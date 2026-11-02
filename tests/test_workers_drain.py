@@ -330,7 +330,17 @@ def test_off_worker_taken_in_the_race_falls_back(world, remote, monkeypatch):
     remote.register(enabled=False)
     monkeypatch.setattr(RG, "pools_for", lambda *a, **k: [("box", 1), (None, 2)])
     monkeypatch.setattr(WK, "placeable_by_name", lambda cfg, name: True)    # the race
+    seen = {}
+    real = RG.run
+
+    def spy(*a, **k):
+        seen["out"] = real(*a, **k)
+        return seen["out"]
+    monkeypatch.setattr(RG, "run", spy)
     run = G.run_all(world.project, world.state, world.cfg, seq=1)
+    out = seen["out"]
+    assert out.run is None and out.failure.stage == "registry"
+    assert "draining or disabled" in out.failure.error
     assert run.ok and run.worker is None
     (ev,) = world.ledger(["worker_failed"])
     assert ev["stage"] == "registry"
@@ -614,7 +624,18 @@ def test_recheck_refuses_a_worker_without_gate_kind(world, remote, monkeypatch):
     remote.register(ssh=ssh, kinds=["review"])
     monkeypatch.setattr(RG, "pools_for", lambda *a, **k: [("box", 1), (None, 2)])
     monkeypatch.setattr(WK, "placeable_by_name", lambda cfg, name: True)    # the race
+    seen = {}
+    real = RG.run
+
+    def spy(*a, **k):
+        seen["out"] = real(*a, **k)
+        return seen["out"]
+    monkeypatch.setattr(RG, "run", spy)
     run = G.run_all(world.project, world.state, world.cfg, seq=1)
+    out = seen["out"]
+    assert out.run is None and out.failure.stage == "registry"
+    assert "takes no gates" in out.failure.error and "'gate' in kinds" in out.failure.error
+    assert "draining" not in out.failure.error
     assert run.ok and run.worker is None
     (ev,) = world.ledger(["worker_failed"])
     assert ev["stage"] == "registry" and ev["cooldown"] is False
@@ -637,3 +658,84 @@ def test_record_turning_unusable_under_the_lock_blocks_completion(cfg, invoke, m
         return real(cfg_, fn)
     monkeypatch.setattr(WK, "update", racing)
     _assert_skipped(cfg)
+
+
+# ---- review loop 4: malformed records, unknown states, repeated skips --------------------------
+
+def _raw_job(cfg, job, **kw):
+    rec = {"schema": RJ.SCHEMA, "job_id": job, "campaign": "c-2", "state": "submitted",
+           "worker": "box", "seq_or_run": 1, "attempt": 1, **kw}
+    RJ.jobs_dir(cfg).mkdir(parents=True, exist_ok=True)
+    RJ.path(cfg, job).write_text(json.dumps(rec))
+    return rec
+
+
+@pytest.mark.parametrize("field", ["seq_or_run", "attempt"])
+@pytest.mark.parametrize("value", [[1], {"n": 1}, "x"])
+def test_malformed_sort_field_never_escapes_the_tick(cfg, invoke, field, value):
+    """A live record with a list, dict or non-numeric string in `seq_or_run` / `attempt` does
+    not raise out of the tick, `list` or `drain`: it is still a live job on box, so the drain
+    waits for it."""
+    _seed(cfg, _w("box"))
+    _job(cfg, 1, state="done")
+    _raw_job(cfg, "c-2-gate-001-a1", **{field: value})
+    r = invoke("drain", "box")
+    assert r.exit_code == 0 and "draining (1 jobs)" in r.output
+    assert "draining (1 jobs)" in invoke("list").output
+    assert json.loads(invoke("list", "--json").output)["workers"][0]["draining_jobs"] == 1
+    Q._finish_worker_drains(cfg)                # the tick's pass: nothing escapes
+    assert "worker_drain_skipped" not in _journal_kinds(cfg)
+    assert _raw(cfg)["draining"] is True and not _drained_events(cfg)
+    RJ.update(cfg, "c-2-gate-001-a1", state="done")
+    Q._finish_worker_drains(cfg)
+    assert _raw(cfg)["enabled"] is False and len(_drained_events(cfg)) == 1
+
+
+def test_type_error_from_the_pass_is_journaled(cfg, invoke, monkeypatch):
+    _seed(cfg, _w("box"))
+    assert invoke("drain", "box").exit_code == 0
+
+    def boom(cfg_):
+        raise TypeError("bad record")
+    monkeypatch.setattr(WK, "finish_drains", boom)
+    Q._finish_worker_drains(cfg)                # journaled, never raised
+    assert "worker_drain_skipped" in _journal_kinds(cfg)
+
+
+@pytest.mark.parametrize("state", ["missing", None, "running", 3])
+def test_record_with_unknown_state_blocks_completion(cfg, invoke, state):
+    """A record whose `state` is missing, null or outside `remote_jobs.STATES` cannot be
+    trusted to be final: the pass is skipped rather than disabling box under it."""
+    _seed(cfg, _w("box"))
+    assert invoke("drain", "box").exit_code == 0
+    job = "c-2-gate-001-a1"
+    rec = _raw_job(cfg, job)
+    if state == "missing":
+        rec.pop("state")
+    else:
+        rec["state"] = state
+    RJ.path(cfg, job).write_text(json.dumps(rec))
+    _assert_skipped(cfg)
+    RJ.update(cfg, job, state="lost")           # a known final state: the drain completes
+    Q._finish_worker_drains(cfg)
+    assert _raw(cfg)["enabled"] is False and len(_drained_events(cfg)) == 1
+
+
+def test_repeated_skip_is_journaled_once(cfg):
+    """An unreadable registry (reported by ConfigWatch too) journals one
+    `worker_drain_skipped` row, not one per tick; a new error, or the same one after a
+    clean pass, is journaled again."""
+    p = WK.path(cfg)
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text("{not json")
+    for _ in range(3):
+        Q._finish_worker_drains(cfg)
+    assert _journal_kinds(cfg).count("worker_drain_skipped") == 1
+    p.write_text("[also not a registry")       # a different error: journaled
+    Q._finish_worker_drains(cfg)
+    assert _journal_kinds(cfg).count("worker_drain_skipped") == 2
+    _seed(cfg, _w("box"))                       # a clean pass resets it
+    Q._finish_worker_drains(cfg)
+    p.write_text("[also not a registry")
+    Q._finish_worker_drains(cfg)
+    assert _journal_kinds(cfg).count("worker_drain_skipped") == 3

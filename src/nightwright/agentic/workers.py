@@ -279,8 +279,9 @@ class _NoDrain(Exception):
 
 def _check_job_records(cfg) -> None:
     """Raise `ValueError` (`OSError` for an unreadable dir) when `remote-jobs/` holds a record
-    file `remote_jobs.read` cannot use (unreadable, unparseable, another `schema`), or a
-    non-final record without a string `worker`: its job may still run on a draining worker,
+    file `remote_jobs.read` cannot use (unreadable, unparseable, another `schema`), a record
+    whose `state` is missing or outside `remote_jobs.STATES`, or a non-final record without a
+    string `worker`: its job may still run on a draining worker,
     and `live` / `_drained` would silently pass it over. Only regular, non-hidden `*.json`
     files are record files (job ids never start with a dot): a directory or a dotfile is
     not a record."""
@@ -299,6 +300,8 @@ def _check_job_records(cfg) -> None:
             if p.exists() or p.is_symlink():                # a pruned file is no record
                 raise ValueError(f"unreadable job record {p}")
             continue
+        if rec.get("state") not in RJ.STATES:               # missing, null, or unknown: it
+            raise ValueError(f"job record {p} has no known state")  # may be a running job
         if rec.get("state") in RJ.LIVE and not isinstance(rec.get("worker"), str):
             raise ValueError(f"live job record {p} names no worker")
 

@@ -327,6 +327,23 @@ against bootstrap text that this spec no longer contains. Each is resolved in
   remote-gate, job-record and drain-signal files): 319 passed. The full suite is left to
   gating.
 
+### Test record (2026-11-02, review loop 4)
+
+- `tests/test_workers_drain.py` (52 passed). New:
+  `test_malformed_sort_field_never_escapes_the_tick[seq_or_run|attempt × list|dict|"x"]`
+  (`drain`, `list`, `list --json` and the tick's drain pass raise nothing; the record still
+  counts as a live job on box and blocks completion until it is final),
+  `test_type_error_from_the_pass_is_journaled`,
+  `test_record_with_unknown_state_blocks_completion[missing|None|"running"|3]` and
+  `test_repeated_skip_is_journaled_once`. `test_recheck_refuses_a_worker_without_gate_kind`
+  now asserts that the failure error names the missing `gate` kind and not draining.
+- Mutation check: with the old `int()` sort key in `remote_jobs.live`, 6 tests fail. With the
+  unknown-state check removed, 4 fail. With the journal dedupe removed, 1 fails. The code was
+  then restored.
+- Regression guard (`-n 4`; the drain, registry, bootstrap, gate-slot, CLI gate-slot,
+  remote-gate, job-record and drain-signal files): 331 passed. The full suite is left to
+  gating.
+
 ### As shipped (2026-11-01)
 
 - **`--worker` waiters get no `skip`.** `gates.run_all` passes the `skip` predicate only when no
@@ -368,6 +385,20 @@ against bootstrap text that this spec no longer contains. Each is resolved in
   without a string `worker` makes `finish_drains` raise `ValueError` like an unusable record
   (the pass is skipped and journaled), since its job may run on a draining worker (review
   loop 3).
+- **Unknown record states block completion (review loop 4).** A record whose `state` is
+  missing, null or outside `remote_jobs.STATES` makes `finish_drains` raise `ValueError` like
+  an unusable record: it cannot be trusted to be final.
+- **`remote_jobs.live` tolerates malformed sort fields (review loop 4).** A `seq_or_run` or
+  `attempt` that is not an int (a list, a dict, a non-numeric string) sorts as 0 instead of
+  raising `TypeError`, so `drain`, `list` and the tick never crash on one bad record. The
+  record still counts as a live job. The tick wrapper also catches `TypeError`.
+- **A repeated skip is journaled once (review loop 4).** `queue._finish_worker_drains`
+  journals `worker_drain_skipped` only when the error differs from the last one it journaled
+  for that runner journal. A clean pass resets this. An unreadable `workers.json` (which
+  `ConfigWatch` reports too) or a stuck record therefore adds one row, not one per tick.
+- **Re-check wording (review loop 4).** An enabled, non-draining worker without the `gate` kind
+  is refused with `worker NAME takes no gates (no 'gate' in kinds)`. Draining and disabled
+  workers keep the Design's `worker NAME is draining or disabled`.
 - **Record files are regular, non-hidden `*.json` files.** The unusable-record check skips
   directories and dotfiles in `remote-jobs/`; job ids never start with a dot.
 - **A disabled worker never lists as draining.** A hand-edited `enabled: false,

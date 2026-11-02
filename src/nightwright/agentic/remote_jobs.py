@@ -198,7 +198,16 @@ def live(cfg, campaign: str | None = None) -> list[dict]:
         if campaign is not None and rec.get("campaign") != campaign:
             continue
         out.append(rec)
-    return sorted(out, key=lambda r: (int(r.get("seq_or_run") or 0), int(r.get("attempt") or 0)))
+    return sorted(out, key=lambda r: (_int0(r.get("seq_or_run")), _int0(r.get("attempt"))))
+
+
+def _int0(v) -> int:
+    """`v` as an int for sorting; 0 for a missing or malformed value (a list, a dict, a
+    non-numeric string), so one bad record never breaks `live` for every caller."""
+    try:
+        return int(v or 0)
+    except (TypeError, ValueError):
+        return 0
 
 
 def live_gate(cfg, campaign: str) -> dict | None:

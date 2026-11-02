@@ -705,7 +705,8 @@ def run(worker: str, project_cfg: dict, campaign_state: dict, cfg, seq: int, own
     written, for an async worker; `recorded` False for a `gate-job` one, which has none and
     keeps its `-a0` id), so a stop or a transport failure before that leaves no trace of it.
     SPEC-0343: the record is re-read after the slot is taken; a worker that is no longer
-    `placeable` (draining or disabled) gets nothing sent, as an unregistered one."""
+    `placeable` (draining, disabled, or without the `gate` kind) gets nothing sent, as an
+    unregistered one."""
     cid = campaign_state["id"]
     job_id = f"{cid}-gate-{seq:03d}-a0"
     bundle = store.child_tmp(cfg, cid, owner) / "job.bundle"
@@ -718,8 +719,9 @@ def run(worker: str, project_cfg: dict, campaign_state: dict, cfg, seq: int, own
             raise RemoteFailure("registry", f"worker {worker!r} is no longer registered",
                                 cooldown=False)
         if not WK.placeable(rec):               # SPEC-0343: drained or disabled since the take
-            raise RemoteFailure("registry", f"worker {worker} is draining or disabled",
-                                cooldown=False)
+            why = "takes no gates (no 'gate' in kinds)" \
+                if rec["enabled"] and not rec["draining"] else "is draining or disabled"
+            raise RemoteFailure("registry", f"worker {worker} {why}", cooldown=False)
         if RJ.has_async(rec) and RJ.read(cfg, RJ.gate_job_id(cid, seq, attempt)) is None:
             job_id = RJ.gate_job_id(cid, seq, attempt)
             return _run_async(rec, project_cfg, campaign_state, cfg, seq, job_id, bundle, stop,

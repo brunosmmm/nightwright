@@ -7705,16 +7705,25 @@ def _settle_ended_remote_jobs(cfg, flying) -> None:
         RJ.prune(cfg, cid, keep=cancelled)      # a just-cancelled record stays one tick
 
 
+_DRAIN_SKIPPED: dict = {}       # runner journal path -> the last `worker_drain_skipped` error
+
+
 def _finish_worker_drains(cfg) -> None:
     """SPEC-0343, every tick: disable the draining workers that are idle (`workers.finish_drains`)
-    and emit `worker_drained` for each. An unreadable registry or `remote-jobs` dir skips the
-    pass (journaled `worker_drain_skipped`); nothing is disabled."""
+    and emit `worker_drained` for each. An unreadable registry, `remote-jobs` dir or record
+    skips the pass (journaled `worker_drain_skipped`); nothing is disabled. The same error on
+    consecutive ticks is journaled once, not every tick (a bad file stays bad until fixed)."""
     from . import events as E                   # lazy: events imports this module
+    key = str(runner_journal_path(cfg))
     try:
         drained = workers.finish_drains(cfg)
-    except (OSError, ValueError) as e:
-        journal(cfg, "worker_drain_skipped", error=f"{type(e).__name__}: {e}")
+    except (OSError, ValueError, TypeError) as e:
+        err = f"{type(e).__name__}: {e}"
+        if _DRAIN_SKIPPED.get(key) != err:
+            journal(cfg, "worker_drain_skipped", error=err)
+            _DRAIN_SKIPPED[key] = err
         return
+    _DRAIN_SKIPPED.pop(key, None)
     for name in drained:                        # the registry write is the truth; the event
         try:                                    # only reports it, so no failure here undoes it
             E.append(cfg, "worker_drained", by="queue", data={"worker": name})
