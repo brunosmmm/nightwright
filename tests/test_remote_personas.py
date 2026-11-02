@@ -520,29 +520,41 @@ def test_workers_set(tmp_path, monkeypatch):
     assert bad.exit_code != 0
 
 
-@pytest.mark.parametrize("working", [True, False])
-def test_workers_check_auth_with_fake_claude(tmp_path, working, monkeypatch):
+# working: everything passes; broken: `--version` fails too; no_auth: `--version` works but
+# the `claude -p` probe fails, so only `--auth` (which runs the probe) catches it
+@pytest.mark.parametrize("claude,auth,ok", [("working", True, True), ("broken", True, False),
+                                            ("broken", False, False), ("no_auth", True, False),
+                                            ("no_auth", False, True)])
+def test_workers_check_auth_with_fake_claude(tmp_path, claude, auth, ok, monkeypatch):
     from nightwright.cli import cli
     w = _world(tmp_path)
     monkeypatch.setattr("nightwright.cli.load_config", lambda: w.cfg)
     r = _remote(w, _write_script(tmp_path / "s.json", WRITER))
     bindir = tmp_path / "bin"
     bindir.mkdir()
-    if working:
-        _script(bindir / "claude", 'case "$1" in --version) echo "2.0.0 (Claude Code)";; '
-                                   '*) echo \'{"type":"result","is_error":false,"result":"ok"}\';; esac')
-    else:
+    probed = tmp_path / "probed"                        # the `claude -p` probe ran
+    probe = {"working": 'echo \'{"type":"result","is_error":false,"result":"ok"}\'',
+             "no_auth": "echo 'not logged in' >&2; exit 1"}
+    if claude == "broken":
         _script(bindir / "claude", "echo 'not logged in' >&2; exit 1")
+    else:
+        _script(bindir / "claude", 'case "$1" in --version) echo "2.0.0 (Claude Code)";; '
+                                   f'*) touch {probed}; {probe[claude]};; esac')
     ssh = _script(tmp_path / "fake-ssh-claude", f'export PATH={bindir}:$PATH\nexec {r.ssh} "$@"')
     r.register(ssh=ssh, info=INFO, kinds=["gate", "persona"])
     monkeypatch.setattr(WK, "check", lambda cfg, rec: {"name": rec["name"], "ok": True,
                                                        "errors": [], "warnings": [],
                                                        "info": INFO})
-    run = CliRunner().invoke(cli, ["workers", "check", "box", "--auth", "--json"])
+    run = CliRunner().invoke(cli, ["workers", "check", "box", "--json"]
+                             + (["--auth"] if auth else []))
     out = json.loads(run.output)
-    assert out[0]["ok"] is working and (run.exit_code == 0) is working
-    if not working:
+    assert out[0]["ok"] is ok and (run.exit_code == 0) is ok
+    if not ok:
         assert "claude" in out[0]["errors"][0]
+    if claude != "broken":
+        assert probed.exists() is auth                  # the paid probe runs only with --auth
+    if claude == "no_auth" and auth:
+        assert "auth probe" in out[0]["errors"][0]
 
 
 def test_ssh_grammar_allows_claude_check():
@@ -931,3 +943,89 @@ def test_decode_is_bounded(monkeypatch):
     monkeypatch.setattr(RPS, "MAX_RUN_FILE_BYTES", 99)
     with pytest.raises(ValueError):
         RPS._decode(data)
+
+
+# ---- an adopted job's local runs use the full request from its record ------------------------
+
+class _RecordingLocal:
+    """A non-detachable local runner that keeps every request it is handed."""
+    detachable = False
+
+    def __init__(self):
+        self.reqs = []
+
+    def run(self, req, *, hooks=None):
+        self.reqs.append(req)
+        req.run_dir.mkdir(parents=True, exist_ok=True)
+        return R.write_run_record(req, R.RunResult(
+            exit_code=0, timed_out=False, interrupted=False, duration_s=0.0, is_error=False,
+            cost_usd=0.0, verdict=VERDICT, verdict_ok=True), S.now_iso())
+
+
+def _adopt_stripped(tmp_path, monkeypatch, *, lost=False, writeback_fails=False,
+                    keep_request=True):
+    """Detach a remote job, then adopt it as `queue._adopt` does: with the stripped request
+    `_adopt_request` rebuilds from the run dir and the `run.start` entry."""
+    w, _old, req, job = _detached_job(tmp_path)
+    if not keep_request:                                # a record written before the fix
+        rec = RJ.read(w.cfg, job)
+        rec.pop("request")
+        RJ.path(w.cfg, job).write_text(json.dumps(rec))
+    if lost:
+        monkeypatch.setattr(RPS, "_attach", lambda *a: ("lost", "unknown"))
+    if writeback_fails:
+        monkeypatch.setattr(RPS, "_before_writeback",
+                            lambda wt, b: (w.repo / "late.txt").write_text("late\n"))
+    start, = w.ledger(["run.start"])
+    stripped = Q._adopt_request(req.run_dir, start)
+    assert stripped.system_append == "" and stripped.env == {}     # what `_adopt` hands over
+    local = _RecordingLocal()
+    ctx = Q._Ctx(w.cfg, runner=local)
+    ctx._projects[w.state["project"]] = w.project
+    hooks = R.RunHooks(threading.Lock(), req.run_dir, phase="wait")
+    res = Q._do_persona(ctx, S.read_state(w.cfg, CID), Q.Step("implement", persona="implementer"),
+                        "001-implementer", stripped, 1.0, hooks, {"exited_before_start": False})
+    return w, req, res, local
+
+
+def _assert_full(w, got, want, run_dir):
+    wt = Path(S.read_state(w.cfg, CID)["repo"]["worktree"])
+    assert got.run_dir == run_dir
+    assert got.prompt == want.prompt and got.system_append == want.system_append == "sys"
+    assert got.allowed_tools == (f"Bash({wt}/tools/check.sh*)", "Bash(uv run pytest*)")
+    assert got.add_dirs == (wt,) and got.cwd == wt
+    assert got.permission_mode == want.permission_mode and got.json_schema == want.json_schema
+    env = got.env
+    assert env["NW_PERSONA_RUN"] == "1" and env["NW_CAMPAIGN"] == CID
+    assert env["NW_SPEC_ID"] == "SPEC-0900" and env["NW_BASE"] == "main"
+    assert env["NW_WORKTREE"] == str(wt) and env["NW_DATA_DIR"] == str(w.cfg["data_dir"])
+    assert env["NW_CONFIG_DIR"] == str(w.cfg["config_dir"]) and env["TMPDIR"]
+
+
+def test_lost_adopted_job_runs_locally_with_the_full_request(tmp_path, monkeypatch):
+    w, req, res, local = _adopt_stripped(tmp_path, monkeypatch, lost=True)
+    got, = local.reqs
+    _assert_full(w, got, req, req.run_dir)
+    assert res.run_result.verdict == VERDICT and not res.interrupted
+
+
+def test_failed_write_back_of_an_adopted_job_reruns_with_the_full_request(tmp_path,
+                                                                          monkeypatch):
+    w, req, res, local = _adopt_stripped(tmp_path, monkeypatch, writeback_fails=True)
+    got, = local.reqs
+    _assert_full(w, got, req, S.runs_dir(w.cfg, CID) / "002-implementer")
+    assert res.run_id == "002-implementer" and res.run_result.verdict == VERDICT
+
+
+def test_adopted_record_without_a_request_never_runs_locally(tmp_path, monkeypatch):
+    w, req, res, local = _adopt_stripped(tmp_path, monkeypatch, lost=True, keep_request=False)
+    assert local.reqs == [] and res.interrupted               # the step is prepared again
+    assert res.run_result.interrupted and res.commit_sha is None
+
+
+def test_failed_write_back_of_a_record_without_a_request_is_not_rerun(tmp_path, monkeypatch):
+    w, req, res, local = _adopt_stripped(tmp_path, monkeypatch, writeback_fails=True,
+                                         keep_request=False)
+    assert local.reqs == [] and res.run_id == "001-implementer"
+    assert res.run_result.writeback_failed and res.run_result.is_error
+    assert [e["run_id"] for e in w.ledger(["run.start"])] == ["001-implementer"]

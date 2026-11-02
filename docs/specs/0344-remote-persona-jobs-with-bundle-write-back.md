@@ -576,6 +576,49 @@ working `claude` fails the check. This needs one more allowed subcommand on the 
   `test_agentic_adopt.py`, `test_remote_job_records.py` and `test_remote_gates.py`: 249
   passed. The full suite is left to gating.
 
+### As shipped (2026-11-02, adopted local runs)
+
+- **An adopted job's local runs use the full request.** `_fresh` now stores the job's
+  `request_to_job` doc (worktree-relative) as `request` in its `remote-jobs/` record. When
+  `dispatch` builds an adopted `RemoteRunner`, `adopted_request` rebuilds the full
+  `RunRequest` from that doc with `request_from_job`, anchored at the campaign worktree,
+  and sets `NW_WORKTREE`, `NW_DATA_DIR`, `NW_CONFIG_DIR` and the run's `tmp_env` the way
+  `personas.py` does. A lost adopted job's local run (`_local`) and the re-run after an
+  adopted job's failed write-back (`_do_persona` -> `_rerun_locally`) both use it. Before
+  this fix they used the queue's adoption rebuild (`rebuild_request`), which has no
+  `system_append`, `allowed_tools`, `add_dirs` or env, so `NW_PERSONA_RUN`, `NW_CAMPAIGN` and
+  the other persona keys were missing.
+- **A record without the doc** (one written before this fix) never starts a local run. A lost
+  job ends interrupted, so the queue prepares the step again. A failed write-back is recorded
+  as it is: a transient `run_failed`, no re-run.
+- **`request.json`.** The coordinator writes no `request.json` for a remote run (only
+  `prompt.md`), so `_finish`'s worker copy overwrites nothing. Adoption no longer depends on
+  it, because the full request comes from the record. `_finish` is unchanged.
+- `_rollback` runs `git clean` in chunks of 500 paths.
+
+### Test record (2026-11-02, adopted local runs)
+
+- New cases in `tests/test_remote_personas.py`. Each detaches a remote job and adopts it with
+  the stripped request `queue._adopt_request` builds, using a recording local runner:
+  - a lost adopted job runs locally with `prompt`, `system_append`, `allowed_tools` (gate
+    path re-anchored at the worktree), `add_dirs`, `cwd` and env (`NW_PERSONA_RUN=1`,
+    `NW_CAMPAIGN`, `NW_SPEC_ID`, `NW_BASE`, and the re-set `NW_WORKTREE`, `NW_DATA_DIR`,
+    `NW_CONFIG_DIR`, `TMPDIR`) as the original;
+  - a failed write-back of an adopted job (a dirty worktree) re-runs `002-implementer` with
+    the same full request;
+  - a record with no `request`: a lost job ends interrupted with no local run and no commit,
+    and a failed write-back is not re-run.
+  Mutation check: with `_local` and `_do_persona` using the stripped request again, three of
+  the four cases fail. The fourth checks the no-`request` guard, which that mutation keeps.
+- `check --auth` now has a fake `claude` whose `--version` works and whose `-p` fails. It
+  fails with `--auth` (`auth probe` error) and passes without it, and a marker file shows the
+  probe runs only with `--auth`. Mutation check: with the worker's `--auth` probe disabled,
+  two cases fail.
+- `uv run pytest -q -n 4 tests/test_remote_personas.py`: 58 passed.
+- `uv run pytest -q -n 6` over `test_remote_personas.py`, `test_agentic_runner.py`,
+  `test_agentic_adopt.py`, `test_remote_job_records.py`, `test_remote_gates.py` and
+  `test_agentic_campaign_runs.py`: 278 passed. The full suite is left to gating.
+
 ## Rollout / migration
 
 Implementation sessions clock in and out on the linked idea (`nw idea clock-in IDEA-560` /

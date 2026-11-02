@@ -657,14 +657,16 @@ class RemoteRunner:
     """A persona run on a worker (SPEC-0344): a `kind: persona` job through SPEC-0340, its
     result bundle written back into the campaign worktree. Detachable like `ClaudeRunner`: a
     stop leaves the job and its SPEC-0341 record for the next runner to adopt. The logic is in
-    `remote_personas`; `local` is the runner a run falls back to before the worker took it."""
+    `remote_personas`; `local` is the runner a run falls back to before the worker took it.
+    `request` is an adopted job's full request, rebuilt from its record (None when fresh, or
+    when the record keeps none)."""
 
     detachable = True
 
     def __init__(self, cfg, state: dict, worker: dict, *, local=None, slot=None,
-                 record: dict | None = None):
+                 record: dict | None = None, request: RunRequest | None = None):
         self.cfg, self.state, self.worker = cfg, state, worker
-        self.local, self.slot, self.record = local, slot, record
+        self.local, self.slot, self.record, self.request = local, slot, record, request
         self.job_id: str | None = None         # the job this runner is attached to
         self.job_lock: int | None = None       # its `job-<id>.lock` fd, held with a slot
 

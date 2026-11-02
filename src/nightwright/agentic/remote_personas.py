@@ -312,7 +312,8 @@ def dispatch(cfg, state: dict, step_kind: str | None, req, *, adopted: bool = Fa
             w = WK.normalize(cfg, {"name": rec.get("worker"), "ssh": "-"})
         got = acquire_slot(cfg, w)              # best effort: the job runs on the worker anyway
         return R.RemoteRunner(cfg, state, w, local=local, record=rec,
-                              slot=got[0] if got else None)
+                              slot=got[0] if got else None,
+                              request=adopted_request(cfg, state, rec, req.run_dir))
     workers = persona_workers(cfg, state)
     if not workers or ineligible(state, step_kind, req) is not None:
         return None
@@ -326,6 +327,30 @@ def dispatch(cfg, state: dict, step_kind: str | None, req, *, adopted: bool = Fa
             continue
         return R.RemoteRunner(cfg, state, w, local=local, slot=fd)
     return None
+
+
+def adopted_request(cfg, state: dict, rec: dict, run_dir):
+    """The full `RunRequest` of an adopted job, rebuilt from the `request_to_job` doc its
+    record keeps, anchored at the campaign worktree, with the `ENV_RESET` keys set as
+    `personas.py` sets them. The queue's adoption rebuild (`runner.rebuild_request`) keeps only
+    what collecting a result needs (no `system_append`, `allowed_tools`, `add_dirs` or env), so
+    a local run started for an adopted job uses this one. None for a record without the doc:
+    such a run is never started locally (see `_local`)."""
+    from . import gates as G
+    doc = rec.get("request")
+    wt = (state.get("repo") or {}).get("worktree")
+    if not isinstance(doc, dict) or not wt:
+        return None
+    env = {"NW_WORKTREE": str(wt), "NW_DATA_DIR": str(cfg.get("data_dir") or ""),
+           "NW_CONFIG_DIR": str(cfg.get("config_dir") or "")}
+    try:
+        cid = str(state.get("id") or "")
+        if cid:          # SPEC-0253: the run's private TMPDIR
+            env.update(G.tmp_env(store.child_tmp(cfg, cid, f"run-{Path(run_dir).name}",
+                                                 create=True)))
+        return R.request_from_job(doc, wt, run_dir, env=env)
+    except (KeyError, TypeError, ValueError, OSError):
+        return None
 
 
 # ---- the job (coordinator) ------------------------------------------------------------------
@@ -376,7 +401,17 @@ def _hold_job(rr: R.RemoteRunner, job_id: str) -> None:
 
 
 def _local(rr: R.RemoteRunner, req, hooks):
-    """The run on the local runner (the worker never took it, or lost it)."""
+    """The run on the local runner (the worker never took it, or lost it). An adopted job runs
+    from the full request its record keeps (`adopted_request`), never from the queue's
+    stripped rebuild; without one the run ends interrupted and the queue prepares the step
+    again."""
+    if rr.record is not None:
+        if rr.request is None:
+            if hooks is not None and not hooks.enter_collect():
+                return R.DETACHED
+            return R._synthetic(req, "the remote persona job was lost and its record keeps no "
+                                     "request to run it locally")
+        req = rr.request
     local = rr.local if rr.local is not None else R.select_runner(rr.cfg)
     if hooks is not None and getattr(local, "detachable", False):
         # an adopted remote run dir has no `proc.json`, so `_adopt` gave the hooks an adoption
@@ -409,9 +444,11 @@ def _fresh(rr: R.RemoteRunner, req, hooks):
         RJ.create(cfg, job_id=job_id, campaign=cid, worker=w["name"], attempt=1, seq=0,
                   submitted_at=now, kind=KIND, commit=header["commit"], head=base_head,
                   deadline_at=now + header["timeout_s"] + RJ.settings(cfg)["worker_ttl_s"])
+        # `request`: an adopted runner rebuilds the full request from it (`adopted_request`)
         rec = RJ.update(cfg, job_id, run_id=run_id, persona=req.persona, base_head=base_head,
                         read_only=req.read_only, started_at=store.now_iso(),
-                        step={"state": state.get("state")})
+                        step={"state": state.get("state")},
+                        request=header["payload"]["request"])
         _hold_job(rr, job_id)
         try:
             RG._submit(w, header, bundle, cfg)
@@ -768,9 +805,9 @@ def _rollback(worktree, base_head: str, head: str, wip: str | None, pre: str) ->
                               "--diff-filter=A", head, wip], capture_output=True).stdout
         added = [os.fsdecode(n) for n in out.split(b"\0") if n]
     _git_out(worktree, "reset", "-q", "--hard", base_head)
-    if added:
+    for i in range(0, len(added), 500):        # chunked: a long path list fits in one argv
         # literal pathspecs: a name starting `:` or holding `*` is a path, not pathspec magic
-        _git_out(worktree, "--literal-pathspecs", "clean", "-q", "-fd", "--", *added)
+        _git_out(worktree, "--literal-pathspecs", "clean", "-q", "-fd", "--", *added[i:i + 500])
     if pre:
         if _git_out(worktree, "stash", "apply", "--index", "-q", pre).returncode != 0:
             _git_out(worktree, "stash", "apply", "-q", pre)

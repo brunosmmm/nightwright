@@ -1856,9 +1856,13 @@ def _do_persona(ctx: _Ctx, state: dict, step: Step, run_id: str, req, budget: fl
         if outcome is DETACHED:
             res.detached = True
             return res
-        if getattr(outcome, "writeback_failed", False):
-            run_id, req, outcome = _rerun_locally(ctx, state, step, run_id, req, budget, outcome,
-                                                  hooks)
+        # an adopted job re-runs from the full request its record keeps, never from the
+        # stripped adoption rebuild; without one the failed run is recorded as it is (a
+        # transient `run_failed`) and the queue prepares the step again
+        rerun_req = req if adopted is None else getattr(remote, "request", None)
+        if getattr(outcome, "writeback_failed", False) and rerun_req is not None:
+            run_id, req, outcome = _rerun_locally(ctx, state, step, run_id, rerun_req, budget,
+                                                  outcome, hooks)
             res.run_id = run_id
             detachable = bool(getattr(ctx.runner, "detachable", False))
             if outcome is DETACHED:
