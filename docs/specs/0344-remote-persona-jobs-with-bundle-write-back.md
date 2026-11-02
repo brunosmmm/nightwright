@@ -545,6 +545,37 @@ working `claude` fails the check. This needs one more allowed subcommand on the 
 - The manual steps are still not run (no persona-capable worker on this host). They are left
   to the human and to SPEC-0346. The full suite is left to gating.
 
+### As shipped (2026-11-02, rewound head)
+
+- **A bundle `head` must descend from `base_head`.** `write_back` runs
+  `git merge-base --is-ancestor <base_head> <head>` after the HEAD and clean checks and before
+  the fast-forward, and fails with `write-back: head not a descendant of base_head` otherwise.
+  Before this, a persona that rewound history on the worker (`git reset --hard HEAD~1`, then
+  an edit) sent an older `head`: `merge --ff-only` was a no-op that returned 0, the `wip`
+  stash applied on top of `base_head`, and the run counted as a successful write-back that
+  kept the dropped commit. The failure is before the fast-forward, so the worktree is
+  untouched and the step re-runs locally as for any other write-back failure.
+- **Second guard.** After the merge, `write_back` checks that HEAD is `head`; if not, it rolls
+  back (`_rollback`) and fails with `write-back: fast-forward did not reach head`.
+- **Malformed `done` frame.** `_finish` coerces `exit_code`, `duration_s` and `cost_usd`
+  through `_num` (a bad value becomes -1, 0 or null), so a malformed frame cannot raise
+  before the record is finished.
+
+### Test record (2026-11-02, rewound head)
+
+- New cases in `tests/test_remote_personas.py`:
+  - a fake worker script running `git reset -q --hard HEAD~1` and then editing `a.txt` gives
+    a write-back failure (`head not a descendant of base_head`), the full failure checks
+    (`run.end`, `transient` `run_failed`, `remote_excluded`, one local re-run, no autopark),
+    and an untouched worktree. Mutation check: with the ancestor check disabled, the test
+    fails (the run counted as a successful write-back);
+  - a `merge --ff-only` stubbed to return 0 without moving HEAD is rolled back to
+    `base_head` with a clean status and fails with `fast-forward did not reach head`;
+  - `_num` returns the default for malformed values.
+- `uv run pytest -q -n 6` over `test_remote_personas.py`, `test_agentic_runner.py`,
+  `test_agentic_adopt.py`, `test_remote_job_records.py` and `test_remote_gates.py`: 249
+  passed. The full suite is left to gating.
+
 ## Rollout / migration
 
 Implementation sessions clock in and out on the linked idea (`nw idea clock-in IDEA-560` /

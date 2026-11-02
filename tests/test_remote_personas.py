@@ -284,6 +284,47 @@ def test_write_back_failure_corrupt_bundle(tmp_path, monkeypatch):
     assert _local_saw(w) == (base, "")
 
 
+REWINDER = [{"pre_shell": ["git reset -q --hard HEAD~1"],
+             "edits": [{"path": "a.txt", "append": "after rewind\n"}],
+             "verdict": VERDICT, "cost_usd": 0.5}]
+
+
+def test_write_back_failure_head_rewound_on_the_worker(tmp_path, monkeypatch):
+    """The persona drops a commit (`reset --hard HEAD~1`) and leaves an edit: the bundle's
+    `head` is an ancestor of `base_head`, so a fast-forward would be a silent no-op. It is a
+    write-back failure with a local re-run, and the worktree is untouched."""
+    w, base, res, st, _ctx_ = _failure_case(tmp_path, monkeypatch, lambda w, b: None,
+                                            worker_entries=REWINDER)
+    _check_failure(w, res, st, "head not a descendant of base_head")
+    assert _local_saw(w) == (base, "")
+
+
+def test_write_back_rolls_back_when_the_fast_forward_misses_head(tmp_path, monkeypatch):
+    """Second guard: a merge that returns 0 without moving HEAD to `head` is rolled back."""
+    w = _world(tmp_path)
+    repo = w.repo
+    base = _git(repo, "rev-parse", "HEAD")
+    head = __import__("test_remote_gates")._commit(repo, "c.txt", "c\n")
+    _git(repo, "reset", "-q", "--hard", base)
+    real = RPS._git_out
+
+    def fake(wt, *args, **kw):
+        if args[:2] == ("merge", "--ff-only"):
+            return real(wt, "status")                           # rc 0, HEAD unmoved
+        return real(wt, *args, **kw)
+    monkeypatch.setattr(RPS, "_git_out", fake)
+    ok, reason, saved = RPS.write_back(w.cfg, repo, "job-x", base,
+                                       {"head": head, "wip": None})
+    assert not ok and reason == "fast-forward did not reach head"
+    assert saved == ["refs/nw/jobs/job-x/head"]
+    assert _git(repo, "rev-parse", "HEAD") == base and _git(repo, "status", "--porcelain") == ""
+
+
+def test_finish_tolerates_a_malformed_done_frame(tmp_path):
+    assert RPS._num("x", int, -1) == -1 and RPS._num(None, float, 0.0) == 0.0
+    assert RPS._num("2.5", float, 0.0) == 2.5 and RPS._num([1], int, -1) == -1
+
+
 # ---- restart / adoption ----------------------------------------------------------------------
 
 def _detached_job(tmp_path, sleep_s=1.5):

@@ -609,6 +609,14 @@ def _decode(data: str) -> bytes:
     return out
 
 
+def _num(v, cast, default):
+    """A `done` frame's numeric field; a malformed one is `default`, not an exception."""
+    try:
+        return cast(v)
+    except (TypeError, ValueError, OverflowError):
+        return default
+
+
 def _finish(rr: R.RemoteRunner, req, hooks, rec: dict, frame: dict):
     """The `done` frame: run-dir files, write-back (once), `run.json`; the record goes."""
     cfg, job_id = rr.cfg, rec["job_id"]
@@ -626,9 +634,11 @@ def _finish(rr: R.RemoteRunner, req, hooks, rec: dict, frame: dict):
     res = frame.get("result") if isinstance(frame.get("result"), dict) else {}
     cut = bool(frame.get("interrupted") or res.get("interrupted"))
     result = R.RunResult(
-        exit_code=int(res.get("exit_code", -1)), timed_out=bool(res.get("timed_out")),
-        interrupted=cut, duration_s=float(res.get("duration_s") or frame.get("duration_s") or 0),
-        is_error=bool(res.get("is_error", True)) or cut, cost_usd=res.get("cost_usd"),
+        exit_code=_num(res.get("exit_code", -1), int, -1), timed_out=bool(res.get("timed_out")),
+        interrupted=cut,
+        duration_s=_num(res.get("duration_s") or frame.get("duration_s") or 0, float, 0.0),
+        is_error=bool(res.get("is_error", True)) or cut,
+        cost_usd=_num(res["cost_usd"], float, None) if res.get("cost_usd") is not None else None,
         usage=res.get("usage") if isinstance(res.get("usage"), dict) else {},
         session_id=res.get("session_id"), verdict=res.get("verdict"),
         verdict_ok=bool(res.get("verdict_ok")), result_text=str(res.get("result_text") or ""),
@@ -723,11 +733,18 @@ def write_back(cfg, worktree, job_id: str, base_head: str, bundle: dict) -> tupl
             return fail("head moved")
         if not _worktree_clean(worktree):
             return fail("worktree dirty")
+        # a `head` that does not descend from `base_head` (the persona rewound history on the
+        # worker) would make the fast-forward a silent no-op and drop the rewind
+        if _git_out(worktree, "merge-base", "--is-ancestor", base_head, head).returncode != 0:
+            return fail("head not a descendant of base_head")
         pre = _git_out(worktree, "stash", "create").stdout.strip()    # empty: the tree is clean
         p = _git_out(worktree, "merge", "--ff-only", "-q", head)
         if p.returncode != 0:
             _rollback(worktree, base_head, head, None, pre)
             return fail(f"fast-forward failed: {(p.stderr or p.stdout).strip()[-300:]}")
+        if gitops.rev_parse(worktree) != head:
+            _rollback(worktree, base_head, head, None, pre)
+            return fail("fast-forward did not reach head")
         if wip:
             p = _git_out(worktree, "stash", "apply", "--index", "-q", wip)
             if p.returncode != 0:
