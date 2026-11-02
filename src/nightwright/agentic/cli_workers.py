@@ -31,8 +31,8 @@ def workers_group():
                                        install nw, the forced key line, register (SPEC-0354)
     nw workers list                    name, destination, slots, enabled, cooldown, held
     nw workers check [NAME]            probe over SSH
-    nw workers set NAME --kinds gate,persona [--persona-slots N]
-                                       job kinds / persona slots (SPEC-0344)
+    nw workers set NAME [--slots N] [--kinds gate,persona] [--persona-slots N]
+                                       gate slots (SPEC-0390) / job kinds / persona slots
     nw workers on|off NAME             enable (clears cooldown) / disable
     nw workers clear-cooldown NAME     clear the cooldown only (enabled/drain untouched; SPEC-0387)
     nw workers drain NAME              no new gates; disabled once idle (SPEC-0343)
@@ -268,15 +268,22 @@ def workers_check(cfg, name, as_json, auth):
 
 @workers_group.command("set")
 @click.argument("name")
+@click.option("--slots", type=click.IntRange(WK.MIN_SLOTS, WK.MAX_SLOTS), default=None,
+              help="gate slots on the worker; raising applies on the next tick, lowering "
+                   "lets held slots drain (SPEC-0390)")
 @click.option("--kinds", default=None, metavar="KIND[,KIND]",
               help="job kinds the worker takes: gate, persona (SPEC-0344)")
 @click.option("--persona-slots", type=click.IntRange(RPS_MIN, RPS_MAX), default=None,
               help="concurrent persona jobs on the worker (default 1)")
 @click.pass_obj
-def workers_set(cfg, name, kinds, persona_slots):
-    """Change a registered worker's job kinds or persona slots (SPEC-0344)."""
-    if kinds is None and persona_slots is None:
-        raise click.UsageError("nothing to set: give --kinds and/or --persona-slots")
+def workers_set(cfg, name, slots, kinds, persona_slots):
+    """Change a registered worker's gate slots, job kinds or persona slots (SPEC-0344/0390).
+
+    Only the named fields change: draining, a pending update, enabled and cooldown are kept.
+    Lowering --slots never kills a running job: slots held beyond the new count drain
+    naturally and are not granted again."""
+    if slots is None and kinds is None and persona_slots is None:
+        raise click.UsageError("nothing to set: give --slots, --kinds and/or --persona-slots")
     parsed = None
     if kinds is not None:
         parsed = [k.strip() for k in kinds.split(",") if k.strip()]
@@ -286,8 +293,13 @@ def workers_set(cfg, name, kinds, persona_slots):
                                    + (f" (not {', '.join(bad)})" if bad else ""))
         parsed = list(dict.fromkeys(parsed))
 
+    old = []
+
     def fn(records):
         r = _find(records, name)
+        old[:] = [WK.normalize(cfg, dict(r))["slots"]]
+        if slots is not None:
+            r["slots"] = slots
         if parsed is not None:
             r["kinds"] = parsed
         if persona_slots is not None:
@@ -295,7 +307,9 @@ def workers_set(cfg, name, kinds, persona_slots):
     _update(cfg, fn)
     w = WK.normalize(cfg, _find(_load_or_fail(cfg), name))
     from . import remote_personas as RPS
-    _say(f"{name}: kinds {','.join(w['kinds'])}, persona slots {RPS.persona_slots(w)}")
+    was = f" (was {old[0]})" if slots is not None and old[0] != w["slots"] else ""
+    _say(f"{name}: gate slots {w['slots']}{was}, kinds {','.join(w['kinds'])}, "
+         f"persona slots {RPS.persona_slots(w)}")
 
 
 @workers_group.command("on")
