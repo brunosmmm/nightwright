@@ -1,9 +1,10 @@
 ---
 id: SPEC-0382
 title: "Conductor never blocks on the human: launch guard and hook backstop"
-status: proposed
+status: accepted
 owner: user
 created: 2026-11-02
+updated: 2026-11-02
 kind: feature
 source_idea: IDEA-775
 tags: [agentic, conductor]
