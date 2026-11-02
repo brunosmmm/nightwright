@@ -290,6 +290,26 @@ an idempotent `enabled: false`.
   waits with `until` (SPEC-0269). `test_remote_job_records.py` + `test_tui_queue_model.py` +
   `test_test_waits.py`: 80 passed.
 
+### Test record (2026-11-01, review fixes)
+
+- Three review findings were fixed in the code (see *As shipped*): a retry's transport-failure
+  fallback now sets the lost record `local`; `worker_job_retried` for a remote attempt is written
+  only once the job is about to be sent; an adoption whose worker was removed records no loss.
+- `tests/test_worker_job_retry.py` gains 8 tests: a free-text answer is `skipped` with one
+  `note` and no registry write; a stop while the retry waits for a slot (b2 and both local
+  slots held) leaves the record `lost` with no event, and the next step continues as attempt 2
+  on b2; a stop after b2's slot is taken but before submit appends no event (the continuation
+  appends the only one); `events.sync` projects `worker_job_retried` with
+  `job_id`/`from_worker`/`to_worker`/`attempt`; `retry_pools` with a removed or disabled
+  `--worker` is local; a retry whose `prepare` fails sets the lost record `local` and appends
+  `to_worker: null`, and with a crash during that local run the next step starts fresh with no
+  attempt 2; adopting three records of a removed worker records no loss and raises no escalation.
+  32 passed (`-n 4`). With the `src/` change reverted, the four tests of the logic fixes fail
+  and the others pass.
+- Regression guard: `test_remote_job_records.py`, `test_remote_gates.py`, `test_gate_slots.py`,
+  `test_workers_registry.py`, `test_agentic_gates.py`, `test_gate_tiers.py`,
+  `test_agentic_events.py`: 355 passed (`-n 4`). The full suite is left to gating.
+
 ### As shipped (2026-11-01)
 
 - **Where the retry lives.** `remote_gates._give_up` no longer sets the record `local`. It
@@ -325,6 +345,14 @@ an idempotent `enabled: false`.
   `queue._apply_worker_escalations` calls the handler in `_tick` next to
   `_settle_ended_remote_jobs`. An unreadable registry leaves the record unapplied until the
   next tick.
+- **Review fixes.** `remote_gates.run` takes `on_attempt`, which is called once the job is
+  about to be sent (after the attempt's record is written for an async worker, after the last
+  stop check for a `gate-job` one). `_retry` appends `worker_job_retried` there, so a stop
+  before the send leaves no event and the next step's continuation writes the only one. A
+  transport failure of a retry sets the lost record `local` before the local fallback (and
+  appends `to_worker: null` when nothing was sent), so a crash during that run does not continue
+  the chain. `_give_up` takes `count`; `adopt` passes `count=False` when the record's worker is
+  no longer registered, so no loss (and no escalation) is recorded against a removed worker.
 
 ## Clock Log
 

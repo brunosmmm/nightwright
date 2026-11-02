@@ -592,8 +592,10 @@ def _retry(lost, waited, *, project_cfg, campaign_state, cfg, cid, worktree, seq
     from `remote_gates.retry_pools` (the eligible pools without them, local last), so a full
     fleet runs it locally at once. Past `max_remote_attempts`, or with no remote pool left, it
     runs locally. Every new attempt appends `worker_job_retried` (`to_worker` None: local); a
-    local one sets the lost record `local` first. A transport failure of a retry falls back
-    locally as SPEC-0338's does."""
+    remote one appends it only once the job is about to be sent (`on_attempt`), so a stop
+    before that leaves the record `lost` with no event and the next step continues the chain.
+    A local run, including a transport failure's fallback (SPEC-0338, no further retry), sets
+    the lost record `local` first, so a crash during it never restarts remote attempts."""
     from . import remote_gates as RG
     limit = RJ.settings(cfg)["max_remote_attempts"]
     while True:
@@ -620,13 +622,20 @@ def _retry(lost, waited, *, project_cfg, campaign_state, cfg, cid, worktree, seq
                 run = _run_all_held(project_cfg, campaign_state, cfg, cid, worktree, seq, stop,
                                     tier)
                 return replace(run, slot_wait_s=waited, head=head, tree=tree)
-            RG.retried(cfg, cid, lost, attempt, hold.pool)
+            sent = []
+
+            def on_attempt(lost=lost, attempt=attempt, to=hold.pool):
+                sent.append(to)
+                RG.retried(cfg, cid, lost, attempt, to)
             out = RG.run(hold.pool, project_cfg, campaign_state, cfg, seq, owner, stop,
-                         tier=tier, attempt=attempt, excluded=excluded)
+                         tier=tier, attempt=attempt, excluded=excluded, on_attempt=on_attempt)
         waited = round(waited + out.worker_wait_s, 1)
         if out.run is not None:
             return replace(out.run, slot_wait_s=waited, head=head, tree=tree)
-        if out.lost is None:
+        if out.lost is None:                    # a transport failure: local, no further retry
+            RJ.update(cfg, lost["job_id"], state="local")
+            if not sent:                        # nothing was sent: this local run is the attempt
+                RG.retried(cfg, cid, lost, attempt, None)
             return _fallback(project_cfg, campaign_state, cfg, cid, worktree, seq, stop, tier,
                              announce, waited, head=head, tree=tree)
         lost = out.lost

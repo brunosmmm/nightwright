@@ -196,6 +196,143 @@ def test_retry_pools_drop_the_excluded_workers_and_keep_local_last(aw, boxes):
     assert RG.retry_pools(aw.cfg, aw.project, st, seq=1, excluded=["b1"], worker="b1") is None
 
 
+
+def test_retry_pools_with_an_unregistered_or_disabled_pinned_worker_is_local(aw, boxes):
+    """`--worker` names a worker `pools_for` refuses now (removed, or disabled since): the
+    retry runs locally instead of failing the step."""
+    st = S.read_state(aw.cfg, CID)
+    assert RG.retry_pools(aw.cfg, aw.project, st, seq=1, excluded=["b1"], worker="gone") is None
+
+    def off(records):
+        for r in records:
+            if r["name"] == "b2":
+                r["enabled"] = False
+    WK.update(aw.cfg, off)
+    assert RG.retry_pools(aw.cfg, aw.project, st, seq=1, excluded=["b1"], worker="b2") is None
+
+
+def test_worker_job_retried_is_projected_into_the_global_events(aw, boxes):
+    b1, b2 = boxes
+    t, out = _thread(lambda: _gate_step(aw))
+    assert until(lambda: b1.running(A1))
+    b1.kill(A1)
+    aw.release()
+    join(t)
+    assert out["r"].gate_run.worker == "b2" and out["r"].gate_run.ok
+    EV.sync(aw.cfg)
+    (ev,) = EV.read_since(aw.cfg, types=["worker_job_retried"])
+    assert ev["campaign"] == CID
+    assert ev["data"] == {"job_id": A2, "from_worker": "b1", "to_worker": "b2", "attempt": 2}
+
+
+# ---- a stop or a transport failure during the retry ------------------------------------------
+
+def test_stop_while_the_retry_waits_for_a_slot_leaves_the_record_lost(aw, boxes, monkeypatch):
+    """Every pool of the retry (b2 and both local slots) is held: the retry waits, a stop
+    ends the step with nothing sent. The record stays `lost` with no `worker_job_retried`, and
+    the next step continues the chain (one event, attempt 2 on b2)."""
+    b1, b2 = boxes
+    real = GS.acquire
+    waiting = threading.Event()
+
+    def acquire(cfg, cid, **kw):
+        if kw.get("pools") == [("b2", 1), (None, 2)]:
+            waiting.set()
+        return real(cfg, cid, **kw)
+    monkeypatch.setattr(GS, "acquire", acquire)
+    stop = threading.Event()
+    with real(aw.cfg, "O1", pools=[("b2", 1)]), real(aw.cfg, "O2"), real(aw.cfg, "O3"):
+        t, out = _thread(lambda: _gate_step(aw, stop))
+        assert until(lambda: b1.running(A1))
+        b1.kill(A1)
+        assert waiting.wait(30)
+        stop.set()
+        join(t)
+    run = out["r"].gate_run
+    assert run.interrupted and not run.ok and run.seq == 1
+    assert RJ.read(aw.cfg, A1)["state"] == "lost" and RJ.read(aw.cfg, A2) is None
+    assert not _retried(aw)
+    assert not (b2.wdata / "agentic" / "worker" / "jobs").exists()
+    monkeypatch.undo()
+    G.reset()
+    aw.release()
+    res = _gate_step(aw)
+    assert res.gate_run.ok and res.gate_run.worker == "b2" and res.gate_run.seq == 1
+    assert RJ.read(aw.cfg, A2)["excluded_workers"] == ["b1"]
+    assert _retried(aw) == [{"job_id": A2, "from_worker": "b1", "to_worker": "b2",
+                             "attempt": 2}]
+
+
+def test_stop_before_the_retry_is_sent_appends_no_event(aw, boxes, monkeypatch):
+    """A stop right after the retry took b2's slot, before submit: no record, no event; the
+    next step's continuation appends the only `worker_job_retried`."""
+    b1, b2 = boxes
+    real = RG.prepare
+    stop = threading.Event()
+
+    def prepare(worker, project_cfg, campaign_state, cfg, seq, job_id, *a, **k):
+        out = real(worker, project_cfg, campaign_state, cfg, seq, job_id, *a, **k)
+        if job_id == A2:
+            stop.set()
+        return out
+    monkeypatch.setattr(RG, "prepare", prepare)
+    t, out = _thread(lambda: _gate_step(aw, stop))
+    assert until(lambda: b1.running(A1))
+    b1.kill(A1)
+    join(t)
+    assert out["r"].gate_run.interrupted
+    assert RJ.read(aw.cfg, A1)["state"] == "lost" and RJ.read(aw.cfg, A2) is None
+    assert not _retried(aw)
+    monkeypatch.undo()
+    G.reset()
+    aw.release()
+    res = _gate_step(aw)
+    assert res.gate_run.ok and res.gate_run.worker == "b2"
+    assert _retried(aw) == [{"job_id": A2, "from_worker": "b1", "to_worker": "b2",
+                             "attempt": 2}]
+
+
+@pytest.mark.parametrize("crash", [False, True])
+def test_transport_failure_of_a_retry_sets_the_lost_record_local(aw, boxes, monkeypatch,
+                                                                   crash):
+    """The retry to b2 fails before anything is sent: the lost record goes `local`, the event
+    says `to_worker: null`, and the run is local with no further retry. A crash during that
+    local run does not restart remote attempts on the next step."""
+    b1, b2 = boxes
+    real = RG.prepare
+
+    def prepare(worker, project_cfg, campaign_state, cfg, seq, job_id, *a, **k):
+        if job_id == A2:
+            raise RG.RemoteFailure("bundle", "prepare failed")
+        return real(worker, project_cfg, campaign_state, cfg, seq, job_id, *a, **k)
+    monkeypatch.setattr(RG, "prepare", prepare)
+
+    class Crash(BaseException):
+        pass
+
+    if crash:
+        def boom(*a, **k):
+            raise Crash()
+        monkeypatch.setattr(G, "_fallback", boom)
+    t, out = _thread(lambda: _gate_step(aw))
+    assert until(lambda: b1.running(A1))
+    b1.kill(A1)
+    aw.release()
+    join(t)
+    assert RJ.read(aw.cfg, A1)["state"] == "local" and RJ.read(aw.cfg, A2) is None
+    assert _retried(aw) == [{"job_id": A2, "from_worker": "b1", "to_worker": None,
+                             "attempt": 2}]
+    assert [e["worker"] for e in S.read_ledger(aw.cfg, CID, types=["worker_failed"])] == ["b2"]
+    if not crash:
+        assert out["r"].gate_run.ok and out["r"].gate_run.worker is None
+        return
+    assert isinstance(out.get("e"), Crash)
+    monkeypatch.undo()
+    G.reset()
+    res = _gate_step(aw)                        # no `lost` record to continue: a fresh run
+    assert res.gate_run.ok and res.gate_run.seq != 1
+    assert RJ.read(aw.cfg, A2) is None and len(_retried(aw)) == 1
+
 # ---- max_remote_attempts ---------------------------------------------------------------------
 
 def test_max_remote_attempts_setting():
@@ -341,6 +478,22 @@ def test_crash_between_records_from_the_lost_record_alone(aw, boxes):
     assert res.gate_run.ok and res.gate_run.seq == 1 and res.gate_run.worker == "b1"
     assert RJ.read(aw.cfg, A2)["excluded_workers"] == ["b2"]
 
+
+
+def test_adopting_a_record_of_a_removed_worker_records_no_loss(two):
+    """`nw workers rm W` while records on W are live: each adoption gives up (`unreachable`)
+    but counts no loss against W, so no escalation is raised about a worker that is gone."""
+    aw = two
+    for i, cid in enumerate((CID, CID2, CID)):
+        seq = i + 1
+        rec = RJ.create(aw.cfg, job_id=RJ.gate_job_id(cid, seq, 1), campaign=cid,
+                        worker="gone", attempt=1, seq=seq, submitted_at=RG._now(),
+                        deadline_at=RG._now() + 600, tier="loop")
+        out, _ = RG.adopt(rec, aw.project, S.read_state(aw.cfg, cid), aw.cfg, seq, None)
+        assert out.lost["state"] == "lost" and out.lost["lost_reason"] == "unreachable"
+    assert "gone" not in (WK.read_losses(aw.cfg).get("workers") or {})
+    assert not _worker_escalations(aw)
+    assert len(S.read_ledger(aw.cfg, CID, types=["worker_job_lost"])) == 2
 
 # ---- the loss window -------------------------------------------------------------------------
 
@@ -498,3 +651,22 @@ def test_removed_worker_is_skipped_with_a_note(two, monkeypatch):
     notes = EV.read_since(aw.cfg, types=["note"])
     assert any(esc_id in n["data"]["text"] and "no longer registered" in n["data"]["text"]
                for n in notes)
+
+
+
+def test_free_text_answer_is_skipped_with_a_note(two):
+    aw = two
+    _lose(aw, CID, 3, at=T0)
+    (esc,) = _worker_escalations(aw)
+    ESC.apply_answer(aw.cfg, ESC.plan_answer(aw.cfg, esc["id"], text="look at it tomorrow"))
+    before = WK.path(aw.cfg).read_bytes()
+    mtime = WK.path(aw.cfg).stat().st_mtime_ns
+    _tick(aw)
+    assert WK.path(aw.cfg).read_bytes() == before and WK.path(aw.cfg).stat().st_mtime_ns == mtime
+    rec = ESC.read(aw.cfg, esc["id"])
+    assert rec["applied"] == "skipped" and rec["applied_at"]
+    notes = [n for n in EV.read_since(aw.cfg, types=["note"]) if esc["id"] in n["data"]["text"]]
+    assert len(notes) == 1 and "not one of its options" in notes[0]["data"]["text"]
+    _tick(aw)                                   # applied once: no second note
+    assert len([n for n in EV.read_since(aw.cfg, types=["note"])
+                if esc["id"] in n["data"]["text"]]) == 1
