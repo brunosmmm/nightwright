@@ -351,7 +351,7 @@ ROLE_PLACEHOLDERS = {
         "diff", "gate_results", "pending_brief", "previous_verdicts", "test_files",
         "tests_touched", "changed_files", "campaign_diff"},
     "triager": _COMMON_PLACEHOLDERS | {
-        "gate_results", "pending_brief", "previous_verdicts", "triage_input"},
+        "gate_results", "pending_brief", "previous_verdicts", "triage_input", "flaky_history"},
 }
 
 

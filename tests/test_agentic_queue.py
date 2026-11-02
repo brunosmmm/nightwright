@@ -2516,7 +2516,7 @@ def test_backlog_readiness_outbound_dependency(tmp_path):
 
 # ---- SPEC-0293: the cross-campaign flaky record ---------------------------------------------------
 
-def _gate_run(seq, ok, *, failing=(), flaky=()):
+def _flaky_gate_run(seq, ok, *, failing=(), flaky=()):
     from nightwright.agentic.gates import GateResult, GateRun
     r = GateResult("test", True, ok, 0 if ok else 1, False, 0.1, f"gates/{seq:03d}-test.log", "",
                    summary={"failing": list(failing)} if failing else None, flaky=tuple(flaky))
@@ -2531,7 +2531,7 @@ def _flaky_doc(cfg):
 def test_gate_flaky_ids_recorded(opened):
     cfg, cid, ctx = opened
     S.write_state(cfg, cid, dict(S.read_state(cfg, cid), state="GATING"))
-    row, st = _apply(ctx, cfg, cid, "gate", gate_run=_gate_run(1, True, flaky=["t::a"]))
+    row, st = _apply(ctx, cfg, cid, "gate", gate_run=_flaky_gate_run(1, True, flaky=["t::a"]))
     assert row["to"] == "REVIEWING"
     assert _flaky_doc(cfg)["t::a"]["sources"] == {"rerun": 1}
     (ev,) = S.read_ledger(cfg, cid, types=["flaky_recorded"])
@@ -2543,12 +2543,12 @@ def test_gate_flaky_ids_recorded(opened):
 def test_triage_retry_green_records_previous_failing(opened):
     cfg, cid, ctx = opened
     S.write_state(cfg, cid, dict(S.read_state(cfg, cid), state="GATING"))
-    row, st = _apply(ctx, cfg, cid, "gate", gate_run=_gate_run(1, False, failing=["t::b"]))
+    row, st = _apply(ctx, cfg, cid, "gate", gate_run=_flaky_gate_run(1, False, failing=["t::b"]))
     assert row["to"] == "TRIAGING" and not _flaky_doc(cfg)
     row, st = _apply(ctx, cfg, cid, "triage", persona="gate_triager", run_id="002-gate_triager",
                      run_result=_rr(_verdict("retry_gate", suspected_flaky=True)), budget=0.5)
     assert row["to"] == "GATING" and st["counters"]["gate_retries"] == 1
-    row, st = _apply(ctx, cfg, cid, "gate", gate_run=_gate_run(2, True))
+    row, st = _apply(ctx, cfg, cid, "gate", gate_run=_flaky_gate_run(2, True))
     assert row["to"] == "REVIEWING"
     assert _flaky_doc(cfg)["t::b"]["sources"] == {"triage_retry": 1}
     (ev,) = S.read_ledger(cfg, cid, types=["flaky_recorded"])
@@ -2564,10 +2564,10 @@ def _triage(ctx, cfg, cid, kind, n):
 def test_retry_gate_still_failing_records_nothing(opened):
     cfg, cid, ctx = opened
     S.write_state(cfg, cid, dict(S.read_state(cfg, cid), state="GATING"))
-    _apply(ctx, cfg, cid, "gate", gate_run=_gate_run(1, False, failing=["t::b"]))
+    _apply(ctx, cfg, cid, "gate", gate_run=_flaky_gate_run(1, False, failing=["t::b"]))
     row, st = _triage(ctx, cfg, cid, "retry_gate", 2)
     assert row["to"] == "GATING"
-    row, st = _apply(ctx, cfg, cid, "gate", gate_run=_gate_run(2, False, failing=["t::b"]))
+    row, st = _apply(ctx, cfg, cid, "gate", gate_run=_flaky_gate_run(2, False, failing=["t::b"]))
     assert row["to"] == "TRIAGING" and st["state"] == "TRIAGING"
     assert "t::b" not in _flaky_doc(cfg)
     assert not S.read_ledger(cfg, cid, types=["flaky_recorded"])
@@ -2576,14 +2576,14 @@ def test_retry_gate_still_failing_records_nothing(opened):
 def test_resume_after_park_green_is_not_a_triage_retry(opened):
     cfg, cid, ctx = opened
     S.write_state(cfg, cid, dict(S.read_state(cfg, cid), state="GATING"))
-    _apply(ctx, cfg, cid, "gate", gate_run=_gate_run(1, False, failing=["t::b"]))
+    _apply(ctx, cfg, cid, "gate", gate_run=_flaky_gate_run(1, False, failing=["t::b"]))
     _triage(ctx, cfg, cid, "retry_gate", 2)
-    _apply(ctx, cfg, cid, "gate", gate_run=_gate_run(2, False, failing=["t::b"]))
+    _apply(ctx, cfg, cid, "gate", gate_run=_flaky_gate_run(2, False, failing=["t::b"]))
     row, st = _triage(ctx, cfg, cid, "escalate", 3)
     assert st["state"] == "PARKED" and st["park"]["resume_to"] == "GATING"
     assert st["counters"]["gate_retries"] == 1                # the stale counter must not matter
     Q.apply_resume(cfg, Q.plan_resume(cfg, cid))
-    row, st = _apply(ctx, cfg, cid, "gate", gate_run=_gate_run(3, True))
+    row, st = _apply(ctx, cfg, cid, "gate", gate_run=_flaky_gate_run(3, True))
     assert row["to"] == "REVIEWING"
     assert not _flaky_doc(cfg) and not S.read_ledger(cfg, cid, types=["flaky_recorded"])
 
@@ -2591,9 +2591,9 @@ def test_resume_after_park_green_is_not_a_triage_retry(opened):
 def test_green_without_retry_records_nothing(opened):
     cfg, cid, ctx = opened
     S.write_state(cfg, cid, dict(S.read_state(cfg, cid), state="GATING"))
-    _apply(ctx, cfg, cid, "gate", gate_run=_gate_run(1, False, failing=["t::b"]))
+    _apply(ctx, cfg, cid, "gate", gate_run=_flaky_gate_run(1, False, failing=["t::b"]))
     S.write_state(cfg, cid, dict(S.read_state(cfg, cid), state="GATING"))
-    row, st = _apply(ctx, cfg, cid, "gate", gate_run=_gate_run(2, True))
+    row, st = _apply(ctx, cfg, cid, "gate", gate_run=_flaky_gate_run(2, True))
     assert row["to"] == "REVIEWING"
     assert not _flaky_doc(cfg) and not S.read_ledger(cfg, cid, types=["flaky_recorded"])
 
@@ -2606,7 +2606,7 @@ def test_record_failure_is_note_only(opened, monkeypatch):
     monkeypatch.setattr(FL, "record", boom)
     cfg, cid, ctx = opened
     S.write_state(cfg, cid, dict(S.read_state(cfg, cid), state="GATING"))
-    row, st = _apply(ctx, cfg, cid, "gate", gate_run=_gate_run(1, True, flaky=["t::a"]))
+    row, st = _apply(ctx, cfg, cid, "gate", gate_run=_flaky_gate_run(1, True, flaky=["t::a"]))
     assert row["to"] == "REVIEWING" and st["state"] == "REVIEWING"
     assert any("could not record flaky tests: disk full" in n["text"]
                for n in S.read_ledger(cfg, cid, types=["note"]))
