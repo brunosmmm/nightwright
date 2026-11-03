@@ -561,9 +561,8 @@ def _occupied(rows, lease) -> int:
     ids, the union `_tick` counts as `n_busy`. The watchdog cannot see the pool, so the
     runner publishes its flights; a parked campaign whose run is still in flight counts.
     Without `in_flight` (legacy lease, runner down) it is the state rows alone."""
-    from .queue import ACTIVE_STATES
-    ids = {r["id"] for r in rows if r.get("state") in ACTIVE_STATES}
-    return len(ids | set((lease or {}).get("in_flight") or ()))
+    from .queue import slot_ids
+    return len(slot_ids(rows, (lease or {}).get("in_flight") or ()))
 
 
 def _drain_info(lease, now=None) -> dict | None:

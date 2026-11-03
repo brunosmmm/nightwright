@@ -74,6 +74,10 @@ STATES = ("QUEUED", "WAITING", "OPENING", "SPEC_WRITING", "SPEC_REVIEW", "IMPLEM
 TERMINAL_STATES = store.TERMINAL_STATES
 ACTIVE_STATES = frozenset({"OPENING", "SPEC_WRITING", "SPEC_REVIEW", "IMPLEMENTING", "GATING", "TRIAGING", "REVIEWING",
                            "CLOSING"})
+# SPEC-0394: GATING costs no Claude spend (it waits on / runs box gates, whose concurrency is
+# bounded by the gate slot pools, gate_slots.py), so it does not count against the profile
+# `slots`. Every other active state does.
+SLOT_STATES = ACTIVE_STATES - {"GATING"}
 RESUMABLE_STATES = ("SPEC_WRITING", "SPEC_REVIEW", "IMPLEMENTING", "GATING", "REVIEWING", "CLOSING", "QUEUED")
 PARK_REASONS = frozenset({
     "cost_cap", "loop_exhausted", "implementer_blocked", "triage_escalated", "open_failed",
@@ -295,15 +299,22 @@ class _ReviewGroup:
         return bool(self.results or self.meta)
 
 
+def slot_ids(rows, flying=()) -> set:
+    """Ids occupying a profile slot (SPEC-0394): campaigns in a SLOT_STATES state plus
+    in-flight ids, except those whose campaign is GATING."""
+    gating = {r["id"] for r in rows if r.get("state") == "GATING"}
+    return {r["id"] for r in rows if r.get("state") in SLOT_STATES} | (set(flying) - gating)
+
+
 def _active_count(cfg) -> int:
-    return sum(1 for s in store.list_campaigns(cfg) if s.get("state") in ACTIVE_STATES)
+    return sum(1 for s in store.list_campaigns(cfg) if s.get("state") in SLOT_STATES)
 
 
 def _enter_slot_or_wait(cfg, st: dict, to: str, reason: str, *, by="tick", busy=None,
                         slots=None, extra_events=()) -> dict:
     """Move a started campaign to `to`, or to WAITING when `to` needs a slot and none is free
     (SPEC-0200). `busy`/`slots` default to the live counts."""
-    if to in ACTIVE_STATES:
+    if to in SLOT_STATES:
         busy = _active_count(cfg) if busy is None else busy
         slots = slots_for(cfg) if slots is None else slots
         if busy >= slots:
@@ -4314,7 +4325,7 @@ def _auto_resume_step(cfg, flying, *, busy_count, slots, report) -> list:
                 action=f"resume to {plan['to']}" + (f" raise cap to ${cap:.2f}" if cap else ""))
             try:
                 # states resumed earlier in this step are not in the tick's `busy` yet
-                taken = sum(1 for r in resumed if r["state"] in ACTIVE_STATES)
+                taken = sum(1 for r in resumed if r["state"] in SLOT_STATES)
                 after = apply_resume(cfg, plan, busy=busy_count() + taken, slots=slots)
             except ValueError as e:
                 error = str(e)
@@ -4352,7 +4363,7 @@ def _tick(cfg, ctx: _Ctx, pool: StepPool, report: TickReport, *, admit: bool, ow
     queued = [s for s in items if s.get("state") == "QUEUED"]
 
     def n_busy() -> int:              # SPEC-0200 slots; in-flight campaigns always count
-        return len({s["id"] for s in busy} | flying)
+        return len(slot_ids(busy, flying))
 
     # 0. campaigns parked on a bad project config resume once it loads (SPEC-0194) — into a
     #    free slot only, so a recovery never runs more campaigns than the profile allows
@@ -5182,9 +5193,7 @@ class _SlotWatch:
         self.last = self.count()
 
     def count(self) -> int:
-        active = {s["id"] for s in store.list_campaigns(self.cfg)
-                  if s.get("state") in ACTIVE_STATES}
-        return len(active | self.pool.ids())
+        return len(slot_ids(store.list_campaigns(self.cfg), self.pool.ids()))
 
     def check(self, lease, **info) -> None:
         """One `update_info` call: `info` plus `in_flight` and, when the runner went from full to
@@ -5871,7 +5880,7 @@ def queue_payload(cfg, *, include_terminal=False, project=None, state=None, now=
     rows = store.list_campaigns(cfg, include_terminal=include_terminal, project=project,
                                 state=state)
     slots = slots_for(cfg)
-    busy = sum(1 for r in rows if r.get("state") in ACTIVE_STATES)
+    busy = sum(1 for r in rows if r.get("state") in SLOT_STATES)
     backlog = {b["campaign"]: b for b in backlog_view(cfg)}
     held = L.is_held(cfg)
     items = []
@@ -7808,7 +7817,7 @@ def plan_resume(cfg, campaign, *, to=None, note=None, raise_cap=None, reset_loop
         raise ValueError(f"a merge campaign resumes to CLOSING or QUEUED, not {target!r}")
     if target not in RESUMABLE_STATES:
         raise ValueError(f"cannot resume to {target!r}; one of {', '.join(RESUMABLE_STATES)}")
-    waits = target in ACTIVE_STATES and _active_count(cfg) >= slots_for(cfg)
+    waits = target in SLOT_STATES and _active_count(cfg) >= slots_for(cfg)
     return {"campaign": campaign, "from": "PARKED", "to": target, "note": note,
             "raise_cap": raise_cap, "reset_loops": bool(reset_loops),
             "park": park, "cap_usd": (st.get("cost") or {}).get("cap_usd"),

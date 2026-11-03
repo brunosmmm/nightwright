@@ -629,6 +629,7 @@ progress. This is the single place to see *what has been decided* and *what is i
 | [SPEC-0389](./specs/0389-persona-claude-resolution.md) | One claude resolver for claude-check and the persona job exec; missing claude is a job error | feature | done | — | 2026-11-02 |
 | [SPEC-0390](./specs/0390-workers-set-slots.md) | nw workers set --slots - change a worker's gate slots in place | feature | done | — | 2026-11-02 |
 | [SPEC-0393](./specs/0393-wtfug-spec-0304-20261030-7a4f-spec-0304-review.md) | SPEC-0304 review follow-ups: mvp-report edge cases in E4, E5 and E6, and the tests that pin them | feature | done | M10: agentic MVP | 2026-11-02 |
+| [SPEC-0395](./specs/0395-gating-does-not-hold-a-profile-slot.md) | GATING campaigns do not count against the profile slots | feature | done | M10: agentic MVP | 2026-11-02 |
 
 ## Superseded / rejected
 

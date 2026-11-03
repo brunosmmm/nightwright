@@ -169,7 +169,7 @@ def test_apply_restarts_the_runner(tmp_path, children, slots):
     _camp(cfg, "low-gate", "GATING", priority=3)
     _camp(cfg, "hi-close", "CLOSING", priority=1)
     _camp(cfg, "impl", "IMPLEMENTING", priority=2)
-    slots["v"] = 2                       # impl + hi-close fit; low-gate waits for a slot
+    slots["v"] = 2                       # impl + hi-close fit; low-gate (GATING) needs none
     plan = RS.plan_restart(cfg)
     done = RS.apply_restart(cfg, plan, by="tester", popen=_recording_popen(children))
 
@@ -180,7 +180,7 @@ def test_apply_restarts_the_runner(tmp_path, children, slots):
     assert [r["campaign"] for r in done["resumed"]] == ["hi-close", "low-gate"]
     assert _state(cfg, "hi-close")["state"] == "CLOSING"
     low = _state(cfg, "low-gate")
-    assert low["state"] == "WAITING" and low["waiting"]["resume_to"] == "GATING"
+    assert low["state"] == "GATING"          # SPEC-0395: GATING holds no profile slot, never waits
     assert low.get("park") is None
     impl = _state(cfg, "impl")
     assert impl["state"] == "IMPLEMENTING"

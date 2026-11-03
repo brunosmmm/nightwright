@@ -85,7 +85,9 @@ def test_waiting_takes_the_free_slot_before_the_backlog_without_reopening(two):
     report = Q.tick(cfg, admit=True)
     steps = {(r["campaign"], r["from"], r["to"]) for r in report.steps}
     assert (b, "WAITING", "GATING") in steps
-    assert S.read_state(cfg, a)["state"] == "QUEUED"     # the backlog did not get the slot
+    # SPEC-0395: the WAITING item resumed into GATING, which holds no profile slot, so the
+    # backlog is admitted in the same tick
+    assert S.read_state(cfg, a)["state"] != "QUEUED"
     assert "waiting" not in S.read_state(cfg, b)
     assert not any(e["to"] == "OPENING" for e in S.read_ledger(cfg, b, types=["transition"])
                    if e["from"] == "WAITING")
