@@ -1,9 +1,10 @@
 ---
 id: SPEC-0392
 title: "A gate's timeout_s is a hard wall-clock bound: kill the whole process tree, reap with a bound, and always return"
-status: proposed
+status: accepted
 owner: user
 created: 2026-11-02
+updated: 2026-11-02
 kind: feature
 source_idea: IDEA-552
 depends_on: [SPEC-0228, SPEC-0229]
