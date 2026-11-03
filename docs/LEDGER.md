@@ -633,6 +633,7 @@ progress. This is the single place to see *what has been decided* and *what is i
 | [SPEC-0388](./specs/0388-worker-disk-guard.md) | Worker disk guard - auto-reap dead jobs, in-run free-space abort, job sizes, update headroom | feature | done | — | 2026-11-02 |
 | [SPEC-0389](./specs/0389-persona-claude-resolution.md) | One claude resolver for claude-check and the persona job exec; missing claude is a job error | feature | done | — | 2026-11-02 |
 | [SPEC-0390](./specs/0390-workers-set-slots.md) | nw workers set --slots - change a worker's gate slots in place | feature | done | — | 2026-11-02 |
+| [SPEC-0392](./specs/0392-gate-timeout-not-enforced-under-xdist-uv-run.md) | A gate's timeout_s is a hard wall-clock bound: kill the whole process tree, reap with a bound, and always return | feature | done | — | 2026-11-02 |
 | [SPEC-0393](./specs/0393-wtfug-spec-0304-20261030-7a4f-spec-0304-review.md) | SPEC-0304 review follow-ups: mvp-report edge cases in E4, E5 and E6, and the tests that pin them | feature | done | M10: agentic MVP | 2026-11-02 |
 | [SPEC-0394](./specs/0394-declared-persona-run-settings-routing-and-requests.md) | Declared personas: run settings, reviewer routing metadata and run requests (rework of SPEC-0296 on the persona registry) | feature | done | M9: agentic workflow | 2026-11-03 |
 | [SPEC-0395](./specs/0395-gating-does-not-hold-a-profile-slot.md) | GATING campaigns do not count against the profile slots | feature | done | M10: agentic MVP | 2026-11-02 |
