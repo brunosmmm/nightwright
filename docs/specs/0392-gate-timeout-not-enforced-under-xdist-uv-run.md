@@ -237,6 +237,11 @@ is pasted in the spec's As shipped section as the pinned cause. One additional m
   `_capture_run(missing=True)` helper now sets `PATH` to the empty bindir only, points `HOME` at tmp
   and empties `runproc._CLAUDE_SYSTEM`; verified on a host with a real `claude` in `~/.local/bin`:
   `uv run pytest -q tests/test_agentic_runner.py` -> 19 passed. Test-only; `gates.py` untouched.
+- Gate follow-up 2 (2026-11-02): `tests/test_agentic_runproc.py::test_claude_popen_failure` had the same flaw
+  (PATH to a nonexistent dir only; the gate host's fallback-dir `claude` ran, exit 1 not -1). It now also sets
+  `HOME` to tmp and empties `runproc._CLAUDE_SYSTEM`; the other `ClaudeRunner` tests put a fake `claude`
+  first on PATH, so need no change. `uv run pytest -q tests/test_agentic_runproc.py tests/test_agentic_runner.py
+  tests/test_claude_resolve.py` -> 45 passed. Test-only; the full suite is left to gating.
 
 ### As shipped
 
