@@ -1,9 +1,10 @@
 ---
 id: SPEC-0396
 title: "Campaign export: treatment-aware difficulty metrics (per-reviewer-run findings, first-round blockers, active time net of close)"
-status: proposed
+status: accepted
 owner: user
 created: 2026-11-02
+updated: 2026-11-02
 kind: feature
 tags: [agentic, campaign, export, analytics]
 source_idea: IDEA-422
