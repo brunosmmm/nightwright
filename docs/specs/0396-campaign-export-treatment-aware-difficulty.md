@@ -266,6 +266,14 @@ ratios; their counts of findings are still exact.
   (`[-6:-4]`); re-anchored to `[-15:-13]` since nine columns now follow them. No behavior change.
 - `BLOCKING` is a tuple in `campaign_export.py` (not a frozenset) so a non-hashable LLM severity
   cannot raise on membership.
+- A reviewer `finding` counts toward `reviewer_findings`, `reviewer_blocking` and `first_review_*`
+  only when the latest `run.end` of its persona was not discarded (`verdict_ok is False` or
+  `interrupted`). `queue._record_run` writes a run's findings after its `run.end` even for a
+  non-conforming or interrupted run, and the retry repeats them, so counting both double-counted.
+  A reviewer `run.end` with `verdict_ok` missing (older ledgers) is not a run in the denominator
+  but its findings still count, as the Compatibility section says. `must_fix_count` and
+  `finding_count` are unchanged. Tests: `test_findings_of_discarded_reviewer_runs_not_counted`,
+  `test_reviewer_run_end_without_verdict_ok_not_counted`.
 
 ## Rollout / migration
 

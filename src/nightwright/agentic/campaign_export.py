@@ -236,6 +236,7 @@ def _reviewer_stats(events: list[dict]) -> dict:
     whatever its reason (`review_fix`, or the resume after a `loop_exhausted` park)."""
     runs = findings = blocking = first_must = first_major = 0
     reviewed = first_round_over = False
+    discarded: set = set()  # reviewer personas whose latest run.end was malformed or interrupted
     for e in events:
         kind = e.get("type")
         if kind == "transition":
@@ -243,11 +244,19 @@ def _reviewer_stats(events: list[dict]) -> dict:
                 reviewed = True
             elif e.get("to") == "IMPLEMENTING" and reviewed:
                 first_round_over = True
-        elif kind == "run.end":
-            if (e.get("persona") in _REVIEWERS and e.get("verdict_ok") is True
-                    and not e.get("interrupted")):
+        elif kind == "run.end" and e.get("persona") in _REVIEWERS:
+            if e.get("verdict_ok") is True and not e.get("interrupted"):
                 runs += 1
+            # `_record_run` writes a run's findings right after its run.end, even when the verdict
+            # was non-conforming (the retry then repeats them); drop those with the run. A missing
+            # verdict_ok (older ledger) is unknown, so its findings still count.
+            if e.get("verdict_ok") is False or e.get("interrupted"):
+                discarded.add(e.get("persona"))
+            else:
+                discarded.discard(e.get("persona"))
         elif kind == "finding" and e.get("persona") in _REVIEWERS:
+            if e.get("persona") in discarded:
+                continue
             sev = e.get("severity")
             if sev == "info":
                 continue

@@ -1149,3 +1149,33 @@ def test_unknown_severity_not_counted_as_blocking(cfg):
                           events, NOW)
     assert row["reviewer_findings"] == 4 and row["reviewer_blocking"] == 1
     assert (row["first_review_must_fix"], row["first_review_major"]) == (0, 1)
+
+
+def test_findings_of_discarded_reviewer_runs_not_counted(cfg):
+    # `_record_run` writes run.end then that run's findings, even for a malformed or interrupted
+    # run; the retry repeats them. Only the run counted in `reviewer_runs` contributes findings.
+    for cid, bad in (("C-MAL", {"verdict_ok": False}), ("C-INT", {"interrupted": True})):
+        make(cfg, cid, [
+            (1, "transition", tr("QUEUED", "REVIEWING")),
+            (2, "run.end", run_end("test_reviewer", "001", **bad)),
+            (2, "finding", finding("test_reviewer", "must_fix", "a")),
+            (3, "run.end", run_end("test_reviewer", "002")),
+            (3, "finding", finding("test_reviewer", "must_fix", "a")),
+        ])
+        r = row_of(cfg, cid)
+        assert (r["reviewer_runs"], r["reviewer_findings"], r["reviewer_blocking"]) == (1, 1, 1)
+        assert r["first_review_must_fix"] == 1
+        assert r["must_fix_count"] == 2 and r["finding_count"] == 2   # old columns unchanged
+
+
+def test_reviewer_run_end_without_verdict_ok_not_counted(cfg):
+    # pre-verdict_ok ledgers: no run counted, ratios null; the findings themselves still count
+    events = [
+        {"type": "run.end", "ts": ts(1), "persona": "test_reviewer", "interrupted": False},
+        {"type": "finding", "ts": ts(1), "persona": "test_reviewer", "severity": "must_fix"},
+    ]
+    row = CE.campaign_row(cfg, {"id": "C-OLD", "state": "REVIEWING", "created_at": ts(0)},
+                          events, NOW)
+    assert row["reviewer_runs"] == 0
+    assert row["findings_per_reviewer_run"] is None and row["blocking_per_reviewer_run"] is None
+    assert row["reviewer_findings"] == 1
