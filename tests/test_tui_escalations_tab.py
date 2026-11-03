@@ -3,6 +3,7 @@ import pytest
 
 pytest.importorskip("textual")  # module-level skip: the imports below need the tui extra
 
+from waits import pilot_until
 from test_agentic_dashboard import _campaign, _fixture
 from test_tui_queue_tab import SIZE, _desk, _run, _sub, press, settle, spy_titles
 from nightwright import tui as T
@@ -283,6 +284,9 @@ def test_answered_meanwhile_is_an_error_and_writes_nothing(tmp_path, monkeypatch
     async def body(app, pilot):
         await press(app, pilot, keys)
         await settle(app, pilot)
+        # SPEC-0269: wait for the outcome (a loaded box can outrun the fixed pauses)
+        await pilot_until(pilot, lambda: errors(app) and not mv(app)._busy
+                          and len(app.screen_stack) == 1)
         (err,) = errors(app)
         assert "ESC-0001 is" in err and not mv(app)._busy and len(app.screen_stack) == 1
         r = ESC.read(cfg, "ESC-0001")

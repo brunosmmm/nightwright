@@ -52,6 +52,11 @@ ALLOWED = {
     ("agentic/cli_herdr.py", "herdr_watch"): "one-line no-op notice for the herdr pane/hook, outside the TTY render path (SPEC-0361)",
     ("agentic/cli_herdr.py", "parent_gone"): "one line into herdr_watch.log: the auto-started watcher's stdout is its log file (SPEC-0365)",
     ("agentic/herdr_watch.py", "_guard"): "stderr diagnostic from the herdr watch loop, outside the TTY render path (SPEC-0361/0363)",
+    ("agentic/campaign_export.py", "export_tables"): "stderr diagnostic: conductor columns skipped; keeps the exported table on stdout clean",
+    ("agentic/cli_conductor.py", "conductor_guard"): "PreToolUse hook JSON decision for the harness, not human output",
+    ("agentic/cli_gate.py", "gate_logs"): "gate logs: verbatim log text for piping; Rich markup would mangle it",
+    ("agentic/worker.py", "_run"): "stderr diagnostic: the disk watch failed; stdout is the frame protocol (SPEC-0336)",
+    ("agentic/worker_update.py", "_stderr"): "stderr diagnostic to the ssh caller, outside the render path",
 }
 
 
