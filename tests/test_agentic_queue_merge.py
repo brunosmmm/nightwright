@@ -846,3 +846,16 @@ def test_e2e_docs_only_amended_with_code_parks_then_recovers_through_the_gates(t
     assert st2["state"] == "MERGED", st2
     assert (repo / "src" / "x.py").exists()
     assert [e["type"] for e in S.read_ledger(cfg, cid2)].count("gate") == 1
+
+
+def test_apply_merge_open_event_has_code_and_profile_hashes(world, monkeypatch):     # SPEC-0397
+    from nightwright.agentic import codewatch as CW
+    from nightwright.agentic.profiles import profile_sha256, resolve_profile
+    monkeypatch.setattr(CW, "code_sha", lambda: "d" * 40)
+    repo, cfg, tmp = world
+    branch_wt(tmp, repo)
+    p = plan(cfg)
+    want = profile_sha256(resolve_profile(cfg, p["profile"]))
+    st = Q.apply_merge(cfg, p)
+    ev = S.read_ledger(cfg, st["id"], types=["open"])[0]
+    assert ev["nw_sha"] == "d" * 40 and ev["profile_sha256"] == want and len(want) == 64

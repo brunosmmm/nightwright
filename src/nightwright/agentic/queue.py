@@ -59,7 +59,7 @@ from . import workers
 from .codewatch import (_CODE_PATHS, _changed_paths, _git_out, code_changes,  # noqa: F401
                         code_checkout)
 from .gitops import GitError
-from .profiles import (SEVERITIES, persona_settings, resolve_profile, review_params,
+from .profiles import (SEVERITIES, persona_settings, profile_sha256, resolve_profile, review_params,
                        reviewers_of, select_profile, triager_enabled)
 from .events import settings as events_settings
 from .events import temp_pressure as events_temp_pressure
@@ -7087,6 +7087,7 @@ def plan_add(cfg, spec_id, *, project=None, profile=None, base=None, force=False
         "profile_source": pick["source"], "profile_reason": pick["reason"],
         "review_sha256": (review_doc or {}).get("spec_sha256"),
         "profile_sources": list(prof.get("sources") or ()),             # SPEC-0238
+        "profile_sha256": profile_sha256(prof),                         # SPEC-0397
         "spec_fm": {"source_idea": str(fm.get("source_idea") or ""),    # SPEC-0292
                     "created": str(fm.get("created") or "")},
         "split": split, "split_origin": origin["id"] if origin else None,
@@ -7103,6 +7104,7 @@ def apply_add(cfg, plan: dict, *, by="human") -> dict:
         "priority": check_priority(plan.get("priority", PRIORITY_DEFAULT)),
         "force": bool(plan.get("force")), "backlog": None,
         "profile_sources": list(plan.get("profile_sources") or ()),    # SPEC-0238
+        "profile_sha256": plan.get("profile_sha256"),                  # SPEC-0397
         "repo": {"root": plan["repo_root"], "base": plan["base"], "base_sha_at_open": None,
                  "branch": plan["branch"], "worktree": plan["worktree"], "head": None},
         "spec": {"rel_path": plan["spec_rel_path"], "internal": plan["internal"],
@@ -7315,6 +7317,7 @@ def plan_merge(cfg, branch, *, project=None, worktree=None, profile=None,
         "head_at_request": git.rev_parse(root, branch), "ahead": ahead,
         "requested_by": requested_by, "note": note, "cap_usd": prof.get("campaign_cap_usd"),
         "slots": prof.get("slots"), "merge_policy": policy,
+        "profile_sha256": profile_sha256(prof),                         # SPEC-0397
         **({"docs_only": True, "docs_only_paths": allow,
             "gates": f"none (docs-only; {len(changed)} paths within merge.docs_only_paths)"}
            if docs_only else {}),
@@ -7330,6 +7333,7 @@ def apply_merge(cfg, plan: dict, *, by="human") -> dict:
         "state": "QUEUED", "prev_state": None, "created_at": store.now_iso(),
         "priority": check_priority(plan.get("priority", MERGE_PRIORITY_DEFAULT)),
         "force": False, "backlog": None,
+        "profile_sha256": plan.get("profile_sha256"),                  # SPEC-0397
         "repo": {"root": plan["repo_root"], "base": plan["base"], "base_sha_at_open": None,
                  "branch": plan["branch"], "worktree": plan["worktree"], "head": None},
         "spec": None,
@@ -7396,6 +7400,7 @@ def plan_add_idea(cfg, idea_id, *, project=None, profile=None, base=None,
         "worktree": str(worktree), "branch": f"nw/{cid}",
         "cap_usd": prof.get("campaign_cap_usd"), "loop_max": prof.get("loop_max"),
         "slots": prof.get("slots"), "merge_policy": (pcfg.get("merge") or {}).get("policy"),
+        "profile_sha256": profile_sha256(prof),                         # SPEC-0397
     }
 
 
@@ -7423,6 +7428,7 @@ def apply_add_idea(cfg, plan: dict, *, by="human") -> dict:
             "created_at": store.now_iso(),
             "priority": check_priority(plan.get("priority", PRIORITY_DEFAULT)),
             "force": False, "backlog": None,
+            "profile_sha256": plan.get("profile_sha256"),              # SPEC-0397
             "repo": {"root": plan["repo_root"], "base": plan["base"], "base_sha_at_open": None,
                      "branch": plan["branch"], "worktree": plan["worktree"], "head": None},
             "spec": {"id": None, "rel_path": None, "internal": True},

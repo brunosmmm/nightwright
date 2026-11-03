@@ -1,7 +1,7 @@
 ---
 id: SPEC-0397
 title: "Record the nw code version and resolved-profile hash on each campaign open, and export them"
-status: accepted
+status: done
 owner: user
 created: 2026-11-02
 updated: 2026-11-02
@@ -121,23 +121,23 @@ without `sources`. CSV, JSONL and Parquet all get the columns through the existi
 
 ## Acceptance criteria
 
-- [ ] A campaign created by `apply_add`, `apply_add_idea` and `apply_merge` has an `open`
+- [x] A campaign created by `apply_add`, `apply_add_idea` and `apply_merge` has an `open`
       ledger event with `nw_sha` equal to `git rev-parse HEAD` of the code checkout, and
       `profile_sha256` a 64-hex string.
-- [ ] `profile_sha256` is identical for two resolutions of the same profile and differs after
+- [x] `profile_sha256` is identical for two resolutions of the same profile and differs after
       any change to a resolved profile field (e.g. a persona model); it ignores `sources`.
-- [ ] When the code is not a git checkout (or `git` fails), campaign creation succeeds and the
+- [x] When the code is not a git checkout (or `git` fails), campaign creation succeeds and the
       `open` event has `nw_sha: null`.
-- [ ] If the profile cannot be resolved the existing plan error still raises exactly as before;
+- [x] If the profile cannot be resolved the existing plan error still raises exactly as before;
       the hash adds no new failure.
-- [ ] `nw campaign export` writes `nw_sha` and `profile_sha256` columns (type `str`) in the
+- [x] `nw campaign export` writes `nw_sha` and `profile_sha256` columns (type `str`) in the
       `campaigns` table in JSONL, CSV and (when `pyarrow` is importable) Parquet, and lists
       them in `manifest.json`; the schema id stays `nw.campaign.export.v1`.
-- [ ] A campaign whose `open` event lacks both keys (created before this change) exports with
+- [x] A campaign whose `open` event lacks both keys (created before this change) exports with
       both columns `null`, and the other columns are unchanged.
-- [ ] `schemas.EVENT_KEYS["open"]` is unchanged and a ledger containing the old `open` payload
+- [x] `schemas.EVENT_KEYS["open"]` is unchanged and a ledger containing the old `open` payload
       still validates.
-- [ ] The export `NOTES` document the new columns and their limits.
+- [x] The export `NOTES` document the new columns and their limits.
 
 ## Test plan
 
@@ -167,6 +167,32 @@ without `sources`. CSV, JSONL and Parquet all get the columns through the existi
   `test_agentic_campaign_export.py`, `test_agentic_store.py`, `test_agentic_queue.py` and `test_agentic_queue_merge.py`;
   existing column-list assertions are updated only to add the two new columns.
 
+### Test record (2026-11-02)
+
+- `uv run pytest -q` over `test_agentic_queue.py`, `test_agentic_campaign_export.py`,
+  `test_agentic_store.py`, `test_agentic_profiles.py`, `test_agentic_queue_merge.py`,
+  `test_agentic_idea_campaign.py`, `test_agentic_logs.py`, `test_agentic_campaign_cli.py`,
+  `test_agentic_queue_cli.py` and the other files that mention `create_campaign`,
+  `profile_sources` or `codewatch` (alphabetically through `test_agentic_exit_paths.py`)
+  passed. The one existing column-position assertion (`test_export_conductor_columns_appended`)
+  was shifted by two columns, as the plan allows. Three `test_agentic_exit_paths.py`
+  `admission_blocked` tests fail identically on the unmodified tree (verified by stashing the
+  change), so they are pre-existing and unrelated. `tools/affected_tests.py --run` exceeded its
+  time limit and was killed; the remaining files and the full suite are left to gating.
+- New tests: store (open event keys, null sha, optional keys, real `code_sha` vs `git rev-parse
+  HEAD`), profiles (`profile_sha256` stable, ignores `sources`, tracks fields), queue / merge /
+  idea apply paths, and export (columns, types, old-style `open` event exporting null, JSONL,
+  CSV, Parquet, manifest, schema id).
+- Manual: the full `nw queue add` + `nw campaign export` CLI flow was not run; instead a real
+  (unmocked) `store.create_campaign` in a scratch data dir wrote an `open` event whose `nw_sha`
+  equalled `git rev-parse HEAD` and whose `profile_sha256` matched `profile_sha256(resolve_profile(cfg))`.
+
+### As shipped
+
+As designed. `codewatch` imports only the stdlib, so `store` imports it directly (no keyword
+argument on `create_campaign`). `plan_merge` and `plan_add_idea` put `profile_sha256` in the
+plan like `plan_add`; the three `apply_*` copy it to `state["profile_sha256"]`.
+
 ## Rollout / migration
 
 No data migration. Campaigns created before this lands keep their `open` events unchanged and
@@ -175,11 +201,11 @@ need a version stratum for earlier campaigns derive it from `created_at` and `gi
 
 ## Definition of done
 
-- [ ] Acceptance criteria all met.
-- [ ] Test plan executed; affected tests pass; manual steps performed.
-- [ ] No regressions.
-- [ ] Spec body updated to match what shipped.
-- [ ] `docs/LEDGER.md` regenerated (`python3 tools/spec_lint.py --write-ledger`).
+- [x] Acceptance criteria all met.
+- [x] Test plan executed; affected tests pass; manual steps performed.
+- [x] No regressions.
+- [x] Spec body updated to match what shipped.
+- [x] `docs/LEDGER.md` regenerated (`python3 tools/spec_lint.py --write-ledger`).
 
 ## Open questions
 

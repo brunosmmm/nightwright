@@ -167,7 +167,7 @@ def test_columns_and_key_order(cfg):
         "rebase_resolved", "resolver_overcap_usd",
         "reviewer_runs", "reviewer_findings", "reviewer_blocking", "findings_per_reviewer_run",
         "blocking_per_reviewer_run", "first_review_must_fix", "first_review_major", "close_s",
-        "task_active_s"]
+        "task_active_s", "nw_sha", "profile_sha256"]
     assert [n for n, _ in CE.RUN_COLUMNS] == [
         "campaign", "spec_id", "profile", "size", "tone", "run_id", "persona", "model", "effort",
         "max_budget_usd", "timeout_s", "started_at", "duration_s", "cost_usd", "charged_usd",
@@ -208,8 +208,8 @@ def test_column_types_pinned():
         ("reviewer_runs", "int"), ("reviewer_findings", "int"), ("reviewer_blocking", "int"),
         ("findings_per_reviewer_run", "float"), ("blocking_per_reviewer_run", "float"),
         ("first_review_must_fix", "int"), ("first_review_major", "int"), ("close_s", "int"),
-        ("task_active_s", "int"))
-    assert len(CE.CAMPAIGN_COLUMNS) == 57 and CE.CAMPAIGN_COLUMNS[47][0] == "resolver_overcap_usd"
+        ("task_active_s", "int"), ("nw_sha", "str"), ("profile_sha256", "str"))
+    assert len(CE.CAMPAIGN_COLUMNS) == 59 and CE.CAMPAIGN_COLUMNS[47][0] == "resolver_overcap_usd"
     assert CE.EXPORT_SCHEMA == "nw.campaign.export.v1"
     assert CE.RUN_COLUMNS == (
         ("campaign", "str"), ("spec_id", "str"), ("profile", "str"), ("size", "str"),
@@ -841,10 +841,10 @@ def test_failed_write_cleanup_cannot_mask_the_error(cfg, invoke, tmp_path, monke
 
 def test_export_conductor_columns_appended(cfg, tmp_path):
     """SPEC-0299: two columns are the conductor's share and the total with it (SPEC-0303
-    appended four more after them, SPEC-0396 nine more)."""
+    appended four more after them, SPEC-0396 nine more, SPEC-0397 two more)."""
     from nightwright.agentic import conductor_cost as CC
     names = [n for n, _ in CE.CAMPAIGN_COLUMNS]
-    assert names[-15:-13] == ["conductor_usd", "cost_with_conductor_usd"]
+    assert names[-17:-15] == ["conductor_usd", "cost_with_conductor_usd"]
     make(cfg, "C1", [(10, "transition", tr("CLOSING", "MERGED"))], created=0,
          state="MERGED", cost={"total_usd": 2.5, "cap_usd": None, "by_persona": {}})
     make(cfg, "C2", [], created=600, cost={"total_usd": None, "cap_usd": None, "by_persona": {}})
@@ -869,7 +869,7 @@ def test_export_conductor_columns_appended(cfg, tmp_path):
         assert (r["conductor_usd"], r["cost_with_conductor_usd"]) == (None, None)
     transcript("claude-x")
     got = rows()
-    assert list(got["C1"])[-15:-13] == ["conductor_usd", "cost_with_conductor_usd"]
+    assert list(got["C1"])[-17:-15] == ["conductor_usd", "cost_with_conductor_usd"]
     assert got["C1"]["conductor_usd"] == 1.0 and got["C1"]["cost_with_conductor_usd"] == 3.5
     assert got["C2"]["conductor_usd"] == 0.0                     # no attributed turn
     assert got["C2"]["cost_usd"] is None
@@ -1179,3 +1179,71 @@ def test_reviewer_run_end_without_verdict_ok_not_counted(cfg):
     assert row["reviewer_runs"] == 0
     assert row["findings_per_reviewer_run"] is None and row["blocking_per_reviewer_run"] is None
     assert row["reviewer_findings"] == 1
+
+
+# ---- SPEC-0397: nw_sha and profile_sha256 ------------------------------------------------
+
+def _stamp_open(cfg, cid, **extra):
+    """Add keys to the first (`open`) ledger line, as a post-SPEC-0397 admission writes them."""
+    path = S.campaign_dir(cfg, cid) / "ledger.jsonl"
+    lines = path.read_text().splitlines()
+    lines[0] = json.dumps({**json.loads(lines[0]), **extra})
+    path.write_text("\n".join(lines) + "\n")
+
+
+def test_nw_sha_and_profile_sha256_columns(cfg):
+    assert ("nw_sha", "str") in CE.CAMPAIGN_COLUMNS
+    assert ("profile_sha256", "str") in CE.CAMPAIGN_COLUMNS
+    assert ("nw_sha", "str") not in CE.RUN_COLUMNS + CE.FINDING_COLUMNS
+    assert CE.EXPORT_SCHEMA == "nw.campaign.export.v1"
+    full_campaign(cfg)
+    old = row_of(cfg, "C-FULL")
+    assert old["nw_sha"] is None and old["profile_sha256"] is None     # opened before SPEC-0397
+    _stamp_open(cfg, "C-FULL", nw_sha="f" * 40, profile_sha256="1" * 64)
+    new = row_of(cfg, "C-FULL")
+    assert (new["nw_sha"], new["profile_sha256"]) == ("f" * 40, "1" * 64)
+    drop = ("nw_sha", "profile_sha256")
+    assert {k: v for k, v in new.items() if k not in drop} == {
+        k: v for k, v in old.items() if k not in drop}
+    assert any("nw_sha" in n and "profile_sha256" in n for n in CE.NOTES)
+
+
+def test_nw_sha_null_on_open_event_without_the_keys_or_with_null(cfg):
+    make(cfg, "C-OLD", [], spec_at_open=None)
+    make(cfg, "C-NULL", [], spec_at_open=None)
+    _stamp_open(cfg, "C-NULL", nw_sha=None, profile_sha256=None)
+    for cid in ("C-OLD", "C-NULL"):
+        row = row_of(cfg, cid)
+        assert row["nw_sha"] is None and row["profile_sha256"] is None
+
+
+def test_new_columns_in_jsonl_csv_and_manifest(cfg, invoke, tmp_path):
+    full_campaign(cfg)
+    _stamp_open(cfg, "C-FULL", nw_sha="f" * 40, profile_sha256="1" * 64)
+    j = tmp_path / "j"
+    assert invoke("--out", str(j)).exit_code == 0
+    row = read_jsonl(j / "campaigns.jsonl")[0]
+    assert row["nw_sha"] == "f" * 40 and row["profile_sha256"] == "1" * 64
+    man = json.loads((j / "manifest.json").read_text())
+    assert man["schema"] == "nw.campaign.export.v1"
+    cols = man["tables"]["campaigns"]["columns"]
+    assert ["nw_sha", "str"] in cols and ["profile_sha256", "str"] in cols
+    c = tmp_path / "c"
+    assert invoke("--format", "csv", "--out", str(c)).exit_code == 0
+    with open(c / "campaigns.csv", newline="", encoding="utf-8") as f:
+        crow = next(csv.DictReader(f))
+    assert crow["nw_sha"] == "f" * 40 and crow["profile_sha256"] == "1" * 64
+
+
+def test_new_columns_in_parquet(cfg, invoke, tmp_path):
+    pq = pytest.importorskip("pyarrow.parquet")
+    import pyarrow as pa
+    full_campaign(cfg)
+    _stamp_open(cfg, "C-FULL", nw_sha="f" * 40, profile_sha256="1" * 64)
+    d = tmp_path / "pq"
+    assert invoke("--format", "parquet", "--out", str(d)).exit_code == 0
+    t = pq.read_table(d / "campaigns.parquet")
+    assert t.schema.field("nw_sha").type == pa.string()
+    assert t.schema.field("profile_sha256").type == pa.string()
+    row = t.to_pylist()[0]
+    assert row["nw_sha"] == "f" * 40 and row["profile_sha256"] == "1" * 64

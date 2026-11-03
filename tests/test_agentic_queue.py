@@ -2611,3 +2611,19 @@ def test_record_failure_is_note_only(opened, monkeypatch):
     assert any("could not record flaky tests: disk full" in n["text"]
                for n in S.read_ledger(cfg, cid, types=["note"]))
     assert not S.read_ledger(cfg, cid, types=["flaky_recorded"])
+
+
+def test_apply_add_open_event_has_code_and_profile_hashes(tmp_path, monkeypatch):    # SPEC-0397
+    from nightwright.agentic import codewatch as CW
+    from nightwright.agentic.profiles import profile_sha256, resolve_profile
+    monkeypatch.setattr(CW, "code_sha", lambda: "c" * 40)
+    repo = make_repo(tmp_path)
+    cfg = make_cfg(tmp_path, repo, script(tmp_path, []))
+    with pytest.raises(ValueError, match="nope"):     # the plan's profile error is unchanged
+        Q.plan_add(cfg, "SPEC-0001", profile="nope")
+    plan = Q.plan_add(cfg, "SPEC-0001")
+    want = profile_sha256(resolve_profile(cfg, plan["profile"], project_root=plan["repo_root"]))
+    assert plan["profile_sha256"] == want
+    Q.apply_add(cfg, plan)
+    ev = S.read_ledger(cfg, plan["campaign"], types=["open"])[0]
+    assert ev["nw_sha"] == "c" * 40 and ev["profile_sha256"] == want and len(want) == 64

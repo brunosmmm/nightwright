@@ -23,6 +23,7 @@ from pathlib import Path
 
 from ..export import _atomic_write
 from ..rules import INTERNAL_PROJECT
+from . import codewatch
 from . import schemas as SC
 
 TERMINAL_STATES = frozenset({"MERGED", "HANDED_OFF", "ABANDONED"})
@@ -184,6 +185,8 @@ def create_campaign(cfg, state: dict, *, by="human") -> Path:
         **({"profile_sources": state["profile_sources"]}              # SPEC-0238
            if state.get("profile_sources") else {}),
         "admission": state.get("admission"),                              # SPEC-0243
+        "nw_sha": codewatch.code_sha(),                                   # SPEC-0397
+        "profile_sha256": state.get("profile_sha256"),
         **({"kind": "merge", "merge_branch": (state.get("merge") or {}).get("branch")}
            if state.get("kind") == "merge" else {}),               # SPEC-0233
         **({"docs_only": True} if (state.get("merge") or {}).get("docs_only") else {}),  # SPEC-0234

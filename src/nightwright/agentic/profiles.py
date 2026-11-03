@@ -12,6 +12,8 @@ from __future__ import annotations
 from ..legacy import schema_ok
 
 import copy
+import hashlib
+import json
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -456,6 +458,14 @@ def resolve_profile(cfg, name=None, *, project_root=None):
     `project_root` is the project's main checkout, for its `.nw/profiles` layer."""
     name = name or _agentic(cfg).get("default_profile") or "balanced"
     return _resolve(load_layers(cfg, project_root=project_root), name)
+
+
+def profile_sha256(profile: dict) -> str:
+    """SPEC-0397: sha256 hex of the canonical JSON of a resolved profile without `sources`
+    (origin paths differ per machine; they are recorded apart as `profile_sources`)."""
+    doc = {k: v for k, v in profile.items() if k != "sources"}
+    return hashlib.sha256(json.dumps(doc, sort_keys=True, separators=(",", ":"),
+                                     ensure_ascii=False, default=str).encode("utf-8")).hexdigest()
 
 
 def check_all(cfg, *, project_root=None) -> list:

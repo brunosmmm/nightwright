@@ -827,3 +827,19 @@ def test_short_origin_forms(tmp_path, monkeypatch):
         == "~/.config/nightwright/profiles/a.yaml"
     assert P.short_origin(cfg, str(_pdir(proj) / "a.yaml"), project="Proj") \
         == "Proj:.nw/profiles/a.yaml"
+
+
+def test_profile_sha256_stable_ignores_sources_and_tracks_fields():     # SPEC-0397
+    import re
+    cfg = {"agentic": dict(DEFAULT_CONFIG["agentic"])}
+    a, b = P.resolve_profile(cfg), P.resolve_profile(cfg)
+    h = P.profile_sha256(a)
+    assert re.fullmatch(r"[0-9a-f]{64}", h) and h == P.profile_sha256(b)
+    b["sources"] = ["/elsewhere/config.yaml"]
+    assert P.profile_sha256(b) == h                      # origin paths are not hashed
+    b["personas"]["implementer"]["model"] = "other-model"
+    assert P.profile_sha256(b) != h
+    c = P.resolve_profile(cfg)
+    c["name"] = "renamed"
+    assert P.profile_sha256(c) != h
+    assert P.profile_sha256(P.resolve_profile(cfg, "frugal")) != h

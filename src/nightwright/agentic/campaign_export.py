@@ -49,6 +49,7 @@ CAMPAIGN_COLUMNS = (
     ("reviewer_blocking", "int"), ("findings_per_reviewer_run", "float"),
     ("blocking_per_reviewer_run", "float"), ("first_review_must_fix", "int"),
     ("first_review_major", "int"), ("close_s", "int"), ("task_active_s", "int"),
+    ("nw_sha", "str"), ("profile_sha256", "str"),                          # SPEC-0397
 )
 RUN_COLUMNS = (
     ("campaign", "str"), ("spec_id", "str"), ("profile", "str"), ("size", "str"), ("tone", "str"),
@@ -104,6 +105,11 @@ NOTES = [
     "the same reviewer set or alongside findings_per_reviewer_run. task_active_s = active_s - "
     "close_s excludes PARKED and CLOSING (rebase, resolver, merge), whereas active_s excludes "
     "only PARKED.",
+    "nw_sha is the git sha of the nightwright code checkout of the process that admitted the "
+    "campaign (SPEC-0397), not of later runs: the runner re-execs on code changes, so a long "
+    "campaign can run under several shas. It is null for campaigns opened before SPEC-0397 and "
+    "for installs that are not a git checkout. profile_sha256 is the sha256 of the resolved "
+    "profile at admission without its `sources`; null for earlier campaigns.",
 ]
 
 
@@ -280,7 +286,8 @@ def campaign_row(cfg, state: dict, events: list[dict], now) -> dict:
     close = state.get("close") or {}
     st = state.get("state")
 
-    opened = next((_parse_ts(e.get("ts")) for e in events if e.get("type") == "open"), None)
+    open_ev = next((e for e in events if e.get("type") == "open"), None) or {}
+    opened = _parse_ts(open_ev.get("ts"))
     start = opened or _parse_ts(state.get("created_at"))
     ended = next((e for e in reversed(events)
                   if e.get("type") == "transition" and e.get("to") in store.TERMINAL_STATES), None)
@@ -345,6 +352,7 @@ def campaign_row(cfg, state: dict, events: list[dict], now) -> dict:
         "resolver_overcap_usd": _resolver_overcap(events),
         **_reviewer_stats(events), "close_s": close_s,
         "task_active_s": max(0, active_s - close_s),
+        "nw_sha": open_ev.get("nw_sha"), "profile_sha256": open_ev.get("profile_sha256"),
     }
     out = _project(row, CAMPAIGN_COLUMNS)       # signals read the coerced values
     out["signals"] = signals(out)

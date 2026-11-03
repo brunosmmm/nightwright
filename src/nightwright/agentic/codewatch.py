@@ -31,6 +31,12 @@ def _git_out(root, *args) -> str | None:
     return r.stdout.strip() if r.returncode == 0 else None
 
 
+def code_sha() -> str | None:
+    """SPEC-0397: `git rev-parse HEAD` of `code_checkout()`; None when not a checkout or git fails."""
+    root = code_checkout()
+    return _git_out(root, "rev-parse", "HEAD") if root else None
+
+
 def _changed_paths(root, since: str, head: str, paths) -> list[str] | None:
     """`paths` changed between two shas, or None when `git diff` fails (unlike an empty diff)."""
     diff = _git_out(root, "-c", "core.quotePath=false", "diff", "--name-only", since, head,

@@ -385,3 +385,16 @@ def test_idea_campaign_accepts_a_project_only_profile(env, monkeypatch):
     assert Q.plan_add_idea(cfg, iid, profile="careful")["cap_usd"] == 4.0
     cid = add_idea_campaign(cfg, monkeypatch, iid, "--profile", "careful")
     assert S.read_state(cfg, cid)["profile"] == "careful"
+
+
+def test_apply_add_idea_open_event_has_code_and_profile_hashes(env, monkeypatch):    # SPEC-0397
+    from nightwright.agentic import codewatch as CW
+    from nightwright.agentic.profiles import profile_sha256, resolve_profile
+    cfg, _ = env
+    monkeypatch.setattr(CW, "code_sha", lambda: "e" * 40)
+    plan = Q.plan_add_idea(cfg, capture(cfg))
+    want = profile_sha256(resolve_profile(cfg, plan["profile"], project_root=plan["repo_root"]))
+    assert plan["profile_sha256"] == want
+    Q.apply_add_idea(cfg, plan)
+    ev = S.read_ledger(cfg, plan["campaign"], types=["open"])[0]
+    assert ev["nw_sha"] == "e" * 40 and ev["profile_sha256"] == want and len(want) == 64

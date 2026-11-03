@@ -209,3 +209,47 @@ def test_item_lock_reentrant_and_append_inside(tmp_path):
     assert out.strip() == "blocked"
     out = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True).stdout
     assert out.strip() == "acquired"
+
+
+# ---- SPEC-0397: nw_sha and profile_sha256 on the open event ---------------------------------
+
+def test_open_event_records_code_sha_and_profile_hash(tmp_path, monkeypatch):
+    from nightwright.agentic import codewatch as CW
+    cfg = _cfg(tmp_path)
+    monkeypatch.setattr(CW, "code_sha", lambda: "a" * 40)
+    S.create_campaign(cfg, {**_state("C1"), "profile_sha256": "b" * 64})
+    ev = S.read_ledger(cfg, "C1", types=["open"])[0]
+    assert ev["nw_sha"] == "a" * 40 and ev["profile_sha256"] == "b" * 64
+    assert SC.ledger_problems(ev) == []
+
+
+def test_open_event_nw_sha_null_when_not_a_checkout(tmp_path, monkeypatch):
+    from nightwright.agentic import codewatch as CW
+    cfg = _cfg(tmp_path)
+    monkeypatch.setattr(CW, "code_sha", lambda: None)
+    S.create_campaign(cfg, _state("C1"))              # no profile_sha256 in the state either
+    ev = S.read_ledger(cfg, "C1", types=["open"])[0]
+    assert ev["nw_sha"] is None and ev["profile_sha256"] is None
+    assert S.read_state(cfg, "C1")["id"] == "C1"
+
+
+def test_code_sha_is_head_of_the_checkout_or_none(tmp_path, monkeypatch):
+    import subprocess
+    from nightwright.agentic import codewatch as CW
+    root = CW.code_checkout()
+    if root is not None:
+        want = subprocess.run(["git", "-C", str(root), "rev-parse", "HEAD"], capture_output=True,
+                              text=True).stdout.strip()
+        assert CW.code_sha() == want
+    monkeypatch.setattr(CW, "code_checkout", lambda: None)
+    assert CW.code_sha() is None
+    monkeypatch.setattr(CW, "code_checkout", lambda: tmp_path)   # a dir, not a repo: git fails
+    assert CW.code_sha() is None
+
+
+def test_open_keys_nw_sha_and_profile_sha256_are_optional():
+    assert "nw_sha" not in SC.EVENT_KEYS["open"] and "profile_sha256" not in SC.EVENT_KEYS["open"]
+    old = SC.with_defaults("open", {"spec_id": "SPEC-0001", "project": "P"})
+    rec = {"schema": SC.LEDGER_SCHEMA, "ts": "2026-10-25T10:00:00-04:00", "seq": 1,
+           "campaign": "C", "type": "open", "by": "t", **old}
+    assert "nw_sha" not in rec and SC.ledger_problems(rec) == []
