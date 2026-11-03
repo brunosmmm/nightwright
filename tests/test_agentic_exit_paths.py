@@ -1162,9 +1162,14 @@ def test_stop_with_wait_run_and_gate_then_next_runner_adopts_and_regates(world, 
 
     # a new run() adopts B's run and applies it, and re-gates A with the next seq
     (world.tmp / "g1.rel").write_text("")
-    release_run(world, b)
-    run_with_stop(cfg, lambda: S.read_ledger(cfg, b, types=["run.end"])
-                  and S.read_ledger(cfg, a, types=["gate"]), runner=world.runner)
+    # release B only once the new runner has adopted it: releasing before run() starts races the
+    # adoption snapshot (B may already have exited -> status "finished", not "running")
+    def when2():
+        if any(r["campaign"] == b for r in adopted(world)):
+            release_run(world, b)
+        return S.read_ledger(cfg, b, types=["run.end"]) and S.read_ledger(cfg, a, types=["gate"])
+
+    run_with_stop(cfg, when2, runner=world.runner)
     assert [r["status"] for r in adopted(world) if r["campaign"] == b] == ["running"]
     assert len(S.read_ledger(cfg, b, types=["run.end"])) == 1
     assert S.read_ledger(cfg, a, types=["gate"])[0]["gate_seq"] == 2
