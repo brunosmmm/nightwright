@@ -270,7 +270,7 @@ progress. This is the single place to see *what has been decided* and *what is i
 | [SPEC-0368](./specs/0368-remote-gating-red-on-current-trees-human-visible.md) | Remote gates gate a stat-dirty tree at HEAD instead of falling back, and expose done.changed on the run | feature | in-progress | — | 2026-11-02 |
 | [SPEC-0391](./specs/0391-worker-host-slots-from-registry.md) | A gate job carries the worker's registry slots as the worker host's slot limit | feature | in-progress | — | 2026-11-02 |
 | [SPEC-0394](./specs/0394-declared-persona-run-settings-routing-and-requests.md) | Declared personas: run settings, reviewer routing metadata and run requests (rework of SPEC-0296 on the persona registry) | feature | accepted | M9: agentic workflow | 2026-11-02 |
-| [SPEC-0399](./specs/0399-pr-mode-with-auto-merge-merge-policy-pr-opens-a.md) | Implicit docs/LEDGER.md regeneration on every nw rebase (first slice of PR auto-merge) | feature | proposed | M9: agentic workflow | 2026-11-02 |
+| [SPEC-0399](./specs/0399-pr-mode-with-auto-merge-merge-policy-pr-opens-a.md) | Implicit docs/LEDGER.md regeneration on every nw rebase (first slice of PR auto-merge) | feature | accepted | M9: agentic workflow | 2026-11-02 |
 | [SPEC-0400](./specs/0400-remote-web-dashboard-live-view-of-active-queue.md) | Remote web dashboard and decisions inbox over Tailscale (nw serve --dashboard) | epic | accepted | M9: agentic workflow | 2026-11-03 |
 | [SPEC-0405](./specs/0405-rich-queue-tui-prioritized-live-queue-campaign.md) | Rich queue TUI: prioritized live queue, campaign detail popup, closed-campaign history and a cross-campaign findings and decisions browser over one shared history layer | epic | accepted | — | 2026-11-03 |
 

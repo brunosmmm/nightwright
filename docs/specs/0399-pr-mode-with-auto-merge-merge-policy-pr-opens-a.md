@@ -1,7 +1,7 @@
 ---
 id: SPEC-0399
 title: "Implicit docs/LEDGER.md regeneration on every nw rebase (first slice of PR auto-merge)"
-status: proposed
+status: accepted
 owner: user
 created: 2026-11-02
 updated: 2026-11-02
