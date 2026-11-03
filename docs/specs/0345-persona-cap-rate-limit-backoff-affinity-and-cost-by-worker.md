@@ -1,7 +1,7 @@
 ---
 id: SPEC-0345
 title: "Persona cap, rate-limit backoff, campaign affinity and cost by worker"
-status: in-progress
+status: done
 owner: user
 created: 2026-11-01
 updated: 2026-11-02
@@ -298,7 +298,18 @@ back to local. Stuck detectors skip campaigns held by the gate. Cost attribution
   performed" together. The spec stays `in-progress` until the manual steps are done or the
   human waives them.
 
+### Test record (2026-11-03, waiver)
+
+- The two manual steps (a real campaign with persona jobs on the worker box, and a real 429
+  backoff, deferred to SPEC-0346) were waived by the human on 2026-11-03. Automated tests and
+  review pass; the spec is set `done`.
+
 ### As shipped (2026-11-02)
+
+- **Waiver (2026-11-03).** The real-persona-campaign-on-box and real-429 manual steps were
+  never performed (box is gate-only; a real 429 cannot be produced on demand) and were
+  waived by the human; the real-429 check is deferred to SPEC-0346. Shipped behavior is
+  covered by automated tests only.
 
 - **Module.** `agentic/persona_gate.py` holds the gate (`Gate`), the backoff
   (`is_rate_limit`, `note_run`, `rate-limit.json` under `rate-limit.lock`), the holds
@@ -393,10 +404,10 @@ Use `nw idea clock-in IDEA-560` / `nw idea clock-out IDEA-560`.
 ## Definition of done
 
 - [x] Acceptance criteria all met.
-- [ ] Test plan executed; automated tests pass (`uv run pytest`); manual steps performed.
-- [ ] No regressions.
+- [x] Test plan executed; automated tests pass (`uv run pytest`); manual steps performed (two manual steps waived by the human, 2026-11-03; see Test record).
+- [x] No regressions (affected tests pass; full suite is the main sentinel).
 - [x] Spec body updated to match what shipped.
-- [ ] `docs/LEDGER.md` updated (status + date).
+- [x] `docs/LEDGER.md` updated (status + date).
 
 ## Open questions
 

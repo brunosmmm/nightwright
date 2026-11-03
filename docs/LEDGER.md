@@ -219,7 +219,7 @@ progress. This is the single place to see *what has been decided* and *what is i
   - [x] [SPEC-0325](./specs/0325-steward-campaign-notices-project-idea-reconcile-remote-open.md) Stewards get campaign notices; a second-project merge reconciles its idea; pr campaigns branch from the remote — done
   - [x] [SPEC-0327](./specs/0327-cross-project-spec-id-collision-the-comfort.md) Spec ids are per project: a second project's SPEC-NNNN never resolves against wt's own specs — done
   - [x] [SPEC-0393](./specs/0393-wtfug-spec-0304-20261030-7a4f-spec-0304-review.md) SPEC-0304 review follow-ups: mvp-report edge cases in E4, E5 and E6, and the tests that pin them — done
-- **[SPEC-0310](./specs/0310-remote-workers-run-gates-persona-runs-and.md) — Remote workers: run gates, persona runs and campaigns on other machines** · accepted · (13/16 done)
+- **[SPEC-0310](./specs/0310-remote-workers-run-gates-persona-runs-and.md) — Remote workers: run gates, persona runs and campaigns on other machines** · accepted · (14/16 done)
   - [x] [SPEC-0331](./specs/0331-remote-gates-over-ssh-on-one-worker-host.md) Remote gates over SSH on one worker host — superseded
   - [x] [SPEC-0332](./specs/0332-worker-owned-async-jobs.md) Worker-owned async jobs — superseded
   - [x] [SPEC-0333](./specs/0333-remote-persona-runs-with-bundle-write-back.md) Remote persona runs with bundle write-back — superseded
@@ -233,7 +233,7 @@ progress. This is the single place to see *what has been decided* and *what is i
   - [x] [SPEC-0342](./specs/0342-lost-job-retry-across-workers-and-escalation.md) Lost-job retry across workers and escalation — done
   - [x] [SPEC-0343](./specs/0343-worker-bootstrap-and-drain.md) Worker drain — done
   - [x] [SPEC-0344](./specs/0344-remote-persona-jobs-with-bundle-write-back.md) Remote persona jobs with bundle write-back — done
-  - [ ] [SPEC-0345](./specs/0345-persona-cap-rate-limit-backoff-affinity-and-cost-by-worker.md) Persona cap, rate-limit backoff, campaign affinity and cost by worker — in-progress
+  - [x] [SPEC-0345](./specs/0345-persona-cap-rate-limit-backoff-affinity-and-cost-by-worker.md) Persona cap, rate-limit backoff, campaign affinity and cost by worker — done
   - [ ] [SPEC-0346](./specs/0346-remote-workers-integration-suite.md) Remote workers integration suite for gate and persona workers — accepted
   - [x] [SPEC-0354](./specs/0354-nw-workers-bootstrap.md) nw workers bootstrap — done
 - **[SPEC-0348](./specs/0348-declarative-per-project-agentic-pipeline.md) — Declarative per-project agentic pipeline: steps, personas and routing as data, with a lean fast-track lane** · accepted · (3/3 done)
@@ -282,7 +282,6 @@ progress. This is the single place to see *what has been decided* and *what is i
 | [SPEC-0169](./specs/0169-mini-agentic-workflow-queue-campaigns-headless.md) | Mini agentic workflow: queue, campaigns, headless personas, conductor | epic | accepted | M9: agentic workflow | 2026-10-25 |
 | [SPEC-0310](./specs/0310-remote-workers-run-gates-persona-runs-and.md) | Remote workers: run gates, persona runs and campaigns on other machines | epic | accepted | — | 2026-10-31 |
 | [SPEC-0335](./specs/0335-federation-over-a-networked-mailbox.md) | Federation over a networked mailbox | feature | accepted | — | 2026-10-31 |
-| [SPEC-0345](./specs/0345-persona-cap-rate-limit-backoff-affinity-and-cost-by-worker.md) | Persona cap, rate-limit backoff, campaign affinity and cost by worker | feature | in-progress | — | 2026-11-02 |
 | [SPEC-0346](./specs/0346-remote-workers-integration-suite.md) | Remote workers integration suite for gate and persona workers | feature | accepted | — | 2026-11-01 |
 | [SPEC-0348](./specs/0348-declarative-per-project-agentic-pipeline.md) | Declarative per-project agentic pipeline: steps, personas and routing as data, with a lean fast-track lane | epic | accepted | M9: agentic workflow | 2026-11-01 |
 | [SPEC-0367](./specs/0367-nw-workers-bootstrap-cannot-refresh-a-stale.md) | nw workers bootstrap refreshes a stale worker install (build id, --reinstall, stale warning, loud gate rejection) | feature | in-progress | — | 2026-11-02 |
@@ -614,6 +613,7 @@ progress. This is the single place to see *what has been decided* and *what is i
 | [SPEC-0342](./specs/0342-lost-job-retry-across-workers-and-escalation.md) | Lost-job retry across workers and escalation | feature | done | — | 2026-11-02 |
 | [SPEC-0343](./specs/0343-worker-bootstrap-and-drain.md) | Worker drain | feature | done | — | 2026-11-02 |
 | [SPEC-0344](./specs/0344-remote-persona-jobs-with-bundle-write-back.md) | Remote persona jobs with bundle write-back | feature | done | — | 2026-11-02 |
+| [SPEC-0345](./specs/0345-persona-cap-rate-limit-backoff-affinity-and-cost-by-worker.md) | Persona cap, rate-limit backoff, campaign affinity and cost by worker | feature | done | — | 2026-11-02 |
 | [SPEC-0347](./specs/0347-queue-backlog-resolves-outbound-depends-on.md) | Queue backlog resolves outbound `depends_on` (PROJ-NNNN files, merged-campaign fallback) | feature | done | — | 2026-11-01 |
 | [SPEC-0349](./specs/0349-nw-doctor-install-health-check.md) | `nw doctor`: read-only install health check with `nw.doctor.v1` JSON | feature | done | — | 2026-11-01 |
 | [SPEC-0350](./specs/0350-per-gate-path-sensitivity.md) | Per-gate path sensitivity for the close re-gate | feature | done | M9: agentic workflow | 2026-11-01 |
