@@ -14,6 +14,12 @@ def test_long_tick_keeps_the_lease_fresh(tmp_path, monkeypatch):
     cfg["agentic"] = {**(cfg.get("agentic") or {}), "lease_ttl_s": 2}
     real_tick = Q.tick
     seen = []
+    # The production beat is max(1s, ttl/4) = 1s against a 2s TTL: one starved heartbeat
+    # thread on a loaded box and the age crosses the TTL. Beat every 0.1s so the margin is
+    # 20x the interval, and the test asserts "beats keep happening", not scheduler luck.
+    real_hb = Q._heartbeat_while
+    monkeypatch.setattr(Q, "_heartbeat_while",
+                        lambda lease, interval_s=None: real_hb(lease, interval_s=0.1))
 
     def slow_tick(*a, **k):
         t_end = time.monotonic() + 3.5                    # well past the 2s TTL
