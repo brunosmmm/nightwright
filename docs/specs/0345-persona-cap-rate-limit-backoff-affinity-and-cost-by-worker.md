@@ -304,6 +304,14 @@ back to local. Stuck detectors skip campaigns held by the gate. Cost attribution
   backoff, deferred to SPEC-0346) were waived by the human on 2026-11-03. Automated tests and
   review pass; the spec is set `done`.
 
+### Test record (2026-11-03, gate loop 5)
+
+- The gate failure `test_gate_slots.py::test_acquire_waits_for_whichever_pool_frees_first`
+  was a race in the test, which this branch does not change. Main had already fixed it
+  (7372e51a/61a7e947: the test frees only the box slot before it asserts). Main's
+  `tests/test_gate_slots.py` was copied here unchanged. `uv run pytest -q -n 2
+  tests/test_gate_slots.py`: 24 passed. Full suite left to gating.
+
 ### As shipped (2026-11-02)
 
 - **Waiver (2026-11-03).** The real-persona-campaign-on-box and real-429 manual steps were
