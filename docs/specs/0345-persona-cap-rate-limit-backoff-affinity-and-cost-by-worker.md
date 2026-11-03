@@ -326,6 +326,29 @@ back to local. Stuck detectors skip campaigns held by the gate. Cost attribution
   watchdog, events, test-waits, affected-tests replay and worker-job files: 631 passed.
 - Full suite left to gating.
 
+### Test record (2026-11-03, review loop 6)
+
+- New tests in `tests/test_remote_persona_limits.py`. Each of these fails without its fix:
+  four new `test_is_rate_limit` cases (status 429 or 529, or no status, with "Rate limit
+  reached for requests", "limit resets in 30s" or "capacity resets in 10s": all a rate
+  limit), `test_a_local_rerun_after_a_late_loss_keeps_its_cap_slot`,
+  `test_capped_fan_out_member_failing_to_prepare_is_charged_and_escalates`,
+  `test_a_job_lost_during_the_backoff_is_not_rerun_locally`,
+  `test_a_remote_429_whose_write_back_failed_starts_the_backoff_and_holds_the_rerun`, and the
+  `run_id` assertion added to `test_lost_persona_job_clears_affinity` (9 failed with the
+  source changes reverted).
+- Guard tests for existing behavior (they pass before and after):
+  `test_a_429_status_counts_only_on_an_error_result_that_was_not_interrupted` (a non-error
+  result with status 429 and an interrupted 429 are not rate limits),
+  `test_flush_keeps_since_while_the_hold_lasts_and_resets_it_on_a_change`,
+  `test_a_job_lost_with_no_backoff_still_runs_locally` and
+  `test_a_write_back_rerun_runs_locally_with_no_backoff`.
+- `uv run pytest -q -n 4 tests/test_remote_persona_limits.py`: 72 passed.
+- `uv run pytest -q -n 6` on the affected-tests replay, adopt, e2e, quiet, resolver,
+  reviewers, review triage, spec writer, watchdog, remote gates, remote job records, remote
+  personas, test-waits, worker-job and events files: 883 passed.
+- Full suite left to gating.
+
 ### As shipped (2026-11-02)
 
 - **Waiver (2026-11-03).** The real-persona-campaign-on-box and real-429 manual steps were
@@ -362,9 +385,10 @@ back to local. Stuck detectors skip campaigns held by the gate. Cost attribution
   must match `\b429\b`, `\b529\b`, `rate[ _]limit` or `\boverloaded\b`.
   `rate_limit` also matches because it is the API's error type name. A message naming
   an account limit never counts, whatever its status: `usage_limit`, `usage limit`, `session
-  limit`, `weekly limit`, `limit reached`, `hit your … limit` or `resets`
-  (`_ACCOUNT_LIMIT_RE`, which covers the claude CLI's "5-hour limit reached ∙ resets 3am" and
-  "You've hit your limit · resets 3am").
+  limit`, `weekly limit`, `<n>-hour limit`, `hit your … limit` or a time-of-day reset
+  (`resets 3am`, `resets at 3:30 pm`) (`_ACCOUNT_LIMIT_RE`, which covers the claude CLI's
+  "5-hour limit reached ∙ resets 3am" and "You've hit your limit · resets 3am"). A bare
+  "limit reached" or "resets in 30s" is not an account limit (review loop 6).
   `events.RATE_LIMIT_MARKERS` is the documented subset of `_TRANSIENT_MARKERS`.
 - **Backoff file.** `{until (ISO), backoff_s, reset?}`. A reset writes `backoff_s: 60` plus
   `reset: true`, so the next episode uses 60 s instead of doubling the stored value. A run's
@@ -423,6 +447,19 @@ back to local. Stuck detectors skip campaigns held by the gate. Cost attribution
   never gets its `run.end`, or a record that never goes final, therefore frees its cap slot
   once the run's timeout would have killed it or the job would have been lost.
   (3) The wider account-limit match above.
+- **Review loop 6.** Four fixes. (1) The account-limit match no longer treats a bare `limit
+  reached` or `resets` as an account limit, so "API Error: Rate limit reached for requests"
+  with status 429 starts the backoff. (2) A persona job's `worker_job_lost` names the
+  `run_id`, and the live count restarts that run's deadline at the loss: the local re-run
+  under the same run id keeps its cap slot for its own full timeout. (3) In a capped fan-out,
+  a dispatched member whose `_prepare_run` failed (no `run.start`, not a config error) is
+  charged a retry like a member whose run failed, and parks `review_escalated` once out of
+  retries. (4) The local fallback of a remote persona run (`remote_personas._local`: a lost
+  job or a failure before submission) and the re-run after a failed write-back
+  (`queue._rerun_locally`) do not start while the backoff runs. The run ends interrupted
+  (the re-run after its own `run.start`, closed by the `run.end`), no retry is charged, and
+  the tick's gate holds the step. Before the write-back re-run, the remote run's own result
+  is folded into the backoff (a 429 there starts it), and the re-run's start time is its own.
 - **Test support.** A `FakeRunner` script entry may carry
   `api_error: {status, message}`, which yields an API-error result.
 

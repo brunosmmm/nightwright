@@ -200,6 +200,95 @@ def test_lost_persona_job_clears_affinity(tmp_path):
     assert S.read_state(w.cfg, CID)["remote_affinity"] is None
     lost = S.read_ledger(w.cfg, CID, types=["worker_job_lost"])
     assert [e["worker"] for e in lost] == ["box"]
+    assert lost[0]["run_id"] == "001-implementer"          # the cap restarts the run's clock
+
+
+class _SpyLocal(R.FakeRunner):
+    """The local runner, recording the run dirs it was asked to run."""
+
+    def __init__(self, script):
+        super().__init__(script)
+        self.calls = []
+
+    def run(self, req, **kw):
+        self.calls.append(req.run_dir.name)
+        return super().run(req, **kw)
+
+
+def _backoff_on(cfg, seconds=900):
+    PG._write_json(PG.rate_limit_path(cfg), {"until": PG._iso(PG._now_epoch(None) + seconds),
+                                             "backoff_s": 60})
+
+
+def _persona_step(w, req, local):
+    """`_do_persona` for the implementer, after the `run.start` `_prepare_run` writes."""
+    S.append_event(w.cfg, CID, "run.start", {
+        "persona": req.persona, "run_id": req.run_dir.name, "model": req.model,
+        "effort": None, "max_budget_usd": req.max_budget_usd, "timeout_s": req.timeout_s,
+        "permission_mode": req.permission_mode, "state": "IMPLEMENTING",
+        "prompt_sha256": "0" * 64, "step": {"kind": "implement", "personas": []}})
+    st = S.read_state(w.cfg, CID)
+    st["counters"]["runs"] = int(req.run_dir.name[:3])
+    S.write_state(w.cfg, CID, st)
+    ctx = Q._Ctx(w.cfg, runner=local)
+    ctx._projects[w.state["project"]] = w.project
+    return Q._do_persona(ctx, S.read_state(w.cfg, CID),
+                         Q.Step("implement", persona="implementer"), req.run_dir.name, req, 1.0)
+
+
+def test_a_job_lost_during_the_backoff_is_not_rerun_locally(tmp_path, monkeypatch):
+    # another campaign's 429 started the backoff after this job was placed; the worker then
+    # loses it: the run does not go local, it ends interrupted and the gate holds the step
+    w = _world(tmp_path)
+    _remote(w, _write_script(tmp_path / "s.json", [dict(WRITER[0], persona="reviewer")]))
+    local = _SpyLocal(_write_script(tmp_path / "ok.json", LOCAL_OK))
+    real = RPS._follow
+
+    def follow(*a, **kw):
+        _backoff_on(w.cfg)
+        return real(*a, **kw)
+    monkeypatch.setattr(RPS, "_follow", follow)
+    res = _persona_step(w, _req(w), local)
+    assert local.calls == []
+    assert res.interrupted and res.run_result.interrupted and res.commit_sha is None
+    assert RJ.read(w.cfg, RPS.job_id_for(CID, "001-implementer"))["state"] == "lost"
+
+
+def test_a_job_lost_with_no_backoff_still_runs_locally(tmp_path):
+    w = _world(tmp_path)
+    _remote(w, _write_script(tmp_path / "s.json", [dict(WRITER[0], persona="reviewer")]))
+    local = _SpyLocal(_write_script(tmp_path / "ok.json", LOCAL_OK))
+    res = _persona_step(w, _req(w), local)
+    assert local.calls == ["001-implementer"] and not res.interrupted
+
+
+def test_a_remote_429_whose_write_back_failed_starts_the_backoff_and_holds_the_rerun(
+        tmp_path, monkeypatch):
+    # the remote run's own 429 is folded in before the re-run, so the re-run is held too
+    w = _world(tmp_path)
+    _remote(w, _write_script(tmp_path / "w.json", [dict(WRITER[0], api_error={
+        "status": 429, "message": "API Error: 429 rate limit"})]))
+    monkeypatch.setattr(RPS, "_before_writeback",
+                        lambda wt, b: (w.repo / "late.txt").write_text("late\n"))
+    local = _SpyLocal(_write_script(tmp_path / "ok.json", LOCAL_OK))
+    res = _persona_step(w, _req(w), local)
+    assert local.calls == []
+    assert PG.read_rate_limit(w.cfg)["backoff_s"] == 60 and PG.backoff_until(w.cfg) is not None
+    assert [e["campaign"] for e in _events(w.cfg)] == [CID]
+    assert res.run_id == "002-implementer" and res.interrupted and res.run_result.interrupted
+    assert res.commit_sha is None
+    failed, = S.read_ledger(w.cfg, CID, types=["run.end"])
+    assert failed["run_id"] == "001-implementer" and failed["writeback_failed"]
+
+
+def test_a_write_back_rerun_runs_locally_with_no_backoff(tmp_path, monkeypatch):
+    w = _world(tmp_path)
+    _remote(w, _write_script(tmp_path / "w.json", WRITER))
+    monkeypatch.setattr(RPS, "_before_writeback",
+                        lambda wt, b: (w.repo / "late.txt").write_text("late\n"))
+    local = _SpyLocal(_write_script(tmp_path / "ok.json", LOCAL_OK))
+    res = _persona_step(w, _req(w), local)
+    assert local.calls == ["002-implementer"] and not res.interrupted
 
 
 def test_workers_check_records_its_outcome(tmp_path, monkeypatch):
@@ -277,6 +366,26 @@ def test_a_run_or_job_record_past_its_deadline_frees_its_cap_slot(tmp_path):
     assert PG.live_persona_runs(w.cfg, [], late + 5) == 0
 
 
+def test_a_local_rerun_after_a_late_loss_keeps_its_cap_slot(tmp_path, monkeypatch):
+    # the persona job is lost just before its timeout and the run goes local under the same
+    # run id with a full timeout: it counts past the original run.start + timeout + TTL
+    w = _world(tmp_path)
+    t0 = PG._now_epoch(None)
+    ttl = RJ.settings(w.cfg)["worker_ttl_s"]
+    monkeypatch.setattr(S, "now_iso", lambda: PG._iso(t0))
+    _open_run(w.cfg, CID, "001-implementer")                              # timeout_s 60
+    _open_run(w.cfg, CID, "002-reviewer")
+    monkeypatch.setattr(S, "now_iso", lambda: PG._iso(t0 + 55))
+    S.append_event(w.cfg, CID, "worker_job_lost", {
+        "worker": "box", "job_id": "j-1", "run_id": "001-implementer", "attempt": 1,
+        "reason": "deadline"}, by="personas")
+    S.append_event(w.cfg, CID, "worker_job_lost", {                       # a gate job's loss
+        "worker": "box", "job_id": "g-1", "attempt": 1, "reason": "deadline"})
+    assert PG.live_persona_runs(w.cfg, [CID], t0 + 30) == 2
+    assert PG.live_persona_runs(w.cfg, [CID], t0 + 60 + ttl + 5) == 1     # the re-run only
+    assert PG.live_persona_runs(w.cfg, [CID], t0 + 55 + 60 + ttl + 5) == 0
+
+
 def test_no_cap_by_default(tmp_path):
     w = _world(tmp_path)
     for i in range(5):
@@ -348,6 +457,26 @@ def test_capped_fan_out_member_failing_twice_escalates(e2e):
     assert st["state"] == "PARKED" and st["park"]["reason"] == "review_escalated", st
     assert "conformance reviewer" in st["park"]["detail"]
     assert runner.calls.count(A) == 2 and runner.calls.count(B) == 0
+
+
+def test_capped_fan_out_member_failing_to_prepare_is_charged_and_escalates(e2e, monkeypatch):
+    # room for 1 of 2 reviewers; A's request cannot be built (no run.start) on every attempt:
+    # it is charged a retry like a failed run and parks review_escalated, instead of the
+    # campaign looping in REVIEWING/persona_cap with B held forever
+    cfg, cid, repo, runner = e2e({"implementer": [impl_done()], A: [review_entry("pass")],
+                                  B: [b_entry("pass")]})
+    _cap(cfg, 1)
+    real = Q._prepare_run
+
+    def prepare(ctx, state, persona, step=None):
+        if persona == A:
+            raise OSError("cannot build the request")
+        return real(ctx, state, persona, step)
+    monkeypatch.setattr(Q, "_prepare_run", prepare)
+    drive(cfg, runner)
+    st = S.read_state(cfg, cid)
+    assert st["state"] == "PARKED" and st["park"]["reason"] == "review_escalated", st
+    assert runner.calls.count(A) == 0 and runner.calls.count(B) == 0
 
 
 def test_capped_fan_out_charges_a_retry_only_to_the_member_that_ran(e2e):
@@ -492,9 +621,25 @@ def test_rate_limit_markers_are_transient():
     (None, "FAILED tests/x.py::t - x.py:429: AssertionError", False),
     (None, "x.py:429: AssertionError\nAPI Error: 429", False),
     (None, "API Error: 4290 bytes", False),
+    # an API rate-limit message may say "limit reached" or "resets in": still a rate limit
+    (429, "API Error: Rate limit reached for requests", True),
+    (429, "API Error: 429 rate_limit_error: limit resets in 30s", True),
+    (None, "API Error: Rate limit reached for requests", True),
+    (529, "API Error: Overloaded, capacity resets in 10s", True),
 ])
 def test_is_rate_limit(tmp_path, status, message, want):
     assert PG.is_rate_limit(_result(tmp_path, status=status, message=message)) is want
+
+
+def test_a_429_status_counts_only_on_an_error_result_that_was_not_interrupted(tmp_path):
+    import dataclasses
+    hit = _result(tmp_path, status=429, message="API Error: 429 rate limit")
+    assert PG.is_rate_limit(hit)                                       # baseline
+    assert not PG.is_rate_limit(_result(tmp_path, status=429, message="API Error: 429",
+                                        is_error=False, name="ok429"))
+    assert not PG.is_rate_limit(dataclasses.replace(hit, is_error=False))
+    assert not PG.is_rate_limit(dataclasses.replace(hit, interrupted=True))
+    assert not PG.is_rate_limit(None)
 
 
 def test_rate_limit_episode_doubles_resets_and_caps(rl):
@@ -614,6 +759,28 @@ def test_a_cap_hold_older_than_the_mute_limit_is_reported_again(tmp_path):
     assert {"campaign_silent", "state_stuck"} <= _kinds(w.cfg, later)
     item = next(i for i in Q.queue_payload(w.cfg, now=later)["items"] if i["campaign"] == CID)
     assert item["held_by"] == "persona_cap"                  # still shown as held
+
+
+def test_flush_keeps_since_while_the_hold_lasts_and_resets_it_on_a_change(tmp_path,
+                                                                         monkeypatch):
+    # rewriting `since` on every tick would silently disable CAP_MUTE_MAX_S
+    w = _world(tmp_path)
+    clock = iter(f"2026-11-01T10:{m:02d}:00+00:00" for m in range(0, 60, 5))
+    monkeypatch.setattr(S, "now_iso", lambda: next(clock))
+
+    def tick(why):
+        gate = PG.Gate(w.cfg, [CID])
+        if why:
+            gate._hold(CID, why)
+        gate.flush()
+        return (PG.read_holds(w.cfg).get(CID) or {}).get("since")
+
+    assert tick("persona_cap") == "2026-11-01T10:00:00+00:00"
+    assert tick("persona_cap") == "2026-11-01T10:00:00+00:00"           # the same hold: kept
+    assert tick("rate_limit") == "2026-11-01T10:10:00+00:00"            # another hold: reset
+    assert tick(None) is None                                           # released
+    assert PG.read_holds(w.cfg) == {}
+    assert tick("persona_cap") == "2026-11-01T10:20:00+00:00"           # a new hold
 
 
 def test_the_cap_counts_the_open_run_of_a_campaign_parked_mid_run(tmp_path, monkeypatch):

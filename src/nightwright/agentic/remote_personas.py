@@ -419,7 +419,9 @@ def _local(rr: R.RemoteRunner, req, hooks):
     """The run on the local runner (the worker never took it, or lost it). An adopted job runs
     from the full request its record keeps (`adopted_request`), never from the queue's
     stripped rebuild; without one the run ends interrupted and the queue prepares the step
-    again."""
+    again. SPEC-0345: while the account's rate-limit backoff runs, the run is not started
+    locally either: it ends interrupted and the tick's dispatch gate holds the step."""
+    from . import persona_gate as PG
     if rr.record is not None:
         if rr.request is None:
             if hooks is not None and not hooks.enter_collect():
@@ -427,6 +429,11 @@ def _local(rr: R.RemoteRunner, req, hooks):
             return R._synthetic(req, "the remote persona job was lost and its record keeps no "
                                      "request to run it locally")
         req = rr.request
+    if req.persona not in PG.UNGATED_PERSONAS and PG.backoff_until(rr.cfg) is not None:
+        if hooks is not None and not hooks.enter_collect():
+            return R.DETACHED
+        return R._synthetic(req, "the run went local during the rate-limit backoff; the step "
+                                 "runs again when the backoff ends")
     local = rr.local if rr.local is not None else R.select_runner(rr.cfg)
     if hooks is not None and getattr(local, "detachable", False):
         # an adopted remote run dir has no `proc.json`, so `_adopt` gave the hooks an adoption
@@ -639,6 +646,7 @@ def _lost(rr: R.RemoteRunner, req, hooks, rec: dict, why: str):
     try:
         store.append_event(cfg, rr.state["id"], "worker_job_lost",
                            {"worker": rr.worker["name"], "job_id": job_id,
+                            "run_id": Path(req.run_dir).name,   # the cap restarts its clock
                             "attempt": lost.get("attempt"), "reason": why}, by="personas")
     except (OSError, ValueError):
         pass

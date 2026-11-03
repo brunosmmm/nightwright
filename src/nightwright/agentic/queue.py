@@ -2078,6 +2078,10 @@ def _do_persona(ctx: _Ctx, state: dict, step: Step, run_id: str, req, budget: fl
         # transient `run_failed`) and the queue prepares the step again
         rerun_req = req if adopted is None else getattr(remote, "request", None)
         if getattr(outcome, "writeback_failed", False) and rerun_req is not None:
+            # SPEC-0345: the remote run's own result counts (a 429 there starts the backoff,
+            # which then holds the re-run); the re-run's start is its own
+            _note_rate_limit(ctx, state, outcome, started)
+            started = time.time()
             run_id, req, outcome = _rerun_locally(ctx, state, step, run_id, rerun_req, budget,
                                                   outcome, hooks)
             res.run_id = run_id
@@ -2085,6 +2089,8 @@ def _do_persona(ctx: _Ctx, state: dict, step: Step, run_id: str, req, budget: fl
             if outcome is DETACHED:
                 res.detached = True
                 return res
+            # a re-run the backoff held never ran: interrupted, whatever the local runner
+            detachable = detachable or bool(outcome.interrupted)
         _note_rate_limit(ctx, state, outcome, started)          # SPEC-0345
         res.run_result = outcome
         res.interrupted = bool(outcome.interrupted) if detachable else ctx.stop.is_set()
@@ -2139,7 +2145,9 @@ def _rerun_locally(ctx: _Ctx, state: dict, step: Step, run_id: str, req, budget:
     under a new run id with its own `run.start` (no autopark). A detachable local runner gets
     the task's `hooks` back in `spawning` for the new run dir, so a stop or restart detaches
     the re-run like any local run (the result is then `DETACHED`; the next runner adopts the
-    new run). Returns (run_id, req, result)."""
+    new run). While the account's rate-limit backoff runs (SPEC-0345) the re-run is not
+    started: it ends interrupted and the tick's dispatch gate holds the step. Returns
+    (run_id, req, result)."""
     cfg, cid = ctx.cfg, state["id"]
     persona = req.persona
     with store.item_lock(cfg, cid):
@@ -2179,6 +2187,11 @@ def _rerun_locally(ctx: _Ctx, state: dict, step: Step, run_id: str, req, budget:
     new_req = replace(req, run_dir=store.runs_dir(cfg, cid) / new_id)
     if tmp_env is not None:
         new_req = replace(new_req, env={**env, **tmp_env})
+    if PG.backoff_until(cfg) is not None:
+        from .runner import _save_inputs, _synthetic
+        _save_inputs(new_req)
+        return new_id, new_req, _synthetic(new_req, "the write-back re-run was not started "
+                                                    "during the rate-limit backoff")
     if hooks is not None and getattr(ctx.runner, "detachable", False):
         if not hooks.restart(new_req.run_dir):
             return new_id, new_req, DETACHED
@@ -3901,11 +3914,11 @@ def _apply_reviews(ctx, state, profile, counters, res, row, events, finish):
     _store_verdicts(state, profile, counters, res.reviews)
     if res.step.held:
         # SPEC-0345: the persona cap held part of the fan-out; no routing until every reviewer
-        # ran. A member that ran without a valid verdict uses one retry, as in a full pass, and
-        # one already out of retries parks review_escalated, as `decide_reviews` would.
+        # ran. A dispatched member without a valid verdict (its run failed, or it never started)
+        # uses one retry, as in a full pass, and one already out of retries parks
+        # review_escalated, as `decide_reviews` would.
         valid = _valid_verdicts(state, profile)
-        failed = [r.step.persona for r in res.reviews
-                  if r.run_result is not None and r.step.persona not in valid]
+        failed = [r.step.persona for r in res.reviews if r.step.persona not in valid]
         out = tuple(p for p in failed
                     if _retries_used(counters, p, len(reviewers)) >= REVIEW_RETRY_MAX)
         if out:

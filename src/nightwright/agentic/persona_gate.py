@@ -45,9 +45,11 @@ LOSS_FAILING_S = 1800
 _RATE_RE = re.compile(r"\b429\b|\b529\b|\brate[ _]limit|\boverloaded\b")
 # an account usage/session/weekly limit (its own handling, never the backoff), in the wordings
 # the claude CLI uses: "Claude AI usage limit reached|<epoch>", "5-hour limit reached ∙ resets
-# 3am", "You've hit your limit · resets 3am", "Opus weekly limit reached"
-_ACCOUNT_LIMIT_RE = re.compile(r"usage[_ ]limit|session limit|weekly limit|\blimit reached\b"
-                               r"|\bhit your\b[^\n]*\blimit\b|\bresets\b")
+# 3am", "You've hit your limit · resets 3am", "Opus weekly limit reached". A bare "limit
+# reached" or "resets in 30s" is not one: an API rate-limit message says those too
+_ACCOUNT_LIMIT_RE = re.compile(r"usage[_ ]limit|session limit|weekly limit|\b\d+[- ]hour limit\b"
+                               r"|\bhit your\b[^\n]*\blimit\b"
+                               r"|\bresets (?:at )?\d{1,2}(?::\d\d)?\s*[ap]\.?m\b")
 
 
 # ---- config -----------------------------------------------------------------------------------
@@ -162,7 +164,8 @@ def is_rate_limit(result) -> bool:
     """The run failed with an API rate-limit error: an error result whose `api_error_status` is
     429/529, or (no status recorded) whose result message is an `API Error` naming 429, 529, a
     rate limit or an overload as whole tokens. Only the API error message counts, never the
-    transcript or test output; an account usage/session limit never counts."""
+    transcript or test output; an account usage/session/weekly limit never counts, whatever its
+    status (the claude CLI reports one with status 429)."""
     if result is None or not getattr(result, "is_error", False) \
             or getattr(result, "interrupted", False):
         return False
@@ -239,22 +242,29 @@ def live_persona_runs(cfg, campaign_ids, now=None) -> int:
     mid-job) cannot hold a cap slot forever: an open run's deadline is its start plus its
     `timeout_s` (absent: the longest job timeout) plus the worker TTL, a remote record's is its
     `deadline_at` (absent: `submitted_at` plus the longest job timeout plus the TTL). By then
-    the run is killed by its timeout or the job is lost."""
+    the run is killed by its timeout or the job is lost. A persona job lost to the run's local
+    re-run (a `worker_job_lost` naming its `run_id`) restarts the run's clock at the loss: the
+    re-run gets a full timeout of its own."""
     from . import remote_gates as RG
     from . import remote_jobs as RJ
     t, ttl = _now_epoch(now), _ttl_s(cfg)
     seen = set()
     for cid in campaign_ids:
-        starts, ended = {}, set()
-        for ev in store.read_ledger(cfg, cid, types=["run.start", "run.end"]):
+        starts, ended, restarted = {}, set(), {}
+        for ev in store.read_ledger(cfg, cid, types=["run.start", "run.end", "worker_job_lost"]):
             if ev["type"] == "run.start":
                 starts[ev.get("run_id")] = ev
-            else:
+            elif ev["type"] == "run.end":
                 ended.add(ev.get("run_id"))
+            elif ev.get("run_id") is not None:
+                restarted[ev["run_id"]] = ev.get("ts")
         for rid, ev in starts.items():
             if rid in ended or ev.get("persona") in UNGATED_PERSONAS:
                 continue
             t0, limit = _epoch(ev.get("ts")), ev.get("timeout_s")
+            lost = _epoch(restarted.get(rid))
+            if t0 is not None and lost is not None:
+                t0 = max(t0, lost)
             if not isinstance(limit, (int, float)) or isinstance(limit, bool) or limit <= 0:
                 limit = RG.MAX_JOB_TIMEOUT_S
             if t0 is None or t <= t0 + limit + ttl:
