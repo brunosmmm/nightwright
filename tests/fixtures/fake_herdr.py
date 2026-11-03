@@ -35,9 +35,13 @@ def load():
 
 
 def save(st):
+    """Write to a temp file, then `os.replace`: a call killed mid-write (the client's timeout on
+    a loaded host) never leaves the state file empty or half-written."""
     if STATE:
-        with open(STATE, "w") as f:
+        tmp = f"{STATE}.{os.getpid()}.tmp"
+        with open(tmp, "w") as f:
             json.dump(st, f)
+        os.replace(tmp, STATE)
 
 
 def usage(msg):

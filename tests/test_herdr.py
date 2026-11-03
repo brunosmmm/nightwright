@@ -580,7 +580,9 @@ def _end(rd):
 
 
 def _rp_watcher(cfg, now, **kw):
-    return HW.Watcher(cfg, H.Client(), interval_s=10, run_panes=True,
+    # These tests read the fake's state after each push, so every call must finish: a load-
+    # tolerant timeout instead of the client's 2 s (the timeout has its own tests above).
+    return HW.Watcher(cfg, H.Client(timeout_s=waits.WAIT_S), interval_s=10, run_panes=True,
                       clock=lambda: now[0], **kw)
 
 

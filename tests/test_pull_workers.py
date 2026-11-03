@@ -21,7 +21,7 @@ from nightwright.agentic import workers as WK
 
 from test_remote_gates import CID, Remote, World, _gate, _snapshot
 from test_remote_gates import _short_runtime_dir  # noqa: F401  (autouse fixture)
-from waits import until
+from waits import WAIT_S, until
 
 ASYNC_INFO = {"protocol": "nw.job.v1", "features": ["async", "persona"], "git": "git version 2"}
 JOB = RJ.gate_job_id(CID, 1)
@@ -144,6 +144,52 @@ def _leased(w, job_id=JOB) -> bool:
     return bool(rec) and rec.get("pull_state") == "leased" and int(rec.get("pull_cursor") or 0) >= 1
 
 
+def _expiry_after_first_frame(monkeypatch, job_id=JOB):
+    """Hold the server's lease check until `job_id`'s first frame is applied. A short
+    `job_lease_s` (2 or 3 s) then cannot lapse while a loaded host is still starting the job
+    process (bundle fetch, `WJ.submit`, the first frames post); from the first frame on the
+    check runs as shipped, so a stopped worker's lease still expires."""
+    real, opened = PJ.expire_leases, threading.Event()
+
+    def gated(cfg, now=None):
+        if not opened.is_set():
+            if int((RJ.read(cfg, job_id) or {}).get("pull_cursor") or 0) < 1:
+                return []
+            opened.set()
+        return real(cfg, now)
+    monkeypatch.setattr(PJ, "expire_leases", gated)
+
+
+def _seen_polling(monkeypatch, name):
+    """An event set once worker `name` has sent its first `POST /v1/lease`: a test with a short
+    `worker_ttl_s` queues its job only then, so a slow `nw worker serve` start-up is never taken
+    for an unreachable worker."""
+    real, seen = PJ.lease, threading.Event()
+
+    def recording(cfg, worker, *a, **kw):
+        if worker.get("name") == name:
+            seen.set()
+        return real(cfg, worker, *a, **kw)
+    monkeypatch.setattr(PJ, "lease", recording)
+    return seen
+
+
+def _partition(monkeypatch, token):
+    """An event that, while set, cuts the worker holding `token` off: the server answers each
+    of its requests 503, so the worker backs off, keeps its jobs and renews no lease. (A
+    SIGSTOP of `nw worker serve` is no partition: it can freeze the worker while it holds
+    `jobs_lock`, which its job process then waits for before it may write `result.json`.)"""
+    cut, real = threading.Event(), PJ._Handler._handle
+
+    def handle(self, method):
+        if cut.is_set() and self.headers.get("Authorization") == f"Bearer {token}":
+            self.close_connection = True        # the body is unread
+            return self._send(503, {"error": "partitioned (test)"})
+        return real(self, method)
+    monkeypatch.setattr(PJ._Handler, "_handle", handle)
+    return cut
+
+
 # ---- gate and persona jobs, compared with SSH push -------------------------------------------
 
 def _ssh_run(tmp_path):
@@ -228,20 +274,26 @@ def test_restarted_worker_reposts_from_the_server_cursor(bw, pull):
     assert len(bw.ledger(["gate"])) == 1
 
 
-def test_lease_expiry_retries_then_runs_locally_and_the_old_worker_gets_410(tmp_path):
+def test_lease_expiry_retries_then_runs_locally_and_the_old_worker_gets_410(tmp_path,
+                                                                           monkeypatch):
     w = BW(tmp_path)
     w.cfg["agentic"]["workers"] = {"job_lease_s": 2, "worker_ttl_s": 3,
                                    "max_remote_attempts": 2}
+    _expiry_after_first_frame(monkeypatch)
+    polling = _seen_polling(monkeypatch, "box")
     p = Pull(w, names=("box", "box2"))
+    cut = _partition(monkeypatch, p.tokens["box"])
     try:
         p.worker_config("box", job_lease_s=60)  # the coordinator's 2 s comes with the lease
-        proc = p.start("box")
+        p.start("box")
+        assert polling.wait(WAIT_S)
         th, box = _gate_bg(w)
         assert until(lambda: _leased(w))
-        proc.send_signal(signal.SIGSTOP)        # a partition: no heartbeat, no frames
+        cut.set()                               # a partition: no heartbeat, no frames
         assert until(lambda: (RJ.read(w.cfg, JOB) or {}).get("state") == "lost")
-        # its local lease (never renewed while stopped) ends the old job before g3 may finish
+        # its local lease (never renewed while cut off) ends the old job before g3 may finish
         assert until(lambda: (p.job_dir() / "result.json").exists())
+        cut.clear()                             # healed: its next request is about a lost job
         w.release()                             # the retries' gates may finish now
         th.join(60)
         run = box["run"]
@@ -251,7 +303,6 @@ def test_lease_expiry_retries_then_runs_locally_and_the_old_worker_gets_410(tmp_
             (RJ.gate_job_id(CID, 1, 2), "box2"), (RJ.gate_job_id(CID, 1, 3), None)]
         lost = w.ledger(["worker_job_lost"])
         assert [e["job_id"] for e in lost][:1] == [JOB]
-        proc.send_signal(signal.SIGCONT)
         gone = f"{JOB}: the coordinator gave the job up (410)"
         assert until(lambda: gone in p.log("box"))
         # the worker cancels the job on the 410 (`nw worker cancel`), after the 410
@@ -263,8 +314,9 @@ def test_lease_expiry_retries_then_runs_locally_and_the_old_worker_gets_410(tmp_
         p.close()
 
 
-def test_a_job_longer_than_the_lease_completes_with_heartbeats(tmp_path):
+def test_a_job_longer_than_the_lease_completes_with_heartbeats(tmp_path, monkeypatch):
     w = World(tmp_path)
+    _expiry_after_first_frame(monkeypatch)      # heartbeats are what keep the lease from then on
     # the gate outlives two whole leases; a 3 s lease (heartbeats every 1 s) leaves a loaded
     # test host 2 s of slack per heartbeat instead of 1.3 s
     w.project["gates"] = [_gate("slow", "sleep 7; echo slow")]

@@ -845,6 +845,42 @@ Fixes from the eighth review, no Design change:
   tests/test_agentic_project.py --run uv run pytest -q -n 2`: 3759 passed, 4 skipped.
   `python3 tools/spec_lint.py`: ok. The full suite is left to gating.
 
+### Test record (2026-11-02, loop 13)
+
+Two tests failed in the gate on a loaded host. Only test code changed; no product code changed.
+`git diff main...HEAD` touches no herdr, events, runproc or tail code.
+
+- `tests/test_herdr.py::test_parked_campaign_is_blocked_for_the_linger_then_closed` read an empty
+  `herdr-state.json`. The herdr client kills a call after 2 s, and the fake truncated the state
+  file before writing it. The fake now writes a temp file and then calls `os.replace`. The
+  run-pane watcher tests read the fake's state after every push, so their client uses the
+  `tests/waits.py` bound as its timeout. The 2 s timeout keeps its own tests. The test passed
+  alone 3 times out of 3.
+- `test_lease_expiry_retries_then_runs_locally_and_the_old_worker_gets_410` had three timing
+  windows, and two of them are also in the heartbeat test. The test keeps `job_lease_s=2`
+  and all of its assertions: `worker_job_lost`, `-a2` to `box2`, the local run after
+  `max_remote_attempts`, the 410, and `cancelling` after it.
+  - Worker start-up against `worker_ttl_s=3`. The job is now queued only after the worker's
+    first `POST /v1/lease`, so a slow start-up is no longer taken for `unreachable`.
+  - The 2 s lease before the first frame. The server's lease check is held until the job's
+    first frame is applied. From then on, the check runs as shipped. The heartbeat test (a
+    3 s lease) does the same.
+  - The partition. A SIGSTOP of `nw worker serve` could freeze it while it held `jobs_lock`.
+    The job process then waited for that lock before it could write `result.json`, so the
+    test timed out at line 278. This was seen 2 times in 9 `-n 4` runs with 8 CPU burners.
+    The partition is now made at the server instead: the server answers the worker's requests
+    with 503 while the partition is on. The worker backs off and renews no lease. Its job
+    ends on its own local lease. When the partition is lifted, the worker's next post gets
+    410 and it logs `cancelling`.
+  - No sleeps were added.
+- With 8 CPU burners:
+  - `uv run pytest -q -n 4 tests/test_pull_workers.py tests/test_herdr.py
+    tests/test_pull_workers_security.py`: 156 passed, 2 skipped, in 6 runs out of 6.
+  - The lease-expiry, heartbeat and parked-herdr tests, 8 concurrent single-process copies,
+    3 rounds: 24 runs out of 24 passed.
+- The affected-tests command at `-n 2` was still running when this loop had to report, so its result is left to the gate.
+- `python3 tools/spec_lint.py`: ok. The full suite is left to gating.
+
 ## Clock Log
 
 Use `nw idea clock-in IDEA-561` / `nw idea clock-out IDEA-561`.
