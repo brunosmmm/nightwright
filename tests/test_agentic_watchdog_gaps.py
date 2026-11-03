@@ -160,7 +160,7 @@ def test_waiting_not_admitted_quiet_when_full_or_park_requested(tmp_path, held):
     cfg = _cfg(tmp_path)
     held(cfg, slot_freed_at=iso(0))
     _campaign(cfg, A, state="IMPLEMENTING")
-    _campaign(cfg, C, state="GATING")                      # two active: both slots taken
+    _campaign(cfg, C, state="CLOSING")                     # two active: both slots taken (GATING takes none, SPEC-0395)
     _waiting(cfg, B, since=0)
     assert E.waiting_not_admitted_items(cfg, at(300), E.settings(cfg)) == []
     _set_state(cfg, C, state="MERGED")                     # a slot is free again...

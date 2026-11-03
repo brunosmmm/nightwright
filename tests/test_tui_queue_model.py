@@ -53,7 +53,7 @@ def test_load_queue_sections_order_and_meta(tmp_path):
     merged = by[("delivered", ids["merged"])]
     assert merged.meta.startswith("MERGED abcdef1 · $1.25 · ") and merged.meta.endswith(" ago")
     assert merged.actions == ()
-    assert header.startswith("runner down · hb -s · slots 2/")
+    assert header.startswith("runner down · hb -s · slots 1/")      # SPEC-0395: the GATING item holds none
 
 
 def test_load_queue_needs_you_and_overdue(tmp_path):

@@ -1,4 +1,4 @@
-Active (2/2) · no loop running                              
+Active (1/2) · no loop running                              
 campaign                  state          title              
 ────────────────────────────────────────────────────────────
 SPEC-0341-20261031-c0de   PARKED         [budget_cap] Coord…

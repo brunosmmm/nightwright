@@ -66,7 +66,9 @@ def test_run_stamps_slot_freed_at_on_drop(tmp_path, monkeypatch, spy):
     ticks = [kw for kw, _ in spy if isinstance(kw, dict) and "tick_at" in kw]
     assert ticks and "slot_freed_at" not in ticks[0]            # admission raises the count
     assert "slot_freed_at" in ticks[-1]                          # the merge tick lowered it
-    assert sum("slot_freed_at" in kw for kw in ticks) == 1
+    # SPEC-0395: GATING holds no slot, so the slot frees twice: IMPLEMENTING -> GATING, and the
+    # merge (REVIEWING -> done) after the review took it again
+    assert sum("slot_freed_at" in kw for kw in ticks) == 2
 
 
 class _Lease:

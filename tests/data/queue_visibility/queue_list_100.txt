@@ -1,4 +1,4 @@
-Active (2/2) · no loop running                                                                      
+Active (1/2) · no loop running                                                                      
 campaign                  state          title              park         pri   cost       project   
 ────────────────────────────────────────────────────────────────────────────────────────────────────
 SPEC-0341-20261031-c0de   PARKED         Coordinator re-…   budget_cap     3   $1.25/10   Meta-Tools

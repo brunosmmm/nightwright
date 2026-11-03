@@ -230,6 +230,21 @@ campaign while the lease is held (a dead runner still wakes):
 - Manual verification (a live runner with held slots) was not performed: the queue runner is
   not driven from this worktree. The behaviour is covered by the injected-lease tests above.
 
+### Test record, gate triage (2026-11-02)
+
+- `test_admission_blocked_journaled_once_per_change`, `test_run_stamps_slot_freed_at_on_drop`
+  (and the sibling `admission_blocked` tests) failed on the base commit 1d629480 as well: SPEC-0395
+  (GATING holds no profile slot) shifted the slot accounting they asserted. They are adapted in
+  `tests/test_agentic_exit_paths.py` / `tests/test_agentic_loop_state.py` (a CLOSING holder fills
+  the one slot; `slot_freed_at` stamps on IMPLEMENTING -> GATING and on the merge). No change to
+  `queue.py`. `uv run pytest -q tests/test_agentic_quiet.py tests/test_skills.py
+  tests/test_agentic_exit_paths.py tests/test_agentic_loop_state.py
+  tests/test_agentic_gating_slots.py`: all pass. The wide affected run then showed more SPEC-0395
+  fallout, adapted the same way: the `queue_list_*` snapshots (`Active (1/2)`),
+  `test_waiting_not_admitted_quiet_when_full_or_park_requested` (a CLOSING holder instead of GATING)
+  and `test_load_queue_sections_order_and_meta` (`slots 1/`). Affected set: 4035 passed before
+  those five; they now pass.
+
 ### As shipped (2026-11-02)
 
 As designed. `Ctx` also gets a `rows` property, the shared cached `store.list_campaigns` scan

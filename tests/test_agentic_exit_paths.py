@@ -820,7 +820,7 @@ def test_admission_blocked_journaled_once_per_change(tmp_path, monkeypatch):
     repo, cfg, a = gate_world(tmp_path, monkeypatch)
     for i in (2, 3, 4):
         _second_spec(repo, f"SPEC-000{i}", f"docs/specs/000{i}-x.md")
-    cfg["agentic"]["profiles"]["balanced"]["slots"] = 2
+    cfg["agentic"]["profiles"]["balanced"]["slots"] = 1      # SPEC-0395: A's GATING holds none; B's CLOSING fills it
     runner = Det(cfg)
     runner.release.set()
     seen, calls = {"n": 0}, []
@@ -857,7 +857,7 @@ def test_admission_blocked_journaled_once_per_change(tmp_path, monkeypatch):
           runner=runner, max_ticks=300)
     first, second = seen["first"], journal(cfg, "admission_blocked")
     (rec,) = first
-    assert rec["ready"] == [seen["c"]] and rec["slots"] == 2 and rec["occupied"] == 2
+    assert rec["ready"] == [seen["c"]] and rec["slots"] == 1 and rec["occupied"] == 1
     assert rec["draining"] is True
     held = {h["campaign"]: h for h in rec["holders"]}
     assert set(held) == {a, seen["b"]} and held[seen["b"]]["state"] == "CLOSING"
@@ -871,7 +871,7 @@ def test_admission_blocked_journaled_again_when_the_condition_recurs(tmp_path, m
     repo, cfg, a = gate_world(tmp_path, monkeypatch)
     for i in (2, 3):
         _second_spec(repo, f"SPEC-000{i}", f"docs/specs/000{i}-x.md")
-    cfg["agentic"]["profiles"]["balanced"]["slots"] = 2
+    cfg["agentic"]["profiles"]["balanced"]["slots"] = 1      # SPEC-0395: A's GATING holds none; B's CLOSING fills it
     runner = Det(cfg)
     runner.release.set()
     seen, calls = {"n": 0}, []
@@ -917,13 +917,18 @@ def test_admission_blocked_non_draining_has_no_deferred_holders(tmp_path, monkey
     """SPEC-0268: outside a drain the record says `draining: False` and defers no holder."""
     repo, cfg, a = gate_world(tmp_path, monkeypatch)
     _second_spec(repo)
-    cfg["agentic"]["profiles"]["balanced"]["slots"] = 1
+    _second_spec(repo, "SPEC-0003", "docs/specs/0003-x.md")
+    cfg["agentic"]["profiles"]["balanced"]["slots"] = 1      # SPEC-0395: A's GATING holds none
     runner = Det(cfg)
     runner.release.set()
     seen = {"n": 0}
 
     def on_tick(report):
-        if "b" not in seen and pid_file(tmp_path):               # A holds the only slot
+        if "b" not in seen and pid_file(tmp_path):               # A is in its held gate
+            h = added(cfg, monkeypatch, "SPEC-0003")             # a CLOSING holder takes the slot
+            st = S.read_state(cfg, h)
+            st["state"] = "CLOSING"
+            S.write_state(cfg, h, st)
             seen["b"] = added(cfg, monkeypatch, "SPEC-0002")
         if "b" in seen:
             seen["n"] += 1
