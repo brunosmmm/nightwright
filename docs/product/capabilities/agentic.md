@@ -591,6 +591,9 @@ never oversubscribe the CPU. A campaign waiting for a slot is not reported `camp
 `state_stuck`, and the wait does not count against its gate budget. A wait over 30 s writes a
 `gate_waiting` event, and the gate result records `slot_wait_s`. `nw queue gate-slots [--json]`
 shows the holders and the waiters.
+The quiet conductor stream (SPEC-0398) also holds `campaign_silent` / `state_stuck` for a
+campaign waiting for or holding a gate slot, or whose gate is deferred behind a drain or another
+gate, until the hold, drain or deferral passes its bound.
 
 **Remote gate workers (in progress).** A second machine can run gates over SSH (SPEC-0310). The
 coordinator keeps a registry (`nw workers add NAME --ssh me@box [--slots N]`, `list`, `check`,

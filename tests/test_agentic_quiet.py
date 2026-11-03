@@ -418,6 +418,155 @@ def test_closing_waiters_built_from_store(tmp_path):
     assert QT.Ctx(cfg, "conductor", lease={"held": False}).closing_waiters == {"w": "h"}
 
 
+def _states(**kw):
+    """`Ctx.states` for tests: id -> state, or (state, gate_exclusive)."""
+    out = {}
+    for cid, v in kw.items():
+        state, excl = v if isinstance(v, tuple) else (v, False)
+        out[cid] = {"state": state, "gate_exclusive": excl, "updated_at": None,
+                    "created_at": None}
+    return out
+
+
+def _dead():
+    import subprocess
+    import sys
+    p = subprocess.Popen([sys.executable, "-c", "pass"])
+    p.wait()
+    return p.pid
+
+
+def _slot_file(cfg, name, cid, pid, since=None, pool=None):
+    from nightwright.agentic import gate_slots as GS
+    d = GS.slots_dir(cfg) / (f"w-{pool}" if pool else "")
+    d.mkdir(parents=True, exist_ok=True)
+    (d / name).write_text(json.dumps({"campaign": cid, "pid": pid, "since": since}))
+
+
+def test_silent_held_for_gate_slot_waiter(tmp_path):
+    import os
+    cfg = _cfg(tmp_path)
+    _slot_file(cfg, "waiting-c1.json", "c1", os.getpid(), "2026-10-30T10:00:00+00:00")
+    for type_ in ("campaign_silent", "state_stuck"):
+        ev = _ev(type_, campaign="c1", state="GATING", silent_s=1000, stuck_s=1000)
+        held = {"held": True, "in_flight": []}
+        assert QT.classify(cfg, ev, _ctx(cfg, held)) == "hold"
+        assert QT.classify(cfg, ev, _ctx(cfg, {"held": False, "in_flight": []})) == "wake"
+        other = _ev(type_, campaign="c2", state="GATING")
+        assert QT.classify(cfg, other, _ctx(cfg, held)) == "wake"
+    _slot_file(cfg, "waiting-c1.json", "c1", _dead())
+    assert QT.classify(cfg, ev, _ctx(cfg, held)) == "wake"
+
+
+def test_silent_held_for_live_gate_hold_within_budget(tmp_path):
+    import os
+    cfg = _cfg(tmp_path)
+    now = dt.datetime.now().astimezone()
+    limit = E.settings(cfg)["gate_budget_s"] + QT._GRACE_S
+    ev = _ev("campaign_silent", campaign="c1", state="GATING", silent_s=1000)
+    lease = {"held": True, "in_flight": []}
+
+    def verdict(since, pid=None, pool=None):
+        _slot_file(cfg, "slot-0.lock", "c1", pid or os.getpid(), since, pool)
+        return QT.classify(cfg, ev, _ctx(cfg, lease, now=now))
+
+    ago = lambda s: (now - dt.timedelta(seconds=s)).isoformat()   # noqa: E731
+    assert verdict(ago(limit - 5)) == "hold"
+    assert verdict(ago(limit + 5)) == "wake"
+    assert verdict(ago(10), pid=_dead()) == "wake"
+    assert verdict(None) == "wake"
+    assert verdict("garbage") == "wake"
+    import shutil
+    from nightwright.agentic import gate_slots as GS
+    shutil.rmtree(GS.slots_dir(cfg))
+    assert verdict(ago(10), pool="box") == "hold"                 # a worker pool hold
+    assert verdict(ago(limit + 5), pool="box") == "wake"
+
+
+def test_silent_held_for_gate_deferred_by_drain(tmp_path):
+    cfg = _cfg(tmp_path)
+    now = dt.datetime.now().astimezone()
+    budget = E.settings(cfg)["gate_budget_s"]
+    states = _states(c1="GATING", c2="IMPLEMENTING")
+
+    def verdict(age, waiting_on=None, cid="c1", in_flight=()):
+        lease = {"held": True, "in_flight": list(in_flight), "draining": {
+            "since": (now - dt.timedelta(seconds=age)).isoformat(), "waiting_on": waiting_on}}
+        ev = _ev("campaign_silent", campaign=cid, state="GATING", silent_s=1000)
+        return QT.classify(cfg, ev, QT.Ctx(cfg, "conductor", lease=lease, now=now,
+                                           states=states))
+
+    assert verdict(100) == "hold"
+    assert verdict(budget + 300 - 5) == "hold"
+    assert verdict(budget + 300 + 5) == "wake"
+    assert verdict(100, [{"campaign": "a", "timeout_s": 7200}]) == "hold"
+    assert verdict(budget + 400, [{"campaign": "a", "timeout_s": 7200}]) == "hold"
+    assert verdict(7200 + 305, [{"campaign": "a", "timeout_s": 7200}]) == "wake"
+    assert verdict(100, cid="c2") == "wake"                         # not GATING
+    assert verdict(100, cid="nope") == "wake"                       # unknown campaign
+    assert verdict(100, in_flight=["c1"]) == "hold"                 # in flight: the old rule
+    ev = _ev("state_stuck", campaign="c1", state="GATING", stuck_s=1000)
+    lease = {"held": True, "in_flight": [], "draining": {"since": now.isoformat()}}
+    assert QT.classify(cfg, ev, QT.Ctx(cfg, "conductor", lease=lease, now=now,
+                                       states=states)) == "hold"
+    lease["draining"] = None
+    assert QT.classify(cfg, ev, QT.Ctx(cfg, "conductor", lease=lease, now=now,
+                                       states=states)) == "wake"
+    lease["draining"] = {"since": now.isoformat()}
+    lease["held"] = False
+    assert QT.classify(cfg, ev, QT.Ctx(cfg, "conductor", lease=lease, now=now,
+                                       states=states)) == "wake"
+
+
+def test_silent_held_for_gate_deferred_behind_another_gate(tmp_path):
+    cfg = _cfg(tmp_path)
+    now = dt.datetime.now().astimezone()
+    budget = E.settings(cfg)["gate_budget_s"]
+    limit = 2 * budget + QT._GRACE_S
+
+    def verdict(states, in_flight, *, age=100, cid="c1", ev_type="campaign_silent"):
+        if age is not None:
+            for st in states.values():
+                st["updated_at"] = (now - dt.timedelta(seconds=age)).isoformat()
+        lease = {"held": True, "in_flight": in_flight}
+        ev = _ev(ev_type, campaign=cid, state="GATING", silent_s=1000, stuck_s=1000)
+        return QT.classify(cfg, ev, QT.Ctx(cfg, "conductor", lease=lease, now=now,
+                                           states=states))
+
+    for t in ("campaign_silent", "state_stuck"):
+        own = _states(c1=("GATING", True), g="GATING", cl="CLOSING")
+        assert verdict(own, ["g", "cl"], ev_type=t) == "hold"       # own exclusive marker
+        assert verdict(own, ["cl"], ev_type=t) == "hold"
+        other = _states(c1="GATING", g=("GATING", True))
+        assert verdict(other, ["g"], ev_type=t) == "hold"           # another's marker
+    base = _states(c1="GATING", g=("GATING", True), im="IMPLEMENTING")
+    assert verdict(base, ["im"]) == "wake"                          # other state in flight
+    assert verdict(base, []) == "wake"
+    assert verdict(base, ["c1"]) == "hold"                          # in flight itself: old rule
+    assert verdict(_states(c1="CLOSING", g=("GATING", True)), ["g"]) == "wake"
+    assert verdict(_states(c1="GATING", g="GATING"), ["g"]) == "wake"        # no marker
+    assert verdict(_states(c1="GATING", cl="CLOSING"), ["cl"]) == "wake"
+    assert verdict(_states(c1="GATING", cl=("CLOSING", True)), ["cl"]) == "wake"   # non-GATING
+    ok = _states(c1="GATING", g=("GATING", True))
+    assert verdict(ok, ["g"], age=limit - 5) == "hold"
+    assert verdict(ok, ["g"], age=limit + 5) == "wake"              # over age
+    assert verdict(_states(c1="GATING", g=("GATING", True)), ["g"], age=None) == "wake"
+
+
+def test_ctx_states_built_from_store(tmp_path):
+    cfg = _cfg(tmp_path)
+    for cid, state, extra in (("a", "GATING", {"gate_exclusive": {"entered_at": "x"}}),
+                              ("b", "GATING", {}), ("c", "CLOSING", {"closing": {"attempts": 0}})):
+        store.create_campaign(cfg, {"id": cid, "spec_id": "SPEC-0001", "project": "p",
+                                    "state": state, **extra})
+    ctx = QT.Ctx(cfg, "conductor", lease={"held": False})
+    st = ctx.states
+    assert {k: (v["state"], v["gate_exclusive"]) for k, v in st.items()} == {
+        "a": ("GATING", True), "b": ("GATING", False), "c": ("CLOSING", False)}
+    assert ctx.closing_waiters == {}
+    assert ctx.rows is ctx.rows                                 # one cached scan
+
+
 def test_settings_validate(tmp_path):
     assert QT.settings(_cfg(tmp_path)) == QT.DEFAULTS
     s = QT.settings(_cfg(tmp_path, {"enabled": "yes", "readers": "x", "digest_interval_s": -1}))

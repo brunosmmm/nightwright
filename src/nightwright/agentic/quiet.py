@@ -12,7 +12,9 @@ from pathlib import Path
 
 from ..export import _atomic_write
 from . import events as E
+from . import gate_slots
 from . import lease as L
+from . import queue
 from . import store
 
 DIGEST_SCHEMA = "nw.conductor.digest.v1"
@@ -141,12 +143,14 @@ class Ctx:
     `last_ping_fp` is the last delivered ping's fingerprint)."""
 
     def __init__(self, cfg, reader, *, lease=None, digest=None, now=None, live_specs=None,
-                 closing_waiters=None):
+                 closing_waiters=None, states=None):
         self.cfg, self.reader = cfg, reader
         self.now = now or dt.datetime.now().astimezone()
         self._lease = lease
         self._live_specs = live_specs
         self._closing_waiters = closing_waiters
+        self._states = states
+        self._rows = None
         self.digest = digest if digest is not None else Digest.load(cfg, reader)
 
     @property
@@ -154,6 +158,13 @@ class Ctx:
         if self._lease is None:
             self._lease = L.lease_status(self.cfg, now=self.now)
         return self._lease
+
+    @property
+    def rows(self) -> list:
+        """One `store.list_campaigns` scan, shared by `states` and `closing_waiters`."""
+        if self._rows is None:
+            self._rows = store.list_campaigns(self.cfg)
+        return self._rows
 
     @property
     def live_specs(self) -> frozenset:
@@ -170,12 +181,23 @@ class Ctx:
         """Campaign id -> head id for every campaign waiting in the close train behind a live
         CLOSING head (SPEC-0314)."""
         if self._closing_waiters is None:
-            rows = store.list_campaigns(self.cfg)
+            rows = self.rows
             ids = {r["id"] for r in rows if r.get("state") == "CLOSING"}
             self._closing_waiters = {
                 r["id"]: r["closing"]["queued_behind"] for r in rows
                 if E.waits_in_close_train(r, ids)}
         return self._closing_waiters
+
+    @property
+    def states(self) -> dict:
+        """Campaign id -> `{state, gate_exclusive, updated_at, created_at}` (SPEC-0398);
+        `gate_exclusive` is whether the SPEC-0311 exclusive re-gate marker is set."""
+        if self._states is None:
+            self._states = {
+                r["id"]: {"state": r.get("state"), "gate_exclusive": bool(queue.gate_exclusive(r)),
+                          "updated_at": r.get("updated_at"), "created_at": r.get("created_at")}
+                for r in self.rows}
+        return self._states
 
 
 def _drain_bound(cfg, data) -> float:
@@ -192,11 +214,50 @@ def _drain_hold(cfg, data) -> bool:
 
 def _silent_hold(ev, ctx) -> bool:
     """A gate or close process for the campaign is alive in the runner, or it waits in the
-    close train behind a head for which that holds (SPEC-0314)."""
+    close train behind a head for which that holds (SPEC-0314), or it waits for / holds a gate
+    slot, or its gate is deferred behind a drain or another gate (SPEC-0398)."""
     lease, cid = ctx.lease, ev.get("campaign")
     if not lease.get("held") or not cid:
         return False
-    return _alive(lease, cid, ctx) or _alive(lease, ctx.closing_waiters.get(cid), ctx)
+    return (_alive(lease, cid, ctx) or _alive(lease, ctx.closing_waiters.get(cid), ctx)
+            or _gate_active(cid, ctx) or _gate_deferred(cid, lease, ctx))
+
+
+def _gate_active(cid, ctx) -> bool:
+    """SPEC-0398: a live gate-slot waiter marker, or a live slot hold within the gate budget
+    plus grace (a missing or unparsable `since` does not hold). A retry that keeps the same
+    hold is measured from that hold's `since`."""
+    if gate_slots.waiting(ctx.cfg, cid):
+        return True
+    hold = gate_slots.holding(ctx.cfg, cid)
+    if not hold:
+        return False
+    age = E._age_s(hold.get("since"), ctx.now)
+    return age is not None and age <= E.settings(ctx.cfg)["gate_budget_s"] + _GRACE_S
+
+
+def _gate_deferred(cid, lease, ctx) -> bool:
+    """SPEC-0398: a GATING campaign outside `in_flight` whose gate step is deferred by a drain
+    within its window, or behind another gate by an exclusive re-gate (`select_gate_starts`)
+    within `2 x gate_budget_s` plus grace."""
+    me = ctx.states.get(cid)
+    in_flight = lease.get("in_flight") or ()
+    if not me or me.get("state") != "GATING" or cid in in_flight:
+        return False
+    draining = lease.get("draining")
+    if isinstance(draining, dict):
+        age = E._age_s(draining.get("since"), ctx.now)
+        if age is not None and _drain_hold(
+                ctx.cfg, {"waiting_on": draining.get("waiting_on"), "draining_s": age}):
+            return True
+    states = ctx.states
+    if not any(v.get("state") == "GATING" and v.get("gate_exclusive") for v in states.values()):
+        return False
+    if not any(i != cid and (states.get(i) or {}).get("state") in ("GATING", "CLOSING")
+               for i in in_flight):
+        return False
+    age = E._since_state(ctx.cfg, {"id": cid, **me}, ctx.now)
+    return age is not None and age <= 2 * E.settings(ctx.cfg)["gate_budget_s"] + _GRACE_S
 
 
 def _alive(lease, cid, ctx) -> bool:
