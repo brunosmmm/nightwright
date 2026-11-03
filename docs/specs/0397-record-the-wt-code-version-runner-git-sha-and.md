@@ -1,9 +1,10 @@
 ---
 id: SPEC-0397
 title: "Record the nw code version and resolved-profile hash on each campaign open, and export them"
-status: proposed
+status: accepted
 owner: user
 created: 2026-11-02
+updated: 2026-11-02
 milestone: "M9: agentic workflow"
 kind: feature
 tags: [agentic, campaign, export, analysis, provenance]
