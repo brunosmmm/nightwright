@@ -43,8 +43,10 @@ events carry `persona` and `verdict_ok`, `finding` events carry `persona` and `s
 - G1. Per-reviewer-run normalization: the campaign row exposes the number of completed reviewer
   runs and the reviewers' findings and blocking findings per such run.
 - G2. First-review-round difficulty: the number of `must_fix` and of `major` findings the
-  reviewers raised in the first review round, before any review-driven fix loop. This is
-  comparable across profiles because it is the first, treatment-independent look at the diff.
+  reviewers raised in the first review round, before any review-driven fix loop. It does not
+  depend on how many fix rounds the profile allows; it still scales with the number of reviewer
+  personas in the first round, so compare it within the same reviewer set or alongside
+  `findings_per_reviewer_run`.
 - G3. Active time net of close mechanics: a column with the time spent in task-delivery states,
   excluding `PARKED` (as `active_s` already does) and the `CLOSING` state (rebase, resolver,
   merge).
@@ -69,7 +71,8 @@ Append nine columns to `CAMPAIGN_COLUMNS` and derive them in `campaign_row` from
 already in hand: a reviewer-run count and reviewer-only finding counts with their per-run ratios,
 the first-review-round `must_fix` and `major` counts, and the active time net of `CLOSING`.
 Reviewer-ness is decided by persona name against the builtin `REVIEWER_PERSONAS`. The "first
-review round" ends at the first `transition` to `IMPLEMENTING` with reason `review_fix`. Ratios
+review round" ends at the first `transition` to `IMPLEMENTING` after the campaign first enters
+`REVIEWING`, whatever its reason (`review_fix`, or the resume after a `loop_exhausted` park). Ratios
 are rounded to 3 places and are null when the denominator is zero. The existing columns stay as
 they are, so every earlier consumer of the v1 export keeps working, and the manifest gains one
 note describing the new group.
@@ -103,12 +106,18 @@ Only the "blocking" definition `{must_fix, major}` is used, matching `divergence
   in the denominator: it could not have raised findings, and counting it would deflate the
   ratio for exactly the campaigns that ran under pressure.
 - **First review round:** walk `events` in ledger order. Reviewer findings count toward the first
-  round until the first `transition` event with `to == "IMPLEMENTING"` and `reason ==
-  "review_fix"`; findings after it belong to later rounds and are excluded. A campaign that
-  never takes a review fix loop (the first round was clean enough, or the campaign ended
-  earlier) counts all its reviewer findings. A `triage_fix` transition (a gate-driven loop) does
-  not end the round: gate loops happen before the reviewers first run, and a reviewer run after
-  a gate fix is still the first review of the diff. A campaign with no reviewer findings, or
+  round until the first `transition` to `IMPLEMENTING` that comes after the campaign's first
+  entry into `REVIEWING`, whatever its reason (`review_fix`, or the resume after a
+  `loop_exhausted` park). Transitions to `IMPLEMENTING` before the first `REVIEWING` entry (the
+  initial implement, `triage_fix` gate loops) do not end the round, and neither does a
+  park/resume back into `REVIEWING` (`review_escalated`, `cost_cap`). Findings after the ending
+  transition belong to later rounds and are excluded. Rationale: `decide_review`
+  (`queue.py:707-713`) runs a fix loop as `review_fix` only while `loops <= loop_max`; past that
+  it parks with `loop_exhausted` and `resume_to="IMPLEMENTING"`, so keying on the reason alone
+  would count the re-review of a low-loop (frugal) profile as first round, which is the
+  treatment bias this spec removes. A campaign that never returns to `IMPLEMENTING` after
+  `REVIEWING` (the first round was clean enough, or the campaign ended earlier) counts all its
+  reviewer findings. A campaign with no reviewer findings, or
   one that never reached review, has both columns 0 (not null), because the counts are
   well-defined and zero.
 - **`close_s` / `task_active_s`:** read the already computed `time_in_state_s` map. `CLOSING`
@@ -125,7 +134,9 @@ Only the "blocking" definition `{must_fix, major}` is used, matching `divergence
 ### Manifest note
 
 Append one entry to `NOTES` explaining: the per-reviewer-run and first-review-round columns are
-for comparing campaigns across profiles; only builtin reviewer personas are counted; a reviewer
+for comparing campaigns across profiles; `first_review_*` does not depend on how many fix rounds
+the profile allows but still scales with the number of reviewer personas in the first round, so
+compare it within the same reviewer set or alongside `findings_per_reviewer_run`; only builtin reviewer personas are counted; a reviewer
 run counts only with a valid verdict; `task_active_s` excludes `PARKED` and `CLOSING`, whereas
 `active_s` excludes only `PARKED`. The manifest `tables.campaigns.columns` listing already
 derives from `CAMPAIGN_COLUMNS`, so it picks the new columns up with no further change.
@@ -165,15 +176,18 @@ ratios; their counts of findings are still exact.
 - [ ] `findings_per_reviewer_run` and `blocking_per_reviewer_run` equal the counts divided by
       `reviewer_runs` rounded to 3 places, and are null when `reviewer_runs` is 0.
 - [ ] `first_review_must_fix` and `first_review_major` count reviewer findings that precede the
-      first `IMPLEMENTING` transition with reason `review_fix`; findings after it are excluded;
-      with no such transition all reviewer findings count; a `triage_fix` transition does not end
-      the round.
+      first `IMPLEMENTING` transition after the first `REVIEWING` entry, whatever its reason
+      (`review_fix`, or the resume after a `loop_exhausted` park); findings after it are
+      excluded; with no such transition all reviewer findings count; `IMPLEMENTING` transitions
+      before the first `REVIEWING` entry (initial implement, `triage_fix`) and park/resume back
+      into `REVIEWING` do not end the round.
 - [ ] `close_s` equals `time_in_state_s["CLOSING"]` (0 when absent) and `task_active_s ==
       active_s - close_s`, never negative; a campaign parked for `rebase_conflict` has the park
       interval in neither.
-- [ ] Two campaigns with the same single-reviewer verdict but different numbers of reviewer
-      runs have different `reviewer_findings` totals but equal `first_review_*` and equal
-      per-run ratios (the treatment-independence property).
+- [ ] Campaign B equals campaign A plus one more review round (an `IMPLEMENTING`/`review_fix`
+      transition followed by two more valid reviewer runs with findings): both have equal
+      `first_review_must_fix` / `first_review_major`, and B has a larger `reviewer_runs` and
+      `reviewer_findings` (the fix-round-independence property).
 - [ ] The existing `must_fix_count`, `finding_count`, `wall_s`, `active_s`, `signals` and all
       other pre-existing columns have identical values for every fixture campaign before and
       after the change.
@@ -196,13 +210,19 @@ ratios; their counts of findings are still exact.
     old values.
   - `test_per_run_ratios_and_null_denominator`: ratios to 3 places; a campaign with zero reviewer
     runs gets null ratios and 0 counts.
-  - `test_first_review_round_boundary`: reviewer findings before and after a
-    `IMPLEMENTING`/`review_fix` transition; asserts only the earlier ones count; a variant with a
-    prior `triage_fix` transition asserts the round is not ended by it; a variant with no fix
-    loop counts all.
-  - `test_treatment_independence`: two campaigns with identical first-round findings, one with
-    two extra reviewer runs and an extra round; asserts equal `first_review_*` and unequal raw
-    `reviewer_findings`.
+  - `test_first_review_round_boundary`: reviewer findings before and after an
+    `IMPLEMENTING`/`review_fix` transition that follows `REVIEWING`; asserts only the earlier
+    ones count; a variant with a prior `triage_fix` transition (before the first `REVIEWING`
+    entry) asserts the round is not ended by it; a variant with a park/resume back into
+    `REVIEWING` (`review_escalated`) asserts the round is not ended; a `loop_exhausted` variant:
+    `REVIEWING` -> `PARKED` (`loop_exhausted`) -> `IMPLEMENTING` (resume reason) -> `REVIEWING`
+    with later findings, asserting the later findings are excluded; a variant with no return to
+    `IMPLEMENTING` counts all.
+  - `test_treatment_independence`: campaign A has one round of reviewer runs and findings;
+    campaign B is A plus an `IMPLEMENTING`/`review_fix` transition and two more valid reviewer
+    runs with findings. Asserts A and B have equal `first_review_must_fix` /
+    `first_review_major`, and B has a larger `reviewer_runs` and `reviewer_findings`. The
+    per-run ratios are not asserted equal.
   - `test_task_active_excludes_closing_and_parked`: transitions through `IMPLEMENTING`,
     `CLOSING`, `PARKED` (`rebase_conflict`), `CLOSING`; asserts `close_s`, `task_active_s ==
     active_s - close_s`, and that the park interval is in neither; a never-closed campaign has
