@@ -36,10 +36,18 @@ MAX_BACKOFF_S = 900
 # the detectors stop skipping a `persona_cap` hold older than this: a live count inflated by a
 # run that never ends (no `run.end`, a persona job record never final) would hold it forever
 CAP_MUTE_MAX_S = 7200
+# a `worker_job_lost` keeps that worker failing for the campaign for at most this long: without
+# a bound, one loss before any affinity (or with no other worker to move the affinity to) would
+# keep the campaign's persona runs off the worker for the rest of its life
+LOSS_FAILING_S = 1800
 
 # whole-token rate-limit markers of an API error message (`events.RATE_LIMIT_MARKERS`)
 _RATE_RE = re.compile(r"\b429\b|\b529\b|\brate[ _]limit|\boverloaded\b")
-_ACCOUNT_LIMIT = ("usage_limit", "usage limit", "session limit")   # their own handling
+# an account usage/session/weekly limit (its own handling, never the backoff), in the wordings
+# the claude CLI uses: "Claude AI usage limit reached|<epoch>", "5-hour limit reached ∙ resets
+# 3am", "You've hit your limit · resets 3am", "Opus weekly limit reached"
+_ACCOUNT_LIMIT_RE = re.compile(r"usage[_ ]limit|session limit|weekly limit|\blimit reached\b"
+                               r"|\bhit your\b[^\n]*\blimit\b|\bresets\b")
 
 
 # ---- config -----------------------------------------------------------------------------------
@@ -162,7 +170,7 @@ def is_rate_limit(result) -> bool:
     msg = obj.get("result") if isinstance(obj.get("result"), str) else \
         str(getattr(result, "result_text", "") or "")
     low = msg.strip().lower()
-    if any(m in low for m in _ACCOUNT_LIMIT):
+    if _ACCOUNT_LIMIT_RE.search(low):
         return False
     status = obj.get("api_error_status")
     if isinstance(status, int) and not isinstance(status, bool):
@@ -215,11 +223,26 @@ def note_run(cfg, result, started: float | None, *, campaign=None, now=None) -> 
 
 # ---- the cap: live campaign persona runs ------------------------------------------------------
 
-def live_persona_runs(cfg, campaign_ids) -> int:
+def _ttl_s(cfg) -> float:
+    from . import remote_jobs as RJ
+    try:
+        return RJ.settings(cfg)["worker_ttl_s"]
+    except ValueError:                  # a bad `max_remote_attempts`: the gate step reports it
+        return RJ.DEFAULT_WORKER_TTL_S
+
+
+def live_persona_runs(cfg, campaign_ids, now=None) -> int:
     """Live campaign persona runs: the open runs (`run.start` without `run.end`) of the given
     campaigns plus the live `kind: persona` remote job records, each `(campaign, run_id)` once.
-    Spec-review runs are not counted."""
+    Spec-review runs are not counted. A run or record past its deadline is not counted, so one
+    that never gets its `run.end` or final state (a coordinator crash, a worker unregistered
+    mid-job) cannot hold a cap slot forever: an open run's deadline is its start plus its
+    `timeout_s` (absent: the longest job timeout) plus the worker TTL, a remote record's is its
+    `deadline_at` (absent: `submitted_at` plus the longest job timeout plus the TTL). By then
+    the run is killed by its timeout or the job is lost."""
+    from . import remote_gates as RG
     from . import remote_jobs as RJ
+    t, ttl = _now_epoch(now), _ttl_s(cfg)
     seen = set()
     for cid in campaign_ids:
         starts, ended = {}, set()
@@ -228,10 +251,22 @@ def live_persona_runs(cfg, campaign_ids) -> int:
                 starts[ev.get("run_id")] = ev
             else:
                 ended.add(ev.get("run_id"))
-        seen.update((cid, rid) for rid, ev in starts.items()
-                    if rid not in ended and ev.get("persona") not in UNGATED_PERSONAS)
+        for rid, ev in starts.items():
+            if rid in ended or ev.get("persona") in UNGATED_PERSONAS:
+                continue
+            t0, limit = _epoch(ev.get("ts")), ev.get("timeout_s")
+            if not isinstance(limit, (int, float)) or isinstance(limit, bool) or limit <= 0:
+                limit = RG.MAX_JOB_TIMEOUT_S
+            if t0 is None or t <= t0 + limit + ttl:
+                seen.add((cid, rid))
     for rec in RJ.live(cfg):
-        if rec.get("kind") == "persona" and rec.get("persona") not in UNGATED_PERSONAS:
+        if rec.get("kind") != "persona" or rec.get("persona") in UNGATED_PERSONAS:
+            continue
+        deadline = RJ.epoch(rec.get("deadline_at"))
+        if deadline is None:
+            sub = RJ.epoch(rec.get("submitted_at"))
+            deadline = None if sub is None else sub + RG.MAX_JOB_TIMEOUT_S + ttl
+        if deadline is None or t <= deadline:
             seen.add((rec.get("campaign"), rec.get("run_id") or rec.get("job_id")))
     return len(seen)
 
@@ -252,7 +287,7 @@ class Gate:
 
     def live(self) -> int:
         if self._live is None:
-            self._live = live_persona_runs(self.cfg, self.ids)
+            self._live = live_persona_runs(self.cfg, self.ids, self.now)
         return self._live
 
     def _hold(self, cid, why: str, waiting=()) -> None:
@@ -331,13 +366,17 @@ def _losses(cfg, cid) -> list[dict]:
         return []
 
 
-def lost_since(cfg, state: dict, worker: str, since) -> bool:
-    """A `worker_job_lost` of this campaign on `worker` at or after `since` (any, when None)."""
+def lost_since(cfg, state: dict, worker: str, since, *, within=None, now=None) -> bool:
+    """A `worker_job_lost` of this campaign on `worker` at or after `since` (any, when None);
+    with `within`, only one at most `within` seconds old."""
     t0 = _epoch(since)
+    cutoff = None if within is None else _now_epoch(now) - within
     for ev in _losses(cfg, state.get("id")):
         if ev.get("worker") != worker:
             continue
         t = _epoch(ev.get("ts"))
+        if cutoff is not None and (t is None or t < cutoff):
+            continue
         if t0 is None or (t is not None and t >= t0):
             return True
     return False
@@ -353,11 +392,13 @@ def affinity(cfg, state: dict) -> str | None:
     return name
 
 
-def failing(cfg, state: dict, w: dict) -> bool:
+def failing(cfg, state: dict, w: dict, now=None) -> bool:
     """The worker is disabled, its last `nw workers check` failed, or it lost a job of this
-    campaign since the campaign's affinity was last set."""
+    campaign since the campaign's affinity was last set and within the last `LOSS_FAILING_S`
+    (a loss older than that, or one from before any affinity, stops counting then)."""
     return (not w.get("enabled", True) or w.get("check_ok") is False
-            or lost_since(cfg, state, w["name"], state.get("remote_affinity_at")))
+            or lost_since(cfg, state, w["name"], state.get("remote_affinity_at"),
+                          within=LOSS_FAILING_S, now=now))
 
 
 def order(cfg, state: dict, names: list) -> list:

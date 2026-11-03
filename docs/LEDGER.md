@@ -613,7 +613,7 @@ progress. This is the single place to see *what has been decided* and *what is i
 | [SPEC-0342](./specs/0342-lost-job-retry-across-workers-and-escalation.md) | Lost-job retry across workers and escalation | feature | done | — | 2026-11-02 |
 | [SPEC-0343](./specs/0343-worker-bootstrap-and-drain.md) | Worker drain | feature | done | — | 2026-11-02 |
 | [SPEC-0344](./specs/0344-remote-persona-jobs-with-bundle-write-back.md) | Remote persona jobs with bundle write-back | feature | done | — | 2026-11-02 |
-| [SPEC-0345](./specs/0345-persona-cap-rate-limit-backoff-affinity-and-cost-by-worker.md) | Persona cap, rate-limit backoff, campaign affinity and cost by worker | feature | done | — | 2026-11-02 |
+| [SPEC-0345](./specs/0345-persona-cap-rate-limit-backoff-affinity-and-cost-by-worker.md) | Persona cap, rate-limit backoff, campaign affinity and cost by worker | feature | done | — | 2026-11-03 |
 | [SPEC-0347](./specs/0347-queue-backlog-resolves-outbound-depends-on.md) | Queue backlog resolves outbound `depends_on` (PROJ-NNNN files, merged-campaign fallback) | feature | done | — | 2026-11-01 |
 | [SPEC-0349](./specs/0349-nw-doctor-install-health-check.md) | `nw doctor`: read-only install health check with `nw.doctor.v1` JSON | feature | done | — | 2026-11-01 |
 | [SPEC-0350](./specs/0350-per-gate-path-sensitivity.md) | Per-gate path sensitivity for the close re-gate | feature | done | M9: agentic workflow | 2026-11-01 |

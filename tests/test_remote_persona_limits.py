@@ -138,6 +138,49 @@ def test_affine_worker_that_lost_a_job_of_the_campaign_is_demoted_for_gates(two)
     assert _place(two)[0] == "box2"
 
 
+def _ago(seconds):
+    return PG._iso(PG._now_epoch(None) - seconds)
+
+
+def test_a_loss_from_before_any_affinity_stops_failing_the_worker(two):
+    # a gate job of the campaign was lost on box while no affinity was set; box is the only
+    # persona worker. The loss keeps box failing for LOSS_FAILING_S, not for the campaign's life
+    _set_registry(two, "box2", enabled=False)
+    st = S.read_state(two.cfg, CID)
+    assert st.get("remote_affinity") is None and st.get("remote_affinity_at") is None
+    box = next(r for r in WK.load(two.cfg) if r["name"] == "box")
+    S.append_event(two.cfg, CID, "worker_job_lost", {"worker": "box", "job_id": "j",
+                                                    "attempt": 1, "reason": "deadline"})
+    assert PG.failing(two.cfg, st, box)
+    assert _place(two)[0] is None                           # runs locally while it is fresh
+    assert PG.failing(two.cfg, st, box, now=PG._now_epoch(None) + PG.LOSS_FAILING_S + 5) \
+        is False
+    # the same loss, recorded LOSS_FAILING_S ago: box takes the campaign's persona runs again
+    led = S._ledger_path(two.cfg, CID)
+    lines = [json.loads(x) for x in led.read_text().splitlines()]
+    for e in lines:
+        if e["type"] == "worker_job_lost":
+            e["ts"] = _ago(PG.LOSS_FAILING_S + 5)
+    led.write_text("".join(json.dumps(e) + "\n" for e in lines))
+    assert not PG.failing(two.cfg, st, box)
+    assert _place(two)[0] == "box"
+    assert S.read_state(two.cfg, CID)["remote_affinity"] == "box"
+
+
+def test_a_loss_after_the_affinity_stops_failing_the_worker_after_the_window(two):
+    # the affinity on box was cleared by a loss and box is the only persona worker: the loss
+    # keeps box failing (runs go local) only for LOSS_FAILING_S
+    st = _affine(two, "box")
+    _set_registry(two, "box2", enabled=False)
+    box = next(r for r in WK.load(two.cfg) if r["name"] == "box")
+    S.append_event(two.cfg, CID, "worker_job_lost", {"worker": "box", "job_id": "j",
+                                                    "attempt": 1, "reason": "unreachable"})
+    assert PG.affinity(two.cfg, st) is None and PG.failing(two.cfg, st, box)
+    later = PG._now_epoch(None) + PG.LOSS_FAILING_S + 5
+    assert not PG.failing(two.cfg, st, box, now=later)
+    assert PG.affinity(two.cfg, st) is None                 # still cleared: a new run sets it
+
+
 def test_gate_run_never_sets_affinity(two):
     pools = RG.pools_for(two.cfg, two.project, S.read_state(two.cfg, CID), seq=1)
     assert pools[0][0] == "box"
@@ -202,6 +245,36 @@ def test_cap_counts_local_and_remote_runs_and_trims_a_fan_out(tmp_path):
     assert gate.admit(st, Q.Step("implement", persona="implementer")) is None   # room used
     gate.flush()
     assert PG.read_holds(w.cfg)[CID]["held_by"] == "persona_cap"
+
+
+def test_a_run_or_job_record_past_its_deadline_frees_its_cap_slot(tmp_path):
+    # the coordinator crashed mid persona job: its `run.start` never gets a `run.end` and the
+    # job record stays `detached` on a worker since unregistered. Both count until the run's
+    # deadline, then free the slot, so the cap cannot stay full forever
+    w = _world(tmp_path)
+    _cap(w.cfg, 1)
+    S.append_event(w.cfg, CID, "run.start", {
+        "persona": "implementer", "run_id": "001-implementer", "model": "m", "effort": None,
+        "max_budget_usd": 1.0, "timeout_s": 600, "permission_mode": "x", "prompt_sha256": "0"})
+    now = PG._now_epoch(None)
+    RJ.create(w.cfg, job_id="j-1", campaign="gone", worker="old", attempt=1, seq=0,
+              submitted_at=now, kind="persona", deadline_at=now + 3600)
+    RJ.update(w.cfg, "j-1", run_id="001-reviewer", persona="reviewer", state="detached")
+    ttl = RJ.settings(w.cfg)["worker_ttl_s"]
+    assert PG.live_persona_runs(w.cfg, [CID], now) == 2
+    assert PG.live_persona_runs(w.cfg, [CID], now + 600 + ttl + 5) == 1    # the record only
+    assert PG.live_persona_runs(w.cfg, [CID], now + 3605) == 0
+    st = S.read_state(w.cfg, CID)
+    step = Q.Step("implement", persona="implementer")
+    assert PG.Gate(w.cfg, [CID], now=now).admit(st, step) is None
+    assert PG.Gate(w.cfg, [CID], now=now + 3605).admit(st, step) is step
+    # a record with no deadline counts until submitted_at + the longest job timeout + the TTL
+    rec = RJ.read(w.cfg, "j-1")
+    rec.pop("deadline_at")
+    RJ._write(w.cfg, rec)
+    late = now + RG.MAX_JOB_TIMEOUT_S + ttl
+    assert PG.live_persona_runs(w.cfg, [], late - 5) == 1
+    assert PG.live_persona_runs(w.cfg, [], late + 5) == 0
 
 
 def test_no_cap_by_default(tmp_path):
@@ -412,6 +485,10 @@ def test_rate_limit_markers_are_transient():
     (429, "Claude AI usage limit reached|1700000000", False),
     (None, "API Error: usage_limit reached (429)", False),
     (None, "session limit reached", False),
+    (429, "5-hour limit reached \u2219 resets 3am", False),
+    (429, "You've hit your limit \u00b7 resets 3am (Europe/Lisbon)", False),
+    (429, "Opus weekly limit reached", False),
+    (None, "API Error: 429 You've hit your usage limit", False),
     (None, "FAILED tests/x.py::t - x.py:429: AssertionError", False),
     (None, "x.py:429: AssertionError\nAPI Error: 429", False),
     (None, "API Error: 4290 bytes", False),

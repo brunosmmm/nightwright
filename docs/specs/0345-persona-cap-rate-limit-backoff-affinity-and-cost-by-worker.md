@@ -4,7 +4,7 @@ title: "Persona cap, rate-limit backoff, campaign affinity and cost by worker"
 status: done
 owner: user
 created: 2026-11-01
-updated: 2026-11-02
+updated: 2026-11-03
 source_idea: IDEA-560
 parent: SPEC-0310
 tags: [agentic, remote, workers, personas, cost]
@@ -312,6 +312,20 @@ back to local. Stuck detectors skip campaigns held by the gate. Cost attribution
   `tests/test_gate_slots.py` was copied here unchanged. `uv run pytest -q -n 2
   tests/test_gate_slots.py`: 24 passed. Full suite left to gating.
 
+### Test record (2026-11-03, review loop 5)
+
+- New tests in `tests/test_remote_persona_limits.py`, each failing without its fix:
+  `test_a_loss_from_before_any_affinity_stops_failing_the_worker`,
+  `test_a_loss_after_the_affinity_stops_failing_the_worker_after_the_window`,
+  `test_a_run_or_job_record_past_its_deadline_frees_its_cap_slot`, and four new
+  `test_is_rate_limit` cases (status 429 with "5-hour limit reached ∙ resets 3am", "You've hit
+  your limit · resets 3am", "Opus weekly limit reached", and an `API Error: 429` naming a usage
+  limit, all not a rate limit).
+- `uv run pytest -q -n 4 tests/test_remote_persona_limits.py`: 60 passed.
+- `uv run pytest -q -n 6` on the remote gates and personas, resolver, spec writer, quiet,
+  watchdog, events, test-waits, affected-tests replay and worker-job files: 631 passed.
+- Full suite left to gating.
+
 ### As shipped (2026-11-02)
 
 - **Waiver (2026-11-03).** The real-persona-campaign-on-box and real-429 manual steps were
@@ -347,7 +361,10 @@ back to local. Stuck detectors skip campaigns held by the gate. Cost attribution
   529 counts. Without it, the result message must start with `API Error` and its first line
   must match `\b429\b`, `\b529\b`, `rate[ _]limit` or `\boverloaded\b`.
   `rate_limit` also matches because it is the API's error type name. A message naming
-  `usage_limit`, `usage limit` or `session limit` never counts.
+  an account limit never counts, whatever its status: `usage_limit`, `usage limit`, `session
+  limit`, `weekly limit`, `limit reached`, `hit your … limit` or `resets`
+  (`_ACCOUNT_LIMIT_RE`, which covers the claude CLI's "5-hour limit reached ∙ resets 3am" and
+  "You've hit your limit · resets 3am").
   `events.RATE_LIMIT_MARKERS` is the documented subset of `_TRANSIENT_MARKERS`.
 - **Backoff file.** `{until (ISO), backoff_s, reset?}`. A reset writes `backoff_s: 60` plus
   `reset: true`, so the next episode uses 60 s instead of doubling the stored value. A run's
@@ -380,8 +397,10 @@ back to local. Stuck detectors skip campaigns held by the gate. Cost attribution
   first, unless it is failing; a failing affine worker goes after the other remote pools, even
   when the registry order put it first. A full pool falls through in `gate_slots.acquire`.
   Gate runs never set the affinity. A `worker_job_lost` keeps that worker failing for the
-  campaign until a new affinity is set (the Design's "had a `worker_job_lost` for this
-  campaign"); the persona run then goes to another worker or runs locally.
+  campaign (the Design's "had a `worker_job_lost` for this campaign") until a new affinity is
+  set or for at most `persona_gate.LOSS_FAILING_S` (1800 s) after the loss, whichever comes
+  first; the persona run then goes to another worker or runs locally. A loss from before any
+  affinity counts the same way.
 - **Cost.** `campaign_export` gains the `cost_by_worker` campaign column. `nw campaign show`
   gains `cost_by_worker` in its JSON output and a `cost by worker` line in the text output.
   Both sum `charged_usd` of `run.end` by `worker`, with no worker counted as `local`. Remote
@@ -395,6 +414,15 @@ back to local. Stuck detectors skip campaigns held by the gate. Cost attribution
   live count inflated by a run that never ends cannot mute them forever. `nw queue status`
   still shows the hold. `nw queue status` has its own help line naming it as the alias of
   `list`.
+- **Review loop 5.** Three fixes. (1) A loss stops making the worker failing after
+  `LOSS_FAILING_S` (see Affinity), so a gate job lost before any affinity no longer keeps a
+  single persona worker off the campaign for its whole life. (2) The live count ignores an
+  open run past its deadline (its `run.start` time plus its `timeout_s`, or the longest job
+  timeout when absent, plus the worker TTL) and a live `kind: persona` record past its
+  `deadline_at` (absent: `submitted_at` plus the longest job timeout plus the TTL). A run that
+  never gets its `run.end`, or a record that never goes final, therefore frees its cap slot
+  once the run's timeout would have killed it or the job would have been lost.
+  (3) The wider account-limit match above.
 - **Test support.** A `FakeRunner` script entry may carry
   `api_error: {status, message}`, which yields an API-error result.
 
