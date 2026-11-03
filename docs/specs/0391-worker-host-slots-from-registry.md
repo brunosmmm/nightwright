@@ -121,6 +121,7 @@ config by hand or with sudo is not acceptable.
   (test_worker.py); `test_registry_slots_raise_the_worker_hosts_own_limit` and a `host_slots`
   header assertion in `test_stat_dirty_tree_runs_remotely` (test_remote_gates.py). Both new
   behavior tests fail with the `_run_gates` change reverted.
+- Deflake: `test_registry_slots_raise_the_worker_hosts_own_limit` uses `slot_wait_s: 20` (was 1, which expired under load and fell back to local); `test_payload_host_slots_is_the_hosts_slot_limit` needed no change (its worker-side env is only an event interval, not a timeout).
 - Not done: the real-box AC and manual step. They need the worker box updated to this version
   (`nw workers update`), which only the human approves; the spec stays `in-progress` until then.
 

@@ -1183,12 +1183,14 @@ def test_worker_slot_wait_past_the_limit_falls_back_without_cooldown(world, remo
 def test_registry_slots_raise_the_worker_hosts_own_limit(world, remote):
     """SPEC-0391 (IDEA-813): a worker registered with 3 slots runs a third job while its host's
     own default pool of 2 is full; the header carries the registry value."""
-    world.cfg["agentic"]["workers"] = {"slot_wait_s": 1}
+    # Generous wait: a loaded box must not expire it and fall back to local (flaky); with the
+    # worker change reverted the job waits out the full 20 s and falls back, so this still fails.
+    world.cfg["agentic"]["workers"] = {"slot_wait_s": 20}
     remote.register(slots=3)
     with _hold_worker_slots(remote):
         run = G.run_all(world.project, world.state, world.cfg, seq=1)
     assert run.worker == "box" and run.ok and not world.ledger(["worker_failed"])
-    assert run.slot_wait_s < 1.0
+    assert run.slot_wait_s < 20
 
 
 def test_stop_during_the_fallback_local_wait(world, remote):
