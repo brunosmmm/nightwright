@@ -97,7 +97,7 @@ progress. This is the single place to see *what has been decided* and *what is i
   - [x] [SPEC-0156](./specs/0156-architecture-and-lifecycle-pages.md) Architecture and lifecycle pages — done
   - [x] [SPEC-0157](./specs/0157-agent-surface-guide-schemas-skills-map-json.md) Agent surface guide: schemas, skills map, JSON recipes — done
   - [x] [SPEC-0158](./specs/0158-outbound-multi-project-depth-and-wave-c-captures.md) Outbound/multi-project depth and Wave C captures — done
-- **[SPEC-0169](./specs/0169-mini-agentic-workflow-queue-campaigns-headless.md) — Mini agentic workflow: queue, campaigns, headless personas, conductor** · accepted · (102/104 done)
+- **[SPEC-0169](./specs/0169-mini-agentic-workflow-queue-campaigns-headless.md) — Mini agentic workflow: queue, campaigns, headless personas, conductor** · accepted · (103/105 done)
   - [x] [SPEC-0170](./specs/0170-per-project-config-wt-project-yaml-and-wt.md) Per-project config .wt/project.yaml and wt projects config|init — done
   - [x] [SPEC-0171](./specs/0171-workflow-profiles-campaign-store-ledger-locks-and.md) Workflow profiles, campaign store, ledger, locks and wt campaign commands — done
   - [x] [SPEC-0172](./specs/0172-git-worktree-and-branch-operations-for-campaigns.md) Git worktree and branch operations for campaigns (gitops) — done
@@ -198,6 +198,7 @@ progress. This is the single place to see *what has been decided* and *what is i
   - [ ] [SPEC-0293](./specs/0293-gate-ladder-v2-cross-campaign-flaky-test-record.md) Gate ladder v2: a cross-campaign flaky-test record the triager sees — accepted
   - [x] [SPEC-0294](./specs/0294-queue-a-split-campaign-s-child-specs-on-merge.md) Queue a split campaign's child specs on merge, in dependency order — done
   - [x] [SPEC-0295](./specs/0295-spec-review-findings-carry-a-required-structured.md) Review findings carry a required, structured suggested_fix — done
+  - [x] [SPEC-0296](./specs/0296-pluggable-reviewer-personas-fully-defined-project.md) Pluggable reviewer personas, defined in the project repo: declarations and registry — superseded
   - [x] [SPEC-0297](./specs/0297-outbound-projects-end-to-end.md) Outbound projects end to end: a merged campaign pulls the portable spec's status back — done
   - [x] [SPEC-0298](./specs/0298-agentic-mvp-cheap-durable-quiet-conductor.md) Agentic MVP: a cheap, durable, quiet conductor on a second project — done
   - [ ] [SPEC-0310](./specs/0310-remote-workers-run-gates-persona-runs-and.md) Remote workers: run gates, persona runs and campaigns on other machines — accepted
@@ -234,9 +235,10 @@ progress. This is the single place to see *what has been decided* and *what is i
   - [ ] [SPEC-0345](./specs/0345-persona-cap-rate-limit-backoff-affinity-and-cost-by-worker.md) Persona cap, rate-limit backoff, campaign affinity and cost by worker — accepted
   - [ ] [SPEC-0346](./specs/0346-remote-workers-integration-suite.md) Remote workers integration suite for gate and persona workers — accepted
   - [x] [SPEC-0354](./specs/0354-nw-workers-bootstrap.md) nw workers bootstrap — done
-- **[SPEC-0348](./specs/0348-declarative-per-project-agentic-pipeline.md) — Declarative per-project agentic pipeline: steps, personas and routing as data, with a lean fast-track lane** · accepted · (2/2 done)
+- **[SPEC-0348](./specs/0348-declarative-per-project-agentic-pipeline.md) — Declarative per-project agentic pipeline: steps, personas and routing as data, with a lean fast-track lane** · accepted · (2/3 done)
   - [x] [SPEC-0370](./specs/0370-pipeline-a1-persona-registry-as-data.md) Pipeline A1: persona registry as data (persona_defs/*.yaml, layered loader, nw personas list|show) — done
   - [x] [SPEC-0371](./specs/0371-pipeline-a2-role-limited-custom-personas.md) Pipeline A2a: role-limited custom personas (user/project definitions, role schemas, validator, nw personas validate) — done
+  - [ ] [SPEC-0394](./specs/0394-declared-persona-run-settings-routing-and-requests.md) Declared personas: run settings, reviewer routing metadata and run requests (rework of SPEC-0296 on the persona registry) — accepted
 - **[SPEC-0360](./specs/0360-look-inside-running-agents-herdr-status-reporting.md) — Look inside running agents: herdr status reporting, stream-json run capture and a tail viewer** · done · (6/6 done)
   - [x] [SPEC-0361](./specs/0361-herdr-reporter-nw-herdr-watch-pushes-queue-tokens.md) herdr reporter: nw herdr watch pushes queue tokens and notifications — superseded
   - [x] [SPEC-0362](./specs/0362-stream-json-capture-of-persona-runs-and-nw.md) Stream-json capture of persona runs and nw campaign tail viewer — done
@@ -264,6 +266,7 @@ progress. This is the single place to see *what has been decided* and *what is i
 | [SPEC-0367](./specs/0367-nw-workers-bootstrap-cannot-refresh-a-stale.md) | nw workers bootstrap refreshes a stale worker install (build id, --reinstall, stale warning, loud gate rejection) | feature | in-progress | — | 2026-11-02 |
 | [SPEC-0368](./specs/0368-remote-gating-red-on-current-trees-human-visible.md) | Remote gates gate a stat-dirty tree at HEAD instead of falling back, and expose done.changed on the run | feature | in-progress | — | 2026-11-02 |
 | [SPEC-0391](./specs/0391-worker-host-slots-from-registry.md) | A gate job carries the worker's registry slots as the worker host's slot limit | feature | in-progress | — | 2026-11-02 |
+| [SPEC-0394](./specs/0394-declared-persona-run-settings-routing-and-requests.md) | Declared personas: run settings, reviewer routing metadata and run requests (rework of SPEC-0296 on the persona registry) | feature | accepted | M9: agentic workflow | 2026-11-02 |
 
 ## Done
 
@@ -639,6 +642,7 @@ progress. This is the single place to see *what has been decided* and *what is i
 | [SPEC-0084](./specs/0084-theme-the-recessive-styling-in-the-idea-views.md) | Theme every recessive style in the idea views, not just the state palette | feature | rejected | M4: cli ergonomics | 2026-07-28 |
 | [SPEC-0177](./specs/0177-wt-conduct-skill-docs-and-dogfood-bootstrap-for.md) | wt-conduct skill, docs and dogfood bootstrap for wt itself | feature | superseded | M9: agentic workflow | 2026-10-25 |
 | [SPEC-0218](./specs/0218-agentic-workflow-docs-refresh.md) | Agentic workflow docs refresh: a guide, a coherent reference, concepts and front door | feature | superseded | M8: product documentation | 2026-10-25 |
+| [SPEC-0296](./specs/0296-pluggable-reviewer-personas-fully-defined-project.md) | Pluggable reviewer personas, defined in the project repo: declarations and registry | feature | superseded | M9: agentic workflow | 2026-11-02 |
 | [SPEC-0331](./specs/0331-remote-gates-over-ssh-on-one-worker-host.md) | Remote gates over SSH on one worker host | feature | superseded | — | 2026-10-31 |
 | [SPEC-0332](./specs/0332-worker-owned-async-jobs.md) | Worker-owned async jobs | feature | superseded | — | 2026-11-01 |
 | [SPEC-0333](./specs/0333-remote-persona-runs-with-bundle-write-back.md) | Remote persona runs with bundle write-back | feature | superseded | — | 2026-11-01 |

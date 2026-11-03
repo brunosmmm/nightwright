@@ -56,6 +56,10 @@ epic does not depend on or supersede it (a `supersedes` link cannot resolve to a
 from `main`); Stage A re-specifies that scope against current `main`, and may reuse that branch's
 design notes (strict validation, main-checkout-only reads, `<name>_reviewer` naming) as prior
 art. Reconciling the idea's dangling `:SPEC:` and the stranded branch is a separate cleanup.
+*Update 2026-11-02:* the branch's spec file was brought to `main` as `superseded` by
+[SPEC-0394](./0394-declared-persona-run-settings-routing-and-requests.md), the rework of its
+remaining scope (declared-persona run settings, reviewer routing metadata, run requests) on
+top of A1/A2a.
 
 ## Goals / Non-goals
 
@@ -216,6 +220,7 @@ Children set `parent: SPEC-0348`. Labels (A1…C1) are for sequencing; seeded id
 
 - [ ] Pipeline A1: persona registry as data — builtin personas moved to `persona_defs/*.yaml` + existing templates; layered loader (builtin/user/project-main-checkout) and strict validator; `PERSONAS`, `REVIEWER_PERSONAS`, `ADOPT_REGISTRY` derived from it; `nw personas list|show`; equality test against the old tables. No behavior change. (depends_on: none)
 - [ ] Pipeline A2: role-limited custom personas — user/project persona definitions (`role: implementer|reviewer|triager`, placeholder subset, `category` narrowing, builtin-name shadowing refused); `nw personas validate`; profile `reviewers:` and `personas:` accept declared names. Not yet run by the queue. Absorbs IDEA-090 slices 1–2. (depends_on: A1)
+- [ ] Pipeline A2c (SPEC-0394): declared-persona run settings (`model`/`effort`/`max_budget_usd`), reviewer `required`/`when` metadata, `is_reviewer` and `build_request` for declared personas, generated Output section. Rework of SPEC-0296; inert. (depends_on: A1, A2a)
 - [ ] Pipeline A3: queue runs custom personas — review fan-out, triage, divergence and adoption use registry membership; custom reviewers appear in watch chips; `config_invalid` park for a broken declaration. Absorbs IDEA-090 slice 3. (depends_on: A2, B2 — queue.py hotspot)
 - [ ] Pipeline B1: pipeline schema, loader, validator and golden fixture — `nw.pipeline.v1`, layered `pipelines/*.yaml`, the six invariants, builtin `default.yaml`, `nw pipelines list|show|validate`; a golden-transition fixture (state x outcome → next state/park) captured from today's `plan_step`/`finish` targets. Inert. (depends_on: none; parallel with A1/A2)
 - [ ] Pipeline B2: behavior-preserving extraction — `plan_step` and transition targets driven by the `default` graph; `pipeline`/`step` recorded on campaigns; golden fixture and the existing suite pass unchanged. (depends_on: B1)
