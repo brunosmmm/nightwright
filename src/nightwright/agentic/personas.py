@@ -11,6 +11,7 @@ import ast
 import hashlib
 import json
 import re
+from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -279,6 +280,8 @@ class Persona:
     read_only: bool
     invariant: str = INVARIANT
     role: str | None = None             # SPEC-0371: set for declared (non-builtin) personas
+    # SPEC-0394: a declared persona's {settings, required, when, template_sha256}; builtins None
+    declared: Mapping | None = None
 
     @property
     def template(self) -> str:
@@ -367,6 +370,39 @@ def get_persona(name, project_root=None, *, user_dir=None) -> Persona:
         if name in registry:
             return registry[name]
     raise ValueError(f"unknown persona {name!r}; known: {', '.join(sorted(PERSONAS))}")
+
+
+def is_reviewer(name, project_root=None, *, user_dir=None) -> bool:
+    """SPEC-0394: a builtin reviewer, or (with `project_root`) a persona the user or that project
+    declares with `role: reviewer`. Without a root only builtins count."""
+    if name in REVIEWER_PERSONAS:
+        return True
+    if name in PERSONAS or project_root is None:
+        return False
+    from .persona_defs import load_registry
+    p = load_registry(project_root, user_dir=user_dir).get(name)
+    return p is not None and p.role == "reviewer"
+
+
+# SPEC-0394: run settings of a declared persona, lowest layer first: these nightwright defaults,
+# the profile's entry for the role's builtin, the definition's own keys, the profile's explicit
+# `personas.<name>` entry.
+DECLARED_DEFAULTS = {"model": "sonnet", "effort": "medium", "max_budget_usd": 1.0}
+ROLE_DEFAULT_PERSONA = {"reviewer": "conformance_reviewer", "implementer": "implementer",
+                        "triager": "gate_triager"}
+
+
+def declared_settings(profile, p: Persona) -> dict:
+    """The layered settings of declared persona `p` (later layers win key by key). A read-only
+    role is forced to `read_only: True`, `permission_mode: dontAsk` whatever the profile says."""
+    entries = (profile or {}).get("personas") or {}
+    out = dict(DECLARED_DEFAULTS)
+    out.update(entries.get(ROLE_DEFAULT_PERSONA.get(p.role)) or {})
+    out.update(((p.declared or {}).get("settings")) or {})
+    out.update(entries.get(p.name) or {})
+    if p.read_only:
+        out.update(read_only=True, permission_mode="dontAsk")
+    return out
 
 
 # ---- rendering ---------------------------------------------------------------------------
@@ -878,12 +914,41 @@ def build_context(cfg, state, project_cfg=None, *, loop_max=None, previous=None,
     return ctx
 
 
+def output_section(p: Persona) -> str:
+    """SPEC-0394: the generated `## Output` block of a declared reviewer, read from its schema
+    (so the category list is exactly what `--json-schema` enforces)."""
+    props = p.schema["properties"]
+    item = props["findings"]["items"]
+    fprops = item["properties"]
+    optional = [k for k in fprops if k not in item["required"]]
+    code = lambda xs, sep: sep.join(f"`{x}`" for x in xs)                      # noqa: E731
+    return "\n".join([
+        "## Output",
+        "",
+        "Finish with ONE JSON object and nothing after it:",
+        "",
+        f"- `verdict`: {code(props['verdict']['enum'], ' | ')} (`fix` when any finding must "
+        "be addressed)",
+        f"- `score`: integer {props['score']['minimum']}..{props['score']['maximum']}",
+        "- `findings`: a list; each finding has",
+        f"  - `severity`: {code(fprops['severity']['enum'], ' | ')}",
+        f"  - `category`: one of {code(fprops['category']['enum'], ', ')}",
+        "  - `title`: one line",
+        f"  - optionally {code(optional, ', ')}",
+        "- `fix_brief`: what the implementer should change (empty when `verdict` is `pass`)",
+    ])
+
+
 def build_prompt(persona, ctx: dict, invariant: str | None = None) -> str:
     """Persona template + invariant block, both rendered from `ctx`. Deterministic.
-    `invariant` replaces the persona's own block (SPEC-0214)."""
+    `invariant` replaces the persona's own block (SPEC-0214). A declared reviewer gets the
+    generated Output section between the two (SPEC-0394)."""
     p = get_persona(persona) if isinstance(persona, str) else persona
     inv = p.invariant if invariant is None else invariant
-    return render(p.template, ctx).rstrip("\n") + "\n\n" + render(inv, ctx) + "\n"
+    body = render(p.template, ctx).rstrip("\n")
+    if p.declared is not None and p.role == "reviewer":
+        body += "\n\n" + output_section(p)
+    return body + "\n\n" + render(inv, ctx) + "\n"
 
 
 def prompt_sha256(prompt: str) -> str:
@@ -910,9 +975,17 @@ def build_request(cfg, profile, project_cfg, state, persona, *, run_dir,
     so a project can opt into an allowlist); read-only personas keep the profile's mode and run
     `--restricted`. The implementer's allowlist is the project's `agents.allowed_tools` plus a
     `Bash(<gate cmd>*)` pattern per gate. `extra` = additional prompt values (`triage_input`).
-    `invariant` overrides the persona's invariant block (the in-campaign spec reviewer)."""
-    p = get_persona(persona)
-    settings = persona_settings(profile, persona)
+    `invariant` overrides the persona's invariant block (the in-campaign spec reviewer).
+
+    SPEC-0394: the persona is resolved against the project's main checkout
+    (`project_cfg["_root"]`), so a declared persona is found and a campaign worktree's
+    `.nw/personas/` is never read; its settings are layered by `declared_settings`."""
+    from .persona_defs import user_personas_dir
+    project_root = (project_cfg or {}).get("_root")
+    user_dir = user_personas_dir(cfg)
+    p = get_persona(persona, project_root, user_dir=user_dir)
+    settings = persona_settings(profile, persona) if persona in PERSONAS \
+        else declared_settings(profile, p)
     repo = state.get("repo") or {}
     worktree = Path(repo.get("worktree") or ".")
     agents = (project_cfg or {}).get("agents") or {}
@@ -926,7 +999,8 @@ def build_request(cfg, profile, project_cfg, state, persona, *, run_dir,
         allowed = tuple(list(agents.get("allowed_tools") or []) + _gate_tool_patterns(project_cfg))
     extra = {**(persona_extra(state, persona, project_cfg) or {}), **(extra or {})} or None
     ctx = build_context(cfg, state, project_cfg, loop_max=profile.get("loop_max"),
-                        previous=previous, review=persona in REVIEWER_PERSONAS,
+                        previous=previous,
+                        review=is_reviewer(persona, project_root, user_dir=user_dir),
                         with_tests=persona == "test_reviewer", extra=extra)
     env = {
         "NW_CAMPAIGN": str(state.get("id") or ""),

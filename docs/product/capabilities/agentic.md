@@ -284,6 +284,63 @@ prompt CAMPAIGN PERSONA` prints it without running anything.
 For tests and dry runs, `agentic.runner: fake` (or `NW_AGENTIC_RUNNER=fake`) replays a JSON
 script of scripted edits and canned verdicts instead of calling `claude`.
 
+### Declared personas (SPEC-0371, SPEC-0394)
+
+A project can declare its own personas in its repo (a crypto repo a security reviewer, a UI repo
+an accessibility reviewer) without patching nightwright: one `nw.persona.v1` YAML file per
+persona in `<main checkout>/.nw/personas/` (or, for every project, in the user config dir's
+`personas/`), with its markdown template next to it.
+
+```yaml
+# <project main checkout>/.nw/personas/security_reviewer.yaml
+schema: nw.persona.v1
+name: security_reviewer
+role: reviewer
+template: security_reviewer.md
+description: "crypto misuse, secrets, injection"
+category: [key_handling, timing, randomness]
+model: opus                 # opus|sonnet|haiku or a claude-* model id
+effort: high                # low|medium|high|xhigh|max
+max_budget_usd: 2.0         # a number > 0
+required: true              # reviewer only; default true (blocking vs advisory)
+when:                       # reviewer only; omitted or {} means always
+  paths: ["src/crypto/**", "**/*.rs"]
+  labels: [security, crypto]
+```
+
+The role, not the file, fixes the output schema and the permissions:
+
+| role | output schema | read-only | template placeholders |
+|---|---|---|---|
+| `implementer` | the implementer verdict | no (the project's `agents.permission_mode` / allowlist) | the implementer's |
+| `reviewer` | the shared findings schema, `category` = the file's `category` list plus `other` | yes (`dontAsk`) | the reviewers' (diff, test files, changed files, ...) |
+| `triager` | the gate triager verdict | yes (`dontAsk`) | the gate triager's |
+
+Keys beyond the registry's common ones (`schema`, `name`, `role`, `template`, `description`,
+`category`):
+
+- `model`, `effort`, `max_budget_usd`: the persona's own run defaults. A run request layers
+  nightwright defaults (`sonnet`, `medium`, $1.00) < the profile's entry for the role's builtin
+  (`conformance_reviewer`, `implementer`, `gate_triager`) < these keys < an explicit profile
+  `personas.<name>` entry. A read-only role is always `read_only: true` / `dontAsk`.
+- `required` (bool) and `when` (`paths` and/or `labels`, each a non-empty list of non-empty
+  strings; both given means both must match): reviewer-role routing metadata for the review set.
+- `read_only`, `permission_mode`, `output_schema` and `invariant` are refused; so are a builtin's
+  name and the new keys in a builtin definition. A reviewer's prompt gets a generated `## Output`
+  section (verdict, score, findings with its category list, fix brief), so the template carries
+  only the review lens.
+
+`nw personas list [--project P] [--json]` lists every definition (builtin, user, project) with
+its origin; `nw personas show NAME` adds the run settings, `required`, `when` and the template's
+sha256; `nw personas validate [--project P]` reports every problem of every declared file in one
+run and exits 1 on any. Definitions are read only from the project's main checkout, never from a
+campaign worktree.
+
+**Declared personas are validated and listed, but the queue does not run them yet.** Profiles
+cannot name them in `reviewers:` and no campaign reaches them until Pipeline A2b (profiles
+referencing declared personas) and A3 (the review set, `when` filtering, required vs advisory)
+ship.
+
 ## Reviews
 
 Green gates say the build works, not that the change does what the spec says. After every

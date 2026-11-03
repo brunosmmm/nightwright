@@ -119,3 +119,60 @@ def test_completion_offers_declared_names(env):
     names = [i.value for i in C.complete_persona(ctx, None, "sec")]
     assert names == ["security_reviewer"]
     assert "conformance_reviewer" in [i.value for i in C.complete_persona(ctx, None, "conf")]
+
+
+# ---- SPEC-0394: run settings, routing metadata and template sha256 ---------------------------
+
+DECLARED = ("category: [key_handling, timing]\nmodel: opus\neffort: high\nmax_budget_usd: 2.0\n"
+            "required: false\nwhen: {paths: ['src/crypto/**'], labels: [security]}\n")
+DECLARED_FIELDS = ("settings", "required", "when", "template_sha256")
+
+
+def test_show_and_list_json_carry_declared_fields_and_omit_them_for_builtins(env):
+    import hashlib
+    cfg, user, pdir = env
+    _put(pdir, "security_reviewer", extra=DECLARED)
+    _put(user, "my_impl", role="implementer", template="{{spec_text}}\n", extra="effort: low\n")
+    sha = hashlib.sha256(TEMPLATE.encode()).hexdigest()
+    r = _run("show", "security_reviewer", "--project", "Proj", "--json")
+    assert r.exit_code == 0, r.output
+    d = json.loads(r.output)
+    assert d["settings"] == {"model": "opus", "effort": "high", "max_budget_usd": 2.0}
+    assert d["required"] is False
+    assert d["when"] == {"paths": ["src/crypto/**"], "labels": ["security"]}
+    assert d["template_sha256"] == sha
+    r = _run("list", "--project", "Proj", "--json")
+    by = {p["name"]: p for p in json.loads(r.output)["personas"]}
+    assert {k: by["security_reviewer"][k] for k in DECLARED_FIELDS} == \
+        {k: d[k] for k in DECLARED_FIELDS}
+    assert by["my_impl"]["settings"] == {"effort": "low"} and "template_sha256" in by["my_impl"]
+    assert "required" not in by["my_impl"] and "when" not in by["my_impl"]
+    for name in ("conformance_reviewer", "implementer"):
+        assert not set(DECLARED_FIELDS) & set(by[name]), name
+        shown = json.loads(_run("show", name, "--project", "Proj", "--json").output)
+        assert not set(DECLARED_FIELDS) & set(shown), name
+    r = _run("show", "security_reviewer", "--project", "Proj")
+    for needle in ("settings: model=opus, effort=high, max_budget_usd=2.0", "required: false",
+                   "when: paths: src/crypto/**; labels: security", f"template_sha256: {sha}"):
+        assert needle in r.output, r.output
+    r = _run("show", "conformance_reviewer", "--project", "Proj")
+    assert "template_sha256" not in r.output and "settings:" not in r.output
+
+
+def test_validate_and_list_agree_on_new_key_problems(env):
+    cfg, user, pdir = env
+    _put(pdir, "bad_reviewer", extra="effort: extreme\nwhen: {files: x}\n")
+    r = _run("validate", "--project", "Proj", "--json")
+    assert r.exit_code == 1
+    probs = json.loads(r.output)["problems"]
+    assert [p.split(": ", 1)[1] for p in probs] == [
+        "effort: must be one of low, medium, high, xhigh, max, got 'extreme'",
+        "when.files: unknown key; allowed: labels, paths"]
+    by = {p["name"]: p for p in json.loads(_run("list", "--project", "Proj", "--json").output)[
+        "personas"]}
+    assert not by["bad_reviewer"]["ok"]
+    assert by["bad_reviewer"]["error"].split(": ", 1)[1] == probs[0].split(": ", 1)[1]
+    shown = json.loads(_run("show", "bad_reviewer", "--project", "Proj", "--json").output)
+    assert [p.split(": ", 1)[1] for p in shown["problems"]] == \
+        [p.split(": ", 1)[1] for p in probs]
+    assert "settings" not in shown                         # a broken entry carries no declaration

@@ -9,17 +9,20 @@ projects. Nothing here is reachable from profiles or the queue (the module-level
 `REVIEWER_PERSONAS` and `ADOPT_REGISTRY` stay builtin-only)."""
 from __future__ import annotations
 
+import hashlib
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
+from types import MappingProxyType
 
 import yaml
 
 from .. import paths
+from . import persona_registry as PR
 from . import personas as PS
 
 SCHEMA_ID = "nw.persona.v1"
-KEYS = ("schema", "name", "role", "template", "description", "category")
+KEYS = ("schema", "name", "role", "template", "description", "category") + PR.DECLARED_KEYS
 ROLES = ("implementer", "reviewer", "triager")
 NAME_RE = re.compile(r"^[a-z][a-z0-9_]{1,39}$")
 CATEGORY_RE = re.compile(r"^[a-z][a-z0-9_]{0,31}$")
@@ -39,6 +42,8 @@ class Declared:
     categories: tuple = ()
     description: str = ""
     template_path: Path | None = None
+    template_sha256: str | None = None      # SPEC-0394: of the bytes read during validation
+    doc: dict = field(default_factory=dict)
     problems: list = field(default_factory=list)
     persona: PS.Persona | None = None
 
@@ -60,29 +65,31 @@ def _inside(path: Path, directory: Path) -> bool:
 
 
 def _check_template(doc, role, directory: Path, put):
-    """The template path of `doc` or None; problems go to `put(key, msg)`."""
+    """`(template path, sha256 of its bytes)` of `doc`, or `(None, None)`; problems go to
+    `put(key, msg)`."""
     tmpl = doc.get("template")
     if not isinstance(tmpl, str) or not tmpl:
         put("template", "required: the template file name, next to the definition")
-        return None
+        return None, None
     if "/" in tmpl or "\\" in tmpl or ".." in tmpl or Path(tmpl).is_absolute():
         put("template", f"{tmpl!r} must be a file name inside the definition's directory")
-        return None
+        return None, None
     path = directory / tmpl
     if not path.is_file():
         put("template", f"{tmpl!r} is not a file next to the definition")
-        return None
+        return None, None
     if not _inside(path, directory):
         put("template", f"{tmpl!r} resolves outside {directory.name}/")
-        return None
+        return None, None
     try:
-        text = path.read_text(encoding="utf-8")
+        data = path.read_bytes()
+        text = data.decode("utf-8")
     except UnicodeDecodeError:
         put("template", f"{tmpl!r} is not valid UTF-8")
-        return None
+        return None, None
     except OSError as e:
         put("template", f"{tmpl!r}: {e.strerror or e}")
-        return None
+        return None, None
     if role in PS.ROLE_PLACEHOLDERS:
         allowed = PS.ROLE_PLACEHOLDERS[role]
         for n, line in enumerate(text.splitlines(), 1):
@@ -91,7 +98,7 @@ def _check_template(doc, role, directory: Path, put):
                     kind = "out of role" if m.group(1) in PS.PLACEHOLDERS else "unknown"
                     put("template", f"line {n}: placeholder {{{{{m.group(1)}}}}} is {kind} "
                                     f"for role {role!r}")
-    return path
+    return path, hashlib.sha256(data).hexdigest()
 
 
 def _categories(doc, role, put) -> tuple:
@@ -150,7 +157,9 @@ def _read_file(path: Path, layer: str, origin: str, directory: Path) -> Declared
     else:
         d.description = desc
     d.categories = _categories(doc, role, put)
-    d.template_path = _check_template(doc, role, directory, put)
+    PR.check_declared_keys(doc, role, put)
+    d.template_path, d.template_sha256 = _check_template(doc, role, directory, put)
+    d.doc = doc
     return d
 
 
@@ -200,7 +209,17 @@ def _build(d: Declared) -> PS.Persona:
         schema, read_only = PS.reviewer_schema(d.categories), True
     else:
         schema, read_only = _ROLE_SCHEMA[d.role]
-    return PS.Persona(d.name, str(d.template_path.resolve()), schema, read_only, role=d.role)
+    return PS.Persona(d.name, str(d.template_path.resolve()), schema, read_only, role=d.role,
+                      declared=_declared(d))
+
+
+def _declared(d: Declared) -> MappingProxyType:
+    """SPEC-0394: the read-only declaration carried on `Persona.declared`."""
+    v = PR.declared_values(d.doc, d.role)
+    return MappingProxyType({
+        "settings": MappingProxyType(v["settings"]), "required": v["required"],
+        "when": None if v["when"] is None else MappingProxyType(v["when"]),
+        "template_sha256": d.template_sha256})
 
 
 def validate_persona_defs(project_root=None, *, user_dir=None) -> list:

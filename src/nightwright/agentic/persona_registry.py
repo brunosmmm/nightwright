@@ -26,6 +26,12 @@ _PLACEHOLDER_RE = re.compile(r"\{\{(\w+)\}\}")
 
 _COMMON = ("schema", "name", "role", "template", "description", "category")
 _BUILTIN_ONLY = ("order", "output_schema", "invariant", "read_only", "adopt")
+# SPEC-0394: run defaults (any custom role) and review-set routing metadata (reviewer role only),
+# allowed only in a user or project definition. Builtin run settings stay the profiles' job.
+DECLARED_SETTINGS = ("model", "effort", "max_budget_usd")
+DECLARED_ROUTING = ("required", "when")
+DECLARED_KEYS = DECLARED_SETTINGS + DECLARED_ROUTING
+WHEN_KEYS = ("paths", "labels")
 
 
 @dataclass(frozen=True)
@@ -64,6 +70,7 @@ class Entry:
     doc: dict = field(default_factory=dict)
     errors: list = field(default_factory=list)
     refused: bool = False   # shadows a builtin / conflicts with a sibling: never wins resolution
+    declared: object = None  # SPEC-0394: `Persona.declared` of a valid user/project entry (CLI)
 
 
 @dataclass
@@ -104,12 +111,14 @@ def validate_persona_doc(doc, *, origin, layer, stem, known, directory=None) -> 
     if not isinstance(doc, dict):
         return [f"{origin}: <file>: must be a YAML mapping"]
     builtin = layer == "builtin"
-    allowed = set(_COMMON) | (set(_BUILTIN_ONLY) if builtin else set())
+    allowed = set(_COMMON) | (set(_BUILTIN_ONLY) if builtin else set(DECLARED_KEYS))
     for key in doc:
         if key in allowed:
             continue
         if key in _BUILTIN_ONLY:
             bad(key, "allowed only in a builtin definition")
+        elif key in DECLARED_KEYS:
+            bad(key, "allowed only in a user or project definition")
         else:
             bad(key, f"unknown key; allowed: {', '.join(sorted(allowed))}")
     if doc.get("schema") != SCHEMA:
@@ -137,7 +146,63 @@ def validate_persona_doc(doc, *, origin, layer, stem, known, directory=None) -> 
     _check_template(doc.get("template"), builtin, directory, known, bad)
     if builtin:
         _check_builtin_keys(doc, role, known, bad)
+    else:
+        check_declared_keys(doc, role, bad)
     return errs
+
+
+def _is_num(v) -> bool:
+    return isinstance(v, (int, float)) and not isinstance(v, bool)
+
+
+def check_declared_keys(doc, role, bad):
+    """SPEC-0394: the run-default and routing keys of a user/project definition, problems to
+    `bad(key, msg)`. Shared by this module's validator and `persona_defs._read_file` so both
+    report identical messages. `required`/`when` on a valid non-reviewer role are refused
+    without checking their shape; with an unknown role only the shape is checked."""
+    # lazy: profiles imports personas, which imports this module
+    from .profiles import EFFORTS, MODEL_ALIASES, MODEL_RE
+    if "model" in doc:
+        model = doc["model"]
+        if not (isinstance(model, str) and (model in MODEL_ALIASES or MODEL_RE.match(model))):
+            bad("model", f"must be one of {', '.join(MODEL_ALIASES)} or a claude-* model id, "
+                         f"got {model!r}")
+    if "effort" in doc and (not isinstance(doc["effort"], str) or doc["effort"] not in EFFORTS):
+        bad("effort", f"must be one of {', '.join(EFFORTS)}, got {doc['effort']!r}")
+    if "max_budget_usd" in doc and (not _is_num(doc["max_budget_usd"])
+                                    or doc["max_budget_usd"] <= 0):
+        bad("max_budget_usd", f"must be a number > 0, got {doc['max_budget_usd']!r}")
+    for key in DECLARED_ROUTING:
+        if key in doc and role in CUSTOM_ROLES and role != "reviewer":
+            bad(key, "only allowed for role reviewer")
+    if role in CUSTOM_ROLES and role != "reviewer":
+        return
+    if "required" in doc and not isinstance(doc["required"], bool):
+        bad("required", f"must be true or false, got {doc['required']!r}")
+    if "when" not in doc:
+        return
+    when = doc["when"]
+    if not isinstance(when, dict):
+        bad("when", f"must be a mapping with paths and/or labels, got {when!r}")
+        return
+    for key in when:
+        if key not in WHEN_KEYS:
+            bad(f"when.{key}", f"unknown key; allowed: {', '.join(sorted(WHEN_KEYS))}")
+    for key in WHEN_KEYS:
+        if key in when and not (isinstance(when[key], list) and when[key] and all(
+                isinstance(v, str) and v.strip() for v in when[key])):
+            bad(f"when.{key}", "must be a non-empty list of non-empty strings")
+
+
+def declared_values(doc, role) -> dict:
+    """SPEC-0394: the declaration of a valid user/project definition, as plain values:
+    `{"settings": {given keys}, "required": bool|None, "when": {paths?, labels?}|None}`
+    (reviewer: `required` defaults to True and `when` to `{}`; other roles: both None)."""
+    reviewer = role == "reviewer"
+    when = doc.get("when") or {}
+    return {"settings": {k: doc[k] for k in DECLARED_SETTINGS if k in doc},
+            "required": bool(doc.get("required", True)) if reviewer else None,
+            "when": {k: tuple(when[k]) for k in WHEN_KEYS if k in when} if reviewer else None}
 
 
 def _check_template(tpl, builtin, directory, known, bad):

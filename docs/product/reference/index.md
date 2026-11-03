@@ -33,7 +33,7 @@ Claude-generating vs your-turn diagnostic.
 | `migrate-from-wt` | One-time move of a pre-rename `wt` install to nightwright's config/data dirs (dry run unless `--yes`, SPEC-0330) | [Bootstrap](../guides/bootstrap.md) |
 | `next` | Next-step hints for open ideas | [Ideas](../capabilities/ideas.md) |
 | `override` | Time-scoped reclassification | [Report](../capabilities/report.md) |
-| `personas` | Agentic persona registry: `list` / `show NAME` / `validate [--project NAME] [--json]` over the builtin, user (config dir `personas/`) and project (main-checkout `.nw/personas/`) layers, with each definition's origin file; `validate` exits 1 on any problem (SPEC-0370, SPEC-0371) | [Agentic loop](../capabilities/agentic.md) |
+| `personas` | Agentic persona registry: `list` / `show NAME` / `validate [--project NAME] [--json]` over the builtin, user (config dir `personas/`) and project (main-checkout `.nw/personas/`) layers, with each definition's origin file, and for a declared one its run settings, `required` / `when` and template sha256; `validate` exits 1 on any problem (SPEC-0370, SPEC-0371, SPEC-0394) | [Agentic loop](../capabilities/agentic.md) |
 | `profiles` | Agentic workflow profiles: list / show (with sources) / check | [Agentic loop](../capabilities/agentic.md) |
 | `projects` | List / register outbox + research targets | [Projects](../capabilities/projects.md) |
 | `queue` | Agentic work queue: add / list / watch / run / park / resume, conductor tooling (subcommands below) | [Agentic loop](../capabilities/agentic.md) |

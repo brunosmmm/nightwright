@@ -236,10 +236,10 @@ progress. This is the single place to see *what has been decided* and *what is i
   - [ ] [SPEC-0345](./specs/0345-persona-cap-rate-limit-backoff-affinity-and-cost-by-worker.md) Persona cap, rate-limit backoff, campaign affinity and cost by worker — accepted
   - [ ] [SPEC-0346](./specs/0346-remote-workers-integration-suite.md) Remote workers integration suite for gate and persona workers — accepted
   - [x] [SPEC-0354](./specs/0354-nw-workers-bootstrap.md) nw workers bootstrap — done
-- **[SPEC-0348](./specs/0348-declarative-per-project-agentic-pipeline.md) — Declarative per-project agentic pipeline: steps, personas and routing as data, with a lean fast-track lane** · accepted · (2/3 done)
+- **[SPEC-0348](./specs/0348-declarative-per-project-agentic-pipeline.md) — Declarative per-project agentic pipeline: steps, personas and routing as data, with a lean fast-track lane** · accepted · (3/3 done)
   - [x] [SPEC-0370](./specs/0370-pipeline-a1-persona-registry-as-data.md) Pipeline A1: persona registry as data (persona_defs/*.yaml, layered loader, nw personas list|show) — done
   - [x] [SPEC-0371](./specs/0371-pipeline-a2-role-limited-custom-personas.md) Pipeline A2a: role-limited custom personas (user/project definitions, role schemas, validator, nw personas validate) — done
-  - [ ] [SPEC-0394](./specs/0394-declared-persona-run-settings-routing-and-requests.md) Declared personas: run settings, reviewer routing metadata and run requests (rework of SPEC-0296 on the persona registry) — accepted
+  - [x] [SPEC-0394](./specs/0394-declared-persona-run-settings-routing-and-requests.md) Declared personas: run settings, reviewer routing metadata and run requests (rework of SPEC-0296 on the persona registry) — done
 - **[SPEC-0360](./specs/0360-look-inside-running-agents-herdr-status-reporting.md) — Look inside running agents: herdr status reporting, stream-json run capture and a tail viewer** · done · (6/6 done)
   - [x] [SPEC-0361](./specs/0361-herdr-reporter-nw-herdr-watch-pushes-queue-tokens.md) herdr reporter: nw herdr watch pushes queue tokens and notifications — superseded
   - [x] [SPEC-0362](./specs/0362-stream-json-capture-of-persona-runs-and-nw.md) Stream-json capture of persona runs and nw campaign tail viewer — done
@@ -269,7 +269,6 @@ progress. This is the single place to see *what has been decided* and *what is i
 | [SPEC-0367](./specs/0367-nw-workers-bootstrap-cannot-refresh-a-stale.md) | nw workers bootstrap refreshes a stale worker install (build id, --reinstall, stale warning, loud gate rejection) | feature | in-progress | — | 2026-11-02 |
 | [SPEC-0368](./specs/0368-remote-gating-red-on-current-trees-human-visible.md) | Remote gates gate a stat-dirty tree at HEAD instead of falling back, and expose done.changed on the run | feature | in-progress | — | 2026-11-02 |
 | [SPEC-0391](./specs/0391-worker-host-slots-from-registry.md) | A gate job carries the worker's registry slots as the worker host's slot limit | feature | in-progress | — | 2026-11-02 |
-| [SPEC-0394](./specs/0394-declared-persona-run-settings-routing-and-requests.md) | Declared personas: run settings, reviewer routing metadata and run requests (rework of SPEC-0296 on the persona registry) | feature | accepted | M9: agentic workflow | 2026-11-02 |
 | [SPEC-0400](./specs/0400-remote-web-dashboard-live-view-of-active-queue.md) | Remote web dashboard and decisions inbox over Tailscale (nw serve --dashboard) | epic | accepted | M9: agentic workflow | 2026-11-03 |
 | [SPEC-0405](./specs/0405-rich-queue-tui-prioritized-live-queue-campaign.md) | Rich queue TUI: prioritized live queue, campaign detail popup, closed-campaign history and a cross-campaign findings and decisions browser over one shared history layer | epic | accepted | — | 2026-11-03 |
 
@@ -635,6 +634,7 @@ progress. This is the single place to see *what has been decided* and *what is i
 | [SPEC-0389](./specs/0389-persona-claude-resolution.md) | One claude resolver for claude-check and the persona job exec; missing claude is a job error | feature | done | — | 2026-11-02 |
 | [SPEC-0390](./specs/0390-workers-set-slots.md) | nw workers set --slots - change a worker's gate slots in place | feature | done | — | 2026-11-02 |
 | [SPEC-0393](./specs/0393-wtfug-spec-0304-20261030-7a4f-spec-0304-review.md) | SPEC-0304 review follow-ups: mvp-report edge cases in E4, E5 and E6, and the tests that pin them | feature | done | M10: agentic MVP | 2026-11-02 |
+| [SPEC-0394](./specs/0394-declared-persona-run-settings-routing-and-requests.md) | Declared personas: run settings, reviewer routing metadata and run requests (rework of SPEC-0296 on the persona registry) | feature | done | M9: agentic workflow | 2026-11-02 |
 | [SPEC-0395](./specs/0395-gating-does-not-hold-a-profile-slot.md) | GATING campaigns do not count against the profile slots | feature | done | M10: agentic MVP | 2026-11-02 |
 | [SPEC-0396](./specs/0396-campaign-export-treatment-aware-difficulty.md) | Campaign export: treatment-aware difficulty metrics (per-reviewer-run findings, first-round blockers, active time net of close) | feature | done | — | 2026-11-02 |
 | [SPEC-0398](./specs/0398-quiet-follower-delivers-campaign-silent-for.md) | The quiet follower holds `campaign_silent` / `state_stuck` for a GATING campaign that waits for a gate slot, runs a gate, or has its gate deferred | feature | done | M10: agentic MVP | 2026-11-02 |

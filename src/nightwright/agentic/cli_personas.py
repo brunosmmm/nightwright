@@ -45,7 +45,23 @@ def _registry(cfg, project):
         d = declared.get((e.scope, Path(e.path).name))
         if d is not None and d.problems and not e.errors:
             e.errors = list(d.problems)
+        if d is not None and d.persona is not None and not e.errors:
+            e.declared = d.persona.declared
     return project, root, reg
+
+
+def _declared_fields(entry) -> dict:
+    """SPEC-0394: `settings` (given keys only), `required` / `when` for a reviewer and
+    `template_sha256` of a valid user/project entry; nothing for a builtin or a broken one."""
+    decl = entry.declared
+    if decl is None:
+        return {}
+    out = {"settings": dict(decl["settings"])}
+    if decl["required"] is not None:
+        out["required"] = decl["required"]
+        out["when"] = {k: list(v) for k, v in decl["when"].items()}
+    out["template_sha256"] = decl["template_sha256"]
+    return out
 
 
 def _adopt_text(adopt) -> str:
@@ -68,7 +84,7 @@ def _summary(entry, active) -> dict:
             "category": list(d.category) if d and d.category else None,
             "template": d.template if d else _text(entry.doc.get("template")),
             "description": d.description if d else None,
-            "error": entry.errors[0] if entry.errors else None}
+            "error": entry.errors[0] if entry.errors else None, **_declared_fields(entry)}
 
 
 def _detail(entry, active) -> dict:
@@ -142,6 +158,15 @@ def personas_show(cfg, name, project, as_json):
                   ("template path", str(d.template_path)),
                   ("category", ", ".join(d.category) or "-"),
                   ("read_only", "true" if d.read_only else "false")]
+        decl = _declared_fields(entry)
+        if decl:
+            pairs.append(("settings", ", ".join(f"{k}={v}" for k, v in decl["settings"].items())
+                          or "-"))
+            if "required" in decl:
+                pairs += [("required", "true" if decl["required"] else "false"),
+                          ("when", "; ".join(f"{k}: {', '.join(v)}"
+                                             for k, v in decl["when"].items()) or "always")]
+            pairs.append(("template_sha256", decl["template_sha256"]))
         if d.scope == "builtin":
             pairs += [("order", str(d.order)), ("output_schema", d.output_schema),
                       ("invariant", d.invariant), ("adopt", _adopt_text(d.adopt))]

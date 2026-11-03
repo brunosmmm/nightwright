@@ -1,7 +1,7 @@
 ---
 id: SPEC-0394
 title: "Declared personas: run settings, reviewer routing metadata and run requests (rework of SPEC-0296 on the persona registry)"
-status: accepted
+status: done
 owner: user
 created: 2026-11-02
 updated: 2026-11-02
@@ -228,35 +228,35 @@ the queue does not run them until Pipeline A2b/A3 ship.
 
 ## Acceptance criteria
 
-- [ ] AC1. A user/project definition accepts `model`, `effort`, `max_budget_usd`; bad values (an
+- [x] AC1. A user/project definition accepts `model`, `effort`, `max_budget_usd`; bad values (an
       unknown model, a non-`claude-*` id, a bad effort, a budget `<= 0`, a bool or a string)
       are refused naming file and key; the keys in a builtin definition are refused.
-- [ ] AC2. A reviewer-role definition accepts `required` (bool) and `when` (`paths`/`labels`
+- [x] AC2. A reviewer-role definition accepts `required` (bool) and `when` (`paths`/`labels`
       only, non-empty lists of non-empty strings); every bad shape (non-bool, `when: null`,
       non-mapping, unknown key, empty list, non-string item) and `required`/`when` on a
       non-reviewer role are refused; defaults are `required: true`, `when: {}`.
-- [ ] AC3. `nw personas validate` and `nw personas list|show` report the same problems for the
+- [x] AC3. `nw personas validate` and `nw personas list|show` report the same problems for the
       new keys (one shared helper); all problems of a multi-fault file come back in one run.
-- [ ] AC4. `is_reviewer(name, project_root)` is true for a declared reviewer and false for a
+- [x] AC4. `is_reviewer(name, project_root)` is true for a declared reviewer and false for a
       declared implementer/triager; without a root, or for a project that does not declare it,
       it is false; builtin answers are unchanged.
-- [ ] AC5. `build_request` for a declared reviewer (project config with `_root`) returns a
+- [x] AC5. `build_request` for a declared reviewer (project config with `_root`) returns a
       request with `read_only` true, `permission_mode: dontAsk`, no allowed tools, the
       reviewer's JSON schema, and settings layered `nw defaults < profile conformance_reviewer
       entry < definition < profile personas.<name>`; `read_only: false` or `bypassPermissions`
       in the profile entry is overridden. A declared implementer builds a writable request.
-- [ ] AC6. The declared reviewer's prompt context carries the review `diff` and `test_files`;
+- [x] AC6. The declared reviewer's prompt context carries the review `diff` and `test_files`;
       the persona is resolved from `project_cfg["_root"]`, and a different `.nw/personas/` copy
       in the campaign worktree changes nothing in the request.
-- [ ] AC7. A declared reviewer's prompt contains the generated Output section listing its
+- [x] AC7. A declared reviewer's prompt contains the generated Output section listing its
       category vocabulary; builtin prompts are byte-identical to `render(template) + invariant`
       as before.
-- [ ] AC8. `nw personas show` / `list --json` show `settings`, `required`, `when` and
+- [x] AC8. `nw personas show` / `list --json` show `settings`, `required`, `when` and
       `template_sha256` for a declared reviewer and omit them for builtins.
-- [ ] AC9. Inert: `PERSONAS`, `REVIEWER_PERSONAS`, `ADOPT_REGISTRY` unchanged; a profile naming a
+- [x] AC9. Inert: `PERSONAS`, `REVIEWER_PERSONAS`, `ADOPT_REGISTRY` unchanged; a profile naming a
       declared persona in `reviewers:` is still refused by `resolve_profile`; the diff does not
       touch `queue.py`, `profiles.py` or `divergence.py`.
-- [ ] AC10. The capability page documents declared personas with the example, the new keys and
+- [x] AC10. The capability page documents declared personas with the example, the new keys and
       the "not run by the queue yet" statement.
 
 ## Test plan
@@ -287,6 +287,56 @@ the queue does not run them until Pipeline A2b/A3 ship.
   <P>`; set `effort: extreme` and `when: {files: x}` and confirm one run lists both problems with
   exit 1. Record output in *As shipped*. AC10 is checked by reading the page.
 
+### Test record (2026-11-02)
+
+- `uv run pytest -q -n 4 tests/test_agentic_persona_run_settings.py
+  tests/test_agentic_personas_declared_cli.py tests/test_agentic_persona_defs.py
+  tests/test_agentic_personas.py`: 189 passed (new file: 77 cases; CLI file +2 tests).
+  Also `tests/test_agentic_persona_registry.py`, `tests/test_agentic_personas_cli.py`,
+  `tests/test_remote_personas.py`, `tests/test_agentic_profiles.py`,
+  `tests/test_docs_product_ia.py`: pass.
+- `python3 tools/affected_tests.py --run uv run pytest -q -n 8` (after `--write-ledger`): 3463
+  passed, 9 failed. All 9 (`test_agentic_exit_paths.py` x3 admission_blocked,
+  `test_agentic_watchdog_gaps.py::test_waiting_not_admitted_quiet_when_full_or_park_requested`,
+  `test_agentic_loop_state.py::test_run_stamps_slot_freed_at_on_drop`,
+  `test_agentic_queue_visibility.py::test_width_snapshots` x3,
+  `test_tui_queue_model.py::test_load_queue_sections_order_and_meta`; slot/admission accounting)
+  fail identically on an unmodified `git archive HEAD` copy, so they are pre-existing and
+  unrelated (no queue/profile code touched).
+  The full suite is left to gating.
+- AC9: `git diff --stat main` names no `queue.py`, `profiles.py` or `divergence.py`.
+- Manual (scratch project `proj/.nw/personas/security_reviewer.yaml` = the Design example, the
+  real `nw personas` CLI with only the project-root lookup pointed at the scratch dir):
+  `personas show security_reviewer` printed `settings: model=opus, effort=high,
+  max_budget_usd=2.0`, `required: true`, `when: paths: src/crypto/**, **/*.rs; labels:
+  security, crypto`, `template_sha256: 5c9332a0…`, `status: ok`; `personas validate` printed
+  `ok`, exit 0. With `effort: extreme` and `when: {files: x}` one `validate` run printed both
+  `effort: must be one of low, medium, high, xhigh, max, got 'extreme'` and `when.files:
+  unknown key; allowed: labels, paths`, exit 1.
+- AC10: read `docs/product/capabilities/agentic.md` *Personas* > *Declared personas*: example,
+  role table, new keys, layering, `nw personas list|show|validate`, "the queue does not run them
+  yet".
+
+### As shipped (2026-11-02)
+
+- `persona_registry.check_declared_keys(doc, role, bad)` is the one helper both validators call;
+  `persona_registry.declared_values` turns a valid doc into the `settings/required/when` values
+  that `persona_defs._build` wraps (read-only `MappingProxyType`, `when` lists as tuples) into
+  `Persona.declared` with the template sha256. `required`/`when` on a valid non-reviewer role
+  report only `only allowed for role reviewer` (their shape is not checked); with an invalid role
+  the role error is reported and the shape is still checked. `when` problems name the sub-key
+  (`when.files`, `when.paths`).
+- The CLI attaches the declaration to the registry `Entry` (new `Entry.declared` field, set only
+  for a valid user/project entry) and shows `settings`, `required`/`when` (reviewer only) and
+  `template_sha256`; a broken entry and builtins show none.
+- `build_request` passes `user_dir=persona_defs.user_personas_dir(cfg)` to `get_persona` and
+  `is_reviewer`, so the user layer follows `cfg["config_dir"]` like the CLI.
+- The generated Output section lists the schema's optional finding fields as read from the
+  schema (`detail`, `trigger`, `files`, `lines`): `trigger` is one more than the Design's list,
+  because the section is derived from the enforced schema.
+- `nw idea clock-in/out IDEA-090` is refused inside a campaign run (`NW_PERSONA_RUN=1`), so no
+  clock entries were recorded; the runner's transcript tracking covers the time.
+
 ## Rollout / migration
 
 1. Land this spec's code: inert, no data migration (no project has `.nw/personas/` with the new
@@ -303,11 +353,11 @@ the queue does not run them until Pipeline A2b/A3 ship.
 
 ## Definition of done
 
-- [ ] Acceptance criteria all met.
-- [ ] Test plan executed; listed tests pass; manual steps performed and noted.
-- [ ] No regressions (affected tests at the queue's close gate).
-- [ ] Spec body updated to match what shipped.
-- [ ] `docs/LEDGER.md` regenerated and `python3 tools/spec_lint.py` exits 0.
+- [x] Acceptance criteria all met.
+- [x] Test plan executed; listed tests pass; manual steps performed and noted.
+- [x] No regressions (affected tests at the queue's close gate).
+- [x] Spec body updated to match what shipped.
+- [x] `docs/LEDGER.md` regenerated and `python3 tools/spec_lint.py` exits 0.
 
 ## Open questions
 
