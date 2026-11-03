@@ -1,9 +1,10 @@
 ---
 id: SPEC-0398
 title: "The quiet follower holds `campaign_silent` / `state_stuck` for a GATING campaign that waits for a gate slot, runs a gate, or has its gate deferred"
-status: proposed
+status: accepted
 owner: user
 created: 2026-11-02
+updated: 2026-11-02
 milestone: "M10: agentic MVP"
 kind: feature
 source_idea: IDEA-551
