@@ -100,6 +100,42 @@ def test_timeout_kills_the_process_group(world, tmp_path):
     assert "timed out" not in (tmp_path / "slow.log").read_text()
 
 
+def test_live_deadlines_lists_a_running_gate_until_it_ends(world, tmp_path):
+    """SPEC-0392: `live_deadlines()` carries name, campaign, started_at and deadline_at (start +
+    timeout_s) while the gate runs, and is empty after it ends."""
+    import waits
+    cfg, st, wt = world
+    assert G.live_deadlines() == []
+    box = []
+    th = threading.Thread(target=lambda: box.append(G.run_gate(
+        _gate("live", "sleep 1", timeout_s=30), wt, G.gate_env(cfg, st), tmp_path / "l.log", {})))
+    th.start()
+    assert waits.until(lambda: bool(G.live_deadlines()), 10)
+    (entry,) = G.live_deadlines()
+    assert (entry["name"], entry["campaign"]) == ("live", CID)
+    assert entry["deadline_at"] - entry["started_at"] == pytest.approx(30)
+    assert abs(entry["started_at"] - time.time()) < 10
+    waits.join(th)
+    assert box[0].ok and G.live_deadlines() == []
+
+
+def test_live_deadlines_empty_after_a_timeout_kill_and_after_reset(world, tmp_path):
+    import waits
+    cfg, st, wt = world
+    r = G.run_gate(_gate("slow", "sleep 30", timeout_s=1), wt, G.gate_env(cfg, st),
+                   tmp_path / "s.log", {})
+    assert r.timed_out and G.live_deadlines() == []
+    box = []
+    th = threading.Thread(target=lambda: box.append(G.run_gate(
+        _gate("live", "sleep 1", timeout_s=30), wt, G.gate_env(cfg, st), tmp_path / "r.log", {})))
+    th.start()
+    assert waits.until(lambda: bool(G.live_deadlines()), 10)
+    G.reset()
+    assert G.live_deadlines() == []
+    waits.join(th)                      # the gate's own cleanup tolerates the cleared registry
+    assert box[0].ok and G.live_deadlines() == []
+
+
 def test_env_placeholders_and_cwd(world, tmp_path):
     cfg, st, wt = world
     env = G.gate_env(cfg, st)

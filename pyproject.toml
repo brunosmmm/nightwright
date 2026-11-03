@@ -48,3 +48,4 @@ packages = ["src/nightwright"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+markers = ["slow: runs a real nested pytest/xdist process (SPEC-0392)"]

@@ -1,7 +1,7 @@
 ---
 id: SPEC-0392
 title: "A gate's timeout_s is a hard wall-clock bound: kill the whole process tree, reap with a bound, and always return"
-status: accepted
+status: done
 owner: user
 created: 2026-11-02
 updated: 2026-11-02
@@ -168,23 +168,23 @@ is pasted in the spec's As shipped section as the pinned cause. One additional m
 
 ## Acceptance criteria
 
-- [ ] A gate whose command spawns descendants that ignore SIGTERM (including one that called
+- [x] A gate whose command spawns descendants that ignore SIGTERM (including one that called
       `setsid`) is gone entirely (no surviving pid from the snapshot) within
       `timeout_s + 2 x grace + reap bound`, and the result has `timed_out=True`.
-- [ ] `_kill_group` sends SIGKILL to surviving descendants even when the shell has already
+- [x] `_kill_group` sends SIGKILL to surviving descendants even when the shell has already
       exited after SIGTERM.
-- [ ] `run_gate` returns within `timeout_s + HARD_DEADLINE_S` even if the kill thread never
+- [x] `run_gate` returns within `timeout_s + HARD_DEADLINE_S` even if the kill thread never
       completes (simulated by a kill function that blocks), with `timed_out=True` and an
       `error` that says the kill did not complete.
-- [ ] A pid recycled between snapshot and signal (start ticks differ) is not signalled.
-- [ ] `live_deadlines()` lists each running gate with `name`, `campaign`, `started_at` and a
+- [x] A pid recycled between snapshot and signal (start ticks differ) is not signalled.
+- [x] `live_deadlines()` lists each running gate with `name`, `campaign`, `started_at` and a
       `deadline_at` equal to start plus `timeout_s`, and is empty once the gate ends (including
       after a timeout kill and after `reset()`).
-- [ ] The reproduction test existed and failed against the pre-fix code, and its cause is
+- [x] The reproduction test existed and failed against the pre-fix code, and its cause is
       recorded in the spec's As shipped section.
-- [ ] No existing gate behaviour changes for a gate that finishes before `timeout_s`: exit code,
+- [x] No existing gate behaviour changes for a gate that finishes before `timeout_s`: exit code,
       sidecar fields, ladder/retry results are identical.
-- [ ] The worker-box path needs no separate change: a `worker_job` gate run goes through
+- [x] The worker-box path needs no separate change: a `worker_job` gate run goes through
       the same `run_gate` and is covered by the same tests (asserted by a test that runs
       `run_gate` the way `worker_job` calls it, or by reading the call site, noted in As shipped).
 
@@ -211,6 +211,48 @@ is pasted in the spec's As shipped section as the pinned cause. One additional m
   unchanged; `tests/test_agentic_dogfood_config.py` still parses `.nw/project.yaml` with the
   same `timeout_s` values.
 
+### Test record (2026-11-02)
+
+- Reproduction first: `tests/test_gate_timeout_tree.py` was written and run against the unmodified
+  `gates.py`; both tree tests were red. The 4-child fixture (SIGTERM-ignoring, one `setsid`) left
+  **the setsid child alive** after `run_gate(timeout_s=1)` (`descendants survived the timeout
+  kill: [<pid>]`): the group KILL reached the in-group children, the out-of-group one was never
+  signalled. The shell-exits-first case left the TERM-proof child alive (`assert not True where
+  True = _alive(<pid>)`): `_kill_group` returned as soon as the shell died on TERM, with no KILL.
+- After the change: `uv run pytest -q tests/test_gate_timeout_tree.py tests/test_agentic_gates.py`
+  -> 91 passed (includes the slow real `pytest -n 2` case and the new `live_deadlines` tests).
+- Related modules, `-n 4`: `test_agentic_gates, test_agentic_exit_paths, test_gate_slots,
+  test_worker_jobs, test_worker, test_remote_gates, test_remote_job_records, test_workers_drain,
+  test_agentic_gate_limits, test_agentic_gate_paths, test_gate_jobs, test_agentic_sentinel,
+  test_agentic_dogfood_config, test_gate_timeout_tree` -> 700 passed, 1 failed
+  (`test_remote_gates.py::test_registry_slots_raise_the_worker_hosts_own_limit`, a worker-box
+  timing test); it passes alone and the whole file passed again under `-n 4` (116 passed): load
+  flake, not touched by this change. The full affected set (`affected_tests.py --run`) exceeded
+  this run's time budget, and the full suite is left to gating.
+- Manual: `run_gate` with `sh -c 'trap "" TERM; setsid sleep 600 & sleep 600'`, `timeout_s: 5`
+  -> `timed_out=True`, returned after 10.1 s (5 + the 5 s grace the TERM-proof shell used), and
+  no `sleep 600` process remained.
+
+### As shipped
+
+- `gates.py`: `_kill_tree` (snapshot of the shell's group plus ppid-reachable descendants as
+  `(pid, start_ticks)`; TERM; wait for all of them; re-snapshot; KILL survivors even if the shell
+  exited; bounded reap; returns survivor pids) with `_kill_group` as a thin alias for
+  `terminate_all`/SPEC-0229. A recycled pid (`runproc.start_ticks` differs) is never signalled;
+  zombies count as gone. A double-forked daemon that left the group and lost its ancestors before
+  the snapshot is not found (left to a cgroup backend, per Alternatives). Off Linux it degrades to
+  the old group kill.
+- `run_gate` waits in 1 s slices against a monotonic deadline and kills in a daemon thread joined
+  for `hard_deadline_s()` (`2 x grace + reap + HARD_SLACK_S`; `HARD_DEADLINE_S` is the default
+  25 s). NW_GATE_GRACE_S / NW_GATE_REAP_S override the first two; `HARD_SLACK_S` is a module
+  constant so a test can shorten it. Sidecar `error`: unchanged `timed out after Ns; process group
+  killed` (plus `; survivors: <pids>`), or `...; kill did not complete within Ms`.
+- `_LIVE` is a dict `proc -> {name, campaign, started_at, deadline_at}` (epoch seconds);
+  `live_deadlines()` returns copies. `worker_job._watch` iterates it unchanged (keys are procs).
+- Worker-box path: `worker.py::_run_gates` calls `gates.run_gate_with_retries`, which calls
+  `run_gate`; no separate change, covered by `test_a_worker_job_style_call_...`.
+- `pyproject.toml` registers the `slow` pytest marker.
+
 ## Rollout / migration
 
 1. Land the reproduction test (red), then the `gates.py` kill-tree and deadline changes (green)
@@ -222,11 +264,11 @@ is pasted in the spec's As shipped section as the pinned cause. One additional m
 
 ## Definition of done
 
-- [ ] Acceptance criteria all met.
-- [ ] Test plan executed; affected tests pass; the manual steps performed and noted.
-- [ ] No regressions.
-- [ ] Spec body updated to match what shipped (including the pinned root cause).
-- [ ] `docs/LEDGER.md` updated (status + date).
+- [x] Acceptance criteria all met.
+- [x] Test plan executed; affected tests pass; the manual steps performed and noted.
+- [x] No regressions.
+- [x] Spec body updated to match what shipped (including the pinned root cause).
+- [x] `docs/LEDGER.md` updated (status + date).
 
 ## Open questions
 

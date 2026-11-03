@@ -26,11 +26,19 @@ from . import schemas as SC
 from . import store
 from . import project as P
 from . import remote_jobs as RJ
+from . import runproc
 from .project import expand_cmd
 
 TAIL_LINES = 60
 REPORT_MAX_BYTES = 64 * 1024    # SPEC-0359: a larger selection report is dropped
 _KILL_GRACE_S = 5
+# SPEC-0392: a gate's timeout is a hard bound. After TERM the tree gets `_KILL_GRACE_S`, after KILL
+# `REAP_BOUND_S` to disappear; the whole kill runs under `hard_deadline_s()`, so `run_gate` returns
+# by `timeout_s + HARD_DEADLINE_S` even if the kill itself hangs. NW_GATE_GRACE_S / NW_GATE_REAP_S
+# shorten the first two (tests; the same pattern as NW_RUNPROC_GRACE_S).
+REAP_BOUND_S = 10
+HARD_SLACK_S = 5
+HARD_DEADLINE_S = 2 * _KILL_GRACE_S + REAP_BOUND_S + HARD_SLACK_S
 _LOG_SEQ_RE = re.compile(r"^(\d{3})-")
 # SPEC-0289: pytest exits 4 (usage error: ids not found) and 5 (nothing collected) when a targeted
 # rerun could not run the ids, which says nothing about whether the failure reproduces.
@@ -41,7 +49,7 @@ _SHELL_OPS_RE = re.compile(r"[|&;<>()`\n]|\$\(")
 # SPEC-0229: live gate processes, so a stop can end them (gates run in their own sessions, out of
 # reach of any signal sent to the runner's group). `_stopping` makes a stop sticky until reset().
 _LOCK = threading.Lock()
-_LIVE: set = set()
+_LIVE: dict = {}    # SPEC-0392: proc -> {name, campaign, started_at, deadline_at} (epoch seconds)
 _stopping = False
 
 
@@ -103,6 +111,13 @@ def reset() -> None:
         _LIVE.clear()
 
 
+def live_deadlines() -> list[dict]:
+    """SPEC-0392: the gates running right now, each `{name, campaign, started_at, deadline_at}`
+    (epoch seconds; `deadline_at` = start + `timeout_s`). Empty when none run."""
+    with _LOCK:
+        return [dict(v) for v in _LIVE.values()]
+
+
 def tail(path, n: int = TAIL_LINES) -> str:
     """Last `n` lines of a text file ("" when missing)."""
     try:
@@ -140,22 +155,183 @@ def placeholders(state: dict) -> dict:
             "worktree": repo.get("worktree"), "base": repo.get("base")}
 
 
-def _kill_group(proc: subprocess.Popen) -> None:
-    """SIGTERM the gate's process group, wait a grace period, then SIGKILL it."""
+def _env_s(name: str, default: float) -> float:
     try:
-        pgid = os.getpgid(proc.pid)
-    except ProcessLookupError:
+        return float(os.environ.get(name) or default)
+    except ValueError:
+        return float(default)
+
+
+def _grace_s() -> float:
+    return _env_s("NW_GATE_GRACE_S", _KILL_GRACE_S)
+
+
+def _reap_s() -> float:
+    return _env_s("NW_GATE_REAP_S", REAP_BOUND_S)
+
+
+def hard_deadline_s() -> float:
+    """Longest a timeout kill may take before `run_gate` stops waiting for it (SPEC-0392)."""
+    return 2 * _grace_s() + _reap_s() + HARD_SLACK_S
+
+
+def _stat(pid: int):
+    """`(state, ppid, pgrp, start_ticks)` from `/proc/<pid>/stat`; None when gone / off Linux."""
+    try:
+        raw = Path(f"/proc/{pid}/stat").read_text()
+        f = raw.rsplit(")", 1)[1].split()
+        return f[0], int(f[1]), int(f[2]), int(f[19])
+    except (OSError, IndexError, ValueError):
+        return None
+
+
+def _proc_table() -> dict:
+    table = {}
+    try:
+        names = os.listdir("/proc")
+    except OSError:
+        return table
+    for n in names:
+        if n.isdigit() and (st := _stat(int(n))) is not None:
+            table[int(n)] = st
+    return table
+
+
+def _pgid(proc: subprocess.Popen) -> int:
+    try:
+        return os.getpgid(proc.pid)
+    except OSError:
+        return proc.pid         # the shell leads its own session, so its pid is the group
+
+
+def _tree_pids(proc: subprocess.Popen) -> set:
+    """Snapshot of the gate's process tree as `{(pid, start_ticks)}`: the shell's process group
+    united with every descendant reachable through parent links, so a child that called `setsid`
+    is found while its parent lives. A descendant that left the group *and* lost its ancestor
+    chain before the snapshot (a double-fork daemon, reparented to init) is not found: a known
+    limit, left to a cgroup backend. Off Linux it degrades to the shell alone (the group kill)."""
+    table = _proc_table()
+    if not table:
+        return {(proc.pid, None)}
+    pgid = _pgid(proc)
+    kids: dict = {}
+    for pid, (_s, ppid, _g, _t) in table.items():
+        kids.setdefault(ppid, []).append(pid)
+    todo = [pid for pid, (_s, _p, pg, _t) in table.items() if pg == pgid or pid == proc.pid]
+    seen = set(todo)
+    while todo:
+        for kid in kids.get(todo.pop(), ()):
+            if kid not in seen:
+                seen.add(kid)
+                todo.append(kid)
+    return {(pid, table[pid][3]) for pid in seen}
+
+
+def _present(pid: int, ticks) -> bool:
+    """The snapshotted process is still there: same start ticks (a recycled pid is someone
+    else's) and not a zombie (dead, only unreaped)."""
+    if ticks is None:
+        return False
+    st = _stat(pid)
+    return st is not None and st[0] != "Z" and runproc.start_ticks(pid) == ticks
+
+
+def _signal_tree(snap: set, pgid: int, sig: int) -> None:
+    members = [pid for pid, ticks in snap if _present(pid, ticks)]
+    if not members:
         return
-    for sig, wait_s in ((signal.SIGTERM, _KILL_GRACE_S), (signal.SIGKILL, _KILL_GRACE_S)):
+    if any((st := _stat(pid)) is not None and st[2] == pgid for pid in members):
         try:
             os.killpg(pgid, sig)
-        except ProcessLookupError:
-            return
+        except OSError:
+            pass
+    for pid in members:
         try:
-            proc.wait(timeout=wait_s)
-            return
+            os.kill(pid, sig)
+        except OSError:
+            pass
+
+
+def _survivors(proc: subprocess.Popen, snap: set) -> list[int]:
+    proc.poll()                                     # reap the shell so it stops counting
+    return sorted(pid for pid, ticks in snap if _present(pid, ticks))
+
+
+def _wait_gone(proc: subprocess.Popen, snap: set, bound_s: float) -> list[int]:
+    end = time.monotonic() + bound_s
+    while True:
+        left = _survivors(proc, snap)
+        if not left or time.monotonic() >= end:
+            return left
+        time.sleep(0.05)
+
+
+def _kill_tree(proc: subprocess.Popen) -> list[int]:
+    """SPEC-0392: end the gate's whole process tree. TERM it (group and every snapshotted
+    pid), wait for *all* of it, not just the shell, then KILL whatever is left, even when the
+    shell already exited, and wait a bounded time for it to go. Returns the pids that outlived
+    that (empty normally); they are never waited on again."""
+    pgid = _pgid(proc)
+    snap = _tree_pids(proc)
+    if snap == {(proc.pid, None)}:                  # off Linux: the group kill, as before
+        for sig in (signal.SIGTERM, signal.SIGKILL):
+            try:
+                os.killpg(pgid, sig)
+            except OSError:
+                break
+            try:
+                proc.wait(timeout=_grace_s())
+                break
+            except subprocess.TimeoutExpired:
+                pass
+        return []
+    _signal_tree(snap, pgid, signal.SIGTERM)
+    if _wait_gone(proc, snap, _grace_s()):
+        snap |= _tree_pids(proc)                    # children spawned during the grace
+        _signal_tree(snap, pgid, signal.SIGKILL)
+        left = _wait_gone(proc, snap, _reap_s())
+    else:
+        left = []
+    try:
+        proc.wait(timeout=1)
+    except subprocess.TimeoutExpired:
+        pass
+    return left
+
+
+def _kill_group(proc: subprocess.Popen) -> list[int]:
+    """Kill the gate's process tree (name kept for `terminate_all` and SPEC-0229's stop path)."""
+    return _kill_tree(proc)
+
+
+def _wait_deadline(proc: subprocess.Popen, deadline: float) -> int | None:
+    """Exit code, or None once the monotonic `deadline` passes. Short slices, so no single
+    blocking call stands between the gate and its deadline."""
+    while True:
+        left = deadline - time.monotonic()
+        if left <= 0:
+            return proc.poll()
+        try:
+            return proc.wait(timeout=min(1.0, left))
         except subprocess.TimeoutExpired:
-            continue
+            pass
+
+
+def _timeout_kill(proc: subprocess.Popen, timeout_s: int) -> tuple[int | None, str]:
+    """Kill an overrun gate under `hard_deadline_s()`: the kill runs in a daemon thread and
+    `run_gate` stops waiting for it at the bound (SPEC-0392). -> (exit code, sidecar error)."""
+    out: list = []
+    th = threading.Thread(target=lambda: out.append(_kill_tree(proc)), daemon=True,
+                          name="gate-kill")
+    th.start()
+    bound = hard_deadline_s()
+    th.join(bound)
+    if th.is_alive():
+        return None, f"timed out after {timeout_s}s; kill did not complete within {bound:g}s"
+    error = f"timed out after {timeout_s}s; process group killed"
+    if out and out[0]:
+        error += f"; survivors: {' '.join(map(str, out[0]))}"
+    return proc.returncode, error
 
 
 def _write_sidecar(log_path: Path, result: GateResult, *, timeout_s: int, started_at: str,
@@ -219,21 +395,20 @@ def run_gate(gate: dict, worktree, env: dict, log_path, placeholders: dict, *,
                     proc = subprocess.Popen(cmd, shell=True, cwd=str(cwd), env=child_env,
                                             stdout=log, stderr=subprocess.STDOUT,
                                             start_new_session=True)
-                    _LIVE.add(proc)
+                    t_wall = time.time()
+                    _LIVE[proc] = {"name": gate["name"], "campaign": env.get("NW_CAMPAIGN") or None,
+                                   "started_at": t_wall, "deadline_at": t_wall + timeout_s}
         except OSError as e:
             error = f"failed to start: {e}"
         if proc is not None:
             try:
-                try:
-                    exit_code = proc.wait(timeout=timeout_s)
-                except subprocess.TimeoutExpired:
+                exit_code = _wait_deadline(proc, started + timeout_s)
+                if exit_code is None:
                     timed_out = True
-                    _kill_group(proc)
-                    exit_code = proc.returncode
-                    error = f"timed out after {timeout_s}s; process group killed"
+                    exit_code, error = _timeout_kill(proc, timeout_s)
             finally:
                 with _LOCK:
-                    _LIVE.discard(proc)
+                    _LIVE.pop(proc, None)
                     stopping = _stopping
             if stopping and not timed_out and exit_code != 0:
                 interrupted = True
