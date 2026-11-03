@@ -242,6 +242,11 @@ is pasted in the spec's As shipped section as the pinned cause. One additional m
   `HOME` to tmp and empties `runproc._CLAUDE_SYSTEM`; the other `ClaudeRunner` tests put a fake `claude`
   first on PATH, so need no change. `uv run pytest -q tests/test_agentic_runproc.py tests/test_agentic_runner.py
   tests/test_claude_resolve.py` -> 45 passed. Test-only; the full suite is left to gating.
+- Gate follow-up 3 (2026-11-02): `tests/test_remote_gates.py::test_registry_slots_raise_the_worker_hosts_own_limit`
+  missed its window under `-n 2` load (`slot_wait_s=1`, remote run fell back to local, `run.worker is None`).
+  The test now uses `slot_wait_s=10` (a job without the registry's third slot would still wait the full 10 s and
+  fall back, so the assertion keeps its meaning) and asserts `slot_wait_s < 5.0`. `uv run pytest -q
+  tests/test_remote_gates.py -n 4` -> 116 passed. Test-only; `gates.py` untouched; the full suite is left to gating.
 
 ### As shipped
 
