@@ -223,19 +223,26 @@ def test_acquire_prefers_the_first_pool_then_falls_back_to_local(cfg):
 def test_acquire_waits_for_whichever_pool_frees_first(cfg):
     pools = [("box", 1), (None, 1)]
     got = {}
-    with GS.acquire(cfg, "a", poll_s=0.05, pools=pools), \
-            GS.acquire(cfg, "b", poll_s=0.05, pools=pools):
-        def waiter():
-            with GS.acquire(cfg, "c", poll_s=0.05, pools=pools) as hold:
-                got["pool"] = hold.pool
-        t = threading.Thread(target=waiter)
-        t.start()
+    a_cm = GS.acquire(cfg, "a", poll_s=0.05, pools=pools)
+    b_cm = GS.acquire(cfg, "b", poll_s=0.05, pools=pools)
+    a = a_cm.__enter__()                                  # takes the box slot
+    b = b_cm.__enter__()                                  # box is full -> local
+    assert (a.pool, b.pool) == ("box", None)
+
+    def waiter():
+        with GS.acquire(cfg, "c", poll_s=0.05, pools=pools) as hold:
+            got["pool"] = hold.pool
+    t = threading.Thread(target=waiter)
+    t.start()
+    try:
         until(lambda: GS.waiting(cfg, "c") is not None)
         assert "pool" not in got
-    join(t)
-    # the `with` exits release `b` (local) then `a` (box) back to back; the waiter polls in
-    # between under load, so either freed pool is a valid win (it must not stay unset)
-    assert got["pool"] in ("box", None)
+        a_cm.__exit__(None, None, None)                   # free only the box slot
+        join(t)
+        assert got["pool"] == "box"                       # the waiter takes whichever freed
+    finally:
+        b_cm.__exit__(None, None, None)
+        join(t)
     assert GS.waiting(cfg, "c") is None
 
 
