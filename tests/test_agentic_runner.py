@@ -47,6 +47,14 @@ def _capture_run(monkeypatch, tmp_path, stdout=None, returncode=0, missing=False
     if not missing:
         (bindir / "claude").symlink_to(FAKE_CLAUDE)
     monkeypatch.setenv("PATH", f"{bindir}:/usr/bin:/bin")
+    # SPEC-0389: resolve_claude also probes ~/.local/bin etc. and /usr/local/bin, /opt/homebrew/bin,
+    # /usr/bin -- keep the host's real claude out of reach (hermetic HOME; "missing" = no resolution).
+    home = tmp_path / "home"
+    home.mkdir(exist_ok=True)
+    monkeypatch.setenv("HOME", str(home))
+    if missing:
+        from nightwright.agentic import runproc
+        monkeypatch.setattr(runproc, "resolve_claude", lambda environ=None: None)
     record = tmp_path / "record.json"
     monkeypatch.setenv("FAKE_CLAUDE_RECORD", str(record))
     monkeypatch.setenv("FAKE_CLAUDE_RC", str(returncode))

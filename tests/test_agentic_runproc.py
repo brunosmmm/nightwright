@@ -296,6 +296,7 @@ def test_wrapper_dying_before_claim_returns_promptly(tmp_path, monkeypatch):
 
 def test_claude_popen_failure(tmp_path, monkeypatch):
     monkeypatch.setenv("PATH", str(tmp_path / "nowhere"))
+    monkeypatch.setenv("HOME", str(tmp_path / "nohome"))  # SPEC-0389: no ~/.local/bin/claude fallback
     req = mkreq(tmp_path)
     res = R.ClaudeRunner().run(req)
     ex = json.loads((req.run_dir / "exit.json").read_text())
