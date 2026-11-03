@@ -203,7 +203,7 @@ progress. This is the single place to see *what has been decided* and *what is i
   - [x] [SPEC-0298](./specs/0298-agentic-mvp-cheap-durable-quiet-conductor.md) Agentic MVP: a cheap, durable, quiet conductor on a second project — done
   - [ ] [SPEC-0310](./specs/0310-remote-workers-run-gates-persona-runs-and.md) Remote workers: run gates, persona runs and campaigns on other machines — accepted
   - [x] [SPEC-0350](./specs/0350-per-gate-path-sensitivity.md) Per-gate path sensitivity for the close re-gate — done
-- **[SPEC-0298](./specs/0298-agentic-mvp-cheap-durable-quiet-conductor.md) — Agentic MVP: a cheap, durable, quiet conductor on a second project** · done · (14/15 done)
+- **[SPEC-0298](./specs/0298-agentic-mvp-cheap-durable-quiet-conductor.md) — Agentic MVP: a cheap, durable, quiet conductor on a second project** · done · (15/15 done)
   - [x] [SPEC-0299](./specs/0299-conductor-cost-measurement.md) Conductor cost measurement: session registry, `wt queue conductor-cost`, conductor share in the export — done
   - [x] [SPEC-0300](./specs/0300-quiet-conductor-follower-digest.md) Quiet conductor: the conductor follower holds informational events, prints a digest, and counts wakeups — done
   - [x] [SPEC-0301](./specs/0301-conductor-state-handoff-and-decision-log.md) Conductor state handoff and decision log: `wt queue decision`, `wt queue conductor-brief`, compaction rule — done
@@ -218,7 +218,7 @@ progress. This is the single place to see *what has been decided* and *what is i
   - [x] [SPEC-0321](./specs/0321-wtfug-spec-0299-20261030-a7a2-spec-0299-review.md) Conductor cost measurement hardening: terminal campaigns without a transition, malformed config and transcripts, honest manual-check record, test gaps — done
   - [x] [SPEC-0325](./specs/0325-steward-campaign-notices-project-idea-reconcile-remote-open.md) Stewards get campaign notices; a second-project merge reconciles its idea; pr campaigns branch from the remote — done
   - [x] [SPEC-0327](./specs/0327-cross-project-spec-id-collision-the-comfort.md) Spec ids are per project: a second project's SPEC-NNNN never resolves against wt's own specs — done
-  - [ ] [SPEC-0393](./specs/0393-wtfug-spec-0304-20261030-7a4f-spec-0304-review.md) SPEC-0304 review follow-ups: mvp-report edge cases in E4, E5 and E6, and the tests that pin them — accepted
+  - [x] [SPEC-0393](./specs/0393-wtfug-spec-0304-20261030-7a4f-spec-0304-review.md) SPEC-0304 review follow-ups: mvp-report edge cases in E4, E5 and E6, and the tests that pin them — done
 - **[SPEC-0310](./specs/0310-remote-workers-run-gates-persona-runs-and.md) — Remote workers: run gates, persona runs and campaigns on other machines** · accepted · (13/16 done)
   - [x] [SPEC-0331](./specs/0331-remote-gates-over-ssh-on-one-worker-host.md) Remote gates over SSH on one worker host — superseded
   - [x] [SPEC-0332](./specs/0332-worker-owned-async-jobs.md) Worker-owned async jobs — superseded
@@ -266,7 +266,6 @@ progress. This is the single place to see *what has been decided* and *what is i
 | [SPEC-0367](./specs/0367-nw-workers-bootstrap-cannot-refresh-a-stale.md) | nw workers bootstrap refreshes a stale worker install (build id, --reinstall, stale warning, loud gate rejection) | feature | in-progress | — | 2026-11-02 |
 | [SPEC-0368](./specs/0368-remote-gating-red-on-current-trees-human-visible.md) | Remote gates gate a stat-dirty tree at HEAD instead of falling back, and expose done.changed on the run | feature | in-progress | — | 2026-11-02 |
 | [SPEC-0391](./specs/0391-worker-host-slots-from-registry.md) | A gate job carries the worker's registry slots as the worker host's slot limit | feature | in-progress | — | 2026-11-02 |
-| [SPEC-0393](./specs/0393-wtfug-spec-0304-20261030-7a4f-spec-0304-review.md) | SPEC-0304 review follow-ups: mvp-report edge cases in E4, E5 and E6, and the tests that pin them | feature | accepted | M10: agentic MVP | 2026-11-02 |
 | [SPEC-0394](./specs/0394-declared-persona-run-settings-routing-and-requests.md) | Declared personas: run settings, reviewer routing metadata and run requests (rework of SPEC-0296 on the persona registry) | feature | accepted | M9: agentic workflow | 2026-11-02 |
 
 ## Done
@@ -629,6 +628,7 @@ progress. This is the single place to see *what has been decided* and *what is i
 | [SPEC-0388](./specs/0388-worker-disk-guard.md) | Worker disk guard - auto-reap dead jobs, in-run free-space abort, job sizes, update headroom | feature | done | — | 2026-11-02 |
 | [SPEC-0389](./specs/0389-persona-claude-resolution.md) | One claude resolver for claude-check and the persona job exec; missing claude is a job error | feature | done | — | 2026-11-02 |
 | [SPEC-0390](./specs/0390-workers-set-slots.md) | nw workers set --slots - change a worker's gate slots in place | feature | done | — | 2026-11-02 |
+| [SPEC-0393](./specs/0393-wtfug-spec-0304-20261030-7a4f-spec-0304-review.md) | SPEC-0304 review follow-ups: mvp-report edge cases in E4, E5 and E6, and the tests that pin them | feature | done | M10: agentic MVP | 2026-11-02 |
 
 ## Superseded / rejected
 

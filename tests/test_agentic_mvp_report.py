@@ -2,6 +2,7 @@
 import datetime as dt
 import json
 import shutil
+import time
 from pathlib import Path
 
 import pytest
@@ -588,3 +589,182 @@ def test_e6_replayed_compact_boundary_before_any_replayed_turn(cfg):
     ev = MVP.report(cfg, n=1)["e6_events"]
     assert [(e["session_id"], e["kind"], e["ts"]) for e in ev] == [
         ("s1", "compaction", T(10, 11, 1)), ("s2", "restart", T(10, 12))]
+
+
+# ---- SPEC-0393: review follow-ups --------------------------------------------------------------
+
+def day(d):
+    return dt.datetime(2026, 10, d, tzinfo=UTC)
+
+
+def test_since_filters_on_open_ts(cfg, run, monkeypatch, request):
+    monkeypatch.setenv("TZ", "UTC")                    # a naive --since date is local time
+    time.tzset()
+    request.addfinalizer(time.tzset)                   # runs after monkeypatch restored TZ
+    camp(cfg, "A", T(4, 1), T(8, 1))          # opens before the cutoff, ends after it
+    camp(cfg, "B", T(6, 0), T(8, 2))          # opens exactly at the cutoff
+    camp(cfg, "C", T(7, 1), T(9, 1))
+    assert MVP.report(cfg, n=3, since=day(6))["window"]["campaigns"] == ["B", "C"]
+    j = json.loads(run("--window", "3", "--since", "2026-10-06", "--json").output)
+    assert j["window"]["campaigns"] == ["B", "C"]
+    j = json.loads(run("--window", "3", "--since", "2026-10-06T12:00:00+00:00", "--json").output)
+    assert j["window"]["campaigns"] == ["C"]
+
+
+def test_e5_escalation_alone_leaves_e5_passing(cfg, tmp_path):
+    pr_project(cfg, tmp_path)
+    camp(cfg, "PRC", T(25, 10), T(25, 12), project="PR", state="MERGED",
+         close={"pr_state": "MERGED", "pr_url": "u"})
+    ESC._create(cfg, {"campaign": "PRC", "question": "scope?"})
+    rep = MVP.report(cfg, n=1)
+    (row,) = rep["e5_campaigns"]
+    assert crit(rep, "E5")["status"] == "pass" and row["status"] == "pass"
+    assert row["touchpoints"] == [{"kind": "escalation", "id": "ESC-0001", "question": "scope?"}]
+
+
+def test_e3_delivery_exactly_at_start_counts_and_before_start_does_not(cfg):
+    one_window(cfg)
+    deliveries(cfg, [(T(10, 9), "parked", "wake")])                    # only before start
+    e3 = crit(MVP.report(cfg, n=1), "E3")
+    assert e3["value"] == 0 and e3["status"] == "pass"
+    deliveries(cfg, [(T(10, 9), "parked", "wake"), (T(10, 10), "parked", "wake")])   # at start
+    assert crit(MVP.report(cfg, n=1), "E3")["value"] == 1
+    deliveries(cfg, [(T(10, 10), "parked", "wake"), (T(10, 14), "parked", "wake"),    # and at end
+                     (T(10, 14, 1), "parked", "wake")])
+    assert crit(MVP.report(cfg, n=1), "E3")["value"] == 2
+
+
+def test_e4_unparseable_exit_ts_is_unverified(cfg):
+    camp(cfg, "C", T(10, 10), T(10, 20), events=[
+        park_ev(T(10, 10, 10), "a"), out_of_park("garbage")])
+    decide(cfg, 1, "C", T(10, 10, 12))
+    rep = MVP.report(cfg, n=1)
+    e4 = crit(rep, "E4")
+    assert e4["value"] == 0 and e4["status"] == "fail"
+    assert [(p["reason"], p["status"]) for p in rep["parks_undecided"]] == [("a", "unverified")]
+    assert "unverified" in MVP.render_text(rep)
+
+
+def test_e4_twin_still_parked_stays_covered(cfg):
+    camp(cfg, "T", T(10, 10), T(10, 20), events=[park_ev(T(10, 10, 10), "a")])
+    decide(cfg, 1, "T", T(10, 10, 12))
+    rep = MVP.report(cfg, n=1)
+    assert crit(rep, "E4")["value"] == 1 and rep["parks_undecided"] == []
+
+
+def test_e5_has_no_lower_bound_with_a_measurement_spec_unmerged(cfg, tmp_path):
+    pr_project(cfg, tmp_path)
+    camp(cfg, "M0299", T(9, 1), T(10, 1), spec="SPEC-0299")
+    camp(cfg, "M0300", T(9, 1), T(10, 1), spec="SPEC-0300")
+    camp(cfg, "PRC", T(2, 1), T(2, 2), project="PR", state="MERGED",
+         close={"pr_state": "MERGED", "pr_url": "u"})
+    rep = MVP.report(cfg, n=1)
+    assert crit(rep, "E5")["status"] == "pass" and crit(rep, "E5")["value"] == 1
+    camp(cfg, "M0301", T(9, 1), T(10, 1), spec="SPEC-0301")      # now the point is day 10
+    rep = MVP.report(cfg, n=1)
+    assert crit(rep, "E5")["status"] == "fail" and crit(rep, "E5")["value"] == 0
+
+
+def _registry(cfg, rows):
+    """Rewrite sessions.jsonl with `rows` ((session id, registration ts)) in that line order."""
+    path = CC._sessions_path(cfg)
+    path.write_text("".join(json.dumps({"ts": ts, "reader": "conductor", "session_id": sid,
+                                         "source": "manual"}) + "\n" for sid, ts in rows))
+
+
+def _e6_events(cfg, order, *, rows):
+    _registry(cfg, [(sid, rows[sid]) for sid in order])
+    return [(e["session_id"], e["kind"], e["ts"], e["oriented"])
+            for e in MVP.report(cfg, n=1)["e6_events"]]
+
+
+@pytest.mark.parametrize("case", ["diverged", "superset"])
+def test_e6_resumed_session_ordering_is_registry_independent(cfg, case):
+    one_window(cfg)
+    orig = [asst("a", T(10, 9), 1), asst("b", T(10, 11), 1), compact(T(10, 11, 1)),
+            asst("c", T(10, 11, 2), 1, brief=True), asst("d", T(10, 11, 3), 1)]
+    if case == "diverged":
+        # the original kept running after the resume: neither id set contains the other
+        resumed = [asst("a", T(10, 9), 1), asst("b", T(10, 11), 1), asst("c", T(10, 11, 2), 1),
+                   asst("x", T(10, 12), 1)]
+    else:
+        resumed = orig + [asst("e", T(10, 12), 1)]
+    conductor(cfg, "sO", orig)
+    conductor(cfg, "sR", resumed)
+    # sO registered before sR; each row keeps its own ts whichever line comes first
+    rows = {"sO": T(10, 8), "sR": T(10, 8, 1)}
+    first = _e6_events(cfg, ["sO", "sR"], rows=rows)
+    second = _e6_events(cfg, ["sR", "sO"], rows=rows)
+    assert first == second
+    assert [(s, k) for s, k, *_ in first] == [("sO", "compaction"), ("sR", "restart")]
+    assert first[1][2] == T(10, 12)
+
+
+def test_e6_unparseable_registration_ts_sorts_last(cfg):
+    one_window(cfg)
+    orig = [asst("a", T(10, 9), 1), asst("b", T(10, 11), 1), compact(T(10, 11, 1))]
+    conductor(cfg, "sO", orig)
+    conductor(cfg, "sR", orig[:1] + [asst("x", T(10, 12), 1), asst("y", T(10, 12, 1), 1),
+                                     asst("z", T(10, 12, 2), 1)])
+    _registry(cfg, [("sO", "garbage"), ("sR", T(10, 8, 1))])
+    ev = MVP.report(cfg, n=1)["e6_events"]
+    # sR is registered, sO's registration ts is unreadable: sO goes last and is the resumed one
+    assert [(e["session_id"], e["kind"], e["ts"]) for e in ev] == [
+        ("sO", "restart", T(10, 11)), ("sO", "compaction", T(10, 11, 1))]
+
+
+def test_cli_empty_store_exits_zero_with_null_values(cfg, run):
+    r = run()
+    assert r.exit_code == 0, r.output
+    r = run("--json")
+    assert r.exit_code == 0, r.output
+    j = json.loads(r.output)
+    w = j["window"]
+    assert w["start"] is None and w["end"] is None and w["merges"] == 0
+    assert w["qualifying"] is False and j["ok"] is False
+    for c in j["criteria"]:
+        if c["id"] == "E5":
+            assert c["value"] == 0 and c["status"] == "fail"
+        else:
+            assert c["value"] is None and c["status"] == "no_data", c
+
+
+def test_e6_clean_interval_open_lower_bound(cfg, monkeypatch):
+    one_window(cfg)
+    conductor(cfg, "s1", [compact(T(10, 11)), asst("p", T(10, 11, 1), 1, brief=True)])
+    for ts in (T(10, 11), T(10, 10, 59)):                  # at the event ts, and before it
+        undecided_event(monkeypatch, ts)
+        E.append(cfg, "park_undecided", campaign="W",
+                 data={"reason": "loop_exhausted", "parked_for_s": 600, "owner": "conductor"})
+        assert [e["clean"] for e in MVP.report(cfg, n=1)["e6_events"]] == [True]
+    undecided_event(monkeypatch, T(10, 11, 15))
+    E.append(cfg, "park_undecided", campaign="W2",
+             data={"reason": "loop_exhausted", "parked_for_s": 600, "owner": "conductor"})
+    assert [e["clean"] for e in MVP.report(cfg, n=1)["e6_events"]] == [False]
+
+
+def test_e5_campaign_opened_exactly_at_the_qualifying_point(cfg, tmp_path):
+    pr_project(cfg, tmp_path)
+    measurement_specs(cfg, end=T(5, 3))
+    pr = dict(project="PR", state="MERGED", close={"pr_state": "MERGED", "pr_url": "u"})
+    camp(cfg, "AT", T(5, 3), T(6, 1), **pr)
+    rep = MVP.report(cfg, n=1)
+    assert crit(rep, "E5")["status"] == "fail" and crit(rep, "E5")["value"] == 0
+    assert rep["e5_campaigns"] == []
+    # the same campaign in a window: not qualifying, named
+    w = rep["window"]
+    assert w["campaigns"] == ["AT"] and w["qualifying"] is False and "AT" in w["qualifying_reason"]
+    camp(cfg, "AFTER", T(5, 3, 0).replace("03:00:00", "03:00:01"), T(6, 2), **pr)
+    rep = MVP.report(cfg, n=1)
+    assert crit(rep, "E5")["value"] == 1 and rep["window"]["qualifying"] is True
+
+
+def test_e6_compaction_outside_interval_and_inclusive_ends(cfg):
+    one_window(cfg)
+    conductor(cfg, "s1", [asst("a", T(10, 9), 1), compact(T(10, 9, 30)),
+                          compact(T(10, 14, 1)), asst("b", T(10, 14, 2), 1)])
+    assert MVP.report(cfg, n=1)["e6_events"] == []
+    conductor(cfg, "s2", [asst("c", T(10, 9), 1), compact(T(10, 10)), compact(T(10, 14))])
+    ev = MVP.report(cfg, n=1)["e6_events"]
+    assert [(e["session_id"], e["kind"], e["ts"]) for e in ev] == [
+        ("s2", "compaction", T(10, 10)), ("s2", "compaction", T(10, 14))]

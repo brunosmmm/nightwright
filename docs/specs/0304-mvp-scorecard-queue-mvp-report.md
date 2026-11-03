@@ -334,6 +334,9 @@ is error-prone (day vs campaign windows, all-time vs windowed merges).
   restart is dated by the session's first new turn, replayed turns do not count toward the
   10-turn orientation window, and a replayed `compact_boundary` is not a second event
   (`transcript_marks(path, replayed)`).
+- Amended by [SPEC-0393](./0393-wtfug-spec-0304-20261030-7a4f-spec-0304-review.md): E5's
+  lower bound (none unless all three measurement specs are merged), the strict "opened after
+  the point" boundary, the E4 `unverified` status and the E6 session ordering.
 
 ## Rollout / migration
 

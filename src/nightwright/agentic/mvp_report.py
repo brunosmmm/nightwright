@@ -166,10 +166,13 @@ def e4(cfg, campaigns, start, end, targets) -> tuple[dict, list[dict]]:
             if hit is None:
                 status = "missing"
             else:
-                exit_ts = next((D.parse_ts(x.get("ts")) for x in led
-                                if x.get("type") == "transition" and x.get("from") == "PARKED"
+                exit_tr = next((x for x in led if x.get("type") == "transition"
+                                and x.get("from") == "PARKED"
                                 and (x.get("seq") or 0) > (e.get("seq") or 0)), None)
-                if exit_ts is not None and D.parse_ts(hit.get("ts")) > exit_ts:
+                exit_ts = D.parse_ts(exit_tr.get("ts")) if exit_tr else None
+                if exit_tr is not None and exit_ts is None:
+                    status = "unverified"  # it left PARKED, but when is unreadable
+                elif exit_ts is not None and D.parse_ts(hit.get("ts")) > exit_ts:
                     status = "late"
             if status:
                 bad.append({"campaign": cid, "reason": e.get("reason"), "ts": e.get("ts"),
@@ -196,7 +199,7 @@ def _pr_policy(cfg, project, cache) -> str | None:
 
 
 def e5(cfg, point, targets) -> tuple[dict, list[dict]]:
-    """Merged PR-policy campaigns opened at or after `point` (no lower bound when None)."""
+    """Merged PR-policy campaigns opened after `point` (no lower bound when None)."""
     policies: dict = {}
     escs = ESC.list_all(cfg)
     rows = []
@@ -210,7 +213,7 @@ def e5(cfg, point, targets) -> tuple[dict, list[dict]]:
         led = store.read_ledger(cfg, cid, types=["open", "park"])
         opened = next((CC._parse_ts(e.get("ts")) for e in led if e.get("type") == "open"), None) \
             or CC._parse_ts(st.get("created_at"))
-        if point is not None and (opened is None or opened < point):
+        if point is not None and (opened is None or opened <= point):
             continue
         touch = [{"kind": "park", "reason": e.get("reason"), "ts": e.get("ts")}
                  for e in led if e.get("type") == "park" and Q.park_owner(e.get("reason")) == "human"]
@@ -238,10 +241,19 @@ def e6(cfg, start, end, targets) -> tuple[dict, list[dict]]:
         if turns:
             sess.append((min(t["ts"] for t in turns), len(turns), order,
                          r["session_id"], path, turns))
-    # a resumed transcript copies the original's first turn (same ts), so ties go to the
-    # shorter transcript, then registry order: never to the random session-id string
-    sess.sort(key=lambda s: s[:3])
-    sess = [(s[0], *s[3:]) for s in sess]
+    # a resumed transcript copies the original's first turn (same ts): a session whose message
+    # ids contain another's history sorts after it (depth); sessions that diverged after the
+    # resume go by when each was registered; registry order is only the last tie-break, never
+    # the random session-id string
+    reg = {r["session_id"]: D.parse_ts(r.get("ts")) for r in CC.sessions(cfg)}
+    late = dt.datetime.max.replace(tzinfo=dt.timezone.utc)
+    id_sets = [{t["msg_id"] for t in s[5] if t["msg_id"] is not None} for s in sess]
+    keyed = []
+    for i, s in enumerate(sess):
+        depth = sum(1 for j, o in enumerate(id_sets) if j != i and o and o < id_sets[i])
+        keyed.append(((s[0], depth, reg.get(s[3]) or late, s[2]), s))
+    keyed.sort(key=lambda k: k[0])
+    sess = [(s[0], *s[3:]) for _, s in keyed]
     # a resumed session's transcript replays earlier history under the same message ids:
     # only its new turns date the restart, and replayed marks are not events
     seen_ids, fresh = set(), []
@@ -288,7 +300,7 @@ def report(cfg, *, n=DEFAULT_WINDOW, since=None, project=None) -> dict:
     win = pick_window(pool, n=n, since=since)
     start, end, camps = win["start"], win["end"], win["campaigns"]
     ok_q, why = qualifying(win, all_merged)
-    point, _ = qualifying_point(all_merged)
+    point, missing = qualifying_point(all_merged)
     merges = sum(1 for c in all_merged if start is not None and start <= c["end"] <= end)
     if camps:
         c1, c2 = e1_e2(cfg, start, end, merges, targets)
@@ -299,7 +311,7 @@ def report(cfg, *, n=DEFAULT_WINDOW, since=None, project=None) -> dict:
         c1, c2, c3, c4, c6 = (_crit(k, targets, None, "no_data", "no merged campaign in the window")
                               for k in ("e1", "e2", "e3", "e4", "e6"))
         undecided, ev6 = [], []
-    c5, ev5 = e5(cfg, point, targets)
+    c5, ev5 = e5(cfg, None if missing else point, targets)
     criteria = [c1, c2, c3, c4, c5, c6]
     return {"schema": SCHEMA,
             "window": {"n": len(camps), "requested": n, "start": _iso(start), "end": _iso(end),
