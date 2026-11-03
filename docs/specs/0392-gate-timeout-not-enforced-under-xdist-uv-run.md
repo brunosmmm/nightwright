@@ -232,6 +232,11 @@ is pasted in the spec's As shipped section as the pinned cause. One additional m
 - Manual: `run_gate` with `sh -c 'trap "" TERM; setsid sleep 600 & sleep 600'`, `timeout_s: 5`
   -> `timed_out=True`, returned after 10.1 s (5 + the 5 s grace the TERM-proof shell used), and
   no `sleep 600` process remained.
+- Gate follow-up (2026-11-02): `tests/test_agentic_runner.py::test_claude_missing_is_error` was not
+  hermetic (a real `claude` on the gate host's `/usr/bin` or SPEC-0389's fallback dirs ran). The
+  `_capture_run(missing=True)` helper now sets `PATH` to the empty bindir only, points `HOME` at tmp
+  and empties `runproc._CLAUDE_SYSTEM`; verified on a host with a real `claude` in `~/.local/bin`:
+  `uv run pytest -q tests/test_agentic_runner.py` -> 19 passed. Test-only; `gates.py` untouched.
 
 ### As shipped
 
