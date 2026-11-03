@@ -1,6 +1,7 @@
 """SPEC-0304: `nw queue mvp-report`, the E1-E6 scorecard over the last N merged campaigns."""
 import datetime as dt
 import json
+import os
 import shutil
 import time
 from pathlib import Path
@@ -593,14 +594,25 @@ def test_e6_replayed_compact_boundary_before_any_replayed_turn(cfg):
 
 # ---- SPEC-0393: review follow-ups --------------------------------------------------------------
 
+@pytest.fixture
+def utc_tz():
+    """TZ=UTC for a naive --since date; tzset again after the fixture itself restores TZ."""
+    old = os.environ.get("TZ")
+    os.environ["TZ"] = "UTC"
+    time.tzset()
+    yield
+    if old is None:
+        os.environ.pop("TZ", None)
+    else:
+        os.environ["TZ"] = old
+    time.tzset()
+
+
 def day(d):
     return dt.datetime(2026, 10, d, tzinfo=UTC)
 
 
-def test_since_filters_on_open_ts(cfg, run, monkeypatch, request):
-    monkeypatch.setenv("TZ", "UTC")                    # a naive --since date is local time
-    time.tzset()
-    request.addfinalizer(time.tzset)                   # runs after monkeypatch restored TZ
+def test_since_filters_on_open_ts(cfg, run, utc_tz):
     camp(cfg, "A", T(4, 1), T(8, 1))          # opens before the cutoff, ends after it
     camp(cfg, "B", T(6, 0), T(8, 2))          # opens exactly at the cutoff
     camp(cfg, "C", T(7, 1), T(9, 1))
@@ -678,21 +690,32 @@ def _e6_events(cfg, order, *, rows):
             for e in MVP.report(cfg, n=1)["e6_events"]]
 
 
-@pytest.mark.parametrize("case", ["diverged", "superset"])
+@pytest.mark.parametrize("case", ["diverged", "diverged_longer_original", "superset",
+                                  "superset_registered_earlier", "superset_original_unparseable"])
 def test_e6_resumed_session_ordering_is_registry_independent(cfg, case):
     one_window(cfg)
     orig = [asst("a", T(10, 9), 1), asst("b", T(10, 11), 1), compact(T(10, 11, 1)),
             asst("c", T(10, 11, 2), 1, brief=True), asst("d", T(10, 11, 3), 1)]
+    rows = {"sO": T(10, 8), "sR": T(10, 8, 1)}           # sO registered before sR
     if case == "diverged":
         # the original kept running after the resume: neither id set contains the other
         resumed = [asst("a", T(10, 9), 1), asst("b", T(10, 11), 1), asst("c", T(10, 11, 2), 1),
                    asst("x", T(10, 12), 1)]
+    elif case == "diverged_longer_original":
+        # ... and the original has strictly more turns than the resumed session
+        orig = orig + [asst("e", T(10, 11, 4), 1)]
+        resumed = [asst("a", T(10, 9), 1), asst("b", T(10, 11), 1), asst("c", T(10, 11, 2), 1),
+                   asst("x", T(10, 12), 1)]
     else:
         resumed = orig + [asst("e", T(10, 12), 1)]
+        if case == "superset_registered_earlier":
+            # containment, not registration time, puts the resumed session after the original
+            rows = {"sO": T(10, 8, 1), "sR": T(10, 8)}
+        elif case == "superset_original_unparseable":
+            rows = {"sO": "garbage", "sR": T(10, 8)}
     conductor(cfg, "sO", orig)
     conductor(cfg, "sR", resumed)
-    # sO registered before sR; each row keeps its own ts whichever line comes first
-    rows = {"sO": T(10, 8), "sR": T(10, 8, 1)}
+    # each row keeps its own ts whichever line comes first
     first = _e6_events(cfg, ["sO", "sR"], rows=rows)
     second = _e6_events(cfg, ["sR", "sO"], rows=rows)
     assert first == second
@@ -754,7 +777,7 @@ def test_e5_campaign_opened_exactly_at_the_qualifying_point(cfg, tmp_path):
     # the same campaign in a window: not qualifying, named
     w = rep["window"]
     assert w["campaigns"] == ["AT"] and w["qualifying"] is False and "AT" in w["qualifying_reason"]
-    camp(cfg, "AFTER", T(5, 3, 0).replace("03:00:00", "03:00:01"), T(6, 2), **pr)
+    camp(cfg, "AFTER", "2026-10-05T03:00:01+00:00", T(6, 2), **pr)
     rep = MVP.report(cfg, n=1)
     assert crit(rep, "E5")["value"] == 1 and rep["window"]["qualifying"] is True
 
