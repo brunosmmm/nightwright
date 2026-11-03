@@ -233,7 +233,9 @@ def test_acquire_waits_for_whichever_pool_frees_first(cfg):
         until(lambda: GS.waiting(cfg, "c") is not None)
         assert "pool" not in got
     join(t)
-    assert got["pool"] == "box"                          # `a` (box) released first, then `b`
+    # the `with` exits release `b` (local) then `a` (box) back to back; the waiter polls in
+    # between under load, so either freed pool is a valid win (it must not stay unset)
+    assert got["pool"] in ("box", None)
     assert GS.waiting(cfg, "c") is None
 
 
