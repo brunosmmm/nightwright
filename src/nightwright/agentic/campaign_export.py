@@ -18,6 +18,7 @@ from pathlib import Path
 
 from .. import specmeta
 from ..export import _atomic_write
+from . import personas as PS
 from . import runs as RN
 from . import store
 from .profiles import resolve_profile
@@ -44,6 +45,10 @@ CAMPAIGN_COLUMNS = (
     ("conductor_usd", "float"), ("cost_with_conductor_usd", "float"),     # SPEC-0299
     ("rebase_regenerated", "int"), ("resolver_dispatches", "int"),         # SPEC-0303
     ("rebase_resolved", "int"), ("resolver_overcap_usd", "float"),
+    ("reviewer_runs", "int"), ("reviewer_findings", "int"),                # SPEC-0396
+    ("reviewer_blocking", "int"), ("findings_per_reviewer_run", "float"),
+    ("blocking_per_reviewer_run", "float"), ("first_review_must_fix", "int"),
+    ("first_review_major", "int"), ("close_s", "int"), ("task_active_s", "int"),
 )
 RUN_COLUMNS = (
     ("campaign", "str"), ("spec_id", "str"), ("profile", "str"), ("size", "str"), ("tone", "str"),
@@ -73,6 +78,8 @@ SIGNAL_ORDER = ("loops_exhausted", "cap_parked", "cost_near_cap", "many_fix_loop
 ESCALATION_REASONS = frozenset({"triage_escalated", "review_escalated", "implementer_blocked"})
 FINDING_DETAIL_MAX = 500
 FIX_REASONS = frozenset({"triage_fix", "review_fix"})
+_REVIEWERS = frozenset(PS.REVIEWER_PERSONAS)
+BLOCKING = ("must_fix", "major")         # as divergence.BLOCKING
 _AC_LINE = re.compile(r"^\s*[-*] \[[ xX]\]")
 
 NOTES = [
@@ -87,6 +94,16 @@ NOTES = [
     "rebase_regenerated, resolver_dispatches and rebase_resolved count the close's rebase "
     "findings and events (SPEC-0303); resolver_overcap_usd is the conflict_resolver spend above "
     "the campaign cap (the close allowance), 0 when there was none.",
+    "reviewer_runs, reviewer_findings, reviewer_blocking, the *_per_reviewer_run ratios and "
+    "first_review_must_fix / first_review_major (SPEC-0396) compare campaigns across profiles. "
+    "Only builtin reviewer personas are counted (not reviewers declared by users or projects); a "
+    "reviewer run counts only with a valid verdict; blocking is must_fix plus major. "
+    "first_review_* counts reviewer findings before the first return to IMPLEMENTING after the "
+    "first REVIEWING entry: it does not depend on how many fix rounds the profile allows, but "
+    "still scales with the number of reviewer personas in the first round, so compare it within "
+    "the same reviewer set or alongside findings_per_reviewer_run. task_active_s = active_s - "
+    "close_s excludes PARKED and CLOSING (rebase, resolver, merge), whereas active_s excludes "
+    "only PARKED.",
 ]
 
 
@@ -213,6 +230,39 @@ def _resolver_overcap(events: list[dict]) -> float:
     return round(over, 4)
 
 
+def _reviewer_stats(events: list[dict]) -> dict:
+    """SPEC-0396: reviewer-only run/finding counts and the first review round's blockers. The
+    first round ends at the first transition to IMPLEMENTING after the first entry into REVIEWING,
+    whatever its reason (`review_fix`, or the resume after a `loop_exhausted` park)."""
+    runs = findings = blocking = first_must = first_major = 0
+    reviewed = first_round_over = False
+    for e in events:
+        kind = e.get("type")
+        if kind == "transition":
+            if e.get("to") == "REVIEWING":
+                reviewed = True
+            elif e.get("to") == "IMPLEMENTING" and reviewed:
+                first_round_over = True
+        elif kind == "run.end":
+            if (e.get("persona") in _REVIEWERS and e.get("verdict_ok") is True
+                    and not e.get("interrupted")):
+                runs += 1
+        elif kind == "finding" and e.get("persona") in _REVIEWERS:
+            sev = e.get("severity")
+            if sev == "info":
+                continue
+            findings += 1
+            if sev in BLOCKING:  # a non-string or unknown severity matches nothing
+                blocking += 1
+                if not first_round_over:
+                    first_must += sev == "must_fix"
+                    first_major += sev == "major"
+    return {"reviewer_runs": runs, "reviewer_findings": findings, "reviewer_blocking": blocking,
+            "findings_per_reviewer_run": _frac(findings, runs),
+            "blocking_per_reviewer_run": _frac(blocking, runs),
+            "first_review_must_fix": first_must, "first_review_major": first_major}
+
+
 def campaign_row(cfg, state: dict, events: list[dict], now) -> dict:
     cid = state["id"]
     sizing = state.get("sizing") or {}
@@ -228,6 +278,8 @@ def campaign_row(cfg, state: dict, events: list[dict], now) -> dict:
     ended_at = ended.get("ts") if ended else None
     end = _parse_ts(ended_at) if ended_at else (None if st in store.TERMINAL_STATES else now)
     tis = _time_in_state(state, events, start, end)
+    active_s = sum(v for k, v in tis.items() if k in _active_states())
+    close_s = tis.get("CLOSING", 0)
 
     def of(t, pred=lambda e: True):
         return [e for e in events if e.get("type") == t and pred(e)]
@@ -250,7 +302,7 @@ def campaign_row(cfg, state: dict, events: list[dict], now) -> dict:
         "outcome": st if st in store.TERMINAL_STATES else None,
         "created_at": state.get("created_at"), "ended_at": ended_at,
         "wall_s": _secs(_parse_ts(state.get("created_at")), end),
-        "active_s": sum(v for k, v in tis.items() if k in _active_states()),
+        "active_s": active_s,
         "size": sizing.get("size"), "tone": sizing.get("tone"), "profile": state.get("profile"),
         "profile_source": sizing.get("source"), "sizing_rationale": sizing.get("rationale"),
         "loop_max": _loop_max(cfg, state), "cap_usd": cap,
@@ -282,6 +334,8 @@ def campaign_row(cfg, state: dict, events: list[dict], now) -> dict:
                                    if e.get("title") == "rebase conflict; resolver dispatched"),
         "rebase_resolved": len(of("rebase_resolved")),
         "resolver_overcap_usd": _resolver_overcap(events),
+        **_reviewer_stats(events), "close_s": close_s,
+        "task_active_s": max(0, active_s - close_s),
     }
     out = _project(row, CAMPAIGN_COLUMNS)       # signals read the coerced values
     out["signals"] = signals(out)

@@ -1,7 +1,7 @@
 ---
 id: SPEC-0396
 title: "Campaign export: treatment-aware difficulty metrics (per-reviewer-run findings, first-round blockers, active time net of close)"
-status: accepted
+status: done
 owner: user
 created: 2026-11-02
 updated: 2026-11-02
@@ -165,34 +165,34 @@ ratios; their counts of findings are still exact.
 
 ## Acceptance criteria
 
-- [ ] `CAMPAIGN_COLUMNS` ends with the nine new columns in the order and types of the Design
+- [x] `CAMPAIGN_COLUMNS` ends with the nine new columns in the order and types of the Design
       table, and the first 48 earlier columns (through `resolver_overcap_usd`) are unchanged in
       name, type and order. `EXPORT_SCHEMA` is still `nw.campaign.export.v1`.
-- [ ] `reviewer_runs` counts only `run.end` events of builtin reviewer personas with
+- [x] `reviewer_runs` counts only `run.end` events of builtin reviewer personas with
       `verdict_ok` true and not interrupted; runs of other personas, interrupted runs and
       malformed-verdict reviewer runs are not counted.
-- [ ] `reviewer_findings` and `reviewer_blocking` count only reviewer-persona `finding` events
+- [x] `reviewer_findings` and `reviewer_blocking` count only reviewer-persona `finding` events
       (non-`info`, and `must_fix`/`major` respectively); findings from `close`, `implementer`,
       gate and triager personas are excluded.
-- [ ] `findings_per_reviewer_run` and `blocking_per_reviewer_run` equal the counts divided by
+- [x] `findings_per_reviewer_run` and `blocking_per_reviewer_run` equal the counts divided by
       `reviewer_runs` rounded to 3 places, and are null when `reviewer_runs` is 0.
-- [ ] `first_review_must_fix` and `first_review_major` count reviewer findings that precede the
+- [x] `first_review_must_fix` and `first_review_major` count reviewer findings that precede the
       first `IMPLEMENTING` transition after the first `REVIEWING` entry, whatever its reason
       (`review_fix`, or the resume after a `loop_exhausted` park); findings after it are
       excluded; with no such transition all reviewer findings count; `IMPLEMENTING` transitions
       before the first `REVIEWING` entry (initial implement, `triage_fix`) and park/resume back
       into `REVIEWING` do not end the round.
-- [ ] `close_s` equals `time_in_state_s["CLOSING"]` (0 when absent) and `task_active_s ==
+- [x] `close_s` equals `time_in_state_s["CLOSING"]` (0 when absent) and `task_active_s ==
       active_s - close_s`, never negative; a campaign parked for `rebase_conflict` has the park
       interval in neither.
-- [ ] Campaign B equals campaign A plus one more review round (an `IMPLEMENTING`/`review_fix`
+- [x] Campaign B equals campaign A plus one more review round (an `IMPLEMENTING`/`review_fix`
       transition followed by two more valid reviewer runs with findings): both have equal
       `first_review_must_fix` / `first_review_major`, and B has a larger `reviewer_runs` and
       `reviewer_findings` (the fix-round-independence property).
-- [ ] The existing `must_fix_count`, `finding_count`, `wall_s`, `active_s`, `signals` and all
+- [x] The existing `must_fix_count`, `finding_count`, `wall_s`, `active_s`, `signals` and all
       other pre-existing columns have identical values for every fixture campaign before and
       after the change.
-- [ ] The new columns appear, with the declared types, in the JSONL, CSV and Parquet outputs and
+- [x] The new columns appear, with the declared types, in the JSONL, CSV and Parquet outputs and
       in `manifest.json` `tables.campaigns.columns`, and `manifest.json` `notes` contains the new
       note.
 
@@ -243,6 +243,30 @@ ratios; their counts of findings are still exact.
   `tests/test_agentic_campaign_export.py` and `tests/test_rich_output_guard.py`; the unchanged
   pre-existing-column assertions above; `python3 tools/spec_lint.py` exits 0.
 
+### Test record (2026-11-02)
+
+- `uv run pytest -q tests/test_agentic_campaign_export.py`: 78 passed, 2 skipped (pyarrow
+  Parquet tests skipped when absent). New tests: `test_reviewer_run_counts`,
+  `test_reviewer_findings_exclude_other_personas`, `test_per_run_ratios_and_null_denominator`,
+  `test_first_review_round_boundary` (incl. triage_fix, review_escalated, loop_exhausted and
+  no-return variants), `test_treatment_independence`,
+  `test_task_active_excludes_closing_and_parked`, `test_unknown_severity_not_counted_as_blocking`
+  (via `campaign_row` on raw events), `test_existing_columns_unchanged`; column order/type pins,
+  CSV, Parquet and manifest-note assertions extended.
+- `tests/test_rich_output_guard.py` fails identically on `main` (unrelated: cli_worker /
+  cli_workers / pull_worker raw writes); not touched here.
+- Manual: `uv run nw campaign export --out /tmp/nw-export-0396 --format csv` (213 campaigns)
+  lists the nine new headers last; for SPEC-0207-20261025-87ec the single round-1 reviewer
+  `major` (findings seq 23) is `first_review_major == 1`, later rounds excluded.
+- The full suite was left to gating.
+
+### As shipped
+
+- `test_export_conductor_columns_appended` located the conductor columns by negative index
+  (`[-6:-4]`); re-anchored to `[-15:-13]` since nine columns now follow them. No behavior change.
+- `BLOCKING` is a tuple in `campaign_export.py` (not a frozenset) so a non-hashable LLM severity
+  cannot raise on membership.
+
 ## Rollout / migration
 
 1. Land the columns, derivations, manifest note and tests together; there is no data migration
@@ -254,11 +278,11 @@ ratios; their counts of findings are still exact.
 
 ## Definition of done
 
-- [ ] Acceptance criteria all met.
-- [ ] Test plan executed; affected tests pass; manual steps performed.
-- [ ] No regressions.
-- [ ] Spec body updated to match what shipped.
-- [ ] `docs/LEDGER.md` updated (status + date).
+- [x] Acceptance criteria all met.
+- [x] Test plan executed; affected tests pass; manual steps performed.
+- [x] No regressions.
+- [x] Spec body updated to match what shipped.
+- [x] `docs/LEDGER.md` updated (status + date).
 
 ## Open questions
 

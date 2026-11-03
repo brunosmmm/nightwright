@@ -164,7 +164,10 @@ def test_columns_and_key_order(cfg):
         "cost_cap_frac", "time_in_state_s", "review_score", "must_fix_count", "finding_count",
         "waived_count", "close_mode", "merged_sha", "signals", "conductor_usd",
         "cost_with_conductor_usd", "rebase_regenerated", "resolver_dispatches",
-        "rebase_resolved", "resolver_overcap_usd"]
+        "rebase_resolved", "resolver_overcap_usd",
+        "reviewer_runs", "reviewer_findings", "reviewer_blocking", "findings_per_reviewer_run",
+        "blocking_per_reviewer_run", "first_review_must_fix", "first_review_major", "close_s",
+        "task_active_s"]
     assert [n for n, _ in CE.RUN_COLUMNS] == [
         "campaign", "spec_id", "profile", "size", "tone", "run_id", "persona", "model", "effort",
         "max_budget_usd", "timeout_s", "started_at", "duration_s", "cost_usd", "charged_usd",
@@ -201,7 +204,13 @@ def test_column_types_pinned():
         ("close_mode", "str"), ("merged_sha", "str"), ("signals", "json"),
         ("conductor_usd", "float"), ("cost_with_conductor_usd", "float"),
         ("rebase_regenerated", "int"), ("resolver_dispatches", "int"),
-        ("rebase_resolved", "int"), ("resolver_overcap_usd", "float"))
+        ("rebase_resolved", "int"), ("resolver_overcap_usd", "float"),
+        ("reviewer_runs", "int"), ("reviewer_findings", "int"), ("reviewer_blocking", "int"),
+        ("findings_per_reviewer_run", "float"), ("blocking_per_reviewer_run", "float"),
+        ("first_review_must_fix", "int"), ("first_review_major", "int"), ("close_s", "int"),
+        ("task_active_s", "int"))
+    assert len(CE.CAMPAIGN_COLUMNS) == 57 and CE.CAMPAIGN_COLUMNS[47][0] == "resolver_overcap_usd"
+    assert CE.EXPORT_SCHEMA == "nw.campaign.export.v1"
     assert CE.RUN_COLUMNS == (
         ("campaign", "str"), ("spec_id", "str"), ("profile", "str"), ("size", "str"),
         ("tone", "str"),
@@ -255,6 +264,21 @@ def test_hand_computed_campaign_row(cfg):
     assert r["loops"] == 2 and r["gate_retries"] == 1 and r["triage_retries"] == 1
     assert r["loop_resets"] == 1 and r["cap_raises"] == 1
     assert r["signals"] == ["loops_exhausted", "cost_near_cap", "many_fix_loops"]
+
+
+def test_existing_columns_unchanged(cfg):
+    """SPEC-0396: the new group leaves every earlier value as test_hand_computed_campaign_row
+    pins it (active_s still includes CLOSING; counts still cover every persona)."""
+    full_campaign(cfg)
+    r = row_of(cfg, "C-FULL")
+    assert r["active_s"] == 120 * 60 and r["wall_s"] == 190 * 60
+    assert r["must_fix_count"] == 1 and r["finding_count"] == 2
+    assert r["signals"] == ["loops_exhausted", "cost_near_cap", "many_fix_loops"]
+    # the new group on the same campaign: one reviewer finding (major), no valid reviewer run
+    assert (r["reviewer_runs"], r["reviewer_findings"], r["reviewer_blocking"]) == (0, 1, 1)
+    assert r["findings_per_reviewer_run"] is None and r["blocking_per_reviewer_run"] is None
+    assert (r["first_review_must_fix"], r["first_review_major"]) == (0, 1)
+    assert r["close_s"] == 5 * 60 and r["task_active_s"] == 115 * 60
 
 
 def test_open_campaign_runs_to_now(cfg):
@@ -532,6 +556,7 @@ def test_default_dir_and_same_second(cfg, invoke, monkeypatch):
     assert on_disk["filters"] == {"project": None, "since": None, "terminal_only": False}
     assert any("loop_max" in n for n in on_disk["notes"])
     assert any("final cost cap" in n for n in on_disk["notes"])
+    assert any("first_review_*" in n and "reviewer personas" in n for n in on_disk["notes"])
     assert on_disk["nw_version"] and on_disk["generated_at"]
     assert {k: v for k, v in m1.items() if k != "out"} == on_disk
     assert m1["schema"] == "nw.campaign.export.v1" and m1["notes"] == on_disk["notes"]
@@ -676,6 +701,8 @@ def test_csv_encoding(cfg, invoke, tmp_path):
     assert json.loads(row["runs_by_persona"]) == {"implementer": 2, "gate_triager": 2}
     assert json.loads(row["signals"]) == ["loops_exhausted", "cost_near_cap", "many_fix_loops"]
     assert row["loops"] == "2" and row["outcome"] == "MERGED"
+    assert row["reviewer_runs"] == "0" and row["findings_per_reviewer_run"] == ""
+    assert row["first_review_major"] == "1" and row["task_active_s"] == str(115 * 60)
     runs = list(csv.DictReader((d / "runs.csv").open()))
     assert runs[0]["is_error"] == "false" and runs[0]["input_tokens"] == ""
     assert json.loads((d / "manifest.json").read_text())["format"] == "csv"
@@ -713,6 +740,9 @@ def test_parquet_round_trip(cfg, invoke, tmp_path):
     assert t.schema.field("signals").type == pa.string()
     row = t.to_pylist()[0]
     assert row["loops"] == 2 and json.loads(row["signals"])[0] == "loops_exhausted"
+    assert t.schema.field("reviewer_runs").type == pa.int64()
+    assert t.schema.field("findings_per_reviewer_run").type == pa.float64()
+    assert row["findings_per_reviewer_run"] is None and row["close_s"] == 300
     runs = pq.read_table(d / "runs.parquet")
     assert runs.schema.field("is_error").type == pa.bool_() and runs.num_rows == 4
     assert json.loads((d / "manifest.json").read_text())["format"] == "parquet"
@@ -811,10 +841,10 @@ def test_failed_write_cleanup_cannot_mask_the_error(cfg, invoke, tmp_path, monke
 
 def test_export_conductor_columns_appended(cfg, tmp_path):
     """SPEC-0299: two columns are the conductor's share and the total with it (SPEC-0303
-    appended four more after them)."""
+    appended four more after them, SPEC-0396 nine more)."""
     from nightwright.agentic import conductor_cost as CC
     names = [n for n, _ in CE.CAMPAIGN_COLUMNS]
-    assert names[-6:-4] == ["conductor_usd", "cost_with_conductor_usd"]
+    assert names[-15:-13] == ["conductor_usd", "cost_with_conductor_usd"]
     make(cfg, "C1", [(10, "transition", tr("CLOSING", "MERGED"))], created=0,
          state="MERGED", cost={"total_usd": 2.5, "cap_usd": None, "by_persona": {}})
     make(cfg, "C2", [], created=600, cost={"total_usd": None, "cap_usd": None, "by_persona": {}})
@@ -839,7 +869,7 @@ def test_export_conductor_columns_appended(cfg, tmp_path):
         assert (r["conductor_usd"], r["cost_with_conductor_usd"]) == (None, None)
     transcript("claude-x")
     got = rows()
-    assert list(got["C1"])[-6:-4] == ["conductor_usd", "cost_with_conductor_usd"]
+    assert list(got["C1"])[-15:-13] == ["conductor_usd", "cost_with_conductor_usd"]
     assert got["C1"]["conductor_usd"] == 1.0 and got["C1"]["cost_with_conductor_usd"] == 3.5
     assert got["C2"]["conductor_usd"] == 0.0                     # no attributed turn
     assert got["C2"]["cost_usd"] is None
@@ -949,3 +979,173 @@ def test_export_tolerates_malformed_conductor_config_and_bad_registry_byte(
     (row,) = CE.export_tables(cfg, now=NOW)["campaigns"]
     assert row["conductor_usd"] == 1.0 and row["cost_with_conductor_usd"] == 3.5
     assert capsys.readouterr().err == ""
+
+
+# ---- treatment-aware difficulty metrics (SPEC-0396) ---------------------------------------
+
+def finding(persona, severity, title="f"):
+    return {"persona": persona, "severity": severity, "title": title}
+
+
+def test_reviewer_run_counts(cfg):
+    make(cfg, "C-RR", [
+        (1, "run.end", run_end("conformance_reviewer", "001")),
+        (2, "run.end", run_end("adversarial_reviewer", "002")),
+        (3, "run.end", run_end("test_reviewer", "003", interrupted=True)),
+        (4, "run.end", run_end("test_reviewer", "004", verdict_ok=False, verdict=None)),
+        (5, "run.end", run_end("implementer", "005")),
+        (6, "run.end", run_end("declared_reviewer", "006")),
+    ])
+    assert row_of(cfg, "C-RR")["reviewer_runs"] == 2
+
+
+def test_reviewer_findings_exclude_other_personas(cfg):
+    make(cfg, "C-RF", [
+        (1, "finding", finding("conformance_reviewer", "must_fix")),
+        (1, "finding", finding("adversarial_reviewer", "major")),
+        (1, "finding", finding("test_reviewer", "minor")),
+        (1, "finding", finding("test_reviewer", "info")),
+        (1, "finding", finding("close", "must_fix")),
+        (1, "finding", finding("implementer", "major")),
+        (1, "finding", finding("gate_triager", "must_fix")),
+    ])
+    r = row_of(cfg, "C-RF")
+    assert (r["reviewer_findings"], r["reviewer_blocking"]) == (3, 2)
+    assert r["must_fix_count"] == 3 and r["finding_count"] == 6      # old columns: every persona
+
+
+def test_per_run_ratios_and_null_denominator(cfg):
+    make(cfg, "C-RATIO", [
+        (1, "run.end", run_end("conformance_reviewer", "001")),
+        (1, "run.end", run_end("test_reviewer", "002")),
+        (1, "run.end", run_end("adversarial_reviewer", "003")),
+        (2, "finding", finding("conformance_reviewer", "must_fix")),
+        (2, "finding", finding("test_reviewer", "minor")),
+        (2, "finding", finding("test_reviewer", "minor")),
+        (2, "finding", finding("adversarial_reviewer", "minor")),
+    ])
+    r = row_of(cfg, "C-RATIO")
+    assert r["findings_per_reviewer_run"] == 1.333 and r["blocking_per_reviewer_run"] == 0.333
+    make(cfg, "C-ZERO", [])
+    z = row_of(cfg, "C-ZERO")
+    assert z["findings_per_reviewer_run"] is None and z["blocking_per_reviewer_run"] is None
+    assert [z[k] for k in ("reviewer_runs", "reviewer_findings", "reviewer_blocking",
+                           "first_review_must_fix", "first_review_major")] == [0] * 5
+
+
+def _round(first_to, mid, second_tail=()):
+    """OPENING→IMPLEMENTING→REVIEWING with round-1 findings, then `mid` transitions, then
+    findings that belong to a later round (1 must_fix, 1 major), then `second_tail`."""
+    return [
+        (1, "transition", tr("QUEUED", "OPENING", "admit")),
+        (2, "transition", tr("OPENING", "IMPLEMENTING", "opened")),
+        *first_to,
+        (10, "transition", tr("IMPLEMENTING", "REVIEWING", "implemented")),
+        (11, "finding", finding("conformance_reviewer", "must_fix")),
+        (11, "finding", finding("test_reviewer", "major")),
+        (11, "finding", finding("test_reviewer", "major")),
+        (11, "finding", finding("test_reviewer", "minor")),
+        *mid,
+        (30, "finding", finding("conformance_reviewer", "must_fix")),
+        (30, "finding", finding("conformance_reviewer", "major")),
+        *second_tail,
+    ]
+
+
+def test_first_review_round_boundary(cfg):
+    fix = [(20, "transition", tr("REVIEWING", "IMPLEMENTING", "review_fix")),
+           (25, "transition", tr("IMPLEMENTING", "REVIEWING", "implemented"))]
+    make(cfg, "C-B1", _round([], fix))
+    r = row_of(cfg, "C-B1")
+    assert (r["first_review_must_fix"], r["first_review_major"]) == (1, 2)
+    assert r["reviewer_blocking"] == 5
+
+    # a triage_fix IMPLEMENTING entry before the first REVIEWING entry does not end the round
+    early = [(5, "transition", tr("IMPLEMENTING", "GATING", "implemented")),
+             (6, "transition", tr("GATING", "IMPLEMENTING", "triage_fix"))]
+    make(cfg, "C-B2", _round(early, fix))
+    r = row_of(cfg, "C-B2")
+    assert (r["first_review_must_fix"], r["first_review_major"]) == (1, 2)
+
+    # park/resume back into REVIEWING does not end the round: everything counts
+    park = [(15, "transition", tr("REVIEWING", "PARKED", "review_escalated")),
+            (18, "transition", tr("PARKED", "REVIEWING", "resume"))]
+    make(cfg, "C-B3", _round([], park))
+    r = row_of(cfg, "C-B3")
+    assert (r["first_review_must_fix"], r["first_review_major"]) == (2, 3)
+
+    # loop_exhausted park, then the resume goes to IMPLEMENTING (not review_fix)
+    exhausted = [(15, "transition", tr("REVIEWING", "PARKED", "loop_exhausted")),
+                 (18, "transition", tr("PARKED", "IMPLEMENTING", "resume")),
+                 (22, "transition", tr("IMPLEMENTING", "REVIEWING", "implemented"))]
+    make(cfg, "C-B4", _round([], exhausted))
+    r = row_of(cfg, "C-B4")
+    assert (r["first_review_must_fix"], r["first_review_major"]) == (1, 2)
+
+    # never back to IMPLEMENTING: all reviewer findings count
+    make(cfg, "C-B5", _round([], []))
+    r = row_of(cfg, "C-B5")
+    assert (r["first_review_must_fix"], r["first_review_major"]) == (2, 3)
+
+
+def test_treatment_independence(cfg):
+    round1 = [
+        (1, "transition", tr("QUEUED", "OPENING", "admit")),
+        (2, "transition", tr("OPENING", "IMPLEMENTING", "opened")),
+        (10, "transition", tr("IMPLEMENTING", "REVIEWING", "implemented")),
+        (11, "run.end", run_end("conformance_reviewer", "001")),
+        (11, "run.end", run_end("test_reviewer", "002")),
+        (11, "finding", finding("conformance_reviewer", "must_fix")),
+        (11, "finding", finding("test_reviewer", "major")),
+    ]
+    round2 = [
+        (20, "transition", tr("REVIEWING", "IMPLEMENTING", "review_fix")),
+        (25, "transition", tr("IMPLEMENTING", "REVIEWING", "implemented")),
+        (26, "run.end", run_end("conformance_reviewer", "003")),
+        (26, "run.end", run_end("test_reviewer", "004")),
+        (26, "finding", finding("conformance_reviewer", "must_fix")),
+        (26, "finding", finding("test_reviewer", "major")),
+        (26, "finding", finding("test_reviewer", "minor")),
+    ]
+    make(cfg, "C-A", round1)
+    make(cfg, "C-BB", round1 + round2)
+    a, b = row_of(cfg, "C-A"), row_of(cfg, "C-BB")
+    assert (a["first_review_must_fix"], a["first_review_major"]) == (1, 1)
+    assert (b["first_review_must_fix"], b["first_review_major"]) == (1, 1)
+    assert b["reviewer_runs"] > a["reviewer_runs"]
+    assert b["reviewer_findings"] > a["reviewer_findings"]
+
+
+def test_task_active_excludes_closing_and_parked(cfg):
+    make(cfg, "C-TA", [
+        (10, "transition", tr("QUEUED", "OPENING", "admit")),
+        (15, "transition", tr("OPENING", "IMPLEMENTING", "opened")),
+        (45, "transition", tr("IMPLEMENTING", "CLOSING", "approved")),
+        (50, "transition", tr("CLOSING", "PARKED", "rebase_conflict")),
+        (110, "transition", tr("PARKED", "CLOSING", "resume")),
+        (115, "transition", tr("CLOSING", "MERGED", "merged")),
+    ], state="MERGED")
+    r = row_of(cfg, "C-TA")
+    assert r["close_s"] == 10 * 60                       # 45..50 and 110..115
+    assert r["active_s"] == (5 + 30 + 10) * 60
+    assert r["task_active_s"] == (5 + 30) * 60 == r["active_s"] - r["close_s"]
+    assert r["time_in_state_s"]["PARKED"] == 60 * 60     # in neither column
+    make(cfg, "C-NC", [(10, "transition", tr("QUEUED", "OPENING", "admit")),
+                       (20, "transition", tr("OPENING", "ABANDONED", "x"))], state="ABANDONED")
+    n = row_of(cfg, "C-NC")
+    assert n["close_s"] == 0 and n["task_active_s"] == n["active_s"] == 10 * 60
+
+
+def test_unknown_severity_not_counted_as_blocking(cfg):
+    # `make` rejects events that fail ledger_problems, so call campaign_row on raw events.
+    events = [
+        {"type": "transition", "ts": ts(1), "from": "QUEUED", "to": "REVIEWING"},
+        {"type": "finding", "ts": ts(2), "persona": "test_reviewer", "severity": ["must_fix"]},
+        {"type": "finding", "ts": ts(2), "persona": "test_reviewer", "severity": "catastrophic"},
+        {"type": "finding", "ts": ts(2), "persona": "test_reviewer", "severity": None},
+        {"type": "finding", "ts": ts(2), "persona": "test_reviewer", "severity": "major"},
+    ]
+    row = CE.campaign_row(cfg, {"id": "C-SEV", "state": "REVIEWING", "created_at": ts(0)},
+                          events, NOW)
+    assert row["reviewer_findings"] == 4 and row["reviewer_blocking"] == 1
+    assert (row["first_review_must_fix"], row["first_review_major"]) == (0, 1)

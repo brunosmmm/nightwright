@@ -266,7 +266,6 @@ progress. This is the single place to see *what has been decided* and *what is i
 | [SPEC-0368](./specs/0368-remote-gating-red-on-current-trees-human-visible.md) | Remote gates gate a stat-dirty tree at HEAD instead of falling back, and expose done.changed on the run | feature | in-progress | — | 2026-11-02 |
 | [SPEC-0391](./specs/0391-worker-host-slots-from-registry.md) | A gate job carries the worker's registry slots as the worker host's slot limit | feature | in-progress | — | 2026-11-02 |
 | [SPEC-0394](./specs/0394-declared-persona-run-settings-routing-and-requests.md) | Declared personas: run settings, reviewer routing metadata and run requests (rework of SPEC-0296 on the persona registry) | feature | accepted | M9: agentic workflow | 2026-11-02 |
-| [SPEC-0396](./specs/0396-campaign-export-treatment-aware-difficulty.md) | Campaign export: treatment-aware difficulty metrics (per-reviewer-run findings, first-round blockers, active time net of close) | feature | accepted | — | 2026-11-02 |
 
 ## Done
 
@@ -631,6 +630,7 @@ progress. This is the single place to see *what has been decided* and *what is i
 | [SPEC-0390](./specs/0390-workers-set-slots.md) | nw workers set --slots - change a worker's gate slots in place | feature | done | — | 2026-11-02 |
 | [SPEC-0393](./specs/0393-wtfug-spec-0304-20261030-7a4f-spec-0304-review.md) | SPEC-0304 review follow-ups: mvp-report edge cases in E4, E5 and E6, and the tests that pin them | feature | done | M10: agentic MVP | 2026-11-02 |
 | [SPEC-0395](./specs/0395-gating-does-not-hold-a-profile-slot.md) | GATING campaigns do not count against the profile slots | feature | done | M10: agentic MVP | 2026-11-02 |
+| [SPEC-0396](./specs/0396-campaign-export-treatment-aware-difficulty.md) | Campaign export: treatment-aware difficulty metrics (per-reviewer-run findings, first-round blockers, active time net of close) | feature | done | — | 2026-11-02 |
 | [SPEC-0398](./specs/0398-quiet-follower-delivers-campaign-silent-for.md) | The quiet follower holds `campaign_silent` / `state_stuck` for a GATING campaign that waits for a gate slot, runs a gate, or has its gate deferred | feature | done | M10: agentic MVP | 2026-11-02 |
 
 ## Superseded / rejected
