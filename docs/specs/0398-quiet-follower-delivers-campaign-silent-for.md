@@ -54,9 +54,11 @@ with live facts at delivery time.
   live gate-slot hold that is within the gate budget, are held by the quiet follower, whether or
   not the campaign is in the lease's `in_flight` snapshot.
 - Those events for a `GATING` campaign whose gate step is deferred (the runner is draining
-  within its wait window, or another gate or close re-gate is in flight) are held.
-- A gate that exceeds its budget, a drain past its window, a dead runner and a dead holder pid
-  still wake, so the follower cannot hide a hang.
+  within its wait window, or an exclusive re-gate defers it behind another gate or close
+  re-gate in flight, within a bounded age) are held.
+- A gate that exceeds its budget, a drain past its window, a deferral older than its bound, a
+  deferral with no exclusive re-gate behind it, a dead runner and a dead holder pid still
+  wake, so the follower cannot hide a hang.
 
 **Non-goals**
 - No change to the watchdog's detectors, `silent_after_s`, `gate_budget_s`, the event log
@@ -76,16 +78,24 @@ campaign while the lease is held (a dead runner still wakes):
    `gate_slots.holding(cfg, cid)` returns a live hold whose `since` is at most `gate_budget_s`
    plus the follower's existing grace (`_GRACE_S`, 300 s) old.
 2. **Deferred gate.** Hold when the campaign's state is `GATING`, it is not in `in_flight`, and
-   either the lease is `draining` within the bound `_drain_hold` already uses for
-   `runner_draining`, or `in_flight` names another campaign whose state is `GATING` or
-   `CLOSING` (the gate or close re-gate that defers it).
+   either (a) the lease is `draining` within the bound `_drain_hold` already uses for
+   `runner_draining`, or (b) an exclusive re-gate (SPEC-0311 `gate_exclusive` marker) is set on
+   a `GATING` campaign (this one or another) while `in_flight` names another `GATING` or
+   `CLOSING` campaign, and this campaign has been `GATING` for at most
+   `2 × gate_budget_s + _GRACE_S`. Rule (b) mirrors `select_gate_starts` (`queue.py:433`),
+   which defers a non-exclusive gate only when an exclusive re-gate is in flight, or is pending
+   while another gate is in flight; without an exclusive marker nothing defers a gate, so a
+   silent `GATING` campaign outside a drain is not explained and wakes. The age bound is one
+   gate run plus the exclusive re-gate that follows its timeout, plus grace.
 
 ## Design
 
 **`src/nightwright/agentic/quiet.py`**
-- `Ctx` gets a lazy property `states` -> `dict[str, str]` (campaign id -> state), built from one
-  `store.list_campaigns(cfg)` scan on first use, like `live_specs` and `closing_waiters`; tests
-  inject it through a new optional `Ctx(..., states=None)` argument.
+- `Ctx` gets a lazy property `states` -> `dict[str, dict]` (campaign id -> `{"state": str,
+  "gate_exclusive": bool, "updated_at": ..., "created_at": ...}`, `gate_exclusive` being
+  `bool(queue.gate_exclusive(row))`), built from one `store.list_campaigns(cfg)` scan on first
+  use, like `live_specs` and `closing_waiters`; tests inject it through a new optional
+  `Ctx(..., states=None)` argument.
 - `_silent_hold(ev, ctx)` returns true when the lease is held, the event has a campaign and any
   of: the existing `_alive` check for the campaign or its close-train head (SPEC-0314),
   `_gate_active(cid, ctx)`, `_gate_deferred(cid, lease, ctx)`.
@@ -95,16 +105,24 @@ campaign while the lease is held (a dead runner still wakes):
   `since` does not hold. Both probes check the holder/waiter pid is alive (existing behavior),
   so a dead pid never holds.
 - `_gate_deferred(cid, lease, ctx)`: false unless `ctx.states.get(cid) == "GATING"` and `cid`
-  is not in `lease["in_flight"]`. Then true when `lease["draining"]` is a dict with a `since`
-  whose age is within `_drain_hold(cfg, {"waiting_on": draining.get("waiting_on"),
-  "draining_s": age})` (the same bound as the `runner_draining` rule), or when any other id in
-  `lease["in_flight"]` has `ctx.states` equal to `GATING` or `CLOSING`.
+  is not in `lease["in_flight"]` (`ctx.states[cid]["state"]`). Then true when either:
+  - (a) `lease["draining"]` is a dict with a `since` whose age is within
+    `_drain_hold(cfg, {"waiting_on": draining.get("waiting_on"), "draining_s": age})` (the same
+    bound as the `runner_draining` rule); or
+  - (b) all of: some id in `ctx.states` with state `GATING` has `gate_exclusive` true (this
+    campaign or another); some id in `lease["in_flight"]` other than `cid` has state `GATING`
+    or `CLOSING` in `ctx.states`; and the campaign's time in `GATING`,
+    `E._since_state(cfg, {"id": cid, **ctx.states[cid]}, ctx.now)` (the watchdog's own
+    `in_state_s` clock), is not None and at most `2 * E.settings(cfg)["gate_budget_s"] +
+    _GRACE_S`. A missing age does not hold.
 - `classify` is unchanged: both event types already go through `_silent_hold`.
 - Why nothing is hidden forever: a slot waiter or holder that stalls is bounded by
   `gate_budget_s` + grace, after which the event wakes; a drain is bounded by its own window
-  (then `runner_draining` and this event wake); a deferral by another gate is bounded by that
-  gate's own `campaign_silent` / `state_stuck` / `run_overdue` / `parked` events, which wake
-  when it is no longer held; a dead runner raises `runner_dead` and `held` turns false.
+  (then `runner_draining` and this event wake); a deferral behind another gate needs an
+  exclusive marker (the only thing `select_gate_starts` defers on) and is cut off by the
+  `2 × gate_budget_s + _GRACE_S` age bound regardless of how busy the queue stays, so a
+  `GATING` campaign whose gate never starts for another reason (a bug, a `none` plan step)
+  wakes once it is older than that; a dead runner raises `runner_dead` and `held` turns false.
 - Gate retries (SPEC-0289's retry ladder, SPEC-0342's remote retry) run inside the one gate
   step: while a retry waits for a slot the waiter marker holds, and while it runs the hold does.
 
@@ -125,8 +143,12 @@ campaign while the lease is held (a dead runner still wakes):
   need the lease and pool facts in the detector. Events raised by older code would still reach
   the follower. The follower already has the lease and decides at delivery time.
 - **Hold any GATING campaign while the lease is held.** Would hide a gate that hung inside a
-  live runner; the budget bound on the hold and the liveness of the deferring gate keep the
-  second signal.
+  live runner; the budget bound on the hold and the exclusive-marker and age bounds on the
+  deferral keep the second signal.
+- **Hold whenever any other gate or close is in `in_flight`, without an exclusive marker or age
+  bound.** `in_flight` lists every pooled campaign, including a `CLOSING` one that does not
+  re-gate, and on a busy queue the next gate always replaces the last, so a gate that never
+  starts would stay hidden indefinitely.
 - **Add `gate_waiting` to the hold decision.** `gate_waiting` is only written after a wait of
   30 s and as a ledger entry; the marker and hold files are the live source of truth and also
   cover a gate that runs after its wait ended.
@@ -144,9 +166,16 @@ campaign while the lease is held (a dead runner still wakes):
 - [ ] A hold on a worker pool (`gate-slots/w-<W>/`, SPEC-0337) holds like a local one.
 - [ ] It returns `hold` for a `GATING` campaign that is not in `in_flight` when the lease is
       draining within `_drain_hold`'s bound, and `wake` when the drain is older than the bound.
-- [ ] It returns `hold` for a `GATING` campaign not in `in_flight` while `in_flight` names
-      another `GATING` or `CLOSING` campaign, and `wake` when `in_flight` is empty, names only
-      campaigns in other states, or the campaign is not `GATING`.
+- [ ] It returns `hold` for a `GATING` campaign not in `in_flight` while a `GATING` campaign
+      (itself or another) carries a `gate_exclusive` marker, `in_flight` names another `GATING`
+      or `CLOSING` campaign, and the campaign has been `GATING` for at most
+      `2 × gate_budget_s + 300` s.
+- [ ] It returns `wake` in the same situation when no `GATING` campaign has a `gate_exclusive`
+      marker, when the campaign has been `GATING` longer than `2 × gate_budget_s + 300` s (or
+      its age is unknown), when `in_flight` is empty or names only campaigns in other states,
+      or when the campaign is not `GATING`.
+- [ ] `Ctx.states` maps each campaign id to its `state` and a `gate_exclusive` flag, read from
+      one store scan.
 - [ ] The existing cases still hold: own campaign in `in_flight`, fresh `busy`, close-train
       waiter behind a live head (SPEC-0314); other campaigns still wake.
 - [ ] `quiet.RULES` is unchanged and no other event type's classification changes.
@@ -165,11 +194,16 @@ campaign while the lease is held (a dead runner still wakes):
     hold.
   - `test_silent_held_for_gate_deferred_by_drain`: `GATING`, not in `in_flight`, `draining` with
     `since` inside and past the bound (with and without `waiting_on` timeouts).
-  - `test_silent_held_for_gate_deferred_behind_another_gate`: `in_flight` naming a `GATING`, a
-    `CLOSING`, an `IMPLEMENTING` campaign and nothing; and the campaign itself in a non-`GATING`
-    state.
-  - `test_ctx_states_built_from_store`: campaigns written to a temp store, the lazy property
-    maps id -> state.
+  - `test_silent_held_for_gate_deferred_behind_another_gate`: with an exclusive marker on a
+    `GATING` campaign (the event's own, then another's) and `in_flight` naming a `GATING` and a
+    `CLOSING` campaign, within age: `hold`. Wake cases: `in_flight` naming an `IMPLEMENTING`
+    campaign or nothing; the campaign itself in a non-`GATING` state; no exclusive marker
+    anywhere (a `CLOSING`-only or `GATING`-only `in_flight`); an exclusive marker only on a
+    non-`GATING` campaign; and an over-age case (`GATING` since more than
+    `2 × gate_budget_s + 300` s, via a transition ledger entry or `updated_at`) and a missing-age
+    case, both with every other condition met.
+  - `test_ctx_states_built_from_store`: campaigns written to a temp store (one with a
+    `gate_exclusive` marker), the lazy property maps id -> `state` and `gate_exclusive`.
   - Existing `test_silent_held_while_in_flight`, `test_silent_held_for_train_waiter_behind_live_head`,
     `test_silent_not_held_for_waiter_without_train_entry`, and
     `tests/test_skills.py::test_conduct_skill_quiet_rules_match_code`.
