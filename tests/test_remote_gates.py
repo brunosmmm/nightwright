@@ -188,6 +188,14 @@ for line in p.stdout:
 """
 
 
+def no_disk_guard(cfg_dir) -> None:
+    """A loopback worker is a real `nw worker` process: SPEC-0387 refuses its jobs while the
+    host's free disk is under `min_free_gb` (default 5), which a busy gate box can be, so the
+    placement falls back local. Keep the host's disk out of the test."""
+    cfg_dir.mkdir(parents=True, exist_ok=True)
+    (cfg_dir / "config.yaml").write_text(json.dumps({"agentic": {"workers": {"min_free_gb": 0}}}))
+
+
 class Remote:
     """A worker reached through a fake `ssh`: the destination is dropped and the command runs
     as the SSH forced command would, against its own data dir."""
@@ -197,6 +205,7 @@ class Remote:
         tmp = w.tmp
         self.wdata = tmp / "wdata"
         self.wcfg = {"data_dir": str(self.wdata)}
+        no_disk_guard(tmp / "wcfgdir")
         self.ssh = _script(tmp / "fake-ssh", (
             f'shift\nexport SSH_ORIGINAL_COMMAND="$*" NW_DATA_DIR={self.wdata} '
             f'NW_CONFIG_DIR={tmp / "wcfgdir"} NW_WORKER_FINISH_GC=0\n'

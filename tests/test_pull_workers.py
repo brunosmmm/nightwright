@@ -41,6 +41,8 @@ class Pull:
                                        daemon=True)
         self.thread.start()
         self.blobs, self.tokens, self.procs = {}, {}, {}
+        for name in names:
+            self.worker_config(name)            # the host's free disk is not under test
         recs = []
         for name in names:
             token, secret = PJ.new_credential(w.cfg, name)
@@ -60,7 +62,8 @@ class Pull:
     def worker_config(self, name="box", **workers):
         d = self.wcfg(name)
         d.mkdir(parents=True, exist_ok=True)
-        (d / "config.yaml").write_text(json.dumps({"agentic": {"workers": workers}}))
+        (d / "config.yaml").write_text(json.dumps(
+            {"agentic": {"workers": {"min_free_gb": 0, **workers}}}))
 
     def start(self, name="box", env=None, *args):
         log = open(self.tmp / f"serve-{name}.log", "ab")

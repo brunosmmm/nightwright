@@ -21,7 +21,7 @@ from nightwright.agentic import remote_jobs as RJ
 from nightwright.agentic import store as S
 from nightwright.agentic import workers as WK
 
-from test_remote_gates import CID, _commit, _script
+from test_remote_gates import CID, _commit, _script, no_disk_guard
 from test_remote_gates import _short_runtime_dir  # noqa: F401  (autouse fixture)
 from test_remote_job_records import ASYNC_INFO, AW
 from waits import join, until
@@ -36,6 +36,7 @@ class Box:
     def __init__(self, w, name):
         self.w, self.name = w, name
         self.wdata = w.tmp / f"wdata-{name}"
+        no_disk_guard(w.tmp / f"wcfg-{name}")
         self.ssh = _script(w.tmp / f"fake-ssh-{name}", (
             f'shift\nexport SSH_ORIGINAL_COMMAND="$*" NW_DATA_DIR={self.wdata} '
             f'NW_CONFIG_DIR={w.tmp / f"wcfg-{name}"} NW_WORKER_FINISH_GC=0\n'
