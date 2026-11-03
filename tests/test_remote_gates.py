@@ -188,12 +188,15 @@ for line in p.stdout:
 """
 
 
+DISK_GUARD_OFF = {"workers": {"min_free_gb": 0}}
+
+
 def no_disk_guard(cfg_dir) -> None:
     """A loopback worker is a real `nw worker` process: SPEC-0387 refuses its jobs while the
     host's free disk is under `min_free_gb` (default 5), which a busy gate box can be, so the
     placement falls back local. Keep the host's disk out of the test."""
     cfg_dir.mkdir(parents=True, exist_ok=True)
-    (cfg_dir / "config.yaml").write_text(json.dumps({"agentic": {"workers": {"min_free_gb": 0}}}))
+    (cfg_dir / "config.yaml").write_text(json.dumps({"agentic": DISK_GUARD_OFF}))
 
 
 class Remote:

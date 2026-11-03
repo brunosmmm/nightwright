@@ -20,6 +20,7 @@ import pytest
 from nightwright.agentic import gate_slots as GS
 from nightwright.agentic import worker as W
 
+from test_remote_gates import no_disk_guard, DISK_GUARD_OFF
 from waits import WAIT_S, until
 
 
@@ -73,6 +74,7 @@ def wenv(tmp_path):
            if not k.startswith("NW_") or k == "NW_TEST_WAIT_S"}
     # a job's detached finish gc would race the gc tests' own counts; its own test turns it on
     env.update(NW_DATA_DIR=str(data), NW_CONFIG_DIR=str(conf), NW_WORKER_FINISH_GC="0")
+    no_disk_guard(conf)         # SPEC-0387: the host's free disk is not under test
     return env
 
 
@@ -91,8 +93,7 @@ def _no_finish_gc(monkeypatch):
 
 def _cfg(env, slots=None):
     cfg = {"data_dir": env["NW_DATA_DIR"], "config_dir": env["NW_CONFIG_DIR"]}
-    if slots:
-        cfg["agentic"] = {"gates": {"slots": slots}}
+    cfg["agentic"] = {**DISK_GUARD_OFF, **({"gates": {"slots": slots}} if slots else {})}
     return cfg
 
 
@@ -273,7 +274,8 @@ def test_concurrent_jobs_see_their_own_base(src, tmp_path, wenv):
     sync = tmp_path / "sync"
     sync.mkdir()
     # both jobs must hold a slot at once (each gate waits for the other): pin two slots
-    (Path(wenv["NW_CONFIG_DIR"]) / "config.yaml").write_text("agentic:\n  gates:\n    slots: 2\n")
+    (Path(wenv["NW_CONFIG_DIR"]) / "config.yaml").write_text(
+        json.dumps({"agentic": {"gates": {"slots": 2}, **DISK_GUARD_OFF}}))
     cmd = (f'git rev-parse "$NW_BASE"; touch "{sync}/$NW_CAMPAIGN"; '
            f'while [ "$(ls "{sync}" | wc -l)" -lt 2 ]; do sleep 0.1; done; '
            'git rev-parse "$NW_BASE"')
@@ -485,7 +487,7 @@ def test_gate_budget_from_the_payload_bounds_the_retry_ladder(src, tmp_path, wen
 def test_gate_budget_falls_back_to_the_workers_own(src, tmp_path, wenv, budget, reruns):
     # 1 s of sleep alone exceeds 0.2 s (load can only add to it); 600 s leaves ~10 minutes
     (Path(wenv["NW_CONFIG_DIR"]) / "config.yaml").write_text(
-        f"agentic:\n  events:\n    gate_budget_s: {budget}\n")
+        json.dumps({"agentic": {"events": {"gate_budget_s": budget}, **DISK_GUARD_OFF}}))
     h, data = _bundle_job(src, tmp_path, [_flaky_once(1)])
     del h["payload"]["gate_budget_s"]
     job, fin, rc = _run(wenv, h, data)
@@ -735,7 +737,8 @@ def test_a_stale_git_ref_lock_in_the_cache_is_cleared(src, tmp_path, wenv):
 
 def _slot_conf(env):
     from pathlib import Path
-    (Path(env["NW_CONFIG_DIR"]) / "config.yaml").write_text("agentic:\n  gates:\n    slots: 1\n")
+    (Path(env["NW_CONFIG_DIR"]) / "config.yaml").write_text(
+        json.dumps({"agentic": {"gates": {"slots": 1}, **DISK_GUARD_OFF}}))
     return {**env, W.SLOT_WAIT_ENV: "0.5"}
 
 

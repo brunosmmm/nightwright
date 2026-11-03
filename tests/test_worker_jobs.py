@@ -40,14 +40,13 @@ def _kill_leftover_jobs(tmp_path):
 
 def _conf(env, **workers):
     (Path(env["NW_CONFIG_DIR"]) / "config.yaml").write_text(
-        yaml.safe_dump({"agentic": {"workers": workers}}))
+        yaml.safe_dump({"agentic": {"workers": {"min_free_gb": 0, **workers}}}))
     return {**env, WJ.KILL_GRACE_ENV: "1"}
 
 
 def _cfg(env, **workers):
     cfg = {"data_dir": env["NW_DATA_DIR"], "config_dir": env["NW_CONFIG_DIR"]}
-    if workers:
-        cfg["agentic"] = {"workers": workers}
+    cfg["agentic"] = {"workers": {"min_free_gb": 0, **workers}}    # SPEC-0387: not under test
     return cfg
 
 
