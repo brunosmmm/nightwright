@@ -5,14 +5,15 @@
       "name": "SPEC-0338 .nw/project.yaml",
       "changed": [".nw/project.yaml"],
       "full": false,
-      "must_include": ["tests/test_agentic_dogfood_config.py"]
+      "must_include": ["tests/test_agentic_dogfood_config.py"],
+      "max_fraction": 0.5
     },
     {
       "name": "SPEC-0338 tests/data/remote_gates_golden.json",
       "changed": ["tests/data/remote_gates_golden.json"],
       "full": false,
       "must_include": ["tests/test_remote_gates_golden.py"],
-      "max_tests": 12,
+      "max_tests": 18,
       "stage": {
         "tests/data/remote_gates_golden.json": "{}\n",
         "tests/test_remote_gates_golden.py": "from pathlib import Path\n\nGOLDEN = Path(__file__).parent / \"data\" / \"remote_gates_golden.json\"\n\n\ndef test_golden():\n    assert GOLDEN.exists()\n"

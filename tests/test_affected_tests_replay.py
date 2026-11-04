@@ -54,4 +54,5 @@ def test_recorded_fallback(tree_copy, tmp_path, case):
     if "max_tests" in case:
         assert len(sel.tests) <= case["max_tests"], sel.tests
     all_tests = [t for t in AT.import_graph(copy)[0].values() if AT._is_test_module(t)]
-    assert len(sel.tests) <= AT.MAX_FRACTION * len(all_tests)
+    # a case may widen the cap: a config file named by string in many tests legitimately fans out
+    assert len(sel.tests) <= case.get("max_fraction", AT.MAX_FRACTION) * len(all_tests)
