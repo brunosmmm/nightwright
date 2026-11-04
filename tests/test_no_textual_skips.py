@@ -11,6 +11,8 @@ from pathlib import Path
 
 import pytest
 
+pytestmark = pytest.mark.tree_guard  # SPEC-0421: scans the tree; always run by --guards
+
 TESTS = Path(__file__).resolve().parent
 ROOT = TESTS.parent
 

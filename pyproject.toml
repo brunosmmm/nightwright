@@ -48,4 +48,7 @@ packages = ["src/nightwright"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-markers = ["slow: runs a real nested pytest/xdist process (SPEC-0392)"]
+markers = [
+  "slow: runs a real nested pytest/xdist process (SPEC-0392)",
+  "tree_guard: scans the tests or src tree; always selected by tools/affected_tests.py --guards (SPEC-0421)",
+]

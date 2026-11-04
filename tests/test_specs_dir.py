@@ -14,6 +14,8 @@ import pytest
 
 from nightwright import specs as S
 
+pytestmark = pytest.mark.tree_guard  # SPEC-0421: scans the tree; always run by --guards
+
 
 def test_explicit_specs_dir_wins(tmp_path):
     want = tmp_path / "elsewhere"

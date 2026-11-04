@@ -447,6 +447,8 @@ import os
 import re
 from pathlib import Path
 
+pytestmark = pytest.mark.tree_guard  # SPEC-0421: scans the tree; always run by --guards
+
 DEFS = Path(P.__file__).resolve().parent / "profile_defs"
 SCHEMA = "schema: nw.profile.v1\n"
 

@@ -832,3 +832,113 @@ def test_campaign_environment_does_not_force_the_full_suite(repo, monkeypatch, e
     r = _cli(repo, "--run", "echo", "RUN")
     assert r.stdout.strip() == "RUN tests/test_mid.py"
     assert AT.forced_full() is None
+
+
+# --- SPEC-0421: tree guards (`--guards`) and the tree-reader rule ---------------------------------
+
+GUARD_FILES = {
+    "tests/test_guard_one.py": ("import pytest\n\npytestmark = pytest.mark.tree_guard\n\n"
+                                "def test_x():\n    pass\n"),
+    "tests/test_guard_list.py": ("import pytest\n\npytestmark = [pytest.mark.slow, pytest.mark.tree_guard]\n"),
+    "tests/test_guard_tuple.py": "import pytest\n\npytestmark = (pytest.mark.tree_guard,)\n",
+    "tests/test_not_guard.py": ("import pytest\n\npytestmark = pytest.mark.slow\n\n"
+                                "@pytest.mark.tree_guard\ndef test_x():\n    pass\n"),
+    "tests/test_tests_reader.py": ("from pathlib import Path\n\nTESTS = Path(__file__).parent\n"
+                                   "FILES = sorted(TESTS.glob('test_*.py'))\n"),
+    "tests/test_root_reader.py": ("from pathlib import Path\n\nROOT = Path(__file__).resolve().parents[1]\n"
+                                  "SRC = ROOT / 'src' / 'nightwright'\n"
+                                  "def f():\n    return list(SRC.rglob('*.py'))\n"),
+    "tests/test_walk_reader.py": ("import os\nfrom pathlib import Path\n\n"
+                                  "SRC = Path(__file__).parent.parent / 'src' / 'nightwright'\n"
+                                  "def f():\n    return list(os.walk(SRC))\n"),
+    "tests/test_tmp_glob.py": ("def test_x(tmp_path):\n    assert not list(tmp_path.glob('*.py'))\n"
+                               "    assert not list(tmp_path.rglob('*'))\n"),
+    "tests/test_sub_glob.py": ("from pathlib import Path\n\nD = Path(__file__).parent / 'data'\n"
+                               "X = list(D.glob('*.json'))\n"),
+}
+
+
+@pytest.fixture
+def grepo(tmp_path):
+    r = tmp_path / "repo"
+    for rel, text in {**FILES, **GUARD_FILES}.items():
+        p = r / rel
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(text)
+    _git(r, "init", "-q", "-b", "main")
+    _git(r, "add", "-A")
+    _git(r, "commit", "-qm", "init")
+    _git(r, "checkout", "-qb", "feat")
+    return r
+
+
+GUARDS = ["tests/test_guard_list.py", "tests/test_guard_one.py", "tests/test_guard_tuple.py"]
+
+
+def test_guards_finds_single_list_and_tuple_marks_and_ignores_a_function_mark(grepo):
+    assert AT._guards(AT.Index(grepo)) == GUARDS
+
+
+def test_tree_roots_detects_scans_of_the_tests_and_src_trees_only(grepo):
+    ix = AT.Index(grepo)
+    roots = {rel: ix.info[m].tree_roots for m, rel in ix.mods.items() if rel.startswith("tests/test_")}
+    assert roots["tests/test_tests_reader.py"] == {"tests"}
+    assert roots["tests/test_root_reader.py"] == {"src/nightwright"}
+    assert roots["tests/test_walk_reader.py"] == {"src/nightwright"}
+    assert roots["tests/test_tmp_glob.py"] == set()           # tmp_path is not the tree
+    assert roots["tests/test_sub_glob.py"] == set()           # a subdirectory is not a root
+    assert roots["tests/test_base.py"] == set()
+
+
+def test_guards_flag_adds_every_guard_to_a_docs_only_selection(grepo):
+    _change(grepo, "docs/note.md")
+    plain = _cli(grepo, "--json")
+    rep = json.loads(plain.stdout)
+    assert rep["tests"] == [] and "guards" not in rep
+    r = _cli(grepo, "--guards", "--json")
+    rep = json.loads(r.stdout)
+    assert rep["guards"] == GUARDS and rep["tests"] == GUARDS
+    assert "+3 guards" in r.stderr
+
+
+def test_guards_flag_runs_the_command_for_an_empty_selection_but_not_a_full_one(grepo):
+    _change(grepo, "docs/note.md")
+    r = _cli(grepo, "--run", "echo", "RUN")
+    assert r.stdout.strip() == "no affected tests"
+    r = _cli(grepo, "--guards", "--run", "echo", "RUN")
+    assert r.stdout.strip() == "RUN " + " ".join(GUARDS)
+    _git(grepo, "reset", "-q", "--hard", "main")
+    _git(grepo, "checkout", "-qB", "feat")
+    _change(grepo, "tests/conftest.py")                      # full suite: nothing appended
+    r = _cli(grepo, "--guards", "--run", "echo", "RUN")
+    assert r.stdout.strip() == "RUN" and "full suite" in r.stderr and "guards" not in r.stderr
+
+
+def test_guards_come_after_include_and_are_deduplicated(grepo):
+    _change(grepo, "tests/test_guard_one.py")
+    r = _cli(grepo, "--guards", "--include", "tests/test_base.py", "--run", "echo", "RUN")
+    out = r.stdout.split()
+    assert out[0] == "RUN" and "tests/test_base.py" in out
+    assert out.count("tests/test_guard_one.py") == 1
+
+
+def test_added_test_file_selects_the_tests_that_scan_tests(grepo):
+    (grepo / "tests" / "test_new.py").write_text("def test_x():\n    pass\n")
+    sel = _select(grepo)
+    assert {"tests/test_new.py", "tests/test_tests_reader.py"} <= set(sel.tests)
+    assert "tests/test_walk_reader.py" not in sel.tests       # scans src, not tests
+    assert "tests/test_tmp_glob.py" not in sel.tests
+    assert any("tree readers of tests for tests/test_new.py" in s for s in sel.reason.split("; "))
+
+
+def test_changed_src_file_selects_the_tests_that_scan_src(grepo):
+    _change(grepo, "src/nightwright/lonely.py")
+    sel = _select(grepo)
+    assert {"tests/test_root_reader.py", "tests/test_walk_reader.py"} <= set(sel.tests)
+    assert "tests/test_tests_reader.py" not in sel.tests
+
+
+def test_tree_reader_rule_is_off_in_strict_mode(grepo):
+    (grepo / "tests" / "test_new.py").write_text("def test_x():\n    pass\n")
+    sel = _select(grepo, strict=True, max_fraction=1.0)
+    assert sel.tests == ["tests/test_new.py"]

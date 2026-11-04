@@ -1,5 +1,8 @@
 """Policy: no MCP packaging in core (SPEC-0053)."""
 from pathlib import Path
+import pytest
+
+pytestmark = pytest.mark.tree_guard  # SPEC-0421: scans the tree; always run by --guards
 
 ROOT = Path(__file__).resolve().parent.parent
 

@@ -32,6 +32,12 @@ mapped to test modules through a static AST import graph over `src/nightwright` 
   path-shaped parent-directory reference); an unreached src module selects the tests named
   after it (the name rule). `--strict` / `NW_AFFECTED_STRICT=1` restores the SPEC-0328 rules.
 
+- (SPEC-0421) `--guards` adds every registered tree guard (a test module with module-level
+  `pytestmark = pytest.mark.tree_guard`, found through the AST of the tree under test) to a
+  non-full selection, so a guard that landed on main after the branch was cut still runs; and, not
+  with `--strict`, a changed or added file under `tests/` or `src/nightwright/` selects the test
+  modules that scan that root or an ancestor of it (`_tree_roots`).
+
 Usage:
     python3 tools/affected_tests.py [--base REF] [--repo DIR] [--include PATH]...
         prints the selection, one pytest path per line (`tests` for the full suite);
@@ -49,6 +55,7 @@ import argparse
 import ast
 import json
 import os
+import posixpath
 import subprocess
 import sys
 from pathlib import Path
@@ -76,6 +83,12 @@ TOP_DIRS = (TESTS_DIR, TOOLS_DIR, SRC_PKG, SRC_ROOT)
 DATA_ROOTS = (f"{TESTS_DIR}/", f"{SRC_ROOT}/{SRC_PKG}/", ".nw/", f"{TOOLS_DIR}/")
 # CLI wiring modules (see `_hub`); `nightwright.agentic.cli` also covers `nightwright.agentic.cli_*`.
 HUBS = ("nightwright.cli", "nightwright.agentic.cli")
+# SPEC-0421: the roots a tree-scanning test module can read, broadest last; a changed file selects
+# the modules scanning its own root or an ancestor of it.
+TREE_ROOTS = ("tests", "src/nightwright", "src", ".")
+GUARD_MARKER = "tree_guard"
+_SCAN_ATTRS = ("glob", "rglob", "iterdir")
+_SCAN_OS = ("walk", "scandir", "listdir")
 
 
 class Selection:
@@ -215,12 +228,131 @@ def _path_chain_hits(node):
     return False
 
 
+def _norm_dir(value):
+    """Repo-relative posix path of `value`, None when it leaves the repo or is absolute."""
+    if not isinstance(value, str) or value.startswith("/"):
+        return None
+    n = posixpath.normpath(value) if value else "."
+    return None if n == ".." or n.startswith("../") else n
+
+
+def _eval_paths(node, env, rel):
+    """Set of repo-relative paths `node` may denote (a static evaluation of `Path(__file__)`
+    derived expressions, SPEC-0421), or None when it cannot be resolved."""
+    if isinstance(node, ast.Name):
+        if node.id == "__file__":
+            return {rel}
+        return env.get(node.id)
+    if isinstance(node, ast.Constant):
+        d = _norm_dir(node.value) if isinstance(node.value, str) else None
+        return {d} if d else None
+    if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Div):
+        left, right = _eval_paths(node.left, env, rel), _eval_paths(node.right, env, rel)
+        if not left or not right:
+            return None
+        out = {_norm_dir(posixpath.join(a, b)) for a in left for b in right}
+        return out - {None} or None
+    if isinstance(node, ast.Attribute):
+        base = _eval_paths(node.value, env, rel)
+        if base and node.attr == "parent":
+            out = {_norm_dir(posixpath.dirname(b) or ".") for b in base}
+            return out - {None} or None
+        return None
+    if isinstance(node, ast.Subscript) and isinstance(node.value, ast.Attribute) \
+            and node.value.attr == "parents" and isinstance(node.slice, ast.Constant) \
+            and isinstance(node.slice.value, int):
+        base = _eval_paths(node.value.value, env, rel)
+        out = set()
+        for b in base or ():
+            for _ in range(node.slice.value + 1):
+                b = _norm_dir(posixpath.dirname(b) or ".") if b else None
+                if b is None:
+                    break
+            if b:
+                out.add(b)
+        return out or None
+    if isinstance(node, ast.Call):
+        f = node.func
+        name = f.attr if isinstance(f, ast.Attribute) else f.id if isinstance(f, ast.Name) else None
+        if name in ("resolve", "absolute", "expanduser") and isinstance(f, ast.Attribute):
+            return _eval_paths(f.value, env, rel)
+        if name in ("Path", "PurePath", "str", "abspath", "realpath", "normpath", "fspath") and node.args:
+            return _eval_paths(node.args[0], env, rel)
+        if name == "dirname" and node.args:
+            base = _eval_paths(node.args[0], env, rel)
+            out = {_norm_dir(posixpath.dirname(b) or ".") for b in base or ()}
+            return out - {None} or None
+        if name == "join" and node.args:
+            acc = _eval_paths(node.args[0], env, rel)
+            for a in node.args[1:]:
+                part = _eval_paths(a, env, rel)
+                if not acc or not part:
+                    return None
+                acc = {_norm_dir(posixpath.join(x, y)) for x in acc for y in part} - {None}
+            return acc or None
+    return None
+
+
+def _const_strs(node):
+    """The strings of a literal tuple/list of string constants, else None."""
+    if isinstance(node, (ast.Tuple, ast.List)) and node.elts \
+            and all(isinstance(e, ast.Constant) and isinstance(e.value, str) for e in node.elts):
+        return {_norm_dir(e.value) for e in node.elts} - {None}
+    return None
+
+
+def _tree_roots(rel, nodes):
+    """SPEC-0421: the `TREE_ROOTS` a module scans (`.glob(` / `.rglob(` / `.iterdir(` on a path
+    derived from `Path(__file__)` or a repo-relative literal, or `os.walk(` / `os.scandir(` /
+    `os.listdir(` on one). Only a scan of exactly such a root counts; a scan of a subdirectory or
+    of a `tmp_path` is not a tree scan."""
+    nodes = list(nodes or ())
+    env = {}
+    for _ in range(4):                      # names bound from other names: a small fixed point
+        for n in nodes:
+            if isinstance(n, ast.Assign) and len(n.targets) == 1 and isinstance(n.targets[0], ast.Name):
+                got = _eval_paths(n.value, env, rel)
+                if got:
+                    env[n.targets[0].id] = got
+            elif isinstance(n, (ast.For, ast.comprehension)) and isinstance(n.target, ast.Name):
+                got = _const_strs(n.iter)
+                if got:
+                    env[n.target.id] = got
+    roots = set()
+    for n in nodes:
+        if not isinstance(n, ast.Call):
+            continue
+        f = n.func
+        target = None
+        if isinstance(f, ast.Attribute) and f.attr in _SCAN_ATTRS:
+            target = f.value
+        elif isinstance(f, ast.Attribute) and f.attr in _SCAN_OS and n.args \
+                and isinstance(f.value, ast.Name) and f.value.id == "os":
+            target = n.args[0]
+        got = _eval_paths(target, env, rel) if target is not None else None
+        roots |= {d for d in got or () if d in TREE_ROOTS}
+    return roots
+
+
+def _marks_guard(tree):
+    """True when the module assigns `pytestmark` at module level to an expression naming
+    `tree_guard` (`pytest.mark.tree_guard`, or a list/tuple holding it)."""
+    for n in getattr(tree, "body", ()):
+        if isinstance(n, ast.Assign) and any(isinstance(t, ast.Name) and t.id == "pytestmark"
+                                             for t in n.targets):
+            if any(isinstance(x, ast.Attribute) and x.attr == GUARD_MARKER for x in ast.walk(n.value)):
+                return True
+    return False
+
+
 class _Info:
     """Reference data of one module: its string constants and `Path(...) / "x"` operands."""
 
-    def __init__(self, nodes):
+    def __init__(self, nodes, rel=None, tree=None):
         self.consts = []
         self.pathparts = set()
+        self.tree_roots = _tree_roots(rel, nodes) if rel and nodes is not None else set()
+        self.guard = _marks_guard(tree) if tree is not None and rel and _is_test_module(rel) else False
         if nodes is not None:
             for n in nodes:
                 if isinstance(n, ast.Constant) and isinstance(n.value, str):
@@ -257,7 +389,7 @@ class Index:
             for dep in deps:
                 self.reverse[dep].add(name)
             if with_refs:
-                self.info[name] = _Info(nodes)
+                self.info[name] = _Info(nodes, rel, tree)
         # a shadowed tools module is reached by the same `import X` as the module that shadows it
         self.shadow_deps = {n: _imports(repo, rel, n, self.mods) for n, rel in self.shadowed.items()}
 
@@ -438,6 +570,26 @@ def _referencing(ix, rel, wide=False):
     return refs | {m for m, info in ix.info.items() if info.has_dir_ref(p.parent.name)}
 
 
+def _guards(ix):
+    """SPEC-0421: the registered tree guards, test module paths marked `pytestmark =
+    pytest.mark.tree_guard`, read from the tree being tested."""
+    return sorted(ix.mods[m] for m, info in ix.info.items() if info.guard)
+
+
+def _tree_root_of(rel):
+    for root in ("tests", "src/nightwright"):
+        if rel.startswith(root + "/"):
+            return root
+    return None
+
+
+def _tree_readers(ix, root):
+    """Test module paths scanning `root` or an ancestor of it."""
+    ancestors = {r for r in TREE_ROOTS if r == "." or root == r or root.startswith(r + "/")}
+    return {ix.mods[m] for m, info in ix.info.items()
+            if _is_test_module(ix.mods[m]) and info.tree_roots & ancestors}
+
+
 def _name_rule(ix, rel, name):
     """Test files named after the unreached src module `name` (SPEC-0357 name rule)."""
     leaf = name.rpartition(".")[2]
@@ -522,6 +674,11 @@ def select(repo, changed, max_fraction=None, depth=0, strict=False, base=None):
         p = Path(rel)
         top = p.parts[0]
         is_src = rel.startswith(f"{SRC_ROOT}/{SRC_PKG}/")
+        if not strict and (root := _tree_root_of(rel)):
+            # SPEC-0421: a test or src file is read by the tests that scan its tree
+            if readers := _tree_readers(ix, root):
+                selected |= readers
+                rules.append(f"tree readers of {root} for {rel}")
         if not strict and (sub := _nested_conftest_dir(rel)):
             selected |= {t for t in all_tests if t.startswith(sub + "/")}
             rules.append(f"tests below {sub} for {rel}")
@@ -703,6 +860,8 @@ def main(argv=None):
                          f"{MAX_FRACTION} with --strict)")
     ap.add_argument("--include", action="append", default=[], metavar="PATH",
                     help="test path always selected (a smoke set); repeatable")
+    ap.add_argument("--guards", action="store_true",
+                    help="also select every registered tree guard (SPEC-0421), read from the tree")
     ap.add_argument("--depth", type=int, default=0,
                     help="src import hops always walked before stopping at the nearest tests")
     ap.add_argument("--strict", action="store_true",
@@ -735,6 +894,11 @@ def main(argv=None):
         sel = Selection(True, [], f"cannot diff against {args.base!r}: {e}")
     if not sel.full and args.include:
         sel.tests = sorted(set(sel.tests) | set(args.include))
+    guards = []
+    if args.guards and not sel.full:
+        guards = _guards(Index(repo))
+        sel.tests = sorted(set(sel.tests) | set(guards))
+        sel.reason += f" +{len(guards)} guards"
     label = "full suite" if sel.full else "affected"
     print(f"affected_tests: {label}: {sel.reason}", file=sys.stderr, flush=True)
     report_path = os.environ.get("NW_GATE_REPORT")
@@ -743,6 +907,8 @@ def main(argv=None):
                   "include": list(args.include), "changed": changed, "base_sha": base_sha,
                   "head_sha": _git_out(repo, "rev-parse", "HEAD"),
                   "head_tree": _git_out(repo, "rev-parse", "HEAD^{tree}")}
+        if args.guards:
+            report["guards"] = guards
         if report_path:
             write_report(report_path, report)
         if args.json:

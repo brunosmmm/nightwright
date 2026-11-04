@@ -22,9 +22,12 @@ gates:
     when: loop
     # A worktree branched before SPEC-0328 has no tools/affected_tests.py (the gate list comes
     # from main's project.yaml): run the full suite there instead of failing (IDEA-533, 2026-10-31).
+    # SPEC-0421: --guards runs the tree guards on every selection; the loop runs in the un-rebased
+    # worktree, whose tool may predate the flag, so it is passed only when the tool knows it.
     cmd: >-
       if [ -f tools/affected_tests.py ]; then
-      python3 tools/affected_tests.py
+      python3 tools/affected_tests.py --help | grep -q -- --guards && G=--guards || G=;
+      python3 tools/affected_tests.py $G
       --include tests/test_agentic_dogfood_config.py --include tests/test_agentic_project.py
       --run uv run pytest -q -x -n 2;
       else uv run pytest -q -x -n 2; fi
@@ -81,8 +84,10 @@ gates:
     # suite runs only as the main sentinel (SPEC-0379, interval agentic.sentinel.interval_hours),
     # which affected_tests.py detects (NW_CAMPAIGN sentinel-*) and runs in full.
     # SPEC-0309: 4 xdist workers (8 cores / 2 gate slots); the targeted rerun stays serial.
+    # SPEC-0421: --guards adds the tree_guard modules (tests that scan the tests/src tree) to every
+    # non-full selection, so a guard that landed on main after the branch was cut still runs.
     cmd: >-
-      python3 tools/affected_tests.py
+      python3 tools/affected_tests.py --guards
       --include tests/test_agentic_dogfood_config.py --include tests/test_agentic_project.py
       --run uv run pytest -q -x -n 4
     retry_cmd: uv run pytest -q -n 0 {failing}

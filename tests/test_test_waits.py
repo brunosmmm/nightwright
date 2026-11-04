@@ -10,6 +10,8 @@ import pytest
 
 import waits
 
+pytestmark = pytest.mark.tree_guard  # SPEC-0421: scans the tree; always run by --guards
+
 TESTS = Path(__file__).parent
 HELPER_NAMES = {"until", "_until", "wait_for", "_wait_for"}
 NUMERIC_JOIN = re.compile(r"\.join\(\s*\d+(\.\d+)?\s*\)")

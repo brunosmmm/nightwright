@@ -231,6 +231,18 @@ abbr wn 'nw next'
 abbr wtoday 'nw ideas; and nw agenda; and nw next'
 ```
 
+## Tree guards in the test gates (SPEC-0421)
+
+The loop and close pytest gates run only the tests a branch affects (`tools/affected_tests.py`).
+A test that scans the tests or src tree (SPEC-0269 waits, SPEC-0409 textual skips, SPEC-0185 raw
+prints) imports nothing it checks, so a branch that breaks it would not select it. Such a module
+is a **tree guard**: it sets `pytestmark = pytest.mark.tree_guard` at module level (a list holding
+it also works), and both gates pass `--guards`, which adds every marked module to every non-full
+selection, read from the tree being tested. A changed or added file under `tests/` or
+`src/nightwright/` also selects the tests that scan that tree. To register a new guard, add the
+marker in the same commit as the test; `tests/test_guard_registry.py` fails for a tree-scanning
+module that is neither marked nor listed in its `GUARD_EXEMPT` (with a reason).
+
 ## CLI next-step hints
 
 ```bash

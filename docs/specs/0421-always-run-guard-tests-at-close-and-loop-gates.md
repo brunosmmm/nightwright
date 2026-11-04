@@ -1,7 +1,7 @@
 ---
 id: SPEC-0421
 title: "Always-run guard tests at close and loop gates"
-status: accepted
+status: done
 owner: user
 created: 2026-11-04
 source_idea: IDEA-927
@@ -157,19 +157,19 @@ to register a new guard.
 
 ## Acceptance criteria
 
-- [ ] AC1: `python3 tools/affected_tests.py --guards --changed docs/README.md --json` (any
+- [x] AC1: `python3 tools/affected_tests.py --guards --changed docs/README.md --json` (any
       non-full selection) lists every `tree_guard` module in `tests` and in `guards`.
       Without `--guards`, the output is unchanged from today, byte for byte, for the same input.
-- [ ] AC2: `--guards --run CMD` with an otherwise empty selection runs CMD with the guards.
+- [x] AC2: `--guards --run CMD` with an otherwise empty selection runs CMD with the guards.
       A full selection appends nothing, as today.
-- [ ] AC3: For a changed or added `tests/test_new.py`, the selection includes every test module
+- [x] AC3: For a changed or added `tests/test_new.py`, the selection includes every test module
       that scans `tests`, registered or not. For a changed `src/nightwright/x.py`, it includes
       `tests/test_rich_output_guard.py`. Both are in non-strict mode only.
-- [ ] AC4: `tests/test_guard_registry.py` passes on main and fails when the marker is removed from
+- [x] AC4: `tests/test_guard_registry.py` passes on main and fails when the marker is removed from
       any registered guard, or when a new module that globs `tests/test_*.py` is added unmarked.
-- [ ] AC5: Both pytest gate commands in `.nw/project.yaml` pass `--guards`. The loop gate still
+- [x] AC5: Both pytest gate commands in `.nw/project.yaml` pass `--guards`. The loop gate still
       runs on a worktree whose `tools/affected_tests.py` lacks the flag.
-- [ ] AC6: Replay of the audited incidents. At the parent of `91d4811e` (dashboard `.join(N)` on
+- [x] AC6: Replay of the audited incidents. At the parent of `91d4811e` (dashboard `.join(N)` on
       main), `python3 tools/affected_tests.py --guards --changed tests/test_dashboard_auth.py --changed
       tests/test_dashboard_server.py --run uv run pytest -q` selects `tests/test_test_waits.py` and exits non-zero.
       At `91d4811e` it exits 0. The guard set's runtime under `-n 4` is recorded in As shipped.
@@ -223,16 +223,57 @@ CLOCK-OUT: [timestamp]
 
 ## Definition of done
 
-- [ ] Acceptance criteria all met.
-- [ ] Test plan executed; automated tests pass (`uv run pytest`); manual steps performed.
-- [ ] No regressions.
-- [ ] Spec body updated to match what shipped.
-- [ ] `docs/LEDGER.md` updated (status + date).
+- [x] Acceptance criteria all met.
+- [x] Test plan executed; automated tests pass (`uv run pytest`); manual steps performed.
+- [x] No regressions.
+- [x] Spec body updated to match what shipped.
+- [x] `docs/LEDGER.md` updated (status + date).
 
 ## As shipped
 
-_To be filled at close: the final guard set, the exemption dict, the replay records and the guard
-runtime._
+**Guard set (8, `pytestmark = pytest.mark.tree_guard`):** `test_agentic_profiles` (src + tests),
+`test_guard_registry`, `test_mcp_deferred` (src), `test_no_textual_skips` (tests),
+`test_org_write_race` (src), `test_rich_output_guard` (src), `test_specs_dir` (tests),
+`test_test_waits` (tests). This is the detector's output over `tests/`. `GUARD_EXEMPT` in
+`tests/test_guard_registry.py` is empty: no module scans a root without being a guard.
+
+**Detector.** `_tree_roots` statically evaluates paths derived from `Path(__file__)`, `Path("tests")`
+literals, `os.path.*`, and loop variables over constant tuples. A scan counts only when the scanned
+directory is exactly one of `TREE_ROOTS`; scans of `tmp_path` or of a subdirectory (fixtures, data)
+are not tree scans. Scans through an imported module's `__file__` (for example
+`test_dashboard_tailnet_seams`) cannot be resolved and are not detected; they are covered by the
+normal selection. The tree-reader rule is non-strict only.
+
+**Loop gate.** `python3 tools/affected_tests.py --help | grep -q -- --guards && G=--guards || G=`
+precedes the tool call, so an un-rebased worktree whose tool predates the flag still runs
+(`test_loop_gate_runs_on_a_tool_that_predates_the_flag`). The close gate passes `--guards` directly.
+
+**Side effect.** A changed data file under `tests/` now also selects the tests that scan `tests/`.
+`tests/data/affected_fallback_replay.json` `max_tests` for the remote_gates_golden case went 18 to 24.
+A `pyproject.toml` `[tool.pytest]` change (the marker registration) is a full-suite trigger, so this
+branch's own close ran the full suite.
+
+**Replay of the incidents** (real repo checkouts, the new tool copied in and the three guard modules
+marked, `--changed` given explicitly, `-n 2`):
+- `91d4811e^` with `--changed tests/test_dashboard_auth.py --changed tests/test_dashboard_server.py`:
+  6 selected +3 guards, `tests/test_test_waits.py::test_no_bare_join_before_result_read` FAILED, exit 1.
+- `91d4811e`: same command, 272 passed, exit 0.
+- `cd75e6d6^` with `--changed tests/test_tui_queue_parity.py --changed tests/test_tui_queue_view.py`:
+  `tests/test_no_textual_skips.py` selected and FAILED (and test_test_waits), exit 1.
+- On this tree, an added test using `pytest.importorskip("textual")` selected `+8 guards` and
+  `test_no_textual_skips` failed; an added test with a numeric join failed `test_test_waits`; a src
+  diff selected the 8 guards including `test_rich_output_guard`; a docs-only diff selected the 8
+  guards. The tree-reader rule alone already selects readers of `tests/`, so the late-guard gap
+  remains observable only with `--strict` (the replay fixture test uses it).
+- The guards caught this branch's own replay test (a literal numeric join in a string); it is now
+  spelled apart.
+
+**Runtime.** Guard set alone: about 5 to 7 s with `-n 4` unloaded (177 tests); the real close-gate
+command with an empty diff (8 guards + 2 smoke files, 270 tests, `-n 2`) took 26 s of pytest, 40 s
+wall. `test_no_textual_skips` is the slowest (it runs a nested pytest).
+
+**Live gate check** (manual, after landing): the next campaign close's gate log should show
+`+8 guards` in the `affected_tests:` line.
 
 ## Open questions
 

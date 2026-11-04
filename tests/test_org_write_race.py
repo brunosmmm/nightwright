@@ -12,6 +12,8 @@ from nightwright import explore as X
 from nightwright import org_write as W
 from nightwright.org import load_tasks
 
+pytestmark = pytest.mark.tree_guard  # SPEC-0421: scans the tree; always run by --guards
+
 SRC = pathlib.Path(__file__).resolve().parents[1] / "src" / "nightwright"
 
 

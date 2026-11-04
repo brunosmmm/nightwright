@@ -2,6 +2,9 @@
 `sys.stdout.write` or `sys.stderr.write` in `src/nightwright` must be a listed machine-output path."""
 import ast
 from pathlib import Path
+import pytest
+
+pytestmark = pytest.mark.tree_guard  # SPEC-0421: scans the tree; always run by --guards
 
 SRC = Path(__file__).resolve().parents[1] / "src" / "nightwright"
 
