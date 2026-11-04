@@ -1,8 +1,9 @@
 "use strict";
 /* SPEC-0413: the dashboard phone page. Polls GET /api/snapshot every 15 s with If-None-Match,
-   pauses while the tab is hidden, (SPEC-0402) and, when env.live is set, reads GET /api/stream
-   through fetch() so the loopback bearer header rides along; polling is the fallback, derives ages from the server's clock, and renders every
-   snapshot value with textContent only. createApp(env) takes every browser object it touches,
+   pauses while the tab is hidden, and derives ages from the server's clock. (SPEC-0402) When
+   env.live is set it reads GET /api/stream through fetch(), so the loopback bearer header rides
+   along; polling is the fallback. Every snapshot value is rendered with textContent only.
+   createApp(env) takes every browser object it touches,
    so the logic runs under node with a fake DOM (tests/js). */
 
 var POLL_MS = 15000;
