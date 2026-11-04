@@ -9,7 +9,7 @@ milestone: "M9: agentic workflow"
 kind: feature
 source_idea: IDEA-904
 tags: [agentic, dashboard, remote, web]
-depends_on: [SPEC-0401, SPEC-0414]
+depends_on: [SPEC-0401]
 ---
 
 ## Context
@@ -25,11 +25,13 @@ The three slices, in order:
 
 1. **SPEC-0401 (done): the data layer.** `nw.dashboard.v1`, `SnapshotCache`, the watermark
    and `nw dashboard snapshot`. It opens no socket.
-2. **SPEC-0414 (merged): the dashboard server**, from `IDEA-903`:
+2. **The dashboard server** (a sibling spec written in its own campaign, from `IDEA-903`):
    `nw serve --dashboard`, the bind gate, whois/token auth, Host/Origin checks, audit, and
    `GET /api/snapshot` with a strong `ETag` equal to the snapshot's `rev` and `304` on
-   `If-None-Match`. This spec depends on it at runtime, its Rollout orders the two, and it is
-   listed in `depends_on`.
+   `If-None-Match`. This spec depends on it at runtime, and its Rollout orders the two. It is
+   not named in `depends_on` because that spec has no file yet and the linter rejects a
+   `depends_on` that does not resolve; the campaign that lands the server spec adds
+   `SPEC-NNNN` here in the same change that accepts it.
 3. **This spec: the phone page.** The static HTML/CSS/JS the server serves at `GET /`, and
    the package code that locates those files.
 
@@ -450,6 +452,7 @@ Built to Design. Details the Design left open or that differ in form:
 - The "ledger change" in `tests/test_dashboard_page.py` writes the active campaign's
   `state.json` cost and appends a `cost` ledger event (the queue's own pair).
 - Heartbeat and header after review (loop 2): `snapshot.compute_rev` ignores `*_age_s` and the lease clock stamps, so on a quiet queue every poll is a `304` and the kept snapshot's `heartbeat_age_s` (which resets on each heartbeat) must not be ticked as an age that only grows. The Health row shows `heartbeat ok` while `lease.stale` is false and, for a stale lease (its flip is part of `rev`, so it arrives as a `200`), the ticking `heartbeat <age>` plus `stale lease`. The header is based on the last successful poll (`st.lastOk`) and reads `checked Ns ago` (was `updated Ns ago` measured from `generated_at`), so a healthy queue with no changes reads a few seconds, and an unreachable server lets it grow. Run `elapsed_s` and campaign `age_s` still tick from `generated_at` (both genuinely only grow). A token that is not a valid header value (fetch `TypeError`) is not handled specially (unchanged).
+- The merged dashboard server spec is SPEC-0414 (from `IDEA-903`); the base text keeps it out of `depends_on` (the guarded spec body cannot change), so the runtime dependency is recorded here only.
 - Follow-up for the dashboard server spec: serving the page from the server (route `/`, `/app.js`, `/app.css` through `assets.read_asset`).
 
 ### Test record (2026-11-04, loop 2)
@@ -465,7 +468,7 @@ Built to Design. Details the Design left open or that differ in form:
 2. The dashboard server spec's implementation serves the page through `read_asset` and sets
    the headers of the contract. Until it lands, `nw dashboard snapshot` remains the way to
    see the dashboard from an SSH session.
-3. Done: SPEC-0414 (the merged server spec) is listed in this spec's `depends_on` (Context).
+3. Add the server spec's id to this spec's `depends_on` when that spec exists (Context).
 4. Epic child 3 adds SSE in front of the same snapshot; the poll in this page stays as the
    fallback, so no change to this spec's behavior is needed then.
 
