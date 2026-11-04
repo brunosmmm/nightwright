@@ -8,6 +8,7 @@ updated: 2026-11-03
 source_idea: IDEA-884
 kind: feature
 parent: SPEC-0405
+depends_on: [SPEC-0408]
 tags: [agentic, observability, history]
 ---
 
@@ -53,13 +54,14 @@ third.
 - `schemas.py` holds the record schemas the queue writes (`nw.ledger.event.v1`,
   `nw.run.v1`, `nw.gate.v1`, `nw.runner.record.v1`) and has no read-side schemas.
 
-**Dependencies that have no spec id yet.** Neither child 1 nor the fixture spec has an id
-yet, so neither can be named in `depends_on`.
+**Dependencies.** Child 1 is now [SPEC-0408](./0408-ledger-provenance-finding-run-id-and-key-triage.md)
+(`done`, in `depends_on`). The fixture spec still has no spec id, so it cannot be named in
+`depends_on`; its ordering is enforced by the hard-ordering check below.
 - **Fixture spec (hard ordering).** The fixture-backed tests below read
   `tests/fixtures/agentic_history/` and its `MANIFEST.json` roles. This spec is implemented
   only once the fixture spec is `done`; the implementer checks that the fixture directory and
   its manifest exist before starting, and the campaign queue orders the two accordingly.
-- **Child 1 (soft).** This layer does not need child 1's fields to work:
+- **Child 1 = SPEC-0408 (soft, now landed).** This layer does not need child 1's fields to work:
   - When a field is present, it is read and the link is marked `linked_by: "field"`.
   - When it is absent, the link is inferred (`"inferred"`) or matched in text (`"text"`).
   - If child 1 is not `done` when this spec is implemented, the field path is tested on
