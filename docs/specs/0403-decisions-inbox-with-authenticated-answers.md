@@ -9,17 +9,18 @@ kind: feature
 parent: SPEC-0400
 source_idea: IDEA-875
 tags: [agentic, dashboard, remote, escalation, conductor, web]
-depends_on: [SPEC-0232, SPEC-0235]
+depends_on: [SPEC-0232, SPEC-0235, SPEC-0401]
 ---
 
 ## Context
 
 Child 2 of the epic [SPEC-0400](./0400-remote-web-dashboard-live-view-of-active-queue.md),
 promoted from `IDEA-875`. It is the child that lets the human unblock the conductor from the
-phone. It builds on child 1 of the same epic (the read-only `nw serve --dashboard` server, its
-bind gate, whois and local-token auth, Host/Origin checks and the `nw.dashboard.v1` snapshot).
-Child 1 has no spec id yet, so the dependency is stated here in prose rather than in
-`depends_on`. This spec is not implemented until child 1 is `done`.
+phone. It builds on child 1 of the same epic,
+[SPEC-0401](./0401-read-only-dashboard-server-and-nw-dashboard-v1.md) (the read-only
+`nw serve --dashboard` server, its bind gate, whois and local-token auth, Host/Origin checks,
+the snapshot cache and the `nw.dashboard.v1` snapshot). SPEC-0401 is declared in `depends_on`:
+implementation of this spec must not start until SPEC-0401 is `done`.
 
 What already exists (checked against the code on 2026-11-03):
 
