@@ -107,8 +107,8 @@ What exists today, checked against the code on 2026-11-04:
    no `audit.jsonl` line (as a `200` snapshot does not); `403` / `405` / `413` on a static path
    go through the existing `_refuse` and are audited like any other refusal. The path in the audit
    line is `self.path` as today.
-7. **A broken install is a `500`, not a crash.** If `read_asset` raises (`OSError`, packaged file
-   missing), the response is `500 {"error": "<ExcType>: <msg>"}` and the server keeps serving.
+7. **A broken install is a `500`, not a crash.** If `read_asset` raises for a route path
+   (`OSError`, packaged file missing), the response is `500 {"error": "<ExcType>: <msg>"}` and the server keeps serving.
 8. **SPEC-0413's `depends_on` gains `SPEC-0414`** in the same change (`depends_on: [SPEC-0401,
    SPEC-0414]`, with `updated`), as its Rollout step 3 prescribed and its Context announced for
    the change that lands the server. No other line of SPEC-0413 changes: this is the recorded
@@ -141,9 +141,11 @@ What exists today, checked against the code on 2026-11-04:
 
   The existing `path = urlsplit(self.path).path` further down is removed (it is computed once,
   above). `read_asset` returns `None` for every non-route path, so the rest of `_handle` is
-  byte-for-byte what it is today for `/api/snapshot` and unknown paths. The exceptions of
-  `read_asset` are only reachable for a route (the lookup precedes any read), so the `500` is
-  specific to a missing packaged file.
+  byte-for-byte what it is today for `/api/snapshot` and unknown paths. The real
+  `read_asset` looks the path up before it reads any file, so it can only raise for a route path
+  (a missing packaged file); every other request, `/api/snapshot` included, gets `None` and
+  continues. The test double for the `500` path must keep that contract (raise only for
+  `assets.ROUTES` paths, return `None` otherwise).
 - `_send` already supplies `Content-Type` (from `ctype`), `Content-Length`, `nosniff`,
   `Cache-Control: no-cache`, and the extra `Content-Security-Policy`. Its `HEAD` suppression is
   unreachable for assets (a `HEAD` is refused `405` first).
@@ -193,79 +195,78 @@ Frontmatter only: `depends_on: [SPEC-0401, SPEC-0414]` and `updated: 2026-11-04`
 
 ## Acceptance criteria
 
-- [ ] `GET /`, `GET /app.js` and `GET /app.css`, with a correct `Host` and no `Authorization`,
-      return `200` with a body byte-identical to `assets.read_asset(path)[0]` and the matching
-      `Content-Type` from `assets.ROUTES`.
-- [ ] Each of those responses carries `Content-Security-Policy` equal to `assets.CSP`,
-      `Cache-Control: no-cache`, `X-Content-Type-Options: nosniff`, a `Content-Length` equal to
-      the body length and a `Date` header.
-- [ ] An `Authorization` header (valid or wrong) on a static request does not change the `200`.
+- [ ] `GET /`, `/app.js`, `/app.css` (also with a query string such as `/app.js?v=1` or `/?x=1`),
+      with a correct `Host` and no, a valid or a wrong `Authorization`, return `200` with a body
+      byte-identical to `assets.read_asset(path)[0]`, the route's `Content-Type`,
+      `Content-Security-Policy` equal to `assets.CSP`, `Cache-Control: no-cache`,
+      `X-Content-Type-Options: nosniff`, a `Content-Length` equal to the body length and a `Date`;
+      the headers equal those the SPEC-0413 page stub sends.
 - [ ] `GET /api/snapshot` without a token is still `401` (`no_token`) with
       `WWW-Authenticate: Bearer`, with a wrong token `401` (`bad_token`), and with the token
       `200` (with `ETag`) and `304` on a matching `If-None-Match`: unchanged.
 - [ ] Any other path without a token (`/nope`, `/index.html`, `/static/app.js`, `/../app.js`,
       `//app.js`, `/%61pp.js`, `/app.js/`) is `401`; with the token it is `404
       {"error": "not found"}` and no asset bytes.
-- [ ] A query string on a static path does not change the response (`/app.js?v=1` and
-      `/?x=1` are `200` with the asset); the server never reads a fragment.
 - [ ] A static request with a bad, missing or non-allowed `Host`, or a bad/`null` `Origin`, is
-      `403` with a `bad_host` / `bad_origin` audit line and a JSON error body that contains none of
-      the asset's bytes.
+      `403` with a JSON error body that contains none of the asset's bytes and exactly one
+      `bad_host` / `bad_origin` audit line; a `localhost:<port>` `Host` is accepted; and with
+      `A.check_host_origin` patched to refuse, `GET /` is `403` (the check precedes the static
+      branch).
 - [ ] `POST`, `PUT`, `DELETE`, `PATCH`, `OPTIONS` and `HEAD` on `/`, with no token, are `405`
-      with `Allow: GET` and a `method_not_allowed` audit line and an empty or JSON-only body (no
-      asset bytes); a `GET /` with a request body is `413`.
-- [ ] A successful static response adds no line to `audit.jsonl`; each refusal above adds
-      exactly one.
-- [ ] If `assets.read_asset` raises, the response is `500` with a JSON `{"error": …}` body, and a
-      later request to `/api/snapshot` is still `200`.
-- [ ] The Host/Origin check precedes the static branch: with `A.check_host_origin` patched to
-      refuse, `GET /` is `403` and no asset is returned.
-- [ ] Serving the assets writes nothing outside `agentic/dashboard/` and adds no file inside it
-      beyond the existing four (`local.token`, `audit.jsonl`, `audit.jsonl.1`, `server.json`).
-- [ ] The bind gate is unchanged: `make_server` still refuses a public/non-tailnet bind with
-      `BindRefused` before any socket opens, and the SPEC-0414/SPEC-0416 server and tailnet tests
-      pass untouched, apart from the one listed edit to `test_404_and_413_and_503`.
+      with `Allow: GET`, an empty or JSON-only body (no asset bytes) and exactly one
+      `method_not_allowed` audit line; a `GET /` with a request body is `413` with exactly one
+      audit line; a `200` static response adds no audit line.
+- [ ] If `assets.read_asset` raises for a route path, the response is `500` with a JSON
+      `{"error": …}` body, and with that failure still in place `GET /api/snapshot` with the
+      token is `200`.
+- [ ] No regression: serving the assets writes nothing outside `agentic/dashboard/` and adds no
+      file inside it beyond the existing four (`local.token`, `audit.jsonl`, `audit.jsonl.1`,
+      `server.json`); `make_server` still refuses a public/non-tailnet bind with `BindRefused`
+      before any socket opens; the SPEC-0414/SPEC-0416 server and tailnet tests pass untouched,
+      apart from the one listed edit to `test_404_and_413_and_503`.
 - [ ] `nw serve --dashboard --bind 127.0.0.1:0` started as a subprocess answers `GET /` with the
       page (contains the `index.html` bytes) without a token.
 - [ ] SPEC-0413's frontmatter `depends_on` is `[SPEC-0401, SPEC-0414]` and nothing else in its
       body changed; `python3 tools/spec_lint.py` exits 0.
-- [ ] `server.py`'s docstring names the static routes as the only unauthenticated ones.
 
 ## Test plan
 
 - **Automated tests** (new `tests/test_dashboard_server_assets.py`, reusing the `Srv` loopback
   helper of `tests/test_dashboard_server.py` on `127.0.0.1:0` over real sockets and
   `fixtures.dashboard_data.seed`; no browser, no `tailscale`; waits via `tests/waits.py`):
-  - `test_static_routes_unauthenticated_200`: each `assets.ROUTES` path with `auth=False`:
-    status, body equals `read_asset`, `Content-Type`, CSP, `no-cache`, `nosniff`,
+  - `test_static_routes_unauthenticated_200` (criterion 1): each `assets.ROUTES` path with
+    `auth=False`, with a valid and with a wrong bearer, and with a query string (`/app.js?v=1`,
+    `/?x=1`): status, body equals `read_asset`, `Content-Type`, CSP, `no-cache`, `nosniff`,
     `Content-Length`, `Date`.
-  - `test_static_ignores_authorization`: a valid and a wrong bearer both give the same `200`.
-  - `test_api_snapshot_still_gated`: `401` `no_token`, `401` `bad_token` (+ `WWW-Authenticate`),
-    `200` with `ETag`, `304` on `If-None-Match`.
-  - `test_non_route_paths_stay_401_then_404`: the path list of the criteria, without a token →
-    `401`; with the token → `404`, body has none of the asset bytes.
-  - `test_query_string_on_asset_path`: `/app.js?v=1`, `/?x=1` → `200` asset.
-  - `test_static_behind_host_and_origin`: wrong `Host`, no `Host`, `Origin: http://evil`,
-    `Origin: null`, each `403` with the `bad_host`/`bad_origin` audit line and no asset bytes; a
-    `localhost:<port>` `Host` is accepted; and `A.check_host_origin` monkeypatched to refuse makes
-    `GET /` `403`.
-  - `test_static_methods_and_body`: the five non-`GET` methods plus `HEAD` on `/` without a token
-    → `405`, `Allow: GET`, audit line; `GET /` with a body → `413`.
-  - `test_audit_only_refusals`: count `audit.jsonl` lines around a run of `200` and refused static
-    requests (a `200` adds none, each refusal adds one).
-  - `test_read_asset_failure_is_500`: monkeypatch `server.AS.read_asset` to raise `OSError`;
-    `500` JSON, then `/api/snapshot` is `200`.
-  - `test_serving_assets_writes_nothing`: before/after `tree()` (from
+  - `test_header_parity_with_page_stub` (criterion 1): the headers the real server sends for each
+    route equal those the stub of `tests/test_dashboard_page.py` sends (`Content-Type`, CSP,
+    `nosniff`, `no-cache`), so SPEC-0413's contract and the real server cannot drift.
+  - `test_api_snapshot_still_gated` (criterion 2): `401` `no_token`, `401` `bad_token`
+    (+ `WWW-Authenticate`), `200` with `ETag`, `304` on `If-None-Match`.
+  - `test_non_route_paths_stay_401_then_404` (criterion 3): the path list of the criteria, without
+    a token → `401`; with the token → `404`, body has none of the asset bytes.
+  - `test_static_behind_host_and_origin` (criterion 4): wrong `Host`, no `Host`,
+    `Origin: http://evil`, `Origin: null`, each `403` with exactly one `bad_host`/`bad_origin`
+    audit line and no asset bytes; a `localhost:<port>` `Host` is accepted; and
+    `A.check_host_origin` monkeypatched to refuse makes `GET /` `403`.
+  - `test_static_methods_and_body` (criterion 5): the five non-`GET` methods plus `HEAD` on `/`
+    without a token → `405`, `Allow: GET`, exactly one audit line each; `GET /` with a body →
+    `413` with one audit line; a `200` static request leaves the line count unchanged.
+  - `test_read_asset_failure_is_500` (criterion 6): monkeypatch `server.AS.read_asset` with a fake
+    that raises `OSError` for paths in `assets.ROUTES` and returns `None` for any other path (the
+    real function's lookup-before-read contract). `GET /` is `500` with a JSON
+    `{"error": "OSError: …"}` body. With the patch still active, `GET /api/snapshot` with the
+    token is `200`.
+  - `test_serving_assets_writes_nothing` (criterion 7): before/after `tree()` (from
     `tests/test_dashboard_readonly.py`) of the data dir, request every route, only the allowed
-    files under `agentic/dashboard/` change.
-  - `test_header_parity_with_page_stub`: the headers the real server sends for each route equal
-    those the stub of `tests/test_dashboard_page.py` sends (`Content-Type`, CSP, `nosniff`,
-    `no-cache`), so SPEC-0413's contract and the real server cannot drift.
-  - `test_spec_0413_depends_on_includes_0414`: parse the SPEC-0413 frontmatter, assert
-    `depends_on == ["SPEC-0401", "SPEC-0414"]`.
-  - `test_serve_cli_serves_page`: using the helpers of `tests/test_dashboard_serve_cli.py`
-    (`start`, `wait_server`, `get`, `stop`), run `nw serve --dashboard --bind 127.0.0.1:0` and
-    `GET /` without a token; assert it returns `index.html`'s bytes.
+    files under `agentic/dashboard/` change; and `make_server` with a public bind still raises
+    `BindRefused` before a socket opens.
+  - `test_serve_cli_serves_page` (criterion 8): using the helpers of
+    `tests/test_dashboard_serve_cli.py` (`start`, `wait_server`, `get`, `stop`), run
+    `nw serve --dashboard --bind 127.0.0.1:0` and `GET /` without a token; assert it returns
+    `index.html`'s bytes.
+  - `test_spec_0413_depends_on_includes_0414` (criterion 9): parse the SPEC-0413 frontmatter,
+    assert `depends_on == ["SPEC-0401", "SPEC-0414"]`.
 - **Edited test:** `tests/test_dashboard_server.py::test_404_and_413_and_503` drops `/` from its
   `404` tuple.
 - **Manual verification** (once; this is also SPEC-0413's manual step 1, pending until the server
@@ -299,6 +300,8 @@ Frontmatter only: `depends_on: [SPEC-0401, SPEC-0414]` and `updated: 2026-11-04`
 ## Definition of done
 
 - [ ] Acceptance criteria all met.
+- [ ] `server.py`'s module docstring names the phone page and says the static routes are the only
+      unauthenticated ones.
 - [ ] Test plan executed; automated tests pass (affected tests via
       `python3 tools/affected_tests.py --run uv run pytest -q`); manual verification performed and
       noted.
