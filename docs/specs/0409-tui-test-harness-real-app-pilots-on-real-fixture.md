@@ -253,6 +253,7 @@ A pytest plugin whose hooks are module-level functions. Its core is a pure funct
   because the run began before the ledger was regenerated; both pass on re-run after
   `python3 tools/spec_lint.py --write-ledger`. `python3 tools/spec_lint.py` exits 0.
 - The full suite was left to gating.
+- Review loop 1: after the retune, `uv run pytest -q tests/test_tui_budget.py tests/test_no_textual_skips.py`: 52 passed.
 
 ### As shipped (2026-11-03)
 
@@ -273,6 +274,15 @@ A pytest plugin whose hooks are module-level functions. Its core is a pure funct
   the five most expensive, rest under 15 s each): `test_tui_queue_tab.py` 105.4 s,
   `test_tui_mailbox_tab.py` 89.7 s, `test_tui_escalations_tab.py` 65.3 s,
   `test_tui_events_tab.py` 49.5 s, `test_tui_campaign_screen.py` 29.0 s. All under the limits.
+- **Retune (review loop 1, 2026-11-03).** The gate host measured `test_tui_queue_tab.py` at
+  133.6 s and 575.7 s total over 20 TUI files (`tui budget ok: ... (limit 180s) ... (limit 900s)`),
+  against 105.4 s on the dev box: a 27% swing between hosts. At 180 s that is ~1.35x headroom, not
+  the intended ~2x, and summed durations stretch under contention. The shipped defaults are now
+  per test 30 s (unchanged; the slowest single test is far below it), per file **300 s** and total
+  **1200 s** (~2.2x and ~2.1x the gate observation). This supersedes the 180 s / 900 s numbers in
+  the Design and Open questions text above, which stay as written because that text is guarded.
+  `test_defaults_are_the_documented_ones` and `test_scale_multiplies_all_three_limits` pin the new
+  values.
 
 ## Rollout / migration
 

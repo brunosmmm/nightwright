@@ -18,7 +18,7 @@ def _kinds(vs):
 
 
 def test_defaults_are_the_documented_ones():
-    assert B.limits_from_env({}) == B.Limits(30.0, 180.0, 900.0)
+    assert B.limits_from_env({}) == B.Limits(30.0, 300.0, 1200.0)
 
 
 def test_per_test_violation_and_scope():
@@ -59,14 +59,14 @@ def test_nothing_to_judge():
 
 
 def test_scale_multiplies_all_three_limits():
-    assert B.limits_from_env({"NW_TUI_BUDGET_SCALE": "2"}) == B.Limits(60.0, 360.0, 1800.0)
+    assert B.limits_from_env({"NW_TUI_BUDGET_SCALE": "2"}) == B.Limits(60.0, 600.0, 2400.0)
 
 
 def test_per_limit_overrides_and_scale_together():
     env = {"NW_TUI_TEST_BUDGET_S": "5", "NW_TUI_FILE_BUDGET_S": "7", "NW_TUI_TOTAL_BUDGET_S": "9"}
     assert B.limits_from_env(env) == B.Limits(5.0, 7.0, 9.0)
     assert B.limits_from_env({**env, "NW_TUI_BUDGET_SCALE": "3"}) == B.Limits(15.0, 21.0, 27.0)
-    assert B.limits_from_env({"NW_TUI_FILE_BUDGET_S": "7"}) == B.Limits(30.0, 7.0, 900.0)
+    assert B.limits_from_env({"NW_TUI_FILE_BUDGET_S": "7"}) == B.Limits(30.0, 7.0, 1200.0)
 
 
 @pytest.mark.parametrize("var", ["NW_TUI_BUDGET_SCALE", "NW_TUI_TEST_BUDGET_S",

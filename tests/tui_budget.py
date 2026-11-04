@@ -16,7 +16,9 @@ from dataclasses import dataclass
 import pytest
 
 SCOPE_GLOB = "test_tui_*.py"  # matched on the file basename, wherever the rootdir is
-DEFAULTS = {"test": 30.0, "file": 180.0, "total": 900.0}
+# ~2x the worst gate observation (queue_tab 133.6 s, 575.7 s total on the gate host, SPEC-0409
+# As shipped), since summed durations stretch under host contention.
+DEFAULTS = {"test": 30.0, "file": 300.0, "total": 1200.0}
 ENV_LIMIT = {"test": "NW_TUI_TEST_BUDGET_S", "file": "NW_TUI_FILE_BUDGET_S",
              "total": "NW_TUI_TOTAL_BUDGET_S"}
 ENV_SCALE = "NW_TUI_BUDGET_SCALE"
