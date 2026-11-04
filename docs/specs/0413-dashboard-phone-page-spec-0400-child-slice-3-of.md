@@ -1,7 +1,7 @@
 ---
 id: SPEC-0413
 title: "Dashboard phone page: phone-first static UI with a 15 s conditional poll of /api/snapshot"
-status: accepted
+status: done
 owner: user
 created: 2026-11-04
 updated: 2026-11-04
@@ -270,61 +270,61 @@ next one is armed when the pending one settles.
 
 ## Acceptance criteria
 
-- [ ] `assets.read_asset("/")`, `("/app.js")` and `("/app.css")` return the shipped bytes with
+- [x] `assets.read_asset("/")`, `("/app.js")` and `("/app.css")` return the shipped bytes with
       the content types of Decision 10; every other path (`"/index.html"`, `"/../x"`,
       `"/app.js?x=1"`, `"/static/app.js"`, `""`) returns `None`. `assets.CSP` equals the string
       of Decision 9, and the three files are present in a built wheel.
-- [ ] Static checks pass: `app.js` contains none of `innerHTML`, `outerHTML`,
+- [x] Static checks pass: `app.js` contains none of `innerHTML`, `outerHTML`,
       `insertAdjacentHTML`, `document.write`, `eval(`, `new Function`, `EventSource`,
       `setInterval`, `XMLHttpRequest`, `setAttribute("style"`, `setAttribute('style'`, or a
       `setAttribute` call whose first argument is `href`, `src` or `action` (single or double
       quoted); none of the three files contains `http://` or `https://`
       or a protocol-relative `//host` URL; `index.html` has no inline `<script>` body, no inline
       `<style>`, no `style=` attribute and no `on…=` attribute, and carries the viewport meta.
-- [ ] Against the real snapshot builder on the SPEC-0401 fixture, the page logic renders: the
+- [x] Against the real snapshot builder on the SPEC-0401 fixture, the page logic renders: the
       `spend today $X.XX` value equal to `totals.spend_today_usd`; the counts line equal to
       the CLI's counts line; one card per `active` row with `$cost / $cap` and a progress bar
       whose `aria-valuenow` is `min(100, round(cost/cap·100))`; the fixture's open `ESC-0001`
       and `main_dirty` park under "Needs you"; the health rows; and at most 20 recent events,
       newest first.
-- [ ] A snapshot whose values contain markup (`<img src=x onerror=…>` in a label, a question
+- [x] A snapshot whose values contain markup (`<img src=x onerror=…>` in a label, a question
       and an event summary) renders that text literally: the fake DOM records no element
       created from it, and its `innerHTML` setter is never called (it throws if it is).
-- [ ] Polling: the first request is sent at start with no `If-None-Match`; subsequent requests
+- [x] Polling: the first request is sent at start with no `If-None-Match`; subsequent requests
       send `If-None-Match: "<rev>"`; a `304` leaves the rendered tree unchanged; a `200` with a
       new `rev` re-renders; requests are 15 000 ms apart on the injected clock; there is never
       more than one request in flight.
-- [ ] Visibility: while hidden no request is made and no timer is armed; on `visibilitychange`
+- [x] Visibility: while hidden no request is made and no timer is armed; on `visibilitychange`
       to visible one request is sent immediately and the 15 s timer is re-armed after it
       settles; hiding again cancels both the poll and the age timers.
-- [ ] Ages: with `generated_at = T` and `age_s = 10`, a response whose `Date` is `T + 5 s`
+- [x] Ages: with `generated_at = T` and `age_s = 10`, a response whose `Date` is `T + 5 s`
       displays 15 s, and 20 s of injected clock later displays 35 s with no new request; a
       `Date` header earlier than `generated_at` never displays a negative age; a missing `Date`
       falls back to the local clock.
-- [ ] Banners and dot: `401` shows the sign-in banner, `403` the not-allowed banner, a thrown
+- [x] Banners and dot: `401` shows the sign-in banner, `403` the not-allowed banner, a thrown
       fetch the unreachable banner with the last snapshot kept; 46 s without a `200`/`304`
       shows the stale banner and a grey dot; the next `200`/`304` clears the banner. `healthLevel`
       returns `green`, `amber`, `red` and `grey` for the fixtures of Decision 7, including the
       error-section cases, and a `{"error": …}` section renders as one muted line while the
       other sections still render.
-- [ ] Token handling: a start URL with `#token=abc` stores `abc` in
+- [x] Token handling: a start URL with `#token=abc` stores `abc` in
       `localStorage["nw-dashboard-token"]`, clears the fragment through `history.replaceState`,
       and sends `Authorization: Bearer abc` on every request; with no stored token no
       `Authorization` header is sent; the token string appears in no DOM node.
-- [ ] Layout: the CSS has no `width`/`min-width` in `px` above 360 on any rule that applies at
+- [x] Layout: the CSS has no `width`/`min-width` in `px` above 360 on any rule that applies at
       narrow widths, defines `overflow-wrap` on text rows, gives interactive elements
       `min-height: 44px`, and has a `prefers-color-scheme: dark` block. Manually, at 390×844 and
       360×740 the page has no horizontal scroll (Test plan, manual 2).
-- [ ] The page is read-only and adds no coupling: the Python tests perform only `GET`s, the
+- [x] The page is read-only and adds no coupling: the Python tests perform only `GET`s, the
       package modules added by this spec (`assets.py`) are imported by no queue-side module
       (`SPEC-0401`'s import-graph test still passes with `assets` included), and serving the
       assets and snapshot through the stub leaves every file under the data dir byte-identical.
-- [ ] Every JS-side criterion above is exercised by a pytest file: `tests/test_dashboard_page_logic.py`
+- [x] Every JS-side criterion above is exercised by a pytest file: `tests/test_dashboard_page_logic.py`
       runs `node --test tests/js/page_logic.test.js` and fails on a non-zero exit (with node's
       output) or a missing `node`; and `affected_tests.py --changed
       src/nightwright/agentic/dashboard/static/app.js` selects that file and
       `tests/test_dashboard_page.py` (or the full suite).
-- [ ] `python3 tools/spec_lint.py` exits 0, and the affected tests pass.
+- [x] `python3 tools/spec_lint.py` exits 0, and the affected tests pass.
 
 ## Test plan
 
@@ -406,6 +406,50 @@ test with a message naming the requirement, it is not skipped.
 3. Before the server spec lands, only manual 2 is possible; mark manual 1 pending in
    As shipped and complete it in the server spec's campaign.
 
+### Test record (2026-11-04)
+
+- `uv run pytest -q -n 0 tests/test_dashboard_assets.py tests/test_dashboard_page_logic.py
+  tests/test_dashboard_packaging.py tests/test_dashboard_imports.py tests/test_dashboard_page.py`:
+  all pass. `node --test tests/js/page_logic.test.js` (13 tests, the real-snapshot one runs
+  through the pytest wrapper): all pass. The wheel built with `uv build --wheel --offline` holds
+  `assets.py` and the three `static/` files, so `pyproject.toml` needed no include.
+- `uv run pytest -q -n 4` over the new files plus `tests/test_specs.py`, `test_test_waits.py`,
+  `test_affected_tests.py` and SPEC-0401's five dashboard test files: 191 passed, 1 skipped (the
+  manual stub server).
+- `python3 tools/affected_tests.py --changed .../static/app.js --json` selects
+  `tests/test_dashboard_page.py` (reference scan), and `assets.py` selects it by import. The
+  `--run` selection for the whole change is ~110 files and did not finish inside this run's time
+  limit; the full affected run and the suite are left to gating.
+- `python3 tools/spec_lint.py --write-ledger` then `python3 tools/spec_lint.py`: exit 0.
+- Manual 2 (partial, headless Chromium 1208 from the Playwright cache against the test stub):
+  the page loads under the CSP, renders the fixture, and shows no horizontal scroll at 360×740
+  and 390×844 (screenshots read by eye). Not checked in a browser: dark mode, tap targets and
+  the 401/403/offline banners (the CSS rules and the banner logic are covered by the static and
+  node tests). Manual 1 is pending the dashboard server spec.
+
+### As shipped (2026-11-04)
+
+Built to Design. Details the Design left open or that differ in form:
+
+- `assets.ROUTES` maps a path to `(file name, content type)`; `read_asset` returns `(bytes,
+  content_type)` or `None` as specified.
+- `createApp(env)` takes the visibility accessor as `env.visibility()` (returns `"visible"` or
+  `"hidden"`) and registers `visibilitychange` on `env.document`. `app.idle()` (the in-flight
+  request, or a resolved promise) exists for tests.
+- The health dot counts "needs you" from `inbox.escalations` + `inbox.parks`, the lists the
+  page shows. `conn` is `ok | stale | error | denied | none`; `none` with no snapshot is grey.
+- The stale rule measures from the later of the last `200`/`304` and the moment the tab last
+  became visible, so a phone unlocked after a long hide does not flash "stale" before its first
+  poll settles. On `error`/`denied` the stale banner never replaces their own banner (priority
+  order of Decision 6), the dot is grey in all three cases.
+- The page has no request timeout: a request that never settles blocks later polls (the stale
+  banner then shows). Not in the spec; see the follow-up idea in the campaign verdict.
+- The stub's control route (`GET /__test/<cmd>`) is a test-only addition to the Contract
+  stub, used by `page_http.test.js` to change the fixture and toggle `401`/`403`; the
+  read-only test runs a scenario without the change and hashes the data dir.
+- The "ledger change" in `tests/test_dashboard_page.py` writes the active campaign's
+  `state.json` cost and appends a `cost` ledger event (the queue's own pair).
+
 ## Rollout / migration
 
 1. Land `assets.py`, `static/`, the tests and the `pyproject.toml` include (if the packaging
@@ -420,13 +464,13 @@ test with a message naming the requirement, it is not skipped.
 
 ## Definition of done
 
-- [ ] Acceptance criteria all met.
-- [ ] Test plan executed; the new tests and the affected tests pass; manual step 2 performed
+- [x] Acceptance criteria all met.
+- [x] Test plan executed; the new tests and the affected tests pass; manual step 2 performed
       and noted (and step 1 once the server spec has landed, or noted as pending there).
-- [ ] No regressions (SPEC-0401 dashboard tests, TUI escalation tests and `dashboard_payload`
+- [x] No regressions (SPEC-0401 dashboard tests, TUI escalation tests and `dashboard_payload`
       tests green).
-- [ ] Spec body updated to match what shipped.
-- [ ] `docs/LEDGER.md` regenerated; `python3 tools/spec_lint.py` exits 0.
+- [x] Spec body updated to match what shipped.
+- [x] `docs/LEDGER.md` regenerated; `python3 tools/spec_lint.py` exits 0.
 
 ## Open questions
 

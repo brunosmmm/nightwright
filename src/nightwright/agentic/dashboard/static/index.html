@@ -1,0 +1,44 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light dark">
+<title>nightwright</title>
+<link rel="stylesheet" href="/app.css">
+<script src="/app.js" defer></script>
+</head>
+<body>
+<header class="top">
+  <div class="status">
+    <span id="dot" class="dot grey" role="img" aria-label="health"></span>
+    <span id="reason" class="reason">loading</span>
+  </div>
+  <div id="updated" class="muted">waiting for data</div>
+  <div id="banner" class="banner hidden" role="status"></div>
+</header>
+<main id="main">
+  <section class="card">
+    <h2>Needs you</h2>
+    <div id="needs"></div>
+  </section>
+  <section class="card">
+    <h2>Counts</h2>
+    <div id="counts"></div>
+    <div id="spend"></div>
+  </section>
+  <section class="card">
+    <h2>Active</h2>
+    <div id="active"></div>
+  </section>
+  <section class="card">
+    <h2>Health</h2>
+    <div id="health"></div>
+  </section>
+  <section class="card">
+    <h2>Recent events</h2>
+    <div id="events"></div>
+  </section>
+</main>
+</body>
+</html>

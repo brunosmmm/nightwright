@@ -84,3 +84,13 @@ def test_snapshot_does_not_import_auth_or_server():
     out = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True,
                          check=True, timeout=120).stdout.strip()
     assert out == "[]"
+
+
+def test_queue_side_modules_never_load_the_page_assets():
+    """SPEC-0413: `assets` is a dashboard module like `snapshot`: no queue-side import pulls it."""
+    mods = ", ".join(f"nightwright.agentic.{m}" for m in QUEUE_SIDE)
+    code = (f"import sys, {mods};"
+            "print('nightwright.agentic.dashboard.assets' in sys.modules)")
+    out = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True,
+                         check=True, timeout=120).stdout.strip()
+    assert out == "False"
