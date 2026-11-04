@@ -471,6 +471,21 @@ Ran `uv run pytest -q tests/test_dashboard_stream.py tests/test_dashboard_e2e.py
 including the new `test_a_builder_that_stays_down_ends_the_streams_with_an_error_event`. The full
 suite is left to gating.
 
+### As shipped (2026-11-04, round 7: final loop, nothing new built)
+
+Re-checked the three blockers on this branch before the last loop; none moved, so no code changed.
+
+- Whois: `server.py` still sets `stream_auth_ok = lambda handler: True`; SPEC-0416's whois gate is not
+  on this branch, so the 403 and revocation-within-TTL+15 s tests cannot be written against real code.
+- Page: `server.py` has no route for `/`, `/app.js`, `/app.css` and the bearer gate would reject a
+  browser page load; whether assets are token-exempt is a server decision for the human.
+- Browser: no Chromium/Chrome on this host (`which chromium chromium-browser google-chrome chrome`
+  all empty), so `tests/test_dashboard_mobile.py` could not run, only skip.
+
+AC6 and AC7 stay unticked and the status stays `in-progress`. A human must either bring the whois
+gate and a Chromium host in and rule on page serving, or revise this spec to move AC6's whois clause
+and AC7's selftest / headless / serving clauses into follow-up specs.
+
 ## Rollout / migration
 
 1. Land after child 1 of SPEC-0400 (the server, auth and snapshot cache). Reconcile the cache
