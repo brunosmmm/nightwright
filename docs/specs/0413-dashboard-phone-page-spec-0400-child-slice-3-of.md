@@ -135,8 +135,10 @@ What exists today, checked against the code on 2026-11-04:
    "runner down", "2 need you").
 8. **Everything is `textContent`.** The page builds DOM only with `createElement`,
    `textContent`, `setAttribute` of fixed attribute names and `classList`. It never uses
-   `innerHTML`, `outerHTML`, `insertAdjacentHTML`, `document.write`, `eval` or `new Function`,
-   and never builds a URL or attribute value from snapshot data. A static test pins this.
+   `innerHTML`, `outerHTML`, `insertAdjacentHTML`, `document.write`, `eval` or `new Function`.
+   Attribute values set from snapshot data are limited to `title` (a string) and
+   `aria-valuenow`/`aria-valuemax` (finite numbers clamped to 0–100); no URL-bearing attribute
+   (`href`, `src`, `action`, `style`) is ever set from snapshot data. A static test pins this.
 9. **A strict CSP, defined once here.** `assets.CSP` is
    `default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; img-src
    'self' data:; base-uri 'none'; form-action 'none'; frame-ancestors 'none'` (one line).
@@ -192,8 +194,13 @@ non-Python files under `src/nightwright` (checked by the packaging test below, n
    activity line (`activity.kind == "run"` shows `persona`, with the run's elapsed time as a
    ticking age; `gates` shows "gates"; otherwise "idle"), and **cost vs cap**: `$cost / $cap`
    with a bar whose fill is `min(100, cost/cap·100)`; a null or zero cap shows `$cost` with
-   "no cap" and no bar. The bar is `amber` at ≥ 80 % and `red` at ≥ 100 %, and carries
-   `role="progressbar"` with `aria-valuenow`.
+   "no cap" and no bar. The bar is a native `<progress max="100">` element whose `value`
+   property is set to `min(100, cost/cap·100)` (or, if a div is used, a fill whose width is set
+   with `el.style.width = n + '%'`, which the CSSOM allows under the CSP); `setAttribute("style",
+   …)` is never used, because `style-src 'self'` blocks it. The bar is `amber` at ≥ 80 % and
+   `red` at ≥ 100 % through a fixed class name via `classList`, and carries `aria-valuenow` and
+   `aria-valuemax="100"` (finite numbers clamped to 0–100; `role="progressbar"` when a div is
+   used).
 5. **Counts.** One line like the CLI's: `active N · queued N · parked N · waiting N · backlog
    N · conductor-handling N`, from `totals` (`ready` → queued, `attention` → parked).
 6. **Spend today.** `$X.XX` from `totals.spend_today_usd` (two decimals).
@@ -268,7 +275,9 @@ next one is armed when the pending one settles.
       of Decision 9, and the three files are present in a built wheel.
 - [ ] Static checks pass: `app.js` contains none of `innerHTML`, `outerHTML`,
       `insertAdjacentHTML`, `document.write`, `eval(`, `new Function`, `EventSource`,
-      `setInterval`, `XMLHttpRequest`; none of the three files contains `http://` or `https://`
+      `setInterval`, `XMLHttpRequest`, `setAttribute("style"`, `setAttribute('style'`, or a
+      `setAttribute` call whose first argument is `href`, `src` or `action` (single or double
+      quoted); none of the three files contains `http://` or `https://`
       or a protocol-relative `//host` URL; `index.html` has no inline `<script>` body, no inline
       `<style>`, no `style=` attribute and no `on…=` attribute, and carries the viewport meta.
 - [ ] Against the real snapshot builder on the SPEC-0401 fixture, the page logic renders: the
@@ -309,6 +318,11 @@ next one is armed when the pending one settles.
       package modules added by this spec (`assets.py`) are imported by no queue-side module
       (`SPEC-0401`'s import-graph test still passes with `assets` included), and serving the
       assets and snapshot through the stub leaves every file under the data dir byte-identical.
+- [ ] Every JS-side criterion above is exercised by a pytest file: `tests/test_dashboard_page_logic.py`
+      runs `node --test tests/js/page_logic.test.js` and fails on a non-zero exit (with node's
+      output) or a missing `node`; and `affected_tests.py --changed
+      src/nightwright/agentic/dashboard/static/app.js` selects that file and
+      `tests/test_dashboard_page.py` (or the full suite).
 - [ ] `python3 tools/spec_lint.py` exits 0, and the affected tests pass.
 
 ## Test plan
@@ -331,7 +345,7 @@ test with a message naming the requirement, it is not skipped.
   `appendChild`, `replaceChildren`, `setAttribute`, `classList`, `getElementById`,
   `textContent`) whose `innerHTML`, `outerHTML` and `insertAdjacentHTML` throw, and which
   records every element created, so the markup-literal criterion can assert on it.
-- `tests/js/page_logic.test.js`, run by `node --test`: drives `createApp` with an injected
+- `tests/js/page_logic.test.js`, run by `node --test` (from pytest, see the next item): drives `createApp` with an injected
   clock, `setTimeout` queue, visibility toggle, in-memory storage and a scripted `fetch`:
   - polling cadence, `If-None-Match`, `304` vs `200`, one request in flight;
   - visibility pause/resume; the age tick and the `Date`-header age arithmetic (including the
@@ -339,7 +353,20 @@ test with a message naming the requirement, it is not skipped.
   - banners, stale at 45 s, and `healthLevel` across all four levels and the error sections;
   - token fragment → storage → `Authorization`, fragment cleared, token absent from the DOM;
   - markup-literal rendering with the hostile snapshot.
-- `tests/test_dashboard_page.py` (integration, real sockets, real builder):
+- `tests/test_dashboard_page_logic.py` (the gate's entry to the node tests; pytest does not run
+  `.js` files): runs `node --test tests/js/page_logic.test.js` in a subprocess with its timeout
+  from `tests/waits.py` (`WAIT_S`) and fails on a non-zero exit with node's stdout/stderr in the
+  assertion message; a missing `node` binary fails it with a message naming the requirement. It
+  imports `nightwright.agentic.dashboard.assets` and names `app.js`, `fakedom.js` and
+  `page_logic.test.js` in string constants, so `affected_tests.py` selects it both when
+  `assets.py` changes (import graph) and when a file under `static/` or `tests/js/` changes
+  (SPEC-0357 reference scan of non-Python files, which matches on basename; with no referencing
+  test it would fall back to the full suite, never to no tests). A test in this file asserts
+  `affected_tests.py --changed src/nightwright/agentic/dashboard/static/app.js --json` selects
+  both node-driving files (this one and `tests/test_dashboard_page.py`) or the full suite, so
+  an edit to `app.js` alone can never select none.
+- `tests/test_dashboard_page.py` (integration, real sockets, real builder; also imports
+  `assets` and names `app.js` and `page_http.test.js` in string constants):
   - starts a stub `ThreadingHTTPServer` defined in the test file that implements exactly the
     "Contract with the server" section: `assets.read_asset` for the three routes with the
     CSP header, and `/api/snapshot` from a real `SnapshotCache` over the SPEC-0401 fixture
