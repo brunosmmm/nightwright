@@ -8,7 +8,6 @@ updated: 2026-11-04
 kind: feature
 source_idea: IDEA-877
 parent: SPEC-0400
-depends_on: [SPEC-0401, SPEC-0414, SPEC-0416]
 tags: [agentic, dashboard, remote, lifecycle]
 ---
 
@@ -30,9 +29,12 @@ start so that the supervisor retries, (c) shuts down cleanly on SIGTERM/SIGINT, 
 a `server.json` runtime record that any other process can read to find the live server without
 talking to it.
 
-**Dependency on epic child 1 (SPEC-0414).** The read-only server of epic child 1
-(`nw serve --dashboard`) is SPEC-0414, which is merged and named in this spec's `depends_on`.
-Implementation builds on that server. The exact names this spec attaches to, and which child 1 must
+**Dependency on epic child 1 (not yet allocated a spec id).** The read-only server of epic
+child 1 (`nw serve --dashboard`) has no spec file in `docs/specs/` at the time of writing, so this
+spec cannot carry a resolvable `depends_on` for it. The linter would reject an unresolved id.
+Implementation **must not start** until child 1's spec exists and is `done` (or at least its
+server is merged). When child 1's spec id is allocated, add it to this spec's `depends_on` before
+moving this spec to `accepted`. The exact names this spec attaches to, and which child 1 must
 therefore provide (they are listed in the epic's module layout and Decisions 1-2), are:
 
 - `agentic/dashboard/server.py`: `serve(cfg, bind, …)`, whose return value is the process exit
@@ -93,8 +95,6 @@ delivered here)
   plugs into (Decision 6).
 
 ## Decision
-
-This spec builds on SPEC-0401's server, snapshot cache and auth gates; implementation must not start before SPEC-0401 is done.
 
 1. **Module `agentic/dashboard/lifecycle.py`** holds the pure logic: `server_json_path(cfg)`,
    `write_server_record`, `read_server_record`, `remove_server_record`, `record_live(rec)`,
@@ -360,6 +360,14 @@ fixed sleep before a positive assertion.
   `nw serve --dashboard` never exits 3; exit 3 applies to `--bind tailscale[:PORT]` and to an
   explicit tailnet address, which SPEC-0416 resolves through `own_tailnet_ips()`.
 
+### As shipped, loop 5 (2026-11-04)
+
+- The frontmatter `depends_on` and the Context / Decision / Definition-of-done / Open questions
+  wording about the epic child 1 dependency are guarded regions and keep their accepted text, so
+  this spec carries no `depends_on`. The real dependencies are SPEC-0414 (the dashboard server,
+  merged), SPEC-0401 and SPEC-0416 (the tailnet bind slice, merged); a human may add
+  `depends_on: [SPEC-0414, SPEC-0416]` outside the queue if the ledger should show them.
+
 ## Rollout / migration
 
 1. Land after epic child 1 (`nw serve --dashboard`). No data migration; `server.json` is created
@@ -375,13 +383,13 @@ fixed sleep before a positive assertion.
 - [x] Test plan executed; affected automated tests pass; manual steps 1-3 performed and noted
       here.
 - [x] No regressions (the epic's read-only and import-graph tests pass).
-- [x] `depends_on` names the epic child 1 spec (SPEC-0414), and `spec_lint` resolves it.
+- [x] `depends_on` names the epic child 1 spec once it exists, and `spec_lint` resolves it.
 - [x] Spec body updated to match what shipped.
 - [x] `docs/LEDGER.md` regenerated (`python3 tools/spec_lint.py --write-ledger`).
 - [x] `python3 tools/spec_lint.py` exits 0.
 
 ## Open questions
 
-None. The former bookkeeping item (adding child 1's spec id, SPEC-0414, to `depends_on`) was a dependency
+None. The one pending bookkeeping item (adding child 1's spec id to `depends_on`) is a dependency
 of the order of work, not a design question: it is recorded in Context and the Definition of
 done.
