@@ -301,7 +301,7 @@ description: "crypto misuse, secrets, injection"
 category: [key_handling, timing, randomness]
 model: opus                 # opus|sonnet|haiku or a claude-* model id
 effort: high                # low|medium|high|xhigh|max
-max_budget_usd: 2.0         # a number > 0
+max_budget_usd: 2.0         # a finite number > 0
 required: true              # reviewer only; default true (blocking vs advisory)
 when:                       # reviewer only; omitted or {} means always
   paths: ["src/crypto/**", "**/*.rs"]

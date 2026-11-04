@@ -12,7 +12,7 @@ from nightwright.agentic import persona_registry as R
 from nightwright.agentic import personas as PS
 from nightwright.agentic.profiles import resolve_profile
 
-TEMPLATE = "Review {{spec_id}} in {{worktree}} for crypto misuse.\n{{diff}}\n"
+TEMPLATE = "Review {{spec_id}} in {{worktree}} for crypto misuse.\n{{diff}}\n{{test_files}}\n"
 ROOT = Path(__file__).resolve().parent.parent
 DEFS = ROOT / "src" / "nightwright" / "agentic" / "persona_defs"
 
@@ -87,7 +87,9 @@ def test_settings_keys_valid(env, extra, role):
     ("model: 3\n", "model", "got 3"),
     ("effort: extreme\n", "effort", "must be one of low, medium, high, xhigh, max"),
     ("effort: [high]\n", "effort", "got ['high']"),
-    ("max_budget_usd: 0\n", "max_budget_usd", "must be a number > 0"),
+    ("max_budget_usd: 0\n", "max_budget_usd", "must be a finite number > 0"),
+    ("max_budget_usd: .inf\n", "max_budget_usd", "got inf"),
+    ("max_budget_usd: .nan\n", "max_budget_usd", "got nan"),
     ("max_budget_usd: -1.5\n", "max_budget_usd", "got -1.5"),
     ("max_budget_usd: true\n", "max_budget_usd", "got True"),
     ("max_budget_usd: '2.0'\n", "max_budget_usd", "got '2.0'"),
@@ -143,6 +145,8 @@ def test_routing_keys_valid_for_reviewer(env, extra):
     ("when: {paths: src}\n", "when.paths", "non-empty list"),
     ("when: {paths: [3]}\n", "when.paths", "non-empty strings"),
     ("when: {labels: ['']}\n", "when.labels", "non-empty strings"),
+    ("when: {labels: ['  ']}\n", "when.labels", "non-empty strings"),
+    ("when: {paths: ['src/**', ' ']}\n", "when.paths", "non-empty strings"),
     ("when: {paths: null}\n", "when.paths", "non-empty list"),
 ])
 def test_routing_keys_reviewer_only_bad_shapes(env, extra, key, needle):
@@ -163,6 +167,24 @@ def test_routing_keys_reviewer_only(env, role, extra, key):
     probs = _problems(user, root)
     assert probs == [f"{root.name}:.nw/personas/my_persona.yaml: {key}: only allowed for role "
                      "reviewer"]
+
+
+@pytest.mark.parametrize("extra,keys", [
+    ("required: maybe\n", ["required"]),
+    ("when: {files: [x], paths: []}\n", ["when.files", "when.paths"]),
+    ("when: [src]\n", ["when"]),
+])
+def test_routing_shape_still_checked_under_an_invalid_role(env, extra, keys):
+    """An unknown role is reported, and `required`/`when` are still shape-checked (both
+    validators)."""
+    cfg, user, root, pdir, _ = env
+    _put(pdir, "x_reviewer", role="auditor", template="{{spec_text}}\n", extra=extra)
+    defs = _problems(user, root)
+    assert [_tail(m).split(":", 1)[0] for m in defs] == ["role", *keys]
+    assert "role: must be one of implementer, reviewer, triager" in defs[0]
+    reg = R.load_registry(cfg, project_root=root, known=PS.KNOWN)
+    entry = next(e for e in reg.entries if e.name == "x_reviewer")
+    assert [_tail(m) for m in entry.errors] == [_tail(m) for m in defs]
 
 
 # ---- AC3: one helper, every problem at once -------------------------------------------------
@@ -238,6 +260,10 @@ def test_is_reviewer(env, tmp_path):
     other = tmp_path / "other"
     (other / ".nw" / "personas").mkdir(parents=True)
     assert not PS.is_reviewer("security_reviewer", other, user_dir=user)     # not declared there
+    _put(user, "user_reviewer")                                              # user layer
+    assert PS.is_reviewer("user_reviewer", root, user_dir=user)
+    assert PS.is_reviewer("user_reviewer", other, user_dir=user)
+    assert not PS.is_reviewer("user_reviewer", user_dir=user)                # no root
     for name in PS.PERSONAS:
         want = name in PS.REVIEWER_PERSONAS
         assert PS.is_reviewer(name) is want and PS.is_reviewer(name, root, user_dir=user) is want
@@ -295,11 +321,23 @@ def test_build_request_declared_reviewer(env, tmp_path):
     assert "Review SPEC-0001" in req.prompt
     # review context: the branch diff and the test files it touches
     assert "src/a.py" in req.prompt and "print('hi')" in req.prompt
+    assert "tests/test_a.py" in req.prompt
     assert req.persona == "security_reviewer"
     with pytest.raises(ValueError, match="unknown persona 'rogue_reviewer'"):
         _req(cfg, profile, root, state, "rogue_reviewer", tmp_path)
-    ctx = PS.build_context(cfg, state, {"_root": str(root)}, review=True)
-    assert ctx["test_files"] == ["tests/test_a.py"] and ctx["diff"]
+
+
+def test_build_request_resolves_the_declared_registry_once(env, tmp_path, monkeypatch):
+    """Persona and review context come from one registry scan, so they cannot disagree."""
+    cfg, user, root, pdir, state = env
+    _put(pdir, "security_reviewer")
+    calls = []
+    real = PD.load_registry
+    monkeypatch.setattr(PD, "load_registry",
+                        lambda *a, **k: calls.append(a) or real(*a, **k))
+    req = _req(cfg, resolve_profile(cfg), root, state, "security_reviewer", tmp_path)
+    assert len(calls) == 1
+    assert "print('hi')" in req.prompt and "tests/test_a.py" in req.prompt
 
 
 def test_build_request_declared_reviewer_needs_the_root(env, tmp_path):

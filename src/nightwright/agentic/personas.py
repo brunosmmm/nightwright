@@ -1000,7 +1000,8 @@ def build_request(cfg, profile, project_cfg, state, persona, *, run_dir,
     extra = {**(persona_extra(state, persona, project_cfg) or {}), **(extra or {})} or None
     ctx = build_context(cfg, state, project_cfg, loop_max=profile.get("loop_max"),
                         previous=previous,
-                        review=is_reviewer(persona, project_root, user_dir=user_dir),
+                        review=persona in REVIEWER_PERSONAS
+                        or (p.declared is not None and p.role == "reviewer"),
                         with_tests=persona == "test_reviewer", extra=extra)
     env = {
         "NW_CAMPAIGN": str(state.get("id") or ""),

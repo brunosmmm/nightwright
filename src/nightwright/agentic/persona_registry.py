@@ -8,6 +8,7 @@ owns as a `known` mapping, `{"output_schemas": keys, "invariants": keys, "placeh
 Builtin templates live in `agentic/personas/`; a user/project template sits beside its YAML."""
 from __future__ import annotations
 
+import math
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -155,6 +156,11 @@ def _is_num(v) -> bool:
     return isinstance(v, (int, float)) and not isinstance(v, bool)
 
 
+def _is_budget(v) -> bool:
+    """A finite number > 0 (YAML `.inf` / `.nan` load as floats and are refused)."""
+    return _is_num(v) and math.isfinite(v) and v > 0
+
+
 def check_declared_keys(doc, role, bad):
     """SPEC-0394: the run-default and routing keys of a user/project definition, problems to
     `bad(key, msg)`. Shared by this module's validator and `persona_defs._read_file` so both
@@ -169,9 +175,8 @@ def check_declared_keys(doc, role, bad):
                          f"got {model!r}")
     if "effort" in doc and (not isinstance(doc["effort"], str) or doc["effort"] not in EFFORTS):
         bad("effort", f"must be one of {', '.join(EFFORTS)}, got {doc['effort']!r}")
-    if "max_budget_usd" in doc and (not _is_num(doc["max_budget_usd"])
-                                    or doc["max_budget_usd"] <= 0):
-        bad("max_budget_usd", f"must be a number > 0, got {doc['max_budget_usd']!r}")
+    if "max_budget_usd" in doc and not _is_budget(doc["max_budget_usd"]):
+        bad("max_budget_usd", f"must be a finite number > 0, got {doc['max_budget_usd']!r}")
     for key in DECLARED_ROUTING:
         if key in doc and role in CUSTOM_ROLES and role != "reviewer":
             bad(key, "only allowed for role reviewer")

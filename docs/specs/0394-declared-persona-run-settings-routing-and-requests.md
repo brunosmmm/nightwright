@@ -4,7 +4,7 @@ title: "Declared personas: run settings, reviewer routing metadata and run reque
 status: done
 owner: user
 created: 2026-11-02
-updated: 2026-11-02
+updated: 2026-11-03
 milestone: "M9: agentic workflow"
 kind: feature
 parent: SPEC-0348
@@ -317,6 +317,19 @@ the queue does not run them until Pipeline A2b/A3 ship.
   role table, new keys, layering, `nw personas list|show|validate`, "the queue does not run them
   yet".
 
+### Test record (2026-11-03, review loop 2)
+
+- After the review fixes: `uv run pytest -q -n 4 tests/test_agentic_persona_run_settings.py
+  tests/test_agentic_personas_declared_cli.py tests/test_agentic_persona_defs.py
+  tests/test_agentic_personas.py tests/test_agentic_persona_registry.py
+  tests/test_agentic_personas_cli.py tests/test_remote_personas.py`: 304 passed. New cases:
+  `.inf` / `.nan` budgets refused; whitespace-only `when` items refused; unknown role with a
+  malformed `required` / `when` reports the role error plus every shape error in both
+  validators; a user-layer reviewer is a reviewer with any root and not without one; the
+  declared reviewer's built prompt carries `tests/test_a.py` through `{{test_files}}`;
+  `build_request` scans the declared registry once (the test fails against the previous
+  `is_reviewer(...)` call, checked by reverting it). The full suite is left to gating.
+
 ### As shipped (2026-11-02)
 
 - `persona_registry.check_declared_keys(doc, role, bad)` is the one helper both validators call;
@@ -334,6 +347,13 @@ the queue does not run them until Pipeline A2b/A3 ship.
 - The generated Output section lists the schema's optional finding fields as read from the
   schema (`detail`, `trigger`, `files`, `lines`): `trigger` is one more than the Design's list,
   because the section is derived from the enforced schema.
+- `max_budget_usd` must be a *finite* number > 0: YAML `.inf` / `.nan` load as floats and are
+  refused (`must be a finite number > 0, got inf`), so a definition cannot lift the budget cap.
+- `build_request` computes the review flag from the persona it already resolved
+  (`persona in REVIEWER_PERSONAS or (p.declared is not None and p.role == "reviewer")`) instead
+  of calling `is_reviewer(persona, project_root)`: same answer, one registry scan per request,
+  and the persona and its review context cannot come from two different reads of the
+  definitions. `is_reviewer` stays the public helper for callers without a resolved `Persona`.
 - `nw idea clock-in/out IDEA-090` is refused inside a campaign run (`NW_PERSONA_RUN=1`), so no
   clock entries were recorded; the runner's transcript tracking covers the time.
 
