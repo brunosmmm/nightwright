@@ -211,20 +211,30 @@ def worker_serve(cfg, blob, conf, kinds, slots):
 
 
 @click.command("serve")
-@click.option("--jobs", "jobs", is_flag=True, required=True,
-              help="serve the pull-worker job API (the only mode so far)")
-@click.option("--bind", default="127.0.0.1:8790", show_default=True, metavar="ADDR:PORT",
-              help="without TLS: loopback or a Tailscale address only")
+@click.option("--jobs", "jobs", is_flag=True,
+              help="serve the pull-worker job API (default bind 127.0.0.1:8790)")
+@click.option("--dashboard", "dashboard", is_flag=True,
+              help="serve the read-only dashboard (SPEC-0414; default bind 127.0.0.1:8791, "
+                   "loopback only, bearer token in <data_dir>/agentic/dashboard/local.token)")
+@click.option("--bind", default=None, metavar="ADDR:PORT",
+              help="--jobs: loopback or a Tailscale address without TLS; --dashboard: loopback "
+                   "only")
 @click.option("--tls-cert", default=None, type=click.Path(exists=True, dir_okay=False))
 @click.option("--tls-key", default=None, type=click.Path(exists=True, dir_okay=False))
 @click.option("--client-ca", default=None, type=click.Path(exists=True, dir_okay=False),
               help="require client certificates signed by this CA, CN = the worker's name")
 @click.pass_obj
-def serve_cmd(cfg, jobs, bind, tls_cert, tls_key, client_ca):
-    """Serve jobs to pull workers over HTTP(S) (SPEC-0334)."""
+def serve_cmd(cfg, jobs, dashboard, bind, tls_cert, tls_key, client_ca):
+    """Serve jobs to pull workers (--jobs, SPEC-0334) or the read-only dashboard (--dashboard,
+    SPEC-0414) over HTTP(S). Exactly one mode flag is required."""
+    if jobs == dashboard:
+        raise click.UsageError("give exactly one of --jobs and --dashboard")
+    if dashboard:
+        return _serve_dashboard(cfg, bind, tls_cert, tls_key, client_ca)
     from . import pull_jobs as PJ
     try:
-        srv = PJ.make_server(cfg, bind, tls_cert=tls_cert, tls_key=tls_key, client_ca=client_ca)
+        srv = PJ.make_server(cfg, bind or PJ.DEFAULT_BIND, tls_cert=tls_cert, tls_key=tls_key,
+                             client_ca=client_ca)
     except (ValueError, OSError) as e:
         raise click.ClickException(str(e))
     host, port = srv.server_address[:2]
@@ -236,4 +246,42 @@ def serve_cmd(cfg, jobs, bind, tls_cert, tls_key, client_ca):
         pass
     finally:
         srv.stopping.set()
+        srv.server_close()
+
+
+def _serve_dashboard(cfg, bind, tls_cert, tls_key, client_ca):
+    """`nw serve --dashboard` (SPEC-0414). Exit 2: `BindRefused` or a TLS flag; exit 1: an
+    OSError from binding."""
+    import signal
+    import threading
+
+    from .dashboard import auth as DA
+    from .dashboard import server as DS
+    try:
+        DA.validate_bind(bind or DS.DEFAULT_BIND)
+    except DA.BindRefused as e:
+        raise click.UsageError(str(e))
+    if tls_cert or tls_key or client_ca:
+        raise click.UsageError("TLS is not supported with --dashboard")
+    try:
+        srv = DS.make_server(cfg, bind)
+    except DA.BindRefused as e:
+        raise click.UsageError(str(e))
+    except OSError as e:
+        raise click.ClickException(str(e))
+    try:
+        rec = DS.write_server_json(cfg, srv)
+        click.echo(f"nw serve: dashboard on {rec['url']} (token auth, token in "
+                   f"{DS.dashboard_dir(cfg) / 'local.token'})", err=True)
+        stop = threading.Event()
+        for sig in (signal.SIGTERM, signal.SIGINT):
+            signal.signal(sig, lambda *_: stop.set())
+        t = threading.Thread(target=srv.serve_forever, kwargs={"poll_interval": 0.2},
+                             daemon=True)
+        t.start()
+        stop.wait()
+        srv.shutdown()
+        t.join()
+    finally:
+        DS.remove_server_json(cfg)
         srv.server_close()

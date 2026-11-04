@@ -58,6 +58,8 @@ ALLOWED = {
     ("agentic/worker.py", "_run"): "stderr diagnostic: the disk watch failed; stdout is the frame protocol (SPEC-0336)",
     ("agentic/worker_update.py", "_stderr"): "stderr diagnostic to the ssh caller, outside the render path",
     ("agentic/cli_worker.py", "serve_cmd"): "daemon startup line on stderr (the server's log), not a TTY render (SPEC-0334)",
+    ("agentic/cli_worker.py", "_serve_dashboard"): "daemon startup line on stderr (the server's log), not a TTY render (SPEC-0414)",
+    ("agentic/cli_dashboard.py", "snapshot_cmd"): "dashboard snapshot: plain text/JSON for scripts and ssh callers (SPEC-0401)",
     ("agentic/cli_workers.py", "_add_pull"): "prints the bare enrol blob on stdout for scripts to capture; Rich would mangle it (SPEC-0334)",
     ("agentic/cli_workers.py", "workers_token"): "prints the bare enrol blob on stdout for scripts to capture; Rich would mangle it (SPEC-0334)",
     ("agentic/pull_worker.py", "_log"): "pull-worker daemon log line on stderr, outside the render path (SPEC-0334)",

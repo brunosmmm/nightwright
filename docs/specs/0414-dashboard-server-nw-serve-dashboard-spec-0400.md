@@ -1,7 +1,7 @@
 ---
 id: SPEC-0414
 title: "Dashboard server, loopback: nw serve --dashboard with token auth and GET /api/snapshot"
-status: accepted
+status: done
 owner: user
 created: 2026-11-04
 updated: 2026-11-04
@@ -244,47 +244,47 @@ by any queue-side module):
 
 ## Acceptance criteria
 
-- [ ] `nw serve --dashboard --bind 127.0.0.1:0` starts, writes `server.json` with the real port
+- [x] `nw serve --dashboard --bind 127.0.0.1:0` starts, writes `server.json` with the real port
       and `auth: "token"`, and `GET /api/snapshot` with the right bearer token returns `200`, a
       JSON document with `schema == "nw.dashboard.v1"` and every top-level key SPEC-0401 defines,
       and `ETag` equal to `"<rev>"` of that document.
-- [ ] A repeat request with `If-None-Match: "<rev>"` returns `304` with an empty body and the
+- [x] A repeat request with `If-None-Match: "<rev>"` returns `304` with an empty body and the
       same `ETag`; a stale value returns `200`; `*` and `W/"<rev>"` return `304`. Two requests
       with no queue change cause exactly one JSON serialization (counter) and, within
       `refresh_s`, one snapshot build.
-- [ ] CLI surface: `nw serve` with neither `--jobs` nor `--dashboard`, or with both, exits 2;
+- [x] CLI surface: `nw serve` with neither `--jobs` nor `--dashboard`, or with both, exits 2;
       `nw serve --jobs` keeps its default bind `127.0.0.1:8790` and existing behavior (the
       SPEC-0334 tests pass unchanged); `--dashboard` without `--bind` binds `127.0.0.1:8791`; a
       bind that fails at the OS (port in use) exits 1 via `OSError`; and
       `docs/product/reference/index.md` lists `serve --dashboard`.
-- [ ] Bind gate: `nw serve --dashboard` refuses with `BindRefused` (exit 2, stderr names the rule,
+- [x] Bind gate: `nw serve --dashboard` refuses with `BindRefused` (exit 2, stderr names the rule,
       nothing listening, no `server.json`) on `0.0.0.0`, `::`, `[::]`, a LAN address
       (`192.168.1.20`), a tailnet address (`100.64.0.9`), `tailscale`, and a host name, each alone
       and each combined with `--tls-cert/--tls-key` (existing files), in which case the stderr is
       the bind-rule message. A valid loopback bind combined with TLS flags exits 2 with stderr
       `TLS is not supported with --dashboard`, and the two messages differ.
-- [ ] On a loopback bind, a request with no `Authorization`, a wrong token, a non-`Bearer` scheme
+- [x] On a loopback bind, a request with no `Authorization`, a wrong token, a non-`Bearer` scheme
       or the token in the query string gets `401`; `local.token` exists with mode 0600 in a 0700
       directory and is reused across starts. The token value never appears in the audit log,
       `server.json` or stderr.
-- [ ] A request with a wrong `Host`, a foreign `Origin` (`http://evil.example`), `Origin: null`
+- [x] A request with a wrong `Host`, a foreign `Origin` (`http://evil.example`), `Origin: null`
       or a DNS-rebinding `Host` is `403` before authentication, even with a valid token; the bound
       `address:port` and `localhost:port` (with a matching `Origin`) pass.
-- [ ] `POST`, `PUT`, `DELETE` and `OPTIONS` to any path get `405` with `Allow: GET` and write
+- [x] `POST`, `PUT`, `DELETE` and `OPTIONS` to any path get `405` with `Allow: GET` and write
       nothing but an audit line; `GET /` and `GET /nope` get `404`; a `GET` with a body gets
       `413`; a cache that raises gives `503` and the next request works.
-- [ ] Every refusal (`bad_host`, `bad_origin`, `no_token`, `bad_token`, `method_not_allowed`)
+- [x] Every refusal (`bad_host`, `bad_origin`, `no_token`, `bad_token`, `method_not_allowed`)
       appends one valid `nw.dashboard.audit.v1` line with `reason`, `status`, method and path (no
       query); successful reads (`200`/`304`) append none; `audit.jsonl` rotates to `audit.jsonl.1`
       past 5 MiB and never exceeds one backup.
-- [ ] Over HTTP, after a mix of authenticated reads, conditional reads, refusals and a snapshot
+- [x] Over HTTP, after a mix of authenticated reads, conditional reads, refusals and a snapshot
       rebuild, every file under the data dir outside `agentic/dashboard/` is byte-identical and no
       file other than `local.token`, `audit.jsonl`, `audit.jsonl.1` and `server.json` exists under
       `agentic/dashboard/`; and no queue-side module (`queue`, the runner, `runproc`, `events`,
       `escalations`, `lease`, `store`, `mailbox`, `pull_jobs`, `cli_worker` at module level)
       imports `nightwright.agentic.dashboard`, and importing
       `nightwright.agentic.dashboard.snapshot` does not import `auth` or `server`.
-- [ ] On SIGTERM the process exits 0 and `server.json` is gone; a `server.json` naming another
+- [x] On SIGTERM the process exits 0 and `server.json` is gone; a `server.json` naming another
       pid is left alone; a `server.json` left by a killed process does not stop a new start and is
       replaced. The server never executes `tailscale` (a recording stub on `PATH` is not called).
 
@@ -375,6 +375,42 @@ slice owns the real `tailscale` checks.
 **Regression guard.** Affected tests via `python3 tools/affected_tests.py --run uv run pytest
 -q`. The queue's close gate runs the affected set.
 
+### Test record (2026-11-04)
+
+Ran, all green: `uv run pytest -q tests/test_dashboard_auth.py tests/test_dashboard_audit.py
+tests/test_dashboard_server.py tests/test_dashboard_serve_cli.py
+tests/test_dashboard_http_readonly.py tests/test_dashboard_imports.py` (new or extended; 109 tests);
+the SPEC-0401 dashboard tests (`test_dashboard_snapshot|_cache|_cli|_readonly|_imports`,
+`test_agentic_dashboard*`), the SPEC-0334 pull-worker tests (`test_pull_workers`,
+`test_pull_workers_security`, `test_worker_jobs`, `test_workers_drain`) and
+`test_docs_product_reference`, `test_docs_product_ia`, `test_rich_output_guard` (278 + 221 passed
+across the two runs). `python3 tools/spec_lint.py` exits 0 after `--write-ledger`. The full
+`tools/affected_tests.py` set is large on a spec/docs change and was left to the close gate, as
+was the full suite.
+
+Manual (this host, seeded data dir, `nw serve --dashboard --bind 127.0.0.1:0`): with the token
+from `local.token`, `curl` showed `200` + `ETag`; `If-None-Match` with that ETag gave `304`;
+no token gave `401`; `find <data_dir> -newer <marker>` listed nothing outside
+`agentic/dashboard/`; after SIGTERM `server.json` was gone. `nw serve --dashboard --bind
+0.0.0.0:8791` exited 2 ("refusing to bind: 0.0.0.0 is a wildcard address") and `ss -ltn` showed
+nothing on 8791. No `tailscale` was run (a recording stub on `PATH` stayed uncalled in the CLI
+test).
+
+### As shipped
+
+Shipped to Design with these notes:
+
+- `tests/test_rich_output_guard.py` allowlists `cli_worker._serve_dashboard` (daemon startup
+  line on stderr, like `serve_cmd`). It also allowlists the already-present
+  `cli_dashboard.snapshot_cmd` plain output (SPEC-0401), which the guard flagged on this branch.
+- `DashboardServer.handle_error` drops `OSError` (a peer that resets its connection) without a
+  traceback; not in Design.
+- A refused request's body (up to 64 KiB) is read and dropped so the response is not lost to a
+  reset; larger or chunked bodies close the connection (`Connection: close`).
+- `HEAD` is routed like any non-`GET` method (`405`, audited).
+- `auth.parse_bind` also accepts a bare IP (`::1`, `127.0.0.1`) and a bare bracketed IPv6
+  (`[::]`) with the default port; `audit.record` drops keys outside the schema.
+
 ## Rollout / migration
 
 1. Land `dashboard/auth.py`, `audit.py`, `server.py`, the `serve_cmd` mode switch, the docs row and
@@ -388,12 +424,12 @@ slice owns the real `tailscale` checks.
 
 ## Definition of done
 
-- [ ] Acceptance criteria all met.
-- [ ] Test plan executed; automated tests pass (affected set via `tools/affected_tests.py`);
+- [x] Acceptance criteria all met.
+- [x] Test plan executed; automated tests pass (affected set via `tools/affected_tests.py`);
       manual steps 1 and 2 performed and noted.
-- [ ] No regressions (`nw serve --jobs`, SPEC-0401 dashboard tests green).
-- [ ] Spec body updated to match what shipped.
-- [ ] `docs/LEDGER.md` regenerated; `python3 tools/spec_lint.py` exits 0.
+- [x] No regressions (`nw serve --jobs`, SPEC-0401 dashboard tests green).
+- [x] Spec body updated to match what shipped.
+- [x] `docs/LEDGER.md` regenerated; `python3 tools/spec_lint.py` exits 0.
 
 ## Open questions
 
