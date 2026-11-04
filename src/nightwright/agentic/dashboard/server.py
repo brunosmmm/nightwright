@@ -203,6 +203,7 @@ class _Handler(http.server.BaseHTTPRequestHandler):
         self.close_connection = True
         try:
             self.connection.settimeout(srv.send_timeout_s)
+            ST.set_keepalive(self.connection)
             self.send_response(200)
             for k, v in (("Content-Type", "text/event-stream; charset=utf-8"),
                          ("Cache-Control", "no-store"), ("X-Accel-Buffering", "no"),
@@ -229,6 +230,8 @@ class _Handler(http.server.BaseHTTPRequestHandler):
                 elif time.monotonic() - last_write >= srv.heartbeat_s:
                     ST.write_comment(self.wfile, "hb")
                     last_write = time.monotonic()
+            if sub.error is not None:           # the hub cannot build snapshots any more
+                ST.write_error(self.wfile, sub.error)
         except OSError:
             pass
         finally:

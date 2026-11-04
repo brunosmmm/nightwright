@@ -6,6 +6,7 @@ slow client lags (and is dropped by the send timeout) without delaying the other
 stdlib only; not imported by any queue-side module."""
 from __future__ import annotations
 
+import json
 import math
 import select
 import socket
@@ -17,6 +18,7 @@ HEARTBEAT_S = 15.0              # a `: hb` comment this often (tests inject a sh
 SEND_TIMEOUT_S = 10.0           # a client whose socket stays unwritable this long is dropped
 RETRY_MS = 3000
 DEFAULT_MAX_CLIENTS = 8
+FAIL_AFTER_S = 30.0             # a builder failing this long ends open streams (see Hub._run)
 ERROR_LOG_EVERY_S = 60.0        # the same snapshotter error is logged at most this often
 
 
@@ -41,8 +43,30 @@ def write_event(wfile, event: str, ident: str, data: bytes) -> None:
                 + b"\ndata: " + data + b"\n\n")
 
 
+def write_error(wfile, msg: str) -> None:
+    """The final `error` event before the server ends a stream it can no longer keep current."""
+    data = json.dumps({"error": msg}, separators=(",", ":")).encode("ascii", "replace")
+    wfile.write(b"event: error\ndata: " + data + b"\n\n")
+
+
 def write_comment(wfile, text: str = "hb") -> None:
     wfile.write(f": {text}\n\n".encode("ascii"))
+
+
+def set_keepalive(sock: socket.socket) -> None:
+    """Short TCP keepalives, so a half-open phone connection frees its slot in bounded time
+    (about 30 s). Best effort: an option the platform lacks is skipped."""
+    for opt, val in (("SO_KEEPALIVE", 1),):
+        try:
+            sock.setsockopt(socket.SOL_SOCKET, getattr(socket, opt), val)
+        except (OSError, AttributeError):
+            return
+    for opt, val in (("TCP_KEEPIDLE", 15), ("TCP_KEEPINTVL", 5), ("TCP_KEEPCNT", 3),
+                     ("TCP_USER_TIMEOUT", 30000)):
+        try:
+            sock.setsockopt(socket.IPPROTO_TCP, getattr(socket, opt), val)
+        except (OSError, AttributeError):
+            pass
 
 
 def peer_gone(sock: socket.socket) -> bool:
@@ -94,6 +118,7 @@ class Subscriber:
         self.box = None
         self.offered = False            # the snapshotter has handed over something
         self.closed = False
+        self.error = None               # set when the hub ended this stream because it cannot build
         self.event = threading.Event()
         self._lock = threading.Lock()
 
@@ -113,6 +138,10 @@ class Subscriber:
         self.closed = True
         self.event.set()
 
+    def fail(self, msg: str) -> None:
+        self.error = msg
+        self.close()
+
     def take(self, timeout: float):
         """The pending snapshot, or None after `timeout` (or once closed)."""
         self.event.wait(timeout)
@@ -124,8 +153,10 @@ class Subscriber:
 
 
 class Hub:
-    def __init__(self, cache, pool: SlotPool, refresh_s: float | None = None):
+    def __init__(self, cache, pool: SlotPool, refresh_s: float | None = None,
+                 fail_after_s: float = FAIL_AFTER_S):
         self.cache, self.pool = cache, pool
+        self.fail_after_s = fail_after_s
         self.refresh_s = cache.refresh_s if refresh_s is None else refresh_s
         self.builds_published = 0
         self._subs: list[Subscriber] = []
@@ -173,11 +204,23 @@ class Hub:
             s.close()
 
     def _run(self, stop: threading.Event) -> None:
+        failing_since = None
         while not stop.wait(self.refresh_s):
             try:
                 snap = self.cache.get()
+                failing_since = None
             except Exception as e:              # noqa: BLE001 - retry next tick, never die
-                self._log_error(f"{type(e).__name__}: {e}")
+                msg = f"{type(e).__name__}: {e}"
+                self._log_error(msg)
+                now = time.monotonic()
+                failing_since = now if failing_since is None else failing_since
+                if now - failing_since >= self.fail_after_s:
+                    # heartbeats must not make a client believe it is current: end the streams
+                    # so the page falls back to polling, where the same failure is a 503
+                    with self._lock:
+                        subs = list(self._subs)
+                    for s in subs:
+                        s.fail(msg)
                 continue
             with self._lock:
                 if stop.is_set():

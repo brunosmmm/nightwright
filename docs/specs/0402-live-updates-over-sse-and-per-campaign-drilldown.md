@@ -446,6 +446,31 @@ reopens with `?rev=`, leaves no slot behind, and with `max_clients` exhausted by
 back to "polling" and still renders. The SSE parser (split chunks, multi-line `data:`, comments,
 `retry:`, CRLF) is covered by the node tests. The full suite is left to gating.
 
+### As shipped (2026-11-04, round 6: a dead builder no longer looks live)
+
+Review found that heartbeats kept the page green and "live" while the snapshot builder was failing
+(the page counts any stream bytes as a check), the reverse of the polling page's 503 -> "offline".
+
+- `Hub._run` tracks how long `cache.get()` has failed continuously. After `fail_after_s` (default
+  `FAIL_AFTER_S` = 30 s, under the page's 45 s watchdog; injectable) it calls `Subscriber.fail(msg)`
+  on every subscriber; the handler writes a final `event: error` and ends the stream, so slots are
+  freed and the snapshotter stops. The page treats the end as a stream failure: it polls, gets the
+  same 503 and shows "offline"; new streams answer 503 until the builder recovers. Shorter outages
+  (the existing resilience test) are still ridden out.
+- Stream sockets get `SO_KEEPALIVE` with short `TCP_KEEPIDLE/INTVL/CNT` and `TCP_USER_TIMEOUT`
+  (`stream.set_keepalive`, best effort), so a half-open phone connection frees its slot in about 30 s.
+- Still open: AC6 whois half and AC7 (selftest, `tests/test_dashboard_mobile.py`, serving the page).
+  SPEC-0416 (tailnet bind gate) has since landed on `main` but is not on this branch and does not
+  add whois to `stream_auth_ok`; this host still has no Chromium/Chrome; `server.py` still has no
+  route for `/`, `/app.js`, `/app.css`. These stay with the human decision recorded in the campaign
+  note (depend on / split into follow-up specs).
+
+### Test record (2026-11-04, round 6)
+
+Ran `uv run pytest -q tests/test_dashboard_stream.py tests/test_dashboard_e2e.py` (21 passed),
+including the new `test_a_builder_that_stays_down_ends_the_streams_with_an_error_event`. The full
+suite is left to gating.
+
 ## Rollout / migration
 
 1. Land after child 1 of SPEC-0400 (the server, auth and snapshot cache). Reconcile the cache

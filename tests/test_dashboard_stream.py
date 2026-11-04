@@ -341,6 +341,28 @@ def test_a_failing_cache_call_leaves_the_snapshotter_running(mk, capfd):
     assert err.count("snapshot failed: RuntimeError: builder down") == 1   # repeats held back
 
 
+def test_a_builder_that_stays_down_ends_the_streams_with_an_error_event(mk):
+    """Heartbeats must not keep a page looking current once no snapshot can be built."""
+    down = [False]
+
+    def flaky(cfg):
+        if down[0]:
+            raise RuntimeError("ledger unreadable")
+        return {"schema": "nw.dashboard.v1", "rev": "a"}
+
+    s = mk(refresh_s=0.05, max_stale_s=0.05, builder=flaky, heartbeat_s=0.1)
+    s.hub.fail_after_s = 0.3
+    c = s.stream()
+    assert c.event()["id"] == "a"
+    down[0] = True
+    assert c.closed_by_server(10)                   # ended, not kept alive by heartbeats
+    assert until(lambda: s.hub.pool.used == 0)
+    assert s.get()[0] == 503                        # what the page's poll then sees
+    assert s.stream().status == 503
+    down[0] = False                                 # and it recovers
+    assert s.stream().status == 200
+
+
 # ---- the cap -----------------------------------------------------------------------------
 
 def test_cap_answers_503_and_a_slot_frees_on_any_end(mk):
