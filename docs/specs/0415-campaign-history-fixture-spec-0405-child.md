@@ -1,9 +1,10 @@
 ---
 id: SPEC-0415
 title: "Campaign history fixture: tools/capture_history_fixture.py, the sanitized tests/fixtures/agentic_history/ data dir with MANIFEST.json, and tests/history_scale.copy_fixture"
-status: proposed
+status: accepted
 owner: user
 created: 2026-11-04
+updated: 2026-11-04
 source_idea: IDEA-909
 kind: feature
 tags: [tui, agentic, observability, testing]
