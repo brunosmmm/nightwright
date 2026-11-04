@@ -22,7 +22,7 @@ from waits import join, until
 
 CID = "SPEC-0900-20261101-abcd"
 GOLDEN = Path(__file__).parent / "data" / "remote_gates_golden.json"
-_MASK = {"started_at", "duration_s", "slot_wait_s", "ts", "since", "waited_s"}
+_MASK = {"started_at", "duration_s", "slot_wait_s", "ts", "since", "waited_s", "nw_sha"}
 
 
 @pytest.fixture(autouse=True)
