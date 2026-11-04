@@ -249,8 +249,8 @@ progress. This is the single place to see *what has been decided* and *what is i
   - [x] [SPEC-0366](./specs/0366-herdr-run-tabs-one-tab-per-campaign-named-after.md) herdr run tabs: one tab per campaign named after the work, supersedes the shared nw runs tab — done
 - **[SPEC-0400](./specs/0400-remote-web-dashboard-live-view-of-active-queue.md) — Remote web dashboard and decisions inbox over Tailscale (nw serve --dashboard)** · accepted · (0/0 done)
   - _(no child specs yet)_
-- **[SPEC-0405](./specs/0405-rich-queue-tui-prioritized-live-queue-campaign.md) — Rich queue TUI: prioritized live queue, campaign detail popup, closed-campaign history and a cross-campaign findings and decisions browser over one shared history layer** · accepted · (1/2 done)
-  - [ ] [SPEC-0408](./specs/0408-ledger-provenance-finding-run-id-and-key-triage.md) Ledger provenance: finding run_id and key, triage events — accepted
+- **[SPEC-0405](./specs/0405-rich-queue-tui-prioritized-live-queue-campaign.md) — Rich queue TUI: prioritized live queue, campaign detail popup, closed-campaign history and a cross-campaign findings and decisions browser over one shared history layer** · accepted · (2/2 done)
+  - [x] [SPEC-0408](./specs/0408-ledger-provenance-finding-run-id-and-key-triage.md) Ledger provenance: finding run_id and key, triage events — done
   - [x] [SPEC-0409](./specs/0409-tui-test-harness-real-app-pilots-on-real-fixture.md) Remove Textual/pyte test skips, add the AST guard and a TUI test runtime budget — done
 
 ## Active & planned
@@ -272,7 +272,6 @@ progress. This is the single place to see *what has been decided* and *what is i
 | [SPEC-0391](./specs/0391-worker-host-slots-from-registry.md) | A gate job carries the worker's registry slots as the worker host's slot limit | feature | in-progress | — | 2026-11-02 |
 | [SPEC-0400](./specs/0400-remote-web-dashboard-live-view-of-active-queue.md) | Remote web dashboard and decisions inbox over Tailscale (nw serve --dashboard) | epic | accepted | M9: agentic workflow | 2026-11-03 |
 | [SPEC-0405](./specs/0405-rich-queue-tui-prioritized-live-queue-campaign.md) | Rich queue TUI: prioritized live queue, campaign detail popup, closed-campaign history and a cross-campaign findings and decisions browser over one shared history layer | epic | accepted | — | 2026-11-03 |
-| [SPEC-0408](./specs/0408-ledger-provenance-finding-run-id-and-key-triage.md) | Ledger provenance: finding run_id and key, triage events | feature | accepted | — | 2026-11-03 |
 
 ## Done
 
@@ -643,6 +642,7 @@ progress. This is the single place to see *what has been decided* and *what is i
 | [SPEC-0397](./specs/0397-record-the-wt-code-version-runner-git-sha-and.md) | Record the nw code version and resolved-profile hash on each campaign open, and export them | feature | done | M9: agentic workflow | 2026-11-02 |
 | [SPEC-0398](./specs/0398-quiet-follower-delivers-campaign-silent-for.md) | The quiet follower holds `campaign_silent` / `state_stuck` for a GATING campaign that waits for a gate slot, runs a gate, or has its gate deferred | feature | done | M10: agentic MVP | 2026-11-02 |
 | [SPEC-0399](./specs/0399-pr-mode-with-auto-merge-merge-policy-pr-opens-a.md) | Implicit docs/LEDGER.md regeneration on every nw rebase (first slice of PR auto-merge) | feature | done | M9: agentic workflow | 2026-11-02 |
+| [SPEC-0408](./specs/0408-ledger-provenance-finding-run-id-and-key-triage.md) | Ledger provenance: finding run_id and key, triage events | feature | done | — | 2026-11-03 |
 | [SPEC-0409](./specs/0409-tui-test-harness-real-app-pilots-on-real-fixture.md) | Remove Textual/pyte test skips, add the AST guard and a TUI test runtime budget | feature | done | M9: agentic workflow | 2026-11-03 |
 
 ## Superseded / rejected

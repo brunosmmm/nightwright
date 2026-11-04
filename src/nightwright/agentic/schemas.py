@@ -4,6 +4,8 @@ command output) is kept beside a nightwright-written JSON record, never mixed wi
 
 - `nw.ledger.event.v1` — one line of `campaigns/<id>/ledger.jsonl`: the envelope
   `{schema, ts, seq, campaign, type, by}` plus the per-type keys below (values may be null).
+  SPEC-0408: a `finding` also carries `key` and `run_id` (see `EVENT_KEYS`), and the `triage`
+  event records an applied review- or gate-triager verdict with stable finding keys.
 - `nw.run.v1` — `runs/<NNN-persona>/run.json`, normalized from the runner's result.
 - `nw.gate.v1` — `gates/<NNN-name>.json`, the sidecar of the raw `gates/<NNN-name>.log`. Optional
   `interrupted` (SPEC-0229) and `summary` (SPEC-0284: parsed `{format, passed, failed, errors,
@@ -57,6 +59,8 @@ EVENT_KEYS: dict[str, tuple[str, ...]] = {
     "close": ("mode",),
     "note": ("text",),
     "backlog": ("ready", "blocked_by"),
+    # + optional `key` (`followups.finding_key`) and `run_id` (the producing persona run, null
+    # for gate / close / queue-internal findings), stamped by `store.append_event` (SPEC-0408)
     "finding": ("persona", "severity", "gate", "title", "detail", "files"),
     "priority": ("from", "to"),
     "admitted_after_revision": ("review_sha", "current_sha", "findings"),
@@ -80,6 +84,10 @@ EVENT_KEYS: dict[str, tuple[str, ...]] = {
     "spec_accepted": ("spec_id", "round"),
     "followup": ("persona", "severity", "title", "key", "idea_id", "origin"),
     "human_decision": ("escalation", "kind"),                  # SPEC-0235
+    # SPEC-0408: one applied triager verdict. Review triager: `waive` = [{id, key, severity,
+    # title, reason}], `ignored` = [{id, why}]. Gate triager: `waive` = [{gate, key, reason}],
+    # `routed_to` (decide_triage's step kind), `confidence`, `suspected_flaky`, `fix_keys`.
+    "triage": ("persona", "run_id", "kind", "disposition", "waive"),
 }
 
 RUN_KEYS = ("schema", "campaign", "run_id", "persona", "model", "effort", "max_budget_usd",

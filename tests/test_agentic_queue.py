@@ -1176,7 +1176,7 @@ def test_record_run_maps_category_and_folds_trigger():
     assert found[0] == {"persona": "adversarial_reviewer", "severity": "must_fix", "gate": None,
                         "ac": None, "title": "escape", "files": ["a.py"],
                         "detail": "joined\ntrigger: when name has ../",
-                        "category": "path_traversal"}
+                        "category": "path_traversal", "run_id": "003-adversarial_reviewer"}
     assert found[1]["detail"] == "trigger: rare" and found[1]["category"] == "other"
     assert "category" not in found[2] and found[2]["detail"] is None
     assert "trigger" not in found[0] and "lines" not in found[0]

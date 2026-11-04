@@ -57,6 +57,13 @@ journal (`runner.jsonl`). Gate logs keep the raw command output, with a JSON rec
 each one. This is what lets the loop run unattended. You can always answer "what happened,
 and why", with `nw campaign log`, `nw campaign runs` and `nw queue runner-log`.
 
+Events carry their provenance (SPEC-0408): a `finding` has `key` (the same `finding_key` its
+follow-up idea is filed under) and `run_id` (the persona run that produced it, `null` for
+gate, close and queue-internal findings). A `triage` event records each applied triager
+verdict: the review triager's waivers by finding `key`, and the gate triager's disposition,
+what the queue routed it to, and the keys of the findings it waived or asked to fix. Older
+events lack these keys and stay valid.
+
 ## 4. Never block — park
 
 When the loop can't decide, it doesn't hang and doesn't guess. It **parks** the campaign with

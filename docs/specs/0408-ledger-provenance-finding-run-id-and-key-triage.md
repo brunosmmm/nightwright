@@ -1,7 +1,7 @@
 ---
 id: SPEC-0408
 title: "Ledger provenance: finding run_id and key, triage events"
-status: accepted
+status: done
 owner: user
 created: 2026-11-03
 updated: 2026-11-03
@@ -170,33 +170,33 @@ provenance.
 
 ## Acceptance criteria
 
-- [ ] A `finding` produced from a persona verdict (`must_fix`, implementer blocker, reviewer
+- [x] A `finding` produced from a persona verdict (`must_fix`, implementer blocker, reviewer
   finding, and the run-level info findings) is written with `run_id` equal to the producing
   run's id and `key` equal to `followups.finding_key(spec_id, title, files)`.
-- [ ] A `finding` written by a deterministic producer (a gate, close, remote-gate eligibility,
+- [x] A `finding` written by a deterministic producer (a gate, close, remote-gate eligibility,
   a queue-internal check) has `key` and `run_id: null`; an explicit payload `key` is not
   overwritten.
-- [ ] If the campaign state is unreadable, a `finding` is still appended (without `key`) and no
+- [x] If the campaign state is unreadable, a `finding` is still appended (without `key`) and no
   exception escapes `append_event`.
-- [ ] The review triager's applied verdict writes exactly one `triage` event with
+- [x] The review triager's applied verdict writes exactly one `triage` event with
   `persona: "review_triager"`, `kind: "review"`, the run's `run_id`, `waive[]` entries whose
   `id` is the `persona#index` and whose `key` equals the key the same finding gets as a
   `followup`, the accepted `reason`, and `ignored[]` for rejected ids. A run with no valid
   verdict writes none.
-- [ ] The gate triager's applied verdict writes one `triage` event with
+- [x] The gate triager's applied verdict writes one `triage` event with
   `persona: "gate_triager"`, `kind: "gate"`, `disposition`, `routed_to` (the `decide_triage`
   step kind), `fix_keys` (keys of the verdict's `must_fix` items) and `waive[]` built from the
   verdict's `waived` list; a waived entry gets a `key` only when exactly one open finding of
   that gate exists in the current round, otherwise `null`. It is written for each of the four
   routes (implement, gate retry, close on waive, park) and not for a malformed verdict.
-- [ ] `triage` is a known type in `schemas.EVENT_KEYS` with the required keys above, and
+- [x] `triage` is a known type in `schemas.EVENT_KEYS` with the required keys above, and
   `append_event` rejects a `triage` missing one.
-- [ ] Ledger lines written before this change are not modified, and a ledger mixing old events
+- [x] Ledger lines written before this change are not modified, and a ledger mixing old events
   (no `key`/`run_id`, no `triage`) with new ones is read by `store.read_ledger` and
   `ledger_problems` without error.
-- [ ] `nw campaign log` and `journey.py` render a campaign whose ledger has `triage` events
+- [x] `nw campaign log` and `journey.py` render a campaign whose ledger has `triage` events
   without error.
-- [ ] `schemas.py` docs and `docs/product/loop/principles.md` describe `finding.key`,
+- [x] `schemas.py` docs and `docs/product/loop/principles.md` describe `finding.key`,
   `finding.run_id` and the `triage` event.
 
 ## Test plan
@@ -233,6 +233,33 @@ provenance.
   `test_agentic_queue.py`; existing ledger tests pass unmodified apart from additions;
   `python3 tools/spec_lint.py` exits 0.
 
+### Test record (2026-11-03)
+
+- `uv run pytest -q tests/test_agentic_ledger_provenance.py` — 20 passed (append_event
+  stamping, unreadable state, `triage` schema validation, `_record_run` run_id/key, review
+  triager incl. ignored ids / `disposition: none` / bad runs, gate triager per route incl.
+  retry past cap, `waived` key resolution one/none/two and `waive`-only verdict, old-ledger
+  compatibility with `nw campaign log` and `journey.event_sentence`).
+- `tests/test_agentic_queue.py`, `test_agentic_review_triage.py`, `test_agentic_store.py`,
+  `test_agentic_close.py`, `test_agentic_dashboard_journey.py` — 370 passed. One existing
+  assertion (`test_record_run_maps_category_and_folds_trigger`) gained `run_id`.
+- `uv run pytest -q -n 4 tests/test_agentic_*.py` — 3311 passed, 3 skipped.
+- A wider `-k "agentic or remote or ..."` run passed except
+  `test_export.py::test_internal_spec_lint_unaffected_by_outbox`, which failed only because
+  `docs/LEDGER.md` was stale; it passes after `--write-ledger`.
+- `python3 tools/spec_lint.py` exits 0. The full suite was left to gating.
+- Manual verification: not run against a live persona run (no real claude call in this
+  session); the same checks (`key`/`run_id` on `finding`, `triage` line in `nw campaign log`,
+  `waive[].key` equal to the follow-up key) are covered by the automated tests over the
+  real writers and a tmp data dir.
+
+### As shipped
+
+As designed. Notes: `store._stamp_finding` does the `key`/`run_id` stamping; `_record_run` sets
+`run_id` on all its findings in one pass at the end; the gate `triage` event is built by
+`queue._gate_triage_event`, which resolves a waived gate's key from `finding` events after the
+last `gate` event (`None` for a null gate name, zero or several candidates).
+
 ## Rollout / migration
 
 1. Land the writer changes, schema entries and docs together; no data migration, no flag.
@@ -245,12 +272,12 @@ provenance.
 
 ## Definition of done
 
-- [ ] Acceptance criteria all met.
-- [ ] Test plan executed; automated tests pass (affected tests via
+- [x] Acceptance criteria all met.
+- [x] Test plan executed; automated tests pass (affected tests via
   `python3 tools/affected_tests.py --run uv run pytest -q`); manual steps performed.
-- [ ] No regressions.
-- [ ] Spec body updated to match what shipped.
-- [ ] `docs/LEDGER.md` updated (status + date).
+- [x] No regressions.
+- [x] Spec body updated to match what shipped.
+- [x] `docs/LEDGER.md` updated (status + date).
 
 ## Open questions
 

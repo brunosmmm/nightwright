@@ -293,6 +293,21 @@ def _last_seq(path: Path) -> int:
 EVENT_UID_SCAN = 200          # SPEC-0341: how far back `append_event` looks for an `event_uid`
 
 
+def _stamp_finding(cfg, campaign_id, rec: dict) -> None:
+    """SPEC-0408: a `finding` always carries `run_id` (None when no persona run produced it)
+    and `key` (`followups.finding_key`, the follow-up key). An explicit value is kept; when
+    the campaign state cannot be read the key is left out rather than failing the append."""
+    rec.setdefault("run_id", None)
+    if "key" in rec:
+        return
+    from . import followups                  # imports queue, which imports this module
+    try:
+        spec_id = read_state(cfg, campaign_id).get("spec_id")
+    except (ValueError, OSError):            # ValueError includes JSONDecodeError
+        return
+    rec["key"] = followups.finding_key(spec_id, rec.get("title"), rec.get("files"))
+
+
 def append_event(cfg, campaign_id, type, payload=None, *, by="tick") -> dict:
     """Append one `nw.ledger.event.v1` line `{schema, ts, seq, campaign, type, by, **payload}`
     under the campaign lock, with `O_APPEND` and a single `write()` so lines never interleave.
@@ -310,6 +325,8 @@ def append_event(cfg, campaign_id, type, payload=None, *, by="tick") -> dict:
         rec = {"schema": SC.LEDGER_SCHEMA, "ts": now_iso(), "seq": _last_seq(path) + 1,
                "campaign": campaign_id, "type": type, "by": by}
         rec.update(payload or {})
+        if type == "finding":
+            _stamp_finding(cfg, campaign_id, rec)
         problems = SC.ledger_problems(rec)
         if problems:
             raise ValueError(f"invalid ledger event for {campaign_id}: {'; '.join(problems)}")

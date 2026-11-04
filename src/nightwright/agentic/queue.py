@@ -1162,6 +1162,9 @@ def _record_run(state: dict, persona: str, run_id: str, result, budget: float, *
         events.append(("finding", {"persona": persona, "severity": "info", "gate": None,
                                    "title": "permission denials during the run",
                                    "detail": str(denials)[:800], "files": []}))
+    for i, (etype, payload) in enumerate(events):      # SPEC-0408: the run that produced them
+        if etype == "finding":
+            events[i] = (etype, {**payload, "run_id": run_id})
     return events
 
 
@@ -2419,6 +2422,9 @@ def _apply(ctx: _Ctx, state: dict, res: StepResult) -> dict:
         if decision.kind == "none":                      # malformed verdict, retry allowed
             counters["triage_retries"] += 1
             return finish("TRIAGING", "triage_retry")
+        if rr.verdict_ok:                                # SPEC-0408
+            events.append(("triage", _gate_triage_event(cfg, cid, state, res.run_id,
+                                                        rr.verdict, decision)))
         if decision.kind == "park":
             return finish("PARKED", decision.reason, park={
                 "reason": decision.reason, "detail": decision.detail,
@@ -3498,6 +3504,33 @@ def _accept_waivers(state: dict, profile: dict, items) -> tuple:
     return accepted, ignored
 
 
+def _gate_triage_event(cfg, cid: str, state: dict, run_id, verdict, decision) -> dict:
+    """SPEC-0408: the `triage` ledger event of an applied gate-triager verdict. `waive[].key` is
+    the key of the one open `finding` of that gate in the current gate round (after the last
+    `gate` event), `None` when there is none or several (never guessed)."""
+    v = verdict if isinstance(verdict, dict) else {}
+    spec_id = state.get("spec_id")
+    ledger = store.read_ledger(cfg, cid, types=["finding", "gate"])
+    last_gate = max((e.get("seq", 0) for e in ledger if e.get("type") == "gate"), default=-1)
+    round_findings = [e for e in ledger if e.get("type") == "finding"
+                      and e.get("seq", 0) > last_gate]
+    waive = []
+    for item in v.get("waived") or []:
+        if not isinstance(item, dict):
+            continue
+        gate = item.get("gate")
+        keys = {e.get("key") or FU.finding_key(spec_id, e.get("title"), e.get("files"))
+                for e in round_findings if gate and e.get("gate") == gate}
+        waive.append({"gate": gate, "key": next(iter(keys)) if len(keys) == 1 else None,
+                      "reason": item.get("reason")})
+    return {"persona": "gate_triager", "run_id": run_id, "kind": "gate",
+            "disposition": v.get("disposition"), "routed_to": decision.kind,
+            "confidence": v.get("confidence"), "suspected_flaky": v.get("suspected_flaky"),
+            "waive": waive,
+            "fix_keys": [FU.finding_key(spec_id, i.get("title"), i.get("files"))
+                         for i in v.get("must_fix") or [] if isinstance(i, dict)]}
+
+
 def _apply_triager(ctx, state, profile, counters, res, row, events):
     """Record the review triager's run and accept its waivers (SPEC-0206). The result never
     enters `last_review.verdicts` nor the reviewers' retry logic: a failed, malformed or
@@ -3533,6 +3566,14 @@ def _apply_triager(ctx, state, profile, counters, res, row, events):
         accepted = []
     else:
         accepted, ignored = _accept_waivers(state, profile, verdict["waive"])
+        events.append(("triage", {      # SPEC-0408: the applied verdict, with stable finding keys
+            "persona": "review_triager", "run_id": r.run_id, "kind": "review",
+            "disposition": "waive" if accepted else "none",
+            "waive": [{"id": w["id"],
+                       "key": FU.finding_key(state.get("spec_id"), w.get("title"), w.get("files")),
+                       "severity": w.get("severity"), "title": w.get("title"),
+                       "reason": w["reason"]} for w in accepted],
+            "ignored": [{"id": fid, "why": why} for fid, why in ignored]}))
         for fid, why in ignored:
             events.append(("note", {"text": f"triager ignored {fid}: {why}", "author": "queue"}))
         for w in accepted:
