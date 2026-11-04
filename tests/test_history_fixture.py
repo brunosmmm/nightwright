@@ -668,3 +668,61 @@ def test_scan_user_segments_only_when_given(tool, tmp_path):
     assert tool.scan(tmp_path, []) == []
     assert ("a.txt", 1, "user_segment") in tool.scan(tmp_path, [], users=["nw"])
     assert tool.scan(tmp_path, [], users=["user", ""]) == []
+
+
+# ---- JSONL lines split on '\n' only (U+2028 and friends stay inside the JSON string) -------------
+
+LS = " "
+PLANTED = ('{"type":"x","text":"a%sb","env":{"GH_TOKEN":"abc"},"authorization":"opaque-value"}\n' % LS)
+
+
+def test_jsonl_lines_split_on_newline_only(tool):
+    assert tool.jsonl_lines("a b c\x0b\x1d\u0085\nd\ne") == ["a b c\x0b\x1d\u0085\n", "d\n", "e"]
+    assert tool.jsonl_lines("") == [] and tool.jsonl_lines("a\n") == ["a\n"]
+
+
+def test_unicode_line_separator_does_not_bypass_redaction(tool, tmp_path):
+    got = tool.san_jsonl(PLANTED.encode(), tool.Sanitizer()).decode()
+    obj = json.loads(got)
+    assert obj["env"] == {} and obj["authorization"] == "[REDACTED]" and LS in obj["text"]
+    assert "opaque-value" not in got and "GH_TOKEN" not in got
+    assert tool.cap_stream(PLANTED.encode(), tool.Sanitizer()).decode().count("\n") == 1
+    (tmp_path / "x.jsonl").write_text(PLANTED, encoding="utf-8")
+    assert {"env", "secret_key"} <= {r for _, _, r in tool.scan(tmp_path, [])}
+    (tmp_path / "x.jsonl").write_text(got, encoding="utf-8")
+    assert tool.scan(tmp_path, []) == []
+    rows = tool.read_jsonl(tmp_path / "x.jsonl")
+    assert len(rows) == 1 and rows[0][1] is not None
+
+
+def test_capture_redacts_planted_line_separator_line(tmp_path):
+    src = build_source(tmp_path / "src")
+    sp = src / "agentic/campaigns" / MULTI / "runs/001-implementer/stream.jsonl"
+    lines = sp.read_text(encoding="utf-8").splitlines(keepends=True)
+    sp.write_text("".join(lines[:-1]) + PLANTED, encoding="utf-8")
+    out = tmp_path / "out"
+    r = run_tool("--src", str(src), "--out", str(out))
+    assert r.returncode == 0, r.stderr
+    blob = (out / "agentic/campaigns" / MULTI / "runs/001-implementer/stream.jsonl").read_text(encoding="utf-8")
+    assert "opaque-value" not in blob and "GH_TOKEN" not in blob
+
+
+def test_derive_handed_off_tolerates_non_json_ledger_line(tool):
+    orig, new = "SPEC-1-20260101-aaaa", "SPEC-1-20260101-hdof"
+    led = (f'{{"type":"open","campaign":"{orig}"}}\nnot json at all\n'
+           f'{{"type":"transition","to":"MERGED","campaign":"{orig}"}}\n').encode()
+    st = json.dumps({"id": orig, "state": "MERGED"}).encode()
+    got = tool.derive_handed_off({"state.json": st, "ledger.jsonl": led}, orig, new)
+    lines = got["ledger.jsonl"].decode().splitlines()
+    assert lines[1] == "not json at all" and json.loads(lines[2])["to"] == "HANDED_OFF"
+    assert orig.encode() not in got["ledger.jsonl"]
+
+
+def test_recapture_replaces_out_and_leaves_no_side_dirs(tmp_path):
+    src = build_source(tmp_path / "src")
+    out = tmp_path / "out"
+    assert run_tool("--src", str(src), "--out", str(out)).returncode == 0
+    first = tree_hashes(out)
+    assert run_tool("--src", str(src), "--out", str(out)).returncode == 0
+    assert tree_hashes(out) == first
+    assert sorted(p.name for p in tmp_path.iterdir()) == ["out", "src"]

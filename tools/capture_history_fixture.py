@@ -176,6 +176,17 @@ def san_json_text(raw: bytes, san: Sanitizer) -> bytes:
     return (dumps(new, 2 if text.startswith("{\n") else None) + ("\n" if text.endswith("\n") else "")).encode()
 
 
+def jsonl_lines(text: str) -> list[str]:
+    """Split on '\\n' only, endings kept. str.splitlines also splits on U+2028/U+2029/U+0085 and
+    \\x0b-\\x1e, which JSON writers leave unescaped inside strings; a split line would dodge the
+    key-based rules."""
+    parts = text.split("\n")
+    out = [p + "\n" for p in parts[:-1]]
+    if parts[-1]:
+        out.append(parts[-1])
+    return out
+
+
 def san_jsonl_line(line: str, san: Sanitizer) -> str:
     body = line.rstrip("\r\n")
     ending = line[len(body):]
@@ -191,7 +202,7 @@ def san_jsonl_line(line: str, san: Sanitizer) -> str:
 
 def san_jsonl(raw: bytes, san: Sanitizer) -> bytes:
     text = decode(raw)
-    return "".join(san_jsonl_line(ln, san) for ln in text.splitlines(keepends=True)).encode()
+    return "".join(san_jsonl_line(ln, san) for ln in jsonl_lines(text)).encode()
 
 
 def san_plain(raw: bytes, san: Sanitizer) -> bytes:
@@ -228,7 +239,7 @@ def cut_bytes(s: str, n: int) -> str:
 
 
 def cap_stream(raw: bytes, san: Sanitizer) -> bytes:
-    lines = decode(raw).splitlines(keepends=True)
+    lines = jsonl_lines(decode(raw))
     if len(lines) > STREAM_LINES:
         lines = lines[:1] + lines[-(STREAM_LINES - 1):]
     out = []
@@ -284,7 +295,7 @@ def read_jsonl(path: Path) -> list[tuple[str, object]]:
     except OSError:
         return []
     out = []
-    for ln in text.splitlines(keepends=True):
+    for ln in jsonl_lines(text):
         try:
             out.append((ln, json.loads(ln)))
         except ValueError:
@@ -399,6 +410,13 @@ def camp_size(c: Camp) -> int:
     return c._size
 
 
+def _loads_or_none(line: str):
+    try:
+        return json.loads(line) if line.strip() else None
+    except ValueError:
+        return None
+
+
 def derive_handed_off(files: dict[str, bytes], orig: str, new: str) -> dict[str, bytes]:
     """Copy of a merged campaign's files as a HANDED_OFF one with its own cid throughout."""
     out = {}
@@ -413,8 +431,8 @@ def derive_handed_off(files: dict[str, bytes], orig: str, new: str) -> dict[str,
             st["close"] = close
             raw = (dumps(st, 2) + "\n").encode()
         elif rel == "ledger.jsonl":
-            lines = raw.decode().splitlines(keepends=True)
-            objs = [json.loads(x) if x.strip() else None for x in lines]
+            lines = jsonl_lines(raw.decode())
+            objs = [_loads_or_none(x) for x in lines]
             for typ, edit in (("transition", lambda e: e.update(to="HANDED_OFF")
                                if e.get("to") == "MERGED" else None),
                               ("close", lambda e: e.update(mode="pr", merged_sha=None,
@@ -627,7 +645,8 @@ def scan(root: Path, deny: list[str], users=()) -> list[tuple[str, int, str]]:
                     rules |= _text_rules(part, deny, seg_res)
                 hits.extend((rel, 0, r) for r in sorted(rules))
                 continue
-        for n, ln in enumerate(text.splitlines(), 1):
+        for n, ln in enumerate(jsonl_lines(text), 1):
+            ln = ln.rstrip("\n")
             rules, parts = set(), [ln]
             if rel.endswith(".jsonl"):
                 try:
@@ -843,10 +862,20 @@ def capture(args) -> int:
             for rel, line, rule in hits[:20]:
                 print(f"scan: {rel}:{line} {rule}", file=sys.stderr)
             return fail(4, f"verification scan found {len(hits)} hit(s); nothing written")
-        if out.exists():
-            shutil.rmtree(out)
         out.parent.mkdir(parents=True, exist_ok=True)
-        tmp.rename(out)
+        old = None
+        if out.exists():
+            old = out.parent / f".{out.name}.old-{os.getpid()}"
+            shutil.rmtree(old, ignore_errors=True)
+            out.rename(old)
+        try:
+            tmp.rename(out)
+        except OSError:
+            if old is not None:
+                old.rename(out)
+            raise
+        if old is not None:
+            shutil.rmtree(old, ignore_errors=True)
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
 
