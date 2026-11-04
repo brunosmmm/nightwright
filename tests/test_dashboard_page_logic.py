@@ -4,6 +4,7 @@ SPEC-0401 fixture handed over as JSON. Imports `assets` and names `app.js`, `fak
 `page_logic.test.js` below, so `affected_tests.py` selects this file when `assets.py`, a file
 under `static/` or a file under `tests/js/` changes."""
 import json
+import re
 import shutil
 import subprocess
 import sys
@@ -33,7 +34,7 @@ def test_page_logic_under_node(tmp_path):
     r = subprocess.run([node, "--test", str(ROOT / "tests" / "js" / NODE_TESTS[0])], cwd=ROOT,
                        env=env, capture_output=True, text=True, timeout=WAIT_S)
     assert r.returncode == 0, f"node --test {NODE_TESTS[0]} failed:\n{r.stdout}\n{r.stderr}"
-    assert "# skipped 0" in r.stdout, "the real-snapshot test must run, not skip"
+    assert re.search(r"skipped\s+0\b", r.stdout), "the real-snapshot test must run, not skip"
 
 
 def test_an_app_js_edit_selects_the_node_driving_tests():

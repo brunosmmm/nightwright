@@ -425,6 +425,8 @@ test with a message naming the requirement, it is not skipped.
   the 401/403/offline banners (the CSS rules and the banner logic are covered by the static and
   node tests). Manual 1 is pending the dashboard server spec.
 
+- Gate fix: `tests/test_dashboard_page_logic.py` now checks node's skipped count with `re.search(r"skipped\s+0\b", …)`, so it holds under both the TAP and spec reporters; `uv run pytest -q -n 0 tests/test_dashboard_page_logic.py tests/test_dashboard_page.py`: 6 passed, 1 skipped (manual stub).
+
 ### As shipped (2026-11-04)
 
 Built to Design. Details the Design left open or that differ in form:
