@@ -7,6 +7,9 @@
    value (env.csrf(), the <meta name="nw-csrf"> the server fills in) as X-NW-CSRF.
    (SPEC-0429) The inbox answers escalations: choose / text / override -> plan -> confirm ->
    answer. (SPEC-0430) #/c/<cid> is a campaign drilldown with a live run tail.
+   (SPEC-0433) Its timeline is the campaign story: collapsible loop/phase groups, one line per
+   run, gate, review round or rebase; a tap opens a line's details and raw events, and a
+   "raw" button shows every raw ledger event.
    Every server value is rendered with textContent only. createApp(env) takes every browser
    object it touches, so the logic runs under node with a fake DOM (tests/js). */
 
@@ -853,7 +856,7 @@ function createApp(env) {
 
   /* ---- the campaign drilldown (SPEC-0430) ---- */
 
-  var dv = { cid: null, doc: null, gen: 0, loading: null,
+  var dv = { cid: null, doc: null, gen: 0, loading: null, open: {}, raw: false,
              tail: { ctrl: null, run: null, lines: [], ended: false, gen: 0, retry: null, note: "" } };
 
   function routeCid() {
@@ -874,6 +877,8 @@ function createApp(env) {
     closeTail();
     dv.cid = cid;
     dv.doc = null;
+    dv.open = {};
+    dv.raw = false;
     dv.gen += 1;
     showDrill(!!cid);
     if (cid) {
@@ -922,16 +927,104 @@ function createApp(env) {
       return n;
     }));
     put("drill-run", [el("p", "muted", d.current_run ? d.current_run + (d.running ? " · running" : " · ended") : "no runs yet")]);
-    put("drill-timeline", section(d.timeline, function (t) {
-      if (!t.length) return [el("p", "muted", "no events")];
-      return t.slice().reverse().map(function (ev) { return el("div", "tl", ev.text); });
-    }));
+    renderTimeline();
     put("drill-runs", section(d.runs, function (rs) {
       if (!rs.length) return [el("p", "muted", "no runs yet")];
       return rs.map(function (r) {
         return row(String(r.run), [r.persona, r.status, r.verdict_status, r.cost_usd !== null && r.cost_usd !== undefined ? formatUsd(r.cost_usd) : null].filter(Boolean).join(" · "));
       });
     }));
+  }
+
+  /* SPEC-0433: the story (d.story, nw.campaign.story.v1) with a raw toggle (d.raw: seq ->
+     text). Open state lives in dv.open by group/line id, so a refresh keeps it. */
+  function hasStory(d) { return !!(d.story && !isErr(d.story) && Array.isArray(d.story.loops)); }
+
+  function rawRows(d, seqs) {
+    var raw = d.raw && !isErr(d.raw) ? d.raw : null;
+    if (!raw) return [];
+    return seqs.filter(function (q) { return raw[String(q)] !== undefined; })
+      .map(function (q) { return el("div", "tl", raw[String(q)]); });
+  }
+
+  function allRaw(d) {
+    if (d.raw && !isErr(d.raw)) {
+      var seqs = Object.keys(d.raw).map(Number).sort(function (a, b) { return b - a; });
+      if (!seqs.length) return [el("p", "muted", "no events")];
+      return rawRows(d, seqs);
+    }
+    return section(d.timeline, function (t) {
+      if (!t.length) return [el("p", "muted", "no events")];
+      return t.slice().reverse().map(function (ev) { return el("div", "tl", ev.text); });
+    });
+  }
+
+  function isOpen(id, dflt) { return dv.open[id] === undefined ? !!dflt : !!dv.open[id]; }
+
+  function toggle(id, dflt) {
+    dv.open[id] = !isOpen(id, dflt);
+    renderTimeline();
+  }
+
+  function storyLine(d, line) {
+    var kids = line.children || [];
+    var open = isOpen(line.id, false);
+    var wrap = el("div", "tl-item");
+    var label = (open ? "▾ " : "▸ ") + line.text + (kids.length && !open ? "  [+" + kids.length + "]" : "");
+    wrap.appendChild(button(label, "tl-line" + (line.tone ? " tone-" + line.tone : "") + (line.quiet ? " quiet" : ""),
+                            function () { toggle(line.id, false); }));
+    if (open) {
+      kids.forEach(function (c) { wrap.appendChild(el("div", "tl-kid" + (c.tone ? " tone-" + c.tone : "") + (c.waived ? " waived" : ""), c.text)); });
+      rawRows(d, line.seqs || []).forEach(function (n) { n.classList.add("tl-raw"); wrap.appendChild(n); });
+    }
+    return wrap;
+  }
+
+  function storyNodes(d) {
+    var loops = d.story.loops;
+    if (!loops.length) return [el("p", "muted", "no events")];
+    var lastLoop = loops[loops.length - 1], gs = lastLoop.groups || [];
+    var dflt = {};
+    if (gs.length) dflt[gs[gs.length - 1].id] = true;
+    var said = gs.filter(function (g) { return (g.lines || []).length; });
+    if (said.length) dflt[said[said.length - 1].id] = true;
+    var out = [];
+    loops.slice().reverse().forEach(function (lp) {
+      out.push(el("div", "tl-loop", lp.header || lp.title));
+      (lp.groups || []).slice().reverse().forEach(function (g) {
+        var open = isOpen(g.id, dflt[g.id]);
+        var box = el("div", "tl-groupbox");
+        box.appendChild(button((open ? "▾ " : "▸ ") + (g.header || g.title), "tl-group", function () { toggle(g.id, dflt[g.id]); }));
+        if (open) {
+          var lines = g.lines || [], quiet = lines.filter(function (l) { return l.quiet; });
+          lines.forEach(function (l) { if (!l.quiet) box.appendChild(storyLine(d, l)); });
+          if (quiet.length) {
+            var qid = "q" + g.id, qopen = isOpen(qid, false);
+            box.appendChild(button((qopen ? "▾ " : "▸ ") + "details (" + quiet.length + ")", "tl-line quiet", function () { toggle(qid, false); }));
+            if (qopen) quiet.forEach(function (l) { box.appendChild(storyLine(d, l)); });
+          }
+          if (!lines.length) box.appendChild(el("p", "muted", "nothing yet"));
+        }
+        out.push(box);
+      });
+    });
+    return out;
+  }
+
+  function renderTimeline() {
+    var d = dv.doc;
+    if (!d || !$("drill-timeline")) return;
+    var story = hasStory(d);
+    var nodes = [];
+    if (story) {
+      var bar = el("div", "tl-bar");
+      bar.appendChild(el("span", "muted", dv.raw ? "raw ledger events, newest first" :
+        (d.story.lines || 0) + " lines from " + (d.story.events || 0) + " events"));
+      bar.appendChild(button(dv.raw ? "story" : "raw", "tl-toggle", function () { dv.raw = !dv.raw; renderTimeline(); }));
+      nodes.push(bar);
+    }
+    nodes = nodes.concat(story && !dv.raw ? storyNodes(d) : allRaw(d));
+    put("drill-timeline", nodes);
   }
 
   function renderTail() {

@@ -138,3 +138,23 @@ button.camp { display: inline-flex; align-items: center; padding: 0.25rem 0.5rem
 .tl { padding: 0.1rem 0; border-top: 1px solid var(--line); overflow-wrap: anywhere;
       font: 0.8rem/1.35 ui-monospace, SFMono-Regular, Menlo, monospace; white-space: pre-wrap; }
 #selftest { white-space: pre-wrap; overflow-wrap: anywhere; }
+
+/* SPEC-0433: the campaign story */
+.tl-bar { display: flex; align-items: center; justify-content: space-between; gap: 0.5rem; margin-bottom: 0.25rem; }
+button.tl-toggle { min-height: 44px; padding: 0.25rem 0.9rem; text-align: center; }
+.tl-loop { font-weight: 700; margin: 0.75rem 0 0.25rem; overflow-wrap: anywhere; }
+.tl-groupbox { margin: 0.25rem 0 0.5rem; }
+button.tl-group { display: block; width: 100%; min-height: 44px; font-weight: 600; color: var(--fg); }
+.tl-item { margin: 0.15rem 0 0 0.5rem; }
+button.tl-line { display: block; width: 100%; min-height: 44px; border: 0; border-left: 3px solid var(--line);
+                 border-radius: 0; padding: 0.35rem 0.5rem; font-size: 0.9rem; }
+button.tl-line.quiet, .tl-line.quiet { color: var(--muted); }
+.tl-kid { margin-left: 1rem; padding: 0.15rem 0; font-size: 0.85rem; overflow-wrap: anywhere; }
+.tl-raw { margin-left: 1rem; opacity: 0.75; }
+.tone-ok { border-left-color: var(--green) !important; }
+.tl-kid.tone-ok { color: var(--green); }
+.tone-bad { border-left-color: var(--red) !important; }
+.tl-kid.tone-bad { color: var(--red); }
+.tone-warn { border-left-color: var(--amber) !important; }
+.tone-info { border-left-color: var(--muted) !important; }
+.tl-kid.waived { color: var(--muted); }

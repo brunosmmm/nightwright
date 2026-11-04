@@ -1,6 +1,7 @@
 """The per-campaign drilldown (SPEC-0430): `GET /api/campaigns/<cid>` (`nw.dashboard.campaign.v1`:
 state, the ledger timeline as `nw campaign log` renders it, the runs as `nw campaign runs` lists
-them, the current run) and the live run tail behind `GET /api/campaigns/<cid>/tail` (`Tailer`,
+them, the current run; SPEC-0433: the whole ledger as the `timeline.story` and its raw text per
+seq) and the live run tail behind `GET /api/campaigns/<cid>/tail` (`Tailer`,
 the `nw campaign tail` renderer over `runs/<run>/stream.jsonl`).
 
 Built per request, read-only (no lock, no write), every section failing alone. Not imported by
@@ -13,6 +14,7 @@ from ... import render as R
 from .. import runs as RN
 from .. import store
 from .. import tail as TL
+from .. import timeline as STORY
 
 SCHEMA = "nw.dashboard.campaign.v1"
 TIMELINE_N = 40
@@ -68,6 +70,23 @@ def _timeline(cfg, cid) -> list[dict]:
             for ev in store.read_ledger(cfg, cid, tail=TIMELINE_N)]
 
 
+def _story_and_raw(cfg, cid, st) -> tuple[dict, dict]:
+    """SPEC-0433: `nw.campaign.story.v1` over the whole ledger (every text cleaned) and the
+    raw `campaign_event` text of every event by seq, read once."""
+    events = store.read_ledger(cfg, cid)
+    doc = STORY.story(events, campaign=cid, state=st, now=store.now_iso())
+    for _, g, line in STORY.iter_lines(doc):
+        line["text"] = clean(line.get("text"))
+        for c in line.get("children") or []:
+            c["text"] = clean(c.get("text"))
+    for lp in doc.get("loops") or []:
+        lp["header"] = clean(lp.get("header"))
+        for g in lp.get("groups") or []:
+            g["header"] = clean(g.get("header"))
+    raw = {str(ev.get("seq")): clean(R.campaign_event(ev).plain) for ev in events}
+    return doc, raw
+
+
 def _runs(cfg, cid) -> list[dict]:
     rows = sorted(RN.campaign_runs(cfg, cid), key=lambda r: str(r.get("run_id")))[-RUNS_N:]
     return [{"run": r.get("run_id"), **{k: r.get(k) for k in RUN_KEYS}} for r in reversed(rows)]
@@ -94,6 +113,10 @@ def build(cfg, cid) -> dict | None:
             doc[key] = fn()
         except Exception as e:                           # noqa: BLE001 - one section fails alone
             doc[key] = _error(e)
+    try:
+        doc["story"], doc["raw"] = _story_and_raw(cfg, cid, st)
+    except Exception as e:                               # noqa: BLE001 - fails alone
+        doc["story"] = doc["raw"] = _error(e)
     try:
         doc["current_run"], doc["running"] = current_run(cfg, cid)
     except Exception as e:                               # noqa: BLE001

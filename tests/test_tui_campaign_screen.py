@@ -41,11 +41,16 @@ def seed(cfg, cid):
     _ev(cfg, cid, "note", {"text": "hello there"})
 
 
-async def open_screen(app, pilot, cid, section):
+async def open_screen(app, pilot, cid, section, raw=True):
+    """Open the screen; `raw` (the SPEC-0246 tests) switches to the raw event table with `r`
+    (SPEC-0433: the story tree is the default view)."""
     await settle(app, pilot)
     select(app, section, cid)
     await press(app, pilot, ["enter"])
     await settle(app, pilot)
+    if raw:
+        await press(app, pilot, ["r"])
+        assert screen(app).raw_mode
 
 
 def test_enter_opens_the_screen_and_escape_returns_with_the_cursor(tmp_path):
@@ -393,5 +398,136 @@ def test_filter_key_and_resize_paint_errors_are_contained(tmp_path, monkeypatch)
             screen(app).on_resize(None)
             await settle(app, pilot)
             assert app.is_running and "campaign failed" in status(app)
+
+    _run(drive())
+
+
+# --- SPEC-0433: the story tree is the default view -------------------------------------------
+
+def story_rows(s) -> list[str]:
+    """The visible tree as text, `>` on the cursor row (a text snapshot)."""
+    out = []
+
+    def walk(node, depth):
+        for ch in node.children:
+            mark = ("▼ " if ch.is_expanded else "▶ ") if ch.allow_expand else "  "
+            out.append(f"{'>' if s.tree.cursor_node is ch else ' '}{'  ' * depth}{mark}"
+                       f"{ch.label.plain}")
+            if ch.is_expanded:
+                walk(ch, depth + 1)
+    walk(s.tree.root, 0)
+    return out
+
+
+def seed_story(cfg, cid):
+    seed(cfg, cid)
+    _ev(cfg, cid, "run.end", {"persona": "implementer", "run_id": "001-implementer",
+                              "duration_s": 61, "charged_usd": 1.5, "is_error": False,
+                              "verdict": {"status": "done", "summary": "built it"}})
+    _ev(cfg, cid, "transition", {"from": "IMPLEMENTING", "to": "GATING", "reason": "implemented"})
+    _ev(cfg, cid, "gate.reuse_declined", {"gate": "pytest", "rule": "R3", "detail": "differs"})
+    _ev(cfg, cid, "gate", {"gate_seq": 2, "ok": True, "duration_s": 660, "worker": "box",
+                           "results": [{"name": "pytest", "ok": True, "duration_s": 650}]})
+
+
+def test_the_story_tree_is_the_default_and_expands_with_enter_and_space(tmp_path):
+    repo, cfg, ids = _fixture(tmp_path)
+    cid = ids["ready"]
+    seed_story(cfg, cid)
+    app = _desk(cfg, tab="queue")
+
+    async def drive():
+        async with app.run_test(size=SIZE) as pilot:
+            await open_screen(app, pilot, cid, "queued", raw=False)
+            s = screen(app)
+            assert not s.raw_mode and s.tree.display and not s.table.display
+            assert status(app).startswith("story · filter all · ") and "r raw" in status(app)
+            rows = story_rows(s)
+            assert rows[0].startswith(" ▼ Loop 1 · ")
+            assert any("▼ Gating · GATING · " in r for r in rows)
+            gate = [r for r in rows if "Gate #2 on box — passed (11m)" in r]
+            assert gate and gate[0].startswith(">") and gate[0].rstrip().endswith("[+2]")
+            assert not any("gate.reuse_declined" in r for r in rows)
+            assert "raw events (2)" in detail(app) and "gate.reuse_declined" in detail(app)
+            assert "pytest: ok" in detail(app)                  # the gate detail of its event
+            await press(app, pilot, ["enter"])                  # expand the gate line
+            rows = story_rows(s)
+            assert any("✓ pytest (10m 50s)" in r for r in rows)
+            assert any("pytest: reuse declined (R3: differs)" in r for r in rows)
+            await press(app, pilot, [" "])                      # space collapses it again
+            assert not any("✓ pytest (10m 50s)" in r for r in story_rows(s))
+            await press(app, pilot, ["k", "k"])                 # up to the implementing group
+            assert "Implementing" in str(s.tree.cursor_node.label)
+            await press(app, pilot, ["enter"])
+            rows = story_rows(s)
+            impl = [r for r in rows if r.lstrip(" >").startswith("▶ Implementing")
+                    or "Implementing · QUEUED" in r or "Implementing · IMPLEMENTING" in r]
+            assert impl and "▼" in impl[0]
+            assert any("Implementer (1m 1s, $1.50): done — built it" in r for r in rows)
+            await press(app, pilot, ["g"])
+            assert s.tree.cursor_line == 0
+            await press(app, pilot, ["G"])
+            assert s.tree.cursor_line == s.tree.last_line
+
+    _run(drive())
+
+
+def test_r_toggles_the_raw_table_and_f_filters_the_story(tmp_path):
+    repo, cfg, ids = _fixture(tmp_path)
+    cid = ids["ready"]
+    seed_story(cfg, cid)
+    total = len(S.read_ledger(cfg, cid))
+    app = _desk(cfg, tab="queue")
+
+    async def drive():
+        async with app.run_test(size=SIZE) as pilot:
+            await open_screen(app, pilot, cid, "queued", raw=False)
+            s = screen(app)
+            await press(app, pilot, ["r"])
+            assert s.raw_mode and s.table.display and not s.tree.display
+            assert status(app) == f"filter all · {total}/{total} events"
+            assert s.table.cursor_row == total - 1 and "pytest" in detail(app)
+            await press(app, pilot, ["r"])
+            assert not s.raw_mode and s.tree.display and status(app).startswith("story")
+            await press(app, pilot, ["f", "f", "f"])            # gates
+            assert s.filter == "gates" and "filter gates" in status(app)
+            rows = story_rows(s)
+            assert any("Gate #2 on box" in r for r in rows)
+            assert any("Gate #1 — FAILED" in r for r in rows)
+            assert not any("Note (" in r or "Implementer (" in r for r in rows)
+            await press(app, pilot, ["f", "f", "f"])            # notes, then all
+            assert s.filter == "all"
+            await press(app, pilot, ["v"])
+            assert s.review_mode and "Code review" in detail(app)
+            await press(app, pilot, ["v"])
+            assert not s.review_mode
+
+    _run(drive())
+
+
+def test_a_ledger_append_extends_the_story_and_keeps_open_nodes(tmp_path, monkeypatch):
+    monkeypatch.setattr(CS, "POLL_S", 0.1)
+    repo, cfg, ids = _fixture(tmp_path)
+    cid = ids["ready"]
+    seed_story(cfg, cid)
+    app = _desk(cfg, tab="queue")
+
+    async def drive():
+        async with app.run_test(size=SIZE) as pilot:
+            await open_screen(app, pilot, cid, "queued", raw=False)
+            s = screen(app)
+            await press(app, pilot, ["enter"])                  # open the gate line
+            opened = s.tree.cursor_node.data[2]
+            _ev(cfg, cid, "note", {"text": "fresh note"})
+            await pilot_until(pilot, lambda: any("Note (" in r and "fresh note" in r
+                                                 for r in story_rows(s)))
+            assert opened in s.expanded and s.story_nodes[opened].is_expanded
+            # on the last line the cursor follows the end, as the raw table does (SPEC-0246)
+            assert "fresh note" in str(s.tree.cursor_node.label)
+            await press(app, pilot, ["k"])                      # off the end: it stays put
+            here = s.tree.cursor_node.data[2]
+            _ev(cfg, cid, "note", {"text": "another"})
+            await pilot_until(pilot, lambda: any("another" in r for r in story_rows(s)))
+            assert s.tree.cursor_node.data[2] == here
 
     _run(drive())

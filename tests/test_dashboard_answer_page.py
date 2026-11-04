@@ -1,4 +1,4 @@
-"""SPEC-0429 / SPEC-0430: the gate's entry to tests/js/answer.test.js (the page's inbox answering
+"""SPEC-0429 / SPEC-0430 / SPEC-0433: the gate's entry to tests/js/answer.test.js (the page's inbox answering
 flow and campaign drilldown under node, on the fake DOM). Names `answer.test.js` and `app.js` so
 `affected_tests.py` selects this file when either changes."""
 import re
@@ -17,4 +17,4 @@ def test_answer_flow_and_drilldown_under_node():
     r = subprocess.run([node, "--test", str(ROOT / "tests" / "js" / "answer.test.js")], cwd=ROOT,
                        capture_output=True, text=True, timeout=WAIT_S)
     assert r.returncode == 0, f"node --test answer.test.js failed:\n{r.stdout}\n{r.stderr}"
-    assert re.search(r"skipped\s+0\b", r.stdout) and re.search(r"pass\s+7\b", r.stdout)
+    assert re.search(r"skipped\s+0\b", r.stdout) and re.search(r"pass\s+11\b", r.stdout)  # +4 SPEC-0433

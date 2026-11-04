@@ -27,6 +27,7 @@ from ..agentic import queue as Q
 from ..agentic import runs as RN
 from ..agentic import spec_review as SR
 from ..agentic import store
+from ..agentic import timeline as TLN
 from ..agentic.cli_queue import _ago, _dur
 
 ACTIONS = ("park", "resume", "prioritize", "abandon")
@@ -362,6 +363,8 @@ class CampaignDetail:
     review: Text
     actions: tuple
     signature: tuple
+    story: dict = field(default_factory=dict)              # SPEC-0433 nw.campaign.story.v1
+    events_by_seq: dict = field(default_factory=dict)
 
 
 def _entry(ev: dict) -> TimelineEntry:
@@ -441,13 +444,16 @@ def load_campaign(cfg, cid) -> CampaignDetail:
     """Raises ValueError for an unknown campaign (from `store.read_state`)."""
     signature = campaign_signature(cfg, cid)        # first: a write during the load re-triggers
     state = store.read_state(cfg, cid)
-    entries = [_entry(ev) for ev in store.read_ledger(cfg, cid)]
+    events = store.read_ledger(cfg, cid)
+    entries = [_entry(ev) for ev in events]
     entries.sort(key=lambda e: e.seq)
     return CampaignDetail(
         campaign=cid, state=state, header=header_lines(cfg, state), entries=entries,
         review=review_text(cfg, state),
         actions=allowed_actions(state.get("state"), bool(state.get("park_requested"))),
-        signature=signature)
+        signature=signature,
+        story=TLN.story(events, campaign=cid, state=state, now=store.now_iso()),
+        events_by_seq={ev.get("seq"): ev for ev in events if isinstance(ev, dict)})
 
 
 def campaign_signature(cfg, cid) -> tuple:
@@ -550,6 +556,53 @@ def entry_detail(cfg, cid, entry) -> Text:
             _gate_detail(t, cfg, cid, ev)
         else:
             _payload(t, ev)
+    except Exception as e:      # the pane must never take the screen down
+        t.append(f"(detail unavailable: {e})\n", style="red")
+    t.rstrip()
+    return t
+
+
+STORY_TONE = {"ok": "green", "bad": "red", "warn": "yellow", "info": "blue", "dim": "dim"}
+
+
+def _raw_events(t: Text, detail, seqs) -> None:
+    evs = [detail.events_by_seq[s] for s in seqs or [] if s in detail.events_by_seq]
+    if not evs:
+        return
+    t.append(f"\nraw events ({len(evs)})\n", style="bold")
+    for ev in evs:
+        t.append_text(RD.campaign_event(ev))
+        t.append("\n")
+
+
+def story_detail(cfg, cid, detail, node) -> Text:
+    """The detail pane for one SPEC-0433 story node `(kind, data)`: its text, its children,
+    the run or gate detail of its main event, then its raw ledger events. Never raises."""
+    t = Text()
+    try:
+        kind, data = node
+        if kind == "loop":
+            t.append(f"{data.get('header')}\n", style="bold")
+            for g in data.get("groups") or []:
+                t.append(f"  {g.get('header')}\n")
+        elif kind == "group":
+            t.append(f"{data.get('header')}\n", style="bold")
+            for tr in data.get("transitions") or []:
+                t.append(f"  {tr.get('seq')}  {str(tr.get('ts') or '')[11:19]}  "
+                         f"{tr.get('from')} → {tr.get('to')}  ({tr.get('reason')}, "
+                         f"{tr.get('by')})\n", style="cyan")
+            t.append(f"{len(data.get('lines') or [])} lines, {len(data.get('seqs') or [])} events\n",
+                     style="dim")
+        else:
+            t.append(f"{data.get('text')}\n", style="bold " + STORY_TONE.get(data.get("tone"), ""))
+            for c in data.get("children") or []:
+                t.append(f"  {c.get('text')}\n", style=STORY_TONE.get(c.get("tone"), ""))
+            ref = detail.events_by_seq.get(data.get("ref_seq"))
+            if kind == "line" and ref and ref.get("type") in ("run.start", "run.end", "gate"):
+                t.append("\n")
+                t.append_text(entry_detail(cfg, cid, _entry(ref)))
+                t.append("\n")
+            _raw_events(t, detail, data.get("seqs"))
     except Exception as e:      # the pane must never take the screen down
         t.append(f"(detail unavailable: {e})\n", style="red")
     t.rstrip()

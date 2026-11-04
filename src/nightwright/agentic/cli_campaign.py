@@ -20,6 +20,7 @@ from . import queue as Q
 from . import campaign_export as CE
 from . import runs as RN
 from . import store
+from . import timeline as TL
 
 
 def _summary(st: dict, cfg=None, backlog=None) -> dict:
@@ -160,6 +161,25 @@ def _print_run(rec: dict) -> None:
 _NAME_OK = frozenset("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-.")
 
 
+_TONE_STYLE = {"head": "bold", "group": "bold cyan", "ok": "green", "bad": "red",
+               "warn": "yellow", "info": "blue", "dim": "dim"}
+
+
+def _print_story(story, expand) -> None:
+    """The SPEC-0433 story under the header: collapsed unless `expand`."""
+    rows = TL.text_lines(story, expand=expand)
+    if not rows:
+        console.print("  [dim]no events[/]")
+        return
+    console.print()
+    for indent, text, tone in rows:
+        console.print(Text("  " * (indent + 1) + text, style=_TONE_STYLE.get(tone, "")),
+                      highlight=False, soft_wrap=False, overflow="fold")
+    if not expand:
+        console.print(Text("  (-x expands details · --raw shows raw events · "
+                           "nw campaign log for the full ledger)", style="dim"), highlight=False)
+
+
 def _session_reader(cfg, sid) -> str | None:
     """The `conductor` / `steward:<P>` reader the Claude Code session `sid` is registered as in
     `conductor_cost.sessions` (SPEC-0299), or None."""
@@ -268,10 +288,16 @@ def attach(campaign_group):
 
     @campaign_group.command("show")
     @click.argument("campaign", shell_complete=C.complete_campaign_id)
-    @click.option("--json", "as_json", is_flag=True, help="emit nw.campaign.v1 JSON")
+    @click.option("--raw", is_flag=True,
+                  help="the last raw ledger events instead of the story (SPEC-0433)")
+    @click.option("--expand", "-x", is_flag=True,
+                  help="also print each story line's details (findings, gate results, raw notes)")
+    @click.option("--json", "as_json", is_flag=True,
+                  help="emit nw.campaign.v1 JSON (last_events plus the nw.campaign.story.v1 story)")
     @click.pass_obj
-    def campaign_show(cfg, campaign, as_json):
-        """State of one campaign plus its last events."""
+    def campaign_show(cfg, campaign, raw, expand, as_json):
+        """State of one campaign plus its story: the ledger grouped by loop and phase, one line
+        per run, gate, review round and rebase (SPEC-0433). `--raw` shows the last raw events."""
         try:
             st = dict(store.read_state(cfg, campaign))
         except ValueError as e:
@@ -281,7 +307,12 @@ def attach(campaign_group):
         wt_path = (st.get("repo") or {}).get("worktree")
         st["worktree_present"] = bool(wt_path and os.path.isdir(wt_path))
         st["remote_gate"] = Q.remote_gate_view(cfg, st)                # SPEC-0356
+        story = None
+        if as_json or not raw:
+            story = TL.story(store.read_ledger(cfg, campaign), campaign=campaign, state=st,
+                             now=store.now_iso())
         if as_json:
+            st["story"] = story
             _dump_json(st)
             return
         r = _summary(st)
@@ -347,8 +378,11 @@ def attach(campaign_group):
             p = st["park"]
             console.print(f"  [yellow]parked[/] {p.get('reason')}: {p.get('detail', '')}  "
                           f"→ resume to {p.get('resume_to')}")
-        for ev in st["last_events"]:
-            console.print(Text("  ") + R.campaign_event(ev), highlight=False)
+        if raw:
+            for ev in st["last_events"]:
+                console.print(Text("  ") + R.campaign_event(ev), highlight=False)
+            return
+        _print_story(story, expand)
 
     @campaign_group.command("log")
     @click.argument("campaign", shell_complete=C.complete_campaign_id)

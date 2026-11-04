@@ -217,3 +217,82 @@ test("drilldown: #/c/<cid> shows the campaign, its timeline and the live tail; l
   assert.ok(aborted, "leaving the drilldown aborts the tail stream");
   assert.ok(!t.doc.getElementById("main").classList.contains("hidden"));
 });
+
+// SPEC-0433: the drilldown timeline is the campaign story, collapsible, with a raw toggle.
+const STORY = {
+  schema: "nw.campaign.story.v1", events: 6, lines: 3,
+  loops: [
+    { id: "loop0", header: "Loop 1 · 5m · $0.00 → $1.00", groups: [
+      { id: "g1", header: "Implementing · IMPLEMENTING → GATING · 5m · $0.00 → $1.00", lines: [
+        { id: "l2", text: "Implementer (opus, 5m, $1.00): done — x", tone: "ok", quiet: false, seqs: [2, 3], children: [] }] }] },
+    { id: "loop1", header: "Loop 2 · 1m · $1.00 → $1.13", groups: [
+      { id: "g4", header: "Gating & triage · GATING → TRIAGING · 1m · $1.00 → $1.13", lines: [
+        { id: "l4", text: "Gate #1 on box — FAILED after 40s (pytest)", tone: "bad", quiet: false, seqs: [4],
+          children: [{ text: "✗ pytest (40s, exit 1)", tone: "bad", seqs: [4] }] },
+        { id: "l5", text: "Gate triager (sonnet, 9s, $0.13): retry — suspected flaky (medium)", tone: "", quiet: false, seqs: [5], children: [] },
+        { id: "l6", text: "Priority 3 → 1 (conductor)", tone: "", quiet: true, seqs: [6], children: [] }] },
+      { id: "g7", header: "Gating · GATING · 0s · $1.13", lines: [] }] }],
+};
+const RAW = { 2: "2 run.start", 3: "3 run.end", 4: "4 gate ok=False", 5: "5 run.end gate_triager", 6: "6 priority" };
+
+async function drill(body) {
+  const t = setup("#/c/C1");
+  t.routes.push([(u) => u === "/api/snapshot", () => resp(200, snap({}))]);
+  t.routes.push([(u) => u === "/api/campaigns/C1", () => resp(200, {
+    campaign: "C1", state: { state: "GATING", label: "SPEC-1", loop: 2, cost_usd: 1.13, cap_usd: 5, park: null },
+    timeline: [{ text: "old 5" }, { text: "old 6" }], runs: [], current_run: null, running: false, ...body })]);
+  t.app.start();
+  await settle();
+  return t;
+}
+const tl = (t) => t.doc.getElementById("drill-timeline");
+const texts = (t, cls) => byClass(t.doc, "drill-timeline", cls).map((e) => e.textContent);
+
+test("SPEC-0433: the drilldown shows the story newest first, the newest talking group open", async () => {
+  const t = await drill({ story: STORY, raw: RAW });
+  assert.deepEqual(texts(t, "tl-loop"), ["Loop 2 · 1m · $1.00 → $1.13", "Loop 1 · 5m · $0.00 → $1.00"]);
+  const groups = texts(t, "tl-group");
+  assert.ok(groups[0].startsWith("▾ Gating · GATING"), groups[0]);          // newest group open
+  assert.ok(groups[1].startsWith("▾ Gating & triage"), groups[1]);          // newest with lines open
+  assert.ok(groups[2].startsWith("▸ Implementing"), groups[2]);             // older collapsed
+  const lines = texts(t, "tl-line");
+  assert.deepEqual(lines, ["▸ Gate #1 on box — FAILED after 40s (pytest)  [+1]",
+    "▸ Gate triager (sonnet, 9s, $0.13): retry — suspected flaky (medium)", "▸ details (1)"]);
+  assert.ok(byClass(t.doc, "drill-timeline", "tl-line")[0].classList.contains("tone-bad"));
+  assert.ok(tl(t).textContent.includes("3 lines from 6 events"));
+});
+
+test("SPEC-0433: a tap opens a line's details and raw events; groups toggle; open state survives a refresh", async () => {
+  const t = await drill({ story: STORY, raw: RAW });
+  byClass(t.doc, "drill-timeline", "tl-line")[0].click();
+  assert.deepEqual(texts(t, "tl-kid"), ["✗ pytest (40s, exit 1)"]);
+  assert.deepEqual(texts(t, "tl-raw"), ["4 gate ok=False"]);
+  byClass(t.doc, "drill-timeline", "tl-line")[2].click();                 // quiet details
+  assert.ok(texts(t, "tl-line").includes("▸ Priority 3 → 1 (conductor)"));
+  byClass(t.doc, "drill-timeline", "tl-group")[2].click();                // open loop 1's group
+  assert.ok(texts(t, "tl-line").some((x) => x.startsWith("▸ Implementer (opus")));
+  byClass(t.doc, "drill-timeline", "tl-group")[1].click();                // collapse the gate group
+  assert.ok(!texts(t, "tl-line").some((x) => x.includes("Gate #1")));
+  t.app.route();                                                           // same cid: no reset
+  assert.ok(texts(t, "tl-line").some((x) => x.startsWith("▸ Implementer (opus")));
+});
+
+test("SPEC-0433: the raw toggle shows every raw event newest first, and back", async () => {
+  const t = await drill({ story: STORY, raw: RAW });
+  const toggle = () => byClass(t.doc, "drill-timeline", "tl-toggle")[0];
+  assert.equal(toggle().textContent, "raw");
+  toggle().click();
+  assert.deepEqual(texts(t, "tl"), ["6 priority", "5 run.end gate_triager", "4 gate ok=False", "3 run.end", "2 run.start"]);
+  assert.equal(toggle().textContent, "story");
+  assert.equal(texts(t, "tl-group").length, 0);
+  toggle().click();
+  assert.ok(texts(t, "tl-group").length > 0);
+});
+
+test("SPEC-0433: a story that failed falls back to the raw events (or the old timeline)", async () => {
+  let t = await drill({ story: { error: "ValueError: bad" }, raw: RAW });
+  assert.equal(texts(t, "tl")[0], "6 priority");
+  assert.equal(byClass(t.doc, "drill-timeline", "tl-toggle").length, 0);
+  t = await drill({ story: { error: "x" }, raw: { error: "x" } });
+  assert.deepEqual(texts(t, "tl"), ["old 6", "old 5"]);
+});

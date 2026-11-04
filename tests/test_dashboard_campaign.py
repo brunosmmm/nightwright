@@ -74,6 +74,25 @@ def test_drilldown_matches_the_cli_views(world, monkeypatch):
     assert [x["text"] for x in d["timeline"]] == [CP.clean(R.campaign_event(e).plain)
                                                   for e in events[-CP.TIMELINE_N:]]
     assert "\x1b" not in d["timeline"][-1]["text"] and "<b>x</b>" in d["timeline"][-1]["text"]
+    # SPEC-0433: the whole ledger as the story plus its raw text per seq
+    from nightwright.agentic import timeline as TLN
+    assert d["story"]["schema"] == TLN.SCHEMA and d["story"]["events"] == len(events)
+    assert d["raw"] == {str(e["seq"]): CP.clean(R.campaign_event(e).plain) for e in events}
+    lines = [ln for _, _, ln in TLN.iter_lines(d["story"])]
+    note = [ln for ln in lines if ln["kind"] == "note"][-1]
+    assert note["text"] == "Note (t): hello <b>x</b>[31m" and "\x1b" not in body.decode()
+    assert {s for ln in lines for s in ln["seqs"]} | {
+        t["seq"] for lp in d["story"]["loops"] for g in lp["groups"] for t in g["transitions"]
+    } == {e["seq"] for e in events}
+
+
+def test_a_story_failure_fails_alone(world, monkeypatch):
+    def boom(*a, **k):
+        raise ValueError("no story")
+    monkeypatch.setattr(CP.STORY, "story", boom)
+    d = CP.build(world["cfg"], ACTIVE)
+    assert d["story"] == {"error": "ValueError: no story"} == d["raw"]
+    assert d["timeline"] and d["runs"] and d["state"]["state"] == "IMPLEMENTING"
 
 
 @pytest.mark.parametrize("cid", ["nope-123", "..", "a/b", "%2e%2e", "x" * 200])

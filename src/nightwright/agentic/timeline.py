@@ -200,6 +200,7 @@ class _Builder:
         self.n = 0
         self._last_ended = None
         self._last_ended_line = None
+        self.total_known = False
 
     # --- groups --------------------------------------------------------------------------
 
@@ -624,7 +625,17 @@ class _Builder:
         self._last_ended_line = line
 
     def _ev_cost(self, ev):
-        self.total = _num(ev.get("total_usd")) if _num(ev.get("total_usd")) is not None else self.total
+        total = _num(ev.get("total_usd"))
+        if total is not None and not self.total_known:
+            # the first total names what was spent before it (a ledger may not start at $0)
+            base = round(total - (_num(ev.get("delta_usd")) or 0.0), 4)
+            for lp in self.loops:
+                for g in lp["groups"]:
+                    g["cost_from"] = base
+                    if g is not self.group:
+                        g["cost_to"] = base
+            self.total_known = True
+        self.total = total if total is not None else self.total
         if ev.get("cap_usd") is not None:
             self.cap = _num(ev.get("cap_usd"))
         m, line = self._last_ended, self._last_ended_line

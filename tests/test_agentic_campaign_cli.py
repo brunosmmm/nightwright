@@ -246,3 +246,28 @@ def test_note_cli_attribution(tmp_path, monkeypatch):
     assert [(e["by"], e["author"]) for e in notes] == [
         ("agent:implementer", "implementer"), ("conductor", "conductor"),
         ("agent:session", "session"), ("human", "human")]
+
+
+def test_show_prints_the_story_by_default_raw_on_request_and_both_in_json(tmp_path, monkeypatch):
+    """SPEC-0433: `nw campaign show` tells the story; `--raw` is the old last-events view."""
+    cfg = _cfg(tmp_path)
+    _seed(cfg)
+    cid = "SPEC-0170-20261025-aaaa"
+    _ev(cfg, cid, "transition", {"from": "QUEUED", "to": "GATING", "reason": "x"})
+    _ev(cfg, cid, "gate.reuse_declined", {"gate": "pytest", "rule": "R3", "detail": "differs"})
+    _ev(cfg, cid, "gate", {"gate_seq": 3, "ok": False, "duration_s": 2431, "worker": "box",
+                           "results": [{"name": "pytest", "ok": False, "required": True,
+                                        "exit_code": 1, "duration_s": 2400}]})
+    r = _run(cfg, monkeypatch, ["campaign", "show", cid], env={"COLUMNS": "200"})
+    assert r.exit_code == 0, r.output
+    assert "Loop 1 · " in r.output and "Gating · GATING · " in r.output
+    assert "Gate #3 on box — FAILED after 40m 31s (pytest)  [+2]" in r.output
+    assert "reuse_declined" not in r.output and "rule=R3" not in r.output
+    x = _run(cfg, monkeypatch, ["campaign", "show", cid, "-x"], env={"COLUMNS": "200"}).output
+    assert "pytest: reuse declined (R3: differs)" in x and "✗ pytest (40m, exit 1)" in x
+    raw = _run(cfg, monkeypatch, ["campaign", "show", cid, "--raw"], env={"COLUMNS": "200"})
+    assert "gate.reuse_declined" in raw.output and "rule=R3" in raw.output
+    assert "Loop 1 · " not in raw.output
+    d = json.loads(_run(cfg, monkeypatch, ["campaign", "show", cid, "--json"]).output)
+    assert d["schema"] == "nw.campaign.v1" and d["last_events"][-1]["type"] == "gate"
+    assert d["story"]["schema"] == "nw.campaign.story.v1" and d["story"]["events"] == 4
