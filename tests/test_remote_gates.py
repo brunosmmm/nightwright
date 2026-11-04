@@ -108,6 +108,16 @@ class World:
                   retries=1),
         ]}
 
+    def split_counter(self):
+        """The `flaky` gate with one counter per side (worker vs local). After a dropped
+        connection the worker job keeps running, so with one shared counter it may spend the
+        local re-run's first failure, and whether the local run writes `.r1` files depends on
+        which side reached the counter first. Gate text differs from the golden's, so only the
+        drop cases use it."""
+        (g,) = [g for g in self.project["gates"] if g["name"] == "flaky"]
+        g["cmd"] = (f'c={self.counter}.$(case "$NW_DATA_DIR" in *wdata*) echo w;; *) echo l;; esac); '
+                    'n=$(cat $c 2>/dev/null || echo 0); echo $((n+1)) > $c; echo try $n; [ $n -ge 1 ]')
+
     @property
     def gates_dir(self):
         return S.gates_dir(self.cfg, CID)
@@ -178,14 +188,20 @@ def _script(path, body):
     return str(path)
 
 
-_DROP_AFTER_GATE = """import subprocess, sys, os
+_DROP_AFTER_GATE = """import subprocess, sys, os, time
 p = subprocess.Popen(sys.argv[1:], stdout=subprocess.PIPE)
 for line in p.stdout:
     sys.stdout.buffer.write(line)
     sys.stdout.buffer.flush()
     if b'"type": "gate"' in line:
+        time.sleep(DROP_DELAY_S)
         os._exit(255)
 """
+
+# The slow-drop variant holds the connection open this long after relaying the `gate` frame
+# before dropping it: the stall a loaded box puts between the worker's job and the drop. The
+# plain variant drops at once.
+SLOW_DROP_S = 3.0
 
 
 DISK_GUARD_OFF = {"workers": {"min_free_gb": 0}}
@@ -213,7 +229,8 @@ class Remote:
             f'shift\nexport SSH_ORIGINAL_COMMAND="$*" NW_DATA_DIR={self.wdata} '
             f'NW_CONFIG_DIR={tmp / "wcfgdir"} NW_WORKER_FINISH_GC=0\n'
             f'exec {sys.executable} -m nightwright worker ssh-command'))
-        (tmp / "drop.py").write_text(_DROP_AFTER_GATE)
+        (tmp / "drop.py").write_text(_DROP_AFTER_GATE.replace("DROP_DELAY_S", "0"))
+        (tmp / "drop-slow.py").write_text(_DROP_AFTER_GATE.replace("DROP_DELAY_S", str(SLOW_DROP_S)))
         self.variants = {
             "unreachable": _script(tmp / "ssh-255", "echo 'ssh: connect: refused' >&2\nexit 255"),
             "job255": _script(tmp / "ssh-job255", f'case "$*" in *gate-job*) exit 255;; esac\n'
@@ -226,6 +243,9 @@ class Remote:
             "drop": _script(tmp / "ssh-drop", f'case "$*" in *gate-job*) exec {sys.executable} '
                                               f'{tmp / "drop.py"} {self.ssh} "$@";; esac\n'
                                               f'exec {self.ssh} "$@"'),
+            "slowdrop": _script(tmp / "ssh-slowdrop", f'case "$*" in *gate-job*) exec {sys.executable} '
+                                                      f'{tmp / "drop-slow.py"} {self.ssh} "$@";; '
+                                                      f'esac\nexec {self.ssh} "$@"'),
         }
 
     def register(self, ssh=None, **kw):
@@ -537,29 +557,48 @@ def test_head_equal_to_base_gates_remotely_twice(tmp_path, spy):
 # ---- transport failures ----------------------------------------------------------------------
 
 def _assert_fell_back(world, remote, run, stage, cooldown):
-    assert run.worker is None and run.seq == 1 and run.ok
-    assert all(r.cwd == str(world.repo) for r in run.results)
+    # the messages carry what a loaded-box failure needs to be diagnosed from the log alone
+    why = lambda: (world.ledger(["worker_failed"]), remote.record().get("cooldown_until"),  # noqa: E731
+                   sorted(p.name for p in world.gates_dir.iterdir()))
+    assert run.worker is None and run.seq == 1 and run.ok, why()
+    assert all(r.cwd == str(world.repo) for r in run.results), why()
     (ev,) = world.ledger(["worker_failed"])
     assert ev["worker"] == "box" and ev["job_id"] == f"{CID}-gate-001-a0"
     assert ev["stage"] == stage, ev
-    assert (remote.record()["cooldown_until"] is not None) == cooldown
+    assert (remote.record()["cooldown_until"] is not None) == cooldown, why()
     names = sorted(p.name for p in world.gates_dir.iterdir())
     assert names == sorted([f"001-{n}.{x}" for n in ("ok", "opt", "flaky") for x in ("log", "json")]
-                           + ["001-flaky.r1.json", "001-flaky.r1.log"])
+                           + ["001-flaky.r1.json", "001-flaky.r1.log"]), why()
     for p in world.gates_dir.glob("*.json"):                     # nothing left from the worker
         assert json.loads(p.read_text())["cwd"] == str(world.repo)
+    # both are local state `run_all` cleans up before it returns, so they are direct asserts: a
+    # still-running worker job cannot change them, and waiting would hide a lost cleanup
     assert not S.child_tmp(world.cfg, CID, "gate-001").exists()
     assert _git(world.repo, "for-each-ref", "refs/nw/gate-jobs/") == ""
+
+
+def _run_drop(world, remote, variant):
+    """A gate run whose ssh drops after the `gate` frame, and the outcome it must have."""
+    world.split_counter()
+    remote.register(ssh=remote.variants[variant])
+    run = G.run_all(world.project, world.state, world.cfg, seq=1)
+    _assert_fell_back(world, remote, run, "ssh", cooldown=True)
+    assert len(run.results) == 3
 
 
 @pytest.mark.parametrize("variant,stage", [("unreachable", "have"), ("job255", "ssh"), ("have", "have"),
                                            ("garbage", "protocol"), ("drop", "ssh")])
 def test_transport_failures_fall_back_with_cooldown(world, remote, variant, stage):
+    if variant == "drop":
+        return _run_drop(world, remote, variant)
     remote.register(ssh=remote.variants[variant])
     run = G.run_all(world.project, world.state, world.cfg, seq=1)
     _assert_fell_back(world, remote, run, stage, cooldown=True)
-    if variant == "drop":
-        assert len(run.results) == 3
+
+
+def test_drop_ssh_survives_a_slow_worker_side(world, remote):
+    """The stage is `ssh` however long the worker side lingers before the connection drops."""
+    _run_drop(world, remote, "slowdrop")
 
 
 def test_a_drop_deletes_the_worker_files_the_local_run_does_not_rewrite(world, remote):

@@ -1,7 +1,7 @@
 ---
 id: SPEC-0426
 title: Deflake the load-sensitive remote-gate, heartbeat and job-lease tests
-status: accepted
+status: done
 owner: user
 created: 2026-11-04
 updated: 2026-11-04
@@ -178,32 +178,32 @@ real time.
 
 ## Acceptance criteria
 
-- [ ] `git diff main...HEAD --name-only` for the implementing change lists only files under
+- [x] `git diff main...HEAD --name-only` for the implementing change lists only files under
       `tests/` (plus this spec and the generated ledger); nothing under `src/`.
-- [ ] `test_transport_failures_fall_back_with_cooldown[drop-ssh]` and the stalled-drop companion
+- [x] `test_transport_failures_fall_back_with_cooldown[drop-ssh]` and the stalled-drop companion
       both pass; with the drop delayed 3 s the stage is still `ssh`, cooldown set, three local
       results, no leftover `child_tmp` or `refs/nw/gate-jobs/` at return of `run_all`
       (direct asserts; neither is wrapped in `until`).
-- [ ] If the stall injection does not reproduce a failing assertion, `_assert_fell_back`
+- [x] If the stall injection does not reproduce a failing assertion, `_assert_fell_back`
       carries assertion messages with the ledger event, cooldown record and gate-file listing,
       and the As shipped note records the diagnosis outcome (including "not reproduced").
-- [ ] `test_heartbeat_spans_many_ticks` uses `lease_ttl_s = 20` (>= 10 x `LOAD_STALL_S` = 2.0), a
+- [x] `test_heartbeat_spans_many_ticks` uses `lease_ttl_s = 20` (>= 10 x `LOAD_STALL_S` = 2.0), a
       21 s step (3 beats at interval + `LOAD_STALL_S`), asserts at least 3 distinct
       `heartbeat_at` values, `len(samples) >= 5` and `ticks >= 5`; the distinct-beat minimum
       still holds when every beat lags by `LOAD_STALL_S`.
-- [ ] `test_heartbeat_survives_a_stalled_beat` delays one beat by `LOAD_STALL_S` (2 s) and the lease is never
+- [x] `test_heartbeat_survives_a_stalled_beat` delays one beat by `LOAD_STALL_S` (2 s) and the lease is never
       `stale` and exactly one `nw-lease-heartbeat` thread ran.
-- [ ] `test_a_long_silent_gate_is_never_cancelled_while_attached` uses `job_lease_s = 6` with
+- [x] `test_a_long_silent_gate_is_never_cancelled_while_attached` uses `job_lease_s = 6` with
       a >= 7 s gate, `not lapsed`, `min(gaps) >= every - 0.05` and
       `max(gaps) <= every + 2 * FOLLOW_TICK_S + LOAD_SLACK_S`.
-- [ ] `test_attach_renewal_survives_a_stalled_follow_tick` passes: a 3 s stall in one follow
+- [x] `test_attach_renewal_survives_a_stalled_follow_tick` passes: a 3 s stall in one follow
       tick still yields a renewal on the next tick.
-- [ ] Each widened margin sits in a named constant with a comment explaining the stall it
+- [x] Each widened margin sits in a named constant with a comment explaining the stall it
       tolerates; no new bare time literal is introduced without one.
-- [ ] The three tests (and companions) pass 10 consecutive runs each while the box carries
+- [x] The three tests (and companions) pass 10 consecutive runs each while the box carries
       CPU-burner load (`nproc * 2` busy loops) and when run pinned to one CPU
       (`taskset -c 0`).
-- [ ] `tests/test_test_waits.py` and `python3 tools/spec_lint.py` pass.
+- [x] `tests/test_test_waits.py` and `python3 tools/spec_lint.py` pass.
 
 ## Test plan
 
@@ -226,15 +226,50 @@ real time.
   `tests/test_worker_jobs.py`; the `git diff --stat` shows no `src/` change, so product
   behavior is unchanged.
 
+### Test record (2026-11-04)
+
+- `uv run pytest -q -p no:cacheprovider -n 16 tests/test_remote_gates.py tests/test_agentic_nonblocking.py tests/test_worker_jobs.py tests/test_test_waits.py`: 222 passed (once; the 10x xdist repeat of the review's suggestion was not run).
+- Loaded-box loop (16 `while :; do :; done` burners = nproc x 2) over the six tests (the three named plus the three companions), 10 runs: 10/10 passed. Same set pinned with `taskset -c 0` under the same burners, 10 runs: 10/10 passed. These runs pass before the change too (the flake was never reproduced on this box), so they are a regression guard; the load-tolerance proof is the three injected-stall companions.
+- `python3 tools/spec_lint.py` passes; the ledger was regenerated with `--write-ledger`. The full suite was left to gating.
+
+### As shipped (2026-11-04)
+
+- No `src/` change; only the three test files.
+- **`[drop-ssh]` diagnosis: reproduced, via the stalled-drop companion.** With the drop delayed 3 s
+  the gate-file listing assertion failed (`001-flaky.r1.*` missing). The world's `flaky` gate
+  kept one counter file shared by the worker and the local run; the worker job keeps running
+  after the connection drops, so it can spend the counter's first failure before the local
+  re-run reaches it, and then the local run passes first try and writes no `.r1` files. Which side
+  got there first is exactly what a loaded box shuffles. The fix is in the test world, not a
+  widened assertion: `World.split_counter()` gives the `flaky` gate one counter per side
+  (`$NW_DATA_DIR` containing `wdata` is the worker) and `_run_drop` applies it. Only the drop cases
+  use it: the other cases' gate text is pinned by the golden record. The stage stays `ssh` and no
+  assertion is loosened. `child_tmp` and `refs/nw/gate-jobs/` stay direct asserts.
+  `_assert_fell_back` now carries the ledger events, cooldown record and gate listing in its
+  messages. The shared `_assert_fell_back` is called through `_run_drop` for both `drop` and
+  the new `slowdrop` variant (`SLOW_DROP_S = 3.0`), which delays `os._exit(255)` inside the same
+  script (`DROP_DELAY_S` placeholder, 0 for the plain variant).
+- **Heartbeat:** `LOAD_STALL_S = 2.0`, `SAMPLE_S = 0.2`; `lease_ttl_s = 20`, step
+  `3 * (ttl/4 + LOAD_STALL_S)` = 21 s; asserts `ticks >= 5`, `len(samples) >= 5`, at least 3
+  distinct `heartbeat_at`, never stale, one beat thread. Both heartbeat tests share
+  `_run_sampled`. The companion deviates from the Design's example numbers: `lease_ttl_s = 8`
+  (interval 2 s) and the first `Lease.heartbeat` call delayed by ttl/2 = 4 s, so the lease is at
+  worst 6 s old, 2 s (`LOAD_STALL_S`) short of stale (the Design's ttl 4 left a 1 s margin, thinner than
+  the stall budget it is meant to survive). It asserts at least 3 beat calls (the stalled one plus
+  later ones, so a beat thread dying after the stall fails), never stale and one thread.
+- **Job lease:** `ATTACH_LEASE_S = 6` (every 2 s), 7 s gate, `LOAD_SLACK_S = 1.0`; gap bounds as
+  designed. The companion `_StalledClock(_Clock)` makes the second follow `sleep` advance 3 s
+  and asserts the next `_renew` happens at that tick's fake-clock end, inside the 6 s term.
+
 ## Definition of done
 
-- [ ] Acceptance criteria all met.
-- [ ] Test plan executed; affected tests pass; the manual loaded-box loop performed and its
+- [x] Acceptance criteria all met.
+- [x] Test plan executed; affected tests pass; the manual loaded-box loop performed and its
       result noted in the spec.
-- [ ] No regressions (affected tests pass at the queue close gate).
-- [ ] Spec body updated to match what shipped (the final constants, and the diagnosed
+- [x] No regressions (affected tests pass at the queue close gate).
+- [x] Spec body updated to match what shipped (the final constants, and the diagnosed
       interleaving for `[drop-ssh]`).
-- [ ] `docs/LEDGER.md` regenerated (`python3 tools/spec_lint.py --write-ledger`).
+- [x] `docs/LEDGER.md` regenerated (`python3 tools/spec_lint.py --write-ledger`).
 
 ## Open questions
 

@@ -268,9 +268,18 @@ def test_a_job_whose_lease_is_not_renewed_cancels_itself(src, tmp_path, wenv):
     assert until(lambda: not _alive(pid))
 
 
+# A 6 s lease (renewed every 2 s) with a 7 s silent gate (3+ renewals) leaves a 6 s margin where a
+# 2 s lease left 2 s: a scheduling stall of a few seconds on a loaded box cannot lapse it.
+ATTACH_LEASE_S = 6
+ATTACH_EVERY_S = ATTACH_LEASE_S / 3
+# Slack on the upper bound of the gap between two lease rewrites. `not lapsed` is the hard
+# guarantee; the gap bound only catches a renewal that never throttles back up.
+LOAD_SLACK_S = 1.0
+
+
 def test_a_long_silent_gate_is_never_cancelled_while_attached(src, tmp_path, wenv):
-    env = _conf(wenv, job_lease_s=2)
-    h, data = _bundle_job(src, tmp_path, [_gate("long", "sleep 5; echo ok")])
+    env = _conf(wenv, job_lease_s=ATTACH_LEASE_S)
+    h, data = _bundle_job(src, tmp_path, [_gate("long", "sleep 7; echo ok")])
     lease = _job_dir(env, h["job_id"]) / "lease.json"
     changes, lapsed, stop = [], [], threading.Event()
 
@@ -291,8 +300,8 @@ def test_a_long_silent_gate_is_never_cancelled_while_attached(src, tmp_path, wen
     w = threading.Thread(target=watch, daemon=True)
     w.start()
     try:
-        # in-process: the 2 s lease is not spent on a second interpreter's startup
-        rc = WJ.attach(_cfg(env, job_lease_s=2), h["job_id"], 0, out)
+        # in-process: the lease is not spent on a second interpreter's startup
+        rc = WJ.attach(_cfg(env, job_lease_s=ATTACH_LEASE_S), h["job_id"], 0, out)
     finally:
         stop.set()
         w.join(WAIT_S)
@@ -303,10 +312,10 @@ def test_a_long_silent_gate_is_never_cancelled_while_attached(src, tmp_path, wen
     assert not lapsed
     attached = changes[1:]                  # changes[0] is submit's lease, seen first
     gaps = [b - a for a, b in zip(attached, attached[1:])]
-    # min(30, 2/3) s apart, give or take a follow tick (plus one for a loaded machine);
-    # `not lapsed` above is the hard bound
-    assert gaps and max(gaps) <= 2 / 3 + 2 * WJ.FOLLOW_TICK_S, gaps
-    assert min(gaps) >= 2 / 3 - 0.05, gaps                # throttled: never every tick
+    # min(30, lease/3) s apart, give or take a follow tick (plus one for a loaded machine, plus
+    # LOAD_SLACK_S); `not lapsed` above is the hard bound
+    assert gaps and max(gaps) <= ATTACH_EVERY_S + 2 * WJ.FOLLOW_TICK_S + LOAD_SLACK_S, gaps
+    assert min(gaps) >= ATTACH_EVERY_S - 0.05, gaps       # throttled: never every tick
 
 
 class _Clock:
@@ -338,6 +347,42 @@ def test_attach_rewrites_the_lease_at_most_every_third_of_it(wenv, monkeypatch, 
     # renewed on the first tick, then once more than `every` passed: one tick late at most
     assert renews[0] == 0 and len(gaps) == 3, renews
     assert all(every < g <= every + WJ.FOLLOW_TICK_S for g in gaps), renews
+
+
+class _StalledClock(_Clock):
+    """`_Clock` whose `stall_call`-th `sleep` advances `stall_s` instead of the requested tick: a
+    follow tick that a loaded box held for seconds."""
+
+    def __init__(self, job, stop_at, stall_call, stall_s):
+        super().__init__(job, stop_at)
+        self.calls, self.stall_call, self.stall_s = 0, stall_call, stall_s
+        self.stalled_to = None
+
+    def sleep(self, s):
+        self.calls += 1
+        if self.calls == self.stall_call:
+            s = self.stall_s
+        super().sleep(s)
+        if self.calls == self.stall_call:
+            self.stalled_to = self.t
+
+
+def test_attach_renewal_survives_a_stalled_follow_tick(wenv, monkeypatch):
+    """A follow tick held for 3 s (a stalled box) does not delay the renewal: it happens on the
+    very loop iteration after the stall, while the lease (6 s) has not run out. Wall time stays
+    real under the fake clock, so only the renewal's timing is checked here."""
+    job = _fake_job(wenv, "j-stall")
+    stall_s = 3.0
+    clock = _StalledClock(job, stop_at=ATTACH_LEASE_S, stall_call=2, stall_s=stall_s)
+    renews, real = [], WJ._renew
+    monkeypatch.setattr(WJ, "time", clock)
+    monkeypatch.setattr(WJ, "_renew", lambda j, s: (renews.append(clock.t), real(j, s)))
+    assert WJ.attach(_cfg(wenv, job_lease_s=ATTACH_LEASE_S), "j-stall", 0, io.BytesIO()) == 0
+    assert clock.stalled_to == WJ.FOLLOW_TICK_S + stall_s
+    assert renews[0] == 0
+    # the stalled tick passed `every`, so the next iteration renews at the stall's end
+    assert renews[1] == clock.stalled_to, renews
+    assert renews[1] - renews[0] < ATTACH_LEASE_S             # the lease was still inside its term
 
 
 def test_settings_defaults_and_the_heartbeat_cap():
