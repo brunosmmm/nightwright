@@ -6924,7 +6924,8 @@ def dashboard_payload(cfg, *, project=None, recent=5, recent_hours=24, now=None)
                                      "ts": req.get("at"), "by": req.get("by") or "human"},
                         "parked_at": parked_at}
             row = {**it, "spec_title": title, "park": park or None,
-                   "park_age_s": _age(parked_at, now), "state_since": parked_at,   # SPEC-0410 "last_verdict": _verdict_summary(st),
+                   "park_age_s": _age(parked_at, now), "last_verdict": _verdict_summary(st),
+                   "state_since": parked_at,   # SPEC-0410
                    "why": JY.why(st, ledger, loops=it["loops"])}
             (needs_you if park.get("owner") == "human" else conductor).append(row)
             if state == "PARKED":

@@ -170,19 +170,33 @@ def _priority(it) -> int:
     return _DEFAULT_PRIORITY if p is None else p
 
 
+def _epoch(ts) -> float:
+    """A timestamp as epoch seconds, so keys sort by time and not by string format (`Z` vs
+    `+00:00`, fractional seconds, timezone). Missing or unparsable sorts first."""
+    if not ts:
+        return 0.0
+    try:
+        t = dt.datetime.fromisoformat(str(ts).replace("Z", "+00:00"))
+    except ValueError:
+        return 0.0
+    if t.tzinfo is None:
+        t = t.astimezone()
+    return t.timestamp()
+
+
 def _sort_key(group, it) -> tuple:
     """Fixed timestamps, priority and ids only: never an age (SPEC-0410 Decision 2)."""
     cid = it["campaign"]
     if group == "queued":
         return (it.get("position") or 0, cid)
     if group in ("needs you", "conductor"):
-        return ((it.get("park") or {}).get("parked_at") or it.get("state_since") or "", cid)
+        return (_epoch((it.get("park") or {}).get("parked_at") or it.get("state_since")), cid)
     if group == "waiting":
-        return (_priority(it), (it.get("waiting") or {}).get("since") or it.get("state_since") or "",
-                cid)
+        return (_priority(it),
+                _epoch((it.get("waiting") or {}).get("since") or it.get("state_since")), cid)
     if group == "delivered":
-        return (it.get("state_since") or "", cid)       # reversed below, ties by id
-    return (_priority(it), it.get("created_at") or "", cid)
+        return (_epoch(it.get("state_since")), cid)     # reversed below, ties by id
+    return (_priority(it), _epoch(it.get("created_at")), cid)
 
 
 def _row(group, it, state=None, now=None) -> QueueRow:

@@ -185,3 +185,14 @@ def test_allowed_actions_per_group_row(state, expect):
     rows = AM.rows_from_payload(_payload(**{src: [_it("X", state, position=1,
                                                       finished_age_s=1, state_since="a")]}))
     assert rows[-1].actions == expect
+
+
+def test_timestamp_keys_sort_by_time_not_string_format():
+    # `Z` vs `+00:00` and fractional seconds order wrongly as strings: 10:00:00Z < 10:00:00.5+00:00
+    # as text ("Z" > "+"), but 09:59:59+00:00 is the oldest.
+    def item(cid, at):
+        return {"campaign": cid, "park": {"parked_at": at, "owner": "conductor"}}
+    ats = {"a": "2026-11-03T10:00:00Z", "b": "2026-11-03T10:00:00.5+00:00",
+           "c": "2026-11-03T09:59:59+00:00", "d": "2026-11-03T07:00:00-03:30"}
+    keys = {c: AM._sort_key("conductor", item(c, at)) for c, at in ats.items()}
+    assert sorted(keys, key=keys.get) == ["c", "a", "b", "d"]
