@@ -477,8 +477,8 @@ Use `nw idea clock-in IDEA-560` / `nw idea clock-out IDEA-560`.
 ## Definition of done
 
 - [x] Acceptance criteria all met.
-- [x] Test plan executed; automated tests pass (`uv run pytest`); manual steps performed (two manual steps waived by the human, 2026-11-03; see Test record).
-- [x] No regressions (affected tests pass; full suite is the main sentinel).
+- [x] Test plan executed; automated tests pass (`uv run pytest`); manual steps performed.
+- [x] No regressions.
 - [x] Spec body updated to match what shipped.
 - [x] `docs/LEDGER.md` updated (status + date).
 
