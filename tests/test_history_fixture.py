@@ -245,7 +245,7 @@ def test_capture_synthetic_source(captured):
     # caps
     stream = (out / "agentic/campaigns" / MULTI / "runs/001-implementer/stream.jsonl").read_text().splitlines()
     assert len(stream) <= 120 and all(len(x.encode()) <= 4096 for x in stream)
-    assert json.loads(stream[0])["n"] == 0 or json.loads(stream[0]).get("text") == "x"
+    assert json.loads(stream[0])["n"] == 0             # the first line of the original is always kept
     assert any(json.loads(x).get("truncated") for x in stream)
     log = (out / "agentic/campaigns" / MULTI / "gates/001-pytest.log").read_text().splitlines()
     assert len(log) == 200 and "log line 499" in log[-1]
@@ -282,6 +282,96 @@ def test_runner_window_and_caps(tmp_path):
     assert [x for x in ns if x != "overlap"][0] == 700 - 499
 
 
+def test_runner_per_interval_cap_with_two_busy_intervals(tmp_path):
+    """Each interval keeps its own last 500; neither is starved by the other's lines."""
+    src = build_source(tmp_path / "src", runner_in_a=0)
+    rows = [{"ts": ts(2, i % 60), "kind": "tick", "n": f"m{i}"} for i in range(600)]      # MULTI only
+    rows += [{"ts": ts(31 + (i % 8), i // 8 % 60), "kind": "tick", "n": f"a{i}"} for i in range(600)]
+    jl(src / "agentic" / "runner.jsonl", sorted(rows, key=lambda r: r["ts"]))
+    out = tmp_path / "out"
+    r = run_tool("--src", str(src), "--out", str(out))
+    assert r.returncode == 0, r.stderr
+    ns = [x["n"] for x in read_jsonl(out / "agentic/runner.jsonl")]
+    assert len([n for n in ns if n.startswith("m")]) == 500
+    assert len([n for n in ns if n.startswith("a")]) == 500
+
+
+def test_big_run_and_result_json_are_cut(tmp_path):
+    src = build_source(tmp_path / "src")
+    rd = src / "agentic/campaigns" / MULTI / "runs/001-implementer"
+    run = json.loads((rd / "run.json").read_text())
+    run["notes"] = ["n" * 20000] * 5
+    run["cost_usd"] = 0.5
+    (rd / "run.json").write_text(json.dumps(run, indent=2) + "\n")
+    (rd / "result.json").write_text(json.dumps({"summary": "s" * 70000, "n": 7}) + "\n")
+    assert (rd / "run.json").stat().st_size > 64 * 1024
+    out = tmp_path / "out"
+    r = run_tool("--src", str(src), "--out", str(out))
+    assert r.returncode == 0, r.stderr
+    for name in ("run.json", "result.json"):
+        got = json.loads((out / "agentic/campaigns" / MULTI / "runs/001-implementer" / name).read_text())
+        assert got["truncated_by_fixture"] is True, name
+        assert all(len(x) <= 4096 for x in tool_strings(got)), name
+    assert got["n"] == 7                                 # non-text values are untouched
+    assert json.loads((out / "agentic/campaigns" / MULTI / "runs/001-implementer/run.json").read_text())["cost_usd"] == 0.5
+
+
+def tool_strings(v):
+    if isinstance(v, str):
+        yield v
+    elif isinstance(v, list):
+        for x in v:
+            yield from tool_strings(x)
+    elif isinstance(v, dict):
+        for x in v.values():
+            yield from tool_strings(x)
+
+
+def test_long_gate_log_lines_are_cut_to_1kib(tmp_path):
+    src = build_source(tmp_path / "src")
+    g = src / "agentic/campaigns" / MULTI / "gates"
+    (g / "002-long.log").write_text("short\n" + "é" * 3000 + "\nlast\n")
+    rd = src / "agentic/campaigns" / MULTI / "runs/001-implementer"
+    (rd / "stderr.log").write_text("e" * 5000 + "\n")
+    out = tmp_path / "out"
+    r = run_tool("--src", str(src), "--out", str(out))
+    assert r.returncode == 0, r.stderr
+    base = out / "agentic/campaigns" / MULTI
+    for p in (base / "gates/002-long.log", base / "runs/001-implementer/stderr.log"):
+        lines = p.read_bytes().splitlines()
+        assert lines and all(len(x) <= 1024 for x in lines), p
+    assert (base / "gates/002-long.log").read_text().splitlines()[0] == "short"
+    assert (base / "gates/002-long.log").read_text().splitlines()[-1] == "last"
+
+
+def test_secrets_under_list_and_dict_values_are_redacted(tool, tmp_path):
+    san = tool.Sanitizer()
+    obj = {"tokens": ["plain-1", "plain-2"], "auth": {"cookie": {"a": "plain-3"}, "n": 4},
+           "password": ["plain-4", {"x": "plain-5"}], "ok": ["fine"], "count_token": 3}
+    got = san.value(obj)
+    assert got["tokens"] == ["[REDACTED]"] * 2
+    assert got["auth"]["cookie"] == {"a": "[REDACTED]"} and got["auth"]["n"] == 4
+    assert got["password"] == ["[REDACTED]", {"x": "[REDACTED]"}]
+    assert got["ok"] == ["fine"] and got["count_token"] == 3
+    (tmp_path / "a.json").write_text(json.dumps(obj))
+    assert {r for _, _, r in tool.scan(tmp_path, [])} >= {"secret_key"}
+    (tmp_path / "a.json").write_text(json.dumps(got))
+    assert tool.scan(tmp_path, []) == []
+
+
+def test_capture_redacts_list_secret_values(tmp_path):
+    src = build_source(tmp_path / "src")
+    rd = src / "agentic/campaigns" / MULTI / "runs/001-implementer"
+    run = json.loads((rd / "run.json").read_text())
+    run["api_keys"] = ["plainvalue-one", "plainvalue-two"]
+    (rd / "run.json").write_text(json.dumps(run, indent=2) + "\n")
+    out = tmp_path / "out"
+    r = run_tool("--src", str(src), "--out", str(out))
+    assert r.returncode == 0, r.stderr
+    blob = b"".join(p.read_bytes() for p in out.rglob("*") if p.is_file())
+    assert b"plainvalue" not in blob
+
+
 def test_missing_required_scenario_exits_2(tmp_path):
     src = build_source(tmp_path / "src")
     shutil.rmtree(src / "agentic/campaigns" / ABANDONED)
@@ -302,6 +392,50 @@ def test_size_budget_exits_3(captured, tmp_path):
     r = run_tool("--src", str(captured["src"]), "--out", str(out), env={"NW_FIXTURE_MAX_BYTES": "1000"})
     assert r.returncode == 3 and "largest campaign" in r.stderr
     assert not out.exists()
+
+
+def test_capture_refuses_to_delete_a_foreign_out(tmp_path):
+    src = build_source(tmp_path / "src")
+    out = tmp_path / "precious"
+    out.mkdir()
+    (out / "notes.txt").write_text("mine")
+    r = run_tool("--src", str(src), "--out", str(out))
+    assert r.returncode == 2 and "refusing" in r.stderr
+    assert (out / "notes.txt").read_text() == "mine"
+    (out / "MANIFEST.json").write_text('{"schema": "something.else"}')     # wrong schema: still refused
+    assert run_tool("--src", str(src), "--out", str(out)).returncode == 2
+    assert (out / "notes.txt").read_text() == "mine"
+    (out / "MANIFEST.json").write_text("not json")
+    assert run_tool("--src", str(src), "--out", str(out)).returncode == 2
+    assert (out / "notes.txt").read_text() == "mine"
+    f = tmp_path / "afile"
+    f.write_text("x")
+    assert run_tool("--src", str(src), "--out", str(f)).returncode == 2 and f.read_text() == "x"
+
+
+def test_capture_replaces_an_empty_or_fixture_out(captured, tmp_path):
+    empty = tmp_path / "empty"
+    empty.mkdir()
+    assert run_tool("--src", str(captured["src"]), "--out", str(empty)).returncode == 0
+    assert (empty / "MANIFEST.json").is_file()
+    stale = tmp_path / "stale"
+    shutil.copytree(captured["out"], stale)
+    (stale / "agentic/stale.txt").write_text("old")
+    assert run_tool("--src", str(captured["src"]), "--out", str(stale)).returncode == 0
+    assert not (stale / "agentic/stale.txt").exists()
+    assert run_tool("--check", "--out", str(stale)).returncode == 0
+
+
+def test_capture_refuses_src_inside_or_equal_out(tmp_path):
+    out = tmp_path / "out"
+    src = build_source(out / "src")
+    (out / "MANIFEST.json").write_text(json.dumps({"schema": "nw.history.fixture.v1", "files": {}}))
+    before = tree_hashes(src)
+    r = run_tool("--src", str(src), "--out", str(out))
+    assert r.returncode == 2 and "inside --out" in r.stderr
+    assert tree_hashes(src) == before
+    r = run_tool("--src", str(src), "--out", str(tmp_path))          # an ancestor of --src
+    assert r.returncode == 2 and (src / "agentic/campaigns").is_dir()
 
 
 def test_no_derive_flag(tmp_path):
@@ -375,6 +509,18 @@ def test_check_detects_drift(captured, tmp_path):
     assert r.returncode == 1 and "agentic/events.jsonl" in r.stderr
 
 
+@pytest.mark.parametrize("text", ["", "not json", "[]", "null", '{"schema": "nw.history.fixture.v1"}',
+                                  '{"schema": "nw.history.fixture.v1", "files": []}',
+                                  '{"schema": "nw.history.fixture.v1", "files": {"a": 1}}',
+                                  '{"schema": "other", "files": {}}'])
+def test_check_malformed_manifest_exits_1(tmp_path, text):
+    (tmp_path / "agentic").mkdir()
+    (tmp_path / "agentic/x.txt").write_text("x")
+    (tmp_path / "MANIFEST.json").write_text(text)
+    r = run_tool("--check", "--out", str(tmp_path))
+    assert r.returncode == 1 and "Traceback" not in r.stderr and "MANIFEST.json" in r.stderr
+
+
 # ---- the committed fixture ---------------------------------------------------------------------
 
 def fixture_manifest():
@@ -445,7 +591,7 @@ def test_committed_fixture_caps(tool):
     stamps = [dt.datetime.fromisoformat(r["ts"]) for r in rows]
     assert all(any(a <= t <= b for a, b in ivs) for t in stamps)
     for a, b in ivs:
-        assert sum(1 for t in stamps if a <= t <= b) <= 500 * len(ivs)
+        assert sum(1 for t in stamps if a <= t <= b) <= 500, (a, b)
     assert len(rows) <= 500 * len(ivs)
 
 

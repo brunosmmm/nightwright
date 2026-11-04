@@ -465,6 +465,11 @@ and green. `python3 tools/spec_lint.py` stays at exit 0.
 - Gate failure reproduced with `USER=nw HOME=/home/nw ... --check`: `scan()` took the user-name path segments from `$USER` and the home dir name, so `/nw/` in SPEC-0336 paths and text matched on the gate worker. `scan()` now takes a `users` argument (default empty); `--check` and the committed-tree scan use none, and only a capture run passes the names (environment and `--src`). The fixture bytes did not change; no re-capture.
 - `uv run pytest -q -n 0 tests/test_history_fixture.py`: 24 passed (new: `--check` under `USER`/`HOME` of `nw`, `agentic`, `campaigns`, `bruno`; `scan()` user segments only when given). `--check` exits 0 under both the real and the `nw` environment. `spec_lint` exit 0.
 
+### Test record, loop 3 (2026-11-04)
+
+- Review fixes in `tools/capture_history_fixture.py`: a capture replaces `--out` only when it is absent, empty or a dir whose `MANIFEST.json` has schema `nw.history.fixture.v1` (exit 2 otherwise), and refuses a `--src` that is inside `--out` or an ancestor of it; secret-named keys now redact every string beneath them (lists and dicts too), in both the sanitizer and `scan()`; `--check` exits 1 with a message on a malformed `MANIFEST.json`. The committed fixture needed no re-capture: `--check` exits 0 with the stricter scan.
+- `uv run pytest -q -n 4 tests/test_history_fixture.py`: 40 passed (new: foreign/empty/fixture `--out`, `--src` inside `--out`, list/dict secrets, run/result over 64 KiB, gate and stderr lines over 1 KiB, two busy runner intervals, malformed manifests; the stream-first-line assertion no longer a tautology; the committed-runner cap is now at most 500 per interval). `spec_lint` exit 0. The full suite is left to gating.
+
 ### As shipped (2026-11-04)
 
 - Chosen campaigns (8, one derived): `SPEC-0179-20261025-158c` (legacy, no `run.json`, no stream), `SPEC-0180-20261025-f78d`, `SPEC-0195-20261025-f49a` (merged; base of the derived `SPEC-0195-20261025-hdof`), `SPEC-0218-20261025-0131` (abandoned, legacy), `SPEC-0336-20261031-6558` (merged, answered escalation, 1.25 MB, the largest), `SPEC-0394-20261102-ae5b` (merged, flaky and triage), `IDEA-606-20261101-df50` (abandoned, pre-stream). The fixture is 2,989,452 bytes of the 3 MiB budget; `runner.jsonl` is 393 KB of that.

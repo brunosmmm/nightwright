@@ -114,10 +114,12 @@ class Sanitizer:
             self.counts["user_name"] += n
         return s
 
-    def value(self, v, key=None):
-        """Sanitize a parsed JSON value (keys are never touched)."""
+    def value(self, v, key=None, secret=False):
+        """Sanitize a parsed JSON value (keys are never touched). Every string under a
+        secret-named key is redacted, however deep (a list or dict value included)."""
+        secret = secret or (key is not None and bool(SECRET_KEY_RE.search(key)))
         if isinstance(v, str):
-            if key is not None and SECRET_KEY_RE.search(key) and v and v != "[REDACTED]":
+            if secret and v and v != "[REDACTED]":
                 self.counts["secret"] += 1
                 return "[REDACTED]"
             if key == "pr_url":
@@ -127,7 +129,7 @@ class Sanitizer:
                     v = m.group(1) + "example.invalid" + v[m.end():]
             return self.text(v)
         if isinstance(v, list):
-            return [self.value(x) for x in v]
+            return [self.value(x, None, secret) for x in v]
         if isinstance(v, dict):
             out = {}
             for k, x in v.items():
@@ -136,7 +138,7 @@ class Sanitizer:
                         self.counts["env"] += 1
                     out[k] = {}
                 else:
-                    out[k] = self.value(x, k)
+                    out[k] = self.value(x, k, secret)
             return out
         return v
 
@@ -147,7 +149,7 @@ class NullSanitizer(Sanitizer):
     def text(self, s):
         return s
 
-    def value(self, v, key=None):
+    def value(self, v, key=None, secret=False):
         return v
 
 
@@ -570,16 +572,17 @@ def collect_records(agentic: Path, chosen: list[Camp], esc: dict, note) -> tuple
 
 # ---- verification scan ---------------------------------------------------------------------
 
-def _walk_hits(v, key=None, path=""):
+def _walk_hits(v, key=None, secret=False):
+    secret = secret or bool(key and SECRET_KEY_RE.search(key))
     if isinstance(v, dict):
         for k, x in v.items():
             if k == "env" and isinstance(x, dict) and x:
                 yield "env"
-            yield from _walk_hits(x, k)
+            yield from _walk_hits(x, k, secret)
     elif isinstance(v, list):
         for x in v:
-            yield from _walk_hits(x)
-    elif isinstance(v, str) and key and SECRET_KEY_RE.search(key) and v and v != "[REDACTED]":
+            yield from _walk_hits(x, None, secret)
+    elif isinstance(v, str) and secret and v and v != "[REDACTED]":
         yield "secret_key"
 
 
@@ -663,8 +666,17 @@ def check(out: Path) -> int:
     if not mf.is_file():
         print(f"check: {mf} missing", file=sys.stderr)
         return 1
-    manifest = json.loads(mf.read_text(encoding="utf-8"))
-    listed = manifest.get("files") or {}
+    try:
+        manifest = json.loads(mf.read_text(encoding="utf-8"))
+    except (ValueError, OSError) as e:
+        print(f"check: {mf} is not valid JSON: {e}", file=sys.stderr)
+        return 1
+    listed = manifest.get("files") if isinstance(manifest, dict) else None
+    if (not isinstance(listed, dict) or manifest.get("schema") != SCHEMA
+            or not all(isinstance(e, dict) and "sha256" in e and "bytes" in e for e in listed.values())):
+        print(f"check: {mf} is malformed (want schema {SCHEMA} and files{{path: {{sha256, bytes}}}})",
+              file=sys.stderr)
+        return 1
     bad = []
     actual = tree_files(out)
     for rel, raw in actual.items():
@@ -701,6 +713,26 @@ def worker_hosts(agentic: Path) -> list[str]:
     return hosts
 
 
+def out_refusal(out: Path):
+    """Why `out` may not be replaced, or None. A capture deletes the old `out`, so it only
+    replaces an absent or empty dir or a dir that is itself a fixture (its MANIFEST.json has our
+    schema); anything else is somebody's data."""
+    if not out.exists():
+        return None
+    if not out.is_dir():
+        return f"--out {out} exists and is not a directory"
+    if not any(out.iterdir()):
+        return None
+    try:
+        schema = json.loads((out / "MANIFEST.json").read_text(encoding="utf-8")).get("schema")
+    except (ValueError, OSError, AttributeError):
+        schema = None
+    if schema != SCHEMA:
+        return (f"--out {out} is not empty and has no {SCHEMA} MANIFEST.json: "
+                "refusing to delete it")
+    return None
+
+
 def capture(args) -> int:
     src = Path(args.src).expanduser().resolve()
     out = Path(args.out).resolve()
@@ -709,6 +741,11 @@ def capture(args) -> int:
         return fail(2, f"{src} has no agentic/campaigns/")
     if out == src or src in out.parents:
         return fail(2, "--out must not be inside --src")
+    if out in src.parents:
+        return fail(2, "--src must not be inside --out (it would be deleted on write)")
+    refusal = out_refusal(out)
+    if refusal:
+        return fail(2, refusal)
     max_bytes = int(os.environ.get("NW_FIXTURE_MAX_BYTES") or MAX_BYTES)
     notes = []
     esc = {}
