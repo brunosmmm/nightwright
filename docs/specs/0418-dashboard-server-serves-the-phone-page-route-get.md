@@ -1,9 +1,10 @@
 ---
 id: SPEC-0418
 title: "Dashboard server serves the phone page: GET / /app.js /app.css through assets.ROUTES, bearer-exempt, behind Host/Origin"
-status: proposed
+status: accepted
 owner: user
 created: 2026-11-04
+updated: 2026-11-04
 milestone: "M9: agentic workflow"
 kind: feature
 source_idea: IDEA-919
