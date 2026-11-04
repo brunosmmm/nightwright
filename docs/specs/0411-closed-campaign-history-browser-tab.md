@@ -1,9 +1,10 @@
 ---
 id: SPEC-0411
 title: Closed-campaign history browser tab
-status: proposed
+status: accepted
 owner: user
 created: 2026-11-03
+updated: 2026-11-03
 kind: feature
 parent: SPEC-0405
 source_idea: IDEA-888
