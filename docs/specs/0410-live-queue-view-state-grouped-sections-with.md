@@ -19,6 +19,11 @@ goal G1 ("live queue ordering"). It needs the epic's child 3 (the TUI test harne
 guards) to land first. That child has no spec id yet, so `depends_on` is added when it does
 (see *Rollout*).
 
+The epic's child 4 was reviewed as too big for one campaign and is split in two. This spec is
+the first half: the grouped table, its row model, stable order, columns, cursor behaviour and
+the carried-forward actions. The second half (ticking elapsed times, double-click open and the
+delivered fold) is a follow-up spec that `depends_on` this one (see *Non-goals*).
+
 **What exists today** ([SPEC-0241](./0241-tui-queue-tab-over-the-queue-dashboard.md), done):
 - The queue tab is one `QueueTable(DataTable)` in `src/nightwright/tui/queue_tab.py`, fed by
   `agentic_model.load_queue` over `queue.dashboard_payload`.
@@ -33,8 +38,7 @@ guards) to land first. That child has no spec id yet, so `depends_on` is added w
 - There is no priority column, no time in state, no cost-vs-cap bar, and no "why is it
   waiting" (although `dashboard_payload` already computes `why` and `waiting_for` per row via
   `journey.why` / `journey.waiting_for`, SPEC-0326).
-- The whole table repaints from a `stat()` signature poll every 2 s and a reload every 15 s;
-  elapsed times only move on those reloads.
+- The whole table repaints from a `stat()` signature poll every 2 s and a reload every 15 s.
 - Enter posts `QueueView.CampaignSelected`, and the desk pushes `CampaignScreen`
   ([SPEC-0246](./0246-tui-campaign-detail-screen.md)). There is no double-click.
 
@@ -43,7 +47,8 @@ which the runner admits queued work. The TUI does not show that order today.
 
 This spec replaces SPEC-0241's table layout, grouping, row model and sort, and carries its
 actions, plumbing and read-only guarantees forward unchanged (restated below). The detail
-popup is child 5 of the epic. Until it lands, Enter and double-click open the SPEC-0246 screen.
+popup is child 5 of the epic. Until it lands, Enter keeps opening the SPEC-0246 screen exactly
+as today.
 
 ## Goals / Non-goals
 
@@ -56,18 +61,21 @@ popup is child 5 of the epic. Until it lands, Enter and double-click open the SP
   moves only when its group changes, and the cursor follows the campaign id.
 - G4. Queued rows appear in exactly the runner's admission order (the `nw queue backlog`
   `position`).
-- G5. Elapsed and time-in-state cells tick every second from cached timestamps, with no reload
-  and no file read.
-- G6. Enter and double-click open the campaign detail.
-- G7. Park, resume, prioritize and abandon, the SPEC-0277 per-reviewer chips and the
-  read-only guarantees of SPEC-0241 keep working as they do.
+- G5. Park, resume, prioritize and abandon, Enter-to-open, the SPEC-0277 per-reviewer chips
+  and the read-only guarantees of SPEC-0241 keep working as they do.
 
-**Non-goals**
+**Non-goals** (the first three are the follow-up spec split off from this one, which will set
+`depends_on: [SPEC-0410]`)
+- Ticking elapsed and time-in-state cells every second from cached epoch timestamps. Here the
+  `state` activity and `time` cells are computed at load and move on the existing 2 s / 15 s
+  reloads only.
+- Double-click to open (`events.Click` with `chain == 2`). Here only Enter opens the detail.
+- The `z` delivered fold and delivered being collapsed by default. Here the delivered group is
+  listed expanded under its header, as SPEC-0241 lists it today.
 - The detail popup (child 5), the History tab (child 6) and the Findings tab (child 7).
 - Any new write path or new action.
 - Changing `nw queue watch`, the CLI renderers or the runner's admission logic.
-- Filtering or searching the queue (a later spec if needed).
-- Persisting the collapsed state of a group across `nw tui` runs.
+- Filtering or searching the queue.
 
 ## Decision
 
@@ -87,7 +95,7 @@ over a new row model, in the same `QueueView` / `QueueTable`.
    | 6 | building | `active` with state OPENING, SPEC_WRITING, SPEC_REVIEW or IMPLEMENTING |
    | 7 | waiting | `waiting` (state WAITING) |
    | 8 | queued | `backlog` (state QUEUED) |
-   | 9 | delivered (24 h) | `delivered`, collapsed by default |
+   | 9 | delivered (24 h) | `delivered`, expanded in this spec |
 
    Furthest-along work comes first, because what is closest to landing is what the human
    acts on. An `active` state not in the table lands in `building`, so no row is dropped.
@@ -113,8 +121,8 @@ over a new row model, in the same `QueueView` / `QueueTable`.
 
 4. **Header rows are not selectable.** Cursor movement (`j`/`k`, arrows, page keys, a mouse
    click, a repaint) never rests on a header row: it moves to the next data row in the
-   direction of travel, and stays put at the ends. Header rows carry no actions. `z` toggles
-   the delivered group between collapsed (header only) and expanded.
+   direction of travel, and stays put at the ends. Header rows carry no actions, and Enter on
+   one does nothing.
 
 5. **Columns** (one `DataTable`, left to right):
 
@@ -141,20 +149,13 @@ over a new row model, in the same `QueueView` / `QueueTable`.
    **Time in state** is: for active rows the age of the last transition into the current
    state (`state_age_s`); for parked rows the age of the park; for waiting rows the age of
    `waiting.since`; for queued rows the age since creation; blank for delivered rows, which
-   show `finished <ago> ago` in the `time` column instead.
+   show `finished <ago> ago` in the `time` column instead. These ages are computed when the
+   rows are built, so they refresh on each load.
 
-6. **Ticking from cached timestamps.** On load, each row stores absolute epoch timestamps
-   (`state_since`, `activity_since`, `finished_at`), computed once as `loaded_wall - age_s`
-   from the payload's ages. A 1 s timer, active only while the tab is visible, recomputes the
-   time-bearing cells from `time.time()` and updates those cells in place. It reads no file,
-   calls no payload function and re-sorts nothing.
-
-7. **Open.** Enter and a double-click (`events.Click` with `chain == 2`) on a data row both
-   post `QueueView.CampaignSelected(campaign_id, title)`. A click on a header row does
-   nothing. The desk keeps its handler, which pushes the SPEC-0246 `CampaignScreen`; child 5
-   replaces that handler body and nothing in this spec changes then.
-
-8. **Carried forward verbatim from SPEC-0241:**
+6. **Carried forward verbatim from SPEC-0241:**
+   - Enter on a data row posts `QueueView.CampaignSelected(campaign_id, title)`, and the desk
+     pushes the SPEC-0246 `CampaignScreen`; child 5 later replaces that handler body and
+     nothing in this spec changes then;
    - the actions `p` park, `u` resume, `P` prioritize, `A` abandon, with the same prompts,
      confirmations, cancel behaviour and `ValueError` handling, through `plan_queue_action` /
      `queue_action` and `allowed_actions`, unchanged;
@@ -181,37 +182,36 @@ with `recent=20` so the delivered group is useful; the CLI keeps its default of 
 - `GROUPS`: the ordered tuple of the nine group names above, and `group_of(state, source)`,
   the one place that maps payload list plus state to a group.
 - `QueueRow` keeps its fields and gains `group`, `pri`, `loops`, `cost_usd`, `cap_usd`,
-  `activity`, `why`, `state_since`, `activity_since`, `finished_at` and `sort_key`. `meta` is
-  removed, and `section` is renamed `group`. `kind` (`"header"` or `"campaign"`) distinguishes
-  header rows, which have an empty `campaign`, no actions and `count`.
-- `rows_from_payload(payload, *, collapsed=frozenset({"delivered"}), now=None)` returns header
-  and data rows in final order. It sorts with the keys of Decision 2 and does not depend on
-  the payload's list order. `load_queue(cfg)` keeps its `(rows, header_line)` shape.
+  `activity`, `why`, `state_since`, `time_text` and `sort_key`. `meta` is removed, and
+  `section` is renamed `group`. `kind` (`"header"` or `"campaign"`) distinguishes header
+  rows, which have an empty `campaign`, no actions and `count`.
+- `rows_from_payload(payload, *, collapsed=frozenset(), now=None)` returns header and data
+  rows in final order. It sorts with the keys of Decision 2 and does not depend on the
+  payload's list order. A group named in `collapsed` emits its header only; this spec never
+  passes one (the follow-up spec adds the `z` fold and makes delivered collapsed by default).
+  `now` is the reference time for the age cells. `load_queue(cfg)` keeps its
+  `(rows, header_line)` shape.
 - `cost_bar(cost, cap, width=8) -> str` renders `███░░░░░`-style cells, clamped to
   `0..width`; an over-cap campaign fills the bar and is flagged in the cell style. No cap
   returns `""`.
-- `format_elapsed(since_epoch, now)` is the single formatter for the ticking cells; it uses
-  `cli_queue._dur` / `_ago`, as `nw queue watch` does.
 - `activity_text(item)` builds the activity string, including the SPEC-0277 chips
   (the glyph map and `Q.review_short_name(...)[:4]` code move here from `_active_meta`).
+  Elapsed and age text use `cli_queue._dur` / `_ago`, as `nw queue watch` does.
 - `queue_signature` and the four action wrappers are unchanged.
 
 ### Widget (`src/nightwright/tui/queue_tab.py`)
 
 - `on_mount` adds the eight columns of Decision 5.
-- `paint(previous)` draws header rows (bold, group colour, `▾`/`▸` fold marker on delivered)
-  and data rows, keyed `"<group>|<campaign>"`, with header keys `"#<group>"`. The `title`
-  and `why` columns share the width left after the fixed columns (measured, as today); `why`
-  is clipped first, then `title`.
+- `paint(previous)` draws header rows (bold, group colour) and data rows, keyed
+  `"<group>|<campaign>"`, with header keys `"#<group>"`. The `title` and `why` columns share
+  the width left after the fixed columns (measured, as today); `why` is clipped first, then
+  `title`.
 - `QueueTable` overrides `action_cursor_down`, `action_cursor_up`, page movement and `Home`/`End`
   to skip header rows, and handles `DataTable.RowHighlighted` so a mouse click or a repaint that
-  lands on a header row snaps to the nearest data row. `on_click` with `event.chain == 2`
-  calls `view.open_selected()`; Enter keeps its binding. `z` is bound to `toggle_delivered`.
-- `_tick` (1 s interval, paused with the other timers in `deactivate`) calls
-  `table.update_cell` for the elapsed part of the `state` cell and for the `time` cell of
-  data rows, from `time.time()`. It never calls `reload` and never reorders.
-- `_restore_index` is extended to skip header rows. Collapsing or expanding delivered
-  repaints from the cached rows with no reload.
+  lands on a header row snaps to the nearest data row. Enter keeps its binding and posts
+  `CampaignSelected` for data rows only.
+- `_restore_index` is extended to skip header rows.
+- The timers, the `stat()` poll and the reload are untouched; no per-second timer is added.
 
 ### Parity with the CLI and the dashboard
 
@@ -227,25 +227,31 @@ with `recent=20` so the delivered group is useful; the CLI keeps its default of 
 - **Keep sorting by the payload's order and time-varying keys (age, overdue first).**
   Rejected: rows would jump under the cursor as ages cross each other, which is the problem
   this spec fixes.
-- **Reload every second to tick elapsed times.** Rejected: it reads every campaign's ledger
-  and hammers the data dir (epic G6). Cached timestamps cost nothing.
 - **A separate `active` group sorted by state.** Rejected: the human asked for state
   groups with the furthest-along work on top, and a flat active list hides what is closing.
 - **Textual `DataTable` row labels as headers.** Rejected: they do not span columns and
   cannot be made unselectable; header rows plus cursor skipping do.
+- **Keeping ticking, double-click and the fold in this spec.** Rejected: the review found 13
+  acceptance criteria too many for one campaign, and those three features are separable from
+  the grouped-table rewrite and testable on their own.
+- **Collapsing delivered by default here, without the `z` key.** Rejected: delivered rows
+  would become unreachable, a regression from SPEC-0241. Delivered stays expanded until the
+  follow-up adds the fold.
 
 ## Acceptance criteria
 
 - [ ] AC1. `rows_from_payload` emits groups in the fixed order needs you, conductor, closing,
       reviewing, gating, building, waiting, queued, delivered; an empty group emits no header;
-      each header's count equals its data rows; a seeded campaign in each of CLOSING,
-      REVIEWING, GATING, TRIAGING, OPENING, SPEC_WRITING, SPEC_REVIEW and IMPLEMENTING lands in
-      the group the table in Decision 1 names; an unlisted active state lands in building.
+      each header's count equals its data rows; the delivered group's data rows are present
+      (expanded); a seeded campaign in each of CLOSING, REVIEWING, GATING, TRIAGING, OPENING,
+      SPEC_WRITING, SPEC_REVIEW and IMPLEMENTING lands in the group the table in Decision 1
+      names; an unlisted active state lands in building.
 - [ ] AC2. Inside closing, reviewing, gating and building, rows are sorted by
       `(priority, created_at, campaign id)`; queued rows by backlog `position`; needs-you and
       conductor rows by `(parked_at, campaign id)`; waiting rows by
       `(priority, waiting.since, campaign id)`; delivered newest first. Shuffling the payload
-      lists before building the rows does not change the result.
+      lists before building the rows does not change the result, and an overdue conductor row
+      does not move ahead of an older non-overdue one.
 - [ ] AC3. On a seeded data dir, the queued rows' campaign ids equal `nw queue backlog --json`
       `items[].campaign` in order, and for every group the campaign set equals the matching
       `dashboard_payload` list.
@@ -254,36 +260,29 @@ with `recent=20` so the delivered group is useful; the CLI keeps its default of 
       (full and flagged when over the cap) and money only when there is no cap. A running
       campaign shows `<persona> <elapsed>`, a gating one its gate name or `gates`, a waiting
       one what it waits on, and a REVIEWING one the SPEC-0277 per-reviewer chips unchanged.
+      Delivered rows show `finished <ago> ago` in `time` and no priority.
 - [ ] AC5. Header rows are never the cursor row: `j`/`k`, arrows, page keys, `Home`/`End`, a
       mouse click on a header and a repaint all end on a data row; at either end the cursor
-      stays put. Header rows have no actions and Enter on one does nothing.
+      stays put. Header rows have no actions and Enter on one does nothing; Enter on a data
+      row still posts `CampaignSelected` and opens the SPEC-0246 screen.
 - [ ] AC6. A reload (including a forced one) where no campaign changed group leaves the row
       order, the row keys and the cursor campaign unchanged. When a campaign changes group,
       the cursor follows its campaign id to the new row. A deferred-park campaign appears in
       its park group and its active group without a duplicate-key error, and the cursor is
       restored to the right one of the two.
-- [ ] AC7. Time-bearing cells advance without a reload: after 3 s on the tab with an
-      unchanged signature, the elapsed and time-in-state cells have advanced by about 3 s,
-      `load_queue` was called no more than once, and no file under the data dir was opened by
-      the tick. The tick is paused when another tab is active.
-- [ ] AC8. Enter and a double-click on a data row each post `CampaignSelected` for that
-      campaign and open the SPEC-0246 screen (until child 5 replaces it); a single click only
-      moves the cursor; a double-click on a header row opens nothing.
-- [ ] AC9. `z` toggles the delivered group between header-only and expanded without a reload;
-      delivered is collapsed on first load and its header shows the count.
-- [ ] AC10. Park, resume (with and without a note), prioritize and abandon (with and without
+- [ ] AC7. Park, resume (with and without a note), prioritize and abandon (with and without
       keeping the worktree) behave as in SPEC-0241 AC6: same prompts, plan summary
       confirmation, resulting campaign state equal to the CLI's, and cancel or Esc writes
       nothing; an action not allowed for the row's state notifies and opens no prompt; the
       same holds on rows in the new groups.
-- [ ] AC11. The tab never calls `events.sync`, `events.cursor_set`, `events.reader_lock`,
-      `events.follow` or `mailbox.follow` (monkeypatched to raise) across load, refresh, tick,
-      fold and every action; the 2 s signature poll, 15 s reload, `queue failed: <error>`
-      status line and idea-action gating on the queue tab are unchanged.
-- [ ] AC12. The payload additions are append-only: `dashboard_payload` and `queue_payload`
+- [ ] AC8. The tab never calls `events.sync`, `events.cursor_set`, `events.reader_lock`,
+      `events.follow` or `mailbox.follow` (monkeypatched to raise) across load, refresh and
+      every action; the 2 s signature poll, 15 s reload, `queue failed: <error>` status line
+      and idea-action gating on the queue tab are unchanged.
+- [ ] AC9. The payload additions are append-only: `dashboard_payload` and `queue_payload`
       keep every existing key and value, and `nw queue watch` and `nw queue backlog --json`
       output are unchanged on a seeded data dir.
-- [ ] AC13. SPEC-0241 is set `superseded` with `superseded_by: SPEC-0410` when this spec is
+- [ ] AC10. SPEC-0241 is set `superseded` with `superseded_by: SPEC-0410` when this spec is
       done, and `python3 tools/spec_lint.py` exits 0.
 
 ## Test plan
@@ -291,26 +290,22 @@ with `recent=20` so the delivered group is useful; the CLI keeps its default of 
 - **Automated tests:**
   - `tests/test_tui_queue_groups.py` (new, no Textual): `rows_from_payload` group order and
     counts (AC1); sort keys and independence from payload list order, with a hand-built
-    payload that shuffles every list (AC2); `cost_bar` (empty, partial, full, over cap, no
-    cap); `activity_text` including the chips; `allowed_actions` for rows of each new group;
-    delivered collapse; `format_elapsed`.
+    payload that shuffles every list and an overdue conductor row (AC2); `cost_bar` (empty,
+    partial, full, over cap, no cap); `activity_text` including the chips and delivered
+    `time` text (AC4); `allowed_actions` for rows of each new group.
   - `tests/test_agentic_dashboard.py` (added tests only): `created_at` on queue items and
-    `state_since` on dashboard rows, and that every pre-existing key is unchanged (AC12).
+    `state_since` on dashboard rows, and that every pre-existing key is unchanged (AC9).
   - `tests/test_tui_queue_view.py` (new, Textual `run_test` via the child 3 harness,
     `tests/tui_harness.py`, with `pilot_until` waits, never a fixed sleep):
-    - cursor skipping across headers with `j`/`k`/page/`Home`/`End`, a click on a header, and
-      a repaint (AC5);
+    - cursor skipping across headers with `j`/`k`/page/`Home`/`End`, a click on a header, a
+      repaint, and Enter on a header versus a data row (AC5);
     - a state write that moves a campaign between groups, with the cursor following it, and a
       forced reload with no change leaving rows and cursor untouched (AC6), including the
       deferred-park campaign listed twice;
-    - the 1 s tick with `time.time` monkeypatched forward and `load_queue` and `open` counted
-      (AC7);
-    - Enter, single click and `Pilot.double_click` on a data row, double-click on a header
-      (AC8);
-    - `z` fold (AC9);
     - each action through its prompts with yes, cancel and Esc, moved from
-      `tests/test_tui_queue_tab.py` and run on rows of the new groups (AC10);
-    - the forbidden-call monkeypatches (AC11) and a load error kept in the status line.
+      `tests/test_tui_queue_tab.py` and run on rows of the new groups (AC7);
+    - the forbidden-call monkeypatches across load, refresh and actions, and a load error kept
+      in the status line (AC8).
   - `tests/test_tui_queue_parity.py` (new, harness): on the child 3 fixture data dir copy,
     seeded with live campaigns in each state through `store.create_campaign` plus state edits
     where the fixture lacks them, assert the queued order equals
@@ -319,16 +314,16 @@ with `recent=20` so the delivered group is useful; the CLI keeps its default of 
     from the mounted `DataTable` rows equals `rows_from_payload`.
   - A text snapshot of the queue tab at 160x48 on that data dir, through the SPEC-0115 pyte
     path, regenerated only with `NW_UPDATE_SNAPSHOTS=1`, showing headers, columns and the cost
-    bar.
+    bar (AC4).
   - `tests/test_tui_queue_model.py` and `tests/test_tui_queue_tab.py`: assertions about the
     SPEC-0241 `section`/`meta` rows are rewritten to the new model (this spec supersedes
     them on purpose); the action, plumbing, forbidden-call and `check_action` assertions
     stay as they are.
+  - A spec-lint check (`python3 tools/spec_lint.py` exits 0) covers AC10 at closing.
 - **Manual verification:** with the queue running, `uv run nw tui --tab queue` on the real
   data dir. Check that the group order and counts match `nw queue watch`, that queued rows
-  match `nw queue backlog`, that elapsed times move every second without the rows
-  repainting, that no row jumps for two minutes, and that double-click opens the campaign.
-  Record the outcome under *As shipped*.
+  match `nw queue backlog`, that no row jumps for two minutes, and that Enter opens the
+  campaign. Record the outcome under *As shipped*.
 - **Regression guard:** affected tests (`python3 tools/affected_tests.py --run uv run pytest -q`)
   including `tests/test_agentic_dashboard*.py`, `tests/test_tui_*`, `tests/test_cli_queue*` (if
   present) and the epic's guard that no TUI test skips for a missing Textual;
@@ -344,7 +339,9 @@ Nothing to migrate: the view model is rebuilt from live state on each load.
    SPEC-0241 assertions.
 3. On `done`, set SPEC-0241 `superseded` with `superseded_by: SPEC-0410` and regenerate
    `docs/LEDGER.md`.
-4. Child 5 later replaces the desk's `CampaignSelected` handler body; this spec needs no
+4. The follow-up spec (ticking times, double-click, delivered fold) is written with
+   `depends_on: [SPEC-0410]` and lands after this one.
+5. Child 5 later replaces the desk's `CampaignSelected` handler body; this spec needs no
    change then.
 
 ## Definition of done
@@ -362,6 +359,7 @@ None. Decided while writing:
 | Question | Decision | Why |
 |---|---|---|
 | Does overdue still sort the conductor group first? | No; parked-at order, overdue shown in `why` | overdue flips with time, so sorting on it would move rows |
-| How many delivered rows? | `recent=20` for the view | the group is collapsed by default, so a longer list costs nothing |
-| Key to fold delivered? | `z` | free on the queue table and not an idea-scoped action |
+| How many delivered rows? | `recent=20` for the view | a longer list is useful, and the follow-up collapses the group by default |
+| Is delivered collapsed in this spec? | No, expanded as in SPEC-0241 | without the `z` fold (follow-up) a collapsed group could not be opened |
+| Where do ticking, double-click and the fold go? | A follow-up spec depending on this one | the review found 13 ACs too many for one campaign |
 | Are the SPEC-0241 `meta` tests kept? | rewritten | the `meta` column no longer exists |
