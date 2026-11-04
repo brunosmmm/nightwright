@@ -347,7 +347,7 @@ def test_idle_connection_is_closed_after_the_handler_timeout(tmp_path, monkeypat
 
 @pytest.mark.parametrize("bind,word", [
     ("0.0.0.0:0", "wildcard"), ("[::]:0", "wildcard"), ("192.168.1.20:0", "loopback"),
-    ("100.64.0.9:0", "loopback"), ("tailscale", "not an IP"), ("example.com:8791", "not an IP")])
+    ("example.com:8791", "not an IP")])
 def test_make_server_runs_the_bind_gate_itself(tmp_path, bind, word):
     """G2: a direct caller cannot skip the gate; nothing is bound or created."""
     import socket

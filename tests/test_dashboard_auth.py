@@ -33,8 +33,9 @@ def test_parse_bind_garbage(spec):
 @pytest.mark.parametrize("host,word", [
     ("127.0.0.1", None), ("127.5.5.5", None), ("::1", None), ("::ffff:127.0.0.1", None),
     ("0.0.0.0", "wildcard"), ("::", "wildcard"), ("::ffff:0.0.0.0", "wildcard"),
-    ("192.168.1.20", "loopback"), ("100.64.0.9", "loopback"), ("10.0.0.1", "loopback"),
-    ("::ffff:192.168.1.20", "loopback"), ("fd7a:115c:a1e0::1", "loopback"),
+    ("192.168.1.20", "loopback"), ("100.64.0.9", "foreign tailnet address"),
+    ("10.0.0.1", "loopback"), ("::ffff:192.168.1.20", "loopback"),
+    ("fd7a:115c:a1e0::1", "foreign tailnet address"),
     ("tailscale", "not an IP"), ("example.com", "not an IP"),
 ])
 def test_check_bind(host, word):

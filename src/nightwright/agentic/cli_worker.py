@@ -249,24 +249,33 @@ def serve_cmd(cfg, jobs, dashboard, bind, tls_cert, tls_key, client_ca):
         srv.server_close()
 
 
+class _TailnetMissingExit(click.ClickException):
+    """No tailnet address on this host: exit 3 (SPEC-0416), distinct from a usage error (2)."""
+    exit_code = 3
+
+
 def _serve_dashboard(cfg, bind, tls_cert, tls_key, client_ca):
-    """`nw serve --dashboard` (SPEC-0414). Exit 2: `BindRefused` or a TLS flag; exit 1: an
-    OSError from binding."""
+    """`nw serve --dashboard` (SPEC-0414, SPEC-0416). Exit 2: `BindRefused` or a TLS flag; exit 3:
+    `TailnetMissing`; exit 1: an OSError from binding."""
     import signal
     import threading
 
     from .dashboard import auth as DA
     from .dashboard import server as DS
     try:
-        DA.validate_bind(bind or DS.DEFAULT_BIND)
+        host, port = DA.resolve_bind(bind or DS.DEFAULT_BIND)
     except DA.BindRefused as e:
         raise click.UsageError(str(e))
+    except DA.TailnetMissing as e:
+        raise _TailnetMissingExit(str(e))
     if tls_cert or tls_key or client_ca:
         raise click.UsageError("TLS is not supported with --dashboard")
     try:
-        srv = DS.make_server(cfg, bind)
+        srv = DS.make_server(cfg, f"[{host}]:{port}" if ":" in host else f"{host}:{port}")
     except DA.BindRefused as e:
         raise click.UsageError(str(e))
+    except DA.TailnetMissing as e:
+        raise _TailnetMissingExit(str(e))
     except OSError as e:
         raise click.ClickException(str(e))
     stop = threading.Event()

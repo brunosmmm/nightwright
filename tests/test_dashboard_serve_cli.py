@@ -89,7 +89,7 @@ def tls_files(tmp_path):
 
 
 REFUSED = {"0.0.0.0:0": "wildcard", "[::]:0": "wildcard", "::": "wildcard",
-           "192.168.1.20:0": "loopback", "100.64.0.9:0": "loopback", "tailscale": "not an IP",
+           "192.168.1.20:0": "loopback",
            "example.com:8791": "not an IP"}
 
 

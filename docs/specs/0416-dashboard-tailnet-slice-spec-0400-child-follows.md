@@ -1,7 +1,7 @@
 ---
 id: SPEC-0416
 title: "Dashboard tailnet bind gate: own-address resolution, --bind tailscale and TailnetMissing (exit 3)"
-status: accepted
+status: done
 owner: user
 created: 2026-11-04
 updated: 2026-11-04
@@ -213,53 +213,53 @@ with exit 2, so a test fails if the server ever runs `up`, `set`, `serve`, `cert
 
 ## Acceptance criteria
 
-- [ ] `auth.own_tailnet_ips()` returns this host's tailnet addresses from `tailscale ip` (IPv4
+- [x] `auth.own_tailnet_ips()` returns this host's tailnet addresses from `tailscale ip` (IPv4
       first, only addresses in `100.64.0.0/10` or `fd7a:115c:a1e0::/48`), and raises
       `TailnetMissing` when `tailscale` is not on `PATH`, exits non-zero, times out, prints
       garbage, or prints no tailnet address; `is_tailnet_ip` is correct at both range edges and
       for IPv4-mapped IPv6.
-- [ ] `resolve_bind` table: loopback → accepted without calling `own_fn`; wildcard (`0.0.0.0`,
+- [x] `resolve_bind` table: loopback → accepted without calling `own_fn`; wildcard (`0.0.0.0`,
       `::`, `[::]`), LAN, public, link-local and host-name binds → `BindRefused` with the rule
       words `wildcard` / `not a loopback or tailnet address` / `not an IP` without calling `own_fn`;
       a foreign tailnet address (`100.64.0.9` when own is `100.64.0.5`) → `BindRefused` "foreign
       tailnet address"; `tailscale`, `TAILSCALE`, `tailscale:9000` and an own tailnet address →
       `BindRefused` "tailnet serving needs the identity gate"; `own_fn` is called exactly once for
       `tailscale` and for tailnet-range addresses.
-- [ ] A host with no tailnet address (`tailscale` missing from `PATH`, logged out, mode `fail`,
+- [x] A host with no tailnet address (`tailscale` missing from `PATH`, logged out, mode `fail`,
       `hang`, `garbage`) makes `nw serve --dashboard --bind tailscale` and
       `--bind 100.64.0.9:0` exit **3** with a message that names `tailscale up`; nothing listens
       and no `server.json` exists. The exit code comes from `TailnetMissing`, not from message
       text (a unit test raises it directly from a stubbed `own`), and combining the bind with TLS
       flags still exits 3.
-- [ ] No socket is ever opened on a non-loopback address: with the fake reporting own address
+- [x] No socket is ever opened on a non-loopback address: with the fake reporting own address
       `100.64.0.5`, `--bind tailscale` and `--bind 100.64.0.5:0` exit **2** naming "identity
       gate", with and without TLS flags (the gate message, never the TLS one), nothing listening
       and no `server.json`; `make_server(cfg, "100.64.0.5:0", own=...)` raises `BindRefused`
       before a socket is created.
-- [ ] The CLI bind gate exits **2**, stderr naming its rule word and `refusing to bind`, nothing
+- [x] The CLI bind gate exits **2**, stderr naming its rule word and `refusing to bind`, nothing
       listening and no `server.json`, for `0.0.0.0`, `::`, `[::]`, a LAN address
       (`192.168.1.20`), a public address (`8.8.8.8`), a foreign tailnet address (`100.64.0.9` with
       the fake's own `100.64.0.5`) and a host name, each alone and each combined with
       `--tls-cert/--tls-key` (existing files), in which case stderr is the bind-rule message and
       not the TLS one. A wildcard, LAN, public or host-name bind never runs `tailscale` (the
       fake's log is empty).
-- [ ] A loopback bind combined with TLS flags still exits 2 with `TLS is not supported with
+- [x] A loopback bind combined with TLS flags still exits 2 with `TLS is not supported with
       --dashboard`; `--bind 127.0.0.1:PORT` and the no-`--bind` default still serve with
       `auth: "token"` and never run `tailscale` (the fake's log is empty), and the CLI default bind
       is still `127.0.0.1:8791`.
-- [ ] `make_server` applies the same gate: calling it directly with each refused bind raises
+- [x] `make_server` applies the same gate: calling it directly with each refused bind raises
       `BindRefused` (or `TailnetMissing`) before a socket is created; `own` is keyword-only on
       `make_server`, is not passed by `serve_cmd` / `_serve_dashboard` (checked by an AST test)
       and is not reachable from a flag, an environment variable or a config key.
-- [ ] The only `tailscale` subcommand the server runs is `tailscale ip`, with an argv list and no
+- [x] The only `tailscale` subcommand the server runs is `tailscale ip`, with an argv list and no
       shell: over a full CLI/server test run the fake's log holds no other subcommand.
-- [ ] The SPEC-0414 loopback guarantees still hold: all of its tests pass **except the rows this
+- [x] The SPEC-0414 loopback guarantees still hold: all of its tests pass **except the rows this
       spec deliberately changes**, which are listed in the Test plan and move to the tailnet
       tests; read-only over HTTP, the no-import invariants and `nw serve --jobs` behavior are
       unchanged.
-- [ ] `tests/fixtures/fake_tailscale.py` has a self-test and rejects every subcommand other than
+- [x] `tests/fixtures/fake_tailscale.py` has a self-test and rejects every subcommand other than
       `ip`; docs list `--bind tailscale` and exit 3; `python3 tools/spec_lint.py` exits 0.
-- [ ] Manual, real binary: on this host (logged out) `uv run nw serve --dashboard --bind
+- [x] Manual, real binary: on this host (logged out) `uv run nw serve --dashboard --bind
       tailscale` exits 3 with the real `tailscale`; after the human logs in, the same command
       exits 2 naming the identity gate and the address it names equals `tailscale ip -4`. Anything
       not possible yet is recorded as pending in As shipped, not claimed.
@@ -336,6 +336,46 @@ run the venv's `nw` as a real subprocess with `NW_DATA_DIR` set to the
    which equals `tailscale ip -4`; `ss -ltn` shows nothing on it. Step 3 needs the human's login;
    if not done yet it stays pending, and this spec's shipped record says so.
 
+### Test record (2026-11-04)
+
+- `uv run pytest -q tests/test_fake_tailscale.py tests/test_dashboard_tailnet_auth.py
+  tests/test_dashboard_tailnet_server.py tests/test_dashboard_tailnet_seams.py
+  tests/test_dashboard_tailnet_cli.py` (the CLI file: 36 passed in 20 s, including the `hang`
+  mode, which waits out the 5 s timeout), then `uv run pytest -q -n 4 tests/test_docs_*.py
+  tests/test_specs.py tests/test_spec_status.py tests/test_dashboard_*.py
+  tests/test_fake_tailscale.py tests/test_agentic_dashboard.py`: 440 passed, 2 skipped (this
+  includes the SPEC-0414 / SPEC-0401 / SPEC-0403 dashboard files with the listed rows moved).
+- `python3 tools/affected_tests.py --run uv run pytest -q` (serial, ~130 files): 3167 passed, 6
+  skipped, no failure, up to ~94 %; I interrupted it there because it ran too long (11 min), so
+  the last few files were not run by me. The queue's close gate runs the affected set.
+- The full suite was left to gating.
+- Manual, this host (logged out, `tailscale ip` prints `no current Tailscale IPs; state:
+  NeedsLogin`), real binary: step 1 `uv run nw serve --dashboard --bind tailscale` and `--bind
+  100.64.0.9:8791` both print the `tailscale up` message and exit **3**; `ss -ltn` shows nothing
+  on 8791. Step 2 `--bind 0.0.0.0:8791` exits **2** ("refusing to bind: 0.0.0.0 is a wildcard
+  address"); `uv run nw serve --dashboard` still serves on `http://127.0.0.1:8791` with the token.
+  Step 3 (logged in: exit 2 naming the identity gate and the `tailscale ip -4` address) is
+  **pending the human's `tailscale up`**; it is covered meanwhile by the fake (`100.64.0.5`).
+
+### As shipped (2026-11-04)
+
+- As designed: `TailnetMissing`, `TailscaleError`, `is_tailnet_ip`, `run_tailscale`,
+  `own_tailnet_ips`, `check_bind(host, own=())`, `resolve_bind` in `auth.py`; `make_server(...,
+  own=None)`; `_serve_dashboard` calls `resolve_bind` first and maps `TailnetMissing` to a
+  `click.ClickException` subclass with `exit_code = 3`. `tests/fixtures/fake_tailscale.py` models
+  only `ip`.
+- Message wording: the foreign-tailnet message reads "<addr> is a foreign tailnet address (not one
+  of this host's own, and not a loopback address)", so `validate_bind` (which passes no `own`)
+  still produces a message containing `loopback` for a tailnet address and its SPEC-0414 unit rows
+  stay unchanged. `validate_bind` is kept (loopback-only) but no dashboard caller uses it now.
+- SPEC-0414 rows moved beyond the spec's list: `test_dashboard_auth.py::test_check_bind` row
+  `fd7a:115c:a1e0::1` also moved from "loopback" to "foreign tailnet address" (same reason as the
+  `100.64.0.9` row).
+- `docs/WORKFLOW.md` has no `agentic.dashboard` section yet (SPEC-0401 documented the setting
+  elsewhere), so the "`bind` is not read by the server yet" note was not added there; the reference
+  doc (`docs/product/reference/index.md`) documents `--bind tailscale` and exit 3.
+- Manual step 3 pending as recorded above.
+
 ## Rollout / migration
 
 1. Land the code, the fake fixture and the tests; move the SPEC-0414 rows listed in the Test plan.
@@ -348,13 +388,13 @@ run the venv's `nw` as a real subprocess with `NW_DATA_DIR` set to the
 
 ## Definition of done
 
-- [ ] Acceptance criteria all met.
-- [ ] Test plan executed; affected tests pass (`python3 tools/affected_tests.py --run uv run pytest
+- [x] Acceptance criteria all met.
+- [x] Test plan executed; affected tests pass (`python3 tools/affected_tests.py --run uv run pytest
       -q`) plus the files touched; manual steps 1-2 performed and step 3 recorded as done or pending.
-- [ ] No regressions (SPEC-0414 / SPEC-0401 dashboard tests apart from the listed moved rows,
+- [x] No regressions (SPEC-0414 / SPEC-0401 dashboard tests apart from the listed moved rows,
       SPEC-0334 `--jobs` tests).
-- [ ] Spec body updated to match what shipped.
-- [ ] `docs/LEDGER.md` regenerated (`python3 tools/spec_lint.py --write-ledger`) and
+- [x] Spec body updated to match what shipped.
+- [x] `docs/LEDGER.md` regenerated (`python3 tools/spec_lint.py --write-ledger`) and
       `python3 tools/spec_lint.py` exits 0.
 
 ## Open questions

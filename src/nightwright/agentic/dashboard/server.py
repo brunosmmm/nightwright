@@ -61,10 +61,12 @@ class DashboardServer(http.server.ThreadingHTTPServer):
             return self._body
 
 
-def make_server(cfg, bind: str | None = None, *, cache=None) -> DashboardServer:
-    """The server, bound (not yet serving). `BindRefused` for a refused bind; the bind `OSError`
-    propagates. `cache` is a test seam (a `SnapshotCache` with an injected clock or builder)."""
-    host, port = A.validate_bind(bind or DEFAULT_BIND)
+def make_server(cfg, bind: str | None = None, *, cache=None, own=None) -> DashboardServer:
+    """The server, bound (not yet serving). `BindRefused` for a refused bind, `TailnetMissing`
+    when the bind needs a tailnet this host lacks; the bind `OSError` propagates. `cache` is a
+    test seam (a `SnapshotCache` with an injected clock or builder), `own` another (replaces
+    `auth.own_tailnet_ips`); `serve_cmd` passes neither."""
+    host, port = A.resolve_bind(bind or DEFAULT_BIND, own_fn=own or A.own_tailnet_ips)
     dashboard_dir(cfg)
     token = A.local_token(cfg)
     return DashboardServer(cfg, (host, port), cache or SnapshotCache(cfg), token)
