@@ -47,6 +47,21 @@ def _path(cfg, esc_id):
     return escalations_dir(cfg) / f"{esc_id}.json"
 
 
+def signature(cfg) -> tuple:
+    """Sorted (name, size, mtime_ns) of the record files; `stat()` calls only. A cheap change
+    signal for pollers (the TUI escalation inbox, the dashboard watermark, SPEC-0401)."""
+    d = escalations_dir(cfg)
+    out = []
+    if d.is_dir():
+        for p in d.glob("ESC-*.json"):
+            try:
+                st = p.stat()
+            except OSError:
+                continue
+            out.append((p.name, st.st_size, st.st_mtime_ns))
+    return tuple(sorted(out))
+
+
 def _ids(cfg) -> list[int]:
     d = escalations_dir(cfg)
     if not d.is_dir():

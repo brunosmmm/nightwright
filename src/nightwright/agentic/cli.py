@@ -58,3 +58,5 @@ def register(cli, projects_group):
     cli.add_command(escalations_group)
     from .cli_herdr import herdr_group                  # SPEC-0361
     cli.add_command(herdr_group)
+    from .cli_dashboard import dashboard_group          # SPEC-0401
+    cli.add_command(dashboard_group)

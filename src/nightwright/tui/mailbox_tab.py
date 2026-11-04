@@ -197,7 +197,7 @@ class MailboxView(Horizontal):
             self.reload()
 
     def _current_signature(self) -> tuple:
-        return AM.mailbox_signature(self.cfg), AM.escalations_signature(self.cfg)
+        return AM.mailbox_signature(self.cfg), ESC.signature(self.cfg)
 
     def reload(self) -> None:
         if self._loading:

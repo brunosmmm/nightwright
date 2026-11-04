@@ -1,7 +1,7 @@
 ---
 id: SPEC-0401
 title: "Dashboard snapshot: nw.dashboard.v1, SnapshotCache and nw dashboard snapshot"
-status: accepted
+status: done
 owner: user
 created: 2026-11-03
 updated: 2026-11-03
@@ -269,39 +269,39 @@ server serializes it once per `rev`).
 
 ## Acceptance criteria
 
-- [ ] `snapshot.build` on the seeded fixture returns a document with every top-level key of
+- [x] `snapshot.build` on the seeded fixture returns a document with every top-level key of
       the `nw.dashboard.v1` schema above and `schema == "nw.dashboard.v1"`. Its
       `totals.spend_today_usd` equals `queue.dashboard_payload`'s for the same data, its
       `inbox.escalations` lists exactly the open escalations, and its `inbox.parks` lists
       exactly the `main_dirty` / `main_not_on_base` parks. When one builder raises, that
       section is `{"error": …}` and every other section is still present and correct.
-- [ ] `rev` is unchanged between two builds whose inputs differ only in `*_age_s` values and
+- [x] `rev` is unchanged between two builds whose inputs differ only in `*_age_s` values and
       `generated_at`, and changes when a campaign's cost changes.
-- [ ] `watermark(cfg)` includes the campaign signature of Decision 3: appending one line to a
+- [x] `watermark(cfg)` includes the campaign signature of Decision 3: appending one line to a
       campaign's `ledger.jsonl` with no `events.jsonl` change moves it, and so does replacing
       a `state.json`, adding a campaign directory, writing an escalation record or touching
       the lease file. Two calls with no file change return equal tuples.
-- [ ] `SnapshotCache` (injected clock) performs 0 builds and 0 watermark checks with no
+- [x] `SnapshotCache` (injected clock) performs 0 builds and 0 watermark checks with no
       `get()`. 20 threads × 10 `get()` within one `refresh_s` and an unchanged watermark
       cause exactly 1 build. A watermark move before `refresh_s` elapses is not seen; after
       `refresh_s` it causes a rebuild. With no change, `max_stale_s` causes a rebuild that
       yields the same `rev`.
-- [ ] At the cache level, a ledger-only change (one `ledger.jsonl` append that changes a
+- [x] At the cache level, a ledger-only change (one `ledger.jsonl` append that changes a
       campaign's cost or state, no `events.jsonl` line), followed by advancing the clock past
       `refresh_s`, makes `get()` return a snapshot with a new `rev`.
-- [ ] `recent_events` never reads before offset `size − 256 KiB` of `events.jsonl`, returns at
+- [x] `recent_events` never reads before offset `size − 256 KiB` of `events.jsonl`, returns at
       most 20 events, all of `RECENT_TYPES`, in file order; `RECENT_TYPES` is a subset of
       `events.EVENT_TYPES`.
-- [ ] `nw dashboard snapshot --json` prints a document that passes the same schema-key check,
+- [x] `nw dashboard snapshot --json` prints a document that passes the same schema-key check,
       with no server running, no `tailscale` on `PATH` and no token. Without `--json` it
       prints the text summary, including the `spend today` and counts lines.
-- [ ] Running `build` and `SnapshotCache.get()` repeatedly with rebuilds forced, and running
+- [x] Running `build` and `SnapshotCache.get()` repeatedly with rebuilds forced, and running
       `nw dashboard snapshot` (both forms), leaves every file under the data dir
       byte-identical and creates no file or directory (including `agentic/dashboard/`).
-- [ ] No module among `agentic/queue.py`, the runner, `runproc`, `events`, `escalations`,
+- [x] No module among `agentic/queue.py`, the runner, `runproc`, `events`, `escalations`,
       `lease`, `store` and `mailbox` imports `nightwright.agentic.dashboard`, directly or
       transitively.
-- [ ] `escalations.signature` exists with the old behaviour, `tui/agentic_model.py` no longer
+- [x] `escalations.signature` exists with the old behaviour, `tui/agentic_model.py` no longer
       defines `escalations_signature`, and the TUI escalation inbox tests (SPEC-0250) pass
       unchanged.
 
@@ -366,6 +366,64 @@ server serializes it once per `rev`).
 **Regression guard.** Affected tests via `python3 tools/affected_tests.py --run uv run pytest
 -q`. The queue's close gate runs the affected set.
 
+### Test record (2026-11-03)
+
+- `uv run pytest -q -n 0 tests/test_dashboard_snapshot.py tests/test_dashboard_cache.py
+  tests/test_dashboard_cli.py tests/test_dashboard_readonly.py tests/test_dashboard_imports.py`:
+  26 passed (this includes `test_ledger_append_without_events_moves_watermark` and
+  `test_ledger_only_change_yields_new_rev`).
+- `uv run pytest -q -n 4 tests/test_agentic_escalations.py tests/test_tui_escalations_model.py
+  tests/test_tui_escalations_tab.py tests/test_agentic_dashboard.py tests/test_tui_mailbox_tab.py
+  tests/test_herdr.py`: 240 passed, 2 skipped (TUI escalation inbox, escalations, `dashboard_payload`
+  and the herdr import precedent).
+- `python3 tools/affected_tests.py --run uv run pytest -q -x -n 4` (121 test files): the first
+  pass had 2462 passed and 1 failure, `test_export.py::test_internal_spec_lint_unaffected_by_outbox`,
+  which failed only because the ledger was stale after the status edit. The run after
+  `--write-ledger` is recorded below. The full suite is left to gating.
+- After `python3 tools/spec_lint.py --write-ledger`, `python3 tools/affected_tests.py --run uv run
+  pytest -q -n 4` gave 3122 passed and 4 skipped. `python3 tools/spec_lint.py` exits 0.
+- Manual 1 (real data dir, 2026-11-03 20:47): `nw dashboard snapshot` printed `runner 1415509@…
+  heartbeat 14s · conductor 1551100`, `active 7 · queued 0 · parked 4 · waiting 0 · backlog 1 ·
+  conductor-handling 4` and `spend today $124.87`. `nw queue watch --once` at the same moment
+  showed runner pid 1415509 with a 14s heartbeat, 7 active, 0 waiting, needs you 0, conductor 4,
+  1 backlog and today $124.87. They match.
+- Manual 2: `nw dashboard snapshot --json | python3 -m json.tool` succeeded. Afterwards
+  `find $NW_DATA_DIR -newer /tmp/nw-mark` listed only `agentic/events.projector.json` and the
+  `agentic/` directory, which the live conductor follower's `events.sync` rewrites. The command
+  calls no `sync`, and the fixture read-only test, where no follower runs, finds no change at
+  all. `agentic/dashboard/` does not exist.
+
+### As shipped (2026-11-03)
+
+- **`rev` also ignores clock-derived keys without the `_age_s` suffix.** `dashboard_payload`
+  derives `age_s` (queue rows and backlog), `elapsed_s` (run activity), `held_s` (gate hold),
+  `waiting_s` and `waited_s` (journey) from "now". If they stayed in the hash, every rebuild would
+  change `rev`. `snapshot.NOW_RELATIVE_KEYS` drops them from the hash in the same way as
+  `*_age_s`, which is what Decision 2 intends. Two real builds 2 s apart on the live data dir gave
+  the same `rev`.
+- **The watermark is `(events.jsonl (size, mtime_ns), escalations.signature, lease mtime_ns,
+  campaigns_signature)`.** `snapshot.campaigns_signature(cfg)` gives sorted `(campaign_id,
+  file_name, size, mtime_ns)` for each campaign's `state.json` and `ledger.jsonl`, with
+  `(None, None)` for a missing file. The lease mtime stays in, so a live runner's heartbeat
+  causes a rebuild once per `refresh_s` while `rev` stays stable.
+- **Cache:** `SnapshotCache(cfg, clock, builder, *, refresh_s=None, max_stale_s=None,
+  watermark_fn=watermark)`. The keyword-only overrides exist for tests; `None` reads `settings`.
+  When a watermark check finds a move, it reuses that watermark for the rebuild instead of
+  statting twice.
+- **Text form:** the counts line uses `dashboard_payload`'s totals as follows: `queued` = `ready`,
+  `parked` = `attention` (human plus conductor), `backlog` = `backlog`. A human-owned park prints
+  as `park <label> <campaign> <reason>: <detail>`. A failed section prints
+  `<section>: error: <message>` and the command exits 0. A failed build exits 1.
+- **Test files:** the escalation signature tests went into the existing
+  `tests/test_agentic_escalations.py`, because there is no `tests/test_escalations.py`. The CLI
+  and read-only tests run the venv's `nw` entry point (`<venv>/bin/nw`, which is what `uv run nw`
+  executes) as a real subprocess, so a nested `uv run` cannot sync or lock inside the gate
+  sandbox.
+- **TUI tests:** `tests/test_tui_escalations_model.py` and `tests/test_tui_escalations_tab.py`
+  called `AM.escalations_signature`. They now call `ESC.signature`, and their assertions are
+  unchanged. The rename forces this edit, because the AC also requires that the TUI module no
+  longer defines the old name. `tui/mailbox_tab.py` calls `ESC.signature`.
+
 ## Rollout / migration
 
 1. Land the `nightwright.agentic.dashboard` package (`__init__`, `snapshot`), `cli_dashboard`,
@@ -379,12 +437,12 @@ server serializes it once per `rev`).
 
 ## Definition of done
 
-- [ ] Acceptance criteria all met.
-- [ ] Test plan executed; the new tests and the affected tests pass; manual steps 1 and 2
+- [x] Acceptance criteria all met.
+- [x] Test plan executed; the new tests and the affected tests pass; manual steps 1 and 2
       performed and noted.
-- [ ] No regressions (TUI escalation, escalations and `dashboard_payload` tests green).
-- [ ] Spec body updated to match what shipped.
-- [ ] `docs/LEDGER.md` regenerated; `python3 tools/spec_lint.py` exits 0.
+- [x] No regressions (TUI escalation, escalations and `dashboard_payload` tests green).
+- [x] Spec body updated to match what shipped.
+- [x] `docs/LEDGER.md` regenerated; `python3 tools/spec_lint.py` exits 0.
 
 ## Open questions
 

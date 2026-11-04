@@ -1374,3 +1374,24 @@ def test_waiver_resolved_ac_keeps_only_the_exact_ac(tmp_path, monkeypatch):
     _esc(cfg, question="attest?")         # a later escalation sees ESC-0001's waiver applied
     again = ESC.plan_answer(cfg, "ESC-0002", attest=[f"{RV}#ac1"], reason="r")
     assert again["override"]["attest"] == [long_]
+
+
+# ---- SPEC-0401: the stat-only signature lives here ---------------------------------------
+
+def test_signature_is_sorted_stat_tuples_and_moves_on_a_write(tmp_path):
+    cfg = _cfg(tmp_path)
+    assert ESC.signature(cfg) == ()
+    _esc(cfg, cid=None, question="first")
+    _esc(cfg, cid=None, question="second")
+    d = ESC.escalations_dir(cfg)
+    want = tuple(sorted((p.name, p.stat().st_size, p.stat().st_mtime_ns)
+                        for p in d.glob("ESC-*.json")))
+    s1 = ESC.signature(cfg)
+    assert s1 == want and [n for n, *_ in s1] == ["ESC-0001.json", "ESC-0002.json"]
+    ESC.withdraw(cfg, "ESC-0001", "r", "human")
+    assert ESC.signature(cfg) != s1
+
+
+def test_the_tui_no_longer_defines_its_own_signature():
+    from nightwright.tui import agentic_model as AM
+    assert not hasattr(AM, "escalations_signature")

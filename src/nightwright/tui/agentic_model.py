@@ -1021,20 +1021,6 @@ def load_escalations(cfg) -> list[EscRow]:
             for r in recs if r.get("id")]
 
 
-def escalations_signature(cfg) -> tuple:
-    """Sorted (name, size, mtime_ns) of the record files; `stat()` calls only."""
-    d = ESC.escalations_dir(cfg)
-    out = []
-    if d.is_dir():
-        for p in d.glob("ESC-*.json"):
-            try:
-                st = p.stat()
-            except OSError:
-                continue
-            out.append((p.name, st.st_size, st.st_mtime_ns))
-    return tuple(sorted(out))
-
-
 def _esc_campaign_line(cfg, t: Text, rec) -> None:
     cid = rec.get("campaign")
     if not cid:

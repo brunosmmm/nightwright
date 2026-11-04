@@ -175,14 +175,14 @@ def test_the_escalation_mail_points_at_the_record(tmp_path):
 
 def test_the_signature_changes_on_a_write_and_the_snapshot_opens_on_escalations(tmp_path):
     cfg = cfg_(tmp_path)
-    s0 = AM.escalations_signature(cfg)
+    s0 = ESC.signature(cfg)
     assert s0 == () and AM.load_mailbox(cfg).inbox == "human"
     _esc(cfg, cid=None, question="loose")
-    s1 = AM.escalations_signature(cfg)
+    s1 = ESC.signature(cfg)
     assert s1 != s0 and s1[0][0] == "ESC-0001.json"
     snap = AM.load_mailbox(cfg)
     assert snap.inbox == "escalations" and snap.threads == [] and len(snap.escalations) == 1
     ESC.withdraw(cfg, "ESC-0001", "r", "human")
-    assert AM.escalations_signature(cfg) != s1
+    assert ESC.signature(cfg) != s1
     assert AM.load_mailbox(cfg).inbox == "human"                  # none open any more
     assert AM.load_mailbox(cfg, "conductor").inbox == "conductor"

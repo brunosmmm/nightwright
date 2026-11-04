@@ -239,7 +239,7 @@ def test_cancel_and_esc_at_each_step_write_nothing(tmp_path):
     cfg, ids = world(tmp_path, n=1)
 
     async def body(app, pilot):
-        before = AM.escalations_signature(cfg)
+        before = ESC.signature(cfg)
         for keys in (["c", "escape"],                               # at the choice
                      ["c", "enter", "escape"],                      # at the confirm
                      ["c", "enter", "j", "enter"],                  # cancel
@@ -251,7 +251,7 @@ def test_cancel_and_esc_at_each_step_write_nothing(tmp_path):
                      ["w", *"no", "enter", "j", "enter"]):
             await press(app, pilot, keys)
             await settle(app, pilot)
-            assert AM.escalations_signature(cfg) == before and len(app.screen_stack) == 1, keys
+            assert ESC.signature(cfg) == before and len(app.screen_stack) == 1, keys
         assert ESC.read(cfg, "ESC-0001")["status"] == "open" and not mv(app)._busy
         assert notes(app) == []
     drive_with(cfg, body)
@@ -335,12 +335,12 @@ def test_keys_on_a_record_that_is_not_open_notify_and_open_nothing(tmp_path, sta
     async def body(app, pilot):
         v = mv(app)
         await select_inbox(app, pilot, "escalations")
-        before = AM.escalations_signature(cfg)
+        before = ESC.signature(cfg)
         for key in "ctw":
             await press(app, pilot, [key])
             assert len(app.screen_stack) == 1
         assert notes(app) == [f"ESC-0001 is {status}"] * 3
-        assert AM.escalations_signature(cfg) == before and not v._busy
+        assert ESC.signature(cfg) == before and not v._busy
     drive_with(cfg, body)
 
 
@@ -375,7 +375,7 @@ def test_empty_text_answer_and_empty_withdraw_reason_are_refused(tmp_path):
     cfg, ids = world(tmp_path, n=1)
 
     async def body(app, pilot):
-        before = AM.escalations_signature(cfg)
+        before = ESC.signature(cfg)
         await press(app, pilot, ["t", "ctrl+s"])
         await settle(app, pilot)
         await press(app, pilot, ["t", " ", "ctrl+s"])
@@ -383,7 +383,7 @@ def test_empty_text_answer_and_empty_withdraw_reason_are_refused(tmp_path):
         await press(app, pilot, ["w", "enter"])
         await settle(app, pilot)
         assert notes(app) == ["empty answer", "empty answer", "empty reason"]
-        assert AM.escalations_signature(cfg) == before and not mv(app)._busy
+        assert ESC.signature(cfg) == before and not mv(app)._busy
         assert len(app.screen_stack) == 1
     drive_with(cfg, body)
 
