@@ -162,6 +162,9 @@ def test_server_record_roundtrip_and_liveness(fx, tmp_path):
     assert LC.record_live(rec)
     assert not LC.record_live({**rec, "ticks": (rec["ticks"] or 0) + 1})   # reused pid
     assert not LC.record_live({**rec, "pid": 999999})                      # dead pid
+    if LC.start_ticks(me) is not None:                                     # /proc readable
+        assert not LC.record_live({**rec, "ticks": None})
+        assert not LC.record_live({k: v for k, v in rec.items() if k != "ticks"})
     assert not LC.record_live(None) and not LC.record_live({"pid": "x"})
     LC.remove_server_record(cfg)
     assert LC.read_server_record(cfg) is None

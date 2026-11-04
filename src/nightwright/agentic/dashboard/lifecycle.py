@@ -48,11 +48,12 @@ def _pid_alive(pid) -> bool:
 def record_live(rec) -> bool:
     """True when `rec` names a running process that is the one that wrote it: `pid` alive and
     its `/proc` start ticks equal `ticks` (a crashed server's file, or a reused pid, reads as
-    not running). No `/proc` (or no recorded ticks): the pid check alone."""
+    not running). Without `/proc` the pid check alone; where `/proc` is readable a record
+    with no `ticks` is not live (it cannot prove the pid is still the server)."""
     if not isinstance(rec, dict) or not _pid_alive(rec.get("pid")):
         return False
     want, now = rec.get("ticks"), start_ticks(rec["pid"])
-    return want is None or now is None or want == now
+    return now is None or want == now
 
 
 def read_server_record(cfg) -> dict | None:

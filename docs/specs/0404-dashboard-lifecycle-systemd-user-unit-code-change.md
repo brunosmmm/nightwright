@@ -297,6 +297,10 @@ fixed sleep before a positive assertion.
   with the tailnet-slice sibling of SPEC-0414: that spec's `serve` path should raise a distinct
   `TailnetMissing` mapped to exit 3 before the socket opens and before `server.json`, and carry
   the test cases of this spec's `test_server_exits_3_without_tailnet_address`. AC 3 stays unticked.
+- **Loop 2:** AC 3 is still blocked on the tailnet slice; a campaign note (#107) asks the human or
+  spec-writer to move AC 3 / Decision 4 to the SPEC-0414 tailnet-slice sibling or to hold this spec
+  until `own_tailnet_ips()` exists. `lifecycle.record_live` now reads a record with no `ticks` as not
+  running when `/proc` is readable (test added to `test_server_record_roundtrip_and_liveness`).
 - `lifecycle.py` holds the record and watcher logic as designed. `server.py` keeps
   `server_json_path` / `remove_server_json` as aliases of `lifecycle`'s and
   `write_server_json(cfg, server, *, code_watch, code_sha, bind)` builds the record through
