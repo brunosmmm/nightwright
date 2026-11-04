@@ -40,7 +40,6 @@ CAMPAIGN_COLUMNS = (
     ("gate_runs", "int"), ("gate_failures", "int"), ("gate_retries", "int"),
     ("triage_retries", "int"), ("parks", "int"), ("park_reasons", "json"),
     ("cost_usd", "float"), ("cost_by_persona", "json"), ("cost_cap_frac", "float"),
-    ("cost_by_worker", "json"),                                            # SPEC-0345
     ("time_in_state_s", "json"), ("review_score", "int"), ("must_fix_count", "int"),
     ("finding_count", "int"), ("waived_count", "int"),
     ("close_mode", "str"), ("merged_sha", "str"), ("signals", "json"),
@@ -52,6 +51,7 @@ CAMPAIGN_COLUMNS = (
     ("blocking_per_reviewer_run", "float"), ("first_review_must_fix", "int"),
     ("first_review_major", "int"), ("close_s", "int"), ("task_active_s", "int"),
     ("nw_sha", "str"), ("profile_sha256", "str"),                          # SPEC-0397
+    ("cost_by_worker", "json"),                                            # SPEC-0345
 )
 RUN_COLUMNS = (
     ("campaign", "str"), ("spec_id", "str"), ("profile", "str"), ("size", "str"), ("tone", "str"),

@@ -161,13 +161,13 @@ def test_columns_and_key_order(cfg):
         "loop_max", "cap_usd", "cap_raises", "models", "ac_count", "spec_lines", "loops",
         "loop_resets", "runs", "runs_by_persona", "gate_runs", "gate_failures", "gate_retries",
         "triage_retries", "parks", "park_reasons", "cost_usd", "cost_by_persona",
-        "cost_cap_frac", "cost_by_worker", "time_in_state_s", "review_score", "must_fix_count", "finding_count",
+        "cost_cap_frac", "time_in_state_s", "review_score", "must_fix_count", "finding_count",
         "waived_count", "close_mode", "merged_sha", "signals", "conductor_usd",
         "cost_with_conductor_usd", "rebase_regenerated", "resolver_dispatches",
         "rebase_resolved", "resolver_overcap_usd",
         "reviewer_runs", "reviewer_findings", "reviewer_blocking", "findings_per_reviewer_run",
         "blocking_per_reviewer_run", "first_review_must_fix", "first_review_major", "close_s",
-        "task_active_s", "nw_sha", "profile_sha256"]
+        "task_active_s", "nw_sha", "profile_sha256", "cost_by_worker"]
     assert [n for n, _ in CE.RUN_COLUMNS] == [
         "campaign", "spec_id", "profile", "size", "tone", "run_id", "persona", "model", "effort",
         "max_budget_usd", "timeout_s", "started_at", "duration_s", "cost_usd", "charged_usd",
@@ -199,7 +199,6 @@ def test_column_types_pinned():
         ("gate_runs", "int"), ("gate_failures", "int"), ("gate_retries", "int"),
         ("triage_retries", "int"), ("parks", "int"), ("park_reasons", "json"),
         ("cost_usd", "float"), ("cost_by_persona", "json"), ("cost_cap_frac", "float"),
-        ("cost_by_worker", "json"),
         ("time_in_state_s", "json"), ("review_score", "int"), ("must_fix_count", "int"),
         ("finding_count", "int"), ("waived_count", "int"),
         ("close_mode", "str"), ("merged_sha", "str"), ("signals", "json"),
@@ -209,8 +208,9 @@ def test_column_types_pinned():
         ("reviewer_runs", "int"), ("reviewer_findings", "int"), ("reviewer_blocking", "int"),
         ("findings_per_reviewer_run", "float"), ("blocking_per_reviewer_run", "float"),
         ("first_review_must_fix", "int"), ("first_review_major", "int"), ("close_s", "int"),
-        ("task_active_s", "int"), ("nw_sha", "str"), ("profile_sha256", "str"))
-    assert len(CE.CAMPAIGN_COLUMNS) == 59 and CE.CAMPAIGN_COLUMNS[47][0] == "resolver_overcap_usd"
+        ("task_active_s", "int"), ("nw_sha", "str"), ("profile_sha256", "str"),
+        ("cost_by_worker", "json"))
+    assert len(CE.CAMPAIGN_COLUMNS) == 60 and CE.CAMPAIGN_COLUMNS[47][0] == "resolver_overcap_usd"
     assert CE.EXPORT_SCHEMA == "nw.campaign.export.v1"
     assert CE.RUN_COLUMNS == (
         ("campaign", "str"), ("spec_id", "str"), ("profile", "str"), ("size", "str"),
@@ -842,10 +842,10 @@ def test_failed_write_cleanup_cannot_mask_the_error(cfg, invoke, tmp_path, monke
 
 def test_export_conductor_columns_appended(cfg, tmp_path):
     """SPEC-0299: two columns are the conductor's share and the total with it (SPEC-0303
-    appended four more after them, SPEC-0396 nine more, SPEC-0397 two more)."""
+    appended four more after them, SPEC-0396 nine more, SPEC-0397 two more, SPEC-0345 one more)."""
     from nightwright.agentic import conductor_cost as CC
     names = [n for n, _ in CE.CAMPAIGN_COLUMNS]
-    assert names[-17:-15] == ["conductor_usd", "cost_with_conductor_usd"]
+    assert names[-18:-16] == ["conductor_usd", "cost_with_conductor_usd"]
     make(cfg, "C1", [(10, "transition", tr("CLOSING", "MERGED"))], created=0,
          state="MERGED", cost={"total_usd": 2.5, "cap_usd": None, "by_persona": {}})
     make(cfg, "C2", [], created=600, cost={"total_usd": None, "cap_usd": None, "by_persona": {}})
@@ -870,7 +870,7 @@ def test_export_conductor_columns_appended(cfg, tmp_path):
         assert (r["conductor_usd"], r["cost_with_conductor_usd"]) == (None, None)
     transcript("claude-x")
     got = rows()
-    assert list(got["C1"])[-17:-15] == ["conductor_usd", "cost_with_conductor_usd"]
+    assert list(got["C1"])[-18:-16] == ["conductor_usd", "cost_with_conductor_usd"]
     assert got["C1"]["conductor_usd"] == 1.0 and got["C1"]["cost_with_conductor_usd"] == 3.5
     assert got["C2"]["conductor_usd"] == 0.0                     # no attributed turn
     assert got["C2"]["cost_usd"] is None
