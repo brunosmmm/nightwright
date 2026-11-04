@@ -1,9 +1,10 @@
 ---
 id: SPEC-0416
 title: "Dashboard tailnet bind gate: own-address resolution, --bind tailscale and TailnetMissing (exit 3)"
-status: proposed
+status: accepted
 owner: user
 created: 2026-11-04
+updated: 2026-11-04
 milestone: "M9: agentic workflow"
 kind: feature
 source_idea: IDEA-910
