@@ -70,12 +70,18 @@ Two things make this more than a one-liner:
    `agentic/store.py`: `sole_campaign_named(cfg, text) -> str | None`. It returns a campaign id
    only when the text contains exactly one distinct id that resolves to an existing campaign
    (`state.json` present); zero or two-or-more distinct matches return `None`.
-2. **Precedence.** An explicit argument always wins and is never second-guessed. Otherwise
-   `nw mailbox send` inherits the `campaign` of the message named by `--re` when that message
-   has one (an exact field, no text). Otherwise the text is scanned. For `nw queue decision`
-   the text scanned is the rationale and `--action`.
+2. **Precedence.** An explicit argument always wins and is never second-guessed. Otherwise an
+   exact field of a record the caller points at ranks above any text:
+   - `nw mailbox send` inherits the `campaign` of the message named by `--re` when that
+     message has one.
+   - `nw queue decision` uses the `campaign` of the queue event named by `--event N` when that
+     event has one.
+
+   Only when neither applies is the text scanned. For `nw queue decision` the text scanned is
+   the rationale and `--action`. Because the event's campaign ranks above text, a rationale
+   that mentions a different campaign never overrides the event.
 3. **Provenance of the stamp.** Inferred stamps add `campaign_from` to the record
-   (`"text"` or `"re"`); explicit and absent stamps carry no `campaign_from` key. Consumers
+   (`"text"`, `"re"` or `"event"`); explicit and absent stamps carry no `campaign_from` key. Consumers
    treat a missing key as "explicit or none". This is an additive field; the schemas stay
    `nw.conductor.decision.v1` and `nw.message.v1`.
 4. **Opt-out.** Both commands gain `--no-campaign`, which skips inference (an explicit
@@ -103,18 +109,26 @@ Two things make this more than a one-liner:
 
 **`nw queue decision`** (`cli_conductor.py` `queue_decision`)
 - With two words the first is the explicit campaign (unchanged). With one word the existing
-  "campaign id alone" guard stays first. If no campaign is set and `--no-campaign` is not given,
-  `campaign = sole_campaign_named(cfg, rationale + " " + (action or ""))`, and the record gets
-  `campaign_from: "text"`.
+  "campaign id alone" guard stays first. If no campaign is set and `--no-campaign` is not given:
+  1. when `--event N` is given and queue event N (the event `decisions.record` already
+     validates as `event_id`) has a `campaign`, use it with `campaign_from: "event"`; an event
+     with no `campaign`, or one that does not exist (the existing `event_id` validation applies
+     unchanged), falls through to the text;
+  2. else `campaign = sole_campaign_named(cfg, rationale + " " + (action or ""))` with
+     `campaign_from: "text"`.
 - `decisions.record` gains an optional `campaign_from=None` keyword that is written into the
   record only when set. It is never accepted from a caller that also passes no campaign.
-- Output: `decision #N kind (rule) on CID` plus ` (campaign inferred from text)` when inferred.
+- Output: `decision #N kind (rule) on CID` plus ` (campaign inferred from text)` or ` (campaign inferred from event)` when inferred.
 
 **`nw mailbox send`** (`cli_mailbox.py` `mailbox_send`)
-- New flag `--no-campaign`. When `--campaign` is absent and the flag is off: if `--re` names a
-  message in the recipient's inbox (`mailbox.read_inbox`/thread lookup) whose `campaign` is set,
-  use it with `campaign_from: "re"`; else `sole_campaign_named(cfg, text)` with
-  `campaign_from: "text"`.
+- New flag `--no-campaign`. When `--campaign` is absent and the flag is off: if `--re` names an
+  existing message (looked up across all inboxes, as `mailbox.thread` does via
+  `_all_messages`; the message id `<addr>:<seq>` names its inbox) whose `campaign` is set, use
+  it with `campaign_from: "re"`. The replied-to message is normally in the *sender's* inbox
+  (e.g. a message to `conductor` answered with `--to steward:P --re conductor:5`), so the
+  recipient's inbox must not be the only place searched. An `--re` that names no existing
+  message is not an error (today `send` does not validate it); inference falls through to
+  `sole_campaign_named(cfg, text)` with `campaign_from: "text"`.
 - `mailbox.send` gains an optional `campaign_from=None` keyword written into the envelope only
   when set. The `message` event data for conductor-bound mail is unchanged apart from the
   event's `campaign`/`spec_id`/`project` (already derived from `campaign`).
@@ -160,8 +174,15 @@ except that they now gain a stamp when the text names exactly one existing campa
 - [ ] `nw mailbox send` with no `--campaign` and text naming exactly one existing campaign
   stores `campaign=<cid>` and `campaign_from: "text"`; with `--campaign` it stores the given
   value and no `campaign_from`.
+- [ ] `nw queue decision --event N` without CAMPAIGN, where queue event N has campaign A,
+  stores `campaign=A` and `campaign_from: "event"`, even when the rationale names a different
+  existing campaign B (no ledger note is written to B); an explicit CAMPAIGN still wins, and an
+  event with no `campaign` falls through to text inference.
 - [ ] `nw mailbox send --re <id>` where the replied-to message has a campaign and the text names
-  none stores that campaign with `campaign_from: "re"`; an explicit `--campaign` still wins.
+  none stores that campaign with `campaign_from: "re"`, including when the replied-to message
+  sits in the sender's inbox rather than the recipient's (reply `--to steward:P --re
+  conductor:N` to a message that was sent to `conductor`); an explicit `--campaign` still wins,
+  and an `--re` naming no existing message is not an error and falls through to text.
 - [ ] `--no-campaign` on either command suppresses inference and stores `campaign: null`;
   combining it with an explicit campaign is a usage error with nothing written.
 - [ ] A stamped conductor-bound message's mirrored `message` queue event carries the stamped
@@ -183,10 +204,15 @@ except that they now gain a stamp when the text names exactly one existing campa
   - `tests/test_agentic_decisions.py` (extend): `record(..., campaign_from="text")` writes the
     key only when a campaign is set; CLI via `CliRunner` for `nw queue decision` covering the
     explicit, inferred, ambiguous, none, `--action`-only and `--no-campaign` cases against a
-    tmp data dir; asserts the ledger `note`, `spec_id`, `campaign_from`, and that
+    tmp data dir, plus `--event N` cases: event N has campaign A and the rationale names only B
+    (stores A, `campaign_from: "event"`, no note on B); event with no campaign and rationale
+    naming one campaign (falls through to text); explicit CAMPAIGN over `--event`; asserts the ledger `note`, `spec_id`, `campaign_from`, and that
     `park_coverage` covers a park by an inferred decision.
   - `tests/test_agentic_mailbox.py` (extend): `send(..., campaign_from=…)` envelope shape; CLI
-    cases for explicit, text-inferred, `--re`-inherited, explicit-over-`--re`, ambiguous,
+    cases for explicit, text-inferred, `--re`-inherited (a message sent to `conductor`
+    answered with `--to steward:P --re conductor:N`, i.e. the replied-to message is in the
+    sender's inbox; plus an `--re` naming no existing message falling through to text),
+    explicit-over-`--re`, ambiguous,
     `--no-campaign`, the usage-error combination, and the mirrored `message` event's campaign.
   - Append-only check in the same files: record the file bytes before a stamped write and
     assert the prefix is unchanged.
@@ -224,6 +250,6 @@ except that they now gain a stamp when the text names exactly one existing campa
 ## Open questions
 
 None. Decided while writing: inference lives only in the two CLI entry points; ambiguity yields
-no stamp; inferred stamps carry `campaign_from`; `--re` inheritance is exact-field and ranks
-above text; an inferred decision has the same ledger-note and park-coverage effect as an
+no stamp; inferred stamps carry `campaign_from`; `--re` (mail) and `--event` (decisions)
+inheritance are exact-field and rank above text, with `--re` looked up across all inboxes; an inferred decision has the same ledger-note and park-coverage effect as an
 explicit one.
