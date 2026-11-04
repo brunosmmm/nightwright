@@ -272,12 +272,34 @@ def _run_sampled(tmp_path, monkeypatch, ttl, step_s):
     return cfg, a, samples, beaters, ticks
 
 
+BEAT_THREAD = "nw-lease-heartbeat"
+BEAT_SLACK_S = 1.0              # spare time on top of the stall budget for the later beats
+
+
+def _spy_beat_thread(monkeypatch, stall_first_s=0.0):
+    """Wrap Lease.heartbeat, recording (and, for the first one, stalling) only the calls made on
+    the beat thread: `Q.run` also beats on the main thread after every tick, and those must
+    neither take the stall nor count as the thread's beats."""
+    calls, real = [], L.Lease.heartbeat
+
+    def spy(self, now=None):
+        if threading.current_thread().name == BEAT_THREAD:
+            calls.append(time.monotonic())
+            if len(calls) == 1 and stall_first_s:
+                time.sleep(stall_first_s)
+        return real(self, now)
+
+    monkeypatch.setattr(L.Lease, "heartbeat", spy)
+    return calls
+
+
 def test_heartbeat_spans_many_ticks(tmp_path, monkeypatch):
     # ttl 20 -> a 5 s heartbeat interval (max(1, ttl/4)); a lease is only stale once a beat lags by
     # 20 s, >= 10 x LOAD_STALL_S. The step spans 3 beats even when each one lags by LOAD_STALL_S, so
     # the acquire stamp and two beats are always three distinct `heartbeat_at` values.
     ttl = 20
     step_s = 3 * (ttl / 4 + LOAD_STALL_S)
+    beat_calls = _spy_beat_thread(monkeypatch)
     cfg, a, samples, beaters, ticks = _run_sampled(tmp_path, monkeypatch, ttl, step_s)
     assert _state(cfg, a) == "MERGED"
     assert ticks >= 5                                         # the run spanned many ticks
@@ -285,28 +307,23 @@ def test_heartbeat_spans_many_ticks(tmp_path, monkeypatch):
     assert not any(s["stale"] for s in samples), [s["heartbeat_age_s"] for s in samples]
     assert len({s["heartbeat_at"] for s in samples}) >= 3, [s["heartbeat_at"] for s in samples]
     assert max(s["heartbeat_age_s"] for s in samples) < ttl
+    assert len(beat_calls) >= 2, beat_calls                   # the beat thread itself beat, repeatedly
     assert len(beaters) == 1                                  # one thread for the whole loop
-    assert not any(t.name == "nw-lease-heartbeat" for t in threading.enumerate())
+    assert not any(t.name == BEAT_THREAD for t in threading.enumerate())
 
 
 def test_heartbeat_survives_a_stalled_beat(tmp_path, monkeypatch):
-    # ttl 8 -> a 2 s interval; the first beat takes ttl/2 = 4 s (twice LOAD_STALL_S), so the lease
-    # is 6 s old at worst, still 2 s (LOAD_STALL_S) short of stale. The step outlasts the stalled
-    # beat plus a later one, so a beat thread that died after the stall fails the later-beat check.
+    # ttl 8 -> a 2 s interval. The beat thread's first beat takes LOAD_STALL_S (a call at 2 s
+    # lands at 4 s); the lease stays well inside its 8 s ttl. The step covers 3 beat-thread calls
+    # even when each beat (not only the stalled one) lags by LOAD_STALL_S, plus BEAT_SLACK_S, so a
+    # beat thread that stopped after the stall fails the call-count check.
     ttl = 8
-    stall_s = ttl / 2
-    calls, real = [], L.Lease.heartbeat
-
-    def slow_first(self, now=None):
-        calls.append(time.monotonic())
-        if len(calls) == 1:
-            time.sleep(stall_s)
-        return real(self, now)
-
-    monkeypatch.setattr(L.Lease, "heartbeat", slow_first)
-    cfg, a, samples, beaters, _ = _run_sampled(tmp_path, monkeypatch, ttl, ttl / 4 + stall_s + ttl / 4 + 3)
+    interval = ttl / 4
+    beat_calls = _spy_beat_thread(monkeypatch, stall_first_s=LOAD_STALL_S)
+    step_s = 3 * (interval + LOAD_STALL_S) + LOAD_STALL_S + BEAT_SLACK_S
+    cfg, a, samples, beaters, _ = _run_sampled(tmp_path, monkeypatch, ttl, step_s)
     assert _state(cfg, a) == "MERGED"
-    assert len(calls) >= 3, calls                             # the stalled beat, then later ones
+    assert len(beat_calls) >= 3, beat_calls                   # the stalled beat, then two more
     assert not any(s["stale"] for s in samples), [s["heartbeat_age_s"] for s in samples]
     assert len(beaters) == 1
 

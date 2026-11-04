@@ -231,6 +231,7 @@ real time.
 - `uv run pytest -q -p no:cacheprovider -n 16 tests/test_remote_gates.py tests/test_agentic_nonblocking.py tests/test_worker_jobs.py tests/test_test_waits.py`: 222 passed (once; the 10x xdist repeat of the review's suggestion was not run).
 - Loaded-box loop (16 `while :; do :; done` burners = nproc x 2) over the six tests (the three named plus the three companions), 10 runs: 10/10 passed. Same set pinned with `taskset -c 0` under the same burners, 10 runs: 10/10 passed. These runs pass before the change too (the flake was never reproduced on this box), so they are a regression guard; the load-tolerance proof is the three injected-stall companions.
 - `python3 tools/spec_lint.py` passes; the ledger was regenerated with `--write-ledger`. The full suite was left to gating.
+- Review round fix (loop 1): `tests/test_agentic_nonblocking.py` + `tests/test_worker_jobs.py::test_a_long_silent_gate_is_never_cancelled_while_attached` and `tests/test_test_waits.py`: 14 passed; with `_beat` temporarily returning after one beat, both heartbeat tests failed (reverted).
 
 ### As shipped (2026-11-04)
 
@@ -252,12 +253,15 @@ real time.
 - **Heartbeat:** `LOAD_STALL_S = 2.0`, `SAMPLE_S = 0.2`; `lease_ttl_s = 20`, step
   `3 * (ttl/4 + LOAD_STALL_S)` = 21 s; asserts `ticks >= 5`, `len(samples) >= 5`, at least 3
   distinct `heartbeat_at`, never stale, one beat thread. Both heartbeat tests share
-  `_run_sampled`. The companion deviates from the Design's example numbers: `lease_ttl_s = 8`
-  (interval 2 s) and the first `Lease.heartbeat` call delayed by ttl/2 = 4 s, so the lease is at
-  worst 6 s old, 2 s (`LOAD_STALL_S`) short of stale (the Design's ttl 4 left a 1 s margin, thinner than
-  the stall budget it is meant to survive). It asserts at least 3 beat calls (the stalled one plus
-  later ones, so a beat thread dying after the stall fails), never stale and one thread.
-- **Job lease:** `ATTACH_LEASE_S = 6` (every 2 s), 7 s gate, `LOAD_SLACK_S = 1.0`; gap bounds as
+  `_run_sampled`. Both tests spy `Lease.heartbeat`
+  (`_spy_beat_thread`) counting only calls on the `nw-lease-heartbeat` thread, because `Q.run`
+  also beats on the main thread after every tick. The companion uses `lease_ttl_s = 8` (interval
+  2 s) and stalls the beat thread's first beat by `LOAD_STALL_S`; the step is
+  `3 * (interval + LOAD_STALL_S) + LOAD_STALL_S + BEAT_SLACK_S` (1 s), and it asserts at least 3
+  beat-thread calls (a beat thread dying after the stall fails; checked by making `_beat` return
+  after its first beat, which fails both heartbeat tests), never stale and one thread.
+  `test_heartbeat_spans_many_ticks` also asserts at least 2 beat-thread calls.
+- **Job lease:** `ATTACH_LEASE_S = 6` (every 2 s), 7 s gate (`ATTACH_GATE_S = 7`), `LOAD_SLACK_S = 1.0`; gap bounds as
   designed. The companion `_StalledClock(_Clock)` makes the second follow `sleep` advance 3 s
   and asserts the next `_renew` happens at that tick's fake-clock end, inside the 6 s term.
 

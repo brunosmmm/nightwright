@@ -272,6 +272,7 @@ def test_a_job_whose_lease_is_not_renewed_cancels_itself(src, tmp_path, wenv):
 # 2 s lease left 2 s: a scheduling stall of a few seconds on a loaded box cannot lapse it.
 ATTACH_LEASE_S = 6
 ATTACH_EVERY_S = ATTACH_LEASE_S / 3
+ATTACH_GATE_S = 7               # a silent gate spanning 3+ renewals (>= 3 x ATTACH_EVERY_S)
 # Slack on the upper bound of the gap between two lease rewrites. `not lapsed` is the hard
 # guarantee; the gap bound only catches a renewal that never throttles back up.
 LOAD_SLACK_S = 1.0
@@ -279,7 +280,7 @@ LOAD_SLACK_S = 1.0
 
 def test_a_long_silent_gate_is_never_cancelled_while_attached(src, tmp_path, wenv):
     env = _conf(wenv, job_lease_s=ATTACH_LEASE_S)
-    h, data = _bundle_job(src, tmp_path, [_gate("long", "sleep 7; echo ok")])
+    h, data = _bundle_job(src, tmp_path, [_gate("long", f"sleep {ATTACH_GATE_S}; echo ok")])
     lease = _job_dir(env, h["job_id"]) / "lease.json"
     changes, lapsed, stop = [], [], threading.Event()
 
