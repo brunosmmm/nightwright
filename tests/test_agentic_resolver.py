@@ -1610,9 +1610,12 @@ def test_a_backoff_begun_after_the_gate_holds_the_resolver_at_its_start(tmp_path
     monkeypatch.setattr(PG, "Gate", StaleGate)
     PG._write_json(PG.rate_limit_path(w.cfg),
                    {"until": PG._iso(PG._now_epoch(None) + 900), "backoff_s": 60})
+    cost0 = w.st()["cost"]["total_usd"]
     w.drive(lambda s: w.run_ids())
     end, = [e for e in w.ledger("run.end") if e["persona"] == "conflict_resolver"]
     assert end["interrupted"] is True
+    assert end["charged_usd"] == 0.0 and end["cost_estimated"] is False    # never started
+    assert w.st()["cost"]["total_usd"] == cost0
     st = w.st()
     assert st["state"] == "CLOSING" and not (st["closing"] or {}).get("resolve_attempts")
     assert st["closing"]["resolve"] is not None

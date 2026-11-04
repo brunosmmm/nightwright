@@ -374,12 +374,14 @@ def _error_result(req: RunRequest, text: str, started_at: str, duration: float) 
         started_at)
 
 
-def _synthetic(req: RunRequest, text: str) -> RunResult:
-    """An interrupted run that never produced output: the state stays, the step respawns."""
+def _synthetic(req: RunRequest, text: str, *, cost_usd: float | None = None) -> RunResult:
+    """An interrupted run that never produced output: the state stays, the step respawns.
+    `cost_usd=0.0` marks a run known never to have started (SPEC-0345: held by the rate-limit
+    backoff), so it is not charged its budget as an estimate."""
     started_at = (RP.read_json(req.run_dir / "request.json") or {}).get("started_at") or _now_iso()
     return write_run_record(req, RunResult(
         exit_code=-1, timed_out=False, interrupted=True, duration_s=0.0, is_error=True,
-        cost_usd=None, result_text=text, raw_path=req.run_dir / "result.json"), started_at)
+        cost_usd=cost_usd, result_text=text, raw_path=req.run_dir / "result.json"), started_at)
 
 
 class ClaudeRunner:

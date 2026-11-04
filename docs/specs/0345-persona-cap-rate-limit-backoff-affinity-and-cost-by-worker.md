@@ -428,6 +428,29 @@ back to local. Stuck detectors skip campaigns held by the gate. Cost attribution
   `tests/test_tui_*.py` and `tests/test_agentic_dashboard*.py`: 929 passed, 2 skipped. Full suite
   left to gating.
 
+### Test record (2026-11-04, review loop 10)
+
+- Steward-scoped pass: only the review's major (held runs charged their budget) and the
+  optional spec-review skip were fixed.
+- `tests/test_remote_persona_limits.py`: `_apply_held` applies a held step's result through
+  `Q._apply` and asserts that `state.cost.total_usd`, the persona's `by_persona` entry and the
+  `local` entry of `cost_by_worker` do not change, and that the run's `run.end` has
+  `charged_usd: 0.0` with `cost_estimated: false`. It is used by
+  `test_a_backoff_begun_after_the_gate_holds_the_dispatch` (`HeldRunner`, with and without a
+  worker), `test_a_job_lost_during_the_backoff_is_not_rerun_locally` (`_local`) and
+  `test_a_remote_429_whose_write_back_failed_starts_the_backoff_and_holds_the_rerun`
+  (`_rerun_locally`). With the source changes reverted, these tests fail (4 failed).
+- `test_a_backoff_begun_after_the_gate_holds_the_spec_writer_at_its_start` and
+  `test_a_backoff_begun_after_the_gate_holds_the_resolver_at_its_start` (`_gated_runner`) now
+  assert `charged_usd: 0.0` and an unchanged `total_usd`. With `HeldRunner` reverted, both
+  fail.
+- New: `test_an_ungated_spec_review_run_neither_starts_nor_resets_the_backoff`.
+- `uv run pytest -q -n 4 tests/test_remote_persona_limits.py`: 85 passed. `uv run pytest -q
+  -n 6` on the spec writer, resolver, remote personas and gates, pull workers (and their
+  security tests), runner, test-waits and affected-tests replay files: 497 passed.
+  `python3 tools/spec_lint.py`: exit 0.
+- Full suite left to gating.
+
 ### As shipped (2026-11-02)
 
 - **Waiver (2026-11-03).** The real-persona-campaign-on-box and real-429 manual steps were
@@ -566,6 +589,14 @@ back to local. Stuck detectors skip campaigns held by the gate. Cost attribution
   clears only a `probe` failure; a `claude` failure stays until the next `nw workers check`
   passes, since the automatic probe never checks claude. `set_affinity` returns False and
   leaves the snapshot unchanged when the stored write fails.
+- **Review loop 10.** A run held by the backoff never started, so it costs nothing.
+  `runner._synthetic` takes `cost_usd`, and `HeldRunner.run`, the backoff branch of
+  `remote_personas._local` and the backoff branch of `queue._rerun_locally` pass `0.0`. The
+  run is then not charged its budget as an estimate: `total_usd`, `by_persona`, `charged_usd`
+  and `cost_by_worker` do not change, and a held run cannot cause a `cost_cap` park. The other
+  `_synthetic` callers (stale or orphaned runs) still report an unknown cost.
+  `queue._note_rate_limit` skips `UNGATED_PERSONAS` (spec-review) runs, so they neither start
+  nor reset the backoff.
 - **Test support.** A `FakeRunner` script entry may carry
   `api_error: {status, message}`, which yields an API-error result.
 

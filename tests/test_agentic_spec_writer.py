@@ -1151,9 +1151,12 @@ def test_a_backoff_begun_after_the_gate_holds_the_spec_writer_at_its_start(tmp_p
     monkeypatch.setattr(PG, "Gate", StaleGate)
     PG._write_json(PG.rate_limit_path(cfg),
                    {"until": PG._iso(PG._now_epoch(None) + 900), "backoff_s": 60})
+    cost0 = S.read_state(cfg, cid)["cost"]["total_usd"]
     Q.tick(cfg)
     end, = ledger(cfg, cid, "run.end")
     assert end["interrupted"] is True
+    assert end["charged_usd"] == 0.0 and end["cost_estimated"] is False    # never started
+    assert S.read_state(cfg, cid)["cost"]["total_usd"] == cost0
     assert S.read_state(cfg, cid)["state"] == "SPEC_WRITING"
     assert not (wtree(cfg, cid) / "docs/specs/0002-add-a-thing.md").exists()
     monkeypatch.setattr(PG, "Gate", real_gate)

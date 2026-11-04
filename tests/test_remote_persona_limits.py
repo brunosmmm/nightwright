@@ -1,5 +1,6 @@
 """SPEC-0345: persona cap, rate-limit backoff, campaign affinity and cost by worker. Offline:
 SPEC-0338's loopback workers (`remote_support.Remote`) and `FakeRunner`."""
+import copy
 import datetime as dt
 import json
 import os
@@ -236,6 +237,23 @@ def _persona_step(w, req, local):
                          Q.Step("implement", persona="implementer"), req.run_dir.name, req, 1.0)
 
 
+def _apply_held(w, local, res):
+    """Apply a held step's result as the tick does; assert the held run charged nothing."""
+    ctx = Q._Ctx(w.cfg, runner=local)
+    ctx._projects[w.state["project"]] = w.project
+    before = S.read_state(w.cfg, CID)
+    Q._apply(ctx, copy.deepcopy(before), res)
+    after = S.read_state(w.cfg, CID)
+    assert after["cost"]["total_usd"] == before["cost"]["total_usd"]
+    persona = res.step.persona
+    assert ((after["cost"].get("by_persona") or {}).get(persona, 0.0)
+            == (before["cost"].get("by_persona") or {}).get(persona, 0.0))
+    end, = [e for e in S.read_ledger(w.cfg, CID, types=["run.end"])
+            if e["run_id"] == res.run_id]
+    assert end["charged_usd"] == 0.0 and end["cost_estimated"] is False
+    assert PG.cost_by_worker(S.read_ledger(w.cfg, CID)).get("local", 0.0) == 0.0
+
+
 def test_a_job_lost_during_the_backoff_is_not_rerun_locally(tmp_path, monkeypatch):
     # another campaign's 429 started the backoff after this job was placed; the worker then
     # loses it: the run does not go local, it ends interrupted and the gate holds the step
@@ -252,6 +270,7 @@ def test_a_job_lost_during_the_backoff_is_not_rerun_locally(tmp_path, monkeypatc
     assert local.calls == []
     assert res.interrupted and res.run_result.interrupted and res.commit_sha is None
     assert RJ.read(w.cfg, RPS.job_id_for(CID, "001-implementer"))["state"] == "lost"
+    _apply_held(w, local, res)                      # SPEC-0345: a held run costs nothing
 
 
 def test_a_job_lost_with_no_backoff_still_runs_locally(tmp_path):
@@ -279,6 +298,7 @@ def test_a_remote_429_whose_write_back_failed_starts_the_backoff_and_holds_the_r
     assert res.commit_sha is None
     failed, = S.read_ledger(w.cfg, CID, types=["run.end"])
     assert failed["run_id"] == "001-implementer" and failed["writeback_failed"]
+    _apply_held(w, local, res)                      # the held re-run costs nothing
 
 
 def test_a_write_back_rerun_runs_locally_with_no_backoff(tmp_path, monkeypatch):
@@ -306,6 +326,7 @@ def test_a_backoff_begun_after_the_gate_holds_the_dispatch(tmp_path, workers):
     assert "backoff" in res.run_result.result_text
     assert RJ.read(w.cfg, RPS.job_id_for(CID, "001-implementer")) is None    # never submitted
     assert S.read_state(w.cfg, CID).get("remote_affinity") is None
+    _apply_held(w, local, res)                      # the held run costs nothing
     # the campaign's spec review is not gated
     st = S.read_state(w.cfg, CID)
     rr = RPS.dispatch(w.cfg, st, "spec_review", _req(w, "002-spec_reviewer",
@@ -736,6 +757,22 @@ def _ok(tmp_path):
 
 def _events(cfg):
     return [e for e in EV.read_since(cfg, 0) if e["type"] == "rate_limited"]
+
+
+def test_an_ungated_spec_review_run_neither_starts_nor_resets_the_backoff(tmp_path):
+    # spec-review is outside the backoff (Design, Scope): its 429 starts no episode and its
+    # success resets nothing; a gated persona's 429 still starts one
+    w = _world(tmp_path)
+    ctx = Q._Ctx(w.cfg, runner=None)
+    st = S.read_state(w.cfg, CID)
+    limited = _result(tmp_path, status=429, message="API Error: 429 rate limit")
+    Q._note_rate_limit(ctx, st, limited, None, "spec_reviewer")
+    assert PG.backoff_until(w.cfg) is None and _events(w.cfg) == []
+    Q._note_rate_limit(ctx, st, limited, None, "implementer")
+    assert PG.backoff_until(w.cfg) is not None and len(_events(w.cfg)) == 1
+    doc = PG.read_rate_limit(w.cfg)
+    Q._note_rate_limit(ctx, st, _ok(tmp_path), PG._now_epoch(None) + 10_000, "spec_reviewer")
+    assert PG.read_rate_limit(w.cfg) == doc
 
 
 @pytest.fixture

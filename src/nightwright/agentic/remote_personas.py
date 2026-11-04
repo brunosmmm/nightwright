@@ -359,7 +359,7 @@ class HeldRunner:
         if hooks is not None and not hooks.enter_collect():
             return R.DETACHED
         return R._synthetic(req, "the run was not started: the rate-limit backoff began after "
-                                 "the tick admitted it")
+                                 "the tick admitted it", cost_usd=0.0)
 
 
 def adopted_request(cfg, state: dict, rec: dict, run_dir):
@@ -453,7 +453,7 @@ def _local(rr: R.RemoteRunner, req, hooks):
         if hooks is not None and not hooks.enter_collect():
             return R.DETACHED
         return R._synthetic(req, "the run went local during the rate-limit backoff; the step "
-                                 "runs again when the backoff ends")
+                                 "runs again when the backoff ends", cost_usd=0.0)
     local = rr.local if rr.local is not None else R.select_runner(rr.cfg)
     if hooks is not None and getattr(local, "detachable", False):
         # an adopted remote run dir has no `proc.json`, so `_adopt` gave the hooks an adoption
