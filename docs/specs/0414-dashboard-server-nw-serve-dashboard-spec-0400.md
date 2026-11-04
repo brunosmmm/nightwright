@@ -396,6 +396,12 @@ no token gave `401`; `find <data_dir> -newer <marker>` listed nothing outside
 nothing on 8791. No `tailscale` was run (a recording stub on `PATH` stayed uncalled in the CLI
 test).
 
+Review loop 1 (tests only): added a direct `make_server` bind-gate test (six refused binds, rule
+word asserted, nothing listening, no `server.json`), rule words and the bare `::` spec in the CLI
+refusal test, a SIGINT shutdown case (exit 0, `server.json` mode 0600 then removed) and a grep
+for `serve --dashboard` in `docs/product/reference/index.md`; `uv run pytest -q
+tests/test_dashboard_server.py tests/test_dashboard_serve_cli.py` passed (53).
+
 ### As shipped
 
 Shipped to Design with these notes:

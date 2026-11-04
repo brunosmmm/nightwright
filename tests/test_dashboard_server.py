@@ -8,6 +8,7 @@ import pytest
 
 from fixtures.dashboard_data import ACTIVE, seed
 from test_dashboard_snapshot import check_schema, ledger_run_end
+from nightwright.agentic.dashboard import auth as A
 from nightwright.agentic.dashboard import server as DS
 from nightwright.agentic.dashboard import snapshot as SN
 
@@ -219,3 +220,22 @@ def test_idle_connection_is_closed_after_the_handler_timeout(tmp_path, monkeypat
         c.close()
     finally:
         s.close()
+
+
+@pytest.mark.parametrize("bind,word", [
+    ("0.0.0.0:0", "wildcard"), ("[::]:0", "wildcard"), ("192.168.1.20:0", "loopback"),
+    ("100.64.0.9:0", "loopback"), ("tailscale", "not an IP"), ("example.com:8791", "not an IP")])
+def test_make_server_runs_the_bind_gate_itself(tmp_path, bind, word):
+    """G2: a direct caller cannot skip the gate; nothing is bound or created."""
+    import socket
+    fx = seed(tmp_path)
+    busy = socket.socket().connect_ex(("127.0.0.1", 8791)) == 0     # pre-existing listener, if any
+    with pytest.raises(A.BindRefused, match=word):
+        DS.make_server(fx["cfg"], bind)
+    if not busy:
+        probe = socket.socket()
+        try:
+            assert probe.connect_ex(("127.0.0.1", 8791)) != 0
+        finally:
+            probe.close()
+    assert not (fx["data"] / "agentic/dashboard/server.json").exists()

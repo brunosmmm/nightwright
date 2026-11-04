@@ -88,19 +88,24 @@ def tls_files(tmp_path):
     return ["--tls-cert", str(cert), "--tls-key", str(key)]
 
 
-REFUSED = ["0.0.0.0:0", "[::]:0", "192.168.1.20:0", "100.64.0.9:0", "tailscale",
-           "example.com:8791"]
+REFUSED = {"0.0.0.0:0": "wildcard", "[::]:0": "wildcard", "::": "wildcard",
+           "192.168.1.20:0": "loopback", "100.64.0.9:0": "loopback", "tailscale": "not an IP",
+           "example.com:8791": "not an IP"}
 
 
-@pytest.mark.parametrize("bind", REFUSED)
+@pytest.mark.parametrize("bind,word", list(REFUSED.items()))
 @pytest.mark.parametrize("with_tls", [False, True])
-def test_refused_binds_exit_2_with_the_rule(fx, tmp_path, tls_files, bind, with_tls):
+def test_refused_binds_exit_2_with_the_rule(fx, tmp_path, tls_files, bind, word, with_tls):
+    busy = bind.endswith(":8791") and listening(8791)
     r = run_serve(fx, "--dashboard", "--bind", bind, *(tls_files if with_tls else []),
                   env=stub_env(fx, tmp_path))
     assert r.returncode == 2, r.stderr
     assert "refusing to bind" in r.stderr and "TLS is not supported" not in r.stderr
+    assert word in r.stderr
     assert not (dash(fx) / "server.json").exists()
     assert not (tmp_path / "tailscale.calls").exists()
+    if bind.endswith(":8791") and not busy:
+        assert not listening(8791)
 
 
 def test_loopback_with_tls_flags_is_refused_with_the_tls_message(fx, tls_files):
@@ -196,3 +201,22 @@ def test_stale_server_json_is_replaced_and_foreign_one_is_kept(fx):
         stop(proc)
     assert proc.returncode == 0
     assert json.loads(sj.read_text()) == {"pid": 1, "port": 2}
+
+
+def test_sigint_shuts_down_cleanly_and_server_json_is_0600(fx):
+    proc = start(fx, "--bind", "127.0.0.1:0")
+    sj = dash(fx) / "server.json"
+    try:
+        wait_server(fx, proc)
+        assert stat.S_IMODE(sj.stat().st_mode) == 0o600
+        proc.send_signal(signal.SIGINT)
+        proc.communicate(timeout=30)
+    finally:
+        stop(proc)
+    assert proc.returncode == 0
+    assert not sj.exists()
+
+
+def test_reference_docs_list_serve_dashboard():
+    root = Path(__file__).resolve().parent.parent
+    assert "serve --dashboard" in (root / "docs/product/reference/index.md").read_text()
