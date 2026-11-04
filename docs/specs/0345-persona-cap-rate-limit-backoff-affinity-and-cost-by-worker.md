@@ -409,6 +409,16 @@ back to local. Stuck detectors skip campaigns held by the gate. Cost attribution
   registry, bootstrap, drain, update (command and schedule) and disk-guard files: 459 passed.
 - Full suite left to gating.
 
+### Test record (2026-11-04, gate loop 3)
+
+- The gate failure `test_agentic_nonblocking.py::test_heartbeat_spans_many_ticks` (a stale
+  heartbeat sample with `lease_ttl_s: 2` under `-n 2` load) is a timing margin in the test;
+  this branch does not touch the lease or `_heartbeat_while`. Main had already fixed it
+  (b319caaf: ttl 8, a 7 s run, `max(age) < 8`). Main's `tests/test_agentic_nonblocking.py`
+  was copied here unchanged. `uv run pytest -q -n 2 tests/test_agentic_nonblocking.py
+  tests/test_tui_campaign_screen.py::test_park_runs_end_to_end_through_the_screen`: 8 passed.
+  Full suite left to gating.
+
 ### As shipped (2026-11-02)
 
 - **Waiver (2026-11-03).** The real-persona-campaign-on-box and real-429 manual steps were
