@@ -9,7 +9,7 @@ milestone: "M9: agentic workflow"
 kind: feature
 source_idea: IDEA-904
 tags: [agentic, dashboard, remote, web]
-depends_on: [SPEC-0401]
+depends_on: [SPEC-0401, SPEC-0414]
 ---
 
 ## Context

@@ -1,7 +1,9 @@
 """The dashboard HTTP server (SPEC-0414): `nw serve --dashboard`, loopback only, bearer-token
-auth, `GET /api/snapshot` from the shared `SnapshotCache`. Read-only: it writes only under
-`agentic/dashboard/` (`local.token`, `audit.jsonl`, `server.json`). stdlib only. Not imported by
-any queue-side module."""
+auth, the phone page (SPEC-0418: `GET /`, `/app.js`, `/app.css` via `assets.ROUTES`) and
+`GET /api/snapshot` from the shared `SnapshotCache`. The three static routes are the only
+unauthenticated ones (a browser cannot send a bearer on a navigation); they sit behind the
+`Host`/`Origin` check. Read-only: it writes only under `agentic/dashboard/` (`local.token`,
+`audit.jsonl`, `server.json`). stdlib only. Not imported by any queue-side module."""
 from __future__ import annotations
 
 import contextlib
@@ -16,6 +18,7 @@ from pathlib import Path
 from urllib.parse import urlsplit
 
 from .. import store
+from . import assets as AS
 from . import auth as A
 from . import audit as AU
 from . import dashboard_dir
@@ -151,6 +154,23 @@ class _Handler(http.server.BaseHTTPRequestHandler):
         why = A.check_host_origin(self.headers, self.server.hosts)
         if why:
             return self._refuse(403, why, "bad host or origin")
+        path = urlsplit(self.path).path
+        # http.server folds a leading `//` into `/`; the request as sent is not a route
+        sent = self.requestline.split(" ")[1:2]
+        try:
+            asset = None if sent and sent[0].startswith("//") else AS.read_asset(path)
+        except Exception as e:                  # noqa: BLE001 - a broken install must not kill us
+            return self._send(500, {"error": f"{type(e).__name__}: {e}"})
+        if asset is not None:                   # the phone page: public, no bearer (SPEC-0418)
+            if method != "GET":
+                return self._refuse(405, "method_not_allowed", "method not allowed",
+                                    headers=[("Allow", "GET")])
+            if n != 0:                          # audited here (unlike the snapshot's 413)
+                self.close_connection = True
+                return self._refuse(413, "body_on_get", "a GET takes no body")
+            body, ctype = asset
+            return self._send(200, raw=body, ctype=ctype,
+                              headers=[("Content-Security-Policy", AS.CSP)])
         why = self._token_ok()
         if why:
             return self._refuse(401, why, "unauthorized",
@@ -161,7 +181,6 @@ class _Handler(http.server.BaseHTTPRequestHandler):
         if n != 0:
             self.close_connection = True
             return self._send(413, {"error": "a GET takes no body"})
-        path = urlsplit(self.path).path
         if path != "/api/snapshot":
             return self._send(404, {"error": "not found"})
         try:

@@ -1,7 +1,7 @@
 ---
 id: SPEC-0418
 title: "Dashboard server serves the phone page: GET / /app.js /app.css through assets.ROUTES, bearer-exempt, behind Host/Origin"
-status: accepted
+status: done
 owner: user
 created: 2026-11-04
 updated: 2026-11-04
@@ -196,38 +196,38 @@ Frontmatter only: `depends_on: [SPEC-0401, SPEC-0414]` and `updated: 2026-11-04`
 
 ## Acceptance criteria
 
-- [ ] `GET /`, `/app.js`, `/app.css` (also with a query string such as `/app.js?v=1` or `/?x=1`),
+- [x] `GET /`, `/app.js`, `/app.css` (also with a query string such as `/app.js?v=1` or `/?x=1`),
       with a correct `Host` and no, a valid or a wrong `Authorization`, return `200` with a body
       byte-identical to `assets.read_asset(path)[0]`, the route's `Content-Type`,
       `Content-Security-Policy` equal to `assets.CSP`, `Cache-Control: no-cache`,
       `X-Content-Type-Options: nosniff`, a `Content-Length` equal to the body length and a `Date`;
       the headers equal those the SPEC-0413 page stub sends.
-- [ ] `GET /api/snapshot` without a token is still `401` (`no_token`) with
+- [x] `GET /api/snapshot` without a token is still `401` (`no_token`) with
       `WWW-Authenticate: Bearer`, with a wrong token `401` (`bad_token`), and with the token
       `200` (with `ETag`) and `304` on a matching `If-None-Match`: unchanged.
-- [ ] Any other path without a token (`/nope`, `/index.html`, `/static/app.js`, `/../app.js`,
+- [x] Any other path without a token (`/nope`, `/index.html`, `/static/app.js`, `/../app.js`,
       `//app.js`, `/%61pp.js`, `/app.js/`) is `401`; with the token it is `404
       {"error": "not found"}` and no asset bytes.
-- [ ] A static request with a bad, missing or non-allowed `Host`, or a bad/`null` `Origin`, is
+- [x] A static request with a bad, missing or non-allowed `Host`, or a bad/`null` `Origin`, is
       `403` with a JSON error body that contains none of the asset's bytes and exactly one
       `bad_host` / `bad_origin` audit line; a `localhost:<port>` `Host` is accepted; and with
       `A.check_host_origin` patched to refuse, `GET /` is `403` (the check precedes the static
       branch).
-- [ ] `POST`, `PUT`, `DELETE`, `PATCH`, `OPTIONS` and `HEAD` on `/`, with no token, are `405`
+- [x] `POST`, `PUT`, `DELETE`, `PATCH`, `OPTIONS` and `HEAD` on `/`, with no token, are `405`
       with `Allow: GET`, an empty or JSON-only body (no asset bytes) and exactly one
       `method_not_allowed` audit line; a `GET /` with a request body is `413` with exactly one
       audit line; a `200` static response adds no audit line.
-- [ ] If `assets.read_asset` raises for a route path, the response is `500` with a JSON
+- [x] If `assets.read_asset` raises for a route path, the response is `500` with a JSON
       `{"error": …}` body, and with that failure still in place `GET /api/snapshot` with the
       token is `200`.
-- [ ] No regression: serving the assets writes nothing outside `agentic/dashboard/` and adds no
+- [x] No regression: serving the assets writes nothing outside `agentic/dashboard/` and adds no
       file inside it beyond the existing four (`local.token`, `audit.jsonl`, `audit.jsonl.1`,
       `server.json`); `make_server` still refuses a public/non-tailnet bind with `BindRefused`
       before any socket opens; the SPEC-0414/SPEC-0416 server and tailnet tests pass untouched,
       apart from the one listed edit to `test_404_and_413_and_503`.
-- [ ] `nw serve --dashboard --bind 127.0.0.1:0` started as a subprocess answers `GET /` with the
+- [x] `nw serve --dashboard --bind 127.0.0.1:0` started as a subprocess answers `GET /` with the
       page (contains the `index.html` bytes) without a token.
-- [ ] SPEC-0413's frontmatter `depends_on` is `[SPEC-0401, SPEC-0414]` and nothing else in its
+- [x] SPEC-0413's frontmatter `depends_on` is `[SPEC-0401, SPEC-0414]` and nothing else in its
       body changed; `python3 tools/spec_lint.py` exits 0.
 
 ## Test plan
@@ -286,6 +286,39 @@ Frontmatter only: `depends_on: [SPEC-0401, SPEC-0414]` and `updated: 2026-11-04`
   never imports the dashboard) and `test_dashboard_packaging.py`; plus `python3 tools/spec_lint.py`.
   Heavy gates go to the box with `nw gate run`, not a local full suite.
 
+### Test record (2026-11-04)
+
+- `uv run pytest -q tests/test_dashboard_server_assets.py tests/test_dashboard_server.py`: 56 passed,
+  1 skipped (the 10 new tests, one per criterion, plus the edited `test_404_and_413_and_503`).
+- Related modules, run directly: `test_dashboard_http_readonly`, `_auth`, `_serve_cli`, `_assets`,
+  `_imports`, `_packaging`, `_readonly`, `_tailnet_*`, `_page`, `_page_logic`: all passed.
+- `python3 tools/spec_lint.py`: exits 0; ledger regenerated. The full suite was left to gating.
+- Real binary: `test_serve_cli_serves_page` starts `nw serve --dashboard --bind 127.0.0.1:0` as a
+  subprocess and gets `index.html`'s bytes from `GET /` with no token (and `401` on the snapshot).
+- Manual step, curl half done against a real `nw serve --dashboard --bind 127.0.0.1:0`: `GET /`
+  without a token is `200`, `text/html; charset=utf-8`, with the CSP and `no-cache`;
+  `GET /api/snapshot` without a token is `401`. The browser half (phone-sized window, token in
+  the fragment) was NOT performed by the implementer (no browser in the queue run); it stays a
+  human check, with SPEC-0413's step 1.
+
+### As shipped (2026-11-04)
+
+- Shipped as designed (`server.py` static branch after `Host`/`Origin`, before the bearer; SPEC-0413
+  `depends_on`; `test_404_and_413_and_503` drops `/`).
+- A `GET` with a body on a static path is `413` through `_refuse`, so it is audited (one
+  `body_on_get` line), as acceptance criterion 5 and Decision 6 require. The snapshot path's 413
+  is unchanged (not audited), which the untouched `test_404_and_413_and_503` still asserts.
+- `//app.js`: `http.server` folds a leading `//` into `/` before the handler runs, so `self.path`
+  alone would make it the route. The handler checks the request target as sent
+  (`self.requestline`) and treats a `//`-prefixed target as a non-route (`401`, then `404`), as
+  criterion 3 lists.
+- Order of `500` and `405` on asset paths: `read_asset` runs before the method check, so on a
+  broken install any method on an asset path gets `500` (not `405`); the pipeline's static row is
+  `500`, then `405` non-`GET`, then `413` body. The stub's `404` for `/app.js?x=1`
+  (SPEC-0413 page stub) is a stub artifact; the server drops the query (Decision 1).
+- Tunnel note for the manual step: use a same-port tunnel (`ssh -L 8791:127.0.0.1:8791 <host>`);
+  a different local port is refused by the `Host` check (`403 bad_host`).
+
 ## Rollout / migration
 
 1. One change: `server.py` branch, the one edited test, the new test file, SPEC-0413's
@@ -300,15 +333,15 @@ Frontmatter only: `depends_on: [SPEC-0401, SPEC-0414]` and `updated: 2026-11-04`
 
 ## Definition of done
 
-- [ ] Acceptance criteria all met.
-- [ ] `server.py`'s module docstring names the phone page and says the static routes are the only
+- [x] Acceptance criteria all met.
+- [x] `server.py`'s module docstring names the phone page and says the static routes are the only
       unauthenticated ones.
-- [ ] Test plan executed; automated tests pass (affected tests via
+- [x] Test plan executed; automated tests pass (affected tests via
       `python3 tools/affected_tests.py --run uv run pytest -q`); manual verification performed and
       noted.
-- [ ] No regressions (the SPEC-0414 and SPEC-0416 server, tailnet and bind-gate tests green).
-- [ ] Spec body updated to match what shipped.
-- [ ] `docs/LEDGER.md` regenerated (`python3 tools/spec_lint.py --write-ledger`) and
+- [x] No regressions (the SPEC-0414 and SPEC-0416 server, tailnet and bind-gate tests green).
+- [x] Spec body updated to match what shipped.
+- [x] `docs/LEDGER.md` regenerated (`python3 tools/spec_lint.py --write-ledger`) and
       `python3 tools/spec_lint.py` exits 0.
 
 ## Open questions

@@ -301,7 +301,7 @@ def test_404_and_413_and_503(tmp_path):
     cache = Flaky(fx["cfg"])
     s = Srv(fx, cache)
     try:
-        for p in ("/", "/nope", "/api/snapshot/x"):
+        for p in ("/nope", "/api/snapshot/x"):
             st, _, b = s.req(path=p)
             assert st == 404 and json.loads(b) == {"error": "not found"}
         st, h, _ = s.req(body=b"abc")
