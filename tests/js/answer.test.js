@@ -296,3 +296,139 @@ test("SPEC-0433: a story that failed falls back to the raw events (or the old ti
   t = await drill({ story: { error: "x" }, raw: { error: "x" } });
   assert.deepEqual(texts(t, "tl"), ["old 6", "old 5"]);
 });
+
+// ---- SPEC-0434: answers land at once; the page survives a server restart ----
+
+const PLAN_OK = () => resp(200, { plan: { summary: "chose 1 (resume)" }, effect: "The conductor resumes it.", plan_token: "1.tok" });
+const page = (csrf) => ({ status: 200, headers: { get: () => null },
+  text: async () => `<!doctype html><meta name="nw-csrf" content="${csrf}">`, json: async () => null });
+const escIds = (t) => byClass(t.doc, "needs", "esc").map((n) => n.attrs["data-esc"]);
+const msgs = (t) => byClass(t.doc, "needs", "msg").map((n) => n.textContent);
+
+async function planAndConfirm(t) {
+  byClass(t.doc, "needs", "opt")[0].click();
+  await settle();
+  byClass(t.doc, "needs", "primary")[0].click();
+  await settle();
+}
+
+test("SPEC-0434: a 200 answer removes the escalation at once, even while the server still lists it", async () => {
+  const t = setup();
+  t.routes.push([(u) => u === "/api/snapshot", () => resp(200, snap({ escalations: [ESC] }, "r1"))]);
+  t.routes.push([(u) => u.endsWith("/plan"), PLAN_OK]);
+  t.routes.push([(u) => u.endsWith("/answer"), () => resp(200, { summary: "chose 1 (resume)" })]);
+  t.app.start();
+  await settle();
+  const before = t.calls.filter((c) => c.url === "/api/snapshot").length;
+  await planAndConfirm(t);
+  assert.deepEqual(escIds(t), [], "gone before any new snapshot");
+  assert.ok(t.doc.getElementById("needs").textContent.includes("Nothing needs you."));
+  assert.ok(/^\d\d:\d\d:\d\d ESC-0007 answered/.test(msgs(t)[0]), msgs(t)[0]);
+  assert.equal(t.calls.filter((c) => c.url === "/api/snapshot").length, before + 1, "refetched at once");
+  await t.clock.advance(30000, settle);                  // 304s / the same rev: still hidden
+  assert.deepEqual(escIds(t), []);
+  await t.clock.advance(31000, settle);                  // past 60 s the server's view wins again
+  t.routes.unshift([(u) => u === "/api/snapshot", () => resp(200, snap({ escalations: [ESC] }, "r9"))]);
+  await t.clock.advance(15000, settle);
+  assert.deepEqual(escIds(t), ["ESC-0007"]);
+});
+
+test("SPEC-0434: a snapshot without the answered id ends the hiding (a later re-open shows)", async () => {
+  const t = setup();
+  let listed = true, rev = "r1";
+  t.routes.push([(u) => u === "/api/snapshot", () => resp(200, snap({ escalations: listed ? [ESC] : [] }, rev))]);
+  t.routes.push([(u) => u.endsWith("/plan"), PLAN_OK]);
+  t.routes.push([(u) => u.endsWith("/answer"), () => { listed = false; rev = "r2"; return resp(200, { summary: "s" }); }]);
+  t.app.start();
+  await settle();
+  await planAndConfirm(t);
+  assert.equal(t.app.rev(), "r2");
+  listed = true; rev = "r3";                              // escalated again under the same id
+  await t.clock.advance(15000, settle);
+  assert.deepEqual(escIds(t), ["ESC-0007"]);
+});
+
+test("SPEC-0434: bad_csrf on a plan refreshes the value from / and retries the plan once", async () => {
+  const t = setup();
+  t.routes.push([(u) => u === "/api/snapshot", () => resp(200, snap({ escalations: [ESC] }))]);
+  t.routes.push([(u) => u === "/", () => page("fresh.value")]);
+  t.routes.push([(u, o) => u.endsWith("/plan") && o.headers["X-NW-CSRF"] === "nonce.mac", () => resp(403, { reason: "bad_csrf", error: "stale" })]);
+  t.routes.push([(u) => u.endsWith("/plan"), PLAN_OK]);
+  t.app.start();
+  await settle();
+  byClass(t.doc, "needs", "opt")[0].click();
+  await settle();
+  const p = posts(t);
+  assert.deepEqual(p.map((c) => c.opts.headers["X-NW-CSRF"]), ["nonce.mac", "fresh.value"]);
+  assert.equal(byClass(t.doc, "needs", "confirm").length, 1);
+  assert.deepEqual(msgs(t), []);
+});
+
+test("SPEC-0434: bad_csrf on an answer never re-sends it blind: re-plan, confirm again, then it lands", async () => {
+  const t = setup();
+  let csrfOk = "nonce.mac";
+  t.routes.push([(u) => u === "/api/snapshot", () => resp(200, snap({ escalations: [ESC] }))]);
+  t.routes.push([(u) => u === "/", () => page("after.restart")]);
+  t.routes.push([(u, o) => u.endsWith("/plan") || u.endsWith("/answer") ? o.headers["X-NW-CSRF"] !== csrfOk : false,
+                 () => resp(403, { reason: "bad_csrf", error: "stale" })]);
+  t.routes.push([(u) => u.endsWith("/plan"), PLAN_OK]);
+  t.routes.push([(u) => u.endsWith("/answer"), () => resp(200, { summary: "chose 1 (resume)" })]);
+  t.app.start();
+  await settle();
+  byClass(t.doc, "needs", "opt")[0].click();
+  await settle();
+  csrfOk = "after.restart";                               // the server restarted with a new secret
+  byClass(t.doc, "needs", "primary")[0].click();
+  await settle();
+  const answers = () => posts(t).filter((c) => c.url.endsWith("/answer"));
+  assert.equal(answers().length, 1, "the refused answer was not re-sent");
+  assert.equal(byClass(t.doc, "needs", "confirm").length, 1, "a fresh confirm panel");
+  assert.ok(msgs(t).some((m) => m.includes("restarted") && m.includes("confirm again")), msgs(t).join("|"));
+  assert.equal(posts(t).at(-1).url, "/api/escalations/ESC-0007/plan");
+  assert.equal(posts(t).at(-1).opts.headers["X-NW-CSRF"], "after.restart");
+  byClass(t.doc, "needs", "primary")[0].click();
+  await settle();
+  assert.equal(answers().length, 2);
+  assert.deepEqual(escIds(t), []);
+});
+
+test("SPEC-0434: a bad plan token and an expired confirmation re-plan once; a second refusal is shown", async () => {
+  const t = setup();
+  t.routes.push([(u) => u === "/api/snapshot", () => resp(200, snap({ escalations: [ESC] }))]);
+  t.routes.push([(u) => u.endsWith("/plan"), PLAN_OK]);
+  let n = 0;
+  t.routes.push([(u) => u.endsWith("/answer"), () => (++n === 1
+    ? resp(400, { reason: "bad_plan_token", error: "the plan token does not match" })
+    : resp(409, { status: "plan_expired", error: "the confirmation expired: plan the answer again" }))]);
+  t.app.start();
+  await settle();
+  await planAndConfirm(t);
+  assert.equal(byClass(t.doc, "needs", "confirm").length, 1);
+  byClass(t.doc, "needs", "primary")[0].click();
+  await settle();
+  assert.equal(byClass(t.doc, "needs", "confirm").length, 0, "one automatic re-plan only");
+  assert.ok(msgs(t).some((m) => m.includes("confirmation expired")), msgs(t).join("|"));
+});
+
+test("SPEC-0434: a network error, a timeout and a non-JSON 502 on an answer each leave a reason", async () => {
+  for (const [kind, want] of [["throw", "may or may not have been applied"], ["hang", "No reply from the dashboard within 20 s"],
+                              ["502", "The dashboard failed (502)"]]) {
+    const t = setup();
+    t.routes.push([(u) => u === "/api/snapshot", () => resp(200, snap({ escalations: [ESC] }))]);
+    t.routes.push([(u) => u.endsWith("/plan"), PLAN_OK]);
+    t.routes.push([(u) => u.endsWith("/answer"), () => {
+      if (kind === "throw") throw new Error("net");
+      if (kind === "hang") return new Promise(() => {});
+      return { status: 502, headers: { get: () => null }, json: async () => { throw new Error("not json"); } };
+    }]);
+    t.app.start();
+    await settle();
+    await planAndConfirm(t);
+    if (kind === "hang") {
+      assert.ok(byClass(t.doc, "needs", "primary")[0].textContent === "Answering…");
+      await t.clock.advance(20000, settle);
+    }
+    assert.ok(msgs(t).some((m) => m.includes(want)), `${kind}: ${msgs(t).join("|")}`);
+    assert.deepEqual(escIds(t), ["ESC-0007"], `${kind}: still listed (the outcome is the server's)`);
+  }
+});

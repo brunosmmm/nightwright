@@ -39,6 +39,9 @@ function snap(over = {}) {
   };
 }
 
+// "HH:MM:SS" in the local zone, as the page writes its "data as of" stamp (SPEC-0434)
+const hms = (ms) => { const d = new Date(ms); const p = (n) => String(n).padStart(2, "0"); return `${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`; };
+
 function setup({ t0 = GEN + 5000, hash = "", stored = {}, visible = true } = {}) {
   const doc = new Document(IDS);
   doc.hidden = !visible;
@@ -171,13 +174,35 @@ test("a slow request is never overlapped: later polls are dropped until it settl
   await settle();
   t.app.poll();
   t.app.poll();
-  await t.clock.advance(60000, settle);
+  await t.clock.advance(9000, settle);
   assert.equal(t.calls.length, 1);
   release();
   await t.app.idle();
   assert.equal(t.state.max, 1);
   await t.clock.advance(15000, settle);
   assert.equal(t.calls.length, 2);
+});
+
+test("SPEC-0434: a hung request is abandoned after 10 s and polling carries on", async () => {
+  const t = setup();
+  t.script.push(ok(snap(), GEN + 5000));
+  t.app.start();
+  await t.app.idle();
+  t.script.push(() => new Promise(() => {}));            // never answers (a half-open phone link)
+  await t.clock.advance(15000, settle);
+  assert.equal(t.calls.length, 2);
+  t.app.poll();                                          // joins the hung one, no overlap
+  await t.clock.advance(9000, settle);
+  assert.equal(t.calls.length, 2);
+  assert.equal(t.text("banner"), "");
+  await t.clock.advance(1000, settle);                   // 10 s: aborted
+  assert.equal(t.text("banner"), "Can't reach the dashboard.");
+  assert.equal(t.text("live"), "offline");
+  assert.ok(t.calls[1].opts.signal === undefined || t.calls[1].opts.signal.aborted !== false);
+  await t.clock.advance(15000, settle);                  // the poll chain is alive
+  assert.equal(t.calls.length, 3);
+  assert.equal(t.text("banner"), "");
+  assert.equal(t.text("live"), "polling");
 });
 
 test("visibility: no request or timer while hidden; visible polls at once and re-arms", async () => {
@@ -219,7 +244,7 @@ test("ages tick from the server clock", async () => {
   assert.ok(t.text("active").includes("age 15s"), t.text("active"));
   assert.ok(t.text("active").includes("implementer · 55s"), t.text("active"));   // elapsed_s, not age_s
   assert.ok(t.text("health").includes("heartbeat ok"), t.text("health"));             // healthy: no age
-  assert.equal(t.text("updated"), "checked 0s ago");
+  assert.equal(t.text("updated"), `data as of ${hms(GEN + 5000)} · checked 0s ago`);
   await t.clock.advance(10000, settle);                                                // no request yet? one 304 at 15 s only
   assert.equal(t.calls.length, 1);
   assert.ok(t.text("active").includes("age 25s"));
@@ -241,7 +266,7 @@ test("quiet queue: 304s for 10 minutes never show a growing heartbeat age; the h
   assert.ok(t.calls.length >= 40, String(t.calls.length));
   assert.ok(t.text("health").includes("heartbeat ok"), t.text("health"));
   assert.ok(!/heartbeat \d/.test(t.text("health")), t.text("health"));
-  assert.ok(/^checked ([0-9]|1[0-5])s ago$/.test(t.text("updated")), t.text("updated"));   // last poll <= 15 s ago
+  assert.ok(/^data as of \d\d:\d\d:\d\d · checked ([0-9]|1[0-5])s ago$/.test(t.text("updated")), t.text("updated"));   // last poll <= 15 s ago
   // a stale lease arrives as a 200 (stale is part of rev) and then shows the ticking age
   const stale = snap({ rev: "r2", generated_at: new Date(GEN + 600000).toISOString() });
   stale.health.runner.lease = { held: true, pid: 11, host: "box", stale: true, heartbeat_age_s: 120 };
@@ -256,7 +281,7 @@ test("ages: a Date earlier than generated_at is never negative; no Date falls ba
   early.app.start();
   await early.app.idle();
   assert.ok(early.text("active").includes("age 10s"), early.text("active"));
-  assert.equal(early.text("updated"), "checked 0s ago");
+  assert.equal(early.text("updated"), `data as of ${hms(GEN - 3600000)} · checked 0s ago`);
   const none = setup({ t0: GEN + 5000 });
   none.script.push(ok(snap()));                          // no Date header
   none.app.start();
@@ -305,15 +330,16 @@ test("banners and the dot: 401, 403, unreachable, stale, and clearing", async ()
   stale.script.push(ok(snap(), GEN + 5000));
   stale.app.start();
   await stale.app.idle();
-  let release;
-  stale.script.push(() => new Promise((r) => { release = () => r(resp(304, null, { date: httpDate(stale.clock.now()) })); }));
-  await stale.clock.advance(45000, settle);              // 45 s is not yet stale
+  // SPEC-0434: a hung poll is aborted at 10 s (an error, not a silent stale); stale is the
+  // backstop for a device that slept with no timer running: 60 s is not yet stale, 61 s is
+  stale.script.push(() => new Promise(() => {}));
+  stale.clock.t += 59000;
+  await stale.clock.advance(1000, settle);
   assert.equal(banner(stale), "");
   await stale.clock.advance(1000, settle);
-  assert.equal(banner(stale), "Last update 46 s ago.");
+  assert.equal(banner(stale), `No update for 61 s: data as of ${hms(GEN + 5000)}.`);
   assert.deepEqual(dot(stale), ["grey"]);
-  release();
-  await stale.app.idle();
+  await stale.clock.advance(30000, settle);              // the hung poll aborted, the next one answers
   assert.equal(banner(stale), "");
   assert.deepEqual(dot(stale), ["green"]);
 });

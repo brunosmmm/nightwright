@@ -207,6 +207,11 @@ class Hub:
         failing_since = None
         while not stop.wait(self.refresh_s):
             try:
+                # SPEC-0434: this tick is the stream's refresh; without the expiry a cache whose
+                # own check clock runs a hair behind skips it, doubling the latency to 2 x refresh_s
+                expire = getattr(self.cache, "expire", None)
+                if expire is not None:
+                    expire()
                 snap = self.cache.get()
                 failing_since = None
             except Exception as e:              # noqa: BLE001 - retry next tick, never die

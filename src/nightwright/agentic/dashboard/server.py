@@ -9,6 +9,8 @@
 - SPEC-0402: `GET /api/stream`, the shared snapshot over Server-Sent Events.
 - SPEC-0429: `POST /api/escalations/<id>/plan|answer` through `escalations.plan_answer` /
   `apply_answer` (`answers`), audited.
+- SPEC-0434: the CSRF / plan-token secret persists under `agentic/dashboard/secret`, so a page
+  outlives a restart; a successful answer expires the snapshot cache's watermark check.
 - SPEC-0430: `GET /api/campaigns/<cid>` and the live run tail `GET /api/campaigns/<cid>/tail`.
 - SPEC-0432: the default bind `auto[:PORT]`, one process with a loopback listener (mode `local`)
   and, whenever this host has a tailnet address, a tailnet listener (mode `whois`) kept by
@@ -75,7 +77,9 @@ class DashboardServer(http.server.ThreadingHTTPServer):
         if self.mode == "whois":
             self.gate = gate or A.Gate(allowed_logins=settings(cfg)["allowed_logins"])
         self.peer = peer or (lambda address: address)   # test seam: never set by the CLI
-        self.csrf = csrf or A.Csrf()            # SPEC-0428: per-process secret (shared, 0432)
+        # SPEC-0428 secret, shared by both listeners (0432); `make_server` passes the persisted
+        # one (SPEC-0434), a bare server keeps a random per-instance one
+        self.csrf = csrf or A.Csrf()
         self.serializations = 0                 # body encodings; the body is cached by `rev`
         self._own_hub = hub is None             # a shared hub (SPEC-0432) outlives this socket
         self.hub = hub or ST.Hub(cache, ST.SlotPool(ST.max_clients(cfg)))
@@ -155,7 +159,9 @@ def make_server(cfg, bind: str | None = None, *, cache=None, own=None, mode=None
     `mode="local"` for the loopback half of an `auto` bind (refused on any other address). `hub` / `csrf` are shared
     with the tailnet listener of an `auto` bind (SPEC-0432)."""
     host, port = A.resolve_bind(bind or DEFAULT_BIND, own_fn=own or A.own_tailnet_ips)
-    dashboard_dir(cfg)
+    d = dashboard_dir(cfg)
+    if csrf is None:                            # SPEC-0434: a secret that survives restarts
+        csrf = A.Csrf(A.load_secret(d))
     return DashboardServer(cfg, (host, port), cache or SnapshotCache(cfg), mode=mode,
                            gate=gate, peer=peer, hub=hub, csrf=csrf)
 
@@ -363,6 +369,10 @@ class _Handler(http.server.BaseHTTPRequestHandler):
         except OSError as e:
             AU.audit(srv.cfg, **base, result="500", status=500, detail=str(e))
             return self._send(500, {"error": f"{type(e).__name__}: {e}"}, headers=nostore)
+        if action == "answer":
+            expire = getattr(srv.cache, "expire", None)
+            if expire is not None:              # SPEC-0434: the page's next poll sees the answer
+                expire()
         summary = (out.get("plan") or {}).get("summary") if action == "plan" else \
             out.get("summary")
         AU.audit(srv.cfg, **base, result="ok", status=200, summary=summary,

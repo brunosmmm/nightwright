@@ -290,7 +290,8 @@ def _b64(raw: bytes) -> str:
 
 class Csrf:
     """SPEC-0428 per-page CSRF values: `<nonce>.<mac>`, `mac = HMAC-SHA256(secret, "csrf" |
-    nonce | identity_key)`. Stateless: a value is valid for this secret's (process's) life and
+    nonce | identity_key)`. Stateless: a value is valid for this secret's life (SPEC-0434: the
+    server's secret persists across restarts, `load_secret`) and
     only for the identity it was minted for. `sign` / `verify` are the same MAC for other
     purposes (SPEC-0429's plan token)."""
 
@@ -314,6 +315,47 @@ class Csrf:
             return False
         nonce, mac = value.strip().split(".")
         return bool(nonce) and self.verify(mac, "csrf", nonce, identity_key)
+
+
+SECRET_NAME = "secret"
+SECRET_LEN = 32
+
+
+def load_secret(directory) -> bytes:
+    """SPEC-0434: the dashboard's HMAC secret (CSRF values, plan tokens), persisted as
+    `<dir>/secret` (32 raw bytes, mode 0600) so a page served by one server process still writes
+    after a restart. Created with `O_EXCL`; a file of the wrong size or readable by group/others
+    is replaced atomically by a fresh secret. Delete the file to rotate."""
+    path = os.path.join(os.fspath(directory), SECRET_NAME)
+    try:
+        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    except FileExistsError:
+        try:
+            st = os.stat(path)
+            with open(path, "rb") as f:
+                raw = f.read(SECRET_LEN + 1)
+            if len(raw) == SECRET_LEN and not st.st_mode & 0o077:
+                return raw
+        except OSError:
+            pass
+        raw = secrets.token_bytes(SECRET_LEN)
+        tmp = f"{path}.{os.getpid()}.tmp"
+        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        try:
+            os.write(fd, raw)
+            os.fsync(fd)
+        finally:
+            os.close(fd)
+        os.chmod(tmp, 0o600)
+        os.replace(tmp, path)
+        return raw
+    raw = secrets.token_bytes(SECRET_LEN)
+    try:
+        os.write(fd, raw)
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+    return raw
 
 
 def _peer_ip(addr) -> str | None:

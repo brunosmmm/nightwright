@@ -374,6 +374,12 @@ class SnapshotCache:
         self.builds += 1
         self._built_at = self._last_check = t
 
+    def expire(self) -> None:
+        """SPEC-0434: the next `get()` checks the watermark now (after a dashboard write)."""
+        with self._lock:
+            if self._last_check is not None:
+                self._last_check = float("-inf")
+
     def get(self) -> dict:
         with self._lock:
             t = self.clock()

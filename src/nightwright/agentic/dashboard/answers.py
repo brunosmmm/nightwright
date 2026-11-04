@@ -172,11 +172,13 @@ def check_token(csrf, token: str, identity: Identity, rec: dict, canon: str,
     """A 400 `Refusal` for a token that does not match, 409 for an expired one."""
     exp, dot, mac = token.partition(".")
     if not dot or not exp.isdigit() or len(exp) > 12:
-        raise Refusal(400, {"error": "bad plan token: plan the answer again"},
+        raise Refusal(400, {"error": "bad plan token: plan the answer again",
+                            "reason": "bad_plan_token"},
                       result="bad_plan_token")
     if not csrf.verify(mac, *_token_parts(identity, rec, canon, exp)):
         raise Refusal(400, {"error": "the plan token does not match this answer, this device "
-                                     "or the escalation as it is now: plan the answer again"},
+                                     "or the escalation as it is now: plan the answer again",
+                            "reason": "bad_plan_token"},
                       result="bad_plan_token")
     if int(exp) < now:
         raise Refusal(409, {"error": "the confirmation expired: plan the answer again",

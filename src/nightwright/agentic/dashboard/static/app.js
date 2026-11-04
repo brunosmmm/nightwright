@@ -10,12 +10,21 @@
    (SPEC-0433) Its timeline is the campaign story: collapsible loop/phase groups, one line per
    run, gate, review round or rebase; a tap opens a line's details and raw events, and a
    "raw" button shows every raw ledger event.
+   (SPEC-0434) Every request is bounded by a timeout; an answered escalation leaves the inbox at
+   once; a `bad_csrf` refreshes the page's CSRF value from `/` (a plan is retried once, an answer
+   is re-planned and confirmed again); a poll that succeeds while the stream is down reopens it;
+   the header shows "data as of HH:MM:SS" and the chip reads live / stalled / polling /
+   reconnecting / offline.
    Every server value is rendered with textContent only. createApp(env) takes every browser
    object it touches, so the logic runs under node with a fake DOM (tests/js). */
 
 var POLL_MS = 15000;
 var TICK_MS = 1000;
-var STALE_S = 45;
+var STALE_S = 60;                   /* SPEC-0434: the stale banner after this long unconfirmed */
+var STALL_MS = 30000;               /* SPEC-0434: an open stream silent this long reads "stalled" */
+var READ_MS = 10000;                /* SPEC-0434: request timeouts */
+var WRITE_MS = 20000;
+var GONE_MS = 60000;                /* SPEC-0434: an answered escalation stays hidden at most this long */
 var MAX_EVENTS = 20;
 var OLD_TOKEN_KEY = "nw-dashboard-token";   /* SPEC-0428: removed from storage when found */
 var TAIL_MAX_LINES = 1000;
@@ -152,12 +161,12 @@ function createApp(env) {
   var st = {
     snap: null, rev: null, conn: "none", code: null, generatedMs: NaN,
     anchor: null, lastOk: null, startedAt: null, visibleSince: null,
-    inflight: null, pollTimer: null, tickTimer: null, ages: [], shown: {}
+    inflight: null, pollTimer: null, tickTimer: null, ages: [], shown: {}, csrf: null
   };
   /* SPEC-0402 stream state. mode: off (hidden or not started), polling (waiting to retry),
      reconnecting (a retry in flight), live. gen invalidates a superseded stream. */
   var lv = { mode: "off", gen: 0, ctrl: null, backoff: BACKOFF_MIN_MS, retryTimer: null,
-             dogTimer: null, failed: false };
+             dogTimer: null, failed: false, openedAt: null };
 
   function hidden() { return env.visibility() === "hidden"; }
   function $(id) { return doc.getElementById(id); }
@@ -183,6 +192,52 @@ function createApp(env) {
   function serverNow() {
     var t = env.now();
     return st.anchor ? st.anchor.server + (t - st.anchor.local) : t;
+  }
+
+  /* SPEC-0434: `env.fetch(path, opts)` and then `read(res)`, together bounded by `ms`. Resolves
+     `{res, val}`; rejects on a network error, or with `err.timeout` once `ms` passed (the
+     request is aborted when env.abort exists). A hung request can never wedge the page. */
+  function bounded(path, opts, ms, read) {
+    var ctrl = env.abort ? env.abort() : null;
+    var o = {};
+    Object.keys(opts || {}).forEach(function (k) { o[k] = opts[k]; });
+    if (ctrl) o.signal = ctrl.signal;
+    var timer = null;
+    var work = (async function () {
+      var res = await env.fetch(path, o);
+      var val = read ? await read(res) : null;
+      return { res: res, val: val };
+    })();
+    work.catch(function () { /* settled after the timeout: nobody waits for it */ });
+    var limit = new Promise(function (resolve, reject) {
+      timer = env.setTimeout(function () {
+        timer = null;
+        if (ctrl) { try { ctrl.abort(); } catch (e) { /* closed */ } }
+        var err = new Error("timeout");
+        err.timeout = true;
+        reject(err);
+      }, ms);
+    });
+    return Promise.race([work, limit]).finally(function () {
+      if (timer !== null) { env.clearTimeout(timer); timer = null; }
+    });
+  }
+
+  function readJson(res) {
+    return Promise.resolve().then(function () { return res.json(); }).catch(function () { return null; });
+  }
+
+  function clockS(ms) {
+    var d = new Date(ms);
+    if (isNaN(d.getTime())) return "--:--:--";
+    var p = function (n) { return (n < 10 ? "0" : "") + n; };
+    return p(d.getHours()) + ":" + p(d.getMinutes()) + ":" + p(d.getSeconds());
+  }
+
+  /* the server-clock time of the last confirmation (a 200 / 304 or any stream byte) */
+  function asOfMs() {
+    if (st.lastOk === null) return NaN;
+    return st.anchor ? st.anchor.server + (st.lastOk - st.anchor.local) : st.lastOk;
   }
 
   /* ---- ages ---- */
@@ -228,9 +283,24 @@ function createApp(env) {
   var ui = {};
   var flash = [];
   var inboxSig = null;
+  var gone = {};          /* SPEC-0434: answered id -> hide-until (ms), until a snapshot lacks it */
+
+  function isGone(id) { return gone[id] !== undefined && gone[id] > env.now(); }
+
+  /* drop hidden ids the snapshot no longer lists (it caught up) or whose time ran out */
+  function pruneGone(snap) {
+    var inbox = (snap && snap.inbox) || {};
+    var listed = {};
+    [inbox.escalations, inbox.auto_applied].forEach(function (l) {
+      if (Array.isArray(l)) l.forEach(function (e) { if (e && e.id) listed[e.id] = true; });
+    });
+    Object.keys(gone).forEach(function (id) {
+      if (!listed[id] || gone[id] <= env.now()) delete gone[id];
+    });
+  }
 
   function uiOf(id) {
-    if (!ui[id]) ui[id] = { text: "", note: "", reason: "", waive: {}, attest: {}, confirm: null, msg: null, busy: false };
+    if (!ui[id]) ui[id] = { text: "", note: "", reason: "", waive: {}, attest: {}, confirm: null, msg: null, busy: false, replanned: false };
     return ui[id];
   }
 
@@ -278,22 +348,38 @@ function createApp(env) {
 
   function writeHeaders() {
     var h = { "Content-Type": "application/json" };
-    var c = env.csrf ? env.csrf() : null;
+    var c = st.csrf || (env.csrf ? env.csrf() : null);
     if (c) h["X-NW-CSRF"] = c;
     return h;
   }
 
   async function post(path, body) {
-    var res;
+    var r;
     try {
-      res = await env.fetch(path, { method: "POST", cache: "no-store", credentials: "same-origin",
-                                    headers: writeHeaders(), body: JSON.stringify(body) });
+      r = await bounded(path, { method: "POST", cache: "no-store", credentials: "same-origin",
+                                headers: writeHeaders(), body: JSON.stringify(body) }, WRITE_MS, readJson);
     } catch (e) {
-      return { status: 0, body: { error: "Can't reach the dashboard." } };
+      return { status: 0, timeout: !!(e && e.timeout),
+               body: { error: e && e.timeout ? "No reply from the dashboard within " + (WRITE_MS / 1000) + " s." : MSG_ERR } };
     }
-    var out = null;
-    try { out = await res.json(); } catch (e) { out = null; }
-    return { status: res.status, body: out && typeof out === "object" ? out : {} };
+    var out = r.val;
+    return { status: r.res.status, body: out && typeof out === "object" && !Array.isArray(out) ? out : {} };
+  }
+
+  function badCsrf(r) { return r.status === 403 && r.body && r.body.reason === "bad_csrf"; }
+  function badToken(r) { return r.status === 400 && r.body && r.body.reason === "bad_plan_token"; }
+
+  /* SPEC-0434: a fresh CSRF value from the page itself (same-origin GET /), for a secret that
+     changed under an open page. True when one was read. */
+  async function refreshCsrf() {
+    try {
+      var r = await bounded("/", { cache: "no-store", credentials: "same-origin" }, READ_MS, function (res) {
+        return res.status === 200 && res.text ? res.text() : null;
+      });
+      var m = typeof r.val === "string" ? /<meta name="nw-csrf" content="([A-Za-z0-9_.-]+)">/.exec(r.val) : null;
+      if (m) { st.csrf = m[1]; return true; }
+    } catch (e) { /* unreachable: the refusal stays on screen */ }
+    return false;
   }
 
   function refusalText(r) {
@@ -304,25 +390,31 @@ function createApp(env) {
       if (b.status === "answered" || b.status === "withdrawn") return "Already " + b.status + who + when + ". " + (b.error || "");
       return "No longer applicable: " + (b.error || b.status || "conflict");
     }
-    if (r.status === 403 && b.reason === "bad_csrf") return "This page is stale: reload it, then answer again.";
+    if (r.status === 403 && b.reason === "bad_csrf") return "The dashboard refused this page's credentials (bad_csrf): reload the page, then answer again.";
     if (r.status === 403) return "This device may not answer (" + (b.reason || "forbidden") + ").";
-    if (r.status === 0) return b.error;
-    return (b.error || "Refused") + " (" + r.status + ")";
+    if (r.status === 0) return b.error || MSG_ERR;
+    return (b.error || (r.status >= 500 ? "The dashboard failed" : "Refused")) + " (" + r.status + ")";
   }
 
-  async function planAnswer(e, body) {
+  /* `notice` (SPEC-0434): shown with the new confirm panel when the page re-plans by itself */
+  async function planAnswer(e, body, notice) {
     var u = uiOf(e.id);
     if (u.busy) return;
+    if (!notice) u.replanned = false;          /* the human's own plan: a fresh retry budget */
     if (u.note.trim()) body.note = u.note;
     u.busy = true; u.msg = null;
     rerenderInbox();
-    var r = await post("/api/escalations/" + encodeURIComponent(e.id) + "/plan", body);
+    var path = "/api/escalations/" + encodeURIComponent(e.id) + "/plan";
+    var r = await post(path, body);
+    if (badCsrf(r) && await refreshCsrf()) r = await post(path, body);   /* a plan writes nothing: retry once */
     u.busy = false;
-    if (r.status === 200 && r.body.plan_token) u.confirm = { body: body, res: r.body };
-    else {
+    if (r.status === 200 && r.body.plan_token) {
+      u.confirm = { body: body, res: r.body };
+      if (notice) u.msg = { cls: "warn", text: notice };
+    } else {
       u.confirm = null;
       u.msg = { cls: "err", text: refusalText(r) };
-      if (r.status === 409) poll();
+      if (r.status === 409) refetch();
     }
     rerenderInbox();
   }
@@ -330,23 +422,42 @@ function createApp(env) {
   async function confirmAnswer(e) {
     var u = uiOf(e.id);
     if (u.busy || !u.confirm) return;
+    var planned = {};
+    Object.keys(u.confirm.body).forEach(function (k) { planned[k] = u.confirm.body[k]; });
     var body = {};
-    Object.keys(u.confirm.body).forEach(function (k) { body[k] = u.confirm.body[k]; });
+    Object.keys(planned).forEach(function (k) { body[k] = planned[k]; });
     body.plan_token = u.confirm.res.plan_token;
-    u.busy = true;
+    u.busy = true; u.msg = null;
     rerenderInbox();
     var r = await post("/api/escalations/" + encodeURIComponent(e.id) + "/answer", body);
     u.busy = false;
     if (r.status === 200) {
-      flash.unshift({ cls: "ok", text: e.id + " answered: " + (r.body.summary || "") +
+      gone[e.id] = env.now() + GONE_MS;        /* SPEC-0434: out of the inbox now, not at the next rev */
+      flash.unshift({ cls: "ok", text: clockS(env.now()) + " " + e.id + " answered: " + (r.body.summary || "") +
         (r.body.event_error ? " (the conductor was NOT woken: " + r.body.event_error + ")" : " — the conductor applies it.") });
       flash = flash.slice(0, 3);
       delete ui[e.id];
-      poll();
+      rerenderInbox();
+      refetch();
+      return;
+    }
+    u.confirm = null;
+    var expired = r.status === 409 && r.body.status === "plan_expired";
+    if ((badCsrf(r) || badToken(r) || expired) && !u.replanned) {
+      /* SPEC-0434: the server's secret changed under this page (a restart before SPEC-0434, or a
+         rotated secret), or the confirm panel sat open too long. Never re-send an answer blind:
+         re-plan, and the human confirms again. */
+      u.replanned = true;
+      if (badCsrf(r)) await refreshCsrf();
+      return planAnswer(e, planned, expired ? "The confirmation expired: check it and confirm again." :
+        "The dashboard restarted since this was planned: check it and confirm again.");
+    }
+    if (r.status === 0) {
+      u.msg = { cls: "err", text: r.body.error + " The answer may or may not have been applied: the inbox shows which once the dashboard answers." };
+      refetch();
     } else {
-      u.confirm = null;
       u.msg = { cls: "err", text: refusalText(r) };
-      if (r.status === 409) poll();
+      if (r.status === 409) refetch();
     }
     rerenderInbox();
   }
@@ -390,6 +501,7 @@ function createApp(env) {
       d.appendChild(el("p", "muted", "recommended: " + e.recommendation + (rec ? " (" + rec.label + ")" : "")));
     }
     if (u.msg) d.appendChild(el("p", "msg " + u.msg.cls, u.msg.text));
+    if (u.busy && !u.confirm) d.appendChild(el("p", "muted busy", "working…"));
     if (!e.answerable) {
       d.appendChild(el("p", "muted", e.pending ? "Waiting for the campaign to park; answer once it does." : "Not answerable: " + (e.why_not || "?")));
       return d;
@@ -439,14 +551,15 @@ function createApp(env) {
     var esc = inbox.escalations;
     var parks = inbox.parks;
     var auto = inbox.auto_applied;
-    var sig = JSON.stringify([esc, parks, auto, flash]);
+    var hide = Object.keys(gone).filter(isGone);
+    var sig = JSON.stringify([esc, parks, auto, flash, hide]);
     if (sig === inboxSig) return;
     inboxSig = sig;
     var nodes = [];
     var count = 0;
     flash.forEach(function (f) { nodes.push(el("p", "msg " + f.cls, f.text)); });
     if (isErr(esc)) nodes.push(muted("inbox.escalations", esc));
-    else (esc || []).forEach(function (e) { nodes.push(escNode(e, false)); count++; });
+    else (esc || []).forEach(function (e) { if (isGone(e.id)) return; nodes.push(escNode(e, false)); count++; });
     if (isErr(parks)) nodes.push(muted("inbox.parks", parks));
     else (parks || []).forEach(function (p) {
       var park = p.park || {};
@@ -460,7 +573,7 @@ function createApp(env) {
       count++;
     });
     if (isErr(auto)) nodes.push(muted("inbox.auto_applied", auto));
-    else (auto || []).forEach(function (e) { nodes.push(escNode(e, true)); });
+    else (auto || []).forEach(function (e) { if (!isGone(e.id)) nodes.push(escNode(e, true)); });
     if (!count && !isErr(esc) && !isErr(parks)) nodes.push(el("p", "muted", "Nothing needs you."));
     put("needs", nodes);
   }
@@ -604,8 +717,9 @@ function createApp(env) {
     /* Time since the last successful poll (200 or 304), not since generated_at: on a quiet
        queue rev does not change, so generated_at stays old while every poll confirms it. */
     st.ages.push({ node: $("updated"), fn: function () {
-      var since = st.lastOk === null ? 0 : Math.max(0, (env.now() - st.lastOk) / 1000);
-      return "checked " + formatAge(since) + " ago";
+      if (st.lastOk === null) return "waiting for data";
+      var since = Math.max(0, (env.now() - st.lastOk) / 1000);
+      return "data as of " + clockS(asOfMs()) + " · checked " + formatAge(since) + " ago";
     } });
     renderNeeds(snap);
     renderCounts(snap);
@@ -640,11 +754,14 @@ function createApp(env) {
     else if (cs === "error") msg = MSG_ERR;
     else if (cs === "stale") {
       var since = st.lastOk === null ? st.startedAt : st.lastOk;
-      msg = "Last update " + Math.max(0, Math.floor((env.now() - since) / 1000)) + " s ago.";
+      msg = "No update for " + Math.max(0, Math.floor((env.now() - since) / 1000)) + " s" +
+        (st.lastOk === null ? "." : ": data as of " + clockS(asOfMs()) + ".");
     }
     setText("banner", msg);
     $("banner").classList.toggle("hidden", msg === "");
     $("main").classList.toggle("greyed", cs !== "ok" && cs !== "none" && !!st.snap);
+    indicator();
+    updateAges();                            /* the "checked" age moves with the chip, not a tick later */
   }
 
   /* ---- timers ---- */
@@ -709,40 +826,55 @@ function createApp(env) {
     if (rev !== null && rev === st.rev && st.snap) return false;
     st.snap = body;
     st.rev = rev;
+    pruneGone(body);
     render();
     if (dv.cid) loadDrill();                 /* SPEC-0430: an open drilldown follows the queue */
     return true;
   }
 
+  function failed() {
+    if (lv.mode !== "live") st.conn = "error";   /* an open stream is the better witness */
+  }
+
   async function request() {
-    var res;
+    var r;
     try {
-      res = await env.fetch("/api/snapshot", { cache: "no-store", credentials: "same-origin", headers: headers() });
+      r = await bounded("/api/snapshot", { cache: "no-store", credentials: "same-origin", headers: headers() },
+                        READ_MS, function (res) { return res.status === 200 ? readJson(res) : null; });
     } catch (e) {
-      st.conn = "error";
+      failed();
       return;
     }
+    var res = r.res;
     if (res.status === 304) {
       noteDate(res);
+      kickStream();
     } else if (res.status === 200) {
-      var body = null;
-      try { body = await res.json(); } catch (e) { body = null; }
-      if (!body || typeof body !== "object" || Array.isArray(body)) { st.conn = "error"; return; }
+      var body = r.val;
+      if (!body || typeof body !== "object" || Array.isArray(body)) { failed(); return; }
       noteDate(res);
       applySnapshot(body);
+      kickStream();
     } else if (res.status === 401 || res.status === 403) {
       st.conn = "denied";
       st.code = res.status;
     } else {
-      st.conn = "error";
+      failed();
     }
+  }
+
+  /* SPEC-0434: a poll now, and one more after any poll already in flight (it may predate the
+     change the caller wants to see). */
+  function refetch() {
+    if (st.inflight) return st.inflight.then(function () { return poll(); });
+    return poll();
   }
 
   function poll() {
     clearPoll();
     if (hidden()) return Promise.resolve();
     if (st.inflight) return st.inflight;
-    var p = request().catch(function () { st.conn = "error"; }).then(function () {
+    var p = request().catch(function () { failed(); }).then(function () {
       st.inflight = null;
       chrome();
       armPoll();
@@ -753,8 +885,12 @@ function createApp(env) {
 
   /* ---- the live stream (SPEC-0402) ---- */
 
+  /* SPEC-0434: the chip says what is true now: an open stream silent for two heartbeats is
+     "stalled"; failing requests with no stream are "offline". */
   function liveLabel() {
-    return lv.mode === "live" ? "live" : lv.mode === "reconnecting" ? "reconnecting" : "polling";
+    if (lv.mode === "live") return st.lastOk !== null && env.now() - st.lastOk > STALL_MS ? "stalled" : "live";
+    if (st.conn === "error" || st.conn === "denied") return "offline";
+    return lv.mode === "reconnecting" ? "reconnecting" : "polling";
   }
 
   function indicator() {
@@ -762,7 +898,7 @@ function createApp(env) {
     if (!n) return;
     var label = liveLabel();
     setText("live", label);
-    ["live", "polling", "reconnecting"].forEach(function (c) { n.classList.toggle("is-" + c, c === label); });
+    ["live", "stalled", "polling", "reconnecting", "offline"].forEach(function (c) { n.classList.toggle("is-" + c, c === label); });
   }
 
   function streamUrl() {
@@ -814,14 +950,27 @@ function createApp(env) {
     lv.backoff = Math.min(BACKOFF_MAX_MS, lv.backoff * 2);
   }
 
+  /* SPEC-0434: a poll that succeeds while the stream is down waiting for its retry means the
+     server is back: retry now (at most once per BACKOFF_MIN_MS, so a server that accepts and
+     drops streams cannot spin the page). */
+  function kickStream() {
+    if (!env.live || hidden() || lv.mode !== "polling" || lv.retryTimer === null) return;
+    if (lv.openedAt !== null && env.now() - lv.openedAt < BACKOFF_MIN_MS) return;
+    openStream();                            /* the backoff keeps growing if this one fails too */
+  }
+
   async function openStream() {
     if (!env.live || hidden()) return;
     clearLive();
     var gen = lv.gen;
-    lv.mode = lv.failed ? "reconnecting" : "polling";
+    var again = lv.failed;
+    lv.mode = again ? "reconnecting" : "polling";
+    lv.openedAt = env.now();
     indicator();
     var ctrl = env.abort();
     lv.ctrl = ctrl;
+    /* SPEC-0434: an open that never answers fails over like a silent stream */
+    lv.dogTimer = env.setTimeout(function () { lv.dogTimer = null; streamFailed(gen); }, READ_MS);
     var res;
     try {
       res = await env.fetch(streamUrl(), { cache: "no-store", credentials: "same-origin",
@@ -837,6 +986,7 @@ function createApp(env) {
     sawData(gen);
     chrome();
     indicator();
+    if (again) poll();                       /* SPEC-0434: a reconnect re-fetches the snapshot too */
     var dec = new TextDecoder();
     var parser = createSseParser({
       event: function (ev) { if (ev.type === "snapshot") onStreamSnapshot(ev.data); }
@@ -895,8 +1045,9 @@ function createApp(env) {
     dv.loading = (async function () {
       var res, body = null;
       try {
-        res = await env.fetch("/api/campaigns/" + encodeURIComponent(cid), { cache: "no-store", credentials: "same-origin" });
-        try { body = await res.json(); } catch (e) { body = null; }
+        var r = await bounded("/api/campaigns/" + encodeURIComponent(cid), { cache: "no-store", credentials: "same-origin" },
+                              READ_MS, readJson);      /* SPEC-0434: never a hung drilldown */
+        res = r.res; body = r.val;
       } catch (e) { res = { status: 0 }; }
       if (gen !== dv.gen) return;
       if (res.status !== 200 || !body) {
@@ -1124,11 +1275,22 @@ function createApp(env) {
     }
   }
 
+  /* SPEC-0434: the network came back (a phone off wifi, a laptop resumed): check at once */
+  function onOnline() {
+    if (hidden()) return;
+    lv.backoff = BACKOFF_MIN_MS;
+    poll();
+    if (env.live && lv.mode !== "live") openStream();
+  }
+
   function start() {
     dropFragmentToken();
     st.startedAt = st.visibleSince = env.now();
     doc.addEventListener("visibilitychange", onVisibility);
-    if (env.listen) env.listen("hashchange", route);
+    if (env.listen) {
+      env.listen("hashchange", route);
+      env.listen("online", onOnline);
+    }
     route();
     chrome();
     poll();

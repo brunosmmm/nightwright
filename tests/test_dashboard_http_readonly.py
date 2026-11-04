@@ -9,7 +9,7 @@ from test_dashboard_serve_cli import dash, get, start, stop, wait_server
 from test_dashboard_snapshot import ledger_run_end
 from waits import until
 
-ALLOWED = {"audit.jsonl", "audit.jsonl.1", "server.json"}
+ALLOWED = {"audit.jsonl", "audit.jsonl.1", "server.json", "secret"}  # secret: SPEC-0434
 
 
 def outside(data):

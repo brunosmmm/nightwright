@@ -107,23 +107,29 @@ function setup({ visible = true, stored = {}, live = true } = {}) {
   const calls = [];
   const modes = [];                       // per /api/stream open: "stream" (default), 503, "throw"
   let pollRev = "r0";
+  const listeners = {};
+  const poll = { fail: false, hang: false };   // SPEC-0434: a poll that throws, or never answers
   const env = {
     document: doc, now: () => clock.now(), setTimeout: (f, ms) => clock.setTimeout(f, ms),
     clearTimeout: (id) => clock.clearTimeout(id), visibility: () => doc.visibilityState,
     storage: { getItem: (k) => (store.has(k) ? store.get(k) : null), setItem: (k, v) => store.set(k, v) },
     location: { hash: "", pathname: "/", search: "" }, history: { replaceState() {} },
     live, abort: () => new AbortController(),
+    listen: (type, fn) => { (listeners[type] = listeners[type] || []).push(fn); },
     fetch: async (url, opts) => {
       calls.push({ url, opts, at: clock.now() });
       if (url.startsWith("/api/stream")) {
         const mode = modes.length ? modes.shift() : "stream";
         if (mode === "throw") throw new Error("network");
+        if (mode === "hang") return new Promise((_, rej) => { if (opts.signal) opts.signal.addEventListener("abort", () => rej(new Error("aborted"))); });
         if (mode === 503) return { status: 503, headers: { get: () => null }, body: null };
         const s = fakeStream(opts.signal);
         streams.push(s);
         return s.res;
       }
       polls.push({ url, opts });
+      if (poll.fail) throw new Error("network");
+      if (poll.hang) return new Promise(() => {});
       const date = new Date(clock.now()).toUTCString();
       const h = { date, etag: `"${pollRev}"` };
       return { status: 200, headers: { get: (k) => h[k.toLowerCase()] ?? null }, json: async () => snap(pollRev, 7) };
@@ -131,7 +137,8 @@ function setup({ visible = true, stored = {}, live = true } = {}) {
   };
   const app = APP.createApp(env);
   const text = (id) => doc.getElementById(id).textContent;
-  return { app, doc, clock, calls, polls, streams, modes, text, store, setPollRev: (r) => { pollRev = r; } };
+  return { app, doc, clock, calls, polls, streams, modes, text, store, poll,
+           fire: (type) => (listeners[type] || []).forEach((fn) => fn()), setPollRev: (r) => { pollRev = r; } };
 }
 
 const streamCalls = (t) => t.calls.filter((c) => c.url.startsWith("/api/stream"));
@@ -193,24 +200,40 @@ test("live: heartbeats keep it alive; 45 s of silence falls back to polling and 
   assert.equal(t.text("live"), "live");
   assert.equal(t.streams.length, 1);
   const silent = t.clock.now();
-  await t.clock.advance(44000, settle);
+  await t.clock.advance(30000, settle);
   assert.equal(t.text("live"), "live");
+  await t.clock.advance(1000, settle);                   // SPEC-0434: silent over 30 s
+  assert.equal(t.text("live"), "stalled");
+  await t.clock.advance(13000, settle);
+  assert.equal(t.text("live"), "stalled");
   await t.clock.advance(1000, settle);                   // 45 s without a byte
   assert.ok(t.streams[0].closed, "the silent stream was aborted");
-  assert.equal(t.text("live"), "polling");
   assert.ok(t.polls.length >= 2, "polling resumed at once");
-  // retry after 2 s, again after 4 s (that second open fails too: 503), 8 s, ...
+  // SPEC-0434: that poll succeeded, so the server is up: the stream reopens at once
+  assert.equal(t.streams.length, 2, "reopened after the successful poll");
+  assert.equal(t.text("live"), "live");
+  assert.ok(silent > 0);
+});
+
+test("live: with polls failing too, a silent stream falls back and retries with backoff", async () => {
+  const t = setup();
+  t.app.start();
+  await settle();
+  t.poll.fail = true;
+  await t.clock.advance(45000, settle);
+  assert.ok(t.streams[0].closed, "the silent stream was aborted");
+  assert.equal(t.text("live"), "offline");
   await t.clock.advance(1999, settle);
   assert.equal(t.streams.length, 1);
   await t.clock.advance(2, settle);
   assert.equal(t.streams.length, 2, "reconnect after 2 s");
   assert.equal(t.text("live"), "live");
-  assert.ok(silent > 0);
 });
 
-test("live: backoff doubles from 2 s to a 30 s cap", async () => {
+test("live: backoff doubles from 2 s to a 30 s cap (the server unreachable, polls failing too)", async () => {
   const t = setup();
   t.modes.push(503, 503, 503, 503, 503, 503, 503);
+  t.poll.fail = true;
   t.app.start();
   await settle();
   const opens = [t.clock.now()];
@@ -221,7 +244,7 @@ test("live: backoff doubles from 2 s to a 30 s cap", async () => {
   }
   const gaps = opens.slice(1).map((v, i) => Math.round((v - opens[i]) / 1000));
   assert.deepEqual(gaps, [2, 4, 8, 16, 30, 30]);
-  assert.equal(t.text("live"), "polling");
+  assert.equal(t.text("live"), "offline");             // SPEC-0434: nothing answers
 });
 
 test("live: a 503 on the stream leaves the page polling and still rendering the snapshot", async () => {
@@ -292,4 +315,81 @@ test("live: without env.live the page only polls (SPEC-0413 behaviour)", async (
   await t.clock.advance(30000, settle);
   assert.equal(streamCalls(t).length, 0);
   assert.ok(t.polls.length >= 2);
+});
+
+// ---- SPEC-0434 ----
+
+test("SPEC-0434: a stream open that never answers fails over after 10 s and retries", async () => {
+  const t = setup();
+  t.modes.push("hang");
+  t.app.start();
+  await settle();
+  assert.equal(t.text("live"), "polling");
+  await t.clock.advance(9999, settle);
+  assert.equal(streamCalls(t).length, 1);
+  await t.clock.advance(1, settle);                      // the open watchdog
+  assert.ok(streamCalls(t)[0].opts.signal.aborted, "the hung open was aborted");
+  await t.clock.advance(2000, settle);
+  assert.equal(t.streams.length, 1);
+  assert.equal(t.text("live"), "live");
+});
+
+test("SPEC-0434: the server comes back: a successful poll reopens the stream without waiting out the backoff", async () => {
+  const t = setup();
+  t.app.start();
+  await settle();
+  t.poll.fail = true;
+  t.modes.push("throw", "throw", "throw", "throw", "throw");
+  t.streams[0].end();                                    // the server went away (a restart)
+  await settle();
+  assert.equal(t.text("live"), "offline");
+  // retries at 2, 6, 14, 30 s fail; the next is 30 s out (60 s); polls at 15, 30 s fail too
+  await t.clock.advance(31000, settle);
+  const n = streamCalls(t).length;
+  t.poll.fail = false;                                   // the new process is up
+  t.modes.length = 0;
+  await t.clock.advance(14000, settle);                  // the 45 s poll succeeds
+  assert.equal(streamCalls(t).length, n + 1, "reopened at the successful poll, not at 60 s");
+  assert.equal(streamCalls(t).at(-1).at, t.calls[0].at + 45000);
+  assert.equal(t.text("live"), "live");
+});
+
+test("SPEC-0434: a reconnect re-fetches the snapshot; the online event retries at once", async () => {
+  const t = setup();
+  t.app.start();
+  await settle();
+  t.streams[0].end();
+  await settle();
+  t.poll.fail = true;                                    // keep the fallback poll from reopening it
+  await settle();
+  const polls = t.polls.length;
+  t.poll.fail = false;
+  await t.clock.advance(2000, settle);                   // the retry opens
+  assert.equal(t.text("live"), "live");
+  assert.ok(t.polls.length > polls, "a poll right after the reconnect");
+  t.streams[1].end();
+  await settle();
+  t.modes.push(503);
+  await t.clock.advance(2000, settle);
+  const before = streamCalls(t).length;
+  t.fire("online");
+  await settle();
+  assert.equal(streamCalls(t).length, before + 1);
+});
+
+test("SPEC-0434: the header stamps the data time and the chip is truthful", async () => {
+  const t = setup();
+  t.app.start();
+  await settle();
+  t.streams[0].push(wireOf(snap("r1", 2)));
+  await settle();
+  assert.ok(/^data as of \d\d:\d\d:\d\d · checked 0s ago$/.test(t.text("updated")), t.text("updated"));
+  assert.ok(t.doc.getElementById("live").classList.contains("is-live"));
+  await t.clock.advance(31000, settle);
+  assert.equal(t.text("live"), "stalled");
+  assert.ok(t.doc.getElementById("live").classList.contains("is-stalled"));
+  t.streams[0].push(": hb\n\n");
+  await settle();
+  await t.clock.advance(1000, settle);
+  assert.equal(t.text("live"), "live");
 });

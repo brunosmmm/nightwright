@@ -99,6 +99,8 @@ a, button, summary { min-height: 44px; }
 .live { margin-left: auto; font-size: 0.8rem; font-weight: 600; padding: 0.1rem 0.5rem; border-radius: 999px; border: 1px solid currentColor; opacity: 0.8; }
 .live.is-live { color: #1a7f37; opacity: 1; }
 .live.is-reconnecting { color: #9a6700; }
+.live.is-stalled { color: #9a6700; opacity: 1; }
+.live.is-offline { color: var(--red); opacity: 1; }
 
 /* SPEC-0429: answering from the inbox */
 .esc .head { display: flex; flex-wrap: wrap; align-items: center; gap: 0.25rem 0.5rem; }
@@ -128,6 +130,7 @@ button.primary { background: var(--green); color: #fff; font-weight: 600; text-a
 .msg { padding: 0.25rem 0; overflow-wrap: anywhere; }
 .msg.err { color: var(--red); }
 .msg.ok { color: var(--green); }
+.msg.warn { color: var(--amber); }
 button.camp { display: inline-flex; align-items: center; padding: 0.25rem 0.5rem; text-decoration: underline; }
 
 /* SPEC-0430: the campaign drilldown */

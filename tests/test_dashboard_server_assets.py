@@ -18,7 +18,7 @@ from nightwright.agentic.dashboard import auth as A
 from nightwright.agentic.dashboard import server as DS
 
 ROOT = Path(__file__).resolve().parent.parent
-ALLOWED_DASH_FILES = {"audit.jsonl", "audit.jsonl.1", "server.json"}
+ALLOWED_DASH_FILES = {"audit.jsonl", "audit.jsonl.1", "server.json", "secret"}  # secret: SPEC-0434
 CSRF_META = re.compile(rb'<meta name="nw-csrf" content="([^"]*)">')
 
 
