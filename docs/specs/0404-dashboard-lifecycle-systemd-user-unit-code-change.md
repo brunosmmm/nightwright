@@ -8,6 +8,7 @@ updated: 2026-11-03
 kind: feature
 source_idea: IDEA-877
 parent: SPEC-0400
+depends_on: [SPEC-0401]
 tags: [agentic, dashboard, remote, lifecycle]
 ---
 
@@ -95,6 +96,8 @@ delivered here)
   plugs into (Decision 6).
 
 ## Decision
+
+This spec builds on SPEC-0401's server, snapshot cache and auth gates; implementation must not start before SPEC-0401 is done.
 
 1. **Module `agentic/dashboard/lifecycle.py`** holds the pure logic: `server_json_path(cfg)`,
    `write_server_record`, `read_server_record`, `remove_server_record`, `record_live(rec)`,
