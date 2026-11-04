@@ -236,15 +236,36 @@ from anywhere. Every function has a key, so the mouse is never required.
 
 ### Dependencies
 
-- Child 2 (`history.py`, the index reader with a progress hook, and the fixture) and child 5
-  (the popup and its opener) land first. This spec adds no `depends_on` front-matter keys,
-  because those children have no spec ids yet. The campaign that implements this spec must
-  find both merged.
-- If child 2's reader has no progress callback, the implementer adds an optional keyword-only
-  `progress=None` argument to it. That change is additive and leaves the schema alone.
-- Child 3's harness (`tests/tui_harness.py`) and the fixture
-  (`tests/fixtures/agentic_history/`) are used by the tab tests. No `importorskip` and no
-  `needs_textual` guard is added (epic child 3 forbids them).
+- **Prerequisites.** Child 2 (`history.py`, the index reader with a progress hook, the
+  fixture), child 3 (`tests/tui_harness.py`, the snapshot helper, the scale-clone helper, the
+  no-skip guard test) and child 5 (the popup and its opener) land first. The implementing
+  campaign starts only after all three are `done`.
+- **Front matter.** At the time of writing none of the three has a spec id (the epic's
+  breakdown lists them, but only this child is promoted), so `depends_on` cannot name them
+  yet and the linter would reject invented ids. **Gate:** this spec is not moved to
+  `accepted` until the child-2, child-3 and child-5 specs exist and
+  `depends_on: [<child 2 id>, <child 3 id>, <child 5 id>]` is added to the front matter in
+  the same edit. The source idea IDEA-888 already records "depends_on child 2 and child 5"
+  for the queue, and child 3 is added to it at that point.
+- **Symbols this spec takes from them.** The names below are the contract this spec codes
+  against. All reach the tab through one adapter, the module-level `_history_api` in
+  `history_tab.py`, so a rename in the owning spec is a one-line change here. When the child
+  specs exist, the gate above includes reconciling this table with their text.
+
+| Symbol | Owner | Used for |
+|---|---|---|
+| `history.load_index(cfg, *, progress=None) -> list[dict]` | child 2 | the `nw.history.index.v1` rows. On a cold cache it builds and calls `progress(done, total)`. On a warm one it returns the cached rows after stat-ing live campaigns and the global logs. |
+| `history.parse_date(text, *, end=False) -> datetime` | child 2 | the one `since:`/`until:` parser, shared with `nw campaign history --list`. Raises `ValueError`. |
+| `history.PHASES` | child 2 | the valid `dominant:` values. |
+| `history.CLOSED_OUTCOMES = ("merged", "handed_off", "abandoned")` | child 2 | the closed set of Decision 4. |
+| `app.open_campaign_detail(campaign_id: str) -> None` | child 5 | pushes the `CampaignDetail` popup. |
+| `tests/tui_harness.py` (`start_desk`, `pilot_until`, visible-text extraction, `scale_clone`, `snapshot`) | child 3 | the Pilot, perf and snapshot tests. |
+| `tests/fixtures/agentic_history/` | child 2, with the capture tool | real closed, abandoned, handed-off and live campaigns. |
+
+- If child 2's reader lacks a `progress` argument, child 2's spec must add it; this spec
+  does not patch `history.py`.
+- No `importorskip` and no `needs_textual` guard is added by this spec (epic child 3 forbids
+  them).
 
 ### Performance
 
@@ -290,29 +311,27 @@ With the 500-campaign clone from the epic's perf helper:
 - [ ] **AC6.** Applying a filter shows only matching rows. Applying a bad filter leaves the
   rows and the previous filter unchanged and shows the error in the status line. `x`
   restores the unfiltered list. `since:`/`until:` select the same campaigns as
-  `nw campaign history --list --since/--until` with the same dates, on the fixture.
+  `nw campaign history --list --since/--until` with the same dates, on the fixture. A
+  filter that matches nothing shows `no campaign matches the filter (x: clear)`.
 - [ ] **AC7.** `o` cycles the sort keys in the documented order, `O` reverses, and the status
   line states both. The order is total and deterministic.
-- [ ] **AC8.** On a cold cache, the index build runs off the event-loop thread and the status
-  line shows `building history index N/M…` progress; the app still responds to keys while it
-  builds. On a warm cache, no build runs and rows appear.
+- [ ] **AC8.** Loading and performance. On a cold cache, the index build runs off the
+  event-loop thread and the status line shows `building history index N/M…` progress; the
+  app still responds to keys while it builds. On a warm cache, no build runs and rows appear.
+  With no terminal campaigns the status line reads `no closed campaigns yet (a: include
+  live)`. When the history layer raises, the error text shows as plain text and the last
+  good rows stay. On the 500-campaign clone, filtering and sorting the loaded rows take
+  ≤ 20 ms and a repaint ≤ 100 ms (×3 slack in the assertions).
 - [ ] **AC9.** Enter, and a double-click on a data row, each open the child-5 popup for that
   row's campaign, exactly once. Esc returns to History with the cursor on the same row. A
-  single click only moves the cursor.
+  single click only moves the cursor. Every function in the Keys list, including open,
+  works without the mouse.
 - [ ] **AC10.** A refresh that changes no row neither repaints nor moves the cursor or
   scroll offset. A refresh that changes the row set keeps the cursor on the same campaign
   when it is still visible.
 - [ ] **AC11.** The tab is read-only. After a session (open the tab, sort, filter, toggle
   `a`, open and close the popup), a hash of every file in the data dir is identical. The
   tab binds no key that calls `queue_action` or any `apply_*`.
-- [ ] **AC12.** Empty and error states render as described: no closed campaigns, no match,
-  history-layer error with the last good rows retained.
-- [ ] **AC13.** The tab is fully keyboard-drivable: every function in the Keys list works
-  without the mouse.
-- [ ] **AC14.** On the 500-campaign clone, filtering and sorting the loaded rows take ≤ 20 ms
-  and a repaint ≤ 100 ms (×3 slack in the assertions).
-- [ ] **AC15.** No new Textual skip guard is added, and the existing `test_tui_*` suites stay
-  green.
 
 ## Test plan
 
@@ -355,15 +374,15 @@ child 3's `tests/tui_harness.py`, with cfg over a copy of `tests/fixtures/agenti
 6. Move to a row, press Enter and assert the popup is `CampaignDetail` for that campaign
    id. Press Esc and assert the History table has focus with the same cursor campaign.
    Repeat with `Pilot.double_click` on another row and assert exactly one screen was pushed
-   (count `app.screen_stack`). A single `click` only moves the cursor (AC9, AC13).
+   (count `app.screen_stack`). A single `click` only moves the cursor (AC9).
 7. Refresh stability: patch the loader to return identical rows, call `r`, and assert the
    table's repaint counter did not change and the cursor and scroll are unchanged. Then add
    one closed campaign to the returned set and assert the cursor campaign is unchanged
    (AC10).
 8. Failure states: loader returns no rows -> `no closed campaigns yet`; filter with no match
    -> `no campaign matches the filter`; loader raises -> the error text appears and the last
-   good rows stay (AC12).
-9. Keyboard-only run: steps 1, 3, 4, 6 repeated with key presses only (AC13).
+   good rows stay (AC6, AC8).
+9. Keyboard-only run: steps 1, 3, 4, 6 repeated with key presses only (AC9).
 10. Hash every file in the data dir before and after steps 1-9, and assert they are equal.
     Assert, by source inspection, that `history_tab.py` references neither `queue_action` nor
     `apply_` (AC11).
@@ -372,7 +391,7 @@ child 3's `tests/tui_harness.py`, with cfg over a copy of `tests/fixtures/agenti
 
 **Performance.** In `tests/test_history_perf.py`, or a sibling `tests/test_tui_history_perf.py`
 that reuses child 3's scale-clone helper: load the 500-campaign index, time
-`filter_history_rows` + `sort_history_rows` and a full repaint, and assert the AC14 budgets
+`filter_history_rows` + `sort_history_rows` and a full repaint, and assert the AC8 budgets
 with ×3 slack.
 
 **Manual verification** on the real data dir, with the TUI built from this branch:
@@ -388,13 +407,15 @@ with ×3 slack.
    and the cursor does not move.
 
 **Regression guard:** `uv run pytest` on `tests/test_tui_*.py` and the dashboard suites
-(`python3 tools/affected_tests.py --run uv run pytest -q`); the epic's guard test that no TUI
-test brings back a Textual skip; `python3 tools/spec_lint.py`.
+(`python3 tools/affected_tests.py --run uv run pytest -q`); the epic's guard test (child 3)
+that no TUI test brings back a Textual skip, which also covers the two new test files of this
+spec (no `importorskip`, no skip marker for a missing Textual); `python3 tools/spec_lint.py`.
 
 ## Rollout / migration
 
 - No data migration. The tab reads the index cache, which the history layer builds lazily.
-- Order: land after child 2 (history layer) and child 5 (popup). Independent of child 7
+- Order: land after child 2 (history layer), child 3 (TUI harness) and child 5 (popup).
+  Independent of child 7
   (Findings tab), so the two can land in either order. Whichever lands second reconciles the
   `_tab_activated` branches and the tab-key bindings (`6` here, `7` there).
 - On the first use of the tab on a large data dir the cold build takes a few seconds, with a
@@ -405,7 +426,8 @@ test brings back a Textual skip; `python3 tools/spec_lint.py`.
 - [ ] Acceptance criteria all met.
 - [ ] Test plan executed; automated tests pass (`uv run pytest` on the affected tests);
   manual steps performed and noted in the spec.
-- [ ] No regressions.
+- [ ] No regressions: the existing `test_tui_*` suites stay green and no new Textual skip
+  guard was added by this spec.
 - [ ] Spec body updated to match what shipped.
 - [ ] `docs/LEDGER.md` regenerated (`python3 tools/spec_lint.py --write-ledger`).
 
