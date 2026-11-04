@@ -424,6 +424,28 @@ server serializes it once per `rev`).
 - `python3 tools/affected_tests.py --run uv run pytest -q -n 6`: 4053 passed, 4 skipped.
   `python3 tools/spec_lint.py` exits 0. The full suite is left to gating.
 
+### Test record (2026-11-03, loop 3: review fixes)
+
+- New tests: `test_unreadable_pid_files_do_not_fail_the_watermark`,
+  `test_pid_alive_is_the_real_kill_probe`, `test_build_without_a_data_dir_raises` and the
+  inf/nan cases in `test_settings_defaults_fallback_and_later_keys`
+  (`tests/test_dashboard_snapshot.py`); `test_a_failing_watermark_never_fails_get`
+  (`tests/test_dashboard_cache.py`); `test_a_config_without_a_data_dir_exits_1` and
+  `test_text_prints_every_failed_section` (`tests/test_dashboard_cli.py`);
+  `test_reader_holder_ignores_another_probe_on_a_dead_follower`
+  (`tests/test_agentic_followers.py`). `test_a_dead_follower_moves_watermark_without_any_write`
+  now controls liveness through a patched `gate_slots._pid_alive`, so it no longer depends on
+  a real pid that could be reused.
+- `uv run pytest -q -n 0` over the five dashboard test files plus `test_agentic_followers` and
+  `test_agentic_events`: 91 passed.
+- Mutation checks: catching only `OSError` in `_pid_of` fails the unreadable-pid test; making
+  `reader_holder` return on the first busy probe fails the concurrent-probe test.
+- `python3 tools/affected_tests.py --run uv run pytest -q -n 6`: the first run stopped when an
+  xdist worker crashed in `tests/test_org_write_race.py::test_concurrent_processes_lose_nothing_and_never_reuse_an_id`.
+  The previous gate also recorded that test as flaky, and it does not touch the dashboard.
+  `tests/test_org_write_race.py` alone: 9 passed. The affected set with that one test
+  deselected: 4215 passed, 5 skipped. The full suite is left to gating.
+
 ### As shipped (2026-11-03)
 
 - **`rev` also ignores clock-derived keys without the `_age_s` suffix.** `dashboard_payload`
@@ -497,6 +519,27 @@ server serializes it once per `rev`).
   called `AM.escalations_signature`. They now call `ESC.signature`, and their assertions are
   unchanged. The rename forces this edit, because the AC also requires that the TUI module no
   longer defines the old name. `tui/mailbox_tab.py` calls `ESC.signature`.
+
+### As shipped (2026-11-03, loop 3: review fixes)
+
+- **The watermark never fails the cache.** `_pid_of` treats a file that is not valid UTF-8 as
+  holding no pid. If `watermark` still raises, `SnapshotCache` counts that check as a move. It
+  then rebuilds at most once per `refresh_s` and keeps returning a snapshot, and `get()` never
+  raises from the watermark.
+- **`reader_holder` tells another prober from a live follower.** When the lock is busy, the
+  pid in `.pid` decides the result. If that pid is alive, `reader_holder` returns it at once.
+  Otherwise the holder may be another probe holding the lock for an instant (the TUI,
+  `conduct-status`, Supervisor, the dashboard), so it retries like `reader_lock` (up to
+  `READER_LOCK_TRIES` × `READER_LOCK_RETRY_S`) before reporting the lock as held. If the lock
+  is still busy after the retries, it returns the recorded pid, or -1 when there is none, as
+  before.
+- **The build needs a data dir.** `snapshot.build` raises when the config has no `data_dir` or
+  the directory does not exist. `nw dashboard snapshot` then exits 1 with the message instead
+  of printing a document of error sections. It still creates nothing.
+- **Text form:** it also prints `health.stewards: error: …`, `health.herdr_watch: error: …`,
+  `needs_you: error: …` and `conductor_handling: error: …`.
+- **Settings:** `refresh_s` and `max_stale_s` must be finite, so `.inf` and `.nan` fall back to
+  the defaults.
 
 ## Rollout / migration
 

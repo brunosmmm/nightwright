@@ -6,6 +6,7 @@ Read-only by contract (SPEC-0400 invariant 1): nothing here writes under the dat
 imports this package (invariant 2, `tests/test_dashboard_imports.py`)."""
 from __future__ import annotations
 
+import math
 import os
 from pathlib import Path
 
@@ -13,7 +14,8 @@ DEFAULTS = {"bind": "tailscale:8791", "allowed_logins": [], "refresh_s": 5, "max
 
 
 def _positive(v) -> bool:
-    return isinstance(v, (int, float)) and not isinstance(v, bool) and v > 0
+    return isinstance(v, (int, float)) and not isinstance(v, bool) and math.isfinite(v) \
+        and v > 0
 
 
 _VALID = {

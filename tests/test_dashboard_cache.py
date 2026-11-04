@@ -165,6 +165,28 @@ def test_a_failing_build_keeps_the_move_visible():
     assert again is not first and c.builds == 2 and builder.calls == 2
 
 
+def test_a_failing_watermark_never_fails_get():
+    """A watermark that raises (an unreadable file) counts as a move: `get()` rebuilds at most
+    once per `refresh_s` and keeps returning a snapshot."""
+    clock, builder, boom = Clock(), Counting(), []
+
+    def mark(cfg):
+        if boom:
+            raise UnicodeDecodeError("utf-8", b"\xff", 0, 1, "invalid start byte")
+        return (0,)
+    c = SN.SnapshotCache(CFG, clock=clock, builder=builder, watermark_fn=mark,
+                         refresh_s=5, max_stale_s=1000)
+    first = c.get()
+    boom.append(1)
+    assert c.get() is first
+    clock.t += 5
+    second = c.get()
+    assert second is not first and builder.calls == 2
+    assert c.get() is second
+    clock.t += 5
+    assert c.get() is not second and builder.calls == 3
+
+
 def test_settings_feed_the_cache():
     cfg = {"data_dir": "/x", "agentic": {"dashboard": {"refresh_s": 2, "max_stale_s": 9}}}
     c = SN.SnapshotCache(cfg)

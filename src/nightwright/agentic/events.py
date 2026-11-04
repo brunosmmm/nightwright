@@ -996,24 +996,38 @@ def reader_lock(cfg, reader):
         os.close(fd)
 
 
+def _recorded_pid(pid_file) -> int | None:
+    try:
+        return int(pid_file.read_text().strip())
+    except (OSError, ValueError):
+        return None
+
+
 def reader_holder(cfg, reader) -> int | None:
-    """Pid of the live follower for `reader`, or None."""
+    """Pid of the live follower for `reader`, or None. A busy lock whose recorded pid is alive
+    is that follower's at once; otherwise the holder may be another prober's instant (the TUI,
+    `conduct-status`, the dashboard), so the probe retries like `reader_lock` before calling
+    it held (SPEC-0401). -1 when held with no readable pid."""
     d = cursors_dir(cfg)
     path = d / f"{_safe(reader)}.lock"
     if not path.exists():
         return None
+    pid_file = d / f"{_safe(reader)}.pid"
     fd = os.open(path, os.O_RDWR)
     try:
-        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-    except BlockingIOError:
-        pid_file = d / f"{_safe(reader)}.pid"
-        try:
-            return int(pid_file.read_text().strip())
-        except (OSError, ValueError):
-            return -1
-    else:
-        fcntl.flock(fd, fcntl.LOCK_UN)
-        return None
+        for attempt in range(READER_LOCK_TRIES):
+            try:
+                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError:
+                pid = _recorded_pid(pid_file)
+                if (pid is not None and gate_slots._pid_alive(pid)) \
+                        or attempt + 1 == READER_LOCK_TRIES:
+                    return -1 if pid is None else pid
+                time.sleep(READER_LOCK_RETRY_S)
+            else:
+                fcntl.flock(fd, fcntl.LOCK_UN)
+                return None
+        return None                                 # unreachable: the loop always returns
     finally:
         os.close(fd)
 

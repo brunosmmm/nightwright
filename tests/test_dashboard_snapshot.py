@@ -292,22 +292,41 @@ def test_follower_gate_mailbox_and_herdr_files_move_watermark(fx):
     assert SN.watermark(cfg) == SN.watermark(cfg)
 
 
-def test_a_dead_follower_moves_watermark_without_any_write(fx):
-    """A follower that dies releases its flock and writes nothing: its pid's liveness moves."""
+def test_a_dead_follower_moves_watermark_without_any_write(fx, monkeypatch):
+    """A follower that dies releases its flock and writes nothing: its pid's liveness moves.
+    Liveness is a controlled `_pid_alive`, so no real pid can be reused under the test."""
     cfg = fx["cfg"]
-    child = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(600)"])
-    try:
-        E.cursors_dir(cfg).mkdir(parents=True, exist_ok=True)
-        (E.cursors_dir(cfg) / "conductor.pid").write_text(str(child.pid))
-        w = SN.watermark(cfg)
-        assert ("cursors/conductor.pid", str(child.pid), True) in w[4][4]
-        files = {p: p.stat().st_mtime_ns for p in fx["data"].rglob("*") if p.is_file()}
-    finally:
-        child.kill()
-        child.wait()
+    pid, live = 4_000_001, {4_000_001}
+    monkeypatch.setattr(GS, "_pid_alive", lambda p: p in live)
+    E.cursors_dir(cfg).mkdir(parents=True, exist_ok=True)
+    (E.cursors_dir(cfg) / "conductor.pid").write_text(str(pid))
+    w = SN.watermark(cfg)
+    assert ("cursors/conductor.pid", str(pid), True) in w[4][4]
+    files = {p: p.stat().st_mtime_ns for p in fx["data"].rglob("*") if p.is_file()}
+    live.clear()                                    # the follower dies, writing nothing
     w1 = SN.watermark(cfg)
     assert {p: p.stat().st_mtime_ns for p in fx["data"].rglob("*") if p.is_file()} == files
-    assert w1 != w and ("cursors/conductor.pid", str(child.pid), False) in w1[4][4]
+    assert w1 != w and ("cursors/conductor.pid", str(pid), False) in w1[4][4]
+
+
+def test_pid_alive_is_the_real_kill_probe():
+    """The real `kill(pid, 0)` behind the liveness signature, without a reaped-pid race."""
+    assert GS._pid_alive(os.getpid())
+    assert not any(GS._pid_alive(p) for p in (0, -1, True, None, "12"))
+
+
+def test_unreadable_pid_files_do_not_fail_the_watermark(fx):
+    """A torn or binary `.pid` / `waiting-*.json` (invalid UTF-8) counts as no pid."""
+    cfg = fx["cfg"]
+    E.cursors_dir(cfg).mkdir(parents=True, exist_ok=True)
+    (E.cursors_dir(cfg) / "conductor.pid").write_bytes(b"\xff\xfe\x00")
+    GS.slots_dir(cfg).mkdir(parents=True, exist_ok=True)
+    (GS.slots_dir(cfg) / "waiting-x.json").write_bytes(b"{\"pid\": \xc3\x28}")
+    L.lease_path(cfg).write_bytes(b"\x80garbage")
+    w = SN.watermark(cfg)
+    names = {r[0] for r in w[4][4]}
+    assert not names & {"cursors/conductor.pid", "gate-slots/waiting-x.json"}
+    assert SN.watermark(cfg) == w
 
 
 # ---- recent events -----------------------------------------------------------------------
@@ -424,3 +443,14 @@ def test_settings_defaults_fallback_and_later_keys():
     assert settings({"agentic": {"dashboard": {"refresh_s": -1, "max_stale_s": True}}})[
         "refresh_s"] == 5
     assert settings({"agentic": {"dashboard": "junk"}})["max_stale_s"] == 30
+    inf = settings({"agentic": {"dashboard": {"refresh_s": float("inf"),
+                                              "max_stale_s": float("nan")}}})
+    assert (inf["refresh_s"], inf["max_stale_s"]) == (5, 30)
+
+
+def test_build_without_a_data_dir_raises(tmp_path):
+    with pytest.raises(ValueError, match="no data_dir"):
+        SN.build({"agentic": {}})
+    with pytest.raises(FileNotFoundError, match="does not exist"):
+        SN.build({"data_dir": str(tmp_path / "missing"), "agentic": {}})
+    assert not (tmp_path / "missing").exists()

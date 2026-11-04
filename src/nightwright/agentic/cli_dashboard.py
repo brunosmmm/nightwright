@@ -61,8 +61,11 @@ def text_lines(doc: dict) -> list[str]:
                    f"backlog {totals.get('backlog', 0)} · "
                    f"conductor-handling {totals.get('conductor_handling', 0)}")
         out.append(f"spend today ${float(totals.get('spend_today_usd') or 0):.2f}")
-    for name in ("slots", "gate_pools", "active", "waiting", "backlog", "delivered",
-                 "recent_events"):
+    for name in ("stewards", "herdr_watch"):
+        if _err(h.get(name)):
+            out.append(f"health.{name}: error: {_err(h[name])}")
+    for name in ("slots", "gate_pools", "active", "needs_you", "conductor_handling", "waiting",
+                 "backlog", "delivered", "recent_events"):
         if _err(doc.get(name)):
             out.append(f"{name}: error: {_err(doc[name])}")
     inbox = doc.get("inbox") or {}

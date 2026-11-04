@@ -83,6 +83,33 @@ def test_reader_lock_retries_a_probe_and_still_refuses_a_holder(tmp_path, monkey
             assert "already followed by pid" in str(e)
 
 
+def test_reader_holder_ignores_another_probe_on_a_dead_follower(tmp_path, monkeypatch):
+    """SPEC-0401: a concurrent probe's instant on a dead follower's lock is not a live holder;
+    a live recorded pid is returned at once, and a real holder is still reported."""
+    import fcntl
+    cfg = _cfg(tmp_path)
+    with E.reader_lock(cfg, "conductor"):
+        assert E.reader_holder(cfg, "conductor") == os.getpid()
+    d = E.cursors_dir(cfg)
+    (d / "conductor.pid").write_text("4000001")
+    monkeypatch.setattr(E.gate_slots, "_pid_alive", lambda p: p == os.getpid())
+    real, busy = fcntl.flock, [2]
+
+    def probed(fd, op):
+        if op & fcntl.LOCK_NB and op & fcntl.LOCK_EX and busy[0]:
+            busy[0] -= 1
+            raise BlockingIOError(11, "another probe holds it")
+        return real(fd, op)
+    monkeypatch.setattr(E.fcntl, "flock", probed)
+    monkeypatch.setattr(E, "READER_LOCK_RETRY_S", 0)
+    assert E.reader_holder(cfg, "conductor") is None and busy[0] == 0
+    busy[0] = 1000                                  # held for good, by a dead pid's record
+    assert E.reader_holder(cfg, "conductor") == 4000001
+    (d / "conductor.pid").write_text(str(os.getpid()))
+    busy[0] = 1000
+    assert E.reader_holder(cfg, "conductor") == os.getpid() and busy[0] == 999
+
+
 def test_followers_empty(tmp_path):
     assert E.followers(_cfg(tmp_path)) == []
 

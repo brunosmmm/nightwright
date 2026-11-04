@@ -82,6 +82,19 @@ def test_a_failing_build_exits_1(monkeypatch):
     assert r.exit_code == 1 and "KeyError" in r.output
 
 
+def test_a_config_without_a_data_dir_exits_1(monkeypatch, tmp_path):
+    from click.testing import CliRunner
+    from nightwright.cli import cli
+    monkeypatch.setattr("nightwright.cli.load_config", lambda: {"agentic": {}})
+    r = CliRunner().invoke(cli, ["dashboard", "snapshot"])
+    assert r.exit_code == 1 and "no data_dir" in r.output
+    missing = tmp_path / "nope"
+    monkeypatch.setattr("nightwright.cli.load_config",
+                        lambda: {"data_dir": str(missing), "agentic": {}})
+    r = CliRunner().invoke(cli, ["dashboard", "snapshot", "--json"])
+    assert r.exit_code == 1 and "does not exist" in r.output and not missing.exists()
+
+
 # ---- the text summary's branches (`text_lines` on crafted documents) --------------------
 
 def _doc(lease=None, runner_code=None, cond_pid=None, escalations=(), parks=()):
@@ -123,3 +136,17 @@ def test_text_park_lines_keep_the_detail_verbatim():
     assert "park SPEC-1 C1 main_dirty: see: " in lines
     assert "park C2 C2 main_not_on_base" in lines
     assert "nothing needs you" not in lines
+
+
+def test_text_prints_every_failed_section():
+    from nightwright.agentic.cli_dashboard import text_lines
+    doc = _doc()
+    doc["health"]["stewards"] = {"error": "ValueError: bad inbox"}
+    doc["health"]["herdr_watch"] = {"error": "OSError: gone"}
+    doc["needs_you"] = {"error": "KeyError: x"}
+    doc["conductor_handling"] = {"error": "KeyError: y"}
+    lines = text_lines(doc)
+    for want in ("health.stewards: error: ValueError: bad inbox",
+                 "health.herdr_watch: error: OSError: gone", "needs_you: error: KeyError: x",
+                 "conductor_handling: error: KeyError: y"):
+        assert want in lines

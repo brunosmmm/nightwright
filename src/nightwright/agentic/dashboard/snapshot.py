@@ -87,10 +87,11 @@ def _tree_signature(d) -> tuple:
 
 
 def _pid_of(path):
-    """The pid in a `.pid` file (a bare int) or a JSON record's `pid`; None when unreadable."""
+    """The pid in a `.pid` file (a bare int) or a JSON record's `pid`; None when unreadable
+    (missing, or not UTF-8: a torn write or a stray binary file must not fail the watermark)."""
     try:
         raw = path.read_text(encoding="utf-8").strip()
-    except OSError:
+    except (OSError, ValueError):
         return None
     if raw.isdigit():
         return int(raw)
@@ -287,10 +288,21 @@ def _dp_section(dp, fn):
     return dp if _failed(dp) else _safe(fn, dp)
 
 
+def _require_data_dir(cfg) -> None:
+    """The build itself cannot run without a config naming an existing data dir: raise, so
+    `nw dashboard snapshot` exits 1 instead of printing a document of error sections."""
+    root = cfg.get("data_dir") if isinstance(cfg, dict) else None
+    if not root:
+        raise ValueError("no data_dir in the config")
+    if not store.agentic_dir(cfg).parent.is_dir():
+        raise FileNotFoundError(f"data dir {root} does not exist")
+
+
 def build(cfg, now=None) -> dict:
     """One `nw.dashboard.v1` document. A builder that raises turns its section into
     `{"error": "<Type>: <message>"}`; the rest still builds."""
     from .. import queue as Q
+    _require_data_dir(cfg)
     now = now or dt.datetime.now().astimezone()
     dp = _safe(Q.dashboard_payload, cfg, now=now)
     tail = _safe(_tail_events, cfg)
@@ -359,11 +371,19 @@ class SnapshotCache:
         self._built_at = None
         self._last_check = None
 
+    def _watermark(self):
+        """The watermark, or a fresh sentinel when it raises: an unreadable state counts as a
+        move (rebuild at most once per `refresh_s`) and never fails `get()`."""
+        try:
+            return self.watermark_fn(self.cfg)
+        except Exception:                           # noqa: BLE001 - keep serving the cache
+            return object()
+
     def _build(self, t, wm=None) -> None:
         # the watermark is taken before the build: a change during it is seen at the next
         # check. It is stored only with the snapshot it describes, so a builder that raises
         # leaves the old pair and the next check still sees the move.
-        wm = self.watermark_fn(self.cfg) if wm is None else wm
+        wm = self._watermark() if wm is None else wm
         doc = self.builder(self.cfg)
         self._wm, self._cached = wm, doc
         self.builds += 1
@@ -380,7 +400,7 @@ class SnapshotCache:
             elif t - self._last_check >= self.refresh_s:
                 self._last_check = t
                 self.watermark_checks += 1
-                wm = self.watermark_fn(self.cfg)
+                wm = self._watermark()
                 if wm != self._wm:
                     self._build(t, wm)
             return self._cached
