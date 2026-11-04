@@ -1,7 +1,7 @@
 ---
 id: SPEC-0402
 title: "Live snapshot stream over SSE with polling fallback and load guard"
-status: proposed
+status: accepted
 owner: user
 created: 2026-11-03
 updated: 2026-11-03
