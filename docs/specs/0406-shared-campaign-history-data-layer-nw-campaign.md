@@ -1,9 +1,10 @@
 ---
 id: SPEC-0406
 title: "Shared campaign history data layer: history.py derivation, read-side schemas, campaign_export reuse and the history/records CLIs"
-status: proposed
+status: accepted
 owner: user
 created: 2026-11-03
+updated: 2026-11-03
 source_idea: IDEA-884
 kind: feature
 parent: SPEC-0405
