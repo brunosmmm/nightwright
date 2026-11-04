@@ -5,6 +5,7 @@ import json
 import threading
 
 import pytest
+import waits
 
 from fixtures.dashboard_data import ACTIVE, seed
 from test_dashboard_snapshot import check_schema, ledger_run_end
@@ -61,7 +62,7 @@ class Srv:
 
     def close(self):
         self.srv.shutdown()
-        self.t.join(10)
+        waits.join(self.t, 10)
         self.srv.server_close()
 
 
@@ -192,7 +193,7 @@ def test_ipv6_loopback_host_passes(tmp_path):
             c.close()
     finally:
         srv.shutdown()
-        t.join(10)
+        waits.join(t, 10)
         srv.server_close()
 
 

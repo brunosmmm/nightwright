@@ -3,6 +3,7 @@ import os
 import stat
 
 import pytest
+import waits
 
 from nightwright.agentic.dashboard import auth as A
 
@@ -104,7 +105,7 @@ def test_local_token_concurrent_first_starts_agree(tmp_path):
         out.append(A.local_token(cfg))
     ts = [threading.Thread(target=go) for _ in range(8)]
     [t.start() for t in ts]
-    [t.join(30) for t in ts]
+    [waits.join(t, 30) for t in ts]
     d = tmp_path / "agentic" / "dashboard"
     assert len(out) == 8 and len(set(out)) == 1
     assert (d / "local.token").read_text().strip() == out[0]
