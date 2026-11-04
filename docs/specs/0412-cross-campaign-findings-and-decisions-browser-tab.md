@@ -1,346 +1,317 @@
 ---
 id: SPEC-0412
-title: "TUI Findings tab: cross-campaign browser of every finding, decision, mail and review record over nw.history.record.v1"
+title: "Findings record filter: parse_record_filter and a query adapter that matches nw campaign records over nw.history.record.v1"
 status: proposed
 owner: user
 created: 2026-11-03
 milestone: "M9: agentic workflow"
 kind: feature
 parent: SPEC-0405
-tags: [tui, agentic, observability, findings, textual]
+tags: [tui, agentic, observability, findings]
 source_idea: IDEA-889
 ---
 
 ## Context
 
 Child 7 of epic [SPEC-0405](./0405-rich-queue-tui-prioritized-live-queue-campaign.md) (rich
-queue TUI), promoted from `IDEA-889`. The human asked for "a navigable history of all findings
-and decisions by all agents that record findings and decisions".
+queue TUI), promoted from `IDEA-889` ("Cross-campaign findings and decisions browser tab").
+The human asked for "a navigable history of all findings and decisions by all agents that
+record findings and decisions".
 
-**What exists today.** Findings, decisions and mail are scattered over many sources, and the
-TUI shows only slices of them:
+The full idea (desk tab 7 `Findings` over `nw.history.record.v1`) is too big for one campaign:
+it covers a pure filter and query layer, a paged live-refreshing list, and a record pane with
+navigation into the campaign popup. A spec review split it into three specs. **This spec is
+the first split: the pure filter and query layer.** The other two are follow-on specs, filed
+after this one is accepted (see *Non-goals* for their scope):
 
-- per-campaign `ledger.jsonl` (`finding`, `followup`, `human_decision`, `spec_review`, `note`,
-  and, once epic child 1 lands, `triage`);
-- per-run `run.json` verdicts (`must_fix`, `blockers`, triager `waive`);
-- `conductor/decisions.jsonl`, `escalations/ESC-NNNN.json`, `mailbox/<inbox>.jsonl`;
-- spec reviews (`reviews/`, `spec-reviews.jsonl`), `flaky-tests.json` and
-  `sentinel/<project>.last.json`.
+1. **This spec (SPEC-0412)**: `RecordFilter`, `parse_record_filter`, and the adapter that
+   turns a filter into a history record query. It waits for **epic child 2** (history layer,
+   record cache and fixture) only. It does not need Textual, the desk, or the popup.
+2. Findings tab list, filter bar, paging, live refresh, read-only guarantees. Waits for epic
+   child 3 (TUI test harness) and this spec.
+3. Findings tab record pane and `c` / `r` / `d` navigation into the popup. Waits for epic
+   child 5 (detail popup) and split 2.
 
-The desk (`src/nightwright/tui/app.py`, `IdeaDesk`) has tabs 1 ideas, 2 hub, 3 queue,
-4 mailbox ([SPEC-0249](./0249-tui-mailbox-tab.md)) and 5 events
-([SPEC-0251](./0251-tui-events-tab.md)). The mailbox tab shows mail only, the events tab shows
-the alert stream only, and the campaign screen
-([SPEC-0246](./0246-tui-campaign-detail-screen.md)) shows one campaign's ledger only. Nothing
-lets the human ask a cross-campaign question such as "every `major` finding the reviewer raised
-on project X this month" or "what did the conductor decide about escalations last week".
-
-The epic's shared history layer (`agentic/history.py`, epic child 2) already turns all those
-sources into one flat stream of `nw.history.record.v1` records (`id`, `ts`, `source`, `kind`,
+**What exists today.** Findings, decisions and mail are scattered over many sources:
+per-campaign `ledger.jsonl` (`finding`, `followup`, `human_decision`, `spec_review`, `note`,
+and, once epic child 1 lands, `triage`), per-run `run.json` verdicts, `conductor/decisions.jsonl`,
+`escalations/ESC-NNNN.json`, `mailbox/<inbox>.jsonl`, spec reviews, `flaky-tests.json` and
+`sentinel/<project>.last.json`. The epic's history layer (`agentic/history.py`, epic child 2)
+turns them into one stream of `nw.history.record.v1` records (`id`, `ts`, `source`, `kind`,
 `agent`, `campaign`, `spec_id`, `project`, `severity`, `title`, `text`, `status`, `links`,
-`linked_by`) and exposes the same filtered query on the CLI as `nw campaign records`. The
-campaign detail popup (`CampaignDetail`, epic child 5) is the single place a campaign is
-explored in depth. This spec adds the tab that lists the records and hands off to that popup.
+`linked_by`) and exposes a filtered query on the CLI as `nw campaign records [--campaign C]
+[--agent A] [--kind K] [--project P] [--severity S] [--status S] [--since D] [--until D]
+[--query TEXT] [--limit N] [--json]`.
 
-This spec depends on epic child 2 (history layer, record cache and fixture), child 3 (TUI test
-harness) and child 5 (detail popup). Those children have no spec ids at the time of writing,
-so the dependency is recorded here in prose and in the epic's breakdown. Implementation starts
-once they are `done`.
+The epic defines those flags but not their fine semantics (prefix matching, `none`, fragments,
+relative dates, several terms). The Findings tab needs those semantics, and it must give the
+same answer as the CLI. This spec pins the grammar, says for each row who implements it, and
+guards the equivalence with differential tests.
 
 ## Goals / Non-goals
 
 **Goals**
-- G1. A desk tab 7, `findings`, listing **every** `nw.history.record.v1` record, newest first,
-  from every source the history layer reads, including records that belong to no campaign.
-- G2. A filter bar with the keys `agent: kind: project: severity: status: campaign: since:
-  until:` plus free text that does a full-text search over record title and text.
-- G3. A record pane showing the full record and its links (run, resolving decision,
-  follow-up idea, escalation, thread, campaign).
-- G4. Three navigation keys: `c` opens the campaign popup focused on the record, `r` opens it
-  on the producing run, `d` goes to the record that resolved this one.
-- G5. Strictly read-only, fully keyboard-drivable, and inside the epic's performance budget
-  (query over 50 000 records in at most 200 ms).
+- G1. A pure, Textual-free module `src/nightwright/tui/findings_filter.py` (it imports nothing
+  from Textual, so it also runs in a lean environment) with `RecordFilter`,
+  `parse_record_filter(text, now=None) -> RecordFilter` (never raises) and
+  `query_records(cfg, flt, now=None) -> RecordQueryResult`.
+- G2. A documented filter grammar over the keys `agent: kind: project: severity: status:
+  campaign: since: until:` plus free text, each row saying whether the history query
+  implements it or the adapter post-filters it.
+- G3. Equivalence with `nw campaign records`: the adapter's result equals the CLI's for every
+  filter the CLI can express, and equals a reference predicate applied to the CLI's
+  unfiltered output for the rest.
+- G4. The epic's query budget: a filter or full-text query over 50 000 records in at most
+  200 ms.
 
-**Non-goals**
-- Any write path: no triage, answering, waiving, or editing from this tab. The popup's
-  existing actions (park, resume, prioritize, abandon, SPEC-0250 answer flow) stay in the
-  popup and are not re-exposed here.
-- New record sources, schema fields, or changes to `history.py`. If a field is missing, this
-  spec lives with it and shows `-`.
-- The History tab (closed campaigns, epic child 6) and its tab binding `6`.
-- Saved filters, export from the TUI (`nw campaign records --json` covers that), and charts.
+**Non-goals** (each is in the two follow-on specs listed in *Context*, or out of scope)
+- Everything about the Textual tab: desk tab 7, the `7` binding and `IdeaDesk(tab="findings")`,
+  `FindingsTable`, the filter input widget, paging by 500 rows, the 5 s poll and cursor-stable
+  refresh, the error line, the 160x48 pyte golden. (Split 2.)
+- The record pane, the Links list, the 20 000-character cut, and the `c` / `r` / `d` keys, the
+  double-click and Esc handling, opening `CampaignDetail`. (Split 3.)
+- Any change to `history.py`, to its schemas, or to any ledger or log writer. If child 2
+  shipped a semantic differently from the table below, this spec adapts on the tab side.
+- Any write path. The module reads through the history layer only; its single filesystem
+  side effect is the history layer's disposable cache under `cache_dir`.
+- Saved filters, CLI changes, new record sources, charts.
 
 ## Decision
 
-Add `FindingsView`, a new widget in `src/nightwright/tui/findings_tab.py` mounted as desk tab
-`tab-findings` and bound to `7`. It follows the shape of the events tab
-([SPEC-0251](./0251-tui-events-tab.md)): a `DataTable` plus a filter `Input`, with a side pane.
-All data comes from `history.py`'s record query (the function behind `nw campaign records`);
-the tab never parses ledgers, run files or logs itself. Loading and querying run in Textual
-workers, never on the event-loop thread ([SPEC-0129](./0129-tui-poll-reload-off-the-event-loop-thread.md)).
-Untrusted text is always rendered as `rich.text.Text`, never as markup
-([SPEC-0265](./0265-operator-surfaces-survive-bad-data-and-never.md)).
-The tab is read-only: its only filesystem writes are the history layer's disposable cache under
-`cache_dir`.
+Add one pure module, `src/nightwright/tui/findings_filter.py`, with three parts:
+
+1. `RecordFilter`: a frozen dataclass holding the parsed filter (see *Design*).
+2. `parse_record_filter(text, now=None)`: a small `key:value` token parser in the style of the
+   events tab ([SPEC-0251](./0251-tui-events-tab.md)). It never raises. It does not reuse the
+   History tab's parser (epic child 6), so the two tabs can land in either order.
+3. `query_records(cfg, flt, now=None)`: translates the filter into the history layer's
+   record query, then applies a **final reference predicate** `matches(record, flt)` to what
+   the history layer returned. The predicate is the authority for the grammar; the history
+   flags are only a narrowing that must never exclude a record the predicate would accept.
 
 Judgment calls made here (recorded so implementers do not re-ask):
 
-- **Filter grammar** is a small `key:value` token parser in the style of the events tab, as a
-  pure function `parse_record_filter(text) -> RecordFilter` that is unit-tested without
-  Textual. It does not reuse the History tab's parser, so the two tabs can land in either
-  order.
-- **`d` stays inside the tab.** It moves the list cursor to the resolving record (clearing
-  filters that hide it), because the resolving decision is itself a record and may have no
-  campaign. `c` and `r` open the popup.
-- **Pagination by page of 500 rows**, not by a virtual table, to keep the DataTable simple.
-  The query itself covers all matches; only rendered rows are paged.
+- **The adapter, not the history layer, owns the extended semantics.** `history.py` is not
+  changed. Each grammar row is either `history` (passed down as the CLI flag, exact semantics
+  identical to the grammar) or `tab` (the history query is not given that flag; the adapter
+  post-filters). This makes AC3 satisfiable without touching child 2.
+- **`matches` always runs**, even for `history` rows. It is idempotent, so a history layer
+  that is stricter-equal changes nothing, and a history layer that is looser (or that later
+  gains native support) cannot make the tab disagree with the grammar.
+- **Relative dates are resolved by the adapter** to absolute timestamps before they are
+  passed down, with a clock injected as `now` for tests.
+- **Untrusted text is data.** The module returns plain strings and records; it renders
+  nothing ([SPEC-0265](./0265-operator-surfaces-survive-bad-data-and-never.md) is the
+  concern of the split-2 widgets).
 
 ## Design
 
-### Module and wiring
+### `RecordFilter`
 
-- `src/nightwright/tui/findings_tab.py`: `FindingsTable(DataTable)`, `RecordFilterInput(Input)`,
-  `FindingsView(Horizontal)` (table on the left, record pane on the right; the pane drops
-  below the table under 120 columns, as the events tab does for narrow terminals), and
-  `parse_record_filter` / `RecordFilter`.
-- `src/nightwright/tui/app.py`: add `TabPane("findings", id="tab-findings")` yielding
-  `FindingsView(self.cfg, id="findings-view")`, `Binding("7", "tab('tab-findings')",
-  "findings", show=False)`, and extend `_tab_activated` so `activate()` / `deactivate()` is
-  called on the findings view exactly as for the events and mailbox views (every other tab
-  activation deactivates it). `IdeaDesk(tab="findings")` must be accepted like the other tab
-  names.
-- No change to `history.py`, `agentic_model.py` write paths, or any ledger/log writer.
+```
+RecordFilter(
+  agent: str|None, kind: str|None, project: str|None, severity: str|None, status: str|None,
+  campaign: str|None, since: datetime|None, until: datetime|None,
+  terms: tuple[str, ...],            # free-text terms, lowercased, AND-ed
+  problems: tuple[str, ...],         # human-readable parse problems, e.g. "unknown kind 'x'"
+  impossible: frozenset[str],        # keys whose value was invalid; each matches nothing
+)
+```
 
-### Rows and columns
-
-Rows come from the history record query, ordered `ts` descending with ties broken by record
-`id` descending (stable, so rows never swap places). Columns:
-
-| Column | Content |
-|---|---|
-| time | `ts` as local `MM-DD HH:MM` |
-| kind | `kind` (finding, verdict, triage, decision, escalation, answer, human_decision, mail, followup, spec_review, close_check, note, flaky, sentinel), colour-coded |
-| agent | `agent` (persona, `conductor`, `steward:<P>`, `human`, `queue`) |
-| sev | `severity`, or `-`; `blocker`/`major` highlighted |
-| status | `status` or `-` |
-| campaign | campaign id shortened as in the queue tab, or `-` when the record has none |
-| title | `title`, truncated to the free width |
-
-A record with no campaign is listed like any other and shows `-` in the campaign column. A
-record with an unknown kind or source (a future history version) is shown as-is, never
-dropped and never a crash.
+`RecordFilter.is_empty` is true when nothing narrows the list. `RecordFilter.describe()`
+returns a one-line canonical form (used by split 2's status line and by the tests).
 
 ### Filter grammar
 
-One input (`f` or `/` opens it, Enter applies, Esc closes and keeps the last applied filter,
-`F` clears it) holds whitespace-separated tokens:
+Tokens are whitespace-separated; `"quoted phrase"` is one token. The **Where** column says
+who implements the row: `history` = passed to the history record query as the matching
+`nw campaign records` flag with identical semantics (and re-checked by `matches`); `tab` =
+not passed down, applied by `matches` in `query_records()`.
 
-| Token | Matches |
-|---|---|
-| `agent:X` | `agent == X`, or `agent` starts with `X:` (so `agent:steward` matches `steward:Meta-Tools`) |
-| `kind:X` | `kind == X` |
-| `project:X` | `project == X`, case-insensitive |
-| `severity:X` | `severity == X`; `severity:none` matches records with no severity |
-| `status:X` | `status == X`; `status:none` matches records with no status |
-| `campaign:X` | `campaign` contains `X` (an id or a unique fragment); `campaign:none` matches campaign-less records |
-| `since:D` / `until:D` | `ts` on or after / before the end of day `D`; `D` is `YYYY-MM-DD` or relative (`7d`, `12h`) |
-| anything else | free-text term: case-insensitive substring over title and text; several terms are AND-ed; `"quoted phrase"` is one term |
+| Token | Matches | Where |
+|---|---|---|
+| `agent:X` | `agent == X` or `agent` starts with `X:` (so `agent:steward` matches `steward:Meta-Tools`). Passed down as `--agent X` only when `X` contains `:` (a full agent id); otherwise the prefix form is post-filtered | `history` for a full agent id, else `tab` |
+| `kind:X` | `kind == X` (lowercase) | `history` |
+| `project:X` | `project` equals `X`, case-insensitive | `tab` |
+| `severity:X` | `severity == X`; `severity:none` matches records with no severity | `history` for a value, `tab` for `none` |
+| `status:X` | `status == X`; `status:none` matches records with no status | `history` for a value, `tab` for `none` |
+| `campaign:X` | `campaign` contains `X` (an id or a unique fragment); `campaign:none` matches records with no campaign | `tab` |
+| `since:D` / `until:D` | `ts` on or after the start of day `D` / strictly before the end of day `D` (so `until:D` includes day `D`); `D` is `YYYY-MM-DD` or relative (`7d`, `12h`, relative to `now`). Dates are local time, converted to UTC for comparison | `history` as absolute `--since` / `--until` (relative values resolved first) |
+| anything else | free-text term: case-insensitive substring over title and text. Several terms are AND-ed. The **first** term is passed down as `--query`; the rest are post-filtered | first term `history`, rest `tab` |
 
-Rules: a key given twice keeps the last value; an unknown `key:` is treated as a free-text
-term (so a pasted `foo:bar` finds text); an invalid value for `kind`, `severity`, `status` or a
-bad date is not an error in the parse, it is reported in the status line ("unknown kind
-'x'") and the filter then matches nothing for that key, never everything. `parse_record_filter`
-never raises. The parsed `RecordFilter` is translated to the history record query's
-arguments, which are the same ones `nw campaign records` takes (`--agent --kind --project
---severity --status --campaign --since --until --query`), so the CLI and the tab agree by
-construction.
+Rules:
+- A key given twice keeps the last value.
+- An unknown `key:` (e.g. `foo:bar`) is a free-text term, so pasting it finds text. A token
+  with an empty value (`kind:`) is ignored and reported in `problems`.
+- An invalid value for `kind`, `severity` or `status` (not in the closed set below) or a bad
+  date is **not** an error in the parse. It is added to `problems` ("unknown kind 'x'"), the
+  key goes into `impossible`, and the filter then matches nothing for that key, never
+  everything. Closed sets: kinds from `nw.history.record.v1` (`finding`, `verdict`, `triage`,
+  `decision`, `escalation`, `answer`, `human_decision`, `mail`, `followup`, `spec_review`,
+  `close_check`, `note`, `flaky`, `sentinel`); severities `blocker`, `major`, `minor`, `nit`,
+  `info` plus `none`; statuses `open`, `fixed`, `waived`, `filed`, `carried`, `answered`,
+  `withdrawn` plus `none`. A value outside the set that history produces anyway (a future
+  version) is therefore flagged by the parser; the closed sets live in one constant so the
+  fixture test below keeps them in step with the history layer.
+- `parse_record_filter` never raises, for any string (empty, unbalanced quote, NUL bytes,
+  10 000-character input, lone `:`).
 
-### Query, paging and refresh
+### `query_records`
 
-- `activate()` loads in a worker. A cold record cache shows a "building history…" progress
-  line from the history layer; a warm one is shown at once. A query result is the full list of
-  matching record ids with their cheap row fields; the DataTable renders the first **500**
-  and appends the next 500 when the cursor moves past the last row or `n` is pressed. The
-  status line reads `500 of 12 345 matching · 48 211 records`.
-- While the tab is visible, a poll every 5 s stats the global logs and the non-terminal
-  campaigns only (the history layer's signature check); when the signature moves, the query
-  is re-run in a worker. The poll stops on `deactivate()`. A terminal campaign's files are
-  never read by the poll.
-- On a refresh the cursor stays on the record `id` it was on, and the scroll position is
-  preserved; new records appear above it and a `+N new` counter shows in the status line until
-  the cursor returns to the top. If the cursor's record no longer matches the filter the
-  cursor goes to the nearest row, never to the top.
-- A history-layer error (corrupt cache, unreadable log) shows a one-line error in the status
-  line and keeps the previous rows; it never crashes the desk.
+```
+query_records(cfg, flt, now=None) -> RecordQueryResult(
+    records: list[dict],     # nw.history.record.v1, ordered ts desc, tie id desc
+    total_matching: int,
+    total_records: int,      # all records, for the "of 48 211" status
+    problems: tuple[str, ...],
+    error: str|None,         # a history-layer failure; records are then []
+)
+```
 
-### Record pane
+1. If `flt.impossible` is non-empty, return `records=[]` without calling the history layer.
+2. Resolve relative dates against `now` (default: current time), build the history call from
+   the `history`-column rows only, and run it with no `--limit`: paging is the tab's concern
+   and `total_matching` must be exact.
+3. Apply `matches(record, flt)` to the result. `matches` implements every row of the grammar
+   table on the record dict, using only fields of `nw.history.record.v1`. A record with an
+   unknown `kind` or `source` is kept if it passes the filter and is never dropped or an
+   error.
+4. Sort by `ts` descending, ties by record `id` descending. This is a stable order, so the
+   same data always gives the same list.
+5. A history-layer exception (corrupt cache, unreadable log) is caught and returned in
+   `error` with `records=[]`; the function itself does not raise for data problems.
 
-The pane shows, for the cursor record, as plain `Text`: header (`kind`, `source`, `ts`,
-`agent`, `severity`, `status`, `linked_by`), campaign, spec id and project, the full `title`
-and `text` (wrapped; very long text is cut at 20 000 characters with a "truncated" marker),
-then a **Links** list: `run` (`links.run_id`), `resolved by` (`links.resolved_by`, shown as
-the target record's kind, agent and title), `follow-up idea` (`links.followup_idea` with the
-text of the follow-up checklist line when the history layer provides it), `escalation`,
-`thread`, `campaign`. A link whose `linked_by` is `inferred` or `text` is labelled `(inferred)`
-or `(from text)`, so the confidence the history layer recorded is visible. Missing links show
-nothing rather than `None`.
+`query_records` is synchronous and does file I/O through the history layer. Split 2 calls it
+from a Textual worker; it is not called from the event-loop thread.
 
-### Keys
+### Differential contract with the CLI
 
-All keys work from the keyboard; the mouse is only a shortcut.
+`nw campaign records --json` is the oracle. The test builds each case from one filter string
+and compares record ids:
 
-| Key | Action |
-|---|---|
-| `j` / `k`, arrows, PageUp/PageDown, `g` / `G` | move; `G` also loads further pages until the last row |
-| `f` or `/` | focus the filter input; `F` clears the filter |
-| `n` | load the next page of 500 rows |
-| `c`, Enter, double-click | open the `CampaignDetail` popup for the record's campaign, **focused on the record**: its tab is Findings & decisions and its row is selected; if the record has none (campaign-less), show a status-line note "record has no campaign" and do nothing else |
-| `r` | open the popup on its Runs tab with `links.run_id` selected; if the record has no run link, show "no run linked" |
-| `d` | move the list cursor to `links.resolved_by`, clearing filters that hide it and noting that in the status line; if none, show "no resolving decision" |
+- **CLI-expressible filters (`history` rows only).** For these filters the tab's id list
+  equals `nw campaign records --json` run with the equivalent flags, in the same order:
+  `agent:conductor`, `agent:steward:Meta-Tools`, `kind:decision`, `severity:major`,
+  `status:open`, `since:2026-01-01`, `until:2026-06-30`, `since:2026-01-01 until:2026-06-30`,
+  a single free-text term, and combinations such as `kind:finding severity:major
+  status:open`.
+- **Extended filters (`tab` rows).** For `agent:steward`, `project:meta-tools`,
+  `severity:none`, `status:none`, `campaign:none`, `campaign:<fragment>`, two free-text
+  terms, a quoted phrase and a relative `since:7d` (with `now` fixed), the tab's id list
+  equals `matches` applied to `nw campaign records --json` with **no filters**, so the
+  reference is built only from CLI output.
 
-Esc in the popup returns to the Findings tab with the cursor on the same record id. The tab's
-bindings shadow the desk's single-letter ones while the table has focus, as the events tab
-does.
-
-The popup's focus contract (`CampaignDetail(cfg, cid, focus=<record id>, tab=<name>,
-run=<run id>)`) is owned by epic child 5. If child 5 shipped a different signature, this
-spec adapts to it; the behaviour above is what matters.
-
-### Read-only and performance
-
-- The tab opens no file for writing and holds no lock. It does not sync the event stream or
-  set any cursor ([SPEC-0251](./0251-tui-events-tab.md) rule). Opening the popup from here is
-  the only cross-over and the popup is read-only for history.
-- Budget (epic): a filter or full-text query over 50 000 records returns in at most 200 ms
-  (asserted with ×3 slack). Repainting 500 rows is bounded by paging.
-- While the tab is not active it registers no timer and does no I/O.
+If, on the child 2 fixture, the history layer's `--query`, `--since` or `--until` turn out to
+differ from the grammar (for example token-based instead of substring search, or an
+exclusive start bound), the affected row is moved to `tab` in this table and in the code in
+the same change; the differential test then compares it in the extended group. The grammar,
+not the history flag, is the contract.
 
 ## Alternatives considered
 
-- **Virtual scrolling over the whole result.** More code and more Textual surface; paging by
-  500 rows is enough for a browser that is filtered before it is read.
+- **Changing `history.py` / `nw campaign records` to implement the extended semantics.**
+  Would be the cleanest, but edits another child's frozen v1 contract. The adapter
+  post-filter keeps this spec independent of child 2's internals; later rows can be moved
+  to `history` without changing behaviour.
 - **Reusing the History tab's filter parser.** Would force a landing order between epic
   children 6 and 7. A small pure parser here costs less than the coupling.
-- **`d` opening the popup on the decision.** The decision may be a campaign-less conductor
-  record; moving the cursor works for all records and keeps the popup for campaign context.
-- **Parsing sources directly in the tab.** Duplicates the history layer and breaks the "CLI
-  and UI agree" property of the epic.
-- **A free-text-only search box.** Cannot express "major findings by the reviewer on project
-  X since last week", which is the point of the tab.
+- **Filtering only in the tab, never passing flags down.** Simplest, but a post-filter
+  over every record cannot meet the 200 ms budget on 50 000 records for the common
+  `kind:` / `severity:` / `since:` queries; the `history` rows narrow first.
+- **Parsing sources directly.** Duplicates the history layer and breaks the epic's "CLI
+  and UI agree" property.
+- **Raising on invalid input.** A filter box is typed live; every keystroke is a partial
+  filter. Reporting and matching nothing is the usable behaviour.
 
 ## Acceptance criteria
 
-- [ ] **AC1.** Desk tab 7 `findings` exists, is reachable with key `7` and with
-  `IdeaDesk(tab="findings")`, and activating/deactivating it starts/stops its polling (no
-  timer and no I/O while another tab is active).
-- [ ] **AC2.** The list shows records newest first (`ts` descending, tie broken by `id`
-  descending) and contains records of **every source** the history layer produces on the
-  fixture (ledger, run, decisions, escalation, mailbox, spec_review, flaky, sentinel), with
-  the kinds listed in *Rows and columns*. Campaign-less records are listed with `-` in the
-  campaign column.
-- [ ] **AC3.** The filter keys `agent: kind: project: severity: status: campaign: since:
-  until:` each narrow the list as documented in *Filter grammar* (including prefix `agent:`
-  matching, `none` values and relative dates), and free text matches case-insensitively over
-  title and text with multiple terms AND-ed. The set of records the tab shows for a filter is
-  identical to `nw campaign records --json` run with the equivalent flags.
-- [ ] **AC4.** `parse_record_filter` never raises, for any input string; invalid values are
-  reported in the status line and match nothing for that key; unknown keys become free text.
-- [ ] **AC5.** The record pane shows the full record (title, text, all fields) and a Links
-  list including run, resolved-by, follow-up idea (with its text), escalation, thread and
-  campaign, with `linked_by` confidence labels. Text containing Rich markup such as
-  `[bold]` or `[/]` renders literally and does not crash.
-- [ ] **AC6.** On a record with a campaign, `c`, Enter and double-click open the campaign
-  popup for that campaign focused on that record; `r` opens it on the Runs tab with the
-  producing run selected (for a record with `links.run_id`); Esc returns to the tab with the
-  cursor on the same record id. On a campaign-less record `c` shows "record has no campaign"
-  and opens nothing.
-- [ ] **AC7.** `d` on a record whose `links.resolved_by` is set moves the cursor to that
-  record, clearing hiding filters and saying so; with no link it shows "no resolving decision"
-  and the cursor does not move.
-- [ ] **AC8.** Paging: with more than 500 matches the table renders 500 rows and the status
-  line shows `shown of matching · total`; `n` (and moving past the last row) appends the next
-  500; no match yields an empty table and a "no matching records" status, not an error.
-- [ ] **AC9.** A refresh (poll after the global logs or a live campaign changed) keeps the
-  cursor on the same record id and the same scroll position, shows `+N new` for records
-  added above, and moves no existing row.
-- [ ] **AC10.** A filter or full-text query over 50 000 records completes in at most 200 ms
-  (×3 slack in the test) on the 500-campaign clone; rendering the first page and opening the
-  tab on a warm cache stays within the epic's index-load budget; the event-loop thread does
-  no file I/O.
-- [ ] **AC11.** The tab is read-only: after exercising it (filters, paging, `c`/`r`/`d`,
-  poll refreshes) every file in the data dir is byte-identical, and the tab introduces no
-  binding that calls `queue_action`, `plan_*` or `apply_*`.
-- [ ] **AC12.** A corrupt or missing history cache, or an unreadable global log, leaves the
-  desk running: the tab shows an error line and keeps the previous rows.
-- [ ] **AC13.** Every function of the tab can be driven by the keyboard alone.
-- [ ] **AC14.** The tab's tests run under a plain `uv run pytest` with none skipped for a
-  missing Textual, and a plain-text snapshot of the tab at 160×48 matches its golden.
+- [ ] **AC1.** `parse_record_filter` never raises, for any input string (including empty,
+  unbalanced quotes, NUL bytes, very long input and random unicode), and returns a
+  `RecordFilter`.
+- [ ] **AC2.** Each key `agent: kind: project: severity: status: campaign: since: until:`
+  parses as documented in *Filter grammar*: repeated keys keep the last value; `agent:steward`
+  matches `steward:Meta-Tools`; `project:` is case-insensitive; `none` works for severity,
+  status and campaign; `campaign:` matches a fragment; several free-text terms are AND-ed;
+  a quoted phrase is one term; relative `7d` and `12h` resolve against the injected `now`.
+- [ ] **AC3.** An unknown `key:` becomes a free-text term; an invalid `kind`, `severity`,
+  `status` or date is reported in `problems`, is listed in `impossible`, and makes
+  `query_records` return no records (never all records) without calling the history layer.
+- [ ] **AC4.** For every filter in the CLI-expressible list of *Differential contract*
+  (`agent:conductor`, `agent:steward:Meta-Tools`, `kind:`, `severity:major`, `status:open`,
+  `since:`, `until:`, a single free-text term and their combinations), the id list from
+  `query_records` is identical, including order, to `nw campaign records --json` with the
+  equivalent flags on the child 2 fixture.
+- [ ] **AC5.** For every extended filter (prefix `agent:steward`, `project:` in another case,
+  `severity:none`, `status:none`, `campaign:none`, `campaign:<fragment>`, two terms, a quoted
+  phrase, relative `since:7d` with fixed `now`), the id list from `query_records` equals the
+  reference predicate applied to the unfiltered `nw campaign records --json` output.
+- [ ] **AC6.** Each grammar row has its **Where** classification (`history` or `tab`)
+  recorded in code as one table (`GRAMMAR_ROWS`), and a test asserts the table in this spec
+  and the code agree and that a `tab` row is never passed to the history query.
+- [ ] **AC7.** `query_records` returns records ordered by `ts` descending then `id` descending,
+  includes campaign-less records, passes through a record with an unknown `kind` or `source`
+  without error, and reports an exact `total_matching` and `total_records`.
+- [ ] **AC8.** A history-layer failure (corrupt cache, unreadable log, raised exception) is
+  returned in `RecordQueryResult.error` with no records; the function does not raise.
+- [ ] **AC9.** On the 500-campaign clone (about 50 000 records) a representative set of
+  filter and full-text queries through `query_records` each completes in at most 200 ms
+  (asserted with x3 slack, i.e. 600 ms), measured on a warm cache.
+- [ ] **AC10.** `findings_filter.py` imports nothing from Textual (a source scan and an
+  import test in a process without Textual on the path), writes no file other than through
+  the history layer's `cache_dir` cache, and leaves every file in the data dir byte-identical
+  after the whole test module runs.
 
 ## Test plan
 
 Fixture: `tests/fixtures/agentic_history/` from epic child 2 (sanitized real campaigns,
 including an answered escalation, triage waives, flaky tests, a pre-SPEC-0362 campaign, an
-abandoned and a handed-off campaign), copied to a temp data dir by `tests/tui_harness.py`
-(epic child 3). The synthetic cases below build records directly through the history layer's
-test helpers or by writing small ledger/mailbox files into the temp data dir.
+abandoned and a handed-off campaign), copied to a temp data dir. Synthetic records for the
+unknown-kind and error cases are written through the history layer's test helpers.
 
-- **Automated tests, pure:** `tests/test_findings_filter.py`
-  - `parse_record_filter` table-driven: each key, repeated keys (last wins), `agent:steward`
-    prefix match, `none` values, quoted phrases, relative `since:7d`, unknown key as free
-    text, invalid kind/severity/date reported and matching nothing, and a Hypothesis-style
-    fuzz loop over random strings asserting it never raises (AC3, AC4).
-  - Equivalence with the CLI: for a list of filter strings, the record ids from the tab's
-    query function equal the ids from `nw campaign records --json` with the matching flags
-    (AC3).
-- **Automated tests, Pilot on the real app:** `tests/test_tui_findings_tab.py`
-  (uses `waits.pilot_until`, never fixed sleeps, SPEC-0269)
-  1. Start `IdeaDesk`, press `7`, wait for rows; assert newest-first order against
-     `nw campaign records --json`, the source/kind coverage set equals the set of sources
-     in the CLI output (AC1, AC2), and campaign-less rows show `-`.
-  2. Apply `agent:conductor kind:decision`, `severity:major status:open`, `project:Meta-Tools
-     since:2026-01-01`, `campaign:none`, a free-text phrase taken from one real finding, and a
-     no-match string; assert row counts and the empty-state status (AC3, AC8).
-  3. Page: with a cloned set above 500 matches, assert 500 rows then 1000 after `n`, and the
-     status text (AC8).
-  4. Record pane: select a finding with a run link, a decision with `resolved_by`, a record
-     with a follow-up idea and an inferred link; assert the pane text and labels. Inject a
-     record whose title/text is `[bold]x[/] [link=http://a]y`; assert the literal text and
-     no exception (AC5).
-  5. Navigation: `c` (and Enter, and `Pilot.double_click`) opens `CampaignDetail` for the
-     right campaign focused on the record; `r` opens the Runs tab with the run selected; Esc
-     returns with the cursor on the same record id; on a campaign-less record `c` opens
-     nothing and sets the status message; `d` moves to the resolving record and clears a
-     hiding filter (AC6, AC7).
-  6. Refresh: append a mailbox message and a ledger note to the temp data dir, wait for the
-     poll, assert the cursor's record id and scroll are unchanged, `+N new` shows, and the
-     old rows keep their order (AC9).
-  7. Corrupt the record cache file and truncate a log to garbage; assert the error line,
-     previous rows kept, no exception (AC12).
-  8. Keyboard-only run of steps 2, 4 and 5 without any mouse event (AC13).
-  9. Idle: switch to another tab; with `os.stat` / `open` patched to count calls, assert
-     no findings poll fires and no file of a terminal campaign is opened (AC1, AC10).
-  10. Hash every data-dir file before and after steps 1 to 6; assert byte-identical, and
-      statically assert (source scan) that `findings_tab.py` imports nothing from the write
-      side of `agentic_model` (`queue_action`) (AC11).
-- **Text snapshot:** pyte render of the Findings tab on the fixture at 160×48, golden under
-  `tests/snapshots/`; regenerated only with `NW_UPDATE_SNAPSHOTS=1` (AC14).
+- **Automated, pure:** `tests/test_findings_filter.py`
+  - Table-driven `parse_record_filter` cases for every grammar row: each key, repeated keys,
+    `agent:steward` prefix, `none` values, `campaign:` fragment, quoted phrase, several
+    terms, unknown key as free text, empty value, relative `7d` / `12h` with a fixed `now`,
+    invalid kind / severity / status / date landing in `problems` and `impossible`
+    (AC2, AC3).
+  - A fuzz loop over random strings (Hypothesis if the repo already uses it, otherwise a
+    seeded `random` loop of at least 2 000 inputs including NULs, lone `:` and unbalanced
+    quotes) asserting `parse_record_filter` never raises (AC1).
+  - `matches` unit cases on hand-built records, including a record with an unknown `kind`
+    (AC7).
+  - A test that parses the grammar table in this spec and compares it to `GRAMMAR_ROWS`, and
+    a test with a fake history query that records its arguments, asserting `tab` rows never
+    reach it and that an `impossible` filter does not call it (AC3, AC6).
+  - A test that makes the fake history query raise, return garbage, and return a corrupt
+    cache, asserting `error` and no exception (AC8).
+  - A source-scan and subprocess import test: `findings_filter` imports with `textual`
+    blocked (AC10).
+- **Automated, differential:** `tests/test_findings_filter_cli.py` runs
+  `nw campaign records --json` (through the CLI entry point in-process) on the fixture
+  data dir for every CLI-expressible filter and every extended filter listed in
+  *Differential contract* and compares id lists as described there (AC4, AC5, AC7). The same
+  test hashes every data-dir file before and after the module's tests and asserts they are
+  byte-identical, and asserts that every file written during the test is under `cache_dir`
+  (AC10). Fixture writes (the synthetic-record helper) happen before the first hash.
 - **Performance:** extend `tests/test_history_perf.py` (500 campaigns, about 50 000 records):
-  filter and full-text queries through the tab's query path ≤ 200 ms ×3; the first page
-  renders within the index-load budget ×3 (AC10).
-- **Guard:** the existing guard test from epic child 3 keeps asserting no `collect_ignore`,
-  `importorskip("textual")` or `needs_textual` in `tests/test_tui_*.py`; the new test files
-  must pass it (AC14).
+  a set of at least eight queries, `kind:finding severity:major`, `since:30d`, `agent:conductor
+  kind:decision`, one free-text term, two terms, `project:` in another case, `severity:none`,
+  `campaign:<fragment>`, each through `query_records` on a warm cache, each at most 200 ms
+  x3 (AC9). If a `tab` row cannot meet the budget on the clone, the implementer records the
+  measurement in the spec's *As shipped* and moves the row to `history` only by a change in
+  the history layer's own spec, never by loosening the budget.
 - **Manual verification** (human, real data dir; recorded in the epic's *As shipped*):
-  1. `nw tui`, press `7`. Is the list newest first, with every kind present?
-  2. Type `severity:major since:7d`, then a reviewer phrase you remember; compare the count
-     with `nw campaign records --severity major --since 7d --json | jq length`.
-  3. On a finding press `r`, then Esc, then `c`, then Esc; the cursor must be where it was.
-  4. On a record with a resolving decision press `d`.
-  5. Leave the tab open 10 minutes with the queue running; confirm no flicker, no cursor
-     jump, and unchanged `nw queue tick` latency.
-- **Regression guard:** existing `tests/test_tui_*.py` and `tests/test_agentic_dashboard.py`
-  stay green (affected-tests run via `python3 tools/affected_tests.py --run uv run pytest -q`);
-  `python3 tools/spec_lint.py` exits 0.
+  1. Run the differential test against the real data dir with `NW_FINDINGS_REAL_DATA=1
+     uv run pytest -q tests/test_findings_filter_cli.py` (the test reads the data dir
+     named by the normal config and skips its fixture copy). It must pass, which compares
+     `nw campaign records --severity major --since 2026-10-01 --json | jq length` with the
+     count `query_records` returns for `severity:major since:2026-10-01`.
+  2. Compare by hand `agent:steward` and `severity:none` against
+     `nw campaign records --json | jq '[.[] | select(.agent | startswith("steward"))] | length'`
+     and `jq '[.[] | select(.severity == null)] | length'`.
+- **Regression guard:** run the affected tests with
+  `python3 tools/affected_tests.py --run uv run pytest -q`; `python3 tools/spec_lint.py`
+  exits 0. Existing `tests/test_tui_*.py` and `tests/test_agentic_dashboard.py` are untouched.
 
 ## Clock Log
 
@@ -349,11 +320,13 @@ CLOCK-OUT: [timestamp]
 
 ## Rollout / migration
 
-1. Land after epic children 2, 3 and 5 are `done`; this spec adds one tab and no data.
-2. No migration: the tab reads the history layer's cache, built lazily on first use. Old
-   campaigns show inferred links, labelled as such.
-3. Tab `6` (History) belongs to epic child 6; whichever of children 6 and 7 lands first
-   leaves the other's number simply unused. Verify with the manual checklist above.
+1. Land after epic child 2 is `done` (history layer, `nw campaign records`, fixture and
+   `tests/test_history_perf.py`). This spec adds one module and tests, and no data.
+2. No migration: the module reads the history layer's cache, built lazily on first use.
+3. After this spec is `done`, file and promote split 2 (Findings tab list, filter bar,
+   paging, refresh; waits for epic child 3 and this spec) and split 3 (record pane and
+   `c` / `r` / `d` navigation; waits for epic child 5 and split 2). The epic's breakdown line
+   for child 7 stays open until both are `done`.
 
 ## Definition of done
 
@@ -361,10 +334,11 @@ CLOCK-OUT: [timestamp]
 - [ ] Test plan executed; automated tests pass (`uv run pytest` on the affected files);
   manual steps performed and noted in the epic's *As shipped*.
 - [ ] No regressions.
-- [ ] Spec body updated to match what shipped.
+- [ ] Spec body updated to match what shipped (including the final **Where** column).
 - [ ] `docs/LEDGER.md` updated (status + date) via `python3 tools/spec_lint.py --write-ledger`.
 
 ## Open questions
 
-None. The judgment calls (own filter parser, `d` stays in the tab, paging by 500) are
-recorded in *Decision*.
+None. The judgment calls (adapter owns the extended semantics and always re-checks with
+`matches`; no change to `history.py`; own parser rather than the History tab's) are recorded
+in *Decision*.

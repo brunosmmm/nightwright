@@ -274,7 +274,7 @@ progress. This is the single place to see *what has been decided* and *what is i
   - [x] [SPEC-0409](./specs/0409-tui-test-harness-real-app-pilots-on-real-fixture.md) Remove Textual/pyte test skips, add the AST guard and a TUI test runtime budget — done
   - [x] [SPEC-0410](./specs/0410-live-queue-view-state-grouped-sections-with.md) Live queue view: state-grouped sections with priority, admission order and why-waiting — done
   - [ ] [SPEC-0411](./specs/0411-closed-campaign-history-browser-tab.md) Closed-campaign history browser tab — accepted
-  - [ ] [SPEC-0412](./specs/0412-cross-campaign-findings-and-decisions-browser-tab.md) TUI Findings tab: cross-campaign browser of every finding, decision, mail and review record over nw.history.record.v1 — proposed
+  - [ ] [SPEC-0412](./specs/0412-cross-campaign-findings-and-decisions-browser-tab.md) Findings record filter: parse_record_filter and a query adapter that matches nw campaign records over nw.history.record.v1 — proposed
   - [x] [SPEC-0431](./specs/0431-campaign-stamps-on-conductor-decisions-and.md) Campaign stamps on conductor decisions and mailbox messages — done
   - [x] [SPEC-0433](./specs/0433-human-readable-campaign-story-one-shared-timeline.md) Human-readable campaign story: one shared timeline formatter for the TUI, the dashboard drilldown and nw campaign show — done
   - [x] [SPEC-0459](./specs/0459-real-app-tui-test-harness-on-the-real-data.md) Real-fixture IdeaDesk Pilot harness and queue-window preparation — done
@@ -335,7 +335,7 @@ progress. This is the single place to see *what has been decided* and *what is i
 | [SPEC-0400](./specs/0400-remote-web-dashboard-live-view-of-active-queue.md) | Remote web dashboard and decisions inbox over Tailscale (nw serve --dashboard) | epic | accepted | M9: agentic workflow | 2026-11-03 |
 | [SPEC-0405](./specs/0405-rich-queue-tui-prioritized-live-queue-campaign.md) | Rich queue TUI: prioritized live queue, campaign detail popup, closed-campaign history and a cross-campaign findings and decisions browser over one shared history layer | epic | accepted | — | 2026-11-03 |
 | [SPEC-0411](./specs/0411-closed-campaign-history-browser-tab.md) | Closed-campaign history browser tab | feature | accepted | — | 2026-11-03 |
-| [SPEC-0412](./specs/0412-cross-campaign-findings-and-decisions-browser-tab.md) | TUI Findings tab: cross-campaign browser of every finding, decision, mail and review record over nw.history.record.v1 | feature | proposed | M9: agentic workflow | 2026-11-03 |
+| [SPEC-0412](./specs/0412-cross-campaign-findings-and-decisions-browser-tab.md) | Findings record filter: parse_record_filter and a query adapter that matches nw campaign records over nw.history.record.v1 | feature | proposed | M9: agentic workflow | 2026-11-03 |
 | [SPEC-0465](./specs/0465-run-pi-personas-through-the-node-sdk.md) | Run Pi personas through the Node SDK | feature | in-progress | — | 2026-11-08 |
 | [SPEC-0466](./specs/0466-gpt-only-pi-sdk-model-set-for-all-nightwright.md) | GPT-only Pi SDK model set for all nightwright personas | feature | in-progress | — | 2026-11-08 |
 | [SPEC-0468](./specs/0468-stop-queue-thrash.md) | Stop the queue from thrashing a finished campaign | feature | accepted | — | 2026-11-08 |
