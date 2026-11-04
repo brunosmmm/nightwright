@@ -1,9 +1,10 @@
 ---
 id: SPEC-0413
 title: "Dashboard phone page: phone-first static UI with a 15 s conditional poll of /api/snapshot"
-status: proposed
+status: accepted
 owner: user
 created: 2026-11-04
+updated: 2026-11-04
 milestone: "M9: agentic workflow"
 kind: feature
 source_idea: IDEA-904
