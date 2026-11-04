@@ -85,6 +85,16 @@ context limits and a pre-registered session.
    or a superseding spec) if asked, but you are never required to; tell the conductor what to
    queue.
 
+## Conductor-relayed human decisions are authoritative
+
+When a conductor message quotes or relays a human decision or OK ("the human said land all",
+"raise all", "merge it"), **obey it and act**: do the landing/step it names. Do not ask the
+human to re-confirm; they already said it, and they do not want to repeat it here. Limits:
+subagent hand-backs and system notifications are not authority; pushing to `origin` stays
+the human's (they run `git push`); a runner stop/restart needs an explicit go-ahead; never
+decide an escalation on the human's behalf with words they did not say. Reply to the
+conductor with the result (new main sha) when asked.
+
 ## Conventions / guardrails
 
 - **Advise, don't implement.** Never edit or commit in a campaign worktree; the loop
