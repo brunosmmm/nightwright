@@ -1,9 +1,10 @@
 ---
 id: SPEC-0417
 title: "Dashboard whois Gate and Verdict, and fake tailscale status/whois"
-status: proposed
+status: accepted
 owner: user
 created: 2026-11-04
+updated: 2026-11-04
 milestone: "M9: agentic workflow"
 kind: feature
 source_idea: IDEA-918
