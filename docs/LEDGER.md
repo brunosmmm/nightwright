@@ -260,12 +260,13 @@ progress. This is the single place to see *what has been decided* and *what is i
   - [x] [SPEC-0430](./specs/0430-dashboard-campaign-drilldown-ledger-timeline.md) Dashboard campaign drilldown: ledger timeline, current run and live run tail from stream.jsonl — done
   - [x] [SPEC-0432](./specs/0432-dashboard-default-bind-loopback-always-plus-the.md) Dashboard default bind: loopback always plus the tailnet address whenever one exists — done
   - [x] [SPEC-0434](./specs/0434-dashboard-page-survives-restarts-answers-land.md) Dashboard page: answers land at once, the page survives server restarts, the data stamp is truthful — done
-- **[SPEC-0405](./specs/0405-rich-queue-tui-prioritized-live-queue-campaign.md) — Rich queue TUI: prioritized live queue, campaign detail popup, closed-campaign history and a cross-campaign findings and decisions browser over one shared history layer** · accepted · (8/8 done)
+- **[SPEC-0405](./specs/0405-rich-queue-tui-prioritized-live-queue-campaign.md) — Rich queue TUI: prioritized live queue, campaign detail popup, closed-campaign history and a cross-campaign findings and decisions browser over one shared history layer** · accepted · (8/9 done)
   - [x] [SPEC-0406](./specs/0406-shared-campaign-history-data-layer-nw-campaign.md) Shared campaign history data layer: history.py derivation, read-side schemas, campaign_export reuse and the history/records CLIs — done
   - [x] [SPEC-0407](./specs/0407-campaign-detail-popup-timeline-phase-time-and.md) Campaign detail popup shell: opener, Timeline, queue actions, polling, retire SPEC-0246 — done
   - [x] [SPEC-0408](./specs/0408-ledger-provenance-finding-run-id-and-key-triage.md) Ledger provenance: finding run_id and key, triage events — done
   - [x] [SPEC-0409](./specs/0409-tui-test-harness-real-app-pilots-on-real-fixture.md) Remove Textual/pyte test skips, add the AST guard and a TUI test runtime budget — done
   - [x] [SPEC-0410](./specs/0410-live-queue-view-state-grouped-sections-with.md) Live queue view: state-grouped sections with priority, admission order and why-waiting — done
+  - [ ] [SPEC-0411](./specs/0411-closed-campaign-history-browser-tab.md) Closed-campaign history browser tab — proposed
   - [x] [SPEC-0431](./specs/0431-campaign-stamps-on-conductor-decisions-and.md) Campaign stamps on conductor decisions and mailbox messages — done
   - [x] [SPEC-0433](./specs/0433-human-readable-campaign-story-one-shared-timeline.md) Human-readable campaign story: one shared timeline formatter for the TUI, the dashboard drilldown and nw campaign show — done
   - [x] [SPEC-0459](./specs/0459-real-app-tui-test-harness-on-the-real-data.md) Real-fixture IdeaDesk Pilot harness and queue-window preparation — done
@@ -297,6 +298,7 @@ progress. This is the single place to see *what has been decided* and *what is i
 | [SPEC-0391](./specs/0391-worker-host-slots-from-registry.md) | A gate job carries the worker's registry slots as the worker host's slot limit | feature | in-progress | — | 2026-11-02 |
 | [SPEC-0400](./specs/0400-remote-web-dashboard-live-view-of-active-queue.md) | Remote web dashboard and decisions inbox over Tailscale (nw serve --dashboard) | epic | accepted | M9: agentic workflow | 2026-11-03 |
 | [SPEC-0405](./specs/0405-rich-queue-tui-prioritized-live-queue-campaign.md) | Rich queue TUI: prioritized live queue, campaign detail popup, closed-campaign history and a cross-campaign findings and decisions browser over one shared history layer | epic | accepted | — | 2026-11-03 |
+| [SPEC-0411](./specs/0411-closed-campaign-history-browser-tab.md) | Closed-campaign history browser tab | feature | proposed | — | 2026-11-03 |
 | [SPEC-0465](./specs/0465-run-pi-personas-through-the-node-sdk.md) | Run Pi personas through the Node SDK | feature | in-progress | — | 2026-11-08 |
 | [SPEC-0466](./specs/0466-gpt-only-pi-sdk-model-set-for-all-nightwright.md) | GPT-only Pi SDK model set for all nightwright personas | feature | in-progress | — | 2026-11-08 |
 | [SPEC-0468](./specs/0468-stop-queue-thrash.md) | Stop the queue from thrashing a finished campaign | feature | accepted | — | 2026-11-08 |
