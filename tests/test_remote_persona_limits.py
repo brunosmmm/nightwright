@@ -380,6 +380,50 @@ def test_an_automatic_check_failure_does_not_make_the_worker_failing(tmp_path, m
     assert not PG.failing(w.cfg, S.read_state(w.cfg, CID), rec)
 
 
+def test_an_automatic_pass_keeps_a_claude_check_failure(tmp_path, monkeypatch):
+    # `nw workers check` fails on claude: an automatic probe that passes (it never checks claude)
+    # leaves the worker failing; only the next `nw workers check` that passes clears it
+    from nightwright.cli import cli
+    w = _world(tmp_path)
+    _remote(w, _write_script(tmp_path / "s.json", WRITER))
+    monkeypatch.setattr("nightwright.cli.load_config", lambda: w.cfg)
+    monkeypatch.setattr(WK, "_check", lambda cfg, wk, out: None)
+    monkeypatch.setattr(RPS, "claude_check", lambda cfg, wk, auth: ["claude: not logged in"])
+    run = CliRunner().invoke(cli, ["workers", "check", "box", "--json"])
+    assert run.exit_code == 1, run.output
+    rec = WK.load(w.cfg)[0]
+    assert rec["check_ok"] is False and rec["check_failed"] == "claude"
+    assert PG.failing(w.cfg, S.read_state(w.cfg, CID), rec)
+    assert WK.check(w.cfg, rec)["ok"] is True                 # e.g. an update's preflight
+    rec = WK.load(w.cfg)[0]
+    assert rec["check_ok"] is False and rec["check_failed"] == "claude"
+    assert PG.failing(w.cfg, S.read_state(w.cfg, CID), rec)
+    monkeypatch.setattr(RPS, "claude_check", lambda cfg, wk, auth: [])
+    run = CliRunner().invoke(cli, ["workers", "check", "box", "--json"])
+    assert run.exit_code == 0, run.output
+    rec = WK.load(w.cfg)[0]
+    assert rec["check_ok"] is True and "check_failed" not in rec
+    assert not PG.failing(w.cfg, S.read_state(w.cfg, CID), rec)
+    # an SSH failure recorded by `nw workers check` is cleared by an automatic pass
+    monkeypatch.setattr(WK, "_check", lambda cfg, wk, out: out["errors"].append("down"))
+    CliRunner().invoke(cli, ["workers", "check", "box", "--json"])
+    assert WK.load(w.cfg)[0]["check_failed"] == "probe"
+    monkeypatch.setattr(WK, "_check", lambda cfg, wk, out: None)
+    WK.check(w.cfg, WK.load(w.cfg)[0])
+    assert WK.load(w.cfg)[0]["check_ok"] is True
+
+
+def test_set_affinity_leaves_the_snapshot_when_the_store_write_fails(tmp_path, monkeypatch):
+    w = _world(tmp_path)
+    st = S.read_state(w.cfg, CID)
+
+    def boom(*a, **k):
+        raise OSError("disk full")
+    monkeypatch.setattr(S, "write_state", boom)
+    assert PG.set_affinity(w.cfg, st, "box") is False
+    assert st.get("remote_affinity") is None
+
+
 def test_set_affinity_keeps_an_affinity_stored_from_another_snapshot(tmp_path):
     # two dispatches of one campaign from separate snapshots both see a null affinity: the
     # first writer wins, the second takes its value over and does not move `remote_affinity_at`

@@ -397,6 +397,18 @@ back to local. Stuck detectors skip campaigns held by the gate. Cost attribution
   `tests/test_worker_disk_guard.py` give 126 passed. `python3 tools/spec_lint.py`: exit 0.
 - Full suite left to gating.
 
+### Test record (2026-11-04, review loop 9)
+
+- New tests in `tests/test_remote_persona_limits.py`, both failing with the source changes
+  reverted (2 failed): `test_an_automatic_pass_keeps_a_claude_check_failure` (`nw workers
+  check` with a failing `claude_check` records `check_ok: false`, `check_failed: claude`; a
+  following passing `WK.check(cfg, rec)` leaves the worker failing; the next passing `nw
+  workers check` clears it; an SSH failure, `check_failed: probe`, is still cleared by an
+  automatic pass) and `test_set_affinity_leaves_the_snapshot_when_the_store_write_fails`.
+- `uv run pytest -q -n 6` on the persona-limits, remote personas and gates, workers
+  registry, bootstrap, drain, update (command and schedule) and disk-guard files: 459 passed.
+- Full suite left to gating.
+
 ### As shipped (2026-11-02)
 
 - **Waiver (2026-11-03).** The real-persona-campaign-on-box and real-429 manual steps were
@@ -530,6 +542,11 @@ back to local. Stuck detectors skip campaigns held by the gate. Cost attribution
   the step. (4) The account-limit match takes "hit your limit" only bare or with a usage,
   session, weekly, daily, monthly, model or `<n>-hour` qualifier. "hit your rate limit" and
   "hit your request limit" are rate limits.
+- **Review loop 9.** A failed check now also records `check_failed`: `claude` when `nw workers
+  check`'s claude check failed, `probe` for an SSH or info failure. An automatic probe's pass
+  clears only a `probe` failure; a `claude` failure stays until the next `nw workers check`
+  passes, since the automatic probe never checks claude. `set_affinity` returns False and
+  leaves the snapshot unchanged when the stored write fails.
 - **Test support.** A `FakeRunner` script entry may carry
   `api_error: {status, message}`, which yields an API-error result.
 

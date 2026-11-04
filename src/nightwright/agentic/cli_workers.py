@@ -324,7 +324,7 @@ def workers_check(cfg, name, as_json, auth):
             res["errors"] += RPS.claude_check(cfg, w, auth)
             res["ok"] = not res["errors"]
             if not res["ok"]:
-                WK.record_check(cfg, w["name"], False)  # SPEC-0345: no working claude
+                WK.record_check(cfg, w["name"], False, failed="claude")  # SPEC-0345
         results.append(res)
     if as_json:
         _dump_json(results)

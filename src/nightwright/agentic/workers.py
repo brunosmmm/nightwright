@@ -457,7 +457,8 @@ def check(cfg, rec: dict, *, record: bool = False) -> dict:
     gate jobs multiplex on it, and `-O exit` would end every one in flight.
     SPEC-0345: with `record` (`nw workers check`) the outcome is stored as `check_ok`; an
     automatic probe (an update's preflight or post-update check, bootstrap, `add`) only stores a
-    pass, so a transient failure there never takes the worker off persona work."""
+    pass, so a transient failure there never takes the worker off persona work. That pass never
+    clears a `claude` failure (`check_failed: "claude"`): the probe does not check claude."""
     w = normalize(cfg, rec)
     out = {"name": w["name"], "ok": False, "errors": [], "warnings": [], "info": None}
     if w["mode"] == "pull":                     # SPEC-0334: nothing to reach over SSH
@@ -472,17 +473,29 @@ def check(cfg, rec: dict, *, record: bool = False) -> dict:
     if isinstance(out["info"], dict):
         _cache_info(cfg, w["name"], out["info"])
     if record or out["ok"]:
-        record_check(cfg, w["name"], out["ok"])
+        record_check(cfg, w["name"], out["ok"], manual=record)
     return out
 
 
-def record_check(cfg, name: str, ok: bool) -> None:
-    """SPEC-0345: the worker's last check outcome (`check_ok`, `checked_at`); a failed check makes
-    it *failing* for campaign affinity."""
+def record_check(cfg, name: str, ok: bool, *, failed: str = "probe",
+                 manual: bool = True) -> None:
+    """SPEC-0345: the worker's last check outcome (`check_ok`, `checked_at`, and on a failure
+    `check_failed`: `probe` for SSH/info, `claude` for `nw workers check`'s claude check); a
+    failed check makes it *failing* for campaign affinity. A pass that is not `manual` (an
+    automatic probe, which never checks claude) leaves a `claude` failure in place: only the
+    next `nw workers check` clears it."""
     def fn(records):
         for r in records:
-            if r.get("name") == name:
-                r["check_ok"], r["checked_at"] = bool(ok), _iso(time.time())
+            if r.get("name") != name:
+                continue
+            if ok and not manual and r.get("check_ok") is False \
+                    and r.get("check_failed") == "claude":
+                continue
+            r["check_ok"], r["checked_at"] = bool(ok), _iso(time.time())
+            if ok:
+                r.pop("check_failed", None)
+            else:
+                r["check_failed"] = failed
     try:
         update(cfg, fn)
     except (OSError, ValueError):

@@ -446,7 +446,7 @@ def set_affinity(cfg, state: dict, worker: str) -> bool:
                 cur["remote_affinity"], cur["remote_affinity_at"] = worker, at
                 store.write_state(cfg, cid, cur)
         except (ValueError, OSError):
-            pass
+            return False                          # not stored: the snapshot stays as it was
         state["remote_affinity"], state["remote_affinity_at"] = worker, at
         return True
 
