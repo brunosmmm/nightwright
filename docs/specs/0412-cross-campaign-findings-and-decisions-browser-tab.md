@@ -1,9 +1,10 @@
 ---
 id: SPEC-0412
 title: "Findings record filter: parse_record_filter and a query adapter that matches nw campaign records over nw.history.record.v1"
-status: proposed
+status: accepted
 owner: user
 created: 2026-11-03
+updated: 2026-11-03
 milestone: "M9: agentic workflow"
 kind: feature
 parent: SPEC-0405
