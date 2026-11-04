@@ -1,7 +1,7 @@
 ---
 id: SPEC-0409
 title: "Remove Textual/pyte test skips, add the AST guard and a TUI test runtime budget"
-status: proposed
+status: accepted
 owner: user
 created: 2026-11-03
 updated: 2026-11-03
