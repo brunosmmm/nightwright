@@ -726,3 +726,105 @@ def test_recapture_replaces_out_and_leaves_no_side_dirs(tmp_path):
     assert run_tool("--src", str(src), "--out", str(out)).returncode == 0
     assert tree_hashes(out) == first
     assert sorted(p.name for p in tmp_path.iterdir()) == ["out", "src"]
+
+
+# ---- review fixes: --cid pin, IPv4 map, sanitize-then-cut, mail guard ---------------------------
+ABANDONED2 = "SPEC-0007-20261001-1111"      # a second abandoned candidate, bigger than ABANDONED
+
+
+def test_cid_pin_overrides_automatic_selection(tmp_path):
+    src = build_source(tmp_path / "src")
+    make_campaign(src / "agentic", ABANDONED2, "ABANDONED",
+                  [ev(ABANDONED2, 1, 20, "open"), ev(ABANDONED2, 2, 25, "run.end", cost_usd=0.1),
+                   ev(ABANDONED2, 3, 40, "transition", **{"from": "PARKED", "to": "ABANDONED"})],
+                  {f"00{i}-implementer": run_files() for i in range(1, 4)})
+    auto = tmp_path / "auto"
+    r = run_tool("--src", str(src), "--out", str(auto))
+    assert r.returncode == 0, r.stderr
+    assert manifest_of(auto)["scenarios"]["abandoned"] == [ABANDONED]     # smaller one wins unpinned
+    pinned = tmp_path / "pinned"
+    r = run_tool("--src", str(src), "--out", str(pinned), "--cid", ABANDONED2)
+    assert r.returncode == 0, r.stderr
+    m = manifest_of(pinned)
+    assert m["scenarios"]["abandoned"] == [ABANDONED2]
+    cids = {c["cid"]: c for c in m["campaigns"]}
+    assert ABANDONED2 in cids and "abandoned" in cids[ABANDONED2]["scenarios"]
+    assert ABANDONED not in cids and not (pinned / "agentic/campaigns" / ABANDONED).exists()
+    assert (pinned / "agentic/campaigns" / ABANDONED2 / "state.json").is_file()
+
+
+def test_private_ipv4_is_rewritten_with_a_stable_map(tmp_path):
+    src = build_source(tmp_path / "src")
+    a, b = "192.168.1.9", "172.16.0.4"
+    base = src / "agentic/campaigns"
+    (base / ABANDONED / "spec_at_open.md").write_text(f"x {b} y {a}\n")
+    (base / MULTI / "spec_at_open.md").write_text(f"{a} {a} {b} 10.1.2.3\n")
+    out = tmp_path / "out"
+    r = run_tool("--src", str(src), "--out", str(out))
+    assert r.returncode == 0, r.stderr
+    got = {cid: (out / "agentic/campaigns" / cid / "spec_at_open.md").read_text().split()
+           for cid in (MULTI, ABANDONED)}
+    blob = "".join(p.read_text(errors="replace") for p in out.rglob("*") if p.is_file())
+    for ip in (a, b, "10.1.2.3"):
+        assert ip not in blob, ip
+    m_a, m_a2, m_b, m_c = got[MULTI]
+    assert m_a == m_a2 and len({m_a, m_b, m_c}) == 3
+    assert all(x.startswith("10.0.0.") for x in got[MULTI])
+    assert got[ABANDONED] == ["x", m_b, "y", m_a]                  # same map across files
+    assert manifest_of(out)["sanitization"]["rules"]["ipv4"] >= 6
+
+
+def test_secret_straddling_the_json_cut_is_redacted_first(tmp_path):
+    src = build_source(tmp_path / "src")
+    rd = src / "agentic/campaigns" / MULTI / "runs/001-implementer"
+    run = json.loads((rd / "run.json").read_text())
+    run["notes"] = ["a" * 4080 + "ghp_" + "B" * 36, "c" * 4075 + " Bearer " + "D" * 30,
+                    "e" * 4084 + "sk-" + "F" * 30, "pad" * 20000]
+    (rd / "run.json").write_text(json.dumps(run, indent=2) + "\n")
+    out = tmp_path / "out"
+    r = run_tool("--src", str(src), "--out", str(out))
+    assert r.returncode == 0, r.stderr
+    got = json.loads((out / "agentic/campaigns" / MULTI / "runs/001-implementer/run.json").read_text())
+    assert got["truncated_by_fixture"] is True
+    blob = json.dumps(got)
+    for part in ("ghp_", "BBBB", "DDDD", "sk-", "FFFF"):
+        assert part not in blob, part
+
+
+def _clean(tool, data: bytes):
+    text = data.decode()
+    assert all(m.group(1) == "user" for m in tool.PATH_RE.finditer(text)), text[-40:]
+    assert all(m.group(0) == tool.PLACEHOLDER_EMAIL for m in tool.EMAIL_RE.finditer(text)), text[-40:]
+
+
+def test_cut_cannot_leave_a_half_path_or_half_email(tool):
+    san = tool.Sanitizer()
+    for pad in range(1000, 1030):                                  # gate / stderr log lines (1 KiB)
+        raw = ("x" * pad + " /home/alice/w user@corp.example\n").encode()
+        _clean(tool, tool.cap_log(raw, san))
+    for pad in range(1000, 1030):
+        raw = ("x" * pad + " alice@corp.example /home/alice\n").encode()
+        _clean(tool, tool.cap_log(raw, san))
+    for pad in range(4070, 4100):                                  # oversized run / result values
+        obj = {"a": "x" * pad + " /home/alice/w user@corp.example", "p": "y" * 70000}
+        raw = json.dumps(obj).encode()
+        out = tool.cap_big_json(tool.sanitize_file("run.json", raw, san))
+        _clean(tool, out)
+    for pad in range(480, 530):                                    # truncated stream lines (512 chars)
+        line = {"type": "assistant", "text": "z" * pad + " /home/alice/w user@corp.example " + "q" * 5000}
+        out = tool.cap_stream((json.dumps(line) + "\n").encode(), san)
+        assert json.loads(out)["truncated"] is True
+        _clean(tool, out)
+
+
+def test_mail_about_a_chosen_cid_for_another_campaign_is_dropped(tmp_path):
+    src = build_source(tmp_path / "src")
+    with (src / "agentic/mailbox/conductor.jsonl").open("a") as f:
+        f.write(json.dumps({"id": "conductor:9", "campaign": LIVE, "text": f"re {MULTI}"}) + "\n")
+    out = tmp_path / "out"
+    r = run_tool("--src", str(src), "--out", str(out))
+    assert r.returncode == 0, r.stderr
+    cids = {c["cid"] for c in manifest_of(out)["campaigns"]}
+    mail = [o for p in (out / "agentic/mailbox").glob("*.jsonl") for o in read_jsonl(p)]
+    assert mail and all(not o.get("campaign") or o["campaign"] in cids for o in mail)
+    assert not any(LIVE in json.dumps(o) for o in mail)

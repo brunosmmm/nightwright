@@ -48,6 +48,7 @@ SCENARIOS = [("merged_multi_loop", True), ("abandoned", True), ("handed_off", Fa
 PATH_RE = re.compile(r"(?:/home|/Users)/([A-Za-z0-9_.-]+)")
 EMAIL_RE = re.compile(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)+")
 TAIL_EMAIL_RE = re.compile(r"[\w.%+-]*@[\w.-]*$")      # an email cut in half by a truncation
+TAIL_PATH_RE = re.compile(r"(?:/home|/Users)(?:/[A-Za-z0-9_.-]*)?$")   # a home path cut in half
 SECRET_RES = [re.compile(p) for p in (
     r"sk-[A-Za-z0-9_-]{16,}", r"ghp_[A-Za-z0-9]{20,}", r"github_pat_[A-Za-z0-9_]{20,}",
     r"xox[abprs]-[A-Za-z0-9-]{10,}", r"AKIA[0-9A-Z]{16}", r"Bearer [A-Za-z0-9._~+/=-]{20,}")]
@@ -233,9 +234,19 @@ def strings(v):
             yield from strings(x)
 
 
+def trim_cut(s: str) -> str:
+    """Drop a trailing email or home path that a truncation cut in half: the half no longer matches
+    the placeholder, so the verification scan would flag it. Applied to cut strings only."""
+    s = TAIL_EMAIL_RE.sub("", s)
+    m = TAIL_PATH_RE.search(s)
+    if m and m.group(0) != "/home/user":
+        s = s[:m.start()]
+    return s
+
+
 def cut_bytes(s: str, n: int) -> str:
     b = s.encode()
-    return s if len(b) <= n else b[:n].decode("utf-8", errors="ignore")
+    return s if len(b) <= n else trim_cut(b[:n].decode("utf-8", errors="ignore"))
 
 
 def cap_stream(raw: bytes, san: Sanitizer) -> bytes:
@@ -253,7 +264,7 @@ def cap_stream(raw: bytes, san: Sanitizer) -> bytes:
             typ = obj.get("type") if isinstance(obj, dict) else None
             text = "\n".join(strings(obj)) if obj is not None else ln
             ln = dumps({"type": typ, "truncated": True,
-                        "text": TAIL_EMAIL_RE.sub("", text[:STREAM_TEXT_CHARS])}) + "\n"
+                        "text": trim_cut(text[:STREAM_TEXT_CHARS])}) + "\n"
         out.append(ln)
     return "".join(out).encode()
 
@@ -265,8 +276,7 @@ def cap_log(raw: bytes, san: Sanitizer) -> bytes:
 
 
 def cap_big_json(raw: bytes) -> bytes:
-    if len(raw) <= JSON_CAP_BYTES:
-        return raw
+    """Cut the free-text values of an (already sanitized) JSON document to JSON_VALUE_CHARS."""
     try:
         obj = json.loads(raw)
     except ValueError:
@@ -274,7 +284,7 @@ def cap_big_json(raw: bytes) -> bytes:
 
     def cut(v):
         if isinstance(v, str):
-            return v[:JSON_VALUE_CHARS]
+            return v if len(v) <= JSON_VALUE_CHARS else trim_cut(v[:JSON_VALUE_CHARS])
         if isinstance(v, list):
             return [cut(x) for x in v]
         if isinstance(v, dict):
@@ -385,7 +395,10 @@ def campaign_files(c: Camp, san: Sanitizer) -> dict[str, bytes]:
         elif how == "log":
             out[rel] = cap_log(raw, san)
         else:
-            out[rel] = sanitize_file(rel, cap_big_json(raw) if rel.endswith(("run.json", "result.json")) else raw, san)
+            # sanitize first, then cut: a cut must not split a secret below its pattern's length
+            data = sanitize_file(rel, raw, san)
+            big = rel.endswith(("run.json", "result.json")) and len(raw) > JSON_CAP_BYTES
+            out[rel] = cap_big_json(data) if big else data
 
     for name in ("state.json", "ledger.jsonl", "spec_at_open.md"):
         if (c.path / name).is_file():
@@ -524,7 +537,7 @@ def collect_records(agentic: Path, chosen: list[Camp], esc: dict, note) -> tuple
     if src("mailbox", mb):
         for p in sorted(mb.glob("*.jsonl")):
             keep = [ln for ln, o in read_jsonl(p) if isinstance(o, dict) and (
-                o.get("campaign") in cids or mentions(ln, cids))]
+                o.get("campaign") in cids or (not o.get("campaign") and mentions(ln, cids)))]
             if keep:
                 counts["mail"] += len(keep)
                 files[f"mailbox/{p.name}"] = "".join(keep).encode()
