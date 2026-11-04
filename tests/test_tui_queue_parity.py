@@ -1,7 +1,6 @@
 """SPEC-0410: the grouped queue rows agree with `nw queue backlog` and `dashboard_payload`."""
 import json
 
-import pytest
 
 from test_agentic_dashboard import _campaign, _fixture, _iso, _park_fixture
 from test_agentic_e2e import run_cli
@@ -62,7 +61,6 @@ def test_a_deferred_park_is_in_both_groups(tmp_path):
 
 
 def test_mounted_table_order_equals_rows_from_payload(tmp_path):
-    pytest.importorskip("textual")
     from test_tui_queue_tab import SIZE, _desk, _run, settle, view
     repo, cfg, ids = _seed(tmp_path)
     app = _desk(cfg, tab="queue")

@@ -1,8 +1,4 @@
 """SPEC-0410: the grouped queue table in a mounted desk (Textual pilot tests)."""
-import pytest
-
-pytest.importorskip("textual")  # module-level skip: the imports below need the tui extra
-
 import json
 
 from test_agentic_dashboard import _campaign, _fixture, _iso, _park_fixture
