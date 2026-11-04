@@ -1,7 +1,7 @@
 ---
 id: SPEC-0414
 title: "Dashboard server, loopback: nw serve --dashboard with token auth and GET /api/snapshot"
-status: proposed
+status: accepted
 owner: user
 created: 2026-11-04
 updated: 2026-11-04
