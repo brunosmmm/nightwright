@@ -217,8 +217,8 @@ test("ages tick from the server clock", async () => {
   await t.app.idle();
   assert.ok(t.text("active").includes("age 15s"), t.text("active"));
   assert.ok(t.text("active").includes("implementer · 55s"), t.text("active"));   // elapsed_s, not age_s
-  assert.ok(t.text("health").includes("heartbeat 9s"), t.text("health"));             // heartbeat_age_s
-  assert.equal(t.text("updated"), "updated 5s ago");
+  assert.ok(t.text("health").includes("heartbeat ok"), t.text("health"));             // healthy: no age
+  assert.equal(t.text("updated"), "checked 0s ago");
   await t.clock.advance(10000, settle);                                                // no request yet? one 304 at 15 s only
   assert.equal(t.calls.length, 1);
   assert.ok(t.text("active").includes("age 25s"));
@@ -230,13 +230,32 @@ test("ages tick from the server clock", async () => {
   assert.ok(t.text("active").includes("age 35s"), t.text("active"));
 });
 
+test("quiet queue: 304s for 10 minutes never show a growing heartbeat age; the header tracks the last poll", async () => {
+  const t = setup();
+  t.script.push(ok(snap(), GEN + 5000));                 // heartbeat_age_s = 4, lease healthy
+  t.app.start();
+  await t.app.idle();
+  assert.ok(t.text("health").includes("heartbeat ok"), t.text("health"));
+  await t.clock.advance(600000, settle);                 // 40 polls, all 304
+  assert.ok(t.calls.length >= 40, String(t.calls.length));
+  assert.ok(t.text("health").includes("heartbeat ok"), t.text("health"));
+  assert.ok(!/heartbeat \d/.test(t.text("health")), t.text("health"));
+  assert.ok(/^checked ([0-9]|1[0-5])s ago$/.test(t.text("updated")), t.text("updated"));   // last poll <= 15 s ago
+  // a stale lease arrives as a 200 (stale is part of rev) and then shows the ticking age
+  const stale = snap({ rev: "r2", generated_at: new Date(GEN + 600000).toISOString() });
+  stale.health.runner.lease = { held: true, pid: 11, host: "box", stale: true, heartbeat_age_s: 120 };
+  t.script.push(ok(stale, GEN + 600000));
+  await t.clock.advance(15000, settle);
+  assert.ok(/heartbeat 2m/.test(t.text("health")) && t.text("health").includes("stale lease"), t.text("health"));
+});
+
 test("ages: a Date earlier than generated_at is never negative; no Date falls back to the local clock", async () => {
   const early = setup();
   early.script.push(ok(snap(), GEN - 3600000));
   early.app.start();
   await early.app.idle();
   assert.ok(early.text("active").includes("age 10s"), early.text("active"));
-  assert.equal(early.text("updated"), "updated 0s ago");
+  assert.equal(early.text("updated"), "checked 0s ago");
   const none = setup({ t0: GEN + 5000 });
   none.script.push(ok(snap()));                          // no Date header
   none.app.start();

@@ -449,6 +449,13 @@ Built to Design. Details the Design left open or that differ in form:
   read-only test runs a scenario without the change and hashes the data dir.
 - The "ledger change" in `tests/test_dashboard_page.py` writes the active campaign's
   `state.json` cost and appends a `cost` ledger event (the queue's own pair).
+- Heartbeat and header after review (loop 2): `snapshot.compute_rev` ignores `*_age_s` and the lease clock stamps, so on a quiet queue every poll is a `304` and the kept snapshot's `heartbeat_age_s` (which resets on each heartbeat) must not be ticked as an age that only grows. The Health row shows `heartbeat ok` while `lease.stale` is false and, for a stale lease (its flip is part of `rev`, so it arrives as a `200`), the ticking `heartbeat <age>` plus `stale lease`. The header is based on the last successful poll (`st.lastOk`) and reads `checked Ns ago` (was `updated Ns ago` measured from `generated_at`), so a healthy queue with no changes reads a few seconds, and an unreachable server lets it grow. Run `elapsed_s` and campaign `age_s` still tick from `generated_at` (both genuinely only grow). A token that is not a valid header value (fetch `TypeError`) is not handled specially (unchanged).
+- Follow-up for the dashboard server spec: serving the page from the server (route `/`, `/app.js`, `/app.css` through `assets.read_asset`).
+
+### Test record (2026-11-04, loop 2)
+
+- `node --test tests/js/page_logic.test.js`: 14 pass, 1 skipped (the real-snapshot test, run by the pytest wrapper). New test: snapshot with `heartbeat_age_s=4`, then 10 minutes of `304`s on the injected clock, shows `heartbeat ok` and never a growing age; the header stays within 15 s of the last poll; a stale-lease `200` then shows the ticking age. The `ages tick` and `Date earlier` tests were updated for the `checked` header.
+- `uv run pytest -q -n 0 tests/test_dashboard_page_logic.py tests/test_dashboard_assets.py tests/test_dashboard_page.py`: 22 passed, 1 skipped (manual stub). Full affected run left to gating.
 
 ## Rollout / migration
 

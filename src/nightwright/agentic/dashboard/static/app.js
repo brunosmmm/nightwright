@@ -273,8 +273,13 @@ function createApp(env) {
       if (!lease.held) r.appendChild(el("span", "v", "down"));
       else {
         r.appendChild(el("span", "v", lease.host ? lease.pid + "@" + lease.host : String(lease.pid)));
-        r.appendChild(ageNode("span", "v", "heartbeat ", lease.heartbeat_age_s));
-        if (lease.stale) r.appendChild(el("span", "v", "stale lease"));
+        /* heartbeat_age_s resets on every heartbeat and rev ignores it, so across 304s the page
+           cannot tick it as an age that only grows: show it (ticking) only for a stale lease,
+           whose flip is part of rev and so arrives as a 200. */
+        if (lease.stale) {
+          r.appendChild(ageNode("span", "v", "heartbeat ", lease.heartbeat_age_s));
+          r.appendChild(el("span", "v", "stale lease"));
+        } else r.appendChild(el("span", "v", "heartbeat ok"));
       }
       if (runner && runner.draining) r.appendChild(el("span", "v", "draining"));
       if (runner && runner.runner_code && runner.runner_code.stale) r.appendChild(el("span", "v", "stale code"));
@@ -325,8 +330,11 @@ function createApp(env) {
     var snap = st.snap;
     st.ages = [];
     st.generatedMs = Date.parse(snap.generated_at);
+    /* Time since the last successful poll (200 or 304), not since generated_at: on a quiet
+       queue rev does not change, so generated_at stays old while every poll confirms it. */
     st.ages.push({ node: $("updated"), fn: function () {
-      return "updated " + formatAge(displayAge(0, st.generatedMs, serverNow())) + " ago";
+      var since = st.lastOk === null ? 0 : Math.max(0, (env.now() - st.lastOk) / 1000);
+      return "checked " + formatAge(since) + " ago";
     } });
     renderNeeds(snap);
     renderCounts(snap);
