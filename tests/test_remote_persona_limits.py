@@ -221,8 +221,8 @@ def _backoff_on(cfg, seconds=900):
                                              "backoff_s": 60})
 
 
-def _persona_step(w, req, local):
-    """`_do_persona` for the implementer, after the `run.start` `_prepare_run` writes."""
+def _run_start(w, req):
+    """The implementer's `run.start` as `_prepare_run` writes it."""
     S.append_event(w.cfg, CID, "run.start", {
         "persona": req.persona, "run_id": req.run_dir.name, "model": req.model,
         "effort": None, "max_budget_usd": req.max_budget_usd, "timeout_s": req.timeout_s,
@@ -231,10 +231,16 @@ def _persona_step(w, req, local):
     st = S.read_state(w.cfg, CID)
     st["counters"]["runs"] = int(req.run_dir.name[:3])
     S.write_state(w.cfg, CID, st)
+
+
+def _persona_step(w, req, local, hooks=None):
+    """`_do_persona` for the implementer, after the `run.start` `_prepare_run` writes."""
+    _run_start(w, req)
     ctx = Q._Ctx(w.cfg, runner=local)
     ctx._projects[w.state["project"]] = w.project
     return Q._do_persona(ctx, S.read_state(w.cfg, CID),
-                         Q.Step("implement", persona="implementer"), req.run_dir.name, req, 1.0)
+                         Q.Step("implement", persona="implementer"), req.run_dir.name, req, 1.0,
+                         hooks)
 
 
 def _apply_held(w, local, res):
@@ -334,6 +340,56 @@ def test_a_backoff_begun_after_the_gate_holds_the_dispatch(tmp_path, workers):
     assert not isinstance(rr, RPS.HeldRunner)
     if rr is not None:
         os.close(rr.slot)
+
+
+def _adopt_held(w, req):
+    """A later runner adopts the held run dir: as a member (`ClaudeRunner` attaches) and as a
+    stale open run (`_close_stale`); both close it interrupted, charging nothing."""
+    assert R.RP.run_status(req.run_dir) == "orphaned"
+    hooks = R.RunHooks(threading.Lock(), req.run_dir, phase="wait")
+    rr = R.ClaudeRunner().run(req, hooks=hooks)
+    assert rr.interrupted and rr.cost_usd == 0.0
+    ev, = [e for e in S.read_ledger(w.cfg, CID, types=["run.start"])
+           if e["run_id"] == req.run_dir.name]
+    before = S.read_state(w.cfg, CID)["cost"]["total_usd"]
+    ctx = Q._Ctx(w.cfg, runner=R.FakeRunner(_write_script(req.run_dir.parent / "x.json", [])))
+    assert Q._close_stale(w.cfg, CID, ev, ctx) == "stale_orphaned"
+    end, = [e for e in S.read_ledger(w.cfg, CID, types=["run.end"])
+            if e["run_id"] == req.run_dir.name]
+    assert end["charged_usd"] == 0.0 and end["cost_estimated"] is False
+    assert S.read_state(w.cfg, CID)["cost"]["total_usd"] == before
+
+
+@pytest.mark.parametrize("workers", [True, False])
+def test_a_held_run_detached_before_collect_is_adopted_at_no_cost(tmp_path, workers):
+    # a stop or restart races the held run: it detaches at `enter_collect`, and the next
+    # runner's adoption must not charge the never-started run its budget as an estimate
+    w = _world(tmp_path)
+    if workers:
+        _remote(w, _write_script(tmp_path / "s.json", WRITER))
+    local = _SpyLocal(_write_script(tmp_path / "ok.json", LOCAL_OK))
+    _backoff_on(w.cfg)
+    req = _req(w)
+    hooks = R.RunHooks(threading.Lock(), req.run_dir)
+    hooks.detach.set()                                   # the stop sweep detached the task
+    res = _persona_step(w, req, local, hooks)
+    assert res.detached and local.calls == []
+    _adopt_held(w, req)
+
+
+def test_a_local_fallback_held_by_the_backoff_and_detached_is_adopted_at_no_cost(tmp_path):
+    # `remote_personas._local`'s backoff branch (a lost job, a failure before submission)
+    from types import SimpleNamespace
+    w = _world(tmp_path)
+    _backoff_on(w.cfg)
+    req = _req(w)
+    _run_start(w, req)
+    R._save_inputs(req)
+    hooks = R.RunHooks(threading.Lock(), req.run_dir)
+    hooks.detach.set()
+    rr = SimpleNamespace(record=None, request=None, cfg=w.cfg, local=None)
+    assert RPS._local(rr, req, hooks) is R.DETACHED
+    _adopt_held(w, req)
 
 
 def test_an_uncharged_loss_restarts_the_cap_clock_of_the_local_rerun(tmp_path, monkeypatch):
@@ -935,11 +991,17 @@ def _kinds(cfg, now):
     return {t for _k, t, cid, _d in EV.watchdog_checks(cfg, now) if cid == CID}
 
 
+def _hold_file(cfg, why, since, at):
+    PG._write_json(PG.holds_path(cfg), {"holds": {CID: {"held_by": why, "since": since}},
+                                        "at": at})
+
+
 def test_backoff_hold_raises_no_campaign_silent(tmp_path):
     w, later = _silent_world(tmp_path)
     assert {"campaign_silent", "state_stuck"} <= _kinds(w.cfg, later)        # baseline
     PG._write_json(PG.rate_limit_path(w.cfg),
                    {"until": PG._iso(later.timestamp() + 900), "backoff_s": 900})
+    _hold_file(w.cfg, "rate_limit", S.now_iso(), later.isoformat())       # the tick held it
     assert not {"campaign_silent", "state_stuck"} & _kinds(w.cfg, later)
     assert CID not in [s["campaign"] for s in EV.ping_digest(w.cfg, later)["stuck"]]
     item = next(i for i in Q.queue_payload(w.cfg, now=later)["items"] if i["campaign"] == CID)
@@ -948,19 +1010,52 @@ def test_backoff_hold_raises_no_campaign_silent(tmp_path):
 
 def test_cap_hold_raises_no_campaign_silent(tmp_path):
     w, later = _silent_world(tmp_path)
-    PG._write_json(PG.holds_path(w.cfg), {"holds": {CID: {"held_by": "persona_cap",
-                                                          "since": S.now_iso()}}})
+    _hold_file(w.cfg, "persona_cap", S.now_iso(), later.isoformat())
     assert not {"campaign_silent", "state_stuck"} & _kinds(w.cfg, later)
     item = next(i for i in Q.queue_payload(w.cfg, now=later)["items"] if i["campaign"] == CID)
     assert item["held_by"] == "persona_cap"
+
+
+def test_a_backoff_mutes_only_the_campaigns_the_gate_held(tmp_path):
+    # another campaign's 429 started the backoff; this one sits in IMPLEMENTING with no run
+    # and no gated step (stuck for another reason): it is still reported
+    w, later = _silent_world(tmp_path)
+    PG._write_json(PG.rate_limit_path(w.cfg),
+                   {"until": PG._iso(later.timestamp() + 900), "backoff_s": 900})
+    PG._write_json(PG.holds_path(w.cfg), {"holds": {"OTHER": {"held_by": "rate_limit",
+                                                              "since": S.now_iso()}},
+                                          "at": later.isoformat()})
+    assert {"campaign_silent", "state_stuck"} <= _kinds(w.cfg, later)
+    assert CID in [s["campaign"] for s in EV.ping_digest(w.cfg, later)["stuck"]]
+    item = next(i for i in Q.queue_payload(w.cfg, now=later)["items"] if i["campaign"] == CID)
+    assert item["held_by"] is None
+
+
+@pytest.mark.parametrize("why", ["rate_limit", "persona_cap"])
+def test_holds_of_a_runner_that_stopped_ticking_stop_muting_the_detectors(tmp_path, why):
+    # the runner died right after a tick that held the campaign: its holds file is never
+    # rewritten, and after HOLDS_FRESH_S the detectors report the campaign again
+    w, later = _silent_world(tmp_path)
+    PG._write_json(PG.rate_limit_path(w.cfg),
+                   {"until": PG._iso(later.timestamp() + 900), "backoff_s": 900})
+    fresh = later - dt.timedelta(seconds=PG.HOLDS_FRESH_S - 60)
+    _hold_file(w.cfg, why, fresh.isoformat(), fresh.isoformat())
+    assert not {"campaign_silent", "state_stuck"} & _kinds(w.cfg, later)
+    stale = later - dt.timedelta(seconds=PG.HOLDS_FRESH_S + 60)
+    _hold_file(w.cfg, why, stale.isoformat(), stale.isoformat())
+    assert {"campaign_silent", "state_stuck"} <= _kinds(w.cfg, later)
+    assert CID in [s["campaign"] for s in EV.ping_digest(w.cfg, later)["stuck"]]
+    item = next(i for i in Q.queue_payload(w.cfg, now=later)["items"] if i["campaign"] == CID)
+    assert item["held_by"] is None
+    _hold_file(w.cfg, why, stale.isoformat(), None)                       # no stamp: stale too
+    assert {"campaign_silent", "state_stuck"} <= _kinds(w.cfg, later)
 
 
 def test_a_cap_hold_older_than_the_mute_limit_is_reported_again(tmp_path):
     # a live count inflated by a run that never ends must not mute the detectors forever
     w, later = _silent_world(tmp_path)
     old = later - dt.timedelta(seconds=PG.CAP_MUTE_MAX_S + 60)
-    PG._write_json(PG.holds_path(w.cfg), {"holds": {CID: {"held_by": "persona_cap",
-                                                          "since": old.isoformat()}}})
+    _hold_file(w.cfg, "persona_cap", old.isoformat(), later.isoformat())   # still refreshed
     assert {"campaign_silent", "state_stuck"} <= _kinds(w.cfg, later)
     item = next(i for i in Q.queue_payload(w.cfg, now=later)["items"] if i["campaign"] == CID)
     assert item["held_by"] == "persona_cap"                  # still shown as held
@@ -968,17 +1063,26 @@ def test_a_cap_hold_older_than_the_mute_limit_is_reported_again(tmp_path):
 
 def test_flush_keeps_since_while_the_hold_lasts_and_resets_it_on_a_change(tmp_path,
                                                                          monkeypatch):
-    # rewriting `since` on every tick would silently disable CAP_MUTE_MAX_S
+    # rewriting `since` on every tick would silently disable CAP_MUTE_MAX_S; `at` is the
+    # tick's own time, rewritten on every tick with a hold (`read_holds` drops a stale file)
     w = _world(tmp_path)
     clock = iter(f"2026-11-01T10:{m:02d}:00+00:00" for m in range(0, 60, 5))
-    monkeypatch.setattr(S, "now_iso", lambda: next(clock))
+    last = []
+
+    def now_iso():
+        last.append(next(clock))
+        return last[-1]
+    monkeypatch.setattr(S, "now_iso", now_iso)
 
     def tick(why):
         gate = PG.Gate(w.cfg, [CID])
         if why:
             gate._hold(CID, why)
         gate.flush()
-        return (PG.read_holds(w.cfg).get(CID) or {}).get("since")
+        doc = PG._read_json(PG.holds_path(w.cfg))
+        h = (doc.get("holds") or {}).get(CID) or {}
+        assert doc.get("at") == (last[-1] if h else None)
+        return h.get("since")
 
     assert tick("persona_cap") == "2026-11-01T10:00:00+00:00"
     assert tick("persona_cap") == "2026-11-01T10:00:00+00:00"           # the same hold: kept

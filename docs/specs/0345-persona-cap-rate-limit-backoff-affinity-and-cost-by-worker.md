@@ -464,6 +464,23 @@ back to local. Stuck detectors skip campaigns held by the gate. Cost attribution
   tests/test_remote_persona_limits.py`: 138 passed. The gate's affected set
   (`tools/affected_tests.py --guards`, run with `-n 6`): 5575 passed, 7 skipped.
 
+### Test record (2026-11-04, review loop 11)
+
+- New tests in `tests/test_remote_persona_limits.py`, failing with the source changes reverted
+  (7 failed): `test_a_backoff_mutes_only_the_campaigns_the_gate_held`,
+  `test_holds_of_a_runner_that_stopped_ticking_stop_muting_the_detectors` (`rate_limit` and
+  `persona_cap`), `test_a_held_run_detached_before_collect_is_adopted_at_no_cost` (with and
+  without a worker: the adopting `ClaudeRunner` and `_close_stale` both charge 0.0),
+  `test_a_local_fallback_held_by_the_backoff_and_detached_is_adopted_at_no_cost`, and the
+  `at` assertion added to `test_flush_keeps_since_while_the_hold_lasts_and_resets_it_on_a_change`.
+  The detector tests that write the holds file now write a fresh `at`.
+- `uv run pytest -q -n 6 tests/test_remote_persona_limits.py`: 93 passed. `uv run pytest -q
+  -n 6` on the affected-tests replay, adopt, dashboard, e2e, events (and settings), queue
+  visibility, quiet, resolver, reviewers, runner, spec writer, watchdog gaps, pull workers
+  (and their security tests), remote gates and personas, test-waits and index-lock files:
+  872 passed. `python3 tools/spec_lint.py`: exit 0.
+- Full suite left to gating.
+
 ### As shipped (2026-11-02)
 
 - **Waiver (2026-11-03).** The real-persona-campaign-on-box and real-429 manual steps were
@@ -522,8 +539,8 @@ back to local. Stuck detectors skip campaigns held by the gate. Cost attribution
   (each with `held_by` and `since`). `campaign_silent` (`watchdog_checks`) and
   `stuck_items` (`state_stuck`, and the conductor ping's stuck list and count) skip a
   campaign with no run in flight in either of two cases. Case 1: the backoff is running and
-  the campaign is in a persona state (`IMPLEMENTING`, `TRIAGING`, `REVIEWING`,
-  `SPEC_WRITING`) or has a `rate_limit` hold. Case 2: the campaign has a `persona_cap` hold.
+  the campaign has a `rate_limit` hold. Case 2: the campaign has a `persona_cap` hold. (Until
+  review loop 11, case 1 also covered every campaign in a persona state; see below.)
 - **Affinity.** State gains `remote_affinity` and `remote_affinity_at`. `dispatch` sets them,
   under the item lock, when it places the first persona run while the affinity is null.
   `failing` means one of: the worker is disabled; the worker's `check_ok` is false (`nw
@@ -610,6 +627,19 @@ back to local. Stuck detectors skip campaigns held by the gate. Cost attribution
   `_synthetic` callers (stale or orphaned runs) still report an unknown cost.
   `queue._note_rate_limit` skips `UNGATED_PERSONAS` (spec-review) runs, so they neither start
   nor reset the backoff.
+- **Review loop 11.** Three fixes. (1) `held_by` returns `rate_limit` only for a campaign
+  the last tick's gate held on the backoff, not for every campaign in a persona state while a
+  backoff runs, so a campaign stuck for another reason during another campaign's backoff is
+  still reported. (2) `Gate.flush` stamps the holds file with `at` (the tick's time) on every
+  tick with a hold, and `read_holds` returns no holds when `at` is missing or older than
+  `persona_gate.HOLDS_FRESH_S` (600 s). Holds left by a runner that stopped ticking therefore
+  mute the detectors for at most 10 minutes, not up to `CAP_MUTE_MAX_S`. `nw queue status`
+  then shows no `held_by` either. (3) A held run (`HeldRunner`, the backoff branches of
+  `remote_personas._local` and `queue._rerun_locally`) claims its run dir with `proc.json`
+  `{orphaned: true, held: true}` (`runner.mark_held`). When it detaches at `enter_collect`
+  because a stop or restart races it, the next runner's adoption sees an orphaned run, and
+  `runner._synthetic` charges a `held` run dir 0.0 whoever closes it, so the run is not
+  charged its budget as an estimate.
 - **Test support.** A `FakeRunner` script entry may carry
   `api_error: {status, message}`, which yields an API-error result.
 

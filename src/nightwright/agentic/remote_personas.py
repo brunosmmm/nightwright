@@ -356,6 +356,7 @@ class HeldRunner:
 
     def run(self, req, *, hooks=None):
         R._save_inputs(req)
+        R.mark_held(req)                 # a runner adopting it after a detach charges nothing
         if hooks is not None and not hooks.enter_collect():
             return R.DETACHED
         return R._synthetic(req, "the run was not started: the rate-limit backoff began after "
@@ -450,6 +451,7 @@ def _local(rr: R.RemoteRunner, req, hooks):
                                      "request to run it locally")
         req = rr.request
     if req.persona not in PG.UNGATED_PERSONAS and PG.backoff_until(rr.cfg) is not None:
+        R.mark_held(req)                 # a runner adopting it after a detach charges nothing
         if hooks is not None and not hooks.enter_collect():
             return R.DETACHED
         return R._synthetic(req, "the run went local during the rate-limit backoff; the step "

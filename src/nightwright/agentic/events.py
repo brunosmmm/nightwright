@@ -527,7 +527,7 @@ def stuck_items(cfg, now, sett) -> list[dict]:
     out = []
     rows = store.list_campaigns(cfg)
     closing_ids = {s["id"] for s in rows if s.get("state") == "CLOSING"}
-    holds = PG.read_holds(cfg)
+    holds = PG.read_holds(cfg, now)
     for st in rows:
         if st.get("state") not in ACTIVE_STATES:
             continue
@@ -794,7 +794,7 @@ def watchdog_checks(cfg, now=None) -> list[tuple]:
     out = []
     running = {}
     from . import persona_gate as PG
-    holds = PG.read_holds(cfg)
+    holds = PG.read_holds(cfg, now)
     for r in active:
         run = _open_run(cfg, r["id"])
         if run:

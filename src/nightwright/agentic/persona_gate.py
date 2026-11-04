@@ -9,8 +9,9 @@
 - **Rate limit.** A run whose claude result is an API rate-limit error (`is_rate_limit`) starts
   a backoff episode (60 s, doubled per episode up to 900 s); one `rate_limited` queue event per
   episode. A success from a run started after `until` resets the next episode to 60 s.
-- **Holds.** The tick records which campaigns the gate held (`persona-holds.json`); the stuck
-  detectors skip them and `nw queue list` / `status` shows `held_by`.
+- **Holds.** The tick records which campaigns the gate held (`persona-holds.json`, stamped
+  `at` on every tick with a hold); the stuck detectors skip them, and only them, while the
+  stamp is fresh (`HOLDS_FRESH_S`), and `nw queue list` / `status` shows `held_by`.
 - **Affinity.** `state.remote_affinity` (+ `remote_affinity_at`): the worker the campaign's first
   remote persona run went to. Persona runs and gate runs prefer it while it is not full and not
   failing; a `worker_job_lost` for the campaign on it clears it."""
@@ -30,12 +31,15 @@ from . import store
 
 GATED_KINDS = frozenset({"implement", "triage", "review", "write_spec", "resolve"})
 UNGATED_PERSONAS = frozenset({"spec_reviewer"})          # counted by neither cap nor backoff
-HELD_STATES = frozenset({"IMPLEMENTING", "TRIAGING", "REVIEWING", "SPEC_WRITING"})
 FIRST_BACKOFF_S = 60
 MAX_BACKOFF_S = 900
 # the detectors stop skipping a `persona_cap` hold older than this: a live count inflated by a
 # run that never ends (no `run.end`, a persona job record never final) would hold it forever
 CAP_MUTE_MAX_S = 7200
+# the holds file is the last tick's: a runner ticks every `poll_interval_s` (20 s by default)
+# and rewrites it (`at`) on each tick with a hold, so holds not rewritten for this long are
+# from a runner that stopped ticking, and the detectors stop skipping them (`read_holds`)
+HOLDS_FRESH_S = 600
 # a `worker_job_lost` keeps that worker failing for the campaign for at most this long: without
 # a bound, one loss before any affinity (or with no other worker to move the affinity to) would
 # keep the campaign's persona runs off the worker for the rest of its life
@@ -325,6 +329,8 @@ class Gate:
         return step
 
     def flush(self) -> None:
+        """Write the tick's holds, stamped `at` (the tick's time): rewritten on every tick that
+        holds something, so `read_holds` can tell a live runner's holds from a dead one's."""
         p = holds_path(self.cfg)
         old = _read_json(p).get("holds") or {}
         if not self.holds and not old:
@@ -335,27 +341,32 @@ class Gate:
                  for cid, h in self.holds.items()}
         for h in holds.values():
             h["since"] = h["since"] or since
-        if holds != old:
-            _write_json(p, {"holds": holds})
+        _write_json(p, {"holds": holds, "at": since} if holds else {"holds": {}})
 
 
 def holds_path(cfg) -> Path:
     return store.agentic_dir(cfg) / "persona-holds.json"
 
 
-def read_holds(cfg) -> dict:
-    h = _read_json(holds_path(cfg)).get("holds")
-    return h if isinstance(h, dict) else {}
+def read_holds(cfg, now=None) -> dict:
+    """The last tick's holds, `{}` when that tick is older than `HOLDS_FRESH_S` (or the file
+    has no `at`): a runner that stopped ticking holds nothing, so its last holds never mute
+    the detectors."""
+    doc = _read_json(holds_path(cfg))
+    h, at = doc.get("holds"), _epoch(doc.get("at"))
+    if not isinstance(h, dict) or at is None or _now_epoch(now) - at > HOLDS_FRESH_S:
+        return {}
+    return h
 
 
 def held_by(cfg, state: dict, now=None, holds=None, *, cap_mute_max_s=None) -> str | None:
-    """`rate_limit` while the backoff runs for a campaign whose next step is a persona step,
-    `persona_cap` while the last tick held its step on the cap, else None. The caller skips
+    """`rate_limit` while the backoff runs for a campaign the last tick's gate held on it,
+    `persona_cap` while the last tick held its step on the cap, else None: only a step the
+    gate held is held, never a campaign waiting for another reason. The caller skips
     campaigns with a run in flight. With `cap_mute_max_s` (the detectors), a `persona_cap` hold
     held since longer than that is None, so the detectors report it again."""
-    entry = (read_holds(cfg) if holds is None else holds).get(state.get("id")) or {}
-    if backoff_until(cfg, now) is not None and (
-            state.get("state") in HELD_STATES or entry.get("held_by") == "rate_limit"):
+    entry = (read_holds(cfg, now) if holds is None else holds).get(state.get("id")) or {}
+    if entry.get("held_by") == "rate_limit" and backoff_until(cfg, now) is not None:
         return "rate_limit"
     if entry.get("held_by") == "persona_cap":
         since = _epoch(entry.get("since"))

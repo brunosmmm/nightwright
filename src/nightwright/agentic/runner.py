@@ -374,10 +374,24 @@ def _error_result(req: RunRequest, text: str, started_at: str, duration: float) 
         started_at)
 
 
+def mark_held(req: RunRequest) -> None:
+    """SPEC-0345: claim the run dir of a run the rate-limit backoff held (it never starts) as
+    orphaned and `held`. A runner that adopts it later (this one detached before collecting
+    it) then closes it as orphaned, and `_synthetic` charges it nothing."""
+    try:
+        RP.claim(req.run_dir, {"orphaned": True, "held": True, "by": "rate_limit",
+                               "ts": _now_iso()})
+    except OSError:
+        pass
+
+
 def _synthetic(req: RunRequest, text: str, *, cost_usd: float | None = None) -> RunResult:
     """An interrupted run that never produced output: the state stays, the step respawns.
     `cost_usd=0.0` marks a run known never to have started (SPEC-0345: held by the rate-limit
-    backoff), so it is not charged its budget as an estimate."""
+    backoff), so it is not charged its budget as an estimate; so does a run dir `mark_held`
+    claimed, whoever closes it."""
+    if cost_usd is None and (RP.read_json(req.run_dir / "proc.json") or {}).get("held"):
+        cost_usd = 0.0
     started_at = (RP.read_json(req.run_dir / "request.json") or {}).get("started_at") or _now_iso()
     return write_run_record(req, RunResult(
         exit_code=-1, timed_out=False, interrupted=True, duration_s=0.0, is_error=True,

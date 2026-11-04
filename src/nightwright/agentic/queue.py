@@ -2210,8 +2210,9 @@ def _rerun_locally(ctx: _Ctx, state: dict, step: Step, run_id: str, req, budget:
     if tmp_env is not None:
         new_req = replace(new_req, env={**env, **tmp_env})
     if PG.backoff_until(cfg) is not None:
-        from .runner import _save_inputs, _synthetic
+        from .runner import _save_inputs, _synthetic, mark_held
         _save_inputs(new_req)
+        mark_held(new_req)
         return new_id, new_req, _synthetic(new_req, "the write-back re-run was not started "
                                                     "during the rate-limit backoff", cost_usd=0.0)
     if hooks is not None and getattr(ctx.runner, "detachable", False):
@@ -6671,7 +6672,7 @@ def queue_payload(cfg, *, include_terminal=False, project=None, state=None, now=
     busy = sum(1 for r in rows if r.get("state") in SLOT_STATES)
     backlog = {b["campaign"]: b for b in backlog_view(cfg)}
     held = L.is_held(cfg)
-    holds = PG.read_holds(cfg)                       # SPEC-0345
+    holds = PG.read_holds(cfg, now)                  # SPEC-0345
     items = []
     for r in rows:
         counters = r.get("counters") or {}
