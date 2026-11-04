@@ -10,7 +10,7 @@ kind: feature
 parent: SPEC-0400
 source_idea: IDEA-875
 tags: [agentic, dashboard, remote, escalation, conductor]
-depends_on: [SPEC-0232, SPEC-0235, SPEC-0401]
+depends_on: [SPEC-0232, SPEC-0235, SPEC-0401, SPEC-0414]
 ---
 
 ## Context
