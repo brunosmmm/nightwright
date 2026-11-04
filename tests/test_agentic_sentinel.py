@@ -91,8 +91,9 @@ def test_check_due_marks_due_since_and_respects_enabled(world):
 
 @pytest.fixture
 def sw(world):
-    """`world` with a close config, `_root` set and escalation notifications off."""
-    world["cfg"]["agentic"] = {"escalations": {"notify": "none"}}
+    """`world` with a close config, `_root` set and escalation notifications off and the SPEC-0420
+    red-main machinery off (the legacy escalate-per-sha path, AC9)."""
+    world["cfg"]["agentic"] = {"escalations": {"notify": "none"}, "red_main": {"enabled": False}}
     pcfg = _pcfg(world)
     pcfg["_root"] = str(world["root"])
     pcfg["gates"] = [
@@ -165,7 +166,7 @@ def test_red_run_flags_escalates_names_only_ancestors(sw):
 
 
 def test_red_sentinel_makes_the_next_close_decline_with_r1(rw):
-    rw["cfg"]["agentic"] = {"escalations": {"notify": "none"}}
+    rw["cfg"]["agentic"] = {"escalations": {"notify": "none"}, "red_main": {"enabled": False}}
     SN.settle(rw["cfg"], PROJECT, git.rev_parse(rw["root"]), False, ["t::x"],
               root=str(rw["root"]))
     out = CL.prepare_close(rw["cfg"], rw["state"], rw["pcfg"])
@@ -174,7 +175,7 @@ def test_red_sentinel_makes_the_next_close_decline_with_r1(rw):
 
 
 def test_deleted_after_red_restores_force_full_close(rw):
-    rw["cfg"]["agentic"] = {"escalations": {"notify": "none"}}
+    rw["cfg"]["agentic"] = {"escalations": {"notify": "none"}, "red_main": {"enabled": False}}
     SN.settle(rw["cfg"], PROJECT, git.rev_parse(rw["root"]), False, ["t::x"],
               root=str(rw["root"]))
     SN.state_path(rw["cfg"], PROJECT).unlink()
@@ -694,3 +695,24 @@ def test_remote_transport_failure_is_a_failed_run_not_a_local_fallback(sw, monke
     with pytest.raises(RuntimeError, match="remote sentinel on box failed"):
         SN.run(sw["cfg"], PROJECT, project_cfg=sw["pcfg"])
     assert ran_local == []
+
+
+# ---- SPEC-0420: a red settle opens a red episode and never escalates ------------------------
+
+def test_red_settle_opens_an_episode_and_never_escalates(world, monkeypatch):
+    from nightwright.agentic import redmain as RM
+    cfg, root = world["cfg"], world["root"]
+    cfg["agentic"] = {"escalations": {"notify": "none"}}         # red_main on (the default)
+
+    def boom(*a, **k):
+        raise AssertionError("plan_escalate must not be called on a red sentinel")
+    monkeypatch.setattr(ESC, "plan_escalate", boom)
+    sha = git.rev_parse(root)
+    for _ in range(2):                                   # same sha twice: still no escalation
+        SN.settle(cfg, PROJECT, sha, False, ["t.py::test_x"], root=str(root))
+    rec = RM.read(cfg, PROJECT)
+    assert rec["open"] and rec["episode"] == 1 and rec["runs"] == 2
+    assert ESC.list_all(cfg) == []
+    assert len(E.read_since(cfg, 0, types=["red_main"])) == 1
+    SN.settle(cfg, PROJECT, sha, True, root=str(root))
+    assert not RM.is_red(cfg, PROJECT)

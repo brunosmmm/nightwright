@@ -49,6 +49,7 @@ from . import gitops as git
 from . import lease as L
 from . import personas as PS
 from . import project as P
+from . import redmain as RM
 from . import remote_jobs as RJ
 from . import remote_personas as RPS
 from . import sentinel as SN
@@ -92,6 +93,7 @@ PARK_REASONS = frozenset({
     "regenerate_failed",                               # SPEC-0255: close-time regenerate failed/dirtied
     "gate_timeout",                                    # SPEC-0311: gates keep timing out under load
     "restart",                                         # SPEC-0375: parked across `nw queue restart`
+    "fixforward_weakens", "revert_conflict",           # SPEC-0420: red-base fix campaigns
 })
 # SPEC-0222: who a park waits for. The human only for their own checkout and explicit
 # escalations (`human_decision`, SPEC-0232); everything else is the conductor's.
@@ -225,6 +227,8 @@ def campaign_label(state: dict) -> str:
         return str(state["spec_id"])
     if state.get("kind") == "merge":
         return f"merge:{(state.get('merge') or {}).get('branch') or (state.get('repo') or {}).get('branch') or '?'}"
+    if state.get("kind") in RM.RED_KINDS:                       # SPEC-0420
+        return f"{state['kind']}:{state.get('project') or '?'}#{state.get('red_episode') or '?'}"
     return str((state.get("idea") or {}).get("id") or "?")
 
 
@@ -243,9 +247,11 @@ def plan_step(state: dict, profile: dict, project_cfg: dict | None = None, *, re
         return Step("none")
     if st == "OPENING":
         return Step("open")
-    if state.get("kind") == "merge" and st != "CLOSING":
+    if state.get("kind") in ("merge", "revert") and st != "CLOSING":
         # SPEC-0233: open goes straight to CLOSING; no persona ever runs for a merge request
-        return Step("park", reason="human", detail=f"merge campaign in {st}", resume_to="CLOSING")
+        # (SPEC-0420: nor for a revert campaign, whose open runs the revert)
+        return Step("park", reason="human", detail=f"{state['kind']} campaign in {st}",
+                    resume_to="CLOSING")
     if st == "SPEC_WRITING" and state.get("kind") == "split":
         # SPEC-0290: checked before the `spec.id` park below (a split campaign sets `spec.id`)
         parts = (state.get("split") or {}).get("parts") or []
@@ -823,6 +829,8 @@ def backlog_readiness(cfg, state: dict) -> tuple[bool, list[str]]:
     `--force` add) and every dependency `done` or `superseded`. Unknown ids block. An idea
     campaign without a spec (SPEC-0209) is ready while its idea is still open. A merge request
     (SPEC-0233) is ready while its branch exists."""
+    if state.get("kind") in RM.RED_KINDS:          # SPEC-0420: no spec, opened by the queue
+        return True, []
     if state.get("kind") == "merge":
         repo = state.get("repo") or {}
         branch = repo.get("branch") or ""
@@ -1095,6 +1103,9 @@ def _park(cfg, state: dict, reason: str, detail: str, resume_to: str, *, by="tic
         _counters(state)["parks"] += 1
     state["park"] = {"reason": reason, "detail": detail, "since": store.now_iso(),
                      "resume_to": resume_to, **(extra or {})}
+    if state.get("kind") in RM.RED_KINDS:
+        # SPEC-0420: the queue decides a red-base fix's park (the episode counts it failed)
+        state["park"]["red_main"] = state.get("red_episode")
     # SPEC-0318: a deferred park request carries the decision to record once the park applies
     pending = (state.get("park_requested") or {}).get("decision_request")
     if isinstance(pending, dict) and "decision_request" not in state["park"]:
@@ -1240,6 +1251,7 @@ class StepResult:
     lock_cleanup: dict | None = None                 # SPEC-0244: an adopted commit's index.lock outcome
     spec_review: dict | None = None                  # SPEC-0214: a spec_review step's outcome
     deferred: str | None = None                      # SPEC-0341: a gate step that did nothing yet
+    revert_conflict: str | None = None               # SPEC-0420: a revert open that conflicted
 
 
 _PROGRESS_MIN_INTERVAL_S = 1.0      # SPEC-0313: at most one `progress_at` lease write per second
@@ -1352,8 +1364,13 @@ def _do_open_unwrapped(ctx: _Ctx, state: dict) -> StepResult:
         git.worktree_add(root, worktree, repo["branch"], base_sha)
         _run_worktree_setup(pcfg, worktree)
         repo["base_sha_at_open"] = base_sha
+        if state.get("kind") == "revert":                       # SPEC-0420 §6
+            res.revert_conflict = CL.revert_campaign_range(state, worktree, pcfg,
+                                                         res.events_before)
         repo["head"] = git.rev_parse(worktree)
-        if not has_no_spec(state):
+        if state.get("kind") in RM.RED_KINDS:
+            pass                                                # SPEC-0420: no spec
+        elif not has_no_spec(state):
             spec = state.setdefault("spec", {})
             spec["sha256_at_open"] = _spec_sha(worktree / spec.get("rel_path", ""))
             # SPEC-0186: keep the accepted text so the close step can detect spec drift
@@ -2219,9 +2236,13 @@ def _gate_committed(state: dict, rec: dict) -> bool:
 def _do_prepare_close(ctx: _Ctx, state: dict) -> StepResult:
     """The close's worktree phase (SPEC-0220): worker-safe, no main-checkout writes."""
     res = StepResult(state["id"], Step("close"), "CLOSING")
+    held = CL.close_hold(ctx.cfg, state, ctx.project(state))       # SPEC-0420: red base
+    if held:
+        res.prepared = CL.PreparedClose(outcome=CL.CloseOutcome("CLOSING", held=held))
+        return res
     # SPEC-0207: file the follow-up ideas first; the filer never raises, and its events and
     # summary reach `_apply` whether or not the close then succeeds.
-    if state.get("kind") not in ("merge", "split"):     # SPEC-0233/0290: no review, no follow-ups
+    if state.get("kind") not in ("merge", "split", *RM.RED_KINDS):  # SPEC-0233/0290/0420
         res.events_before, res.followups = FU.file_followups(ctx.cfg, state, ctx.profile(state))
     try:
         res.prepared = CL.prepare_close(ctx.cfg, state, ctx.project(state), stop=ctx.stop)
@@ -2382,6 +2403,12 @@ def _apply(ctx: _Ctx, state: dict, res: StepResult) -> dict:
     if kind == "open":
         if state.get("kind") == "merge":
             return finish("CLOSING", "opened")
+        if state.get("kind") == "revert":                              # SPEC-0420
+            if res.revert_conflict:
+                return finish("PARKED", "revert_conflict", park={
+                    "reason": "revert_conflict", "detail": res.revert_conflict,
+                    "resume_to": "QUEUED", "no_auto": True})
+            return finish("CLOSING", "opened")
         if state.get("kind") == "split":                               # SPEC-0290
             return finish("SPEC_WRITING", "opened")
         pending = state.get("admission") == "revise_pending"           # SPEC-0279
@@ -2524,6 +2551,8 @@ def _apply(ctx: _Ctx, state: dict, res: StepResult) -> dict:
         events += _flaky_events(cfg, state, payload, previous, run.ok, retried=retried)
         if run.ok:
             counters["timeout_regates"] = 0
+            if state.get("kind") == "fixforward":       # SPEC-0420: full suite + weakening check
+                return finish("CLOSING", "gates_green")
             return finish("REVIEWING", "gates_green")
         if timeout_only(payload):                        # SPEC-0311: load, not a code fix
             timeouts = _gate_timeouts(ctx, state)
@@ -2549,6 +2578,10 @@ def _apply(ctx: _Ctx, state: dict, res: StepResult) -> dict:
             # must not send the campaign to TRIAGING; the next run redoes the close
             row["to"], row["reason"] = "CLOSING", "interrupted"
             return row
+        held = res.prepared.outcome.held if res.prepared is not None \
+            and res.prepared.outcome is not None else None
+        if held and not res.error:                       # SPEC-0420: no attempt, no park
+            return _apply_close_held(cfg, state, held, events, finish)
         counters["close_attempts"] += 1
         if res.followups is not None:
             fu = res.followups                      # counts and ids, plus the detail lists
@@ -2607,8 +2640,11 @@ def _apply(ctx: _Ctx, state: dict, res: StepResult) -> dict:
                 # the state is not MERGED on disk yet
                 _queue_split_children(cfg, state, events)
             state["park"] = None
-            return finish(oc.next_state, "closed")
-        if oc.next_state == "TRIAGING" and state.get("kind") in ("merge", "split"):
+            out = finish(oc.next_state, "closed")
+            if oc.next_state == "MERGED":
+                _red_fix_merged(cfg, state, oc.close)               # SPEC-0420
+            return out
+        if oc.next_state == "TRIAGING" and state.get("kind") in ("merge", "split", "revert"):
             # SPEC-0233: no gate triager for a merge request (SPEC-0290: nor a split campaign);
             # the conductor relays the failure
             return finish("PARKED", "gates_failed", park={
@@ -4220,6 +4256,176 @@ def tick(cfg, *, stop: threading.Event | None = None, runner=None, admit=True,
     return report
 
 
+# ---- red episodes (SPEC-0420) -------------------------------------------------------------
+
+def _apply_close_held(cfg, state: dict, held: str, events: list, finish) -> dict:
+    """A close the red base holds: the campaign stays CLOSING, no attempt is counted, nothing
+    parks; one `close_held` ledger event per campaign per episode."""
+    red = RM.read(cfg, state.get("project")) or {}
+    episode = red.get("episode")
+    closing = dict(state.get("closing") or {})
+    if closing.get("held_episode") != episode:
+        closing["held_episode"] = episode
+        events.append(("close_held", {"episode": episode, "reason": held}))
+    state["closing"] = closing
+    row = finish("CLOSING", "close_held")
+    return row
+
+
+def _red_fix_merged(cfg, state: dict, close: dict | None) -> None:
+    try:
+        if RM.record_merge(cfg, state, (close or {}).get("merged_sha")):
+            journal(cfg, "red_main_fix_merged", campaign=state["id"],
+                    project=state.get("project"), merged_sha=(close or {}).get("merged_sha"))
+    except (OSError, ValueError) as e:
+        journal(cfg, "red_main_failed", campaign=state["id"], error=str(e)[:500])
+
+
+def _red_abandon(cfg, cid: str, rule: str, why: str) -> bool:
+    """Abandon a fix campaign by the queue: PARKED / QUEUED / WAITING at once; an active one
+    gets a park request first (abandoned on a later tick, once parked)."""
+    st = store.read_state(cfg, cid)
+    s = st.get("state")
+    if s in TERMINAL_STATES:
+        return False
+    if s in ("PARKED", "QUEUED", "WAITING"):
+        if (st.get("park") or {}).get("reason") == "human_decision":
+            return False                          # the human's escalation decides it
+        _record_queue_decision(cfg, cid, "abandon", rule, why, action="abandon")
+        apply_abandon(cfg, plan_abandon(cfg, cid, by="queue"))
+        return True
+    with store.item_lock(cfg, cid):
+        cur = store.read_state(cfg, cid)
+        if cur.get("state") in TERMINAL_STATES or cur.get("state") in ("PARKED", "CLOSING") \
+                or cur.get("park_requested"):
+            return False
+        cur["park_requested"] = {"reason": "human", "detail": f"{rule}: {why}", "by": "queue",
+                                 "at": store.now_iso()}
+        store.write_state(cfg, cid, cur)
+    return False
+
+
+def _admit_red_fix(ctx: _Ctx, report: TickReport, st: dict) -> None:
+    """SPEC-0420 §3: a fix campaign is admitted at once, one slot over the profile's `slots`
+    (a queue full of held closes must not starve it)."""
+    _transition(ctx.cfg, st, "OPENING", "red_main_admitted", by="queue")
+    report.admitted += 1
+    report.steps.append(_apply(ctx, st, _do_open(ctx, st)))
+
+
+def _red_main_step(ctx: _Ctx, pool: StepPool, report: TickReport, *, own: bool) -> None:
+    """Tick step (after the sentinel step): for each project with an open red episode, refresh
+    the fix outcomes and act on `redmain.step` (open a fix-forward, localize the culprit, open a
+    revert, escalate once). Also adopts a pre-SPEC-0420 red sentinel once, admits queued fix
+    campaigns and abandons the fix campaigns a green sentinel made moot."""
+    cfg = ctx.cfg
+    if not RM.enabled(cfg):
+        return
+    fl = getattr(pool, "red_localize", None)
+    if fl is not None and fl[1].done():
+        pool.red_localize = None
+        _red_localized(cfg, fl[0], fl[1])
+    flying = pool.ids()
+    for project in SN.projects(cfg):
+        ctx.progress()
+        try:
+            pcfg = P.project_config(cfg, project)
+            try:
+                sst = SN.read(cfg, project, root=pcfg.get("_root"), project_cfg=pcfg)
+            except SN.Unreadable:
+                sst = None
+            if RM.adopt_legacy(cfg, project, sst):
+                journal(cfg, "red_main_adopted", project=project)
+            for st in RM.moot_campaigns(cfg, project):
+                if st["id"] in flying:
+                    continue
+                if _red_abandon(cfg, st["id"], "red_main.moot", "the base is green again; this "
+                                "fix is moot"):
+                    RM.mark_moot(cfg, project, st["id"])
+            red, failed = RM.refresh(cfg, project)
+            if not red or not red.get("open"):
+                continue
+            for cid in failed:
+                if cid not in flying:
+                    _red_abandon(cfg, cid, "red_main.fix_failed",
+                                 f"red-base fix failed (episode {red['episode']}); the episode "
+                                 "goes on without it")
+            active = store.list_campaigns(cfg, project=project)
+            for st in active:
+                if st.get("kind") in RM.RED_KINDS and st.get("state") == "QUEUED" \
+                        and st["id"] not in flying and not ctx.stop.is_set() \
+                        and not st.get("park_requested"):
+                    _admit_red_fix(ctx, report, st)
+            action, why = RM.step(cfg, project, active=store.list_campaigns(cfg, project=project),
+                                  red=red, project_cfg=pcfg)
+            _red_act(ctx, pool, report, project, pcfg, red, action, why, own=own)
+        except (GitError, ValueError, OSError) as e:
+            err = " ".join(str(e).split())[:500]
+            key = ("red_main", project, err)
+            if key not in pool.deferred_noted:
+                pool.deferred_noted.add(key)
+                journal(cfg, "red_main_failed", project=project, error=err)
+
+
+def _red_localized(cfg, project, fut) -> None:
+    try:
+        out = fut.result()
+    except Exception as e:
+        out = {"culprit": None, "why": f"localize failed: {type(e).__name__}: {e}"[:500]}
+    if out.get("retry"):
+        journal(cfg, "red_main_localize_deferred", project=project, reason=out.get("why"))
+        return
+    rec = RM.set_localized(cfg, project, out)
+    c = (rec or {}).get("culprit")
+    journal(cfg, "red_main_localized", project=project,
+            culprit=(c or {}).get("campaign"), why=out.get("why"), probes=out.get("probes"))
+    _record_queue_decision(cfg, None, "other", "red_main.localize",
+                           f"{project}: culprit {(c or {}).get('campaign') or 'none'} "
+                           f"({out.get('why')})")
+
+
+def _red_act(ctx, pool, report, project, pcfg, red, action, why, *, own) -> None:
+    cfg = ctx.cfg
+    if action == "none" or ctx.stop.is_set():
+        return
+    ep = red["episode"]
+    if action in ("open_fixforward", "open_revert"):
+        st = (RM.open_fixforward if action == "open_fixforward" else RM.open_revert)(cfg, project)
+        journal(cfg, "red_main_fix_opened", project=project, campaign=st["id"],
+                kind=st["kind"], episode=ep)
+        _record_queue_decision(cfg, st["id"], "other", f"red_main.{action}",
+                               f"red episode {ep} of {project}: {why}",
+                               action=f"open {st['kind']} {st['id']}")
+        report.steps.append({"campaign": st["id"], "from": None, "to": "QUEUED",
+                             "action": action, "reason": why, "run_id": None, "cost_usd": None})
+        _admit_red_fix(ctx, report, st)
+        return
+    if action == "localize":
+        if getattr(pool, "red_localize", None) is not None or _sentinel_busy(pool):
+            return                                  # one at a time, sharing the sentinel's slot
+        root = pcfg.get("_root")
+        journal(cfg, "red_main_localize_started", project=project, episode=ep)
+        if own:
+            fut: Future = Future()
+            try:
+                fut.set_result(RM.localize(cfg, project, root=root, project_cfg=pcfg,
+                                           stop=ctx.stop))
+            except Exception as e:
+                fut.set_exception(e)
+            _red_localized(cfg, project, fut)
+        else:
+            pool.red_localize = (project, pool.submit(
+                lambda: RM.localize(cfg, project, root=root, project_cfg=pcfg, stop=ctx.stop)))
+        return
+    if action == "escalate":
+        rec = RM.escalate(cfg, project, why)
+        if rec is not None:
+            journal(cfg, "red_main_escalated", project=project, escalation=rec["id"], why=why)
+            _record_queue_decision(cfg, None, "escalate", "red_main.escalate",
+                                   f"red episode {ep} of {project}: {why}",
+                                   action=f"escalate {rec['id']}")
+
+
 # ---- the close train (SPEC-0260) -----------------------------------------------------------
 
 def _train_key(state: dict) -> tuple:
@@ -4250,9 +4456,15 @@ def close_train(states, close_flights) -> dict[str, list[str]]:
             continue
         root = _repo_root(st) or st["id"]
         groups.setdefault(root, []).append(st)
+    # SPEC-0420: a red-base fix closes ahead of the (held) campaigns that wait for it
     return {root: [s["id"] for s in sorted(members, key=lambda s: (s["id"] not in close_flights,
+                                                                    not _fixes_red_base(s),
                                                                     *_train_key(s)))]
             for root, members in groups.items()}
+
+
+def _fixes_red_base(state: dict) -> bool:
+    return state.get("kind") in RM.RED_KINDS or bool(state.get("fixes_red"))
 
 
 def _train_wait(cfg, st: dict, head_id: str, position: int) -> None:
@@ -4671,6 +4883,11 @@ def _tick(cfg, ctx: _Ctx, pool: StepPool, report: TickReport, *, admit: bool, ow
             _sentinel_step(ctx, pool, busy)
         except Exception as e:              # never let the sentinel cost the tick
             journal(cfg, "sentinel_failed", error=f"{type(e).__name__}: {e}")
+    if not draining:
+        try:                                # SPEC-0420: red episodes: fix, revert, escalate
+            _red_main_step(ctx, pool, report, own=own)
+        except Exception as e:              # never let it cost the tick
+            journal(cfg, "red_main_failed", error=f"{type(e).__name__}: {e}")
     if own:
         pool.wait_all()
         _harvest(pool, report)
@@ -7547,15 +7764,24 @@ docs_only_violations = git.docs_only_violations      # SPEC-0234 (lives in gitop
 
 def plan_merge(cfg, branch, *, project=None, worktree=None, profile=None,
                priority=MERGE_PRIORITY_DEFAULT, note=None, requested_by="human",
-               docs_only=False) -> dict:
+               docs_only=False, fixes_red=False) -> dict:
     """SPEC-0233: resolve everything `nw queue merge` needs and return the plan (no writes).
     Raises ValueError naming the fix when the branch cannot be queued for a merge.
-    SPEC-0234: `docs_only` also needs every changed path to be on `merge.docs_only_paths`."""
+    SPEC-0234: `docs_only` also needs every changed path to be on `merge.docs_only_paths`.
+    SPEC-0420: `fixes_red` marks a branch that fixes the project's red base: priority 1, full
+    suite at close, exempt from the red-base hold; refused when the project is not red."""
     branch = (branch or "").strip()
     if not branch:
         raise ValueError("branch is required")
     priority = check_priority(priority)
     project = project or P.find_project_for_cwd(cfg) or "Meta-Tools"
+    if fixes_red:
+        if docs_only:
+            raise ValueError("--fixes-red and --docs-only exclude each other")
+        if not RM.is_red(cfg, project):
+            raise ValueError(f"--fixes-red refused: {project} has no open red episode "
+                             f"(nw queue sentinel status --project {project})")
+        priority = 1
     pcfg = P.project_config(cfg, project)
     root = Path(pcfg["_root"])
     policy = (pcfg.get("merge") or {}).get("policy")
@@ -7620,6 +7846,9 @@ def plan_merge(cfg, branch, *, project=None, worktree=None, profile=None,
         **({"docs_only": True, "docs_only_paths": allow,
             "gates": f"none (docs-only; {len(changed)} paths within merge.docs_only_paths)"}
            if docs_only else {}),
+        **({"fixes_red": True, "full_suite": True,
+            "gates": "close gates with the full suite (fixes the red base; not held)"}
+           if fixes_red else {}),
     }
 
 
@@ -7646,6 +7875,8 @@ def apply_merge(cfg, plan: dict, *, by="human") -> dict:
         "last_gate": None, "last_verdict": None,
         "pending_brief": None, "park": None, "close": None,
     }
+    if plan.get("fixes_red"):                                          # SPEC-0420
+        state.update(fixes_red=True, full_suite=True)
     with store.add_lock(cfg):
         active = _campaign_on_branch(cfg, plan["project"], plan["branch"])
         if active:

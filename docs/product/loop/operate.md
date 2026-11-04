@@ -116,6 +116,8 @@ it would do.
 | `regenerate_failed` | After the rebase, a `merge.regenerate` command failed, or it left undeclared files changed (SPEC-0255); nothing was merged and the worktree is back at HEAD | Read the detail, fix the command or the source it reads, then `nw queue resume <id>` (back to `CLOSING`) |
 | `gate_timeout` | Gates timed out on three consecutive runs, two of them serialized re-gates (SPEC-0311); no fix loop was spent | Likely machine load or a `timeout_s` that is too low: raise it or wait for the load to drop, then `nw queue resume <id>` (re-gates alone, first) |
 | `restart` | `nw queue restart` parked an in-process step (open / gate / close) across the runner restart and did not get to resume it (SPEC-0375): the restart crashed or was interrupted | `nw queue restart --continue --yes` resumes it in priority order and starts the runner; `nw queue resume <id>` also works |
+| `fixforward_weakens` | A red-base fix-forward campaign (SPEC-0420) deleted, skipped, xfailed or importorskipped a test, or removed test functions; its close refused the diff before any gate ran | Nothing: the queue counts it a failed attempt, abandons it and opens the next fix or the revert |
+| `revert_conflict` | The queue's revert of the culprit merge of a red episode conflicted outside the generated files | Nothing: the queue escalates the episode once; answer that escalation |
 | `open_failed` | Creating the worktree or a step failed unexpectedly | Read the detail and retry once; if it fails again, investigate |
 | `gh_failed` | Opening the PR (`pr` / `draft-pr` policy) failed | Check `gh auth`, then resume |
 | `config_invalid` | `.nw/project.yaml` didn't load | Fix the config. The campaign resumes **by itself** once it loads |
@@ -133,6 +135,23 @@ nw queue gc                                                        # list leftov
 Every queue write (`add`, `resume`, `park`, `abandon`, `gc`, `prioritize`) is a dry run until you
 add `--yes`. A resumed campaign goes straight back to work if a slot is free, or to **WAITING** (first in
 line) if not.
+
+## When the base turns red
+
+The full-suite sentinel runs the project's close gates on the base branch. When it is red the
+queue owns the **red episode** (SPEC-0420): it opens a priority-1 `fixforward` campaign briefed
+with the failing tests and the merges since the last green, holds every other close of the
+project in CLOSING, reverts the culprit merge after two failed fixes, and asks you at most once.
+A green sentinel closes the episode and releases the held merges.
+
+```bash
+nw queue sentinel status --project P            # the episode: failing tests, merges, fixes
+nw queue merge my-fix --fixes-red --yes         # land a hand-made fix (full suite, not held)
+nw queue sentinel resume-fix --project P --yes  # one more automatic fix-forward attempt
+nw queue sentinel clear --project P             # accept red for now: closes the episode
+```
+
+`agentic.red_main.enabled: false` turns this off (the sentinel escalates per red sha instead).
 
 ## Questions for you: escalations
 

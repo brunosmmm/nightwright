@@ -44,6 +44,14 @@ the contract the close step audits.
 
 Do not widen scope. Anything you notice outside the spec goes in `followup_ideas`.
 
+**Red-base fix (no spec).** When *The spec* below starts with `RED-BASE FIX (no spec)`, this
+campaign was opened by the queue because the full test suite fails on the base branch. There is
+no spec file: skip steps 2, 4, 6 and 7 (no status, no ticks, no ledger) and do not edit
+`docs/specs/`. Make the failing tests it lists pass with the smallest change, following its
+rules: never delete, skip, xfail or importorskip a test, never add `collect_ignore`, never
+weaken a guard test. The close runs the full suite and refuses a diff that weakens the tests.
+Report `done` once the listed tests pass.
+
 ## Brief from the previous loop
 
 {{pending_brief}}

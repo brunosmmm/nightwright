@@ -39,7 +39,8 @@ from .store import agentic_dir, now_iso
 JOB_SCHEMA = "nw.job.v1"
 FRAME_SCHEMA = "nw.job.frame.v1"
 INFO_SCHEMA = "nw.worker.info.v1"
-ENV_ALLOWLIST = frozenset({"NW_CAMPAIGN", "NW_SPEC_ID", "NW_BASE"})
+# SPEC-0420: NW_AFFECTED_FULL makes a red-base fix's gates run the full suite on the worker too
+ENV_ALLOWLIST = frozenset({"NW_CAMPAIGN", "NW_SPEC_ID", "NW_BASE", "NW_AFFECTED_FULL"})
 MAX_LOG_BYTES = 16 * 1024 * 1024
 MAX_HEADER_BYTES = 4 * 1024 * 1024
 DEFAULT_KEEP_DAYS = 2

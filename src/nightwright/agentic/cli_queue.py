@@ -1611,11 +1611,14 @@ def attach(queue_group):
                   help="who asks: human, conductor, steward:<Project>")
     @click.option("--docs-only", "docs_only", is_flag=True,
                   help="skip the gates; only if every changed path is in merge.docs_only_paths")
+    @click.option("--fixes-red", "fixes_red", is_flag=True,
+                  help="the branch fixes the red base (SPEC-0420): priority 1, full suite, not "
+                       "held; refused unless the project has an open red episode")
     @click.option("--yes", "do_write", is_flag=True, help="create the campaign (default is dry-run)")
     @click.option("--json", "as_json", is_flag=True, help="emit nw.queue.merge.v1 JSON")
     @click.pass_obj
     def queue_merge(cfg, branch, project, worktree, profile, priority, note, requested_by,
-                    docs_only, do_write, as_json):
+                    docs_only, fixes_red, do_write, as_json):
         """Queue a local branch for a rebase + re-gate + ff-only merge (dry-run unless --yes).
 
         \b
@@ -1626,7 +1629,7 @@ def attach(queue_group):
         try:
             plan = Q.plan_merge(cfg, branch, project=project, worktree=worktree, profile=profile,
                                 priority=priority, note=note, requested_by=requested_by,
-                                docs_only=docs_only)
+                                docs_only=docs_only, fixes_red=fixes_red)
             if do_write:
                 Q.apply_merge(cfg, plan, by=requested_by)
         except ValueError as e:
@@ -2263,17 +2266,75 @@ def attach(queue_group):
     @click.pass_obj
     def queue_sentinel_clear(cfg, project, as_json):
         """Clear `force_full_close` and `due_since` (the suspects stay)."""
+        from . import redmain as RM
         from . import sentinel as SN
         pcfg = _sentinel_project(cfg, project)
         try:
             state = SN.clear(cfg, project, root=pcfg.get("_root"), project_cfg=pcfg)
+            red = RM.clear(cfg, project, by="human")              # SPEC-0420: releases holds
         except (GitError, ValueError, OSError) as e:
             raise click.ClickException(getattr(e, "tail", None) or str(e))
         if as_json:
-            _dump_json({"schema": "nw.queue.sentinel.v1", "project": project, "state": state})
+            _dump_json({"schema": "nw.queue.sentinel.v1", "project": project, "state": state,
+                        "red_episode_closed": (red or {}).get("episode")})
             return
         console.print(f"[green]✓[/] {project}: force_full_close cleared "
                       f"({len(state['suspects'])} suspects kept)", highlight=False)
+        if red is not None:
+            console.print(f"[green]✓[/] {project}: red episode {red['episode']} closed; held "
+                          "merges are released", highlight=False)
+
+    @queue_sentinel.command("status")
+    @click.option("--project", required=True, shell_complete=C.complete_project)
+    @click.option("--json", "as_json", is_flag=True, help="emit nw.queue.red.v1 JSON")
+    @click.pass_obj
+    def queue_sentinel_status(cfg, project, as_json):
+        """The project's red episode (SPEC-0420): open, age, failing tests, merges, culprit,
+        fixes, escalation."""
+        from . import redmain as RM
+        _sentinel_project(cfg, project)
+        out = RM.status(cfg, project)
+        if as_json:
+            _dump_json(out)
+            return
+        ep = out["episode"]
+        if not ep:
+            console.print(f"{project}: no red episode"
+                          + (f" (sentinel due: {out['due_reason']})" if out["due_reason"] else ""),
+                          highlight=False)
+            return
+        console.print(f"{project}: red episode {ep['episode']} "
+                      + ("[red]OPEN[/]" if ep["open"] else "[green]closed[/]")
+                      + f"  age {out.get('age_s')} s  runs {ep.get('runs')}", highlight=False)
+        console.print("  failing: " + (", ".join(ep.get("failing")[:10]) or "-"), highlight=False)
+        console.print("  merges: " + (", ".join(m["campaign"] for m in ep.get("merges") or [])
+                                      or "-"), highlight=False)
+        console.print(f"  culprit: {(ep.get('culprit') or {}).get('campaign') or '-'}",
+                      highlight=False)
+        for f in ep.get("fixes") or []:
+            console.print(f"  fix {f['campaign']} ({f['kind']}): {f.get('outcome') or 'open'}",
+                          highlight=False)
+        console.print(f"  escalation: {ep.get('escalation') or '-'}", highlight=False)
+
+    @queue_sentinel.command("resume-fix")
+    @click.option("--project", required=True, shell_complete=C.complete_project)
+    @click.option("--by", "by", default="conductor", show_default=True)
+    @click.option("--yes", "do_write", is_flag=True, help="apply (default is dry-run)")
+    @click.pass_obj
+    def queue_sentinel_resume_fix(cfg, project, by, do_write):
+        """Allow one more fix-forward attempt in the open red episode (escalation choice 1)."""
+        from . import redmain as RM
+        _sentinel_project(cfg, project)
+        if not RM.is_red(cfg, project):
+            raise click.ClickException(f"{project} has no open red episode")
+        if not do_write:
+            console.print(f"would allow one more fix-forward attempt for {project} "
+                          "(dry-run; --yes to apply)", highlight=False)
+            return
+        rec = RM.resume_fix(cfg, project, by=by)
+        console.print(f"[green]✓[/] {project}: episode {rec['episode']}, failed fix-forwards now "
+                      f"{RM.failed_fixforwards(rec)}; the next tick opens another attempt",
+                      highlight=False)
 
     _attach_cost_policy(queue_group)
     return queue_group

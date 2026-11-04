@@ -72,7 +72,10 @@ context limits and a pre-registered session.
    up"): send a request to the conductor rather than running queue writes yourself:
    `nw mailbox send --to conductor --kind request "queue SPEC-0190 priority 2"`; to land a
    branch ask for `"merge <branch>"` or, for a branch touching only the project's
-   `merge.docs_only_paths`, `"merge <branch> docs-only"`; tell the
+   `merge.docs_only_paths`, `"merge <branch> docs-only"`; a hand-made fix for a red base
+   (SPEC-0420, `nw queue sentinel status --project <P>` shows an open episode) is requested as
+   `"merge <branch> fixes-red"`, never "wait for the human": the conductor lands it through the
+   full-suite gated merge without a human OK; tell the
    human the conductor will act and confirm when its `answer` arrives on your Monitor.
 6. **Escalation answers:** when the human answers an open escalation for this project in
    your session ("choose 2", "that major is wrong, ship it", "AC 4 is met, I checked"), run

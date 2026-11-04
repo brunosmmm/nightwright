@@ -90,6 +90,11 @@ EVENT_TYPES = {
     "sentinel": SC.EVENT_KEYS["sentinel"],
     # SPEC-0381: a standalone `nw gate run` job was dispatched or finished
     "gate_job": ("job_id", "status"),
+    # SPEC-0420: red-base episodes (queue-owned fix-forward / revert) and held closes
+    "red_main": ("episode", "sha", "failing"),
+    "red_main_fix_opened": ("campaign", "kind", "attempt"),
+    "red_main_cleared": ("episode",),
+    "close_held": ("episode", "reason"),
     # SPEC-0300: synthetic follower line (never appended to events.jsonl)
     "conductor_digest": ("first_id", "last_id", "held", "merged"),
 }
@@ -345,7 +350,10 @@ def _project_ledger_event(ev: dict, st: dict, sett: dict, warned: bool):
         return None
     if t == "park":
         return "parked", {"reason": ev.get("reason"), "detail": ev.get("detail"),
-                          "resume_to": ev.get("resume_to"), "auto": ev.get("auto")}
+                          "resume_to": ev.get("resume_to"), "auto": ev.get("auto"),
+                          **({"red_main": ev["red_main"]} if ev.get("red_main") else {})}
+    if t == "close_held":                                   # SPEC-0420: informational
+        return "close_held", {"episode": ev.get("episode"), "reason": ev.get("reason")}
     if t == "cap_raised":                                    # SPEC-0422: informational
         return "cap_raised", {"from": ev.get("from"), "to": ev.get("to"),
                               "ceiling": ev.get("ceiling")}

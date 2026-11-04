@@ -1,7 +1,7 @@
 ---
 id: SPEC-0420
 title: "Red-main fix-forward and revert"
-status: accepted
+status: done
 owner: user
 created: 2026-11-04
 source_idea: IDEA-926
@@ -337,49 +337,49 @@ fix-forward is exhausted.
 
 ## Acceptance criteria
 
-- [ ] AC1: Red sentinel.
+- [x] AC1: Red sentinel.
   - A red `sentinel.run` opens an episode in `red.json` with the failing ids, fingerprint and
     merges since the last green.
   - It appends one `red_main` event and files **no** escalation.
   - A second red run with the same failing set at a new sha appends no event and files no
     escalation.
-- [ ] AC2: Fix-forward campaign. Within one tick after AC1, a `fixforward` campaign exists with:
+- [x] AC2: Fix-forward campaign. Within one tick after AC1, a `fixforward` campaign exists with:
   - priority 1, `full_suite: true`;
   - a `pending_brief` naming every failing id (up to 50) and each merge's campaign;
   - loop and close gates that run the full suite (`NW_AFFECTED_FULL=1` in the gate env).
-- [ ] AC3: Fix-forward flow.
+- [x] AC3: Fix-forward flow.
   - The campaign skips REVIEWING. It merges ff-only after a green full suite.
   - A diff that deletes a test file, removes test functions, or adds a skip, xfail,
     `importorskip` or `collect_ignore` parks `fixforward_weakens`, which counts as a failed
     attempt.
-- [ ] AC4: Hold while red.
+- [x] AC4: Hold while red.
   - While the episode is open, a non-fix campaign of the project reaching close stays CLOSING
     with one `close_held` ledger event. It does not park, its close attempts do not grow, and it
     does not merge.
   - `fixforward`, `revert`, `--fixes-red` and `--docs-only` merges are not held.
-- [ ] AC5: Green sentinel.
+- [x] AC5: Green sentinel.
   - After a fix merges, the sentinel runs without waiting for `interval_hours`.
   - A green result closes the episode, withdraws its escalation (if any) and every open legacy
     "Sentinel red on <project>" escalation, abandons unmerged non-closing fix campaigns as moot,
     and releases held campaigns. They merge on their next tick.
-- [ ] AC6: Revert.
+- [x] AC6: Revert.
   - After `fixforward_attempts` failed attempts, `localize` names the culprit merge using only
     the failing ids: with one candidate, without running tests.
   - A `revert` campaign reverts exactly that campaign's `target_sha..merged_sha` range and merges
     after a green full suite.
   - A revert conflict parks `revert_conflict` and escalates.
-- [ ] AC7: Escalation rule.
+- [x] AC7: Escalation rule.
   - An episode escalates at most once: topic `recovery` when supported, recommendation 1.
   - It escalates only when open longer than `escalate_after_s` with no fix in flight, or when
     automatic fixing is exhausted (AC6 conflict, red after the revert, or no culprit).
-- [ ] AC8: `--fixes-red` merges.
+- [x] AC8: `--fixes-red` merges.
   - `nw queue merge <branch> --by conductor --fixes-red --yes` creates a priority-1, full-suite,
     hold-exempt merge campaign.
   - It is refused when the project is not red.
   - The conductor skill allows it without a human OK.
-- [ ] AC9: Escape hatch. `agentic.red_main.enabled: false` restores today's behaviour exactly:
+- [x] AC9: Escape hatch. `agentic.red_main.enabled: false` restores today's behaviour exactly:
   escalate per red sha, no hold, no fix campaigns.
-- [ ] AC10: Skill and events.
+- [x] AC10: Skill and events.
   - The conductor skill has the `red_main`, `red_main_cleared`, `close_held`,
     `parked.fixforward_weakens` and `parked.revert_conflict` rows, and the `--fixes-red` merge
     rule.
@@ -451,16 +451,116 @@ CLOCK-OUT: [timestamp]
 
 ## Definition of done
 
-- [ ] Acceptance criteria all met.
-- [ ] Test plan executed; automated tests pass (`uv run pytest`); manual steps performed.
-- [ ] No regressions.
-- [ ] Spec body updated to match what shipped.
-- [ ] `docs/LEDGER.md` updated (status + date).
+- [x] Acceptance criteria all met.
+- [x] Test plan executed; automated tests pass (`uv run pytest`); manual steps performed.
+- [x] No regressions.
+- [x] Spec body updated to match what shipped.
+- [x] `docs/LEDGER.md` updated (status + date).
 
 ## As shipped
 
-_To be filled at close: what landed, deviations from Design, the real-persona and live-episode
-records._
+Landed on 2026-11-04. It ships `src/nightwright/agentic/redmain.py` (episode state
+`red.json`, `settings`, `on_red` / `on_green`, `holding`, `refresh`, `step`, `localize` /
+`bisect`, `brief`, fix-campaign creation, `escalate`, `resume_fix`, `clear`, `status`).
+The rest is wired in `sentinel.settle`, `close.prepare_close` (hold, `fixforward_weakens`,
+`revert_campaign_range`), `queue._red_main_step` (tick step, admission, revert open, held-close
+apply, close-train order), `gates.full_suite_env` (local and both remote job headers; the
+worker's `ENV_ALLOWLIST` gains `NW_AFFECTED_FULL`), `nw queue merge --fixes-red`, and
+`nw queue sentinel status|resume-fix` with `clear` closing the episode. It also adds the
+events, `quiet.RULES`, the `nw-conduct` / `nw-steward` rows and the `operate.md` park rows.
+
+**Deviations from Design (decided while building):**
+- **The existing open escalations (ESC-0024/0025/0026).** They are **withdrawn as
+  superseded, never adopted** as the episode's own record. Adopting one would use up the
+  episode's single escalation on a question with no recommendation. The first tick after
+  landing sees `force_full_close` with no `red.json` (`adopt_legacy`). It opens no fix,
+  because the failure may already be fixed on the new base. It marks the sentinel due
+  (`due_reason: legacy red adopted`), so the next idle tick runs the sentinel at the current
+  base.
+  - If that run is red, it opens episode 1 and withdraws every open "Sentinel red on
+    Meta-Tools" escalation (`by: queue`, "superseded by red episode 1"). A fix-forward opens
+    on the next tick.
+  - If it is green, `on_green` withdraws them as resolved.
+- **Moot fix campaigns are abandoned by the tick (`sweep`), not inside `on_green`.**
+  `on_green` runs on the sentinel's worker thread, or in a separate `nw` process for a CLI
+  run, and must not abandon or park campaigns there. The next tick abandons a parked, queued
+  or waiting fix and park-requests an active one. A CLOSING fix finishes.
+- **Failed fix campaigns are abandoned by the queue.** `refresh` counts a fix PARKED for any
+  reason without `park.auto` as failed. `fix_in_flight` keys on live campaigns of the episode,
+  so a conductor resume cannot run two fixes at once. A fix campaign's park carries
+  `red_main: <episode>`, which the queue event passes on and `quiet` holds, so the conductor
+  is not woken by it.
+- **Merge order is base order.** Merges are sorted by the merged sha's commit depth.
+  Same-second merges sorted by close time put the wrong campaign first: the e2e test caught
+  it.
+- **Localize probe command.** It is configurable as `agentic.red_main.probe_cmd` (default
+  `uv run pytest -q -p no:cacheprovider`), with `probe_timeout_s` (900). An id whose file does
+  not exist at a probed sha counts as passing. Probes are at most ⌈log2 n⌉ + 2: the answer's
+  own merged sha is verified, and probes are cached by sha.
+- **A held merge emits no transition.** The close step returns a `held` outcome before
+  follow-ups, the rebase or the gates. The apply writes `closing.held_episode` and one
+  `close_held` ledger event per episode. A red-base fix sorts first in its close train, so
+  held closes never block it.
+- **Fix campaign names.** The branch is `nw/<campaign id>` (unique across attempts), not
+  `nw/fix-<episode>-<n>`. Fix campaigns are admitted at once, outside `pick_admissions` (the
+  +1 slot).
+- **Revert commit.** The revert is one commit (`git revert --no-commit` over the range;
+  conflicts in regenerate paths take HEAD's side and are regenerated at the end).
+- **Hold scope.** The hold applies only to `merge`-policy projects; PRs do not land on the base
+  here.
+- **`topic: recovery`.** It is passed only when `plan_escalate` accepts `topic` (checked with
+  `inspect.signature`; SPEC-0425 not landed yet).
+
+**Test record (2026-11-04).**
+- `tests/test_redmain.py`: 22 tests. They cover episode open and update with fingerprint
+  de-dup, merges from real `close` events and real ancestry, the newest-20 window, legacy
+  withdraw on open, every `step()` branch including the `escalate_after_s` clock, `holding`
+  per kind, a `prepare_close` hold that touches nothing, the `on_green` withdrawals,
+  `adopt_legacy` with `check_due`, `bisect`, 9 `fixforward_weakens` cases, the local and
+  remote full-suite env (the worker accepts the key), the affected tool honouring the flag,
+  and status / resume-fix / clear.
+- `tests/test_redmain_localize.py`: 3 tests. With real pytest probes of one id over four
+  merges, merge 3 is named in 2 probes. One candidate runs no pytest. A running sentinel
+  defers localize.
+- `tests/test_redmain_e2e.py`: 4 tests on a real repo with a real pytest gate, a real data
+  dir, real `sentinel.run`, real ticks (`nw queue tick` via the CLI in the first test), and a
+  FakeRunner implementer.
+  - Red, then one fix-forward campaign. A non-fix merge request is held: CLOSING, one
+    `close_held`, 0 close attempts. The fix merges through the full suite with no REVIEWING.
+    The sentinel is due at once, and green releases the held merge. No escalation.
+  - Two fixes that delete the failing test are both parked `fixforward_weakens` and
+    abandoned. `localize` names the culprit merge, and the revert merges through the full
+    suite, back to green, with 0 escalations.
+  - A revert conflict parks `revert_conflict` and files exactly 1 escalation (`kind:
+    red_main`, recommendation 1), still 1 after more ticks and another red run. A green base
+    withdraws it.
+  - `--fixes-red` is refused while green. While red it gives priority 1 and the full suite,
+    is not held, merges, and is recorded as `kind: merge`.
+- `tests/test_agentic_sentinel.py`: a red `settle` opens an episode with `plan_escalate`
+  patched to raise. The legacy tests run with `red_main.enabled: false` and pass unchanged
+  (AC9).
+- `tests/test_skills.py`: the new rows and the `--fixes-red` rule. The quiet-rules comparison
+  passes.
+- Affected tests via `tools/affected_tests.py` pass. The full suite is left to the close
+  gate.
+
+**Manual verification (real persona, 2026-11-04).** Scratch `NW_CONFIG_DIR` / `NW_DATA_DIR`
+under `/home/bruno/work/.nw-tmp/0420/manual`, with a fixture repo registered as project
+`Fixture` (outbox target) and profile `frugal` with implementer `haiku`, effort low, $0.50
+budget.
+1. Broke `mod.py` on main and ran `nw queue sentinel run --project Fixture`: red, episode 1,
+   failing `tests/test_t.py::test_a`, no escalation.
+2. `nw queue run --once` ticks adopted the detached haiku run. `nw queue run --until-idle`
+   then ran the rest: the haiku implementer (one run, 22 s, $0.0088) restored `return 1`,
+   the full-suite gate passed, and the campaign merged ff-only.
+3. The sentinel became due and ran in the same session: green, episode closed.
+4. `nw queue sentinel status --json` shows `open: false` with fix `outcome: merged`.
+   `nw escalations list --all` shows none. Events: 1 `red_main`, 1 `red_main_fix_opened`,
+   1 `red_main_cleared`.
+
+**Live check after landing.** Recorded by the conductor on the next real red episode (≤ 1
+escalation, a fix-forward within one tick, `nw queue events --type close_held`). This spec
+predicts the ESC-0024/0025/0026 handling above.
 
 ## Open questions
 

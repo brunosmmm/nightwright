@@ -606,3 +606,16 @@ def test_conduct_skill_cost_cap_policy_rows():                     # SPEC-0422 A
     (order,) = [r for r in rows if r.startswith("| `message.human_order` |")]
     assert "standing policy lives in config" in order and "agentic.cost_cap_policy" in order
     assert "cap_raised" in next(ln for ln in rows if ln.lstrip().startswith("- **Always held"))
+
+
+def test_conduct_skill_has_red_main_rows_and_fixes_red_rule_spec_0420():
+    conduct = (REPO_SKILLS_DIR / "nw-conduct" / "SKILL.md").read_text(encoding="utf-8")
+    for rule in ("`red_main`", "`red_main_fix_opened`, `red_main_cleared`", "`close_held`",
+                 "`parked.fixforward_weakens`, `parked.revert_conflict`",
+                 "`escalation.red_main`"):
+        assert any(line.startswith(f"| {rule} |") for line in conduct.splitlines()), rule
+    assert "nw queue sentinel resume-fix --project <P> --yes" in conduct
+    (request,) = [r for r in _conduct_rows() if r.startswith("| `message.request` |")]
+    assert "--fixes-red" in request and "no human OK" in request
+    steward = (REPO_SKILLS_DIR / "nw-steward" / "SKILL.md").read_text(encoding="utf-8")
+    assert "merge <branch> fixes-red" in steward

@@ -90,6 +90,8 @@ EVENT_KEYS: dict[str, tuple[str, ...]] = {
     # title, reason}], `ignored` = [{id, why}]. Gate triager: `waive` = [{gate, key, reason}],
     # `routed_to` (decide_triage's step kind), `confidence`, `suspected_flaky`, `fix_keys`.
     "triage": ("persona", "run_id", "kind", "disposition", "waive"),
+    # SPEC-0420: the close is held while the project's base is red (once per episode)
+    "close_held": ("episode", "reason"),
 }
 
 RUN_KEYS = ("schema", "campaign", "run_id", "persona", "model", "effort", "max_budget_usd",

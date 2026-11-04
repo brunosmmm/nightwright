@@ -45,6 +45,9 @@ RULES = {
     "gate_job": "hold",
     # SPEC-0422: the cost-cap policy raised a converging campaign's cap (informational)
     "cap_raised": "hold",
+    # SPEC-0420: red-base episodes; the queue acts on them (an escalation arrives on its own)
+    "red_main": "hold", "red_main_fix_opened": "hold", "red_main_cleared": "hold",
+    "close_held": "hold",
     "backlog": "cond", "backlog_blocked_long": "cond", "conductor_ping": "cond",
     "runner_draining": "cond", "campaign_silent": "cond", "state_stuck": "cond", "parked": "cond",
     "park_undecided": "wake", "runner_dead": "wake", "lease_stale": "wake",
@@ -307,7 +310,9 @@ def classify(cfg, ev, ctx) -> str:
     if t == "parked":                       # SPEC-0302: a park the queue decided itself;
         # SPEC-0315: a park the conductor itself made (`nw queue park` -> reason human, decided;
         # `nw queue escalate` -> human_decision, human-owned): it already knows
-        return "hold" if data.get("auto") or ev.get("by") == "conductor" else "wake"
+        # SPEC-0420: a red-base fix's park (`red_main` set) is the queue's to decide
+        return "hold" if data.get("auto") or data.get("red_main") \
+            or ev.get("by") == "conductor" else "wake"
     return "wake"
 
 

@@ -5,7 +5,8 @@ What that static reasoning can miss is caught here: every reused close that *mer
 as a suspect in `<agentic>/projects/<project>/gate_reuse.json`, and once enough have piled up (or
 one is old) the queue runner runs the project's close gates on the base HEAD in a dedicated
 detached worktree. A green run settles the suspects its tested sha contains; a red one sets
-`force_full_close` (every later close of the project runs its gates) and escalates.
+`force_full_close` (every later close of the project runs its gates) and opens a red episode
+(SPEC-0420, `redmain`: fix forward, revert, hold merges, escalate at most once).
 
 State file: `{reuses_since_green, last_green_sha, last_green_at, due_since, force_full_close,
 suspects: [{campaign, merge_sha}]}`. Every read-modify-write holds `gate_reuse.json.lock`. A
@@ -361,7 +362,24 @@ def check_due(cfg, project, *, root=None, project_cfg=None, now=None) -> bool:
             return bool(scfg["enabled"])    # a run rewrites it
         if _mark_due(st, scfg, now):
             _write(state_path(cfg, project), st)
-        return bool(scfg["enabled"]) and is_due(st, scfg, now)
+        due = is_due(st, scfg, now)
+    # SPEC-0420: a merged fix (or a legacy red to re-check) makes the sentinel due at once
+    return bool(scfg["enabled"]) and (due or bool(_red_due(cfg, project)))
+
+
+def _red_due(cfg, project) -> str | None:
+    from . import redmain as RM               # lazy: redmain imports this module
+    try:
+        return RM.due_reason(cfg, project)
+    except (OSError, ValueError):
+        return None
+
+
+def mark_due(cfg, project, *, reason: str, now=None) -> None:
+    """SPEC-0420: make the sentinel due on the next idle tick regardless of its reuse count
+    (the `due_reason` lives in `red.json`; the next settled run clears it)."""
+    from . import redmain as RM
+    RM.set_due(cfg, project, reason, now=now)
 
 
 def clear(cfg, project, *, root=None, project_cfg=None) -> dict:
@@ -610,8 +628,9 @@ def _run_locked(cfg, project, *, project_cfg, stop, now, hooks, tested) -> dict:
     if "before_settle" in hooks:
         hooks["before_settle"]()
     failing = [] if out["ok"] else _failing(results)
+    red_logs = [str(logs / r.log) for r in results if r.required and not r.ok and r.log]
     settled = settle(cfg, project, sha, out["ok"], failing, root=root, project_cfg=pcfg,
-                     now=now, base=_base(pcfg))
+                     now=now, base=_base(pcfg), logs=red_logs)
     out.update(suspects=settled, failing=failing)
     return out
 
@@ -652,7 +671,7 @@ def _orphans(root, base, suspects) -> list:
 
 
 def _repeat_red(cfg, project, sha) -> bool:
-    """The project's previous `sentinel` event was already red at `sha`."""
+    """The project's previous `sentinel` event was already red at `sha` (the legacy path)."""
     try:
         runs = [e for e in E.read_since(cfg, 0, types=["sentinel"])
                 if e.get("project") == project]
@@ -663,12 +682,17 @@ def _repeat_red(cfg, project, sha) -> bool:
 
 
 def settle(cfg, project, sha, ok, failing=(), *, root=None, project_cfg=None, now=None,
-           base=None) -> list:
+           base=None, logs=()) -> list:
     """Record a finished sentinel run at tested sha `sha` (section 5 *Outcome*) and announce
     it; returns the suspects it settled (only those that are `sha` or its ancestors; one git
     cannot answer for stays). With `base`, a green run names on its event (`orphans`) the kept
-    suspects that are not on the base branch at all; they stay suspects. A red run at the sha
-    the previous red event already reported does not escalate again."""
+    suspects that are not on the base branch at all; they stay suspects.
+
+    SPEC-0420: a red run opens or updates the project's red episode (`redmain.on_red`, which
+    never escalates; `logs` are the failing gates' log paths for the fix brief) and a green one
+    closes it (`redmain.on_green`). With `agentic.red_main.enabled: false` a red run escalates
+    as before (`_legacy_escalate`), except at the sha the previous red event already reported."""
+    from . import redmain as RM               # lazy: redmain imports this module
     scfg = settings(project_cfg)[1]
     orphans = []
     with locked(cfg, project):
@@ -692,17 +716,35 @@ def settle(cfg, project, sha, ok, failing=(), *, root=None, project_cfg=None, no
     if orphans:
         data["orphans"] = [{"campaign": s.get("campaign"), "merge_sha": s.get("merge_sha")}
                            for s in orphans]
-    repeat = not ok and _repeat_red(cfg, project, sha)
+    red_main = RM.enabled(cfg)
+    repeat = not ok and not red_main and _repeat_red(cfg, project, sha)
     try:
         E.append(cfg, "sentinel", project=project, by="sentinel", data=data)
     except (ValueError, OSError):
         pass
-    if not ok and not repeat:
-        _escalate(cfg, project, sha, data["suspects"], list(failing))
+    if red_main:
+        try:
+            if ok:
+                RM.on_green(cfg, project, sha, now=now)
+            else:
+                RM.on_red(cfg, project, sha, list(failing), root=root, base=base, logs=logs,
+                          now=now)
+        except (OSError, ValueError) as e:       # best effort: the sentinel result stands
+            _journal(cfg, project, f"redmain.{'on_green' if ok else 'on_red'} failed: {e}")
+    elif not ok and not repeat:
+        _legacy_escalate(cfg, project, sha, data["suspects"], list(failing))
     return data["suspects"]
 
 
-def _escalate(cfg, project, sha, suspects, failing) -> dict | None:
+def _journal(cfg, project, error) -> None:
+    try:
+        from .queue import journal
+        journal(cfg, "red_main_failed", project=project, error=str(error)[:500])
+    except Exception:
+        pass
+
+
+def _legacy_escalate(cfg, project, sha, suspects, failing) -> dict | None:
     """A campaign-less escalation naming the suspect merges (best effort)."""
     from . import escalations as ESC         # lazy: escalations imports the queue
     names = ", ".join(f"{s['campaign']} ({str(s['merge_sha'])[:10]})" for s in suspects) \

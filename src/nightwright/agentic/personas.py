@@ -858,6 +858,9 @@ def persona_extra(state, persona, project_cfg) -> dict | None:
     return resolve_context(state, (state.get("closing") or {}).get("resolve"), project_cfg)
 
 
+RED_FIX_MARK = "RED-BASE FIX (no spec)"           # SPEC-0420: opens a fix-forward's "spec"
+
+
 def build_context(cfg, state, project_cfg=None, *, loop_max=None, previous=None,
                   review=False, with_tests=False, extra=None) -> dict:
     """Prompt values from campaign state (+ project config). `spec_text` is read from the
@@ -875,6 +878,11 @@ def build_context(cfg, state, project_cfg=None, *, loop_max=None, previous=None,
         p = Path(worktree) / rel
         if p.is_file():
             spec_text = p.read_text(encoding="utf-8")
+    spec_id = state.get("spec_id")
+    if state.get("kind") == "fixforward":
+        # SPEC-0420: a red-base fix has no spec; the brief takes the spec's place
+        spec_id = f"(none: red-base fix, episode {state.get('red_episode')})"
+        spec_text = RED_FIX_MARK + "\n\n" + str(state.get("red_brief") or "(no brief)")
     counters = state.get("counters") or {}
     agents = (project_cfg or {}).get("agents") or {}
     diff = test_files = changed_files = None
@@ -892,7 +900,7 @@ def build_context(cfg, state, project_cfg=None, *, loop_max=None, previous=None,
         touched = json.dumps(entries, indent=2, sort_keys=True) if entries else None
     ctx = {
         "campaign": state.get("id"),
-        "spec_id": state.get("spec_id"),
+        "spec_id": spec_id,
         "spec_rel_path": rel,
         "spec_text": spec_text,
         "worktree": worktree,

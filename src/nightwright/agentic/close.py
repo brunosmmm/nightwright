@@ -45,6 +45,7 @@ class CloseOutcome:
     attempts: int = 0                     # target-capture → merge attempts made
     retry: bool = False                   # CLOSING + redo the worktree phase (never persisted)
     gate_detail: str = ""                 # SPEC-0233: the red re-gate of a merge request, for its park
+    held: str | None = None               # SPEC-0420: the close is held (red base); stays CLOSING
 
 
 @dataclass(frozen=True)
@@ -292,8 +293,77 @@ def _is_merge_request(state: dict) -> bool:
 
 def _is_spec_less(state: dict) -> bool:
     """SPEC-0290: no spec guard and no spec DoD on the campaign's own spec: a merge request has
-    none (SPEC-0233) and a split campaign's original is superseded, not delivered."""
-    return state.get("kind") in ("merge", "split")
+    none (SPEC-0233) and a split campaign's original is superseded, not delivered. SPEC-0420: a
+    red-base fix (`fixforward`, `revert`) has no spec either."""
+    return state.get("kind") in ("merge", "split", "fixforward", "revert")
+
+
+def close_hold(cfg, state: dict, project_cfg: dict | None) -> str | None:
+    """SPEC-0420: why this close is held while its project's base is red, or None (the
+    campaign fixes the red base, is a docs-only merge, or nothing is red). Never raises."""
+    from . import redmain as RM
+    try:
+        return RM.holding(cfg, state.get("project"), state, project_cfg=project_cfg)
+    except (OSError, ValueError):
+        return None
+
+
+_TEST_FILE_RE = re.compile(r"(^|/)(tests?/.*\.py|test_[^/]*\.py|[^/]*_test\.py|conftest\.py)$")
+_TEST_DEF_RE = re.compile(r"^\s*(async\s+)?def\s+test_\w*\s*\(")
+_WEAKEN_RE = re.compile(r"pytest\.mark\.(skip|skipif|xfail)\b|importorskip\(|pytest\.skip\(|"
+                        r"collect_ignore")
+
+
+def fixforward_weakens(worktree, target_sha) -> list[str]:
+    """SPEC-0420 §5: how a fix-forward diff (`target_sha...HEAD`) weakens the tests, else []:
+    a deleted test file, fewer `def test_` definitions in the test files, an added skip / skipif
+    / xfail mark, `importorskip(`, `pytest.skip(` or `collect_ignore` in a test file, or any
+    removed line in a test module marked `tree_guard` (SPEC-0421)."""
+    rng = f"{target_sha}...HEAD"
+    out = []
+    names = git.git(worktree, "diff", "--name-status", "--no-renames", rng).stdout.splitlines()
+    tests = []
+    for line in names:
+        parts = line.split("\t")
+        if len(parts) < 2 or not _TEST_FILE_RE.search(parts[-1]):
+            continue
+        status, rel = parts[0][:1], parts[-1]
+        if status == "D":
+            out.append(f"deletes test file {rel}")
+        tests.append(rel)
+    if not tests:
+        return out
+    diff = git.git(worktree, "diff", "-U0", "--no-renames", rng, "--", *tests).stdout
+    added = removed = 0
+    cur, guarded, guard_cache = None, set(), {}
+    for line in diff.splitlines():
+        if line.startswith("+++ ") or line.startswith("--- "):
+            if line.startswith("+++ "):
+                cur = line[6:] if line.startswith("+++ b/") else None
+            elif line.startswith("--- a/"):
+                cur = line[6:]
+            continue
+        if line.startswith("+"):
+            body = line[1:]
+            if _TEST_DEF_RE.match(body):
+                added += 1
+            m = _WEAKEN_RE.search(body)
+            if m:
+                out.append(f"adds {m.group(0).rstrip('(')} in {cur}: {body.strip()[:120]}")
+        elif line.startswith("-"):
+            body = line[1:]
+            if _TEST_DEF_RE.match(body):
+                removed += 1
+            if cur and cur not in guard_cache:
+                shown = git.git(worktree, "show", f"{target_sha}:{cur}", check=False)
+                guard_cache[cur] = shown.returncode == 0 and "tree_guard" in shown.stdout
+            if cur and guard_cache.get(cur):
+                guarded.add(cur)
+    if removed > added:
+        out.append(f"removes {removed - added} test function(s) net ({removed} removed, "
+                   f"{added} added)")
+    out += [f"removes lines from tree_guard module {g}" for g in sorted(guarded)]
+    return out
 
 
 def _prune_job_refs(root, state: dict) -> None:
@@ -724,6 +794,9 @@ def prepare_close(cfg, state: dict, project_cfg: dict, *, gate_seq=None,
     def decided(outcome: CloseOutcome) -> PreparedClose:
         return PreparedClose(outcome=outcome, policy=policy, events=events, pre_head=pre_head)
 
+    held = close_hold(cfg, state, project_cfg)       # SPEC-0420: red base, nothing touched
+    if held:
+        return decided(CloseOutcome("CLOSING", held=held, events=events))
     merge_request = _is_merge_request(state)
     if merge_request and policy != "merge":
         return decided(_merge_policy_park(policy, events))
@@ -843,6 +916,16 @@ def prepare_close(cfg, state: dict, project_cfg: dict, *, gate_seq=None,
         return PreparedClose(target=target, target_sha=target_sha, head=head, policy=policy,
                              events=events, commits_since_request=moved_since,
                              pre_head=pre_head)
+    if state.get("kind") == "fixforward":
+        # SPEC-0420 §5: a "fix" that deletes, skips or weakens a test never reaches the gates
+        weak = fixforward_weakens(worktree, target_sha)
+        if weak:
+            events.append(("finding", {"persona": "close", "severity": "must_fix",
+                                       "gate": "fixforward-weakens",
+                                       "title": "fix-forward weakens the tests",
+                                       "detail": "\n".join(weak), "files": []}))
+            return decided(_park("fixforward_weakens", "fix-forward weakens the tests: "
+                                 + "; ".join(weak[:5]), "IMPLEMENTING", events))
 
     # 5. re-gate on the rebased tree
     seq = gate_seq if gate_seq is not None else G.next_gate_seq(cfg, state["id"])
@@ -1011,3 +1094,46 @@ def close_campaign(cfg, state: dict, project_cfg: dict, *, gate_seq=None,
         events.extend(oc.events)
         if not oc.retry:
             return replace(oc, events=events, attempts=attempts)
+
+
+def revert_campaign_range(state: dict, worktree, pcfg: dict, events: list) -> str | None:
+    """SPEC-0420 §6: revert the culprit campaign's `target_sha..merged_sha` range in the new
+    worktree (one commit). Conflicts in `merge.regenerate` paths take the worktree's side and are
+    regenerated at the end; any other conflict aborts the revert and returns the park detail."""
+    rv = state.get("revert") or {}
+    rng = f"{rv.get('target_sha')}..{rv.get('merged_sha')}"
+    regen = effective_regenerate(pcfg.get("merge") or {}, worktree)
+    env = {**os.environ, "GIT_EDITOR": "true"}
+    r = git.git(worktree, "revert", "--no-commit", "--no-edit", rng, check=False, env=env)
+    touched = set()
+    for _ in range(200):                             # one stop per conflicting commit at most
+        if r.returncode == 0:
+            break
+        conflicts = [p for p in git.git(worktree, "diff", "--name-only", "--diff-filter=U",
+                                        check=False).stdout.splitlines() if p]
+        bad = [p for p in conflicts if p not in regen]
+        if not conflicts or bad:
+            git.git(worktree, "revert", "--abort", check=False)
+            git.git(worktree, "reset", "-q", "--hard", "HEAD", check=False)
+            return (f"git revert {rng} conflicts: {', '.join(bad or conflicts)[:400]}"
+                    if (bad or conflicts) else f"git revert {rng} failed: "
+                    f"{((r.stderr or '') + (r.stdout or '')).strip()[-400:]}")
+        for p in conflicts:
+            git.git(worktree, "checkout", "--ours", "--", p)
+            git.git(worktree, "add", "--", p)
+            touched.add(p)
+        r = git.git(worktree, "revert", "--continue", check=False, env=env)
+    for p in sorted(touched):
+        rr = subprocess.run(regen[p], shell=True, cwd=str(worktree), capture_output=True,
+                            text=True)
+        if rr.returncode != 0:
+            git.git(worktree, "reset", "-q", "--hard", "HEAD", check=False)
+            return f"regenerate {p} ({regen[p]}) exited {rr.returncode} during the revert"
+        git.git(worktree, "add", "-A", "--", p)
+    if git.is_clean(worktree):
+        return f"git revert {rng} changed nothing (already reverted?)"
+    what = rv.get("spec_id") or rv.get("campaign")
+    sha = git.commit_all(worktree, f"Revert {what}: {rng} (red episode "
+                                   f"{state.get('red_episode')}, campaign {rv.get('campaign')})")
+    events.append(("commit", {"sha": sha, "message": f"revert {rv.get('campaign')} ({rng})"}))
+    return None

@@ -360,6 +360,7 @@ def adopted_request(cfg, state: dict, rec: dict, run_dir):
 # ---- the job (coordinator) ------------------------------------------------------------------
 
 def _header(cfg, w: dict, state: dict, req, job_id: str, bundle: Path) -> dict:
+    from . import gates as G
     from . import remote_gates as RG
     doc = R.request_to_job(req, state["repo"]["worktree"])
     key, sha, base_sha, have, size = RG.cut(w, {}, state, cfg, job_id, bundle)
@@ -370,7 +371,7 @@ def _header(cfg, w: dict, state: dict, req, job_id: str, bundle: Path) -> dict:
          "campaign": cid, "spec_id": spec_id if spec_id else "-", "commit": sha,
          "base": {"name": base_name, "sha": base_sha}, "have": have, "bundle_bytes": size,
          "env": {"NW_CAMPAIGN": str(cid), "NW_SPEC_ID": str(spec_id or ""),
-                 "NW_BASE": base_name},
+                 "NW_BASE": base_name, **G.full_suite_env(state)},            # SPEC-0420
          "timeout_s": int(req.timeout_s) + TIMEOUT_MARGIN_S, "attempt": 1,
          "payload": {"run_id": Path(req.run_dir).name, "persona": req.persona, "request": doc,
                      "json_schema": req.json_schema, "read_only": req.read_only,

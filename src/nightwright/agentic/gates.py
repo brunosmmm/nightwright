@@ -135,7 +135,9 @@ def tmp_env(path) -> dict[str, str]:
 
 def gate_env(cfg, state: dict, seq: int | None = None) -> dict[str, str]:
     """Environment every gate (and anything it calls) sees: the same nightwright store the loop uses.
-    With `seq` the gate run also gets its own `TMPDIR` under the campaign dir (SPEC-0253)."""
+    With `seq` the gate run also gets its own `TMPDIR` under the campaign dir (SPEC-0253).
+    SPEC-0420: a `full_suite` campaign (a red-base fix) adds `NW_AFFECTED_FULL=1`, so the
+    affected-tests selector runs the whole suite in its loop and close gates."""
     repo = state.get("repo") or {}
     tmp = tmp_env(store.child_tmp(cfg, state["id"], f"gate-{seq:03d}")) \
         if seq is not None and state.get("id") else {}
@@ -146,7 +148,14 @@ def gate_env(cfg, state: dict, seq: int | None = None) -> dict[str, str]:
         "NW_SPEC_ID": str(state.get("spec_id") or ""),
         "NW_WORKTREE": str(repo.get("worktree") or ""),
         "NW_BASE": str(repo.get("base") or ""),
+        **full_suite_env(state),
     }
+
+
+def full_suite_env(state: dict) -> dict[str, str]:
+    """SPEC-0420: `{"NW_AFFECTED_FULL": "1"}` for a `full_suite` campaign, else `{}`; the remote
+    gate and persona job headers carry the same key."""
+    return {"NW_AFFECTED_FULL": "1"} if (state or {}).get("full_suite") else {}
 
 
 def placeholders(state: dict) -> dict:
