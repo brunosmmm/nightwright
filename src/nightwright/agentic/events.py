@@ -957,17 +957,33 @@ def cursor_set(cfg, reader, after: int) -> None:
                   json.dumps({"reader": reader, "after": after, "ts": store.now_iso()}) + "\n")
 
 
+# `reader_holder` probes take and drop the lock for microseconds (the TUI, `conduct-status`,
+# the dashboard snapshot): a starting follower retries briefly before calling it held.
+READER_LOCK_TRIES = 10
+READER_LOCK_RETRY_S = 0.02
+
+
+def _flock_nb_retry(fd) -> bool:
+    for attempt in range(READER_LOCK_TRIES):
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            return True
+        except BlockingIOError:
+            if attempt + 1 < READER_LOCK_TRIES:
+                time.sleep(READER_LOCK_RETRY_S)
+    return False
+
+
 @contextmanager
 def reader_lock(cfg, reader):
     """Exclusive, non-blocking lock per reader name: one live follower per reader, so one
-    conductor (and one steward per project). Raises ValueError naming the holder."""
+    conductor (and one steward per project). Raises ValueError naming the holder. A lock busy
+    only for a status probe's instant is retried for up to ~0.2 s (SPEC-0401)."""
     d = cursors_dir(cfg)
     d.mkdir(parents=True, exist_ok=True)
     path = d / f"{_safe(reader)}.lock"
     fd = os.open(path, os.O_RDWR | os.O_CREAT, 0o644)
-    try:
-        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-    except BlockingIOError:
+    if not _flock_nb_retry(fd):
         os.close(fd)
         holder = (d / f"{_safe(reader)}.pid")
         pid = holder.read_text().strip() if holder.is_file() else "?"
@@ -1002,9 +1018,12 @@ def reader_holder(cfg, reader) -> int | None:
         os.close(fd)
 
 
-def followers(cfg, now=None) -> list[dict]:
+def followers(cfg, now=None, *, last_id=None, lag_from_last_id=False) -> list[dict]:
     """One row per reader with a cursor file: kind, live pid (None when its lock is not
-    held), cursor, lag (events or inbox messages after the cursor) and cursor age."""
+    held), cursor, lag (events or inbox messages after the cursor) and cursor age.
+    `lag_from_last_id` (SPEC-0401, the dashboard): an events reader's lag is
+    `last_id - after` (ids are contiguous; None when `last_id` is None) instead of a
+    `read_since` over the log after its cursor."""
     from . import mailbox as M
     now = now or dt.datetime.now().astimezone()
     d = cursors_dir(cfg)
@@ -1024,8 +1043,12 @@ def followers(cfg, now=None) -> list[dict]:
         except (ValueError, TypeError):
             after = 0
         mailbox = reader.startswith("mailbox:")
-        lag = len(M.read_inbox(cfg, reader[len("mailbox:"):], after)) if mailbox \
-            else len(read_since(cfg, after))
+        if mailbox:
+            lag = len(M.read_inbox(cfg, reader[len("mailbox:"):], after))
+        elif lag_from_last_id:
+            lag = None if last_id is None else max(0, last_id - after)
+        else:
+            lag = len(read_since(cfg, after))
         pid = reader_holder(cfg, reader)
         age = _age_s(rec.get("ts"), now)
         rows.append({"reader": reader, "kind": "mailbox" if mailbox else "events",

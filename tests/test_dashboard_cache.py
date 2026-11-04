@@ -10,7 +10,7 @@ from nightwright.agentic import events as E
 from nightwright.agentic import schemas as SC
 from nightwright.agentic import store as S
 from nightwright.agentic.dashboard import snapshot as SN
-from waits import join
+from waits import join, until
 
 
 class Clock:
@@ -57,12 +57,42 @@ def test_no_get_no_work():
     assert (c.refresh_s, c.max_stale_s) == (5, 30)
 
 
+class GateLock:
+    """The cache's lock, instrumented: counts the callers blocked on it."""
+    def __init__(self):
+        self.inner, self.meta, self.waiting = threading.Lock(), threading.Lock(), 0
+
+    def __enter__(self):
+        with self.meta:
+            self.waiting += 1
+        self.inner.acquire()
+        with self.meta:
+            self.waiting -= 1
+        return self
+
+    def __exit__(self, *a):
+        self.inner.release()
+
+
 def test_concurrent_callers_share_one_build():
-    c, _clock, builder, _mark = make()
+    """The first build blocks until the other 19 threads are inside `get()` waiting on the
+    lock (or, without the lock, until a second build starts): exactly one build."""
+    c, _clock, _builder, _mark = make()
+    gate = GateLock()
+    c._lock = gate
+    calls = []
+    start = threading.Barrier(20)
+
+    def slow(cfg):
+        calls.append(1)
+        assert until(lambda: gate.waiting == 19 or len(calls) > 1)
+        return {"rev": "r0"}
+    c.builder = slow
     seen = []
     lock = threading.Lock()
 
     def worker():
+        start.wait()
         for _ in range(10):
             got = c.get()
             with lock:
@@ -73,7 +103,7 @@ def test_concurrent_callers_share_one_build():
         t.start()
     for t in threads:
         join(t)
-    assert c.builds == 1 == builder.calls and len(seen) == 200 and len(set(seen)) == 1
+    assert len(calls) == 1 and c.builds == 1 and len(seen) == 200 and len(set(seen)) == 1
     assert c.watermark_checks == 1
 
 
@@ -102,6 +132,39 @@ def test_max_stale_rebuilds_with_the_same_rev():
     assert c.builds == 2 and again is not first and again["rev"] == first["rev"]
 
 
+def test_watermark_is_taken_before_the_build():
+    """A change that lands during a build is seen at the next check, not lost."""
+    c, clock, _builder, mark = make()
+
+    def changing(cfg):
+        mark.value += 1                                  # lands while the build runs
+        return {"rev": f"r{mark.value}"}
+    c.builder = changing
+    first = c.get()
+    clock.t += c.refresh_s
+    second = c.get()
+    assert second is not first and c.builds == 2
+
+
+def test_a_failing_build_keeps_the_move_visible():
+    c, clock, builder, mark = make()
+    first = c.get()
+    mark.value = 1
+    clock.t += c.refresh_s
+    good = c.builder
+
+    def boom(cfg):
+        raise MemoryError("once")
+    c.builder = boom
+    with pytest.raises(MemoryError):
+        c.get()
+    c.builder = good
+    assert c.get() is first                              # within refresh_s of that check
+    clock.t += c.refresh_s
+    again = c.get()
+    assert again is not first and c.builds == 2 and builder.calls == 2
+
+
 def test_settings_feed_the_cache():
     cfg = {"data_dir": "/x", "agentic": {"dashboard": {"refresh_s": 2, "max_stale_s": 9}}}
     c = SN.SnapshotCache(cfg)
@@ -111,6 +174,19 @@ def test_settings_feed_the_cache():
 @pytest.fixture
 def fx(tmp_path):
     return seed(tmp_path)
+
+
+def test_max_stale_real_build_keeps_the_rev(fx):
+    """On the real fixture and `build`: nothing moved, `max_stale_s` passes, the rebuild has
+    new ages and `generated_at` but the same `rev`."""
+    cfg = fx["cfg"]
+    clock = Clock()
+    c = SN.SnapshotCache(cfg, clock=clock)
+    first = c.get()
+    clock.t += c.max_stale_s
+    again = c.get()
+    assert c.builds == 2 and again is not first and again["rev"] == first["rev"]
+    assert SN.compute_rev(again) == again["rev"]
 
 
 def test_ledger_only_change_yields_new_rev(fx):

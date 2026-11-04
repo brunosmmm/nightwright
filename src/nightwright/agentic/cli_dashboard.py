@@ -79,8 +79,9 @@ def text_lines(doc: dict) -> list[str]:
     else:
         for p in parks:
             park = p.get("park") or {}
-            out.append(f"park {p.get('label') or p.get('campaign')} {p.get('campaign')} "
-                       f"{park.get('reason')}: {park.get('detail') or ''}".rstrip(": "))
+            line = f"park {p.get('label') or p.get('campaign')} {p.get('campaign')} " \
+                f"{park.get('reason')}"
+            out.append(f"{line}: {park['detail']}" if park.get("detail") else line)
             needs += 1
     if not needs and not _err(esc) and not _err(parks):
         out.append("nothing needs you")

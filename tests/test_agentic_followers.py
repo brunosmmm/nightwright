@@ -46,6 +46,43 @@ def test_followers_rows_and_lag(tmp_path):
     assert {r["reader"]: r for r in E.followers(cfg)}["mailbox:steward:P"]["lag"] == 2
 
 
+def test_followers_lag_from_last_id_reads_no_log(tmp_path, monkeypatch):
+    """SPEC-0401: the dashboard's lag is `last_id - after`, without a `read_since`."""
+    cfg = _setup(tmp_path)
+    want = {r["reader"]: r["lag"] for r in E.followers(cfg)}
+    last = max(e["id"] for e in E.read_since(cfg, 0))
+
+    def no_read(*a, **k):
+        raise AssertionError("read_since")
+    monkeypatch.setattr(E, "read_since", no_read)
+    got = {r["reader"]: r["lag"] for r in E.followers(cfg, last_id=last, lag_from_last_id=True)}
+    assert got == want and got["conductor"] == last - 1
+    rows = E.followers(cfg, last_id=None, lag_from_last_id=True)
+    assert {r["reader"]: r["lag"] for r in rows}["conductor"] is None
+
+
+def test_reader_lock_retries_a_probe_and_still_refuses_a_holder(tmp_path, monkeypatch):
+    """SPEC-0401: a lock busy only for a status probe's instant does not stop a follower."""
+    import fcntl
+    cfg = _cfg(tmp_path)
+    real, busy = fcntl.flock, [2]
+
+    def probed(fd, op):
+        if op & fcntl.LOCK_NB and op & fcntl.LOCK_EX and busy[0]:
+            busy[0] -= 1
+            raise BlockingIOError(11, "probe holds it")
+        return real(fd, op)
+    monkeypatch.setattr(E.fcntl, "flock", probed)
+    with E.reader_lock(cfg, "conductor"):
+        assert busy[0] == 0
+        monkeypatch.setattr(E.fcntl, "flock", real)
+        try:
+            with E.reader_lock(cfg, "conductor"):
+                raise AssertionError("second follower got the lock")
+        except ValueError as e:
+            assert "already followed by pid" in str(e)
+
+
 def test_followers_empty(tmp_path):
     assert E.followers(_cfg(tmp_path)) == []
 

@@ -44,11 +44,13 @@ def test_text_form_has_health_counts_spend_and_needs_you(tmp_path):
     assert r.returncode == 0, r.stderr
     lines = r.stdout.splitlines()
     assert lines[0].startswith("runner down") and "conductor down" in lines[0]
-    assert lines[1] == ("active 1 · queued 0 · parked 2 · waiting 0 · backlog 0 · "
+    assert lines[1] == ("active 1 · queued 0 · parked 3 · waiting 0 · backlog 0 · "
                         "conductor-handling 0")
     assert any(ln.startswith("spend today $") for ln in lines)
     assert any(ln.startswith("ESC-0001 SPEC-0902-20261103-bbbb ship it?") for ln in lines)
     assert any(ln.startswith("park SPEC-0903 ") and "main_dirty" in ln for ln in lines)
+    assert any(ln.startswith("park SPEC-0905 ") and "main_not_on_base" in ln for ln in lines)
+    assert "ESC-0002" not in r.stdout and "ESC-0003" not in r.stdout
     assert "nothing needs you" not in r.stdout
 
 
@@ -78,3 +80,46 @@ def test_a_failing_build_exits_1(monkeypatch):
     monkeypatch.setattr(SN, "build", boom)
     r = CliRunner().invoke(cli, ["dashboard", "snapshot", "--json"])
     assert r.exit_code == 1 and "KeyError" in r.output
+
+
+# ---- the text summary's branches (`text_lines` on crafted documents) --------------------
+
+def _doc(lease=None, runner_code=None, cond_pid=None, escalations=(), parks=()):
+    return {"health": {"runner": {"lease": lease or {"held": False},
+                                  "runner_code": runner_code,
+                                  "draining": (lease or {}).get("draining")},
+                       "conductor": {"pid": cond_pid, "lag": 0, "cursor_age_s": 1}},
+            "totals": {"active": 2, "ready": 1, "attention": 0, "waiting": 0, "backlog": 4,
+                       "conductor_handling": 0, "spend_today_usd": 3.5},
+            "inbox": {"escalations": list(escalations), "parks": list(parks)}}
+
+
+def test_text_held_runner_draining_stale_code_and_conductor_pid():
+    from nightwright.agentic.cli_dashboard import text_lines
+    lines = text_lines(_doc(lease={"held": True, "pid": 77, "host": "box",
+                                   "heartbeat_age_s": 4.5, "draining": {"since": "t"}},
+                            runner_code={"stale": True}, cond_pid=1234))
+    assert lines[0] == "runner 77@box heartbeat 4.5s · draining · stale code · conductor 1234"
+    assert lines[2] == "spend today $3.50"
+    assert lines[-1] == "nothing needs you"
+
+
+def test_text_stale_lease_without_host():
+    from nightwright.agentic.cli_dashboard import text_lines
+    lines = text_lines(_doc(lease={"held": True, "pid": 77, "heartbeat_age_s": 300,
+                                   "stale": True}))
+    assert lines[0] == "runner 77 heartbeat 300s · stale lease · conductor down"
+
+
+def test_text_park_lines_keep_the_detail_verbatim():
+    from nightwright.agentic.cli_dashboard import text_lines
+    parks = [{"campaign": "C1", "label": "SPEC-1", "park": {"reason": "main_dirty",
+                                                           "detail": "see: "}},
+             {"campaign": "C2", "label": None, "park": {"reason": "main_not_on_base",
+                                                       "detail": None}}]
+    lines = text_lines(_doc(parks=parks, escalations=[
+        {"id": "ESC-0009", "campaign": None, "question": "go?"}]))
+    assert "ESC-0009 - go?" in lines
+    assert "park SPEC-1 C1 main_dirty: see: " in lines
+    assert "park C2 C2 main_not_on_base" in lines
+    assert "nothing needs you" not in lines

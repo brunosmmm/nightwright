@@ -393,32 +393,106 @@ server serializes it once per `rev`).
   calls no `sync`, and the fixture read-only test, where no follower runs, finds no change at
   all. `agentic/dashboard/` does not exist.
 
+### Test record (2026-11-03, loop 2: review fixes)
+
+- `uv run pytest -q -n 0 tests/test_dashboard_snapshot.py tests/test_dashboard_cache.py
+  tests/test_dashboard_cli.py tests/test_dashboard_readonly.py tests/test_dashboard_imports.py
+  tests/test_agentic_followers.py`: 46 passed before the estimated-percent test was added. New
+  tests include `test_concurrent_callers_share_one_build` (the first build blocks until the other
+  19 callers wait on an instrumented lock), `test_watermark_is_taken_before_the_build`,
+  `test_a_failing_build_keeps_the_move_visible`, `test_max_stale_real_build_keeps_the_rev`,
+  `test_health_maps_conductor_and_held_stewards`, `test_health_rows_from_patched_followers`,
+  `test_failing_followers_stewards_and_herdr_are_error_sections`,
+  `test_rev_ignores_runner_heartbeat_and_tick_stamps`,
+  `test_rev_ignores_estimated_gate_percent_only`,
+  `test_follower_gate_mailbox_and_herdr_files_move_watermark`,
+  `test_a_dead_follower_moves_watermark_without_any_write`, the `recent_events` missing-log,
+  small-log and window-boundary tests, the `text_lines` branch tests, and in
+  `tests/test_agentic_followers.py` `test_followers_lag_from_last_id_reads_no_log` and
+  `test_reader_lock_retries_a_probe_and_still_refuses_a_holder`.
+- Mutation checks: replacing the cache lock with a `nullcontext` fails the concurrency test;
+  storing the watermark before calling the builder fails
+  `test_a_failing_build_keeps_the_move_visible`; dropping the `held` filter in `_stewards` fails
+  both health tests.
+- `uv run pytest -q -n 4` over the dashboard tests plus `test_agentic_followers`,
+  `test_agentic_events`, `test_agentic_mailbox`, `test_agentic_steward_notify`,
+  `test_tui_events_tab`, `test_tui_events_model`, `test_herdr`, `test_agentic_escalations`,
+  `test_tui_escalations_model` and `test_tui_escalations_tab`: 352 passed, 2 skipped.
+- Live data dir (read-only builds): four `snapshot.build` calls 8 s apart while the runner ticked
+  (`tick_at` moved) and three gates showed estimated progress gave the same `rev` each time.
+  Before this fix, the same check gave four different `rev`s.
+- `python3 tools/affected_tests.py --run uv run pytest -q -n 6`: 4053 passed, 4 skipped.
+  `python3 tools/spec_lint.py` exits 0. The full suite is left to gating.
+
 ### As shipped (2026-11-03)
 
 - **`rev` also ignores clock-derived keys without the `_age_s` suffix.** `dashboard_payload`
   derives `age_s` (queue rows and backlog), `elapsed_s` (run activity), `held_s` (gate hold),
   `waiting_s` and `waited_s` (journey) from "now". If they stayed in the hash, every rebuild would
   change `rev`. `snapshot.NOW_RELATIVE_KEYS` drops them from the hash in the same way as
-  `*_age_s`, which is what Decision 2 intends. Two real builds 2 s apart on the live data dir gave
-  the same `rev`.
+  `*_age_s`, which is what Decision 2 intends.
+- **`rev` ignores the runner's clock stamps and estimated gate percents (review, loop 2).** A live
+  runner rewrites `heartbeat_at`, `tick_at`, `ticks`, `last_tick_s` and the other loop stamps in
+  the lease on every heartbeat and tick, so the first build changed `rev` on every tick.
+  `snapshot.LEASE_CLOCK_KEYS` (`heartbeat_at`, `tick_at`, `slot_freed_at`, `busy_ended_at`,
+  `slots_full_at`, `progress_at`, `last_tick_s`, `ticks`) are dropped from
+  `health.runner.lease` before hashing; `held`, `pid`, `stale`, `draining`, `busy`, `in_flight`
+  and the rest still count. A gate progress `{percent, estimated: true}` is elapsed time over the
+  previous gate's duration (`gate_progress.estimate`), so its `percent` is dropped too; a live
+  (`estimated: false`) percent is real progress and still counts. On the live data dir, with a
+  runner ticking and three gates running, four builds 8 s apart (tick_at moved) gave one `rev`.
 - **The watermark is `(events.jsonl (size, mtime_ns), escalations.signature, lease mtime_ns,
-  campaigns_signature)`.** `snapshot.campaigns_signature(cfg)` gives sorted `(campaign_id,
+  campaigns_signature, (cursors tree, gate-slots tree, mailbox tree, herdr state stat,
+  liveness_signature))`.** `snapshot.campaigns_signature(cfg)` gives sorted `(campaign_id,
   file_name, size, mtime_ns)` for each campaign's `state.json` and `ledger.jsonl`, with
-  `(None, None)` for a missing file. The lease mtime stays in, so a live runner's heartbeat
-  causes a rebuild once per `refresh_s` while `rev` stays stable.
+  `(None, None)` for a missing file. The fifth element (added after review) covers what `health`
+  and `gate_pools` show: `(name, size, mtime_ns)` of the files under `agentic/cursors/`,
+  `agentic/gate-slots/` (and its `w-*` pools) and `agentic/mailbox/`, the stat of the herdr watch
+  state file, and `liveness_signature(cfg)`: sorted `(file, pid, alive)` for the pid in the lease,
+  each follower `.pid`, each gate-slot holder and waiter and the herdr state. A process that dies
+  releases its flock and writes nothing, so its pid's liveness (`kill(pid, 0)`) is what moves the
+  watermark; a dead conductor follower is seen at the next check, not after `max_stale_s`. This
+  departs from Decision 3's "stat calls only": it also reads those few small pid files and calls
+  `kill(pid, 0)`. It still takes no lock and writes nothing. The lease mtime stays in, so a live
+  runner's heartbeat causes a rebuild once per `refresh_s` while `rev` stays stable.
 - **Cache:** `SnapshotCache(cfg, clock, builder, *, refresh_s=None, max_stale_s=None,
   watermark_fn=watermark)`. The keyword-only overrides exist for tests; `None` reads `settings`.
   When a watermark check finds a move, it reuses that watermark for the rebuild instead of
-  statting twice.
+  statting twice. The watermark is still taken before the build, but it is stored together with
+  the snapshot only after the builder returns, so a builder that raises leaves the old pair and
+  the next check still sees the move.
+- **Followers without a full log read.** `events.followers` gained `last_id=` /
+  `lag_from_last_id=` (default off, so `conduct-status` and the TUI are unchanged). The snapshot
+  passes the last id of the 256 KiB tail it already reads, and an events reader's lag is
+  `last_id - after` (event ids are contiguous) instead of `len(read_since(cfg, after))`, which
+  read the whole log for a stale cursor. `recent_events` and the lag share one tail read per
+  build. `health.conductor` uses the conductor's `followers` row (one lock probe, not two) and
+  probes `reader_holder` only when the conductor has no cursor file. `health.stewards` goes
+  through `_safe` like every other section.
+- **Lock probes no longer refuse a starting follower.** `reader_holder` takes and drops the
+  reader's flock for an instant, and `reader_lock` used to refuse at once on `BlockingIOError`,
+  so a follower starting during any probe (TUI, `conduct-status`, now the dashboard) exited with
+  "already followed". `events.reader_lock` now retries for up to `READER_LOCK_TRIES` ×
+  `READER_LOCK_RETRY_S` (10 × 20 ms) before refusing; a real holder is still refused.
+- **`recent_events` keeps a whole line at the window start.** It no longer drops the first line
+  of the window blindly. Every line is parsed, and when the seek was not to 0 the first line is
+  kept only when it is a whole event record (`schema == nw.events.v1` and an int `id`). A line
+  that starts exactly at `size − 256 KiB` is kept, and a cut one is skipped. It still never reads
+  before that offset.
 - **Text form:** the counts line uses `dashboard_payload`'s totals as follows: `queued` = `ready`,
   `parked` = `attention` (human plus conductor), `backlog` = `backlog`. A human-owned park prints
-  as `park <label> <campaign> <reason>: <detail>`. A failed section prints
+  as `park <label> <campaign> <reason>: <detail>`, or without `: <detail>` when there is no
+  detail; the detail is printed verbatim (no trailing-character strip). A failed section prints
   `<section>: error: <message>` and the command exits 0. A failed build exits 1.
 - **Test files:** the escalation signature tests went into the existing
   `tests/test_agentic_escalations.py`, because there is no `tests/test_escalations.py`. The CLI
   and read-only tests run the venv's `nw` entry point (`<venv>/bin/nw`, which is what `uv run nw`
   executes) as a real subprocess, so a nested `uv run` cannot sync or lock inside the gate
   sandbox.
+- **Fixture:** besides the spec's list, `tests/fixtures/dashboard_data.py` seeds an answered
+  `ESC-0002` and a withdrawn `ESC-0003` (left out of `inbox.escalations`) and a
+  `main_not_on_base` park (`SPEC-0905`), so both `HUMAN_PARKS` reasons and the open-only filter
+  are exercised.
 - **TUI tests:** `tests/test_tui_escalations_model.py` and `tests/test_tui_escalations_tab.py`
   called `AM.escalations_signature`. They now call `ESC.signature`, and their assertions are
   unchanged. The rename forces this edit, because the AC also requires that the TUI module no

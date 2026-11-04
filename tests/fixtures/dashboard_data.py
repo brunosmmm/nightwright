@@ -1,8 +1,9 @@
 """SPEC-0401: a seeded data dir for the dashboard tests (snapshot, cache, CLI, read-only; the
 server and page specs reuse it). One active campaign with cost and cap, a PARKED
-`human_decision` campaign with an open ESC-0001, a `main_dirty` park, a delivered (merged)
-campaign, a lease file, and an `events.jsonl` larger than 256 KiB whose tail holds the recent
-events. Everything is written directly (no notifier, no mail, no follower)."""
+`human_decision` campaign with an open ESC-0001 (plus an answered ESC-0002 and a withdrawn
+ESC-0003, which the inbox must leave out), a `main_dirty` park, a `main_not_on_base` park, a
+delivered (merged) campaign, a lease file, and an `events.jsonl` larger than 256 KiB whose tail
+holds the recent events. Everything is written directly (no notifier, no mail, no follower)."""
 from __future__ import annotations
 
 import datetime as dt
@@ -20,6 +21,7 @@ ACTIVE = "SPEC-0901-20261103-aaaa"
 DECISION = "SPEC-0902-20261103-bbbb"
 DIRTY = "SPEC-0903-20261103-cccc"
 MERGED = "SPEC-0904-20261103-dddd"
+OFF_BASE = "SPEC-0905-20261103-ffff"
 AGENTIC = {"lease_ttl_s": 120}
 # event types in the tail, in file order (the old `merged` before the window must not show)
 TAIL_TYPES = ["parked", "note", "escalation", "cost_warning", "merged", "admitted",
@@ -71,12 +73,23 @@ def seed(tmp_path: Path, now=None) -> dict:
     _campaign(cfg, DIRTY, "PARKED", now, park={
         "reason": "main_dirty", "detail": "main checkout has uncommitted tracked changes",
         "since": _iso(now, 3), "resume_to": "CLOSING"})
+    _campaign(cfg, OFF_BASE, "PARKED", now, park={
+        "reason": "main_not_on_base", "detail": "main checkout is on branch feat-x",
+        "since": _iso(now, 2), "resume_to": "CLOSING"})
     _campaign(cfg, MERGED, "MERGED", now, updated_min=10, created_min=60,
               close={"mode": "merge", "merged_sha": "abcdef1234567", "pr_url": None})
     ESC._create(cfg, {"by": "conductor", "campaign": DECISION, "spec_id": DECISION[:9],
                       "project": "Meta-Tools", "question": "ship it?\nmore context",
                       "options": [{"n": 1, "label": "yes"}, {"n": 2, "label": "no"}],
                       "recommendation": 1, "facts": [], "park": None, "kind": None})
+    for status, extra in (("answered", {"answer": 1, "answered_by": "human",
+                                        "answered_at": _iso(now, 1)}),
+                          ("withdrawn", {"withdrawn": {"by": "conductor", "reason": "moot"}})):
+        rec = ESC._create(cfg, {"by": "conductor", "campaign": None, "spec_id": None,
+                                "project": "Meta-Tools", "question": f"{status} one?",
+                                "options": [], "recommendation": None, "facts": [],
+                                "park": None, "kind": None})
+        ESC._mutate(cfg, rec["id"], lambda r, s=status, x=extra: r.update(status=s, **x))
     L.lease_path(cfg).write_text(json.dumps({"pid": 999999, "host": "nowhere",
                                              "heartbeat_at": _iso(now, 10)}))
     lines, i = [], 0

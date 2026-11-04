@@ -4,13 +4,18 @@ over the tail of a large `events.jsonl`, and `settings`."""
 import datetime as dt
 import json
 import os
+import subprocess
+import sys
 
 import pytest
 
-from fixtures.dashboard_data import ACTIVE, DIRTY, DECISION, seed
+from fixtures.dashboard_data import ACTIVE, DIRTY, DECISION, OFF_BASE, seed
 from nightwright.agentic import escalations as ESC
 from nightwright.agentic import events as E
+from nightwright.agentic import gate_slots as GS
+from nightwright.agentic import herdr_autowatch as AW
 from nightwright.agentic import lease as L
+from nightwright.agentic import mailbox as M
 from nightwright.agentic import queue as Q
 from nightwright.agentic import schemas as SC
 from nightwright.agentic import store as S
@@ -46,11 +51,16 @@ def test_build_has_every_section_and_matches_the_payload(fx):
     check_schema(doc)
     dp = Q.dashboard_payload(cfg)
     assert doc["totals"]["spend_today_usd"] == dp["totals"]["spend_today_usd"] > 0
+    # exactly the open records: the answered ESC-0002 and withdrawn ESC-0003 are left out
+    assert {r["id"]: r["status"] for r in ESC.list_all(cfg)} == {
+        "ESC-0001": "open", "ESC-0002": "answered", "ESC-0003": "withdrawn"}
     assert [e["id"] for e in doc["inbox"]["escalations"]] == ["ESC-0001"]
     esc = doc["inbox"]["escalations"][0]
     assert esc["question"] == "ship it?" and esc["campaign"] == DECISION and esc["by"] == "conductor"
-    assert [p["campaign"] for p in doc["inbox"]["parks"]] == [DIRTY]
-    assert {r["campaign"] for r in doc["needs_you"]} == {DECISION, DIRTY}
+    # exactly the main_dirty / main_not_on_base parks: the human_decision park is left out
+    assert {r["campaign"] for r in doc["needs_you"]} == {DECISION, DIRTY, OFF_BASE}
+    assert sorted((p["campaign"], p["park"]["reason"]) for p in doc["inbox"]["parks"]) == [
+        (DIRTY, "main_dirty"), (OFF_BASE, "main_not_on_base")]
     assert [r["campaign"] for r in doc["active"]] == [ACTIVE]
     assert doc["health"]["runner"]["lease"]["held"] is False
     assert doc["health"]["conductor"] == {"pid": None, "lag": None, "cursor_age_s": None}
@@ -118,6 +128,100 @@ def test_rev_changes_with_cost(fx):
     assert SN.build(cfg)["rev"] != r1
 
 
+def _lease_payload(**lease):
+    pl = _payload(3)
+    pl["lease"] = {"held": True, "pid": 42, "host": "h", "stale": False, "draining": None,
+                   "heartbeat_at": "2026-11-03T10:00:00-05:00", "heartbeat_age_s": 1.0,
+                   "tick_at": "2026-11-03T10:00:00-05:00", "ticks": 7, "last_tick_s": 0.4,
+                   "slot_freed_at": None, "busy_ended_at": None, "slots_full_at": None,
+                   "progress_at": None, "busy": False, "in_flight": 1, **lease}
+    return pl
+
+
+def test_rev_ignores_runner_heartbeat_and_tick_stamps(fx, monkeypatch):
+    """A live runner rewrites `heartbeat_at` / `tick_at` / `ticks` every tick: same rev."""
+    cfg = fx["cfg"]
+
+    def rev(**lease):
+        monkeypatch.setattr(Q, "dashboard_payload", lambda cfg, now=None: _lease_payload(**lease))
+        return SN.build(cfg, now=fx["now"])["rev"]
+    r0 = rev()
+    assert rev(heartbeat_at="2026-11-03T10:00:09-05:00", tick_at="2026-11-03T10:00:08-05:00",
+               ticks=9, last_tick_s=0.7, slot_freed_at="2026-11-03T10:00:05-05:00",
+               busy_ended_at="x", slots_full_at="y", progress_at="z") == r0
+    assert rev(held=False) != r0 and rev(pid=43) != r0 and rev(stale=True) != r0
+    assert rev(draining={"since": "t"}) != r0 and rev(in_flight=2) != r0
+
+
+def test_rev_ignores_estimated_gate_percent_only():
+    def doc(pct, est):
+        prog = {"percent": pct, "estimated": est}
+        return {"schema": SN.SCHEMA, "active": [{"campaign": "C", "gate_hold": {
+            "progress": prog}}], "gate_pools": {"campaigns": [{"campaign": "C",
+                                                                "progress": dict(prog)}]}}
+    assert SN.compute_rev(doc(10, True)) == SN.compute_rev(doc(40, True))     # elapsed-time guess
+    assert SN.compute_rev(doc(10, False)) != SN.compute_rev(doc(40, False))   # real progress
+    assert SN.compute_rev(doc(10, True)) != SN.compute_rev(doc(10, False))
+
+
+# ---- health ------------------------------------------------------------------------------
+
+def test_health_maps_conductor_and_held_stewards(fx, monkeypatch):
+    cfg = fx["cfg"]
+    last = SN._last_id(SN._tail_events(cfg))
+    E.cursor_set(cfg, "conductor", last - 3)
+    E.cursor_set(cfg, "mailbox:steward:Meta-Tools", 0)
+    E.cursor_set(cfg, "mailbox:human", 0)                          # not held: left out
+    M.send(cfg, to="steward:Meta-Tools", frm="conductor", text="hi")
+
+    def no_full_read(*a, **k):
+        raise AssertionError("read_since over the log")
+    monkeypatch.setattr(E, "read_since", no_full_read)
+    with E.reader_lock(cfg, "conductor"), E.reader_lock(cfg, "mailbox:steward:Meta-Tools"):
+        h = SN.build(cfg)["health"]
+    assert h["conductor"]["pid"] == os.getpid() and h["conductor"]["lag"] == 3
+    assert isinstance(h["conductor"]["cursor_age_s"], int)
+    assert h["stewards"] == [{"address": "steward:Meta-Tools", "pid": os.getpid(), "lag": 1}]
+
+
+def test_health_rows_from_patched_followers(fx, monkeypatch):
+    cfg = fx["cfg"]
+    rows = [{"reader": "conductor", "kind": "events", "pid": 11, "held": True, "lag": 4,
+             "cursor_age_s": 9},
+            {"reader": "mailbox:steward-x", "kind": "mailbox", "pid": 12, "held": True, "lag": 2},
+            {"reader": "mailbox:steward-y", "kind": "mailbox", "pid": None, "held": False,
+             "lag": 5}]
+    monkeypatch.setattr(E, "followers", lambda cfg, **k: rows)
+    monkeypatch.setattr(E, "reader_holder", lambda cfg, r: 99)
+    h = SN.build(cfg)["health"]
+    assert h["conductor"] == {"pid": 11, "lag": 4, "cursor_age_s": 9}
+    assert h["stewards"] == [{"address": "steward-x", "pid": 12, "lag": 2}]
+    monkeypatch.setattr(E, "followers", lambda cfg, **k: [])
+    assert SN.build(cfg)["health"]["conductor"] == {"pid": 99, "lag": None, "cursor_age_s": None}
+
+
+def test_failing_followers_stewards_and_herdr_are_error_sections(fx, monkeypatch):
+    cfg = fx["cfg"]
+    monkeypatch.setattr(E, "followers", lambda cfg, **k: [{"kind": "mailbox", "held": True}])
+    doc = SN.build(cfg)
+    assert doc["health"]["stewards"] == {"error": "KeyError: 'reader'"}
+    check_schema(doc)
+
+    def boom(*a, **k):
+        raise RuntimeError("no cursors")
+    monkeypatch.setattr(E, "followers", boom)
+
+    def hboom(cfg):
+        raise RuntimeError("no herdr")
+    monkeypatch.setattr(SN, "_herdr_watch", hboom)
+    doc = SN.build(cfg)
+    check_schema(doc)
+    assert doc["health"]["stewards"] == {"error": "RuntimeError: no cursors"}
+    assert doc["health"]["conductor"]["lag"] is None
+    assert doc["health"]["herdr_watch"] == {"error": "RuntimeError: no herdr"}
+    assert doc["inbox"]["escalations"][0]["id"] == "ESC-0001" and doc["active"]
+
+
 # ---- watermark ---------------------------------------------------------------------------
 
 def _bump(path):
@@ -164,8 +268,46 @@ def test_state_replace_new_campaign_escalation_and_lease_move_watermark(fx):
 
 def test_watermark_on_an_empty_data_dir(tmp_path):
     cfg = {"data_dir": str(tmp_path / "nothing")}
-    assert SN.watermark(cfg) == (None, (), None, ())
+    assert SN.watermark(cfg) == (None, (), None, (), ((), (), (), None, ()))
     assert not (tmp_path / "nothing").exists()
+
+
+def test_follower_gate_mailbox_and_herdr_files_move_watermark(fx):
+    cfg = fx["cfg"]
+    w = SN.watermark(cfg)
+    E.cursor_set(cfg, "conductor", 3)                           # a follower advanced
+    assert SN.watermark(cfg) != w
+    w = SN.watermark(cfg)
+    GS.slots_dir(cfg).mkdir(parents=True)
+    (GS.slots_dir(cfg) / "slot-0.lock").write_text(json.dumps({"campaign": ACTIVE, "pid": 1}))
+    assert SN.watermark(cfg) != w                               # a gate slot taken
+    w = SN.watermark(cfg)
+    M.mailbox_dir(cfg).mkdir(parents=True)
+    (M.mailbox_dir(cfg) / "steward_P.jsonl").write_text("{}\n")
+    assert SN.watermark(cfg) != w                               # steward inbox moved
+    w = SN.watermark(cfg)
+    AW.state_path(cfg).parent.mkdir(parents=True, exist_ok=True)
+    AW.state_path(cfg).write_text(json.dumps({"pid": os.getpid()}))
+    assert SN.watermark(cfg) != w                               # herdr watch state
+    assert SN.watermark(cfg) == SN.watermark(cfg)
+
+
+def test_a_dead_follower_moves_watermark_without_any_write(fx):
+    """A follower that dies releases its flock and writes nothing: its pid's liveness moves."""
+    cfg = fx["cfg"]
+    child = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(600)"])
+    try:
+        E.cursors_dir(cfg).mkdir(parents=True, exist_ok=True)
+        (E.cursors_dir(cfg) / "conductor.pid").write_text(str(child.pid))
+        w = SN.watermark(cfg)
+        assert ("cursors/conductor.pid", str(child.pid), True) in w[4][4]
+        files = {p: p.stat().st_mtime_ns for p in fx["data"].rglob("*") if p.is_file()}
+    finally:
+        child.kill()
+        child.wait()
+    w1 = SN.watermark(cfg)
+    assert {p: p.stat().st_mtime_ns for p in fx["data"].rglob("*") if p.is_file()} == files
+    assert w1 != w and ("cursors/conductor.pid", str(child.pid), False) in w1[4][4]
 
 
 # ---- recent events -----------------------------------------------------------------------
@@ -224,6 +366,45 @@ def test_recent_events_caps_at_n(fx):
                                 "label": "merge:feat", "data": {}}) + "\n")
     got = SN.recent_events(cfg)
     assert len(got) == 20 and got[-1]["id"] == 20_029 and got[0]["summary"] == "merged merge:feat"
+
+
+def test_recent_events_without_a_log(tmp_path):
+    assert SN.recent_events({"data_dir": str(tmp_path / "none")}) == []
+
+
+def _write_events(cfg, evs, prefix=b""):
+    path = E.events_path(cfg)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(prefix + b"".join(json.dumps(e).encode() + b"\n" for e in evs))
+    return path
+
+
+def _ev(i, t="merged"):
+    return {"schema": E.SCHEMA, "id": i, "ts": "2026-11-03T00:00:00+00:00", "type": t,
+            "campaign": "C", "spec_id": None, "project": "P", "by": "queue", "data": {}}
+
+
+def test_recent_events_keeps_the_first_line_of_a_small_log(tmp_path):
+    cfg = {"data_dir": str(tmp_path / "d")}
+    _write_events(cfg, [_ev(1), _ev(2, "note"), _ev(3, "parked")])
+    assert [e["id"] for e in SN.recent_events(cfg)] == [1, 3]
+
+
+def test_recent_events_keeps_a_whole_line_at_the_window_start(tmp_path):
+    """A line that starts exactly at `size - 256 KiB` is whole and kept; a cut one is not."""
+    cfg = {"data_dir": str(tmp_path / "d")}
+    first, last = json.dumps(_ev(2)).encode() + b"\n", json.dumps(_ev(3)).encode() + b"\n"
+    pad = b"x" * (SN.RECENT_WINDOW - len(first) - len(last) - 1) + b"\n"
+    head = json.dumps(_ev(1)).encode() + b"\n"
+    path = E.events_path(cfg)
+    path.parent.mkdir(parents=True)
+    path.write_bytes(head + first + pad + last)
+    assert path.stat().st_size - SN.RECENT_WINDOW == len(head)        # window starts at ev 2
+    assert [e["id"] for e in SN.recent_events(cfg)] == [2, 3]
+    path.write_bytes(b"y" + head + first + pad + last)                 # now ev 1 is cut
+    assert [e["id"] for e in SN.recent_events(cfg)] == [2, 3]
+    path.write_bytes(head[:-1] + b"z\n" + first[5:] + pad + last)     # ev 2 cut mid-line
+    assert [e["id"] for e in SN.recent_events(cfg)] == [3]
 
 
 def test_recent_types_are_event_types():
