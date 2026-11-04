@@ -19,7 +19,7 @@ from nightwright.agentic.dashboard import lifecycle as LC
 from test_dashboard_cli import nw_env
 from test_dashboard_serve_cli import dash, stop, wait_server
 from test_dashboard_serve_cli import start as _start
-from waits import until
+from waits import join, until
 
 
 @pytest.fixture
@@ -32,10 +32,12 @@ def set_dashboard_cfg(fx, **dash_cfg):
     path.write_text(yaml.safe_dump({"agentic": {**AGENTIC, "dashboard": dash_cfg}}))
 
 
-def start(fx, *args):
+def start(fx, *args, pythonpath=None):
     """`nw serve --dashboard` with `git` reachable (`nw_env` drops the PATH dirs that hold a
     `tailscale`, and on a host with tailscale installed that is /usr/bin)."""
     env = nw_env(fx)
+    if pythonpath:
+        env["PYTHONPATH"] = str(pythonpath)
     bindir = Path(fx["data"]).parent / "gitbin"
     bindir.mkdir(exist_ok=True)
     link = bindir / "git"
@@ -192,7 +194,7 @@ def test_server_record_writes_are_atomic(fx):
     for n in range(300):
         LC.write_server_record(cfg, {"pid": 1, "n": n, "pad": "x" * 4000})
     done.set()
-    t.join(30)
+    join(t)
     assert not bad
 
 
@@ -235,6 +237,39 @@ def test_clients_count_written_only_on_change(fx):
     now[0] += 60
     assert not r.tick() and LC.read_server_record(cfg)["updated_at"] == stamp
     assert r.writes == 2
+
+
+def test_dashboard_server_client_count_hook_defaults_to_zero(fx):
+    from nightwright.agentic.dashboard import server as DS
+    assert DS.DashboardServer.client_count(object()) == 0
+
+
+SITECUSTOMIZE = """
+from nightwright.agentic.dashboard import lifecycle as LC, server as DS
+DS.DashboardServer.client_count = lambda self: 2
+_init = LC.RecordRefresher.__init__
+def init(self, cfg, rec, client_count, **kw):
+    _init(self, cfg, rec, client_count, **{**kw, "min_s": 0.5})
+LC.RecordRefresher.__init__ = init
+"""
+
+
+def test_real_serve_loop_feeds_client_count_into_the_record(fx, tmp_path):
+    """The serve loop must hand `DashboardServer.client_count` to the refresher and tick it:
+    a subprocess server whose hook returns 2 (sitecustomize) rewrites `clients` to 2, once."""
+    hook = tmp_path / "hook"
+    hook.mkdir()
+    (hook / "sitecustomize.py").write_text(SITECUSTOMIZE)
+    proc = start(fx, "--bind", "127.0.0.1:0", "--no-code-watch", pythonpath=hook)
+    try:
+        first = wait_server(fx, proc)
+        assert until(lambda: (LC.read_server_record(fx["cfg"]) or {}).get("clients") == 2)
+        rec = LC.read_server_record(fx["cfg"])
+        assert rec["updated_at"] >= first["updated_at"] and rec["pid"] == proc.pid
+        assert until(lambda: proc.poll() is not None, timeout=1.5) is False   # idle: no rewrite
+        assert LC.read_server_record(fx["cfg"])["updated_at"] == rec["updated_at"]
+    finally:
+        stop(proc)
 
 
 def test_clients_refresh_leaves_a_foreign_record_alone(fx):

@@ -288,6 +288,20 @@ fixed sleep before a positive assertion.
 - **Not done:** AC 3 (exit 3 without a tailnet address) and manual steps 1-3 (they need a
   tailscale login and the real checkout; step 2 needs the tailnet bind). See "As shipped".
 
+### Test record, loop 3 (2026-11-04)
+
+- Added `test_real_serve_loop_feeds_client_count_into_the_record` (a real `nw serve --dashboard`
+  subprocess whose `DashboardServer.client_count` is patched to 2 through a `sitecustomize` on
+  `PYTHONPATH`, with the refresher's 5 s throttle lowered; `server.json` `clients` reaches 2 and
+  `updated_at` then stays put) and `test_dashboard_server_client_count_hook_defaults_to_zero`.
+  Removing `refresher.tick()` from the serve loop, or handing the refresher another callable,
+  now fails the suite. Bare `Thread.join(N)` calls in the dashboard tests were replaced by
+  `waits.join` (`tests/test_test_waits.py` guard).
+- `uv run pytest -q tests/test_dashboard_lifecycle.py tests/test_test_waits.py
+  tests/test_dashboard_auth.py tests/test_dashboard_server.py`: 137 passed, 1 skipped.
+- AC 3 is still blocked: the tailnet slice (`own_tailnet_ips()`, `--bind tailscale`) has not
+  landed; escalated again in campaign note #170 (after #107). Status stays `in-progress`.
+
 ### As shipped (2026-11-04)
 
 - **Exit 3 is not implemented.** SPEC-0414 narrowed itself to the loopback server: the tree has no
