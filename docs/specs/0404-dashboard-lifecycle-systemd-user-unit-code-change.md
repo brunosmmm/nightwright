@@ -1,7 +1,7 @@
 ---
 id: SPEC-0404
 title: "Dashboard server lifecycle: code-change exit, exit 3 without a tailnet address, server.json record"
-status: proposed
+status: accepted
 owner: user
 created: 2026-11-03
 updated: 2026-11-03
