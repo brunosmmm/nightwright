@@ -56,7 +56,7 @@ def test_enter_opens_the_screen_and_escape_returns_with_the_cursor(tmp_path):
 
     async def drive():
         async with app.run_test(size=SIZE) as pilot:
-            await open_screen(app, pilot, cid, "backlog")
+            await open_screen(app, pilot, cid, "queued")
             s = screen(app)
             assert s.campaign_id == cid
             assert text_of(s.query_one("#campaign-header")).startswith(cid)
@@ -64,7 +64,7 @@ def test_enter_opens_the_screen_and_escape_returns_with_the_cursor(tmp_path):
             await settle(app, pilot)
             assert len(app.screen_stack) == 1
             assert view(app).current_row().campaign == cid
-            await open_screen(app, pilot, cid, "backlog")
+            await open_screen(app, pilot, cid, "queued")
             await press(app, pilot, ["q"])                  # q also pops, it does not quit
             await settle(app, pilot)
             assert len(app.screen_stack) == 1 and app.is_running
@@ -81,7 +81,7 @@ def test_cursor_starts_on_the_last_event_and_filters_cycle(tmp_path):
 
     async def drive():
         async with app.run_test(size=SIZE) as pilot:
-            await open_screen(app, pilot, cid, "backlog")
+            await open_screen(app, pilot, cid, "queued")
             s = screen(app)
             assert len(s.shown) == total and s.table.cursor_row == total - 1
             assert status(app) == f"filter all · {total}/{total} events"
@@ -113,7 +113,7 @@ def test_detail_pane_follows_the_cursor_and_v_toggles_the_review(tmp_path):
 
     async def drive():
         async with app.run_test(size=SIZE) as pilot:
-            await open_screen(app, pilot, cid, "backlog")
+            await open_screen(app, pilot, cid, "queued")
             s = screen(app)
             await press(app, pilot, ["f", "f", "f"])            # gates
             assert "pytest: FAIL" in detail(app) and "(missing:" in detail(app)
@@ -145,7 +145,7 @@ def test_a_ledger_append_shows_within_a_poll_and_never_syncs(tmp_path, monkeypat
 
     async def drive():
         async with app.run_test(size=SIZE) as pilot:
-            await open_screen(app, pilot, cid, "backlog")
+            await open_screen(app, pilot, cid, "queued")
             for name in ("sync", "cursor_set", "reader_lock"):
                 monkeypatch.setattr(EV, name, boom, raising=False)
             s = screen(app)
@@ -177,7 +177,7 @@ def test_park_runs_end_to_end_through_the_screen(tmp_path):
 
     async def drive():
         async with app.run_test(size=SIZE) as pilot:
-            await open_screen(app, pilot, cid, "backlog")
+            await open_screen(app, pilot, cid, "queued")
             s = screen(app)
             await press(app, pilot, ["P", "escape"])             # priority picker, cancelled
             await press(app, pilot, ["p", *"hold", "enter", "enter"])
@@ -205,7 +205,7 @@ def test_idea_keys_are_inert_on_the_screen(tmp_path):
 
     async def drive():
         async with app.run_test(size=SIZE) as pilot:
-            await open_screen(app, pilot, cid, "backlog")
+            await open_screen(app, pilot, cid, "queued")
             for key in ("x", "i", "X", "l", "c", "t", "m", "s", "a"):
                 await press(app, pilot, [key])
                 assert len(app.screen_stack) == 2 and isinstance(app.screen, CS.CampaignScreen)
@@ -253,7 +253,7 @@ def test_cli_campaign_resolves_ids_and_rejects_bad_ones(tmp_path, monkeypatch):
 # --- bad data and untrusted text (SPEC-0265) ---------------------------------------------
 
 def _section_of(app, cid):
-    return next(r.section for r in view(app).rows if r.campaign == cid)
+    return next(r.group for r in view(app).rows if r.campaign == cid)
 
 
 def test_reload_error_keeps_the_app_alive(tmp_path, monkeypatch):

@@ -33,17 +33,40 @@ ACTIONS = ("park", "resume", "prioritize", "abandon")
 EMPTY_META = "queue is empty"
 
 
+# SPEC-0410: the queue tab's groups, furthest-along work first. Not `GROUPS` (the campaign
+# screen's timeline filters, below).
+QUEUE_GROUPS = ("needs you", "conductor", "closing", "reviewing", "gating", "building",
+                "waiting", "queued", "delivered")
+_SOURCE_GROUP = {"needs_you": "needs you", "conductor_handling": "conductor", "waiting": "waiting",
+                 "backlog": "queued", "delivered": "delivered"}
+_ACTIVE_GROUP = {"CLOSING": "closing", "REVIEWING": "reviewing", "GATING": "gating",
+                 "TRIAGING": "gating"}          # anything else active is `building`
+_DEFAULT_PRIORITY = 3
+_SOURCES = ("needs_you", "conductor_handling", "active", "waiting", "backlog", "delivered")
+_REVIEW_GLYPH = {"running": "▶", "pass": "✓", "fix": "✗", "failed": "!", "not_run": "·"}
+
+
 @dataclass(frozen=True)
 class QueueRow:
-    section: str
+    group: str
     campaign: str
     spec: str
     title: str
     project: str
     state: str
-    meta: str
     actions: tuple = ()
     priority: int | None = None
+    kind: str = "campaign"      # "header" | "campaign" | "placeholder" (the empty queue)
+    count: int = 0              # header rows: the group's data rows
+    pri: str = ""
+    loops: str = ""
+    cost_usd: float | None = None
+    cap_usd: float | None = None
+    activity: str = ""
+    why: str = ""
+    state_since: str | None = None
+    time_text: str = ""
+    sort_key: tuple = field(default=(), compare=False)
 
 
 def allowed_actions(state, park_requested=False) -> tuple:
@@ -67,75 +90,149 @@ def _first_line(text) -> str:
     return lines[0].strip() if lines else ""
 
 
-def _park_meta(it, *, overdue=False) -> str:
-    park = it.get("park") or {}
-    reason = park.get("reason") or "park requested"
-    detail = park.get("detail") or (park.get("decision") or {}).get("text")
-    bits = [str(reason), _ago(it.get("park_age_s"))]
-    if _first_line(detail):
-        bits.append(_first_line(detail))
-    return " · ".join(bits) + (" · overdue" if overdue else "")
+def group_of(state, source) -> str:
+    """The one place that maps a payload list (`source`) plus a state to a queue group."""
+    if source == "active":
+        return _ACTIVE_GROUP.get(state, "building")
+    return _SOURCE_GROUP[source]
 
 
-def _active_meta(it) -> str:
+def cost_bar(cost, cap, width=8) -> str:
+    """`███░░░░░` cells of cost against its cap, clamped to `0..width`; no cap -> ''."""
+    try:
+        cap = float(cap)
+    except (TypeError, ValueError):
+        return ""
+    if cap <= 0:
+        return ""
+    full = max(0, min(width, round(float(cost or 0) / cap * width)))
+    return "█" * full + "░" * (width - full)
+
+
+def _wait_label(wf) -> str:
+    """The short label of what a campaign waits on (`journey.waiting_for`)."""
+    kind = (wf or {}).get("kind")
+    if kind == "gate_slot":
+        return "waiting for a gate slot"
+    if kind == "close_train":
+        return "waiting for the close train"
+    if kind == "campaign_slot":
+        return "waiting for a campaign slot"
+    if kind == "dependency":
+        return ", ".join(str(d) for d in wf.get("on") or []) or "waiting"
+    return ""
+
+
+def _gate_name(it) -> str:
+    for src in ((it.get("gate_hold") or {}).get("progress"), it.get("last_gate")):
+        if isinstance(src, dict) and (src.get("gate") or src.get("name")):
+            return str(src.get("gate") or src.get("name"))
+    return "gates"
+
+
+def _chips(reviews) -> str:                     # SPEC-0277: glyph + 4-char tag per reviewer
+    return " ".join(_REVIEW_GLYPH.get(c["status"], "·") + Q.review_short_name(c["persona"])[:4]
+                    for c in reviews)
+
+
+def activity_text(it) -> str:
+    """What the row is doing, appended to its state: an open run, the gate (or the gate-slot
+    wait), what a waiting/queued row waits on, and the SPEC-0277 reviewer chips."""
     act = it.get("activity") or {}
+    wf = it.get("waiting_for")
+    parts = []
     if act.get("kind") == "run":
-        head = f"{it['state']} · {act.get('persona')} {_dur(act.get('elapsed_s'))}"
+        parts.append(f"{act.get('persona')} {_dur(act.get('elapsed_s'))}")
+    elif wf and wf.get("kind") == "gate_slot":
+        parts.append(_wait_label(wf))
     elif act.get("kind") == "gates":
-        head = f"{it['state']} · gates"
-    else:
-        head = it["state"]
-    reviews = it.get("reviews") or []
-    if reviews:                                            # SPEC-0277: glyph + 4-char tag
-        glyph = {"running": "▶", "pass": "✓", "fix": "✗", "failed": "!", "not_run": "·"}
-        head += " · rev " + " ".join(
-            glyph.get(c["status"], "·") + Q.review_short_name(c["persona"])[:4] for c in reviews)
-    return f"{head} · loops {it.get('loops')} · ${float(it.get('cost_usd') or 0):.2f}"
+        parts.append(_gate_name(it))
+    elif wf:
+        parts.append(_wait_label(wf))
+    if it.get("reviews"):
+        parts.append(_chips(it["reviews"]))
+    return " ".join(parts)
 
 
-def _backlog_meta(it) -> str:
-    bits = [f"#{it.get('position')} p{it.get('priority')}"]
-    blocked = it.get("blocked_by") or []
-    bits.append("ready" if it.get("ready", True) and not blocked
-                else f"blocked by {', '.join(str(b) for b in blocked)}")
-    if it.get("size"):
-        bits.append(f"{it['size']}/{it.get('tone')}")
-    return " · ".join(bits)
+_AGE_KEY = {"needs you": "park_age_s", "conductor": "park_age_s", "waiting": "waiting_s",
+            "queued": "age_s"}
 
 
-def _delivered_meta(it) -> str:
-    ref = (it.get("merged_sha") or "")[:7] or it.get("pr_url") or ""
-    head = f"{it.get('state')} {ref}".strip()
-    return f"{head} · ${float(it.get('cost_usd') or 0):.2f} · {_ago(it.get('finished_age_s'))} ago"
+def _age_of(group, it, now) -> int | None:
+    """Seconds in the current state: the group's own payload age (the park, the wait, the time
+    since creation, the last transition), else the age of `state_since`, else None."""
+    age = it.get(_AGE_KEY.get(group, "state_age_s"))
+    return age if age is not None else Q._age(it.get("state_since"), now)
 
 
-def _row(section, it, meta, state=None) -> QueueRow:
+def _priority(it) -> int:
+    p = it.get("priority")
+    return _DEFAULT_PRIORITY if p is None else p
+
+
+def _sort_key(group, it) -> tuple:
+    """Fixed timestamps, priority and ids only: never an age (SPEC-0410 Decision 2)."""
+    cid = it["campaign"]
+    if group == "queued":
+        return (it.get("position") or 0, cid)
+    if group in ("needs you", "conductor"):
+        return ((it.get("park") or {}).get("parked_at") or it.get("state_since") or "", cid)
+    if group == "waiting":
+        return (_priority(it), (it.get("waiting") or {}).get("since") or it.get("state_since") or "",
+                cid)
+    if group == "delivered":
+        return (it.get("state_since") or "", cid)       # reversed below, ties by id
+    return (_priority(it), it.get("created_at") or "", cid)
+
+
+def _row(group, it, state=None, now=None) -> QueueRow:
     state = state or it.get("state") or ""
+    delivered = group == "delivered"
+    why = str(it.get("why") or "")
+    if (it.get("park") or {}).get("overdue") and group == "conductor":
+        why = (why + " · overdue").lstrip(" ·")
+    if delivered:
+        time_text = f"finished {_ago(it.get('finished_age_s'))} ago"
+    else:
+        age = _age_of(group, it, now)
+        time_text = "" if age is None else _ago(age)
     return QueueRow(
-        section=section, campaign=it["campaign"],
+        group=group, campaign=it["campaign"],
         spec=str(it.get("spec_id") or it.get("idea_id") or ""),
         title=it.get("spec_title") or "", project=str(it.get("project") or ""),
-        state=state, meta=meta,
-        actions=allowed_actions(state, bool(it.get("park_requested"))),
-        priority=it.get("priority"))
+        state=state, actions=allowed_actions(state, bool(it.get("park_requested"))),
+        priority=it.get("priority"),
+        pri="" if delivered or it.get("priority") is None else str(it["priority"]),
+        loops="" if delivered else str(it.get("loops") or ""),
+        cost_usd=float(it.get("cost_usd") or 0), cap_usd=it.get("cap_usd"),
+        activity="" if delivered else activity_text(it), why=why,
+        state_since=it.get("state_since"), time_text=time_text, sort_key=_sort_key(group, it))
 
 
-def rows_from_payload(payload) -> list[QueueRow]:
+def rows_from_payload(payload, *, collapsed=frozenset(), now=None) -> list[QueueRow]:
+    """Header and data rows in their final order. Sorts by the stable keys of `_sort_key`, never
+    by the payload's list order. A group in `collapsed` emits its header only."""
+    by_group: dict = {g: [] for g in QUEUE_GROUPS}
+    for source in _SOURCES:
+        for it in payload.get(source) or []:
+            state = "QUEUED" if source == "backlog" else None
+            group = group_of(state or it.get("state"), source)
+            by_group[group].append(_row(group, it, state, now))
     rows = []
-    for it in payload["needs_you"]:
-        rows.append(_row("needs you", it, _park_meta(it)))
-    for it in payload["conductor_handling"]:
-        rows.append(_row("conductor", it, _park_meta(it, overdue=(it.get("park") or {}).get("overdue"))))
-    for it in payload["active"]:
-        rows.append(_row("active", it, _active_meta(it)))
-    for it in payload["waiting"]:
-        rows.append(_row("waiting", it, f"waiting {_ago(it.get('waiting_s'))} → {it.get('resume_to')}"))
-    for it in payload["backlog"]:
-        rows.append(_row("backlog", it, _backlog_meta(it), "QUEUED"))
-    for it in payload["delivered"]:
-        rows.append(_row("delivered", it, _delivered_meta(it)))
+    for group in QUEUE_GROUPS:
+        items = by_group[group]
+        if not items:
+            continue
+        items.sort(key=lambda r: r.sort_key)
+        if group == "delivered":                # newest first, ties by campaign id
+            items.sort(key=lambda r: r.sort_key[0], reverse=True)   # stable: id order kept
+        rows.append(QueueRow(group=group, campaign="", spec="", title="", project="", state="",
+                             kind="header", count=len(items)))
+        if group not in collapsed:
+            rows.extend(items)
     if not rows:
-        rows.append(QueueRow("", "", "", "", "", "", EMPTY_META))
+        rows.append(QueueRow(group="", campaign="", spec="", title=EMPTY_META, project="",
+                             state="", kind="placeholder"))
     return rows
 
 
@@ -164,7 +261,7 @@ def header_line(payload, followers) -> str:
 
 
 def load_queue(cfg, *, project=None) -> tuple[list[QueueRow], str]:
-    payload = Q.dashboard_payload(cfg, project=project)
+    payload = Q.dashboard_payload(cfg, project=project, recent=20)
     return rows_from_payload(payload), header_line(payload, EV.followers(cfg))
 
 

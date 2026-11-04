@@ -551,3 +551,41 @@ def test_watch_shows_split_campaign_kind(tmp_path, monkeypatch):      # SPEC-029
     assert cid in r.output and "kind split" in r.output
     (item,) = Q.queue_payload(cfg)["items"]
     assert item["kind"] == "split"
+
+
+def test_payload_additions_for_the_tui_queue_view(tmp_path):                  # SPEC-0410
+    repo, cfg, ids = _park_fixture(tmp_path)
+    wait = _campaign(cfg, repo, "SPEC-0001-wait", "WAITING",
+                     waiting={"resume_to": "GATING", "since": _iso(5)})
+    ready = _campaign(cfg, repo, "SPEC-0001-ready", "QUEUED", created_min=40)
+    merged = _campaign(cfg, repo, "SPEC-0001-merged", "MERGED", created_min=50, updated_min=5)
+    ev_at(cfg, ids["req"], "transition", {"from": "GATING", "to": "IMPLEMENTING"}, ago_s=600)
+    for it in Q.queue_payload(cfg, include_terminal=True)["items"]:
+        assert it["created_at"] and it["age_s"] is not None            # additive, next to age_s
+    p = Q.dashboard_payload(cfg, recent=20)
+    by = lambda rows: {r["campaign"]: r for r in rows}               # noqa: E731
+    assert by(p["needs_you"])[ids["dirty"]]["state_since"] == (
+        by(p["needs_you"])[ids["dirty"]]["park"]["parked_at"])
+    assert by(p["conductor_handling"])[ids["req"]]["state_since"] == _iso(2)    # the request's `at`
+    assert by(p["waiting"])[wait]["state_since"] == _iso(5)
+    assert by(p["backlog"])[ready]["state_since"] == by(p["backlog"])[ready]["state_since"] \
+        and by(p["backlog"])[ready]["state_since"]
+    assert by(p["delivered"])[merged]["state_since"]
+    act = by(p["active"])[ids["req"]]                                 # the transition's ts
+    assert act["state_since"] and act["state_age_s"] is not None
+    assert 590 <= act["state_age_s"] <= 700
+
+
+def test_state_since_falls_back_to_updated_at_without_a_transition(tmp_path):  # SPEC-0410
+    repo, cfg, ids = _fixture(tmp_path)
+    row = next(r for r in Q.dashboard_payload(cfg)["active"] if r["campaign"] == ids["impl"])
+    assert row["state_age_s"] is None                    # a fixture campaign has no transition
+    assert row["state_since"] == S.read_state(cfg, ids["impl"])["updated_at"]
+
+
+def test_backlog_json_has_no_tui_only_keys(tmp_path, monkeypatch):            # SPEC-0410
+    repo, cfg, ids = _fixture(tmp_path)
+    r = run_cli(cfg, monkeypatch, ["queue", "backlog", "--json"])
+    assert r.exit_code == 0, r.output
+    items = json.loads(r.output)["items"]
+    assert items and not any("state_since" in i or "created_at" in i for i in items)

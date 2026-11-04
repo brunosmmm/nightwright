@@ -21,8 +21,16 @@ from . import agentic_model as AM
 
 POLL_S = 2.0
 RELOAD_S = 15.0
-_FIXED_COST = 44       # section + campaign + spec + padding columns
-_META_W = 40
+_ID_W = 30             # campaign / spec column
+_STATE_W = 26
+_LOOP_W = 5
+_COST_W = 15           # `$12.34 ████████`
+_TIME_W = 6
+_FIXED_COST = 3 + _ID_W + _STATE_W + _LOOP_W + _COST_W + _TIME_W + 2 * 8 + 2   # + padding
+_MIN_WHY = 12
+_GROUP_STYLE = {"needs you": "bold red", "conductor": "bold yellow", "closing": "bold green",
+                "reviewing": "bold cyan", "gating": "bold magenta", "building": "bold blue",
+                "waiting": "bold", "queued": "bold", "delivered": "bold dim"}
 
 
 class QueueActions:
@@ -134,6 +142,57 @@ class QueueTable(DataTable):
     def action_open(self) -> None:
         self.view.open_selected()
 
+    # --- header rows are never the cursor row (SPEC-0410) ----------------------------------
+
+    def _data_indexes(self) -> list:
+        return [i for i, r in enumerate(self.view.rows) if r.kind == "campaign"]
+
+    def _go(self, target: int, direction: int) -> None:
+        """Move to the first data row at or beyond `target` in `direction`; if there is none,
+        to the last data row on that side (only when it is past the cursor)."""
+        data = self._data_indexes()
+        here = self.cursor_row
+        ahead = [i for i in data if (i >= target if direction > 0 else i <= target)]
+        pick = (min(ahead) if direction > 0 else max(ahead)) if ahead else None
+        if pick is None:
+            beyond = [i for i in data if (i > here if direction > 0 else i < here)]
+            pick = (max(beyond) if direction > 0 else min(beyond)) if beyond else None
+        if pick is not None and pick != here:
+            self.move_cursor(row=pick)
+
+    def action_cursor_down(self) -> None:
+        self._go(self.cursor_row + 1, 1)
+
+    def action_cursor_up(self) -> None:
+        self._go(self.cursor_row - 1, -1)
+
+    def action_page_down(self) -> None:
+        self._go(self.cursor_row + max(1, self.size.height - 2), 1)
+
+    def action_page_up(self) -> None:
+        self._go(self.cursor_row - max(1, self.size.height - 2), -1)
+
+    def action_scroll_home(self) -> None:
+        self._go(0, 1)
+
+    def action_scroll_end(self) -> None:
+        self._go(len(self.view.rows) - 1, -1)
+
+    action_scroll_top = action_scroll_home
+    action_scroll_bottom = action_scroll_end
+
+    def on_data_table_row_highlighted(self, event) -> None:
+        """A click or a repaint that lands on a header row snaps to the nearest data row."""
+        rows = self.view.rows
+        i = self.cursor_row                         # the live cursor, not a stale event's
+        if not rows or not (0 <= i < len(rows)) or rows[i].kind == "campaign":
+            return
+        data = self._data_indexes()
+        if not data:
+            return
+        after = [d for d in data if d > i]
+        self.move_cursor(row=min(after) if after else max(data))
+
 
 class QueueView(QueueActions, Vertical):
     """A `QueueTable` plus a status line (header_line, or the last load error)."""
@@ -162,7 +221,8 @@ class QueueView(QueueActions, Vertical):
         return self.query_one("#queue", QueueTable)
 
     def on_mount(self) -> None:
-        self.table.add_columns("section", "campaign", "spec", "what", "meta")
+        self.table.add_columns("pri", "campaign / spec", "title", "state", "loop", "cost", "time",
+                               "why")
         self._refresh_timers = [self.set_interval(POLL_S, self._poll, pause=True),
                         self.set_interval(RELOAD_S, self.reload, pause=True)]
 
@@ -227,42 +287,65 @@ class QueueView(QueueActions, Vertical):
         table = self.table
         previous = previous or self._cursor_target()
         table.clear()
-        what_w = max(20, (table.size.width or 100) - _FIXED_COST - _META_W)
-        last = None
+        data = [r for r in self.rows if r.kind == "campaign"]
+        avail = max(2 * _MIN_WHY, (table.size.width or 100) - _FIXED_COST)
+        title_w = max(10, min(max((len(r.title) for r in data), default=0), avail - _MIN_WHY))
+        why_w = max(_MIN_WHY, avail - title_w)          # `why` is clipped first, then `title`
         for r in self.rows:
-            campaign = r.campaign
-            if r.spec and campaign.startswith(r.spec + "-"):
-                campaign = campaign[len(r.spec) + 1:]
-            table.add_row(Text(r.section if r.section != last else "", style="dim"),
-                          Text(R._clip(campaign, 24)), Text(r.spec or ""),
-                          Text(R._clip(r.title, what_w)),
-                          Text(R._clip(r.meta, _META_W), style="dim"),
-                          key=f"{r.section}|{r.campaign}")
-            last = r.section
+            if r.kind == "header":
+                label = f"{r.group} ({r.count})"
+                table.add_row(Text(""), Text(label, style=_GROUP_STYLE.get(r.group, "bold")),
+                              *[Text("")] * 6, key=f"#{r.group}")
+            elif r.kind == "placeholder":
+                table.add_row(Text(""), Text(""), Text(r.title, style="dim"), *[Text("")] * 5,
+                              key="#empty")
+            else:
+                table.add_row(*self._cells(r, title_w, why_w), key=f"{r.group}|{r.campaign}")
         if self.rows:
             table.move_cursor(row=self._restore_index(previous))
         self.query_one("#queue-status", Static).update(f"[dim]{escape(self.header)}[/]")
 
+    @staticmethod
+    def _cells(r, title_w, why_w) -> list:
+        campaign = r.campaign
+        if r.spec and campaign.startswith(r.spec + "-"):
+            campaign = campaign[len(r.spec) + 1:]
+        ident = f"{r.spec} {campaign}".strip()
+        state = f"{r.state} {r.activity}".strip()
+        cost = f"${r.cost_usd or 0:.2f}"
+        over = r.cap_usd and (r.cost_usd or 0) > float(r.cap_usd)
+        if r.group != "delivered":
+            cost = f"{cost} {AM.cost_bar(r.cost_usd, r.cap_usd)}".strip()
+        return [Text(r.pri), Text(R._clip(ident, _ID_W)), Text(R._clip(r.title, title_w)),
+                Text(R._clip(state, _STATE_W)), Text(r.loops),
+                Text(cost, style="bold red" if over else ""), Text(r.time_text, style="dim"),
+                Text(R._clip(r.why, why_w), style="dim")]
+
     def _cursor_target(self):
         row = self.current_row()
         index = self.table.cursor_row if self.rows else 0
-        return (row.section, row.campaign, index) if row else (None, None, index)
+        return (row.group, row.campaign, index) if row else (None, None, index)
 
     def _restore_index(self, previous) -> int:
-        """Same (section, campaign), else the campaign's first row, else the old index clamped."""
-        section, campaign, index = previous
+        """Same (group, campaign), else the campaign's first row, else the nearest data row at
+        the old index. Never a header row; with no data row, the first row."""
+        group, campaign, index = previous
         if campaign:
             for i, r in enumerate(self.rows):
-                if (r.section, r.campaign) == (section, campaign):
+                if r.kind == "campaign" and (r.group, r.campaign) == (group, campaign):
                     return i
             for i, r in enumerate(self.rows):
-                if r.campaign == campaign:
+                if r.kind == "campaign" and r.campaign == campaign:
                     return i
-        return max(0, min(index, len(self.rows) - 1))
+        data = [i for i, r in enumerate(self.rows) if r.kind == "campaign"]
+        if not data:
+            return 0
+        index = max(0, min(index, len(self.rows) - 1))
+        return min(data, key=lambda i: (abs(i - index), i))
 
     def current_row(self) -> AM.QueueRow | None:
         i = self.table.cursor_row
-        if self.rows and 0 <= i < len(self.rows) and self.rows[i].campaign:
+        if self.rows and 0 <= i < len(self.rows) and self.rows[i].kind == "campaign":
             return self.rows[i]
         return None
 

@@ -158,7 +158,7 @@ progress. This is the single place to see *what has been decided* and *what is i
   - [x] [SPEC-0237](./specs/0237-workflow-profiles-as-yaml-files-builtin-user-project.md) Workflow profiles as YAML files: builtin package data, user and project layers — done
   - [x] [SPEC-0238](./specs/0238-wt-profiles-list-show-with-provenance-and-recorded-sources.md) `wt profiles list/show/check` with per-value provenance; sources recorded on campaigns and runs — done
   - [x] [SPEC-0239](./specs/0239-grouped-review-follow-ups-one-idea-per-campaign.md) Grouped review follow-ups: one idea per campaign, and a migration for the singles — done
-  - [x] [SPEC-0241](./specs/0241-tui-queue-tab-over-the-queue-dashboard.md) TUI queue tab: live view of the agentic queue with park, resume, prioritize and abandon — done
+  - [x] [SPEC-0241](./specs/0241-tui-queue-tab-over-the-queue-dashboard.md) TUI queue tab: live view of the agentic queue with park, resume, prioritize and abandon — superseded
   - [x] [SPEC-0242](./specs/0242-wt-spec-review-show-and-wt-spec-reviews.md) wt spec review --show and wt spec reviews: read stored reviews without re-running — done
   - [x] [SPEC-0243](./specs/0243-outbound-spec-reviews-use-the-target-project-checkout.md) Outbound spec reviews use the target project's checkout; admission recorded on the campaign — done
   - [x] [SPEC-0244](./specs/0244-adoption-clears-a-stale-index-lock-before-collecting.md) Adoption clears a stale .git/index.lock left by a killed implementer before collecting — done
@@ -249,10 +249,10 @@ progress. This is the single place to see *what has been decided* and *what is i
   - [x] [SPEC-0366](./specs/0366-herdr-run-tabs-one-tab-per-campaign-named-after.md) herdr run tabs: one tab per campaign named after the work, supersedes the shared nw runs tab — done
 - **[SPEC-0400](./specs/0400-remote-web-dashboard-live-view-of-active-queue.md) — Remote web dashboard and decisions inbox over Tailscale (nw serve --dashboard)** · accepted · (1/1 done)
   - [x] [SPEC-0401](./specs/0401-read-only-dashboard-server-and-nw-dashboard-v1.md) Dashboard snapshot: nw.dashboard.v1, SnapshotCache and nw dashboard snapshot — done
-- **[SPEC-0405](./specs/0405-rich-queue-tui-prioritized-live-queue-campaign.md) — Rich queue TUI: prioritized live queue, campaign detail popup, closed-campaign history and a cross-campaign findings and decisions browser over one shared history layer** · accepted · (2/3 done)
+- **[SPEC-0405](./specs/0405-rich-queue-tui-prioritized-live-queue-campaign.md) — Rich queue TUI: prioritized live queue, campaign detail popup, closed-campaign history and a cross-campaign findings and decisions browser over one shared history layer** · accepted · (3/3 done)
   - [x] [SPEC-0408](./specs/0408-ledger-provenance-finding-run-id-and-key-triage.md) Ledger provenance: finding run_id and key, triage events — done
   - [x] [SPEC-0409](./specs/0409-tui-test-harness-real-app-pilots-on-real-fixture.md) Remove Textual/pyte test skips, add the AST guard and a TUI test runtime budget — done
-  - [ ] [SPEC-0410](./specs/0410-live-queue-view-state-grouped-sections-with.md) Live queue view: state-grouped sections with priority, admission order and why-waiting — accepted
+  - [x] [SPEC-0410](./specs/0410-live-queue-view-state-grouped-sections-with.md) Live queue view: state-grouped sections with priority, admission order and why-waiting — done
 
 ## Active & planned
 
@@ -273,7 +273,6 @@ progress. This is the single place to see *what has been decided* and *what is i
 | [SPEC-0391](./specs/0391-worker-host-slots-from-registry.md) | A gate job carries the worker's registry slots as the worker host's slot limit | feature | in-progress | — | 2026-11-02 |
 | [SPEC-0400](./specs/0400-remote-web-dashboard-live-view-of-active-queue.md) | Remote web dashboard and decisions inbox over Tailscale (nw serve --dashboard) | epic | accepted | M9: agentic workflow | 2026-11-03 |
 | [SPEC-0405](./specs/0405-rich-queue-tui-prioritized-live-queue-campaign.md) | Rich queue TUI: prioritized live queue, campaign detail popup, closed-campaign history and a cross-campaign findings and decisions browser over one shared history layer | epic | accepted | — | 2026-11-03 |
-| [SPEC-0410](./specs/0410-live-queue-view-state-grouped-sections-with.md) | Live queue view: state-grouped sections with priority, admission order and why-waiting | feature | accepted | — | 2026-11-03 |
 
 ## Done
 
@@ -503,7 +502,6 @@ progress. This is the single place to see *what has been decided* and *what is i
 | [SPEC-0237](./specs/0237-workflow-profiles-as-yaml-files-builtin-user-project.md) | Workflow profiles as YAML files: builtin package data, user and project layers | feature | done | M9: agentic workflow | 2026-10-25 |
 | [SPEC-0238](./specs/0238-wt-profiles-list-show-with-provenance-and-recorded-sources.md) | `wt profiles list/show/check` with per-value provenance; sources recorded on campaigns and runs | feature | done | M9: agentic workflow | 2026-10-25 |
 | [SPEC-0239](./specs/0239-grouped-review-follow-ups-one-idea-per-campaign.md) | Grouped review follow-ups: one idea per campaign, and a migration for the singles | feature | done | M9: agentic workflow | 2026-10-25 |
-| [SPEC-0241](./specs/0241-tui-queue-tab-over-the-queue-dashboard.md) | TUI queue tab: live view of the agentic queue with park, resume, prioritize and abandon | feature | done | M9: agentic workflow | 2026-10-25 |
 | [SPEC-0242](./specs/0242-wt-spec-review-show-and-wt-spec-reviews.md) | wt spec review --show and wt spec reviews: read stored reviews without re-running | feature | done | M9: agentic workflow | 2026-10-25 |
 | [SPEC-0243](./specs/0243-outbound-spec-reviews-use-the-target-project-checkout.md) | Outbound spec reviews use the target project's checkout; admission recorded on the campaign | feature | done | M9: agentic workflow | 2026-10-25 |
 | [SPEC-0244](./specs/0244-adoption-clears-a-stale-index-lock-before-collecting.md) | Adoption clears a stale .git/index.lock left by a killed implementer before collecting | feature | done | M9: agentic workflow | 2026-10-26 |
@@ -647,6 +645,7 @@ progress. This is the single place to see *what has been decided* and *what is i
 | [SPEC-0401](./specs/0401-read-only-dashboard-server-and-nw-dashboard-v1.md) | Dashboard snapshot: nw.dashboard.v1, SnapshotCache and nw dashboard snapshot | feature | done | M9: agentic workflow | 2026-11-03 |
 | [SPEC-0408](./specs/0408-ledger-provenance-finding-run-id-and-key-triage.md) | Ledger provenance: finding run_id and key, triage events | feature | done | — | 2026-11-03 |
 | [SPEC-0409](./specs/0409-tui-test-harness-real-app-pilots-on-real-fixture.md) | Remove Textual/pyte test skips, add the AST guard and a TUI test runtime budget | feature | done | M9: agentic workflow | 2026-11-03 |
+| [SPEC-0410](./specs/0410-live-queue-view-state-grouped-sections-with.md) | Live queue view: state-grouped sections with priority, admission order and why-waiting | feature | done | — | 2026-11-03 |
 
 ## Superseded / rejected
 
@@ -662,6 +661,7 @@ progress. This is the single place to see *what has been decided* and *what is i
 | [SPEC-0084](./specs/0084-theme-the-recessive-styling-in-the-idea-views.md) | Theme every recessive style in the idea views, not just the state palette | feature | rejected | M4: cli ergonomics | 2026-07-28 |
 | [SPEC-0177](./specs/0177-wt-conduct-skill-docs-and-dogfood-bootstrap-for.md) | wt-conduct skill, docs and dogfood bootstrap for wt itself | feature | superseded | M9: agentic workflow | 2026-10-25 |
 | [SPEC-0218](./specs/0218-agentic-workflow-docs-refresh.md) | Agentic workflow docs refresh: a guide, a coherent reference, concepts and front door | feature | superseded | M8: product documentation | 2026-10-25 |
+| [SPEC-0241](./specs/0241-tui-queue-tab-over-the-queue-dashboard.md) | TUI queue tab: live view of the agentic queue with park, resume, prioritize and abandon | feature | superseded | M9: agentic workflow | 2026-11-03 |
 | [SPEC-0296](./specs/0296-pluggable-reviewer-personas-fully-defined-project.md) | Pluggable reviewer personas, defined in the project repo: declarations and registry | feature | superseded | M9: agentic workflow | 2026-11-02 |
 | [SPEC-0331](./specs/0331-remote-gates-over-ssh-on-one-worker-host.md) | Remote gates over SSH on one worker host | feature | superseded | — | 2026-10-31 |
 | [SPEC-0332](./specs/0332-worker-owned-async-jobs.md) | Worker-owned async jobs | feature | superseded | — | 2026-11-01 |

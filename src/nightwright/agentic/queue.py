@@ -5983,6 +5983,7 @@ def queue_payload(cfg, *, include_terminal=False, project=None, state=None, now=
             "cost_usd": round(float(cost.get("total_usd") or 0.0), 4),
             "cap_usd": cost.get("cap_usd"),
             "cost": {"estimated_usd": round(float(cost.get("estimated_usd") or 0.0), 4)},
+            "created_at": r.get("created_at"),          # SPEC-0410: the TUI's stable sort key
             "age_s": _age(r.get("created_at")), "updated_age_s": _age(r.get("updated_at")),
             "park": park, "park_requested": bool(r.get("park_requested")),
             "worktree": repo.get("worktree"), "branch": repo.get("branch"),
@@ -6885,13 +6886,14 @@ def dashboard_payload(cfg, *, project=None, recent=5, recent_hours=24, now=None)
                     "merged_sha": close.get("merged_sha"), "pr_url": close.get("pr_url"),
                     "cost_usd": it["cost_usd"],
                     "duration_s": (_age(st.get("created_at"), now) or 0) - age,
-                    "finished_age_s": age})
+                    "finished_age_s": age, "state_since": updated})   # SPEC-0410
             continue
         if state == "WAITING":
             wf = JY.waiting_for(st, [], busy=slots["busy"], total=slots["total"], now=now)
             waiting.append({**it, "spec_title": title,
                             "resume_to": (st.get("waiting") or {}).get("resume_to"),
                             "waiting_s": _age((st.get("waiting") or {}).get("since"), now),
+                            "state_since": (st.get("waiting") or {}).get("since"),   # SPEC-0410
                             "waiting_for": wf, "why": JY.why(st, [], wf)})
             continue
         if state == "QUEUED":
@@ -6899,7 +6901,7 @@ def dashboard_payload(cfg, *, project=None, recent=5, recent_hours=24, now=None)
                             "blocked_by": [], **(it.get("backlog") or {}),
                             "campaign": it["campaign"], "spec_id": it["spec_id"],
                             "kind": it["kind"], "merge_branch": it["merge_branch"],
-                            "label": it["label"],
+                            "label": it["label"], "state_since": it["created_at"],   # SPEC-0410
                             "spec_title": title, "project": it["project"], "age_s": it["age_s"],
                             "size": it["size"], "tone": it["tone"], "profile": it["profile"],
                             "profile_source": it["profile_source"]})
@@ -6922,7 +6924,7 @@ def dashboard_payload(cfg, *, project=None, recent=5, recent_hours=24, now=None)
                                      "ts": req.get("at"), "by": req.get("by") or "human"},
                         "parked_at": parked_at}
             row = {**it, "spec_title": title, "park": park or None,
-                   "park_age_s": _age(parked_at, now), "last_verdict": _verdict_summary(st),
+                   "park_age_s": _age(parked_at, now), "state_since": parked_at,   # SPEC-0410 "last_verdict": _verdict_summary(st),
                    "why": JY.why(st, ledger, loops=it["loops"])}
             (needs_you if park.get("owner") == "human" else conductor).append(row)
             if state == "PARKED":
@@ -6950,6 +6952,8 @@ def dashboard_payload(cfg, *, project=None, recent=5, recent_hours=24, now=None)
                 if hold:
                     pool = wn
                     break
+        state_since = next((e.get("ts") for e in reversed(ledger)
+                            if e.get("type") == "transition" and e.get("to") == state), None)
         active.append({**it, "spec_title": title,
                        "phases": list(phases),
                        "phase_index": phases.index(state) if state in phases else None,
@@ -6964,9 +6968,9 @@ def dashboard_payload(cfg, *, project=None, recent=5, recent_hours=24, now=None)
                                       "progress": _gate_progress(cfg, it["campaign"], hold, pool,
                                                                  ledger, now)} if hold else None),
                        "recent_lines": JY.recent_lines(ledger, 3),
-                       "state_age_s": _age(next((e.get("ts") for e in reversed(ledger)
-                                                 if e.get("type") == "transition"
-                                                 and e.get("to") == state), None), now)})
+                       "state_age_s": _age(state_since, now),
+                       # SPEC-0410: the transition into this state, else the last write, else None
+                       "state_since": state_since or st.get("updated_at")})
     conductor.sort(key=lambda c: (not (c["park"] or {}).get("overdue"),
                                   -(c.get("park_age_s") or 0)))
     needs_you.sort(key=lambda c: -(c.get("park_age_s") or 0))

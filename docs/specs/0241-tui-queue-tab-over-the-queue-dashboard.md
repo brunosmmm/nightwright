@@ -1,16 +1,17 @@
 ---
 id: SPEC-0241
 title: "TUI queue tab: live view of the agentic queue with park, resume, prioritize and abandon"
-status: done
+status: superseded
 owner: user
 created: 2026-10-25
-updated: 2026-10-25
+updated: 2026-11-03
 milestone: "M9: agentic workflow"
 kind: feature
 parent: SPEC-0169
 tags: [agentic, tui, queue, textual]
 source_idea: IDEA-037
 depends_on: [SPEC-0185, SPEC-0222]
+superseded_by: SPEC-0410
 ---
 
 ## Context

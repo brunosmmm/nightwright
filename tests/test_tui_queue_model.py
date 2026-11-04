@@ -11,10 +11,10 @@ from nightwright.tui import agentic_model as AM
 
 
 def _by(rows):
-    return {(r.section, r.campaign): r for r in rows}
+    return {(r.group, r.campaign): r for r in rows if r.kind == "campaign"}
 
 
-def test_load_queue_sections_order_and_meta(tmp_path):
+def test_load_queue_groups_order_and_cells(tmp_path):
     repo, cfg, ids = _fixture(tmp_path)
     _campaign(cfg, repo, "SPEC-0001-wait", "WAITING", waiting={"resume_to": "GATING",
                                                                "since": _iso(5)})
@@ -25,62 +25,72 @@ def test_load_queue_sections_order_and_meta(tmp_path):
     _campaign(cfg, repo, "SPEC-0001-pr", "MERGED", created_min=50, updated_min=4,
               close={"mode": "pr", "merged_sha": None, "pr_url": "https://x/pull/7"})
     rows, header = AM.load_queue(cfg)
-    order = []
-    for r in rows:
-        if not order or order[-1] != r.section:
-            order.append(r.section)
-    assert order == ["needs you", "conductor", "active", "waiting", "backlog", "delivered"]
+    assert [r.group for r in rows if r.kind == "header"] == [
+        "needs you", "conductor", "gating", "building", "waiting", "queued", "delivered"]
     by = _by(rows)
-    assert by[("needs you", "SPEC-0001-dirty")].meta.startswith("main_dirty · ")
-    assert by[("backlog", "SPEC-0001-sized")].meta.endswith(" · m/high-end")
-    assert "/" not in by[("backlog", ids["ready"])].meta
-    pr = by[("delivered", "SPEC-0001-pr")]
-    assert pr.meta.startswith("MERGED https://x/pull/7 · $1.25 · ")
+    assert by[("needs you", "SPEC-0001-dirty")].actions == ("resume", "prioritize", "abandon")
     park = by[("conductor", ids["parked"])]
-    assert park.meta.startswith("rate_limited · ") and park.meta.endswith("429 from the API")
+    assert park.why                                        # the payload's why sentence
     assert park.actions == ("resume", "prioritize", "abandon")
-    impl = by[("active", ids["impl"])]
-    assert impl.meta.startswith("IMPLEMENTING · implementer ")
-    assert " · loops 1/" in impl.meta and impl.meta.endswith(" · $1.25")
-    assert impl.title == "Trivial feature" and impl.spec == "SPEC-0001"
-    assert by[("active", ids["gating"])].meta.startswith("GATING · gates · loops")
+    impl = by[("building", ids["impl"])]
+    assert impl.activity.startswith("implementer ") and impl.state == "IMPLEMENTING"
+    assert impl.loops.startswith("1/") and impl.cost_usd == 1.25 and impl.cap_usd == 10.0
+    assert impl.title == "Trivial feature" and impl.spec == "SPEC-0001" and impl.pri == "3"
+    assert impl.time_text and impl.state_since
+    assert by[("gating", ids["gating"])].activity == "gates"
     wait = by[("waiting", "SPEC-0001-wait")]
-    assert wait.meta.endswith("→ GATING") and wait.meta.startswith("waiting ")
-    ready, blocked = by[("backlog", ids["ready"])], by[("backlog", ids["blocked"])]
-    assert " · ready" in ready.meta and ready.meta.startswith("#")
-    assert " p3 " in ready.meta
-    assert "blocked by" in blocked.meta and "SPEC-0009" in blocked.meta
+    assert wait.activity == "waiting for a campaign slot" and wait.time_text.endswith("m")
+    ready, blocked = by[("queued", ids["ready"])], by[("queued", ids["blocked"])]
+    assert ready.why.startswith("ready") and ready.activity == ""
+    assert "SPEC-0009" in blocked.activity and "SPEC-0009" in blocked.why
     merged = by[("delivered", ids["merged"])]
-    assert merged.meta.startswith("MERGED abcdef1 · $1.25 · ") and merged.meta.endswith(" ago")
-    assert merged.actions == ()
+    assert merged.time_text.startswith("finished ") and merged.time_text.endswith(" ago")
+    assert merged.actions == () and merged.pri == ""
+    assert by[("delivered", "SPEC-0001-pr")].state == "MERGED"
     assert header.startswith("runner down · hb -s · slots 1/")      # SPEC-0395: the GATING item holds none
+
+
+def test_view_uses_recent_20_for_delivered(tmp_path, monkeypatch):
+    repo, cfg, ids = _fixture(tmp_path)
+    seen = {}
+    real = Q.dashboard_payload
+
+    def spy(cfg, **kw):
+        seen.update(kw)
+        return real(cfg, **kw)
+    monkeypatch.setattr(Q, "dashboard_payload", spy)
+    AM.load_queue(cfg)
+    assert seen["recent"] == 20
 
 
 def test_load_queue_needs_you_and_overdue(tmp_path):
     repo, cfg, ids = _park_fixture(tmp_path)
-    by = _by(AM.load_queue(cfg)[0])
-    assert by[("needs you", ids["dirty"])].meta.startswith("main_dirty · ")
-    assert by[("needs you", ids["dirty"])].meta.endswith("main_dirty detail")
-    assert by[("conductor", ids["moving"])].meta.endswith(" · overdue")
-    assert not by[("conductor", ids["rebase"])].meta.endswith("overdue")
+    rows = AM.load_queue(cfg)[0]
+    by = _by(rows)
+    assert ("needs you", ids["dirty"]) in by
+    assert by[("conductor", ids["moving"])].why.endswith(" · overdue")
+    assert not by[("conductor", ids["rebase"])].why.endswith("overdue")
+    # parked-at order, so the overdue row does not lead the conductor group
+    cond = [r.campaign for r in rows if r.kind == "campaign" and r.group == "conductor"]
+    assert cond == [ids["rebase"], ids["moving"], ids["req"]]
 
 
 def test_deferred_park_is_listed_twice_and_offers_no_park(tmp_path):
     repo, cfg, ids = _park_fixture(tmp_path)
     rows, _ = AM.load_queue(cfg)
-    keys = [(r.section, r.campaign) for r in rows]
+    keys = [(r.group, r.campaign) for r in rows if r.kind == "campaign"]
     assert len(keys) == len(set(keys))                       # row keys stay unique
-    assert ("conductor", ids["req"]) in keys and ("active", ids["req"]) in keys
+    assert ("conductor", ids["req"]) in keys and ("building", ids["req"]) in keys
     by = _by(rows)
     assert by[("conductor", ids["req"])].actions == ()        # no park, no resume (not PARKED)
-    assert by[("active", ids["req"])].actions == ()
+    assert by[("building", ids["req"])].actions == ()
 
 
 def test_empty_queue_has_one_placeholder_row(tmp_path):
     repo = make_repo(tmp_path)
     cfg = make_cfg(tmp_path, repo, script(tmp_path, [impl_done()]))
     rows, header = AM.load_queue(cfg)
-    assert len(rows) == 1 and rows[0].section == "" and rows[0].meta == "queue is empty"
+    assert len(rows) == 1 and rows[0].kind == "placeholder" and rows[0].title == "queue is empty"
     assert rows[0].actions == () and rows[0].campaign == ""
 
 
@@ -218,11 +228,11 @@ def test_plans_carry_the_keys_the_summary_reads(tmp_path):
             {"prioritize": "priority"}.get(action, action))
 
 
-def test_tui_active_meta_review_chips():                                   # SPEC-0277
+def test_tui_activity_review_chips():                                      # SPEC-0277
     it = {"state": "REVIEWING", "loops": 1, "cost_usd": 1.0, "activity": {"kind": "idle"},
           "reviews": [{"persona": "conformance_reviewer", "status": "pass"},
                       {"persona": "adversarial_reviewer", "status": "fix"},
                       {"persona": "test_reviewer", "status": "running"},
                       {"persona": "extra_reviewer", "status": "not_run"}]}
-    assert " · rev ✓conf ✗adve ▶test ·extr · loops 1" in AM._active_meta(it)
-    assert "rev" not in AM._active_meta({**it, "reviews": []})
+    assert AM.activity_text(it) == "✓conf ✗adve ▶test ·extr"
+    assert AM.activity_text({**it, "reviews": []}) == ""

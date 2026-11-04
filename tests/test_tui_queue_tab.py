@@ -50,9 +50,9 @@ def view(app):
     return app.query_one("#queue-view", QueueView)
 
 
-def select(app, section, campaign):
+def select(app, group, campaign):
     v = view(app)
-    i = next(i for i, r in enumerate(v.rows) if (r.section, r.campaign) == (section, campaign))
+    i = next(i for i, r in enumerate(v.rows) if (r.group, r.campaign) == (group, campaign))
     v.table.move_cursor(row=i)
     return i
 
@@ -183,14 +183,14 @@ def test_state_write_reloads_without_a_key_and_keeps_the_cursor(tmp_path, monkey
         async with app.run_test(size=SIZE) as pilot:
             await settle(app, pilot)
             v = view(app)
-            select(app, "backlog", ids["blocked"])
+            select(app, "queued", ids["blocked"])
             before = v.current_row()
-            assert "p3" in before.meta
+            assert before.pri == "3"
             Q.apply_prioritize(cfg, Q.plan_prioritize(cfg, ids["blocked"], 1))
             await pilot.pause(0.5)
             await settle(app, pilot)
             row = v.current_row()
-            assert row.campaign == ids["blocked"] and "p1" in row.meta
+            assert row.campaign == ids["blocked"] and row.pri == "1"
             assert row.priority == 1
 
     _run(drive())
@@ -310,13 +310,13 @@ def test_the_tab_never_touches_followers(tmp_path, monkeypatch):
             await settle(app, pilot)
             await pilot.press("r")
             await settle(app, pilot)
-            for action, section, cid, keys in (
-                    ("park", "backlog", ids["ready"], ["p", *"why", "enter", "enter"]),
-                    ("prioritize", "backlog", ids["blocked"], ["P", "enter", "escape"]),
-                    ("prioritize", "backlog", ids["blocked"], ["P", "enter", "enter"]),
-                    ("abandon", "backlog", ids["blocked"], ["A", "enter"]),
+            for action, group, cid, keys in (
+                    ("park", "queued", ids["ready"], ["p", *"why", "enter", "enter"]),
+                    ("prioritize", "queued", ids["blocked"], ["P", "enter", "escape"]),
+                    ("prioritize", "queued", ids["blocked"], ["P", "enter", "enter"]),
+                    ("abandon", "queued", ids["blocked"], ["A", "enter"]),
                     ("resume", "conductor", ids["parked"], ["u", "enter", "enter"])):
-                await act(app, pilot, section, cid, keys)
+                await act(app, pilot, group, cid, keys)
             assert not [n for n, k in app.notes if k.get("severity") == "error"]
             assert state_of(cfg, ids["ready"])["state"] == "PARKED"
             assert state_of(cfg, ids["blocked"])["state"] == "ABANDONED"
@@ -334,8 +334,8 @@ async def press(app, pilot, keys):
         await pilot.pause(0.15)
 
 
-async def act(app, pilot, section, cid, keys):
-    select(app, section, cid)
+async def act(app, pilot, group, cid, keys):
+    select(app, group, cid)
     await press(app, pilot, keys)
     await settle(app, pilot)
 
@@ -349,16 +349,16 @@ def test_park_immediate_confirm_cancel_and_esc(tmp_path):
         async with app.run_test(size=SIZE) as pilot:
             await settle(app, pilot)
             before = snapshot(cfg, cid)
-            await act(app, pilot, "backlog", cid, ["p", "escape"])          # esc at the prompt
+            await act(app, pilot, "queued", cid, ["p", "escape"])          # esc at the prompt
             assert snapshot(cfg, cid) == before and len(app.screen_stack) == 1
-            await act(app, pilot, "backlog", cid, ["p", *"nope", "enter", "escape"])  # esc at confirm
+            await act(app, pilot, "queued", cid, ["p", *"nope", "enter", "escape"])  # esc at confirm
             assert snapshot(cfg, cid) == before
-            await act(app, pilot, "backlog", cid, ["p", *"nope", "enter", "j", "enter"])  # cancel
+            await act(app, pilot, "queued", cid, ["p", *"nope", "enter", "j", "enter"])  # cancel
             assert snapshot(cfg, cid) == before
-            await act(app, pilot, "backlog", cid, ["p", "enter"])           # empty reason
+            await act(app, pilot, "queued", cid, ["p", "enter"])           # empty reason
             assert snapshot(cfg, cid) == before
             assert any(k.get("severity") == "error" for _, k in app.notes)
-            await act(app, pilot, "backlog", cid, ["p", *"hold", "enter", "enter"])
+            await act(app, pilot, "queued", cid, ["p", *"hold", "enter", "enter"])
             st = state_of(cfg, cid)
             assert st["state"] == "PARKED" and st["park"]["detail"] == "hold"
             assert (f"park {cid} done", {}) in [(m, {}) for m, _ in app.notes]
@@ -375,8 +375,8 @@ def test_park_confirm_titles_show_the_plan_summary(tmp_path, monkeypatch):
         async with app.run_test(size=SIZE) as pilot:
             await settle(app, pilot)
             with spy_titles() as titles:
-                await act(app, pilot, "backlog", ids["ready"], ["p", *"hold", "enter", "escape"])
-                await act(app, pilot, "active", ids["impl"], ["p", *"later", "enter", "escape"])
+                await act(app, pilot, "queued", ids["ready"], ["p", *"hold", "enter", "escape"])
+                await act(app, pilot, "building", ids["impl"], ["p", *"later", "enter", "escape"])
             ready, impl = (Q.plan_park(cfg, ids[k], "x") for k in ("ready", "impl"))
             assert (ready["mode"], impl["mode"]) == ("immediate", "deferred")
             assert titles == [(f"park {ids['ready']} (immediate): {ready['note']}", ["yes", "cancel"]),
@@ -393,7 +393,7 @@ def test_park_matches_the_cli(tmp_path, monkeypatch):
     async def drive():
         async with app.run_test(size=SIZE) as pilot:
             await settle(app, pilot)
-            await act(app, pilot, "backlog", ids["ready"], ["p", *"same", "enter", "enter"])
+            await act(app, pilot, "queued", ids["ready"], ["p", *"same", "enter", "enter"])
 
     _run(drive())
     assert run_cli(cfg2, monkeypatch, ["queue", "park", ids2["ready"], "--reason", "same",
@@ -410,31 +410,31 @@ def test_deferred_park_notifies_requested_and_the_row_is_listed_twice(tmp_path, 
     async def drive():
         async with app.run_test(size=SIZE) as pilot:
             await settle(app, pilot)
-            await act(app, pilot, "active", cid, ["p", *"later", "enter", "enter"])
+            await act(app, pilot, "building", cid, ["p", *"later", "enter", "enter"])
             st = state_of(cfg, cid)
             assert st["state"] == "IMPLEMENTING" and st["park_requested"]["detail"] == "later"
             assert any(m.startswith(f"park requested for {cid}") for m, _ in app.notes)
             assert not any(m == f"park {cid} done" for m, _ in app.notes)
-            rows = [(r.section, r.campaign) for r in view(app).rows]
-            assert ("conductor", cid) in rows and ("active", cid) in rows
+            rows = [(r.group, r.campaign) for r in view(app).rows]
+            assert ("conductor", cid) in rows and ("building", cid) in rows
             assert len(rows) == len(set(rows))
-            # cursor restore: stays on the same (section, campaign) across a reload
-            select(app, "active", cid)
+            # cursor restore: stays on the same (group, campaign) across a reload
+            select(app, "building", cid)
             idx = view(app).table.cursor_row
             view(app).reload()
             await settle(app, pilot)
             assert view(app).table.cursor_row == idx
-            assert (view(app).current_row().section, view(app).current_row().campaign) == (
-                "active", cid)
+            assert (view(app).current_row().group, view(app).current_row().campaign) == (
+                "building", cid)
             # and a second park is not offered
-            await act(app, pilot, "active", cid, ["p"])
+            await act(app, pilot, "building", cid, ["p"])
             assert any("park not available" in m for m, _ in app.notes)
             assert len(app.screen_stack) == 1
 
     _run(drive())
 
 
-def test_cursor_falls_back_to_the_campaign_when_its_section_goes(tmp_path):
+def test_cursor_falls_back_to_the_campaign_when_its_group_goes(tmp_path):
     repo, cfg, ids = _park_fixture(tmp_path)
     app = _desk(cfg, tab="queue")
 
@@ -449,7 +449,7 @@ def test_cursor_falls_back_to_the_campaign_when_its_section_goes(tmp_path):
             view(app).reload()
             await settle(app, pilot)
             row = view(app).current_row()
-            assert row.campaign == cid and row.section == "active"
+            assert row.campaign == cid and row.group == "building"
 
     _run(drive())
 
@@ -525,11 +525,11 @@ def test_prioritize_picks_a_priority(tmp_path, monkeypatch):
         async with app.run_test(size=SIZE) as pilot:
             await settle(app, pilot)
             before = snapshot(cfg, cid)
-            await act(app, pilot, "backlog", cid, ["P", "escape"])
-            await act(app, pilot, "backlog", cid, ["P", "k", "k", "enter", "j", "enter"])  # cancel
+            await act(app, pilot, "queued", cid, ["P", "escape"])
+            await act(app, pilot, "queued", cid, ["P", "k", "k", "enter", "j", "enter"])  # cancel
             assert snapshot(cfg, cid) == before
             with spy_titles() as titles:
-                await act(app, pilot, "backlog", cid, ["P", "k", "k", "enter", "enter"])
+                await act(app, pilot, "queued", cid, ["P", "k", "k", "enter", "enter"])
             assert titles[-1] == ("priority 3 → 1", ["yes", "cancel"])
 
     _run(drive())
@@ -564,7 +564,7 @@ def test_abandon_without_a_worktree_offers_no_keep_choice(tmp_path):
     async def drive():
         async with app.run_test(size=SIZE) as pilot:
             await settle(app, pilot)
-            await act(app, pilot, "backlog", cid, ["A", "enter"])
+            await act(app, pilot, "queued", cid, ["A", "enter"])
 
     try:
         _run(drive())
@@ -593,7 +593,7 @@ def test_abandon_with_a_worktree_offers_keep(tmp_path, keep):
     async def drive():
         async with app.run_test(size=SIZE) as pilot:
             await settle(app, pilot)
-            await act(app, pilot, "backlog", cid, ["A", *(["j"] if keep else []), "enter"])
+            await act(app, pilot, "queued", cid, ["A", *(["j"] if keep else []), "enter"])
 
     try:
         _run(drive())
@@ -618,8 +618,8 @@ def test_abandon_cancel_writes_nothing(tmp_path):
     async def drive():
         async with app.run_test(size=SIZE) as pilot:
             await settle(app, pilot)
-            await act(app, pilot, "backlog", cid, ["A", "j", "enter"])
-            await act(app, pilot, "backlog", cid, ["A", "escape"])
+            await act(app, pilot, "queued", cid, ["A", "j", "enter"])
+            await act(app, pilot, "queued", cid, ["A", "escape"])
 
     _run(drive())
     assert snapshot(cfg, cid) == before
@@ -633,7 +633,7 @@ def test_a_plan_value_error_is_an_error_notification_and_writes_nothing(tmp_path
     async def drive():
         async with app.run_test(size=SIZE) as pilot:
             await settle(app, pilot)
-            select(app, "backlog", cid)
+            select(app, "queued", cid)
             st = state_of(cfg, cid)                       # the row goes stale under the cursor
             st["state"] = "MERGED"
             S.write_state(cfg, cid, st)
@@ -660,7 +660,7 @@ def test_an_apply_value_error_is_an_error_notification(tmp_path, monkeypatch):
     async def drive():
         async with app.run_test(size=SIZE) as pilot:
             await settle(app, pilot)
-            await act(app, pilot, "backlog", cid, ["P", "k", "enter", "enter"])
+            await act(app, pilot, "queued", cid, ["P", "k", "enter", "enter"])
             assert [m for m, k in app.notes if k.get("severity") == "error"] == ["raced"]
 
     _run(drive())
@@ -682,7 +682,7 @@ def test_an_action_not_allowed_notifies_and_opens_no_prompt(tmp_path):
                 assert app.notes[0][0] == f"{name} not available for MERGED"
                 assert len(app.screen_stack) == 1
             app.notes.clear()
-            await act(app, pilot, "backlog", ids["ready"], ["u"])
+            await act(app, pilot, "queued", ids["ready"], ["u"])
             assert app.notes[0][0] == "resume not available for QUEUED"
             assert snapshot(cfg, ids["merged"]) == before
 
@@ -704,7 +704,7 @@ def test_enter_posts_campaign_selected_and_opens_the_campaign_screen(tmp_path):
     async def drive():
         async with app.run_test(size=SIZE) as pilot:
             await settle(app, pilot)
-            select(app, "backlog", ids["ready"])
+            select(app, "queued", ids["ready"])
             await press(app, pilot, ["enter"])
             await settle(app, pilot)
             # SPEC-0246 replaced the CLI hint with the campaign screen
@@ -727,7 +727,7 @@ def test_an_empty_queue_shows_the_placeholder(tmp_path):
     async def drive():
         async with app.run_test(size=SIZE) as pilot:
             await settle(app, pilot)
-            assert [r.meta for r in view(app).rows] == ["queue is empty"]
+            assert [r.title for r in view(app).rows] == ["queue is empty"]
             await press(app, pilot, ["p", "enter"])     # nothing selectable: no prompt, no crash
             await settle(app, pilot)
             assert len(app.screen_stack) == 1
@@ -816,9 +816,10 @@ def test_titles_render_verbatim(tmp_path, monkeypatch):
             await settle(app, pilot)
             table = view(app).table
             assert app.is_running and table.row_count
-            cells = table.get_row_at(0)
-            assert all(isinstance(c, Text) for c in cells[:5])
-            assert cells[3].plain == title
+            first = next(i for i, r in enumerate(view(app).rows) if r.kind == "campaign")
+            cells = table.get_row_at(first)
+            assert all(isinstance(c, Text) for c in cells)
+            assert cells[2].plain == title
 
     _run(drive())
 
@@ -836,7 +837,7 @@ def test_an_unexpected_action_error_is_an_error_notification(tmp_path, monkeypat
     async def drive():
         async with app.run_test(size=SIZE) as pilot:
             await settle(app, pilot)
-            await act(app, pilot, "backlog", cid, ["P", "k", "enter", "enter"])
+            await act(app, pilot, "queued", cid, ["P", "k", "enter", "enter"])
             assert app.is_running
             errs = [m for m, k in app.notes if k.get("severity") == "error"]
             assert len(errs) == 1 and errs[0].startswith("queue action failed")
@@ -878,7 +879,7 @@ def test_a_value_error_notification_is_escaped(tmp_path, monkeypatch):
     async def drive():
         async with app.run_test(size=SIZE) as pilot:
             await settle(app, pilot)
-            await act(app, pilot, "backlog", cid, ["P", "k", "enter", "enter"])
+            await act(app, pilot, "queued", cid, ["P", "k", "enter", "enter"])
             assert app.is_running
             errs = [m for m, k in app.notes if k.get("severity") == "error"]
             assert errs == [r"bad \[/oops] path"]
