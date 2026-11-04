@@ -775,6 +775,24 @@ def test_an_ungated_spec_review_run_neither_starts_nor_resets_the_backoff(tmp_pa
     assert PG.read_rate_limit(w.cfg) == doc
 
 
+@pytest.mark.parametrize("adopted", [None, {"exited_before_start": True}])
+def test_a_persona_run_with_no_request_still_folds_its_429(tmp_path, monkeypatch, adopted):
+    # a fresh flight or an adopted run may carry no request: the persona is the step's
+    w = _world(tmp_path)
+    limited = _result(tmp_path, status=429, message="API Error: 429 rate limit")
+
+    class Local:
+        def run(self, req):
+            return limited
+
+    monkeypatch.setattr(RPS, "dispatch", lambda *a, **k: None)
+    ctx = Q._Ctx(w.cfg, runner=Local())
+    res = Q._do_persona(ctx, S.read_state(w.cfg, CID), Q.Step("triage", persona="triager"),
+                        "002-triager", None, 1.0, adopted=adopted)
+    assert res.run_result is limited and res.error is None
+    assert PG.backoff_until(w.cfg) is not None and len(_events(w.cfg)) == 1
+
+
 @pytest.fixture
 def rl(tmp_path):
     w = _world(tmp_path)

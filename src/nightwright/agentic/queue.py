@@ -1852,7 +1852,7 @@ def _do_write_spec(ctx: _Ctx, state: dict, step: Step, run_id: str, req,
     try:
         started = time.time()
         res.run_result = rr = _gated_runner(ctx, req).run(req)
-        _note_rate_limit(ctx, state, rr, started, req.persona)      # SPEC-0345
+        _note_rate_limit(ctx, state, rr, started, _run_persona(req, step))      # SPEC-0345
         res.interrupted = ctx.stop.is_set()
         verdict = rr.verdict if isinstance(rr.verdict, dict) else {}
         if res.interrupted or rr.interrupted:
@@ -2080,7 +2080,7 @@ def _do_persona(ctx: _Ctx, state: dict, step: Step, run_id: str, req, budget: fl
         if getattr(outcome, "writeback_failed", False) and rerun_req is not None:
             # SPEC-0345: the remote run's own result counts (a 429 there starts the backoff,
             # which then holds the re-run); the re-run's start is its own
-            _note_rate_limit(ctx, state, outcome, started, req.persona)
+            _note_rate_limit(ctx, state, outcome, started, _run_persona(req, step))
             started = time.time()
             run_id, req, outcome = _rerun_locally(ctx, state, step, run_id, rerun_req, budget,
                                                   outcome, hooks)
@@ -2091,7 +2091,7 @@ def _do_persona(ctx: _Ctx, state: dict, step: Step, run_id: str, req, budget: fl
                 return res
             # a re-run the backoff held never ran: interrupted, whatever the local runner
             detachable = detachable or bool(outcome.interrupted)
-        _note_rate_limit(ctx, state, outcome, started, req.persona)     # SPEC-0345
+        _note_rate_limit(ctx, state, outcome, started, _run_persona(req, step))     # SPEC-0345
         res.run_result = outcome
         res.interrupted = bool(outcome.interrupted) if detachable else ctx.stop.is_set()
         # an adopted run a human moved past (parked, abandoned) is recorded, never committed
@@ -2137,6 +2137,12 @@ def _gated_runner(ctx: _Ctx, req):
         except (OSError, ValueError):
             pass
     return ctx.runner
+
+
+def _run_persona(req, step: Step) -> str | None:
+    """The persona of a run: its request's, else the step's (an adopted or fresh-flight run may
+    carry no request)."""
+    return getattr(req, "persona", None) or step.persona
 
 
 def _note_rate_limit(ctx: _Ctx, state: dict, outcome, started, persona=None) -> None:
@@ -2268,7 +2274,7 @@ def _do_resolve(ctx: _Ctx, state: dict, step: Step, run_id: str, req, budget: fl
         try:
             started = time.time()
             res.run_result = rr = _gated_runner(ctx, req).run(req)
-            _note_rate_limit(ctx, state, rr, started, req.persona)  # SPEC-0345
+            _note_rate_limit(ctx, state, rr, started, _run_persona(req, step))  # SPEC-0345
         except Exception as e:          # a crashing resolver is a failed attempt, not a stuck close
             crash = f"the run raised: {e}"
             res.run_result = rr = _synthetic_failure(crash)

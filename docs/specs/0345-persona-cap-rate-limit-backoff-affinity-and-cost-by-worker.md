@@ -451,6 +451,19 @@ back to local. Stuck detectors skip campaigns held by the gate. Cost attribution
   `python3 tools/spec_lint.py`: exit 0.
 - Full suite left to gating.
 
+### Test record (2026-11-04, gate loop 5)
+
+- The gate failures `test_agentic_adopt.py::test_unrecorded_commit_only_for_adopted` and
+  `test_agentic_index_lock.py::test_fresh_flight_never_calls_the_helper` came from review loop
+  10: `_do_persona` read `req.persona`, and a fresh flight or an adopted run may carry no
+  request. The four `_note_rate_limit` calls now take the persona from `queue._run_persona`
+  (the request's, else the step's).
+- New: `test_a_persona_run_with_no_request_still_folds_its_429` (fresh and adopted, `req=None`):
+  the run does not crash and its 429 starts the backoff. Both cases fail with the fix reverted.
+- `uv run pytest -q -n 4 tests/test_agentic_adopt.py tests/test_agentic_index_lock.py
+  tests/test_remote_persona_limits.py`: 138 passed. The gate's affected set
+  (`tools/affected_tests.py --guards`, run with `-n 6`): 5575 passed, 7 skipped.
+
 ### As shipped (2026-11-02)
 
 - **Waiver (2026-11-03).** The real-persona-campaign-on-box and real-429 manual steps were
