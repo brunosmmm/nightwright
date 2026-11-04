@@ -782,8 +782,10 @@ def test_an_upload_longer_than_the_slot_wait_stays_remote(world, remote, spy):
     """The upload has its own bound (`slot_wait_s` + bytes / `UPLOAD_MIN_BPS`): a bundle that
     takes longer than `slot_wait_s` to send does not fall back as a slot wait."""
     _big_commit(world)
-    world.cfg["agentic"]["workers"] = {"slot_wait_s": 1}
-    remote.register(ssh=_gate_job_variant(remote, "slowup", f'sleep 2; exec {remote.ssh} "$@"'))
+    # the slot wait restarts when the upload ends, so it must cover the worker's own work on the
+    # bundle (a slow box needs >1s); the upload outlasts it by one second
+    world.cfg["agentic"]["workers"] = {"slot_wait_s": 4}
+    remote.register(ssh=_gate_job_variant(remote, "slowup", f'sleep 5; exec {remote.ssh} "$@"'))
     run = G.run_all(world.project, world.state, world.cfg, seq=1)
     assert spy[0]["header"]["bundle_bytes"] > 2 << 20
     assert run.worker == "box" and run.ok and not world.ledger(["worker_failed"])
