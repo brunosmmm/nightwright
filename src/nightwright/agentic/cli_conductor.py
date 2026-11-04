@@ -18,6 +18,7 @@ from ..report import _dump_json
 from . import brief as BR
 from . import conductor_cost as CC
 from . import decisions as D
+from . import events as E
 from . import mvp_report as MVP
 from . import store as S
 
@@ -207,13 +208,18 @@ def attach(queue_group):
     @click.option("--action", default=None, help="what was done")
     @click.option("--by", default="conductor", show_default=True,
                   help="conductor, queue or steward:<P>")
+    @click.option("--no-campaign", is_flag=True,
+                  help="do not infer a campaign from --event or the text")
     @click.pass_obj
-    def queue_decision(cfg, words, kind, rule, event_id, action, by):
+    def queue_decision(cfg, words, kind, rule, event_id, action, by, no_campaign):
         """Record a conductor or queue decision (applies at once, like `nw campaign note`).
-        With CAMPAIGN it also lands as a ledger note; without it, a queue-level decision."""
+        With CAMPAIGN it also lands as a ledger note; without it, the campaign of --event, or
+        the one campaign the text names (SPEC-0431), else a queue-level decision."""
         if not 1 <= len(words) <= 2:
             raise click.UsageError("expected [CAMPAIGN] RATIONALE")
         campaign, rationale = (words[0] if len(words) == 2 else None), words[-1]
+        if campaign and no_campaign:
+            raise click.UsageError("--no-campaign conflicts with an explicit CAMPAIGN")
         if campaign is None:
             try:
                 S.read_state(cfg, rationale)
@@ -223,13 +229,24 @@ def attach(queue_group):
                 raise click.ClickException(
                     f"{rationale!r} is a campaign id, not a rationale; "
                     f"pass the rationale after it: nw queue decision {rationale} … RATIONALE")
+        campaign_from = None
+        if campaign is None and not no_campaign:
+            ev = (E.read_since(cfg, event_id - 1)[:1] if event_id is not None and event_id >= 1
+                  else [])
+            if ev and ev[0].get("id") == event_id and ev[0].get("campaign"):
+                campaign, campaign_from = ev[0]["campaign"], "event"
+            else:
+                campaign = S.sole_campaign_named(cfg, f"{rationale} {action or ''}")
+                campaign_from = "text" if campaign else None
         try:
             rec = D.record(cfg, kind=kind, rule=rule, rationale=rationale, campaign=campaign,
-                           event_id=event_id, action=action, by=by)
+                           event_id=event_id, action=action, by=by, campaign_from=campaign_from)
         except ValueError as e:
             raise click.ClickException(str(e))
         console.print(f"decision #{rec['seq']} {kind} ({rule})"
-                      + (f" on {campaign}" if campaign else ""), highlight=False, markup=False)
+                      + (f" on {campaign}" if campaign else "")
+                      + (f" (campaign inferred from {campaign_from})" if campaign_from else ""),
+                      highlight=False, markup=False)
 
     @queue_group.command("decisions")
     @click.option("--campaign", default=None)

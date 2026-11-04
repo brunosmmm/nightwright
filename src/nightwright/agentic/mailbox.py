@@ -76,8 +76,13 @@ def _last_seq(path: Path) -> int:
     return last
 
 
-def send(cfg, *, to, frm, text, kind="info", campaign=None, re=None, needs_reply=None) -> dict:
-    """Append one message to `to`'s inbox; mirror conductor-bound mail into the event stream."""
+def send(cfg, *, to, frm, text, kind="info", campaign=None, re=None, needs_reply=None,
+         campaign_from=None) -> dict:
+    """Append one message to `to`'s inbox; mirror conductor-bound mail into the event stream.
+    `campaign_from` (SPEC-0431) marks an inferred stamp: `"text"` or `"re"`, only with a campaign."""
+    if campaign_from is not None and (campaign is None or campaign_from not in ("text", "re")):
+        raise ValueError(f"campaign_from {campaign_from!r} needs a campaign and must be "
+                         "'text' or 're'")
     to = validate_address(cfg, to)
     frm = validate_address(cfg, frm)
     if kind not in KINDS:
@@ -92,6 +97,8 @@ def send(cfg, *, to, frm, text, kind="info", campaign=None, re=None, needs_reply
         rec = {"schema": SCHEMA, "id": f"{to}:{seq}", "seq": seq, "ts": store.now_iso(),
                "from": frm, "to": to, "kind": kind, "campaign": campaign, "re": re,
                "text": text, "needs_reply": bool(needs_reply)}
+        if campaign_from:
+            rec["campaign_from"] = campaign_from
         line = (json.dumps(rec, ensure_ascii=False) + "\n").encode("utf-8")
         fd = os.open(path, os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o644)
         try:
@@ -146,6 +153,11 @@ def _all_messages(cfg) -> list[dict]:
                 if isinstance(rec, dict) and rec.get("id"):
                     out.append(rec)
     return out
+
+
+def find_message(cfg, msg_id) -> dict | None:
+    """The message with this id from any inbox (its id `<addr>:<seq>` names the inbox), or None."""
+    return next((m for m in _all_messages(cfg) if m["id"] == msg_id), None)
 
 
 def unanswered(cfg, addr) -> list[dict]:

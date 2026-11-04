@@ -281,3 +281,131 @@ def test_decision_with_only_a_campaign_id_is_rejected(cfg, run):
     assert not D.log_path(cfg).exists()
     r = run("decision", "--kind", "resume", "--rule", "parked.cost_cap", "a plain rationale")
     assert r.exit_code == 0 and D.read(cfg)[0]["campaign"] is None
+
+
+# ---- SPEC-0431: campaign stamps ---------------------------------------------------------------
+
+CA = "SPEC-0001-20261101-abcd"
+CB = "SPEC-0002-20261102-0123"
+
+
+def _dec(run, *words, kind="wait", rule="parked.x", extra=()):
+    return run("decision", "--kind", kind, "--rule", rule, *extra, *words)
+
+
+def test_record_campaign_from_validation(cfg):
+    mk(cfg, "C1")
+    rec = decide(cfg, "C1", campaign_from="text")
+    assert rec["campaign_from"] == "text"
+    assert "campaign_from" not in decide(cfg, "C1")
+    assert decide(cfg, "C1", campaign_from="event")["campaign_from"] == "event"
+    before = D.log_path(cfg).read_bytes()
+    for cid, cf in (("C1", "txt"), ("C1", "re"), (None, "text")):
+        with pytest.raises(ValueError):
+            decide(cfg, cid, campaign_from=cf)
+    assert D.log_path(cfg).read_bytes() == before
+    assert len([e for e in S.read_ledger(cfg, "C1") if e["type"] == "note"]) == 3
+
+
+def test_cli_text_inference_stamps_and_notes(cfg, run):
+    mk(cfg, CA)
+    r = _dec(run, f"waiting on {CA} to land")
+    assert r.exit_code == 0, r.output
+    assert f"on {CA} (campaign inferred from text)" in r.output
+    rec = D.read(cfg)[0]
+    assert rec["campaign"] == CA and rec["spec_id"] == f"SPEC-{CA}"
+    assert rec["campaign_from"] == "text"
+    notes = [e for e in S.read_ledger(cfg, CA) if e["type"] == "note"]
+    assert notes[0]["decision"]["seq"] == rec["seq"]
+
+
+def test_cli_text_inference_from_action_only(cfg, run):
+    mk(cfg, CA)
+    r = _dec(run, "no campaign in the rationale", extra=("--action", f"nudged {CA}"))
+    assert r.exit_code == 0, r.output
+    assert D.read(cfg)[0]["campaign"] == CA
+
+
+def test_cli_explicit_campaign_wins_and_has_no_campaign_from(cfg, run):
+    mk(cfg, CA)
+    mk(cfg, CB)
+    r = _dec(run, CA, f"mentions {CB}")
+    assert r.exit_code == 0, r.output
+    assert "inferred" not in r.output
+    rec = D.read(cfg)[0]
+    assert rec["campaign"] == CA and "campaign_from" not in rec
+    assert not [e for e in S.read_ledger(cfg, CB) if e["type"] == "note"]
+
+
+def test_cli_ambiguous_or_none_is_queue_level(cfg, run):
+    mk(cfg, CA)
+    mk(cfg, CB)
+    assert _dec(run, f"{CA} and {CB}").exit_code == 0
+    assert _dec(run, "no ids at all").exit_code == 0
+    for rec in D.read(cfg):
+        assert rec["campaign"] is None and "campaign_from" not in rec
+    for c in (CA, CB):
+        assert not [e for e in S.read_ledger(cfg, c) if e["type"] == "note"]
+
+
+def test_cli_no_campaign_flag(cfg, run):
+    mk(cfg, CA)
+    r = _dec(run, f"about {CA}", extra=("--no-campaign",))
+    assert r.exit_code == 0, r.output
+    assert D.read(cfg)[0]["campaign"] is None
+    n = len(D.read(cfg))
+    r = _dec(run, CA, "x", extra=("--no-campaign",))
+    assert r.exit_code != 0 and "--no-campaign" in r.output
+    assert len(D.read(cfg)) == n
+
+
+def test_cli_event_campaign_outranks_text(cfg, run):
+    mk(cfg, CA)
+    mk(cfg, CB)
+    E.append(cfg, "message", campaign=CA, by="t",
+             data={"msg_id": "1", "from": "x", "kind": "info", "text": "t"})
+    r = _dec(run, f"this is really about {CB}", extra=("--event", "1"))
+    assert r.exit_code == 0, r.output
+    assert "(campaign inferred from event)" in r.output
+    rec = D.read(cfg)[0]
+    assert rec["campaign"] == CA and rec["campaign_from"] == "event" and rec["event_id"] == 1
+    assert [e for e in S.read_ledger(cfg, CA) if e["type"] == "note"]
+    assert not [e for e in S.read_ledger(cfg, CB) if e["type"] == "note"]
+    # an explicit CAMPAIGN still wins over the event
+    r = _dec(run, CB, "explicit", extra=("--event", "1"))
+    assert r.exit_code == 0, r.output
+    rec = D.read(cfg)[1]
+    assert rec["campaign"] == CB and "campaign_from" not in rec
+
+
+def test_cli_event_without_campaign_falls_through_to_text(cfg, run):
+    mk(cfg, CB)
+    E.append(cfg, "message", by="t", data={"msg_id": "1", "from": "x", "kind": "info",
+                                             "text": "t"})
+    r = _dec(run, f"about {CB}", extra=("--event", "1"))
+    assert r.exit_code == 0, r.output
+    rec = D.read(cfg)[0]
+    assert rec["campaign"] == CB and rec["campaign_from"] == "text"
+
+
+def test_inferred_decision_covers_park_and_dispatch(cfg, clock, run):
+    decide(cfg, None, kind="no_action", rule="wt_broken", why="log starts")
+    mk(cfg, CA)
+    park(cfg, CA)
+    r = _dec(run, f"waiting on {CA}")
+    assert r.exit_code == 0, r.output
+    cov = D.park_coverage(cfg)
+    assert cov["parks"] == 1 and cov["covered"] == 1
+    ev = [e for e in S.read_ledger(cfg, CA) if e["type"] == "park"][0]
+    assert D.covering(cfg, CA, ev["ts"])["campaign_from"] == "text"
+    r = _dec(run, f"dispatch {CA}", kind="dispatch", rule="parked.y")
+    assert r.exit_code == 0, r.output
+    assert [x["campaign"] for x in D.open_dispatches(D.read(cfg))] == [CA]
+
+
+def test_inferred_write_is_append_only(cfg, run):
+    mk(cfg, CA)
+    assert _dec(run, "first, no campaign").exit_code == 0
+    before = D.log_path(cfg).read_bytes()
+    assert _dec(run, f"second {CA}").exit_code == 0
+    assert D.log_path(cfg).read_bytes().startswith(before)

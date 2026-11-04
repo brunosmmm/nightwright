@@ -15,6 +15,7 @@ import datetime as dt
 import fcntl
 import json
 import os
+import re
 import secrets
 import shutil
 import threading
@@ -160,6 +161,27 @@ def new_campaign_id(cfg, spec_id, now=None) -> str:
         if not campaign_dir(cfg, cid).exists():
             return cid
     raise ValueError(f"could not mint a free campaign id for {spec_id}")
+
+
+_CID_RE = re.compile(
+    r"(?<![\w-])[A-Za-z][A-Za-z0-9_]*(?:-[A-Za-z0-9_]+)*-\d{8}-[0-9a-f]{4}(?![\w-])")
+
+
+def sole_campaign_named(cfg, text) -> str | None:
+    """The campaign id `text` names, iff it names exactly one distinct id that resolves to a
+    readable campaign (SPEC-0431). Unknown or unreadable candidates are dropped before counting;
+    zero or two-or-more survivors give None. Pure read; never raises."""
+    try:
+        found = []
+        for cid in dict.fromkeys(_CID_RE.findall(text or "")):
+            try:
+                read_state(cfg, cid)
+            except (ValueError, OSError):
+                continue
+            found.append(cid)
+        return found[0] if len(found) == 1 else None
+    except Exception:
+        return None
 
 
 def create_campaign(cfg, state: dict, *, by="human") -> Path:

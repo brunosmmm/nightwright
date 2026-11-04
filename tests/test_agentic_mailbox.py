@@ -222,3 +222,104 @@ def test_cli_follow_no_code_watch(tmp_path, monkeypatch):
     r = _invoke(cfg, ["mailbox", "follow", "--to", "human", "--no-code-watch"])
     assert r.exit_code == 0, r.output
     assert seen[-1]["code_root"] is None
+
+
+# ---- SPEC-0431: campaign stamps ----------------------------------------------------------------
+
+CA = "SPEC-0001-20261101-abcd"
+CB = "SPEC-0002-20261102-0123"
+
+
+def _mk(cfg, cid):
+    from nightwright.agentic import store as S
+    S.create_campaign(cfg, {"id": cid, "spec_id": cid[:9], "project": "Demo", "kind": "spec",
+                            "state": "IMPLEMENTING", "counters": {}})
+
+
+def _send(cfg, *args):
+    return _invoke(cfg, ["mailbox", "send", "--from", "steward:Demo", "--json", *args])
+
+
+def test_send_campaign_from_envelope(tmp_path):
+    cfg = _cfg(tmp_path)
+    plain = M.send(cfg, to="conductor", frm="human", text="x")
+    assert "campaign_from" not in plain
+    stamped = M.send(cfg, to="conductor", frm="human", text="x", campaign="C1",
+                     campaign_from="re")
+    assert stamped["campaign_from"] == "re"
+    before = M._inbox_path(cfg, "conductor").read_bytes()
+    for camp, cf in (("C1", "txt"), ("C1", "event"), (None, "text")):
+        with pytest.raises(ValueError):
+            M.send(cfg, to="conductor", frm="human", text="y", campaign=camp, campaign_from=cf)
+    assert M._inbox_path(cfg, "conductor").read_bytes() == before
+
+
+def test_cli_send_text_inference_and_output(tmp_path):
+    cfg = _cfg(tmp_path)
+    _mk(cfg, CA)
+    _mk(cfg, CB)
+    rec = json.loads(_send(cfg, "--to", "conductor", f"about {CA}").output)
+    assert rec["campaign"] == CA and rec["campaign_from"] == "text"
+    ev = [e for e in E.read_since(cfg, 0) if e["type"] == "message"][-1]
+    assert ev["campaign"] == CA and ev["spec_id"] == CA[:9] and ev["project"] == "Demo"
+    r = _invoke(cfg, ["mailbox", "send", "--from", "steward:Demo", "--to", "conductor",
+                      f"about {CA}"])
+    assert r.exit_code == 0 and f"[{CA}, inferred from text]" in r.output
+    r = _invoke(cfg, ["mailbox", "send", "--from", "steward:Demo", "--to", "conductor", "hi"])
+    assert "inferred" not in r.output
+    # explicit --campaign: stored as given, no campaign_from; ambiguous text: no stamp
+    rec = json.loads(_send(cfg, "--to", "conductor", "--campaign", CB, f"about {CA}").output)
+    assert rec["campaign"] == CB and "campaign_from" not in rec
+    rec = json.loads(_send(cfg, "--to", "conductor", f"{CA} and {CB}").output)
+    assert rec["campaign"] is None and "campaign_from" not in rec
+
+
+def test_cli_send_no_campaign_flag(tmp_path):
+    cfg = _cfg(tmp_path)
+    _mk(cfg, CA)
+    rec = json.loads(_send(cfg, "--to", "conductor", "--no-campaign", f"about {CA}").output)
+    assert rec["campaign"] is None and "campaign_from" not in rec
+    n = len(M.read_inbox(cfg, "conductor"))
+    r = _send(cfg, "--to", "conductor", "--no-campaign", "--campaign", CA, "x")
+    assert r.exit_code != 0 and "--no-campaign" in r.output
+    assert len(M.read_inbox(cfg, "conductor")) == n
+
+
+def test_cli_send_re_inherits_campaign_from_sender_inbox(tmp_path):
+    cfg = _cfg(tmp_path)
+    _mk(cfg, CA)
+    _mk(cfg, CB)
+    q = M.send(cfg, to="conductor", frm="steward:Demo", text="question", kind="question",
+               campaign=CA)
+    # the conductor answers: the replied-to message sits in the sender's own inbox
+    r = _invoke(cfg, ["mailbox", "send", "--from", "conductor", "--to", "steward:Demo",
+                      "--kind", "answer", "--re", q["id"], "--json", "no ids here"])
+    rec = json.loads(r.output)
+    assert rec["campaign"] == CA and rec["campaign_from"] == "re"
+    # --re outranks conflicting text
+    rec = json.loads(_send(cfg, "--to", "conductor", "--re", q["id"], f"about {CB}").output)
+    assert rec["campaign"] == CA and rec["campaign_from"] == "re"
+    # explicit --campaign outranks --re
+    rec = json.loads(_send(cfg, "--to", "conductor", "--re", q["id"], "--campaign", CB,
+                           "x").output)
+    assert rec["campaign"] == CB and "campaign_from" not in rec
+
+
+def test_cli_send_unknown_re_falls_through_to_text(tmp_path):
+    cfg = _cfg(tmp_path)
+    _mk(cfg, CA)
+    r = _send(cfg, "--to", "conductor", "--re", "conductor:99", f"about {CA}")
+    assert r.exit_code == 0, r.output
+    rec = json.loads(r.output)
+    assert rec["campaign"] == CA and rec["campaign_from"] == "text"
+    rec = json.loads(_send(cfg, "--to", "conductor", "--re", "nope:1", "plain").output)
+    assert rec["campaign"] is None
+
+
+def test_cli_send_is_append_only(tmp_path):
+    cfg = _cfg(tmp_path)
+    _mk(cfg, CA)
+    _send(cfg, "--to", "conductor", "first")
+    before = M._inbox_path(cfg, "conductor").read_bytes()
+    _send(cfg, "--to", "conductor", f"second {CA}")
+    assert M._inbox_path(cfg, "conductor").read_bytes().startswith(before)

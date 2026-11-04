@@ -67,7 +67,7 @@ scraping tables. Shapes below are illustrative — fields evolve; trust the live
 | `nw.event.v1` | `nw queue events --follow --for READER` (one per line) | `{schema, id, ts, type, campaign, spec_id, project, by, data:{…}}` — parks, merges, failed runs, watchdog signals (`backlog_blocked_long`, `state_stuck`, `ready_not_admitted`), the periodic `conductor_ping` digest (SPEC-0212), mail (SPEC-0181) |
 | `nw.events.v1` | `nw queue events [--since ID] [--tail N]` | `{schema, events:[nw.event.v1…]}` |
 | `nw.conduct.status.v1` | `nw queue conduct-status --json` | `{schema, lease, slots, conductor_pid, counts, parked[], active[], unanswered_mail[], recent_events[]}` (SPEC-0182) |
-| `nw.message.v1` | `nw mailbox follow --to ADDR` (one per line) / `nw mailbox send --json` | `{schema, id, seq, ts, from, to, kind, campaign, re, text, needs_reply}` (SPEC-0183) |
+| `nw.message.v1` | `nw mailbox follow --to ADDR` (one per line) / `nw mailbox send --json` | `{schema, id, seq, ts, from, to, kind, campaign, re, text, needs_reply}` (SPEC-0183); optional `campaign_from` (`"text"` or `"re"`) when `send` inferred the campaign (SPEC-0431) |
 | `nw.mailbox.list.v1` | `nw mailbox list --to ADDR --json` | `{schema, to, messages:[nw.message.v1…]}` |
 
 Example (hub triage):

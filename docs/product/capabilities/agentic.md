@@ -736,6 +736,16 @@ event fires.
 (question / answer / request / info), `campaign` and `re` threading. Messages to the
 conductor also appear in its event stream, so one Monitor wakes it for both.
 
+Campaign stamps (SPEC-0431): without `--campaign`, `nw mailbox send` stamps the campaign of
+the `--re` message (found in any inbox), else the one existing campaign id its text names;
+two or more, or none, leave `campaign` null. An inferred stamp adds `campaign_from`
+(`"re"` or `"text"`) to the envelope; explicit and absent stamps carry none.
+`--no-campaign` skips inference (and conflicts with `--campaign`). `nw queue decision`
+infers the same way: without CAMPAIGN it uses the campaign of the `--event` queue event,
+else the one campaign its rationale and `--action` name, recording `campaign_from`
+(`"event"` or `"text"`) and treating the decision exactly like an explicit campaign (ledger
+note, park coverage); it takes `--no-campaign` too. Old records are never rewritten.
+
 ## Conductor
 
 `/nw-conduct` (SPEC-0182) turns a session into the **conductor**: it arms a Monitor (Claude

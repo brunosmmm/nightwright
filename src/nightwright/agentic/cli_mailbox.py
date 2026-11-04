@@ -11,6 +11,7 @@ from .. import render as R
 from ..console import console
 from ..report import _dump_json
 from . import mailbox as M
+from . import store as S
 
 
 @C._soft
@@ -38,25 +39,43 @@ def mailbox_group():
 @click.option("--kind", type=click.Choice(M.KINDS), default="info", show_default=True)
 @click.option("--campaign", default=None, shell_complete=C.complete_campaign_id,
               help="campaign this message is about")
+@click.option("--no-campaign", is_flag=True,
+              help="do not infer a campaign from --re or the text")
 @click.option("--re", "re_", default=None, help="message id this replies to")
 @click.option("--no-reply", is_flag=True, help="no reply expected (default for answer/info)")
 @click.option("--json", "as_json", is_flag=True, help="emit the nw.message.v1 envelope")
 @click.argument("text", nargs=-1, required=True)
 @click.pass_obj
-def mailbox_send(cfg, to, frm, kind, campaign, re_, no_reply, as_json, text):
-    """Append a message to TO's inbox (mail to the conductor also wakes its event stream)."""
+def mailbox_send(cfg, to, frm, kind, campaign, no_campaign, re_, no_reply, as_json, text):
+    """Append a message to TO's inbox (mail to the conductor also wakes its event stream).
+    Without --campaign the campaign of the --re message, or the one campaign the text names, is
+    stamped (SPEC-0431); --no-campaign skips that."""
     frm = frm or os.environ.get("NW_MAILBOX_ADDR")
     if not frm:
         raise click.UsageError("sender required: pass --from or set NW_MAILBOX_ADDR")
+    if campaign and no_campaign:
+        raise click.UsageError("--no-campaign conflicts with --campaign")
+    body = " ".join(text)
+    campaign_from = None
+    if not campaign and not no_campaign:
+        replied = M.find_message(cfg, re_) if re_ else None
+        if replied and replied.get("campaign"):
+            campaign, campaign_from = replied["campaign"], "re"
+        else:
+            campaign = S.sole_campaign_named(cfg, body)
+            campaign_from = "text" if campaign else None
     try:
-        rec = M.send(cfg, to=to, frm=frm, text=" ".join(text), kind=kind, campaign=campaign,
-                     re=re_, needs_reply=False if no_reply else None)
+        rec = M.send(cfg, to=to, frm=frm, text=body, kind=kind, campaign=campaign,
+                     re=re_, needs_reply=False if no_reply else None,
+                     campaign_from=campaign_from)
     except ValueError as e:
         raise click.ClickException(str(e))
     if as_json:
         _dump_json(rec)
         return
-    console.print(f"[green]✓[/] {rec['id']}  {rec['kind']} → {rec['to']}", highlight=False)
+    console.print(f"[green]✓[/] {rec['id']}  {rec['kind']} → {rec['to']}"
+                  + (f" \\[{campaign}, inferred from {campaign_from}]" if campaign_from else ""),
+                  highlight=False)
 
 
 @mailbox_group.command("follow")

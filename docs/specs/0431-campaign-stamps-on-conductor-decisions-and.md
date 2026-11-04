@@ -1,7 +1,7 @@
 ---
 id: SPEC-0431
 title: "Campaign stamps on conductor decisions and mailbox messages"
-status: accepted
+status: done
 owner: user
 created: 2026-11-04
 updated: 2026-11-04
@@ -161,38 +161,38 @@ except that they now gain a stamp when the text names exactly one existing campa
 
 ## Acceptance criteria
 
-- [ ] `store.sole_campaign_named(cfg, text)` returns the id when the text contains exactly one
+- [x] `store.sole_campaign_named(cfg, text)` returns the id when the text contains exactly one
   distinct existing campaign id (including when it is repeated), and `None` for no match, for
   two or more distinct existing matches, for a well-formed id with no `state.json`, and for a
   match embedded in a longer token (e.g. `x-<cid>y`).
-- [ ] `nw queue decision KIND/RULE "… <cid> …"` with no CAMPAIGN argument writes a
+- [x] `nw queue decision KIND/RULE "… <cid> …"` with no CAMPAIGN argument writes a
   `decisions.jsonl` record with `campaign=<cid>`, the campaign's `spec_id` and
   `campaign_from: "text"`, and appends the ledger `note` carrying the decision seq.
-- [ ] With an explicit CAMPAIGN argument the record is unchanged from today (no
+- [x] With an explicit CAMPAIGN argument the record is unchanged from today (no
   `campaign_from`), even when the rationale names a different campaign.
-- [ ] A rationale naming two distinct existing campaigns, or none, yields `campaign: null` and
+- [x] A rationale naming two distinct existing campaigns, or none, yields `campaign: null` and
   no ledger note.
-- [ ] `nw mailbox send` with no `--campaign` and text naming exactly one existing campaign
+- [x] `nw mailbox send` with no `--campaign` and text naming exactly one existing campaign
   stores `campaign=<cid>` and `campaign_from: "text"`; with `--campaign` it stores the given
   value and no `campaign_from`.
-- [ ] `nw queue decision --event N` without CAMPAIGN, where queue event N has campaign A,
+- [x] `nw queue decision --event N` without CAMPAIGN, where queue event N has campaign A,
   stores `campaign=A` and `campaign_from: "event"`, even when the rationale names a different
   existing campaign B (no ledger note is written to B); an explicit CAMPAIGN still wins, and an
   event with no `campaign` falls through to text inference.
-- [ ] `nw mailbox send --re <id>` where the replied-to message has a campaign and the text names
+- [x] `nw mailbox send --re <id>` where the replied-to message has a campaign and the text names
   none stores that campaign with `campaign_from: "re"`, including when the replied-to message
   sits in the sender's inbox rather than the recipient's (reply `--to steward:P --re
   conductor:N` to a message that was sent to `conductor`); an explicit `--campaign` still wins,
   and an `--re` naming no existing message is not an error and falls through to text.
-- [ ] `--no-campaign` on either command suppresses inference and stores `campaign: null`;
+- [x] `--no-campaign` on either command suppresses inference and stores `campaign: null`;
   combining it with an explicit campaign is a usage error with nothing written.
-- [ ] A stamped conductor-bound message's mirrored `message` queue event carries the stamped
+- [x] A stamped conductor-bound message's mirrored `message` queue event carries the stamped
   `campaign`, `spec_id` and `project`.
-- [ ] An inferred decision counts for `decisions.covering`, `match_parks` and
+- [x] An inferred decision counts for `decisions.covering`, `match_parks` and
   `open_dispatches` of the stamped campaign exactly like an explicit one.
-- [ ] Existing lines in `decisions.jsonl` and inbox files are byte-identical after the new
+- [x] Existing lines in `decisions.jsonl` and inbox files are byte-identical after the new
   writes (append-only), and records without `campaign_from` still parse in every reader.
-- [ ] The agent-surface and agentic capability docs describe `campaign_from`, the inference
+- [x] The agent-surface and agentic capability docs describe `campaign_from`, the inference
   rule and `--no-campaign`.
 
 ## Test plan
@@ -230,6 +230,28 @@ except that they now gain a stamp when the text names exactly one existing campa
   commands with an explicit campaign or text naming no campaign produce byte-identical records
   to before.
 
+### Test record (2026-11-04)
+
+- New `tests/test_agentic_store_campaign_named.py` (helper cases incl. unreadable `state.json`),
+  extended `tests/test_agentic_decisions.py` and `tests/test_agentic_mailbox.py` (keyword
+  validation, text / `--event` / `--re` (reply to the original sender, unknown `--re`,
+  `--re` over conflicting text, explicit over `--re`) inference, `--no-campaign`, usage error,
+  mirrored event campaign, human output suffix, park coverage / dispatch, append-only).
+- Ran all test files mentioning mailbox / decisions / conductor (71 files, incl. the TUI mailbox
+  and park-decision tests): 2318 passed, 6 skipped. `python3 tools/spec_lint.py` OK, ledger
+  regenerated. `affected_tests.py` selects nearly the whole suite (core `store.py` changed), so
+  the remainder of the full suite is left to gating.
+- Manual verification against a scratch data dir was covered by the CliRunner tests on tmp data
+  dirs (same commands and assertions), not by a separate shell session.
+
+### As shipped (2026-11-04)
+
+- Added `mailbox.find_message(cfg, id)` (any-inbox lookup via `_all_messages`) for `--re`.
+- Human output of `nw mailbox send` appends ` [<cid>, inferred from text|re]`; `nw queue decision`
+  appends ` (campaign inferred from text|event)`.
+- `--event N` campaign lookup reads queue event N through `events.read_since`; a missing event
+  still fails in `decisions.record`'s existing `event_id` validation.
+
 ## Rollout / migration
 
 1. Land `store.sole_campaign_named`, the `campaign_from` keywords and the two CLI changes with
@@ -242,11 +264,11 @@ except that they now gain a stamp when the text names exactly one existing campa
 
 ## Definition of done
 
-- [ ] Acceptance criteria all met.
-- [ ] Test plan executed; affected automated tests pass; manual steps performed.
-- [ ] No regressions.
-- [ ] Spec body updated to match what shipped.
-- [ ] `docs/LEDGER.md` updated (status + date).
+- [x] Acceptance criteria all met.
+- [x] Test plan executed; affected automated tests pass; manual steps performed.
+- [x] No regressions.
+- [x] Spec body updated to match what shipped.
+- [x] `docs/LEDGER.md` updated (status + date).
 
 ## Open questions
 

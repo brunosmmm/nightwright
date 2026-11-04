@@ -113,12 +113,16 @@ def covering(cfg, campaign, park_ts) -> dict | None:
 
 
 def record(cfg, *, kind, rule, rationale, campaign=None, event_id=None, action=None,
-           by="conductor") -> dict:
+           by="conductor", campaign_from=None) -> dict:
     """Validate, then append one decision. With a campaign the ledger note is appended first;
     the `decisions.jsonl` line follows only if that succeeded, so a failure leaves at most a plain
     note. The next `seq` is reserved under the log's flock before the note is written (the note
-    carries it). ValueError on any bad argument, with nothing written."""
+    carries it). ValueError on any bad argument, with nothing written. `campaign_from`
+    (SPEC-0431) marks an inferred stamp: `"text"` or `"event"`, only with a campaign."""
     validate_request(kind, rule, rationale, by)
+    if campaign_from is not None and (campaign is None or campaign_from not in ("text", "event")):
+        raise ValueError(f"campaign_from {campaign_from!r} needs a campaign and must be "
+                         "'text' or 'event'")
     rationale = rationale.strip()
     spec_id = None
     if campaign is not None:
@@ -141,6 +145,8 @@ def record(cfg, *, kind, rule, rationale, campaign=None, event_id=None, action=N
         rec = {"schema": SCHEMA, "seq": seq, "ts": store.now_iso(), "by": by,
                "campaign": campaign, "spec_id": spec_id, "event_id": event_id, "rule": rule,
                "kind": kind, "action": action, "rationale": rationale}
+        if campaign_from:
+            rec["campaign_from"] = campaign_from
         with open(path, "a", encoding="utf-8") as f:
             f.write(json.dumps(rec, ensure_ascii=False) + "\n")
     finally:
