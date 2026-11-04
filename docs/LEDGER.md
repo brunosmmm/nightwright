@@ -247,6 +247,8 @@ progress. This is the single place to see *what has been decided* and *what is i
   - [x] [SPEC-0364](./specs/0364-herdr-run-panes-one-pane-per-active-campaign-in.md) herdr run panes: one pane per active campaign in an nw runs tab, running nw campaign tail, agent state + display agent — superseded
   - [x] [SPEC-0365](./specs/0365-herdr-watcher-auto-start-the-conductor-follower.md) herdr watcher auto-start: the conductor follower supervises nw herdr watch — done
   - [x] [SPEC-0366](./specs/0366-herdr-run-tabs-one-tab-per-campaign-named-after.md) herdr run tabs: one tab per campaign named after the work, supersedes the shared nw runs tab — done
+- **[SPEC-0400](./specs/0400-remote-web-dashboard-live-view-of-active-queue.md) — Remote web dashboard and decisions inbox over Tailscale (nw serve --dashboard)** · accepted · (0/0 done)
+  - _(no child specs yet)_
 
 ## Active & planned
 
@@ -266,6 +268,7 @@ progress. This is the single place to see *what has been decided* and *what is i
 | [SPEC-0368](./specs/0368-remote-gating-red-on-current-trees-human-visible.md) | Remote gates gate a stat-dirty tree at HEAD instead of falling back, and expose done.changed on the run | feature | in-progress | — | 2026-11-02 |
 | [SPEC-0391](./specs/0391-worker-host-slots-from-registry.md) | A gate job carries the worker's registry slots as the worker host's slot limit | feature | in-progress | — | 2026-11-02 |
 | [SPEC-0394](./specs/0394-declared-persona-run-settings-routing-and-requests.md) | Declared personas: run settings, reviewer routing metadata and run requests (rework of SPEC-0296 on the persona registry) | feature | accepted | M9: agentic workflow | 2026-11-02 |
+| [SPEC-0400](./specs/0400-remote-web-dashboard-live-view-of-active-queue.md) | Remote web dashboard and decisions inbox over Tailscale (nw serve --dashboard) | epic | accepted | M9: agentic workflow | 2026-11-03 |
 
 ## Done
 
