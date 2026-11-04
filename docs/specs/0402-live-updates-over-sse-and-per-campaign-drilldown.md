@@ -9,6 +9,7 @@ milestone: "M9: agentic workflow"
 source_idea: IDEA-876
 kind: feature
 parent: SPEC-0400
+depends_on: [SPEC-0401]
 tags: [agentic, dashboard, remote, sse, web]
 ---
 
@@ -73,6 +74,8 @@ background connections, so reconnect has to be a first-class path rather than an
 - Service worker, push, and the systemd unit (children 4 and 5).
 
 ## Decision
+
+This spec builds on SPEC-0401's server, snapshot cache and auth gates, and implementation must not start before SPEC-0401 is done.
 
 1. **One shared fan-out, no per-client work.** A `Hub` in
    `src/nightwright/agentic/dashboard/stream.py` sits on child 1's snapshot cache. A single
