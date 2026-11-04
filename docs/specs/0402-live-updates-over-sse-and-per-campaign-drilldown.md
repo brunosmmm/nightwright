@@ -344,6 +344,37 @@ unticked and the status stays `in-progress`.
   `refresh_s` slice) so the slot is freed and the snapshotter stops promptly instead of at the
   next heartbeat write; the spec's "gone within `2 × refresh_s`" needs this.
 
+### Test record (2026-11-04, round 2)
+
+Ran `uv run pytest -q tests/test_dashboard_stream.py` (19 passed) and, with the related dashboard
+tests (`test_dashboard_e2e`, `_server`, `_http_readonly`, `_imports`, `_readonly`, `_serve_cli`,
+`_auth`, `_cache`), all green. Mutation-checked: dropping the stream's `settimeout(send_timeout_s)`
+fails the backpressure test, and dropping the `try/except` in `Hub._run` fails the new
+snapshotter-resilience test. The full suite is left to gating.
+
+New in this round: the backpressure test now measures from the first blocked event write (a spy on
+`write_event`) and requires the drop within `send_timeout_s` + 2 s; a builder that fails for a few
+ticks and then recovers (the snapshotter survives, the client gets the later event, one stderr
+line); N = 1 vs N = 8 build and watermark-check counts compared in one test; thread-exit bound
+tightened to `2 × refresh_s + 0.5`; `max_clients` set through the seeded config; `server_close()`
+ends open streams and frees their slots; auth re-check on a stream whose snapshots arrive faster
+than the heartbeat; a stale initial offer cannot replace a newer delivered snapshot.
+
+Still not done, because the code they test does not exist on this branch or on `main` (SPEC-0414
+shipped a loopback server only: no tailnet bind, no whois, no `static/` page): the fake-`tailscale`
+whois test, the Node check of the page's SSE parser, `tests/test_dashboard_mobile.py`, the manual
+phone steps. This host also has no Chromium/Chrome (only Firefox, which has no `--dump-dom`).
+Acceptance criteria 6 and 7 stay unticked and the status stays `in-progress`.
+
+### As shipped (2026-11-04, round 2)
+
+- `_Handler._stream` re-runs `stream_auth_ok` on its own `last_auth` clock every `heartbeat_s`,
+  before writing, whether the iteration carries a snapshot or a heartbeat; a busy queue can no
+  longer starve the revocation check.
+- `Subscriber.offer(snap, initial=True)` (the subscribe-time cache read) is ignored once the
+  snapshotter has delivered something; the snapshotter's repeated identical stderr error is
+  logged at most once per 60 s (`ERROR_LOG_EVERY_S`).
+
 ## Rollout / migration
 
 1. Land after child 1 of SPEC-0400 (the server, auth and snapshot cache). Reconcile the cache

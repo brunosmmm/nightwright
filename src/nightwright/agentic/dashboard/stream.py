@@ -11,11 +11,13 @@ import select
 import socket
 import sys
 import threading
+import time
 
 HEARTBEAT_S = 15.0              # a `: hb` comment this often (tests inject a shorter one)
 SEND_TIMEOUT_S = 10.0           # a client whose socket stays unwritable this long is dropped
 RETRY_MS = 3000
 DEFAULT_MAX_CLIENTS = 8
+ERROR_LOG_EVERY_S = 60.0        # the same snapshotter error is logged at most this often
 
 
 def max_clients(cfg) -> int:
@@ -90,12 +92,18 @@ class Subscriber:
     def __init__(self, known_rev):
         self.rev = known_rev            # the rev last handed to this client (or that it holds)
         self.box = None
+        self.offered = False            # the snapshotter has handed over something
         self.closed = False
         self.event = threading.Event()
         self._lock = threading.Lock()
 
-    def offer(self, snap: dict) -> None:
+    def offer(self, snap: dict, *, initial: bool = False) -> None:
+        """Hand over `snap`. An `initial` one (read from the cache on subscribe) never replaces
+        what the snapshotter already delivered: that is at least as new."""
         with self._lock:
+            if initial and self.offered:
+                return
+            self.offered = self.offered or not initial
             if snap["rev"] == self.rev:
                 return
             self.rev, self.box = snap["rev"], snap
@@ -125,6 +133,7 @@ class Hub:
         self._stop = None               # the running snapshotter's own stop event
         self._thread = None
         self._last_rev = None
+        self._last_err = (None, 0.0)    # (message, when) of the last logged snapshotter error
 
     def subscribe(self, known_rev=None):
         """A `Subscriber` whose mailbox already holds the current snapshot unless it is
@@ -141,7 +150,7 @@ class Hub:
                 self._last_rev = None
                 self._thread.start()
         try:
-            sub.offer(self.cache.get())     # not a forced rebuild: the cache decides
+            sub.offer(self.cache.get(), initial=True)     # not a forced rebuild: the cache decides
         except BaseException:
             self.unsubscribe(sub)
             raise
@@ -168,7 +177,7 @@ class Hub:
             try:
                 snap = self.cache.get()
             except Exception as e:              # noqa: BLE001 - retry next tick, never die
-                print(f"nw dashboard: snapshot failed: {type(e).__name__}: {e}", file=sys.stderr)
+                self._log_error(f"{type(e).__name__}: {e}")
                 continue
             with self._lock:
                 if stop.is_set():
@@ -180,6 +189,15 @@ class Hub:
                 subs = list(self._subs)
             for s in subs:
                 s.offer(snap)
+
+    def _log_error(self, msg: str) -> None:
+        """To stderr; a repeat of the same message is held back for `ERROR_LOG_EVERY_S`."""
+        now = time.monotonic()
+        last_msg, at = self._last_err
+        if msg == last_msg and now - at < ERROR_LOG_EVERY_S:
+            return
+        self._last_err = (msg, now)
+        print(f"nw dashboard: snapshot failed: {msg}", file=sys.stderr)
 
     @property
     def thread_alive(self) -> bool:

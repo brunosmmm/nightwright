@@ -39,7 +39,7 @@ class DashboardServer(http.server.ThreadingHTTPServer):
         self.hub = ST.Hub(cache, ST.SlotPool(ST.max_clients(cfg)))
         self.heartbeat_s = ST.HEARTBEAT_S       # stream knobs: tests inject shorter ones
         self.send_timeout_s = ST.SEND_TIMEOUT_S
-        self.stream_auth_ok = lambda handler: True   # re-run on each heartbeat; the tailnet
+        self.stream_auth_ok = lambda handler: True   # re-run every heartbeat_s; the tailnet
         #                                              slice plugs its whois check in here
         self._body = None
         self._body_lock = threading.Lock()
@@ -189,8 +189,9 @@ class _Handler(http.server.BaseHTTPRequestHandler):
 
     def _stream(self, known_rev):
         """SSE: the snapshot on connect (unless `?rev=` is current), then on each `rev` change,
-        and a `: hb` comment every `heartbeat_s`. Ends on any socket error, an auth denial or
-        server close; the slot is always released."""
+        and a `: hb` comment every `heartbeat_s`. `stream_auth_ok` is re-run every `heartbeat_s`
+        whatever else was written. Ends on any socket error, an auth denial or server close; the
+        slot is always released."""
         srv = self.server
         try:
             sub = srv.hub.subscribe(known_rev)
@@ -210,9 +211,15 @@ class _Handler(http.server.BaseHTTPRequestHandler):
             self.end_headers()
             ST.write_retry(self.wfile)
             slice_s = max(0.01, min(srv.heartbeat_s, srv.hub.refresh_s))
-            last_write = time.monotonic()
+            last_write = last_auth = time.monotonic()
             while not sub.closed:
                 snap = sub.take(slice_s)
+                if time.monotonic() - last_auth >= srv.heartbeat_s:
+                    # on its own clock, so a busy queue (a snapshot every few seconds, each
+                    # resetting `last_write`) cannot starve the revocation check
+                    last_auth = time.monotonic()
+                    if not srv.stream_auth_ok(self):
+                        break
                 if snap is not None:
                     rev, data = srv.encode(snap)
                     ST.write_event(self.wfile, "snapshot", rev, data)
@@ -222,8 +229,6 @@ class _Handler(http.server.BaseHTTPRequestHandler):
                 elif time.monotonic() - last_write >= srv.heartbeat_s:
                     ST.write_comment(self.wfile, "hb")
                     last_write = time.monotonic()
-                    if not srv.stream_auth_ok(self):
-                        break
         except OSError:
             pass
         finally:
