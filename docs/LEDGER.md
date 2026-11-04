@@ -281,6 +281,7 @@ progress. This is the single place to see *what has been decided* and *what is i
 | [SPEC-0391](./specs/0391-worker-host-slots-from-registry.md) | A gate job carries the worker's registry slots as the worker host's slot limit | feature | in-progress | — | 2026-11-02 |
 | [SPEC-0400](./specs/0400-remote-web-dashboard-live-view-of-active-queue.md) | Remote web dashboard and decisions inbox over Tailscale (nw serve --dashboard) | epic | accepted | M9: agentic workflow | 2026-11-03 |
 | [SPEC-0405](./specs/0405-rich-queue-tui-prioritized-live-queue-campaign.md) | Rich queue TUI: prioritized live queue, campaign detail popup, closed-campaign history and a cross-campaign findings and decisions browser over one shared history layer | epic | accepted | — | 2026-11-03 |
+| [SPEC-0418](./specs/0418-dashboard-server-serves-the-phone-page-route-get.md) | Dashboard server serves the phone page: GET / /app.js /app.css through assets.ROUTES, bearer-exempt, behind Host/Origin | feature | proposed | M9: agentic workflow | 2026-11-04 |
 | [SPEC-0419](./specs/0419-self-healing-queue.md) | Self-healing queue | epic | accepted | M9: agentic workflow | 2026-11-04 |
 | [SPEC-0420](./specs/0420-red-main-fix-forward-and-revert.md) | Red-main fix-forward and revert | feature | accepted | M9: agentic workflow | 2026-11-04 |
 | [SPEC-0421](./specs/0421-always-run-guard-tests-at-close-and-loop-gates.md) | Always-run guard tests at close and loop gates | feature | accepted | M9: agentic workflow | 2026-11-04 |
