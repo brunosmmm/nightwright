@@ -12,13 +12,15 @@ import os
 import socket
 import sys
 import threading
+import time
 from pathlib import Path
-from urllib.parse import urlsplit
+from urllib.parse import parse_qs, urlsplit
 
 from .. import store
 from . import auth as A
 from . import audit as AU
 from . import dashboard_dir
+from . import stream as ST
 from .snapshot import SnapshotCache
 
 DEFAULT_BIND = f"127.0.0.1:{A.DEFAULT_PORT}"
@@ -34,6 +36,11 @@ class DashboardServer(http.server.ThreadingHTTPServer):
     def __init__(self, cfg, addr, cache, token):
         self.cfg, self.cache, self.token = cfg, cache, token
         self.serializations = 0                 # body encodings; the body is cached by `rev`
+        self.hub = ST.Hub(cache, ST.SlotPool(ST.max_clients(cfg)))
+        self.heartbeat_s = ST.HEARTBEAT_S       # stream knobs: tests inject shorter ones
+        self.send_timeout_s = ST.SEND_TIMEOUT_S
+        self.stream_auth_ok = lambda handler: True   # re-run on each heartbeat; the tailnet
+        #                                              slice plugs its whois check in here
         self._body = None
         self._body_lock = threading.Lock()
         if ":" in addr[0]:
@@ -50,9 +57,15 @@ class DashboardServer(http.server.ThreadingHTTPServer):
         if not isinstance(sys.exc_info()[1], OSError):
             super().handle_error(request, client_address)
 
+    def server_close(self):
+        self.hub.close()
+        super().server_close()
+
     def snapshot_body(self) -> tuple[str, bytes]:
         """`(rev, JSON bytes)` of the current snapshot; encoded once per `rev`."""
-        doc = self.cache.get()
+        return self.encode(self.cache.get())
+
+    def encode(self, doc: dict) -> tuple[str, bytes]:
         rev = doc["rev"]
         with self._body_lock:
             if self._body is None or self._body[0] != rev:
@@ -159,7 +172,10 @@ class _Handler(http.server.BaseHTTPRequestHandler):
         if n != 0:
             self.close_connection = True
             return self._send(413, {"error": "a GET takes no body"})
-        path = urlsplit(self.path).path
+        parts = urlsplit(self.path)
+        path = parts.path
+        if path == "/api/stream":
+            return self._stream((parse_qs(parts.query).get("rev") or [None])[0])
         if path != "/api/snapshot":
             return self._send(404, {"error": "not found"})
         try:
@@ -170,6 +186,48 @@ class _Handler(http.server.BaseHTTPRequestHandler):
         if _etag_matches(self.headers.get("If-None-Match"), rev):
             return self._send(304, headers=[etag])
         self._send(200, raw=data, headers=[etag])
+
+    def _stream(self, known_rev):
+        """SSE: the snapshot on connect (unless `?rev=` is current), then on each `rev` change,
+        and a `: hb` comment every `heartbeat_s`. Ends on any socket error, an auth denial or
+        server close; the slot is always released."""
+        srv = self.server
+        try:
+            sub = srv.hub.subscribe(known_rev)
+        except Exception as e:                  # noqa: BLE001 - keep serving
+            return self._send(503, {"error": f"{type(e).__name__}: {e}"})
+        if sub is None:
+            return self._send(503, {"error": "too many streams"},
+                              headers=[("Retry-After", "5")])
+        self.close_connection = True
+        try:
+            self.connection.settimeout(srv.send_timeout_s)
+            self.send_response(200)
+            for k, v in (("Content-Type", "text/event-stream; charset=utf-8"),
+                         ("Cache-Control", "no-store"), ("X-Accel-Buffering", "no"),
+                         ("X-Content-Type-Options", "nosniff"), ("Connection", "close")):
+                self.send_header(k, v)
+            self.end_headers()
+            ST.write_retry(self.wfile)
+            slice_s = max(0.01, min(srv.heartbeat_s, srv.hub.refresh_s))
+            last_write = time.monotonic()
+            while not sub.closed:
+                snap = sub.take(slice_s)
+                if snap is not None:
+                    rev, data = srv.encode(snap)
+                    ST.write_event(self.wfile, "snapshot", rev, data)
+                    last_write = time.monotonic()
+                elif sub.closed or ST.peer_gone(self.connection):
+                    break                       # free the slot now, not at the next write
+                elif time.monotonic() - last_write >= srv.heartbeat_s:
+                    ST.write_comment(self.wfile, "hb")
+                    last_write = time.monotonic()
+                    if not srv.stream_auth_ok(self):
+                        break
+        except OSError:
+            pass
+        finally:
+            srv.hub.unsubscribe(sub)
 
     do_GET = do_POST = do_PUT = do_DELETE = do_PATCH = do_OPTIONS = do_HEAD = _handle
 

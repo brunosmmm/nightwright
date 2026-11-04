@@ -1,10 +1,10 @@
 ---
 id: SPEC-0402
 title: "Live snapshot stream over SSE with polling fallback and load guard"
-status: accepted
+status: in-progress
 owner: user
 created: 2026-11-03
-updated: 2026-11-03
+updated: 2026-11-04
 milestone: "M9: agentic workflow"
 source_idea: IDEA-876
 kind: feature
@@ -209,21 +209,21 @@ socket. Nothing in `queue`, `runner`, `runproc`, `events` or `escalations` impor
 
 ## Acceptance criteria
 
-- [ ] `GET /api/stream` answers `text/event-stream`, sends a `snapshot` event with `id` equal to
+- [x] `GET /api/stream` answers `text/event-stream`, sends a `snapshot` event with `id` equal to
       the snapshot `rev` on connect, sends another only when `rev` changed (a ledger or
       escalation change), and sends a `: hb` comment at least every 15 s. A client connecting
       with `?rev=` equal to the current rev gets no initial snapshot event.
-- [ ] The snapshotter thread exists only while at least one `/api/stream` client is connected;
+- [x] The snapshotter thread exists only while at least one `/api/stream` client is connected;
       with zero clients the server performs zero snapshot builds and zero watermark stats, and
       the thread is gone within `2 × refresh_s` after the last client leaves.
-- [ ] With N snapshot clients (N = 1 and N = 8) and an unchanging watermark, builds over a fixed
+- [x] With N snapshot clients (N = 1 and N = 8) and an unchanging watermark, builds over a fixed
       window are at most `window / max_stale_s + 1` and the same for N = 1 and N = 8; after one
       watermark change every client receives exactly one new event and exactly one build
       happened. `queue.dashboard_payload` is never called from a request or stream handler, only
       by the snapshot builder.
-- [ ] A client that stops reading does not delay events to other clients; once its socket send
+- [x] A client that stops reading does not delay events to other clients; once its socket send
       buffer is full, its handler exits within the send timeout and frees its slot.
-- [ ] Opening a stream beyond `max_clients` answers 503 with `Retry-After` before any stream
+- [x] Opening a stream beyond `max_clients` answers 503 with `Retry-After` before any stream
       headers, `/api/snapshot` polling still works, and a slot is released whenever a stream
       ends for any reason.
 - [ ] Streams require the same authentication as every other API call (401 on loopback without
@@ -238,7 +238,7 @@ socket. Nothing in `queue`, `runner`, `runproc`, `events` or `escalations` impor
       self-test reports the stream connected and "live", there is no horizontal overflow and all
       controls are at least 44 px tall; with the stream route answering 503 it reports "polling"
       and still renders the snapshot.
-- [ ] Serving streams leaves every file under the data dir except `agentic/dashboard/`
+- [x] Serving streams leaves every file under the data dir except `agentic/dashboard/`
       byte-identical, and no queue, runner, `runproc`, `events` or `escalations` module imports
       `agentic.dashboard`.
 
@@ -309,6 +309,40 @@ is no fixed sleep before a positive assertion.
     files above.
   - The import-graph and read-only tests above guard the epic's invariants 1 and 2.
   - `python3 tools/spec_lint.py` exits 0 and the ledger is regenerated.
+
+### Test record (2026-11-04)
+
+Ran `uv run pytest -q tests/test_dashboard_stream.py tests/test_dashboard_e2e.py` (17 passed, three
+consecutive runs) and the related dashboard tests (`test_dashboard_server`, `_http_readonly`,
+`_imports`, `_readonly`, `_serve_cli`, `_auth`, `_cache`: 150 passed, 1 skipped), plus
+`python3 tools/spec_lint.py`. The full suite is left to gating. Covered: SSE framing and `?rev=`
+gating, the load guard (zero clients, N = 1 and 8, one change = one build and one event per
+client, thread gone after the last client leaves, `Q.dashboard_payload` calls equal builds),
+backpressure with a non-reading client, the cap and slot release, 401/403, the heartbeat auth
+re-check, read-only, and a real `nw serve --dashboard` subprocess.
+
+Not done (tests not written because the code they test does not exist): the Node check of the
+page's SSE parser, `tests/test_dashboard_mobile.py`, the tailnet whois/fake-`tailscale` test, and
+the manual phone steps. Acceptance criteria 6 (whois half) and 7 (the page) are therefore left
+unticked and the status stays `in-progress`.
+
+### As shipped (2026-11-04, partial)
+
+- SPEC-0414 shipped only the loopback server with bearer-token auth. It has no tailnet bind, no
+  whois check and no page (`static/`, `?selftest=1`, the 15 s poll). This spec's whois-expiry
+  behaviour and its page / Live client / indicator / visibility handling were therefore not built.
+- The cache accessor is `SnapshotCache.get()` (not `current()`); the hub calls it.
+- `stream.py` has `SlotPool`, `Hub`, `Subscriber`, the SSE writers, `peer_gone` and
+  `max_clients(cfg)` (the `settings()` validator in `__init__.py` is untouched, so the key is read
+  directly; default 8).
+- `server.py`: route `GET /api/stream?rev=`, `DashboardServer.hub`, `heartbeat_s` and
+  `send_timeout_s` (injectable), and `stream_auth_ok(handler)`, the hook re-run on every heartbeat
+  that closes the stream when it returns false. The later tailnet slice should plug its cached
+  whois check in there. The stream body reuses the server's per-`rev` encoded snapshot (not
+  re-compacted).
+- A stream handler also detects a client that closed its socket (`peer_gone`, checked each
+  `refresh_s` slice) so the slot is freed and the snapshotter stops promptly instead of at the
+  next heartbeat write; the spec's "gone within `2 × refresh_s`" needs this.
 
 ## Rollout / migration
 
