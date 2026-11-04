@@ -9,7 +9,7 @@ milestone: "M9: agentic workflow"
 source_idea: IDEA-876
 kind: feature
 parent: SPEC-0400
-depends_on: [SPEC-0401, SPEC-0414]
+depends_on: [SPEC-0401, SPEC-0413, SPEC-0414]
 tags: [agentic, dashboard, remote, sse, web]
 ---
 
@@ -399,6 +399,13 @@ round built nothing new, deliberately:
 - Needed from the human: create the phone-page spec and the tailnet-slice spec under SPEC-0400,
   then revise SPEC-0402 to either depend on them (and on a host with Chromium) or move AC6's
   whois half and AC7 into a follow-up spec that does. Recorded as a campaign note.
+
+### Update (2026-11-04, round 4: phone page now on main)
+
+SPEC-0413 (the phone page) has merged and is now a dependency: `static/index.html`, `static/app.js`
+and `static/app.css` under `src/nightwright/agentic/dashboard/` exist on `main`. The round 3 note
+above that the page spec does not exist is historical; the page is no longer missing. The tailnet
+slice (own-address bind, whois) is still not on `main`.
 
 ## Rollout / migration
 
