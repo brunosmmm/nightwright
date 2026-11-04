@@ -1,9 +1,10 @@
 ---
 id: SPEC-0408
 title: "Ledger provenance: finding run_id and key, triage events"
-status: proposed
+status: accepted
 owner: user
 created: 2026-11-03
+updated: 2026-11-03
 kind: feature
 parent: SPEC-0405
 source_idea: IDEA-883
