@@ -1590,3 +1590,33 @@ def test_rate_limited_resolver_starts_the_backoff_and_holds_the_next_attempt(tmp
     for _ in range(3):
         w.tick()
     assert len(w.run_ids()) == n and w.st()["state"] == "CLOSING"
+
+
+def test_a_backoff_begun_after_the_gate_holds_the_resolver_at_its_start(tmp_path, monkeypatch):
+    """SPEC-0345: a backoff that starts after the tick's gate admitted the resolve step (another
+    run's 429) holds the resolver at its start: the run ends interrupted, no attempt is charged,
+    and the resolver runs once the backoff is over."""
+    from nightwright.agentic import persona_gate as PG
+    w = basic(tmp_path, monkeypatch, resolver())
+    w.open_and_conflict()
+    w.dispatched()
+
+    class StaleGate(PG.Gate):                       # the gate read the backoff before it began
+        def __init__(self, *a, **kw):
+            super().__init__(*a, **kw)
+            self.until = None
+
+    real_gate = PG.Gate
+    monkeypatch.setattr(PG, "Gate", StaleGate)
+    PG._write_json(PG.rate_limit_path(w.cfg),
+                   {"until": PG._iso(PG._now_epoch(None) + 900), "backoff_s": 60})
+    w.drive(lambda s: w.run_ids())
+    end, = [e for e in w.ledger("run.end") if e["persona"] == "conflict_resolver"]
+    assert end["interrupted"] is True
+    st = w.st()
+    assert st["state"] == "CLOSING" and not (st["closing"] or {}).get("resolve_attempts")
+    assert st["closing"]["resolve"] is not None
+    monkeypatch.setattr(PG, "Gate", real_gate)
+    PG.rate_limit_path(w.cfg).unlink()
+    w.drive(lambda s: s["state"] in ("MERGED", "PARKED", "TRIAGING"))
+    assert w.st()["state"] == "MERGED"

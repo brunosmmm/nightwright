@@ -4,7 +4,7 @@ title: "Persona cap, rate-limit backoff, campaign affinity and cost by worker"
 status: done
 owner: user
 created: 2026-11-01
-updated: 2026-11-03
+updated: 2026-11-04
 source_idea: IDEA-560
 parent: SPEC-0310
 tags: [agentic, remote, workers, personas, cost]
@@ -374,6 +374,29 @@ back to local. Stuck detectors skip campaigns held by the gate. Cost attribution
   478 passed. `python3 tools/spec_lint.py`: exit 0.
 - Full suite left to gating.
 
+### Test record (2026-11-04, review loop 8)
+
+- New tests, each failing with the source changes reverted (7 failed):
+  - `tests/test_remote_persona_limits.py`: three `test_is_rate_limit` cases ("API Error: 429
+    You have hit your rate limit for requests per minute" with and without status, and
+    "You've hit your request limit" with status 429: all rate limits) plus two guards ("hit
+    your session limit", "hit your Opus limit": account limits);
+    `test_an_automatic_check_failure_does_not_make_the_worker_failing`;
+    `test_set_affinity_keeps_an_affinity_stored_from_another_snapshot`.
+  - `test_a_backoff_begun_after_the_gate_holds_the_resolver_at_its_start`
+    (`tests/test_agentic_resolver.py`) and
+    `test_a_backoff_begun_after_the_gate_holds_the_spec_writer_at_its_start`
+    (`tests/test_agentic_spec_writer.py`).
+- `test_workers_check_records_its_outcome` now passes `record=True`.
+- `uv run pytest -q -n 4` on the persona-limits, resolver and spec-writer files: 271 passed.
+  `uv run pytest -q -n 6` on the workers registry, bootstrap, drain, update, remote personas
+  and gates, persona-limits, spec-writer, resolver, test-waits and affected-tests replay files:
+  684 passed, 5 failed. All five were `test_workers_check_auth_with_fake_claude` cases, whose
+  `WK.check` stub did not accept the new `record` keyword. After fixing the stub,
+  `tests/test_remote_personas.py`, `tests/test_workers_registry.py` and
+  `tests/test_worker_disk_guard.py` give 126 passed. `python3 tools/spec_lint.py`: exit 0.
+- Full suite left to gating.
+
 ### As shipped (2026-11-02)
 
 - **Waiver (2026-11-03).** The real-persona-campaign-on-box and real-429 manual steps were
@@ -494,6 +517,19 @@ back to local. Stuck detectors skip campaigns held by the gate. Cost attribution
   run's clock as it does for a charged loss. `persona_gate.lost_since` ignores `charged:
   false` losses, so a rotation neither makes the worker failing nor voids the affinity, and no
   loss is recorded on the worker, as before.
+- **Review loop 8.** Four fixes. (1) Only `nw workers check` (`WK.check(..., record=True)`)
+  records a failed check as `check_ok: false`, including a missing `claude` on a persona
+  worker. An automatic probe (an update's preflight or post-update check, bootstrap, `add`)
+  records only a pass, which clears an earlier failure. A transient SSH failure during an
+  update therefore never takes the worker off persona work. (2) `set_affinity` re-reads the
+  stored state under the item lock: when another dispatch already stored a valid affinity,
+  it stays (with its `remote_affinity_at`) and the caller's snapshot takes it over. (3)
+  `_do_write_spec` and `_do_resolve` check the backoff again at run start
+  (`queue._gated_runner`): a backoff begun after the tick's gate returns a `HeldRunner`, so
+  the run ends interrupted with no retry or attempt charged, and the next tick's gate holds
+  the step. (4) The account-limit match takes "hit your limit" only bare or with a usage,
+  session, weekly, daily, monthly, model or `<n>-hour` qualifier. "hit your rate limit" and
+  "hit your request limit" are rate limits.
 - **Test support.** A `FakeRunner` script entry may carry
   `api_error: {status, message}`, which yields an API-error result.
 

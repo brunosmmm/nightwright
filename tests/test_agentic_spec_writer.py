@@ -1132,3 +1132,32 @@ def test_rate_limited_spec_writer_starts_the_backoff_and_holds_the_rewrite(tmp_p
         Q.tick(cfg)
     assert len(ledger(cfg, cid, "run.start")) == 1
     assert S.read_state(cfg, cid)["state"] == "SPEC_WRITING"
+
+
+def test_a_backoff_begun_after_the_gate_holds_the_spec_writer_at_its_start(tmp_path,
+                                                                           monkeypatch):
+    """SPEC-0345: a backoff that starts after the tick's gate admitted the write_spec step
+    (another run's 429) holds the writer at its start: the run ends interrupted, no retry is
+    charged, and the writer runs once the backoff is over."""
+    from nightwright.agentic import persona_gate as PG
+    cfg, repo, iid, cid = start(tmp_path, monkeypatch, lambda i: [spec_written(2, i)])
+
+    class StaleGate(PG.Gate):                       # the gate read the backoff before it began
+        def __init__(self, *a, **kw):
+            super().__init__(*a, **kw)
+            self.until = None
+
+    real_gate = PG.Gate
+    monkeypatch.setattr(PG, "Gate", StaleGate)
+    PG._write_json(PG.rate_limit_path(cfg),
+                   {"until": PG._iso(PG._now_epoch(None) + 900), "backoff_s": 60})
+    Q.tick(cfg)
+    end, = ledger(cfg, cid, "run.end")
+    assert end["interrupted"] is True
+    assert S.read_state(cfg, cid)["state"] == "SPEC_WRITING"
+    assert not (wtree(cfg, cid) / "docs/specs/0002-add-a-thing.md").exists()
+    monkeypatch.setattr(PG, "Gate", real_gate)
+    PG.rate_limit_path(cfg).unlink()
+    Q.tick(cfg)
+    assert len(ledger(cfg, cid, "run.end")) == 2
+    in_review(cfg, cid)

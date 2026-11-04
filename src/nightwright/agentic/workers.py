@@ -445,7 +445,7 @@ def end_update(cfg, name: str, since, state: str, detail: str = "") -> bool:
     return bool(done)
 
 
-def check(cfg, rec: dict) -> dict:
+def check(cfg, rec: dict, *, record: bool = False) -> dict:
     """Probe a worker: `{name, ok, errors, warnings, info}`. Runs `ssh_argv + [DEST, nw,
     "worker", "info", "--json"]` with a 30 s timeout. Fails on an SSH failure (a timeout
     included), a protocol other than `nw.job.v1` or no `git`; a version or build id
@@ -454,7 +454,10 @@ def check(cfg, rec: dict) -> dict:
     A record with an `identity` must also be bound to the forced command (`_forced_probe`);
     when the probe proves it is not (an unrestricted command ran), the ControlMaster that
     session rode is closed (`_close_master`). Any other failure leaves the master alone:
-    gate jobs multiplex on it, and `-O exit` would end every one in flight."""
+    gate jobs multiplex on it, and `-O exit` would end every one in flight.
+    SPEC-0345: with `record` (`nw workers check`) the outcome is stored as `check_ok`; an
+    automatic probe (an update's preflight or post-update check, bootstrap, `add`) only stores a
+    pass, so a transient failure there never takes the worker off persona work."""
     w = normalize(cfg, rec)
     out = {"name": w["name"], "ok": False, "errors": [], "warnings": [], "info": None}
     if w["mode"] == "pull":                     # SPEC-0334: nothing to reach over SSH
@@ -468,11 +471,12 @@ def check(cfg, rec: dict) -> dict:
     out["ok"] = not out["errors"]
     if isinstance(out["info"], dict):
         _cache_info(cfg, w["name"], out["info"])
-    _cache_check(cfg, w["name"], out["ok"])
+    if record or out["ok"]:
+        record_check(cfg, w["name"], out["ok"])
     return out
 
 
-def _cache_check(cfg, name: str, ok: bool) -> None:
+def record_check(cfg, name: str, ok: bool) -> None:
     """SPEC-0345: the worker's last check outcome (`check_ok`, `checked_at`); a failed check makes
     it *failing* for campaign affinity."""
     def fn(records):

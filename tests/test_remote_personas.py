@@ -526,7 +526,7 @@ def test_workers_check_auth_with_fake_claude(tmp_path, claude, auth, ok, monkeyp
                                    f'*) touch {probed}; {probe[claude]};; esac')
     ssh = _script(tmp_path / "fake-ssh-claude", f'export PATH={bindir}:$PATH\nexec {r.ssh} "$@"')
     r.register(ssh=ssh, info=INFO, kinds=["gate", "persona"])
-    monkeypatch.setattr(WK, "check", lambda cfg, rec: {"name": rec["name"], "ok": True,
+    monkeypatch.setattr(WK, "check", lambda cfg, rec, **kw: {"name": rec["name"], "ok": True,
                                                        "errors": [], "warnings": [],
                                                        "info": INFO})
     run = CliRunner().invoke(cli, ["workers", "check", "box", "--json"]

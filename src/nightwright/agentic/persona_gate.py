@@ -46,9 +46,11 @@ _RATE_RE = re.compile(r"\b429\b|\b529\b|\brate[ _]limit|\boverloaded\b")
 # an account usage/session/weekly limit (its own handling, never the backoff), in the wordings
 # the claude CLI uses: "Claude AI usage limit reached|<epoch>", "5-hour limit reached ∙ resets
 # 3am", "You've hit your limit · resets 3am", "Opus weekly limit reached". A bare "limit
-# reached" or "resets in 30s" is not one: an API rate-limit message says those too
+# reached" or "resets in 30s" is not one: an API rate-limit message says those too, and so is
+# "hit your rate limit" / "hit your request limit" (only "hit your [usage|…] limit" is)
 _ACCOUNT_LIMIT_RE = re.compile(r"usage[_ ]limit|session limit|weekly limit|\b\d+[- ]hour limit\b"
-                               r"|\bhit your\b[^\n]*\blimit\b"
+                               r"|\bhit your (?:(?:usage|session|weekly|daily|monthly|opus"
+                               r"|sonnet|\d+[- ]hour) )?limit\b"
                                r"|\bresets (?:at )?\d{1,2}(?::\d\d)?\s*[ap]\.?m\b")
 
 
@@ -423,22 +425,29 @@ def order(cfg, state: dict, names: list) -> list:
 
 def set_affinity(cfg, state: dict, worker: str) -> bool:
     """Set the campaign's affinity to `worker` when it has none (persona runs only). Mutates the
-    snapshot `state` and the stored state; True when it was set."""
+    snapshot `state` and the stored state; True when it was set. The stored state decides, under
+    the item lock: when another dispatch (another snapshot, another process) set a valid
+    affinity since `state` was read, that one stays and `state` takes it over."""
     with _AFFINITY_LOCK:
         if affinity(cfg, state) is not None:
             return False
         at = store.now_iso()
-        state["remote_affinity"], state["remote_affinity_at"] = worker, at
         cid = state.get("id")
         if not cid:
+            state["remote_affinity"], state["remote_affinity_at"] = worker, at
             return True
         try:
             with store.item_lock(cfg, cid):
                 cur = store.read_state(cfg, cid)
+                if affinity(cfg, cur) is not None:
+                    state["remote_affinity"] = cur["remote_affinity"]
+                    state["remote_affinity_at"] = cur.get("remote_affinity_at")
+                    return False
                 cur["remote_affinity"], cur["remote_affinity_at"] = worker, at
                 store.write_state(cfg, cid, cur)
         except (ValueError, OSError):
             pass
+        state["remote_affinity"], state["remote_affinity_at"] = worker, at
         return True
 
 

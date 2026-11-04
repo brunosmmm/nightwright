@@ -355,10 +355,50 @@ def test_workers_check_records_its_outcome(tmp_path, monkeypatch):
     w = _world(tmp_path)
     _remote(w, _write_script(tmp_path / "s.json", WRITER))
     monkeypatch.setattr(WK, "_check", lambda cfg, wk, out: out["errors"].append("down"))
-    assert WK.check(w.cfg, WK.load(w.cfg)[0])["ok"] is False
+    assert WK.check(w.cfg, WK.load(w.cfg)[0], record=True)["ok"] is False
     rec = WK.load(w.cfg)[0]
     assert rec["check_ok"] is False and rec["checked_at"]
     assert PG.failing(w.cfg, S.read_state(w.cfg, CID), rec)
+
+
+def test_an_automatic_check_failure_does_not_make_the_worker_failing(tmp_path, monkeypatch):
+    # an update's preflight / post-update probe (no `record`) that fails stores nothing; one
+    # that passes clears an earlier `nw workers check` failure
+    w = _world(tmp_path)
+    _remote(w, _write_script(tmp_path / "s.json", WRITER))
+    monkeypatch.setattr(WK, "_check", lambda cfg, wk, out: out["errors"].append("ssh timeout"))
+    assert WK.check(w.cfg, WK.load(w.cfg)[0])["ok"] is False
+    rec = WK.load(w.cfg)[0]
+    assert "check_ok" not in rec
+    assert not PG.failing(w.cfg, S.read_state(w.cfg, CID), rec)
+    WK.check(w.cfg, rec, record=True)
+    assert WK.load(w.cfg)[0]["check_ok"] is False
+    monkeypatch.setattr(WK, "_check", lambda cfg, wk, out: None)
+    assert WK.check(w.cfg, WK.load(w.cfg)[0])["ok"] is True
+    rec = WK.load(w.cfg)[0]
+    assert rec["check_ok"] is True
+    assert not PG.failing(w.cfg, S.read_state(w.cfg, CID), rec)
+
+
+def test_set_affinity_keeps_an_affinity_stored_from_another_snapshot(tmp_path):
+    # two dispatches of one campaign from separate snapshots both see a null affinity: the
+    # first writer wins, the second takes its value over and does not move `remote_affinity_at`
+    w = _world(tmp_path)
+    a, b = S.read_state(w.cfg, CID), S.read_state(w.cfg, CID)
+    assert PG.set_affinity(w.cfg, a, "box") is True
+    stored = S.read_state(w.cfg, CID)
+    assert PG.set_affinity(w.cfg, b, "box2") is False
+    after = S.read_state(w.cfg, CID)
+    assert after["remote_affinity"] == "box"
+    assert after["remote_affinity_at"] == stored["remote_affinity_at"]
+    assert (b["remote_affinity"], b["remote_affinity_at"]) == ("box", stored["remote_affinity_at"])
+    # a stored affinity voided by a loss is replaced
+    S.append_event(w.cfg, CID, "worker_job_lost", {"worker": "box", "job_id": "j",
+                                                  "attempt": 1, "reason": "unreachable"})
+    c = S.read_state(w.cfg, CID)
+    c["remote_affinity"] = None
+    assert PG.set_affinity(w.cfg, c, "box2") is True
+    assert S.read_state(w.cfg, CID)["remote_affinity"] == "box2"
 
 
 # ---- the dispatch gate: global cap -------------------------------------------------------------
@@ -678,6 +718,12 @@ def test_rate_limit_markers_are_transient():
     (429, "You've hit your limit \u00b7 resets 3am (Europe/Lisbon)", False),
     (429, "Opus weekly limit reached", False),
     (None, "API Error: 429 You've hit your usage limit", False),
+    # "hit your rate limit" / "hit your request limit" is the API's rate limit, not the account's
+    (429, "API Error: 429 You have hit your rate limit for requests per minute", True),
+    (None, "API Error: 429 You have hit your rate limit for requests per minute", True),
+    (429, "You've hit your request limit", True),
+    (429, "You've hit your session limit \u00b7 resets 3am", False),
+    (429, "You've hit your Opus limit", False),
     (None, "FAILED tests/x.py::t - x.py:429: AssertionError", False),
     (None, "x.py:429: AssertionError\nAPI Error: 429", False),
     (None, "API Error: 4290 bytes", False),

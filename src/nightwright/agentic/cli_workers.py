@@ -318,11 +318,13 @@ def workers_check(cfg, name, as_json, auth):
         records = [_find(records, name)]
     results = []
     for r in records:
-        res = WK.check(cfg, r)
+        res = WK.check(cfg, r, record=True)
         w = WK.normalize(cfg, r)
         if "persona" in w["kinds"] and not res["errors"]:
             res["errors"] += RPS.claude_check(cfg, w, auth)
             res["ok"] = not res["errors"]
+            if not res["ok"]:
+                WK.record_check(cfg, w["name"], False)  # SPEC-0345: no working claude
         results.append(res)
     if as_json:
         _dump_json(results)

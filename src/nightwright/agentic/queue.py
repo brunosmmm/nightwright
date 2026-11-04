@@ -1851,7 +1851,7 @@ def _do_write_spec(ctx: _Ctx, state: dict, step: Step, run_id: str, req,
 
     try:
         started = time.time()
-        res.run_result = rr = ctx.runner.run(req)
+        res.run_result = rr = _gated_runner(ctx, req).run(req)
         _note_rate_limit(ctx, state, rr, started)           # SPEC-0345
         res.interrupted = ctx.stop.is_set()
         verdict = rr.verdict if isinstance(rr.verdict, dict) else {}
@@ -2124,6 +2124,21 @@ def _do_persona(ctx: _Ctx, state: dict, step: Step, run_id: str, req, budget: fl
     return res
 
 
+def _gated_runner(ctx: _Ctx, req):
+    """SPEC-0345: the runner of a gated `write_spec` / `resolve` run. The tick's gate read the
+    backoff before the run was admitted; one begun since (another run's 429) holds it at its
+    start too: a `HeldRunner`, so it ends interrupted (no attempt charged) and the next tick's
+    gate holds the step. `_do_persona` gets the same check in `remote_personas.dispatch`."""
+    cfg = getattr(ctx, "cfg", None)
+    if cfg is not None and getattr(req, "persona", None) not in PG.UNGATED_PERSONAS:
+        try:
+            if PG.backoff_until(cfg) is not None:
+                return RPS.HeldRunner()
+        except (OSError, ValueError):
+            pass
+    return ctx.runner
+
+
 def _note_rate_limit(ctx: _Ctx, state: dict, outcome, started) -> None:
     """SPEC-0345: fold a finished campaign persona run into the account's rate-limit backoff.
     Never fails the step."""
@@ -2251,7 +2266,7 @@ def _do_resolve(ctx: _Ctx, state: dict, step: Step, run_id: str, req, budget: fl
         crash = None
         try:
             started = time.time()
-            res.run_result = rr = ctx.runner.run(req)
+            res.run_result = rr = _gated_runner(ctx, req).run(req)
             _note_rate_limit(ctx, state, rr, started)       # SPEC-0345
         except Exception as e:          # a crashing resolver is a failed attempt, not a stuck close
             crash = f"the run raised: {e}"
