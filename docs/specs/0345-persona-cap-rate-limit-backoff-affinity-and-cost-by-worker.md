@@ -419,6 +419,15 @@ back to local. Stuck detectors skip campaigns held by the gate. Cost attribution
   tests/test_tui_campaign_screen.py::test_park_runs_end_to_end_through_the_screen`: 8 passed.
   Full suite left to gating.
 
+### Test record (2026-11-04, gate loop 4)
+
+- The gate failure `test_agentic_dashboard.py::test_existing_payload_keys_and_values_are_unchanged`
+  was the SPEC-0410 key pin not listing this spec's new `held_by` queue-item key. `held_by` was
+  added to the pin's `_ADDED` set. `uv run pytest -q -n 4` on the dashboard, TUI, queue, queue
+  CLI, queue visibility and logs files: 405 passed, 1 skipped; on all `tests/test_dashboard_*.py`,
+  `tests/test_tui_*.py` and `tests/test_agentic_dashboard*.py`: 929 passed, 2 skipped. Full suite
+  left to gating.
+
 ### As shipped (2026-11-02)
 
 - **Waiver (2026-11-03).** The real-persona-campaign-on-box and real-429 manual steps were

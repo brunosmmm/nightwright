@@ -610,7 +610,7 @@ def test_delivered_state_since_is_the_close_transition_not_updated_at(tmp_path):
     assert row["state_since"] == stamped
 
 
-_ADDED = {"state_since", "created_at"}                                        # SPEC-0410
+_ADDED = {"state_since", "created_at", "held_by"}                             # SPEC-0410, SPEC-0345
 _PRE_ITEM = {"age_s", "blocked_by", "branch", "campaign", "cap_usd", "cost", "cost_usd",
              "depends_on", "idea_id", "kind", "label", "loops", "merge_branch", "park",
              "park_detail", "park_reason", "park_requested", "priority", "profile",
@@ -647,7 +647,7 @@ def test_existing_payload_keys_and_values_are_unchanged(tmp_path, monkeypatch): 
         assert p[group], group
         for row in p[group]:
             assert pre <= set(row), (group, pre - set(row))
-            # the only additions are the two SPEC-0410 keys (created_at rides the queue item)
+            # the only additions are the SPEC-0410 keys and SPEC-0345 held_by (both ride the queue item)
             assert set(row) - pre <= _ADDED, (group, set(row) - pre - _ADDED)
     # values: every queue_payload field a dashboard row carries is the same value as before
     items = {i["campaign"]: i for i in Q.queue_payload(cfg, include_terminal=True)["items"]}
