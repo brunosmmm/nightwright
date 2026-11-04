@@ -94,3 +94,8 @@ progress.crit { accent-color: var(--red); }
 .spend { font-size: 1.5rem; font-weight: 600; }
 
 a, button, summary { min-height: 44px; }
+
+/* SPEC-0402: the live / polling / reconnecting indicator */
+.live { margin-left: auto; font-size: 0.8rem; font-weight: 600; padding: 0.1rem 0.5rem; border-radius: 999px; border: 1px solid currentColor; opacity: 0.8; }
+.live.is-live { color: #1a7f37; opacity: 1; }
+.live.is-reconnecting { color: #9a6700; }

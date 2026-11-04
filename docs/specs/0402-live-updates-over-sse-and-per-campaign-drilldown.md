@@ -407,6 +407,45 @@ and `static/app.css` under `src/nightwright/agentic/dashboard/` exist on `main`.
 above that the page spec does not exist is historical; the page is no longer missing. The tailnet
 slice (own-address bind, whois) is still not on `main`.
 
+### As shipped (2026-11-04, round 5: the page's live client)
+
+With SPEC-0413's page on `main`, the Live client is built in `static/app.js`; AC6's whois half and
+AC7 are still open for the reasons below.
+
+- `createSseParser(on)`: an incremental SSE parser (`event:`, `id:`, multi-line `data:`, comments,
+  `retry:`, CRLF/CR, chunks split anywhere); exported for node.
+- `createApp(env)` gains an opt-in `env.live` (+ `env.abort()`); the browser bootstrap sets it
+  when `AbortController` and `TextDecoder` exist, so SPEC-0413's tests (no `env.live`) still
+  see polling only. With it: `fetch("/api/stream?rev=<held>")` with the bearer header (never in the
+  URL), a 45 s no-data watchdog (any bytes, heartbeats included, count as a successful check),
+  backoff 2 s → 30 s doubling (reset by a good connect or a visible tab), polling paused while
+  live and resumed at once when a live stream fails, and one `applySnapshot` that ignores an
+  already-shown `rev` for polls and stream alike.
+- Visibility: hidden aborts the stream and cancels the retry (no slot held); visible refreshes
+  `/api/snapshot` conditionally, then reopens the stream with `?rev=`.
+- Indicator: `<span id="live">` in the header (`index.html`, `app.css`): "live", "polling", or
+  "reconnecting" (a retry in flight). `createApp(...)` returns `liveMode()` and `rev()` for tests.
+- **Not built, and why.** (a) `?selftest=1` and the headless-browser test
+  (`tests/test_dashboard_mobile.py`): this host has no Chromium/Chrome (only Firefox, no
+  `--dump-dom`), and the Definition of done requires that run to happen here. (b) The server does
+  not serve the page: `server.py` has no `/`, `/app.js` or `/app.css` route and never imports
+  `assets`, and its auth gate rejects every request without the bearer header, which a browser's
+  page load cannot send. Routing the assets (and deciding whether they are exempt from the token) is a
+  server design decision outside this spec; until it lands the page cannot load from `nw serve
+  --dashboard`. (c) The tailnet slice (whois, fake `tailscale`) does not exist on `main`.
+
+### Test record (2026-11-04, round 5)
+
+Ran `node --test tests/js/live.test.js` (15 passed) and `uv run pytest -q tests/test_dashboard_live.py
+tests/test_dashboard_page_logic.py tests/test_dashboard_page.py tests/test_dashboard_assets.py
+tests/test_dashboard_packaging.py` (all green; `test_dashboard_live.py` three consecutive runs).
+`test_dashboard_live.py` also drives `tests/js/live_http.js`, which runs the page's real client code
+with node's own `fetch` against a real `make_server` and the real snapshot builder: the page goes
+"live", gets a second snapshot after a ledger append with no extra poll, hides (stream closed) and
+reopens with `?rev=`, leaves no slot behind, and with `max_clients` exhausted by another stream falls
+back to "polling" and still renders. The SSE parser (split chunks, multi-line `data:`, comments,
+`retry:`, CRLF) is covered by the node tests. The full suite is left to gating.
+
 ## Rollout / migration
 
 1. Land after child 1 of SPEC-0400 (the server, auth and snapshot cache). Reconcile the cache

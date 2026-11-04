@@ -1,6 +1,7 @@
 "use strict";
 /* SPEC-0413: the dashboard phone page. Polls GET /api/snapshot every 15 s with If-None-Match,
-   pauses while the tab is hidden, derives ages from the server's clock, and renders every
+   pauses while the tab is hidden, (SPEC-0402) and, when env.live is set, reads GET /api/stream
+   through fetch() so the loopback bearer header rides along; polling is the fallback, derives ages from the server's clock, and renders every
    snapshot value with textContent only. createApp(env) takes every browser object it touches,
    so the logic runs under node with a fake DOM (tests/js). */
 
@@ -9,10 +10,49 @@ var TICK_MS = 1000;
 var STALE_S = 45;
 var MAX_EVENTS = 20;
 var TOKEN_KEY = "nw-dashboard-token";
+var WATCHDOG_MS = 45000;            /* SPEC-0402: a stream silent this long (3 heartbeats) is dropped */
+var BACKOFF_MIN_MS = 2000;
+var BACKOFF_MAX_MS = 30000;
 
 var MSG_401 = "Not signed in. Open the dashboard link that carries the token.";
 var MSG_403 = "This device is not allowed to view the dashboard.";
 var MSG_ERR = "Can't reach the dashboard.";
+
+/* SPEC-0402: an incremental Server-Sent Events parser. push(text) takes chunks split anywhere
+   (inside a line, between a CR and its LF); events, comments and `retry:` go to the callbacks. */
+function createSseParser(on) {
+  var buf = "", data = [], type = "", id = null;
+
+  function dispatch() {
+    if (data.length) on.event({ type: type || "message", id: id, data: data.join("\n") });
+    data = []; type = "";
+  }
+
+  function line(l) {
+    if (l === "") return dispatch();
+    if (l.charAt(0) === ":") { if (on.comment) on.comment(l.slice(1).replace(/^ /, "")); return; }
+    var i = l.indexOf(":");
+    var field = i < 0 ? l : l.slice(0, i);
+    var val = i < 0 ? "" : l.slice(i + 1).replace(/^ /, "");
+    if (field === "data") data.push(val);
+    else if (field === "event") type = val;
+    else if (field === "id") id = val;
+    else if (field === "retry" && /^[0-9]+$/.test(val) && on.retry) on.retry(Number(val));
+  }
+
+  function push(text) {
+    buf += text;
+    var m;
+    while ((m = /\r\n|\n|\r/.exec(buf)) !== null) {
+      if (m[0] === "\r" && m.index + 1 === buf.length) break;   /* maybe half of a CRLF */
+      var l = buf.slice(0, m.index);
+      buf = buf.slice(m.index + m[0].length);
+      line(l);
+    }
+  }
+
+  return { push: push };
+}
 
 function isErr(v) {
   return v !== null && typeof v === "object" && !Array.isArray(v) &&
@@ -105,6 +145,10 @@ function createApp(env) {
     anchor: null, lastOk: null, startedAt: null, visibleSince: null,
     inflight: null, pollTimer: null, tickTimer: null, ages: [], shown: {}
   };
+  /* SPEC-0402 stream state. mode: off (hidden or not started), polling (waiting to retry),
+     reconnecting (a retry in flight), live. gen invalidates a superseded stream. */
+  var lv = { mode: "off", gen: 0, ctrl: null, backoff: BACKOFF_MIN_MS, retryTimer: null,
+             dogTimer: null, failed: false };
 
   function hidden() { return env.visibility() === "hidden"; }
   function $(id) { return doc.getElementById(id); }
@@ -388,7 +432,7 @@ function createApp(env) {
 
   function armPoll() {
     clearPoll();
-    if (hidden()) return;
+    if (hidden() || lv.mode === "live") return;
     st.pollTimer = env.setTimeout(function () { st.pollTimer = null; poll(); }, POLL_MS);
   }
 
@@ -448,6 +492,17 @@ function createApp(env) {
     st.code = null;
   }
 
+  /* The one place a snapshot reaches the screen, from a poll or the stream: one whose rev is
+     already shown is ignored, so the two paths cannot fight. */
+  function applySnapshot(body) {
+    var rev = typeof body.rev === "string" ? body.rev : null;
+    if (rev !== null && rev === st.rev && st.snap) return false;
+    st.snap = body;
+    st.rev = rev;
+    render();
+    return true;
+  }
+
   async function request() {
     var res;
     try {
@@ -463,9 +518,7 @@ function createApp(env) {
       try { body = await res.json(); } catch (e) { body = null; }
       if (!body || typeof body !== "object" || Array.isArray(body)) { st.conn = "error"; return; }
       noteDate(res);
-      st.snap = body;
-      st.rev = typeof body.rev === "string" ? body.rev : null;
-      render();
+      applySnapshot(body);
     } else if (res.status === 401 || res.status === 403) {
       st.conn = "denied";
       st.code = res.status;
@@ -487,16 +540,131 @@ function createApp(env) {
     return p;
   }
 
+  /* ---- the live stream (SPEC-0402) ---- */
+
+  function liveLabel() {
+    return lv.mode === "live" ? "live" : lv.mode === "reconnecting" ? "reconnecting" : "polling";
+  }
+
+  function indicator() {
+    var n = $("live");
+    if (!n) return;
+    var label = liveLabel();
+    setText("live", label);
+    ["live", "polling", "reconnecting"].forEach(function (c) { n.classList.toggle("is-" + c, c === label); });
+  }
+
+  function streamUrl() {
+    return "/api/stream" + (st.rev ? "?rev=" + encodeURIComponent(st.rev) : "");
+  }
+
+  function streamHeaders() {
+    var h = {};
+    if (st.token) h.Authorization = "Bearer " + st.token;   /* never in the URL */
+    return h;
+  }
+
+  function clearLive() {
+    lv.gen += 1;
+    if (lv.ctrl) { try { lv.ctrl.abort(); } catch (e) { /* already closed */ } lv.ctrl = null; }
+    if (lv.retryTimer !== null) { env.clearTimeout(lv.retryTimer); lv.retryTimer = null; }
+    if (lv.dogTimer !== null) { env.clearTimeout(lv.dogTimer); lv.dogTimer = null; }
+  }
+
+  /* Any bytes from the stream (an event or a heartbeat) are a successful check, like a 304. */
+  function sawData(gen) {
+    if (lv.dogTimer !== null) env.clearTimeout(lv.dogTimer);
+    lv.dogTimer = env.setTimeout(function () { lv.dogTimer = null; streamFailed(gen); }, WATCHDOG_MS);
+    st.lastOk = env.now();
+    st.conn = "ok";
+    st.code = null;
+  }
+
+  function onStreamSnapshot(raw) {
+    var body = null;
+    try { body = JSON.parse(raw); } catch (e) { body = null; }
+    if (!body || typeof body !== "object" || Array.isArray(body)) return;
+    var gen = typeof body.generated_at === "string" ? Date.parse(body.generated_at) : NaN;
+    /* no Date header on a stream: keep the server-clock anchor moving, never behind the build */
+    st.anchor = { server: isFinite(gen) ? Math.max(gen, serverNow()) : serverNow(), local: env.now() };
+    applySnapshot(body);
+  }
+
+  function streamFailed(gen) {
+    if (gen !== lv.gen) return;
+    var wasLive = lv.mode === "live";
+    clearLive();
+    lv.mode = "polling";
+    lv.failed = true;
+    indicator();
+    if (hidden()) return;
+    if (wasLive) poll();                     /* polling takes over at once and re-arms; a failed
+                                                retry changes nothing, the poll chain never stopped */
+    lv.retryTimer = env.setTimeout(function () {
+      lv.retryTimer = null;
+      openStream();
+    }, lv.backoff);
+    lv.backoff = Math.min(BACKOFF_MAX_MS, lv.backoff * 2);
+  }
+
+  async function openStream() {
+    if (!env.live || hidden()) return;
+    clearLive();
+    var gen = lv.gen;
+    lv.mode = lv.failed ? "reconnecting" : "polling";
+    indicator();
+    var ctrl = env.abort();
+    lv.ctrl = ctrl;
+    var res;
+    try {
+      res = await env.fetch(streamUrl(), { cache: "no-store", credentials: "same-origin",
+                                           headers: streamHeaders(), signal: ctrl.signal });
+    } catch (e) {
+      return streamFailed(gen);
+    }
+    if (gen !== lv.gen) return;
+    if (res.status !== 200 || !res.body || !res.body.getReader) return streamFailed(gen);
+    lv.mode = "live";
+    lv.backoff = BACKOFF_MIN_MS;
+    clearPoll();                             /* the stream carries updates now */
+    sawData(gen);
+    chrome();
+    indicator();
+    var dec = new TextDecoder();
+    var parser = createSseParser({
+      event: function (ev) { if (ev.type === "snapshot") onStreamSnapshot(ev.data); }
+    });
+    var reader = res.body.getReader();
+    try {
+      for (;;) {
+        var r = await reader.read();
+        if (gen !== lv.gen) return;
+        if (r.done) break;
+        sawData(gen);
+        parser.push(dec.decode(r.value, { stream: true }));
+      }
+    } catch (e) { /* a dropped connection is a failure like any other */ }
+    streamFailed(gen);
+  }
+
   function onVisibility() {
     if (hidden()) {
       clearPoll();
       clearTick();
+      clearLive();                           /* a hidden tab holds no client slot */
+      lv.mode = "off";
       return;
     }
     st.visibleSince = env.now();
     clearPoll();
-    poll();
+    var p = poll();
     armTick();
+    if (env.live) {
+      lv.backoff = BACKOFF_MIN_MS;
+      lv.failed = false;
+      var gen = lv.gen;                      /* a hide/show in between opens its own stream */
+      p.then(function () { if (gen === lv.gen && !hidden()) openStream(); });
+    }
   }
 
   function start() {
@@ -506,9 +674,11 @@ function createApp(env) {
     chrome();
     poll();
     armTick();
+    if (env.live) openStream();
   }
 
-  return { start: start, poll: poll, idle: function () { return st.inflight || Promise.resolve(); } };
+  return { start: start, poll: poll, idle: function () { return st.inflight || Promise.resolve(); },
+           liveMode: function () { return lv.mode; }, rev: function () { return st.rev; } };
 }
 
 if (typeof window !== "undefined") {
@@ -521,8 +691,10 @@ if (typeof window !== "undefined") {
     now: function () { return Date.now(); },
     setTimeout: function (f, ms) { return window.setTimeout(f, ms); },
     clearTimeout: function (id) { window.clearTimeout(id); },
-    visibility: function () { return window.document.visibilityState; }
+    visibility: function () { return window.document.visibilityState; },
+    live: typeof window.AbortController === "function" && typeof window.TextDecoder === "function",
+    abort: function () { return new window.AbortController(); }
   }).start();
 } else {
-  module.exports = { createApp: createApp, healthLevel: healthLevel, displayAge: displayAge, formatAge: formatAge, formatUsd: formatUsd };
+  module.exports = { createApp: createApp, createSseParser: createSseParser, healthLevel: healthLevel, displayAge: displayAge, formatAge: formatAge, formatUsd: formatUsd };
 }
