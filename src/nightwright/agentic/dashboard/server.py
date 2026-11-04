@@ -124,7 +124,8 @@ class _Handler(http.server.BaseHTTPRequestHandler):
         raw = self.headers.get("Content-Length")
         if raw is None:
             return 0
-        return int(raw) if raw.isascii() and raw.isdigit() else None
+        # over 18 digits is far beyond any body we read (and int() of 4300+ digits raises)
+        return int(raw) if raw.isascii() and raw.isdigit() and len(raw) <= 18 else None
 
     def _token_ok(self) -> str | None:
         """None when the bearer token is right, else the audit reason."""

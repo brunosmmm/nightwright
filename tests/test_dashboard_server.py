@@ -261,6 +261,31 @@ def test_other_methods_405_with_allow_get(s, m):
     assert s.audit()[-1]["reason"] == "method_not_allowed"
 
 
+def test_head_is_405_audited_and_has_no_body(s):
+    st, h, body = s.req("HEAD", "/api/snapshot")
+    assert st == 405 and h["allow"] == "GET" and body == b""
+    assert s.audit()[-1]["reason"] == "method_not_allowed"
+    assert s.audit()[-1]["method"] == "HEAD"
+    st, _, _ = s.req()                                        # the connection state is fine
+    assert st == 200
+
+
+def test_absurd_content_length_is_refused_not_a_handler_crash(s, capfd):
+    import socket
+    head = ["GET /api/snapshot HTTP/1.1", f"Host: 127.0.0.1:{s.port}",
+            f"Authorization: Bearer {s.token}", "Content-Length: " + "1" * 5000]
+    c = socket.create_connection(("127.0.0.1", s.port), timeout=10)
+    try:
+        c.sendall(("\r\n".join(head) + "\r\n\r\n").encode())
+        buf = c.recv(4096)
+    finally:
+        c.close()
+    assert buf.split(b" ")[1] == b"413"
+    assert "Traceback" not in capfd.readouterr().err
+    st, _, _ = s.req()
+    assert st == 200
+
+
 def test_404_and_413_and_503(tmp_path):
     fx = seed(tmp_path)
 

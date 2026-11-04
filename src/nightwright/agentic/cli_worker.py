@@ -269,13 +269,13 @@ def _serve_dashboard(cfg, bind, tls_cert, tls_key, client_ca):
         raise click.UsageError(str(e))
     except OSError as e:
         raise click.ClickException(str(e))
+    stop = threading.Event()
+    for sig in (signal.SIGTERM, signal.SIGINT):     # before server.json, so it is always cleaned up
+        signal.signal(sig, lambda *_: stop.set())
     try:
         rec = DS.write_server_json(cfg, srv)
         click.echo(f"nw serve: dashboard on {rec['url']} (token auth, token in "
                    f"{DS.dashboard_dir(cfg) / 'local.token'})", err=True)
-        stop = threading.Event()
-        for sig in (signal.SIGTERM, signal.SIGINT):
-            signal.signal(sig, lambda *_: stop.set())
         t = threading.Thread(target=srv.serve_forever, kwargs={"poll_interval": 0.2},
                              daemon=True)
         t.start()

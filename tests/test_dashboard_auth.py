@@ -84,6 +84,32 @@ def test_local_token_repairs_mode_and_regenerates_empty(tmp_path):
     assert new and new != tok and mode(p) == 0o600 and p.read_text().strip() == new
 
 
+def test_local_token_non_utf8_file_is_regenerated(tmp_path):
+    cfg = {"data_dir": str(tmp_path)}
+    A.local_token(cfg)
+    p = tmp_path / "agentic" / "dashboard" / "local.token"
+    p.write_bytes(b"\xff\xfe\x80garbage")
+    new = A.local_token(cfg)
+    assert new and p.read_text().strip() == new and mode(p) == 0o600
+
+
+def test_local_token_concurrent_first_starts_agree(tmp_path):
+    import threading
+    cfg = {"data_dir": str(tmp_path)}
+    out, start = [], threading.Barrier(8)
+
+    def go():
+        start.wait()
+        out.append(A.local_token(cfg))
+    ts = [threading.Thread(target=go) for _ in range(8)]
+    [t.start() for t in ts]
+    [t.join(30) for t in ts]
+    d = tmp_path / "agentic" / "dashboard"
+    assert len(out) == 8 and len(set(out)) == 1
+    assert (d / "local.token").read_text().strip() == out[0]
+    assert [x.name for x in d.iterdir()] == ["local.token"]       # no temp file left behind
+
+
 def test_host_values_brackets_ipv6():
     assert A.host_values("127.0.0.1", 8791) == {"127.0.0.1:8791", "localhost:8791"}
     assert A.host_values("::1", 8791) == {"[::1]:8791", "localhost:8791"}

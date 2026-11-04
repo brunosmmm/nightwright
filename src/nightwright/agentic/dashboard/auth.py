@@ -3,9 +3,11 @@ the Host/Origin (DNS rebinding) check. Pure functions; nothing here opens a sock
 `tailscale` (the tailnet slice adds that). Not imported by `snapshot` or any queue-side module."""
 from __future__ import annotations
 
+import contextlib
 import ipaddress
 import os
 import secrets
+import tempfile
 
 from . import dashboard_dir
 
@@ -78,25 +80,42 @@ def validate_bind(spec) -> tuple[str, int]:
     return host, port
 
 
+def _read_token(p) -> str:
+    try:
+        return p.read_text(encoding="utf-8").strip()
+    except (OSError, ValueError):               # missing, unreadable or not UTF-8: regenerate
+        return ""
+
+
 def local_token(cfg) -> str:
     """`<dashboard_dir>/local.token` (0600): read, or created on first use. A looser file is
-    chmod-ed to 0600 and an empty one is regenerated."""
-    p = dashboard_dir(cfg) / "local.token"
-    try:
-        tok = p.read_text(encoding="utf-8").strip()
-    except OSError:
-        tok = ""
-    if tok:
-        if p.stat().st_mode & 0o777 != 0o600:
-            os.chmod(p, 0o600)
+    chmod-ed to 0600; an empty or unreadable (not UTF-8) one is regenerated. Creation is
+    exclusive (the token is written to a private temp file, then hard-linked into place), so two
+    servers starting together on one data dir end up with the same token."""
+    d = dashboard_dir(cfg)
+    p = d / "local.token"
+    tok = _read_token(p)
+    if not tok:
+        tok = secrets.token_urlsafe(32)
+        fd, tmp = tempfile.mkstemp(prefix=".local.token.", dir=d)
+        try:
+            os.fchmod(fd, 0o600)
+            os.write(fd, (tok + "\n").encode("ascii"))
+            os.close(fd)
+            try:
+                os.link(tmp, p)                 # fails if another process won the race
+            except FileExistsError:
+                other = _read_token(p)
+                if other:
+                    return other
+                os.replace(tmp, p)              # an empty or corrupt file: take it over
+                return tok
+        finally:
+            with contextlib.suppress(OSError):
+                os.unlink(tmp)
         return tok
-    tok = secrets.token_urlsafe(32)
-    fd = os.open(p, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-    try:
-        os.fchmod(fd, 0o600)
-        os.write(fd, (tok + "\n").encode("ascii"))
-    finally:
-        os.close(fd)
+    if p.stat().st_mode & 0o777 != 0o600:
+        os.chmod(p, 0o600)
     return tok
 
 

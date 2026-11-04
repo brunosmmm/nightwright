@@ -412,6 +412,15 @@ bad Host / foreign Origin / `Origin: null` with no token, a wrong token and a no
 `uv run pytest -q tests/test_dashboard_server.py tests/test_dashboard_serve_cli.py`: 71 passed, 1
 skipped.
 
+Review loop 3: fixed four findings and pinned them with tests. `Content-Length` over 18 digits
+is treated as an unreadable body (`413` on a `GET`, connection closed) instead of raising in
+`int()`; `_serve_dashboard` installs the SIGTERM/SIGINT handlers before writing `server.json`;
+`local_token` creates the file exclusively (private temp file hard-linked into place, so
+concurrent first starts agree) and regenerates a non-UTF-8 file. New tests: HEAD `405` + audit +
+no body, a 5000-digit `Content-Length`, `--client-ca` alone refused with the TLS message, handler
+install order, concurrent `local_token`, non-UTF-8 token. `uv run pytest -q` over the six
+dashboard test files: 143 passed, 1 skipped (no `::1`). The full suite is left to gating.
+
 ### As shipped
 
 Shipped to Design with these notes:
@@ -424,6 +433,8 @@ Shipped to Design with these notes:
 - A refused request's body (up to 64 KiB) is read and dropped so the response is not lost to a
   reset; larger or chunked bodies close the connection (`Connection: close`).
 - `HEAD` is routed like any non-`GET` method (`405`, audited).
+- `local_token` regenerates a token file that is not valid UTF-8 (like an empty one) rather than
+  failing; a `Content-Length` over 18 digits is handled as an unreadable body.
 - `auth.parse_bind` also accepts a bare IP (`::1`, `127.0.0.1`) and a bare bracketed IPv6
   (`[::]`) with the default port; `audit.record` drops keys outside the schema.
 

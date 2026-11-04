@@ -116,6 +116,15 @@ def test_loopback_with_tls_flags_is_refused_with_the_tls_message(fx, tls_files):
     assert not (dash(fx) / "server.json").exists()
 
 
+def test_client_ca_alone_is_refused_with_the_tls_message(fx, tmp_path):
+    ca = tmp_path / "ca.pem"
+    ca.write_text("dummy")
+    r = run_serve(fx, "--dashboard", "--bind", "127.0.0.1:0", "--client-ca", str(ca))
+    assert r.returncode == 2
+    assert "TLS is not supported with --dashboard" in r.stderr
+    assert not (dash(fx) / "server.json").exists()
+
+
 def test_port_in_use_exits_1(fx):
     s = socket.socket()
     s.bind(("127.0.0.1", 0))
@@ -254,3 +263,30 @@ def test_sigint_shuts_down_cleanly_and_server_json_is_0600(fx):
 def test_reference_docs_list_serve_dashboard():
     root = Path(__file__).resolve().parent.parent
     assert "serve --dashboard" in (root / "docs/product/reference/index.md").read_text()
+
+
+def test_signal_handlers_are_installed_before_server_json_is_written(fx, monkeypatch):
+    """A SIGTERM between `server.json` and the handler install would skip the cleanup."""
+    from nightwright.agentic import cli_worker as CW
+    from nightwright.agentic.dashboard import server as DS
+    seen = {}
+
+    class Stop(Exception):
+        pass
+
+    def fake_write(cfg, srv):
+        seen["term"] = signal.getsignal(signal.SIGTERM)
+        seen["int"] = signal.getsignal(signal.SIGINT)
+        raise Stop
+
+    monkeypatch.setattr(DS, "write_server_json", fake_write)
+    old = signal.getsignal(signal.SIGTERM), signal.getsignal(signal.SIGINT)
+    try:
+        with pytest.raises(Stop):
+            CW._serve_dashboard(fx["cfg"], "127.0.0.1:0", None, None, None)
+    finally:
+        signal.signal(signal.SIGTERM, old[0])
+        signal.signal(signal.SIGINT, old[1])
+    assert seen["term"] is not old[0] and callable(seen["term"])
+    assert seen["int"] is not old[1] and callable(seen["int"])
+    assert not (dash(fx) / "server.json").exists()
