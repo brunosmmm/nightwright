@@ -8,18 +8,13 @@ import asyncio
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
-import pytest
 from click.testing import CliRunner
 
 from waits import pilot_until
-from nightwright import tui as T
 from nightwright.cli import cli
 from nightwright.tui import model as M
 
 ROOT = Path(__file__).resolve().parent.parent
-
-needs_textual = pytest.mark.skipif(not T.textual_available(),
-                                   reason="optional tui extra not installed")
 
 
 def _cfg(tmp_path):
@@ -122,7 +117,6 @@ def test_hub_json_for_agents_is_unchanged(tmp_path, monkeypatch):
 
 # --- pilot ------------------------------------------------------------------------------
 
-@needs_textual
 def test_hub_tab_renders_and_drills_into_an_idea(tmp_path, monkeypatch):
     from test_tui_desk import _grid
 
@@ -151,7 +145,6 @@ def test_hub_tab_renders_and_drills_into_an_idea(tmp_path, monkeypatch):
     asyncio.run(drive())
 
 
-@needs_textual
 def test_hub_loads_when_activated_without_the_h_binding(tmp_path, monkeypatch):
     """SPEC-0108 regression: clicking the tab produced a blank pane.
 
@@ -181,7 +174,6 @@ def test_hub_loads_when_activated_without_the_h_binding(tmp_path, monkeypatch):
     asyncio.run(drive())
 
 
-@needs_textual
 def test_both_routes_agree(tmp_path, monkeypatch):
     """`h` and direct activation must produce the same populated hub."""
     from nightwright.tui.app import IdeaDesk
@@ -207,7 +199,6 @@ def test_both_routes_agree(tmp_path, monkeypatch):
     assert by_key == by_click > 0, f"routes disagree: h={by_key} click={by_click}"
 
 
-@needs_textual
 def test_returning_to_ideas_by_any_route_restores_focus(tmp_path, monkeypatch):
     from nightwright.tui.app import IdeaDesk
 
@@ -227,7 +218,6 @@ def test_returning_to_ideas_by_any_route_restores_focus(tmp_path, monkeypatch):
     asyncio.run(drive())
 
 
-@needs_textual
 def test_hub_reflects_changes_made_since_launch(tmp_path, monkeypatch):
     """Reload on every activation: the desk mutates the very things the hub summarises."""
     from nightwright.tui.app import IdeaDesk
@@ -251,7 +241,6 @@ def test_hub_reflects_changes_made_since_launch(tmp_path, monkeypatch):
     asyncio.run(drive())
 
 
-@needs_textual
 def test_external_change_poll_during_teardown_is_a_no_op(tmp_path, monkeypatch):
     """The 1.5 s external-change poll can fire while the app tears its DOM down (seen when a
     loaded host stretched a test past the interval): it must return, not raise NoMatches."""
@@ -269,7 +258,6 @@ def test_external_change_poll_during_teardown_is_a_no_op(tmp_path, monkeypatch):
     asyncio.run(drive())
 
 
-@needs_textual
 def test_hub_toggles_back_to_ideas(tmp_path, monkeypatch):
     from nightwright.tui.app import IdeaDesk
 
@@ -289,7 +277,6 @@ def test_hub_toggles_back_to_ideas(tmp_path, monkeypatch):
     asyncio.run(drive())
 
 
-@needs_textual
 def test_browsing_the_hub_writes_nothing(tmp_path, monkeypatch):
     from nightwright.tui.app import IdeaDesk
 

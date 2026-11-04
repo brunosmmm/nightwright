@@ -11,15 +11,11 @@ import pytest
 from click.testing import CliRunner
 
 from nightwright import explore as EX
-from nightwright import tui as T
 from nightwright.cli import cli
 from nightwright.org import load_tasks
 from nightwright.tui import model as M
 
 ROOT = Path(__file__).resolve().parent.parent
-
-needs_textual = pytest.mark.skipif(not T.textual_available(),
-                                   reason="optional tui extra not installed")
 
 
 def _cfg(tmp_path):
@@ -120,7 +116,6 @@ async def _type(pilot, text):
         await pilot.press("space" if ch == " " else ch)
 
 
-@needs_textual
 def test_log_binding_writes_and_refreshes(tmp_path, monkeypatch):
     from nightwright.tui.app import IdeaDesk
 
@@ -141,7 +136,6 @@ def test_log_binding_writes_and_refreshes(tmp_path, monkeypatch):
     asyncio.run(drive())
 
 
-@needs_textual
 def test_capture_binding_adds_an_idea_and_selects_it(tmp_path, monkeypatch):
     from nightwright.tui.app import IdeaDesk
 
@@ -163,7 +157,6 @@ def test_capture_binding_adds_an_idea_and_selects_it(tmp_path, monkeypatch):
     asyncio.run(drive())
 
 
-@needs_textual
 def test_escape_cancels_a_prompt_without_writing(tmp_path, monkeypatch):
     from nightwright.tui.app import IdeaDesk
 
@@ -184,7 +177,6 @@ def test_escape_cancels_a_prompt_without_writing(tmp_path, monkeypatch):
     asyncio.run(drive())
 
 
-@needs_textual
 def test_explored_binding_increments(tmp_path, monkeypatch):
     from nightwright.tui.app import IdeaDesk
 
@@ -201,7 +193,6 @@ def test_explored_binding_increments(tmp_path, monkeypatch):
     asyncio.run(drive())
 
 
-@needs_textual
 def test_summary_modal_saves_with_ctrl_s(tmp_path, monkeypatch):
     from nightwright.tui.app import IdeaDesk
 
@@ -223,7 +214,6 @@ def test_summary_modal_saves_with_ctrl_s(tmp_path, monkeypatch):
 
 # --- pilot: questions screen ------------------------------------------------------------
 
-@needs_textual
 def test_questions_screen_full_crud(tmp_path, monkeypatch):
     from nightwright.tui.app import IdeaDesk
 
@@ -273,7 +263,6 @@ def test_questions_screen_full_crud(tmp_path, monkeypatch):
     asyncio.run(drive())
 
 
-@needs_textual
 def test_questions_screen_survives_a_bad_index(tmp_path, monkeypatch):
     """Deleting the last question then acting again must not raise out of the screen."""
     from nightwright.tui.app import IdeaDesk
@@ -301,7 +290,6 @@ def test_questions_screen_survives_a_bad_index(tmp_path, monkeypatch):
 
 # --- drift -------------------------------------------------------------------------------
 
-@needs_textual
 def test_drift_is_reported_and_non_fatal(tmp_path, monkeypatch):
     """A write that raises must leave the app running and reload from disk."""
     from nightwright.tui.app import IdeaDesk

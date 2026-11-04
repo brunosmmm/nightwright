@@ -1,7 +1,7 @@
 ---
 id: SPEC-0409
 title: "Remove Textual/pyte test skips, add the AST guard and a TUI test runtime budget"
-status: accepted
+status: done
 owner: user
 created: 2026-11-03
 updated: 2026-11-03
@@ -169,25 +169,25 @@ A pytest plugin whose hooks are module-level functions. Its core is a pure funct
 
 ## Acceptance criteria
 
-- [ ] **AC1.** `tests/conftest.py` defines no `collect_ignore` and does not import
+- [x] **AC1.** `tests/conftest.py` defines no `collect_ignore` and does not import
   `importlib.util` for it. `grep -rnE
   'importorskip\("(textual|pyte)|needs_textual|textual_available\(\)'` over `tests/`
   matches nothing except the allowed `monkeypatch.setattr(T, "textual_available", ...)`
   lines in `test_tui_entry.py` and the guard test's own synthetic sources.
-- [ ] **AC2.** `tests/test_no_textual_skips.py` passes on the current tree and fails with a
+- [x] **AC2.** `tests/test_no_textual_skips.py` passes on the current tree and fails with a
   `path:line` message on synthetic sources for each violation kind: `importorskip`,
   `skipif`, `skip`, an `if` gate, `needs_textual`, and `collect_ignore`. It accepts the
   `monkeypatch.setattr(T, "textual_available", ...)` and `hasattr(os, "forkpty")` forms.
-- [ ] **AC3.** Collecting `tests/test_tui_*.py` exits 0, collects tests from every one of
+- [x] **AC3.** Collecting `tests/test_tui_*.py` exits 0, collects tests from every one of
   those files, and no test of those files is reported skipped for Textual or pyte.
-- [ ] **AC4.** The budget plugin's `evaluate` flags per-test, per-file and total violations,
+- [x] **AC4.** The budget plugin's `evaluate` flags per-test, per-file and total violations,
   applies `NW_TUI_BUDGET_SCALE` and the three per-limit overrides, and is inert under
   xdist workers and on runs with no TUI item.
-- [ ] **AC5.** A subprocess run of a tiny `test_tui_x.py` that sleeps, with a tiny
+- [x] **AC5.** A subprocess run of a tiny `test_tui_x.py` that sleeps, with a tiny
   `NW_TUI_TEST_BUDGET_S`, exits non-zero and names the offender. With default limits the
   repo's own TUI files pass, and the measured per-file times are recorded in this spec's
   *As shipped* section.
-- [ ] **AC6.** `python3 tools/spec_lint.py` exits 0, and the affected tests pass
+- [x] **AC6.** `python3 tools/spec_lint.py` exits 0, and the affected tests pass
   (`python3 tools/affected_tests.py --run uv run pytest -q`).
 
 ## Test plan
@@ -236,6 +236,44 @@ A pytest plugin whose hooks are module-level functions. Its core is a pure funct
 - `test_tui_real_terminal.py`'s assertions are unchanged; only its skip guards are removed.
 - `python3 tools/spec_lint.py` exits 0.
 
+### Test record (2026-11-03)
+
+- `uv run pytest -q tests/test_no_textual_skips.py tests/test_tui_budget.py`: 52 passed, none skipped.
+- `uv run pytest -n 4 -v tests/test_tui_*.py tests/test_idea_tree.py tests/test_desk_table.py
+  tests/test_idea_project.py tests/test_clock_json_parity.py tests/test_question_rationale.py`:
+  470 passed in 126 s, no skips; the budget line reported ok.
+- Manual 2: appended `pytest.importorskip("textual")` to `tests/test_tui_desk.py`; the guard test
+  failed with `tests/test_tui_desk.py:404: importorskip() on textual/pyte`. Reverted.
+- Manual 3: with `textual` blocked by a throwaway `sitecustomize` on `PYTHONPATH`,
+  `pytest tests/test_tui_queue_tab.py` ended `Interrupted: 1 error during collection`
+  (`ImportError: textual blocked for test`), not a green run.
+- `python3 tools/affected_tests.py --run uv run pytest -q -n 4` (conftest changed, so nearly
+  everything was selected): 6495 passed, 5 skipped (none for Textual/pyte), 2 failed
+  (`test_specs.py::test_all_specs_pass_lint`, `test_export.py::test_internal_spec_lint_unaffected_by_outbox`)
+  because the run began before the ledger was regenerated; both pass on re-run after
+  `python3 tools/spec_lint.py --write-ledger`. `python3 tools/spec_lint.py` exits 0.
+- The full suite was left to gating.
+
+### As shipped (2026-11-03)
+
+- Removed every Textual/pyte skip in 19 test files plus the `collect_ignore` and `importlib.util`
+  import in `tests/conftest.py`; the now-unused `pytest` and `T` imports went with them.
+  `test_tui_real_terminal.py` imports `pyte` unconditionally and keeps only its `forkpty` skip.
+- `tests/test_no_textual_skips.py`: one deviation from the Design wording. An `if`/`ifexp` test
+  counts a bare `"textual"` string only through `find_spec(...)`; a plain string in a conditional
+  is ordinary text (`test_tui_highlight.py` does `re.search("textual", ...)` on rendered
+  output). Skip calls (`importorskip`, `skip`, `skipif`, `xfail`) still flag the bare string. The
+  collect-only subprocess also passes `-p no:cacheprovider`.
+- `tests/tui_budget.py`: the scale multiplies a per-limit override too
+  (`limit = (override or default) * NW_TUI_BUDGET_SCALE`). A non-positive, non-finite or
+  non-numeric value raises `pytest.UsageError` naming the variable. Violations print under the
+  heading `TUI runtime budget exceeded`; per-file times print when `-v` is given. Defaults
+  (30 s / 180 s / 900 s) were kept.
+- Measured summed test time per file, `-n 4` on the dev box (20 TUI files, 421.6 s total;
+  the five most expensive, rest under 15 s each): `test_tui_queue_tab.py` 105.4 s,
+  `test_tui_mailbox_tab.py` 89.7 s, `test_tui_escalations_tab.py` 65.3 s,
+  `test_tui_events_tab.py` 49.5 s, `test_tui_campaign_screen.py` 29.0 s. All under the limits.
+
 ## Rollout / migration
 
 1. Remove the guards and add the guard test in one change, so the tree never has a window in
@@ -248,13 +286,13 @@ A pytest plugin whose hooks are module-level functions. Its core is a pure funct
 
 ## Definition of done
 
-- [ ] Acceptance criteria all met.
-- [ ] Test plan executed; automated tests pass (affected tests via `python3
+- [x] Acceptance criteria all met.
+- [x] Test plan executed; automated tests pass (affected tests via `python3
   tools/affected_tests.py --run uv run pytest -q`, plus the files touched); manual steps
   performed and noted here.
-- [ ] No regressions at the queue's close gate.
-- [ ] Spec body updated to match what shipped (including the measured TUI file timings).
-- [ ] `docs/LEDGER.md` regenerated (`python3 tools/spec_lint.py --write-ledger`) and
+- [x] No regressions at the queue's close gate.
+- [x] Spec body updated to match what shipped (including the measured TUI file timings).
+- [x] `docs/LEDGER.md` regenerated (`python3 tools/spec_lint.py --write-ledger`) and
   `python3 tools/spec_lint.py` exits 0.
 
 ## Open questions

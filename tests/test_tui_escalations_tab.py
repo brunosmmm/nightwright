@@ -1,12 +1,10 @@
 """SPEC-0250: the escalations inbox of the TUI mailbox tab (Textual pilot tests)."""
 import pytest
 
-pytest.importorskip("textual")  # module-level skip: the imports below need the tui extra
 
 from waits import pilot_until
 from test_agentic_dashboard import _campaign, _fixture
 from test_tui_queue_tab import SIZE, _desk, _run, _sub, press, settle, spy_titles
-from nightwright import tui as T
 from nightwright.agentic import escalations as ESC
 from nightwright.agentic import events as EV
 from nightwright.agentic import mailbox as MB
@@ -14,9 +12,6 @@ from nightwright.agentic import store as S
 from nightwright.tui import agentic_model as AM
 from nightwright.tui import mailbox_tab as MT
 
-needs_textual = pytest.mark.skipif(not T.textual_available(),
-                                   reason="optional tui extra not installed")
-pytestmark = needs_textual
 PARK = {"reason": "human_decision", "detail": "d", "resume_to": "IMPLEMENTING",
         "escalated_from": "loop_exhausted"}
 

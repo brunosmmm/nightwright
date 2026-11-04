@@ -1,15 +1,16 @@
 """Shared fixtures."""
-import importlib.util
 import subprocess
 
 import pytest
 
-# The optional `tui` extra (textual) is absent from lean venvs such as the queue's gate sandbox.
-# These modules import textual-backed tabs/screens at the top level (directly or through
-# test_tui_queue_tab), so they would fail at collection before any skipif marker could apply.
-collect_ignore = [] if importlib.util.find_spec("textual") else [
-    "test_tui_queue_tab.py", "test_tui_campaign_screen.py", "test_tui_mailbox_tab.py",
-    "test_tui_events_tab.py", "test_tui_escalations_tab.py"]
+
+def pytest_configure(config):
+    """SPEC-0409: the TUI runtime budget. Registered here rather than via `pytest_plugins`, which
+    pytest rejects in a non-top-level conftest; a run that already loaded it with `-p tui_budget`
+    is left alone."""
+    if not config.pluginmanager.has_plugin("tui_budget"):
+        import tui_budget
+        config.pluginmanager.register(tui_budget, "tui_budget")
 
 
 class CodeRepo:

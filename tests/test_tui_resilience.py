@@ -13,18 +13,11 @@ import time
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
-import pytest
 from click.testing import CliRunner
+from textual.widgets import DataTable
 
 from nightwright import org as O
-from nightwright import tui as T
 from nightwright.cli import cli
-
-needs_textual = pytest.mark.skipif(not T.textual_available(),
-                                   reason="optional tui extra not installed")
-
-if T.textual_available():
-    from textual.widgets import DataTable
 
 
 def _grid(app) -> list[str]:
@@ -122,7 +115,6 @@ def _seed(tmp_path, monkeypatch):
     return cfg
 
 
-@needs_textual
 def test_detail_pane_self_heals_after_external_line_shift(tmp_path, monkeypatch):
     """A cached Task's line number goes stale when a new headline is inserted earlier in the
     same file by an external writer — the drift class this spec fixes."""
@@ -160,7 +152,6 @@ def test_detail_pane_self_heals_after_external_line_shift(tmp_path, monkeypatch)
     asyncio.run(drive())
 
 
-@needs_textual
 def test_poll_picks_up_external_new_idea_without_keypress(tmp_path, monkeypatch):
     from nightwright.tui.app import IdeaDesk
 
@@ -183,7 +174,6 @@ def test_poll_picks_up_external_new_idea_without_keypress(tmp_path, monkeypatch)
     asyncio.run(drive())
 
 
-@needs_textual
 def test_poll_is_a_noop_when_nothing_changed(tmp_path, monkeypatch):
     """No signature change -> no reload -> no hint noise."""
     from nightwright.tui.app import IdeaDesk
@@ -202,7 +192,6 @@ def test_poll_is_a_noop_when_nothing_changed(tmp_path, monkeypatch):
     asyncio.run(drive())
 
 
-@needs_textual
 def test_action_summary_prefill_reflects_external_change(tmp_path, monkeypatch):
     """The action_summary pre-fill bug (SPEC-0128 Q4): swallowed the drift error into a blank
     prefill instead of showing current content."""
@@ -234,7 +223,6 @@ def test_action_summary_prefill_reflects_external_change(tmp_path, monkeypatch):
 
 # --- SPEC-0129: poll reload off the event-loop thread -----------------------------------
 
-@needs_textual
 def test_poll_reload_does_not_block_the_event_loop(tmp_path, monkeypatch):
     """A slow load_rows (simulated) must not prevent other async work from running
     concurrently -- proving the reparse actually happens off the event-loop thread."""
@@ -270,7 +258,6 @@ def test_poll_reload_does_not_block_the_event_loop(tmp_path, monkeypatch):
     asyncio.run(drive())
 
 
-@needs_textual
 def test_concurrent_poll_ticks_only_run_one_reload(tmp_path, monkeypatch):
     """The in-flight guard prevents a second poll tick from starting a second load_rows
     before the first one's result has been applied."""
@@ -304,7 +291,6 @@ def test_concurrent_poll_ticks_only_run_one_reload(tmp_path, monkeypatch):
     asyncio.run(drive())
 
 
-@needs_textual
 def test_manual_reload_does_not_block_the_event_loop(tmp_path, monkeypatch):
     """SPEC-0134: r / mutate / search reload uses the same off-thread path as the poll."""
     from nightwright.tui import model as M
@@ -337,7 +323,6 @@ def test_manual_reload_does_not_block_the_event_loop(tmp_path, monkeypatch):
     asyncio.run(drive())
 
 
-@needs_textual
 def test_overlapping_reload_async_coalesces(tmp_path, monkeypatch):
     """SPEC-0134: in-flight guard coalesces overlapping _reload_async calls."""
     from nightwright.tui import model as M

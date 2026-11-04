@@ -16,13 +16,9 @@ from waits import pilot_until
 
 from nightwright import explore as EX
 from nightwright import report as R
-from nightwright import tui as T
 from nightwright.cli import cli
 from nightwright.org import load_tasks
 from nightwright.tui import model as M
-
-needs_textual = pytest.mark.skipif(not T.textual_available(),
-                                   reason="optional tui extra not installed")
 
 
 def _cfg(tmp_path):
@@ -184,7 +180,6 @@ def test_desk_rows_expose_clock_and_open_questions(tmp_path, monkeypatch):
     assert M.load_rows(cfg)[0][0].clock_open is True
 
 
-@needs_textual
 def test_clock_toggle_binding_is_bidirectional(tmp_path, monkeypatch):
     from nightwright.tui.app import IdeaDesk
 
@@ -204,7 +199,6 @@ def test_clock_toggle_binding_is_bidirectional(tmp_path, monkeypatch):
     asyncio.run(drive())
 
 
-@needs_textual
 def test_metadata_screen_sets_a_value(tmp_path, monkeypatch):
     from nightwright.tui.app import IdeaDesk
 
@@ -228,7 +222,6 @@ def test_metadata_screen_sets_a_value(tmp_path, monkeypatch):
     asyncio.run(drive())
 
 
-@needs_textual
 def test_desk_shows_open_question_count_and_clock_marker(tmp_path, monkeypatch):
     from test_tui_desk import _grid
 

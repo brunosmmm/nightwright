@@ -12,14 +12,11 @@ from zoneinfo import ZoneInfo
 import pytest
 from click.testing import CliRunner
 
-from nightwright import tui as T
 from nightwright.cli import cli
 from nightwright.tui import model as M
 
 ROOT = Path(__file__).resolve().parent.parent
 
-needs_textual = pytest.mark.skipif(not T.textual_available(),
-                                   reason="optional tui extra not installed")
 
 HEX_RE = re.compile(r"#[0-9a-fA-F]{6}")
 
@@ -60,7 +57,6 @@ def _styled(text):
 
 # --- what the lexer actually styles -------------------------------------------------------
 
-@needs_textual
 def test_code_and_verbatim_are_styled():
     from nightwright.tui.app import lex_org
 
@@ -69,7 +65,6 @@ def test_code_and_verbatim_are_styled():
     assert styled.get("=verb=")
 
 
-@needs_textual
 def test_emphasis_mid_prose_is_not_styled_by_orglexer():
     """Documented limitation, asserted so it is a known state rather than a surprise.
 
@@ -84,14 +79,12 @@ def test_emphasis_mid_prose_is_not_styled_by_orglexer():
     assert _styled(lex_org("prose with /italic/ inside")) == []
 
 
-@needs_textual
 def test_lexing_empty_prose_is_safe():
     from nightwright.tui.app import lex_org
 
     assert lex_org("").plain == ""
 
 
-@needs_textual
 def test_lexed_prose_keeps_its_text_verbatim():
     """Styling must not rewrite content — the org source is what the user typed."""
     from nightwright.tui.app import lex_org
@@ -102,7 +95,6 @@ def test_lexed_prose_keeps_its_text_verbatim():
 
 # --- structure never reaches the lexer -----------------------------------------------------
 
-@needs_textual
 def test_structure_survives_lexing():
     from nightwright.tui.app import _render_detail
 
@@ -114,7 +106,6 @@ def test_structure_survives_lexing():
     assert "a lexed idea" in plain
 
 
-@needs_textual
 def test_clock_and_meta_lines_are_not_lexed():
     from nightwright.tui.app import _render_detail
 
@@ -125,7 +116,6 @@ def test_clock_and_meta_lines_are_not_lexed():
     assert "kind improvement · Meta-Tools" in plain
 
 
-@needs_textual
 def test_org_prose_with_markup_characters_is_not_eaten():
     """`[#A]` / `[[links]]` / `[2026-07-30 Thu]` must survive — they look like Rich markup."""
     from nightwright.tui.app import _render_detail
@@ -141,7 +131,6 @@ def test_org_prose_with_markup_characters_is_not_eaten():
 
 # --- no hardcoded colour -------------------------------------------------------------------
 
-@needs_textual
 @pytest.mark.parametrize("theme", ["ansi_dark", "ansi_light"])
 def test_no_hex_colours_anywhere(theme):
     """SPEC-0083/0084 were reverted for a hex palette invisible on a dark terminal."""
@@ -161,7 +150,6 @@ def test_the_desk_names_no_hex_theme():
     assert '"ansi_dark"' in app_src and '"ansi_light"' in app_src
 
 
-@needs_textual
 def test_theme_follows_the_apps_light_dark_state(tmp_path):
     from nightwright.tui.app import ANSI_DARK, ANSI_LIGHT, IdeaDesk
 
@@ -186,7 +174,6 @@ def test_theme_follows_the_apps_light_dark_state(tmp_path):
 
 # --- composition with search marks (SPEC-0106) ----------------------------------------------
 
-@needs_textual
 def test_search_marks_compose_on_top_of_lexed_prose(tmp_path, monkeypatch):
     """The reason this design was viable at all: lexing returns a Text, so marks still apply."""
     from nightwright.tui.app import IdeaDesk, _render_detail

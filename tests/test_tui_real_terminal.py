@@ -14,15 +14,11 @@ import sys
 import time
 from pathlib import Path
 
+import pyte
 import pytest
 
-from nightwright import tui as T
 
-pyte = pytest.importorskip("pyte", reason="pyte (dev dep) not installed")
-pytestmark = pytest.mark.skipif(
-    not T.textual_available() or not hasattr(os, "forkpty"),
-    reason="needs the tui extra and a POSIX pty",
-)
+pytestmark = pytest.mark.skipif(not hasattr(os, "forkpty"), reason="needs a POSIX pty")
 
 COLS, ROWS = 110, 30
 

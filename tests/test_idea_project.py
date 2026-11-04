@@ -14,15 +14,11 @@ import pytest
 from click.testing import CliRunner
 
 from nightwright import org_write as W
-from nightwright import tui as T
 from nightwright.cli import cli
 from nightwright.org import load_tasks
 from nightwright.tui import model as M
 
 ROOT = Path(__file__).resolve().parent.parent
-
-needs_textual = pytest.mark.skipif(not T.textual_available(),
-                                   reason="optional tui extra not installed")
 
 
 def _cfg(tmp_path):
@@ -229,7 +225,6 @@ def test_desk_owns_no_project_write_rule():
     assert "set_idea_project" not in app_src      # goes through apply_mutation
 
 
-@needs_textual
 def test_capture_flow_offers_a_project_and_can_decline(tmp_path, monkeypatch):
     from nightwright.tui.app import IdeaDesk
 
@@ -263,7 +258,6 @@ def test_capture_flow_offers_a_project_and_can_decline(tmp_path, monkeypatch):
     asyncio.run(drive())
 
 
-@needs_textual
 def test_metadata_chooser_sets_and_clears_project(tmp_path, monkeypatch):
     from nightwright.tui.app import IdeaDesk
 
@@ -300,7 +294,6 @@ def test_metadata_chooser_sets_and_clears_project(tmp_path, monkeypatch):
     asyncio.run(drive())
 
 
-@needs_textual
 def test_desk_opened_with_a_project_preselects_it(tmp_path, monkeypatch):
     from nightwright.tui.app import IdeaDesk
 

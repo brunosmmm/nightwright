@@ -1,9 +1,6 @@
 """SPEC-0246: the TUI campaign detail screen (Textual pilot tests)."""
 import json
 
-import pytest
-
-pytest.importorskip("textual")  # module-level skip: the imports below need the tui extra
 
 from test_agentic_dashboard import _campaign, _ev, _fixture
 from test_agentic_e2e import run_cli
@@ -13,10 +10,6 @@ from nightwright.agentic import events as EV
 from nightwright.agentic import store as S
 from nightwright.tui import campaign_screen as CS
 from waits import pilot_until
-
-needs_textual = pytest.mark.skipif(not T.textual_available(),
-                                   reason="optional tui extra not installed")
-pytestmark = needs_textual
 
 
 def text_of(widget) -> str:

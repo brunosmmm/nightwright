@@ -12,12 +12,8 @@ import pytest
 from click.testing import CliRunner
 
 from nightwright import report as R
-from nightwright import tui as T
 from nightwright.cli import cli
 from nightwright.tui import model as M
-
-needs_textual = pytest.mark.skipif(not T.textual_available(),
-                                   reason="optional tui extra not installed")
 
 
 def _cfg(tmp_path):
@@ -226,7 +222,6 @@ def test_flatten_tree_is_leaves_only_with_depths(tmp_path, monkeypatch):
     assert projects["IDEA-006"] == R.NO_PROJECT
 
 
-@needs_textual
 def test_desk_tree_has_real_levels_and_collapses(tmp_path, monkeypatch):
     """SPEC-0115: the shipped SPEC-0114 desk mode was indented rows with no collapse.
 
@@ -269,7 +264,6 @@ def test_desk_tree_has_real_levels_and_collapses(tmp_path, monkeypatch):
     asyncio.run(drive())
 
 
-@needs_textual
 def test_every_flat_idea_is_reachable_in_the_tree(tmp_path, monkeypatch):
     from textual.widgets import Tree
 
@@ -298,7 +292,6 @@ def test_every_flat_idea_is_reachable_in_the_tree(tmp_path, monkeypatch):
     asyncio.run(drive())
 
 
-@needs_textual
 def test_jk_moves_the_tree_not_the_hidden_table(tmp_path, monkeypatch):
     """Regression: j/k were hardcoded to the DataTable, so in tree mode they moved the *hidden*
     table — the detail pane followed a row you could not see and the tree cursor never moved,
@@ -325,7 +318,6 @@ def test_jk_moves_the_tree_not_the_hidden_table(tmp_path, monkeypatch):
     asyncio.run(drive())
 
 
-@needs_textual
 def test_tree_mode_opens_with_a_selection(tmp_path, monkeypatch):
     """A fresh Tree has cursor_line == -1, which left the detail pane showing a stale idea."""
     from textual.widgets import Tree
@@ -346,7 +338,6 @@ def test_tree_mode_opens_with_a_selection(tmp_path, monkeypatch):
     asyncio.run(drive())
 
 
-@needs_textual
 def test_mutations_act_on_the_tree_selection(tmp_path, monkeypatch):
     """`selected_id` must read from whichever widget is active, or a mutation hits the wrong
     idea — the same class of bug as the j/k routing."""
@@ -378,7 +369,6 @@ def test_mutations_act_on_the_tree_selection(tmp_path, monkeypatch):
     asyncio.run(drive())
 
 
-@needs_textual
 def test_toggling_back_restores_the_table(tmp_path, monkeypatch):
     from nightwright.tui.app import DESK_COLUMNS, IdeaDesk
 

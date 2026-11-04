@@ -9,7 +9,6 @@ import re
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
-import pytest
 from click.testing import CliRunner
 from waits import pilot_until
 
@@ -19,9 +18,6 @@ from nightwright.org import load_tasks
 from nightwright.tui import model as M
 
 ROOT = Path(__file__).resolve().parent.parent
-
-needs_textual = pytest.mark.skipif(not T.textual_available(),
-                                   reason="optional tui extra not installed")
 
 
 def _cfg(tmp_path):
@@ -192,7 +188,6 @@ def test_detail_carries_summary_log_and_hint(tmp_path, monkeypatch):
 
 # --- rendering -------------------------------------------------------------------------
 
-@needs_textual
 def test_detail_markup_escapes_org_prose(tmp_path, monkeypatch):
     """Org text is full of `[#A]` / `[[links]]` / `[2026-07-30 Thu]`; Rich must not eat them."""
     from rich.console import Console
@@ -264,7 +259,6 @@ def _grid(app) -> list[str]:
     return out[1:] if out else out
 
 
-@needs_textual
 def test_desk_lists_ideas_selects_and_shows_detail(tmp_path, monkeypatch):
     from nightwright.tui.app import IdeaDesk
 
@@ -296,7 +290,6 @@ def test_desk_lists_ideas_selects_and_shows_detail(tmp_path, monkeypatch):
     asyncio.run(drive())
 
 
-@needs_textual
 def test_list_pane_carries_headings_and_grows_them_with_width(tmp_path, monkeypatch):
     """Regression: the first cut listed id/state/project but no heading — an unscannable
     column of bare ids — and clipped to a pre-layout width of 0, wasting ~30 columns.
@@ -329,7 +322,6 @@ def test_list_pane_carries_headings_and_grows_them_with_width(tmp_path, monkeypa
     assert seen[240] > seen[80], f"heading budget did not grow with width: {seen}"
 
 
-@needs_textual
 def test_desk_search_filters_then_escape_clears(tmp_path, monkeypatch):
     from nightwright.tui.app import IdeaDesk
 
@@ -356,7 +348,6 @@ def test_desk_search_filters_then_escape_clears(tmp_path, monkeypatch):
     asyncio.run(drive())
 
 
-@needs_textual
 def test_desk_moves_selection_and_repaints_detail(tmp_path, monkeypatch):
     from nightwright.tui.app import IdeaDesk
 

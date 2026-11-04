@@ -9,19 +9,14 @@ import json
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
-import pytest
 from click.testing import CliRunner
 from waits import pilot_until
 
 from nightwright import report as R
-from nightwright import tui as T
 from nightwright.cli import cli
 from nightwright.tui import model as M
 
 ROOT = Path(__file__).resolve().parent.parent
-
-needs_textual = pytest.mark.skipif(not T.textual_available(),
-                                   reason="optional tui extra not installed")
 
 
 def _cfg(tmp_path):
@@ -110,7 +105,6 @@ def test_q_is_registered_in_the_shared_column_table():
     assert header == "q" and min_w >= 1 and cap is not None   # capped => shrinkable
 
 
-@needs_textual
 def test_auto_drop_sheds_columns_narrow_and_keeps_all_wide():
     from nightwright.tui.app import DESK_COLUMNS, DROP_ORDER, HEADING_FLOOR, plan_desk_columns
 
@@ -129,7 +123,6 @@ def test_auto_drop_sheds_columns_narrow_and_keeps_all_wide():
     assert dropped[0] == "kind"
 
 
-@needs_textual
 def test_id_and_updated_are_never_dropped():
     """`id` is how you refer to a row; `updated` drives the default sort."""
     from nightwright.tui.app import plan_desk_columns
@@ -207,7 +200,6 @@ def test_cli_shows_q_only_when_some_idea_has_open_questions(tmp_path, monkeypatc
 
 # --- pilot ---------------------------------------------------------------------------------------
 
-@needs_textual
 def test_filter_bar_applies_and_clears(tmp_path, monkeypatch):
     from nightwright.tui.app import IdeaDesk
 
@@ -239,7 +231,6 @@ def test_filter_bar_applies_and_clears(tmp_path, monkeypatch):
     asyncio.run(drive())
 
 
-@needs_textual
 def test_sort_hotkeys_cycle_and_reverse(tmp_path, monkeypatch):
     from nightwright.tui.app import IdeaDesk
 
@@ -269,7 +260,6 @@ def test_sort_hotkeys_cycle_and_reverse(tmp_path, monkeypatch):
     asyncio.run(drive())
 
 
-@needs_textual
 def test_wide_mode_hides_detail_and_replans_columns(tmp_path, monkeypatch):
     from nightwright.tui.app import DESK_COLUMNS, IdeaDesk
 
@@ -299,7 +289,6 @@ def test_wide_mode_hides_detail_and_replans_columns(tmp_path, monkeypatch):
     asyncio.run(drive())
 
 
-@needs_textual
 def test_project_column_is_visible_in_the_desk(tmp_path, monkeypatch):
     """The reported gap: you could not see which project an idea belonged to."""
     from test_tui_desk import _grid

@@ -6,21 +6,15 @@ import os
 
 import pytest
 
-pytest.importorskip("textual")  # module-level skip: the imports below need the tui extra
 
 from test_agentic_e2e import make_cfg, make_repo
 from test_agentic_events import _campaign
 from test_tui_queue_tab import SIZE, _desk, _run, press, settle
-from nightwright import tui as T
 from nightwright.agentic import events as EV
 from nightwright.agentic import mailbox as MB
 from nightwright.tui import agentic_model as AM
 from nightwright.tui import events_tab as ET
 from waits import pilot_until
-
-needs_textual = pytest.mark.skipif(not T.textual_available(),
-                                   reason="optional tui extra not installed")
-pytestmark = needs_textual
 
 
 @pytest.fixture(autouse=True)
@@ -325,7 +319,6 @@ def test_a_truncated_or_replaced_file_reloads_in_full(tmp_path):
             await ui_until(app, pilot, lambda: ids(app) == [1], "new stream")
 
     _run(drive())
-
 
 
 def test_an_in_place_rewrite_with_older_ids_reloads_in_full(tmp_path):

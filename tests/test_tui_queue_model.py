@@ -193,7 +193,6 @@ def test_queue_action_raises_plan_errors_and_writes_nothing(tmp_path):
 
 
 def test_summary_text_for_each_action():
-    pytest.importorskip("textual")
     from nightwright.tui.queue_tab import QueueView
     s = QueueView._summary
     assert s("park", "C", {"mode": "immediate", "note": "why"}) == "park C (immediate): why"
@@ -208,7 +207,6 @@ def test_summary_text_for_each_action():
 
 
 def test_plans_carry_the_keys_the_summary_reads(tmp_path):
-    pytest.importorskip("textual")
     repo, cfg, ids = _fixture(tmp_path)
     for action, cid, kw in (("park", ids["ready"], {"reason": "r"}),
                             ("resume", ids["parked"], {}),

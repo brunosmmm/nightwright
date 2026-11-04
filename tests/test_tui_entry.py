@@ -91,11 +91,7 @@ def test_missing_dependency_guard_does_not_swallow_app_bugs(tmp_path, monkeypatc
 
 # --- launch path (needs the extra) ------------------------------------------------------
 
-needs_textual = pytest.mark.skipif(not T.textual_available(),
-                                   reason="optional tui extra not installed")
 
-
-@needs_textual
 def test_app_shell_constructs_and_runs_headless(tmp_path):
     from nightwright.tui.app import IdeaDesk
 

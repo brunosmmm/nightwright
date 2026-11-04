@@ -8,16 +8,11 @@ import asyncio
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
-import pytest
 from click.testing import CliRunner
 
-from nightwright import tui as T
 from nightwright.cli import cli
 
 ROOT = Path(__file__).resolve().parent.parent
-
-needs_textual = pytest.mark.skipif(not T.textual_available(),
-                                   reason="optional tui extra not installed")
 
 
 def _cfg(tmp_path):
@@ -63,7 +58,6 @@ async def _type(pilot, text):
 
 # --- visibility (the actual bug) ---------------------------------------------------------
 
-@needs_textual
 def test_typed_text_is_actually_on_screen(tmp_path, monkeypatch):
     """The regression SPEC-0100 missed: the box collected keystrokes no terminal ever showed.
 
@@ -95,7 +89,6 @@ def test_typed_text_is_actually_on_screen(tmp_path, monkeypatch):
     asyncio.run(drive())
 
 
-@needs_textual
 def test_search_hint_and_footer_each_own_a_row(tmp_path, monkeypatch):
     """Root cause was three widgets laid out on the same line, Footer painted over the rest."""
     from nightwright.tui.app import IdeaDesk
@@ -124,7 +117,6 @@ def test_search_hint_and_footer_each_own_a_row(tmp_path, monkeypatch):
 
 # --- filter as you type -------------------------------------------------------------------
 
-@needs_textual
 def test_typing_filters_without_pressing_enter(tmp_path, monkeypatch):
     from nightwright.tui.app import IdeaDesk
 
@@ -145,7 +137,6 @@ def test_typing_filters_without_pressing_enter(tmp_path, monkeypatch):
     asyncio.run(drive())
 
 
-@needs_textual
 def test_clearing_the_query_live_restores_the_full_list(tmp_path, monkeypatch):
     """Backspacing out of a search must not strand the user on an empty result."""
     from nightwright.tui.app import IdeaDesk
@@ -171,7 +162,6 @@ def test_clearing_the_query_live_restores_the_full_list(tmp_path, monkeypatch):
     asyncio.run(drive())
 
 
-@needs_textual
 def test_a_burst_of_typing_costs_one_search(tmp_path, monkeypatch):
     """Debounce, not per-keystroke: each character restarts the timer."""
     from nightwright.tui import model as M
@@ -203,7 +193,6 @@ def test_a_burst_of_typing_costs_one_search(tmp_path, monkeypatch):
 
 # --- existing behaviour must survive -------------------------------------------------------
 
-@needs_textual
 def test_enter_still_applies_and_closes_the_box(tmp_path, monkeypatch):
     from nightwright.tui.app import IdeaDesk
 
@@ -225,7 +214,6 @@ def test_enter_still_applies_and_closes_the_box(tmp_path, monkeypatch):
     asyncio.run(drive())
 
 
-@needs_textual
 def test_escape_cancels_a_live_filter(tmp_path, monkeypatch):
     from nightwright.tui.app import IdeaDesk
 
@@ -249,7 +237,6 @@ def test_escape_cancels_a_live_filter(tmp_path, monkeypatch):
     asyncio.run(drive())
 
 
-@needs_textual
 def test_a_pending_debounce_does_not_fire_after_escape(tmp_path, monkeypatch):
     """Esc must cancel the timer, not merely reset the query before it lands."""
     from nightwright.tui.app import IdeaDesk

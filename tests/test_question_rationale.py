@@ -12,15 +12,12 @@ import pytest
 from click.testing import CliRunner
 
 from nightwright import explore as EX
-from nightwright import tui as T
 from nightwright.cli import cli
 from nightwright.org import load_tasks
 from nightwright.tui import model as M
 
 ROOT = Path(__file__).resolve().parent.parent
 
-needs_textual = pytest.mark.skipif(not T.textual_available(),
-                                   reason="optional tui extra not installed")
 
 WHY = "ANSI, because hex was invisible on dark."
 
@@ -168,7 +165,6 @@ def test_desk_owns_no_body_write_rule():
     assert "question_body" in app_src
 
 
-@needs_textual
 def test_modal_shows_the_rationale_under_its_question(tmp_path, monkeypatch):
     from test_tui_desk import _grid
 
@@ -193,7 +189,6 @@ def test_modal_shows_the_rationale_under_its_question(tmp_path, monkeypatch):
     asyncio.run(drive())
 
 
-@needs_textual
 def test_r_writes_then_edits_a_rationale(tmp_path, monkeypatch):
     from nightwright.tui.app import IdeaDesk
 
@@ -226,7 +221,6 @@ def test_r_writes_then_edits_a_rationale(tmp_path, monkeypatch):
     asyncio.run(drive())
 
 
-@needs_textual
 def test_enter_still_resolves_with_no_prompt(tmp_path, monkeypatch):
     """`Enter` must stay a single keystroke — the whole reason rationale got its own key."""
     from nightwright.tui.app import BodyPrompt, IdeaDesk
@@ -247,7 +241,6 @@ def test_enter_still_resolves_with_no_prompt(tmp_path, monkeypatch):
     asyncio.run(drive())
 
 
-@needs_textual
 def test_escaping_the_rationale_prompt_writes_nothing(tmp_path, monkeypatch):
     from nightwright.tui.app import IdeaDesk
 

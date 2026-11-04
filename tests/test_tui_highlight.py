@@ -9,18 +9,13 @@ import re
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
-import pytest
 from click.testing import CliRunner
 
 from nightwright import report as R
-from nightwright import tui as T
 from nightwright.cli import cli
 from nightwright.tui import model as M
 
 ROOT = Path(__file__).resolve().parent.parent
-
-needs_textual = pytest.mark.skipif(not T.textual_available(),
-                                   reason="optional tui extra not installed")
 
 
 def _cfg(tmp_path):
@@ -76,7 +71,6 @@ def test_the_desk_defines_no_tokeniser_of_its_own():
 
 # --- span fidelity -------------------------------------------------------------------------
 
-@needs_textual
 def test_marks_cover_exactly_the_token_occurrences(tmp_path, monkeypatch):
     from nightwright.tui.app import IdeaDesk
 
@@ -87,7 +81,6 @@ def test_marks_cover_exactly_the_token_occurrences(tmp_path, monkeypatch):
     assert _marks(marked) == [("Textual", "reverse")]
 
 
-@needs_textual
 def test_marks_are_case_insensitive(tmp_path, monkeypatch):
     from nightwright.tui.app import IdeaDesk
 
@@ -98,7 +91,6 @@ def test_marks_are_case_insensitive(tmp_path, monkeypatch):
     assert [s for s, _ in _marks(marked)] == ["textual", "Textual", "TEXTUAL"]
 
 
-@needs_textual
 def test_a_token_inside_a_longer_word_is_marked(tmp_path, monkeypatch):
     """SPEC-0086 matches substrings, so `tui` inside `intuitive` is *why* the idea matched.
     Marking less than the search used would misrepresent the result set."""
@@ -113,7 +105,6 @@ def test_a_token_inside_a_longer_word_is_marked(tmp_path, monkeypatch):
     assert marked.plain[start - 2:start + 5] == "intuiti"   # inside the word, as matched
 
 
-@needs_textual
 def test_every_token_of_a_multi_token_query_is_marked(tmp_path, monkeypatch):
     from nightwright.tui.app import IdeaDesk
 
@@ -124,7 +115,6 @@ def test_every_token_of_a_multi_token_query_is_marked(tmp_path, monkeypatch):
     assert sorted(s.lower() for s, _ in _marks(marked)) == ["packaging", "textual"]
 
 
-@needs_textual
 def test_no_query_means_no_marks(tmp_path, monkeypatch):
     from nightwright.tui.app import IdeaDesk
 
@@ -134,7 +124,6 @@ def test_no_query_means_no_marks(tmp_path, monkeypatch):
     assert _marks(app._marked("Textual packaging is intuitive")) == []
 
 
-@needs_textual
 def test_marks_agree_with_what_the_matcher_matched(tmp_path, monkeypatch):
     """Fidelity: anything marked must be a real reason `score_idea_match` accepted the idea."""
     from nightwright.tui.app import IdeaDesk
@@ -152,7 +141,6 @@ def test_marks_agree_with_what_the_matcher_matched(tmp_path, monkeypatch):
 
 # --- detail pane ----------------------------------------------------------------------------
 
-@needs_textual
 def test_detail_body_is_marked_without_corrupting_markup(tmp_path, monkeypatch):
     """Marks are applied to a Text, not to the markup string whose indices `escape()` shifts.
 
@@ -177,7 +165,6 @@ def test_detail_body_is_marked_without_corrupting_markup(tmp_path, monkeypatch):
 
 # --- live behaviour ---------------------------------------------------------------------------
 
-@needs_textual
 def test_list_cells_gain_and_lose_marks_with_the_query(tmp_path, monkeypatch):
     from nightwright.tui.app import IdeaDesk
 
@@ -205,7 +192,6 @@ def test_list_cells_gain_and_lose_marks_with_the_query(tmp_path, monkeypatch):
     asyncio.run(drive())
 
 
-@needs_textual
 def test_the_mark_is_visibly_different_on_screen(tmp_path, monkeypatch):
     """End-to-end: the matched run must render with a different fill than ordinary body text.
 

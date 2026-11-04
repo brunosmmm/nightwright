@@ -5,12 +5,10 @@ import subprocess
 
 import pytest
 
-pytest.importorskip("textual")  # module-level skip: the imports below need the tui extra
 from rich.text import Text
 
 from test_agentic_dashboard import _campaign, _fixture, _iso, _park_fixture
 from test_agentic_e2e import run_cli
-from nightwright import tui as T
 from nightwright.agentic import events as EV
 from nightwright.agentic import lease as L
 from nightwright.agentic import mailbox as MB
@@ -20,9 +18,6 @@ from nightwright.tui import agentic_model as AM
 from nightwright.tui import queue_tab as QT
 from waits import pilot_until
 
-needs_textual = pytest.mark.skipif(not T.textual_available(),
-                                   reason="optional tui extra not installed")
-pytestmark = needs_textual
 SIZE = (150, 40)
 
 
