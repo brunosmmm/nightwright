@@ -1,9 +1,10 @@
 ---
 id: SPEC-0431
 title: "Campaign stamps on conductor decisions and mailbox messages"
-status: proposed
+status: accepted
 owner: user
 created: 2026-11-04
+updated: 2026-11-04
 kind: feature
 parent: SPEC-0405
 source_idea: IDEA-966
