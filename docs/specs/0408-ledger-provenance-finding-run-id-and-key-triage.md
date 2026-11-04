@@ -1,6 +1,6 @@
 ---
 id: SPEC-0408
-title: "Ledger provenance: finding run_id and key, triage events, campaign stamps on decisions and mail"
+title: "Ledger provenance: finding run_id and key, triage events"
 status: proposed
 owner: user
 created: 2026-11-03
@@ -14,9 +14,9 @@ tags: [agentic, ledger, observability]
 
 Child 1 of epic [SPEC-0405](./0405-rich-queue-tui-prioritized-live-queue-campaign.md). The
 epic's shared history layer (`agentic/history.py`, child 2) must link every finding to the run
-that produced it, the decision that resolved it and its follow-up idea. Today three links are
-missing at the writer, so a reader has to guess them. The epic's data inventory (2026-11-03,
-217 campaigns) found:
+that produced it, the decision that resolved it and its follow-up idea. Today two of those
+links are missing at the writer, so a reader has to guess them. The epic's data inventory
+(2026-11-03, 217 campaigns) found:
 
 - **`finding` ledger events have no `run_id` and no `key`.** `queue._record_run`
   (`src/nightwright/agentic/queue.py`) turns a persona verdict (`must_fix`, `blockers`,
@@ -35,37 +35,39 @@ missing at the writer, so a reader has to guess them. The epic's data inventory 
     reason.
   - The `persona#index` ids are meaningful only inside one review round, so they cannot be
     joined to anything later.
-- **Conductor decisions and mail often have no `campaign`.** 61 of 440
-  `conductor/decisions.jsonl` records and 315 of about 1 000 `mailbox/*.jsonl` messages carry
-  none, although many name exactly one campaign id in their text. `nw queue decision` takes the
-  campaign only as an explicit first positional argument (`cli_conductor.py`
-  `queue_decision`); `nw mailbox send` only through `--campaign` (`cli_mailbox.py`
-  `mailbox_send`).
 
 Ledgers are append-only and ledger events allow extra keys ("additive evolution",
-`schemas.py`), so all of this can be added to the writers without a migration. Old events stay
+`schemas.py`), so this can be added to the writers without a migration. Old events stay
 untouched; the history layer keeps inferring their links and marks them `linked_by: "inferred"`
-or `"text"` (epic Decision 2).
+(epic Decision 2).
+
+**Scope split.** The idea also asked for text-derived `campaign` stamps on `nw queue decision`
+and `nw mailbox send`. That is an independent subsystem (CLI free-text entry points, the
+decision and mailbox stores) that shares no code or data with the ledger writers, and its
+semantics need their own decisions (opt-out, effect on `open_dispatches` / `match_parks`). It
+is split into a separate follow-up spec (see Non-goals). This spec keeps only ledger
+provenance.
 
 ## Goals / Non-goals
 
 **Goals**
 - Every new `finding` event carries `key` (`followups.finding_key`) and `run_id` (the persona
   run that produced it; `null` for findings no persona run produced).
-- A new `triage` ledger event records each applied review-triager and gate-triager verdict, with
-  waived findings resolved to stable finding keys.
-- `nw queue decision` and `nw mailbox send` stamp `campaign` when the caller gave none and the
-  text names exactly one existing campaign, and mark the stamp as text-derived.
+- A new `triage` ledger event records each applied review-triager and gate-triager verdict,
+  with waived findings resolved to stable finding keys.
 - `nw.ledger.event.v1` is documented with the new keys and the new event type.
-- Existing ledger lines, decision records and messages are never rewritten.
+- Existing ledger lines are never rewritten, and readers keep working on them.
 
 **Non-goals**
-- Backfilling old campaigns, decisions or mail. Child 2 keeps inferring them.
-- Making `run_id`, `key` or `campaign` *required*. They stay optional so old ledgers still
-  validate.
-- Linking gate-produced findings to a `gate_seq`. They keep their `gate` name and `run_id: null`.
-- Stamping any other writer (`nw campaign note`, escalations, `nw queue events`) or guessing a
-  campaign from anything but explicit ids in the text.
+- **Text-derived campaign stamps on conductor decisions and mail** (`nw queue decision`,
+  `nw mailbox send`, `store.sole_campaign_named`, `campaign_from`, a `--no-campaign` opt-out,
+  the effect on `decisions.open_dispatches` / `match_parks`, and the docs for them). Moved to a
+  separate spec under SPEC-0405, filed as its own idea when this spec is accepted. The epic
+  child 1 line describes both; this spec delivers the ledger half.
+- Backfilling old campaigns. Child 2 keeps inferring them.
+- Making `run_id` or `key` *required*. They stay optional so old ledgers still validate.
+- Linking gate-produced findings to a `gate_seq`. They keep their `gate` name and
+  `run_id: null`.
 - Any change to the TUI, `history.py` or the retention policy.
 
 ## Decision
@@ -83,33 +85,28 @@ or `"text"` (epic Decision 2).
      `run_id: null` explicitly, so a reader can tell "no run" from "old event".
 2. **A new `triage` ledger event per applied triager verdict**, written in the same `events`
    list as the run's `run.end`, before the transition the verdict causes.
-   - Review triager: `{persona: "review_triager", run_id, kind: "review", disposition,
-     waive: [{id, key, severity, title, reason}], ignored: [{id, why}]}`. `disposition` is
-     `"waive"` when at least one waiver was accepted and `"none"` otherwise. `id` is the
-     original `persona#index`; `key` is the finding key resolved from the reviewed round at
-     write time.
-   - Gate triager: `{persona: "gate_triager", run_id, kind: "gate", disposition, routed_to,
+   - **Review triager:** `{persona: "review_triager", run_id, kind: "review", disposition,
+     waive: [{id, key, severity, title, reason}], ignored: [{id, why}]}`. `waive[]` is built
+     from the *accepted* entries that `_accept_waivers` returns for the verdict's `waive`
+     list; `ignored[]` from its rejected `(id, why)` pairs. `disposition` is `"waive"` when at
+     least one waiver was accepted and `"none"` otherwise. `id` is the original `persona#index`;
+     `key` is the finding key resolved from the reviewed round at write time.
+   - **Gate triager:** `{persona: "gate_triager", run_id, kind: "gate", disposition, routed_to,
      confidence, suspected_flaky, waive: [{gate, key, reason}], fix_keys: [key]}`.
-     `disposition` is the verdict's (`fix | retry_gate | waive | escalate`); `routed_to` is the
-     queue's decision (`decide_triage` kind: `gate | close | fix | park`). `fix_keys` are the
-     keys of the verdict's `must_fix` items. A waived gate entry's `key` is the key of the one
-     open `finding` of that gate in the current gate round, and `null` when there is none or
-     more than one (never guessed).
+     - `waive[]` is built from the verdict's **`waived`** list (`GATE_TRIAGER_SCHEMA` in
+       `personas.py`; the key is `waived`, not `waive`): one `{gate, key, reason}` per entry,
+       with `key` resolved as below.
+     - `disposition` is the verdict's (`fix | retry_gate | waive | escalate`). `routed_to` is
+       the kind of the `Step` that `decide_triage` returned (`gate | close | implement | park`),
+       so it records what the queue actually did, e.g. a `retry_gate` over the retry cap routes
+       to `implement`.
+     - `fix_keys` are the `finding_key`s of the verdict's `must_fix` items.
+     - A waived entry's `key` is the key of the one open `finding` of that gate in the current
+       gate round, and `null` when there is none or more than one (never guessed).
    - No `triage` event for a run that produced no valid verdict (not started, timed out, failed,
      malformed, interrupted): those keep their existing `note`s. Only applied verdicts are
      recorded.
-3. **Campaign stamps are text-derived, exact-one only, and marked.**
-   - A shared helper `store.sole_campaign_named(cfg, *texts) -> str | None` extracts
-     campaign-id-shaped tokens (`<PREFIX>-<digits>-<YYYYMMDD>-<hex>`) from the texts, keeps those
-     whose `campaigns/<id>/state.json` exists, de-duplicates them, and returns the id only when
-     exactly one remains. Two distinct existing ids, none, or only unknown ids give `None`.
-   - `nw queue decision` calls it over `rationale` and `--action` when no campaign was given;
-     `nw mailbox send` calls it over the message text when `--campaign` was not given. An
-     explicit campaign always wins and is never overridden.
-   - A stamped record carries `campaign_from: "text"`; an explicit campaign leaves the key
-     absent. A stamped decision then follows the existing campaign path (the ledger `note`
-     with the `decision` back-reference), exactly as if the id had been passed.
-4. **No migration.** Only new writes change; every added key is optional.
+3. **No migration.** Only new writes change; every added key is optional.
 
 ## Design
 
@@ -126,7 +123,7 @@ or `"text"` (epic Decision 2).
   `"run_id": run_id`. The `run_id` argument already exists. Key stays centralized.
 - Deterministic producers are not edited; for them `append_event` adds `key`, and `run_id` is
   set to `None` only when the event has no `run_id` key, in the same branch, so *every* new
-  `finding` has both keys.
+  `finding` has both keys (`key` absent only when the state is unreadable).
 - `schemas.EVENT_KEYS["finding"]` stays as is (required keys unchanged).
 
 ### Triage event
@@ -141,37 +138,19 @@ or `"text"` (epic Decision 2).
   `(id, why)` list.
 - Gate triager (the `# triage` branch of `_apply`, after `decide_triage`): when
   `decision.kind != "none"` and `rr.verdict_ok`, append the `triage` event before the existing
-  `finish(...)` calls (all four routes: park, gate retry, close/waived, fix). `waive[].key`
+  `finish(...)` calls (all four routes: park, gate retry, close/waived, implement). `waive[].key`
   resolves against `store.read_ledger(cfg, cid, types=["finding"])` entries whose `gate`
-  matches and whose `seq` is after the most recent `gate` event.
+  matches the waived entry's `gate` and whose `seq` is after the most recent `gate` event.
 - Readers of ledger types that switch on `type` must tolerate the new type: the
   `nw campaign log` renderer and `journey.py` fall through to a generic line for unknown types;
-  the spec's tests pin that.
-
-### Campaign stamps
-
-- `store.sole_campaign_named(cfg, *texts)`: regex `\b[A-Za-z][A-Za-z0-9_]*-\d+-\d{8}-[0-9a-f]{4,8}\b`;
-  existence is `(campaign_dir(cfg, id) / "state.json").is_file()`. Pure read, no new lock.
-  `texts` may contain `None`.
-- `cli_conductor.queue_decision`: when `campaign is None`, after the existing "a campaign id
-  alone" guard, `campaign = S.sole_campaign_named(cfg, rationale, action)`; if found, pass
-  `campaign_from="text"`. `decisions.record` gains a keyword `campaign_from=None`, written into
-  the `nw.conductor.decision.v1` record only when set. The console line says
-  `on <campaign> (from text)` for a stamp.
-- `cli_mailbox.mailbox_send`: when `campaign is None`, compute the stamp over `" ".join(text)`
-  and pass it to `mailbox.send`, which gains `campaign_from=None` and writes it into the
-  `nw.message.v1` record only when set. The conductor event mirror in `mailbox.send` then
-  carries the stamped campaign unchanged.
-- `mailbox.send` and `decisions.record` called from Python with `campaign=None` do not infer;
-  inference lives in the two CLI commands (the human/agent entry points where ids are free
-  text).
+  tests pin that.
 
 ### Docs
 
 - `schemas.py` module docstring and `EVENT_KEYS` comments: add `finding.key`, `finding.run_id`
   and the `triage` event.
 - `docs/product/loop/principles.md` mentions `nw.ledger.event.v1`; add one short paragraph
-  there listing the provenance keys, and note `campaign_from` on decision and message records.
+  there listing the provenance keys and the `triage` event.
 
 ## Alternatives considered
 
@@ -180,14 +159,13 @@ or `"text"` (epic Decision 2).
 - **Make `run_id` and `key` required in `EVENT_KEYS`.** Would make every existing ledger
   invalid (`ledger_problems`), and old ledgers are read by `nw` constantly. Optional keys keep
   old events valid.
-- **Infer the campaign inside `decisions.record` / `mailbox.send`.** Python callers (the queue's
-  own writers) always pass a campaign; inferring there would change behavior for internal
-  callers and could attach a campaign to a deliberately queue-level record. The CLI entry points
-  are where free text arrives.
-- **Pick the first (or most frequent) campaign when the text names several.** Rejected by the
-  idea: a wrong stamp is worse than none, because it looks authoritative.
 - **Store only `persona#index` ids in `triage`.** They are meaningless after the round; the
   point of the event is the stable `key`.
+- **Guess a gate waive's key when several findings of that gate are open.** A wrong key looks
+  authoritative and would mark an unrelated finding `waived`; `null` is honest and child 2 can
+  still show the waive by gate name.
+- **Keep the campaign-stamp work in this spec.** Rejected on review: it is an independent
+  subsystem that roughly doubled the acceptance criteria; it ships separately.
 
 ## Acceptance criteria
 
@@ -204,29 +182,21 @@ or `"text"` (epic Decision 2).
   `id` is the `persona#index` and whose `key` equals the key the same finding gets as a
   `followup`, the accepted `reason`, and `ignored[]` for rejected ids. A run with no valid
   verdict writes none.
-- [ ] The gate triager's applied verdict writes one `triage` event with `persona:
-  "gate_triager"`, `kind: "gate"`, `disposition`, `routed_to`, `fix_keys` (keys of the verdict's
-  `must_fix` items) and `waive[]` entries; a waived gate entry gets a `key` only when exactly
-  one open finding of that gate exists in the current round, otherwise `null`. It is written
-  for each of the four routes (fix, retry, waive-to-close, escalate/park) and not for a
-  malformed verdict.
+- [ ] The gate triager's applied verdict writes one `triage` event with
+  `persona: "gate_triager"`, `kind: "gate"`, `disposition`, `routed_to` (the `decide_triage`
+  step kind), `fix_keys` (keys of the verdict's `must_fix` items) and `waive[]` built from the
+  verdict's `waived` list; a waived entry gets a `key` only when exactly one open finding of
+  that gate exists in the current round, otherwise `null`. It is written for each of the four
+  routes (implement, gate retry, close on waive, park) and not for a malformed verdict.
 - [ ] `triage` is a known type in `schemas.EVENT_KEYS` with the required keys above, and
   `append_event` rejects a `triage` missing one.
-- [ ] `nw queue decision` with no campaign and a rationale naming exactly one existing
-  campaign id records that campaign, `campaign_from: "text"`, and the matching ledger `note`; an
-  explicit campaign is kept as given and has no `campaign_from`.
-- [ ] `nw queue decision` and `nw mailbox send` stamp nothing when the text names two different
-  existing campaign ids, none, or only ids that do not exist (the record has `campaign: null`).
-- [ ] `nw mailbox send` without `--campaign` and with text naming exactly one existing campaign
-  writes `campaign` and `campaign_from: "text"` on the message and on its conductor event
-  mirror; `--campaign` wins when given.
-- [ ] Ledger lines, `decisions.jsonl` lines and mailbox lines written before this change are
-  not modified, and reading them (`store.read_ledger`, `decisions.read`, `mailbox.read_inbox`,
-  `nw campaign log`) works unchanged.
+- [ ] Ledger lines written before this change are not modified, and a ledger mixing old events
+  (no `key`/`run_id`, no `triage`) with new ones is read by `store.read_ledger` and
+  `ledger_problems` without error.
 - [ ] `nw campaign log` and `journey.py` render a campaign whose ledger has `triage` events
   without error.
 - [ ] `schemas.py` docs and `docs/product/loop/principles.md` describe `finding.key`,
-  `finding.run_id`, the `triage` event and `campaign_from`.
+  `finding.run_id` and the `triage` event.
 
 ## Test plan
 
@@ -234,7 +204,7 @@ or `"text"` (epic Decision 2).
   - `tests/test_agentic_ledger_provenance.py` (new), over the real writers and a tmp data dir:
     - `store.append_event` stamping: finding gets `key` equal to `followups.finding_key`;
       explicit `key` kept; `run_id` defaulted to `None`; unreadable state still appends;
-      `triage` validated by `ledger_problems`.
+      `triage` validated by `ledger_problems`, and one missing a required key rejected.
     - `queue._record_run` with a fake `RunResult` carrying `must_fix`, `blockers` and
       reviewer `findings`: every emitted `finding` carries the run's `run_id` and the right
       `key` after being appended.
@@ -244,30 +214,23 @@ or `"text"` (epic Decision 2).
       (major finding, empty reason, duplicate) land in `ignored`; timed-out and malformed runs
       write no `triage`.
     - Gate triager through `tests/test_agentic_queue.py` helpers: one test per route
-      (fix, `retry_gate`, waive, escalate) asserting disposition, `routed_to`, `fix_keys`;
-      the waive-key resolution cases (exactly one open gate finding, none, two).
-    - `store.sole_campaign_named`: one id, repeated same id, two ids, unknown id, `None` and
-      empty texts, id embedded in punctuation.
-  - `tests/test_agentic_decisions.py` (extended): `queue decision` CLI stamps with
-    `campaign_from: "text"` and writes the ledger note; no stamp for two ids; explicit
-    campaign wins; the guard for a lone campaign id still fires.
-  - `tests/test_agentic_mailbox.py` (extended): `mailbox send` CLI stamp, no-stamp cases,
-    `--campaign` wins, conductor event mirror carries the campaign.
-  - `tests/test_agentic_ledger_provenance.py` also pins backward compatibility: a ledger
-    fixture of old events (no `key`/`run_id`, no `triage`) plus new ones is read by
-    `store.read_ledger`, `nw campaign log` and `journey` without error.
-- **Manual verification:** in a scratch data dir with a real campaign id `C`:
-  `nw queue decision --kind wait --rule parked.cost_cap "waiting on <C>"` then
-  `nw queue decisions --json` shows `campaign: C` and `campaign_from: "text"`; the same with
-  two real ids shows `campaign: null`. `nw mailbox send --to conductor --from human "<C> done"`
-  then `nw mailbox list --to conductor --json` shows the stamp. After a real run that
-  produces a reviewer finding, `grep '"type": "finding"'` on the campaign's `ledger.jsonl`
-  shows `key` and `run_id` and the `run_id` matches a `runs/` dir.
+      (`fix` to implement, `retry_gate`, `waive` to close, `escalate` to park) asserting
+      `disposition`, `routed_to`, `fix_keys`; a `retry_gate` past the retry cap asserting
+      `routed_to: "implement"`; the waive-key resolution cases, with the verdict's **`waived`**
+      list set (exactly one open gate finding, none, two); a verdict that sets only `waive`
+      (wrong key) yields an empty `waive[]`.
+    - Backward compatibility: a ledger fixture of old events (no `key`/`run_id`, no `triage`)
+      plus new ones is read by `store.read_ledger`, `nw campaign log` and `journey` without
+      error, and the old lines are byte-identical after new appends.
+- **Manual verification:** after a real run that produces a reviewer finding, in a scratch data
+  dir, `grep '"type": "finding"'` on the campaign's `ledger.jsonl` shows `key` and `run_id`,
+  and the `run_id` matches a `runs/` dir. After a review-triager round with a waiver,
+  `nw campaign log <cid>` shows a `triage` line and its `waive[].key` equals the `followup`
+  event's `key`.
 - **Regression guard:** `python3 tools/affected_tests.py --run uv run pytest -q` plus
-  `tests/test_agentic_ledger_provenance.py`, `test_agentic_decisions.py`,
-  `test_agentic_mailbox.py`, `test_agentic_review_triage.py`, `test_agentic_queue.py`; existing
-  ledger/decision/mail tests pass unmodified apart from additions; `python3 tools/spec_lint.py`
-  exits 0.
+  `tests/test_agentic_ledger_provenance.py`, `test_agentic_review_triage.py` and
+  `test_agentic_queue.py`; existing ledger tests pass unmodified apart from additions;
+  `python3 tools/spec_lint.py` exits 0.
 
 ## Rollout / migration
 
@@ -276,6 +239,8 @@ or `"text"` (epic Decision 2).
    mix old and new events, which readers already tolerate.
 3. Child 2 of SPEC-0405 reads the keys when present (`linked_by: "field"`) and infers
    otherwise.
+4. The text-derived campaign stamps (Non-goals) land independently and are not a prerequisite
+   for child 2.
 
 ## Definition of done
 
@@ -289,5 +254,5 @@ or `"text"` (epic Decision 2).
 ## Open questions
 
 None. Decided while writing: gate-produced findings carry `run_id: null` and no `gate_seq`
-(their `gate` name is enough for child 2); `campaign_from` marks text-derived stamps so child 2
-can label them `linked_by: "text"`; inference lives in the CLI entry points only.
+(their `gate` name is enough for child 2); the campaign-stamp half of the idea ships as a
+separate spec.
