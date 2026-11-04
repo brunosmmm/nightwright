@@ -5,6 +5,8 @@ import datetime as dt
 import json
 import threading
 
+import waits
+
 import pytest
 from click.testing import CliRunner
 
@@ -140,7 +142,7 @@ def test_two_concurrent_followers_announce_once(tmp_path):
     for t in ts:
         t.start()
     for t in ts:
-        t.join(30)
+        waits.join(t)
     assert sum(len(o) for o in outs) == 1 and len(_timeouts(cfg)) == 1
 
 
