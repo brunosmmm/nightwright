@@ -256,6 +256,12 @@ is pasted in the spec's As shipped section as the pinned cause. One additional m
   merge is a no-op; `tools/affected_tests.py` and `gates.py` untouched. `uv run pytest -q
   tests/test_affected_tests_replay.py tests/test_affected_tests.py` -> 118 passed.
 
+- Gate follow-up 5 (2026-11-03): `tests/test_test_waits.py::test_no_bare_join_before_result_read` failed on bare numeric
+  `th.join(N)` in `tests/test_pull_workers.py` (3) and `tests/test_pull_workers_security.py` (1). These files are identical to
+  main's (not stale), so they were fixed directly: the joins now use the shared `waits.join` (`from waits import join as wjoin`,
+  `wjoin(th, 60)`), which also asserts the thread ended. `uv run pytest -q tests/test_test_waits.py tests/test_pull_workers.py
+  tests/test_pull_workers_security.py -n 2` -> 105 passed; `spec_lint` passes. Test-only; `gates.py` untouched.
+
 ### As shipped
 
 - `gates.py`: `_kill_tree` (snapshot of the shell's group plus ppid-reachable descendants as
