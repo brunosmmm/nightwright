@@ -374,6 +374,31 @@ Acceptance criteria 6 and 7 stay unticked and the status stays `in-progress`.
 - `Subscriber.offer(snap, initial=True)` (the subscribe-time cache read) is ignored once the
   snapshotter has delivered something; the snapshotter's repeated identical stderr error is
   logged at most once per 60 s (`ERROR_LOG_EVERY_S`).
+- `Hub.__init__(cache, pool, refresh_s=None)` differs from the Design's signature: there is no
+  `clock` parameter (tests drive real time with short `refresh_s`), and `refresh_s` defaults to
+  the cache's own `refresh_s`.
+
+### As shipped (2026-11-04, round 3: blocked on missing sibling specs)
+
+Acceptance criteria 6 (whois half) and 7 stay unticked and the status stays `in-progress`. This
+round built nothing new, deliberately:
+
+- **The page does not belong to this spec's dependencies.** SPEC-0414 ("loopback server") names
+  the phone page and the tailnet slice (own-address bind gate, `tailscale whois` identity, MagicDNS
+  hosts, fake `tailscale` fixture) as sibling specs that do not exist yet in `docs/specs/`. This
+  spec's Context assumes child 1 ships `static/`, the 15 s poll, `?selftest=1` and whois; on this
+  branch and on `main` none of that exists. Building a polling page, a static route and a
+  tailnet bind inside SPEC-0402 would write two other specs' scope under this one's id.
+- **The headless test cannot run on this host** (no Chromium/Chrome; Firefox has no `--dump-dom`),
+  and this spec's Definition of done requires `tests/test_dashboard_mobile.py` to run, not skip,
+  here. So AC7 cannot be closed in this campaign even with the page built.
+- The server half (AC1–5, AC8) is complete and covered with real sockets. The `stream_auth_ok`
+  hook (re-run each heartbeat, closes the stream on denial) is the integration point for the
+  tailnet slice's cached whois check; the fake-`tailscale` revocation test and the 403 for
+  denied/unknown/tagged peers belong with that slice.
+- Needed from the human: create the phone-page spec and the tailnet-slice spec under SPEC-0400,
+  then revise SPEC-0402 to either depend on them (and on a host with Chromium) or move AC6's
+  whois half and AC7 into a follow-up spec that does. Recorded as a campaign note.
 
 ## Rollout / migration
 
