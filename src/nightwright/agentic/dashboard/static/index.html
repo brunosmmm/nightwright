@@ -4,6 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="color-scheme" content="light dark">
+<meta name="nw-csrf" content="__NW_CSRF__">
 <title>nightwright</title>
 <link rel="stylesheet" href="/app.css">
 <script src="/app.js" defer></script>
@@ -13,6 +14,7 @@
   <div class="status">
     <span id="dot" class="dot grey" role="img" aria-label="health"></span>
     <span id="reason" class="reason">loading</span>
+    <span id="live" class="live is-polling">polling</span>
   </div>
   <div id="updated" class="muted">waiting for data</div>
   <div id="banner" class="banner hidden" role="status"></div>
@@ -40,5 +42,26 @@
     <div id="events"></div>
   </section>
 </main>
+<section id="drill" class="hidden">
+  <a id="drill-back" class="back" href="#">&larr; all campaigns</a>
+  <section class="card">
+    <h2 id="drill-title">Campaign</h2>
+    <div id="drill-state"></div>
+  </section>
+  <section class="card">
+    <h2>Current run</h2>
+    <div id="drill-run"></div>
+    <div id="drill-tail" class="tail"></div>
+  </section>
+  <section class="card">
+    <h2>Timeline</h2>
+    <div id="drill-timeline"></div>
+  </section>
+  <section class="card">
+    <h2>Runs</h2>
+    <div id="drill-runs"></div>
+  </section>
+</section>
+<pre id="selftest" class="hidden"></pre>
 </body>
 </html>

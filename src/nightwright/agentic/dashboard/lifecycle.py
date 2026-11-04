@@ -150,7 +150,8 @@ def build_record(server, *, code_watch: bool, code_sha: str | None, bind: str) -
     return {"schema": SCHEMA, "pid": os.getpid(), "ticks": start_ticks(os.getpid()),
             "url": f"http://{h}:{port}", "host": host, "port": port, "bind": bind,
             "scheme": "http", "started_at": now, "code_sha": code_sha,
-            "code_watch": code_watch, "clients": 0, "updated_at": now, "auth": "token"}
+            "code_watch": code_watch, "clients": 0, "updated_at": now,
+            "auth": getattr(server, "mode", "local")}            # SPEC-0428: local | whois
 
 
 class RecordRefresher:

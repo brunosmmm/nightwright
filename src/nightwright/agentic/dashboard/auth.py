@@ -1,23 +1,23 @@
-"""Dashboard server auth (SPEC-0414, SPEC-0416): the bind gate, the per-host bearer token and the
-Host/Origin (DNS rebinding) check. The gate accepts loopback only; it learns this host's own
-tailnet addresses (`tailscale ip`, the only `tailscale` form run here) but refuses to serve on
-them until the identity gate is wired into the server. `Gate` (SPEC-0417) is that gate's decision
-logic (`tailscale whois`); nothing calls it yet. Nothing here opens a socket. Not imported by `snapshot` or
-any queue-side module."""
+"""Dashboard server auth (SPEC-0414, SPEC-0416, SPEC-0417, SPEC-0428): the bind gate, the strict
+Host/Origin (DNS rebinding) allowlist, same-origin and CSRF checks for writes, and the tailnet
+identity gate. A loopback bind needs no credential (mode `local`); an own tailnet address
+(`tailscale ip`) is served in mode `whois`, where `Gate` (`tailscale whois`) decides every
+request. Nothing here opens a socket. Not imported by `snapshot` or any queue-side module."""
 from __future__ import annotations
 
+import base64
 import contextlib
 import dataclasses
+import hashlib
+import hmac
 import ipaddress
 import json
 import os
 import secrets
 import subprocess
-import tempfile
 import threading
 import time
 
-from . import dashboard_dir
 
 DEFAULT_PORT = 8791
 
@@ -168,7 +168,8 @@ def resolve_bind(spec, own_fn=own_tailnet_ips) -> tuple[str, int]:
     """The one bind entry point (SPEC-0416): parse, resolve `tailscale[:PORT]` to this host's
     first own tailnet address, run `check_bind`. `own_fn` is called once for `tailscale` and for
     an address in the Tailscale ranges, never otherwise; `TailnetMissing` when it fails.
-    `BindRefused` for everything refused, including (for now) an accepted own tailnet address."""
+    `BindRefused` for everything refused. An own tailnet address is served behind the whois
+    gate (SPEC-0428)."""
     host, port = parse_bind(spec)
     own: list[str] = []
     if host.lower() == "tailscale":
@@ -181,58 +182,23 @@ def resolve_bind(spec, own_fn=own_tailnet_ips) -> tuple[str, int]:
     why = check_bind(host, own)
     if why:
         raise BindRefused(f"refusing to bind: {why}")
-    if not _unmapped(_ip(host)).is_loopback:
-        # The sibling slice (tailnet whois identity gate) removes exactly this refusal.
-        raise BindRefused(
-            f"refusing to bind {host}: tailnet serving needs the identity gate, which is not "
-            f"available yet; bind loopback with `--bind 127.0.0.1:PORT`")
     return host, port
 
 
-def _read_token(p) -> str:
-    try:
-        return p.read_text(encoding="utf-8").strip()
-    except (OSError, ValueError):               # missing, unreadable or not UTF-8: regenerate
-        return ""
-
-
-def local_token(cfg) -> str:
-    """`<dashboard_dir>/local.token` (0600): read, or created on first use. A looser file is
-    chmod-ed to 0600; an empty or unreadable (not UTF-8) one is regenerated. Creation is
-    exclusive (the token is written to a private temp file, then hard-linked into place), so two
-    servers starting together on one data dir end up with the same token."""
-    d = dashboard_dir(cfg)
-    p = d / "local.token"
-    tok = _read_token(p)
-    if not tok:
-        tok = secrets.token_urlsafe(32)
-        fd, tmp = tempfile.mkstemp(prefix=".local.token.", dir=d)
-        try:
-            os.fchmod(fd, 0o600)
-            os.write(fd, (tok + "\n").encode("ascii"))
-            os.close(fd)
-            try:
-                os.link(tmp, p)                 # fails if another process won the race
-            except FileExistsError:
-                other = _read_token(p)
-                if other:
-                    return other
-                os.replace(tmp, p)              # an empty or corrupt file: take it over
-                return tok
-        finally:
-            with contextlib.suppress(OSError):
-                os.unlink(tmp)
-        return tok
-    if p.stat().st_mode & 0o777 != 0o600:
-        os.chmod(p, 0o600)
-    return tok
-
-
-def host_values(bound_host: str, port: int) -> set[str]:
-    """The `Host` values accepted: the bound address with the port (an IPv6 one in brackets) and
-    `localhost:port`."""
+def host_values(bound_host: str, port: int, mode: str | None = None,
+                magic: str | None = None) -> set[str]:
+    """The `Host` values accepted (SPEC-0428), all with the port: the bound address (an IPv6 one
+    in brackets); on a loopback bind also `127.0.0.1`, `localhost` and `[::1]`; on a tailnet bind
+    also the host's MagicDNS name and its first label when known."""
+    mode = mode or bind_mode(bound_host)
     h = f"[{bound_host}]" if ":" in bound_host else bound_host
-    return {f"{h}:{port}".lower(), f"localhost:{port}"}
+    names = {h}
+    if mode == "local":
+        names |= {"127.0.0.1", "localhost", "[::1]"}
+    dns = _dns_name(magic)
+    if dns and mode != "local":
+        names |= {dns, dns.split(".", 1)[0]}
+    return {f"{n}:{port}".lower() for n in names}
 
 
 def check_host_origin(headers, allowed: set[str]) -> str | None:
@@ -250,9 +216,60 @@ def check_host_origin(headers, allowed: set[str]) -> str | None:
 
 
 def bind_mode(host: str) -> str:
-    """`"token"` for a loopback bind host, `"whois"` for every other host string (SPEC-0417)."""
+    """`"local"` for a loopback bind host (no credential, SPEC-0428), `"whois"` for every other
+    host string (SPEC-0417)."""
     ip = _ip(host) if isinstance(host, str) else None
-    return "token" if ip is not None and _unmapped(ip).is_loopback else "whois"
+    return "local" if ip is not None and _unmapped(ip).is_loopback else "whois"
+
+
+def check_same_origin(headers, allowed: set[str]) -> str | None:
+    """SPEC-0428 for a state-changing request: an allowed `Origin`, or with no `Origin` a
+    `Referer` on an allowed host; the audit reason (`bad_origin` / `no_origin`), else None."""
+    origin = headers.get("Origin")
+    if origin is not None:
+        o = origin.strip().lower()
+        ok = o.startswith("http://") and o[len("http://"):] in allowed
+        return None if ok else "bad_origin"
+    ref = headers.get("Referer")
+    if ref is None:
+        return "no_origin"
+    r = ref.strip().lower()
+    if not r.startswith("http://"):
+        return "bad_origin"
+    host = r[len("http://"):].split("/", 1)[0].split("?", 1)[0].split("#", 1)[0]
+    return None if host in allowed else "bad_origin"
+
+
+def _b64(raw: bytes) -> str:
+    return base64.urlsafe_b64encode(raw).rstrip(b"=").decode("ascii")
+
+
+class Csrf:
+    """SPEC-0428 per-page CSRF values: `<nonce>.<mac>`, `mac = HMAC-SHA256(secret, "csrf" |
+    nonce | identity_key)`. Stateless: a value is valid for this secret's (process's) life and
+    only for the identity it was minted for. `sign` / `verify` are the same MAC for other
+    purposes (SPEC-0429's plan token)."""
+
+    def __init__(self, secret: bytes | None = None):
+        self._secret = secret or secrets.token_bytes(32)
+
+    def sign(self, *parts: str) -> str:
+        msg = "\x00".join(parts).encode("utf-8", "surrogatepass")
+        return _b64(hmac.new(self._secret, msg, hashlib.sha256).digest())
+
+    def verify(self, mac, *parts: str) -> bool:
+        return isinstance(mac, str) and hmac.compare_digest(
+            mac.encode("ascii", "replace"), self.sign(*parts).encode("ascii"))
+
+    def mint(self, identity_key: str) -> str:
+        nonce = _b64(secrets.token_bytes(16))
+        return f"{nonce}.{self.sign('csrf', nonce, identity_key)}"
+
+    def check(self, value, identity_key: str) -> bool:
+        if not isinstance(value, str) or len(value) > 200 or value.count(".") != 1:
+            return False
+        nonce, mac = value.strip().split(".")
+        return bool(nonce) and self.verify(mac, "csrf", nonce, identity_key)
 
 
 def _peer_ip(addr) -> str | None:

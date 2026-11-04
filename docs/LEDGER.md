@@ -247,10 +247,14 @@ progress. This is the single place to see *what has been decided* and *what is i
   - [x] [SPEC-0364](./specs/0364-herdr-run-panes-one-pane-per-active-campaign-in.md) herdr run panes: one pane per active campaign in an nw runs tab, running nw campaign tail, agent state + display agent — superseded
   - [x] [SPEC-0365](./specs/0365-herdr-watcher-auto-start-the-conductor-follower.md) herdr watcher auto-start: the conductor follower supervises nw herdr watch — done
   - [x] [SPEC-0366](./specs/0366-herdr-run-tabs-one-tab-per-campaign-named-after.md) herdr run tabs: one tab per campaign named after the work, supersedes the shared nw runs tab — done
-- **[SPEC-0400](./specs/0400-remote-web-dashboard-live-view-of-active-queue.md) — Remote web dashboard and decisions inbox over Tailscale (nw serve --dashboard)** · accepted · (3/3 done)
+- **[SPEC-0400](./specs/0400-remote-web-dashboard-live-view-of-active-queue.md) — Remote web dashboard and decisions inbox over Tailscale (nw serve --dashboard)** · accepted · (4/7 done)
   - [x] [SPEC-0401](./specs/0401-read-only-dashboard-server-and-nw-dashboard-v1.md) Dashboard snapshot: nw.dashboard.v1, SnapshotCache and nw dashboard snapshot — done
+  - [x] [SPEC-0402](./specs/0402-live-updates-over-sse-and-per-campaign-drilldown.md) Live snapshot stream over SSE with polling fallback and load guard — done
   - [x] [SPEC-0403](./specs/0403-decisions-inbox-with-authenticated-answers.md) Decisions inbox payload: full escalation entries, effects and host fixes in nw.dashboard.v1 — done
   - [x] [SPEC-0404](./specs/0404-dashboard-lifecycle-systemd-user-unit-code-change.md) Dashboard server lifecycle: code-change exit, exit 3 without a tailnet address, server.json record — done
+  - [ ] [SPEC-0428](./specs/0428-dashboard-loopback-without-a-token-host-allowlist.md) Dashboard auth without a loopback token: Host allowlist, same-origin, per-page CSRF; whois gate wired into the server — accepted
+  - [ ] [SPEC-0429](./specs/0429-answer-escalations-from-the-dashboard-page-plan.md) Answer escalations from the dashboard page: plan, confirm, answer through plan_answer/apply_answer, 409 and audit — accepted
+  - [ ] [SPEC-0430](./specs/0430-dashboard-campaign-drilldown-ledger-timeline.md) Dashboard campaign drilldown: ledger timeline, current run and live run tail from stream.jsonl — accepted
 - **[SPEC-0405](./specs/0405-rich-queue-tui-prioritized-live-queue-campaign.md) — Rich queue TUI: prioritized live queue, campaign detail popup, closed-campaign history and a cross-campaign findings and decisions browser over one shared history layer** · accepted · (3/3 done)
   - [x] [SPEC-0408](./specs/0408-ledger-provenance-finding-run-id-and-key-triage.md) Ledger provenance: finding run_id and key, triage events — done
   - [x] [SPEC-0409](./specs/0409-tui-test-harness-real-app-pilots-on-real-fixture.md) Remove Textual/pyte test skips, add the AST guard and a TUI test runtime budget — done
@@ -282,6 +286,9 @@ progress. This is the single place to see *what has been decided* and *what is i
 | [SPEC-0391](./specs/0391-worker-host-slots-from-registry.md) | A gate job carries the worker's registry slots as the worker host's slot limit | feature | in-progress | — | 2026-11-02 |
 | [SPEC-0400](./specs/0400-remote-web-dashboard-live-view-of-active-queue.md) | Remote web dashboard and decisions inbox over Tailscale (nw serve --dashboard) | epic | accepted | M9: agentic workflow | 2026-11-03 |
 | [SPEC-0405](./specs/0405-rich-queue-tui-prioritized-live-queue-campaign.md) | Rich queue TUI: prioritized live queue, campaign detail popup, closed-campaign history and a cross-campaign findings and decisions browser over one shared history layer | epic | accepted | — | 2026-11-03 |
+| [SPEC-0428](./specs/0428-dashboard-loopback-without-a-token-host-allowlist.md) | Dashboard auth without a loopback token: Host allowlist, same-origin, per-page CSRF; whois gate wired into the server | feature | accepted | M9: agentic workflow | 2026-11-04 |
+| [SPEC-0429](./specs/0429-answer-escalations-from-the-dashboard-page-plan.md) | Answer escalations from the dashboard page: plan, confirm, answer through plan_answer/apply_answer, 409 and audit | feature | accepted | M9: agentic workflow | 2026-11-04 |
+| [SPEC-0430](./specs/0430-dashboard-campaign-drilldown-ledger-timeline.md) | Dashboard campaign drilldown: ledger timeline, current run and live run tail from stream.jsonl | feature | accepted | M9: agentic workflow | 2026-11-04 |
 
 ## Done
 
@@ -652,13 +659,13 @@ progress. This is the single place to see *what has been decided* and *what is i
 | [SPEC-0398](./specs/0398-quiet-follower-delivers-campaign-silent-for.md) | The quiet follower holds `campaign_silent` / `state_stuck` for a GATING campaign that waits for a gate slot, runs a gate, or has its gate deferred | feature | done | M10: agentic MVP | 2026-11-02 |
 | [SPEC-0399](./specs/0399-pr-mode-with-auto-merge-merge-policy-pr-opens-a.md) | Implicit docs/LEDGER.md regeneration on every nw rebase (first slice of PR auto-merge) | feature | done | M9: agentic workflow | 2026-11-02 |
 | [SPEC-0401](./specs/0401-read-only-dashboard-server-and-nw-dashboard-v1.md) | Dashboard snapshot: nw.dashboard.v1, SnapshotCache and nw dashboard snapshot | feature | done | M9: agentic workflow | 2026-11-03 |
+| [SPEC-0402](./specs/0402-live-updates-over-sse-and-per-campaign-drilldown.md) | Live snapshot stream over SSE with polling fallback and load guard | feature | done | M9: agentic workflow | 2026-11-04 |
 | [SPEC-0403](./specs/0403-decisions-inbox-with-authenticated-answers.md) | Decisions inbox payload: full escalation entries, effects and host fixes in nw.dashboard.v1 | feature | done | M9: agentic workflow | 2026-11-04 |
 | [SPEC-0404](./specs/0404-dashboard-lifecycle-systemd-user-unit-code-change.md) | Dashboard server lifecycle: code-change exit, exit 3 without a tailnet address, server.json record | feature | done | — | 2026-11-04 |
 | [SPEC-0408](./specs/0408-ledger-provenance-finding-run-id-and-key-triage.md) | Ledger provenance: finding run_id and key, triage events | feature | done | — | 2026-11-03 |
 | [SPEC-0409](./specs/0409-tui-test-harness-real-app-pilots-on-real-fixture.md) | Remove Textual/pyte test skips, add the AST guard and a TUI test runtime budget | feature | done | M9: agentic workflow | 2026-11-03 |
 | [SPEC-0410](./specs/0410-live-queue-view-state-grouped-sections-with.md) | Live queue view: state-grouped sections with priority, admission order and why-waiting | feature | done | — | 2026-11-03 |
 | [SPEC-0413](./specs/0413-dashboard-phone-page-spec-0400-child-slice-3-of.md) | Dashboard phone page: phone-first static UI with a 15 s conditional poll of /api/snapshot | feature | done | M9: agentic workflow | 2026-11-04 |
-| [SPEC-0414](./specs/0414-dashboard-server-nw-serve-dashboard-spec-0400.md) | Dashboard server, loopback: nw serve --dashboard with token auth and GET /api/snapshot | feature | done | M9: agentic workflow | 2026-11-04 |
 | [SPEC-0416](./specs/0416-dashboard-tailnet-slice-spec-0400-child-follows.md) | Dashboard tailnet bind gate: own-address resolution, --bind tailscale and TailnetMissing (exit 3) | feature | done | M9: agentic workflow | 2026-11-04 |
 | [SPEC-0417](./specs/0417-dashboard-tailnet-whois-identity-gate-and-tailnet.md) | Dashboard whois Gate and Verdict, and fake tailscale status/whois | feature | done | M9: agentic workflow | 2026-11-04 |
 | [SPEC-0418](./specs/0418-dashboard-server-serves-the-phone-page-route-get.md) | Dashboard server serves the phone page: GET / /app.js /app.css through assets.ROUTES, bearer-exempt, behind Host/Origin | feature | done | M9: agentic workflow | 2026-11-04 |
@@ -692,6 +699,7 @@ progress. This is the single place to see *what has been decided* and *what is i
 | [SPEC-0355](./specs/0355-faster-code-gating.md) | Faster code gating: narrow affected-test fallbacks, close reuse of a green loop gate, failed-first reruns | feature | superseded | M9: agentic workflow | 2026-11-01 |
 | [SPEC-0361](./specs/0361-herdr-reporter-nw-herdr-watch-pushes-queue-tokens.md) | herdr reporter: nw herdr watch pushes queue tokens and notifications | feature | superseded | — | 2026-11-01 |
 | [SPEC-0364](./specs/0364-herdr-run-panes-one-pane-per-active-campaign-in.md) | herdr run panes: one pane per active campaign in an nw runs tab, running nw campaign tail, agent state + display agent | feature | superseded | — | 2026-11-01 |
+| [SPEC-0414](./specs/0414-dashboard-server-nw-serve-dashboard-spec-0400.md) | Dashboard server, loopback: nw serve --dashboard with token auth and GET /api/snapshot | feature | superseded | M9: agentic workflow | 2026-11-04 |
 
 <!-- specs:end -->
 

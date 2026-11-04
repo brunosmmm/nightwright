@@ -160,7 +160,7 @@ def test_page_over_real_http_with_a_ledger_change(stub):
     assert out["second_status"] == 304 and out["rebuilt_on_304"] is False
     assert out["after_change_status"] == 200
     assert "$4.50 / $10.00" in out["active_after"]
-    assert out["banner_401"].startswith("Not signed in")
+    assert out["banner_401"].startswith("The dashboard refused this request")
     assert out["banner_403"].startswith("This device is not allowed")
     assert out["banner_after"] == ""
     assert out["statuses"][:2] == [200, 304] and 401 in out["statuses"] and 403 in out["statuses"]

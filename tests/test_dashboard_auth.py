@@ -1,9 +1,6 @@
-"""SPEC-0414: dashboard bind gate, local token and Host/Origin check (unit, no sockets)."""
-import os
-import stat
+"""SPEC-0414/0428: dashboard bind gate and Host/Origin allowlist (unit, no sockets)."""
 
 import pytest
-import waits
 
 from nightwright.agentic.dashboard import auth as A
 
@@ -62,64 +59,24 @@ def test_bind_refused_is_a_value_error():
     assert issubclass(A.BindRefused, ValueError)
 
 
-def mode(p):
-    return stat.S_IMODE(p.stat().st_mode)
-
-
-def test_local_token_created_0600_in_0700_dir_and_reused(tmp_path):
-    cfg = {"data_dir": str(tmp_path)}
-    tok = A.local_token(cfg)
-    d = tmp_path / "agentic" / "dashboard"
-    assert len(tok) >= 32 and mode(d) == 0o700 and mode(d / "local.token") == 0o600
-    assert A.local_token(cfg) == tok
-
-
-def test_local_token_repairs_mode_and_regenerates_empty(tmp_path):
-    cfg = {"data_dir": str(tmp_path)}
-    tok = A.local_token(cfg)
-    p = tmp_path / "agentic" / "dashboard" / "local.token"
-    os.chmod(p, 0o644)
-    assert A.local_token(cfg) == tok and mode(p) == 0o600
-    p.write_text("")
-    os.chmod(p, 0o644)
-    new = A.local_token(cfg)
-    assert new and new != tok and mode(p) == 0o600 and p.read_text().strip() == new
-
-
-def test_local_token_non_utf8_file_is_regenerated(tmp_path):
-    cfg = {"data_dir": str(tmp_path)}
-    A.local_token(cfg)
-    p = tmp_path / "agentic" / "dashboard" / "local.token"
-    p.write_bytes(b"\xff\xfe\x80garbage")
-    new = A.local_token(cfg)
-    assert new and p.read_text().strip() == new and mode(p) == 0o600
-
-
-def test_local_token_concurrent_first_starts_agree(tmp_path):
-    import threading
-    cfg = {"data_dir": str(tmp_path)}
-    out, start = [], threading.Barrier(8)
-
-    def go():
-        start.wait()
-        out.append(A.local_token(cfg))
-    ts = [threading.Thread(target=go) for _ in range(8)]
-    [t.start() for t in ts]
-    [waits.join(t, 30) for t in ts]
-    d = tmp_path / "agentic" / "dashboard"
-    assert len(out) == 8 and len(set(out)) == 1
-    assert (d / "local.token").read_text().strip() == out[0]
-    assert [x.name for x in d.iterdir()] == ["local.token"]       # no temp file left behind
-
-
 def test_host_values_brackets_ipv6():
-    assert A.host_values("127.0.0.1", 8791) == {"127.0.0.1:8791", "localhost:8791"}
-    assert A.host_values("::1", 8791) == {"[::1]:8791", "localhost:8791"}
+    loop = {"127.0.0.1:8791", "localhost:8791", "[::1]:8791"}
+    assert A.host_values("127.0.0.1", 8791) == loop
+    assert A.host_values("::1", 8791) == loop
+    assert A.host_values("127.0.0.2", 8791) == loop | {"127.0.0.2:8791"}
+
+
+def test_host_values_tailnet_bind_adds_magicdns_name_and_label_only():
+    want = {"100.64.0.5:8791", "box.tail1234.ts.net:8791", "box:8791"}
+    assert A.host_values("100.64.0.5", 8791, "whois", "box.tail1234.ts.net.") == want
+    assert A.host_values("100.64.0.5", 8791, "whois") == {"100.64.0.5:8791"}
 
 
 @pytest.mark.parametrize("headers,want", [
     ({"Host": "127.0.0.1:8791"}, None),
     ({"Host": "localhost:8791"}, None),
+    ({"Host": "[::1]:8791"}, None),
+    ({"Host": "[::1]:8791", "Origin": "http://[::1]:8791"}, None),
     ({"Host": "LOCALHOST:8791", "Origin": "http://localhost:8791"}, None),
     ({"Host": "127.0.0.1:8791", "Origin": "http://127.0.0.1:8791"}, None),
     ({"Host": "evil.example"}, "bad_host"),

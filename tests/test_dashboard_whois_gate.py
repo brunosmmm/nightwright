@@ -350,8 +350,8 @@ def test_magic_name_never_raises_and_shares_the_status_read():
 
 
 @pytest.mark.parametrize("host,want", [
-    ("127.0.0.1", "token"), ("::1", "token"), ("127.0.0.2", "token"),
-    ("::ffff:127.0.0.1", "token"), ("100.64.0.5", "whois"), ("fd7a:115c:a1e0::1", "whois"),
+    ("127.0.0.1", "local"), ("::1", "local"), ("127.0.0.2", "local"),
+    ("::ffff:127.0.0.1", "local"), ("100.64.0.5", "whois"), ("fd7a:115c:a1e0::1", "whois"),
     ("0.0.0.0", "whois"), ("tailscale", "whois"), ("", "whois")])
 def test_bind_mode(host, want):
     assert A.bind_mode(host) == want
@@ -428,19 +428,22 @@ def test_gate_only_ever_runs_status_and_whois_forms(ts):
                                              and A.is_tailnet_ip(c[2]))
 
 
-# --- criterion 7: nothing is wired ------------------------------------------------------------
+# --- SPEC-0428: the gate is wired into the server, not the CLI -------------------------------
 SRC = Path(A.__file__).parent
 
 
-@pytest.mark.parametrize("mod", ["server.py", "../cli_worker.py"])
-def test_server_and_cli_do_not_reference_the_gate(mod):
+def _names(mod):
     tree = ast.parse((SRC / mod).read_text(encoding="utf-8"))
     names = {n.id for n in ast.walk(tree) if isinstance(n, ast.Name)}
     names |= {n.attr for n in ast.walk(tree) if isinstance(n, ast.Attribute)}
     names |= {a.name for n in ast.walk(tree) if isinstance(n, ast.ImportFrom) for a in n.names}
-    assert not names & {"Gate", "Verdict", "bind_mode"}
+    return names
 
 
-def test_resolve_bind_still_refuses_the_tailnet():
-    with pytest.raises(A.BindRefused, match="identity gate"):
-        A.resolve_bind("tailscale", own_fn=lambda: ["100.64.0.5"])
+def test_the_server_wires_the_gate_and_the_cli_does_not():
+    assert {"Gate", "bind_mode"} <= _names("server.py")
+    assert not _names("../cli_worker.py") & {"Gate", "Verdict", "bind_mode"}
+
+
+def test_resolve_bind_accepts_an_own_tailnet_address():
+    assert A.resolve_bind("tailscale", own_fn=lambda: ["100.64.0.5"]) == ("100.64.0.5", 8791)

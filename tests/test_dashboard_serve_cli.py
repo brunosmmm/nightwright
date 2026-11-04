@@ -1,4 +1,5 @@
-"""SPEC-0414: `nw serve --dashboard` as a real subprocess against the seeded data dir."""
+"""SPEC-0414 / SPEC-0428: `nw serve --dashboard` as a real subprocess against the seeded data
+dir."""
 import http.client
 import json
 import os
@@ -197,38 +198,30 @@ def test_dashboard_without_bind_binds_8791(fx):
         stop(proc)
 
 
-def test_serve_snapshot_token_sigterm_and_no_tailscale(fx, tmp_path):
+def test_serve_snapshot_no_login_sigterm_and_no_tailscale(fx, tmp_path):
+    """SPEC-0428: a loopback dashboard serves the snapshot with no credential (an
+    Authorization header is ignored), creates no `local.token`, and `server.json` carries no
+    secret."""
     proc = start(fx, "--bind", "127.0.0.1:0", env=stub_env(fx, tmp_path))
     try:
         rec = wait_server(fx, proc)
-        assert rec["auth"] == "token" and rec["pid"] == proc.pid and rec["port"] > 0
+        assert rec["auth"] == "local" and rec["pid"] == proc.pid and rec["port"] > 0
+        assert not [k for k in rec if "token" in k or "secret" in k]
         d = dash(fx)
-        tok = (d / "local.token").read_text().strip()
-        assert stat.S_IMODE((d / "local.token").stat().st_mode) == 0o600
         assert stat.S_IMODE(d.stat().st_mode) == 0o700
-        st, body = get(rec["port"], tok)
-        doc = json.loads(body)
-        assert st == 200 and doc["schema"] == "nw.dashboard.v1"
-        assert get(rec["port"])[0] == 401
+        for tok in (None, "junk"):
+            st, body = get(rec["port"], tok)
+            doc = json.loads(body)
+            assert st == 200 and doc["schema"] == "nw.dashboard.v1"
+        assert not (d / "local.token").exists()
     finally:
         _, err = stop(proc)
     assert proc.returncode == 0
+    assert f"nw serve: dashboard on {rec['url']} (loopback, no login)" in err
+    assert "token" not in err.lower()
     assert not (d / "server.json").exists()
-    assert tok not in err and tok not in (d / "audit.jsonl").read_text()
+    assert not (d / "local.token").exists()
     assert not (tmp_path / "tailscale.calls").exists()
-
-
-def test_token_is_reused_across_starts_and_not_in_server_json(fx):
-    toks = []
-    for _ in range(2):
-        proc = start(fx, "--bind", "127.0.0.1:0")
-        try:
-            wait_server(fx, proc)
-            toks.append((dash(fx) / "local.token").read_text().strip())
-            assert toks[-1] not in (dash(fx) / "server.json").read_text()
-        finally:
-            stop(proc)
-    assert toks[0] == toks[1]
 
 
 def test_stale_server_json_is_replaced_and_foreign_one_is_kept(fx):

@@ -300,9 +300,18 @@ def test_clients_count_written_only_on_change(fx):
     assert r.writes == 2
 
 
-def test_dashboard_server_client_count_hook_defaults_to_zero(fx):
+def test_dashboard_server_client_count_is_the_open_streams(fx):
+    """`clients` in `server.json` is the number of open live streams (the hub's slot pool)."""
     from nightwright.agentic.dashboard import server as DS
-    assert DS.DashboardServer.client_count(object()) == 0
+    srv = DS.make_server(fx["cfg"], "127.0.0.1:0")
+    try:
+        assert srv.client_count() == 0
+        assert srv.hub.pool.acquire() and srv.hub.pool.acquire()
+        assert srv.client_count() == 2
+        srv.hub.pool.release()
+        assert srv.client_count() == 1
+    finally:
+        srv.server_close()
 
 
 SITECUSTOMIZE = """

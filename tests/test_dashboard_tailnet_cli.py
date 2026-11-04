@@ -95,14 +95,20 @@ def test_refused_binds_exit_2_with_the_rule(fx, tmp_path, tls_files, bind, word,
 
 @pytest.mark.parametrize("bind", ["tailscale", "TAILSCALE:0", "100.64.0.5:0"])
 @pytest.mark.parametrize("with_tls", [False, True])
-def test_own_tailnet_address_is_refused_by_the_identity_gate(fx, tmp_path, tls_files, bind,
-                                                              with_tls):
+def test_own_tailnet_address_passes_the_bind_gate(fx, tmp_path, tls_files, bind, with_tls):
+    """SPEC-0428 Decision 2: an own tailnet address is no longer refused by the bind gate. With
+    a TLS flag it is the TLS refusal (exit 2); without, the server tries to bind the fake's
+    address, which this host does not have (exit 1, a bind OSError, not a refusal)."""
     env = fake_env(fx, tmp_path)
     r = run_serve(fx, "--dashboard", "--bind", bind, *(tls_files if with_tls else []), env=env)
-    assert r.returncode == 2, r.stderr
-    assert "identity gate" in r.stderr and "100.64.0.5" in r.stderr
-    assert "TLS is not supported" not in r.stderr
-    assert FT.calls(env) == [["ip"]]
+    assert "refusing to bind" not in r.stderr and "identity gate" not in r.stderr
+    assert "Traceback" not in r.stderr
+    if with_tls:
+        assert r.returncode == 2 and "TLS is not supported with --dashboard" in r.stderr
+        assert FT.calls(env) == [["ip"]]
+    else:
+        assert r.returncode == 1, r.stderr
+        assert FT.calls(env) and all(c == ["ip"] for c in FT.calls(env))
     untouched(fx)
 
 
@@ -111,18 +117,18 @@ def test_default_bind_is_still_loopback_and_never_runs_tailscale(fx, tmp_path):
     p = start(fx, env=env)
     try:
         rec = wait_server(fx, p)
-        assert rec["auth"] == "token" and rec["host"] == "127.0.0.1" and rec["port"] == 8791
+        assert rec["auth"] == "local" and rec["host"] == "127.0.0.1" and rec["port"] == 8791
         assert FT.calls(env) == []
     finally:
         stop(p)
 
 
-def test_explicit_loopback_serves_with_token_and_never_runs_tailscale(fx, tmp_path):
+def test_explicit_loopback_serves_with_no_login_and_never_runs_tailscale(fx, tmp_path):
     env = fake_env(fx, tmp_path)
     p = start(fx, "--bind", "127.0.0.1:0", env=env)
     try:
         rec = wait_server(fx, p)
-        assert rec["auth"] == "token" and rec["host"] == "127.0.0.1"
+        assert rec["auth"] == "local" and rec["host"] == "127.0.0.1"
         assert FT.calls(env) == []
     finally:
         stop(p)

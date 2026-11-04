@@ -7,6 +7,7 @@ run on the host. Read-only: no `events.sync`, no lock, no write (SPEC-0400 invar
 offers an answer `plan_answer` refuses for a structural reason."""
 from __future__ import annotations
 
+import datetime as dt
 import re
 
 from .. import escalations as ESC
@@ -37,6 +38,9 @@ HOST_FIX = {
     None: "On the host: `nw campaign log <cid> --tail 20`.",
 }
 NO_ROOT = "the project repo"
+AUTO_WINDOW_S = 24 * 3600           # SPEC-0429: auto-applied answers listed for reversal this long
+REVERSE_PREFIX = ("Reverses the auto-applied answer: the conductor undoes what it can, then "
+                  "applies this one. ")
 # `triage_reviews`' finding records carry no `synthetic` key (it returns the ids apart); a
 # synthetic finding's id is `<persona>#fix` or `<persona>#ac<j>`, the rule triage itself uses
 _SYNTHETIC_ID = re.compile(r"#(fix|ac\d+)$")
@@ -121,10 +125,11 @@ def forms_of(options, has_campaign: bool, findings, unmet) -> list[str]:
     return out
 
 
-def effects_of(kind, forms) -> dict:
+def effects_of(kind, forms, reverses: bool = False) -> dict:
+    pre = REVERSE_PREFIX if reverses else ""
     if kind == "worker_lost":
-        return {f: EFFECTS_WORKER_LOST for f in forms}
-    return {f: EFFECTS[f] for f in forms}
+        return {f: pre + EFFECTS_WORKER_LOST for f in forms}
+    return {f: pre + EFFECTS[f] for f in forms}
 
 
 def _entry(cfg, rec: dict, rows: dict) -> dict:
@@ -157,6 +162,37 @@ def _entry(cfg, rec: dict, rows: dict) -> dict:
                 "effects": effects_of(rec.get("kind"), forms)}
     except Exception as e:                          # noqa: BLE001 - one entry, not the inbox
         return {**base, "error": _error(e), "answerable": False}
+
+
+def _age_s(ts, now) -> float | None:
+    try:
+        t = dt.datetime.fromisoformat(str(ts))
+        if t.tzinfo is None:
+            t = t.astimezone()
+        return (now - t).total_seconds()
+    except (TypeError, ValueError):
+        return None
+
+
+def auto_applied_entries(cfg, rows: dict, now=None) -> list[dict]:
+    """SPEC-0429: answered records whose answer was auto-applied (SPEC-0425) within
+    `AUTO_WINDOW_S`, each an inbox entry the human may reverse once (`ESC._reversible`)."""
+    now = now or dt.datetime.now().astimezone()
+    out = []
+    for rec in ESC.list_all(cfg, "answered"):
+        if not ESC._reversible(rec, "human"):
+            continue
+        age = _age_s(rec.get("answered_at"), now)
+        if age is None or age > AUTO_WINDOW_S:
+            continue
+        e = _entry(cfg, rec, rows)
+        if "error" not in e:
+            e.update(answerable=True, pending=False, why_not=None,
+                     effects=effects_of(rec.get("kind"), e["forms"], reverses=True))
+        e.update(reversible=True, auto_answer=ESC.answer_summary(rec),
+                 answered_at=rec.get("answered_at"))
+        out.append(e)
+    return sorted(out, key=lambda r: (str(r.get("answered_at") or ""), str(r.get("id") or "")))
 
 
 def escalation_entries(cfg, rows: dict) -> list[dict]:
@@ -215,10 +251,11 @@ def _safe(fn, *a):
 
 
 def build_inbox(cfg, needs_you_rows) -> dict:
-    """`{"escalations": [...], "parks": [...]}`. `needs_you_rows` is `dashboard_payload`'s
+    """`{"escalations": [...], "parks": [...], "auto_applied": [...]}`. `needs_you_rows` is `dashboard_payload`'s
     `needs_you` list, or its `{"error": …}` when the payload failed: then `parks` is that error
     and `escalations` still builds. Each section fails alone, and each escalation entry too."""
     failed = isinstance(needs_you_rows, dict)
     rows = {} if failed else {r.get("campaign"): r for r in needs_you_rows or []}
     return {"escalations": _safe(escalation_entries, cfg, rows),
-            "parks": needs_you_rows if failed else _safe(park_entries, cfg, needs_you_rows)}
+            "parks": needs_you_rows if failed else _safe(park_entries, cfg, needs_you_rows),
+            "auto_applied": _safe(auto_applied_entries, cfg, rows)}

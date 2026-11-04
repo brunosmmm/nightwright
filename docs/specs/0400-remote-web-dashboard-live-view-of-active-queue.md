@@ -337,6 +337,25 @@ plus read-only views; an authenticated write path; streaming; supervision; and p
 - [ ] Dashboard lifecycle: systemd user unit, code-change restart and nw dashboard status (project: Meta-Tools) — `nw dashboard unit --install|--uninstall|--print` (user unit, `Restart=always`, ExecStart pinned to the installed `nw`), server exits 0 on code change (SPEC-0231 codewatch) and non-zero when the tailnet address is missing, `server.json` runtime record (pid + start ticks, url, clients), `nw dashboard status [--json]` (unit, pid, url, tailscale state, whois self-check), `conduct-status` `dashboard` key, `agentic.dashboard` config keys documented in `docs/WORKFLOW.md` with the human's Tailscale setup steps (depends_on child 1)
 - [ ] Phone notifications via Web Push over the tailnet (project: Meta-Tools) — opt-in HTTPS via `tailscale cert` for the MagicDNS name (still tailnet-IP bound), service worker + web app manifest (iOS home-screen install), VAPID keypair under `agentic/dashboard/push/`, subscribe/unsubscribe per device (audited), the server's own `--for dashboard` events cursor pushes a content-free "N decision(s) waiting" on `escalation` and on SPEC-0232 reminders, expired subscriptions pruned, new dependency `cryptography` (RFC 8291 aes128gcm + ECDH P-256 + ES256 VAPID JWT; not in stdlib) (depends_on child 2 and child 4)
 
+**Delivery record (2026-11-04).** The breakdown above is the plan; the queue split it into these
+specs (the linter's rollup in `docs/LEDGER.md` is the authority on status):
+
+- child 1 → SPEC-0401 (snapshot), SPEC-0413 (page), SPEC-0414 (loopback server, superseded by
+  SPEC-0428 for auth), SPEC-0416 (tailnet bind gate), SPEC-0417 (whois gate logic), SPEC-0418
+  (page routes), SPEC-0428 (no loopback token: Host allowlist, same-origin, per-page CSRF, no
+  CORS; whois gate wired into the server, tailnet binds served). Decision 2's "loopback binds
+  require the local token" is replaced by SPEC-0428 (the human's 2026-11-04 decision).
+- child 2 → SPEC-0403 (inbox payload) and SPEC-0429 (answering from the page: plan / confirm /
+  answer through `plan_answer` / `apply_answer`, 409, audit, auto-answer reversal).
+- child 3 → SPEC-0402 (live snapshot stream) and SPEC-0430 (campaign drilldown and live run tail).
+- child 4 → SPEC-0404 (code-change exit, exit 3, `server.json`); the systemd user unit and `nw
+  dashboard status|unit` are a separate, parallel build.
+- child 5 (Web Push) is **not delivered** and has no spec yet: it needs the new `cryptography`
+  dependency, HTTPS through `tailscale cert`, and the human's tailnet admin steps (MagicDNS and
+  HTTPS certificates), none of which exist on this host (tailscale is logged out).
+- The manual real-tailnet checks 1–4 of the Test plan wait for the human's `sudo tailscale up` /
+  `tailscale set --operator=$USER` and a phone on the same tailnet.
+
 Sequencing / dependencies: child 1 comes first. It is useful alone and is the human's first
 ask ("consult this while away"). Children 2, 3 and 4 each depend only on child 1 and may run
 in parallel. Child 2 is the priority because it unblocks the conductor. Child 5 comes last:

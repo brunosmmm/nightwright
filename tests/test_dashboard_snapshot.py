@@ -32,7 +32,7 @@ def check_schema(doc):
     assert set(SN.TOP_KEYS) <= set(doc), set(SN.TOP_KEYS) - set(doc)
     assert doc["schema"] == "nw.dashboard.v1"
     assert set(doc["health"]) == {"runner", "conductor", "stewards", "herdr_watch"}
-    assert set(doc["inbox"]) == {"escalations", "parks"}
+    assert set(doc["inbox"]) == {"escalations", "parks", "auto_applied"}
     assert set(doc["backlog"]) in ({"count", "top"}, {"error"})
     assert isinstance(doc["rev"], str) and len(doc["rev"]) == 16
 

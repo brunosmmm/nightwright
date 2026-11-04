@@ -32,13 +32,25 @@ def check_untouched(fx):
     ("0.0.0.0:0", "wildcard"), ("[::]:0", "wildcard"),
     ("192.168.1.20:0", "not a loopback or tailnet address"), ("8.8.8.8:0", "loopback or tailnet"),
     ("example.com:8791", "not an IP"),
-    ("100.64.0.9:0", "foreign tailnet address"),
-    ("100.64.0.5:0", "identity gate"), ("tailscale", "identity gate"),
-    ("TAILSCALE:9000", "identity gate")])
+    ("100.64.0.9:0", "foreign tailnet address")])
 def test_refused_binds_raise_bind_refused_before_a_socket(tmp_path, no_socket, bind, word):
     fx = seed(tmp_path)
     with pytest.raises(A.BindRefused, match=word):
         DS.make_server(fx["cfg"], bind, own=own_ok)
+    check_untouched(fx)
+
+
+@pytest.mark.parametrize("bind,want", [("100.64.0.5:0", ("100.64.0.5", 0)),
+                                       ("tailscale", ("100.64.0.5", 8791)),
+                                       ("TAILSCALE:9000", ("100.64.0.5", 9000))])
+def test_own_tailnet_address_reaches_the_server(tmp_path, monkeypatch, bind, want):
+    """SPEC-0428 Decision 2: an own tailnet address is no longer refused; the server is built
+    on it (and picks the whois mode itself from the address)."""
+    fx = seed(tmp_path)
+    seen = []
+    monkeypatch.setattr(DS, "DashboardServer", lambda cfg, addr, cache, **kw: seen.append(addr))
+    DS.make_server(fx["cfg"], bind, own=own_ok)
+    assert seen == [want] and A.bind_mode(want[0]) == "whois"
     check_untouched(fx)
 
 
@@ -50,13 +62,13 @@ def test_no_tailnet_raises_tailnet_missing_before_a_socket(tmp_path, no_socket, 
     check_untouched(fx)
 
 
-def test_loopback_serves_with_token_auth_and_never_asks_for_the_tailnet(tmp_path):
+def test_loopback_serves_with_no_login_and_never_asks_for_the_tailnet(tmp_path):
     fx = seed(tmp_path)
     calls = []
     srv = DS.make_server(fx["cfg"], "127.0.0.1:0", own=lambda: calls.append(1) or own_missing())
     try:
         rec = DS.write_server_json(fx["cfg"], srv)
-        assert rec["auth"] == "token" and rec["host"] == "127.0.0.1"
+        assert rec["auth"] == "local" and rec["host"] == "127.0.0.1"
         assert calls == []
     finally:
         DS.remove_server_json(fx["cfg"])

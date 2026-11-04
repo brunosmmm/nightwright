@@ -18,6 +18,17 @@ ROUTES: dict[str, tuple[str, str]] = {
 }
 
 
+CSRF_PLACEHOLDER = b"__NW_CSRF__"
+
+
+def render_index(body: bytes, csrf: str) -> bytes:
+    """SPEC-0428: `index.html` with this page's CSRF value in `<meta name="nw-csrf">`. The value
+    is `[A-Za-z0-9_-.]` only (`auth.Csrf.mint`), so it needs no escaping."""
+    if not all(c.isalnum() or c in "-_." for c in csrf):
+        raise ValueError("csrf value has unexpected characters")
+    return body.replace(CSRF_PLACEHOLDER, csrf.encode("ascii"), 1)
+
+
 def read_asset(path: str) -> tuple[bytes, str] | None:
     """`(bytes, content_type)` for an exact `ROUTES` path, else None: no query string, no `..`,
     no `/index.html`, no other path ever reaches the filesystem."""

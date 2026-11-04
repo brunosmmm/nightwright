@@ -54,7 +54,7 @@ function setup({ t0 = GEN + 5000, hash = "", stored = {}, visible = true } = {})
     setTimeout: (f, ms) => clock.setTimeout(f, ms),
     clearTimeout: (id) => clock.clearTimeout(id),
     visibility: () => doc.visibilityState,
-    storage: { getItem: (k) => (store.has(k) ? store.get(k) : null), setItem: (k, v) => store.set(k, v) },
+    storage: { getItem: (k) => (store.has(k) ? store.get(k) : null), setItem: (k, v) => store.set(k, v), removeItem: (k) => store.delete(k) },
     location: { hash, pathname: "/", search: "" },
     history: { replaceState: (...a) => replaced.push(a) },
     fetch: async (url, opts) => {
@@ -129,7 +129,8 @@ test("markup in snapshot values renders literally", async () => {
   assert.ok(t.text("events").includes(bad));
   const tags = new Set(t.doc.created.map((e) => e.tag));
   assert.ok(!tags.has("img"), [...tags].join());
-  for (const [, k] of t.doc.attrWrites) assert.ok(["max", "aria-valuenow", "aria-valuemax", "title"].includes(k), k);
+  // SPEC-0429/0430 add the inbox controls' attributes (all constant or an escaped id / route)
+  for (const [, k] of t.doc.attrWrites) assert.ok(["max", "aria-valuenow", "aria-valuemax", "title", "data-esc", "type", "open"].includes(k), k);
 });
 
 test("polling: conditional, 15 s apart, 304 keeps the tree, 200 re-renders, one in flight", async () => {
@@ -272,7 +273,7 @@ test("banners and the dot: 401, 403, unreachable, stale, and clearing", async ()
   t401.script.push(() => resp(401, { error: "no" }));
   t401.app.start();
   await t401.app.idle();
-  assert.equal(banner(t401), "Not signed in. Open the dashboard link that carries the token.");
+  assert.equal(banner(t401), "The dashboard refused this request (401).");
   assert.deepEqual(dot(t401), ["grey"]);
   t401.script.push(() => resp(403, { error: "no" }));
   await t401.clock.advance(15000, settle);               // polling continues at 15 s
@@ -387,37 +388,24 @@ test("no cap shows the cost with no bar; bar classes follow the ratio", async ()
   assert.equal(bars[2].classList.toString(), "");
 });
 
-test("token: fragment -> storage -> Authorization; replaced by a later fragment; never in the DOM", async () => {
-  const t = setup({ hash: "#token=abc" });
+test("SPEC-0428: no token: an old #token= fragment is dropped and never sent; no Authorization header", async () => {
+  const t = setup({ hash: "#token=abc", stored: { "nw-dashboard-token": "old" } });
   t.script.push(ok(snap(), GEN));
   t.app.start();
   await t.app.idle();
-  assert.equal(t.store.get("nw-dashboard-token"), "abc");
-  assert.deepEqual(t.replaced, [[null, "", "/"]]);
-  assert.equal(t.calls[0].opts.headers.Authorization, "Bearer abc");
+  assert.deepEqual(t.replaced, [[null, "", "/"]]);               // the fragment leaves the address bar
+  assert.ok(!t.store.has("nw-dashboard-token"));                 // an old stored token is deleted
+  assert.ok(!("Authorization" in t.calls[0].opts.headers));
   await t.clock.advance(15000, settle);
-  assert.equal(t.calls[1].opts.headers.Authorization, "Bearer abc");
+  assert.ok(!("Authorization" in t.calls[1].opts.headers));
+  for (const c of t.calls) assert.ok(!c.url.includes("abc"), c.url);
   const all = IDS.map((id) => t.doc.getElementById(id).dump()).join("");
   assert.ok(!all.includes("abc"));
-  assert.ok(!JSON.stringify(t.doc.attrWrites).includes("abc"));
-
-  const again = setup({ hash: "#token=def", stored: { "nw-dashboard-token": "abc" } });
-  again.script.push(ok(snap(), GEN));
-  again.app.start();
-  await again.app.idle();
-  assert.equal(again.store.get("nw-dashboard-token"), "def");
-  assert.equal(again.calls[0].opts.headers.Authorization, "Bearer def");
-
-  const kept = setup({ stored: { "nw-dashboard-token": "xyz" } });          // a later visit with no fragment
-  kept.script.push(ok(snap(), GEN));
-  kept.app.start();
-  await kept.app.idle();
-  assert.equal(kept.calls[0].opts.headers.Authorization, "Bearer xyz");
-  assert.deepEqual(kept.replaced, []);
 
   const none = setup();
   none.script.push(ok(snap(), GEN));
   none.app.start();
   await none.app.idle();
+  assert.deepEqual(none.replaced, []);
   assert.ok(!("Authorization" in none.calls[0].opts.headers));
 });

@@ -1,6 +1,7 @@
 """SPEC-0418: the dashboard server serves the phone page (`GET /`, `/app.js`, `/app.css`) through
-`assets.read_asset`, without a bearer, behind the `Host`/`Origin` check. Real loopback server over
-real sockets (the `Srv` helper of test_dashboard_server), no browser, no `tailscale`."""
+`assets.read_asset`, with no credential (SPEC-0428), behind the `Host`/`Origin` check; `/` carries
+the per-page CSRF value. Real loopback server over real sockets (the `Srv` helper of
+test_dashboard_server), no browser, no `tailscale`."""
 import json
 import re
 from pathlib import Path
@@ -17,7 +18,18 @@ from nightwright.agentic.dashboard import auth as A
 from nightwright.agentic.dashboard import server as DS
 
 ROOT = Path(__file__).resolve().parent.parent
-ALLOWED_DASH_FILES = {"local.token", "audit.jsonl", "audit.jsonl.1", "server.json"}
+ALLOWED_DASH_FILES = {"audit.jsonl", "audit.jsonl.1", "server.json"}
+CSRF_META = re.compile(rb'<meta name="nw-csrf" content="([^"]*)">')
+
+
+def csrf_of(body):
+    """The CSRF value `GET /` embedded in the page."""
+    return CSRF_META.search(body).group(1).decode("ascii")
+
+
+def unrender(body):
+    """The served page with its CSRF value put back to the static file's placeholder."""
+    return CSRF_META.sub(b'<meta name="nw-csrf" content="__NW_CSRF__">', body)
 
 
 @pytest.fixture
@@ -35,17 +47,21 @@ def test_static_routes_unauthenticated_200(s):
     cases = [(p, p) for p in assets.ROUTES] + [("/app.js?v=1", "/app.js"), ("/?x=1", "/")]
     for req_path, route in cases:
         body, ctype = assets.read_asset(route)
-        for kw in ({"auth": False}, {"auth": True},
-                   {"auth": False, "headers": {"Authorization": "Bearer wrong"}}):
+        for kw in ({}, {"headers": {"Authorization": "Bearer junk"}}):
             st, h, got = s.req(path=req_path, **kw)
             assert st == 200, (req_path, kw)
-            assert got == body
+            if route == "/":
+                assert unrender(got) == body and s.srv.csrf.check(csrf_of(got), "local")
+                assert h["cache-control"] == "no-store"
+            else:
+                assert got == body
+                assert h["cache-control"] == "no-cache"
             assert h["content-type"] == ctype
             assert h["content-security-policy"] == assets.CSP
-            assert h["cache-control"] == "no-cache"
             assert h["x-content-type-options"] == "nosniff"
-            assert h["content-length"] == str(len(body))
+            assert h["content-length"] == str(len(got))
             assert "date" in h
+            assert not [k for k in h if k.startswith("access-control-")]
     assert s.audit() == []                       # a 200 static response is not audited
 
 
@@ -55,20 +71,21 @@ def test_header_parity_with_page_stub(s, tmp_path):
     with Stub(seed(tmp_path / "stub")) as stub:
         for path in assets.ROUTES:
             _, sh, sbody = stub_get(stub, path)
-            st, h, body = s.req(path=path, auth=False)
-            assert st == 200 and body == sbody
-            for name in ("content-type", "content-security-policy", "x-content-type-options",
-                         "cache-control"):
+            st, h, body = s.req(path=path)
+            assert st == 200 and unrender(body) == unrender(sbody)
+            names = ["content-type", "content-security-policy", "x-content-type-options"]
+            if path != "/":                     # `/` is no-store on the server (SPEC-0428)
+                names.append("cache-control")
+            for name in names:
                 assert h[name] == {k.lower(): v for k, v in sh.items()}[name], (path, name)
 
 
-def test_api_snapshot_still_gated(s):
-    st, h, b = s.req(auth=False)
-    assert st == 401 and h["www-authenticate"] == "Bearer"
-    assert json.loads(b) == {"error": "unauthorized"}
-    st, h, _ = s.req(auth=False, headers={"Authorization": "Bearer nope"})
-    assert st == 401 and h["www-authenticate"] == "Bearer"
-    assert [r["reason"] for r in s.audit()] == ["no_token", "bad_token"]
+def test_api_snapshot_served_with_no_credential(s):
+    st, h, b = s.req()
+    assert st == 200 and "www-authenticate" not in h and json.loads(b)["schema"]
+    st, h, _ = s.req(headers={"Authorization": "Bearer nope"})
+    assert st == 200 and "www-authenticate" not in h
+    assert s.audit() == []
     st, h, _ = s.req()
     assert st == 200 and h["etag"]
     st, h2, b = s.req(headers={"If-None-Match": h["etag"]})
@@ -81,12 +98,9 @@ NON_ROUTES = ["/nope", "/index.html", "/static/app.js", "/../app.js", "//app.js"
               "/app.js/"]
 
 
-def test_non_route_paths_stay_401_then_404(s):
+def test_non_route_paths_are_404(s):
     served = [asset_bytes(p) for p in assets.ROUTES]
     for p in NON_ROUTES:
-        st, _, b = s.req(path=p, auth=False)
-        assert st == 401, p
-        assert not any(a in b for a in served)
         st, _, b = s.req(path=p)
         assert st == 404 and json.loads(b) == {"error": "not found"}, p
         assert not any(a in b for a in served)
@@ -103,16 +117,16 @@ def test_static_behind_host_and_origin(s, monkeypatch):
         ({"headers": {"Origin": "null"}}, "bad_origin"),
     ]
     for i, (kw, reason) in enumerate(cases, 1):
-        st, _, b = s.req(path="/", auth=False, **kw)
+        st, _, b = s.req(path="/", **kw)
         assert st == 403 and "error" in json.loads(b), kw
         assert not any(a in b for a in served)
         log = s.audit()
         assert len(log) == i and log[-1]["reason"] == reason, kw
-    st, _, b = s.req(path="/app.js", auth=False, headers={"Host": f"localhost:{port}"})
+    st, _, b = s.req(path="/app.js", headers={"Host": f"localhost:{port}"})
     assert st == 200 and b == asset_bytes("/app.js")
     assert len(s.audit()) == len(cases)
     monkeypatch.setattr(A, "check_host_origin", lambda headers, allowed: "bad_host")
-    st, _, b = s.req(path="/", auth=False)
+    st, _, b = s.req(path="/")
     assert st == 403 and not any(a in b for a in served)
 
 
@@ -120,17 +134,17 @@ def test_static_methods_and_body(s):
     served = [asset_bytes(p) for p in assets.ROUTES]
     n = 0
     for m in ("POST", "PUT", "DELETE", "PATCH", "OPTIONS", "HEAD"):
-        st, h, b = s.req(method=m, path="/", auth=False)
+        st, h, b = s.req(method=m, path="/")
         assert st == 405 and h["allow"] == "GET", m
         assert not any(a in b for a in served)
         n += 1
         log = s.audit()
         assert len(log) == n and log[-1]["reason"] == "method_not_allowed", m
-    st, h, b = s.req(path="/", auth=False, body=b"abc")
+    st, h, b = s.req(path="/", body=b"abc")
     assert st == 413 and h.get("connection") == "close"
     assert not any(a in b for a in served)
     assert len(s.audit()) == n + 1
-    st, _, _ = s.req(path="/", auth=False)
+    st, _, _ = s.req(path="/")
     assert st == 200 and len(s.audit()) == n + 1
 
 
@@ -143,7 +157,7 @@ def test_read_asset_failure_is_500(s, monkeypatch):
         return real(path)
 
     monkeypatch.setattr(DS.AS, "read_asset", fake)
-    st, _, b = s.req(path="/", auth=False)
+    st, _, b = s.req(path="/")
     assert st == 500
     assert re.fullmatch(r"OSError: .*", json.loads(b)["error"])
     st, _, b = s.req()                           # patch still active
@@ -156,7 +170,7 @@ def test_serving_assets_writes_nothing(tmp_path):
     try:
         before = tree(fx["data"])
         for p in assets.ROUTES:
-            assert s.req(path=p, auth=False)[0] == 200
+            assert s.req(path=p)[0] == 200
         after = tree(fx["data"])
         assert after == before
         dash = fx["data"] / "agentic" / "dashboard"
@@ -174,8 +188,8 @@ def test_serve_cli_serves_page(tmp_path):
         rec = wait_server(fx, proc)
         st, body = cli_get(rec["port"], path="/")
         index = (ROOT / "src/nightwright/agentic/dashboard/static/index.html").read_bytes()
-        assert st == 200 and body == index
-        assert cli_get(rec["port"])[0] == 401
+        assert st == 200 and unrender(body) == index and csrf_of(body) != "__NW_CSRF__"
+        assert cli_get(rec["port"])[0] == 200          # no credential on loopback (SPEC-0428)
     finally:
         stop(proc)
 

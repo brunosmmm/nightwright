@@ -116,12 +116,19 @@ REFUSED = [
     ("example.com:8791", "not an IP", 0),
     ("100.64.0.9:0", "foreign tailnet address", 1),
     ("[fd7a:115c:a1e0::9]:0", "foreign tailnet address", 1),
-    ("tailscale", "tailnet serving needs the identity gate", 1),
-    ("TAILSCALE", "tailnet serving needs the identity gate", 1),
-    ("tailscale:9000", "tailnet serving needs the identity gate", 1),
-    ("tailscale:0", "tailnet serving needs the identity gate", 1),
-    ("100.64.0.5:0", "tailnet serving needs the identity gate", 1),
 ]
+
+
+@pytest.mark.parametrize("spec,want", [
+    ("tailscale", ("100.64.0.5", 8791)), ("TAILSCALE", ("100.64.0.5", 8791)),
+    ("tailscale:9000", ("100.64.0.5", 9000)), ("tailscale:0", ("100.64.0.5", 0)),
+    ("100.64.0.5:0", ("100.64.0.5", 0))])
+def test_resolve_bind_accepts_an_own_tailnet_address(spec, want):
+    """SPEC-0428 Decision 2: the interim identity-gate refusal is gone; an own tailnet address
+    is served behind the whois gate."""
+    own = Own()
+    assert A.resolve_bind(spec, own_fn=own) == want
+    assert own.calls == 1
 
 
 @pytest.mark.parametrize("spec,word,calls", REFUSED)
@@ -147,10 +154,10 @@ def test_resolve_bind_loopback_never_calls_own_fn(spec, want):
 
 def test_tailscale_resolves_to_the_first_own_address_and_port():
     for spec, port in (("tailscale", 8791), ("tailscale:9000", 9000)):
-        with pytest.raises(A.BindRefused, match=r"bind 100\.64\.0\.5: tailnet serving"):
-            A.resolve_bind(spec, own_fn=Own(["100.64.0.5", "fd7a:115c:a1e0::5"]))
-    with pytest.raises(A.BindRefused, match=r"bind fd7a:115c:a1e0::5: tailnet"):
-        A.resolve_bind("tailscale", own_fn=Own(["fd7a:115c:a1e0::5"]))
+        got = A.resolve_bind(spec, own_fn=Own(["100.64.0.5", "fd7a:115c:a1e0::5"]))
+        assert got == ("100.64.0.5", port)
+    assert A.resolve_bind("tailscale", own_fn=Own(["fd7a:115c:a1e0::5"])) == \
+        ("fd7a:115c:a1e0::5", 8791)
 
 
 @pytest.mark.parametrize("spec", ["tailscale", "TAILSCALE:9", "100.64.0.9:0", "100.64.0.5:0",

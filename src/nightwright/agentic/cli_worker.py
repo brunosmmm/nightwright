@@ -214,11 +214,12 @@ def worker_serve(cfg, blob, conf, kinds, slots):
 @click.option("--jobs", "jobs", is_flag=True,
               help="serve the pull-worker job API (default bind 127.0.0.1:8790)")
 @click.option("--dashboard", "dashboard", is_flag=True,
-              help="serve the read-only dashboard (SPEC-0414; default bind 127.0.0.1:8791, "
-                   "loopback only, bearer token in <data_dir>/agentic/dashboard/local.token)")
+              help="serve the dashboard and decisions inbox (SPEC-0400; default bind "
+                   "127.0.0.1:8791, no login on loopback; --bind tailscale serves this host's "
+                   "tailnet address behind the tailscale whois identity gate)")
 @click.option("--bind", default=None, metavar="ADDR:PORT",
-              help="--jobs: loopback or a Tailscale address without TLS; --dashboard: loopback "
-                   "only")
+              help="--jobs: loopback or a Tailscale address without TLS; --dashboard: loopback, "
+                   "`tailscale[:PORT]` or one of this host's own tailnet addresses")
 @click.option("--tls-cert", default=None, type=click.Path(exists=True, dir_okay=False))
 @click.option("--tls-key", default=None, type=click.Path(exists=True, dir_okay=False))
 @click.option("--client-ca", default=None, type=click.Path(exists=True, dir_okay=False),
@@ -231,8 +232,9 @@ def worker_serve(cfg, blob, conf, kinds, slots):
 @click.pass_obj
 def serve_cmd(cfg, jobs, dashboard, bind, tls_cert, tls_key, client_ca, code_root,
               no_code_watch):
-    """Serve jobs to pull workers (--jobs, SPEC-0334) or the read-only dashboard (--dashboard,
-    SPEC-0414) over HTTP(S). Exactly one mode flag is required."""
+    """Serve jobs to pull workers (--jobs, SPEC-0334) or the dashboard (--dashboard, SPEC-0400:
+    live view, decisions inbox, campaign drilldown) over HTTP(S). Exactly one mode flag is
+    required."""
     if jobs == dashboard:
         raise click.UsageError("give exactly one of --jobs and --dashboard")
     if dashboard:
@@ -319,8 +321,9 @@ def _serve_dashboard(cfg, bind, tls_cert, tls_key, client_ca, *, code_root=None,
         rec = DS.write_server_json(cfg, srv, code_watch=watch is not None,
                                    code_sha=None if watch is None else watch.sha,
                                    bind=bind or DS.DEFAULT_BIND)
-        click.echo(f"nw serve: dashboard on {rec['url']} (token auth, token in "
-                   f"{DS.dashboard_dir(cfg) / 'local.token'})", err=True)
+        click.echo(f"nw serve: dashboard on {rec['url']} ("
+                   + ("loopback, no login" if srv.mode == "local" else
+                      "tailnet, tailscale whois identity gate") + ")", err=True)
         if watch is None:
             click.echo("nw serve: no code watch (will not restart itself on a code change)",
                        err=True)

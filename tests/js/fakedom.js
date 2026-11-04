@@ -31,7 +31,15 @@ class Element {
     this.attrs = {};
     this.classList = new ClassList();
     this.replaced = 0;
+    this.listeners = {};
   }
+  // SPEC-0429: the inbox controls listen for clicks / input; `fire` stands in for the browser
+  addEventListener(type, fn) { (this.listeners[type] = this.listeners[type] || []).push(fn); }
+  fire(type) { (this.listeners[type] || []).forEach((fn) => fn({ type, preventDefault() {} })); }
+  click() { this.fire("click"); }
+  // every element below this one (depth first), for tests to find controls
+  all() { return this.children.filter((c) => c.nodeType === 1).flatMap((c) => [c, ...c.all()]); }
+  find(pred) { return this.all().filter(pred); }
   appendChild(n) { this.children.push(n); return n; }
   replaceChildren(...nodes) { this.children = nodes; this.replaced += 1; }
   setAttribute(k, v) { this.attrs[k] = String(v); this.doc.attrWrites.push([this.tag, k, String(v)]); }

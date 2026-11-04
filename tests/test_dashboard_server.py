@@ -1,5 +1,5 @@
-"""SPEC-0414: the dashboard server in a thread on 127.0.0.1:0 over real sockets, against the
-seeded data dir."""
+"""SPEC-0414 / SPEC-0428: the dashboard server in a thread on 127.0.0.1:0 over real sockets,
+against the seeded data dir. A loopback bind needs no credential (SPEC-0428)."""
 import http.client
 import json
 import threading
@@ -29,16 +29,12 @@ class Srv:
         self.cache = cache or SN.SnapshotCache(self.cfg, clock=self.clock)
         self.srv = DS.make_server(self.cfg, "127.0.0.1:0", cache=self.cache)
         self.port = self.srv.server_address[1]
-        self.token = self.srv.token
         self.t = threading.Thread(target=self.srv.serve_forever, kwargs={"poll_interval": 0.05},
                                   daemon=True)
         self.t.start()
 
-    def req(self, method="GET", path="/api/snapshot", headers=None, body=None, auth=True,
-            host=True):
+    def req(self, method="GET", path="/api/snapshot", headers=None, body=None, host=True):
         h = {}
-        if auth:
-            h["Authorization"] = f"Bearer {self.token}"
         if host:
             h["Host"] = f"127.0.0.1:{self.port}"
         h.update(headers or {})
@@ -81,6 +77,7 @@ def test_snapshot_200_with_etag_equal_to_rev(s):
     assert st == 200 and h["etag"] == '"' + doc["rev"] + '"'
     assert h["content-type"] == "application/json" and h["x-content-type-options"] == "nosniff"
     assert h["cache-control"] == "no-cache" and int(h["content-length"]) == len(body)
+    assert not [k for k in h if k.startswith("access-control-")]
 
 
 def test_conditional_get_hit_miss_star_weak_and_list(s):
@@ -110,33 +107,15 @@ def test_ledger_only_change_gives_a_new_etag_after_refresh(s):
     assert st == 200 and h2["etag"] != h["etag"] and s.srv.serializations == 2
 
 
-@pytest.mark.parametrize("hdrs", [{}, {"Authorization": "Bearer nope"}, {"Authorization": "Basic x"},
-                                  {"Authorization": "Bearer"}])
-def test_auth_matrix_401(s, hdrs):
-    st, h, _ = s.req(auth=False, headers=hdrs)
-    assert st == 401 and h["www-authenticate"] == "Bearer"
-
-
-def test_token_in_query_is_401(s):
-    st, _, _ = s.req(path=f"/api/snapshot?token={s.token}", auth=False)
-    assert st == 401
-    (rec,) = s.audit()
-    assert rec["reason"] == "no_token" and s.token not in json.dumps(rec)
-
-
-@pytest.mark.parametrize("hdrs,host,reason", [
-    ({}, "evil.example", "bad_host"),
-    ({}, "127.0.0.1:1", "bad_host"),
-    ({"Origin": "http://evil.example"}, True, "bad_origin"),
-    ({"Origin": "null"}, True, "bad_origin"),
-])
-def test_host_origin_403_before_auth(s, hdrs, host, reason):
-    h = dict(hdrs)
-    if host is not True:
-        h["Host"] = host
-    st, _, _ = s.req(headers=h, host=host is True)           # a valid token is sent
-    assert st == 403
-    assert s.audit()[-1]["reason"] == reason
+@pytest.mark.parametrize("hdrs", [{}, {"Authorization": "Bearer junk"},
+                                  {"Authorization": "Basic x"}, {"Authorization": "Bearer"}])
+def test_no_credential_is_needed_and_any_authorization_is_ignored(s, hdrs):
+    """SPEC-0428: a loopback request is served with no credential; an Authorization header is
+    harmless and ignored (never a 401, never a WWW-Authenticate challenge)."""
+    st, h, body = s.req(headers=hdrs)
+    assert st == 200 and "www-authenticate" not in h
+    check_schema(json.loads(body))
+    assert s.audit() == []
 
 
 @pytest.mark.parametrize("cred", [None, "Bearer wrong-token", "Basic x"])
@@ -146,27 +125,20 @@ def test_host_origin_403_before_auth(s, hdrs, host, reason):
     ({"Origin": "http://evil.example"}, True, "bad_origin"),
     ({"Origin": "null"}, True, "bad_origin"),
 ])
-def test_host_origin_403_comes_before_the_token_check(s, hdrs, host, reason, cred):
-    """Host/Origin run first: with no token or a wrong one the answer is still 403, audited as
-    bad_host/bad_origin, never 401 no_token/bad_token."""
+def test_host_origin_403_is_checked_first_and_audited(s, hdrs, host, reason, cred):
+    """Host/Origin run first: whatever Authorization is sent the answer is 403, audited as
+    bad_host/bad_origin, with no credential in the audit line."""
     h = dict(hdrs)
     if host is not True:
         h["Host"] = host
     if cred:
         h["Authorization"] = cred
-    st, rh, _ = s.req(headers=h, host=host is True, auth=False)
+    st, rh, body = s.req(headers=h, host=host is True)
     assert st == 403 and "www-authenticate" not in rh
+    assert json.loads(body)["reason"] == reason
     (rec,) = s.audit()
     assert (rec["reason"], rec["status"]) == (reason, 403)
-
-
-def test_unauthenticated_post_is_401_not_405(s):
-    """The method check runs after authentication."""
-    st, _, _ = s.req("POST", body=b"{}", auth=False)
-    assert st == 401
-    st, _, _ = s.req("POST", body=b"{}", auth=False, headers={"Authorization": "Bearer x"})
-    assert st == 401
-    assert [r["reason"] for r in s.audit()] == ["no_token", "bad_token"]
+    assert "wrong-token" not in json.dumps(rec) and "Basic" not in json.dumps(rec)
 
 
 def test_ipv6_loopback_host_passes(tmp_path):
@@ -183,11 +155,10 @@ def test_ipv6_loopback_host_passes(tmp_path):
     try:
         port = srv.server_address[1]
         for host, want in ((f"[::1]:{port}", 200), (f"localhost:{port}", 200),
-                           (f"127.0.0.1:{port}", 403)):
+                           (f"127.0.0.1:{port}", 200), (f"evil.example:{port}", 403)):
             c = http.client.HTTPConnection("::1", port, timeout=10)
             c.putrequest("GET", "/api/snapshot", skip_host=True, skip_accept_encoding=True)
             c.putheader("Host", host)
-            c.putheader("Authorization", f"Bearer {srv.token}")
             c.endheaders()
             assert c.getresponse().status == want, host
             c.close()
@@ -206,9 +177,12 @@ def test_server_json_fields(tmp_path):
         assert on_disk == rec
         assert rec["schema"] == "nw.dashboard.server.v1"
         assert rec["url"] == f"http://127.0.0.1:{s.port}" and rec["port"] == s.port
-        assert rec["host"] == "127.0.0.1" and rec["auth"] == "token"
+        assert rec["host"] == "127.0.0.1" and rec["auth"] == "local"
         assert isinstance(rec["started_at"], str) and rec["started_at"]
-        assert s.token not in json.dumps(rec)
+        # no secret: no token field, and not the per-process CSRF secret
+        assert not [k for k in rec if "token" in k or "secret" in k or "csrf" in k]
+        assert A._b64(s.srv.csrf._secret) not in json.dumps(rec)
+        assert not (fx["data"] / "agentic/dashboard/local.token").exists()
     finally:
         s.close()
 
@@ -216,7 +190,7 @@ def test_server_json_fields(tmp_path):
 @pytest.mark.parametrize("how", ["huge", "chunked"])
 def test_refused_request_with_an_undrainable_body_closes_the_connection(s, how):
     import socket
-    head = [f"POST /api/snapshot HTTP/1.1", f"Host: 127.0.0.1:{s.port}"]     # no token: 401
+    head = [f"POST /api/snapshot HTTP/1.1", f"Host: 127.0.0.1:{s.port}"]     # POST: 405
     if how == "huge":
         head.append(f"Content-Length: {DS.DRAIN_MAX + 1}")
     else:
@@ -234,20 +208,20 @@ def test_refused_request_with_an_undrainable_body_closes_the_connection(s, how):
         c.close()
     status, *lines = buf.decode("latin-1").split("\r\n")
     hdrs = {k.lower(): v for k, _, v in (x.partition(": ") for x in lines if ": " in x)}
-    assert status.split()[1] == "401" and hdrs.get("connection") == "close"
+    assert status.split()[1] == "405" and hdrs.get("connection") == "close"
 
 
 def test_missing_host_is_403(s):
     c = http.client.HTTPConnection("127.0.0.1", s.port, timeout=10)
     c.putrequest("GET", "/api/snapshot", skip_host=True, skip_accept_encoding=True)
-    c.putheader("Authorization", f"Bearer {s.token}")
     c.endheaders()
     assert c.getresponse().status == 403
     c.close()
+    assert s.audit()[-1]["reason"] == "bad_host"
 
 
 def test_bound_and_localhost_hosts_pass(s):
-    for host in (f"127.0.0.1:{s.port}", f"localhost:{s.port}"):
+    for host in (f"127.0.0.1:{s.port}", f"localhost:{s.port}", f"[::1]:{s.port}"):
         st, _, _ = s.req(host=False, headers={"Host": host, "Origin": f"http://{host}"})
         assert st == 200
     assert s.audit() == []
@@ -274,7 +248,7 @@ def test_head_is_405_audited_and_has_no_body(s):
 def test_absurd_content_length_is_refused_not_a_handler_crash(s, capfd):
     import socket
     head = ["GET /api/snapshot HTTP/1.1", f"Host: 127.0.0.1:{s.port}",
-            f"Authorization: Bearer {s.token}", "Content-Length: " + "1" * 5000]
+            "Content-Length: " + "1" * 5000]
     c = socket.create_connection(("127.0.0.1", s.port), timeout=10)
     try:
         c.sendall(("\r\n".join(head) + "\r\n\r\n").encode())
@@ -311,7 +285,8 @@ def test_404_and_413_and_503(tmp_path):
         assert st == 503 and json.loads(b)["error"] == "RuntimeError: boom"
         cache.fail = False
         assert s.req()[0] == 200
-        assert s.audit() == []                                # none of these is a refusal
+        # only the GET with a body is a refusal (SPEC-0428: audited on every GET route)
+        assert [(r["reason"], r["status"]) for r in s.audit()] == [("body_on_get", 413)]
     finally:
         s.close()
 
@@ -322,13 +297,13 @@ def test_every_refusal_reason_is_audited_and_reads_are_not(s):
     assert s.audit() == []
     s.req(host=False, headers={"Host": "evil"})
     s.req(headers={"Origin": "http://evil.example"})
-    s.req(auth=False)
-    s.req(auth=False, headers={"Authorization": "Bearer x"})
+    assert s.req(headers={"Authorization": "Bearer x"})[0] == 200     # ignored, not refused
     s.req("POST")
+    s.req(body=b"abc")
     recs = s.audit()
     assert [(r["reason"], r["status"]) for r in recs] == [
-        ("bad_host", 403), ("bad_origin", 403), ("no_token", 401), ("bad_token", 401),
-        ("method_not_allowed", 405)]
+        ("bad_host", 403), ("bad_origin", 403), ("method_not_allowed", 405),
+        ("body_on_get", 413)]
     assert all(r["schema"] == "nw.dashboard.audit.v1" and r["path"] == "/api/snapshot"
                for r in recs)
     assert "Bearer" not in json.dumps(recs)

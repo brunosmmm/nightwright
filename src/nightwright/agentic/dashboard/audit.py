@@ -1,5 +1,5 @@
-"""Dashboard audit log (SPEC-0414): `agentic/dashboard/audit.jsonl`, one `nw.dashboard.audit.v1`
-line per refused request. Appends under a module lock, rotates once at 5 MiB (one backup) and
+"""Dashboard audit log (SPEC-0414, SPEC-0429): `agentic/dashboard/audit.jsonl`, one
+`nw.dashboard.audit.v1` line per refused request and per escalation plan / answer (`action`). Appends under a module lock, rotates once at 5 MiB (one backup) and
 never raises into a request. Never records a token, `Authorization` header or query string."""
 from __future__ import annotations
 
@@ -13,7 +13,8 @@ from . import dashboard_dir
 SCHEMA = "nw.dashboard.audit.v1"
 MAX_BYTES = 5 * 1024 * 1024
 FIELDS = ("reason", "status", "method", "path", "login", "node", "node_ip", "user_agent",
-          "detail")
+          "detail", "esc_id", "form", "summary", "result")
+ACTIONS = ("refused", "plan", "answer")
 _lock = threading.Lock()
 
 
@@ -23,13 +24,15 @@ def _cut(v, n=200):
 
 def record(**fields) -> dict:
     """The audit line for `fields` (unknown keys are dropped; a path loses its query)."""
-    rec = {"schema": SCHEMA, "ts": store.now_iso(), "action": "refused"}
+    action = fields.get("action")
+    rec = {"schema": SCHEMA, "ts": store.now_iso(),
+           "action": action if action in ACTIONS else "refused"}
     for k in FIELDS:
         rec[k] = fields.get(k)
     if isinstance(rec["path"], str):
         rec["path"] = rec["path"].split("?", 1)[0].split("#", 1)[0]
-    for k in ("path", "user_agent", "detail"):
-        rec[k] = _cut(rec[k])
+    for k in ("path", "user_agent", "detail", "summary"):
+        rec[k] = _cut(rec[k], 400 if k == "summary" else 200)
     return rec
 
 
