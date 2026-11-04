@@ -82,24 +82,32 @@ shared). No file under `src/` changes.
 ### 1. `[drop-ssh]` (`tests/test_remote_gates.py`)
 
 First establish which interleaving flakes, by running the case in a loop under the stall injection
-below and reading the assertion that fails. Candidate sources, each handled by a fix that keeps
+below and reading the assertion that fails. The single stage that may legitimately vary is none:
+the stage is `ssh` whatever the worker side was doing (`line is None` -> `RemoteFailure("ssh")`),
+so the stage assertion is never loosened. Candidate sources, each handled by a fix that keeps
 the claim:
 
-- The worker's job outlives the dropped ssh: the worker side may still be writing frames,
-  the lease or `refs/nw/gate-jobs/*` when `_assert_fell_back` snapshots them. Fix: assert the
-  residue conditions that must hold *eventually* with `until(...)` (the `refs/nw/gate-jobs/`
-  listing and the `child_tmp` dir), keeping the assertions that must hold at return of
-  `run_all` (`run.worker is None`, three local results, one `worker_failed` event with stage
-  `ssh`, the cooldown) as direct asserts. The exact gate-file listing stays direct: it is the
-  local run's own output.
-- Frame ordering under load: `_DROP_AFTER_GATE` can drop before the worker has written the
-  rest, and the stage is `ssh` either way (`line is None` -> `RemoteFailure("ssh")`); the test
-  must not depend on how many frames the dispatcher saw. If a stage other than `ssh` (e.g.
-  `protocol`, via a half-read line) is observed under injected delay, make the drop script
-  flush and drop on a line boundary (it already iterates lines; add `sys.stdout.flush()` before
-  `os._exit`) rather than loosening the stage assertion.
+- The `child_tmp` dir and the `refs/nw/gate-jobs/` refs in `world.repo` are local state cleaned
+  up before `run_all` returns (`store.clear_child_tmp` in the `finally` of `run_all`,
+  `src/nightwright/agentic/gates.py:803`; the `update-ref -d` in the `finally` of the bundle
+  step, `src/nightwright/agentic/remote_gates.py:355`, which runs before ssh is even started).
+  A still-running `nw worker ssh-command` cannot change either, so they stay direct asserts
+  and are not wrapped in `until`: doing so would hide a regression where `run_all` stops
+  cleaning up before it returns. `until` is used only for worker-side state that a
+  still-running worker job can change after the drop, if the diagnosis shows one is asserted.
+- Frame ordering under load: `_DROP_AFTER_GATE` already flushes after every relayed line and
+  exits only after a whole line (`tests/test_remote_gates.py:181-187`), so a half-read line
+  from the script itself is not a source. The test must not depend on how many frames the
+  dispatcher saw before the drop.
 - Any literal `slot_wait_s`/timeout set for the case (none today: the default 300 s applies) is
   left alone; do not add a short one.
+
+If the injected stalls do not reproduce a failing assertion, the implementer makes the test
+report which assertion failed and with what values (an assertion message in `_assert_fell_back`
+carrying `world.ledger(["worker_failed"])`, the cooldown record and the gate-file listing). Each
+tight or snapshot assertion is then judged against the drop: one that depends on worker-side
+timing (named in the As shipped note) is widened; the rest stay. The diagnosis outcome,
+including "not reproduced", is recorded in the spec's As shipped note.
 
 The companion test `test_drop_ssh_survives_a_slow_worker_side` registers a variant of the drop
 script that sleeps 3 s after relaying the `gate` frame before `os._exit(255)` (the stall), and
@@ -109,20 +117,22 @@ and the stalled case share `_assert_fell_back`.
 ### 2. `test_heartbeat_spans_many_ticks` (`tests/test_agentic_nonblocking.py`)
 
 The claim is "one heartbeat thread beats across a run that spans many ticks and the lease is
-never stale". Keep the 7 s step. Replace the tight staleness bound with a bound the code's
-ratio makes load-proof: use `lease_ttl_s = 20` and a 12 s step (beat every ttl/4 = 5 s: at
-least two beats in the run, a beat can lag by 15 s before the lease is stale), and prove "many
-beats" directly instead of from the ttl: assert that the samples carry at least 3 distinct
-`heartbeat_at` values, rather than inferring it from `max(heartbeat_age_s) < ttl`. If the
-heartbeat interval is not exactly ttl/4 in `queue.py`'s `_heartbeat_while` (`src/nightwright/agentic/queue.py:5580`), the implementer derives the constants from that code and
-keeps the same ratios (>= 3 beats, ttl >= 15 x the worst expected stall of 1 s).
-The sample-count assertions (`len(samples) > 10`, `ticks > 10`) are lowered to the
-proportion the run guarantees at a 1 s sampler/poll stall (`len(samples) >= 5`, `ticks >= 5`):
-they prove "many" without assuming the sampler was never starved. Sampling also stops being
-a fixed `time.sleep(0.2)` race: the `beaters` set is read from within the loop as today.
+never stale". A module constant `LOAD_STALL_S = 2.0` is the one stall budget: the longest delay a
+single beat, sampler wake-up or poll must survive. `_heartbeat_while` beats every
+`max(1.0, ttl/4)` s (`src/nightwright/agentic/queue.py:5589`); the implementer derives the
+constants from that code and keeps these ratios. Use `lease_ttl_s = 20` (>= 10 x
+`LOAD_STALL_S`, so a lease is only stale after a beat lags by 20 s) and a step of
+`3 * (ttl/4 + LOAD_STALL_S)` = 21 s, so at least 3 distinct `heartbeat_at` values (the acquire
+stamp and two beats) still appear when every beat lags by `LOAD_STALL_S`. "Many beats" is
+proved directly: assert at least 3 distinct `heartbeat_at` values in the samples, rather than
+inferring it from `max(heartbeat_age_s) < ttl`. The sample-count assertions
+(`len(samples) > 10`, `ticks > 10`) become `len(samples) >= 5` and `ticks >= 5`, which a
+21 s run still meets with the sampler or poll stalled `LOAD_STALL_S` on every wake-up: they
+prove "many" without assuming the sampler was never starved. The `beaters` set is read from
+within the sampling loop as today.
 
 The companion test `test_heartbeat_survives_a_stalled_beat` monkeypatches
-`Lease.heartbeat` (`src/nightwright/agentic/lease.py:59`) to delay one beat by 2 s the first
+`Lease.heartbeat` (`src/nightwright/agentic/lease.py:59`) to delay one beat by `LOAD_STALL_S` (2 s) the first
 time it runs after the first tick, and asserts the lease stayed non-stale and a single beat thread
 was used.
 
@@ -171,13 +181,16 @@ real time.
       `tests/` (plus this spec and the generated ledger); nothing under `src/`.
 - [ ] `test_transport_failures_fall_back_with_cooldown[drop-ssh]` and the stalled-drop companion
       both pass; with the drop delayed 3 s the stage is still `ssh`, cooldown set, three local
-      results, no leftover `child_tmp` or `refs/nw/gate-jobs/` once `until` settles.
-- [ ] The residue assertions that can lag the worker job (`child_tmp`, `refs/nw/gate-jobs/`) use
-      `until` from `tests/waits.py`, not a snapshot; the assertions on `run` are unchanged.
-- [ ] `test_heartbeat_spans_many_ticks` uses a ttl at least 15x the stall it must survive, asserts
-      at least 3 distinct `heartbeat_at` values in the samples, and its sample and tick
-      minimums hold with the sampler or poll stalled 1 s.
-- [ ] `test_heartbeat_survives_a_stalled_beat` delays one beat by 2 s and the lease is never
+      results, no leftover `child_tmp` or `refs/nw/gate-jobs/` at return of `run_all`
+      (direct asserts; neither is wrapped in `until`).
+- [ ] If the stall injection does not reproduce a failing assertion, `_assert_fell_back`
+      carries assertion messages with the ledger event, cooldown record and gate-file listing,
+      and the As shipped note records the diagnosis outcome (including "not reproduced").
+- [ ] `test_heartbeat_spans_many_ticks` uses `lease_ttl_s = 20` (>= 10 x `LOAD_STALL_S` = 2.0), a
+      21 s step (3 beats at interval + `LOAD_STALL_S`), asserts at least 3 distinct
+      `heartbeat_at` values, `len(samples) >= 5` and `ticks >= 5`; the distinct-beat minimum
+      still holds when every beat lags by `LOAD_STALL_S`.
+- [ ] `test_heartbeat_survives_a_stalled_beat` delays one beat by `LOAD_STALL_S` (2 s) and the lease is never
       `stale` and exactly one `nw-lease-heartbeat` thread ran.
 - [ ] `test_a_long_silent_gate_is_never_cancelled_while_attached` uses `job_lease_s = 6` with
       a >= 7 s gate, `not lapsed`, `min(gaps) >= every - 0.05` and
