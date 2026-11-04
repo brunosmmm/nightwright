@@ -261,6 +261,11 @@ is pasted in the spec's As shipped section as the pinned cause. One additional m
   main's (not stale), so they were fixed directly: the joins now use the shared `waits.join` (`from waits import join as wjoin`,
   `wjoin(th, 60)`), which also asserts the thread ended. `uv run pytest -q tests/test_test_waits.py tests/test_pull_workers.py
   tests/test_pull_workers_security.py -n 2` -> 105 passed; `spec_lint` passes. Test-only; `gates.py` untouched.
+- Gate follow-up 6 (2026-11-03): `tests/test_agentic_nonblocking.py::test_heartbeat_spans_many_ticks` was timing-flaky under `-n 2`
+  load (`lease_ttl_s=2`, a lagging heartbeat reached the ttl, `stale`). The test now uses `lease_ttl_s=8` (heartbeat interval 2 s) and a
+  7 s gate `sleep_s`, so the run still spans several beats and many ticks; the `not stale` and heartbeat-thread assertions are kept.
+  `test_tui_search.py::test_typing_filters_without_pressing_enter` passed on rerun and already waits via `pilot.pause`; left unchanged.
+  Test-only; `gates.py` untouched; the full suite is left to gating.
 
 ### As shipped
 

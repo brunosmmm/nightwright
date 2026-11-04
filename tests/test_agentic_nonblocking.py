@@ -239,8 +239,10 @@ def test_reexec_drains_inflight_before_exec(tmp_path, monkeypatch):
 
 def test_heartbeat_spans_many_ticks(tmp_path, monkeypatch):
     repo = make_repo(tmp_path)
-    cfg = make_cfg(tmp_path, repo, script(tmp_path, [dict(impl_done(), sleep_s=3.5), review()]))
-    cfg["agentic"]["lease_ttl_s"] = 2
+    cfg = make_cfg(tmp_path, repo, script(tmp_path, [dict(impl_done(), sleep_s=7), review()]))
+    # ttl 8 -> a 2 s heartbeat interval: the 7 s run spans several beats, and a beat that lags
+    # under xdist load still stays well inside the ttl (ttl 2 flaked at age == ttl)
+    cfg["agentic"]["lease_ttl_s"] = 8
     a = added(cfg, monkeypatch)
     samples, beaters = [], set()
     done = threading.Event()
@@ -265,7 +267,7 @@ def test_heartbeat_spans_many_ticks(tmp_path, monkeypatch):
     assert ticks > 10                                         # the run spanned many ticks
     assert len(samples) > 10
     assert not any(s["stale"] for s in samples), [s["heartbeat_age_s"] for s in samples]
-    assert max(s["heartbeat_age_s"] for s in samples) < 2
+    assert max(s["heartbeat_age_s"] for s in samples) < 8
     assert len(beaters) == 1                                  # one thread for the whole loop
     assert not any(t.name == "nw-lease-heartbeat" for t in threading.enumerate())
 
