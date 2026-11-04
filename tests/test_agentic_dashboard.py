@@ -16,8 +16,6 @@ def _ev(cfg, cid, etype, payload=None, **kw):
     """append_event with the schema's required keys defaulted (SPEC-0192 fixtures)."""
     return S.append_event(cfg, cid, etype, SC.with_defaults(etype, payload), **kw)
 
-NOW = dt.datetime.now().astimezone()
-
 
 def ev_at(cfg, cid, etype, payload=None, *, ago_s=0, **kw):
     """`_ev`, then rewrite the ledger line's `ts` to `ago_s` seconds before now (SPEC-0222:
@@ -34,7 +32,10 @@ def ev_at(cfg, cid, etype, payload=None, *, ago_s=0, **kw):
 
 
 def _iso(minutes_ago):
-    return (NOW - dt.timedelta(minutes=minutes_ago)).isoformat(timespec="seconds")
+    # call-time clock, not an import-time one: `ev_at` stamps ledger lines from the call-time
+    # clock, and a stale module-level NOW skews parked_at order in a long run
+    return (dt.datetime.now().astimezone() - dt.timedelta(minutes=minutes_ago)).isoformat(
+        timespec="seconds")
 
 
 def _campaign(cfg, repo, cid, state, *, spec_id="SPEC-0001", rel="docs/specs/0001-trivial.md",
