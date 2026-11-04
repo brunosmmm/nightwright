@@ -138,6 +138,104 @@ def test_host_origin_403_before_auth(s, hdrs, host, reason):
     assert s.audit()[-1]["reason"] == reason
 
 
+@pytest.mark.parametrize("cred", [None, "Bearer wrong-token", "Basic x"])
+@pytest.mark.parametrize("hdrs,host,reason", [
+    ({}, "evil.example", "bad_host"),
+    ({}, "127.0.0.1:1", "bad_host"),
+    ({"Origin": "http://evil.example"}, True, "bad_origin"),
+    ({"Origin": "null"}, True, "bad_origin"),
+])
+def test_host_origin_403_comes_before_the_token_check(s, hdrs, host, reason, cred):
+    """Host/Origin run first: with no token or a wrong one the answer is still 403, audited as
+    bad_host/bad_origin, never 401 no_token/bad_token."""
+    h = dict(hdrs)
+    if host is not True:
+        h["Host"] = host
+    if cred:
+        h["Authorization"] = cred
+    st, rh, _ = s.req(headers=h, host=host is True, auth=False)
+    assert st == 403 and "www-authenticate" not in rh
+    (rec,) = s.audit()
+    assert (rec["reason"], rec["status"]) == (reason, 403)
+
+
+def test_unauthenticated_post_is_401_not_405(s):
+    """The method check runs after authentication."""
+    st, _, _ = s.req("POST", body=b"{}", auth=False)
+    assert st == 401
+    st, _, _ = s.req("POST", body=b"{}", auth=False, headers={"Authorization": "Bearer x"})
+    assert st == 401
+    assert [r["reason"] for r in s.audit()] == ["no_token", "bad_token"]
+
+
+def test_ipv6_loopback_host_passes(tmp_path):
+    import socket
+    if not socket.has_ipv6:
+        pytest.skip("no IPv6")
+    fx = seed(tmp_path)
+    try:
+        srv = DS.make_server(fx["cfg"], "[::1]:0")
+    except OSError:
+        pytest.skip("::1 is not available")
+    t = threading.Thread(target=srv.serve_forever, kwargs={"poll_interval": 0.05}, daemon=True)
+    t.start()
+    try:
+        port = srv.server_address[1]
+        for host, want in ((f"[::1]:{port}", 200), (f"localhost:{port}", 200),
+                           (f"127.0.0.1:{port}", 403)):
+            c = http.client.HTTPConnection("::1", port, timeout=10)
+            c.putrequest("GET", "/api/snapshot", skip_host=True, skip_accept_encoding=True)
+            c.putheader("Host", host)
+            c.putheader("Authorization", f"Bearer {srv.token}")
+            c.endheaders()
+            assert c.getresponse().status == want, host
+            c.close()
+    finally:
+        srv.shutdown()
+        t.join(10)
+        srv.server_close()
+
+
+def test_server_json_fields(tmp_path):
+    fx = seed(tmp_path)
+    s = Srv(fx)
+    try:
+        rec = DS.write_server_json(fx["cfg"], s.srv)
+        on_disk = json.loads(DS.server_json_path(fx["cfg"]).read_text())
+        assert on_disk == rec
+        assert rec["schema"] == "nw.dashboard.server.v1"
+        assert rec["url"] == f"http://127.0.0.1:{s.port}" and rec["port"] == s.port
+        assert rec["host"] == "127.0.0.1" and rec["auth"] == "token"
+        assert isinstance(rec["started_at"], str) and rec["started_at"]
+        assert s.token not in json.dumps(rec)
+    finally:
+        s.close()
+
+
+@pytest.mark.parametrize("how", ["huge", "chunked"])
+def test_refused_request_with_an_undrainable_body_closes_the_connection(s, how):
+    import socket
+    head = [f"POST /api/snapshot HTTP/1.1", f"Host: 127.0.0.1:{s.port}"]     # no token: 401
+    if how == "huge":
+        head.append(f"Content-Length: {DS.DRAIN_MAX + 1}")
+    else:
+        head.append("Transfer-Encoding: chunked")
+    c = socket.create_connection(("127.0.0.1", s.port), timeout=10)
+    try:
+        c.sendall(("\r\n".join(head) + "\r\n\r\n").encode())
+        buf = b""
+        while b"\r\n\r\n" not in buf:
+            chunk = c.recv(4096)
+            if not chunk:
+                break
+            buf += chunk
+    finally:
+        c.close()
+    status, *lines = buf.decode("latin-1").split("\r\n")
+    hdrs = {k.lower(): v for k, _, v in (x.partition(": ") for x in lines if ": " in x)}
+    assert status.split()[1] == "401" and hdrs.get("connection") == "close"
+
+
 def test_missing_host_is_403(s):
     c = http.client.HTTPConnection("127.0.0.1", s.port, timeout=10)
     c.putrequest("GET", "/api/snapshot", skip_host=True, skip_accept_encoding=True)

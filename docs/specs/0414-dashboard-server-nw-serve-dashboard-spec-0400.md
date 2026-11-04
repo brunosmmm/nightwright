@@ -402,6 +402,16 @@ refusal test, a SIGINT shutdown case (exit 0, `server.json` mode 0600 then remov
 for `serve --dashboard` in `docs/product/reference/index.md`; `uv run pytest -q
 tests/test_dashboard_server.py tests/test_dashboard_serve_cli.py` passed (53).
 
+Review loop 2 (tests only): `nw serve --jobs` is now run through the CLI with no `--bind`
+(listens on 127.0.0.1:8790, skipped if busy; SIGINT exits 0) and with `--bind 127.0.0.1:0`; a
+bad Host / foreign Origin / `Origin: null` with no token, a wrong token and a non-Bearer scheme is
+`403` with `bad_host`/`bad_origin` (never `401`); an unauthenticated `POST` is `401`; `server.json`
+`schema`/`url`/`started_at`; an oversize or chunked refused body gets its status and
+`Connection: close`; a `[::1]:0` server test (skipped here: no `::1`). Mutation-checked: dropping
+`bind or PJ.DEFAULT_BIND` and swapping the auth and Host/Origin checks each fail the new tests.
+`uv run pytest -q tests/test_dashboard_server.py tests/test_dashboard_serve_cli.py`: 71 passed, 1
+skipped.
+
 ### As shipped
 
 Shipped to Design with these notes:

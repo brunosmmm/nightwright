@@ -138,6 +138,40 @@ def test_jobs_keeps_its_default_bind(fx):
     assert "--jobs" in out and "--dashboard" in out and "8790" in out
 
 
+def test_jobs_alone_serves_on_its_default_bind(fx):
+    """AC3: `nw serve --jobs` with no `--bind` really starts and listens on 127.0.0.1:8790."""
+    if listening(8790):
+        pytest.skip("127.0.0.1:8790 is busy")
+    proc = subprocess.Popen([*nw_argv(), "serve", "--jobs"], env=nw_env(fx),
+                            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    try:
+        assert until(lambda: listening(8790) or proc.poll() is not None)
+        assert proc.poll() is None, proc.stderr.read()
+        proc.send_signal(signal.SIGINT)            # `--jobs` stops on KeyboardInterrupt
+        _, err = proc.communicate(timeout=30)
+    finally:
+        stop(proc)
+    assert proc.returncode == 0, err
+    assert "job API on http://127.0.0.1:8790" in err
+    assert not (dash(fx) / "server.json").exists()     # nothing of the dashboard mode
+
+
+def test_jobs_with_an_explicit_bind_uses_it(fx):
+    proc = subprocess.Popen([*nw_argv(), "serve", "--jobs", "--bind", "127.0.0.1:0"],
+                            env=nw_env(fx), stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                            text=True)
+    try:
+        line = proc.stderr.readline()
+        assert proc.poll() is None, line
+        assert line.startswith("nw serve: job API on http://127.0.0.1:")
+        assert not line.rstrip().endswith(":8790")
+        proc.send_signal(signal.SIGINT)
+        proc.communicate(timeout=30)
+    finally:
+        stop(proc)
+    assert proc.returncode == 0
+
+
 def test_dashboard_without_bind_binds_8791(fx):
     s = socket.socket()
     if s.connect_ex(("127.0.0.1", 8791)) == 0:
