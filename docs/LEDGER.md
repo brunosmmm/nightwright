@@ -254,13 +254,13 @@ progress. This is the single place to see *what has been decided* and *what is i
   - [x] [SPEC-0408](./specs/0408-ledger-provenance-finding-run-id-and-key-triage.md) Ledger provenance: finding run_id and key, triage events — done
   - [x] [SPEC-0409](./specs/0409-tui-test-harness-real-app-pilots-on-real-fixture.md) Remove Textual/pyte test skips, add the AST guard and a TUI test runtime budget — done
   - [x] [SPEC-0410](./specs/0410-live-queue-view-state-grouped-sections-with.md) Live queue view: state-grouped sections with priority, admission order and why-waiting — done
-- **[SPEC-0419](./specs/0419-self-healing-queue.md) — Self-healing queue** · accepted · (3/6 done)
+- **[SPEC-0419](./specs/0419-self-healing-queue.md) — Self-healing queue** · accepted · (4/6 done)
   - [x] [SPEC-0420](./specs/0420-red-main-fix-forward-and-revert.md) Red-main fix-forward and revert — done
   - [x] [SPEC-0421](./specs/0421-always-run-guard-tests-at-close-and-loop-gates.md) Always-run guard tests at close and loop gates — done
   - [x] [SPEC-0422](./specs/0422-cost-cap-policy-auto-raise-while-converging.md) Cost-cap policy: auto-raise while converging — done
   - [ ] [SPEC-0423](./specs/0423-idea-campaign-ordering-with-after-and-epic.md) Idea-campaign ordering with --after and epic derivation — accepted
   - [ ] [SPEC-0424](./specs/0424-launch-freshness-and-steward-dontask.md) Launch freshness and steward dontAsk — accepted
-  - [ ] [SPEC-0425](./specs/0425-escalation-timeout-and-note-attribution.md) Escalation timeout and note attribution — accepted
+  - [x] [SPEC-0425](./specs/0425-escalation-timeout-and-note-attribution.md) Escalation timeout and note attribution — done
 
 ## Active & planned
 
@@ -284,7 +284,6 @@ progress. This is the single place to see *what has been decided* and *what is i
 | [SPEC-0419](./specs/0419-self-healing-queue.md) | Self-healing queue | epic | accepted | M9: agentic workflow | 2026-11-04 |
 | [SPEC-0423](./specs/0423-idea-campaign-ordering-with-after-and-epic.md) | Idea-campaign ordering with --after and epic derivation | feature | accepted | M9: agentic workflow | 2026-11-04 |
 | [SPEC-0424](./specs/0424-launch-freshness-and-steward-dontask.md) | Launch freshness and steward dontAsk | feature | accepted | M9: agentic workflow | 2026-11-04 |
-| [SPEC-0425](./specs/0425-escalation-timeout-and-note-attribution.md) | Escalation timeout and note attribution | feature | accepted | M9: agentic workflow | 2026-11-04 |
 
 ## Done
 
@@ -666,6 +665,7 @@ progress. This is the single place to see *what has been decided* and *what is i
 | [SPEC-0420](./specs/0420-red-main-fix-forward-and-revert.md) | Red-main fix-forward and revert | feature | done | M9: agentic workflow | 2026-11-04 |
 | [SPEC-0421](./specs/0421-always-run-guard-tests-at-close-and-loop-gates.md) | Always-run guard tests at close and loop gates | feature | done | M9: agentic workflow | 2026-11-04 |
 | [SPEC-0422](./specs/0422-cost-cap-policy-auto-raise-while-converging.md) | Cost-cap policy: auto-raise while converging | feature | done | M9: agentic workflow | 2026-11-04 |
+| [SPEC-0425](./specs/0425-escalation-timeout-and-note-attribution.md) | Escalation timeout and note attribution | feature | done | M9: agentic workflow | 2026-11-04 |
 
 ## Superseded / rejected
 

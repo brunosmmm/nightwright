@@ -1,7 +1,7 @@
 ---
 id: SPEC-0425
 title: "Escalation timeout and note attribution"
-status: accepted
+status: done
 owner: user
 created: 2026-11-04
 source_idea: IDEA-931
@@ -163,29 +163,29 @@ Files and functions:
 
 ## Acceptance criteria
 
-- [ ] AC1: `nw queue escalate <cid> --question q --option a --option b --recommend 1` without
+- [x] AC1: `nw queue escalate <cid> --question q --option a --option b --recommend 1` without
       `--topic` is refused. With `--topic recovery` the record has `auto.eligible: true` and
       `due_at = created + 1800 s`. With `--topic scope`, or any human-only topic, or `kind:
       cost`, or no recommendation, `eligible` is false and there is no `due_at`.
-- [ ] AC2: A follower sync after `due_at` (driven by `now`) appends exactly one
+- [x] AC2: A follower sync after `due_at` (driven by `now`) appends exactly one
       `escalation_timeout` for the record. A second sync and a second follower append none. A
       human-only or answered record gets none.
-- [ ] AC3: `nw escalations answer ESC-N --auto --by conductor --yes`:
+- [x] AC3: `nw escalations answer ESC-N --auto --by conductor --yes`:
       - before `due_at`, by a non-conductor, or on an ineligible record → refused with the reason;
       - otherwise → answered with the recommended option, `answer.auto: true`, `answered_by:
         conductor`, an `escalation_answered` event with `auto: true`, one human mail and a
         notification.
-- [ ] AC4: A human `nw escalations answer ESC-N --choose 2 --yes` after an auto answer is
+- [x] AC4: A human `nw escalations answer ESC-N --choose 2 --yes` after an auto answer is
       accepted. `answer_history` holds the auto answer, and `escalation_answered` carries
       `reverses_auto: true` and `previous`. A second reversal of a non-auto answer is refused as
       today.
-- [ ] AC5: A note written by `nw campaign note` gets these attributions:
+- [x] AC5: A note written by `nw campaign note` gets these attributions:
       - inside a persona run → `by: agent:<persona>`;
       - with `NW_MAILBOX_ADDR=conductor` → `by: conductor`;
       - from a registered steward session id → `by: steward:<P>`;
       - from an unregistered Claude session → `by: agent:session`;
       - from a plain shell → `by: human`.
-- [ ] AC6: The conductor skill has the `escalation_timeout` row, the `reverses_auto` handling and
+- [x] AC6: The conductor skill has the `escalation_timeout` row, the `reverses_auto` handling and
       the human-only topic list. `quiet.RULES` does not hold `escalation_timeout`.
 
 ## Test plan
@@ -221,10 +221,6 @@ Files and functions:
 - **Regression guard**: affected tests and `python3 tools/spec_lint.py`. Existing answer, withdraw
   and remind tests pass unchanged.
 
-## Clock Log
-
-CLOCK-IN: [timestamp]
-CLOCK-OUT: [timestamp]
 
 ## Rollout / migration
 
@@ -234,15 +230,101 @@ CLOCK-OUT: [timestamp]
 
 ## Definition of done
 
-- [ ] Acceptance criteria all met.
-- [ ] Test plan executed; automated tests pass (`uv run pytest`); manual steps performed.
-- [ ] No regressions.
-- [ ] Spec body updated to match what shipped.
-- [ ] `docs/LEDGER.md` updated (status + date).
+- [x] Acceptance criteria all met.
+- [x] Test plan executed; automated tests pass (affected tests; the full suite runs at the queue's close gate); manual steps performed (the 3-day live check is post-landing, below).
+- [x] No regressions.
+- [x] Spec body updated to match what shipped.
+- [x] `docs/LEDGER.md` updated (status + date).
 
 ## As shipped
 
-_To be filled at close: the real follower transcript and the live counts._
+Built as decided, with these details settled in the build:
+
+- **`depends_on: SPEC-0422`** was not waited on: a record with no topic never times out, and
+  kind `cost` plus the `spend_ceiling` / `spend_diverging` topics are human-only (the
+  `HUMAN_ONLY_KINDS` set). The 3× ceiling therefore holds whether or not SPEC-0422 has landed,
+  so no gate on its config key was needed.
+- **Code callers.** The `--topic` requirement is enforced in `plan_escalate`. A
+  `RECOVERY_KINDS` kind counts as `recovery`, so `workers.py`'s `worker_lost` escalation
+  (recommend 1, "off") needs no change and is eligible. `sentinel._escalate` has no
+  recommendation and stays ineligible until SPEC-0420 passes `kind=red_main, topic=recovery`.
+- **Conservative timeouts.**
+  - A record without an `auto` block (created before this change, e.g. ESC-0024) never times
+    out, and `--auto` refuses it ("predates").
+  - Eligibility is checked again when the timeout is announced, in `plan_answer` and inside
+    the `apply_answer` lock.
+  - A campaign-bound record is announced only once its campaign is PARKED `human_decision`.
+  - Setting `auto_apply_after_s: 0` disables timeouts for existing records too.
+  - A failed `escalation_timeout` append releases the claim.
+- **Reversal** is allowed for `human` and `steward:<P>` only (not the conductor), once: the
+  new answer carries no `auto`, so a second reversal is refused as before. The record gains
+  `answer_history`. `auto` also records `applied_at`, `mail_id` and `notified`. `nw escalations
+  list` marks `auto-applied` / `reversed` / `due in Nm` / `due now` / `human-only`. `show`
+  prints the reverse command. `conductor-brief` lists `auto_applied_24h` (REVERSED when
+  replaced) and shows `[topic due …]` on open rows.
+- **Attribution.**
+  - `note_actor` lives in `cli_campaign.py`. A session row whose reader is not a valid address
+    (e.g. a bare `steward`) is ignored. The note's `author` field mirrors `by`.
+  - Remote runs: `NW_PERSONA` is an `ENV_RESET` key (`runner.py`), not a verbatim one, so it
+    never travels in the job's env (a worker on older code would refuse it). The worker side
+    sets it from the job's `persona` (`remote_personas`); `worker.py` needs no change.
+  - `tests/conftest.py` unsets `NW_PERSONA`, `NW_MAILBOX_ADDR`, `CLAUDECODE` and
+    `CLAUDE_CODE_SESSION_ID`, so note tests run as a plain shell.
+- **Tests.** The SPEC-0425 cases are in the new `tests/test_agentic_escalation_timeout.py`
+  (topics, the eligibility matrix, `timeouts_due` including 4 concurrent callers, `--auto`
+  refusals and success, reversal, brief, quiet, the CLI, and the skill rows: AC1-AC4, AC6).
+  The note_actor matrix and CLI attribution tests are in `tests/test_agentic_campaign_cli.py`
+  (AC5); `NW_PERSONA` is checked in `tests/test_agentic_personas.py`. Existing callers that
+  pass a recommendation now pass `topic="scope"`, which is human-only so their behaviour is
+  unchanged.
+
+**Real verification** (2026-11-04, scratch `NW_DATA_DIR` / `NW_CONFIG_DIR`, real CLI, two real
+follower processes `nw queue events --follow --for conductor` (quiet) and `--for audit --all`,
+`ping_interval_s: 1`, notifier = a shell command that logs the id). To avoid real waiting, the
+records were backdated by 31 min instead of the spec's `auto_apply_after_s: 5` config.
+
+- `nw queue escalate … --recommend 1` without `--topic` → `Error: a recommended escalation
+  needs --topic (…)`, exit 1.
+- ESC-0001 (`--topic recovery`): `auto: {eligible: true, due_at: created + 1800 s}`. ESC-0002
+  (`--topic scope`): `eligible: false, "topic scope is human-only"`. ESC-0003 (no
+  recommendation): `eligible: false, "no recommendation"`. `list` showed `due in 29m` and
+  `human-only`.
+- With both followers running for 4 pings: 0 `escalation_timeout`. `answer ESC-0001 --auto --by
+  conductor --yes` → `not due yet: due at … (in 29m 50s)`.
+- After backdating all three by 31 min, the quiet conductor reader printed
+  `{"type": "escalation_timeout", "campaign": "SPEC-0990-…", "data": {"escalation_id": "ESC-0001",
+  "recommendation": 1, "label": "resume to GATING", "topic": "recovery"}}`. After 4 more pings
+  with 2 followers, events.jsonl held exactly 1 `escalation_timeout`, and none for ESC-0002 or
+  ESC-0003.
+- `--auto` on ESC-0002 → "topic scope is human-only"; on ESC-0003 → "no recommendation";
+  `--by human` → "--auto is the conductor's". ESC-0002 and ESC-0003 stayed `open`, with no
+  answer and no `announced_at`.
+- `--auto --by conductor --yes` → `answered`, `answered_by: conductor`, choice 1, `auto: true`,
+  note "auto-applied after 31 min without an answer (SPEC-0425)". The conductor reader got
+  `escalation_answered` with `data.auto: true`. Human mail `human:4` (info): "ESC-0001: no
+  answer in 30 min; applied option 1 (resume to GATING). To reverse: nw escalations answer
+  ESC-0001 --choose 2 --yes". The notifier ran a second time for ESC-0001. The campaign ledger
+  got `human_decision … auto=True` and a note by `conductor`. `list --all` showed
+  `auto-applied`.
+- `nw escalations answer ESC-0001 --choose 2 --yes` (human) → accepted.
+  `escalation_answered` carried `reverses_auto: true` and `previous.choice: 1, auto: true`.
+  `show` printed "earlier answer by conductor … (auto, reversed)". A second `--choose 1` was
+  refused ("answered since …"). `list` showed `reversed`. `conductor-brief` showed
+  "auto-applied escalations (24h): ESC-0001 … option 1 (resume to GATING) … REVERSED" and
+  `[scope]` on ESC-0002.
+- Notes through the real CLI: plain shell → `human`; `NW_MAILBOX_ADDR=conductor` → `conductor`;
+  `CLAUDECODE=1` + a session id registered for `conductor` → `conductor`; `CLAUDECODE=1` + an
+  unregistered session id → `agent:session`. The steward-session case is covered by the
+  automated matrix.
+- A real persona run: `personas.build_request` for `implementer` (env `NW_PERSONA=implementer`,
+  `NW_PERSONA_RUN=1`) run through the real `ClaudeRunner` (haiku, $0.006) on a fixture campaign.
+  The agent ran `nw campaign note "x from the implementer run"`, and the ledger records `by:
+  agent:implementer`, `author: implementer`.
+
+**Live check (post-landing, manual):** over 3 days, count escalations with a recommendation and
+an eligible topic left open more than 35 min, and new `by: human` notes the human did not write.
+This needs the conductor to reload the skill first (`code_changed`). Records filed before
+landing have no `auto` block and keep waiting.
 
 ## Open questions
 
