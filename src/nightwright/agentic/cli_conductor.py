@@ -237,7 +237,7 @@ def attach(queue_group):
             if ev_campaign:                     # a mirrored mail event may carry a bogus campaign
                 try:
                     S.read_state(cfg, ev_campaign)
-                except (ValueError, OSError):
+                except (ValueError, OSError, TypeError):    # TypeError: a non-string value
                     ev_campaign = None
             if ev_campaign:
                 campaign, campaign_from = ev_campaign, "event"

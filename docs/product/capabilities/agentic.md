@@ -756,6 +756,13 @@ reconcile ideas after a merge), escalating to the human only for design question
 human's own checkout. `nw queue conduct-status` is its one-call situation report. The
 follower's reader lock means only one conductor can be armed.
 
+`nw queue decision [CAMPAIGN] RATIONALE` (SPEC-0431) records the conductor's choice in
+`decisions.jsonl`. Without CAMPAIGN it stamps the campaign of the `--event N` queue event, else
+the one existing campaign its rationale and `--action` name; the record then carries
+`campaign_from` (`"event"` or `"text"`), counts like an explicit campaign (ledger note, park
+coverage) and the output says it was inferred. `--no-campaign` skips inference. Details under
+[Mailbox](#mailbox).
+
 ## Launching the conductor and stewards
 
 `nw queue conductor-launch` and `nw queue steward-launch PROJECT` start the session with a

@@ -256,6 +256,19 @@ except that they now gain a stamp when the text names exactly one existing campa
   (e.g. a spec id passed as `--campaign`) falls through to text inference instead of failing the
   write. Tests also cover `--no-campaign` blocking `--event` / `--re` inheritance.
 
+- Review round 3: `--event` / `--re` inheritance also catches `TypeError`, so a non-string stored
+  `campaign` (int, list) falls through to text inference instead of crashing. Added tests:
+  `--event N` among several events (N=1 CB, 2 CA, 3 none), a missing `--event` with a
+  text-named campaign (non-zero exit, no decision line, no ledger note), and non-string
+  campaigns on `--event` / `--re`. The `nw queue decision` stamp description now also sits in the
+  Conductor section of `agentic.md`.
+
+### Test record (2026-11-04, review round 3)
+
+- `uv run pytest -q tests/test_agentic_decisions.py tests/test_agentic_mailbox.py
+  tests/test_agentic_store_campaign_named.py`: 60 passed. `python3 tools/spec_lint.py` OK. The
+  full suite is left to gating.
+
 ## Rollout / migration
 
 1. Land `store.sole_campaign_named`, the `campaign_from` keywords and the two CLI changes with

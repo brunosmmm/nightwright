@@ -328,6 +328,22 @@ def test_cli_send_re_with_unknown_campaign_falls_through(tmp_path):
     assert rec["campaign"] is None and "campaign_from" not in rec
 
 
+def test_cli_send_re_with_non_string_campaign_falls_through(tmp_path):
+    cfg = _cfg(tmp_path)
+    _mk(cfg, CA)
+    for bad in (123, ["x"], {"a": 1}):
+        q = M.send(cfg, to="conductor", frm="steward:Demo", text="question", kind="question")
+        path = M._inbox_path(cfg, "conductor")
+        lines = path.read_text().splitlines()
+        rec = json.loads(lines[-1])
+        rec["campaign"] = bad                   # a hand-edited / foreign-writer line
+        path.write_text("\n".join(lines[:-1] + [json.dumps(rec)]) + "\n")
+        r = _send(cfg, "--to", "conductor", "--re", q["id"], f"about {CA}")
+        assert r.exit_code == 0, r.output
+        out = json.loads(r.output)
+        assert out["campaign"] == CA and out["campaign_from"] == "text"
+
+
 def test_cli_send_unknown_re_falls_through_to_text(tmp_path):
     cfg = _cfg(tmp_path)
     _mk(cfg, CA)

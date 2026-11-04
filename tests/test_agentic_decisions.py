@@ -399,6 +399,49 @@ def test_cli_no_campaign_flag_blocks_event_inheritance(cfg, run):
     assert not [e for e in S.read_ledger(cfg, CA) if e["type"] == "note"]
 
 
+def _msg_event(cfg, n, campaign=None):
+    return E.append(cfg, "message", campaign=campaign, by="t",
+                    data={"msg_id": str(n), "from": "x", "kind": "info", "text": "t"})
+
+
+def test_cli_event_lookup_picks_event_n_among_several(cfg, run):
+    mk(cfg, CA)
+    mk(cfg, CB)
+    _msg_event(cfg, 1, CB)
+    _msg_event(cfg, 2, CA)
+    _msg_event(cfg, 3)
+    r = _dec(run, "nothing named", extra=("--event", "2"))
+    assert r.exit_code == 0, r.output
+    rec = D.read(cfg)[0]
+    assert rec["campaign"] == CA and rec["campaign_from"] == "event" and rec["event_id"] == 2
+    # neighbours: event 1 stamps CB, event 3 has no campaign and falls through
+    r = _dec(run, "nothing named", extra=("--event", "1"))
+    assert D.read(cfg)[1]["campaign"] == CB
+    r = _dec(run, "nothing named", extra=("--event", "3"))
+    assert r.exit_code == 0, r.output
+    assert D.read(cfg)[2]["campaign"] is None
+
+
+def test_cli_missing_event_with_text_campaign_writes_nothing(cfg, run):
+    mk(cfg, CA)
+    _msg_event(cfg, 1, CA)
+    r = _dec(run, f"about {CA}", extra=("--event", "99"))
+    assert r.exit_code != 0
+    assert D.read(cfg) == []
+    assert not [e for e in S.read_ledger(cfg, CA) if e["type"] == "note"]
+
+
+def test_cli_event_with_non_string_campaign_falls_through(cfg, run):
+    mk(cfg, CB)
+    _msg_event(cfg, 1, 123)
+    _msg_event(cfg, 2, ["x"])
+    for n in ("1", "2"):
+        r = _dec(run, f"about {CB}", extra=("--event", n))
+        assert r.exit_code == 0, r.output
+    recs = D.read(cfg)
+    assert [(x["campaign"], x["campaign_from"]) for x in recs] == [(CB, "text")] * 2
+
+
 def test_cli_event_with_unknown_campaign_falls_through(cfg, run):
     mk(cfg, CB)
     E.append(cfg, "message", campaign="SPEC-0123", by="t",

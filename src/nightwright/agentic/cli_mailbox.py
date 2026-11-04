@@ -63,7 +63,7 @@ def mailbox_send(cfg, to, frm, kind, campaign, no_campaign, re_, no_reply, as_js
         if re_campaign:                         # inherit only a campaign that exists
             try:
                 S.read_state(cfg, re_campaign)
-            except (ValueError, OSError):
+            except (ValueError, OSError, TypeError):    # TypeError: a non-string value
                 re_campaign = None
         if re_campaign:
             campaign, campaign_from = re_campaign, "re"
