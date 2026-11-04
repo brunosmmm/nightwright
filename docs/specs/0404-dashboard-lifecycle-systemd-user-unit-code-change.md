@@ -8,7 +8,7 @@ updated: 2026-11-04
 kind: feature
 source_idea: IDEA-877
 parent: SPEC-0400
-depends_on: [SPEC-0401, SPEC-0414]
+depends_on: [SPEC-0401, SPEC-0414, SPEC-0416]
 tags: [agentic, dashboard, remote, lifecycle]
 ---
 
