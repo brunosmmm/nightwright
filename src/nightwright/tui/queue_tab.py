@@ -313,7 +313,10 @@ class QueueView(QueueActions, Vertical):
         ident = f"{r.spec} {campaign}".strip()
         state = f"{r.state} {r.activity}".strip()
         cost = f"${r.cost_usd or 0:.2f}"
-        over = r.cap_usd and (r.cost_usd or 0) > float(r.cap_usd)
+        try:
+            over = bool(r.cap_usd) and (r.cost_usd or 0) > float(r.cap_usd)
+        except (TypeError, ValueError):         # a hand-edited cap: no flag, never a failed paint
+            over = False
         if r.group != "delivered":
             cost = f"{cost} {AM.cost_bar(r.cost_usd, r.cap_usd)}".strip()
         return [Text(r.pri), Text(R._clip(ident, _ID_W)), Text(R._clip(r.title, title_w)),

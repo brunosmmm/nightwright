@@ -6879,6 +6879,10 @@ def dashboard_payload(cfg, *, project=None, recent=5, recent_hours=24, now=None)
             age = _age(updated, now)
             if age is not None and age <= recent_hours * 3600:
                 close = st.get("close") or {}
+                # SPEC-0410: a stable finish time (the transition into the terminal state),
+                # since `updated_at` moves with any later write to the closed campaign
+                finished = next((e.get("ts") for e in reversed(store.read_ledger(cfg, it["campaign"]))
+                                 if e.get("type") == "transition" and e.get("to") == state), None)
                 delivered.append({
                     "campaign": it["campaign"], "spec_id": it["spec_id"], "spec_title": title,
                     "kind": it["kind"], "merge_branch": it["merge_branch"], "label": it["label"],
@@ -6886,7 +6890,7 @@ def dashboard_payload(cfg, *, project=None, recent=5, recent_hours=24, now=None)
                     "merged_sha": close.get("merged_sha"), "pr_url": close.get("pr_url"),
                     "cost_usd": it["cost_usd"],
                     "duration_s": (_age(st.get("created_at"), now) or 0) - age,
-                    "finished_age_s": age, "state_since": updated})   # SPEC-0410
+                    "finished_age_s": age, "state_since": finished or updated})   # SPEC-0410
             continue
         if state == "WAITING":
             wf = JY.waiting_for(st, [], busy=slots["busy"], total=slots["total"], now=now)
@@ -6970,8 +6974,9 @@ def dashboard_payload(cfg, *, project=None, recent=5, recent_hours=24, now=None)
                                                                  ledger, now)} if hold else None),
                        "recent_lines": JY.recent_lines(ledger, 3),
                        "state_age_s": _age(state_since, now),
-                       # SPEC-0410: the transition into this state, else the last write, else None
-                       "state_since": state_since or st.get("updated_at")})
+                       # SPEC-0410: the transition into this state, else creation (never
+                       # `updated_at`, which every heartbeat or cost write moves)
+                       "state_since": state_since or st.get("created_at")})
     conductor.sort(key=lambda c: (not (c["park"] or {}).get("overdue"),
                                   -(c.get("park_age_s") or 0)))
     needs_you.sort(key=lambda c: -(c.get("park_age_s") or 0))

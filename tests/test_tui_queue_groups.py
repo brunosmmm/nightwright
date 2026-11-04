@@ -81,16 +81,21 @@ def test_sort_keys_and_independence_from_payload_order():
     wait = [_it("W3", "WAITING", priority=3, waiting={"since": "2026-11-03T07:00:00+00:00"}),
             _it("W2", "WAITING", priority=1, waiting={"since": "2026-11-03T09:00:00+00:00"}),
             _it("W1", "WAITING", priority=1, waiting={"since": "2026-11-03T08:00:00+00:00"})]
+    ny = [_it("N2", "PARKED", park=park("2026-11-03T09:00:00+00:00", overdue=True)),
+          _it("N1", "PARKED", park=park("2026-11-03T09:00:00+00:00")),
+          _it("NB", "PARKED", park=park("2026-11-03T10:00:00+00:00")),
+          _it("NA", "PARKED", park=park("2026-11-03T08:00:00+00:00"))]
     back = [_it("Q3", position=3), _it("Q1", position=1), _it("Q2", position=2)]
     dele = [_it("D1", "MERGED", state_since="2026-11-03T09:00:00+00:00", finished_age_s=5),
             _it("D3", "MERGED", state_since="2026-11-03T11:00:00+00:00", finished_age_s=1),
             _it("D2a", "MERGED", state_since="2026-11-03T10:00:00+00:00", finished_age_s=2),
             _it("D2b", "MERGED", state_since="2026-11-03T10:00:00+00:00", finished_age_s=2)]
     payload = _payload(active=act, conductor_handling=cond, waiting=wait, backlog=back,
-                       delivered=dele)
+                       delivered=dele, needs_you=ny)
     rows = AM.rows_from_payload(payload)
     assert _ids(rows, "building") == ["C", "E", "A", "B", "D"]
     assert _ids(rows, "conductor") == ["KA", "K1", "K2", "KO"]         # overdue does not jump
+    assert _ids(rows, "needs you") == ["NA", "N1", "N2", "NB"]         # (parked_at, id)
     assert _ids(rows, "waiting") == ["W1", "W2", "W3"]
     assert _ids(rows, "queued") == ["Q1", "Q2", "Q3"]
     assert _ids(rows, "delivered") == ["D3", "D2a", "D2b", "D1"]
@@ -119,6 +124,7 @@ def test_row_columns_and_time_in_state():
     assert by["R"].pri == "3" and by["R"].loops == "1/3" and by["R"].why == "why R"
     assert by["W"].activity == "waiting for a campaign slot" and by["W"].time_text == "11m"
     assert by["Q"].activity == "SPEC-0009, SPEC-0010" and by["Q"].time_text == "1d"
+    assert by["Q"].loops == "" and by["N"].loops == "1/3"             # blank when n/a
     assert by["Q"].state == "QUEUED" and by["Q"].actions == ("park", "prioritize", "abandon")
     assert by["N"].time_text == "1h" and by["N"].actions == ("resume", "prioritize", "abandon")
 

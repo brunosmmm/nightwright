@@ -567,21 +567,103 @@ def test_payload_additions_for_the_tui_queue_view(tmp_path):                  # 
     by = lambda rows: {r["campaign"]: r for r in rows}               # noqa: E731
     assert by(p["needs_you"])[ids["dirty"]]["state_since"] == (
         by(p["needs_you"])[ids["dirty"]]["park"]["parked_at"])
-    assert by(p["conductor_handling"])[ids["req"]]["state_since"] == _iso(2)    # the request's `at`
-    assert by(p["waiting"])[wait]["state_since"] == _iso(5)
-    assert by(p["backlog"])[ready]["state_since"] == by(p["backlog"])[ready]["state_since"] \
-        and by(p["backlog"])[ready]["state_since"]
+    # compare with the stamped values, never a recomputed clock (second-boundary flake)
+    assert by(p["conductor_handling"])[ids["req"]]["state_since"] == (
+        S.read_state(cfg, ids["req"])["park_requested"]["at"])           # the request's `at`
+    assert by(p["waiting"])[wait]["state_since"] == S.read_state(cfg, wait)["waiting"]["since"]
+    assert by(p["backlog"])[ready]["state_since"] == S.read_state(cfg, ready)["created_at"]
     assert by(p["delivered"])[merged]["state_since"]
     act = by(p["active"])[ids["req"]]                                 # the transition's ts
     assert act["state_since"] and act["state_age_s"] is not None
     assert 590 <= act["state_age_s"] <= 700
 
 
-def test_state_since_falls_back_to_updated_at_without_a_transition(tmp_path):  # SPEC-0410
+def test_state_since_falls_back_to_creation_not_updated_at(tmp_path):  # SPEC-0410
     repo, cfg, ids = _fixture(tmp_path)
     row = next(r for r in Q.dashboard_payload(cfg)["active"] if r["campaign"] == ids["impl"])
     assert row["state_age_s"] is None                    # a fixture campaign has no transition
-    assert row["state_since"] == S.read_state(cfg, ids["impl"])["updated_at"]
+    st = S.read_state(cfg, ids["impl"])
+    assert row["state_since"] == st["created_at"] != st["updated_at"]
+    # a later write (heartbeat, cost) must not move the time in state
+    p = S.campaign_dir(cfg, ids["impl"]) / "state.json"
+    d = json.loads(p.read_text())
+    d["updated_at"] = _iso(0)
+    p.write_text(json.dumps(d))
+    row = next(r for r in Q.dashboard_payload(cfg)["active"] if r["campaign"] == ids["impl"])
+    assert row["state_since"] == st["created_at"]
+
+
+def test_delivered_state_since_is_the_close_transition_not_updated_at(tmp_path):  # SPEC-0410
+    repo, cfg, ids = _fixture(tmp_path)
+    merged = _campaign(cfg, repo, "SPEC-0001-done", "MERGED", created_min=50, updated_min=5)
+    ev_at(cfg, merged, "transition", {"from": "CLOSING", "to": "MERGED"}, ago_s=1800)
+    row = next(r for r in Q.dashboard_payload(cfg, recent=20)["delivered"]
+               if r["campaign"] == merged)
+    stamped = row["state_since"]
+    assert stamped != S.read_state(cfg, merged)["updated_at"]
+    p = S.campaign_dir(cfg, merged) / "state.json"        # a later write to the closed campaign
+    d = json.loads(p.read_text())
+    d["updated_at"] = _iso(0)
+    p.write_text(json.dumps(d))
+    row = next(r for r in Q.dashboard_payload(cfg, recent=20)["delivered"]
+               if r["campaign"] == merged)
+    assert row["state_since"] == stamped
+
+
+_ADDED = {"state_since", "created_at"}                                        # SPEC-0410
+_PRE_ITEM = {"age_s", "blocked_by", "branch", "campaign", "cap_usd", "cost", "cost_usd",
+             "depends_on", "idea_id", "kind", "label", "loops", "merge_branch", "park",
+             "park_detail", "park_reason", "park_requested", "priority", "profile",
+             "profile_source", "project", "review_score", "run", "runs", "size", "spec_id",
+             "spec_round", "state", "title", "tone", "updated_age_s", "waiting", "waiting_on",
+             "worktree"}
+_PRE_TOP = {"active", "attention", "backlog", "conductor_handling", "delivered", "gate_pools",
+            "gate_slots", "generated_at", "lease", "needs_you", "project", "runner_code",
+            "schema", "slots", "spec_reviews", "totals", "waiting"}
+_PRE_ROWS = {
+    "active": _PRE_ITEM | {"activity", "gate_hold", "last_gate", "last_verdict", "phase_index",
+                           "phases", "recent_events", "recent_lines", "reviews", "spec_title",
+                           "state_age_s", "track", "track_elided", "waiting_for", "why"},
+    "needs_you": _PRE_ITEM | {"last_verdict", "park_age_s", "spec_title", "why"},
+    "waiting": _PRE_ITEM | {"resume_to", "spec_title", "waiting_for", "waiting_s", "why"},
+    "backlog": {"age_s", "blocked_by", "campaign", "kind", "label", "merge_branch", "position",
+                "priority", "profile", "profile_source", "project", "ready", "size", "spec_id",
+                "spec_title", "tone", "waiting_for", "why"},
+    "delivered": {"campaign", "cost_usd", "duration_s", "finished_age_s", "kind", "label",
+                  "merge_branch", "merged_sha", "pr_url", "project", "spec_id", "spec_title",
+                  "state"},
+}
+
+
+def test_existing_payload_keys_and_values_are_unchanged(tmp_path, monkeypatch):   # SPEC-0410 AC9
+    repo, cfg, ids = _park_fixture(tmp_path)
+    _campaign(cfg, repo, "SPEC-0001-wait", "WAITING",
+              waiting={"resume_to": "GATING", "since": _iso(5)})
+    _campaign(cfg, repo, "SPEC-0001-ready", "QUEUED", created_min=40)
+    _campaign(cfg, repo, "SPEC-0001-merged", "MERGED", created_min=50, updated_min=5)
+    p = Q.dashboard_payload(cfg, recent=20)
+    assert _PRE_TOP <= set(p)
+    for group, pre in _PRE_ROWS.items():
+        assert p[group], group
+        for row in p[group]:
+            assert pre <= set(row), (group, pre - set(row))
+            # the only additions are the two SPEC-0410 keys (created_at rides the queue item)
+            assert set(row) - pre <= _ADDED, (group, set(row) - pre - _ADDED)
+    # values: every queue_payload field a dashboard row carries is the same value as before
+    items = {i["campaign"]: i for i in Q.queue_payload(cfg, include_terminal=True)["items"]}
+    for row in p["active"] + p["needs_you"] + p["conductor_handling"] + p["waiting"]:
+        for k, v in items[row["campaign"]].items():
+            if k not in _ADDED and k in row and k not in ("age_s", "updated_age_s", "park"):  # park: a pending request rewrites it
+                assert row[k] == v, (row["campaign"], k)
+    # `nw queue watch --json` is the same payload, schema included, with the same key sets
+    r = run_cli(cfg, monkeypatch, ["queue", "watch", "--json"])
+    d = json.loads(r.output)
+    assert d["schema"] == "nw.queue.dashboard.v1" and _PRE_TOP <= set(d)
+    for group, pre in _PRE_ROWS.items():
+        for row in d[group]:
+            assert pre <= set(row) and set(row) - pre <= _ADDED
+    r = run_cli(cfg, monkeypatch, ["queue", "watch", "--once"])
+    assert r.exit_code == 0 and "state_since" not in r.output
 
 
 def test_backlog_json_has_no_tui_only_keys(tmp_path, monkeypatch):            # SPEC-0410

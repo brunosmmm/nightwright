@@ -350,8 +350,26 @@ running queue: groups came out conductor, gating, building, queued, delivered wi
 queued order equals `nw queue backlog --json`. I did not drive `nw tui --tab queue` by hand or
 watch it for two minutes; stability is covered by the unchanged-reload test.
 
+### Test record (2026-11-04, review round)
+
+Ran (all passed): `uv run pytest -q tests/test_tui_queue_groups.py tests/test_tui_queue_view.py
+tests/test_agentic_dashboard.py tests/test_tui_queue_model.py tests/test_tui_queue_tab.py
+tests/test_tui_queue_parity.py tests/test_tui_campaign_screen.py`; `python3 tools/spec_lint.py`
+exits 0. New: over-cap `bold red` style and money-only cell on a mounted table, a non-numeric
+`cap_usd` that must not fail the paint, the Enter key (binding, not `open_selected()`) on a header
+row, cursor fallback when the selected campaign leaves the table, needs-you sort order, blank
+`loop`, a wide/narrow layout test (title/why clipping order, fixed widths, header rows) in place
+of the pyte snapshot, and an AC9 test that pins the pre-existing `dashboard_payload` keys and
+`queue_payload` values and checks `nw queue watch --json`/`--once`. The full suite is left to
+gating.
+
 ### As shipped
 
+- Review round: `state_since` no longer follows `updated_at`. Active rows without a transition
+  event fall back to `created_at`; delivered rows use the ledger's transition into the terminal
+  state (else `updated_at`), so a later write to a closed campaign neither resets the `time`
+  cell nor reorders delivered. `finished_age_s` keeps its old `updated_at` basis (AC9). The
+  over-cap check in `QueueView._cells` ignores a non-numeric `cap_usd` instead of raising.
 - The payload gains `created_at` on `queue_payload` items and `state_since` on needs-you,
   conductor, waiting, backlog (creation time), delivered (`updated_at`, the sort key for newest
   first, since delivered rows carry no ISO finish time otherwise) and active rows (last
