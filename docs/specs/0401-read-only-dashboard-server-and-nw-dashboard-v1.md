@@ -1,35 +1,44 @@
 ---
 id: SPEC-0401
-title: "Read-only dashboard server and nw.dashboard.v1 snapshot (nw serve --dashboard)"
+title: "Dashboard snapshot: nw.dashboard.v1, SnapshotCache and nw dashboard snapshot"
 status: proposed
 owner: user
 created: 2026-11-03
+updated: 2026-11-03
 milestone: "M9: agentic workflow"
 kind: feature
 parent: SPEC-0400
 source_idea: IDEA-874
 tags: [agentic, dashboard, remote, web]
-depends_on: [SPEC-0222, SPEC-0232, SPEC-0334]
+depends_on: [SPEC-0222, SPEC-0232]
 ---
 
 ## Context
 
-This is child 1 of the epic [SPEC-0400](./0400-remote-web-dashboard-live-view-of-active-queue.md),
-promoted from `IDEA-874`. The human asked for "a live web-based dashboard of active items so
-that I can consult this while I am away from home", reachable over Tailscale only. This child
-ships the read-only half: a server, its auth gates, the `nw.dashboard.v1` snapshot and a
-phone-first page that polls it. Children 2 to 5 add answers, SSE and the run tail, the systemd
-unit, and push. Each of them depends only on what this spec ships.
+This is the first slice of child 1 of the epic
+[SPEC-0400](./0400-remote-web-dashboard-live-view-of-active-queue.md), promoted from
+`IDEA-874`. The human asked for "a live web-based dashboard of active items so that I can
+consult this while I am away from home", reachable over Tailscale only.
+
+Review of the first draft found child 1 too large for one campaign (16 acceptance criteria
+over three subsystems with separate fixtures: the snapshot, the network server and its auth
+gates, and the phone page in headless Chromium). It is split into three specs, in order:
+
+1. **This spec:** the data layer. It defines `nw.dashboard.v1`, the shared
+   watermark-driven `SnapshotCache`, the `nw dashboard snapshot` CLI and the epic's read-only
+   and no-import invariants. It opens no socket.
+2. **Dashboard server** (a later sibling spec): `nw serve --dashboard`, the bind gate,
+   token/whois auth, Host/Origin checks, audit, and `GET /api/snapshot` with ETag/304 built on
+   this spec's cache.
+3. **Dashboard page** (a later sibling spec): the phone-first static UI with its in-page
+   self-test, run in headless Chromium.
+
+Everything the server and the page show comes from this spec's builder, so it ships first
+and is useful alone: `nw dashboard snapshot` gives the human (or an SSH session from the
+phone) the full dashboard view as text or JSON today.
 
 What exists today, checked against the code on 2026-11-03:
 
-- `nw serve` (`src/nightwright/agentic/cli_worker.py:213`, `serve_cmd`) has one mode,
-  `--jobs` (`required=True`, help text "the only mode so far"), with `--bind` defaulting to
-  `127.0.0.1:8790`. Its server is `pull_jobs.make_server`
-  (`src/nightwright/agentic/pull_jobs.py:973`): a stdlib `ThreadingHTTPServer` subclass with a
-  per-request socket timeout (`HANDLER_TIMEOUT_S`). Its `check_bind`
-  (`pull_jobs.py:915`) accepts loopback and the whole Tailscale range without TLS, and anything
-  with TLS. That gate is too loose for the dashboard: any tailnet IP, and wildcards with TLS.
 - `queue.dashboard_payload` (`src/nightwright/agentic/queue.py:6811`,
   `nw.queue.dashboard.v1`) already carries what `nw queue watch` draws: `lease` (with
   `draining`), `runner_code`, `slots`, `gate_pools`, `active`, `needs_you`,
@@ -37,116 +46,109 @@ What exists today, checked against the code on 2026-11-03:
   reports ages (`updated_age_s`, `state_age_s`, `park_age_s`, `heartbeat_age_s`,
   `finished_age_s`), not timestamps.
 - `events.reader_holder` / `events.followers` (`src/nightwright/agentic/events.py:983`,
-  `:1005`) give the conductor follower pid and lag and the steward followers. They read only:
+  `:1005`) give the conductor follower pid and lag and the steward followers. They only read:
   `reader_holder` takes and immediately releases a non-blocking `flock` on an existing lock
   file and never creates one.
+- `events.jsonl` (`events.events_path`, `events.py:190`) is a **projection** of the campaign
+  ledgers. Only `events.sync` writes it ("project new ledger entries"), and only followers
+  and `conduct_status` call `sync`. A ledger append (cost, state change, park) therefore does
+  not touch `events.jsonl` until some follower syncs.
+- Each campaign lives in `store.campaign_dir(cfg, cid)` under `store.campaigns_dir(cfg)`
+  (`store.py:37`) with an atomically replaced `state.json` and an append-only `ledger.jsonl`
+  (`store.py:141`, `:145`).
 - `cli_conduct.conduct_status` calls `events.sync`, which writes, and reads
   `read_since(cfg, 0)` over the whole event log. The dashboard must use neither.
   `cli_conduct._herdr_watch_status` is a safe read.
 - `escalations.list_all(cfg, "open")` (`src/nightwright/agentic/escalations.py:78`) lists open
   escalations. The cheap `escalations_signature(cfg)` (stat calls only) lives in the TUI
   (`src/nightwright/tui/agentic_model.py:1024`).
+- `lease.lease_path(cfg)` (`src/nightwright/agentic/lease.py:31`) is the runner lease file.
 - `tests/test_herdr.py:506` (`test_queue_runner_runproc_never_import_herdr`) is the
   import-graph precedent for invariant 2.
-- There is no web framework and no `nw dashboard` command group.
+- There is no `nightwright.agentic.dashboard` package and no `nw dashboard` command group.
 
 ## Goals / Non-goals
 
 **Goals**
-- G1. `nw serve --dashboard` serves the dashboard on this host's own tailnet IP (default) or on
-  loopback, and nowhere else.
-- G2. Every data request is authenticated: tailnet identity via `tailscale whois` on a tailnet
-  bind, a per-host bearer token on loopback. Every check fails closed.
-- G3. One `nw.dashboard.v1` snapshot, built only from the existing payload builders, computed
-  at most once per `refresh_s` and only when a cheap watermark moved (or `max_stale_s`
-  passed), shared by every client, served with an ETag.
-- G4. A phone-first page shows health, active campaigns with cost vs cap, counts, needs-you,
-  recent events and today's spend, and refreshes itself every 15 s with a conditional GET.
-- G5. `nw dashboard snapshot [--json]` prints the same snapshot from the CLI, without a server.
-- G6. The read-only invariant and the no-import invariant of the epic are pinned by tests.
+- G1. One `nw.dashboard.v1` document, built only from the existing payload builders, with a
+  `rev` hash that ignores age-only movement.
+- G2. A shared `SnapshotCache` that does no work without callers, checks a cheap watermark at
+  most once per `refresh_s`, and rebuilds only when the watermark moved or `max_stale_s`
+  passed. The watermark sees ledger and state changes directly, without waiting for a
+  follower to sync `events.jsonl`.
+- G3. `nw dashboard snapshot [--json]` prints the snapshot from the CLI, with no server,
+  no tailscale and no token.
+- G4. The epic's read-only invariant (1) and no-import invariant (2) are pinned by tests for
+  the builder and the CLI.
+- G5. `escalations_signature` moves out of the TUI into `escalations.signature`, so the TUI
+  and the dashboard share one implementation.
 
 **Non-goals**
-- Answering escalations, the plan/answer endpoints, CSRF tokens and the full inbox entry
-  (options, findings, unmet ACs, effects): child 2. This spec ships only the summary fields
-  of each open escalation.
-- SSE, the background snapshotter thread, `max_clients`, the campaign drilldown and the run
-  tail: child 3.
-- The systemd unit, code-change restart, `nw dashboard status` and the `conduct-status`
-  `dashboard` key: child 4.
-- TLS, `tailscale cert`, service worker, push: child 5. The dashboard refuses TLS flags until
-  then.
-- Changing `nw serve --jobs` behaviour. Only its option wiring changes.
+- `nw serve --dashboard`: the `serve_cmd` mode switch (`--jobs`/`--dashboard` exclusive,
+  per-mode bind default, TLS flags refused after the bind gate), `auth.py` (`run_tailscale`,
+  `own_tailnet_ips`, `resolve_bind`, `check_bind`, `local_token`, the whois `Gate` with its
+  60 s / 5 s cache, `check_host_origin`), `audit.py`, `server.py` (routes, headers,
+  `GET /api/snapshot` with ETag/304, `server.json`), the fake `tailscale` fixture, and the
+  e2e, bind-CLI, whois-e2e and over-HTTP read-only tests. That is the **dashboard server**
+  sibling spec, which depends on this one.
+- The phone page: `static/index.html`, `app.js`, `app.css` (sections, status dot, 15 s
+  conditional poll, `visibilitychange`, `textContent`-only rendering, token fragment to
+  `localStorage`, 401/403/stale banners, `?selftest=1`), the CSP and no-external-URL static
+  checks, the headless Chromium test at 390×844 and 360×740, and the epic's manual steps 1–2.
+  That is the **dashboard page** sibling spec, which depends on the server spec.
+- Answering escalations and the full inbox entry (options, recommendation, facts, findings,
+  unmet ACs, effects, host fixes for parks): epic child 2. This spec ships only the summary
+  fields of each open escalation and the human-owned parks.
+- SSE, a background snapshotter thread, `max_clients`, the campaign drilldown and the run
+  tail: epic child 3. Child 3 puts a thread in front of this spec's cache.
+- The systemd unit, `nw dashboard status|unit` and the `conduct-status` `dashboard` key:
+  epic child 4.
+- TLS, `tailscale cert`, service worker and push: epic child 5.
+- Any change to `queue.dashboard_payload`'s output or to `nw queue watch`.
 
 ## Decision
 
-1. **`nw serve` gets a second, mutually exclusive mode.** `--jobs` loses `required=True`.
-   `--dashboard` is added. Exactly one of the two must be given, otherwise usage error, exit
-   2. `--bind` defaults to `None` and resolves per mode: `127.0.0.1:8790` for `--jobs`
-   (unchanged) and `agentic.dashboard.bind` (default `tailscale:8791`) for `--dashboard`.
-   `--tls-cert`, `--tls-key` and `--client-ca` stay `--jobs`-only. With `--dashboard` they
-   are refused (exit 2), but only **after** the bind gate has run, so a bad bind with TLS
-   flags reports the bind rule.
-2. **A strict bind gate of its own** (`dashboard/auth.check_bind`), not `pull_jobs.check_bind`.
-   It accepts loopback, or an address listed by `tailscale ip` (v4 and v6) for this host.
-   `tailscale` and `tailscale:PORT` resolve to the first address of `tailscale ip -4`.
-   Wildcards, LAN addresses, `localhost` names other than the loopback literals, other tailnet
-   IPs and non-IP hosts are refused with exit 2 and a message that names the rule. There is
-   no flag or config key that bypasses it. If `tailscale` is missing, logged out or prints no
-   address, `--bind tailscale` exits 1 with "tailscale has no address for this host (run
-   `sudo tailscale up`)".
-3. **Two auth modes, chosen from the bound address only.**
-   - Loopback bind → **token mode**. `<data_dir>/agentic/dashboard/local.token` (32 random
-     bytes, url-safe, mode 0600, created with `O_EXCL` on first start) must arrive as
-     `Authorization: Bearer <token>`, compared with `hmac.compare_digest`. A missing or wrong
-     token gets 401. The static shell (`/`, `/static/*`) holds no data and is served without
-     auth. At start the server prints the loopback URL with `#token=<token>` in the
-     fragment, which the page moves to `localStorage` and strips from the address bar.
-   - Tailnet bind → **whois mode**. Every request, static ones included, runs
-     `tailscale whois --json <peer-ip>` (3 s timeout). The request is allowed only when
-     `UserProfile.LoginName` is in the allowed set and the node is not tagged (`Node.Tags`
-     non-empty, or no `UserProfile`). The allowed set is `agentic.dashboard.allowed_logins`,
-     or, when that list is empty, the host's own login (`tailscale status --json` →
-     `Self.UserID` → `User[<id>].LoginName`), resolved once at start and re-resolved with the
-     whois cache. Allowed results are cached per peer IP for 60 s. Failures (non-zero exit,
-     timeout, unparsable JSON, missing fields, own-login lookup failing) are 403 and cached
-     for 5 s so a failing peer cannot make the server fork per request. Nothing is cached
-     across a server restart.
-4. **Host and Origin checks on every request**, before auth. `Host` must be one of: the bound
-   `addr:port` (IPv6 in brackets), the host's MagicDNS name (`Self.DNSName` without the
-   trailing dot) with the port, and on loopback `localhost:port`. `Origin`, when present,
-   must be `http://` plus one of those. A mismatch is 403. This blocks DNS rebinding.
-5. **Refusals are audited** in `<data_dir>/agentic/dashboard/audit.jsonl`
-   (`nw.dashboard.audit.v1`, `action: "refused"`, `result: 401|403`, with the reason, the
-   peer IP, the whois login and node name when known, and the user agent). Identical
-   refusals (same peer IP and reason) are written at most once per 10 s, which bounds the
-   file under a retry storm. Child 2 adds `plan` and `answer` records to the same file and
-   module.
-6. **The snapshot is computed lazily and shared** (`dashboard/snapshot.SnapshotCache`). It
-   has no thread in this child. On a request it stats the watermark at most once per
-   `refresh_s` (5 s). It rebuilds only when the watermark moved or the cached snapshot is
-   older than `max_stale_s` (30 s). One lock makes concurrent requests wait for a single
-   build. With no requests the server does no queue reads at all. Child 3 puts a snapshotter
-   thread in front of the same cache.
-7. **The snapshot reuses the existing builders.** It never calls `events.sync`,
-   `events.follow`, `read_since(cfg, 0)`, `conduct_status`, `store.write_state`, `mailbox`
-   writes or any queue mutation. If a builder turns out to write, the fix is a read-only path
-   in that builder, not a fork in the dashboard.
-8. **Ages stay ages; `rev` ignores them.** `dashboard_payload` reports `*_age_s`. Rather than
-   fork it into timestamps, the snapshot keeps them and carries `generated_at`. The page
-   shows `age_s + (now − generated_at)`, which stays correct while the client holds a cached
-   snapshot. `rev` is the sha256 (first 16 hex chars) of the canonical JSON
-   (`sort_keys=True`) of the snapshot with `generated_at`, `rev` and every key ending in
-   `_age_s` removed. A rebuild that only moved ages therefore keeps the same `rev`, and
-   clients get 304. `rev` is the strong ETag.
-9. **The page is static package data** under `src/nightwright/agentic/dashboard/static/`
-   (`index.html`, `app.js`, `app.css`), loaded with `importlib.resources`. There is no build
-   step, no CDN, no inline script. The CSP is
-   `default-src 'self'; script-src 'self'; style-src 'self'; connect-src 'self'; img-src 'self' data:; frame-ancestors 'none'`.
-   It polls `GET /api/snapshot` with `If-None-Match` every 15 s and immediately on
-   `visibilitychange` to visible.
-10. **`nw dashboard snapshot [--json]`** builds the snapshot in-process with the same builder
-    and prints it (`--json`) or a short text summary (health line, counts, spend today, open
-    escalations). It needs no server, no tailscale and no token.
+1. **The snapshot reuses the existing builders.** `snapshot.build` calls
+   `queue.dashboard_payload`, `events.reader_holder` / `events.followers`,
+   `cli_conduct._herdr_watch_status` and `escalations.list_all(cfg, "open")`. It never calls
+   `events.sync`, `events.follow`, `read_since(cfg, 0)`, `conduct_status`,
+   `store.write_state`, any `mailbox` write or any queue mutation. If a builder turns out to
+   write, the fix is a read-only path in that builder, not a fork in the dashboard.
+2. **Ages stay ages; `rev` ignores them.** `dashboard_payload` reports `*_age_s`. Rather than
+   fork it into timestamps, the snapshot keeps them and carries `generated_at`, from which a
+   client derives `age_s + (now − generated_at)`. `rev` is the first 16 hex chars of the
+   sha256 of the canonical JSON (`sort_keys=True`, `separators=(",", ":")`) of the snapshot
+   with `generated_at`, `rev` and every key ending in `_age_s` removed, at any depth. A
+   rebuild that only moved ages keeps the same `rev`. The server spec uses `rev` as the strong
+   ETag.
+3. **The watermark sees the campaign records, not only the projection.** `watermark(cfg)` is
+   a tuple of stat calls only:
+   - `(size, mtime_ns)` of `events.jsonl`;
+   - `escalations.signature(cfg)`;
+   - the `mtime_ns` of the lease file;
+   - a campaign signature: sorted `(campaign_id, file_name, size, mtime_ns)` for the
+     `state.json` and `ledger.jsonl` of every directory under `store.campaigns_dir(cfg)`, in
+     the style of `escalations.signature`.
+
+   Missing files count as `None`. A ledger append or state write therefore moves the
+   watermark immediately, even when no follower has synced `events.jsonl`. The cost is one
+   `stat` per campaign file per check, at most once per `refresh_s`, which is negligible next
+   to `dashboard_payload` itself. Terminal campaigns stay in the scan: they are few per day,
+   and `delivered` reads them.
+4. **The cache is lazy and shared** (`snapshot.SnapshotCache`). It has no thread. On `get()`
+   it checks the watermark at most once per `refresh_s` (default 5 s). It rebuilds only when
+   the watermark moved or the cached snapshot is older than `max_stale_s` (default 30 s). One
+   lock makes concurrent callers wait for a single build. With no `get()` it does no queue
+   reads and no stat calls at all.
+5. **One failing section does not fail the snapshot.** Each builder call is wrapped, and a
+   section whose builder raises becomes `{"error": "<ExceptionType>: <message>"}`. The rest
+   still builds.
+6. **`nw dashboard snapshot [--json]`** builds the snapshot in-process with `snapshot.build`
+   and prints it as JSON (`--json`) or as a short text summary. It needs no server, no
+   tailscale and no token, and it writes nothing (it does not even create
+   `agentic/dashboard/`).
+7. **`escalations_signature` moves** unchanged from `tui/agentic_model.py` into
+   `escalations.py` as `signature(cfg)`. The TUI calls it from there. One implementation.
 
 ## Design
 
@@ -154,61 +156,38 @@ What exists today, checked against the code on 2026-11-03:
 
 New package `src/nightwright/agentic/dashboard/`:
 
-- `__init__.py`: `settings(cfg)` reads `agentic.dashboard` with defaults
-  `{bind: "tailscale:8791", allowed_logins: [], refresh_s: 5, max_stale_s: 30}`. Malformed
-  values fall back to the default per key, like `escalations.settings`. Keys of later children
-  (`max_clients`, `tail_poll_s`, `push`) are accepted and ignored here. Also `dashboard_dir(cfg)`
-  → `<data_dir>/agentic/dashboard/`, created on first use with mode 0700.
-- `auth.py`:
-  - `run_tailscale(*args, timeout=3.0)`: subprocess wrapper that resolves `tailscale` on `PATH`
-    (tests put a fake first), returns parsed stdout or raises `TailscaleError`.
-  - `own_tailnet_ips() -> list[str]` from `tailscale ip`; `resolve_bind(spec) -> (host, port)`
-    handling `tailscale` / `tailscale:PORT` / `ADDR:PORT` / `[v6]:PORT`.
-  - `check_bind(host, own_ips) -> str | None`: `None` for loopback literals (`127.0.0.0/8`,
-    `::1`) or a member of `own_ips`, else the refusal reason. The reasons name the rule, for
-    example `0.0.0.0 is a wildcard; the dashboard binds only loopback or this host's own
-    tailnet address (100.101.1.2)`.
-  - `local_token(cfg, create=False)`.
-  - `class Gate`: `mode` (`"token"`/`"whois"`), `allowed_hosts`, `authorize(peer_ip, headers)
-    -> Verdict(ok, status, reason, login, node, node_ip)`, the whois cache (allowed results
-    60 s, failures 5 s) and `check_host_origin(headers)`.
-- `audit.py`: `append(cfg, record)` writes one JSON line under a file lock (`O_APPEND`),
-  adding `ts`. The `refused` throttle is a dict keyed `(peer_ip, reason)` in the server.
+- `__init__.py`:
+  - `settings(cfg) -> dict` reads `agentic.dashboard` with the defaults
+    `{bind: "tailscale:8791", allowed_logins: [], refresh_s: 5, max_stale_s: 30}`. Malformed
+    values fall back to the default per key, like `escalations.settings`
+    (`escalations.py:30`). `refresh_s` and `max_stale_s` must be positive numbers. Keys of
+    later children (`max_clients`, `tail_poll_s`, `push`) are accepted and ignored. `bind`
+    and `allowed_logins` are parsed here so the server spec does not re-read config, but
+    nothing in this spec uses them.
+  - `dashboard_dir(cfg) -> Path` returns `<data_dir>/agentic/dashboard/` and creates it with
+    mode 0700. Nothing in this spec calls it; the server spec does. It lives here so the
+    read-only test can name the one directory the dashboard may write.
 - `snapshot.py`:
-  - `watermark(cfg) -> tuple`: `(size, mtime_ns)` of `events.events_path(cfg)`,
-    `escalations.signature(cfg)` and the `mtime_ns` of `lease.lease_path(cfg)`. Missing files
-    count as `None`.
-  - `build(cfg, now=None) -> dict`: one `nw.dashboard.v1` document (schema below).
+  - `watermark(cfg) -> tuple`, as in Decision 3.
+  - `build(cfg, now=None) -> dict`: one `nw.dashboard.v1` document (schema below), including
+    `rev`.
+  - `compute_rev(doc) -> str`, as in Decision 2.
   - `RECENT_TYPES`: `merged`, `handed_off`, `abandoned`, `run_failed`, `parked`, `resumed`,
-    `escalation`, `escalation_answered`, `escalation_withdrawn`, `runner_dead`, `lease_stale`,
-    `cost_warning`, `worker_failed`. A test asserts this is a subset of `events.EVENT_TYPES`.
-  - `recent_events(cfg, n=20)`: reads at most the last 256 KiB of `events.jsonl` (seek, drop
-    the first partial line), parses lines, keeps `RECENT_TYPES` and returns the last `n`.
-  - `class SnapshotCache(cfg, clock=time.monotonic)`: `get() -> dict`, plus a `builds` counter
-    and a `watermark_checks` counter for the tests.
-- `server.py`:
-  - `make_server(cfg, bind=None, *, auth_mode=None)` returns a `DashboardServer`
-    (`ThreadingHTTPServer`, `daemon_threads=True`, per-request socket timeout
-    `pull_jobs.HANDLER_TIMEOUT_S`).
-  - `auth_mode` is a Python-only keyword for tests: it forces `"whois"` on a loopback socket
-    so the whois path can be driven over a real socket. No CLI option or config key reaches
-    it, and a test greps `cli_worker.py` / `cli_dashboard.py` to keep it that way.
-  - The handler serves `GET /`, `GET /static/<name>` (names from a fixed allow-list),
-    `GET /api/snapshot` and `GET /api/health` (`{"ok": true}`, auth-gated, for child 4's
-    self-check). Any other path is 404 and any other method 405. Request bodies are not read.
-  - Every response carries `Cache-Control: no-store` (API) or an ETag (static), the CSP,
-    `X-Content-Type-Options: nosniff` and `Referrer-Policy: no-referrer`.
-  - After binding, the server writes `<dashboard_dir>/server.json`
-    (`nw.dashboard.server.v1`: `pid`, `host`, `port`, `url`, `auth`, `started_at`) atomically
-    and removes it on clean exit. Child 4 extends this record.
-- `src/nightwright/agentic/cli_dashboard.py`: the `nw dashboard` group with `snapshot
-  [--json]`, registered on the root CLI next to the other agentic groups. Child 4 adds
-  `status` and `unit`.
-- `cli_worker.serve_cmd`: the mode switch from Decision 1. `--dashboard` calls
-  `dashboard.server.make_server`, prints `nw serve: dashboard on http://<host>:<port>` (and the
-  `#token=` URL in token mode) to stderr, and serves until SIGINT/SIGTERM.
-- `escalations.signature(cfg)`: `escalations_signature` moves from `tui/agentic_model.py` into
-  `escalations.py` unchanged. The TUI calls it from there, which keeps one implementation.
+    `escalation`, `escalation_answered`, `escalation_withdrawn`, `runner_dead`,
+    `lease_stale`, `cost_warning`, `worker_failed`. A test asserts it is a subset of
+    `events.EVENT_TYPES`; any name the implementation finds missing from `EVENT_TYPES` is
+    dropped from the list, not added to `EVENT_TYPES`.
+  - `recent_events(cfg, n=20)`: opens `events.jsonl`, seeks to `max(0, size − 256 KiB)`,
+    drops the first partial line when the seek was not to 0, parses the remaining lines
+    (skipping unparsable ones), keeps `RECENT_TYPES` and returns the last `n`.
+  - `class SnapshotCache(cfg, clock=time.monotonic, builder=build)`: `get() -> dict`, plus
+    `builds` and `watermark_checks` counters for tests.
+- `src/nightwright/agentic/cli_dashboard.py`: the `nw dashboard` click group with
+  `snapshot [--json]`, registered on the root CLI next to the other agentic groups. Child 4
+  adds `status` and `unit`.
+- `escalations.signature(cfg)`: moved from `tui/agentic_model.escalations_signature`. The TUI
+  imports and calls it; the old name is removed from the TUI module and its callers are
+  updated.
 
 ### `nw.dashboard.v1`
 
@@ -228,240 +207,185 @@ New package `src/nightwright/agentic/dashboard/`:
          parks: [needs_you rows whose park reason is main_dirty or main_not_on_base]}}
 ```
 
-`dp` is `queue.dashboard_payload(cfg, now=now)`. `summary` is the event's one-line text form
-as `nw queue events --text` prints it. If a text helper is not importable without side
-effects, `summary` is `type` plus the campaign label. Child 2 extends each `inbox.escalations`
-entry with options, recommendation, facts, findings, unmet ACs and effects, and the parks with
-their host fix. Every builder call is wrapped so that one failing section becomes
-`{"error": "<message>"}` in that section rather than a 500 for the whole snapshot.
+`dp` is `queue.dashboard_payload(cfg, now=now)`, called once per build. `generated_at` is an
+ISO-8601 UTC timestamp. `summary` is `"<type> <campaign label>"` followed by the event's
+`data.reason` or `data.state` when present; it needs no text helper from another module.
+`question` is the first line of the escalation's question. Child 2 extends each
+`inbox.escalations` entry with options, recommendation, facts, findings, unmet ACs and
+effects, and the parks with their host fix.
 
-### `GET /api/snapshot`
+### `SnapshotCache.get()`
 
-The flow is: Host/Origin check → `Gate.authorize` → `SnapshotCache.get()`. Then:
-- `If-None-Match` equal to `"<rev>"` → 304 with no body;
-- otherwise 200 with `application/json; charset=utf-8` and `ETag: "<rev>"`.
+```
+with lock:
+    t = clock()
+    if cached is None:                         -> build, remember (t, watermark)
+    elif t - built_at >= max_stale_s:          -> build
+    elif t - last_check >= refresh_s:
+        last_check = t; watermark_checks += 1
+        if watermark(cfg) != cached_wm:        -> build
+    return cached
+```
 
-### The page
+A build records `cached_wm = watermark(cfg)` taken **before** calling the builder, so a
+change that lands during a build is seen at the next check rather than lost. The first build
+counts one watermark check. Callers get the same dict object; they must not mutate it (the
+server serializes it once per `rev`).
 
-`index.html` is a single column built for 360–430 px wide screens. Tap targets are at least
-44 px, and it uses system fonts with light and dark themes from `prefers-color-scheme`. Its
-sections, top to bottom:
+### `nw dashboard snapshot`
 
-1. Header: overall status dot (red if the runner lease is stale or dead, or the conductor pid
-   is missing; amber if draining or anything needs you; green otherwise), "updated Ns ago"
-   and spend today.
-2. **Needs you**: open escalations (id, campaign, question) and the human-owned parks, or
-   "nothing waiting".
-3. **Health**: runner (holder, heartbeat age, draining, code stale), conductor (pid, lag),
-   stewards, herdr watch.
-4. **Active**: one card per campaign with label, state, loop `n/max`, persona/activity and a
-   cost-vs-cap bar (`cost_usd` / `cap_usd`, text when `cap_usd` is null).
-5. **Counts**: active, queued, parked, waiting, backlog (ready/blocked), conductor-handling.
-6. **Recent**: the last 20 events with type and age.
-
-`app.js` uses `fetch` with `If-None-Match` and renders with `textContent` only (no
-`innerHTML` of data). On 401 it shows "token missing" and on 403 "not allowed on this device".
-If a fetch fails it shows a stale banner with the age of the last good snapshot.
-`?selftest=1` runs, after the first successful render, an in-page check: no horizontal
-overflow (`scrollWidth <= innerWidth`), the Needs-you and Active sections visible, every
-button or link at least 44 px tall, and the snapshot loaded. It writes
-`<pre id="selftest">{"ok": …, "failures": [...]}</pre>` into the DOM.
+- `--json`: `json.dumps(build(cfg), indent=2)` on stdout, exit 0.
+- Text form, one line each: an overall line (`runner <holder> heartbeat <age>s` plus
+  `draining` / `stale code` when set; `conductor <pid|down>`), a counts line (`active N ·
+  queued N · parked N · waiting N · backlog N · conductor-handling N`), `spend today $X.XX`,
+  then one line per open escalation (`ESC-NNNN <campaign> <question>`) and per human-owned
+  park, or `nothing needs you`.
+- A section that came back as `{"error": …}` prints `<section>: error: <message>` and the
+  command still exits 0; the build itself raising (no config, no data dir) exits 1 with the
+  message.
 
 ## Alternatives considered
 
-- **Reuse `pull_jobs.check_bind`.** It accepts any address in `100.64.0.0/10` and wildcards
-  with TLS, which the epic forbids. A separate, stricter gate keeps the job API unchanged.
-- **One `nw serve` process serving both modes.** Rejected by the epic: the trust models
-  differ (bearer tokens and optional wildcard with TLS vs. tailnet identity and never a
-  wildcard).
+- **Watermark on `events.jsonl` only** (the first draft). `events.jsonl` moves only when a
+  follower runs `events.sync`, and the dashboard must not call it. With the conductor down,
+  which is exactly when the dashboard matters, a park or cost change would show only after
+  `max_stale_s`. Statting the campaign records costs a few hundred `stat` calls at most every
+  5 s.
+- **Hashing the files' contents for the watermark.** Reads every ledger on every check; the
+  stat tuple is enough because ledgers are append-only and `state.json` is replaced
+  atomically (new mtime and usually new size).
 - **Converting ages to timestamps in the snapshot.** `now − age` jitters by up to a second
-  between builds, which would change `rev` on every rebuild. Excluding `*_age_s` from the hash
-  and deriving display ages from `generated_at` gives a stable ETag without forking the
+  between builds, which would change `rev` on every rebuild. Excluding `*_age_s` from the
+  hash and deriving display ages from `generated_at` gives a stable `rev` without forking the
   builder.
 - **A snapshotter thread now.** Polling at 15 s does not need one, and a lazy cache already
-  guarantees zero work with zero clients. Child 3 adds the thread when SSE needs a push
+  guarantees zero work with zero callers. Child 3 adds the thread when SSE needs a push
   source.
 - **Building from `conduct_status`.** It calls `events.sync` (writes) and reads the whole
-  event log. Rejected by invariant 1.
-- **`tailscale serve` identity headers.** Rejected by the epic: any local process can forge
-  them behind a loopback proxy.
+  event log. Rejected by the epic's invariant 1.
+- **Shipping the server and page in this spec too.** The first draft did; review counted 16
+  acceptance criteria over three subsystems with separate fixtures. Split as described in
+  Context.
 
 ## Acceptance criteria
 
-- [ ] `nw serve` with neither `--jobs` nor `--dashboard`, or with both, exits 2 with a usage
-      message. `nw serve --jobs` keeps its default bind `127.0.0.1:8790` and its existing
-      behaviour (its existing tests pass unchanged).
-- [ ] `nw serve --dashboard --bind X` exits 2 with a message naming the "loopback or this
-      host's own tailnet address" rule for X in {`0.0.0.0:0`, `[::]:0`, `192.168.1.10:0`,
-      `100.64.0.9:0` while `tailscale ip` reports a different own address, `example.com:0`}.
-      The same holds with `--tls-cert/--tls-key` added. With a valid bind plus TLS flags it
-      exits 2 saying TLS is not supported for the dashboard yet.
-- [ ] `nw serve --dashboard` (default `--bind tailscale`) binds the first `tailscale ip -4`
-      address on port 8791. With `tailscale` absent or printing nothing it exits 1 with the
-      "tailscale has no address" message.
-- [ ] On a loopback bind, `GET /api/snapshot` without a token or with a wrong token returns
-      401. With the token from `local.token` (mode 0600) it returns 200. `GET /` returns
-      200 without a token.
-- [ ] In whois mode, a request whose whois login is not allowed, whose node is tagged, or for
-      which `tailscale whois` exits non-zero or times out returns 403 and writes one
-      `refused` line to `audit.jsonl`. This applies to static paths as well. An allowed login
-      returns 200. With `allowed_logins: []` the allowed login is the host's own
-      (`Self.UserID`). A second request within 60 s from the same allowed peer does not run
-      `tailscale whois` again.
-- [ ] A request with a `Host` that is not the bound address, the MagicDNS name or (on
-      loopback) `localhost`, or with a foreign `Origin`, returns 403.
-- [ ] `GET /api/snapshot` returns a document with every top-level key of the `nw.dashboard.v1`
-      schema above. Its `totals.spend_today_usd` equals `queue.dashboard_payload`'s for the
-      same data. Its `inbox.escalations` lists exactly the open escalations, and its
-      `inbox.parks` lists exactly the `main_dirty` / `main_not_on_base` parks.
-- [ ] A repeat request with `If-None-Match: "<rev>"` returns 304 while nothing changed, even
-      after a rebuild forced by `max_stale_s`. After a ledger or event change and
-      `refresh_s`, it returns 200 with a new `rev`.
-- [ ] `SnapshotCache` performs 0 builds and 0 watermark checks with no requests. With many
-      concurrent requests within one `refresh_s` and an unchanged watermark it performs at most
-      one build. It rebuilds when the watermark moves (after `refresh_s`) or when `max_stale_s`
-      passes.
-- [ ] `recent_events` reads at most the last 256 KiB of `events.jsonl` and returns at most 20
-      events of `RECENT_TYPES`, which is a subset of `events.EVENT_TYPES`.
-- [ ] Serving the page and snapshots, with rebuilds forced, leaves every file under the data
-      dir outside `agentic/dashboard/` byte-identical. The only files the server creates are
-      `local.token`, `audit.jsonl` and `server.json` under `agentic/dashboard/`.
-- [ ] No module in `agentic/queue.py`, the runner, `runproc`, `events`, `escalations`, `lease`,
-      `store` or `mailbox` imports `nightwright.agentic.dashboard` (directly or transitively).
-- [ ] The page at 390×844 and 360×740 in headless Chromium with `?selftest=1` reports
-      `ok: true`: no horizontal overflow, Needs-you and Active visible, tap targets ≥ 44 px,
-      snapshot loaded. The page makes no request to any origin other than its own (no
-      external URL in `static/`).
-- [ ] `nw dashboard snapshot --json` prints a valid `nw.dashboard.v1` document, needs no
-      running server, and writes nothing outside `agentic/dashboard/`. Without `--json` it
-      prints the text summary.
-- [ ] `escalations.signature` exists, and the TUI escalation inbox uses it with unchanged
-      behaviour.
-- [ ] `python3 tools/spec_lint.py` exits 0 and the affected tests pass.
+- [ ] `snapshot.build` on the seeded fixture returns a document with every top-level key of
+      the `nw.dashboard.v1` schema above and `schema == "nw.dashboard.v1"`. Its
+      `totals.spend_today_usd` equals `queue.dashboard_payload`'s for the same data, its
+      `inbox.escalations` lists exactly the open escalations, and its `inbox.parks` lists
+      exactly the `main_dirty` / `main_not_on_base` parks. When one builder raises, that
+      section is `{"error": …}` and every other section is still present and correct.
+- [ ] `rev` is unchanged between two builds whose inputs differ only in `*_age_s` values and
+      `generated_at`, and changes when a campaign's cost changes.
+- [ ] `watermark(cfg)` includes the campaign signature of Decision 3: appending one line to a
+      campaign's `ledger.jsonl` with no `events.jsonl` change moves it, and so does replacing
+      a `state.json`, adding a campaign directory, writing an escalation record or touching
+      the lease file. Two calls with no file change return equal tuples.
+- [ ] `SnapshotCache` (injected clock) performs 0 builds and 0 watermark checks with no
+      `get()`. 20 threads × 10 `get()` within one `refresh_s` and an unchanged watermark
+      cause exactly 1 build. A watermark move before `refresh_s` elapses is not seen; after
+      `refresh_s` it causes a rebuild. With no change, `max_stale_s` causes a rebuild that
+      yields the same `rev`.
+- [ ] At the cache level, a ledger-only change (one `ledger.jsonl` append that changes a
+      campaign's cost or state, no `events.jsonl` line), followed by advancing the clock past
+      `refresh_s`, makes `get()` return a snapshot with a new `rev`.
+- [ ] `recent_events` never reads before offset `size − 256 KiB` of `events.jsonl`, returns at
+      most 20 events, all of `RECENT_TYPES`, in file order; `RECENT_TYPES` is a subset of
+      `events.EVENT_TYPES`.
+- [ ] `nw dashboard snapshot --json` prints a document that passes the same schema-key check,
+      with no server running, no `tailscale` on `PATH` and no token. Without `--json` it
+      prints the text summary, including the `spend today` and counts lines.
+- [ ] Running `build` and `SnapshotCache.get()` repeatedly with rebuilds forced, and running
+      `nw dashboard snapshot` (both forms), leaves every file under the data dir
+      byte-identical and creates no file or directory (including `agentic/dashboard/`).
+- [ ] No module among `agentic/queue.py`, the runner, `runproc`, `events`, `escalations`,
+      `lease`, `store` and `mailbox` imports `nightwright.agentic.dashboard`, directly or
+      transitively.
+- [ ] `escalations.signature` exists with the old behaviour, `tui/agentic_model.py` no longer
+      defines `escalations_signature`, and the TUI escalation inbox tests (SPEC-0250) pass
+      unchanged.
 
 ## Test plan
 
-**Automated tests.** Real processes and sockets wherever the epic requires them. Waits use
-`tests/waits.py` (`NW_TEST_WAIT_S`), never fixed sleeps.
+**Automated tests.** Waits use `tests/waits.py` (`NW_TEST_WAIT_S`), never fixed sleeps.
 
-- `tests/fixtures/fake_tailscale.py` plus a `tests/fixtures/bin/tailscale` shim placed first on
-  `PATH`. It answers `ip`, `ip -4`, `status --json` and `whois --json <ip>` from a JSON fixture
-  named by `NW_FAKE_TAILSCALE`, which can set: own IPs, own login, per-IP whois result, tagged,
-  exit code, sleep (for the timeout case), and a call log file (to count whois calls).
 - `tests/fixtures/dashboard_data.py`: seeds a temp `NW_DATA_DIR` with one active campaign
-  (with cost and cap), a PARKED `human_decision` campaign with open `ESC-0001`, a `main_dirty`
-  park, a delivered (merged) campaign, a lease file and an `events.jsonl` larger than 256 KiB
-  whose tail holds the recent events.
-- `tests/test_dashboard_auth.py` (unit):
-  - `check_bind` accept/refuse table (loopback v4/v6, own v4/v6, wildcard v4/v6, LAN, foreign
-    100.x, hostname) and the rule text;
-  - `resolve_bind` forms;
-  - `Gate.authorize` in whois mode against the fake (allowed, unknown login, tagged, no
-    UserProfile, exit 1, timeout, bad JSON) with the 60 s / 5 s cache under an injected clock;
-  - the own-login default from `status --json`;
-  - `check_host_origin` table;
-  - token compare;
-  - `local.token` created 0600 and reused.
+  (with cost and cap), a PARKED `human_decision` campaign with an open `ESC-0001`, a
+  `main_dirty` park, a delivered (merged) campaign, a lease file and an `events.jsonl` larger
+  than 256 KiB whose tail holds the recent events. The server and page specs reuse it.
 - `tests/test_dashboard_snapshot.py` (unit):
-  - `build` on the fixture has every schema key;
-  - `totals.spend_today_usd` equals `dashboard_payload`'s;
-  - the inbox escalations and parks sets;
-  - `recent_events` bound (a patched `open` records the seek offset ≥ size − 256 KiB) and
-    `RECENT_TYPES ⊆ EVENT_TYPES`;
-  - `rev` unchanged when only `*_age_s` / `generated_at` differ and changed when a cost
-    changes;
-  - one failing builder section yields `{"error": …}` and the rest still builds;
-  - `SnapshotCache` with an injected clock: 0 builds and 0 checks with no `get`; 20 threads
-    × 10 `get()` within `refresh_s` → 1 build; a watermark move before `refresh_s` → still
-    cached; after `refresh_s` → rebuild; `max_stale_s` → rebuild with the same `rev`.
-- `tests/test_dashboard_e2e.py` (real subprocess, real HTTP via `urllib`):
-  - Start `uv run nw serve --dashboard --bind 127.0.0.1:0` with the seeded `NW_DATA_DIR` and
-    read the port from `server.json`;
-  - no token → 401, token → 200 with schema, `If-None-Match` → 304;
-  - append a ledger event plus an `events.jsonl` line, wait past `refresh_s` (config set to
-    0.2 s), get 200 with a new `rev`;
-  - `GET /` and `/static/app.js` without a token → 200 with the CSP header;
-  - wrong `Host` → 403, foreign `Origin` → 403, `POST` → 405, unknown path → 404;
-  - SIGTERM → exit 0 and `server.json` removed.
-- `tests/test_dashboard_bind_cli.py` (real subprocess):
-  - each refused bind from the AC exits 2 with the rule text, also with `--tls-cert/--tls-key`
-    pointing at dummy files;
-  - with the fake reporting own IP `127.0.0.1` the default `--bind tailscale:0` starts, and
-    with the fake printing nothing it exits 1;
-  - neither or both of `--jobs` / `--dashboard` → exit 2;
-  - `--dashboard` with a valid bind plus TLS flags → exit 2.
-- `tests/test_dashboard_whois_e2e.py`: an in-process `make_server(cfg, "127.0.0.1:0",
-  auth_mode="whois")` in a thread, with real `urllib` requests and the fake `tailscale` on
-  `PATH`. Cases:
-  - unknown login, tagged node, whois exit 1 and whois timeout → 403 plus one `refused` audit
-    line each;
-  - allowed login → 200;
-  - a second request within 60 s → the fake's call log shows one whois call;
-  - 10 identical refusals within 10 s → one audit line;
-  - static paths are gated too.
-
-  A grep assertion checks that `auth_mode` appears in neither `cli_worker.py` nor
-  `cli_dashboard.py`.
-- `tests/test_dashboard_readonly.py`:
-  - hash every file under the seeded data dir except `agentic/dashboard/`;
-  - run the real server with `refresh_s: 0.1`, `max_stale_s: 0.2` and make 100 mixed requests
-    (snapshot, conditional snapshot, static) over at least 20 s so that rebuilds happen;
-  - run `nw dashboard snapshot --json`;
-  - re-hash: identical. `agentic/dashboard/` holds only `local.token`, `audit.jsonl`,
-    `server.json`.
-- `tests/test_dashboard_imports.py`: in the style of `test_queue_runner_runproc_never_import_herdr`,
-  import each listed queue-side module in a fresh interpreter and assert
-  `nightwright.agentic.dashboard` is not in `sys.modules`. Also assert the same statically with
-  `ast` over those modules' sources.
-- `tests/test_dashboard_page.py`: headless Chromium (`NW_TEST_CHROMIUM`, else `chromium` /
-  `google-chrome` on `PATH`, else the Playwright cache's headless shell; skipped only when
-  none exists).
-  - Run `--headless --window-size=390,844 --dump-dom` against
-    `http://127.0.0.1:<port>/?selftest=1#token=<token>` on the e2e server, parse `#selftest`
-    and assert `ok: true`. Repeat at 360×740.
-  - A static check asserts no `http://` / `https://` / `//` external URL in `static/*` and no
-    inline `<script>` body.
-- `tests/test_dashboard_cli.py`: `nw dashboard snapshot --json` validates against the schema
-  keys; the text form contains the spend and counts lines.
-- The existing `nw serve --jobs` tests (SPEC-0334) and the TUI escalation inbox tests
-  (SPEC-0250) run unchanged as regression guards.
+  - `build` on the fixture has every schema key; `totals.spend_today_usd` equals
+    `dashboard_payload`'s; the inbox escalations and parks sets are exact;
+  - a monkeypatched `escalations.list_all` that raises yields `inbox.escalations ==
+    {"error": …}` and the other sections are intact;
+  - `rev`: two builds with `dashboard_payload` patched to differ only in `*_age_s` (nested)
+    and different `now` → same `rev`; a ledger cost change → different `rev`;
+  - `watermark`: equal on repeated calls; moved by a `ledger.jsonl` append with `events.jsonl`
+    untouched (the reviewer's case, named `test_ledger_append_without_events_moves_watermark`),
+    by a `state.json` replace, a new campaign dir, a new `ESC-*.json` and a lease touch;
+  - `recent_events`: a wrapped `open` records every `seek` offset, all ≥ size − 256 KiB; at
+    most 20 results, all in `RECENT_TYPES`, in order; a garbage line is skipped;
+    `RECENT_TYPES <= events.EVENT_TYPES`;
+  - `settings`: defaults, a malformed `refresh_s` falls back per key, unknown later-child keys
+    are ignored.
+- `tests/test_dashboard_cache.py` (unit, injected clock and counting builder):
+  - no `get()` → `builds == 0` and `watermark_checks == 0`;
+  - 20 threads × 10 `get()` at a fixed clock → `builds == 1`;
+  - watermark moved, clock < `refresh_s` → cached; clock past `refresh_s` → rebuild;
+  - nothing moved, clock past `max_stale_s` → rebuild with the same `rev`;
+  - the ledger-only case on the real fixture and real `build`: append a ledger event that
+    changes the active campaign's cost, write no `events.jsonl` line, advance past
+    `refresh_s` → new `rev` (`test_ledger_only_change_yields_new_rev`).
+- `tests/test_dashboard_cli.py` (real subprocess, `uv run nw dashboard snapshot`, with
+  `NW_DATA_DIR` set to the fixture and `PATH` stripped of any `tailscale`): `--json` passes
+  the schema-key check; the text form contains `spend today` and the counts line and lists
+  `ESC-0001`.
+- `tests/test_dashboard_readonly.py`: hash every file and list every directory under the
+  seeded data dir; run `build` 50 times and `SnapshotCache.get()` with `refresh_s` /
+  `max_stale_s` near zero under a stepping clock so every call rebuilds; run `nw dashboard
+  snapshot` and `nw dashboard snapshot --json` as subprocesses; re-hash and re-list:
+  identical, and `agentic/dashboard/` does not exist. The server spec re-runs the same check
+  over HTTP.
+- `tests/test_dashboard_imports.py`: in the style of
+  `test_queue_runner_runproc_never_import_herdr`, import each listed queue-side module in a
+  fresh interpreter and assert `nightwright.agentic.dashboard` is not in `sys.modules`; also
+  assert it statically with `ast` over those modules' sources.
+- `tests/test_escalations.py` (extended): `escalations.signature` is sorted
+  `(name, size, mtime_ns)` of `ESC-*.json` and changes on a record write; `tui.agentic_model`
+  has no `escalations_signature` attribute.
+- Regression guard: the TUI escalation inbox tests (SPEC-0250), the `nw queue watch` /
+  `dashboard_payload` tests, and the escalations tests run unchanged.
 
 **Manual verification (on this host, recorded in this spec's As shipped).**
-1. `uv run nw serve --dashboard --bind 127.0.0.1:8791`, then open the printed `#token=` URL in
-   a desktop browser with a mobile viewport. The page renders and refreshes every 15 s.
-2. Once the human has run `sudo tailscale up` and `sudo tailscale set --operator=$USER`:
-   - `uv run nw serve --dashboard` binds the tailnet IP;
-   - the phone on cellular with the Tailscale app connected loads it;
-   - `audit.jsonl` stays empty for the phone;
-   - with the Tailscale app disconnected the page is unreachable.
-
-   Until the human logs in, this step is recorded as pending, and the server fails closed
-   (exit 1 on `--bind tailscale`).
+1. `uv run nw dashboard snapshot` against the real data dir: the health, counts, spend and
+   needs-you lines match what `uv run nw queue watch` shows at the same moment.
+2. `touch /tmp/nw-mark && uv run nw dashboard snapshot --json | python3 -m json.tool` succeeds,
+   and `find <data_dir> -newer /tmp/nw-mark` afterwards lists nothing written by the command
+   (files a live runner or follower touched in the meantime are told apart by their paths).
 
 **Regression guard.** Affected tests via `python3 tools/affected_tests.py --run uv run pytest
 -q`. The queue's close gate runs the affected set.
 
 ## Rollout / migration
 
-1. Land the package, the `serve` mode switch, `escalations.signature` (TUI delegates) and
-   the tests in one change. There is no data migration: `agentic/dashboard/` is created on
-   first start.
-2. Until child 4, the human starts `nw serve --dashboard` by hand. Until child 2, answers stay
-   in the CLI and TUI.
-3. The `nw-orient` skill and the WORKFLOW "Remote dashboard" section come with child 4. This
-   child's `--help` texts describe the mode and the bind rule.
+1. Land the `nightwright.agentic.dashboard` package (`__init__`, `snapshot`), `cli_dashboard`,
+   `escalations.signature` (TUI delegates) and the tests in one change. No data migration:
+   nothing is written.
+2. The dashboard server spec then adds `nw serve --dashboard` on top of `SnapshotCache`, and
+   the dashboard page spec adds the static UI. Until then the human uses `nw dashboard
+   snapshot`.
+3. The `nw-orient` skill and the WORKFLOW "Remote dashboard" section come with epic child 4.
+   This spec's `--help` text describes `nw dashboard snapshot`.
 
 ## Definition of done
 
 - [ ] Acceptance criteria all met.
-- [ ] Test plan executed; the new tests and the affected tests pass; manual step 1 performed,
-      step 2 performed or recorded as pending on the human's Tailscale login.
-- [ ] No regressions (`nw serve --jobs` and TUI escalation tests green).
+- [ ] Test plan executed; the new tests and the affected tests pass; manual steps 1 and 2
+      performed and noted.
+- [ ] No regressions (TUI escalation, escalations and `dashboard_payload` tests green).
 - [ ] Spec body updated to match what shipped.
 - [ ] `docs/LEDGER.md` regenerated; `python3 tools/spec_lint.py` exits 0.
 
 ## Open questions
 
-_None. The one external unknown, whether `tailscale whois` runs without root on this host,
-is covered by `tailscale set --operator=$USER` in the epic's rollout. Until then the gate
-fails closed._
+_None._
