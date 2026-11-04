@@ -1,7 +1,7 @@
 ---
 id: SPEC-0403
 title: "Decisions inbox payload: full escalation entries, effects and host fixes in nw.dashboard.v1"
-status: proposed
+status: accepted
 owner: user
 created: 2026-11-03
 updated: 2026-11-04
