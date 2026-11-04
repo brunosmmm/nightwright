@@ -8,6 +8,7 @@ source_idea: IDEA-931
 parent: SPEC-0419
 milestone: "M9: agentic workflow"
 tags: [agentic, escalations, conductor, ledger]
+depends_on: [SPEC-0422]
 ---
 
 ## Context
