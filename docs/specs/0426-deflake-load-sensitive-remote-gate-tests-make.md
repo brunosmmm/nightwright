@@ -1,9 +1,10 @@
 ---
 id: SPEC-0426
 title: Deflake the load-sensitive remote-gate, heartbeat and job-lease tests
-status: proposed
+status: accepted
 owner: user
 created: 2026-11-04
+updated: 2026-11-04
 kind: feature
 source_idea: IDEA-957
 tags: [tests, flake, remote-gates]
