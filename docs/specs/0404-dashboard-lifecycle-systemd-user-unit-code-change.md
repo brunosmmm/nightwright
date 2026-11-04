@@ -386,6 +386,16 @@ fixed sleep before a positive assertion.
   and flaky (SIGINT sent right after the first stderr line can land before `serve_forever`'s
   `try`, exit 1). `python3 tools/spec_lint.py` exits 0. The full suite was left to gating.
 
+### Follow-up: the dropped splits (2026-11-04)
+
+- The two sibling splits named in Non-goals (the unit installer and `docs/WORKFLOW.md` section;
+  `nw dashboard status`, the `conduct-status` key and the `nw-orient` mention) were never
+  captured as specs after this one closed. Both are delivered by
+  [SPEC-0427](./0427-dashboard-service-nw-dashboard-install-uninstall.md) (`IDEA-962`) as
+  `nw dashboard install | uninstall | status`, with an `agentic.dashboard` doctor check. That spec
+  keeps this one's exit-code contract and adds `server.json` `code_root` and the
+  `nw serve --dashboard --tailnet-wait` option.
+
 ## Rollout / migration
 
 1. Land after epic child 1 (`nw serve --dashboard`). No data migration; `server.json` is created

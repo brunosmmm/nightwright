@@ -52,7 +52,19 @@ def conduct_status(cfg, *, recent=10) -> dict:
         "recent_events": E.read_since(cfg, 0)[-recent:],
         "herdr_watch": _herdr_watch_status(cfg),             # SPEC-0365
         "launch": _launch_freshness(cfg),                    # SPEC-0424
+        "dashboard": _dashboard_status(cfg),                 # SPEC-0427
     }
+
+
+def _dashboard_status(cfg) -> dict | None:
+    """SPEC-0427: the dashboard service in one dict (installed, active, url, problems), or None
+    when there is no unit and no live server, or anything went wrong. Lazy import: the queue
+    side never loads the dashboard package (SPEC-0400 invariant 2)."""
+    try:
+        from .dashboard import lifecycle as LC
+        return LC.brief(cfg)
+    except Exception:
+        return None
 
 
 def _launch_freshness(cfg) -> list:
@@ -170,6 +182,15 @@ def attach(queue_group):
         if st.get("herdr_watch"):
             from . import herdr_autowatch as AW
             console.print(AW.status_line(st["herdr_watch"]), highlight=False)
+        if st.get("dashboard"):
+            from rich.markup import escape
+            from .dashboard import lifecycle as LC
+            d = st["dashboard"]
+            line = escape(LC.brief_line(d))
+            console.print(line if d["ok"] and d["active"] is not False else f"[yellow]{line}[/]",
+                          highlight=False)
+        else:
+            console.print("dashboard: [dim]not installed (nw dashboard install)[/]")
         if st["parked"]:
             t = Table(title="Parked")
             for col in ("campaign", "spec", "reason", "detail", "cost"):

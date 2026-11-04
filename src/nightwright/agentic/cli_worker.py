@@ -229,9 +229,14 @@ def worker_serve(cfg, blob, conf, kinds, slots):
               help="--dashboard: watch this checkout for code changes instead of nightwright's own")
 @click.option("--no-code-watch", is_flag=True, hidden=True,
               help="--dashboard: do not exit 0 when nightwright's code changes")
+@click.option("--tailnet-wait", "tailnet_wait", type=click.FloatRange(min=0), default=0,
+              metavar="SECONDS",
+              help="--dashboard: when the bind needs a tailnet address and there is none yet, "
+                   "retry for up to SECONDS before exiting 3 (SPEC-0427; the systemd unit "
+                   "passes 60)")
 @click.pass_obj
 def serve_cmd(cfg, jobs, dashboard, bind, tls_cert, tls_key, client_ca, code_root,
-              no_code_watch):
+              no_code_watch, tailnet_wait):
     """Serve jobs to pull workers (--jobs, SPEC-0334) or the dashboard (--dashboard, SPEC-0400:
     live view, decisions inbox, campaign drilldown) over HTTP(S). Exactly one mode flag is
     required."""
@@ -239,7 +244,7 @@ def serve_cmd(cfg, jobs, dashboard, bind, tls_cert, tls_key, client_ca, code_roo
         raise click.UsageError("give exactly one of --jobs and --dashboard")
     if dashboard:
         return _serve_dashboard(cfg, bind, tls_cert, tls_key, client_ca, code_root=code_root,
-                                no_code_watch=no_code_watch)
+                                no_code_watch=no_code_watch, tailnet_wait=tailnet_wait)
     from . import pull_jobs as PJ
     try:
         srv = PJ.make_server(cfg, bind or PJ.DEFAULT_BIND, tls_cert=tls_cert, tls_key=tls_key,
@@ -265,7 +270,7 @@ class _TailnetMissingExit(click.ClickException):
 
 
 def _serve_dashboard(cfg, bind, tls_cert, tls_key, client_ca, *, code_root=None,
-                     no_code_watch=False):
+                     no_code_watch=False, tailnet_wait=0):
     """`nw serve --dashboard` (SPEC-0414, SPEC-0416, SPEC-0404). Exit 2: `BindRefused` or a TLS
     flag; exit 3: `TailnetMissing`; exit 1: an OSError from binding; exit 0: SIGTERM/SIGINT or
     nightwright's code changed (a supervisor restarts it onto the new code)."""
@@ -277,8 +282,25 @@ def _serve_dashboard(cfg, bind, tls_cert, tls_key, client_ca, *, code_root=None,
     from .dashboard import auth as DA
     from .dashboard import lifecycle as LC
     from .dashboard import server as DS
+    # SPEC-0427 `--tailnet-wait`: retry a missing tailnet address every 5 s for up to that long
+    # (under systemd an outage is one exit 3 a minute, and the server binds within seconds of
+    # Tailscale coming up). Other errors propagate at once.
+    deadline, said = time.monotonic() + tailnet_wait, False
     try:
-        host, port = DA.resolve_bind(bind or DS.DEFAULT_BIND)
+        while True:
+            try:
+                host, port = DA.resolve_bind(bind or DS.DEFAULT_BIND)
+                break
+            except DA.TailnetMissing as e:
+                left = deadline - time.monotonic()
+                if left <= 0:
+                    raise
+                if not said:
+                    said = True
+                    click.echo(f"nw serve: {e}; retrying for up to {tailnet_wait:g}s", err=True)
+                time.sleep(min(5.0, left))
+    except KeyboardInterrupt:
+        return
     except DA.BindRefused as e:
         raise click.UsageError(str(e))
     except DA.TailnetMissing as e:
@@ -321,6 +343,8 @@ def _serve_dashboard(cfg, bind, tls_cert, tls_key, client_ca, *, code_root=None,
         rec = DS.write_server_json(cfg, srv, code_watch=watch is not None,
                                    code_sha=None if watch is None else watch.sha,
                                    bind=bind or DS.DEFAULT_BIND)
+        if watch is not None:                       # SPEC-0427: status compares against it
+            rec = LC.write_server_record(cfg, {**rec, "code_root": str(watch.root)})
         click.echo(f"nw serve: dashboard on {rec['url']} ("
                    + ("loopback, no login" if srv.mode == "local" else
                       "tailnet, tailscale whois identity gate") + ")", err=True)
