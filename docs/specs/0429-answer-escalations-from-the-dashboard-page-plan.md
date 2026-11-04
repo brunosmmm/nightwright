@@ -1,7 +1,7 @@
 ---
 id: SPEC-0429
 title: "Answer escalations from the dashboard page: plan, confirm, answer through plan_answer/apply_answer, 409 and audit"
-status: accepted
+status: done
 owner: user
 created: 2026-11-04
 updated: 2026-11-04
@@ -121,24 +121,24 @@ validation; `AnswerFormError` for a wrong combination, `ValueError` otherwise), 
 
 ## Acceptance criteria
 
-- [ ] `plan` then `answer` with `choose` from HTTP produces the same escalation record, ledger
+- [x] `plan` then `answer` with `choose` from HTTP produces the same escalation record, ledger
       `human_decision` and `note` events, `human_overrides` and `escalation_answered` event data
       as `nw escalations answer ID --choose N --yes` on a copy of the same data dir (timestamps
       aside); the same holds for `text` and for an override (waive + attest + reason) and for a
       note.
-- [ ] A second answer, an answer to a withdrawn record, and one whose campaign is no longer
+- [x] A second answer, an answer to a withdrawn record, and one whose campaign is no longer
       PARKED `human_decision` get `409` with status, by and at (or the reason); the data dir is
       byte-identical apart from `audit.jsonl`.
-- [ ] `answer` without a plan token, with a token for another body, identity or record, or with
+- [x] `answer` without a plan token, with a token for another body, identity or record, or with
       an expired token is refused (400 / 400 / 409) and writes nothing.
-- [ ] A form error (`choose` 9 of 2 options, an unknown finding, override without reason, a
+- [x] A form error (`choose` 9 of 2 options, an unknown finding, override without reason, a
       foreign field) is `400` with the `plan_answer` message and writes nothing.
-- [ ] Every plan, answer and refused answer appends one audit line with action, esc_id, form,
+- [x] Every plan, answer and refused answer appends one audit line with action, esc_id, form,
       result and identity (`local` on loopback; login, node, node_ip on the tailnet).
-- [ ] An auto-applied answer (SPEC-0425) is listed under `inbox.auto_applied` and can be reversed
+- [x] An auto-applied answer (SPEC-0425) is listed under `inbox.auto_applied` and can be reversed
       once from HTTP; the record gets `answer_history` and the event carries `reverses_auto`,
       as from the CLI; a second reversal is `409`.
-- [ ] The page renders option buttons, the text box and the override controls for an open
+- [x] The page renders option buttons, the text box and the override controls for an open
       escalation, shows the confirm panel with the server's summary and effect, posts the answer
       with the CSRF header only after Confirm, and shows the 409 reason.
 
@@ -165,6 +165,49 @@ validation; `AnswerFormError` for a wrong combination, `ValueError` otherwise), 
 - **Regression guard:** affected tests, the read-only guard (`test_dashboard_http_readonly.py`:
   GET routes still write nothing), the import-graph guard, `python3 tools/spec_lint.py`.
 
+## As shipped
+
+Shipped as designed (`dashboard/answers.py`, the two POST routes in `server.py`, `inbox.auto_applied`,
+the inbox controls in `app.js`). Details the Design left open:
+
+- The plan response's `plan` is the CLI plan's public view (`id, campaign, by, question, answer,
+  summary, reverses, reverses_summary, override{waive[id,severity,title], attest, reason,
+  implicitly_attested, reach}`); `effect` is `inbox.effects_of(kind, [form], reverses)`, which
+  prefixes "Reverses the auto-applied answer: …" for a reversal.
+- A token for another body, identity or record and a garbage token are `400 bad_plan_token`; an
+  expired one is `409 plan_expired`. A missing token is 400. A refused write (CSRF, origin,
+  content type) is audited as `action: refused` with the `esc_id` and `result`.
+- Campaign links in the inbox and the Active list are buttons that set `#/c/<cid>` (SPEC-0430),
+  because the page's guard forbids writing `href` from data.
+- The page skips re-rendering the inbox while its data is unchanged, so typing is never
+  interrupted by an unrelated snapshot.
+
+Real-process evidence (2026-11-04), all against a SCRATCH data dir under
+`/home/bruno/work/.nw-tmp/dash-ui/` with escalations opened by the real CLI (`nw queue escalate
+--yes`), never the real data dir:
+
+- Plan then confirm over real HTTP for ESC-0001 (choose), ESC-0002 (text + note), ESC-0003
+  (override: waive `conformance_reviewer#0`, attest `AC 4 output is sorted`, reason), ESC-0005
+  (reversal of a `nw escalations answer --auto --by conductor` answer). A copy of the data dir
+  taken before the answers was answered with `nw escalations answer … --yes` (same forms). With
+  timestamps masked, the escalation records, the `escalation_answered` events (5 each, including
+  the auto one), the ledger `human_decision` + `note` events of every campaign and the
+  `human_overrides` are **identical** (scratch `twin_diff.py`: "ALL IDENTICAL").
+- A second plan and a replayed answer for ESC-0001 → 409 `{status: answered, by: human, at}`;
+  the withdrawn ESC-0004 → 409 `{status: withdrawn, by: conductor}`; a second reversal of
+  ESC-0005 → 409; the data dir was byte-identical outside `agentic/dashboard/` after them.
+- A real `nw queue events --follow --for conductor --all --no-code-watch` delivered the
+  `escalation_answered` line (`by: human`) of a web answer within its poll.
+- Headless Chromium (Playwright's `chrome-headless-shell` 145, `tests/js/browser_drive.js` over
+  the DevTools protocol): the page listed the open escalation with its option buttons; clicking
+  an option showed the confirm panel with the server's summary and effect; Confirm answered it
+  ("ESC-0006 answered: chose 1 (ok) — the conductor applies it.") and the escalation left the inbox
+  on the next snapshot.
+
+Automated: `tests/test_dashboard_answers.py` (twin checks against the CLI for all four forms,
+conflicts, plan-token and form-error matrices, write checks, audit, auto-applied listing) and
+`tests/js/answer.test.js` (via `tests/test_dashboard_answer_page.py`).
+
 ## Rollout / migration
 
 No data migration; the escalation format is unchanged. The page gains controls; an old cached
@@ -172,11 +215,11 @@ page keeps working read-only.
 
 ## Definition of done
 
-- [ ] Acceptance criteria all met.
-- [ ] Test plan executed; affected automated tests pass; manual steps performed.
-- [ ] No regressions.
-- [ ] Spec body updated to match what shipped.
-- [ ] `docs/LEDGER.md` regenerated; `python3 tools/spec_lint.py` exits 0.
+- [x] Acceptance criteria all met.
+- [x] Test plan executed; affected automated tests pass; manual steps performed.
+- [x] No regressions.
+- [x] Spec body updated to match what shipped.
+- [x] `docs/LEDGER.md` regenerated; `python3 tools/spec_lint.py` exits 0.
 
 ## Open questions
 

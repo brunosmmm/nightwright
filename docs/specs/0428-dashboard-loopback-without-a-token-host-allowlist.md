@@ -1,7 +1,7 @@
 ---
 id: SPEC-0428
 title: "Dashboard auth without a loopback token: Host allowlist, same-origin, per-page CSRF; whois gate wired into the server"
-status: accepted
+status: done
 owner: user
 created: 2026-11-04
 updated: 2026-11-04
@@ -140,26 +140,26 @@ token) and Decision 4 (Host/Origin values). Everything else SPEC-0414 decided (t
 
 ## Acceptance criteria
 
-- [ ] On a loopback bind, `GET /`, `/app.js`, `/app.css`, `/api/snapshot` and `/api/stream`
+- [x] On a loopback bind, `GET /`, `/app.js`, `/app.css`, `/api/snapshot` and `/api/stream`
       answer 200 with no `Authorization` header and no token anywhere; `local.token` is not
       created; a request that sends `Authorization: Bearer junk` is served the same.
-- [ ] A request whose `Host` is not in the allowlist (e.g. `evil.example:8791`, a missing Host)
+- [x] A request whose `Host` is not in the allowlist (e.g. `evil.example:8791`, a missing Host)
       is `403` with a `bad_host` audit line; a foreign `Origin` is `403 bad_origin`. On loopback
       `127.0.0.1:P`, `localhost:P` and `[::1]:P` are accepted.
-- [ ] No response of any route (200, 304, 4xx, 5xx, SSE, OPTIONS) carries an
+- [x] No response of any route (200, 304, 4xx, 5xx, SSE, OPTIONS) carries an
       `Access-Control-*` header; `OPTIONS` is `405`.
-- [ ] A `POST` without `X-NW-CSRF`, with a wrong or foreign-identity value, with a foreign
+- [x] A `POST` without `X-NW-CSRF`, with a wrong or foreign-identity value, with a foreign
       `Origin`, with neither `Origin` nor `Referer`, or with a non-JSON content type is refused
       (403 / 403 / 403 / 403 / 415), audited, and writes nothing else.
-- [ ] `GET /` embeds a fresh CSRF value per load (two loads differ, both validate); a value from
+- [x] `GET /` embeds a fresh CSRF value per load (two loads differ, both validate); a value from
       another server process fails.
-- [ ] `--bind tailscale` and an own tailnet IP are no longer refused by `resolve_bind`
+- [x] `--bind tailscale` and an own tailnet IP are no longer refused by `resolve_bind`
       (wildcard / LAN / foreign tailnet / TLS still are). On a `whois`-mode server every route,
       static files included, is gated by `Gate.check`: an allowed login is served (and its CSRF
       value is bound to login + node IP), an unknown login, a tagged node and a failing `whois`
       get `403` with the reason and device in the audit line; an open stream is closed after the
       gate starts denying.
-- [ ] `nw serve --help` no longer says "loopback only" or names a token; `server.json` `auth`
+- [x] `nw serve --help` no longer says "loopback only" or names a token; `server.json` `auth`
       is `local` or `whois`; the page sends no `Authorization` header and ignores a `#token=`
       fragment.
 
@@ -191,6 +191,51 @@ token) and Decision 4 (Host/Origin values). Everything else SPEC-0414 decided (t
 - **Regression guard:** affected tests (`python3 tools/affected_tests.py --run …`), the
   read-only and import-graph dashboard guards, `python3 tools/spec_lint.py`.
 
+## As shipped
+
+Shipped as designed. Notes on what the code does where the Design left room:
+
+- Refusals carry `{"error", "reason"}`; a refusal before the identity is known (bad Host / Origin)
+  still records the peer `node_ip`. `OPTIONS` is `405` (or `403` when it carries a foreign
+  `Origin`, which is checked first). A `GET` with a body is `413 body_on_get` on every route.
+- In `whois` mode the server reads the MagicDNS name once at start (`Gate.magic_name()`) for the
+  Host allowlist. `localhost` is not accepted on a tailnet bind (it is not the bound address).
+- `server.json` `auth` is `local` / `whois`. `nw serve --help` and the start line name the mode
+  (`(loopback, no login)` / `(tailnet, tailscale whois identity gate)`). `docs/WORKFLOW.md`'s
+  Remote dashboard section describes both.
+- `make_server(..., mode=, gate=, peer=)` are test seams only; `serve_cmd` never passes them.
+
+Real-process evidence (2026-11-04), all against a SCRATCH data dir under
+`/home/bruno/work/.nw-tmp/dash-ui/` with escalations opened by the real CLI (`nw queue escalate
+--yes`), never the real data dir:
+
+- `nw serve --dashboard --bind 127.0.0.1:<free port> --no-code-watch` (start line `(loopback, no
+  login)`, `server.json` `auth: local`, no `local.token` created): `GET /` 200 with a
+  `<meta name="nw-csrf">` value and `Cache-Control: no-store`; `/api/snapshot` 200 with no
+  credential, 200 with `Authorization: Bearer junk`, 200 for `Host: localhost:P` and
+  `Host: [::1]:P`; `Host: evil.example:P` → `403 bad_host`; zero `Access-Control-*` headers on
+  `/`, `/api/snapshot` and a 404.
+- POST `/api/escalations/ESC-0001/plan|answer`: no `X-NW-CSRF` → 403 `bad_csrf`; a wrong value →
+  403 `bad_csrf`; `Origin: http://evil.example` → 403 `bad_origin`; neither Origin nor Referer →
+  403 `no_origin`; `text/plain` → 415; Referer-only from the page's origin → 200. A hash of every
+  file outside `agentic/dashboard/` was unchanged after all refused writes.
+- **Tailnet, real process**: an unprivileged network namespace (`unshare -rn`) whose `lo` carries
+  100.101.0.5–.8, a fake `tailscale` on `PATH` (`ip` → 100.101.0.5; `status --json` → own login
+  `me@example.com`, MagicDNS `box.tail1234.ts.net`; `whois --json`: .5 = phone/me, .6 = another
+  login, .7 = tagged node, .8 = whois exit 1). `nw serve --dashboard --bind tailscale:8791` started
+  with `(tailnet, tailscale whois identity gate)`, `server.json` `auth: whois`. From .5: page and
+  snapshot 200, `Host: box.tail1234.ts.net:8791` 200, a foreign Host 403; plan + answer of a CLI
+  escalation 200 (record `answered_by: human`); a CSRF value not minted for this identity 403.
+  From .6 / .7 / .8: `/`, `/app.js`, `/api/snapshot` all 403, audited as `login_not_allowed`
+  (`eve@example.com`, `laptop-of-eve`), `tagged_node` (`ci-runner`) and `whois_failed`; from
+  127.0.0.1 to the tailnet address 403 `not_tailnet_peer`. The audit lines for the answer carry
+  `login me@example.com, node phone, node_ip 100.101.0.5`. The human's real Tailscale was not
+  touched (it stays logged out).
+
+Automated: `tests/test_dashboard_csrf.py`, `tests/test_dashboard_whois_server.py` (new), and the
+updated server, assets, stream, serve-CLI, tailnet, audit and read-only tests; the page's token
+removal in `tests/js/page_logic.test.js` and `tests/js/live.test.js`.
+
 ## Rollout / migration
 
 1. No data migration. An existing `local.token` is left on disk, unused. Old bookmarks with
@@ -200,11 +245,11 @@ token) and Decision 4 (Host/Origin values). Everything else SPEC-0414 decided (t
 
 ## Definition of done
 
-- [ ] Acceptance criteria all met.
-- [ ] Test plan executed; affected automated tests pass; manual steps performed.
-- [ ] No regressions.
-- [ ] Spec body updated to match what shipped.
-- [ ] `docs/LEDGER.md` regenerated; `python3 tools/spec_lint.py` exits 0.
+- [x] Acceptance criteria all met.
+- [x] Test plan executed; affected automated tests pass; manual steps performed.
+- [x] No regressions.
+- [x] Spec body updated to match what shipped.
+- [x] `docs/LEDGER.md` regenerated; `python3 tools/spec_lint.py` exits 0.
 
 ## Open questions
 

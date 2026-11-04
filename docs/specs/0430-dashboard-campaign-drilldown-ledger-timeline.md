@@ -1,7 +1,7 @@
 ---
 id: SPEC-0430
 title: "Dashboard campaign drilldown: ledger timeline, current run and live run tail from stream.jsonl"
-status: accepted
+status: done
 owner: user
 created: 2026-11-04
 updated: 2026-11-04
@@ -83,15 +83,15 @@ tail -f` uses), SPEC-0402's `stream.SlotPool` and SSE writers.
 
 ## Acceptance criteria
 
-- [ ] `GET /api/campaigns/<cid>` returns the state, the last ledger events with the same text as
+- [x] `GET /api/campaigns/<cid>` returns the state, the last ledger events with the same text as
       `nw campaign log`, the runs and `current_run`; an invalid or unknown cid is `404`; it writes
       nothing.
-- [ ] `GET /api/campaigns/<cid>/tail` streams lines appended to a run's `stream.jsonl` within
+- [x] `GET /api/campaigns/<cid>/tail` streams lines appended to a run's `stream.jsonl` within
       `tail_poll_s` + delivery, rendered as `tail.Renderer` renders them, and sends `end` and
       closes once the run has ended; it takes and frees a stream slot.
-- [ ] The page opens the drilldown from a campaign row, shows the timeline and current run, shows
+- [x] The page opens the drilldown from a campaign row, shows the timeline and current run, shows
       tail lines live, and closes the tail stream when leaving the view or hiding the tab.
-- [ ] Serving drilldowns and tails leaves the data dir byte-identical outside
+- [x] Serving drilldowns and tails leaves the data dir byte-identical outside
       `agentic/dashboard/`.
 
 ## Test plan
@@ -109,17 +109,44 @@ tail -f` uses), SPEC-0402's `stream.SlotPool` and SSE writers.
   `#/c/<cid>` when available.
 - **Regression guard:** affected tests; `python3 tools/spec_lint.py`.
 
+## As shipped
+
+Shipped as designed (`dashboard/campaign.py`, routes in `server.py`, the `#drill` view in
+`index.html` / `app.js`). Details:
+
+- The state block comes from `queue.row_view` (title, cost, cap) plus state, loop, label and park.
+- The tail stream sends `event: start` (`{run, offset, header, status}`, the CLI's header line
+  without the state suffix), then `event: lines`, then `event: end` (`{status}`) and closes. The
+  run is checked for its end on every `tail_poll_s`; a run without stream capture sends its
+  result line at the end. The tail's slot is released on every exit path (`client_count()` drops
+  back to 0).
+- `tail_poll_s` is read by `server.tail_poll_s(cfg)` (positive, ≤ 60, default 1.0).
+
+Real-process evidence (2026-11-04), all against a SCRATCH data dir under
+`/home/bruno/work/.nw-tmp/dash-ui/` with escalations opened by the real CLI (`nw queue escalate
+--yes`), never the real data dir:
+
+- `GET /api/campaigns/<cid>` returned `nw.dashboard.campaign.v1` with the state, the timeline (the
+  `nw campaign log` lines) and `current_run`. A tail of a running run (a live `wrapper_pid`)
+  received the lines appended to `stream.jsonl` within 0.5 s, then `end` after `exit.json`; the
+  dashboard's lines equal `nw campaign tail`'s output line for line (the header aside).
+- Headless Chromium: `#/c/<cid>` hid the main view, showed 1+ timeline rows and the tail ending in
+  "■ run ended (finished)"; clearing the hash returned to the main view.
+
+Automated: `tests/test_dashboard_campaign.py` (CLI parity of the timeline, cid validation, live tail
+to `end` with slot release, read-only hash) and the drilldown test in `tests/js/answer.test.js`.
+
 ## Rollout / migration
 
 No data migration, no new dependency. `tail_poll_s` is the epic's documented key.
 
 ## Definition of done
 
-- [ ] Acceptance criteria all met.
-- [ ] Test plan executed; affected automated tests pass; manual steps performed.
-- [ ] No regressions.
-- [ ] Spec body updated to match what shipped.
-- [ ] `docs/LEDGER.md` regenerated; `python3 tools/spec_lint.py` exits 0.
+- [x] Acceptance criteria all met.
+- [x] Test plan executed; affected automated tests pass; manual steps performed.
+- [x] No regressions.
+- [x] Spec body updated to match what shipped.
+- [x] `docs/LEDGER.md` regenerated; `python3 tools/spec_lint.py` exits 0.
 
 ## Open questions
 
