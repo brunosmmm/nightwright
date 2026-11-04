@@ -1,6 +1,6 @@
 ---
 id: SPEC-0406
-title: "Shared campaign history data layer: nw.campaign.history.v1, nw campaign history and records CLIs, cache and real-data fixture"
+title: "Shared campaign history data layer: history.py derivation, read-side schemas, campaign_export reuse and the history/records CLIs"
 status: proposed
 owner: user
 created: 2026-11-03
@@ -14,70 +14,90 @@ tags: [agentic, observability, history]
 
 This is child 2 of epic [SPEC-0405](./0405-rich-queue-tui-prioritized-live-queue-campaign.md).
 The epic's queue view, detail popup, History tab and Findings tab all read one UI-independent
-layer, and SPEC-0400's per-campaign drilldown should read it too. This spec builds that
-layer. The epic already fixes a lot of it, and this spec follows it as written:
+layer, and SPEC-0400's per-campaign drilldown should read it too. This spec builds the
+derivation half of that layer: the pure module, its schemas and validators, the reuse in
+`campaign_export`, and the CLIs. The epic already fixes much of it, and this spec follows it
+as written:
 - the data inventory and the retention verdict;
 - the phase table;
 - the three frozen v1 schemas;
-- the CLI surface;
-- the cache location and invalidation;
-- the perf budgets.
+- the CLI surface (without `--rebuild-cache`, see Non-goals).
 
-Below, "the epic" means SPEC-0405, and "child 1" means the ledger-provenance sibling (the
-first breakdown item: `finding.run_id` and `finding.key`, `triage` events, and `campaign`
-stamps on decisions and mail).
+**Split.** The spec review found the original idea too large for one campaign and split it in
+three. This spec is the middle one:
+
+| Part | Scope | Order |
+|---|---|---|
+| History fixture | `tools/capture_history_fixture.py`, the committed sanitized real-data fixture `tests/fixtures/agentic_history/`, and `tests/history_scale.clone_fixture` | lands first |
+| **SPEC-0406 (this spec)** | `history.py` derivation, read-side schemas, `campaign_export` reuse, uncached `nw campaign history CID / --list` and `nw campaign records` | after the fixture |
+| History cache and perf budgets | `cache_dir/history/v1`, incremental global-log offsets, atomic writes, bad-cache rebuild, `--rebuild-cache`, the four perf budgets on the 500-campaign clone | after this spec |
+
+Below, "the epic" means SPEC-0405, "child 1" means the ledger-provenance sibling (the first
+breakdown item: `finding.run_id` and `finding.key`, `triage` events, and `campaign` stamps on
+decisions and mail), "the fixture spec" means the first row above, and "the cache spec" the
+third.
 
 **What exists today:**
 - `campaign_export._time_in_state` (`src/nightwright/agentic/campaign_export.py:159`)
   derives state → seconds from `transition` events. It credits each closed interval to the
   transition's `from`, and the open interval of a non-terminal campaign runs to `now`. It is
   the only time-in-state code, and it is private to the export.
+- `campaign_export` counts `loops` (`campaign_export.py:320`) as the transitions to
+  IMPLEMENTING whose `reason` is in `FIX_REASONS` (`campaign_export.py:80`,
+  `{"triage_fix", "review_fix"}`), and `_loop_max` (`campaign_export.py:190`) gives the cap.
 - `nw campaign log/runs/run/tail/show/export` (`cli_campaign.py`) each read one source. None
   joins the ledger with `run.json`, the gates, `decisions.jsonl`, escalations, the mailbox or
   spec reviews.
 - `followups.finding_key(spec_id, title, files)` (`followups.py:43`) is the follow-up key.
 - `schemas.py` holds the record schemas the queue writes (`nw.ledger.event.v1`,
   `nw.run.v1`, `nw.gate.v1`, `nw.runner.record.v1`) and has no read-side schemas.
-- `cfg["cache_dir"]` (`config.py:120`) exists and is used only by `meetings.py`.
-- `tests/fixtures/` has no real campaign data. Every agentic test builds a campaign by hand.
 
-**Dependency on child 1.** Child 1 adds the provenance fields. It has no spec id yet, so it
-cannot be named in `depends_on`. This layer does not need those fields to work:
-- When a field is present, it is read and the link is marked `linked_by: "field"`.
-- When it is absent, the link is inferred (`"inferred"`) or matched in text (`"text"`).
-- The implementer lands this spec after child 1 when child 1 is already `done`. If child 1
-  is not done yet, the field path is tested on synthetic events of child 1's documented shape
-  (see the Test plan), and the fixture is recaptured once child 1 has produced real campaigns
-  (Rollout).
+**Dependencies that have no spec id yet.** Neither child 1 nor the fixture spec has an id
+yet, so neither can be named in `depends_on`.
+- **Fixture spec (hard ordering).** The fixture-backed tests below read
+  `tests/fixtures/agentic_history/` and its `MANIFEST.json` roles. This spec is implemented
+  only once the fixture spec is `done`; the implementer checks that the fixture directory and
+  its manifest exist before starting, and the campaign queue orders the two accordingly.
+- **Child 1 (soft).** This layer does not need child 1's fields to work:
+  - When a field is present, it is read and the link is marked `linked_by: "field"`.
+  - When it is absent, the link is inferred (`"inferred"`) or matched in text (`"text"`).
+  - If child 1 is not `done` when this spec is implemented, the field path is tested on
+    synthetic events of child 1's documented shape (see the Test plan), and the fixture is
+    recaptured once child 1 has produced real campaigns (Rollout).
 
 ## Goals / Non-goals
 
 **Goals**
 - **One pure module, `src/nightwright/agentic/history.py`.**
-  - It never writes the data dir.
+  - It never writes anything: not the data dir, not `cache_dir`.
   - It never imports `nightwright.tui`, Textual or a dashboard package.
   - It produces `nw.campaign.history.v1`, `nw.history.index.v1` and `nw.history.record.v1`
-    exactly as the epic froze them.
+    exactly as the epic froze them, with the schema constants and validators in
+    `schemas.py`.
 - **Phases.** Per-phase visits, with wall, run, gate, gate-wait, runner-down and other time,
   plus cost and run counts. The dominant phase.
 - **One merged timeline**, plus runs, gates, records, links with their provenance, and gaps.
-- **A disposable cache** under `cache_dir/history/v1` that makes closed campaigns
-  compute-once and makes global logs incremental.
-- **CLIs**: `nw campaign history CID | --list | --rebuild-cache` and `nw campaign records`,
-  each with filters and `--json`.
-- **One time-in-state function.** `campaign_export`'s time-in-state reuses history's
-  function, so the two cannot drift.
-- **A committed fixture.** A sanitized fixture of real closed campaigns, a tool that
-  reproduces it, and a scale-clone helper that child 3 and the perf tests reuse.
-- **The epic's data-layer perf budgets**, asserted on a 500-campaign clone.
+- **CLIs**: `nw campaign history CID | --list` and `nw campaign records`, each with filters
+  and `--json`, computed directly (uncached).
+- **One derivation shared with the export.** `campaign_export`'s time-in-state, `loops` and
+  loop cap come from `history`, so the two cannot drift.
 
 **Non-goals**
+- **The cache** (`cache_dir/history/v1`, per-campaign entries, incremental global-log
+  offsets, inode and shrink detection, atomic writes, bad-cache rebuild, the
+  `"cache: not writable"` gap, `cache=False` equivalence), `history.rebuild_cache` and the
+  `nw campaign history --rebuild-cache` flag. These belong to the cache spec, which adds a
+  `cache=` keyword to the public functions below without changing their results.
+- **The perf budgets** (cold and warm index, popup open, 50 000-record query) on the
+  500-campaign clone. They belong to the cache spec. The live-queue repaint budget belongs
+  to child 4.
+- **The capture tool, the committed fixture and the scale-clone helper.** They belong to the
+  fixture spec; this spec only reads the fixture.
 - Any TUI or web view. Children 3 to 7 and SPEC-0400 build those.
 - Writing new ledger, decision or mail fields. That is child 1.
 - Editing, deleting or migrating history, or any change to retention.
 - Reading the pruned sources (`gatejobs/`, `remote-jobs/`, worker caches).
 - Cross-host aggregation.
-- The live-queue repaint budget. That belongs to child 4.
 
 ## Decision
 
@@ -100,43 +120,35 @@ cannot be named in `depends_on`. This layer does not need those fields to work:
    - Every interval is clipped to the visit.
    - `cost_usd` and `runs` belong to the phase of the run's `run.start`, as the epic says,
      even when the run's interval spills over into the next visit.
-4. **The cache splits in two.**
-   - *Campaign-local* derivations (from the ledger, `state.json`, `runs/` and `gates/`) are
-     cached per campaign, keyed by that campaign's file signature.
-   - *Global-log* records (decisions, mailbox, escalations, spec reviews, flaky tests,
-     sentinel, runner intervals) are parsed incrementally into a global cache by offset.
-   - The two are merged at read time, so a new decision on a closed campaign shows up
-     without recomputing its ledger.
-   - The cache lives only under `cache_dir`. It is always safe to delete, and a cache entry
-     that is corrupt, of the wrong version or of an unknown builder is rebuilt, never trusted.
-5. **`time_in_state` moves into `history.py`.** It is moved there unchanged in behaviour.
-   `campaign_export` imports it, and the phase visits are built from the same transition
-   walk.
-6. **The fixture is real data, sanitized by a committed tool.**
-   - `tools/capture_history_fixture.py` copies the selected real closed campaigns plus the
-     matching slices of the global logs into `tests/fixtures/agentic_history/`.
-   - The tool sanitizes the copy and writes a `MANIFEST.json`.
-   - The real data dir has no HANDED_OFF campaign (none at survey: 191 merged, 14 abandoned,
-     12 live). The tool therefore derives the handed-off fixture campaign from a real merged
-     one by rewriting only its close, and it marks that campaign `derived` in the manifest.
+4. **The export's derivations move into `history.py`.** `time_in_state`, `loop_max`, the
+   `FIX_REASONS` predicate and the loop count move there unchanged in behaviour.
+   `campaign_export` imports them back (keeping `campaign_export.FIX_REASONS` as an alias),
+   and the phase visits are built from the same transition walk. `history` never imports
+   `campaign_export`, so there is no import cycle.
+5. **One loop predicate.** A *fix-loop transition* is a `transition` to IMPLEMENTING whose
+   `reason` is in `history.FIX_REASONS`. `header.loops`, visit `loop` numbers and the
+   export's `loops` column all count exactly that.
 
 ## Design
 
 ### Module layout
 
-`src/nightwright/agentic/history.py` (pure functions; no write outside `cache_dir`):
+`src/nightwright/agentic/history.py` (pure functions; no writes):
 
-| Function | Returns |
+| Name | Returns |
 |---|---|
 | `PHASES` | the ordered phase → states table from the epic; `PHASE_OF[state]` is its inverse; an unknown state maps to `other` and adds a gap |
+| `FIX_REASONS` | moved from `campaign_export`: `frozenset({"triage_fix", "review_fix"})` |
+| `is_fix_loop(event) -> bool` | `event["type"] == "transition"`, `to == "IMPLEMENTING"` and `reason in FIX_REASONS` |
+| `count_loops(events) -> int` | the number of events for which `is_fix_loop` holds |
+| `loop_max(cfg, state) -> int` | moved verbatim from `campaign_export._loop_max` |
 | `time_in_state(state, events, start, end) -> dict[str, int]` | moved verbatim from `campaign_export._time_in_state` |
 | `phase_visits(state, events, start, end) -> list[Visit]` | `Visit = (phase, state, start, end, loop)`, from the same walk |
-| `campaign_history(cfg, cid, *, now=None, cache=True) -> dict` | `nw.campaign.history.v1` |
-| `history_index(cfg, *, now=None, cache=True, progress=None) -> list[dict]` | `nw.history.index.v1` rows, one per campaign dir |
-| `history_records(cfg, *, campaign=None, agent=None, kind=None, project=None, severity=None, status=None, since=None, until=None, query=None, limit=None, cache=True) -> list[dict]` | `nw.history.record.v1`, newest first |
+| `campaign_history(cfg, cid, *, now=None) -> dict` | `nw.campaign.history.v1` |
+| `history_index(cfg, *, now=None, progress=None) -> list[dict]` | `nw.history.index.v1` rows, one per campaign dir; `progress(done, total)` is called per campaign when given |
+| `history_records(cfg, *, campaign=None, agent=None, kind=None, project=None, severity=None, status=None, since=None, until=None, query=None, limit=None) -> list[dict]` | `nw.history.record.v1`, newest first |
 | `filter_index(rows, *, project, state, spec, since, until, min_cost) -> list[dict]` | the `--list` filters, pure over rows |
-| `rebuild_cache(cfg, *, progress=None) -> dict` | drops `cache_dir/history/v1` and rebuilds it; returns counts and elapsed time |
-| `campaign_signature(cfg, cid) -> str` | the cache key below, hex |
+| `campaign_signature(cfg, cid) -> str` | hex `sha1` over `(ledger size, ledger mtime_ns, state.json mtime_ns, runs/ mtime_ns, gates/ mtime_ns)`; it fills the schemas' `signature` fields, and the cache spec builds its keys on it |
 
 `schemas.py` gains the following, plus docstring entries for the three read-side schemas:
 - `HISTORY_SCHEMA = "nw.campaign.history.v1"`;
@@ -167,11 +179,11 @@ The header fields are those of the epic. They are derived as follows:
 | `closed_at` | the `close` event `ts`, falling back to `state.close.ts`; null when live |
 | `wall_s` | `closed_at or now` minus `created_at` |
 | `active_s` | `wall_s` minus the `wall_s` of the `queue`, `parked` and `waiting` phases |
-| `loops` | the number of transitions into IMPLEMENTING from a non-spec state, plus one if IMPLEMENTING was ever entered |
-| `loop_max` | `campaign_export._loop_max`, moved into `history` and imported back |
+| `loops` | the export's count: `history.count_loops(events)`, i.e. the transitions to IMPLEMENTING whose `reason` is in `history.FIX_REASONS` (the helper moved out of `campaign_export.py:320` and imported back, like `loop_max`) |
+| `loop_max` | `history.loop_max`, moved from `campaign_export._loop_max` and imported back |
 | `runs` | the count of `run.end` events, plus `run.start` events with no matching end (counted as interrupted) |
 | `cost_usd` | `state.cost.total_usd`, falling back to the sum of `run.end` `charged_usd` |
-| `conductor_usd` | `conductor_cost` attribution, exactly as `campaign_export` computes it (shared helper, null when unavailable) |
+| `conductor_usd` | `conductor_cost` attribution, exactly as `campaign_export` computes it (a shared helper moved into `history`; null when unavailable) |
 | `followup_idea` | the id on the last `followup` event |
 | `tone` | the same tone function that `nw queue watch` / `journey.py` use for the campaign's state |
 
@@ -180,8 +192,10 @@ The header fields are those of the epic. They are derived as follows:
 - **Visits.** `phase_visits` walks the transitions exactly as `time_in_state` does. Each
   closed interval is credited to the transition's `from`, and the open interval of a live
   campaign runs to `now`. A terminal state gets no visit.
-- **Loop numbers.** `loop` is 0 before the first IMPLEMENTING, and goes up by 1 on every
-  entry into IMPLEMENTING.
+- **Loop numbers.** `loop` is 0 from creation through the first IMPLEMENTING visit, and
+  increases by 1 on each fix-loop transition (the `is_fix_loop` predicate). Therefore
+  `max(visit.loop) == header.loops` for every campaign (both are 0 when IMPLEMENTING was
+  never re-entered on a fix reason).
 - **Intervals inside a visit**, all clipped to the visit:
   - **run:** `[run.start.ts, run.start.ts + run.end.duration_s]`. A run with no end runs to
     the next transition.
@@ -240,12 +254,12 @@ Each row has these fields:
 
 ### Records (`nw.history.record.v1`)
 
-Each record's `id` is `<source>:<locator>`, and the locator is stable across rebuilds:
+Each record's `id` is `<source>:<locator>`, and the locator is stable across calls:
 
 | Source | Locator | Example |
 |---|---|---|
-| `ledger` | `<cid>:<seq>` | |
-| `run` | `<cid>:<run_id>` | |
+| `ledger` | `<cid>:<seq>` | `ledger:<cid>:57` |
+| `run` | `<cid>:<run_id>` | `run:<cid>:004-reviewer` |
 | `decisions` | the decision's `event_id`, falling back to the line's byte offset | |
 | `escalation` | the ESC id | `ESC-0012` |
 | escalation answer | the ESC id with `/answer` appended | `ESC-0012/answer` |
@@ -320,6 +334,7 @@ was missing:
 - `"run 004-reviewer: no run.json"`
 - `"state UNKNOWN_X: no phase"`
 - `"runner.jsonl: missing"`
+- `"decisions.jsonl: line 40 unparsable"`
 
 Inferred links are never gaps. They show in `linked_by`, so gaps stay a list of real
 absences.
@@ -331,51 +346,13 @@ There is one row per campaign dir (live ones included). Each row has:
 - `phase_wall_s` and `phase_cost_usd`, as `{phase: value}`;
 - `findings_by_severity`, as `{severity: n}`;
 - `records`, the record count;
-- `signature`.
+- `signature` (`campaign_signature`).
 
-`--list` sorts rows by `closed_at or created_at`, newest first.
+Each row's header fields and `dominant` equal those of `campaign_history` for the same
+campaign and `now`. `--list` sorts rows by `closed_at or created_at`, newest first.
 
-### Cache (`<cache_dir>/history/v1/`)
-
-**Files:**
-- `campaigns/<cid>.json`: `{builder, signature, local}`. `local` is everything derived from
-  campaign-local files: header (without `conductor_usd`), visits, run and gate rows, ledger
-  and run records, ledger gaps.
-- `globals.json`, plus `globals/<source>.jsonl`: parsed global-log records, already linked
-  to a campaign, with a lowercased `_q` search field.
-- `sources.json`: `{path: {size, mtime_ns, inode, offset}}` for each global log, plus the
-  runner intervals parsed so far.
-- `index.jsonl`: one index row per campaign, each with its combined signature.
-- `records.jsonl`: every record, with `_q`, sorted newest first.
-
-**Keys and versions:**
-- `builder` is `history.BUILDER_VERSION`, an int the implementer bumps whenever derivation
-  logic changes. A file with a different builder is ignored and rewritten.
-- A campaign's local signature is `sha1(ledger size, ledger mtime_ns, state.json mtime_ns,
-  runs/ mtime_ns, gates/ mtime_ns)`. It adds `gates/` to the epic's tuple, because gate
-  sidecars feed `gates[].results`.
-- The combined history `signature` is `sha1(local signature, the number of global records
-  for that cid, runner.jsonl offset)`. `runner.jsonl` matters only to campaigns whose window
-  is still open: for a terminal campaign whose `closed_at` falls before the last parsed
-  runner record, runner intervals cannot change, and its offset is fixed in its signature at
-  that value.
-
-**Incremental reads.** On each read, every global log is `stat`ed.
-- If `size >= offset` and the inode is unchanged, only the bytes from `offset` are parsed,
-  and a torn final line (no newline) is left for the next read.
-- If the file shrank or the inode changed, it is re-read in full.
-- `escalations/` and `reviews/` are directories of immutable or rarely-changed JSON files.
-  They are keyed per file by `(mtime_ns, size)`.
-
-**Writes.** Every write goes to `<file>.tmp.<pid>` and is then renamed with `os.replace`,
-so concurrent readers see the old file or the new one, never a torn one.
-
-**Bad cache files.** A JSON error, a wrong schema or a wrong builder means "rebuild this
-file". A cache error never fails the call. If `cache_dir` is not writable, the result is
-computed uncached and gets the gap `"cache: not writable"`.
-
-**`cache=False`** bypasses the cache entirely. Tests use it to compare cached results with
-uncached ones.
+In this spec every call computes from the data dir. A full `history_index` reads every
+campaign; making that fast is the cache spec's job.
 
 ### CLI (`cli_campaign.py`)
 
@@ -383,21 +360,21 @@ uncached ones.
 nw campaign history CID [--json]
 nw campaign history --list [--project P] [--state merged|handed_off|abandoned|live|all]
     [--spec S] [--since D] [--until D] [--min-cost X] [--json]
-nw campaign history --rebuild-cache
 nw campaign records [--campaign C] [--agent A] [--kind K] [--project P] [--severity S]
     [--status S] [--since D] [--until D] [--query TEXT] [--limit N] [--json]
 ```
 
 **Argument rules:**
-- `CID`, `--list` and `--rebuild-cache` are mutually exclusive, and exactly one is required.
-  Breaking that rule is a usage error with exit 2.
+- `CID` and `--list` are mutually exclusive, and exactly one is required. Breaking that rule
+  is a usage error with exit 2. (The cache spec adds `--rebuild-cache` as a third member of
+  this group.)
 - An unknown `CID` prints `campaign <cid> not found` to stderr and exits 1.
 - `--state` defaults to `all` for `--list`.
 - `--since` and `--until` take `YYYY-MM-DD` or ISO-8601. `--until` is inclusive of that day.
 - For `--list`, the dates apply to `closed_at or created_at`. For `records`, they apply to
   `ts`.
 - `--min-cost` compares against `cost_usd`.
-- `--query` is a case-insensitive substring match over `title + text`, using `_q`.
+- `--query` is a case-insensitive substring match over `title + " " + text`.
 - `--limit` defaults to 200 for text output, with no limit for `--json`.
 - `--kind`, `--agent`, `--severity` and `--status` may each be repeated, and repeated values
   are ORed.
@@ -407,10 +384,10 @@ parsed as markup (SPEC-0265).
 - `history CID` prints the header, a phase table (wall, share, run, gate, gate-wait,
   runner-down, other, cost, runs) with a unicode bar column, the dominant line, the last 30
   timeline rows, a runs table and the gaps.
-- `--list` prints one table row per index row.
+- `--list` prints one table row per index row, and a progress line to stderr every 50
+  campaigns when stderr is a TTY.
 - `records` prints one line per record: ts, source, kind, agent, campaign, severity, status
   and title.
-- `--rebuild-cache` prints a progress line per 50 campaigns to stderr, then the totals.
 
 **JSON output** has these shapes:
 - `history CID --json`: the `nw.campaign.history.v1` document.
@@ -419,228 +396,132 @@ parsed as markup (SPEC-0265).
 
 ### campaign_export reuse
 
-- `campaign_export._time_in_state` becomes an import of `history.time_in_state`, and so
-  does `_loop_max`.
+- `campaign_export._time_in_state` becomes an import of `history.time_in_state`, and
+  `_loop_max` an import of `history.loop_max`.
+- The `loops` column (`campaign_export.py:320`) is computed by `history.count_loops`, and
+  `campaign_export.FIX_REASONS` becomes an alias of `history.FIX_REASONS`.
 - `export_tables` output is unchanged byte for byte. The existing `test_campaign_export*`
   tests pin it.
 - No other export column changes in this spec.
-
-### Fixture capture (`tools/capture_history_fixture.py`)
-
-```
-python3 tools/capture_history_fixture.py [--data-dir D] [--out tests/fixtures/agentic_history]
-    [--campaign CID ...] [--auto] [--check]
-```
-
-**Selection.** `--auto` picks the most recent real campaign that matches each required
-role. `--campaign` pins explicit ids. The required roles are:
-- merged with ≥ 2 loops and ≥ 2 review rounds;
-- abandoned;
-- answered human escalation;
-- pre-SPEC-0362 (no `stream.jsonl` anywhere);
-- a run with only `result.json`;
-- flaky tests and a triager waive;
-- live (non-terminal) at capture time;
-- handed-off, derived as described below.
-
-**What it copies:**
-- Each selected `campaigns/<cid>/` dir, without `tmp/`, `prompt.md` and `request.json`.
-- `stream.jsonl` cut to its last 200 lines, and gate logs cut to their last 200 lines.
-- The global-log lines and files that link to a selected campaign, by field or by text:
-  - `conductor/decisions.jsonl`;
-  - `mailbox/*.jsonl`;
-  - `escalations/`;
-  - `reviews/` and `spec-reviews*` for their specs;
-  - the `flaky-tests.json` entries;
-  - `events.jsonl` lines.
-- The `runner.jsonl` window that covers their lifetimes.
-- One `sentinel/<project>.last.json`.
-
-**Sanitizing:**
-- `launch.json` `env` is reduced to an allowlist of `NW_*`/`WT_*` keys. Any value that
-  matches a secret pattern (`sk-`, `ghp_`, `gho_`, `xox`, `AKIA`, `-----BEGIN`, `token=`,
-  `Authorization`) becomes `"<redacted>"` in every file.
-- The home dir and user name become `/home/user` and `user`.
-- Email addresses become `user@example.com`.
-
-**Handed-off campaign.** One merged campaign is copied a second time under a new id (suffix
-`-ho00`). Only its `close` event mode, `state.json` state, `close` and `merged_sha` change.
-`MANIFEST.json` lists it as `derived: "handed_off from <cid>"`.
-
-**`MANIFEST.json`** records the capture date, the tool's git sha, each campaign with its
-role, the sanitizing rules and the total size.
-
-**Size.** The committed fixture must stay ≤ 8 MiB. The tool fails, rather than writing, if
-the output would exceed that.
-
-**`--check`** re-scans an existing fixture for secret patterns and absolute home paths, and
-exits 1 if it finds any. A test runs it.
-
-### Scale clone (`tests/history_scale.py`)
-
-`clone_fixture(src, dst, n=500) -> Path` copies the fixture campaigns round-robin into `n`
-campaign dirs with rewritten ids:
-- ids are suffixed `-cNNN`, and `campaign` fields in the ledger and global logs are rewritten
-  to match;
-- ledger `ts` values are shifted by a day per copy, so dates spread out;
-- global-log lines are replicated per copy until there are about 50 000 records in total.
-
-It uses hard links for files that need no rewriting (runs and gates), so the clone is cheap.
-Child 3 reuses this helper.
-
-### Perf budgets
-
-These are the epic's data-layer budgets. Tests assert them with ×3 slack:
-
-| Operation | Budget |
-|---|---|
-| cold `history_index` on 500 campaigns | ≤ 10 s |
-| warm `history_index` | ≤ 300 ms |
-| warm `campaign_history` of one campaign | ≤ 500 ms |
-| `history_records` filter or `query` over about 50 000 cached records | ≤ 200 ms |
-
-The live-queue repaint budget belongs to child 4. The perf tests run in the default suite,
-with the 500-campaign clone built once per module.
 
 ## Alternatives considered
 
 - **Extend `campaign_export` instead of a new module.** It lost because the export is a
   batch, flat-table producer. Its row shape and CSV contract would fight a nested,
-  per-campaign, cached document, and the TUI would import CSV concerns.
-- **Keep the cache in the data dir.** It lost because it would break SPEC-0400's
-  byte-identical data-dir invariant and AC10 of the epic.
-- **One cache file per campaign that includes its global-log records.** It lost because every
-  new decision or mail line would invalidate a closed campaign's whole cached history. The
-  split local/global cache recomputes nothing for appends.
+  per-campaign document, and the TUI would import CSV concerns.
+- **Keep the header's own loop definition** (every entry into IMPLEMENTING after a non-spec
+  state). It lost because one campaign would show different loop counts in the history
+  header and in `nw campaign export`; one predicate, the export's, is the shared contract.
 - **Proportional overlap attribution instead of precedence.** It lost because it gives
   fractional seconds that are hard to explain. With precedence, "a run was active" always
   wins, which matches how the human reads the time.
-- **A synthetic fixture.** It lost because the epic requires real data, and real ledgers
-  carry the odd shapes (old `wt.` schemas, missing `run.json`, torn lines) that a synthetic
-  fixture forgets. Only the handed-off role is derived, because no real one exists.
+- **Ship the cache and fixture in this spec too.** The spec review rejected it as too large
+  for one campaign (13 acceptance criteria across four subsystems); they are separate specs
+  (Context, *Split*).
+- **Hand-built test campaigns only.** It lost because the epic requires real data, and real
+  ledgers carry the odd shapes (old `wt.` schemas, missing `run.json`, torn lines) that a
+  synthetic set forgets. Hand-built campaigns are still used for the unit cases that need a
+  precise shape.
 
 ## Acceptance criteria
 
-- [ ] **AC1.** `history.py` imports neither `nightwright.tui`, `textual` nor any dashboard
-  module, and calling any of its public functions leaves the data dir byte-identical. A test
-  hashes every file before and after.
-- [ ] **AC2.** For every fixture campaign, `nw campaign history <cid> --json` exits 0 and
-  `schemas.history_problems(doc) == []`. Every record passes `record_problems_v1` and every
-  `--list --json` row passes `index_problems`.
-- [ ] **AC3.** For every fixture campaign:
-  - the sum of `phases[].wall_s` is within 1 s of the wall time covered by the visits;
-  - for terminal campaigns, it is within 1 s of `header.wall_s`;
+- [ ] **AC1. Purity.** `import nightwright.agentic.history` loads neither `textual`,
+  `nightwright.tui` nor any dashboard module (checked in a subprocess via `sys.modules`).
+  Calling every public function of `history` and both CLIs over a copy of the fixture leaves
+  every file under the data dir byte-identical (hash before and after), and creates no file
+  anywhere else under `tmp_path`.
+- [ ] **AC2. Schemas.** For every fixture campaign, `nw campaign history <cid> --json` exits
+  0 and `schemas.history_problems(doc) == []`; every record passes `record_problems_v1` and
+  every `--list --json` row passes `index_problems`. Each index row's header fields and
+  `dominant` equal that campaign's history document. On the real data dir, the same command
+  exits 0 with a valid document for every campaign (manual step 1).
+- [ ] **AC3. Phases and dominant.** For every fixture campaign:
+  - the sum of `phases[].wall_s` is within 1 s of the wall time covered by the visits, and,
+    for terminal campaigns, within 1 s of `header.wall_s`;
   - in each phase, `run_s + gate_s + gate_wait_s + runner_down_s + other_s == wall_s`, and
-    every value is ≥ 0.
-- [ ] **AC4.** `campaign_export`'s `time_in_state_s` equals `history.time_in_state` for every
-  fixture campaign, and the existing `campaign_export` tests pass unchanged.
-- [ ] **AC5.** `dominant.wall`, `dominant.cost` and `dominant.working` follow the stated
-  argmax, tie and working rules. Unit cases cover a tie, an all-zero campaign and a
-  parked-dominant campaign.
-- [ ] **AC6.** On the fixture, the history contains records of every source in
-  `RECORD_SOURCES`, and every kind except `triage`-from-ledger when child 1 has not yet
-  produced fixture data. A campaign-less decision whose text names exactly one campaign
-  links to it with `linked_by: "text"`, and one naming two campaigns links to none.
-- [ ] **AC7.** Finding links and status:
+    every value is ≥ 0;
+  - `max(visit.loop) == header.loops`.
+  `dominant.wall`, `dominant.cost` and `dominant.working` follow the stated argmax, tie and
+  working rules; unit cases cover a tie, an all-zero campaign, a parked-dominant campaign
+  and a run spilling over a transition.
+- [ ] **AC4. Export agreement.** For every fixture campaign, `campaign_export`'s
+  `time_in_state_s` equals `history.time_in_state`, and `export_tables` `loops` equals
+  `header.loops`. The existing `campaign_export` tests pass unchanged.
+- [ ] **AC5. Record coverage and text links.** On the fixture, `history_records` returns
+  records of every source in `RECORD_SOURCES`, and every kind in `RECORD_KINDS` except
+  ledger-`triage` while child 1 has produced no fixture data. A campaign-less decision whose
+  text names exactly one campaign links to it with `linked_by: "text"`; one naming two
+  campaigns links to none.
+- [ ] **AC6. Finding links and status.**
   - On ledger events that carry `run_id` and `key`, the finding gets them with
     `linked_by: "field"`.
   - On old events, the run comes from ledger order and the key from `finding_key`, with
-    `linked_by: "inferred"`.
+    `linked_by: "inferred"`; a gate finding gets `links.gate_seq` and a null `run_id`.
   - A triager `persona#index` waive marks the indexed finding `waived` with `resolved_by`
     set.
   - A `followup` key marks a finding `filed` with `followup_idea`.
   - `review_carry` marks a finding `carried`.
   - `fixed` appears only on merged campaigns.
-- [ ] **AC8.** Bad or partial inputs give a `gaps` entry and a valid document, never an
-  exception. The inputs covered are: a truncated ledger line, a missing `run.json`, a run
-  with neither `run.json` nor `result.json`, an unknown state, an unparsable decision line,
-  a missing `runner.jsonl` and `wt.`-prefixed schemas.
-- [ ] **AC9.** Cache behaviour:
-  - A second `campaign_history` of a closed campaign reads no file under its campaign dir
-    except the `stat` calls for its signature.
-  - Appending a decision line for that campaign shows the new record on the next call
-    without recomputing its local entry.
-  - A truncated global log is re-read in full.
-  - A corrupt or wrong-builder cache file is rebuilt.
-  - The output with `cache=True` equals the output with `cache=False`, except for
-    `generated_at`.
-- [ ] **AC10.** CLI behaviour:
-  - `nw campaign history` enforces exactly one of `CID`, `--list` and `--rebuild-cache`
-    (exit 2 otherwise), and exits 1 on an unknown campaign.
+- [ ] **AC7. Gaps, never crashes.** Each of these inputs gives a `gaps` entry and a document
+  that passes `history_problems`, never an exception: a truncated ledger line, a missing
+  `run.json`, a run with neither `run.json` nor `result.json`, an unknown state, an
+  unparsable decision line, a missing `runner.jsonl`, and `wt.`-prefixed schemas (the last
+  parses with no gap).
+- [ ] **AC8. CLI.**
+  - `nw campaign history` enforces exactly one of `CID` and `--list` (exit 2 otherwise), and
+    exits 1 with `campaign <cid> not found` on an unknown campaign.
   - Each `--list` filter (project, state, spec, since, until, min-cost) and each `records`
-    filter (campaign, agent, kind, project, severity, status, since, until, query, limit)
-    narrows its result as specified.
+    filter (campaign, agent, kind, project, severity, status, since, until, query, limit,
+    and repeated values ORed) narrows its result as specified.
+  - The `--json` outputs carry the stated schema ids.
   - Text output renders untrusted text literally: a finding titled `[bold]x[/]` prints those
     characters.
-- [ ] **AC11.** Fixture and capture tool:
-  - `tests/fixtures/agentic_history/` holds real captured campaigns covering every role
-    listed under *Fixture capture*, plus a `MANIFEST.json`.
-  - It is ≤ 8 MiB.
-  - `tools/capture_history_fixture.py --check` exits 0 on it and exits 1 when a planted
-    `ghp_` token or a `/home/<name>` path is added.
-- [ ] **AC12.** On the 500-campaign clone, the four budgets in *Perf budgets* hold with ×3
-  slack.
-- [ ] **AC13.** `nw campaign history <cid> --json` exits 0 with a valid document for every
-  campaign in the real data dir (manual step).
 
 ## Test plan
 
 **Automated tests:**
 - **`tests/test_history.py`** (unit; small hand-built campaigns in `tmp_path`, written
   through the real `store` ledger writer):
-  - phase visits and loop numbering;
+  - phase visits and loop numbering, including a campaign with one `triage_fix` and one
+    `review_fix` loop and an IMPLEMENTING re-entry on a non-fix reason (AC3);
   - precedence splitting with overlapping run, gate, gate-wait and runner-down intervals,
     and with a run spilling over a transition (AC3);
-  - the dominant rules (AC5);
-  - each link rule, including field vs inferred vs text, the two-campaign text, and
-    `persona#index` resolution (AC6, AC7);
-  - each finding status (AC7);
-  - every bad-input gap case (AC8).
-  - The child-1 field path runs on events of child 1's documented shape.
-- **`tests/test_history_fixture.py`** (over a copy of `tests/fixtures/agentic_history/`):
-  - every campaign validates and its phase sums hold (AC2, AC3);
-  - `campaign_export` agrees with history (AC4);
-  - source and kind coverage (AC6);
-  - the index rows equal the per-campaign headers;
-  - a byte-identical data-dir hash check (AC1);
-  - a subprocess check that `import nightwright.agentic.history` loads neither `textual` nor
-    `nightwright.tui`, by inspecting `sys.modules` (AC1).
-- **`tests/test_history_cache.py`** (AC9):
-  - `open`/`os.stat` are patched to count calls on a warm read;
-  - an appended decision line;
-  - a truncated `mailbox/*.jsonl` and an inode change;
-  - a corrupt `campaigns/<cid>.json`;
-  - a bumped `BUILDER_VERSION`;
-  - an unwritable `cache_dir`;
-  - cached and uncached results compared.
-- **`tests/test_cli_campaign_history.py`** (AC10), through `click.testing.CliRunner` over the
+  - the dominant rules: tie, all-zero, parked-dominant (AC3);
+  - each link rule, including field vs inferred vs text, the two-campaign text, a gate
+    finding, and `persona#index` resolution (AC5, AC6);
+  - each finding status (AC6);
+  - every bad-input gap case (AC7).
+  - The child-1 field path runs on synthetic events of child 1's documented shape
+    (`finding.run_id`, `finding.key`, a `triage` event with `waive[{key, reason}]`).
+- **`tests/test_history_fixture.py`** (over a `tmp_path` copy of
+  `tests/fixtures/agentic_history/` from the fixture spec):
+  - every campaign validates, its index row matches its header, and its phase sums and loop
+    identity hold (AC2, AC3);
+  - `campaign_export` agrees with history on `time_in_state_s` and `loops` (AC4);
+  - source and kind coverage (AC5);
+  - a hash of every data-dir file before and after calling every public function, plus a
+    check that nothing new appeared under `tmp_path` (AC1);
+  - a subprocess check that `import nightwright.agentic.history` loads neither `textual`,
+    `nightwright.tui` nor a dashboard module, by inspecting `sys.modules` (AC1).
+- **`tests/test_cli_campaign_history.py`** (AC8), through `click.testing.CliRunner` over the
   fixture copy:
   - mutual exclusion and exit codes;
-  - every filter;
-  - `--json` schema ids;
-  - literal rendering of markup-like text;
-  - the `--rebuild-cache` totals.
-- **`tests/test_capture_history_fixture.py`** (AC11):
-  - the tool's `--auto` selection on a small synthetic data dir;
-  - redaction of each secret pattern, the home path and emails;
-  - the 8 MiB refusal;
-  - `--check` on the committed fixture (exit 0) and on a planted secret (exit 1).
-- **`tests/test_history_perf.py`** (AC12): it uses `tests/history_scale.clone_fixture` to
-  build 500 campaigns and about 50 000 records once per module, then times a cold index, a
-  warm index, a warm `campaign_history` and a `records` query against the budgets × 3.
+  - every filter, and repeated values;
+  - `--json` schema ids, each output passing its validator (AC2);
+  - literal rendering of markup-like text.
 
 **Manual verification:**
 1. On the real data dir, run
    `for c in $(ls ~/.local/share/nightwright/agentic/campaigns); do uv run nw campaign history "$c" --json >/dev/null || echo FAIL $c; done`.
-   Expected: no `FAIL` line (AC13).
-2. Spot-check one validated document with `python3 -c` against `schemas.history_problems`.
-3. Run `uv run nw campaign history --rebuild-cache`, then `time uv run nw campaign history --list --state merged`.
-   Expected: the warm list returns well under a second.
-4. Run `uv run nw campaign records --kind finding --severity must_fix --query <a phrase from a known finding>`.
+   Expected: no `FAIL` line (AC2).
+2. Spot-check one document with `python3 -c` against `schemas.history_problems`.
+   Expected: `[]`.
+3. Run `uv run nw campaign records --kind finding --severity must_fix --query <a phrase from a known finding>`.
    Expected: the known finding is listed with its run.
-5. Run `uv run nw campaign history <a recently merged cid>`, then compare its timeline with
-   `nw campaign log <cid>`, and its dominant phase with intuition.
-6. Record the outcomes in *As shipped*.
+4. Run `uv run nw campaign history <a recently merged cid>`, then compare its timeline with
+   `nw campaign log <cid>`, its loops with `nw campaign export`, and its dominant phase with
+   intuition.
+5. Record the outcomes in *As shipped*.
 
 **Regression guard:**
 - The existing `tests/test_campaign_export*.py` and `cli_campaign` tests pass unchanged.
@@ -649,18 +530,19 @@ with the 500-campaign clone built once per module.
 
 ## Rollout / migration
 
-1. Land `history.py`, the schema constants and validators, and the `campaign_export`
-   reuse.
-2. Land the cache, then the CLIs.
-3. Capture the fixture with `--auto` from the real data dir. Review `MANIFEST.json` and
-   `--check`, then commit it.
-4. **No data migration.** The cache builds lazily on first use, and the first
-   `nw campaign history --list` shows progress.
+1. Start only once the fixture spec is `done` and `tests/fixtures/agentic_history/MANIFEST.json`
+   exists.
+2. Land `history.py`, the schema constants and validators, and the `campaign_export`
+   reuse (time-in-state, loop cap, loop count).
+3. Land the CLIs.
+4. **No data migration.** Everything is computed on read.
 5. **Once child 1 has shipped and produced at least one closed campaign:**
-   - recapture or extend the fixture so that the `linked_by: "field"` path and ledger
-     `triage` records come from real writer output;
-   - tighten AC6's coverage to include ledger `triage`.
-6. Add a log note on IDEA-876 (SPEC-0402) that `GET /api/campaigns/<cid>` should return
+   - the fixture is recaptured (fixture spec's tool) so that the `linked_by: "field"` path
+     and ledger `triage` records come from real writer output;
+   - AC5's coverage is tightened to include ledger `triage`.
+6. The cache spec then adds the cache, `--rebuild-cache` and the perf budgets on top of
+   these functions.
+7. Add a log note on IDEA-876 (SPEC-0402) that `GET /api/campaigns/<cid>` should return
    `history.campaign_history` (the epic's cross-dependency).
 
 ## Definition of done
@@ -678,7 +560,7 @@ None. These were decided while writing the spec:
 | Question | Decision |
 |---|---|
 | How do overlapping intervals split? | by precedence (Decision 3) |
-| Which tuple keys a campaign's cache? | the epic's tuple plus `gates/` |
-| How is the handed-off fixture campaign obtained? | derived from a merged one (Decision 6) |
+| What is a loop? | a fix-loop transition, the export's predicate (Decision 5) |
 | Where does a gate-finding link point? | `links.gate_seq` is appended to the schema |
-| How large may the fixture be? | 8 MiB at most |
+| What fills `signature` without a cache? | `campaign_signature`, the local file tuple plus `gates/` |
+| Where do the cache, fixture and perf budgets go? | separate sibling specs (Context, *Split*) |
