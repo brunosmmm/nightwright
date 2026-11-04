@@ -70,7 +70,7 @@ def snapshot(worktree, *, mode, number, path) -> dict:
     filled by the caller (first attempt only). `split` (SPEC-0290) is validated like `write`
     against `expected_fm`, which the caller adds. `amend` (SPEC-0279) also keeps `fm_before`, the
     spec's front matter at `HEAD`, which the amend may only touch in `updated`."""
-    sw = {"mode": mode, "number": int(number), "path": path,
+    sw = {"mode": mode, "number": int(number), "path": path, "must_depend_on": [],
           "head_before": git.rev_parse(worktree), "untracked_before": untracked(worktree)}
     if mode == "amend":
         text = git.git(worktree, "show", f"HEAD:{path}").stdout
@@ -109,7 +109,19 @@ def _schema_problems(worktree, fm) -> list:
             for e in errors]
 
 
-def _front_matter_problems(fm, spec_id, idea) -> list:
+def _must_depend(entries) -> list:
+    """SPEC-0423: `must_depend_on` as `[(spec_id, prerequisite)]`; an entry is a spec id or a
+    `{"spec_id", "ref"}` dict (the prerequisite it came from)."""
+    out = []
+    for e in entries or ():
+        if isinstance(e, dict):
+            out.append((str(e.get("spec_id")), str(e.get("ref") or e.get("spec_id"))))
+        else:
+            out.append((str(e), str(e)))
+    return out
+
+
+def _front_matter_problems(fm, spec_id, idea, must_depend_on=()) -> list:
     out = []
     if fm.get("id") != spec_id:
         out.append(f"front matter: id must be {spec_id}, got {fm.get('id')!r}")
@@ -129,6 +141,11 @@ def _front_matter_problems(fm, spec_id, idea) -> list:
     elif not epic and "parent" in fm:
         out.append(f"front matter: parent must be absent (the idea has no :EPIC:), "
                    f"got {fm.get('parent')!r}")
+    deps = fm.get("depends_on") or []
+    deps = {str(d) for d in ([deps] if isinstance(deps, str) else deps)}
+    for sid, ref in _must_depend(must_depend_on):          # SPEC-0423: the `after` prerequisites
+        if sid not in deps:
+            out.append(f"front matter: depends_on must include {sid} (prerequisite {ref})")
     return out
 
 
@@ -180,7 +197,8 @@ def _content_problems(worktree, text, spec_id, idea, spec_write=None) -> list:
     elif (spec_write or {}).get("mode") == "split":
         out = _schema_problems(worktree, fm) + _split_problems(fm, spec_write["expected_fm"])
     else:
-        out = _schema_problems(worktree, fm) + _front_matter_problems(fm, spec_id, idea)
+        out = _schema_problems(worktree, fm) + _front_matter_problems(
+            fm, spec_id, idea, (spec_write or {}).get("must_depend_on") or ())
     secs = sections(body)
     for h in REQUIRED_HEADINGS:
         if h not in secs:
@@ -367,6 +385,10 @@ def write_rules(mode, spec_write, idea, brief) -> str:
               "`title`", "`created` (today, YYYY-MM-DD)"]
         if epic:
             fm.append(f"`parent: {epic}`")
+        must = _must_depend(spec_write.get("must_depend_on"))
+        if must:                                            # SPEC-0423
+            fm.append("`depends_on` must include: " + ", ".join(
+                f"{sid} (prerequisite {ref})" if sid != ref else sid for sid, ref in must))
         return (f"Write mode: create exactly `{path}`, following the template. Its front matter "
                 f"carries {', '.join(fm)} and no keys the schema does not know. Required "
                 f"sections: {', '.join(REQUIRED_HEADINGS)} (and Definition of done).")

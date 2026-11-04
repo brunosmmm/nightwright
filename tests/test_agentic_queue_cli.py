@@ -467,7 +467,7 @@ def test_batch_write_order_detects_a_wrong_sort(tmp_path, monkeypatch):
     repo, cfg = _cfg(tmp_path)
     add_spec(cfg, repo, 2, deps=["SPEC-0003"])
     add_spec(cfg, repo, 3)
-    monkeypatch.setattr(Q, "_order_specs", lambda ids, deps: (list(reversed(ids)), {}))
+    monkeypatch.setattr(Q, "_order_items", lambda ids, deps: (list(reversed(ids)), {}))
     log = write_log(monkeypatch)
     r, d = batch(cfg, monkeypatch, "SPEC-0003", "SPEC-0002", "--yes")
     assert r.exit_code == 0, r.output

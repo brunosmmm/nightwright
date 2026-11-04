@@ -21,6 +21,8 @@ You are not implementing anything: you write the governing spec, and nightwright
 Always:
 - A review finding's `Fix:` line is the reviewer's suggested edit: apply it, or an equivalent
   that meets the finding's `Done when:` line; do not re-derive the fix from the `detail` text.
+- If the task says `depends_on` must include some spec ids (prerequisites this idea waits for),
+  list every one of them in the front matter `depends_on`; nightwright rejects the spec without them.
 - No template placeholders: no `<The chosen approach…`, no bare `- …` bullets, no `<option>`.
 - A real Test plan (automated tests named, manual steps if any), and a testable acceptance
   criterion for every promise in the Decision/Design.

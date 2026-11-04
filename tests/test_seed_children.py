@@ -1,4 +1,5 @@
 """SPEC-0043: known_epics includes outbound; seed-children; outbound --epic scaffold."""
+import pytest
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
@@ -153,3 +154,54 @@ def test_seed_unknown_project_annotation_hard_fails(tmp_path):
     ])
     with pytest.raises(ValueError, match="unknown project"):
         S.seed_ideas_from_epic(cfg, "ACME-0001")
+
+
+# ---- SPEC-0423: `(depends_on child N)` -> `:AFTER:` ------------------------------------------
+
+def _after_of(cfg, iid):
+    from nightwright.org import invalidate_tasks_cache
+    invalidate_tasks_cache()
+    t = next(t for t in load_tasks(cfg) if t.properties.get("ID") == iid)
+    return (t.properties.get("AFTER") or "").split(), t.heading
+
+
+def test_seed_stamps_after_from_depends_on_annotations(tmp_path):
+    cfg = _cfg(tmp_path)
+    _write_outbound_epic(cfg, breakdown_lines=[
+        "First slice — do it",
+        "Second slice — more (depends_on child 1)",
+        "Third slice (depends_on child 1 and child 2)",
+    ])
+    a, b, c = S.seed_ideas_from_epic(cfg, "ACME-0001")
+    assert _after_of(cfg, a) == ([], "First slice")
+    assert _after_of(cfg, b) == ([a], "Second slice")
+    assert _after_of(cfg, c) == ([a, b], "Third slice")          # the annotation stays out of titles
+    before = open(cfg["org_ideas_file"]).read()
+    assert S.seed_ideas_from_epic(cfg, "ACME-0001") == []
+    assert open(cfg["org_ideas_file"]).read() == before           # idempotent, byte for byte
+
+
+def test_seed_fills_missing_after_but_never_overwrites(tmp_path):
+    cfg = _cfg(tmp_path)
+    _write_outbound_epic(cfg, breakdown_lines=["One", "Two", "Three (depends_on child 1)"])
+    a, b, c = S.seed_ideas_from_epic(cfg, "ACME-0001")
+    from nightwright.org import invalidate_tasks_cache
+    invalidate_tasks_cache()
+    t = next(t for t in load_tasks(cfg) if t.properties.get("ID") == c)
+    W.set_property(cfg, t, "AFTER", b)                            # a hand edit wins
+    assert S.seed_ideas_from_epic(cfg, "ACME-0001") == []
+    assert _after_of(cfg, c)[0] == [b]
+    # an idea seeded before this change (no :AFTER:) gets it on the next run
+    _write_outbound_epic(cfg, breakdown_lines=["One", "Two (depends_on child 1)", "Three"])
+    S.seed_ideas_from_epic(cfg, "ACME-0001")
+    assert _after_of(cfg, b)[0] == [a]
+
+
+def test_seed_bad_ordinal_is_a_hard_error_naming_the_bullet(tmp_path):
+    cfg = _cfg(tmp_path)
+    for line, frag in (("Two (depends_on child 9)", "out of range"),
+                       ("Two (depends_on child 2)", "itself")):
+        _write_outbound_epic(cfg, breakdown_lines=["One", line])
+        with pytest.raises(ValueError, match=f"bullet 2.*{frag}"):
+            S.seed_ideas_from_epic(cfg, "ACME-0001")
+    assert [t for t in load_tasks(cfg) if t.is_idea] == []        # nothing seeded

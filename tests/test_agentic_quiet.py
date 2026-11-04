@@ -172,7 +172,9 @@ def test_ctx_live_specs_reads_store(tmp_path):
                                     "state": state, "repo": {"base": "main"}})
     ctx = QT.Ctx(cfg, "conductor", lease={"held": False})
     assert ctx._live_specs is None                          # nothing scanned yet
-    assert ctx.live_specs == {("Meta-Tools", "SPEC-0001"), ("Meta-Tools", "SPEC-0002")}
+    assert ctx.live_specs == {("Meta-Tools", "SPEC-0001"), ("Meta-Tools", "SPEC-0002"),
+                              ("Meta-Tools", "SPEC-0001-20261030-aaaa"),     # SPEC-0423: `after`
+                              ("Meta-Tools", "SPEC-0002-20261030-aaaa")}     # campaign refs
     assert QT.Ctx(cfg, "conductor", lease={"held": False},
                   live_specs={("P", "X-1")}).live_specs == {("P", "X-1")}
 
@@ -198,7 +200,7 @@ def test_ctx_live_specs_is_lazy_and_cached(tmp_path, monkeypatch):
     held = _ev("backlog_blocked_long", "c", "Meta-Tools",
                blocked_by=["waiting on SPEC-0001 (proposed)"])
     assert QT.classify(cfg, held, ctx) == "hold"
-    assert ctx.live_specs == {("Meta-Tools", "SPEC-0001")}
+    assert ("Meta-Tools", "SPEC-0001") in ctx.live_specs
     assert QT.classify(cfg, held, ctx) == "hold"
     assert calls == [1]                                     # read once, then cached
 

@@ -1,7 +1,7 @@
 ---
 id: SPEC-0423
 title: "Idea-campaign ordering with --after and epic derivation"
-status: accepted
+status: done
 owner: user
 created: 2026-11-04
 source_idea: IDEA-929
@@ -155,22 +155,22 @@ had to be mailed to the conductor.
 
 ## Acceptance criteria
 
-- [ ] AC1: `nw queue add IDEA-2 --after IDEA-1 --yes` writes `after: [{ref: IDEA-1, kind: idea}]`.
+- [x] AC1: `nw queue add IDEA-2 --after IDEA-1 --yes` writes `after: [{ref: IDEA-1, kind: idea}]`.
       IDEA-2's campaign stays QUEUED with `blocked_by: ["waiting on IDEA-1 (…)"]` until
       IDEA-1's campaign is MERGED (or IDEA-1's `:SPEC:` is done), then is admitted.
-- [ ] AC2: `--after SPEC-X` and `--after <campaign-id>` work the same way. An unknown ref is
+- [x] AC2: `--after SPEC-X` and `--after <campaign-id>` work the same way. An unknown ref is
       refused at add. An abandoned prerequisite gives a non-ordinary `blocked_by` that is
       delivered to the conductor, not held.
-- [ ] AC3: The spec writer of an idea campaign with `after` gets the "depends_on must include"
+- [x] AC3: The spec writer of an idea campaign with `after` gets the "depends_on must include"
       line. A written spec missing one of those ids fails validation with `front matter:
       depends_on must include SPEC-X (prerequisite IDEA-1)`. A spec that includes them passes.
-- [ ] AC4: `nw spec seed-children` on an epic whose 3rd bullet ends "(depends_on child 1 and
+- [x] AC4: `nw spec seed-children` on an epic whose 3rd bullet ends "(depends_on child 1 and
       child 2)" sets that idea's `:AFTER:` to the ideas of bullets 1 and 2. A re-run changes
       nothing. A bad ordinal is a hard error naming the bullet.
-- [ ] AC5: `nw queue add --epic E --yes` orders the items so that each one follows its
+- [x] AC5: `nw queue add --epic E --yes` orders the items so that each one follows its
       prerequisites (specs and ideas mixed), sets each idea campaign's `after` from `:AFTER:`,
       and refuses cycles and dependents of refused items.
-- [ ] AC6: The dependency wait of an `after` entry with a live prerequisite campaign is held by
+- [x] AC6: The dependency wait of an `after` entry with a live prerequisite campaign is held by
       the quiet stream like a spec `depends_on` wait. A wait with no live prerequisite is
       delivered.
 
@@ -224,15 +224,25 @@ CLOCK-OUT: [timestamp]
 
 ## Definition of done
 
-- [ ] Acceptance criteria all met.
-- [ ] Test plan executed; automated tests pass (`uv run pytest`); manual steps performed.
-- [ ] No regressions.
-- [ ] Spec body updated to match what shipped.
-- [ ] `docs/LEDGER.md` updated (status + date).
+- [x] Acceptance criteria all met.
+- [x] Test plan executed; automated tests pass (`uv run pytest`); manual steps performed.
+- [x] No regressions.
+- [x] Spec body updated to match what shipped.
+- [x] `docs/LEDGER.md` updated (status + date).
 
 ## As shipped
 
-_To be filled at close._
+Shipped as designed, with these specifics:
+
+- `queue.py`: `after_entries`, `after_met`, `_after_blocked` (called from `backlog_readiness` right after the merge branch, so any non-merge campaign is gated; an unmet `after` returns before the spec/idea checks), `resolve_after`, `_must_depend_on`, `_idea_edges`, `plan_after`/`apply_after` (`nw queue after`), `_order_items` (`_order_specs` kept as an alias), `after=` on `plan_add`, `plan_add_idea`, `plan_add_batch`. `row_view`/`backlog_view` carry `after` only when set, so campaigns without it render byte-identically.
+- Wait text: an idea ref whose idea has a `:SPEC:` waits as `waiting on SPEC-X (after: IDEA-N -> <status>)`; a campaign ref waits as `waiting on <cid> (after: campaign <cid> is STATE)`. Abandoned prerequisites and unknown refs use `after X: ...` text, which is not an ordinary wait, so the conductor is woken.
+- `quiet.py`: `_ID_RE` also matches campaign ids; `Ctx.live_specs` gains idea ids and campaign ids of live campaigns.
+- `plan_add_idea` also reads the idea's own `:AFTER:`, so a single `nw queue add IDEA-N` honors it, not only `--epic`.
+- A skipped `must_depend_on` ref (no spec id) is omitted silently rather than noted in the brief; admission needs the prerequisite merged, so it cannot occur in practice.
+- `specs.py`: `parse_breakdown_deps`; `seed_ideas_from_epic` validates all ordinals first (nothing is seeded on a bad one), seeds, then stamps `:AFTER:`.
+- Tests: `tests/test_idea_ordering.py` (20) and `tests/test_idea_ordering_e2e.py` (1, real git fixture repo, real org file, real CLI, real ticks) are new files rather than extensions of the files the plan named; additions to `test_seed_children.py`, `test_agentic_quiet.py`, `test_agentic_queue_cli.py`. The e2e applies child 1's MERGED through `queue._transition` (the implement/gate/merge pipeline has its own tests); the spec-writer validation and admission gating are real.
+- Affected tests (excluding the `test_workers*` files, which hung on unrelated runner processes under load): 4839 passed, 2 failed. `test_skills.py::test_conduct_and_steward_route_merges_through_the_queue_spec_0234` was real (my SKILL.md edit broke its pinned phrase) and was fixed; it passes. `test_dashboard_snapshot.py::test_one_failing_builder_is_one_error_section` is a load flake and passes alone.
+- Live-store replay: `nw queue backlog --json` before/after the change was identical (one QUEUED row, no `after`). `nw queue add --epic SPEC-0400 --json` lists only IDEA-878 (no `after` yet). `seed-children SPEC-0400` on a scratch copy of the ideas files (ideas.org plus ideas-archive.org) stamped IDEA-875/876/877 `:AFTER: IDEA-874` and IDEA-878 `:AFTER: IDEA-875 IDEA-877`; the live file was unchanged. Seed it for real, and `nw queue after <cid> --add` queued campaigns, per Rollout.
 
 ## Open questions
 

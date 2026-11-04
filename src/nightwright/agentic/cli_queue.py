@@ -1377,21 +1377,25 @@ def _print_plan(title: str, plan: dict) -> None:
         plan = {**plan, "revision": (f"review {str(rev.get('review_sha'))[:12]} -> spec "
                                      f"{str(rev.get('current_sha'))[:12]}, "
                                      f"{len(rev.get('findings') or [])} findings")}
+    if plan.get("after"):                                              # SPEC-0423
+        plan = {**plan, "after": ", ".join(plan.get("after_status") or
+                                           [e["ref"] for e in plan["after"]])}
+        plan.pop("after_status", None)
     console.print(R.plan(title, plan), highlight=False)
 
 
 def _queue_add_one(cfg, spec_id, project, profile, base, force, priority, do_write, as_json,
-                    by="human"):
+                    by="human", after=()):
     """The single-id `nw queue add` (nw.queue.add.v1)."""
     try:
         if Q._IDEA_ID_RE.match((spec_id or "").strip()):
             plan = Q.plan_add_idea(cfg, spec_id, project=project, profile=profile,
-                                   base=base, priority=priority)
+                                   base=base, priority=priority, after=after)
             if do_write:
                 Q.apply_add_idea(cfg, plan, by=by)
         else:
             plan = Q.plan_add(cfg, spec_id, project=project, profile=profile, base=base,
-                              force=force, priority=priority)
+                              force=force, priority=priority, after=after)
             if do_write:
                 Q.apply_add(cfg, plan, by=by)
     except ValueError as e:
@@ -1419,6 +1423,9 @@ def _print_batch(batch: dict, do_write: bool, refused) -> None:
         else:
             note = Text("; ".join(f"would block: {w}" for w in it.get("would_block") or ()),
                         style="yellow")
+            if plan.get("after"):                                   # SPEC-0423
+                note = Text("after " + ", ".join(e["ref"] for e in plan["after"]) + "  ",
+                            style="cyan") + note
             if it.get("written"):
                 note = Text(f"✓ {plan['campaign']}  ", style="green") + note
         table.add_row(str(it["position"]), Text(it["id"]), it["kind"],
@@ -1531,6 +1538,9 @@ def attach(queue_group):
                        "ignored)")
     @click.option("--epic", "epic", default=None, shell_complete=C.complete_any_spec_id,
                   help="also queue the epic's accepted child specs and open, spec-less ideas")
+    @click.option("--after", "after", multiple=True,
+                  help="wait for this idea, spec or campaign id to merge first (repeatable; "
+                       "applies to every id of the command)")
     @click.option("--skip-invalid", is_flag=True,
                   help="batch: with --yes, write the valid items instead of nothing")
     @click.option("--project", shell_complete=C.complete_project,
@@ -1547,7 +1557,7 @@ def attach(queue_group):
     @click.option("--by", default=None,
                   help="who acts (default: $NW_MAILBOX_ADDR, then human)")
     @click.pass_obj
-    def queue_add(cfg, ids, from_file, epic, skip_invalid, project, profile, base, force,
+    def queue_add(cfg, ids, from_file, epic, after, skip_invalid, project, profile, base, force,
                   priority, do_write, as_json, by):
         """Queue accepted specs and ideas as new campaigns (dry-run unless --yes).
 
@@ -1557,6 +1567,7 @@ def attach(queue_group):
         nw queue add IDEA-063 --yes       queue an idea: its campaign opens into SPEC_WRITING
         nw queue add SPEC-0171 SPEC-0170 --yes   a batch, created in depends_on order
         nw queue add --epic SPEC-0169 --yes      the epic's accepted children and open ideas
+        nw queue add IDEA-2 --after IDEA-1 --yes wait for IDEA-1 (idea, spec or campaign id)
         nw queue add --from-file ids.txt --skip-invalid --yes
         """
         if not ids and not from_file and not epic:
@@ -1568,7 +1579,7 @@ def attach(queue_group):
             raise click.ClickException(str(e))
         if len(ids) == 1 and not from_file and not epic:
             return _queue_add_one(cfg, ids[0], project, profile, base, force, priority,
-                                  do_write, as_json, by=actor)
+                                  do_write, as_json, by=actor, after=after)
         try:
             batch_ids = list(ids)
             if from_file:
@@ -1580,7 +1591,7 @@ def attach(queue_group):
                 epic_ids, skipped = Q.expand_epic(cfg, epic)
                 batch_ids += epic_ids
             batch = Q.plan_add_batch(cfg, batch_ids, project=project, profile=profile,
-                                     base=base, force=force, priority=priority)
+                                     base=base, force=force, priority=priority, after=after)
             batch["skipped"] = [s for s in skipped if s["id"] not in explicit]
             refused = None
             if do_write:
@@ -1597,6 +1608,31 @@ def attach(queue_group):
             _print_batch(batch, do_write, refused)
         if do_write and (refused or batch["errors"]):
             raise click.exceptions.Exit(1)
+
+    @queue_group.command("after")
+    @click.argument("campaign", shell_complete=C.complete_campaign_id)
+    @click.option("--add", "add", multiple=True, help="prerequisite to add (idea, spec or campaign id)")
+    @click.option("--remove", "remove", multiple=True, help="prerequisite to remove")
+    @click.option("--yes", "do_write", is_flag=True, help="apply (default is dry-run)")
+    @click.option("--json", "as_json", is_flag=True, help="emit JSON")
+    @click.option("--by", default=None, help="who acts (default: $NW_MAILBOX_ADDR, then human)")
+    @click.pass_obj
+    def queue_after(cfg, campaign, add, remove, do_write, as_json, by):
+        """Edit a QUEUED or PARKED campaign's `after` prerequisites (SPEC-0423; dry-run unless --yes)."""
+        if not add and not remove:
+            raise click.UsageError("give --add REF and/or --remove REF")
+        try:
+            plan = Q.plan_after(cfg, campaign, add=add, remove=remove, by=_actor(cfg, by))
+            if do_write:
+                Q.apply_after(cfg, plan)
+        except ValueError as e:
+            raise click.ClickException(str(e))
+        if as_json:
+            _dump_json({"schema": "nw.queue.after.v1", **plan, "written": bool(do_write)})
+            return
+        console.print(f"{campaign}: after {', '.join(e['ref'] for e in plan['to']) or '(none)'}",
+                      highlight=False)
+        console.print(f"[green]✓[/] updated" if do_write else _NOT_WRITTEN)
 
     @queue_group.command("merge")
     @click.argument("branch")

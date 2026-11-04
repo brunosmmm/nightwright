@@ -65,7 +65,7 @@ DEFAULTS = {"enabled": True, "readers": ["conductor"], "digest_interval_s": 1800
 # `backlog_blocked_long` and the ping also require a live campaign per dependency (SPEC-0306)
 _BENIGN_BLOCKED = ("waiting on ", "spec status is draft", "spec status is proposed",
                    "spec status is in-progress")
-_ID_RE = re.compile(r"[A-Za-z]+-\d+")
+_ID_RE = re.compile(r"[A-Za-z]+-\d+(?:-\d{8}-[0-9a-f]{4})?")   # + campaign ids (SPEC-0423)
 _GRACE_S = 300                     # the table's own "wait" window past a drain's step timeout
 
 
@@ -177,9 +177,15 @@ class Ctx:
         """`(project, spec_id)` of every campaign in a non-terminal state (something is
         building it)."""
         if self._live_specs is None:
-            self._live_specs = frozenset(
-                (c.get("project"), c.get("spec_id")) for c in store.list_campaigns(self.cfg)
-                if c.get("project") and c.get("spec_id"))
+            live = set()
+            for c in store.list_campaigns(self.cfg):
+                if not c.get("project"):
+                    continue
+                live.add((c.get("project"), c.get("spec_id")) if c.get("spec_id") else None)
+                live.add((c.get("project"), c.get("id")))              # SPEC-0423: `after` refs
+                if (c.get("idea") or {}).get("id"):
+                    live.add((c.get("project"), c["idea"]["id"]))
+            self._live_specs = frozenset(x for x in live if x)
         return self._live_specs
 
     @property

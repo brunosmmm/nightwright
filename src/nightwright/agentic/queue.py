@@ -837,6 +837,9 @@ def backlog_readiness(cfg, state: dict) -> tuple[bool, list[str]]:
         if branch and git.branch_exists(repo.get("root") or ".", branch):
             return True, []
         return False, [f"branch {branch} missing"]
+    after_blocked = _after_blocked(cfg, state)         # SPEC-0423: any non-merge campaign
+    if after_blocked:
+        return False, after_blocked
     if has_no_spec(state):
         iid = _idea_id_of(state)
         task = _idea_task(cfg, iid)
@@ -884,6 +887,111 @@ def backlog_readiness(cfg, state: dict) -> tuple[bool, list[str]]:
             why += f"; PR open, campaign {camp.get('id')} handed off"
         blocked.append(f"waiting on {dep} ({why})")
     return not blocked, blocked
+
+
+def after_entries(state: dict) -> list[dict]:
+    """SPEC-0423: the campaign's `after` prerequisites as `[{"ref", "kind"}]` (kind `idea|spec|
+    campaign`); [] for a campaign without any (every campaign queued before SPEC-0423)."""
+    out = []
+    for e in state.get("after") or []:
+        if isinstance(e, dict) and e.get("ref"):
+            out.append({"ref": str(e["ref"]), "kind": str(e.get("kind") or "spec")})
+        elif isinstance(e, str) and e:
+            out.append({"ref": e, "kind": "idea" if _IDEA_ID_RE.match(e) else "spec"})
+    return out
+
+
+def _specs_dir_of(state: dict) -> Path:
+    """Where `after` spec refs resolve: next to the campaign's own spec, else the project's
+    `docs/specs` (an idea campaign has no spec file yet)."""
+    root = Path((state.get("repo") or {}).get("root") or "")
+    rel = (state.get("spec") or {}).get("rel_path")
+    return (root / rel).parent if rel else root / "docs" / "specs"
+
+
+def _spec_after_met(cfg, state: dict, spec_id: str) -> tuple[bool, str, bool]:
+    """`(met, why, live)` for a prerequisite spec id: the spec file through `dependency_met`,
+    else a MERGED campaign of it (an outbound PR or a lagging base checkout)."""
+    project = state.get("project")
+    hits = store.list_campaigns(cfg, include_terminal=True, project=project, spec_id=spec_id)
+    camp = hits[0] if hits else None
+    live = bool(camp and camp.get("state") not in TERMINAL_STATES)
+    try:
+        dep_fm, _ = split_frontmatter(_find_dep_spec(_specs_dir_of(state), spec_id)
+                                      .read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        if (camp or {}).get("state") == "MERGED":
+            return True, "", live
+        return False, f"{spec_id} not found", live
+    met, why = dependency_met(_specs_dir_of(state), spec_id, dep_fm or {}, set())
+    if met or (camp or {}).get("state") == "MERGED":
+        return True, "", live
+    if live:
+        why += f"; campaign {camp['id']} is {camp.get('state')}"
+    return False, why, live
+
+
+def after_met(cfg, state: dict, ref) -> tuple[bool, str]:
+    """SPEC-0423: `(met, why)` for one `after` prerequisite (`ref` is an `after` entry or a bare
+    id). `why` is the full `blocked_by` text when unmet, "" when met. An ordinary wait starts
+    `waiting on <id> (` (the quiet stream holds it while the prerequisite has a live campaign);
+    an unknown ref or an abandoned prerequisite is a different text, which wakes the conductor."""
+    entry = ref if isinstance(ref, dict) else {
+        "ref": str(ref), "kind": "idea" if _IDEA_ID_RE.match(str(ref)) else "spec"}
+    rid, kind = entry["ref"], entry.get("kind") or "spec"
+    if kind == "campaign":
+        try:
+            camp = store.read_state(cfg, rid)
+        except (OSError, ValueError, KeyError):
+            return False, f"after {rid}: campaign not found"
+        st = camp.get("state")
+        if st == "MERGED":
+            return True, ""
+        if st == "ABANDONED":
+            return False, f"after {rid}: campaign {rid} abandoned"
+        return False, f"waiting on {rid} (after: campaign {rid} is {st})"
+    if kind == "idea":
+        task = _idea_task(cfg, rid)
+        if task is None:
+            return False, f"after {rid}: idea not found"
+        spec = (task.properties.get("SPEC") or "").strip()
+        hits = [st for st in store.list_campaigns(cfg, include_terminal=True,
+                                                  project=state.get("project"))
+                if st.get("kind") == "idea" and _canon_id(_idea_id_of(st) or "") == _canon_id(rid)]
+        newest = hits[0] if hits else None
+        if (newest or {}).get("state") == "MERGED":
+            return True, ""
+        if spec:
+            met, why, _live = _spec_after_met(cfg, state, spec)
+            if met:
+                return True, ""
+            if (newest or {}).get("state") != "ABANDONED":
+                return False, f"waiting on {spec} (after: {rid} -> {why})"
+        if newest is None:
+            return False, f"waiting on {rid} (after: no campaign queued for {rid})"
+        if newest.get("state") == "ABANDONED":
+            return False, f"after {rid}: campaign {newest['id']} abandoned"
+        return False, f"waiting on {rid} (after: campaign {newest['id']} is {newest.get('state')})"
+    met, why, _live = _spec_after_met(cfg, state, rid)
+    if met:
+        return True, ""
+    hits = store.list_campaigns(cfg, include_terminal=True, project=state.get("project"),
+                                spec_id=rid)
+    if hits and hits[0].get("state") == "ABANDONED" and "not found" not in why:
+        return False, f"after {rid}: campaign {hits[0]['id']} abandoned"
+    if why.endswith("not found"):
+        return False, f"after {why}"
+    return False, f"waiting on {rid} (after: {why})"
+
+
+def _after_blocked(cfg, state: dict) -> list[str]:
+    """The `blocked_by` entries of every unmet `after` prerequisite of `state` (SPEC-0423)."""
+    out = []
+    for entry in after_entries(state):
+        met, why = after_met(cfg, state, entry)
+        if not met and why not in out:
+            out.append(why)
+    return out
 
 
 def _find_dep_spec(specs_dir, dep) -> Path:
@@ -953,6 +1061,8 @@ def backlog_view(cfg, *, readiness=None) -> list[dict]:
         rows[-1].update(kind=st.get("kind") or "spec", label=campaign_label(st),
                         **{k: rv[k] for k in ("title", "depends_on", "waiting_on",
                                               "park_reason", "cost_usd", "cap_usd")})
+        if "after" in rv:                                               # SPEC-0423
+            rows[-1]["after"] = rv["after"]
     return rows
 
 
@@ -1603,6 +1713,8 @@ def _prepare_spec_write(ctx: _Ctx, state: dict) -> dict:
             mode, number = "write", rec["number"]
             path = f"docs/specs/{rec['number']:04d}-{SP.slugify(idea.get('heading') or '')}.md"
         sw = SW.snapshot(worktree, mode=mode, number=number, path=path)
+        if mode == "write":                                     # SPEC-0423
+            sw["must_depend_on"] = _must_depend_on(ctx.cfg, state)
         if mode == "split":
             sw.update(split_sw)
     except GitError as e:
@@ -1634,6 +1746,35 @@ def _prepare_spec_write(ctx: _Ctx, state: dict) -> dict:
         "epic_text": epic_text,
         **extra,
     }
+
+
+def _must_depend_on(cfg, state: dict) -> list[dict]:
+    """SPEC-0423: the spec ids the new spec's `depends_on` must carry, one `{"spec_id", "ref"}`
+    per `after` prerequisite: an idea ref -> its `:SPEC:` (else its MERGED campaign's spec id),
+    a spec ref -> itself, a campaign ref -> its spec id. A ref with no spec id is skipped."""
+    out = []
+    for entry in after_entries(state):
+        rid, kind, sid = entry["ref"], entry["kind"], None
+        if kind == "spec":
+            sid = rid
+        elif kind == "campaign":
+            try:
+                c = store.read_state(cfg, rid)
+                sid = c.get("spec_id") or (c.get("spec") or {}).get("id")
+            except (OSError, ValueError, KeyError):
+                sid = None
+        else:
+            task = _idea_task(cfg, rid)
+            sid = ((task.properties.get("SPEC") or "").strip() if task else "") or None
+            if not sid:
+                for c in store.list_campaigns(cfg, include_terminal=True):
+                    if c.get("kind") == "idea" and c.get("state") == "MERGED" and \
+                            _canon_id(_idea_id_of(c) or "") == _canon_id(rid):
+                        sid = (c.get("spec") or {}).get("id")
+                        break
+        if sid and all(o["spec_id"] != sid for o in out):
+            out.append({"spec_id": str(sid), "ref": rid})
+    return out
 
 
 def _prepare_split_part(ctx: _Ctx, state: dict, worktree: Path) -> tuple:
@@ -6591,6 +6732,8 @@ def row_view(cfg, st: dict, backlog_entry=None, *, remote=False, now=None) -> di
            "park_reason": park.get("reason"), "park_detail": park.get("detail"),
            "cost_usd": round(float(cost.get("total_usd") or 0.0), 4),
            "cap_usd": cost.get("cap_usd")}
+    if st.get("after"):                                 # SPEC-0423: only when set
+        out["after"] = [e["ref"] for e in after_entries(st)]
     if remote:
         out["remote_gate"] = remote_gate_view(cfg, st, now=now)
     return out
@@ -7508,8 +7651,65 @@ def _split_origin(cfg, spec_id: str, inflight: dict | None = None,
     return None
 
 
+def resolve_after(cfg, refs, *, project=None, own=None) -> list[dict]:
+    """SPEC-0423: canonical `after` entries `[{"ref", "kind"}]` for `--after` refs: a campaign id
+    (its directory exists), an idea id or a spec id of `project`. De-duplicated, order kept.
+    ValueError `--after X: not found` for a ref that resolves to nothing now, or one that is the
+    campaign's own idea/spec (`own`)."""
+    out = []
+    for raw in refs or ():
+        raw = str(raw or "").strip()
+        if not raw:
+            continue
+        ref = _canon_id(raw)
+        if store.campaign_dir(cfg, raw).is_dir():
+            entry = {"ref": raw, "kind": "campaign"}
+        elif _IDEA_ID_RE.match(ref):
+            if _idea_task(cfg, ref) is None:
+                raise ValueError(f"--after {raw}: not found (no such idea)")
+            entry = {"ref": ref, "kind": "idea"}
+        elif _ANY_ID_RE.match(ref):
+            try:
+                _project_spec_path(cfg, ref, project)
+            except (ValueError, OSError, KeyError):
+                raise ValueError(f"--after {raw}: not found (no such spec)")
+            entry = {"ref": ref, "kind": "spec"}
+        else:
+            raise ValueError(f"--after {raw}: not found")
+        if own and _canon_id(own) == entry["ref"]:
+            raise ValueError(f"--after {raw}: a campaign cannot wait on itself")
+        if entry not in out:
+            out.append(entry)
+    return out
+
+
+def _after_status(cfg, after_plan, project, repo_root) -> list[str]:
+    """Dry-run text per `after` entry: `IDEA-874 (open, campaign … IMPLEMENTING)` (SPEC-0423)."""
+    pseudo = {"project": project, "repo": {"root": str(repo_root)}}
+    out = []
+    for e in after_plan:
+        met, why = after_met(cfg, pseudo, e)
+        out.append(f"{e['ref']} ({e['kind']}, " + (
+            "met" if met else why.split("(after: ", 1)[-1].rstrip(")")) + ")")
+    return out
+
+
+def _idea_after_refs(task) -> list[str]:
+    """The ids in an idea's `:AFTER:` property (space/comma separated)."""
+    return re.findall(r"[A-Za-z][A-Za-z0-9]*-\d+", (task.properties.get("AFTER") or "")
+                      if task is not None else "")
+
+
+def _note_after(cfg, state: dict, by: str) -> None:
+    """Record the `after` list on the campaign's ledger (SPEC-0423)."""
+    if state.get("after"):
+        store.append_event(cfg, state["id"], "note", {
+            "text": "after: " + ", ".join(f"{e['ref']} ({e['kind']})" for e in state["after"]),
+            "author": "queue"}, by=by)
+
+
 def plan_add(cfg, spec_id, *, project=None, profile=None, base=None, force=False,
-             priority=PRIORITY_DEFAULT, split_origin=None) -> dict:
+             priority=PRIORITY_DEFAULT, split_origin=None, after=()) -> dict:
     """Resolve everything `nw queue add` needs and return the plan (no writes). Raises
     ValueError with the fix when the spec is not admissible. SPEC-0294: a spec with no review
     that a split campaign wrote as a part is admitted as `split_child` (`split_origin` is the
@@ -7591,7 +7791,10 @@ def plan_add(cfg, spec_id, *, project=None, profile=None, base=None, force=False
     base = base or (pcfg.get("merge") or {}).get("base") or pcfg.get("base") or "main"
     cid = store.new_campaign_id(cfg, spec_id)
     worktree = P.worktree_root(pcfg, root, project) / cid
+    after_plan = resolve_after(cfg, after, project=project, own=spec_id)
     return {
+        **({"after": after_plan, "after_status": _after_status(cfg, after_plan, project, root)}
+           if after_plan else {}),
         "campaign": cid, "spec_id": spec_id, "project": project, "profile": prof["name"],
         "priority": priority, "force": bool(force), "review": review, "revision": revision, "base": base,
         "repo_root": str(root), "spec_rel_path": rel, "spec_status": status,
@@ -7636,6 +7839,8 @@ def apply_add(cfg, plan: dict, *, by="human") -> dict:
                    "source": plan.get("profile_source"), "reason": plan.get("profile_reason"),
                    "review_sha256": plan.get("review_sha256")},
     }
+    if plan.get("after"):
+        state["after"] = list(plan["after"])                           # SPEC-0423
     if plan.get("split_origin"):
         state["split_origin"] = plan["split_origin"]                   # SPEC-0294
     split = plan.get("split")
@@ -7674,6 +7879,7 @@ def apply_add(cfg, plan: dict, *, by="human") -> dict:
                            {k: v for k, v in revision.items() if k != "pending"}, by=by)
     elif revision:
         store.append_event(cfg, plan["campaign"], "admitted_after_revision", revision, by=by)
+    _note_after(cfg, state, by)                                        # SPEC-0423
     _clear_handed_off_on_requeue(cfg, plan["spec_id"], plan["campaign"], by,
                                  project=plan.get("project"))
     _link_spec_idea(cfg, state, plan.get("spec_fm"), by)
@@ -7898,7 +8104,7 @@ def _open_idea_campaign(cfg, idea_id) -> dict | None:
 
 
 def plan_add_idea(cfg, idea_id, *, project=None, profile=None, base=None,
-                  priority=PRIORITY_DEFAULT) -> dict:
+                  priority=PRIORITY_DEFAULT, after=()) -> dict:
     """`plan_add` for an idea (SPEC-0209): no writes. Refusals, first match wins: unknown idea,
     idea with a `:SPEC:`, closed idea, open campaign for the idea, unloadable project."""
     idea_id = (idea_id or "").strip()
@@ -7924,7 +8130,11 @@ def plan_add_idea(cfg, idea_id, *, project=None, profile=None, base=None,
     base = base or (pcfg.get("merge") or {}).get("base") or pcfg.get("base") or "main"
     cid = store.new_campaign_id(cfg, idea_id)
     worktree = P.worktree_root(pcfg, root, project) / cid
+    after_plan = resolve_after(cfg, list(after or ()) + _idea_after_refs(task), project=project,
+                               own=idea_id)                            # SPEC-0423: `:AFTER:` too
     return {
+        **({"after": after_plan, "after_status": _after_status(cfg, after_plan, project, root)}
+           if after_plan else {}),
         "kind": "idea", "idea_id": idea_id, "campaign": cid, "project": project,
         "profile": prof["name"], "priority": priority, "base": base, "repo_root": str(root),
         "worktree": str(worktree), "branch": f"nw/{cid}",
@@ -7969,7 +8179,10 @@ def apply_add_idea(cfg, plan: dict, *, by="human") -> dict:
             "last_gate": None, "last_verdict": None,
             "pending_brief": None, "park": None, "close": None,
         }
+        if plan.get("after"):
+            state["after"] = list(plan["after"])                       # SPEC-0423
         store.create_campaign(cfg, state, by=by)
+        _note_after(cfg, state, by)
         OW.set_property(cfg, task, "CAMPAIGN", plan["campaign"])
     return state
 
@@ -8090,10 +8303,10 @@ def _cycle_path(start, deps_of, nodes) -> list[str] | None:
     return None
 
 
-def _order_specs(spec_ids, deps_of) -> tuple[list[str], dict]:
-    """Kahn's algorithm over the in-batch `depends_on` edges, ties by input position. Returns
-    `(order, cycles)`: `cycles` maps every spec on a cycle to its error text; the specs that are
-    stuck behind a cycle follow in input order."""
+def _order_items(spec_ids, deps_of) -> tuple[list[str], dict]:
+    """Kahn's algorithm over the in-batch edges (spec `depends_on`, idea `:AFTER:`; SPEC-0423),
+    ties by input position. Returns `(order, cycles)`: `cycles` maps every item on a cycle to
+    its error text; the items that are stuck behind a cycle follow in input order."""
     ins = set(spec_ids)
     pending = {s: {d for d in deps_of.get(s, ()) if d in ins} for s in spec_ids}
     order: list[str] = []
@@ -8112,6 +8325,26 @@ def _order_specs(spec_ids, deps_of) -> tuple[list[str], dict]:
         if path:
             cycles[s] = "dependency cycle: " + " -> ".join(path)
     return order + [s for s in spec_ids if s in pending], cycles
+
+
+_order_specs = _order_items                  # the pre-SPEC-0423 name
+
+
+def _idea_edges(cfg, idea_ids, batch_ids) -> dict:
+    """SPEC-0423: `{idea_id: [in-batch ids it follows]}` from each idea's `:AFTER:`. An idea ref
+    that has a `:SPEC:` is the batch's spec when that spec is in the batch."""
+    out = {}
+    for iid in idea_ids:
+        edges = []
+        for ref in _idea_after_refs(_idea_task(cfg, iid)):
+            ref = _canon_id(ref)
+            task = _idea_task(cfg, ref) if _IDEA_ID_RE.match(ref) else None
+            spec = ((task.properties.get("SPEC") or "").strip() if task else "")
+            for cand in (ref, _canon_id(spec) if spec else None):
+                if cand and cand in batch_ids and cand != iid and cand not in edges:
+                    edges.append(cand)
+        out[iid] = edges
+    return out
 
 
 def _dangling(cfg, spec_id, deps, in_batch, project=None) -> list[str]:
@@ -8165,7 +8398,7 @@ def _cascade(items, deps_of) -> None:
     while changed:
         changed = False
         for it in items:
-            if "error" in it or it["kind"] != "spec":
+            if "error" in it:
                 continue
             bad = next((d for d in deps_of.get(it["id"], ())
                         if d in by_id and "error" in by_id[d]), None)
@@ -8177,7 +8410,7 @@ def _cascade(items, deps_of) -> None:
 
 
 def plan_add_batch(cfg, ids, *, project=None, profile=None, base=None, force=False,
-                   priority=PRIORITY_DEFAULT, split_origin=None) -> dict:
+                   priority=PRIORITY_DEFAULT, split_origin=None, after=()) -> dict:
     """SPEC-0276: plan several specs and ideas as one batch (no writes). Each id goes through
     `plan_add` / `plan_add_idea`; on top, specs are ordered by their in-batch `depends_on`
     (ideas follow), cycles and dependents of refused items are refused, and dependencies that
@@ -8185,6 +8418,9 @@ def plan_add_batch(cfg, ids, *, project=None, profile=None, base=None, force=Fal
     ids = list(dict.fromkeys(_canon_id(i) for i in ids if i and i.strip()))
     params = {"project": project, "profile": profile, "base": base, "force": bool(force),
               "priority": priority}
+    after = [str(a) for a in (after or ())]
+    if after:
+        params["after"] = after                                 # SPEC-0423
     if split_origin is not None:       # SPEC-0294: kept in the params for apply's re-plan
         params["split_origin"] = {"id": split_origin.get("id"), "kind": split_origin.get("kind"),
                                   "project": split_origin.get("project"),
@@ -8196,20 +8432,23 @@ def plan_add_batch(cfg, ids, *, project=None, profile=None, base=None, force=Fal
         item = {"id": i, "kind": kind}
         try:
             item["plan"] = (plan_add_idea(cfg, i, project=project, profile=profile, base=base,
-                                          priority=priority) if kind == "idea" else
+                                          priority=priority, after=after) if kind == "idea" else
                             plan_add(cfg, i, project=project, profile=profile, base=base,
-                                     force=force, priority=priority, split_origin=split_origin))
+                                     force=force, priority=priority, split_origin=split_origin,
+                                     after=after))
         except ValueError as e:
             item["error"] = str(e)
         items[i] = item
     spec_ids = [i for i in ids if items[i]["kind"] == "spec"]
     all_deps, deps_of = _batch_deps(cfg, spec_ids, project)
-    order, cycles = _order_specs(spec_ids, deps_of)
+    idea_ids = [i for i in ids if items[i]["kind"] == "idea"]
+    deps_of = {**deps_of, **_idea_edges(cfg, idea_ids, set(ids))}     # SPEC-0423
+    order, cycles = _order_items(spec_ids + idea_ids, deps_of)
     for sid, msg in cycles.items():
         prior = items[sid].get("error")
         items[sid]["error"] = f"{prior}; {msg}" if prior else msg
         items[sid].pop("plan", None)
-    ordered = [items[i] for i in order] + [items[i] for i in ids if items[i]["kind"] == "idea"]
+    ordered = [items[i] for i in order]
     _cascade(ordered, deps_of)
     for n, it in enumerate(ordered, 1):
         it["position"] = n
@@ -8233,6 +8472,8 @@ def apply_add_batch(cfg, batch: dict, *, skip_invalid=False, by="human") -> dict
     prm = batch.get("params") or {}
     _, deps_of = _batch_deps(cfg, [it["id"] for it in items if it["kind"] == "spec"],
                             prm.get("project"))
+    deps_of = {**deps_of, **_idea_edges(cfg, [it["id"] for it in items if it["kind"] == "idea"],
+                                        {it["id"] for it in items})}   # SPEC-0423
     for it in items:
         if "error" in it:
             continue
@@ -8243,14 +8484,16 @@ def apply_add_batch(cfg, batch: dict, *, skip_invalid=False, by="human") -> dict
             if it["kind"] == "idea":
                 plan = plan_add_idea(cfg, it["id"], project=prm.get("project"),
                                      profile=prm.get("profile"), base=prm.get("base"),
-                                     priority=prm.get("priority", PRIORITY_DEFAULT))
+                                     priority=prm.get("priority", PRIORITY_DEFAULT),
+                                     after=prm.get("after") or ())
                 apply_add_idea(cfg, plan, by=by)
             else:
                 plan = plan_add(cfg, it["id"], project=prm.get("project"),
                                 profile=prm.get("profile"), base=prm.get("base"),
                                 force=bool(prm.get("force")),
                                 priority=prm.get("priority", PRIORITY_DEFAULT),
-                                split_origin=prm.get("split_origin"))
+                                split_origin=prm.get("split_origin"),
+                                after=prm.get("after") or ())
                 apply_add(cfg, plan, by=by)
         except ValueError as e:
             it["error"] = str(e)
@@ -8263,6 +8506,42 @@ def apply_add_batch(cfg, batch: dict, *, skip_invalid=False, by="human") -> dict
 
 
 # ---- human commands ------------------------------------------------------------------------------
+
+def plan_after(cfg, campaign, *, add=(), remove=(), by="human") -> dict:
+    """SPEC-0423: edit a campaign's `after` list (no writes). Only a QUEUED or PARKED campaign
+    can be edited; an added ref must resolve now, a removed one must be present."""
+    st = store.read_state(cfg, campaign)
+    if st.get("state") not in ("QUEUED", "PARKED"):
+        raise ValueError(f"{campaign} is {st.get('state')}; only QUEUED or PARKED campaigns can "
+                         f"change their `after`")
+    cur = after_entries(st)
+    new = resolve_after(cfg, add, project=st.get("project"),
+                        own=_idea_id_of(st) or st.get("spec_id"))
+    drop = {_canon_id(r) for r in remove or ()} | {str(r) for r in remove or ()}
+    missing = [r for r in remove or () if not any(e["ref"] in (r, _canon_id(r)) for e in cur)]
+    if missing:
+        raise ValueError(f"{campaign} does not wait after {', '.join(missing)}")
+    after = [e for e in cur if e["ref"] not in drop]
+    after += [e for e in new if e not in after]
+    return {"campaign": campaign, "state": st.get("state"), "from": cur, "to": after, "by": by}
+
+
+def apply_after(cfg, plan: dict) -> dict:
+    cid = plan["campaign"]
+    with store.item_lock(cfg, cid):
+        st = store.read_state(cfg, cid)
+        if st.get("state") not in ("QUEUED", "PARKED"):
+            raise ValueError(f"{cid} is {st.get('state')}; only QUEUED or PARKED campaigns can "
+                             f"change their `after`")
+        if plan["to"]:
+            st["after"] = list(plan["to"])
+        else:
+            st.pop("after", None)
+        st["backlog"] = None            # re-record readiness against the new list
+        text = "after: " + (", ".join(f"{e['ref']} ({e['kind']})" for e in plan["to"]) or "(none)")
+        return _transition(cfg, st, st["state"], "after edited", by=plan.get("by") or "human",
+                           extra_events=[("note", {"text": text, "author": plan.get("by") or "human"})])
+
 
 def plan_prioritize(cfg, campaign, priority, *, by="human") -> dict:
     priority = check_priority(priority)

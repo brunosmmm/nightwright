@@ -628,6 +628,32 @@ def _breakdown_idea_title(item: str) -> str:
     return text or "untitled breakdown item"
 
 
+# SPEC-0423: optional `(depends_on child N [and child M])` on a Breakdown bullet.
+_DEPENDS_ANNOT_RE = re.compile(
+    r"\(\s*depends_on\s+child(?:ren)?\b([^)]*)\)", re.IGNORECASE)
+
+
+def parse_breakdown_deps(item: str) -> tuple[str, list[int]]:
+    """SPEC-0423: split `(depends_on child N)`, `(depends_on child N and child M)`,
+    `(depends_on child N, child M)` or `(depends_on children N, M)` (any case) from a Breakdown
+    bullet. Returns `(item_without_annotation, ordinals)`, ordinals 1-based, in written order,
+    de-duplicated."""
+    text = item or ""
+    ords: list[int] = []
+    for m in _DEPENDS_ANNOT_RE.finditer(text):
+        for n in re.findall(r"\d+", m.group(1)):
+            if int(n) not in ords:
+                ords.append(int(n))
+    if not ords and not _DEPENDS_ANNOT_RE.search(text):
+        return text, []
+    cleaned = " ".join(_DEPENDS_ANNOT_RE.sub(" ", text).split())
+    return cleaned, ords
+
+
+def _strip_deps_annot(text: str) -> str:
+    return " ".join(_DEPENDS_ANNOT_RE.sub(" ", text or "").split())
+
+
 # SPEC-0097: optional `(project: Name)` on a Breakdown bullet (anywhere in the raw line).
 _PROJECT_ANNOT_RE = re.compile(r"\(\s*project:\s*([^)]+?)\s*\)", re.IGNORECASE)
 
@@ -686,30 +712,54 @@ def seed_ideas_from_epic(cfg, epic_id, *, state="INCUBATE", tags=()):
         return []
 
     default_project = (fm.get("target_project") or "").strip() or None
-    existing_headings = {
-        (t.heading or "").casefold().strip()
-        for t in load_tasks(cfg)
-        if t.is_idea and (t.properties.get("EPIC") or "").strip() == epic_id
-    }
+    epic_tasks = [t for t in load_tasks(cfg)
+                  if t.is_idea and (t.properties.get("EPIC") or "").strip() == epic_id]
+    # heading key -> idea id; a heading carrying the dependency annotation still matches
+    existing = {_strip_deps_annot(t.heading or "").casefold().strip():
+                (t.properties.get("ID") or "").strip() for t in epic_tasks}
 
-    added = []
-    for item in items:
+    parsed = []                                 # (item, project, title, ordinals) per bullet
+    for n, item in enumerate(items, 1):
         cleaned, annotated = parse_breakdown_project(item)
+        cleaned, ords = parse_breakdown_deps(cleaned)
+        for o in ords:
+            if o < 1 or o > len(items):
+                raise ValueError(f"Breakdown bullet {n} ({item.strip()[:60]!r}): depends_on "
+                                 f"child {o} is out of range (1..{len(items)})")
+            if o == n:
+                raise ValueError(f"Breakdown bullet {n} ({item.strip()[:60]!r}): depends_on "
+                                 f"child {o} points at the bullet itself")
         if annotated is not None:
             project = _canonical_seed_project(cfg, annotated)
         else:
             project = default_project
-        title = _breakdown_idea_title(cleaned)
+        parsed.append((item, project, _breakdown_idea_title(cleaned), ords))
+
+    added = []
+    idea_of = []                                # bullet index -> idea id
+    for item, project, title, _ords in parsed:
         key = title.casefold().strip()
-        if key in existing_headings:
+        if key in existing:
+            idea_of.append(existing[key])
             continue
         _path, _hl, idea_id = W.add_idea(
             cfg, title, state=state, tags=tuple(tags) if tags else (),
             project=project, epic=epic_id,
         )
         set_summary(cfg, idea_id, f"Child of epic `{epic_id}`.\n\n{item.strip()}")
-        existing_headings.add(key)
+        existing[key] = idea_id
+        idea_of.append(idea_id)
         added.append(idea_id)
+    stamps = {idea_of[i]: " ".join(idea_of[o - 1] for o in ords)
+              for i, (_, _, _, ords) in enumerate(parsed) if ords and idea_of[i]}
+    if stamps:
+        from .org import invalidate_tasks_cache
+        invalidate_tasks_cache()
+        for t in load_tasks(cfg):
+            tid = (t.properties.get("ID") or "").strip()
+            if t.is_idea and tid in stamps and not (t.properties.get("AFTER") or "").strip():
+                W.set_property(cfg, t, "AFTER", stamps[tid])
+                invalidate_tasks_cache()
     return added
 
 
