@@ -419,6 +419,27 @@ def check_conductor(cfg) -> dict:
     return check(id, "skip", "no campaigns")
 
 
+def check_launch_fresh(cfg) -> dict:
+    """`agentic.launch_fresh` (SPEC-0424): every launched conductor / steward session runs the
+    launch `build_plan` produces now; a stale one warns with its `--resume` command."""
+    from .agentic import launch
+    id = "agentic.launch_fresh"
+    if cfg is None:
+        return _skip_no_config(id)
+    rows = launch.freshness(cfg)
+    stale = [r for r in rows if r["stale"]]
+    if stale:
+        return check(id, "warn", f"{len(stale)} stale launch(es): "
+                     + ", ".join(r["reader"] for r in stale),
+                     detail="; ".join(f"{r['reader']} ({r['session_id']}): {r['why']}"
+                                      for r in stale),
+                     fix="; ".join(r["fix"] for r in stale))
+    if rows:
+        return check(id, "ok", f"no stale launch ({len(rows)} session(s) checked)",
+                     detail=", ".join(f"{r['reader']}: {r['why'] or 'fresh'}" for r in rows))
+    return check(id, "skip", "no registered conductor or steward session")
+
+
 def check_workers(cfg) -> dict:
     """`agentic.workers`: the worker registry parses and ssh has a ControlPath dir (SPEC-0337).
     Static only: `nw workers check` does the live SSH probe."""
@@ -630,6 +651,7 @@ def run(cfg, *, project=None, config_error=None, which=None, run_cmd=None,
     out.append(_safe("agentic.dirs", check_agentic_dirs, cfg))
     out.append(_safe("agentic.runner", check_runner, cfg))
     out.append(_safe("agentic.conductor", check_conductor, cfg))
+    out.append(_safe("agentic.launch_fresh", check_launch_fresh, cfg))
     out.append(_safe("agentic.workers", check_workers, cfg))
     for name, root in roots:
         out.append(_safe(f"project.{name}.config", check_project_config, cfg, name, root))

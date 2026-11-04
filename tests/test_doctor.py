@@ -709,3 +709,27 @@ def test_help_lists_options():
     assert r.exit_code == 0
     for opt in ("--json", "--project", "--fix-hints"):
         assert opt in r.output
+
+
+def test_launch_fresh_warn_then_ok(tmp_path, monkeypatch):
+    """SPEC-0424: a launch record without (or with an old) launch hash warns with its fix."""
+    from nightwright import rules
+    (tmp_path / "foo").mkdir()
+    monkeypatch.setattr(rules, "projects_payload", lambda cfg: {"projects": [
+        {"name": "Foo", "research": {"root": str(tmp_path / "foo")}},
+        {"name": rules.INTERNAL_PROJECT, "research": {"root": str(tmp_path / "foo")}}]})
+    cfg = _acfg(tmp_path, conductor={"prices": {"claude-sonnet-5-5": PRICE}})
+    assert D.check_launch_fresh(None)["status"] == "skip"
+    assert D.check_launch_fresh(cfg)["status"] == "skip"
+    CC.record_session(cfg, "steward:Foo", {}, source="launch", session_id="s1",
+                      extra={"launch_hash": "sha256:0000000000000000"})
+    c = D.check_launch_fresh(cfg)
+    assert c["status"] == "warn" and "steward:Foo" in c["summary"]
+    assert c["fix"] == "nw queue steward-launch Foo --resume"
+    plan = L.build_plan(cfg, "steward", "Foo", session_id="s1")
+    plan["resumed"] = True
+    L.register(cfg, plan)
+    c = D.check_launch_fresh(cfg)
+    assert c["status"] == "ok" and c["fix"] is None
+    assert any(x["id"] == "agentic.launch_fresh" for x in D.run(cfg, which=lambda n: None,
+                                                                  run_cmd=lambda *a, **k: None))

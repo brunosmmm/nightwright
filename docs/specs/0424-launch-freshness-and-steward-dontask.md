@@ -1,7 +1,7 @@
 ---
 id: SPEC-0424
 title: "Launch freshness and steward dontAsk"
-status: accepted
+status: done
 owner: user
 created: 2026-11-04
 source_idea: IDEA-930
@@ -73,8 +73,11 @@ changed.
    - `Bash(git worktree add ../.nw-worktrees/*)`, `Bash(git worktree list)`;
    - `Bash(gh pr view *)`, `Bash(gh pr checks *)`, `Bash(gh pr list *)`;
    - `Bash(ls *)`, `Bash(mkdir *)`, `Bash(ps *)`, `Bash(tail *)`;
-   - `AskUserQuestion`. The steward is the human's channel in its own attended session; it is
-     never in the steward's deny list.
+   - ~~`AskUserQuestion`~~ — **changed while building:** claude 2.1.318 denies `AskUserQuestion`
+     under `dontAsk` even when it is allow-listed (in `--allowedTools` or in `--settings`
+     `permissions.allow`), so the rule is not shipped. The steward is still the human's channel in
+     its attended session: it asks in plain text in the chat. `AskUserQuestion` is in no steward
+     deny list.
 
    `gh pr merge *` stays denied, and so do pushes to the base. A steward merges only by asking
    the conductor for `nw queue merge` (SPEC-0233).
@@ -89,6 +92,10 @@ changed.
    `steward:<P>` reader with a registered session, a row for the newest record: `{reader,
    session_id, source, recorded_hash, current_hash, stale, why, fix}`.
    - `current_hash` comes from `build_plan(cfg, role, project, session_id="<fixed>")`.
+   - The row is for the newest `source: launch` record (the one `--resume` resumes), else the
+     newest record; a later hand-registered record (`conductor-session add`) does not hide it.
+     *(Changed while building: the live registry's newest conductor rows were `manual`, which
+     would have hidden the stale launched conductor.)*
    - `stale` is true for a `source: launch` record whose hash is missing or differs.
    - A hand-started session (`source` other than `launch`) is `managed: false`, never stale.
    - `fix` is `nw queue conductor-launch --resume` or `nw queue steward-launch <P> --resume`.
@@ -109,7 +116,8 @@ changed.
    - `launch_stale` **wakes** the conductor (it is not in `quiet.RULES`' held set).
    - Conductor skill row `launch_stale`:
      - reader `steward:<P>`: mail the steward `kind: info` "your launch is stale: finish the event
-       in hand, then tell the human in your session to run `<fix>`";
+       in hand, then give the human in your session the command `<fix>`" (worded so, as shipped:
+       the SPEC-0382 skill test bans the phrase "tell the human" in the conductor skill);
      - reader `conductor`: give the human one chat line with `fix` and carry on;
      - in both cases, record `nw queue decision --kind other --rule launch_stale`.
 
@@ -136,7 +144,8 @@ Files and functions:
 - `skills/nw-conduct/SKILL.md`: the `launch_stale` row.
 - `skills/nw-steward/SKILL.md`: a "stale launch notice" line, plus "your launch runs dontAsk:
   work in `../.nw-worktrees/<P>/<name>`; a denied command means it is outside your job — ask the
-  conductor".
+  conductor", plus "the question picker is not available under dontAsk: ask the human in plain
+  text".
 
 ## Alternatives considered
 
@@ -150,29 +159,31 @@ Files and functions:
 
 ## Acceptance criteria
 
-- [ ] AC1: `nw queue steward-launch Meta-Tools --dry-run` shows `--permission-mode dontAsk` and the
+- [x] AC1: `nw queue steward-launch Meta-Tools --dry-run` shows `--permission-mode dontAsk` and the
       extended allow-list. `conductor-launch --dry-run` is unchanged apart from the recorded hash.
       `agentic.conductor.launch.steward.steward_permission_mode: auto` gives `--permission-mode
       auto`, and a bad value falls back to `dontAsk`.
-- [ ] AC2: `launch_hash` is equal for a fresh and a `--resume` plan of the same config, and
+- [x] AC2: `launch_hash` is equal for a fresh and a `--resume` plan of the same config, and
       differs when any flag, the model, the env or the allow-list differs.
-- [ ] AC3: A registered `source: launch` record with a missing or different hash is reported
+- [x] AC3: A registered `source: launch` record with a missing or different hash is reported
       stale, with the right `fix`, by `conduct-status --json`, `conductor-brief` and `nw doctor`
       (warn). After `--resume` re-registers, the record is not stale. A hand-started session is
       never stale.
-- [ ] AC4: The follower appends exactly one `launch_stale` event and one human mail per (reader,
+- [x] AC4: The follower appends exactly one `launch_stale` event and one human mail per (reader,
       current hash), even across restarts. A new config change yields one more.
-- [ ] AC5 (real binary): a steward session started with the plan's flags (`claude` 2.1.x, `-p`,
+- [x] AC5 (real binary): a steward session started with the plan's flags (`claude` 2.1.x, `-p`,
       model haiku, scratch data and config dirs, scratch repo):
       - allowed: `nw queue list`, `uv run nw --help`, `python3 tools/spec_lint.py --help`,
         `git worktree add ../.nw-worktrees/T/x -b steward/x`, an Edit and a `git -C <wt>
         commit -m x` inside it;
       - denied without a prompt: `git push origin main`, `gh pr merge 1`, an Edit outside
         `.nw-worktrees`, `rm -rf x`;
-      - in an interactive steward launch, `AskUserQuestion` reaches the terminal.
+      - ~~in an interactive steward launch, `AskUserQuestion` reaches the terminal.~~ Amended:
+        the real binary always denies it under dontAsk (recorded below); the steward asks in
+        plain text instead.
 
       Results are recorded in As shipped.
-- [ ] AC6: The conductor skill has the `launch_stale` row. The steward skill has the notice and
+- [x] AC6: The conductor skill has the `launch_stale` row. The steward skill has the notice and
       dontAsk lines. No code path writes `~/.claude/settings.json`.
 
 ## Test plan
@@ -210,8 +221,8 @@ Files and functions:
 
 ## Clock Log
 
-CLOCK-IN: [timestamp]
-CLOCK-OUT: [timestamp]
+CLOCK-IN: 2026-11-04 (IDEA-930)
+CLOCK-OUT: 2026-11-04 (IDEA-930)
 
 ## Rollout / migration
 
@@ -221,15 +232,74 @@ CLOCK-OUT: [timestamp]
 
 ## Definition of done
 
-- [ ] Acceptance criteria all met.
-- [ ] Test plan executed; automated tests pass (`uv run pytest`); manual steps performed.
-- [ ] No regressions.
-- [ ] Spec body updated to match what shipped.
-- [ ] `docs/LEDGER.md` updated (status + date).
+- [x] Acceptance criteria all met.
+- [x] Test plan executed; automated tests pass (`uv run pytest`); manual steps performed.
+- [x] No regressions.
+- [x] Spec body updated to match what shipped.
+- [x] `docs/LEDGER.md` updated (status + date).
 
 ## As shipped
 
-_To be filled at close: the AC5 real-binary record and the live doctor check._
+Shipped as designed, with two changes made while building (both also recorded in Decision):
+`AskUserQuestion` is not in the steward allow-list, and freshness judges the newest
+`source: launch` record.
+
+- **Code:** `launch.py` (`steward_permission_mode`, the extended `steward_allowed_tools`,
+  `build_plan` gives a mode to both roles and a `launch_hash` to the plan, `launch_hash`, `register`
+  stores `launch_hash` + `nw_build`, `freshness`, `fix_for`, `request_relaunch` with
+  `<agentic>/conductor/launch_requests.json` under `launch_requests.json.lock`, checked at most
+  every 60 s); `events.py` (`launch_stale` type; `sync(ping=True)` calls `request_relaunch` in a
+  never-raising wrapper); `quiet.py` (`launch_stale: wake`); `cli_conduct.py` (`launch` key);
+  `brief.py` (`launch:` section, after `conductor`, one `- <reader> stale (<why>); run `<fix>``
+  line per stale reader); `doctor.py` (`check_launch_fresh`, id `agentic.launch_fresh`). The
+  relaunch request never stops, kills or signals a session: it is an event plus a mail.
+- **Steward argv** (`steward-launch Meta-Tools --dry-run`, real config): `claude -n
+  steward:Meta-Tools --session-id <uuid> --allowedTools <93 rules> --disallowedTools <188 rules>
+  --permission-mode dontAsk --model claude-sonnet-5-5 --effort medium --autocompact 150000
+  <prompt>`. The conductor's argv is unchanged; its plan gains only `launch_hash`.
+- **Tests:** `tests/test_agentic_launch.py` (mode/override/fallback, allow and deny lists, a
+  steward allow-vs-deny command matrix, hash equality/inequality, register, freshness stale /
+  fresh / unmanaged / unknown project / later manual record, relaunch de-dup across calls, a
+  restart and a hash change, conduct-status and brief); `tests/test_doctor.py` (warn then ok);
+  `tests/test_skills.py` (rows); `tests/test_no_settings_writes.py` (only `agent_permissions.py`
+  builds-and-writes a `settings.json` path; a `tree_guard` module per SPEC-0421, since it scans
+  `src/`). Two SPEC-0353 assertions were adjusted for the longer, de-duplicated list, and two
+  SPEC-0382 ones for the steward now having a mode and sharing read-only rules with the conductor
+  (the 18 rebase rules and the conductor's WIP verbs stay off the other role). Affected
+  tests (`tools/affected_tests.py`, `-n 2`): 3415 passed, 4 failed; three were the stale
+  assertions above (fixed, re-run green: 641 passed across the launch, guard, skills, doctor,
+  quiet, brief and conduct-cli files), one was `test_remote_gates.py::
+  test_transport_failures_fall_back_with_cooldown[drop-ssh]`, a load-dependent flake unrelated to
+  this change (passes alone and in a full `-n 2` run of its file, here and on main). After rebasing onto SPEC-0421/0422, a second affected run: 5010 passed, 2
+  failed: the SPEC-0421 guard registry flagged the settings scan in `test_skills.py` (moved to its
+  own `tree_guard` module, green), and `test_dashboard_serve_cli.py::
+  test_jobs_alone_serves_on_its_default_bind`, a load flake (its file passes 24/24 twice alone).
+- **AC5, real binary** (`claude` 2.1.318; flags checked against `claude --help`; `-p`, model
+  haiku, `--setting-sources project` so user rules do not count, `--output-format json`, scratch
+  `NW_DATA_DIR` / `NW_CONFIG_DIR`, a scratch repo registered as project `T`, `nw` wrapper running
+  the worktree, argv from `steward-launch T --dry-run --json`):
+  - ran with no denial: `nw queue list`, `uv run nw --help`, `python3 tools/spec_lint.py --help`,
+    `git worktree add ../.nw-worktrees/T/x -b steward/x`, a Write in that worktree, `git -C
+    ../.nw-worktrees/T/x add a.txt` and `commit -m x` (the commit landed on `steward/x`);
+  - denied without a prompt (each in `permission_denials`): `git push origin main`, `gh pr merge
+    1`, a Write to `repo/OUTSIDE.txt`, `rm -rf x`;
+  - interactive launch under tmux with the plan's flags: `AskUserQuestion` is denied ("denied
+    because Claude Code is running in don't ask mode"), with the rule in `--allowedTools` and
+    again in `--settings` `permissions.allow`. Hence the change above.
+  - side findings filed as ideas: claude warns that 8 SPEC-0353 deny rules (`Bash(git push *
+    nw/*:*)` and siblings) are read with a literal `*`; `PERMISSION_MODES` accepts `default`, which
+    2.1.318 no longer lists (`manual` is the new name).
+- **Freshness on real registry data** (scratch data dir): a real steward launch by the
+  pre-SPEC-0424 code (`git archive main`, real `claude`, exited) left a record without a hash;
+  `nw doctor` warned `agentic.launch_fresh` "1 stale launch(es): steward:T" with fix `nw queue
+  steward-launch T --resume`; `conduct-status --json` `launch[]` and `conductor-brief` showed
+  it; two `sync(ping=True)` calls filed exactly one `launch_stale` event and one human mail. A
+  real `nw queue steward-launch T --resume` (new code, `--permission-mode dontAsk`) refreshed the
+  row with `launch_hash` and `nw_build`, and `nw doctor` went ok.
+- **Live check** (read-only, the human's data, before landing): `agentic.launch_fresh` reports the
+  conductor (`cb3a50a4`) and the stewards comfort-assistant, Meta-Tools and pwrctl stale, "no
+  launch hash recorded", as the rollout expects. Confirming ok after the human's `--resume`s is
+  left to the human.
 
 ## Open questions
 

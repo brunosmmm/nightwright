@@ -18,6 +18,12 @@ decides queue actions.
 Start the session with `nw queue steward-launch <Project>` (SPEC-0319) to get the forced
 context limits and a pre-registered session.
 
+Your launch runs dontAsk (SPEC-0424): work in `../.nw-worktrees/<P>/<name>`; a denied command
+means it is outside your job — ask the conductor. The question picker (`AskUserQuestion`) is
+not available under dontAsk: ask the human in plain text in your session. **Stale launch notice:** when the conductor
+mails "your launch is stale", finish the event in hand, then tell the human in your session
+the `--resume` command it names, once; never relaunch or stop yourself.
+
 ## Scope
 
 - You answer project-judgment questions: a wrong or ambiguous spec, a triage brief, an

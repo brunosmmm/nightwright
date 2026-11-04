@@ -20,7 +20,7 @@ COMPACT_AT_DEFAULT = 150000
 CAPS = {"parked": 20, "active": 20, "open_dispatches": 10, "escalations_open": 10,
         "unanswered_mail": 10, "recent_decisions": 10, "auto_applied_24h": 10}
 # Highest priority first; truncation removes items from the end of this list first.
-SECTION_ORDER = ("runner", "conductor", "counts", "parked", "open_dispatches",
+SECTION_ORDER = ("runner", "conductor", "launch", "counts", "parked", "open_dispatches",
                  "escalations_open", "auto_applied_24h", "unanswered_mail", "active",
                  "recent_decisions", "standing")
 
@@ -53,6 +53,16 @@ def _session(cfg) -> tuple[str | None, int | None]:
     path = CC.find_transcript(cfg, sid)
     turns = CC.read_turns(path) if path else []
     return sid, (max(turns, key=lambda t: t["ts"])["context"] if turns else None)
+
+
+def _stale_launches(cfg) -> list:
+    """SPEC-0424: the stale conductor / steward launches (`launch.freshness`), never raising."""
+    try:
+        from . import launch as LA
+        return [{k: r[k] for k in ("reader", "session_id", "why", "fix")}
+                for r in LA.freshness(cfg) if r["stale"]]
+    except Exception:
+        return []
 
 
 def _cap(name, rows) -> tuple[list, int]:
@@ -155,6 +165,7 @@ def conductor_brief(cfg, now=None) -> dict:
         "conductor": {"pid": E.reader_holder(cfg, "conductor"), "session_id": sid,
                       "context_tokens": context, "compact_at": limit,
                       "compact_now": context is not None and context > limit},
+        "launch": _stale_launches(cfg),                      # SPEC-0424
         "counts": {"active": len(active), "queued": sum(1 for i in items if i["state"] == "QUEUED"),
                    "parked": len(parked)},
         **out_lists,
@@ -179,6 +190,8 @@ def _sections(b) -> dict:
         "conductor": (f"conductor: pid {c['pid']} session {c['session_id']} context "
                       f"{c['context_tokens']} / compact_at {c['compact_at']} "
                       f"compact_now={str(c['compact_now']).lower()}", [], 0),
+        "launch": ("launch:", [f"- {x['reader']} stale ({x['why']}); run `{x['fix']}`"
+                               for x in b.get("launch") or []], 0),
         "counts": (f"counts: active {n['active']} queued {n['queued']} parked {n['parked']}", [], 0),
     }
     s["parked"] = ("parked:", [

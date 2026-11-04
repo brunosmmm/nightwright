@@ -619,3 +619,12 @@ def test_conduct_skill_has_red_main_rows_and_fixes_red_rule_spec_0420():
     assert "--fixes-red" in request and "no human OK" in request
     steward = (REPO_SKILLS_DIR / "nw-steward" / "SKILL.md").read_text(encoding="utf-8")
     assert "merge <branch> fixes-red" in steward
+
+
+def test_launch_stale_skill_rows():                                  # SPEC-0424
+    row = _conduct_row("launch_stale")
+    assert "steward:<P>" in row and "--rule launch_stale" in row and "data.fix" in row
+    assert "Never stop, kill or relaunch" in row
+    steward = (REPO_SKILLS_DIR / "nw-steward" / "SKILL.md").read_text(encoding="utf-8")
+    assert "Stale launch notice" in steward and "dontAsk" in steward
+    assert "../.nw-worktrees/<P>/<name>" in steward

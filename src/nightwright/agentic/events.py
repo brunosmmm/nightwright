@@ -97,6 +97,8 @@ EVENT_TYPES = {
     "red_main_fix_opened": ("campaign", "kind", "attempt"),
     "red_main_cleared": ("episode",),
     "close_held": ("episode", "reason"),
+    # SPEC-0424: a conductor or steward session runs a launch that differs from `build_plan`
+    "launch_stale": ("reader", "session_id", "recorded_hash", "current_hash", "fix"),
     # SPEC-0300: synthetic follower line (never appended to events.jsonl)
     "conductor_digest": ("first_id", "last_id", "held", "merged"),
 }
@@ -923,6 +925,11 @@ def sync(cfg, now=None, ping=False) -> list[dict]:
         except Exception:                         # a reminder never breaks the follower
             pass
         ESC.timeouts_due(cfg, now)                # SPEC-0425; never raises
+        try:                                      # SPEC-0424: ask for a relaunch, never kill
+            from . import launch as LA
+            LA.request_relaunch(cfg, now)
+        except Exception:
+            pass
         _maybe_sweep_prs(cfg, now)
     return out
 

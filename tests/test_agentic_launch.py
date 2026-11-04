@@ -444,7 +444,7 @@ def test_permission_config_replaces_defaults_and_steward_inherits(cfg):
         steward = plan["name"].startswith("steward")
         extra = (L.DEFAULTS["steward_allowed_tools"] if steward
                  else L.DEFAULTS["conductor_allowed_tools"])
-        assert _perm_args(plan["argv"], "--allowedTools") == ["Bash(ls *)", *extra]
+        assert _perm_args(plan["argv"], "--allowedTools") == L._dedup(["Bash(ls *)", *extra])
         assert _perm_args(plan["argv"], "--disallowedTools") == (
             ["Bash(rm *)"] if steward else ["Bash(rm *)", "AskUserQuestion"])
 
@@ -570,7 +570,9 @@ def test_push_rule_count_and_legacy_literals():
 def test_steward_plan_includes_rebase_set(cfg):
     plan = L.build_plan(cfg, "steward", "Foo")
     st = L.DEFAULTS["steward_allowed_tools"]
-    assert len(st) == 18 and "Bash(git -C * rebase --continue)" in st
+    # the 18 SPEC-0353 rebase rules come first; SPEC-0424 extends the set after them
+    assert len(st[:18]) == 18 and "Bash(git -C * rebase --continue)" in st[:18]
+    assert all("rebase" not in x for x in st[18:]) and len(set(st)) == len(st)
     assert plan["allowed_tools"] == L.DEFAULTS["allowed_tools"] + st
     assert _perm_args(plan["argv"], "--allowedTools") == plan["allowed_tools"]
     assert plan["argv"][-1].startswith("Run the /nw-orient skill, then the /nw-steward")
@@ -581,7 +583,9 @@ def test_steward_plan_includes_rebase_set(cfg):
 
 def test_conductor_plan_excludes_rebase_set(cfg):
     plan = L.build_plan(cfg, "conductor")
-    assert not set(L.DEFAULTS["steward_allowed_tools"]) & set(plan["allowed_tools"])
+    # SPEC-0424: the steward set now shares read-only rules with the conductor's; the SPEC-0353
+    # rebase/commit verbs (the first 18) stay off the conductor
+    assert not set(L.DEFAULTS["steward_allowed_tools"][:18]) & set(plan["allowed_tools"])
     assert not any("rebase" in x for x in plan["allowed_tools"])
     assert plan["argv"][-1] == L.CONDUCTOR_PROMPT
     r = invoke("conductor-launch", "--dry-run", "--json")
@@ -787,12 +791,16 @@ def test_conductor_guard_flags_in_plan_and_json(cfg):
 
 def test_steward_plan_has_none_of_the_conductor_guard(cfg):
     plan = L.build_plan(cfg, "steward", "Foo")
-    assert "--permission-mode" not in plan["argv"] and plan["permission_mode"] is None
+    # SPEC-0424: the steward has its own mode (dontAsk), not the conductor's setting
+    assert plan["permission_mode"] == "dontAsk"
     assert "AskUserQuestion" not in plan["disallowed_tools"]
-    for rule in L.DEFAULTS["conductor_allowed_tools"]:
+    wip = [f"Bash({p} {v})" for p in L._PREFIXES for v in L._CONDUCTOR_WIP_VERBS
+           if v != "worktree list"]          # read-only; both roles have it
+    for rule in wip:
         assert rule not in plan["allowed_tools"]
     cfg["agentic"]["conductor"]["launch"] = {"conductor_permission_mode": "default"}
-    assert "--permission-mode" not in L.build_plan(cfg, "steward", "Foo")["argv"]
+    argv = L.build_plan(cfg, "steward", "Foo")["argv"]
+    assert argv[argv.index("--permission-mode") + 1] == "dontAsk"
 
 
 def test_conductor_guard_settings_override_and_bad_value(cfg):
@@ -841,3 +849,174 @@ def test_launch_record_carries_the_deny(cfg, ex):
 def test_conductor_default_rules_git_work_vs_dangerous(cfg, cmd, ok):
     allow, deny = _eff(cfg, "conductor")
     assert _permitted(cmd, allow, deny) is ok
+
+
+# ---- SPEC-0424: steward dontAsk, launch hash, freshness, relaunch request ----------------
+
+def test_steward_launches_dont_ask_with_override_and_fallback(cfg):
+    plan = L.build_plan(cfg, "steward", "Foo")
+    i = plan["argv"].index("--permission-mode")
+    assert plan["argv"][i + 1] == "dontAsk" == plan["permission_mode"]
+    r = invoke("steward-launch", "Foo", "--dry-run")
+    assert r.exit_code == 0 and "--permission-mode dontAsk" in r.output
+    cfg["agentic"]["conductor"]["launch"] = {"steward": {"steward_permission_mode": "auto"}}
+    argv = L.build_plan(cfg, "steward", "Foo")["argv"]
+    assert argv[argv.index("--permission-mode") + 1] == "auto"
+    # the conductor keeps its own mode
+    c = L.build_plan(cfg, "conductor")["argv"]
+    assert c[c.index("--permission-mode") + 1] == "dontAsk"
+    cfg["agentic"]["conductor"]["launch"] = {"steward": {"steward_permission_mode": "yolo"}}
+    argv = L.build_plan(cfg, "steward", "Foo")["argv"]
+    assert argv[argv.index("--permission-mode") + 1] == "dontAsk"
+
+
+def test_steward_allow_list_extended_and_denies_kept(cfg):
+    allow, deny = _eff(cfg, "steward")
+    for rule in ("Read", "Grep", "Glob", "Edit(//**/.nw-worktrees/**)",
+                 "Write(//**/.nw-worktrees/**)", "Bash(nw *)", "Bash(uv run nw *)",
+                 "Bash(uv run pytest *)", "Bash(uv sync*)", "Bash(python3 tools/spec_lint.py*)",
+                 "Bash(python3 tools/affected_tests.py*)", "Bash(git status)",
+                 "Bash(git -C * log *)", "Bash(git worktree add ../.nw-worktrees/*)",
+                 "Bash(git worktree list)", "Bash(gh pr view *)", "Bash(gh pr checks *)",
+                 "Bash(gh pr list *)", "Bash(ls *)", "Bash(mkdir *)", "Bash(ps *)",
+                 "Bash(tail *)"):
+        assert rule in allow, rule
+    # dontAsk denies AskUserQuestion even when allowed (claude 2.1.318): no dead rule; never denied
+    assert "AskUserQuestion" not in allow and "AskUserQuestion" not in deny
+    assert "Bash(gh pr merge *)" in deny
+    assert set(L.DEFAULTS["disallowed_tools"]) <= set(deny)
+    assert set(L._push_deny()) <= set(deny) and set(L._steward_guard()) <= set(deny)
+
+
+@pytest.mark.parametrize("cmd,ok", [
+    ("nw queue list", True), ("uv run nw --help", True), ("nw queue merge nw/x", True),
+    ("python3 tools/spec_lint.py --help", True), ("uv run pytest -q tests/test_x.py", True),
+    ("git worktree add ../.nw-worktrees/T/x -b steward/x", True),
+    ("git -C ../.nw-worktrees/T/x commit -m x", True), ("gh pr view 1", True),
+    ("git push origin main", False), ("git -C /w push origin HEAD:main", False),
+    ("gh pr merge 1", False), ("rm -rf x", False), ("git worktree add /tmp/x", False),
+    ("git reset --hard HEAD~1", False), ("git worktree remove ../.nw-worktrees/T/x", False)])
+def test_steward_default_rules_job_vs_dangerous(cfg, cmd, ok):
+    allow, deny = _eff(cfg, "steward")
+    assert _permitted(cmd, allow, deny) is ok
+
+
+def test_launch_hash_resume_equal_and_differs_on_any_change(cfg):
+    fresh = L.build_plan(cfg, "steward", "Foo")
+    other = L.build_plan(cfg, "steward", "Foo")
+    assert fresh["session_id"] != other["session_id"]
+    assert fresh["launch_hash"] == other["launch_hash"] == L.launch_hash(fresh)
+    assert re.fullmatch(r"sha256:[0-9a-f]{16}", fresh["launch_hash"])
+    resumed = dict(fresh, argv=[("--resume" if a == "--session-id" else a)
+                                for a in fresh["argv"]])
+    assert L.launch_hash(resumed) == fresh["launch_hash"]
+    base = fresh["launch_hash"]
+    for change in ({"model": "claude-opus-5-5"}, {"effort": "high"},
+                   {"steward_permission_mode": "auto"}, {"bash_max_output_length": 20000},
+                   {"steward_allowed_tools": ["Bash(ls *)"]},
+                   {"disallowed_tools": ["Bash(rm *)"]}):
+        cfg["agentic"]["conductor"]["launch"] = {"steward": change}
+        if "model" in change:
+            cfg["agentic"]["conductor"]["prices"]["claude-opus-5-5"] = PRICE
+        assert L.build_plan(cfg, "steward", "Foo")["launch_hash"] != base, change
+    cfg["agentic"]["conductor"]["launch"] = {}
+    assert L.build_plan(cfg, "steward", "Foo")["launch_hash"] == base
+    assert L.launch_hash(dict(fresh, env_remove=[])) != base
+    assert L.build_plan(cfg, "conductor")["launch_hash"] != base
+
+
+def test_register_stores_hash_and_build(cfg, ex):
+    r = invoke("steward-launch", "Foo")
+    assert r.exit_code == 0, r.output
+    rec = CC.sessions(cfg, "steward:Foo")[-1]
+    assert rec["launch_hash"] == L.build_plan(cfg, "steward", "Foo")["launch_hash"]
+    assert isinstance(rec["nw_build"], str) and rec["nw_build"]
+
+
+def _rows(cfg):
+    return {r["reader"]: r for r in L.freshness(cfg)}
+
+
+def test_freshness_stale_fresh_unmanaged_unknown(cfg, ex, monkeypatch):
+    assert L.freshness(cfg) == []
+    # a pre-SPEC-0424 launch record: no hash -> stale, with the resume command
+    CC.record_session(cfg, "steward:Foo", {}, source="launch", session_id="s-old")
+    CC.record_session(cfg, "conductor", {}, source="follower", session_id="c-hand")
+    CC.record_session(cfg, "steward:Gone", {}, source="launch", session_id="g-1")
+    rows = _rows(cfg)
+    foo = rows["steward:Foo"]
+    assert foo["stale"] and foo["recorded_hash"] is None and foo["managed"]
+    assert foo["fix"] == "nw queue steward-launch Foo --resume" and "no launch hash" in foo["why"]
+    assert not rows["conductor"]["stale"] and rows["conductor"]["managed"] is False
+    assert rows["conductor"]["fix"] == "nw queue conductor-launch --resume"
+    assert not rows["steward:Gone"]["stale"] and rows["steward:Gone"]["why"] == "project unknown"
+    # `--resume` re-registers the same session with the current hash -> fresh
+    monkeypatch.setattr(CC, "find_transcript", lambda cfg, sid: Path("/x.jsonl"))
+    r = invoke("steward-launch", "Foo", "--resume")
+    assert r.exit_code == 0, r.output
+    foo = _rows(cfg)["steward:Foo"]
+    assert foo["session_id"] == "s-old" and not foo["stale"] and foo["why"] is None
+    # a later hand-registered record does not hide the launched one `--resume` would resume
+    CC.record_session(cfg, "steward:Foo", {}, source="manual", session_id="s-hand")
+    assert _rows(cfg)["steward:Foo"]["session_id"] == "s-old"
+    # a config change makes the same record stale again
+    cfg["agentic"]["conductor"]["launch"] = {"steward": {"effort": "high"}}
+    foo = _rows(cfg)["steward:Foo"]
+    assert foo["stale"] and foo["recorded_hash"] != foo["current_hash"]
+    assert "changed" in foo["why"]
+
+
+def _human_mail(cfg):
+    p = Path(cfg["data_dir"]) / "agentic"
+    return [json.loads(x) for f in p.rglob("*.jsonl") if "human" in f.name
+            for x in f.read_text().splitlines() if x.strip()]
+
+
+def test_request_relaunch_once_per_reader_and_hash(cfg):
+    import datetime as dt
+    from nightwright.agentic import events as E
+    CC.record_session(cfg, "steward:Foo", {}, source="launch", session_id="s-old")
+    t0 = dt.datetime(2026, 11, 4, 12, 0, tzinfo=dt.timezone.utc)
+    E.sync(cfg, now=t0, ping=True)
+    E.sync(cfg, now=t0 + dt.timedelta(seconds=120), ping=True)
+    evs = E.read_since(cfg, 0, types=["launch_stale"])
+    assert len(evs) == 1
+    d = evs[0]["data"]
+    assert d["reader"] == "steward:Foo" and d["session_id"] == "s-old"
+    assert d["recorded_hash"] is None and d["fix"] == "nw queue steward-launch Foo --resume"
+    assert evs[0]["project"] == "Foo"
+    mail = _human_mail(cfg)
+    assert len(mail) == 1 and mail[0]["kind"] == "info" and d["fix"] in mail[0]["text"]
+    # a "restart": the state file alone carries the de-dup (no in-memory state)
+    assert L.request_relaunch(cfg, t0 + dt.timedelta(seconds=600)) == []
+    # a config change is a new current hash: one more request
+    cfg["agentic"]["conductor"]["launch"] = {"steward": {"effort": "high"}}
+    E.sync(cfg, now=t0 + dt.timedelta(seconds=900), ping=True)
+    E.sync(cfg, now=t0 + dt.timedelta(seconds=1000), ping=True)
+    assert len(E.read_since(cfg, 0, types=["launch_stale"])) == 2 and len(_human_mail(cfg)) == 2
+    # within the check interval nothing is even computed
+    assert L.request_relaunch(cfg, t0 + dt.timedelta(seconds=1010)) == []
+
+
+def test_request_relaunch_never_breaks_sync(cfg, monkeypatch):
+    from nightwright.agentic import events as E
+    monkeypatch.setattr(L, "freshness", lambda cfg: 1 / 0)
+    E.sync(cfg, ping=True)      # no exception
+
+
+def test_launch_stale_wakes_the_conductor():
+    from nightwright.agentic import quiet as QT
+    assert QT.RULES["launch_stale"] == "wake"
+
+
+def test_conduct_status_and_brief_show_stale_launch(cfg):
+    from nightwright.agentic import brief as B
+    from nightwright.agentic import cli_conduct as CD
+    CC.record_session(cfg, "steward:Foo", {}, source="launch", session_id="s-old")
+    st = CD.conduct_status(cfg)
+    (row,) = [r for r in st["launch"] if r["reader"] == "steward:Foo"]
+    assert row["stale"] and row["fix"] == "nw queue steward-launch Foo --resume"
+    b = B.conductor_brief(cfg)
+    assert [x["reader"] for x in b["launch"]] == ["steward:Foo"]
+    text = B.render_text(b)
+    assert "launch:\n- steward:Foo stale" in text and "nw queue steward-launch Foo --resume" in text

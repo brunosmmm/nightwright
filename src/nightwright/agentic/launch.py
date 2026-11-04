@@ -5,6 +5,10 @@ registered (SPEC-0299) before `claude` starts.
 `settings` and `build_plan` are pure; `run` is the only function with process side effects."""
 from __future__ import annotations
 
+import datetime as dt
+import fcntl
+import hashlib
+import json
 import math
 import os
 import re
@@ -128,7 +132,28 @@ DEFAULTS = {"model": "claude-sonnet-5-5", "effort": "medium", "autocompact": "15
             "file_read_max_output_tokens": 10000,
             "allowed_tools": [*_push_allow(), "Bash(gh pr create *)", "Bash(gh pr edit *)",
                               "Bash(gh pr comment *)"],
-            "steward_allowed_tools": [f"Bash({p} {v})" for p in _PREFIXES for v in _STEWARD_VERBS],
+            # SPEC-0424: the steward runs `dontAsk` too, so its allow-list covers its whole job
+            # (read anything, every `nw` command, tests and spec lint, fix branches in worktrees
+            # under .nw-worktrees/); the deny list (pushes to the base, `gh pr merge`, the guard)
+            # still wins. No `AskUserQuestion` rule: claude 2.1.318 denies it under dontAsk even
+            # when allow-listed (SPEC-0424 real-binary check), so the steward asks the human in
+            # plain text in its attended session; it is never in the steward's deny list either.
+            "steward_allowed_tools": [*[f"Bash({p} {v})" for p in _PREFIXES
+                                        for v in _STEWARD_VERBS],
+                                      "Read", "Grep", "Glob",
+                                      f"Edit(//**/{WORKTREES_DIR}/**)",
+                                      f"Write(//**/{WORKTREES_DIR}/**)",
+                                      "Bash(nw *)", "Bash(uv run nw *)", "Bash(uv run pytest *)",
+                                      "Bash(uv sync*)", "Bash(python3 tools/spec_lint.py*)",
+                                      "Bash(python3 tools/affected_tests.py*)",
+                                      *[f"Bash({p} {v})" for p in _PREFIXES
+                                        for v in _CONDUCTOR_GIT_VERBS],
+                                      f"Bash(git worktree add ../{WORKTREES_DIR}/*)",
+                                      "Bash(git worktree list)",
+                                      "Bash(gh pr view *)", "Bash(gh pr checks *)",
+                                      "Bash(gh pr list *)",
+                                      "Bash(ls *)", "Bash(mkdir *)", "Bash(ps *)", "Bash(tail *)"],
+            "steward_permission_mode": "dontAsk",
             "disallowed_tools": [*_push_deny(), *_steward_guard(), *_conductor_guard(),
                                  "Bash(gh pr merge *)"],
             # SPEC-0382: the conductor never blocks on the human; under `dontAsk` (which applies
@@ -193,7 +218,7 @@ def _good(key, v):
         return v.strip() if isinstance(v, str) and v.strip() else None
     if key == "effort":
         return v if v in EFFORTS else None
-    if key == "conductor_permission_mode":
+    if key in ("conductor_permission_mode", "steward_permission_mode"):
         return v if v in PERMISSION_MODES else None
     if key == "autocompact":
         if isinstance(v, str) and v.strip().lower() == "auto":
@@ -275,18 +300,38 @@ def build_plan(cfg, role, project=None, *, resume=False, session_id=None) -> dic
     eff = {"allowed_tools": _dedup(sett["allowed_tools"] + extra_allow),
            "disallowed_tools": _dedup(sett["disallowed_tools"] + extra_deny)}
     perms = [x for key, flag in TOOL_FLAGS.items() if eff[key] for x in (flag, *eff[key])]
-    mode = sett["conductor_permission_mode"] if role == "conductor" else None
+    mode = sett[f"{role}_permission_mode"]                 # SPEC-0424: both roles
     argv = ["claude", "-n", name, "--resume" if resume else "--session-id", sid, *perms,
             *(["--permission-mode", mode] if mode else []),
             "--model", sett["model"], "--effort", sett["effort"],
             "--autocompact", str(sett["autocompact"]), prompt]
     env = {var: str(sett[key]) for key, var in ENV_KEYS.items()}
     env[LAUNCH_KEYS_VAR] = ",".join(ENV_KEYS.values())
-    return {"role": role, "name": name, "cwd": str(cwd), "session_id": sid, "resumed": resume,
+    plan = {"role": role, "name": name, "cwd": str(cwd), "session_id": sid, "resumed": resume,
             "argv": argv, "env": env, "env_remove": list(ENV_REMOVE), "prompt": prompt,
             "model": sett["model"], "permission_mode": mode,
             "allowed_tools": list(eff["allowed_tools"]),
             "disallowed_tools": list(eff["disallowed_tools"]), "price": CC.price_for(cfg, sett["model"])}
+    plan["launch_hash"] = launch_hash(plan)
+    return plan
+
+
+_SESSION_TOKEN = "<session>"
+
+
+def launch_hash(plan) -> str:
+    """SPEC-0424: `sha256:<hex16>` of the canonical JSON of the plan's effective launch (role,
+    name, cwd, argv, env, env_remove). The `--session-id` / `--resume` flag and its value are
+    replaced by a fixed token, so a `--resume` launch hashes equal to a fresh one."""
+    argv = list(plan["argv"])
+    for i, a in enumerate(argv[:-1]):
+        if a in ("--session-id", "--resume"):
+            argv[i] = argv[i + 1] = _SESSION_TOKEN
+            break
+    doc = {"role": plan["role"], "name": plan["name"], "cwd": plan["cwd"], "argv": argv,
+           "env": plan["env"], "env_remove": plan["env_remove"]}
+    raw = json.dumps(doc, sort_keys=True, ensure_ascii=False, separators=(",", ":"))
+    return "sha256:" + hashlib.sha256(raw.encode("utf-8")).hexdigest()[:16]
 
 
 def missing_prices(cfg) -> list:
@@ -318,10 +363,18 @@ def exec_env(plan, base=None) -> dict:
 
 def register(cfg, plan):
     """Pre-register the session in the SPEC-0299 registry (one row per reader and id; a resumed
-    launch refreshes the row's `disallowed_tools` to the argv it now runs with, SPEC-0382)."""
+    launch refreshes the row's `disallowed_tools`, `launch_hash` and `nw_build` to the launch it
+    now runs with, SPEC-0382 / SPEC-0424)."""
+    from .. import buildid
+    try:
+        build = buildid.local()
+    except Exception:          # the build id is informational; never block a launch on it
+        build = None
     try:
         CC.record_session(cfg, plan["name"], {}, source="launch", session_id=plan["session_id"],
-                          extra={"disallowed_tools": plan["disallowed_tools"]},
+                          extra={"disallowed_tools": plan["disallowed_tools"],
+                                 "launch_hash": plan.get("launch_hash") or launch_hash(plan),
+                                 "nw_build": build},
                           refresh=bool(plan.get("resumed")))
     except OSError as e:
         raise click.ClickException(f"cannot register the session: {e}")
@@ -342,3 +395,142 @@ def run(cfg, plan):
     except OSError as e:   # e.g. a broken `claude` wrapper: an error, not a traceback
         raise click.ClickException(f"cannot start claude: {e}; the registered launch record "
                                    "has no session, so start fresh (without --resume)")
+
+
+# ---- launch freshness (SPEC-0424) ----------------------------------------------------------
+
+FIXED_SESSION = "<fixed>"
+RELAUNCH_CHECK_S = 60          # the follower checks freshness at most this often
+
+
+def fix_for(reader) -> str:
+    if reader == "conductor":
+        return "nw queue conductor-launch --resume"
+    return f"nw queue steward-launch {reader.split(':', 1)[1]} --resume"
+
+
+def _readers(cfg) -> list[str]:
+    """`conductor` plus every `steward:<P>` with a registered session, first seen first."""
+    path = CC._sessions_path(cfg)
+    found = []
+    try:
+        text = path.read_text(encoding="utf-8", errors="replace") if path.is_file() else ""
+    except OSError:
+        text = ""
+    for raw in text.splitlines():
+        try:
+            rec = json.loads(raw)
+        except ValueError:
+            continue
+        r = rec.get("reader") if isinstance(rec, dict) else None
+        if isinstance(r, str) and r.startswith("steward:") and len(r) > 8 and r not in found:
+            found.append(r)
+    return ["conductor", *found]
+
+
+def freshness(cfg) -> list[dict]:
+    """One row per reader (`conductor`, `steward:<P>`) with a registered session, for its newest
+    `source: launch` record (else its newest record): is the launch it runs the one `build_plan`
+    would produce now? A launch record whose `launch_hash` is missing or differs is `stale`; a
+    reader with only hand-started sessions is `managed: false` and never stale; a project that
+    no longer resolves is `why: project unknown`, not stale. Pure over the registry and config."""
+    out = []
+    for reader in _readers(cfg):
+        rows = CC.sessions(cfg, reader)
+        if not rows:
+            continue
+        # the newest launched record is the one `--resume` resumes, so it is the one judged even
+        # when a hand-registered record (`conductor-session add`, a follower) came after it
+        launched = [r for r in rows if r.get("source") == "launch"]
+        last = launched[-1] if launched else rows[-1]
+        managed = last.get("source") == "launch"
+        role, project = (("conductor", None) if reader == "conductor"
+                         else ("steward", reader.split(":", 1)[1]))
+        recorded = last.get("launch_hash")
+        try:
+            current = build_plan(cfg, role, project, session_id=FIXED_SESSION)["launch_hash"]
+        except (click.ClickException, OSError, ValueError, KeyError, TypeError):
+            current = None
+        if current is None:
+            stale, why = False, "project unknown"
+        elif not managed:
+            stale, why = False, "not started by nw (hand-started session)"
+        elif not recorded:
+            stale, why = True, "no launch hash recorded (launched before SPEC-0424)"
+        elif recorded != current:
+            stale, why = True, "the launch flags changed since this session started"
+        else:
+            stale, why = False, None
+        out.append({"reader": reader, "session_id": last.get("session_id"),
+                    "source": last.get("source"), "managed": managed,
+                    "recorded_hash": recorded, "current_hash": current, "stale": stale,
+                    "why": why, "fix": fix_for(reader)})
+    return out
+
+
+def _requests_path(cfg):
+    return CC.conductor_dir(cfg) / "launch_requests.json"
+
+
+def _load_requests(path) -> dict:
+    try:
+        doc = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {"checked_at": None, "requested": {}}
+    if not isinstance(doc, dict):
+        return {"checked_at": None, "requested": {}}
+    req = doc.get("requested")
+    return {"checked_at": doc.get("checked_at"), "requested": req if isinstance(req, dict) else {}}
+
+
+def _age_s(ts, now):
+    try:
+        return (now - dt.datetime.fromisoformat(ts)).total_seconds()
+    except (TypeError, ValueError):
+        return None
+
+
+def request_relaunch(cfg, now=None) -> list[dict]:
+    """The follower's relaunch request (SPEC-0424): for each stale reader, append one
+    `launch_stale` event and mail the human once per `(reader, current_hash)`, remembered in
+    `<agentic>/conductor/launch_requests.json` under its lock. Never kills or signals anything:
+    the session cannot replace itself and the terminal is the human's. Checks at most every
+    `RELAUNCH_CHECK_S`. Returns the events appended."""
+    from . import events as E
+    from . import mailbox as M
+    from . import store
+    now = now or dt.datetime.now().astimezone()
+    path = _requests_path(cfg)
+    age = _age_s(_load_requests(path).get("checked_at"), now)
+    if age is not None and 0 <= age < RELAUNCH_CHECK_S:
+        return []
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd = os.open(path.with_name(path.name + ".lock"), os.O_RDWR | os.O_CREAT, 0o644)
+    out = []
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX)
+        state = _load_requests(path)
+        for row in freshness(cfg):
+            key = f"{row['reader']}|{row['current_hash']}"
+            if not row["stale"] or key in state["requested"]:
+                continue
+            data = {k: row[k] for k in ("reader", "session_id", "recorded_hash", "current_hash",
+                                        "fix")}
+            data["why"] = row["why"]
+            project = None if row["reader"] == "conductor" else row["reader"].split(":", 1)[1]
+            out.append(E.append(cfg, "launch_stale", project=project, by="follower", data=data))
+            try:
+                M.send(cfg, to="human", frm="conductor", kind="info",
+                       text=(f"{row['reader']} runs a stale launch ({row['why']}). In its "
+                             f"terminal, when it is idle, run: {row['fix']}"))
+            except (OSError, ValueError):
+                pass        # the event is the durable request; the mail is a courtesy copy
+            state["requested"][key] = store.now_iso(now)
+        state["checked_at"] = store.now_iso(now)
+        tmp = path.with_name(path.name + ".tmp")
+        tmp.write_text(json.dumps(state, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+        os.replace(tmp, path)
+    finally:
+        fcntl.flock(fd, fcntl.LOCK_UN)
+        os.close(fd)
+    return out

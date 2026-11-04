@@ -51,7 +51,16 @@ def conduct_status(cfg, *, recent=10) -> dict:
         "unanswered_mail": unanswered,
         "recent_events": E.read_since(cfg, 0)[-recent:],
         "herdr_watch": _herdr_watch_status(cfg),             # SPEC-0365
+        "launch": _launch_freshness(cfg),                    # SPEC-0424
     }
+
+
+def _launch_freshness(cfg) -> list:
+    try:
+        from . import launch as LA
+        return LA.freshness(cfg)
+    except Exception:
+        return []
 
 
 def _herdr_supervisor(cfg):
