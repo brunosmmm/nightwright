@@ -20,7 +20,14 @@ DEFAULT_CODE_CHECK_S = 10
 CLIENTS_MIN_S = 5.0                 # `clients` / `updated_at` are rewritten at most this often
 
 
+def read_path(cfg) -> Path:
+    """Where `server.json` lives, without creating or chmod-ing anything: for readers, which may
+    run in a process that is not the server (`dashboard_dir` is the server's)."""
+    return store.agentic_dir(cfg) / "dashboard" / "server.json"
+
+
 def server_json_path(cfg) -> Path:
+    """The writer's path: creates the 0700 `agentic/dashboard/` directory."""
     return dashboard_dir(cfg) / "server.json"
 
 
@@ -59,7 +66,7 @@ def record_live(rec) -> bool:
 def read_server_record(cfg) -> dict | None:
     """The parsed `server.json`; None for a missing, unreadable or non-object file."""
     try:
-        rec = json.loads(server_json_path(cfg).read_text(encoding="utf-8"))
+        rec = json.loads(read_path(cfg).read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return None
     return rec if isinstance(rec, dict) else None
@@ -83,7 +90,7 @@ def remove_server_record(cfg) -> None:
     """Delete `server.json` only when it names this process."""
     rec = read_server_record(cfg)
     if rec is not None and rec.get("pid") == os.getpid():
-        server_json_path(cfg).unlink(missing_ok=True)
+        read_path(cfg).unlink(missing_ok=True)
 
 
 def code_check_s(cfg) -> float:

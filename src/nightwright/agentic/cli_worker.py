@@ -269,6 +269,7 @@ def _serve_dashboard(cfg, bind, tls_cert, tls_key, client_ca, *, code_root=None,
     nightwright's code changed (a supervisor restarts it onto the new code)."""
     import signal
     import threading
+    import time
 
     from .codewatch import AUTO
     from .dashboard import auth as DA
@@ -291,22 +292,33 @@ def _serve_dashboard(cfg, bind, tls_cert, tls_key, client_ca, *, code_root=None,
     except OSError as e:
         raise click.ClickException(str(e))
     stop = threading.Event()
+    signalled = []
+    # The handler must not touch `stop`: `Event.set` takes the Condition's lock, which the main
+    # thread may hold inside `stop.wait`, and the handler runs on the main thread (deadlock).
+    # `list.append` is a single atomic call, and the loop below polls `signalled`.
     for sig in (signal.SIGTERM, signal.SIGINT):     # before server.json, so it is always cleaned up
-        signal.signal(sig, lambda *_: stop.set())
+        signal.signal(sig, lambda *_: signalled.append(sig))
     watch = None
+    t = None
     try:
         check_s = 0 if no_code_watch else LC.code_check_s(cfg)
         if check_s > 0:
             def on_change(change):
-                click.echo(LC.code_changed_line(change), err=True)
-                stop.set()
+                try:
+                    stop.set()                      # first: a dead stderr must not keep stale code
+                finally:
+                    try:
+                        click.echo(LC.code_changed_line(change), err=True)
+                    except OSError:
+                        pass
             watch = LC.CodeWatchThread(stop, on_change, check_s,
                                        AUTO if code_root is None else code_root)
             if not watch.enabled:                   # no checkout, or git cannot read its HEAD
                 watch = None
-        root = None if watch is None else watch.root
+        # the watcher's own baseline, so the record and the comparison cannot disagree
         rec = DS.write_server_json(cfg, srv, code_watch=watch is not None,
-                                   code_sha=LC.head_sha(root), bind=bind or DS.DEFAULT_BIND)
+                                   code_sha=None if watch is None else watch.sha,
+                                   bind=bind or DS.DEFAULT_BIND)
         click.echo(f"nw serve: dashboard on {rec['url']} (token auth, token in "
                    f"{DS.dashboard_dir(cfg) / 'local.token'})", err=True)
         if watch is None:
@@ -318,11 +330,21 @@ def _serve_dashboard(cfg, bind, tls_cert, tls_key, client_ca, *, code_root=None,
         if watch is not None:
             watch.start()
         refresher = LC.RecordRefresher(cfg, rec, srv.client_count)
-        while not stop.wait(1.0):
-            refresher.tick()
-        srv.shutdown()
-        t.join()
+        last_tick, warned = 0.0, False
+        while not (stop.is_set() or signalled):
+            time.sleep(0.2)
+            if time.monotonic() - last_tick >= 1.0:
+                last_tick = time.monotonic()
+                try:
+                    refresher.tick()
+                except Exception as e:              # a failed refresh must not take the server down
+                    if not warned:
+                        warned = True
+                        click.echo(f"nw serve: server.json refresh failed: {e}", err=True)
     finally:
         stop.set()
+        if t is not None:                           # stop serve_forever before closing its socket
+            srv.shutdown()
+            t.join()
         DS.remove_server_json(cfg)
         srv.server_close()

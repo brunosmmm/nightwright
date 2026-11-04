@@ -368,6 +368,24 @@ fixed sleep before a positive assertion.
   merged), SPEC-0401 and SPEC-0416 (the tailnet bind slice, merged); a human may add
   `depends_on: [SPEC-0414, SPEC-0416]` outside the queue if the ledger should show them.
 
+### Test record, loop 6 (2026-11-04)
+
+- Review fixes: readers of `server.json` use `lifecycle.read_path` (no mkdir/chmod; a never-run
+  host creates nothing); the signal handler appends to a list instead of `Event.set` (the main
+  loop polls `stop.is_set()`/the list every 0.2 s, no lock shared with the handler); `on_change`
+  calls `stop.set()` before writing to stderr; a refresh error is logged once and does not stop the
+  server; the `finally` calls `srv.shutdown()` + join before `server_close()`; `code_sha` is the
+  watcher's baseline (`watch.sha`); unused `SERVER_SCHEMA` removed.
+- Tests added: `test_watcher_can_be_disabled[auto_no_checkout]` (real subprocess with
+  `code_checkout()` patched to None through `sitecustomize`; the commit-does-not-stop half now
+  only runs where a watched checkout exists), `test_clients_refresh_does_not_recreate_a_removed_record`,
+  `test_reading_a_record_creates_nothing`, and the exit-3 test asserts no `dashboard on` line.
+- `uv run pytest -q` over `tests/test_dashboard_{lifecycle,serve_cli,server,imports,audit,auth}.py`
+  and `tests/test_test_waits.py`: 175 passed, 1 skipped, with
+  `test_jobs_with_an_explicit_bind_uses_it` deselected: it is the `--jobs` path (untouched here)
+  and flaky (SIGINT sent right after the first stderr line can land before `serve_forever`'s
+  `try`, exit 1). `python3 tools/spec_lint.py` exits 0. The full suite was left to gating.
+
 ## Rollout / migration
 
 1. Land after epic child 1 (`nw serve --dashboard`). No data migration; `server.json` is created

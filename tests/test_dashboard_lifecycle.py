@@ -108,26 +108,38 @@ def test_docs_only_commit_keeps_running_and_sigterm_exits_0(fx, repo):
     assert not sj.exists()
 
 
-@pytest.mark.parametrize("how", ["flag", "zero", "no_checkout"])
+NO_CHECKOUT = """
+from nightwright.agentic import codewatch as CW
+CW.code_checkout = lambda: None
+"""
+
+
+@pytest.mark.parametrize("how", ["flag", "zero", "not_git", "auto_no_checkout"])
 def test_watcher_can_be_disabled(fx, repo, tmp_path, how):
-    args = ["--bind", "127.0.0.1:0"]
+    args, hook = ["--bind", "127.0.0.1:0"], None
     if how == "zero":
         set_dashboard_cfg(fx, code_check_s=0)
         args += ["--code-root", str(repo)]
     elif how == "flag":
         set_dashboard_cfg(fx, code_check_s=1)
         args += ["--code-root", str(repo), "--no-code-watch"]
-    else:                                   # a directory that is not a git checkout
+    elif how == "not_git":                  # a directory that is not a git checkout
         set_dashboard_cfg(fx, code_check_s=1)
         plain = tmp_path / "plain"
         plain.mkdir()
         args += ["--code-root", str(plain)]
-    proc = start(fx, *args)
+    else:                                   # no --code-root: `code_checkout()` is None (AUTO path)
+        set_dashboard_cfg(fx, code_check_s=1)
+        hook = tmp_path / "nocheckout"
+        hook.mkdir()
+        (hook / "sitecustomize.py").write_text(NO_CHECKOUT)
+    proc = start(fx, *args, pythonpath=hook)
     try:
         rec = wait_server(fx, proc)
-        assert rec["code_watch"] is False
-        commit(repo, "src/nightwright/a.py", "x = 3\n")
-        assert not until(lambda: proc.poll() is not None, timeout=4)
+        assert rec["code_watch"] is False and rec["code_sha"] is None
+        if how in ("flag", "zero"):         # a watched checkout exists: the commit must not stop it
+            commit(repo, "src/nightwright/a.py", "x = 3\n")
+            assert not until(lambda: proc.poll() is not None, timeout=4)
     finally:
         stop(proc)
     assert proc.returncode == 0
@@ -180,6 +192,8 @@ def test_server_exits_3_without_tailnet_address(fx, tmp_path, script):
         assert r.returncode == 3, (args, r.stderr)
         assert "no tailnet address" in r.stderr and "tailscale up" in r.stderr, r.stderr
         assert not (dash(fx) / "server.json").exists()
+        # exit 3 came before the bind: the process is gone and never announced a URL
+        assert "dashboard on http" not in r.stderr and "job API" not in r.stderr
 
 
 def test_tailnet_gate_keeps_exit_2_and_loopback_starts(fx, tmp_path):
@@ -326,6 +340,24 @@ def test_clients_refresh_leaves_a_foreign_record_alone(fx):
     r = LC.RecordRefresher(cfg, {"pid": me, "clients": 0}, lambda: 3, clock=lambda: now[0])
     now[0] += 60
     assert not r.tick() and LC.read_server_record(cfg)["clients"] == 0
+
+
+def test_clients_refresh_does_not_recreate_a_removed_record(fx):
+    cfg = fx["cfg"]
+    LC.write_server_record(cfg, {"pid": os.getpid(), "clients": 0})
+    now = [0.0]
+    r = LC.RecordRefresher(cfg, {"pid": os.getpid(), "clients": 0}, lambda: 3,
+                           clock=lambda: now[0])
+    LC.remove_server_record(cfg)
+    assert LC.read_server_record(cfg) is None
+    now[0] += 60
+    assert not r.tick() and not LC.read_path(cfg).exists() and r.writes == 0
+
+
+def test_reading_a_record_creates_nothing(tmp_path):
+    cfg = {"data_dir": str(tmp_path / "never-run")}
+    assert LC.read_server_record(cfg) is None
+    assert not (tmp_path / "never-run").exists()
 
 
 # ---- config (AC 7) -------------------------------------------------------------------------

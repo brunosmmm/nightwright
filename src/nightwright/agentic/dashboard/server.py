@@ -26,7 +26,6 @@ from .snapshot import SnapshotCache
 DEFAULT_BIND = f"127.0.0.1:{A.DEFAULT_PORT}"
 HANDLER_TIMEOUT_S = 30.0            # a connection silent this long is closed (tests patch it)
 DRAIN_MAX = 64 * 1024               # a refused request's body is read (and dropped) up to this
-SERVER_SCHEMA = "nw.dashboard.server.v1"
 
 
 class DashboardServer(http.server.ThreadingHTTPServer):
