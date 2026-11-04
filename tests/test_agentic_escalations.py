@@ -1395,3 +1395,36 @@ def test_signature_is_sorted_stat_tuples_and_moves_on_a_write(tmp_path):
 def test_the_tui_no_longer_defines_its_own_signature():
     from nightwright.tui import agentic_model as AM
     assert not hasattr(AM, "escalations_signature")
+
+
+# ---- SPEC-0403: the public unmet-AC accessor -------------------------------------------------
+
+def test_unmet_acs_in_first_occurrence_order_and_accepted_by_attest(tmp_path):
+    cfg = _cfg(tmp_path)
+    _reviewed(cfg, extra_unmet=("AC 7 bravo", "AC 6 alpha", "AC 7 bravo"))
+    st = _state(cfg)
+    other = {**st["last_review"]["verdicts"][RV],
+             "ac_assessment": [{"ac": "AC 6 alpha", "met": False},
+                               {"ac": "AC 8 charlie", "met": False}]}
+    st["last_review"]["verdicts"]["test_reviewer"] = other
+    S.write_state(cfg, CID, st)
+    got = ESC.unmet_acs(cfg, _state(cfg))
+    assert got == [AC4, "AC 7 bravo", "AC 6 alpha", "AC 8 charlie"]
+    assert got == ESC._review_findings(cfg, _state(cfg))[1]
+    for text in got:
+        plan = ESC.plan_answer(cfg, "ESC-0001", attest=[text], reason="r")
+        assert plan["answer"]["attest"] == [text]
+
+
+def test_unmet_acs_ignores_the_escalations_own_half_written_overrides(tmp_path, monkeypatch):
+    cfg = _cfg(tmp_path)
+    _reviewed(cfg)
+    _half_answered(cfg, monkeypatch)                      # ESC-0001 attested AC4, record open
+    assert _overrides(cfg, "ESC-0001")[1]
+    # an attested AC stays listed (`plan_answer` validates `--attest` against the same list,
+    # and accepts it), with or without `esc_id`
+    assert ESC.unmet_acs(cfg, _state(cfg), "ESC-0001") == [AC4]
+    assert ESC.unmet_acs(cfg, _state(cfg)) == [AC4]
+    plan = ESC.plan_answer(cfg, "ESC-0001", attest=[AC4], reason="r")
+    assert plan["answer"]["attest"] == [AC4]
+    assert ESC.unmet_acs(cfg, {"profile": "balanced"}) == []

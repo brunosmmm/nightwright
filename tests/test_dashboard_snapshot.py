@@ -57,6 +57,12 @@ def test_build_has_every_section_and_matches_the_payload(fx):
     assert [e["id"] for e in doc["inbox"]["escalations"]] == ["ESC-0001"]
     esc = doc["inbox"]["escalations"][0]
     assert esc["question"] == "ship it?" and esc["campaign"] == DECISION and esc["by"] == "conductor"
+    # SPEC-0403: the full entry; `question` keeps the first line
+    assert esc["question_text"] == "ship it?\nmore context"
+    assert {"options", "recommendation", "facts", "spec_title", "park", "answerable", "pending",
+            "why_not", "forms", "findings", "unmet_acs", "effects"} <= set(esc)
+    assert esc["answerable"] is True and esc["forms"] == ["choose", "text", "override"]
+    assert esc["unmet_acs"] == ["AC 4 output is sorted"] and esc["findings"]
     # exactly the main_dirty / main_not_on_base parks: the human_decision park is left out
     assert {r["campaign"] for r in doc["needs_you"]} == {DECISION, DIRTY, OFF_BASE}
     assert sorted((p["campaign"], p["park"]["reason"]) for p in doc["inbox"]["parks"]) == [
@@ -72,8 +78,14 @@ def test_one_failing_builder_is_one_error_section(fx, monkeypatch):
     cfg = fx["cfg"]
     good = SN.build(cfg)
 
-    def boom(*a, **k):
-        raise OSError("disk on fire")
+    real = ESC.list_all
+
+    def boom(cfg_, status=None):
+        # SPEC-0403: the parks read every record (to leave out a campaign with an open one), so
+        # only the open-records read of the escalations section fails here
+        if status == "open":
+            raise OSError("disk on fire")
+        return real(cfg_, status)
     monkeypatch.setattr(ESC, "list_all", boom)
     doc = SN.build(cfg)
     check_schema(doc)
@@ -113,6 +125,15 @@ def test_rev_ignores_ages_and_generated_at(fx, monkeypatch):
     b = SN.build(cfg, now=fx["now"] + dt.timedelta(minutes=15))
     assert a["generated_at"] != b["generated_at"]
     assert a["rev"] == b["rev"] == SN.compute_rev(b)
+
+
+def test_rev_changes_when_an_escalations_options_change(fx):
+    cfg = fx["cfg"]
+    first = SN.build(cfg)
+    ESC._mutate(cfg, "ESC-0001", lambda r: r.update(options=[{"n": 1, "label": "yes"}]))
+    again = SN.build(cfg)
+    assert again["inbox"]["escalations"][0]["options"] == [{"n": 1, "label": "yes"}]
+    assert again["rev"] != first["rev"]
 
 
 def test_rev_changes_with_cost(fx):

@@ -1,7 +1,7 @@
 ---
 id: SPEC-0403
 title: "Decisions inbox payload: full escalation entries, effects and host fixes in nw.dashboard.v1"
-status: accepted
+status: done
 owner: user
 created: 2026-11-03
 updated: 2026-11-04
@@ -304,50 +304,50 @@ or entry has an error.
 
 ## Acceptance criteria
 
-- [ ] `build(cfg)["inbox"]["escalations"]` has one entry per open escalation, ordered by
+- [x] `build(cfg)["inbox"]["escalations"]` has one entry per open escalation, ordered by
       `created` (then `id`). Each entry holds every field listed under Design. `question` is
       the first line and `question_text` the full text. `findings` equals
       `answerable_findings(cfg, state, id)` projected and cut to 300 characters with ids
       intact. `unmet_acs` equals `escalations.unmet_acs(cfg, state, id)`.
-- [ ] `forms` follows the Design rules: no `choose` without options, and no `override` for a
+- [x] `forms` follows the Design rules: no `choose` without options, and no `override` for a
       campaign-less record or one with no findings and no unmet ACs. `effects` has exactly
       the keys in `forms`, with the `EFFECTS` texts. A `worker_lost` record's effects are all
       `EFFECTS_WORKER_LOST`.
-- [ ] A pending escalation (the campaign has `park_requested` and is not PARKED) has
+- [x] A pending escalation (the campaign has `park_requested` and is not PARKED) has
       `answerable: false, pending: true, why_not: "not parked yet"`. A record whose campaign
       is RUNNING has `answerable: false` and `why_not: "campaign is RUNNING"`. A record whose
       campaign is PARKED `human_decision` has `answerable: true`. On the seeded fixture, every
       `answerable: true` entry with each of its `forms` passes `plan_answer` (valid arguments
       built from the entry's own options, findings and unmet ACs), and `plan_answer` refuses
       every `answerable: false` entry.
-- [ ] `inbox.parks` holds exactly the `needs_you` rows with no open escalation for their
+- [x] `inbox.parks` holds exactly the `needs_you` rows with no open escalation for their
       campaign, each with every SPEC-0401 row field plus `inbox_state` and `fix`, both per
       the Design. A `main_dirty` park's `fix` names its repo root and `nw queue resume <cid>`.
       A `human_decision` park whose latest escalation is answered has `inbox_state:
       awaiting_conductor`. One whose latest escalation is withdrawn has `needs_decision`.
-- [ ] `escalations.unmet_acs` exists, returns the `met: false` AC texts in first-occurrence
+- [x] `escalations.unmet_acs` exists, returns the `met: false` AC texts in first-occurrence
       order, and ignores `esc_id`'s own overrides. Each text it returns is accepted by
       `plan_answer(..., attest=[text], reason=…)`.
-- [ ] An open escalation whose campaign state is unreadable yields an entry with the summary
+- [x] An open escalation whose campaign state is unreadable yields an entry with the summary
       fields, `error`, and `answerable: false`, and every other entry still builds. When
       `dashboard_payload` raises, `parks` is its error and `escalations` still builds.
-- [ ] `build_inbox` and `build` leave every file under the data dir byte-identical (SPEC-0401's
+- [x] `build_inbox` and `build` leave every file under the data dir byte-identical (SPEC-0401's
       read-only test, run with the seeded inbox fixture). `escalations` still does not import
       `agentic.dashboard` (SPEC-0401's import-graph test).
-- [ ] `nw dashboard snapshot` (real subprocess) prints each escalation with its forms or its
+- [x] `nw dashboard snapshot` (real subprocess) prints each escalation with its forms or its
       `why_not`, and each park with its `inbox_state` and `fix`. `--json` carries the full
       inbox, and the command exits 0 when an entry has an error.
-- [ ] Over SPEC-0414's real loopback server (`make_server(cfg, "127.0.0.1:0")`, valid bearer
+- [x] Over SPEC-0414's real loopback server (`make_server(cfg, "127.0.0.1:0")`, valid bearer
       token), `GET /api/snapshot` returns an `inbox` equal to `build(cfg)["inbox"]` for the
       seeded inbox fixture. After the seeded `ESC-0001` is answered with `plan_answer` +
       `apply_answer` (`by="human"`) directly in the data dir and the cache clock steps past
       `refresh_s`, the old `ETag` no longer gives `304`, and `ESC-0001` is gone from
       `inbox.escalations` while its campaign is listed in `inbox.parks` with `inbox_state:
       awaiting_conductor`. No SPEC-0414 source file changes.
-- [ ] A drift guard test fails if `EFFECTS["override"]` stops mentioning `REVIEWING`, or if the
+- [x] A drift guard test fails if `EFFECTS["override"]` stops mentioning `REVIEWING`, or if the
       `escalation_answered` row of `skills/nw-conduct/SKILL.md` stops containing
       `--to REVIEWING`, `choose` and `text`.
-- [ ] `python3 tools/spec_lint.py` exits 0, and the affected tests pass, including SPEC-0401's
+- [x] `python3 tools/spec_lint.py` exits 0, and the affected tests pass, including SPEC-0401's
       snapshot, cache, CLI, read-only and import tests and SPEC-0414's server, serve-CLI and
       HTTP read-only tests, changed only where Decisions 3 and 6 change their expected output.
 
@@ -417,6 +417,81 @@ or entry has an error.
   `test_tui_escalations_*`), `tests/test_agentic_dashboard*.py` (`dashboard_payload` /
   `nw queue watch`) and SPEC-0401's dashboard tests, all of which must pass.
 
+### As shipped (2026-11-04)
+
+- `agentic/dashboard/inbox.py` holds `build_inbox`, `EFFECTS`, `EFFECTS_WORKER_LOST`,
+  `HOST_FIX` and `FINDING_TEXT_MAX = 300`, as designed. `escalations.unmet_acs` is the
+  wrapper given in the Design. Already-attested ACs stay in `unmet_acs` on purpose: they are
+  in the list `plan_answer` validates `--attest` against, and it accepts them. The
+  escalations tests pin this. `snapshot.build` passes `_dp_section(dp, needs_you)` to
+  `build_inbox`, and `_escalations`, the `parks` lambda, `HUMAN_PARKS` and `_first_line` are
+  gone from `snapshot.py`. None of SPEC-0414's `server.py`, `auth.py` or `audit.py` changed.
+- `findings[].synthetic`: `queue.triage_reviews`' finding records carry no `synthetic` key
+  (it returns the synthetic ids apart). So the projection derives it from the id
+  (`<persona>#fix` / `<persona>#ac<j>`), the same rule triage uses for synthetic waivers.
+  `test_findings_are_answerable_findings_projected_and_cut` checks it against
+  `_review_findings(...)[2]`.
+- `park.parked_at` is the campaign park's `since`, because the campaign state has no
+  `parked_at` key.
+- `escalations` and `parks` are two separate error sections of `build_inbox`.
+  `escalations` reads `list_all(cfg, "open")`. `parks` reads one `list_all(cfg)` to get both
+  the set of open campaigns and the latest record per campaign. A campaign with any open
+  record is left out of `parks`, because that record is already listed under `escalations`.
+  SPEC-0401's `test_one_failing_builder_is_one_error_section` now makes only the open-records
+  read fail, because `parks` depends on the escalation records (Decision 6).
+- When a campaign state is unreadable (missing or corrupt), the entry carries the summary
+  fields, `error`, `answerable: false`, `pending: false` and `why_not: "campaign state
+  unreadable"`. Any other exception while building an entry gives the summary fields, `error`
+  and `answerable: false`.
+- The AC's "campaign is RUNNING": nightwright has no `RUNNING` state. The fixture's running
+  campaign is `IMPLEMENTING`, so its `why_not` is `campaign is IMPLEMENTING`. A unit test
+  also pins `campaign is RUNNING` for a state named `RUNNING`.
+- The CLI's park line is now `<cid> <reason> <inbox_state>: <fix>`, per the Design. The
+  SPEC-0401 `park <label> <cid> <reason>: <detail>` line is gone, and its tests were updated
+  to match.
+- The server test reuses `tests/test_dashboard_server.py`'s `http.client` harness (`Srv`)
+  rather than `urllib`. Its requests are synchronous, so no `waits.py` poll is needed.
+- The seeded inbox fixture is `tests/fixtures/dashboard_data.py:seed_inbox`. The base
+  `seed()` now also gives `DECISION` a stored review. That is the read-only extension:
+  `test_dashboard_readonly.py` and `test_dashboard_http_readonly.py` run unchanged over it.
+
+### Test record (2026-11-04)
+
+- New `tests/test_dashboard_inbox.py` (12 tests, over `seed_inbox`). It covers every entry
+  field and the order, `question` vs `question_text`, the finding projection and the
+  300-character cut with ids intact, the `forms` / `effects` rules and the worker_lost
+  wording, and the `answerable` / `pending` / `why_not` triples. It also runs the
+  `plan_answer` cross-check (every offered form, finding id and unmet AC is accepted, and
+  every `answerable: false` entry is refused), checks park `inbox_state` / `fix` (including
+  the `the project repo` fallback and the latest-record rule), and covers the per-entry
+  errors and the `dashboard_payload`-raises case. It checks that the data dir is
+  byte-identical after `build_inbox` and `build`, and includes
+  `test_effects_match_nw_conduct_row`. All pass.
+- Extended tests:
+  - `tests/test_agentic_escalations.py`: `unmet_acs` order and `--attest` acceptance, and
+    the SPEC-0286 half-written-override case.
+  - `tests/test_dashboard_snapshot.py`: the new keys, and `rev` changes with options.
+  - `tests/test_dashboard_cli.py`: real `nw dashboard snapshot` subprocesses on
+    `seed_inbox`, text and `--json`, exit 0 with the corrupt-state entry.
+  - `tests/test_dashboard_server.py::test_snapshot_serves_full_inbox`: the real server, the
+    inbox equal to `build`, then a new ETag, `ESC-0001` gone and `awaiting_conductor` after
+    an answer.
+  All pass.
+- The targeted run of the dashboard (snapshot, CLI, server, serve-CLI, cache, readonly,
+  HTTP readonly, imports), escalations and TUI escalation tests gave 273 passed, 1 skipped.
+- `python3 tools/affected_tests.py --run uv run pytest -q` gave 3265 passed, 6 skipped and 2
+  failed. Both failures were the stale-ledger lint (`test_specs.py::test_all_specs_pass_lint`,
+  `test_export.py::test_internal_spec_lint_unaffected_by_outbox`), and `--write-ledger`
+  fixes them. Both were re-run afterwards and pass. The full suite is left to gating.
+- Manual check, on the host with the real data dir: `uv run nw dashboard snapshot` exited 0
+  and listed the 11 real open escalations (ESC-0008..0012 and ESC-0015..0018, campaign-less
+  sentinel records `[choose/text]`; ESC-0019 and ESC-0020 on PARKED `human_decision`
+  campaigns `[choose/text/override]`). `--json` `.inbox` gave the same forms, with the
+  stored-review finding ids for ESC-0019 and ESC-0020 and no unmet ACs. The options and
+  questions match `nw escalations show ESC-0019`. No human-owned park was without an open
+  escalation, so `inbox.parks` was empty, which matches `nw queue watch`'s needs-you rows
+  (both are covered by escalations).
+
 ## Rollout / migration
 
 1. SPEC-0401 and SPEC-0414 are `done`, so this spec can land as soon as it is accepted. It
@@ -429,12 +504,12 @@ or entry has an error.
 
 ## Definition of done
 
-- [ ] Acceptance criteria all met.
-- [ ] Test plan executed: the automated tests above pass, and the manual `nw dashboard
+- [x] Acceptance criteria all met.
+- [x] Test plan executed: the automated tests above pass, and the manual `nw dashboard
       snapshot` check is recorded here.
-- [ ] No regressions (affected tests at the queue's close gate).
-- [ ] Spec body updated to match what shipped.
-- [ ] `docs/LEDGER.md` regenerated, and `python3 tools/spec_lint.py` exits 0.
+- [x] No regressions (affected tests at the queue's close gate).
+- [x] Spec body updated to match what shipped.
+- [x] `docs/LEDGER.md` regenerated, and `python3 tools/spec_lint.py` exits 0.
 
 ## Open questions
 

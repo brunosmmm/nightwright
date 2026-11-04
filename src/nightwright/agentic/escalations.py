@@ -363,6 +363,16 @@ def answerable_findings(cfg, state: dict, esc_id=None) -> list[dict]:
     return _review_findings(cfg, state)[0]
 
 
+def unmet_acs(cfg, state: dict, esc_id=None) -> list[str]:
+    """The unmet AC texts `plan_answer` validates `--attest` against (SPEC-0403): the distinct
+    `ac` of every `met: false` `ac_assessment` entry of the stored review, in first-occurrence
+    order. With `esc_id`, that escalation's own (half-written) overrides do not count, as in
+    `answerable_findings`."""
+    if esc_id is not None:
+        state = _without_overrides_of(state, esc_id)
+    return _review_findings(cfg, state)[1]
+
+
 def _ids_hint(ids) -> str:
     ids = list(ids)
     return ", ".join(ids[:10]) + (f", … ({len(ids)} in all)" if len(ids) > 10 else "") \

@@ -75,16 +75,21 @@ def text_lines(doc: dict) -> list[str]:
         out.append(f"inbox.escalations: error: {_err(esc)}")
     else:
         for e in esc:
-            out.append(f"{e.get('id')} {e.get('campaign') or '-'} {e.get('question')}")
+            if e.get("error"):
+                tail = f"(error: {e['error']})"
+            elif not e.get("answerable"):
+                tail = f"({e.get('why_not')})"
+            else:
+                tail = f"[{'/'.join(e.get('forms') or [])}]"
+            out.append(f"{e.get('id')} {e.get('campaign') or '-'} {e.get('question')} {tail}")
             needs += 1
     if _err(parks):
         out.append(f"inbox.parks: error: {_err(parks)}")
     else:
         for p in parks:
             park = p.get("park") or {}
-            line = f"park {p.get('label') or p.get('campaign')} {p.get('campaign')} " \
-                f"{park.get('reason')}"
-            out.append(f"{line}: {park['detail']}" if park.get("detail") else line)
+            out.append(f"{p.get('campaign')} {park.get('reason')} {p.get('inbox_state')}: "
+                       f"{p.get('fix')}")
             needs += 1
     if not needs and not _err(esc) and not _err(parks):
         out.append("nothing needs you")

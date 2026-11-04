@@ -47,9 +47,11 @@ def test_text_form_has_health_counts_spend_and_needs_you(tmp_path):
     assert lines[1] == ("active 1 · queued 0 · parked 3 · waiting 0 · backlog 0 · "
                         "conductor-handling 0")
     assert any(ln.startswith("spend today $") for ln in lines)
-    assert any(ln.startswith("ESC-0001 SPEC-0902-20261103-bbbb ship it?") for ln in lines)
-    assert any(ln.startswith("park SPEC-0903 ") and "main_dirty" in ln for ln in lines)
-    assert any(ln.startswith("park SPEC-0905 ") and "main_not_on_base" in ln for ln in lines)
+    assert "ESC-0001 SPEC-0902-20261103-bbbb ship it? [choose/text/override]" in lines
+    assert any(ln.startswith("SPEC-0903-20261103-cccc main_dirty needs_host: On the host: ")
+               for ln in lines)
+    assert any(ln.startswith("SPEC-0905-20261103-ffff main_not_on_base needs_host: On the host: ")
+               for ln in lines)
     assert "ESC-0002" not in r.stdout and "ESC-0003" not in r.stdout
     assert "nothing needs you" not in r.stdout
 
@@ -124,18 +126,52 @@ def test_text_stale_lease_without_host():
     assert lines[0] == "runner 77 heartbeat 300s · stale lease · conductor down"
 
 
-def test_text_park_lines_keep_the_detail_verbatim():
+def test_text_inbox_lines_carry_forms_why_not_error_and_fix():
+    # SPEC-0403: forms, or why_not, or the entry's error; a park's inbox_state and fix
     from nightwright.agentic.cli_dashboard import text_lines
     parks = [{"campaign": "C1", "label": "SPEC-1", "park": {"reason": "main_dirty",
-                                                           "detail": "see: "}},
-             {"campaign": "C2", "label": None, "park": {"reason": "main_not_on_base",
-                                                       "detail": None}}]
+                                                           "detail": "see: "},
+              "inbox_state": "needs_host", "fix": "On the host: fix C1"},
+             {"campaign": "C2", "label": None, "park": {"reason": "human_decision"},
+              "inbox_state": "awaiting_conductor", "fix": "Answered."}]
     lines = text_lines(_doc(parks=parks, escalations=[
-        {"id": "ESC-0009", "campaign": None, "question": "go?"}]))
-    assert "ESC-0009 - go?" in lines
-    assert "park SPEC-1 C1 main_dirty: see: " in lines
-    assert "park C2 C2 main_not_on_base" in lines
+        {"id": "ESC-0009", "campaign": None, "question": "go?", "answerable": True,
+         "forms": ["choose", "text"]},
+        {"id": "ESC-0010", "campaign": "C3", "question": "wait?", "answerable": False,
+         "why_not": "not parked yet"},
+        {"id": "ESC-0011", "campaign": "C4", "question": "bad?", "answerable": False,
+         "error": "ValueError: torn"}]))
+    assert "ESC-0009 - go? [choose/text]" in lines
+    assert "ESC-0010 C3 wait? (not parked yet)" in lines
+    assert "ESC-0011 C4 bad? (error: ValueError: torn)" in lines
+    assert "C1 main_dirty needs_host: On the host: fix C1" in lines
+    assert "C2 human_decision awaiting_conductor: Answered." in lines
     assert "nothing needs you" not in lines
+
+
+def test_inbox_fixture_text_and_json_forms(tmp_path):
+    from fixtures.dashboard_data import DIRTY_ROOT, I_ANS, I_DIRTY, seed_inbox
+    fx = seed_inbox(tmp_path)
+    r = run_nw(fx)
+    assert r.returncode == 0, r.stderr                 # with ESC-0005's corrupt state present
+    lines = r.stdout.splitlines()
+    assert "ESC-0001 SPEC-0911-20261103-aaaa Waive the review? [choose/text/override]" in lines
+    assert "ESC-0002 SPEC-0912-20261103-bbbb Pending one? (not parked yet)" in lines
+    assert "ESC-0003 SPEC-0913-20261103-cccc Running one? (campaign is IMPLEMENTING)" in lines
+    assert "ESC-0004 - Campaign-less one? [text]" in lines
+    assert any(ln.startswith("ESC-0005 SPEC-0915-20261103-eeee Corrupt one? (error: "
+                             "JSONDecodeError: ") for ln in lines)
+    assert (f"{I_DIRTY} main_dirty needs_host: On the host: move the uncommitted changes in "
+            f"`{DIRTY_ROOT}` off main (commit them on a branch), then "
+            f"`nw queue resume {I_DIRTY}`.") in lines
+    assert any(ln.startswith(f"{I_ANS} human_decision awaiting_conductor: Answered;")
+               for ln in lines)
+    r = run_nw(fx, "--json")
+    assert r.returncode == 0, r.stderr
+    doc = json.loads(r.stdout)
+    from nightwright.agentic.dashboard import snapshot as SN
+    want = json.loads(json.dumps(SN.build(fx["cfg"])["inbox"]))
+    assert SN._strip(doc["inbox"]) == SN._strip(want)          # ages may tick between builds
 
 
 def test_text_prints_every_failed_section():

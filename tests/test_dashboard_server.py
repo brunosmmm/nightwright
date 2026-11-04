@@ -362,3 +362,32 @@ def test_make_server_runs_the_bind_gate_itself(tmp_path, bind, word):
         finally:
             probe.close()
     assert not (fx["data"] / "agentic/dashboard/server.json").exists()
+
+
+# ---- SPEC-0403: the full decisions inbox over HTTP, with no server change ------------------
+
+def test_snapshot_serves_full_inbox(tmp_path):
+    from fixtures.dashboard_data import I_DEC, seed_inbox
+    from nightwright.agentic import escalations as ESC
+    fx = seed_inbox(tmp_path)
+    srv = Srv(fx)
+    try:
+        st, h, body = srv.req()
+        assert st == 200
+        inbox = json.loads(body)["inbox"]
+        want = json.loads(json.dumps(SN.build(srv.cfg)["inbox"]))
+        assert SN._strip(inbox) == SN._strip(want)        # ages may tick between the builds
+        assert "ESC-0001" in [e["id"] for e in inbox["escalations"]]
+        assert inbox["escalations"][1]["findings"] and inbox["escalations"][1]["effects"]
+        # the human answers ESC-0001 in the data dir (as `nw escalations answer` does)
+        plan = ESC.plan_answer(srv.cfg, "ESC-0001", choose="1", by="human")
+        assert ESC.apply_answer(srv.cfg, plan)["status"] == "answered"
+        srv.clock.t += srv.cache.refresh_s
+        st, h2, body = srv.req(headers={"If-None-Match": h["etag"]})
+        assert st == 200 and h2["etag"] != h["etag"]
+        inbox = json.loads(body)["inbox"]
+        assert "ESC-0001" not in [e["id"] for e in inbox["escalations"]]
+        parks = {p["campaign"]: p for p in inbox["parks"]}
+        assert parks[I_DEC]["inbox_state"] == "awaiting_conductor"
+    finally:
+        srv.close()

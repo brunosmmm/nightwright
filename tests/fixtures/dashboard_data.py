@@ -51,6 +51,23 @@ def _campaign(cfg, cid, state, now, *, updated_min=1, created_min=30, **extra):
     return cid
 
 
+REVIEWER = "conformance_reviewer"
+UNMET_AC = "AC 4 output is sorted"
+LONG_DETAIL = "d" * 400
+
+
+def review(unmet=(UNMET_AC,)) -> dict:
+    """A stored `last_review` (SPEC-0403): one reviewer's `fix` verdict with two blocking
+    (`major`) findings, the second with a 400-character detail, and `unmet` ACs."""
+    return {"verdicts": {REVIEWER: {
+        "verdict": "fix", "score": 40, "fix_brief": "x", "loop": 0, "run": "002-r",
+        "findings": [{"severity": "major", "title": "Wrong order", "files": ["a.py"]},
+                     {"severity": "major", "title": "Missing check", "files": ["b.py"],
+                      "detail": LONG_DETAIL}],
+        "ac_assessment": [*[{"ac": a, "met": False} for a in unmet],
+                          {"ac": "AC 5 other", "met": True}]}}}
+
+
 def _event(i, type_, now, campaign=None, **data):
     return {"schema": E.SCHEMA, "id": i, "ts": _iso(now), "type": type_, "campaign": campaign,
             "spec_id": campaign[:9] if campaign else None, "project": "Meta-Tools",
@@ -69,7 +86,8 @@ def seed(tmp_path: Path, now=None) -> dict:
     _campaign(cfg, ACTIVE, "IMPLEMENTING", now)
     _campaign(cfg, DECISION, "PARKED", now, park={
         "reason": "human_decision", "detail": "ESC-0001: ship it?", "since": _iso(now, 5),
-        "resume_to": "IMPLEMENTING", "escalated_from": "loop_exhausted"})
+        "resume_to": "IMPLEMENTING", "escalated_from": "loop_exhausted"},
+        last_review=review())                          # SPEC-0403: the inbox reads it
     _campaign(cfg, DIRTY, "PARKED", now, park={
         "reason": "main_dirty", "detail": "main checkout has uncommitted tracked changes",
         "since": _iso(now, 3), "resume_to": "CLOSING"})
@@ -110,5 +128,82 @@ def seed(tmp_path: Path, now=None) -> dict:
     with open(E.events_path(cfg), "w", encoding="utf-8") as f:
         for ev in lines:
             f.write(json.dumps(ev) + "\n")
+    env = {"NW_DATA_DIR": str(data), "NW_CONFIG_DIR": str(conf)}
+    return {"cfg": cfg, "env": env, "now": now, "data": data}
+
+
+# ---- SPEC-0403: the decisions inbox fixture ----------------------------------------------
+
+I_DEC = "SPEC-0911-20261103-aaaa"        # PARKED human_decision, ESC-0001 with a review
+I_PEND = "SPEC-0912-20261103-bbbb"       # park requested only, ESC-0002
+I_RUN = "SPEC-0913-20261103-cccc"        # IMPLEMENTING, ESC-0003
+I_BAD = "SPEC-0915-20261103-eeee"        # corrupt state.json, ESC-0005
+I_DIRTY = "SPEC-0916-20261103-ffff"      # main_dirty, repo.root set
+I_OFF = "SPEC-0917-20261103-a1a1"        # main_not_on_base, no repo.root
+I_ANS = "SPEC-0918-20261103-b2b2"        # human_decision, latest escalation answered
+I_WD = "SPEC-0919-20261103-c3c3"         # human_decision, latest escalation withdrawn
+DIRTY_ROOT = "/srv/repos/meta-tools"
+DEC_QUESTION = "Waive the review?\nThe loop is exhausted.\nTwo findings remain."
+
+
+def _hd_park(now, esc_id, minutes=5):
+    return {"reason": "human_decision", "detail": f"{esc_id}: q", "since": _iso(now, minutes),
+            "resume_to": "IMPLEMENTING", "escalated_from": "loop_exhausted"}
+
+
+def _esc(cfg, now, minutes, cid, question, status="open", **fields):
+    rec = ESC._create(cfg, {"by": "conductor", "campaign": cid,
+                            "spec_id": cid[:9] if cid else None, "project": "Meta-Tools",
+                            "question": question, "options": fields.pop("options", []),
+                            "recommendation": fields.pop("recommendation", None),
+                            "facts": fields.pop("facts", []), "park": None,
+                            "kind": fields.pop("kind", None)})
+    extra = {"created": _iso(now, minutes), "status": status, **fields}
+    ESC._mutate(cfg, rec["id"], lambda r: r.update(extra))
+    return rec["id"]
+
+
+def seed_inbox(tmp_path: Path, now=None) -> dict:
+    """A data dir with one of each inbox case (Test plan of SPEC-0403). `created` times give
+    the inbox order ESC-0004, ESC-0001, ESC-0002, ESC-0003 (tie with ESC-0002, broken by id),
+    ESC-0005, ESC-0006."""
+    now = now or dt.datetime.now().astimezone()
+    data, conf = tmp_path / "data", tmp_path / "config"
+    data.mkdir(parents=True, exist_ok=True)
+    conf.mkdir(parents=True, exist_ok=True)
+    (conf / "config.yaml").write_text(yaml.safe_dump({"agentic": AGENTIC}))
+    cfg = make_cfg(data, conf)
+    _campaign(cfg, I_DEC, "PARKED", now, park=_hd_park(now, "ESC-0001"), last_review=review())
+    _campaign(cfg, I_PEND, "IMPLEMENTING", now, park_requested={
+        "reason": "human_decision", "detail": "ESC-0002: q", "at": _iso(now, 4),
+        "by": "conductor"})
+    _campaign(cfg, I_RUN, "IMPLEMENTING", now)
+    _campaign(cfg, I_BAD, "PARKED", now, park=_hd_park(now, "ESC-0005"))
+    _campaign(cfg, I_DIRTY, "PARKED", now, repo={"base": "main", "root": DIRTY_ROOT}, park={
+        "reason": "main_dirty", "detail": "main checkout has uncommitted tracked changes",
+        "since": _iso(now, 3), "resume_to": "CLOSING"})
+    _campaign(cfg, I_OFF, "PARKED", now, park={
+        "reason": "main_not_on_base", "detail": "main checkout is on branch feat-x",
+        "since": _iso(now, 2), "resume_to": "CLOSING"})
+    _campaign(cfg, I_ANS, "PARKED", now, park=_hd_park(now, "ESC-0007"))
+    _campaign(cfg, I_WD, "PARKED", now, park=_hd_park(now, "ESC-0009"))
+    _esc(cfg, now, 50, I_DEC, DEC_QUESTION,
+         options=[{"n": 1, "label": "Waive and resume"}, {"n": 2, "label": "Abandon"}],
+         recommendation=1, facts=["loops: 3", "cost: $4.10"])
+    _esc(cfg, now, 40, I_PEND, "Pending one?", options=[{"n": 1, "label": "go"}])
+    _esc(cfg, now, 40, I_RUN, "Running one?")
+    _esc(cfg, now, 60, None, "Campaign-less one?", facts="one fact")
+    _esc(cfg, now, 30, I_BAD, "Corrupt one?")
+    _esc(cfg, now, 20, None, "Worker box lost 3 jobs; pause it?", kind="worker_lost",
+         options=[{"n": 1, "label": "pause"}, {"n": 2, "label": "keep"}])
+    _esc(cfg, now, 15, I_ANS, "Answered one?", status="answered",
+         answer={"kind": "text", "text": "go"}, answered_by="human",
+         answered_at=_iso(now, 10))
+    _esc(cfg, now, 25, I_WD, "Old answered one?", status="answered",
+         answer={"kind": "text", "text": "go"}, answered_by="human",
+         answered_at=_iso(now, 24))
+    _esc(cfg, now, 12, I_WD, "Withdrawn one?", status="withdrawn",
+         withdrawn={"by": "conductor", "reason": "moot", "at": _iso(now, 11)})
+    (S.campaign_dir(cfg, I_BAD) / "state.json").write_text("{not json")
     env = {"NW_DATA_DIR": str(data), "NW_CONFIG_DIR": str(conf)}
     return {"cfg": cfg, "env": env, "now": now, "data": data}

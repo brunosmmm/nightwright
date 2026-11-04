@@ -17,6 +17,7 @@ from .. import events as E
 from .. import gate_slots as GS
 from .. import lease as L
 from .. import store
+from . import inbox as IB
 from . import settings
 
 SCHEMA = "nw.dashboard.v1"
@@ -29,7 +30,6 @@ RECENT_TYPES = ("merged", "handed_off", "abandoned", "run_failed", "parked", "re
 RECENT_N = 20
 RECENT_WINDOW = 256 * 1024
 BACKLOG_TOP = 5
-HUMAN_PARKS = ("main_dirty", "main_not_on_base")
 # Keys `dashboard_payload` derives from "now" without the `_age_s` suffix: they move with the
 # clock alone, so `rev` ignores them like the `*_age_s` keys (As shipped, SPEC-0401).
 NOW_RELATIVE_KEYS = frozenset({"age_s", "elapsed_s", "held_s", "waiting_s", "waited_s"})
@@ -271,18 +271,6 @@ def _herdr_watch(cfg):
     return _herdr_watch_status(cfg)
 
 
-def _first_line(text) -> str:
-    return str(text or "").strip().splitlines()[0] if str(text or "").strip() else ""
-
-
-def _escalations(cfg) -> list[dict]:
-    return [{"id": r.get("id"), "created": r.get("created"), "by": r.get("by"),
-             "kind": r.get("kind"), "question": _first_line(r.get("question")),
-             "campaign": r.get("campaign"), "spec_id": r.get("spec_id"),
-             "project": r.get("project")}
-            for r in ESC.list_all(cfg, "open")]
-
-
 def _dp_section(dp, fn):
     """A section derived from `dashboard_payload`: its error when the payload failed."""
     return dp if _failed(dp) else _safe(fn, dp)
@@ -319,10 +307,6 @@ def build(cfg, now=None) -> dict:
         rows_ = dp.get("backlog") or []
         return {"count": len(rows_), "top": rows_[:BACKLOG_TOP]}
 
-    def parks(dp):
-        return [r for r in dp.get("needs_you") or []
-                if ((r.get("park") or {}).get("reason")) in HUMAN_PARKS]
-
     doc = {
         "schema": SCHEMA, "generated_at": now.astimezone(dt.timezone.utc).isoformat(
             timespec="seconds"), "rev": None,
@@ -340,7 +324,8 @@ def build(cfg, now=None) -> dict:
         "backlog": _dp_section(dp, backlog),
         "delivered": _dp_section(dp, lambda d: d["delivered"]),
         "recent_events": tail if _failed(tail) else _safe(_recent, tail),
-        "inbox": {"escalations": _safe(_escalations, cfg), "parks": _dp_section(dp, parks)},
+        # SPEC-0403: the full inbox, from the `needs_you` rows already computed
+        "inbox": IB.build_inbox(cfg, _dp_section(dp, lambda d: d["needs_you"])),
     }
     doc["rev"] = compute_rev(doc)
     return doc
