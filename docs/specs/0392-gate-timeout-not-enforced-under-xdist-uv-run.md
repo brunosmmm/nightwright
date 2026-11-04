@@ -248,6 +248,14 @@ is pasted in the spec's As shipped section as the pinned cause. One additional m
   fall back, so the assertion keeps its meaning) and asserts `slot_wait_s < 5.0`. `uv run pytest -q
   tests/test_remote_gates.py -n 4` -> 116 passed. Test-only; `gates.py` untouched; the full suite is left to gating.
 
+- Gate follow-up 4 (2026-11-03): `tests/test_affected_tests_replay.py::test_recorded_fallback[SPEC-0338 .nw/project.yaml]`
+  failed deterministically (102 selected vs cap 0.4*252). Not caused by this branch (it touches no selector input and
+  adds no `.nw/project.yaml` reference): the branch was based on a main that lacked main's later fix `5cb028d2` ("Replay
+  bounds: widen headroom", per-case `max_fraction: 0.5` and `max_tests` 18). Brought those two test files
+  (`tests/test_affected_tests_replay.py`, `tests/data/affected_fallback_replay.json`) to main's content verbatim so the
+  merge is a no-op; `tools/affected_tests.py` and `gates.py` untouched. `uv run pytest -q
+  tests/test_affected_tests_replay.py tests/test_affected_tests.py` -> 118 passed.
+
 ### As shipped
 
 - `gates.py`: `_kill_tree` (snapshot of the shell's group plus ppid-reachable descendants as
