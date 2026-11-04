@@ -30,7 +30,7 @@ def test_serve_cmd_and_serve_dashboard_pass_no_own():
 
 def test_make_server_has_own_keyword_only():
     assert [a.arg for a in ast.parse(inspect.getsource(DS.make_server)).body[0].args.kwonlyargs] \
-        == ["cache", "own", "mode", "gate", "peer"]
+        == ["cache", "own", "mode", "gate", "peer", "hub", "csrf"]
 
 
 def test_no_environment_read_feeds_the_seam():

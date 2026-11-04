@@ -214,12 +214,16 @@ def worker_serve(cfg, blob, conf, kinds, slots):
 @click.option("--jobs", "jobs", is_flag=True,
               help="serve the pull-worker job API (default bind 127.0.0.1:8790)")
 @click.option("--dashboard", "dashboard", is_flag=True,
-              help="serve the dashboard and decisions inbox (SPEC-0400; default bind "
-                   "127.0.0.1:8791, no login on loopback; --bind tailscale serves this host's "
-                   "tailnet address behind the tailscale whois identity gate)")
+              help="serve the dashboard and decisions inbox (SPEC-0400). Default bind "
+                   "`auto:8791` (SPEC-0432): 127.0.0.1:8791 always (no login), plus this "
+                   "host's tailnet address:8791 behind the tailscale whois identity gate "
+                   "whenever Tailscale has one (re-checked every 15 s, bound and closed live; "
+                   "a logged-out Tailscale is never an exit)")
 @click.option("--bind", default=None, metavar="ADDR:PORT",
-              help="--jobs: loopback or a Tailscale address without TLS; --dashboard: loopback, "
-                   "`tailscale[:PORT]` or one of this host's own tailnet addresses")
+              help="--jobs: loopback or a Tailscale address without TLS; --dashboard: "
+                   "`auto[:PORT]` (the default: loopback + tailnet), a loopback address "
+                   "(loopback only), or `tailscale[:PORT]` / one of this host's own tailnet "
+                   "addresses (tailnet only; exits 3 when there is none)")
 @click.option("--tls-cert", default=None, type=click.Path(exists=True, dir_okay=False))
 @click.option("--tls-key", default=None, type=click.Path(exists=True, dir_okay=False))
 @click.option("--client-ca", default=None, type=click.Path(exists=True, dir_okay=False),
@@ -231,9 +235,9 @@ def worker_serve(cfg, blob, conf, kinds, slots):
               help="--dashboard: do not exit 0 when nightwright's code changes")
 @click.option("--tailnet-wait", "tailnet_wait", type=click.FloatRange(min=0), default=0,
               metavar="SECONDS",
-              help="--dashboard: when the bind needs a tailnet address and there is none yet, "
-                   "retry for up to SECONDS before exiting 3 (SPEC-0427; the systemd unit "
-                   "passes 60)")
+              help="--dashboard with a tailnet-only bind: when there is no tailnet address "
+                   "yet, retry for up to SECONDS before exiting 3 (SPEC-0427; a tailscale unit "
+                   "passes 60). The default `auto` bind never needs it")
 @click.pass_obj
 def serve_cmd(cfg, jobs, dashboard, bind, tls_cert, tls_key, client_ca, code_root,
               no_code_watch, tailnet_wait):
@@ -271,9 +275,11 @@ class _TailnetMissingExit(click.ClickException):
 
 def _serve_dashboard(cfg, bind, tls_cert, tls_key, client_ca, *, code_root=None,
                      no_code_watch=False, tailnet_wait=0):
-    """`nw serve --dashboard` (SPEC-0414, SPEC-0416, SPEC-0404). Exit 2: `BindRefused` or a TLS
-    flag; exit 3: `TailnetMissing`; exit 1: an OSError from binding; exit 0: SIGTERM/SIGINT or
-    nightwright's code changed (a supervisor restarts it onto the new code)."""
+    """`nw serve --dashboard` (SPEC-0414, SPEC-0416, SPEC-0404, SPEC-0432). The default bind
+    `auto[:PORT]` serves loopback at once and the tailnet whenever this host has an address (a
+    missing tailnet is never an exit). Exit 2: `BindRefused` or a TLS flag; exit 3:
+    `TailnetMissing` (tailnet-only binds); exit 1: an OSError from binding; exit 0:
+    SIGTERM/SIGINT or nightwright's code changed (a supervisor restarts it onto the new code)."""
     import signal
     import threading
     import time
@@ -282,14 +288,27 @@ def _serve_dashboard(cfg, bind, tls_cert, tls_key, client_ca, *, code_root=None,
     from .dashboard import auth as DA
     from .dashboard import lifecycle as LC
     from .dashboard import server as DS
-    # SPEC-0427 `--tailnet-wait`: retry a missing tailnet address every 5 s for up to that long
-    # (under systemd an outage is one exit 3 a minute, and the server binds within seconds of
-    # Tailscale coming up). Other errors propagate at once.
+    spec = bind or DS.DEFAULT_SERVE_BIND
+    try:
+        auto_port = DS.auto_port(spec)
+    except DA.BindRefused as e:
+        raise click.UsageError(str(e))
+    if auto_port is not None and (tls_cert or tls_key or client_ca):
+        raise click.UsageError("TLS is not supported with --dashboard")
+    waiting_rec = False
+    # SPEC-0427 `--tailnet-wait` (tailnet-only binds): retry a missing tailnet address every 5 s
+    # for up to that long; while waiting, server.json says so (SPEC-0432). Other errors
+    # propagate at once.
     deadline, said = time.monotonic() + tailnet_wait, False
+
+    def _term(*_):                                  # SIGTERM while waiting: a clean stop
+        raise KeyboardInterrupt
+    prev_term = signal.signal(signal.SIGTERM, _term)
     try:
         while True:
             try:
-                host, port = DA.resolve_bind(bind or DS.DEFAULT_BIND)
+                host, port = DA.resolve_bind(f"127.0.0.1:{auto_port}" if auto_port is not None
+                                             else spec)
                 break
             except DA.TailnetMissing as e:
                 left = deadline - time.monotonic()
@@ -298,6 +317,12 @@ def _serve_dashboard(cfg, bind, tls_cert, tls_key, client_ca, *, code_root=None,
                 if not said:
                     said = True
                     click.echo(f"nw serve: {e}; retrying for up to {tailnet_wait:g}s", err=True)
+                    reason, hint = DA.tailnet_reason()
+                    LC.write_server_record(cfg, LC.build_record(
+                        None, code_watch=False, code_sha=None, bind=spec,
+                        listeners=[DS.listener_entry("tailnet", auth="whois", state="waiting",
+                                                     reason=reason, hint=hint)]))
+                    waiting_rec = True
                 time.sleep(min(5.0, left))
     except KeyboardInterrupt:
         return
@@ -305,10 +330,22 @@ def _serve_dashboard(cfg, bind, tls_cert, tls_key, client_ca, *, code_root=None,
         raise click.UsageError(str(e))
     except DA.TailnetMissing as e:
         raise _TailnetMissingExit(str(e))
+    finally:
+        signal.signal(signal.SIGTERM, prev_term)
+        if waiting_rec:
+            DS.remove_server_json(cfg)
     if tls_cert or tls_key or client_ca:
         raise click.UsageError("TLS is not supported with --dashboard")
     try:
-        srv = DS.make_server(cfg, f"[{host}]:{port}" if ":" in host else f"{host}:{port}")
+        if auto_port is not None:                   # SPEC-0432: one cache, hub and CSRF secret
+            from .dashboard import stream as DST
+            from .dashboard.snapshot import SnapshotCache
+            cache = SnapshotCache(cfg)
+            hub = DST.Hub(cache, DST.SlotPool(DST.max_clients(cfg)))
+            srv = DS.make_server(cfg, f"{host}:{port}", cache=cache, mode="local", hub=hub)
+        else:
+            hub = None
+            srv = DS.make_server(cfg, f"[{host}]:{port}" if ":" in host else f"{host}:{port}")
     except DA.BindRefused as e:
         raise click.UsageError(str(e))
     except DA.TailnetMissing as e:
@@ -324,6 +361,7 @@ def _serve_dashboard(cfg, bind, tls_cert, tls_key, client_ca, *, code_root=None,
         signal.signal(sig, lambda *_: signalled.append(sig))
     watch = None
     t = None
+    sup = None
     try:
         check_s = 0 if no_code_watch else LC.code_check_s(cfg)
         if check_s > 0:
@@ -339,10 +377,15 @@ def _serve_dashboard(cfg, bind, tls_cert, tls_key, client_ca, *, code_root=None,
                                        AUTO if code_root is None else code_root)
             if not watch.enabled:                   # no checkout, or git cannot read its HEAD
                 watch = None
+        listeners = None
+        if auto_port is not None:
+            sup = DS.TailnetSupervisor(cfg, srv.server_address[1], cache=srv.cache, hub=hub,
+                                       csrf=srv.csrf, recheck_s=DS.tailnet_recheck_s(cfg))
+            listeners = [DS.listener_entry("local", srv, auth="local"), sup.listener()]
         # the watcher's own baseline, so the record and the comparison cannot disagree
         rec = DS.write_server_json(cfg, srv, code_watch=watch is not None,
                                    code_sha=None if watch is None else watch.sha,
-                                   bind=bind or DS.DEFAULT_BIND)
+                                   bind=spec, listeners=listeners)
         if watch is not None:                       # SPEC-0427: status compares against it
             rec = LC.write_server_record(cfg, {**rec, "code_root": str(watch.root)})
         click.echo(f"nw serve: dashboard on {rec['url']} ("
@@ -357,6 +400,20 @@ def _serve_dashboard(cfg, bind, tls_cert, tls_key, client_ca, *, code_root=None,
         if watch is not None:
             watch.start()
         refresher = LC.RecordRefresher(cfg, rec, srv.client_count)
+        if sup is not None:
+            def log(line):
+                try:
+                    click.echo(f"nw serve: {line}", err=True)
+                except OSError:
+                    pass
+
+            def on_listener(entry):
+                try:
+                    refresher.set_listener(entry)
+                except Exception as e:              # noqa: BLE001 - keep serving
+                    log(f"server.json update failed: {e}")
+            sup.log, sup.on_change = log, on_listener
+            sup.start()
         last_tick, warned = 0.0, False
         while not (stop.is_set() or signalled):
             time.sleep(0.2)
@@ -370,8 +427,12 @@ def _serve_dashboard(cfg, bind, tls_cert, tls_key, client_ca, *, code_root=None,
                         click.echo(f"nw serve: server.json refresh failed: {e}", err=True)
     finally:
         stop.set()
+        if sup is not None:
+            sup.stop()
         if t is not None:                           # stop serve_forever before closing its socket
             srv.shutdown()
             t.join()
         DS.remove_server_json(cfg)
         srv.server_close()
+        if hub is not None:
+            hub.close()

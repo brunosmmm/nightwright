@@ -1,7 +1,7 @@
 ---
 id: SPEC-0432
 title: "Dashboard default bind: loopback always plus the tailnet address whenever one exists"
-status: in-progress
+status: done
 owner: user
 created: 2026-11-04
 updated: 2026-11-04
@@ -160,29 +160,29 @@ superseded; the parts changed are:
 
 ## Acceptance criteria
 
-- [ ] With no `--bind` and no tailnet address, `nw serve --dashboard` serves `127.0.0.1:PORT` at
+- [x] With no `--bind` and no tailnet address, `nw serve --dashboard` serves `127.0.0.1:PORT` at
       once, logs `tailnet: waiting for a Tailscale address (<reason>)` once, and does not exit.
-- [ ] When an own tailnet address appears, the tailnet listener is bound within one re-check
+- [x] When an own tailnet address appears, the tailnet listener is bound within one re-check
       interval: an allowed whois login gets 200, an unknown login gets 403, loopback keeps
       working. When the address goes away the tailnet listener closes (connections refused) and
       loopback keeps serving.
-- [ ] The loopback socket never applies tailnet rules and the tailnet socket never applies
+- [x] The loopback socket never applies tailnet rules and the tailnet socket never applies
       loopback rules: `Host: 127.0.0.1:P` on the tailnet socket is 403 `bad_host`; the tailnet
       Host on the loopback socket is 403 `bad_host`; a `local`-mode server cannot be built on a
       tailnet address.
-- [ ] Both listeners share one snapshot cache, hub, CSRF secret and audit log; closing the
+- [x] Both listeners share one snapshot cache, hub, CSRF secret and audit log; closing the
       tailnet listener does not close the shared hub.
-- [ ] `server.json` carries `listeners` with url, auth and state (listening / waiting + reason).
-- [ ] `nw dashboard status` prints a `local` and a `tailnet` line; a waiting tailnet in `auto`
+- [x] `server.json` carries `listeners` with url, auth and state (listening / waiting + reason).
+- [x] `nw dashboard status` prints a `local` and a `tailnet` line; a waiting tailnet in `auto`
       mode is not a problem; a waiting tailnet-only server is reported as waiting with the fix,
       not as "no live server.json".
-- [ ] `nw dashboard install` defaults to `--bind auto` (`ExecStart=… --bind auto:8791`, no
+- [x] `nw dashboard install` defaults to `--bind auto` (`ExecStart=… --bind auto:8791`, no
       `--tailnet-wait`); re-running it over a tailscale-only unit replaces it and prints what
       changed.
-- [ ] `--bind 127.0.0.1:P` is loopback only; `--bind tailscale` still waits then exits 3.
-- [ ] A real systemd test unit with the default bind keeps `NRestarts` at 0 while there is no
+- [x] `--bind 127.0.0.1:P` is loopback only; `--bind tailscale` still waits then exits 3.
+- [x] A real systemd test unit with the default bind keeps `NRestarts` at 0 while there is no
       tailnet address.
-- [ ] `docs/WORKFLOW.md`, `nw serve --help` and `nw dashboard install --help` describe the
+- [x] `docs/WORKFLOW.md`, `nw serve --help` and `nw dashboard install --help` describe the
       default.
 
 ## Test plan
@@ -214,6 +214,86 @@ superseded; the parts changed are:
 - **Regression guard:** `python3 tools/affected_tests.py --run uv run pytest -q -n 2`, the touched
   test files, `python3 tools/spec_lint.py`.
 
+## As shipped
+
+Shipped as designed. Notes where the code settled details the Design left open:
+
+- `make_server` gained `hub=` / `csrf=` (the SPEC-0416 seam test now lists them). The CLI passes
+  `mode="local"` for the loopback half of `auto`; `DashboardServer` refuses `local` on any
+  non-loopback address, so that argument cannot open a no-login tailnet socket. The CLI never
+  passes the supervisor's seams (`own`, `reason`, `gate`, `peer`); a new AST test guards that.
+- The tailnet listener gets a fresh `auth.Gate` (and so a fresh MagicDNS read) each time it
+  binds. A changed address closes the old listener and binds the new one in the same check.
+- In `auto` mode `server.json` starts with the tailnet entry in state `waiting`, reason
+  `checking`, and the first check rewrites it within milliseconds. In tailnet-only mode the
+  waiting record is written once the wait starts and removed on exit 3 or SIGTERM (a SIGTERM
+  during the wait is now a clean exit 0).
+- Each waiting check also runs `tailscale status --json` for the reason, so a waiting host
+  makes about eight cheap `tailscale` calls a minute.
+- `NeedsMachineAuth` → `waiting for admin approval` (hint: approve it in the admin console), in
+  addition to the reasons in Decision 4.
+- `nw dashboard status` prints `server   pid … · bind … · since … · clients N`, then one line per
+  listener. With no record and an active unit it prints `server   starting (no server.json
+  yet)`. The `exit 3` problem text for an inactive tailnet-only unit names `sudo tailscale up`
+  and `nw dashboard install`.
+- `tests/test_dashboard_tailnet_cli.py`'s "port 8791 untouched" check now compares against the
+  port's state before the test. On this host the human's own dashboard holds `127.0.0.1:8791`,
+  and that made 32 of those tests fail whatever the code did.
+
+### Test record (2026-11-04)
+
+- Automated: `tests/test_dashboard_dual_listen.py` (new, 19 tests in 15 functions) covers `auto_port`, the
+  recheck setting, `tailnet_reason` (each state, a daemon that is down, a missing binary, never
+  raises), `local` refused off loopback, the CLI seam guard, and the supervisor on real sockets
+  (127.0.0.2 standing in for the tailnet address): waiting → listening → 403 for an unknown login
+  → closed, a failed bind as a waiting reason, rebinding to a changed address, modes keyed on the
+  socket, and a closed tailnet listener ending its stream while the shared hub keeps serving
+  loopback. It also covers status / brief lines and problems, the install change report, a real
+  `nw serve` with a fake logged-out `tailscale`, and a real tailnet-only wait record. The updated
+  tests are `test_dashboard_service.py`, `test_dashboard_tailnet_cli.py` and
+  `test_dashboard_tailnet_seams.py`; `test_rich_output_guard.py` allowlists the server's new
+  `log()` stderr lines.
+- `python3 tools/affected_tests.py --run uv run pytest -q -n 2`: 3989 passed, 7 skipped, 1
+  failed (`test_rich_output_guard`, the unlisted `log()`; allowlisted and re-run green). The full
+  suite is left to the close gate.
+- **Real processes**, all with scratch `NW_DATA_DIR` / `NW_CONFIG_DIR` under
+  `/home/bruno/work/.nw-tmp/dash-dual/`. By the time of the test the host's real Tailscale had
+  been logged in by the human, so the logged-out case uses the fake `tailscale`
+  (`tests/fixtures/fake_tailscale.py`) first on `PATH`:
+  1. Logged out, `nw serve --dashboard --bind auto:58921`: loopback was 200 at once. Status
+     showed `local    http://127.0.0.1:58921/ (no login)` and `tailnet  waiting: Tailscale logged
+     out — run: sudo tailscale up`. The process was alive, with loopback 200, at 30, 60 and 95 s.
+     `tailscale ip` was run every 15 s (7 checks) and the waiting line was logged once. SIGTERM
+     gave exit 0.
+  2. `unshare -rn` netns, `lo` with 100.101.0.5/.6, default bind (`auto:8791`, recheck 15 s),
+     fake starts logged out. Loopback 200, the tailnet port refused connections, status said
+     waiting. After flipping the fake to own IP 100.101.0.5, the tailnet listener was up **14 s**
+     later and status showed `tailnet  http://100.101.0.5:8791/ (whois)`. From .5 (own login
+     me@example.com), `/` and `/api/snapshot` returned 200, and so did the MagicDNS Host. From .6
+     (eve@example.com), `/api/snapshot` and `/app.js` returned 403 `login_not_allowed`. Loopback
+     stayed 200. After flipping back to logged out, the tailnet listener closed **14 s** later
+     (connection refused) while loopback stayed 200 and status said waiting again. The process
+     stayed up. The log had exactly four tailnet lines: waiting, listening, address gone,
+     waiting.
+  3. Mode separation in that netns: on the tailnet socket from the allowed .5, `Host:
+     127.0.0.1:8791` and `Host: localhost:8791` were 403 `bad_host`. A loopback peer
+     (127.0.0.1 → 100.101.0.5) was 403 `not_tailnet_peer`. On the loopback socket, `Host:
+     100.101.0.5:8791` was 403 `bad_host`, and a request from source 100.101.0.5 with the
+     loopback Host was 200 (local rules, no whois). The audit lines carried these reasons.
+  4. Also, briefly, the **real logged-in Tailscale** (`auto:58922`, scratch data): status listed
+     `tailnet  http://100.69.173.72:58922/ (whois)`. A request from the host's own tailnet
+     address got 200 through real `tailscale whois`, and `Host: 127.0.0.1` on that socket got 403.
+  5. Real systemd, unit `nw-dashboard-test-dual` on port 58923, with a drop-in that put the
+     logged-out fake first on `PATH`. First `install --bind tailscale` reproduced the human's
+     state: `problem: nothing is served: the tailnet-only bind tailscale:58923 is waiting:
+     Tailscale logged out — run: sudo tailscale up; or run nw dashboard install …`. Re-running
+     `install` with the default printed `replaced …`, `bind tailscale:58923 (tailnet only) ->
+     auto:58923 (loopback + tailnet)` and the `- ExecStart=…` / `+ ExecStart=…` lines, then
+     restarted the unit. `NRestarts` stayed **0** with the same `MainPID` and loopback 200 at
+     every 20 s sample from 16:32:21 to 16:33:41, and the journal had one waiting line.
+     `uninstall` and removing the drop-in left `LoadState=not-found`. The human's
+     `nw-dashboard.service`, their Tailscale login and linger were not touched.
+
 ## Rollout / migration
 
 1. Land. The human's running unit restarts onto the new code (code watch) but keeps its
@@ -223,11 +303,11 @@ superseded; the parts changed are:
 
 ## Definition of done
 
-- [ ] Acceptance criteria all met.
-- [ ] Test plan executed; affected automated tests pass; manual steps performed.
-- [ ] No regressions.
-- [ ] Spec body updated to match what shipped.
-- [ ] `docs/LEDGER.md` updated (status + date).
+- [x] Acceptance criteria all met.
+- [x] Test plan executed; affected automated tests pass; manual steps performed.
+- [x] No regressions.
+- [x] Spec body updated to match what shipped.
+- [x] `docs/LEDGER.md` updated (status + date).
 
 ## Open questions
 

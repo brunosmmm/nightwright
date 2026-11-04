@@ -152,9 +152,12 @@ def _sh(cmd):
 
 
 @dashboard_group.command("install")
-@click.option("--bind", "bind", type=click.Choice(["loopback", "tailscale"]), default="loopback",
-              show_default=True, help="loopback: 127.0.0.1:PORT; tailscale: this host's own "
-                                      "tailnet address (needs `tailscale up`)")
+@click.option("--bind", "bind", type=click.Choice(["auto", "loopback", "tailscale"]),
+              default="auto", show_default=True,
+              help="auto: 127.0.0.1:PORT always, plus this host's own tailnet address:PORT "
+                   "whenever Tailscale has one (bound and closed live, no restarts); loopback: "
+                   "127.0.0.1:PORT only; tailscale: the tailnet address only (exits 3 and is "
+                   "restarted while there is none)")
 @click.option("--port", type=click.IntRange(1, 65535), default=None,
               help="port (default 8791)")
 @click.option("--dry-run", is_flag=True, help="print the unit and the commands; change nothing")
@@ -169,11 +172,14 @@ def install_cmd(cfg, bind, port, dry_run, nw_bin, code_root, unit):
     """Write ~/.config/systemd/user/nw-dashboard.service, then `daemon-reload` and
     `enable --now` it (a running unit is restarted onto the new unit text).
 
-    The unit runs `nw serve --dashboard` with `Restart=always`: the server's exit 0 on a
+    The unit runs `nw serve --dashboard --bind auto:PORT` by default (SPEC-0432): loopback
+    (no login) is served at once, and the host's tailnet address (tailscale whois identity gate)
+    is bound live whenever Tailscale has one and closed when it goes away; a logged-out
+    Tailscale never stops or restarts the server. `Restart=always`: the server's exit 0 on a
     nightwright code change becomes a restart onto the new code. Exit 2 (a refused bind) stops
-    it. With `--bind tailscale` the server waits up to 60 s for a tailnet address before exiting
-    3, so a Tailscale outage is one retry a minute and the dashboard is back within seconds of
-    Tailscale coming up. Logs go to the journal: `journalctl --user -u nw-dashboard -f`.
+    it. With `--bind tailscale` (tailnet only) the server waits up to 60 s for a tailnet address
+    before exiting 3. Re-running install replaces the unit and prints what changed. Logs go to
+    the journal: `journalctl --user -u nw-dashboard -f`.
     """
     import os
     import shutil
@@ -185,11 +191,16 @@ def install_cmd(cfg, bind, port, dry_run, nw_bin, code_root, unit):
         b = LC.unit_bind(bind, port)
     except ValueError as e:
         raise click.UsageError(str(e))
-    after = bind == "tailscale" and LC.tailscaled_unit_exists()
+    after = bind in ("auto", "tailscale") and LC.tailscaled_unit_exists()
     text = LC.render_unit(nw_bin=nw, bind=b, env=LC.env_overrides(), after_tailscaled=after,
                           code_root=os.path.abspath(code_root) if code_root else None,
                           name=name)
     path = LC.unit_path(name)
+    try:
+        old = path.read_text(encoding="utf-8") if path.is_file() else None
+    except OSError:
+        old = None
+    change = LC.unit_change_report(old, text)
     show = LC.systemctl_show(name) if not dry_run else None
     cmds = LC.install_commands(name, restart=bool(show and show.get("ActiveState") == "active"))
     if dry_run:
@@ -200,6 +211,8 @@ def install_cmd(cfg, bind, port, dry_run, nw_bin, code_root, unit):
             click.echo(LC.shell_line(c))
         click.echo(f"# (a unit that is already active is also restarted: "
                    f"systemctl --user restart {name}.service)")
+        for line in change:
+            click.echo(f"# change: {line}")
         return
     if not shutil.which("systemctl"):
         raise click.ClickException("systemctl not found: a systemd user session is required")
@@ -207,7 +220,9 @@ def install_cmd(cfg, bind, port, dry_run, nw_bin, code_root, unit):
     tmp = Path(f"{path}.tmp")
     tmp.write_text(text, encoding="utf-8")
     os.replace(tmp, path)
-    click.echo(f"wrote {path}", err=True)
+    click.echo(f"{'replaced' if old is not None else 'wrote'} {path}", err=True)
+    for line in change:
+        click.echo(f"  {line}", err=True)
     for c in cmds:
         if _sh(c) != 0:
             raise click.ClickException(f"`{LC.shell_line(c)}` failed; see "
@@ -270,6 +285,7 @@ def _yn(v) -> str:
 
 
 def _print_status(st):
+    from .dashboard import lifecycle as LC
     u, srv, code = st["unit"], st["server"], st["code"]
     if u["installed"]:
         bits = [f"installed ({u['path']})", f"enabled {_yn(u['enabled'])}",
@@ -284,10 +300,14 @@ def _print_status(st):
     else:
         click.echo(f"unit     {u['name']}: not installed (nw dashboard install)")
     if srv:
-        click.echo(f"server   {srv['url']} · pid {srv['pid']} · bind {srv['bind']} · since "
+        click.echo(f"server   pid {srv['pid']} · bind {srv['bind']} · since "
                    f"{srv['started_at']} · clients {srv['clients']}")
+        for x in srv.get("listeners") or []:     # SPEC-0432: one line per listener
+            click.echo(f"{str(x.get('name')):<8} {LC.listener_line(x)}")
+    elif u["installed"] and u["active"]:
+        click.echo("server   starting (no server.json yet)")
     else:
-        click.echo("server   not running (no live server.json)")
+        click.echo("server   not running")
     if srv and not code["watched"]:
         click.echo("code     not watched (will not restart itself on a code change)")
     elif code["current"] is True:
@@ -317,8 +337,10 @@ def status_cmd(cfg, as_json, unit):
     does it run the checkout's current code; is linger on; where are the logs.
 
     Read-only: it never runs `loginctl enable-linger` (that changes your system config) but
-    prints the exact command when linger is off. Exit 1 when there is a problem (installed
-    but not active, active without a live server, stale code), else 0.
+    prints the exact command when linger is off. Shows each listener: `local` (no login) and
+    `tailnet` (whois), or why the tailnet one is waiting and the fix. Exit 1 when there is a
+    problem (installed but not active, active without a live server, nothing served, stale
+    code), else 0; a waiting tailnet next to a serving loopback is not a problem.
     """
     from .dashboard import lifecycle as LC
     try:

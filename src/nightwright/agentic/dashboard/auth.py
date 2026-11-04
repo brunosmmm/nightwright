@@ -37,7 +37,15 @@ class TailnetMissing(RuntimeError):
 
 class TailscaleError(RuntimeError):
     """`run_tailscale` could not get output from `tailscale`; `own_tailnet_ips` turns it into
-    `TailnetMissing`."""
+    `TailnetMissing`. `stdout` is what a non-zero exit printed (None otherwise)."""
+
+    def __init__(self, msg, stdout=None):
+        super().__init__(msg)
+        self.stdout = stdout
+
+
+class TailscaleNotInstalled(TailscaleError):
+    """`tailscale` is not on PATH or not executable."""
 
 
 def _ip(host: str):
@@ -79,10 +87,46 @@ def run_tailscale(args, *, timeout: float = 5.0) -> str:
     except UnicodeError:                        # a ValueError subclass: must come first
         raise TailscaleError("`tailscale` printed non-UTF-8 output")
     except (OSError, ValueError) as e:          # not on PATH, not executable
-        raise TailscaleError(f"cannot run `tailscale`: {e}")
+        raise TailscaleNotInstalled(f"cannot run `tailscale`: {e}")
     if r.returncode != 0:
-        raise TailscaleError(f"`tailscale {' '.join(args)}` exited {r.returncode}")
+        raise TailscaleError(f"`tailscale {' '.join(args)}` exited {r.returncode}", r.stdout)
     return r.stdout
+
+
+# SPEC-0432 Decision 4: why there is no tailnet address, and the fix
+_BACKEND_REASON = {"NeedsLogin": "logged out", "NoState": "logged out",
+                   "NeedsMachineAuth": "waiting for admin approval", "Stopped": "stopped",
+                   "Starting": "starting"}
+_REASON_HINT = {"logged out": "sudo tailscale up", "stopped": "sudo tailscale up",
+                "tailscaled not running": "sudo systemctl start tailscaled",
+                "tailscale not installed": "install Tailscale",
+                "waiting for admin approval": "approve this machine in the Tailscale admin "
+                                              "console"}
+
+
+def tailnet_reason(run=run_tailscale) -> tuple[str, str | None]:
+    """`(reason, hint)` for a host with no tailnet address (SPEC-0432), from `tailscale status
+    --json` `BackendState`: `logged out`, `stopped`, `starting`, `tailscaled not running`,
+    `tailscale not installed`, or `no tailnet address` when the backend says it is running.
+    Never raises."""
+    try:
+        try:
+            out = run(["status", "--json"])
+        except TailscaleNotInstalled:
+            return "tailscale not installed", _REASON_HINT["tailscale not installed"]
+        except TailscaleError as e:
+            out = e.stdout or ""
+        try:
+            state = json.loads(out).get("BackendState") if out.strip() else None
+        except (ValueError, AttributeError):
+            state = None
+        if not isinstance(state, str):
+            reason = "tailscaled not running"
+        else:
+            reason = _BACKEND_REASON.get(state, "no tailnet address")
+        return reason, _REASON_HINT.get(reason)
+    except Exception:                           # noqa: BLE001 - a reason is best effort
+        return "no tailnet address", None
 
 
 def own_tailnet_ips(run=run_tailscale) -> list[str]:

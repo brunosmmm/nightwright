@@ -161,7 +161,8 @@ def test_resolve_nw_bin_prefers_the_uv_tool_install(monkeypatch, tmp_path):
 
 
 def test_unit_bind_and_name():
-    assert LC.unit_bind() == "127.0.0.1:8791"
+    assert LC.unit_bind() == "auto:8791"                     # SPEC-0432: the default
+    assert LC.unit_bind("auto", 9002) == "auto:9002"
     assert LC.unit_bind("loopback", 9001) == "127.0.0.1:9001"
     assert LC.unit_bind("tailscale") == "tailscale:8791"
     with pytest.raises(ValueError):
@@ -213,7 +214,7 @@ def test_status_problems_and_linger_hint(fx, xdg):
                                                          f"{LC.current_user()}"
     assert any("loginctl enable-linger" in w for w in st["warnings"])
     st = LC.status(cfg, run=FakeSystemd(active_props()))             # active, no server.json
-    assert "no live server.json" in st["problems"][0]
+    assert "has not written server.json yet (starting up)" in st["problems"][0]
     st = LC.status(cfg, run=FakeSystemd(reachable=False))
     assert "cannot query `systemctl --user`" in st["problems"][0]
 
@@ -311,7 +312,7 @@ def test_install_dry_run_prints_the_unit_and_changes_nothing(fx, tmp_path):
     assert r.returncode == 0, r.stderr
     unit = tmp_path / "xdg/systemd/user/nw-dash-t.service"
     assert f"# {unit}" in r.stdout and "Restart=always" in r.stdout
-    assert "--bind 127.0.0.1:9123" in r.stdout
+    assert "--bind auto:9123" in r.stdout and "--tailnet-wait" not in r.stdout   # SPEC-0432
     assert "systemctl --user daemon-reload\nsystemctl --user enable --now nw-dash-t.service" \
         in r.stdout
     # the scratch data / config dirs are not the defaults, so the unit carries them

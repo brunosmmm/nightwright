@@ -16,7 +16,9 @@ from waits import until
 
 @pytest.fixture
 def fx(tmp_path):
-    return seed(tmp_path)
+    d = seed(tmp_path)
+    d["port_busy"] = listening(8791)    # another server (the human's) may own 8791 already
+    return d
 
 
 @pytest.fixture
@@ -38,7 +40,7 @@ def no_tailscale_env(fx):
 
 def untouched(fx):
     assert not (dash(fx) / "server.json").exists()
-    assert not listening(8791)
+    assert listening(8791) == fx["port_busy"]
 
 
 FAILURES = [("logged_out", {"logged_out": True}, "ok"), ("fail", None, "fail"),
@@ -112,13 +114,19 @@ def test_own_tailnet_address_passes_the_bind_gate(fx, tmp_path, tls_files, bind,
     untouched(fx)
 
 
-def test_default_bind_is_still_loopback_and_never_runs_tailscale(fx, tmp_path):
+def test_default_bind_is_auto_loopback_first_plus_the_tailnet(fx, tmp_path):
+    """SPEC-0432: the default `auto:8791` serves loopback (the primary listener) and asks the
+    tailnet; the fake's 100.64.0.5 is not on this host, so the tailnet listener waits."""
+    from nightwright.agentic.dashboard import server as DS
+    assert DS.DEFAULT_SERVE_BIND == "auto:8791"
     env = fake_env(fx, tmp_path)
-    p = start(fx, env=env)
+    p = start(fx, "--bind", "auto:0", env=env)     # the default with a free port
     try:
         rec = wait_server(fx, p)
-        assert rec["auth"] == "local" and rec["host"] == "127.0.0.1" and rec["port"] == 8791
-        assert FT.calls(env) == []
+        assert rec["auth"] == "local" and rec["host"] == "127.0.0.1" and rec["bind"] == "auto:0"
+        assert rec["listeners"][0]["name"] == "local"
+        assert until(lambda: FT.calls(env))                        # the first tailnet check
+        assert all(c in (["ip"], ["status", "--json"]) for c in FT.calls(env))
     finally:
         stop(p)
 

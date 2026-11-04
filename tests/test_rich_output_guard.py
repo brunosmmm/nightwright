@@ -63,6 +63,7 @@ ALLOWED = {
     ("agentic/cli_worker.py", "serve_cmd"): "daemon startup line on stderr (the server's log), not a TTY render (SPEC-0334)",
     ("agentic/cli_worker.py", "_serve_dashboard"): "daemon startup line on stderr (the server's log), not a TTY render (SPEC-0414)",
     ("agentic/cli_worker.py", "on_change"): "daemon code_changed line on stderr (the server's journal), not a TTY render (SPEC-0404)",
+    ("agentic/cli_worker.py", "log"): "daemon tailnet listener state lines on stderr (the server's journal), not a TTY render (SPEC-0432)",
     ("agentic/cli_dashboard.py", "snapshot_cmd"): "dashboard snapshot: plain text/JSON for scripts and ssh callers (SPEC-0401)",
     ("agentic/dashboard/stream.py", "_log_error"): "server daemon log line on stderr (the snapshotter error, rate-limited), not a TTY render (SPEC-0402)",
     ("agentic/cli_dashboard.py", "install_cmd"): "unit text and shell commands printed verbatim (--dry-run), no rich markup (SPEC-0427)",

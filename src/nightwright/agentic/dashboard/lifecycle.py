@@ -151,16 +151,23 @@ def code_changed_line(change: dict) -> str:
             f"{' diff_failed' if change.get('diff_failed') else ''} (exiting 0 to restart)")
 
 
-def build_record(server, *, code_watch: bool, code_sha: str | None, bind: str) -> dict:
-    """The `server.json` document for a bound `DashboardServer`."""
-    host, port = server.server_address[:2]
-    h = f"[{host}]" if ":" in host else host
+def build_record(server, *, code_watch: bool, code_sha: str | None, bind: str,
+                 listeners=None) -> dict:
+    """The `server.json` document for a bound `DashboardServer` (the primary listener), or for
+    `server=None`: a tailnet-only server still waiting for an address (SPEC-0432; `url`,
+    `host` and `port` are null). `listeners` is SPEC-0432's per-listener list."""
     now = store.now_iso()
-    return {"schema": SCHEMA, "pid": os.getpid(), "ticks": start_ticks(os.getpid()),
-            "url": f"http://{h}:{port}", "host": host, "port": port, "bind": bind,
-            "scheme": "http", "started_at": now, "code_sha": code_sha,
-            "code_watch": code_watch, "clients": 0, "updated_at": now,
-            "auth": getattr(server, "mode", "local")}            # SPEC-0428: local | whois
+    rec = {"schema": SCHEMA, "pid": os.getpid(), "ticks": start_ticks(os.getpid()),
+           "url": None, "host": None, "port": None, "bind": bind,
+           "scheme": "http", "started_at": now, "code_sha": code_sha,
+           "code_watch": code_watch, "clients": 0, "updated_at": now,
+           "auth": getattr(server, "mode", "whois" if server is None else "local"),
+           "listeners": list(listeners or [])}
+    if server is not None:
+        host, port = server.server_address[:2]
+        h = f"[{host}]" if ":" in host else host
+        rec.update(url=f"http://{h}:{port}", host=host, port=port)
+    return rec
 
 
 class RecordRefresher:
@@ -173,25 +180,47 @@ class RecordRefresher:
         self.clock, self.min_s = clock, min_s
         self.last_write = clock()
         self.writes = 0
+        self._lock = threading.Lock()           # `update` runs on the tailnet watch thread
 
-    def tick(self) -> bool:
-        n = int(self.client_count() or 0)
-        if n == self.rec.get("clients") or self.clock() - self.last_write < self.min_s:
-            return False
+    def _write_locked(self) -> bool:
         cur = read_server_record(self.cfg)
         if cur is None or cur.get("pid") != os.getpid():        # taken over or removed: leave it
             return False
-        self.rec.update(clients=n, updated_at=store.now_iso())
+        self.rec["updated_at"] = store.now_iso()
         write_server_record(self.cfg, self.rec)
         self.last_write = self.clock()
         self.writes += 1
         return True
 
+    def tick(self) -> bool:
+        with self._lock:
+            n = int(self.client_count() or 0)
+            if n == self.rec.get("clients") or self.clock() - self.last_write < self.min_s:
+                return False
+            self.rec["clients"] = n
+            return self._write_locked()
+
+    def update(self, **fields) -> bool:
+        """Set `fields` and rewrite the record now (SPEC-0432: a listener changed state)."""
+        with self._lock:
+            self.rec.update(fields)
+            return self._write_locked()
+
+    def set_listener(self, entry: dict) -> bool:
+        """Replace the `listeners` item named `entry["name"]` (appended when new)."""
+        with self._lock:
+            ls = [x for x in self.rec.get("listeners") or [] if x.get("name") != entry["name"]]
+            order = {"local": 0, "tailnet": 1}
+            self.rec["listeners"] = sorted(ls + [dict(entry)],
+                                           key=lambda x: order.get(x.get("name"), 9))
+            return self._write_locked()
+
 
 # ---- the systemd user unit and `nw dashboard status` (SPEC-0427) ---------------------------
 #
 # The unit only supervises; the exit codes are SPEC-0404's: 0 = restart onto new code (or a
-# clean stop), 2 = a configuration error retrying cannot fix, 3 = no tailnet address yet.
+# clean stop), 2 = a configuration error retrying cannot fix, 3 = no tailnet address yet (only a
+# tailnet-only `--bind tailscale` unit; the default `auto` unit never exits for it, SPEC-0432).
 
 UNIT_NAME = "nw-dashboard"
 RESTART_SEC = 5                 # a code-change exit (0) is back up within ~RestartSec + startup
@@ -270,17 +299,71 @@ def env_overrides() -> dict:
     return out
 
 
-def unit_bind(bind="loopback", port=None) -> str:
-    """`loopback` → `127.0.0.1:PORT`, `tailscale` → `tailscale:PORT` (default port 8791)."""
+BIND_CHOICES = ("auto", "loopback", "tailscale")
+BIND_DESCRIPTION = {"auto": "loopback + tailnet", "loopback": "loopback only",
+                    "tailscale": "tailnet only"}
+
+
+def unit_bind(bind="auto", port=None) -> str:
+    """`auto` → `auto:PORT` (loopback always + the tailnet whenever there is one, SPEC-0432),
+    `loopback` → `127.0.0.1:PORT`, `tailscale` → `tailscale:PORT` (default port 8791)."""
     from . import auth
     p = auth.DEFAULT_PORT if port is None else int(port)
     if not 0 < p < 65536:
         raise ValueError(f"port {port} out of range")
+    if bind == "auto":
+        return f"auto:{p}"
     if bind == "loopback":
         return f"127.0.0.1:{p}"
     if bind == "tailscale":
         return f"tailscale:{p}"
-    raise ValueError(f"bind must be loopback or tailscale, not {bind!r}")
+    raise ValueError(f"bind must be auto, loopback or tailscale, not {bind!r}")
+
+
+def bind_kind(spec) -> str | None:
+    """`auto` / `loopback` / `tailscale` for a unit's `--bind` value, None when unknown."""
+    s = str(spec or "").strip().lower()
+    if s == "auto" or s.startswith("auto:"):
+        return "auto"
+    if s.startswith("tailscale") or s.startswith("100.") or s.startswith("[fd7a:"):
+        return "tailscale"
+    if s.startswith("127.") or s.startswith("localhost") or s.startswith("[::1]"):
+        return "loopback"
+    return None
+
+
+def unit_exec_bind(text) -> str | None:
+    """The `--bind` value in a unit's `ExecStart=` line (None when absent: the server default)."""
+    for line in (text or "").splitlines():
+        if line.startswith("ExecStart="):
+            words = line[len("ExecStart="):].split()
+            for i, w in enumerate(words[:-1]):
+                if w == "--bind":
+                    return words[i + 1].strip('"')
+            return None
+    return None
+
+
+def unit_change_report(old_text, new_text) -> list[str]:
+    """What re-running install changes (SPEC-0432 Decision 7): `[]` for a new unit, `["unit
+    unchanged"]`, or a `bind A (kind) -> B (kind)` line (when the bind changed) followed by the
+    removed (`- `) and added (`+ `) lines."""
+    if old_text is None:
+        return []
+    if old_text == new_text:
+        return ["unit unchanged"]
+    out = []
+    ob, nb = unit_exec_bind(old_text), unit_exec_bind(new_text)
+    if ob != nb:
+        def d(b):
+            k = bind_kind(b)
+            return f"{b} ({BIND_DESCRIPTION[k]})" if k else str(b)
+        out.append(f"bind {d(ob)} -> {d(nb)}")
+    import difflib
+    for ln in difflib.ndiff(old_text.splitlines(), new_text.splitlines()):
+        if ln[:2] in ("- ", "+ "):
+            out.append(ln)
+    return out
 
 
 def _q(arg: str) -> str:
@@ -305,8 +388,9 @@ def render_unit(*, nw_bin, bind, env=None, after_tailscaled=False, code_root=Non
                 name=None) -> str:
     """The `nw-dashboard.service` text. `Restart=always`: the code-change exit 0 is a restart
     onto the new code; `RestartPreventExitStatus=2` stops a configuration error; exit 3 (no
-    tailnet address) is slowed in-process by `--tailnet-wait` and so never trips the start
-    limit, which only a real crash loop reaches. `After=tailscaled.service` (ordering only, never
+    tailnet address, only a tailnet-only `--bind tailscale` unit) is slowed in-process by
+    `--tailnet-wait` and so never trips the start limit, which only a real crash loop reaches;
+    the default `auto` unit waits for the tailnet in-process and never exits for it. `After=tailscaled.service` (ordering only, never
     `Requires`/`Wants`) is added when such a unit exists; a user manager cannot order against a
     system unit, so for the usual system `tailscaled` it is inert and `--tailnet-wait` is the
     real guard."""
@@ -460,7 +544,8 @@ def status(cfg, *, name=None, run=None, code_root=CW.AUTO,
     server = None
     if live:
         server = {k: rec.get(k) for k in ("pid", "url", "bind", "started_at", "code_watch",
-                                          "code_sha", "clients", "code_root")}
+                                          "code_sha", "clients", "code_root", "auth")}
+        server["listeners"] = record_listeners(rec)
     code = {"watched": bool(live and rec.get("code_watch")), "running_sha": None,
             "head_sha": None, "current": None, "root": None}
     if live and rec.get("code_watch"):
@@ -480,10 +565,14 @@ def status(cfg, *, name=None, run=None, code_root=CW.AUTO,
             why = f"{unit['state']}" + (f", result {unit['result']}" if unit["result"]
                                          not in (None, "success") else "") + \
                 (f", last exit {unit['exit_status']}" if unit["exit_status"] else "")
+            if unit["exit_status"] == 3:
+                why += ("; a tailnet-only unit exits 3 while there is no tailnet address: run "
+                        "`sudo tailscale up`, or `nw dashboard install` for the default "
+                        "loopback + tailnet bind")
             problems.append(f"installed but not active ({why}); logs: {logs_command(n)}")
         elif not live:
-            problems.append("unit active but no live server.json (starting, or waiting for a "
-                            f"tailnet address); logs: {logs_command(n)}")
+            problems.append("unit active but the server has not written server.json yet "
+                            f"(starting up); logs: {logs_command(n)}")
         if show is not None and not unit["enabled"]:
             warnings.append(f"unit is not enabled (it will not start at login/boot): "
                             f"systemctl --user enable {n}.service")
@@ -492,6 +581,13 @@ def status(cfg, *, name=None, run=None, code_root=CW.AUTO,
                             f"`{linger_fix()}`")
     else:
         warnings.append("dashboard service not installed: nw dashboard install")
+    if server is not None and not any(x.get("state") == "listening"
+                                      for x in server["listeners"]):
+        w = next((x for x in server["listeners"] if x.get("state") == "waiting"), None)
+        what = waiting_text(w) if w else "no listener"
+        problems.append(f"nothing is served: the tailnet-only bind {server.get('bind')} is "
+                        f"{what}; or run `nw dashboard install` for the default loopback + "
+                        f"tailnet bind")
     if code["current"] is False:
         problems.append(f"running code {str(code['running_sha'])[:7]} is not the checkout's "
                         f"{str(code['head_sha'])[:7]} (a code change restarts it within "
@@ -503,6 +599,33 @@ def status(cfg, *, name=None, run=None, code_root=CW.AUTO,
             "warnings": warnings}
 
 
+def record_listeners(rec) -> list[dict]:
+    """`server.json` `listeners` (SPEC-0432); a pre-0432 record gets one item from its `url` and
+    `auth`."""
+    ls = rec.get("listeners")
+    if isinstance(ls, list):
+        return [x for x in ls if isinstance(x, dict)]
+    auth = rec.get("auth") or "local"
+    return [{"name": "local" if auth == "local" else "tailnet", "auth": auth,
+             "state": "listening", "url": rec.get("url"), "reason": None, "hint": None}]
+
+
+def waiting_text(entry) -> str:
+    """`waiting: Tailscale logged out — run: sudo tailscale up` for a waiting listener."""
+    reason = entry.get("reason") or "no tailnet address"
+    head = f"Tailscale {reason}" if reason in ("logged out", "stopped", "starting") else reason
+    hint = entry.get("hint")
+    return f"waiting: {head}" + (f" — run: {hint}" if hint else "")
+
+
+def listener_line(entry) -> str:
+    """`http://127.0.0.1:8791/ (no login)`, `http://100.x:8791/ (whois)` or the waiting text."""
+    if entry.get("state") == "listening" and entry.get("url"):
+        auth = "no login" if entry.get("auth") == "local" else entry.get("auth") or "?"
+        return f"{entry['url'].rstrip('/')}/ ({auth})"
+    return waiting_text(entry)
+
+
 def brief(cfg, *, run=None, name=None) -> dict | None:
     """The one-line view `conduct-status` and `doctor` show: None when there is no unit file and
     no live server (nothing to report, and no subprocess was run)."""
@@ -512,6 +635,7 @@ def brief(cfg, *, run=None, name=None) -> dict | None:
     return {"installed": st["unit"]["installed"], "active": st["unit"]["active"],
             "state": st["unit"]["state"], "running": st["running"],
             "url": (st["server"] or {}).get("url"), "pid": (st["server"] or {}).get("pid"),
+            "listeners": (st["server"] or {}).get("listeners") or [],
             "linger": st["linger"], "ok": st["ok"], "problems": st["problems"],
             "warnings": [w for w in st["warnings"] if not w.startswith("dashboard service not")]}
 
@@ -522,7 +646,12 @@ def brief_line(b: dict) -> str:
         return f"dashboard: running by hand at {b['url']} (pid {b['pid']}; not a service)"
     if not b["active"]:
         return f"dashboard: installed but NOT active ({b['state']}) · nw dashboard status"
-    parts = ["dashboard: active", b["url"] or "no server.json yet"]
+    ls = b.get("listeners") or []
+    parts = ["dashboard: active"]
+    if ls:
+        parts += [f"{x.get('name')} {listener_line(x)}" for x in ls]
+    else:
+        parts.append(b["url"] or "no server.json yet")
     if b["pid"]:
         parts.append(f"pid {b['pid']}")
     parts += b["problems"] + b["warnings"]

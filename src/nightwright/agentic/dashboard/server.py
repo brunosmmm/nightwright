@@ -10,6 +10,10 @@
 - SPEC-0429: `POST /api/escalations/<id>/plan|answer` through `escalations.plan_answer` /
   `apply_answer` (`answers`), audited.
 - SPEC-0430: `GET /api/campaigns/<cid>` and the live run tail `GET /api/campaigns/<cid>/tail`.
+- SPEC-0432: the default bind `auto[:PORT]`, one process with a loopback listener (mode `local`)
+  and, whenever this host has a tailnet address, a tailnet listener (mode `whois`) kept by
+  `TailnetSupervisor`. Both share the snapshot cache, the stream hub and the CSRF secret; the
+  auth mode belongs to the listening socket, never to a request header.
 
 The only queue-side write is `escalations.apply_answer`; the server's own files live under
 `agentic/dashboard/` (`audit.jsonl`, `server.json`). Not imported by any queue-side module."""
@@ -58,18 +62,26 @@ class DashboardServer(http.server.ThreadingHTTPServer):
     daemon_threads = True
     block_on_close = False
 
-    def __init__(self, cfg, addr, cache, *, mode=None, gate=None, peer=None):
+    def __init__(self, cfg, addr, cache, *, mode=None, gate=None, peer=None, hub=None,
+                 csrf=None):
         self.cfg, self.cache = cfg, cache
         self.mode = mode or A.bind_mode(addr[0])
         if self.mode not in ("local", "whois"):
             raise ValueError(f"unknown auth mode {self.mode!r}")
+        if self.mode == "local" and A.bind_mode(addr[0]) != "local":
+            # SPEC-0432: no-login serving only ever on a loopback socket
+            raise ValueError(f"auth mode local needs a loopback address, not {addr[0]}")
         self.gate = None
         if self.mode == "whois":
             self.gate = gate or A.Gate(allowed_logins=settings(cfg)["allowed_logins"])
         self.peer = peer or (lambda address: address)   # test seam: never set by the CLI
-        self.csrf = A.Csrf()                    # SPEC-0428: per-process secret
+        self.csrf = csrf or A.Csrf()            # SPEC-0428: per-process secret (shared, 0432)
         self.serializations = 0                 # body encodings; the body is cached by `rev`
-        self.hub = ST.Hub(cache, ST.SlotPool(ST.max_clients(cfg)))
+        self._own_hub = hub is None             # a shared hub (SPEC-0432) outlives this socket
+        self.hub = hub or ST.Hub(cache, ST.SlotPool(ST.max_clients(cfg)))
+        self.closed = threading.Event()         # set by server_close: open streams end
+        self._conns: set = set()
+        self._conns_lock = threading.Lock()
         self.heartbeat_s = ST.HEARTBEAT_S       # stream knobs: tests inject shorter ones
         self.send_timeout_s = ST.SEND_TIMEOUT_S
         self.tail_poll_s = tail_poll_s(cfg)
@@ -93,9 +105,28 @@ class DashboardServer(http.server.ThreadingHTTPServer):
         if not isinstance(sys.exc_info()[1], OSError):
             super().handle_error(request, client_address)
 
+    def process_request(self, request, client_address):
+        with self._conns_lock:
+            self._conns.add(request)
+        super().process_request(request, client_address)
+
+    def shutdown_request(self, request):
+        with self._conns_lock:
+            self._conns.discard(request)
+        super().shutdown_request(request)
+
     def server_close(self):
-        self.hub.close()
+        """Close the listening socket and every open connection on it (streams end); the hub
+        too unless it is shared."""
+        self.closed.set()
+        if self._own_hub:
+            self.hub.close()
         super().server_close()
+        with self._conns_lock:
+            conns = list(self._conns)
+        for c in conns:
+            with contextlib.suppress(OSError):
+                c.shutdown(socket.SHUT_RDWR)
 
     def client_count(self) -> int:
         """Open live streams (snapshot and tail; `server.json` `clients`)."""
@@ -115,16 +146,18 @@ class DashboardServer(http.server.ThreadingHTTPServer):
 
 
 def make_server(cfg, bind: str | None = None, *, cache=None, own=None, mode=None, gate=None,
-                peer=None) -> DashboardServer:
+                peer=None, hub=None, csrf=None) -> DashboardServer:
     """The server, bound (not yet serving). `BindRefused` for a refused bind, `TailnetMissing`
     when the bind needs a tailnet this host lacks; the bind `OSError` propagates. Test seams,
     never passed by `serve_cmd`: `cache` (a `SnapshotCache` with an injected clock or builder),
-    `own` (replaces `auth.own_tailnet_ips`), `mode` / `gate` / `peer` (run the whois mode on a
-    loopback socket with a fake gate and an injected peer address)."""
+    `own` (replaces `auth.own_tailnet_ips`), `gate` / `peer` (with `mode="whois"`: run the whois
+    mode on a loopback socket with a fake gate and an injected peer address). `serve_cmd` passes
+    `mode="local"` for the loopback half of an `auto` bind (refused on any other address). `hub` / `csrf` are shared
+    with the tailnet listener of an `auto` bind (SPEC-0432)."""
     host, port = A.resolve_bind(bind or DEFAULT_BIND, own_fn=own or A.own_tailnet_ips)
     dashboard_dir(cfg)
     return DashboardServer(cfg, (host, port), cache or SnapshotCache(cfg), mode=mode,
-                           gate=gate, peer=peer)
+                           gate=gate, peer=peer, hub=hub, csrf=csrf)
 
 
 def _etag_matches(header: str | None, rev: str) -> bool:
@@ -367,7 +400,7 @@ class _Handler(http.server.BaseHTTPRequestHandler):
             self._stream_headers()
             slice_s = max(0.01, min(srv.heartbeat_s, srv.hub.refresh_s))
             last_write = last_auth = time.monotonic()
-            while not sub.closed:
+            while not (sub.closed or srv.closed.is_set()):
                 snap = sub.take(slice_s)
                 if time.monotonic() - last_auth >= srv.heartbeat_s:
                     # on its own clock, so a busy queue (a snapshot every few seconds, each
@@ -379,7 +412,7 @@ class _Handler(http.server.BaseHTTPRequestHandler):
                     rev, data = srv.encode(snap)
                     ST.write_event(self.wfile, "snapshot", rev, data)
                     last_write = time.monotonic()
-                elif sub.closed or ST.peer_gone(self.connection):
+                elif sub.closed or srv.closed.is_set() or ST.peer_gone(self.connection):
                     break                       # free the slot now, not at the next write
                 elif time.monotonic() - last_write >= srv.heartbeat_s:
                     ST.write_comment(self.wfile, "hb")
@@ -441,7 +474,7 @@ class _Handler(http.server.BaseHTTPRequestHandler):
                     break
                 deadline = time.monotonic() + srv.tail_poll_s
                 while time.monotonic() < deadline:
-                    if ST.peer_gone(self.connection):
+                    if srv.closed.is_set() or ST.peer_gone(self.connection):
                         return
                     time.sleep(min(0.1, srv.tail_poll_s))
                 if time.monotonic() - last_auth >= srv.heartbeat_s:
@@ -457,6 +490,159 @@ class _Handler(http.server.BaseHTTPRequestHandler):
             srv.hub.pool.release()
 
 
+# ---- the default bind: loopback always, the tailnet whenever there is one (SPEC-0432) --------
+
+AUTO = "auto"
+DEFAULT_SERVE_BIND = f"{AUTO}:{A.DEFAULT_PORT}"     # what `nw serve --dashboard` binds by default
+DEFAULT_RECHECK_S = 15.0
+MAX_RECHECK_S = 300.0
+
+
+def auto_port(spec) -> int | None:
+    """The port of `auto` / `auto:PORT` (8791 when omitted, 0 = ephemeral); None for any other
+    bind spec. `BindRefused` for `auto:` with a bad port."""
+    s = spec.strip().lower() if isinstance(spec, str) else ""
+    if s == AUTO:
+        return A.DEFAULT_PORT
+    if not s.startswith(AUTO + ":"):
+        return None
+    p = s[len(AUTO) + 1:]
+    if not (p.isascii() and p.isdigit()) or int(p) > 65535:
+        raise A.BindRefused(f"--bind {spec!r}: the port must be 0-65535")
+    return int(p)
+
+
+def tailnet_recheck_s(cfg) -> float:
+    """`agentic.dashboard.tailnet_recheck_s`: seconds between tailnet address checks in `auto`
+    mode (default 15; anything but a number in (0, 300] is the default)."""
+    ag = cfg.get("agentic")
+    raw = ag.get("dashboard") if isinstance(ag, dict) else None
+    v = raw.get("tailnet_recheck_s") if isinstance(raw, dict) else None
+    ok = isinstance(v, (int, float)) and not isinstance(v, bool) and 0 < v <= MAX_RECHECK_S
+    return float(v) if ok else DEFAULT_RECHECK_S
+
+
+def server_url(srv) -> str:
+    host, port = srv.server_address[:2]
+    return f"http://{f'[{host}]' if ':' in host else host}:{port}"
+
+
+def listener_entry(name, srv=None, *, auth, state="listening", reason=None, hint=None) -> dict:
+    """One `server.json` `listeners` item (SPEC-0432 Decision 5)."""
+    return {"name": name, "auth": auth, "state": state,
+            "url": server_url(srv) if srv is not None and state == "listening" else None,
+            "reason": reason, "hint": hint}
+
+
+class TailnetSupervisor:
+    """Keeps the tailnet listener of an `auto` server (SPEC-0432): every `recheck_s` seconds it
+    reads this host's own tailnet addresses; it binds a `whois`-mode `DashboardServer` on the
+    first one (sharing `cache`, `hub` and `csrf` with the loopback listener) and closes it again
+    when the address goes away or changes. `on_change(entry)` and `log(line)` are called once
+    per state change. Test seams, never passed by the CLI: `own` (replaces
+    `auth.own_tailnet_ips`), `reason` (replaces `auth.tailnet_reason`), `gate` (a zero-argument
+    factory for the listener's gate) and `peer`."""
+
+    def __init__(self, cfg, port, *, cache, hub, csrf, recheck_s=DEFAULT_RECHECK_S,
+                 on_change=None, log=None, own=None, reason=None, gate=None, peer=None):
+        self.cfg, self.port, self.cache, self.hub, self.csrf = cfg, port, cache, hub, csrf
+        self.recheck_s = recheck_s
+        self.on_change = on_change or (lambda entry: None)
+        self.log = log or (lambda line: None)
+        self._own = own or A.own_tailnet_ips
+        self._reason = reason or A.tailnet_reason
+        self._gate, self._peer = gate, peer
+        self.server: DashboardServer | None = None
+        self._serve_thread = None
+        self._thread = None
+        self._stop = threading.Event()
+        self._lock = threading.Lock()           # one poll at a time (thread vs. a direct call)
+        self._state = listener_entry("tailnet", auth="whois", state="waiting",
+                                     reason="checking")
+
+    def listener(self) -> dict:
+        return dict(self._state)
+
+    def _set(self, entry, line):
+        if entry == self._state:
+            return
+        self._state = entry
+        self.log(line)
+        self.on_change(dict(entry))
+
+    def _waiting(self, reason, hint):
+        self._set(listener_entry("tailnet", auth="whois", state="waiting", reason=reason,
+                                 hint=hint),
+                  f"tailnet: waiting for a Tailscale address ({reason})")
+
+    def poll(self) -> dict:
+        """One check; returns the listener entry."""
+        with self._lock:
+            try:
+                ips = list(self._own())
+            except Exception:                   # TailnetMissing, or anything else: no address
+                ips = []
+            want = ips[0] if ips else None
+            if want is not None and A.check_bind(want, ips) is not None:
+                want = None
+            cur = self.server.server_address[0] if self.server is not None else None
+            if cur is not None and A._ip(cur) != A._ip(want or ""):
+                self._close()
+                self._set(listener_entry("tailnet", auth="whois", state="waiting",
+                                         reason="address gone"),
+                          "tailnet: address gone, listener closed (loopback keeps serving)")
+            if want is None:
+                if self.server is None:
+                    self._waiting(*self._reason())
+                return self.listener()
+            if self.server is None:
+                try:
+                    srv = DashboardServer(self.cfg, (want, self.port), self.cache, mode="whois",
+                                          gate=self._gate() if self._gate else None,
+                                          peer=self._peer, hub=self.hub, csrf=self.csrf)
+                except OSError as e:
+                    self._waiting(f"cannot bind {want}:{self.port}: {e.strerror or e}", None)
+                    return self.listener()
+                t = threading.Thread(target=srv.serve_forever, kwargs={"poll_interval": 0.2},
+                                     name="dashboard-tailnet", daemon=True)
+                t.start()
+                self.server, self._serve_thread = srv, t
+                url = server_url(srv)
+                self._set(listener_entry("tailnet", srv, auth="whois"),
+                          f"tailnet: listening on {url} (tailscale whois identity gate)")
+            return self.listener()
+
+    def _close(self):
+        srv, t = self.server, self._serve_thread
+        self.server = self._serve_thread = None
+        if srv is None:
+            return
+        srv.shutdown()
+        if t is not None:
+            t.join()
+        srv.server_close()
+
+    def _run(self):
+        while not self._stop.is_set():
+            try:
+                self.poll()
+            except Exception as e:              # noqa: BLE001 - never take loopback down
+                self.log(f"tailnet: check failed: {type(e).__name__}: {e}")
+            self._stop.wait(self.recheck_s)
+
+    def start(self):
+        self._thread = threading.Thread(target=self._run, name="dashboard-tailnet-watch",
+                                        daemon=True)
+        self._thread.start()
+
+    def stop(self):
+        self._stop.set()
+        if self._thread is not None:
+            self._thread.join(timeout=10)
+        with self._lock:
+            self._close()
+
+
 # ---- server.json (the record itself lives in `lifecycle`, SPEC-0404) -------------------------
 
 server_json_path = LC.server_json_path
@@ -464,7 +650,11 @@ remove_server_json = LC.remove_server_record
 
 
 def write_server_json(cfg, server: DashboardServer, *, code_watch=False, code_sha=None,
-                      bind=None) -> dict:
+                      bind=None, listeners=None) -> dict:
     host, port = server.server_address[:2]
+    if listeners is None:
+        listeners = [listener_entry("local" if server.mode == "local" else "tailnet", server,
+                                    auth=server.mode)]
     return LC.write_server_record(cfg, LC.build_record(
-        server, code_watch=code_watch, code_sha=code_sha, bind=bind or f"{host}:{port}"))
+        server, code_watch=code_watch, code_sha=code_sha, bind=bind or f"{host}:{port}",
+        listeners=listeners))
