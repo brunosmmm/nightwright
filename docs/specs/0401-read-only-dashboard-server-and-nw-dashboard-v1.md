@@ -1,7 +1,7 @@
 ---
 id: SPEC-0401
 title: "Dashboard snapshot: nw.dashboard.v1, SnapshotCache and nw dashboard snapshot"
-status: proposed
+status: accepted
 owner: user
 created: 2026-11-03
 updated: 2026-11-03
