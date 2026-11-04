@@ -251,6 +251,10 @@ except that they now gain a stamp when the text names exactly one existing campa
   appends ` (campaign inferred from text|event)`.
 - `--event N` campaign lookup reads queue event N through `events.read_since`; a missing event
   still fails in `decisions.record`'s existing `event_id` validation.
+- Review fix: the `--event` / `--re` campaign is inherited only when it resolves to an existing
+  campaign (`state.json`); a bogus stamp on a mirrored `message` event or replied-to message
+  (e.g. a spec id passed as `--campaign`) falls through to text inference instead of failing the
+  write. Tests also cover `--no-campaign` blocking `--event` / `--re` inheritance.
 
 ## Rollout / migration
 

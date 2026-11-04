@@ -305,6 +305,29 @@ def test_cli_send_re_inherits_campaign_from_sender_inbox(tmp_path):
     assert rec["campaign"] == CB and "campaign_from" not in rec
 
 
+def test_cli_send_no_campaign_flag_blocks_re_inheritance(tmp_path):
+    cfg = _cfg(tmp_path)
+    _mk(cfg, CA)
+    q = M.send(cfg, to="conductor", frm="steward:Demo", text="question", kind="question",
+               campaign=CA)
+    rec = json.loads(_send(cfg, "--to", "conductor", "--re", q["id"], "--no-campaign",
+                           "x").output)
+    assert rec["campaign"] is None and "campaign_from" not in rec
+
+
+def test_cli_send_re_with_unknown_campaign_falls_through(tmp_path):
+    cfg = _cfg(tmp_path)
+    _mk(cfg, CA)
+    q = M.send(cfg, to="conductor", frm="steward:Demo", text="question", kind="question",
+               campaign="SPEC-0123")
+    r = _send(cfg, "--to", "conductor", "--re", q["id"], f"about {CA}")
+    assert r.exit_code == 0, r.output
+    rec = json.loads(r.output)
+    assert rec["campaign"] == CA and rec["campaign_from"] == "text"
+    rec = json.loads(_send(cfg, "--to", "conductor", "--re", q["id"], "plain").output)
+    assert rec["campaign"] is None and "campaign_from" not in rec
+
+
 def test_cli_send_unknown_re_falls_through_to_text(tmp_path):
     cfg = _cfg(tmp_path)
     _mk(cfg, CA)

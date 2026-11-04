@@ -59,8 +59,14 @@ def mailbox_send(cfg, to, frm, kind, campaign, no_campaign, re_, no_reply, as_js
     campaign_from = None
     if not campaign and not no_campaign:
         replied = M.find_message(cfg, re_) if re_ else None
-        if replied and replied.get("campaign"):
-            campaign, campaign_from = replied["campaign"], "re"
+        re_campaign = replied.get("campaign") if replied else None
+        if re_campaign:                         # inherit only a campaign that exists
+            try:
+                S.read_state(cfg, re_campaign)
+            except (ValueError, OSError):
+                re_campaign = None
+        if re_campaign:
+            campaign, campaign_from = re_campaign, "re"
         else:
             campaign = S.sole_campaign_named(cfg, body)
             campaign_from = "text" if campaign else None

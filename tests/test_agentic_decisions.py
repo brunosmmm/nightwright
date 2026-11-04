@@ -388,6 +388,31 @@ def test_cli_event_without_campaign_falls_through_to_text(cfg, run):
     assert rec["campaign"] == CB and rec["campaign_from"] == "text"
 
 
+def test_cli_no_campaign_flag_blocks_event_inheritance(cfg, run):
+    mk(cfg, CA)
+    E.append(cfg, "message", campaign=CA, by="t",
+             data={"msg_id": "1", "from": "x", "kind": "info", "text": "t"})
+    r = _dec(run, f"about {CA}", extra=("--event", "1", "--no-campaign"))
+    assert r.exit_code == 0, r.output
+    rec = D.read(cfg)[0]
+    assert rec["campaign"] is None and "campaign_from" not in rec and rec["event_id"] == 1
+    assert not [e for e in S.read_ledger(cfg, CA) if e["type"] == "note"]
+
+
+def test_cli_event_with_unknown_campaign_falls_through(cfg, run):
+    mk(cfg, CB)
+    E.append(cfg, "message", campaign="SPEC-0123", by="t",
+             data={"msg_id": "1", "from": "x", "kind": "info", "text": "t"})
+    r = _dec(run, f"about {CB}", extra=("--event", "1"))
+    assert r.exit_code == 0, r.output
+    rec = D.read(cfg)[0]
+    assert rec["campaign"] == CB and rec["campaign_from"] == "text"
+    r = _dec(run, "nothing named", extra=("--event", "1"))
+    assert r.exit_code == 0, r.output
+    rec = D.read(cfg)[1]
+    assert rec["campaign"] is None and "campaign_from" not in rec
+
+
 def test_inferred_decision_covers_park_and_dispatch(cfg, clock, run):
     decide(cfg, None, kind="no_action", rule="wt_broken", why="log starts")
     mk(cfg, CA)
