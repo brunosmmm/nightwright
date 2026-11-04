@@ -17,6 +17,7 @@ Claude-generating vs your-turn diagnostic.
 | `backups` | Org-file backup retention: `prune` (dry run unless `--yes`) | [Tasks](../capabilities/tasks-agenda.md), [Ideas](../capabilities/ideas.md) |
 | `campaign` | Campaign state, ledger and notes (agentic loop) | [Agentic loop](../capabilities/agentic.md) |
 | `completion` | Generate / install shell completion | [Completion](../capabilities/completion.md) |
+| `dashboard` | Read-only dashboard snapshot of the agentic queue: `dashboard snapshot [--json]` prints the `nw.dashboard.v1` document (health, counts, spend, needs-you, open escalations and human-owned parks) as a text summary or JSON; builds in-process, needs no server, tailscale or token, and writes nothing (SPEC-0401) | [Agentic loop](../capabilities/agentic.md) |
 | `doctor` | Read-only, offline install health check: tools, config, skills, completion, agentic queue, projects; `--fix-hints`, `--json` (`nw.doctor.v1`), `--project NAME`; exit 1 on any fail (SPEC-0349) | [Getting started](../guides/getting-started.md) |
 | `digest` | Hours joined to org tasks by JIRA key | [Report](../capabilities/report.md) |
 | `done` | Mark a task done | [Tasks](../capabilities/tasks-agenda.md) |
@@ -83,6 +84,12 @@ the conductor tooling: `events`, `followers`, `wakeups`, `runner-log`, `decision
 `decisions`, `escalate`, `conduct-status`, `conductor-brief`, `conductor-cost`,
 `conductor-session`, `conductor-launch`, `steward-launch` and `mvp-report`. Full list:
 `nw queue --help`.
+
+### `nw dashboard …`
+
+`snapshot` (text summary) and `snapshot --json` (the `nw.dashboard.v1` document) build the
+dashboard view in-process from the queue's read-only payload builders; nothing is written
+(SPEC-0401). Full list: `nw dashboard --help`.
 
 ### `nw sheet …` / `nw skills …` / `nw completion …` / `nw campaign …`
 
