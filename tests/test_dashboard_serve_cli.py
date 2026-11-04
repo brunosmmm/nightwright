@@ -154,10 +154,12 @@ def test_jobs_alone_serves_on_its_default_bind(fx):
     proc = subprocess.Popen([*nw_argv(), "serve", "--jobs"], env=nw_env(fx),
                             stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
     try:
-        assert until(lambda: listening(8790) or proc.poll() is not None)
-        assert proc.poll() is None, proc.stderr.read()
+        first = proc.stderr.readline()             # the readiness echo: SIGINT is safe after it
+        assert proc.poll() is None, first
+        assert until(lambda: listening(8790))
         proc.send_signal(signal.SIGINT)            # `--jobs` stops on KeyboardInterrupt
         _, err = proc.communicate(timeout=30)
+        err = first + err
     finally:
         stop(proc)
     assert proc.returncode == 0, err
