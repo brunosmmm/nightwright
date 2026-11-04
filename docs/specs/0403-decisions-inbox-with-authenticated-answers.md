@@ -24,10 +24,11 @@ campaign: 15 acceptance criteria over two subsystems. It is split into two specs
    human needs to decide, and every human-owned park with the fix to run, inside
    `nw.dashboard.v1`, and shown by `nw dashboard snapshot`.
 2. **Authenticated answers from the dashboard** (a later sibling spec that depends on this one
-   and on the dashboard server spec): `GET /api/session`, `POST /api/escalations/<id>/plan`
-   and `/answer` through `plan_answer`/`apply_answer` with `by="human"`, the plan token,
-   CSRF, conflict mapping (404/409/400 and a 500 path), `audit.py` with tailnet login and
-   device, the answer controls and confirm sheet, and the twin-equality and live-follower e2e.
+   and on the dashboard server, SPEC-0414): `GET /api/session`, `POST
+   /api/escalations/<id>/plan` and `/answer` through `plan_answer`/`apply_answer` with
+   `by="human"`, the plan token, CSRF, conflict mapping (404/409/400 and a 500 path), plan and
+   answer lines in SPEC-0414's `audit.py` (with tailnet login and device once the tailnet slice
+   lands), the answer controls and confirm sheet, and the twin-equality and live-follower e2e.
 
 This spec depends on [SPEC-0401](./0401-read-only-dashboard-server-and-nw-dashboard-v1.md)
 (the first slice of epic child 1, `done`). It uses only what SPEC-0401 defines and ships:
@@ -46,9 +47,22 @@ This spec depends on [SPEC-0401](./0401-read-only-dashboard-server-and-nw-dashbo
 - Its tests `tests/test_dashboard_snapshot.py`, `test_dashboard_cli.py`,
   `test_dashboard_readonly.py` and `test_dashboard_imports.py`.
 
-The SPEC-0401 sibling specs for the dashboard server (`nw serve --dashboard`, auth, routes)
-and the dashboard page (static UI, `?selftest=1`, headless Chromium) have not been written
-yet. This spec therefore uses no server, route, page or browser interface.
+It also depends on [SPEC-0414](./0414-dashboard-server-nw-serve-dashboard-spec-0400.md)
+(the second slice of epic child 1, `done`, merged on 2026-11-04). SPEC-0414 ships the loopback
+server `nw serve --dashboard` (`agentic/dashboard/server.py`, `auth.py`, `audit.py`): bearer
+`local.token` auth, the `Host`/`Origin` check, `server.json` with the actual port, and `GET
+/api/snapshot`, which serves SPEC-0401's `SnapshotCache` document as it is (serialized once per
+`rev`, strong `ETag: "<rev>"`, `304` on `If-None-Match`). Every method except `GET` gets `405`
+there. Its tests are `tests/test_dashboard_server.py`, `test_dashboard_serve_cli.py`,
+`test_dashboard_http_readonly.py`, `test_dashboard_auth.py` and `test_dashboard_audit.py`. This
+spec changes none of that. Because the server returns the cached document unchanged, the
+richer inbox reaches `GET /api/snapshot` with no server change. This spec pins that with a
+test over the real server (Decision 8).
+
+Two sibling interfaces still do not exist: the dashboard page (static UI, `?selftest=1`,
+headless Chromium; `GET /` is `404` today) and the tailnet slice of the server (`tailscale
+whois` identity). This spec therefore uses no page, browser or tailnet interface, and adds no
+route.
 
 What already exists in `agentic/escalations.py` (checked against the code on 2026-11-04):
 
@@ -89,21 +103,24 @@ does per answer kind:
 - G3. The payload is built read-only from the existing builders. The data for the waivable
   findings and unmet ACs is the data `plan_answer` validates against, so what the inbox offers
   is what an answer may use.
-- G4. `nw dashboard snapshot` shows the richer inbox on the host or over SSH today, before any
-  server exists.
+- G4. `nw dashboard snapshot` shows the richer inbox on the host or over SSH, and SPEC-0414's
+  `GET /api/snapshot` serves it to any authenticated client, with no change to the server.
 
 **Non-goals**
 - **The write path** (the sibling spec in Context, item 2): `GET /api/session`, the
-  `/plan` and `/answer` routes, the plan token, CSRF, body limits, the 404/409/400 mapping by
-  re-reading, the 500 response for a non-`ValueError` from `apply_answer` (with `result: 500`
-  in the audit enum and a test that makes `store.append_event` raise `OSError`), `audit.py`,
-  and the twin-equality and live-follower e2e. That spec must define each of these.
+  `/plan` and `/answer` routes (SPEC-0414 keeps answering `405` to every `POST` until then),
+  the plan token, CSRF, body limits, the 404/409/400 mapping by re-reading, the 500 response
+  for a non-`ValueError` from `apply_answer` (with `result: 500` in the audit enum and a test
+  that makes `store.append_event` raise `OSError`), the plan/answer actions in `audit.py`, and
+  the twin-equality and live-follower e2e. That spec must define each of these.
+- Any change to SPEC-0414's server, routes, auth or audit. This spec touches only the document
+  that the server already serves.
 - **The inbox view on the phone page** (cards, answer controls, the confirm sheet, park cards
   with a copyable fix, and the 390×844 / 360×740 self-test). The read-only cards go in the
   dashboard page sibling spec of SPEC-0401, or in a later spec that depends on it. The answer
-  controls and their 44 px check go in the write-path spec. A page needs a server and a page
-  shell, and neither exists yet. Putting either one here would make this spec depend on specs
-  that have not been written.
+  controls and their 44 px check go in the write-path spec. The server now exists
+  (SPEC-0414), but the page shell does not, so putting either one here would make this spec
+  depend on a spec that has not been written.
 - Live push over SSE (child 3) and phone notifications (child 5).
 - Withdrawing escalations, sending mailbox messages, writing events, or resuming, parking or
   abandoning campaigns (epic non-goals).
@@ -143,6 +160,12 @@ does per answer kind:
    campaign's `state.json` is unreadable, that entry carries the SPEC-0401 summary fields plus
    `error: "<Type>: <message>"` and `answerable: false`, and the rest of the inbox still
    builds.
+8. **The server serves the new inbox unchanged.** No file of SPEC-0414 changes. `GET
+   /api/snapshot` already returns `SnapshotCache.get()` as it is, so the full inbox and its
+   `rev` reach HTTP clients automatically. An answer or withdrawal moves
+   `escalations.signature`, which is in the cache watermark, and so produces a new `rev` and a
+   new `ETag`. A test over SPEC-0414's real server pins this, so a later server change cannot
+   silently drop or reshape the inbox.
 
 ## Design
 
@@ -249,11 +272,13 @@ or entry has an error.
   `HOST_FIX`, `FINDING_TEXT_MAX = 300`).
 - Changed: `snapshot.build` (calls `build_inbox`; drops `_escalations` and the `parks` lambda),
   `cli_dashboard.py` (the text form), and `escalations.py` (gains only `unmet_acs`).
+- Unchanged: SPEC-0414's `server.py`, `auth.py` and `audit.py`, and `cli_worker.serve_cmd`.
 - `build_inbox` is read-only. It calls no `events.sync`, takes no lock and writes nothing.
   SPEC-0401's read-only file-hash test keeps covering `build`, and so now covers the inbox.
 - SPEC-0401's import-graph test (`tests/test_dashboard_imports.py`) keeps pinning that
   `escalations` and the queue modules do not import `agentic.dashboard`. `inbox.py` imports
-  `escalations`, `store` and nothing from the server side.
+  `escalations`, `store` and nothing from the server side (`server`, `auth`, `audit`), and
+  `snapshot.py` still imports nothing from the server side either.
 - Cost: one `list_all(cfg)`, plus one state read and one `_review_findings` per open
   escalation with a campaign, per build. Builds happen only when SPEC-0401's watermark moved or
   `max_stale_s` passed.
@@ -312,12 +337,19 @@ or entry has an error.
 - [ ] `nw dashboard snapshot` (real subprocess) prints each escalation with its forms or its
       `why_not`, and each park with its `inbox_state` and `fix`. `--json` carries the full
       inbox, and the command exits 0 when an entry has an error.
+- [ ] Over SPEC-0414's real loopback server (`make_server(cfg, "127.0.0.1:0")`, valid bearer
+      token), `GET /api/snapshot` returns an `inbox` equal to `build(cfg)["inbox"]` for the
+      seeded inbox fixture. After the seeded `ESC-0001` is answered with `plan_answer` +
+      `apply_answer` (`by="human"`) directly in the data dir and the cache clock steps past
+      `refresh_s`, the old `ETag` no longer gives `304`, and `ESC-0001` is gone from
+      `inbox.escalations` while its campaign is listed in `inbox.parks` with `inbox_state:
+      awaiting_conductor`. No SPEC-0414 source file changes.
 - [ ] A drift guard test fails if `EFFECTS["override"]` stops mentioning `REVIEWING`, or if the
       `escalation_answered` row of `skills/nw-conduct/SKILL.md` stops containing
       `--to REVIEWING`, `choose` and `text`.
 - [ ] `python3 tools/spec_lint.py` exits 0, and the affected tests pass, including SPEC-0401's
-      snapshot, cache, CLI, read-only and import tests, changed only where Decisions 3 and 6
-      change their expected output.
+      snapshot, cache, CLI, read-only and import tests and SPEC-0414's server, serve-CLI and
+      HTTP read-only tests, changed only where Decisions 3 and 6 change their expected output.
 
 ## Test plan
 
@@ -363,9 +395,19 @@ or entry has an error.
     the seeded dir): the text form has the forms or `why_not` per escalation and the `fix` per
     park, and `--json` round-trips the inbox. The command exits 0 with the corrupt-state
     entry present.
-  - `tests/test_dashboard_readonly.py` and `tests/test_dashboard_imports.py` (SPEC-0401): run
-    unchanged against the new code, with the readonly test's fixture extended by an open
-    escalation that has a stored review.
+  - `tests/test_dashboard_server.py` (SPEC-0414, extended with
+    `test_snapshot_serves_full_inbox`): a real server in a thread on `127.0.0.1:0` with an
+    injected cache clock, over the seeded inbox fixture. It asserts the HTTP `inbox` equals
+    `build(cfg)["inbox"]`, then answers `ESC-0001` in the data dir with
+    `plan_answer` + `apply_answer`, steps the clock past `refresh_s`, and asserts a new `ETag`
+    (the old one gets `200`, not `304`), `ESC-0001` gone from `inbox.escalations`, and its
+    campaign in `inbox.parks` as `awaiting_conductor`. Requests use `urllib` and waits use
+    `tests/waits.py`.
+  - `tests/test_dashboard_readonly.py`, `tests/test_dashboard_http_readonly.py` and
+    `tests/test_dashboard_imports.py` (SPEC-0401/0414): run unchanged against the new code, with
+    the read-only fixtures extended by an open escalation that has a stored review, so reading
+    the richer inbox in-process and over HTTP leaves the data dir byte-identical outside
+    `agentic/dashboard/`.
 - **Manual verification:** on the host, with at least one real open escalation, run `uv run
   nw dashboard snapshot` and `uv run nw dashboard snapshot --json | jq .inbox`. Check that the
   forms, findings, unmet ACs and park fixes match `nw escalations show <id>` and `nw queue
@@ -377,13 +419,13 @@ or entry has an error.
 
 ## Rollout / migration
 
-1. SPEC-0401 is `done`, so this spec can land as soon as it is accepted. It does not need the
-   dashboard server or page specs.
+1. SPEC-0401 and SPEC-0414 are `done`, so this spec can land as soon as it is accepted. It
+   does not need the dashboard page or tailnet specs.
 2. No data migration. The escalation, event and state formats are unchanged. `nw.dashboard.v1`
    gains fields, and `inbox.parks` gains the `human_decision` rows with no open escalation.
    Nothing consumes the document outside nightwright yet.
-3. The write-path sibling spec follows. It depends on this spec and on the dashboard server
-   spec. The epic's Breakdown line for child 2 is updated in the epic's next revision.
+3. The write-path sibling spec follows. It depends on this spec and on SPEC-0414 (whose
+   `405`-for-`POST` rule it relaxes for its two routes only). The epic's Breakdown line for child 2 is updated in the epic's next revision.
 
 ## Definition of done
 
