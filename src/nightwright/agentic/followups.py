@@ -41,9 +41,12 @@ _SINGLE_RE = re.compile(r"^(?:nw|wt)fu:([0-9a-f]{12}) \[(SPEC-\d{4})\] (.+)$")  
 
 
 def finding_key(spec_id, title, files) -> str:
-    """`sha1(spec_id | norm_finding_title(title) | ",".join(sorted(files)))` (hex)."""
+    """`sha1(spec_id | norm_finding_title(title) | ",".join(sorted(files)))` (hex). Non-string
+    `files` items (a verdict that failed its schema) are stringified, `None` dropped, so a
+    malformed verdict never raises here (SPEC-0408); a list of strings keys as before."""
     from .queue import norm_finding_title                   # queue imports this module
-    raw = f"{spec_id}|{norm_finding_title(title)}|{','.join(sorted(files or []))}"
+    names = sorted(str(f) for f in files or [] if f is not None)
+    raw = f"{spec_id}|{norm_finding_title(title)}|{','.join(names)}"
     return hashlib.sha1(raw.encode("utf-8")).hexdigest()
 
 

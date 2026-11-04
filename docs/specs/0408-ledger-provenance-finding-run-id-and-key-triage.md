@@ -253,12 +253,24 @@ provenance.
   `waive[].key` equal to the follow-up key) are covered by the automated tests over the
   real writers and a tmp data dir.
 
+### Test record, review round 1 (2026-11-03)
+
+- Added to `tests/test_agentic_ledger_provenance.py`: a gate-triager invalid verdict past
+  `TRIAGE_RETRY_MAX` parks `triage_escalated` with no `triage` event (covers the
+  `rr.verdict_ok` guard); `finding_key` tolerates non-string `files`; a non-conforming verdict
+  with dict/null `files` appends its findings without raising.
+- `uv run pytest -q -n 4` on `test_agentic_ledger_provenance.py`, `test_agentic_queue.py`,
+  `test_agentic_review_triage.py`, `test_agentic_store.py` — 324 passed.
+
 ### As shipped
 
 As designed. Notes: `store._stamp_finding` does the `key`/`run_id` stamping; `_record_run` sets
 `run_id` on all its findings in one pass at the end; the gate `triage` event is built by
 `queue._gate_triage_event`, which resolves a waived gate's key from `finding` events after the
-last `gate` event (`None` for a null gate name, zero or several candidates).
+last `gate` event (`None` for a null gate name, zero or several candidates). `followups.finding_key`
+stringifies non-string `files` items (dropping `None`) and `_stamp_finding` leaves the key off on
+`TypeError`/`ValueError`, so a verdict that failed its schema cannot break `append_event`; the key of
+an all-string `files` list is unchanged.
 
 ## Rollout / migration
 

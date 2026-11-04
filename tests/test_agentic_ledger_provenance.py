@@ -256,3 +256,32 @@ def test_old_ledger_lines_stay_and_all_readers_cope(opened, monkeypatch):
     r = run_cli(cfg, monkeypatch, ["campaign", "log", cid])
     assert r.exit_code == 0 and "triage" in r.output
     assert "triage" in J.event_sentence(events[-1])
+
+
+# ---- review round 1 follow-ups ----------------------------------------------------------------
+
+def test_gate_triager_invalid_verdict_past_retry_cap_writes_no_triage(opened):
+    cfg, cid, ctx = opened
+    _to_triaging(cfg, cid, counters={"triage_retries": Q.TRIAGE_RETRY_MAX})
+    row, _ = _triage_in(ctx, cfg, cid, {"garbage": 1}, ok=False)
+    assert row["to"] == "PARKED" and row["reason"] == "triage_escalated"
+    assert _triages(cfg, cid) == []
+
+
+def test_finding_key_tolerates_non_string_files():
+    assert FU.finding_key(SPEC, "t", ["b.py", "a.py"]) == FU.finding_key(SPEC, "t", ["a.py", "b.py"])
+    assert FU.finding_key(SPEC, "t", [None, "a.py"]) == FU.finding_key(SPEC, "t", ["a.py"])
+    FU.finding_key(SPEC, "t", [{"path": "a.py"}, 3, None])      # does not raise
+
+
+def test_malformed_verdict_files_do_not_break_the_append(opened):
+    cfg, cid, _ = opened
+    st = S.read_state(cfg, cid)
+    verdict = {"must_fix": [{"title": "x", "files": [{"path": "a.py", "line": 3}]},
+                            {"title": "y", "files": [None, 7]}]}
+    events = Q._record_run(st, "implementer", "008-implementer", _rr(verdict), 1.0)
+    for etype, payload in events:
+        S.append_event(cfg, cid, etype, payload)
+    found = _findings(cfg, cid)
+    assert [f["title"] for f in found] == ["x", "y"]
+    assert all(f["run_id"] == "008-implementer" and isinstance(f["key"], str) for f in found)

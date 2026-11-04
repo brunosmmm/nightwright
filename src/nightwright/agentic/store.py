@@ -305,7 +305,10 @@ def _stamp_finding(cfg, campaign_id, rec: dict) -> None:
         spec_id = read_state(cfg, campaign_id).get("spec_id")
     except (ValueError, OSError):            # ValueError includes JSONDecodeError
         return
-    rec["key"] = followups.finding_key(spec_id, rec.get("title"), rec.get("files"))
+    try:
+        rec["key"] = followups.finding_key(spec_id, rec.get("title"), rec.get("files"))
+    except (TypeError, ValueError):          # e.g. `files` is not a list: leave the key off
+        return
 
 
 def append_event(cfg, campaign_id, type, payload=None, *, by="tick") -> dict:
