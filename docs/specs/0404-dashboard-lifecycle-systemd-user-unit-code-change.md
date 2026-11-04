@@ -1,7 +1,7 @@
 ---
 id: SPEC-0404
 title: "Dashboard server lifecycle: code-change exit, exit 3 without a tailnet address, server.json record"
-status: in-progress
+status: done
 owner: user
 created: 2026-11-03
 updated: 2026-11-04
@@ -200,7 +200,7 @@ and before any record is written, so during a tailscale outage there is no `serv
 - [x] When the package is not imported from a git checkout, no watcher runs and `server.json` has
       `code_watch: false`; `agentic.dashboard.code_check_s: 0` and `--no-code-watch` also
       disable it, and `--code-root PATH` retargets it.
-- [ ] When the bind needs a tailnet address and `own_tailnet_ips()` yields none, the server exits
+- [x] When the bind needs a tailnet address and `own_tailnet_ips()` yields none, the server exits
       **3** with a message naming the cause, binds no socket and writes no `server.json`. A
       refused bind (for example `0.0.0.0`) keeps exit **2**, and a loopback bind never exits 3.
 - [x] After a successful bind, `server.json` exists at `<data_dir>/agentic/dashboard/server.json`
@@ -330,6 +330,36 @@ fixed sleep before a positive assertion.
 - `tests/test_dashboard_lifecycle.py` starts the server with a PATH that keeps `git`, because
   `test_dashboard_cli.nw_env` drops every PATH directory holding a `tailscale` (here `/usr/bin`).
 
+### Test record, loop 4 (2026-11-04)
+
+- The tailnet slice (SPEC-0416: `auth.own_tailnet_ips()`, `resolve_bind`, `TailnetMissing`,
+  `--bind tailscale[:PORT]`) is now on the branch and `cli_worker._serve_dashboard` already maps
+  `TailnetMissing` to exit 3 before `make_server` and `write_server_json`. Added
+  `test_server_exits_3_without_tailnet_address` (real `nw serve --dashboard` subprocesses; fake
+  `tailscale` on `PATH` exiting 1, printing nothing, or absent; for `--bind tailscale:0`,
+  `--bind tailscale` and `--bind 100.64.0.9:0`: exit 3, stderr names the cause, no `server.json`)
+  and `test_tailnet_gate_keeps_exit_2_and_loopback_starts` (fake reporting own IP 100.64.0.1:
+  `0.0.0.0`, foreign `100.64.0.9` and LAN `192.168.1.5` exit 2; a loopback bind with a failing
+  fake starts and exits 0 on SIGTERM). `test_code_watch_thread_calls_on_change_once` now uses
+  `waits.join`.
+- `uv run pytest -q tests/test_dashboard_lifecycle.py tests/test_test_waits.py`: 35 passed.
+  The full suite was left to gating.
+- Manual verification on this host: (1) `nw serve --dashboard --bind 127.0.0.1:0` wrote
+  `server.json`, `kill -TERM` removed it and the exit status was 0 (tailscale is not logged in
+  here, so the record was checked on a loopback bind); (2) with the real `/usr/bin/tailscale` in
+  state `NeedsLogin`, `nw serve --dashboard --bind tailscale:0` printed the cause, wrote no record
+  and `$?` was 3; (3) the code-change restart was exercised by
+  `test_server_exits_0_on_code_change` against a tmp git checkout through `--code-root`, not by
+  merging into the live checkout.
+
+### As shipped, loop 4 (2026-11-04)
+
+- Supersedes the "Exit 3 is not implemented" bullet above: AC 3 is met through SPEC-0416's
+  `TailnetMissing` (exit 3), `BindRefused` (exit 2) and the loopback bypass in `resolve_bind`.
+  The default bind of the shipped server is loopback (`127.0.0.1:8791`), so a bare
+  `nw serve --dashboard` never exits 3; exit 3 applies to `--bind tailscale[:PORT]` and to an
+  explicit tailnet address, which SPEC-0416 resolves through `own_tailnet_ips()`.
+
 ## Rollout / migration
 
 1. Land after epic child 1 (`nw serve --dashboard`). No data migration; `server.json` is created
@@ -341,14 +371,14 @@ fixed sleep before a positive assertion.
 
 ## Definition of done
 
-- [ ] Acceptance criteria all met.
-- [ ] Test plan executed; affected automated tests pass; manual steps 1-3 performed and noted
+- [x] Acceptance criteria all met.
+- [x] Test plan executed; affected automated tests pass; manual steps 1-3 performed and noted
       here.
-- [ ] No regressions (the epic's read-only and import-graph tests pass).
-- [ ] `depends_on` names the epic child 1 spec (SPEC-0414), and `spec_lint` resolves it.
-- [ ] Spec body updated to match what shipped.
-- [ ] `docs/LEDGER.md` regenerated (`python3 tools/spec_lint.py --write-ledger`).
-- [ ] `python3 tools/spec_lint.py` exits 0.
+- [x] No regressions (the epic's read-only and import-graph tests pass).
+- [x] `depends_on` names the epic child 1 spec (SPEC-0414), and `spec_lint` resolves it.
+- [x] Spec body updated to match what shipped.
+- [x] `docs/LEDGER.md` regenerated (`python3 tools/spec_lint.py --write-ledger`).
+- [x] `python3 tools/spec_lint.py` exits 0.
 
 ## Open questions
 

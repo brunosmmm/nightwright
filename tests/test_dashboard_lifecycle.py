@@ -16,7 +16,7 @@ import nightwright
 from fixtures.dashboard_data import AGENTIC, seed
 from nightwright.agentic import codewatch as CW
 from nightwright.agentic.dashboard import lifecycle as LC
-from test_dashboard_cli import nw_env
+from test_dashboard_cli import nw_argv, nw_env
 from test_dashboard_serve_cli import dash, stop, wait_server
 from test_dashboard_serve_cli import start as _start
 from waits import join, until
@@ -146,9 +146,56 @@ def test_code_watch_thread_calls_on_change_once(repo):
     t.start()
     commit(repo, "src/nightwright/a.py", "x = 9\n")
     assert until(lambda: seen)
-    t.join(10)
+    join(t)
     assert not t.is_alive() and len(seen) == 1 and seen[0]["paths"] == ["src/nightwright/a.py"]
     stop_ev.set()
+
+
+# ---- exit 3 without a tailnet address (AC 3) -----------------------------------------------
+
+def tailscale_env(fx, tmp_path, script):
+    """`nw_env` with a fake `tailscale` first on PATH (`script` is its shell body), or none
+    when `script` is None. `nw_env` drops every PATH dir that holds a real `tailscale`."""
+    env = nw_env(fx)
+    if script is not None:
+        bindir = tmp_path / "fakebin"
+        bindir.mkdir(exist_ok=True)
+        fake = bindir / "tailscale"
+        fake.write_text(f"#!/bin/sh\n{script}\n")
+        fake.chmod(0o755)
+        env["PATH"] = f"{bindir}{os.pathsep}{env['PATH']}"
+    return env
+
+
+def serve_once(fx, env, *args):
+    return subprocess.run([*nw_argv(), "serve", "--dashboard", *args], env=env,
+                          capture_output=True, text=True, timeout=120)
+
+
+@pytest.mark.parametrize("script", ["exit 1", "exit 0", None], ids=["fails", "silent", "missing"])
+def test_server_exits_3_without_tailnet_address(fx, tmp_path, script):
+    env = tailscale_env(fx, tmp_path, script)
+    for args in (["--bind", "tailscale:0"], ["--bind", "tailscale"], ["--bind", "100.64.0.9:0"]):
+        r = serve_once(fx, env, *args)
+        assert r.returncode == 3, (args, r.stderr)
+        assert "no tailnet address" in r.stderr and "tailscale up" in r.stderr, r.stderr
+        assert not (dash(fx) / "server.json").exists()
+
+
+def test_tailnet_gate_keeps_exit_2_and_loopback_starts(fx, tmp_path):
+    env = tailscale_env(fx, tmp_path, "[ \"$1\" = ip ] && echo 100.64.0.1")
+    for bind in ("0.0.0.0:0", "100.64.0.9:0", "192.168.1.5:0"):   # wildcard, foreign tailnet, LAN
+        r = serve_once(fx, env, "--bind", bind)
+        assert r.returncode == 2, (bind, r.stderr)
+        assert not (dash(fx) / "server.json").exists()
+    # the same failing fake never stops a loopback bind (no tailscale is run for it)
+    env = tailscale_env(fx, tmp_path, "exit 1")
+    p = _start(fx, "--bind", "127.0.0.1:0", env=env)
+    try:
+        assert wait_server(fx, p)["port"] > 0
+    finally:
+        stop(p)
+    assert p.returncode == 0
 
 
 # ---- server.json (AC 4, 5) -----------------------------------------------------------------
