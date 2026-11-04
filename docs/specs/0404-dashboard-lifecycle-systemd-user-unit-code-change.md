@@ -8,7 +8,7 @@ updated: 2026-11-03
 kind: feature
 source_idea: IDEA-877
 parent: SPEC-0400
-depends_on: [SPEC-0401]
+depends_on: [SPEC-0401, SPEC-0414]
 tags: [agentic, dashboard, remote, lifecycle]
 ---
 
@@ -30,12 +30,9 @@ start so that the supervisor retries, (c) shuts down cleanly on SIGTERM/SIGINT, 
 a `server.json` runtime record that any other process can read to find the live server without
 talking to it.
 
-**Dependency on epic child 1 (not yet allocated a spec id).** The read-only server of epic
-child 1 (`nw serve --dashboard`) has no spec file in `docs/specs/` at the time of writing, so this
-spec cannot carry a resolvable `depends_on` for it. The linter would reject an unresolved id.
-Implementation **must not start** until child 1's spec exists and is `done` (or at least its
-server is merged). When child 1's spec id is allocated, add it to this spec's `depends_on` before
-moving this spec to `accepted`. The exact names this spec attaches to, and which child 1 must
+**Dependency on epic child 1 (SPEC-0414).** The read-only server of epic child 1
+(`nw serve --dashboard`) is SPEC-0414, which is merged and named in this spec's `depends_on`.
+Implementation builds on that server. The exact names this spec attaches to, and which child 1 must
 therefore provide (they are listed in the epic's module layout and Decisions 1-2), are:
 
 - `agentic/dashboard/server.py`: `serve(cfg, bind, …)`, whose return value is the process exit
@@ -289,13 +286,13 @@ fixed sleep before a positive assertion.
 - [ ] Test plan executed; affected automated tests pass; manual steps 1-3 performed and noted
       here.
 - [ ] No regressions (the epic's read-only and import-graph tests pass).
-- [ ] `depends_on` names the epic child 1 spec once it exists, and `spec_lint` resolves it.
+- [ ] `depends_on` names the epic child 1 spec (SPEC-0414), and `spec_lint` resolves it.
 - [ ] Spec body updated to match what shipped.
 - [ ] `docs/LEDGER.md` regenerated (`python3 tools/spec_lint.py --write-ledger`).
 - [ ] `python3 tools/spec_lint.py` exits 0.
 
 ## Open questions
 
-None. The one pending bookkeeping item (adding child 1's spec id to `depends_on`) is a dependency
+None. The former bookkeeping item (adding child 1's spec id, SPEC-0414, to `depends_on`) was a dependency
 of the order of work, not a design question: it is recorded in Context and the Definition of
 done.
