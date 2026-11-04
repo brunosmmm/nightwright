@@ -320,6 +320,11 @@ def dispatch(cfg, state: dict, step_kind: str | None, req, *, adopted: bool = Fa
                               slot=got[0] if got else None,
                               request=adopted_request(cfg, state, rec, req.run_dir))
     from . import persona_gate as PG
+    if step_kind in PG.GATED_KINDS and req.persona not in PG.UNGATED_PERSONAS \
+            and PG.backoff_until(cfg) is not None:
+        # SPEC-0345: the tick's gate read the backoff before this run was admitted; one that
+        # started since (another run's 429) holds it too, remote or local
+        return HeldRunner()
     workers = persona_workers(cfg, state)
     if not workers or ineligible(state, step_kind, req) is not None:
         return None
@@ -340,6 +345,21 @@ def dispatch(cfg, state: dict, step_kind: str | None, req, *, adopted: bool = Fa
         PG.set_affinity(cfg, state, w["name"])
         return R.RemoteRunner(cfg, state, w, local=local, slot=fd)
     return None
+
+
+class HeldRunner:
+    """SPEC-0345: a run admitted by the tick's gate whose dispatch found the rate-limit backoff
+    running. It never starts: it ends interrupted (no retry charged) and the next tick's gate
+    holds the step until the backoff ends."""
+
+    detachable = True
+
+    def run(self, req, *, hooks=None):
+        R._save_inputs(req)
+        if hooks is not None and not hooks.enter_collect():
+            return R.DETACHED
+        return R._synthetic(req, "the run was not started: the rate-limit backoff began after "
+                                 "the tick admitted it")
 
 
 def adopted_request(cfg, state: dict, rec: dict, run_dir):
@@ -639,23 +659,36 @@ def _lost(rr: R.RemoteRunner, req, hooks, rec: dict, why: str):
     RG._cancel_job(cfg, rr.worker, job_id)
     lost = RJ.update(cfg, job_id, state="lost", lost_reason=why) or rec
     if why in RG.UNCHARGED:                     # SPEC-0334: a rotation is not the worker's fault
+        # SPEC-0345: no loss on the worker and no affinity change, but the ledger names the run
+        # (`charged: false`) so the cap restarts its clock for the local re-run
+        _lost_event(rr, req, job_id, lost, why, charged=False)
         return _local(rr, req, hooks)
     # SPEC-0345: the campaign's ledger says so (as a gate job's loss does), which also clears
     # the campaign's affinity on this worker
     from . import persona_gate as PG
-    try:
-        store.append_event(cfg, rr.state["id"], "worker_job_lost",
-                           {"worker": rr.worker["name"], "job_id": job_id,
-                            "run_id": Path(req.run_dir).name,   # the cap restarts its clock
-                            "attempt": lost.get("attempt"), "reason": why}, by="personas")
-    except (OSError, ValueError):
-        pass
+    _lost_event(rr, req, job_id, lost, why)
     PG.clear_affinity(cfg, rr.state, rr.worker["name"])
     try:
         WK.record_loss(cfg, rr.worker["name"], job_id=job_id, reason=why)
     except (OSError, ValueError):
         pass
     return _local(rr, req, hooks)
+
+
+def _lost_event(rr: R.RemoteRunner, req, job_id: str, lost: dict, why: str, *,
+                charged: bool = True) -> None:
+    """The persona job's `worker_job_lost` on the campaign ledger, naming its `run_id`: the
+    cap restarts the run's clock at the loss (the local re-run gets a full timeout). An
+    uncharged loss says `charged: false`: it makes the worker neither failing nor clears the
+    affinity (`persona_gate.lost_since`)."""
+    data = {"worker": rr.worker["name"], "job_id": job_id, "run_id": Path(req.run_dir).name,
+            "attempt": lost.get("attempt"), "reason": why}
+    if not charged:
+        data["charged"] = False
+    try:
+        store.append_event(rr.cfg, rr.state["id"], "worker_job_lost", data, by="personas")
+    except (OSError, ValueError):
+        pass
 
 
 def _applied(rr: R.RemoteRunner, req, hooks, job_id: str):

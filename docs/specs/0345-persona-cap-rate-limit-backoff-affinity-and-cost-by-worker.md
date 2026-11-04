@@ -349,6 +349,31 @@ back to local. Stuck detectors skip campaigns held by the gate. Cost attribution
   personas, test-waits, worker-job and events files: 883 passed.
 - Full suite left to gating.
 
+### Test record (2026-11-03, review loop 7)
+
+- Steward-scoped pass: only the two findings named by the human were fixed.
+- New tests in `tests/test_remote_persona_limits.py`. Each fails with the source changes
+  reverted (3 failed):
+  - `test_a_backoff_begun_after_the_gate_holds_the_dispatch` (with a worker, and with none):
+    a backoff that starts after the tick's gate admitted the step holds the run in
+    `remote_personas.dispatch`. No job is submitted, no local run starts, the affinity stays
+    unset, and the run ends interrupted. A `spec_review` dispatch is not held.
+  - `test_an_uncharged_loss_restarts_the_cap_clock_of_the_local_rerun`: a rotation loss late
+    in the run appends `worker_job_lost` with the `run_id` and `charged: false`. The local
+    re-run still counts after the remote run's own deadline and stops counting after its own.
+    The worker stays affine and is not failing.
+- `test_pull_workers_security.py::test_a_rotated_persona_job_goes_local_without_a_recorded_loss`:
+  its stub runner gains the campaign `state` (a real `RemoteRunner` always has one), and it
+  now checks the `charged: false` loss event.
+- `tests/test_test_waits.py::test_no_bare_join_before_result_read` failed on this branch's
+  `tests/test_pull_workers.py` and `tests/test_pull_workers_security.py` (numeric
+  `th.join(N)`). Main had already fixed both files (`waits.join`), so main's versions were
+  copied here, with the stub change above reapplied.
+- `uv run pytest -q -n 6` on the persona-limits, remote personas and gates, pull workers (and
+  their security tests), reviewers, e2e, events, test-waits and affected-tests replay files:
+  478 passed. `python3 tools/spec_lint.py`: exit 0.
+- Full suite left to gating.
+
 ### As shipped (2026-11-02)
 
 - **Waiver (2026-11-03).** The real-persona-campaign-on-box and real-429 manual steps were
@@ -460,6 +485,15 @@ back to local. Stuck detectors skip campaigns held by the gate. Cost attribution
   (the re-run after its own `run.start`, closed by the `run.end`), no retry is charged, and
   the tick's gate holds the step. Before the write-back re-run, the remote run's own result
   is folded into the backoff (a 429 there starts it), and the re-run's start time is its own.
+- **Review loop 7.** Two fixes. (1) `remote_personas.dispatch` checks the backoff again for
+  a gated persona step (not `spec_reviewer`) before it places the run. A backoff begun after
+  the tick's gate read it returns a `HeldRunner`: the run starts neither on a worker nor
+  locally, ends interrupted (no retry charged), and the next tick's gate holds the step.
+  (2) An uncharged loss (`remote_gates.UNCHARGED`, a rotation) now appends `worker_job_lost`
+  with the `run_id` and `charged: false` before the local re-run, so the cap restarts that
+  run's clock as it does for a charged loss. `persona_gate.lost_since` ignores `charged:
+  false` losses, so a rotation neither makes the worker failing nor voids the affinity, and no
+  loss is recorded on the worker, as before.
 - **Test support.** A `FakeRunner` script entry may carry
   `api_error: {status, message}`, which yields an API-error result.
 

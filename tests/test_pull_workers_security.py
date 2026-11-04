@@ -210,11 +210,15 @@ def test_a_rotated_persona_job_goes_local_without_a_recorded_loss(world, monkeyp
     monkeypatch.setattr(RG, "_cancel_job", lambda *a: None)
     monkeypatch.setattr(RPS.WK, "record_loss", lambda *a, **k: calls.append("loss"))
     monkeypatch.setattr(RPS, "_local", lambda rr, req, hooks: calls.append("local") or "ran")
-    rr = types.SimpleNamespace(cfg=world.cfg, worker={"name": "box"})
+    rr = types.SimpleNamespace(cfg=world.cfg, worker={"name": "box"}, state={"id": CID})
     req = types.SimpleNamespace(run_dir=str(world.tmp / "run"))
     assert PJ.follow_persona(rr, req, None, RJ.read(world.cfg, job_id)) == "ran"
     assert calls == ["local"]
     assert RJ.read(world.cfg, job_id)["lost_reason"] == "rotated"
+    # SPEC-0345: the ledger names the run for the cap's clock, as an uncharged loss
+    from nightwright.agentic import store as S
+    ev, = S.read_ledger(world.cfg, CID, types=["worker_job_lost"])
+    assert ev["charged"] is False and ev["run_id"] == "run"
 
 
 def test_a_heartbeat_for_another_workers_job_says_gone(world, pull):

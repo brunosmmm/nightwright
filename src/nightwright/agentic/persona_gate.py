@@ -378,11 +378,12 @@ def _losses(cfg, cid) -> list[dict]:
 
 def lost_since(cfg, state: dict, worker: str, since, *, within=None, now=None) -> bool:
     """A `worker_job_lost` of this campaign on `worker` at or after `since` (any, when None);
-    with `within`, only one at most `within` seconds old."""
+    with `within`, only one at most `within` seconds old. An uncharged loss (`charged: false`,
+    a rotation) is not the worker's fault and never counts."""
     t0 = _epoch(since)
     cutoff = None if within is None else _now_epoch(now) - within
     for ev in _losses(cfg, state.get("id")):
-        if ev.get("worker") != worker:
+        if ev.get("worker") != worker or ev.get("charged") is False:
             continue
         t = _epoch(ev.get("ts"))
         if cutoff is not None and (t is None or t < cutoff):

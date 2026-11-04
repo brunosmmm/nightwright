@@ -291,6 +291,66 @@ def test_a_write_back_rerun_runs_locally_with_no_backoff(tmp_path, monkeypatch):
     assert local.calls == ["002-implementer"] and not res.interrupted
 
 
+@pytest.mark.parametrize("workers", [True, False])
+def test_a_backoff_begun_after_the_gate_holds_the_dispatch(tmp_path, workers):
+    # the tick's gate admitted the step with no backoff; another run's 429 starts one before
+    # this run's dispatch: it is placed neither on the worker nor locally
+    w = _world(tmp_path)
+    if workers:
+        _remote(w, _write_script(tmp_path / "s.json", WRITER))
+    local = _SpyLocal(_write_script(tmp_path / "ok.json", LOCAL_OK))
+    _backoff_on(w.cfg)
+    res = _persona_step(w, _req(w), local)
+    assert local.calls == []
+    assert res.interrupted and res.run_result.interrupted and res.commit_sha is None
+    assert "backoff" in res.run_result.result_text
+    assert RJ.read(w.cfg, RPS.job_id_for(CID, "001-implementer")) is None    # never submitted
+    assert S.read_state(w.cfg, CID).get("remote_affinity") is None
+    # the campaign's spec review is not gated
+    st = S.read_state(w.cfg, CID)
+    rr = RPS.dispatch(w.cfg, st, "spec_review", _req(w, "002-spec_reviewer",
+                                                     persona="spec_reviewer", read_only=True))
+    assert not isinstance(rr, RPS.HeldRunner)
+    if rr is not None:
+        os.close(rr.slot)
+
+
+def test_an_uncharged_loss_restarts_the_cap_clock_of_the_local_rerun(tmp_path, monkeypatch):
+    # a rotation (uncharged) loses the job late in its run: the local re-run under the same run
+    # id keeps its cap slot for its own full timeout, and the worker stays affine and healthy
+    w = _world(tmp_path)
+    _remote(w, _write_script(tmp_path / "s.json", WRITER))
+    req = _req(w)                                                  # timeout_s 600
+    t0 = PG._now_epoch(None) - 590
+    ttl = RJ.settings(w.cfg)["worker_ttl_s"]
+    real_now = S.now_iso
+    monkeypatch.setattr(S, "now_iso", lambda: PG._iso(t0))
+    S.append_event(w.cfg, CID, "run.start", {
+        "persona": "implementer", "run_id": "001-implementer", "model": "m", "effort": None,
+        "max_budget_usd": 1.0, "timeout_s": req.timeout_s, "permission_mode": "x",
+        "prompt_sha256": "0"})
+    monkeypatch.setattr(S, "now_iso", real_now)
+    monkeypatch.setattr(RPS, "_follow", lambda rr, rq, hooks, rec: RPS._lost(
+        rr, rq, hooks, rec, RG.UNCHARGED[0]))
+    monkeypatch.setattr(RG, "_cancel_job", lambda *a: None)
+    local = _SpyLocal(_write_script(tmp_path / "ok.json", LOCAL_OK))
+    st = S.read_state(w.cfg, CID)
+    rr = RPS.dispatch(w.cfg, st, "implement", req, local=local)
+    rr.run(req)
+    assert local.calls == ["001-implementer"]
+    lost, = S.read_ledger(w.cfg, CID, types=["worker_job_lost"])
+    assert lost["run_id"] == "001-implementer" and lost["charged"] is False
+    loss_t = PG._epoch(lost["ts"])
+    late = t0 + req.timeout_s + ttl + 5                    # past the remote run's own deadline
+    assert late < loss_t + req.timeout_s + ttl
+    assert PG.live_persona_runs(w.cfg, [CID], late) == 1
+    assert PG.live_persona_runs(w.cfg, [CID], loss_t + req.timeout_s + ttl + 5) == 0
+    # not the worker's fault: no failing worker, the affinity stays
+    st = S.read_state(w.cfg, CID)
+    assert st["remote_affinity"] == "box" and PG.affinity(w.cfg, st) == "box"
+    assert not PG.failing(w.cfg, st, WK.load(w.cfg)[0])
+
+
 def test_workers_check_records_its_outcome(tmp_path, monkeypatch):
     w = _world(tmp_path)
     _remote(w, _write_script(tmp_path / "s.json", WRITER))
