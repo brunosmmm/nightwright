@@ -54,6 +54,8 @@ EVENT_KEYS: dict[str, tuple[str, ...]] = {
     "worker_job_retried": ("job_id", "from_worker", "to_worker", "attempt"),  # SPEC-0342
     "park": ("reason", "detail", "resume_to"),      # + optional `auto` (SPEC-0302)
     "auto_resume_failed": ("rule", "error"),        # SPEC-0302
+    "cap_raised": ("from", "to", "ceiling"),        # SPEC-0422: the cost-cap policy raised the cap
+    "review_outcome": ("loop", "score", "pass_score", "outcome", "major", "must_fix"),  # SPEC-0422
     "flaky_recorded": ("ids", "source"),                        # SPEC-0293
     "resume": ("to", "note", "cap_usd", "loops_reset"),
     "close": ("mode",),

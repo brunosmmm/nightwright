@@ -43,6 +43,8 @@ RULES = {
     "worker_updated": "hold", "worker_update_failed": "wake",
     # SPEC-0381: a standalone gate job (no campaign) was dispatched or finished (informational)
     "gate_job": "hold",
+    # SPEC-0422: the cost-cap policy raised a converging campaign's cap (informational)
+    "cap_raised": "hold",
     "backlog": "cond", "backlog_blocked_long": "cond", "conductor_ping": "cond",
     "runner_draining": "cond", "campaign_silent": "cond", "state_stuck": "cond", "parked": "cond",
     "park_undecided": "wake", "runner_dead": "wake", "lease_stale": "wake",

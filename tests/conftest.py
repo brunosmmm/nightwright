@@ -89,3 +89,20 @@ def _git_identity(monkeypatch):
                  ("GIT_COMMITTER_NAME", "nightwright test"),
                  ("GIT_COMMITTER_EMAIL", "nightwright@test")):
         monkeypatch.setenv(k, v)
+
+
+@pytest.fixture(autouse=True)
+def _cost_policy_off(monkeypatch):
+    """SPEC-0422: the cost-cap policy ships on, but the tests written before it assert today's
+    pessimistic cap checks and `cost_cap` parks (AC4). Every test starts with the policy's
+    default off; tests of the policy opt in with the `cost_policy_on` fixture (or set
+    `agentic.cost_cap_policy.enabled: true` in their config)."""
+    from nightwright.agentic import cost_policy as CP
+    monkeypatch.setitem(CP.DEFAULTS, "enabled", False)
+
+
+@pytest.fixture
+def cost_policy_on(monkeypatch):
+    """SPEC-0422: the shipped default (the policy on)."""
+    from nightwright.agentic import cost_policy as CP
+    monkeypatch.setitem(CP.DEFAULTS, "enabled", True)

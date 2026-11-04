@@ -594,3 +594,15 @@ def test_conduct_skill_split_rule_mentions_split_campaign():
     assert "`split` ⇒ `nw queue add` the spec as is" in bullet
     assert "split campaign" in bullet and "SPEC-0294" in bullet and "`split_queued`" in bullet
     assert "each part gets its own single review" not in bullet
+
+
+def test_conduct_skill_cost_cap_policy_rows():                     # SPEC-0422 AC7
+    conduct = (REPO_SKILLS_DIR / "nw-conduct" / "SKILL.md").read_text(encoding="utf-8")
+    rows = conduct.splitlines()
+    (cost,) = [r for r in rows if r.startswith("| `parked.cost_cap` |")]
+    assert "agentic.cost_cap_policy" in cost and "SPEC-0422" in cost
+    assert "2×" not in cost and "nw queue cost-policy explain" in cost
+    assert "Never raise a cap yourself" in cost and "nw escalations list" in cost
+    (order,) = [r for r in rows if r.startswith("| `message.human_order` |")]
+    assert "standing policy lives in config" in order and "agentic.cost_cap_policy" in order
+    assert "cap_raised" in next(ln for ln in rows if ln.lstrip().startswith("- **Always held"))

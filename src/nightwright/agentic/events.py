@@ -70,6 +70,7 @@ EVENT_TYPES = {
     # SPEC-0222
     "park_undecided": ("reason", "parked_for_s", "owner"),
     "auto_resume_failed": ("rule", "error"),         # SPEC-0302
+    "cap_raised": ("from", "to", "ceiling"),          # SPEC-0422
     # SPEC-0228
     "waiting_not_admitted": ("waiting_for_s", "active", "slots"),
     "runner_journal_silent": ("last_journal_ts", "silent_s", "heartbeat_age_s",
@@ -345,6 +346,9 @@ def _project_ledger_event(ev: dict, st: dict, sett: dict, warned: bool):
     if t == "park":
         return "parked", {"reason": ev.get("reason"), "detail": ev.get("detail"),
                           "resume_to": ev.get("resume_to"), "auto": ev.get("auto")}
+    if t == "cap_raised":                                    # SPEC-0422: informational
+        return "cap_raised", {"from": ev.get("from"), "to": ev.get("to"),
+                              "ceiling": ev.get("ceiling")}
     if t == "auto_resume_failed":                            # SPEC-0302
         return "auto_resume_failed", {"rule": ev.get("rule"), "error": ev.get("error")}
     if t == "resume":

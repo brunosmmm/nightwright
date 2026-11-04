@@ -38,6 +38,7 @@ from ..spec_scope import idea_project
 from ..specmeta import split_frontmatter
 from . import autopark as AP
 from . import close as CL
+from . import cost_policy as CP
 from . import decisions as DEC
 from . import divergence as DV
 from . import flaky as FL
@@ -164,25 +165,39 @@ def _resolver_allowance(project_cfg: dict | None, profile: dict) -> float:
         * MAX_RESOLVE_ATTEMPTS
 
 
-def _cap_blocks(state: dict, profile: dict, persona,
-                allowance: float = 0.0) -> tuple[str, float] | tuple[None, None]:
-    """Pessimistic cap check: a run may spend up to its budget, so never start one that could
-    cross the campaign cap (plus `allowance`, SPEC-0303: the cap itself is never changed).
-    `persona` is a name or a list of names (a fan-out is checked as the sum of its budgets).
-    Returns `(park detail, the blocked run's budget)` or `(None, None)`."""
+def _cap_blocks(state: dict, profile: dict, persona, allowance: float = 0.0, reserves=None,
+                ceiling=None) -> tuple[str, float] | tuple[None, None]:
+    """Cap check before a run. `persona` is a name or a list of names (a fan-out is checked as
+    the sum). Returns `(park detail, the blocked runs' full budget)` or `(None, None)`.
+
+    Without `reserves` / `ceiling` it is pessimistic: a run may spend up to its budget, so
+    never start one that could cross the campaign cap (plus `allowance`, SPEC-0303: the cap
+    itself is never changed). SPEC-0422: the soft check against the cap uses `reserves`
+    (persona -> $, the observed median × a margin) and is skipped once the cap is at or above
+    `ceiling`; the hard check keeps the full budgets against `max(ceiling, cap)`."""
     cost = state.get("cost") or {}
     cap = cost.get("cap_usd")
     if cap is None:
         return None, None
-    cap = float(cap) + allowance
+    soft_cap = float(cap) + allowance
     names = [persona] if isinstance(persona, str) else list(persona)
-    budget = sum(float(persona_settings(profile, p).get("max_budget_usd") or 0.0) for p in names)
+    budgets = [float(persona_settings(profile, p).get("max_budget_usd") or 0.0) for p in names]
+    budget = sum(budgets)
     total = float(cost.get("total_usd") or 0.0)
-    if total + budget > cap:
-        who = f"a {names[0]} run" if len(names) == 1 else f"{', '.join(names)} runs"
-        return (f"spent ${total:.2f}; {who} may cost ${budget:.2f}; cap ${cap:.2f}"
-                + (f" (including a ${allowance:.2f} close allowance)" if allowance else ""),
-                budget)
+    who = f"a {names[0]} run" if len(names) == 1 else f"{', '.join(names)} runs"
+    close = f" (including a ${allowance:.2f} close allowance)" if allowance else ""
+    if ceiling is None or float(cap) < float(ceiling):
+        reserve = budget if reserves is None else sum(
+            float(reserves.get(p, b)) for p, b in zip(names, budgets))
+        if total + reserve > soft_cap:
+            return (f"spent ${total:.2f}; {who} may cost ${budget:.2f}; cap ${soft_cap:.2f}"
+                    + close + (f" (reserve ${reserve:.2f} of budget ${budget:.2f})"
+                               if reserves is not None else ""), budget)
+    if ceiling is not None:
+        hard = max(float(ceiling), float(cap)) + allowance
+        if total + budget > hard:
+            return (f"spent ${total:.2f}; {who} may cost ${budget:.2f}; spend ceiling "
+                    f"${hard:.2f}" + close, budget)
     return None, None
 
 
@@ -213,8 +228,11 @@ def campaign_label(state: dict) -> str:
     return str((state.get("idea") or {}).get("id") or "?")
 
 
-def plan_step(state: dict, profile: dict, project_cfg: dict | None = None) -> Step:
-    """Pure: the next step for `state`. Never touches disk."""
+def plan_step(state: dict, profile: dict, project_cfg: dict | None = None, *, reserves=None,
+              ceiling=None) -> Step:
+    """Pure: the next step for `state`. Never touches disk. `reserves` / `ceiling` (SPEC-0422,
+    the tick's cost-cap policy) go to every `_cap_blocks` check; None keeps the old checks."""
+    cap_kw = {"reserves": reserves, "ceiling": ceiling}
     st = state.get("state")
     if state.get("park_requested") and st not in TERMINAL_STATES and st != "PARKED":
         req = state["park_requested"]
@@ -233,7 +251,7 @@ def plan_step(state: dict, profile: dict, project_cfg: dict | None = None) -> St
         parts = (state.get("split") or {}).get("parts") or []
         if parts and all(p.get("spec_id") for p in parts):
             return Step("finalize_split")
-        blocked, budget = _cap_blocks(state, profile, "spec_writer")
+        blocked, budget = _cap_blocks(state, profile, "spec_writer", **cap_kw)
         if blocked:
             return Step("park", persona="spec_writer", reason="cost_cap", detail=blocked,
                         resume_to=st, budget=budget)
@@ -243,13 +261,13 @@ def plan_step(state: dict, profile: dict, project_cfg: dict | None = None) -> St
         if (state.get("spec") or {}).get("id") and not state.get("pending_brief"):
             return Step("park", reason="spec_review_unavailable", resume_to="SPEC_WRITING",
                         detail="nothing to revise; resume with --note to have the writer revise")
-        blocked, budget = _cap_blocks(state, profile, "spec_writer")
+        blocked, budget = _cap_blocks(state, profile, "spec_writer", **cap_kw)
         if blocked:
             return Step("park", persona="spec_writer", reason="cost_cap", detail=blocked,
                         resume_to=st, budget=budget)
         return Step("write_spec", persona="spec_writer")
     if st == "SPEC_REVIEW":                 # SPEC-0214
-        blocked, budget = _cap_blocks(state, profile, "spec_reviewer")
+        blocked, budget = _cap_blocks(state, profile, "spec_reviewer", **cap_kw)
         if blocked:
             return Step("park", persona="spec_reviewer", reason="cost_cap", detail=blocked,
                         resume_to=st, budget=budget)
@@ -259,7 +277,7 @@ def plan_step(state: dict, profile: dict, project_cfg: dict | None = None) -> St
     if st == "CLOSING":
         if (state.get("closing") or {}).get("resolve"):         # SPEC-0221
             blocked, budget = _cap_blocks(state, profile, "conflict_resolver",
-                                          _resolver_allowance(project_cfg, profile))
+                                          _resolver_allowance(project_cfg, profile), **cap_kw)
             if blocked:
                 return Step("park", persona="conflict_resolver", reason="cost_cap",
                             detail=blocked, resume_to=st, budget=budget)
@@ -273,14 +291,14 @@ def plan_step(state: dict, profile: dict, project_cfg: dict | None = None) -> St
             # when `triage` became pending
             return Step("review", persona="review_triager", personas=("review_triager",))
         pending = _pending_reviewers(state, profile)
-        blocked, budget = _cap_blocks(state, profile, pending)
+        blocked, budget = _cap_blocks(state, profile, pending, **cap_kw)
         if blocked:
             return Step("park", persona=pending[0], personas=tuple(pending), reason="cost_cap",
                         detail=blocked, resume_to=st, budget=budget)
         return Step("review", persona=pending[0], personas=tuple(pending))
     persona, kind = ("implementer", "implement") if st == "IMPLEMENTING" \
         else ("gate_triager", "triage")
-    blocked, budget = _cap_blocks(state, profile, persona)
+    blocked, budget = _cap_blocks(state, profile, persona, **cap_kw)
     if blocked:
         return Step("park", persona=persona, reason="cost_cap", detail=blocked, resume_to=st,
                     budget=budget)
@@ -1262,6 +1280,24 @@ class _Ctx:
         if (name, root) not in self._profiles:
             self._profiles[name, root] = resolve_profile(self.cfg, name, project_root=root)
         return self._profiles[name, root]
+
+    def cost_args(self, profile) -> dict:
+        """SPEC-0422: `plan_step`'s `reserves` / `ceiling` for `profile` under the cost-cap
+        policy; `{}` when the policy is off. The run-cost statistics are refreshed once per
+        tick; a failure there falls back to the full budgets (the old reserve)."""
+        if not hasattr(self, "_cost_sett"):
+            self._cost_sett = CP.settings(self.cfg)
+            self._cost_stats = None
+            if self._cost_sett["enabled"]:
+                try:
+                    self._cost_stats = CP.refresh(self.cfg)
+                except (OSError, ValueError) as e:
+                    journal(self.cfg, "cost_stats_failed", error=str(e))
+        if not self._cost_sett["enabled"]:
+            return {}
+        return {"reserves": CP.reserves(self.cfg, profile, stats=self._cost_stats or {},
+                                        sett=self._cost_sett),
+                "ceiling": CP.ceiling(profile, self._cost_sett)}
 
     def project(self, state) -> dict:
         name = state.get("project")
@@ -3700,6 +3736,11 @@ def _route_reviews(ctx, state, profile, counters, row, events, finish):
             verdict=tri["outcome"], score=tri["score"], findings=len(surviving),
             must_fix=sum(1 for f in surviving if f["severity"] == "must_fix"),
             waived=lr.get("waived") or [], advisory=tri["advisory"], loop=counters["loops"])
+        events.append(("review_outcome", {                  # SPEC-0422: the score history
+            "loop": counters["loops"], "score": tri["score"], "pass_score": c["pass_score"],
+            "outcome": tri["outcome"],
+            "major": sum(1 for f in surviving if f["severity"] == "major"),
+            "must_fix": sum(1 for f in surviving if f["severity"] == "must_fix")}))
         events.append(("note", {"text": f"review score {tri['score']}/{c['pass_score']} "
                                         f"{tri['outcome']}", "author": "queue"}))
         if tri["human_waived"] or tri["attested"]:
@@ -4350,7 +4391,8 @@ def _auto_resume_step(cfg, flying, *, busy_count, slots, report) -> list:
         for st in pending:
             _auto_give_up(cfg, st["id"], st["park"]["auto"].get("rule") or "auto_resume_failed",
                           "auto-resume disabled")
-        return []
+        return _cost_policy_parked(cfg, flying, report=report, slots=slots,
+                                   busy_count=busy_count)
     resumed = []
     for st in list(pending):
         if not st["park"]["auto"].get("rule"):        # corrupt: nothing to record or resume
@@ -4410,6 +4452,11 @@ def _auto_resume_step(cfg, flying, *, busy_count, slots, report) -> list:
                              "action": "auto_resume", "reason": rule,
                              "run_id": None, "cost_usd": None})
         resumed.append(after)
+    # SPEC-0422: `cost_cap` parks the policy has not decided yet (before the deploy, or while
+    # the policy was off) are re-evaluated: resumed (raised when needed) or escalated once
+    resumed += _cost_policy_parked(
+        cfg, flying, report=report, slots=slots,
+        busy_count=lambda: busy_count() + sum(1 for r in resumed if r["state"] in SLOT_STATES))
     return resumed
 
 
@@ -4550,7 +4597,11 @@ def _tick(cfg, ctx: _Ctx, pool: StepPool, report: TickReport, *, admit: bool, ow
                 st["id"], Step("open"), st["state"], error=str(e),
                 config_error=isinstance(e, ProjectConfigError))))
             continue
-        step = plan_step(st, profile, pcfg)
+        step = plan_step(st, profile, pcfg, **ctx.cost_args(profile))
+        if step.kind == "park" and step.reason == "cost_cap":       # SPEC-0422
+            step = _cost_policy_step(ctx, st, profile, pcfg, step, report)
+            if step is None:
+                continue
         if step.kind == "none":
             continue
         if step.kind == "park":
@@ -4883,6 +4934,203 @@ def _finish_reviews(ctx: _Ctx, report: TickReport, group: _ReviewGroup) -> dict:
                               run_result=_synthetic_failure(err))
         ordered.append(item)
     return _apply(ctx, st, StepResult(st["id"], group.step, st["state"], reviews=ordered))
+
+
+# ---- the cost-cap policy (SPEC-0422) ---------------------------------------------------------
+
+_COST_RAISE_LOOPS = 8          # raises in one tick before a still-blocked step parks
+
+
+def _cost_phantom_first(cfg, state: dict, budget) -> bool:
+    """SPEC-0302 keeps precedence: True when `autopark` would decide this cost park itself
+    (the block is only the phantom charge of transient-failed runs)."""
+    import datetime as dt
+    try:
+        sett = AP.settings(cfg)
+        if not sett["enabled"]:
+            return False
+        probe = {**state, "park": {"reason": "cost_cap"}}
+        led = store.read_ledger(cfg, state["id"], types=["open", "resume", "run.end"])
+        return AP.decide(probe, led, sett, dt.datetime.now().astimezone(),
+                         budget=budget) is not None
+    except Exception:                     # noqa: BLE001 — `_park` reports its own failure
+        return False
+
+
+def _cost_decide(cfg, state: dict, profile: dict, budget):
+    """`(cost_policy.decide(...), ledger)`; a failure is `off` (today's park), journaled."""
+    try:
+        ledger = store.read_ledger(cfg, state["id"], types=CP.LEDGER_TYPES)
+        return CP.decide(state, profile, ledger, cfg, blocked_budget=budget), ledger
+    except Exception as e:                # noqa: BLE001 — the policy never blocks the park
+        journal(cfg, "cost_policy_failed", campaign=state["id"], error=repr(e))
+        return CP.Decision("off", why=f"cost policy failed: {e!r}"), []
+
+
+def _cap_raised_event(decision) -> tuple:
+    f = decision.facts
+    return ("cap_raised", {"from": f.get("cap_usd"), "to": decision.new_cap,
+                           "ceiling": f.get("ceiling_usd"), "base_cap": f.get("base_cap_usd"),
+                           "spent": f.get("spent_usd"), "why": decision.why, "rule": CP.RULE})
+
+
+def _cost_bumps(decision) -> list:
+    return [CP.RAISES] + ([CP.RAISES_NO_REVIEW]
+                          if decision.facts.get("converging") is None else [])
+
+
+def _cost_raise_in_place(cfg, state: dict, decision) -> bool:
+    """Raise the cap of an active campaign (not in flight) under its lock: `cost.cap_usd`, the
+    policy counters, a `cap_raised` ledger event; then the `by: queue` decision record. `state`
+    (the tick's dict) gets the new cost and counters. False when the state moved meanwhile."""
+    cid = state["id"]
+    with store.item_lock(cfg, cid):
+        cur = store.read_state(cfg, cid)
+        if cur.get("state") != state.get("state") or cur.get("park_requested") \
+                or (cur.get("cost") or {}).get("cap_usd") != (state.get("cost") or {}).get("cap_usd"):
+            return False
+        _cost(cur)["cap_usd"] = float(decision.new_cap)
+        for name in _cost_bumps(decision):
+            _counters(cur)[name] = int(_counters(cur).get(name) or 0) + 1
+        etype, payload = _cap_raised_event(decision)
+        store.append_event(cfg, cid, etype, payload, by="queue")
+        store.write_state(cfg, cid, cur)
+    state["cost"], state["counters"] = cur["cost"], cur["counters"]
+    _record_queue_decision(cfg, cid, "resume", CP.RULE, decision.why,
+                           action=f"raise cap to ${decision.new_cap:.2f}")
+    return True
+
+
+def _cost_escalated_before(cfg, cid, decision) -> bool:
+    """True when a cost escalation was already filed for this campaign in this situation
+    (the same spend and cap): the queue files at most one per situation."""
+    from . import escalations as ESC
+    mark = CP.marker(decision.facts.get("spent_usd"), decision.facts.get("cap_usd"))
+    return any(r.get("campaign") == cid and r.get("kind") == "cost"
+               and mark in (r.get("facts") or []) for r in ESC.list_all(cfg))
+
+
+def _cost_escalate(cfg, cid, decision, ledger) -> dict | None:
+    """File the policy's human-only escalation (`kind: cost`, no recommendation; `topic` once
+    `escalations.plan_escalate` takes one, SPEC-0425), at most once per situation. Never
+    called with an item lock held. A failure is journaled; the campaign stays parked."""
+    import inspect
+    from . import escalations as ESC
+    try:
+        if ESC.open_for(cfg, cid) is not None or _cost_escalated_before(cfg, cid, decision):
+            return None
+        st = store.read_state(cfg, cid)
+        question, options, facts = CP.escalation_text(st, decision, CP.review_outcomes(ledger),
+                                                      CP.settings(cfg))
+        kw = {"topic": decision.topic} \
+            if "topic" in inspect.signature(ESC.plan_escalate).parameters else {}
+        plan = ESC.plan_escalate(cfg, cid, question=question, options=options, recommend=None,
+                                 facts=facts, frm="conductor", kind="cost", **kw)
+        rec = ESC.apply_escalate(cfg, plan)
+    except (ValueError, OSError) as e:
+        journal(cfg, "cost_escalation_failed", campaign=cid, error=str(e))
+        return None
+    _record_queue_decision(cfg, cid, "escalate", CP.RULE, decision.why,
+                           action=f"escalate {rec['id']} ({decision.topic})")
+    return rec
+
+
+def _cost_policy_step(ctx, st: dict, profile: dict, pcfg, step: Step, report) -> Step | None:
+    """Tick step 2, a `cost_cap` park planned for an active campaign: the phantom-charge rule
+    (SPEC-0302) and an open escalation keep today's park; a `raise` raises the cap and
+    re-plans in the same tick; an `escalate` parks and files the escalation (returns None)."""
+    cfg = ctx.cfg
+    from . import escalations as ESC
+    for _ in range(_COST_RAISE_LOOPS):
+        if step.kind != "park" or step.reason != "cost_cap" or not CP.settings(cfg)["enabled"]:
+            return step
+        if ESC.open_for(cfg, st["id"]) is not None or _cost_phantom_first(cfg, st, step.budget):
+            return step
+        decision, ledger = _cost_decide(cfg, st, profile, step.budget)
+        if decision.action == "raise":
+            frm = (st.get("cost") or {}).get("cap_usd")
+            if not _cost_raise_in_place(cfg, st, decision):
+                return step
+            report.steps.append({"campaign": st["id"], "from": st.get("state"),
+                                 "to": st.get("state"), "action": "cap_raised",
+                                 "reason": CP.RULE, "run_id": None, "cost_usd": None,
+                                 "cap_from": frm, "cap_to": decision.new_cap})
+            step = plan_step(st, profile, pcfg, **ctx.cost_args(profile))
+            continue
+        if decision.action == "escalate":
+            report.steps.append(_park_row(cfg, st, step))
+            _cost_escalate(cfg, st["id"], decision, ledger)
+            return None
+        return step
+    return step
+
+
+def _cost_policy_parked(cfg, flying, *, busy_count, slots, report) -> list:
+    """Tick step 0a (SPEC-0422): each PARKED `cost_cap` campaign with no `park.auto` and no
+    open escalation is planned as if resumed. Not cost-blocked under the new reserve: resumed
+    as is. Blocked: `decide` — `raise` resumes it with the raised cap, `escalate` files the
+    escalation once. Every resume carries a `by: queue` decision record."""
+    sett = CP.settings(cfg)
+    if not sett["enabled"]:
+        return []
+    from . import escalations as ESC
+    resumed, stats = [], None
+    for st in store.list_campaigns(cfg, state="PARKED"):
+        cid, park = st["id"], st.get("park") or {}
+        if park.get("reason") != "cost_cap" or isinstance(park.get("auto"), dict) \
+                or cid in flying or ESC.open_for(cfg, cid) is not None:
+            continue
+        try:
+            profile = resolve_profile(cfg, st.get("profile"),
+                                      project_root=(st.get("repo") or {}).get("root"))
+            pcfg = P.project_config(cfg, st.get("project"))
+        except ValueError:
+            continue                    # a broken profile / config: the park stays the conductor's
+        if stats is None:
+            try:
+                stats = CP.refresh(cfg)
+            except (OSError, ValueError):
+                stats = {}
+        to = park.get("resume_to") or "IMPLEMENTING"
+        step = plan_step({**st, "state": to, "park": None}, profile, pcfg,
+                         reserves=CP.reserves(cfg, profile, stats=stats, sett=sett),
+                         ceiling=CP.ceiling(profile, sett))
+        new_cap, bumps, extra = None, [], []
+        if step.kind == "park" and step.reason == "cost_cap":
+            decision, ledger = _cost_decide(cfg, st, profile, step.budget)
+            if decision.action == "escalate":
+                _cost_escalate(cfg, cid, decision, ledger)
+                continue
+            if decision.action != "raise":
+                continue
+            new_cap, bumps, extra = decision.new_cap, _cost_bumps(decision), [_cap_raised_event(decision)]
+            rationale, action = decision.why, f"resume to {to} raise cap to ${new_cap:.2f}"
+        elif step.kind == "park":
+            continue
+        else:
+            cap = float((st.get("cost") or {}).get("cap_usd") or 0.0)
+            rationale = (f"the observed-cost reserve fits under the ${cap:.2f} cap now "
+                         f"(next step: {step.kind}); resume without a raise")
+            action = f"resume to {to}"
+        try:
+            plan = plan_resume(cfg, cid, by="queue", raise_cap=new_cap,
+                               event_note=f"queue: {CP.RULE}")
+        except ValueError:
+            continue
+        plan.update(bump_counters=bumps, extra_events=extra)
+        if not _record_queue_decision(cfg, cid, "resume", CP.RULE, rationale, action=action):
+            continue
+        try:
+            after = apply_resume(cfg, plan, busy=busy_count() + sum(
+                1 for r in resumed if r["state"] in SLOT_STATES), slots=slots)
+        except ValueError as e:
+            journal(cfg, "cost_policy_resume_failed", campaign=cid, error=str(e))
+            continue
+        report.steps.append({"campaign": cid, "from": "PARKED", "to": after["state"],
+                             "action": "auto_resume", "reason": CP.RULE,
+                             "run_id": None, "cost_usd": None})
+        resumed.append(after)
+    return resumed
 
 
 def _park_row(cfg, state: dict, step: Step) -> dict:
@@ -7943,13 +8191,16 @@ def apply_resume(cfg, plan: dict, *, busy=None, slots=None) -> dict:
         if by == "queue" and plan.get("auto_rule"):      # SPEC-0302: bounded automatic resumes
             counts = _counters(st).setdefault("auto_resumes", {})
             counts[plan["auto_rule"]] = int(counts.get(plan["auto_rule"], 0)) + 1
+        for name in plan.get("bump_counters") or ():     # SPEC-0422: the cost-cap policy's raises
+            _counters(st)[name] = int(_counters(st).get(name) or 0) + 1
         _drop_decision_request(cfg, st)
         st["park"] = None
         st.pop("park_requested", None)
         st.pop("gate_retry_pending", None)          # SPEC-0293: a resumed gate run is no retry
         ev = ("resume", {"to": plan["to"], "note": plan.get("note") or plan.get("event_note"),
                          "cap_usd": plan.get("raise_cap"), "loops_reset": bool(plan.get("reset_loops"))})
-        st = _enter_slot_or_wait(cfg, st, plan["to"], "resumed", by=by, extra_events=[ev],
+        st = _enter_slot_or_wait(cfg, st, plan["to"], "resumed", by=by,
+                                 extra_events=[*(plan.get("extra_events") or ()), ev],
                                  busy=busy, slots=slots)
         from . import escalations as ESC            # SPEC-0232: after the transition succeeded
         ESC.withdraw_for_campaign(cfg, cid, f"campaign resumed by {by}", by)

@@ -7,6 +7,7 @@ from __future__ import annotations
 import datetime as dt
 
 from . import conductor_cost as CC
+from . import cost_policy as CP
 from . import decisions as D
 from . import escalations as ESC
 from . import events as E
@@ -136,7 +137,8 @@ def conductor_brief(cfg, now=None) -> dict:
         "recent_decisions": recent,
         "standing": {"skill": str(SK.default_dest() / "nw-conduct" / "SKILL.md"),
                      "memory_paths": _str_list(conf.get("memory_paths")),
-                     "standing_rules": _str_list(conf.get("standing_rules"))},
+                     "standing_rules": _str_list(conf.get("standing_rules")),
+                     "cost_cap_policy": CP.standing(cfg)},              # SPEC-0422
         "more": {k: v for k, v in more.items() if v},
     }
 
@@ -182,8 +184,20 @@ def _sections(b) -> dict:
     st = b["standing"]
     s["standing"] = ("standing:", [f"- skill {st['skill']}"]
                      + [f"- memory {p}" for p in st["memory_paths"]]
-                     + [f"- rule {x}" for x in st["standing_rules"]], 0)
+                     + [f"- rule {x}" for x in st["standing_rules"]]
+                     + _cost_policy_lines(st.get("cost_cap_policy")), 0)
     return s
+
+
+def _cost_policy_lines(p) -> list[str]:
+    """SPEC-0422: the effective `agentic.cost_cap_policy` (the queue applies it itself)."""
+    if not isinstance(p, dict):
+        return []
+    if not p.get("enabled"):
+        return ["- cost_cap_policy off (cost_cap parks are yours)"]
+    return [f"- cost_cap_policy on: the queue raises converging caps by {p['step_fraction']:g}x "
+            f"the profile cap up to {p['ceiling_multiplier']:g}x ({p['no_review_raises']} raise(s) "
+            f"before a first review); above that or diverging it escalates to the human"]
 
 
 def render_text(brief, limit=TEXT_LIMIT) -> str:

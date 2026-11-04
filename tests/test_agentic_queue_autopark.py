@@ -530,3 +530,56 @@ def test_post_merge_base_moving_from_finish_close_is_never_auto(tmp_path, monkey
     r = run_cli(cfg, monkeypatch, ["queue", "tick"])            # and no tick resumes it
     assert r.exit_code == 0, r.output
     assert S.read_state(cfg, cid)["state"] == "PARKED"
+
+
+# ---- SPEC-0422: the cost-cap policy next to the phantom-charge rule ------------------------------
+
+def _phantom(cfg, cid, total=8.0, cap=10.0):
+    st = S.read_state(cfg, cid)
+    st["cost"].update(total_usd=total, cap_usd=cap)
+    S.write_state(cfg, cid, st)
+    for i in (1, 2):
+        S.append_event(cfg, cid, "run.end", {
+            "persona": "implementer", "run_id": f"00{i}-implementer", "exit_code": 1,
+            "is_error": True, "timed_out": False, "interrupted": False, "duration_s": 3.0,
+            "cost_usd": None, "charged_usd": 4.0, "cost_estimated": True, "usage": {},
+            "session_id": None, "verdict_ok": False, "verdict": None,
+            "result_tail": "API Error: 529 overloaded"})
+
+
+def test_cost_policy_leaves_the_phantom_charge_rule_first(opened, cost_policy_on):
+    cfg, cid, ctx = opened
+    _phantom(cfg, cid)
+    st = S.read_state(cfg, cid)
+    step = Q.plan_step(st, PROFILE)
+    assert Q._cost_phantom_first(cfg, st, step.budget)
+    out = Q._cost_policy_step(ctx, st, ctx.profile(st), None, step, Q.TickReport())
+    assert out is step                                   # today's park; autopark decides it
+    assert S.read_ledger(cfg, cid, types=["cap_raised"]) == []
+
+
+def test_parked_cost_cap_is_reevaluated_and_resumed_raised(opened, cost_policy_on):
+    cfg, cid, ctx = opened
+    st = S.read_state(cfg, cid)
+    base = float(ctx.profile(st)["campaign_cap_usd"])
+    st["cost"].update(total_usd=base - 1.0, cap_usd=base)
+    S.write_state(cfg, cid, st)
+    Q._park(cfg, S.read_state(cfg, cid), "cost_cap", "d", "IMPLEMENTING", auto_ok=False)
+    report, resumed = _step0a(cfg)
+    now = S.read_state(cfg, cid)
+    assert now["state"] == "IMPLEMENTING" and now["cost"]["cap_usd"] > base
+    assert [r["reason"] for r in report.steps] == ["cost_cap_policy"] and resumed
+    rec = [r for r in D.read(cfg, campaign=cid) if r["rule"] == "cost_cap_policy"]
+    assert [(r["by"], r["kind"]) for r in rec] == [("queue", "resume")]
+    report, _ = _step0a(cfg)                             # idempotent: nothing parked any more
+    assert report.steps == [] and len(S.read_ledger(cfg, cid, types=["cap_raised"])) == 1
+
+
+def test_parked_cost_cap_untouched_with_the_policy_off(opened):
+    cfg, cid, ctx = opened
+    st = S.read_state(cfg, cid)
+    st["cost"].update(total_usd=9.0, cap_usd=10.0)
+    S.write_state(cfg, cid, st)
+    Q._park(cfg, S.read_state(cfg, cid), "cost_cap", "d", "IMPLEMENTING", auto_ok=False)
+    report, resumed = _step0a(cfg)
+    assert S.read_state(cfg, cid)["state"] == "PARKED" and not report.steps and not resumed

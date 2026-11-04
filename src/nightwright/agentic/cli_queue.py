@@ -2275,4 +2275,71 @@ def attach(queue_group):
         console.print(f"[green]✓[/] {project}: force_full_close cleared "
                       f"({len(state['suspects'])} suspects kept)", highlight=False)
 
+    _attach_cost_policy(queue_group)
     return queue_group
+
+
+def _attach_cost_policy(queue_group):
+    """`nw queue cost-policy explain` (SPEC-0422)."""
+
+    @queue_group.group("cost-policy")
+    def queue_cost_policy():
+        """The cost-cap policy the queue applies itself (SPEC-0422, `agentic.cost_cap_policy`)."""
+
+    @queue_cost_policy.command("explain")
+    @click.argument("campaigns", nargs=-1, shell_complete=C.complete_campaign_id)
+    @click.option("--at-seq", type=int, default=None,
+                  help="replay one campaign as it stood at this ledger seq")
+    @click.option("--json", "as_json", is_flag=True, help="emit nw.queue.cost_policy.v1 JSON")
+    @click.pass_obj
+    def queue_cost_policy_explain(cfg, campaigns, at_seq, as_json):
+        """What the policy would do for CAMPAIGNS at their next cost block (default: every
+        active campaign and every one parked on its cost cap). Read-only: writes nothing."""
+        from . import cost_policy as CP
+        if at_seq is not None and len(campaigns) != 1:
+            raise click.UsageError("--at-seq replays exactly one campaign")
+        try:
+            out = CP.explain(cfg, campaigns, at_seq=at_seq)
+        except (ValueError, OSError) as e:
+            raise click.ClickException(str(e))
+        if as_json:
+            _dump_json(out)
+            return
+        pol = out["policy"]
+        console.print(f"cost_cap_policy: {'on' if pol['enabled'] else 'OFF'}, ceiling "
+                      f"{pol['ceiling_multiplier']:g}x, step {pol['step_fraction']:g}x, "
+                      f"no-review raises {pol['no_review_raises']}, reserve median x"
+                      f"{pol['reserve']['multiplier']:g} (min {pol['reserve']['min_samples']} "
+                      f"samples)", highlight=False)
+        if not out["campaigns"]:
+            console.print("no campaigns", highlight=False)
+        for r in out["campaigns"]:
+            if r.get("error"):
+                console.print(f"{r['campaign']}: [red]{r['error']}[/]", highlight=False)
+                continue
+            d = r["decision"]
+            act = d["action"] + (f" to ${d['new_cap']:.2f}" if d.get("new_cap") else "") \
+                + (f" ({d['topic']})" if d.get("topic") else "")
+            console.print(
+                f"{r['campaign']} {r['label']} {r['state']}"
+                + (f"/{r['park_reason']}" if r.get("park_reason") else "")
+                + (f" @seq {r['at_seq']}" if r.get("at_seq") is not None else "")
+                + f": spent ${r['spent_usd']:.2f} cap ${float(r['cap_usd'] or 0):.2f} base "
+                f"${float(r['base_cap_usd'] or 0):.2f} ceiling ${float(r['ceiling_usd'] or 0):.2f}",
+                highlight=False)
+            used = [p for p in ("implementer", "conformance_reviewer", "adversarial_reviewer")
+                    if p in r["reserves"]]
+            console.print("  reserves: " + ", ".join(
+                f"{p} ${r['reserves'][p]['reserve_usd']:.2f}/{r['reserves'][p]['budget_usd']:.2f}"
+                f" (n={r['reserves'][p]['samples']})" for p in used), highlight=False)
+            console.print("  reviews: " + (", ".join(
+                f"{o['score']}/{o['pass_score']} {o['outcome']}"
+                + (f" +{o['major']}maj" if o['major'] else "")
+                + (f" +{o['must_fix']}mf" if o['must_fix'] else "")
+                for o in r["review_outcomes"]) or "none"), highlight=False)
+            console.print(f"  converging: {r['converging']} ({r['converging_why']})",
+                          highlight=False)
+            console.print(f"  next: {r['next_step']} (budget ${r['next_budget_usd']:.2f})"
+                          + (f"; blocked: {r['blocked_detail']}" if r.get("blocked_detail") else ""),
+                          highlight=False)
+            console.print(f"  decision at the cap: {act}: {d['why']}", highlight=False)

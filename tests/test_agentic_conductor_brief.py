@@ -50,6 +50,19 @@ def test_brief_contents_and_caps(cfg, clock):
     assert "+3 more" in BR.render_text(b)
 
 
+def test_brief_standing_shows_the_cost_cap_policy(tmp_path, cost_policy_on):     # SPEC-0422 AC7
+    cfg = {"data_dir": str(tmp_path), "agentic": {"cost_cap_policy": {"step_fraction": 0.25}}}
+    b = BR.conductor_brief(cfg)
+    assert b["standing"]["cost_cap_policy"] == {"enabled": True, "ceiling_multiplier": 3.0,
+                                                "step_fraction": 0.25, "no_review_raises": 1}
+    assert "cost_cap_policy on: the queue raises converging caps by 0.25x the profile cap " \
+        "up to 3x" in BR.render_text(b)
+    cfg["agentic"]["cost_cap_policy"] = {"enabled": False}
+    b = BR.conductor_brief(cfg)
+    assert b["standing"]["cost_cap_policy"]["enabled"] is False
+    assert "cost_cap_policy off" in BR.render_text(b)
+
+
 def test_brief_last_decision_is_scoped_to_the_current_park(cfg, clock):
     mk(cfg, "X")
     park(cfg, "X")
