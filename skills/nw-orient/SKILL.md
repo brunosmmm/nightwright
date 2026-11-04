@@ -78,6 +78,7 @@ idea  →  explore  →  accepted spec  →  (internal: generate → PROMOTED)
 - `docs/specs/` — internal specs; `docs/LEDGER.md` index.
 - Outbox under the nightwright data dir — outbound specs for other repos.
 - Human cheatsheet: `docs/WORKFLOW.md`.
+- Remote dashboard service: `nw dashboard status` (unit, URL, logs, linger; SPEC-0427).
 
 ## Procedure
 

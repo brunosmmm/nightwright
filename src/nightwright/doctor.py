@@ -469,6 +469,35 @@ def check_workers(cfg) -> dict:
                  detail=f"ControlPath dir {d}; `nw workers check` probes them over SSH")
 
 
+def check_dashboard(cfg, *, run_cmd=None) -> dict:
+    """`agentic.dashboard` (SPEC-0427): the `nw-dashboard` systemd user service is active and
+    serving. Skip when it is not installed and no server runs (nothing is queried then); warn
+    when installed but not active, active without a live server, on stale code, or with linger
+    off. `systemctl --user show` / `loginctl show-user` are local reads, never a change."""
+    from .agentic.dashboard import lifecycle as LC
+    id = "agentic.dashboard"
+    if cfg is None:
+        return _skip_no_config(id)
+    kw = {"run": run_cmd} if run_cmd is not None else {}
+    b = LC.brief(cfg, **kw)
+    if b is None:
+        return check(id, "skip", "dashboard service not installed",
+                     detail="nw dashboard install runs it as a systemd user service")
+    if not b["installed"]:
+        return check(id, "ok", f"dashboard running by hand at {b['url']} (pid {b['pid']})",
+                     detail="not a service: nw dashboard install keeps it running")
+    if b["problems"]:
+        fix = (f"systemctl --user restart {LC.UNIT_NAME}.service; "
+               f"{LC.logs_command()}") if b["active"] is not True else LC.logs_command()
+        return check(id, "warn", f"dashboard service: {b['problems'][0]}",
+                     detail="; ".join(b["problems"][1:] + b["warnings"]) or None, fix=fix)
+    if b["linger"] is False:
+        return check(id, "warn", f"dashboard active at {b['url']}, but linger is off",
+                     detail="the user unit stops when you log out", fix=LC.linger_fix())
+    return check(id, "ok", f"dashboard active at {b['url']} (pid {b['pid']})",
+                 detail="; ".join(b["warnings"]) or None)
+
+
 # ---- projects ------------------------------------------------------------------------------
 
 def project_roots(cfg, only=None) -> tuple:
@@ -653,6 +682,7 @@ def run(cfg, *, project=None, config_error=None, which=None, run_cmd=None,
     out.append(_safe("agentic.conductor", check_conductor, cfg))
     out.append(_safe("agentic.launch_fresh", check_launch_fresh, cfg))
     out.append(_safe("agentic.workers", check_workers, cfg))
+    out.append(_safe("agentic.dashboard", check_dashboard, cfg, run_cmd=run_cmd))
     for name, root in roots:
         out.append(_safe(f"project.{name}.config", check_project_config, cfg, name, root))
         out.append(_safe(f"project.{name}.profiles", check_project_profiles, cfg, name, root))

@@ -1,7 +1,7 @@
 ---
 id: SPEC-0427
 title: "Dashboard service: nw dashboard install, uninstall and status over a systemd user unit"
-status: accepted
+status: done
 owner: user
 created: 2026-11-04
 updated: 2026-11-04
@@ -206,7 +206,7 @@ What exists, checked against the code on 2026-11-04:
   and `_print_status`. After `enable --now`, `install` polls the status for up to 15 s and
   prints it. It stops polling once `server.json` is live or the unit is no longer active.
 - `src/nightwright/agentic/cli_worker.py`:
-  - `--tailnet-wait` and `_resolve_dashboard_bind`: one `retrying for up to Ns` line, then a
+  - the `--tailnet-wait` retry loop inside `_serve_dashboard` (the SPEC-0416 seam test wants `resolve_bind` called there): one `retrying for up to Ns` line, then a
     poll every 5 s. SIGINT during the wait exits 0.
   - the `code_root` rewrite of `server.json`.
 - `src/nightwright/agentic/cli_conduct.py`: `_dashboard_status` and the render line.
@@ -265,45 +265,45 @@ With `--bind tailscale` the bind becomes `tailscale:PORT` and `--tailnet-wait 60
 
 ## Acceptance criteria
 
-- [ ] `nw dashboard install` writes `~/.config/systemd/user/nw-dashboard.service` (honouring
+- [x] `nw dashboard install` writes `~/.config/systemd/user/nw-dashboard.service` (honouring
       `XDG_CONFIG_HOME`). It then runs `systemctl --user daemon-reload` and `enable --now`, and
       adds `restart` when the unit was already active. `--dry-run` prints the unit path, the
       unit text and the commands, and changes nothing.
-- [ ] The unit text is as decided:
-  - [ ] `ExecStart` is the resolved `nw` (`--nw-bin`, else the uv tool install, else PATH
+- [x] The unit text is as decided:
+  - [x] `ExecStart` is the resolved `nw` (`--nw-bin`, else the uv tool install, else PATH
         resolved, else the interpreter's sibling), followed by `serve --dashboard --bind
         127.0.0.1:PORT` (default 8791) or by `--bind tailscale:PORT --tailnet-wait 60`.
-  - [ ] It carries `Environment=NW_CONFIG_DIR/NW_DATA_DIR` only for non-default directories,
+  - [x] It carries `Environment=NW_CONFIG_DIR/NW_DATA_DIR` only for non-default directories,
         and logs to the journal.
-  - [ ] It has `Restart=always`, `RestartSec=5` and `RestartPreventExitStatus=2`, plus
+  - [x] It has `Restart=always`, `RestartSec=5` and `RestartPreventExitStatus=2`, plus
         `StartLimitIntervalSec=300` and `StartLimitBurst=20` in `[Unit]`.
-  - [ ] It has `After=tailscaled.service` only for a tailscale bind and only when that unit
+  - [x] It has `After=tailscaled.service` only for a tailscale bind and only when that unit
         exists, and never `Requires` or `Wants`.
-- [ ] Under real `systemctl --user`:
-  - [ ] a code-change exit 0 makes systemd restart the server: a new pid, `NRestarts` up by
+- [x] Under real `systemctl --user`:
+  - [x] a code-change exit 0 makes systemd restart the server: a new pid, `NRestarts` up by
         one, and the page served again;
-  - [ ] a tailscale unit with no tailnet address exits 3 about once a minute, not in a hot
+  - [x] a tailscale unit with no tailnet address exits 3 about once a minute, not in a hot
         loop, and never reaches `start-limit-hit`.
-- [ ] `nw serve --dashboard --tailnet-wait S` retries a missing tailnet address at least every
+- [x] `nw serve --dashboard --tailnet-wait S` retries a missing tailnet address at least every
       5 s for up to S seconds, then exits 3. It stops waiting as soon as an address appears.
       `--tailnet-wait 0`, the default, keeps SPEC-0404's immediate exit 3.
-- [ ] `nw dashboard uninstall` runs `disable --now` and `reset-failed`, removes the unit file,
+- [x] `nw dashboard uninstall` runs `disable --now` and `reset-failed`, removes the unit file,
       runs `daemon-reload`, and reports each step. On a host without the unit it says the unit
       is not installed and exits 0.
-- [ ] `nw dashboard status [--json]` reports:
-  - [ ] whether the unit is installed, enabled and active, its main pid and `NRestarts`;
-  - [ ] the server's pid, URL and bind from a live `server.json`;
-  - [ ] whether the running `code_sha` equals the HEAD of the watched checkout
+- [x] `nw dashboard status [--json]` reports:
+  - [x] whether the unit is installed, enabled and active, its main pid and `NRestarts`;
+  - [x] the server's pid, URL and bind from a live `server.json`;
+  - [x] whether the running `code_sha` equals the HEAD of the watched checkout
         (`server.json` `code_root`);
-  - [ ] the `journalctl --user -u <unit> -f` command and linger;
-  - [ ] with linger off, `loginctl enable-linger <user>`, which it prints and never runs;
-  - [ ] exit 1 on a problem (installed but not active, active without a live server, stale
+  - [x] the `journalctl --user -u <unit> -f` command and linger;
+  - [x] with linger off, `loginctl enable-linger <user>`, which it prints and never runs;
+  - [x] exit 1 on a problem (installed but not active, active without a live server, stale
         code), else 0.
-- [ ] `nw queue conduct-status` has a `dashboard` key and a `dashboard:` line (installed,
+- [x] `nw queue conduct-status` has a `dashboard` key and a `dashboard:` line (installed,
       active, URL, problems). `nw doctor` has an `agentic.dashboard` check that warns when the
       unit is installed but not active. With no unit file and no live server, neither runs a
       subprocess.
-- [ ] No queue-side module imports the dashboard package (the import-graph tests pass).
+- [x] No queue-side module imports the dashboard package (the import-graph tests pass).
       Affected tests pass and `python3 tools/spec_lint.py` exits 0.
 
 ## Test plan
@@ -352,6 +352,67 @@ With `--bind tailscale` the bind becomes `tailscale:PORT` and `--tailnet-wait 60
   `tests/test_dashboard_lifecycle.py`, `tests/test_dashboard_imports.py`,
   `tests/test_herdr_autowatch.py` and the completion tests, then `spec_lint`.
 
+### As shipped (2026-11-04)
+
+- Shipped as designed. One change: the `--tailnet-wait` retry loop is inline in
+  `cli_worker._serve_dashboard` rather than in a helper, because SPEC-0416's seam test
+  (`tests/test_dashboard_tailnet_seams.py`) requires `resolve_bind` to be called from that
+  function.
+- Uninstall order: `disable --now`, `reset-failed` (while the unit is still loaded; run quietly,
+  since nothing to reset is not an error), `rm`, `daemon-reload`.
+- The `nw serve --help` strings still say the dashboard bind is "loopback only". That is true
+  today, because `auth.resolve_bind` refuses tailnet addresses until the identity gate lands.
+  They were left alone so they do not conflict with the parallel loopback-auth slice, which owns
+  the `--dashboard` help text. A `--bind tailscale` unit installs, but exits 2 once Tailscale
+  is up until that refusal is lifted (documented in `docs/WORKFLOW.md`).
+
+### Test record (2026-11-04)
+
+- `tests/test_dashboard_service.py`: 15 passed (unit text, status/brief/doctor/conduct-status
+  with an injected fake `run`, real `nw` subprocesses against fake `systemctl`/`loginctl`, real
+  `nw serve --dashboard --tailnet-wait` subprocesses with a fake `tailscale`).
+  `tests/test_dashboard_tailnet_seams.py` passes.
+- The first full affected run (`tools/affected_tests.py --run uv run pytest -q -n 2`, 149
+  files) had three failures, all from this change:
+  - `test_rich_output_guard`: the new plain-text output was not on the allowlist. The
+    `cli_dashboard` install/uninstall/status functions were added to `ALLOWED`, with reasons.
+  - `test_specs` and `test_export::test_internal_spec_lint_unaffected_by_outbox`: the ledger
+    was stale after the status change, and was regenerated.
+
+  All three were re-run and pass.
+- `python3 tools/spec_lint.py` exits 0. The full suite is left to the close gate.
+- `systemd-analyze --user verify` reported nothing for the generated unit.
+- **Real systemd, this user session.** The setup was a scratch `NW_CONFIG_DIR`/`NW_DATA_DIR`
+  under `/home/bruno/work/.nw-tmp/dash-svc/sd` with `code_check_s: 1`, a scratch git code
+  root, port 58815, unit `nw-dashboard-test`, and `--nw-bin` set to the worktree's
+  `.venv/bin/nw`.
+  1. `nw dashboard install --unit-name nw-dashboard-test --port 58815 --code-root <scratch>`
+     wrote the unit (including `Environment=NW_CONFIG_DIR=…`/`NW_DATA_DIR=…`) and ran
+     `daemon-reload` and `enable --now`. `systemctl --user is-active` printed `active`, and
+     `GET /` returned 200 (1116 B).
+  2. Committing `src/nightwright/x.py` in the scratch root produced the journal line
+     `code_changed 76bfdf2..920477d … (exiting 0 to restart)` at 14:26:12. At 14:26:18 systemd
+     logged "Scheduled restart job, restart counter is at 1". `MainPID` went from 1946535 to
+     1946869, `NRestarts` from 0 to 1, and `GET /` returned 200 again.
+  3. `nw dashboard status --unit-name nw-dashboard-test` showed: installed, enabled yes,
+     active (running), pid 1946869, restarts 1; server `http://127.0.0.1:58815`; code current
+     (920477d = checkout HEAD, through `server.json` `code_root`); linger yes; the logs
+     command. Exit 0, and `--json` had `ok: true`. `lifecycle.brief(name=…)` gave
+     `dashboard: active · http://127.0.0.1:58815 · pid 1946869`.
+  4. Exit 3 did not hot-loop. Unit `nw-dashboard-test3` (`--bind tailscale`, with
+     `/usr/bin/tailscale` logged out) was sampled every 10 s from 14:27:00 to 14:29:30. Its
+     `NRestarts` went 0 → 1 (14:27:50) → 2 (14:28:51) → 3 (14:29:56), with one `retrying
+     for up to 60s` line and one `status=3` exit per cycle, and the unit stayed out of
+     `start-limit-hit`. `systemctl --user show -p After` listed `tailscaled.service` (a
+     not-found user unit, so it has no effect, as documented). While it waited, status
+     reported "active but no live server.json" and exited 1.
+  5. `nw dashboard uninstall` was run for both units. Each logged `disable --now`, `rm` and
+     `daemon-reload`, and printed "removed …". Afterwards `LoadState=not-found`, `is-active`
+     printed `inactive`, no unit file or `default.target.wants` link remained, the port
+     refused connections, and `server.json` was removed (SIGTERM on stop, with no restart).
+  The real `nw-dashboard.service` was not installed, and linger was not touched (it was
+  already `yes` on this host).
+
 ## Rollout / migration
 
 1. Land. Nothing changes on a host without the unit: the doctor check skips, and
@@ -362,11 +423,11 @@ With `--bind tailscale` the bind becomes `tailscale:PORT` and `--tailnet-wait 60
 
 ## Definition of done
 
-- [ ] Acceptance criteria all met.
-- [ ] Test plan executed; automated tests pass; manual steps performed.
-- [ ] No regressions.
-- [ ] Spec body updated to match what shipped.
-- [ ] `docs/LEDGER.md` updated (status + date).
+- [x] Acceptance criteria all met.
+- [x] Test plan executed; automated tests pass; manual steps performed.
+- [x] No regressions.
+- [x] Spec body updated to match what shipped.
+- [x] `docs/LEDGER.md` updated (status + date).
 
 ## Open questions
 

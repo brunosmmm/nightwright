@@ -466,3 +466,60 @@ RestartPreventExitStatus=3
 [Install]
 WantedBy=default.target
 ```
+
+## Remote dashboard
+
+`nw serve --dashboard` (SPEC-0414) serves the live queue page and `GET /api/snapshot`
+(default bind `127.0.0.1:8791`). `nw dashboard snapshot` prints the same document without a
+server. To keep the server running, install it as a **systemd user service** (SPEC-0427):
+
+```
+nw dashboard install [--bind loopback|tailscale] [--port N] [--dry-run]
+nw dashboard status [--json]        # unit, pid, URL, code freshness, linger, log command
+journalctl --user -u nw-dashboard -f
+nw dashboard uninstall              # stop, disable, remove, daemon-reload
+```
+
+`install` writes `~/.config/systemd/user/nw-dashboard.service`, then runs `systemctl --user
+daemon-reload` and `enable --now` (and `restart` when it was already running). `--dry-run`
+prints the unit and the commands. The unit runs the `nw` of your `uv tool` install
+(`~/.local/share/uv/tools/nightwright/bin/nw`; `--nw-bin PATH` overrides). It sets
+`NW_CONFIG_DIR` / `NW_DATA_DIR` only when your shell resolves them to non-default
+directories. Its output goes to the journal.
+
+How the unit reacts to the server's exit codes (SPEC-0404):
+
+- **0**: a nightwright code change (the server's code watch, `agentic.dashboard.code_check_s`,
+  default 10 s) or a clean stop. `Restart=always` with `RestartSec=5` starts it again on the new
+  code. `systemctl --user stop` is not restarted.
+- **2**: a refused bind or bad flag. `RestartPreventExitStatus=2` leaves the unit failed; fix
+  the cause and re-run `nw dashboard install`.
+- **3**: no tailnet address (`--bind tailscale` while Tailscale is logged out or stopped). The
+  unit passes `--tailnet-wait 60`: the server checks `tailscale ip` every 5 s for up to 60 s,
+  then exits 3, and systemd starts it again 5 s later. A Tailscale outage is therefore about
+  one restart a minute, and once Tailscale comes up the server binds within 5 s.
+  `StartLimitBurst=20` in `StartLimitIntervalSec=300` stops only a real crash loop (exit 1,
+  such as a port in use), which the exit-3 rhythm never reaches. The unit orders
+  `After=tailscaled.service` when such a unit exists, but never requires it. A user manager
+  cannot order against the system `tailscaled.service`, so for the usual install that line has
+  no effect and `--tailnet-wait` is the real guard.
+
+`nw dashboard status` exits 1 on a problem: the unit is installed but not active, it is active
+but has no live `server.json`, or it runs code older than the checkout's HEAD. When linger is
+off it prints the command that keeps the unit running after you log out,
+`loginctl enable-linger $USER`. It never runs that command itself. `nw queue conduct-status`
+prints a `dashboard:` line (JSON key `dashboard`), and `nw doctor` has an `agentic.dashboard`
+check that warns when the unit is installed but not active.
+
+Config (`agentic.dashboard` in `config.yaml`; a malformed value falls back to its default):
+`bind` (`tailscale:8791`, not yet used by `nw serve`, whose default is loopback),
+`allowed_logins` (`[]` means only your own Tailscale login), `refresh_s` (5), `max_stale_s`
+(30) and `code_check_s` (10; `0` turns the code watch off).
+
+Tailscale, one time, for the phone: `sudo tailscale up` and log in, then
+`sudo tailscale set --operator=$USER` so that `tailscale ip/status/whois` work without root.
+Install the Tailscale app on the phone with the same account. Then run
+`nw dashboard install --bind tailscale`. (While `auth.resolve_bind` still refuses a tailnet
+address until the whois identity gate is wired into the server, such a unit exits 2 as soon
+as Tailscale is up, and `nw dashboard status` shows it failed. Use the loopback unit until
+then.)
