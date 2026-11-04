@@ -26,6 +26,7 @@ from nightwright.cli import cli
 from test_pull_workers import BW, JOB, Pull, _gate_bg, _leased
 from test_remote_gates import CID, World
 from test_remote_gates import _short_runtime_dir  # noqa: F401  (autouse fixture)
+import waits
 from waits import until
 
 
@@ -428,7 +429,7 @@ def test_rm_revokes_a_running_worker_which_exits_and_its_job_runs_locally(tmp_pa
         assert "401" in p.log()
         assert until(lambda: (p.job_dir() / "result.json").exists())
         w.release()
-        th.join(60)
+        waits.join(th)
         run = box["run"]
         assert run.worker is None and run.ok    # given up, then run locally
         (lost,) = w.ledger(["worker_job_lost"])

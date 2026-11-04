@@ -21,6 +21,7 @@ from nightwright.agentic import workers as WK
 
 from test_remote_gates import CID, Remote, World, _gate, _snapshot
 from test_remote_gates import _short_runtime_dir  # noqa: F401  (autouse fixture)
+import waits
 from waits import WAIT_S, until
 
 ASYNC_INFO = {"protocol": "nw.job.v1", "features": ["async", "persona"], "git": "git version 2"}
@@ -267,7 +268,7 @@ def test_restarted_worker_reposts_from_the_server_cursor(bw, pull):
     pull.kill()                                 # mid-job: g3 still blocks
     pull.start()
     bw.release()
-    th.join(60)
+    waits.join(th)
     run = box["run"]
     assert run.ok and run.worker == "box"
     spool = PJ.read_spool(bw.cfg, JOB)
@@ -298,7 +299,7 @@ def test_lease_expiry_retries_then_runs_locally_and_the_old_worker_gets_410(tmp_
         assert until(lambda: (p.job_dir() / "result.json").exists())
         cut.clear()                             # healed: its next request is about a lost job
         w.release()                             # the retries' gates may finish now
-        th.join(60)
+        waits.join(th)
         run = box["run"]
         assert run.worker is None and run.ok    # box2 never leased: local after 2 attempts
         retried = w.ledger(["worker_job_retried"])
@@ -344,7 +345,7 @@ def test_a_stop_delivers_cancel_and_ends_the_job_within_5s(bw, pull):
     stop.set()
     assert until(lambda: any(f["type"] == "done" for f in pull.frames()), timeout=5)
     assert time.monotonic() - t0 <= 5
-    th.join(30)
+    waits.join(th)
     assert box["run"].interrupted
     rec = RJ.read(bw.cfg, JOB)
     assert rec["state"] == "cancelled" and rec["cancel_requested"]
