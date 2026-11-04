@@ -1,7 +1,7 @@
 ---
 id: SPEC-0419
 title: "Self-healing queue"
-status: accepted
+status: done
 owner: user
 created: 2026-11-04
 source_idea: IDEA-921
@@ -158,12 +158,12 @@ cost 4.5 h in the last episode.
 
 ## Breakdown / sub-specs
 
-- [ ] Red-main fix-forward and revert (project: Meta-Tools) — sentinel decision row; `fixforward` campaign kind opened by the queue on a red sentinel (priority 1, failing ids + suspects + gate log tails as the brief, full-suite gated, weakening check); revert of the localized suspect merge after N failed attempts; non-fix merges held while red; one escalation per red episode (failing-test-set fingerprint), auto-withdrawn on green; escalate only when red persists past a threshold with no fix in flight; conductor may land `--fixes-red` branches through the gated merge
-- [ ] Always-run guard tests at close and loop gates (project: Meta-Tools) — `tree_guard` marker registry read statically by `tools/affected_tests.py --guards`, both pytest gates in `.nw/project.yaml` pass it, a registry test proving every tree-scanning test is marked, and directory readers added for new or changed test and src files
-- [ ] Cost-cap policy: auto-raise while converging (project: Meta-Tools) — `agentic.cost_cap_policy` (3× ceiling, convergence from review outcomes + divergence signals), raise in place instead of parking, reserve from the observed median run cost × margin, one human-only escalation above the ceiling or when diverging, `nw queue cost-policy explain`, decision-table row rewritten and the mail-borne rule retired
-- [ ] Idea-campaign ordering with --after and epic derivation (project: Meta-Tools) — IDEA-880: `nw queue add --after REF` stored on the campaign, `backlog_readiness` gating every campaign kind on it, spec-writer must-include of the prerequisites' spec ids, `nw spec seed-children` stamping `:AFTER:` from "(depends_on child N)" annotations, `--epic` batches ordered by the existing Kahn sort
-- [ ] Launch freshness and steward dontAsk (project: Meta-Tools) — stewards launch `--permission-mode dontAsk` with a reviewed allow-list (read, mail, `nw`, tests, fix branches in `.nw-worktrees`), a launch-spec hash recorded at launch and compared in conduct-status / conductor-brief / `nw doctor`, a `launch_stale` event plus one relaunch request per stale launch, all verified against the real `claude` binary
-- [ ] Escalation timeout and note attribution (project: Meta-Tools) — `topic` on escalations, `agentic.escalations.auto_apply_after_s` (1800), an `escalation_timeout` event, `nw escalations answer --auto` applying the recommendation as `by: conductor` (visible, mailed, reversible by a later human answer), human-only topics never time out; `nw campaign note` author resolution (persona / conductor / steward / session / human) (depends_on child 3)
+- [x] Red-main fix-forward and revert (project: Meta-Tools) — sentinel decision row; `fixforward` campaign kind opened by the queue on a red sentinel (priority 1, failing ids + suspects + gate log tails as the brief, full-suite gated, weakening check); revert of the localized suspect merge after N failed attempts; non-fix merges held while red; one escalation per red episode (failing-test-set fingerprint), auto-withdrawn on green; escalate only when red persists past a threshold with no fix in flight; conductor may land `--fixes-red` branches through the gated merge
+- [x] Always-run guard tests at close and loop gates (project: Meta-Tools) — `tree_guard` marker registry read statically by `tools/affected_tests.py --guards`, both pytest gates in `.nw/project.yaml` pass it, a registry test proving every tree-scanning test is marked, and directory readers added for new or changed test and src files
+- [x] Cost-cap policy: auto-raise while converging (project: Meta-Tools) — `agentic.cost_cap_policy` (3× ceiling, convergence from review outcomes + divergence signals), raise in place instead of parking, reserve from the observed median run cost × margin, one human-only escalation above the ceiling or when diverging, `nw queue cost-policy explain`, decision-table row rewritten and the mail-borne rule retired
+- [x] Idea-campaign ordering with --after and epic derivation (project: Meta-Tools) — IDEA-880: `nw queue add --after REF` stored on the campaign, `backlog_readiness` gating every campaign kind on it, spec-writer must-include of the prerequisites' spec ids, `nw spec seed-children` stamping `:AFTER:` from "(depends_on child N)" annotations, `--epic` batches ordered by the existing Kahn sort
+- [x] Launch freshness and steward dontAsk (project: Meta-Tools) — stewards launch `--permission-mode dontAsk` with a reviewed allow-list (read, mail, `nw`, tests, fix branches in `.nw-worktrees`), a launch-spec hash recorded at launch and compared in conduct-status / conductor-brief / `nw doctor`, a `launch_stale` event plus one relaunch request per stale launch, all verified against the real `claude` binary
+- [x] Escalation timeout and note attribution (project: Meta-Tools) — `topic` on escalations, `agentic.escalations.auto_apply_after_s` (1800), an `escalation_timeout` event, `nw escalations answer --auto` applying the recommendation as `by: conductor` (visible, mailed, reversible by a later human answer), human-only topics never time out; `nw campaign note` author resolution (persona / conductor / steward / session / human) (depends_on child 3)
 
 Sequencing / dependencies (prose on purpose: `nw spec seed-children` turns every bullet of this
 section into a child idea). Child 6 depends on child 3. Its timeout must never auto-apply a spend
@@ -177,28 +177,28 @@ parallel (see Rollout for the shared files).
 
 ## Acceptance criteria
 
-- [ ] On a red sentinel the queue opens a fix-forward campaign within one runner tick, at
+- [x] On a red sentinel the queue opens a fix-forward campaign within one runner tick, at
       priority 1. No human escalation is filed unless the episode lasts longer than
       `agentic.red_main.escalate_after_s` with no fix in flight, or every fix-forward attempt and
       the revert failed. An episode files at most one escalation, and a green sentinel withdraws
       it.
-- [ ] While a project's base is red, no non-fix campaign of that project merges. Held campaigns
+- [x] While a project's base is red, no non-fix campaign of that project merges. Held campaigns
       merge without intervention after the next green sentinel.
-- [ ] Every close and loop `pytest` gate of nightwright runs every registered tree guard, and a
+- [x] Every close and loop `pytest` gate of nightwright runs every registered tree guard, and a
       test fails when a tree-scanning test module is not registered.
-- [ ] A converging campaign blocked by its cap below 3× its profile cap continues without a park
+- [x] A converging campaign blocked by its cap below 3× its profile cap continues without a park
       and with a `by: queue` decision record. Above the ceiling, or when diverging, the queue
       files exactly one human-only escalation.
-- [ ] Children of an epic queued with `nw queue add --epic` start only after the siblings named in
+- [x] Children of an epic queued with `nw queue add --epic` start only after the siblings named in
       their Breakdown annotations merge, and their written specs list those siblings' spec ids in
       `depends_on`.
-- [ ] `nw queue steward-launch` and `conductor-launch` both pass `--permission-mode dontAsk`. A
+- [x] `nw queue steward-launch` and `conductor-launch` both pass `--permission-mode dontAsk`. A
       session launched with an older launch spec is reported stale by `nw doctor` and
       `conduct-status`, and a relaunch request reaches the human once.
-- [ ] An escalation with a recommendation and a non-human-only topic is applied by the conductor
+- [x] An escalation with a recommendation and a non-human-only topic is applied by the conductor
       30 min after it was filed, mailed to the human, and reversible by a later human answer.
       Human-only escalations stay open until the human answers.
-- [ ] Notes written by persona runs, the conductor and stewards are attributed to them, not to
+- [x] Notes written by persona runs, the conductor and stewards are attributed to them, not to
       `human`.
 
 ## Test plan
@@ -256,12 +256,75 @@ Integration-level. Each child's unit and real-verification steps are in the chil
 Partial delivery is safe. Each child is useful alone, and none of them changes what the human
 must decide.
 
+## As shipped
+
+All six children are `done` on main: SPEC-0420 (`d72d467f`), SPEC-0421 (`669824a0`), SPEC-0422
+(`375e03f7`), SPEC-0423 (`321d77a3`), SPEC-0424 (`e6845504`), SPEC-0425 (`91724651` /
+`e18e808e`). The invariant holds: routine failures resolve in the queue with `by: queue` /
+`by: conductor` records, and the human-only list is unchanged.
+
+**Deviations from the epic text** (each is in the child's As shipped):
+- **Red main (SPEC-0420).** Legacy sentinel escalations (ESC-0024/0025/0026) are withdrawn as
+  superseded, never adopted as the episode's record (adopting one would spend the single
+  escalation on a question with no recommendation). Moot fixes are abandoned by the tick
+  (`sweep`), not inside `on_green`. Fix branches are `nw/<campaign id>`, not
+  `nw/fix-<episode>-<n>`. Merge order is base order (commit depth), not close time.
+- **Guard tests (SPEC-0421).** The detector resolves only paths it can evaluate statically;
+  scans through an imported module's `__file__` are not detected and rely on normal selection.
+  A changed data file under `tests/` now also selects tests that scan `tests/`.
+- **Cost policy (SPEC-0422).** Run-cost statistics come from an incremental ledger scan
+  (`cost_policy.refresh`, once per tick), not a `record_run` hook. `plan_step` takes
+  `reserves=` / `ceiling=` from the tick. Cost escalations are always human-only (kind `cost`
+  plus the `spend_ceiling` / `spend_diverging` topics), and the escalation is filed `by:
+  conductor` while the decision record is `by: queue`.
+- **Idea ordering (SPEC-0423).** `nw queue after` was added for queued campaigns; a single
+  `nw queue add IDEA-N` also honors the idea's `:AFTER:`. The live `seed-children` and
+  `nw queue after --add` were left for rollout, not run against the live store.
+- **Launch freshness (SPEC-0424).** `AskUserQuestion` is not allowed for stewards under
+  `dontAsk` (denied by the real binary), so stewards ask in plain text. Freshness judges the
+  newest `source: launch` record. The relaunch request is an event plus a mail; it never stops
+  a session.
+- **Escalation timeout (SPEC-0425).** The `depends_on: SPEC-0422` edge needed no wait: topic-less
+  records never time out and cost / spend topics are human-only. Records without an `auto`
+  block (pre-change) never time out. Reversal is allowed for `human` and `steward:<P>` only,
+  once. Note attribution adds `note_actor` in `cli_campaign.py`.
+
+**Test plan as executed.** The epic's single `tests/test_selfheal_e2e.py` was not written;
+each child carries its own real-fixture e2e instead (`tests/test_redmain_e2e.py`,
+`tests/test_cost_policy_e2e.py`, `tests/test_idea_ordering_e2e.py`, the guard replay of the
+real incident commits in SPEC-0421, the real-binary run in SPEC-0424, the real-process run in
+SPEC-0425), which covers steps 1 to 6 of the plan at finer grain. Real-binary smoke items are
+recorded in SPEC-0420 (live check pending a real red episode) and SPEC-0424 (AC5). Regression:
+affected tests and `spec_lint` per child; the full suite ran at each queue close gate.
+Live state at close (2026-11-04): 0 open escalations; the Meta-Tools sentinel is green at
+`f14d0da8`.
+
+**Post-close monitoring (not AC gates).** The Test plan's 7-day live observation cannot be
+true at close, and the ACs above are checked on the evidence of the children's tests and real
+verification. Compare the following with the audit's 3 days and note results in a follow-up
+idea if any target is missed:
+- sentinel escalations per red episode (target <= 1), red hours per episode, and that no
+  non-fix campaign merges while red (`nw queue sentinel status`, `nw queue events --type
+  close_held`);
+- the next campaign close gate log shows `+8 guards` in its `affected_tests:` line;
+- cost escalations (target: none below 3x);
+- escalations with a recommendation and a non-human-only topic that waited over 30 min
+  (target 0);
+- `by: human` notes the human did not write (target 0);
+- the human relaunches the conductor and stewards once so `launch_stale` clears.
+
+## Follow-ups
+
+- IDEA-942: `/tmp` isolation for test runs.
+- IDEA-944: SPEC-0353 deny rules containing a literal `*`.
+- IDEA-945: the `default` permission mode.
+
 ## Definition of done
 
-- [ ] All child specs `done` or `superseded` (the linter gates this).
-- [ ] Integration test plan executed; `uv run pytest` green.
-- [ ] Acceptance criteria met; epic body reflects what shipped.
-- [ ] `docs/LEDGER.md` regenerated.
+- [x] All child specs `done` or `superseded` (the linter gates this).
+- [x] Integration test plan executed; `uv run pytest` green.
+- [x] Acceptance criteria met; epic body reflects what shipped.
+- [x] `docs/LEDGER.md` regenerated.
 
 ## Open questions
 
