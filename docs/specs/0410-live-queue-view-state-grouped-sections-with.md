@@ -1,9 +1,10 @@
 ---
 id: SPEC-0410
 title: "Live queue view: state-grouped sections with priority, admission order and why-waiting"
-status: proposed
+status: accepted
 owner: user
 created: 2026-11-03
+updated: 2026-11-03
 kind: feature
 parent: SPEC-0405
 source_idea: IDEA-886
