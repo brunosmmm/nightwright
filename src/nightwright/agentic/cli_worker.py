@@ -223,14 +223,21 @@ def worker_serve(cfg, blob, conf, kinds, slots):
 @click.option("--tls-key", default=None, type=click.Path(exists=True, dir_okay=False))
 @click.option("--client-ca", default=None, type=click.Path(exists=True, dir_okay=False),
               help="require client certificates signed by this CA, CN = the worker's name")
+@click.option("--code-root", default=None, hidden=True,       # SPEC-0404 (tests)
+              type=click.Path(exists=True, file_okay=False),
+              help="--dashboard: watch this checkout for code changes instead of nightwright's own")
+@click.option("--no-code-watch", is_flag=True, hidden=True,
+              help="--dashboard: do not exit 0 when nightwright's code changes")
 @click.pass_obj
-def serve_cmd(cfg, jobs, dashboard, bind, tls_cert, tls_key, client_ca):
+def serve_cmd(cfg, jobs, dashboard, bind, tls_cert, tls_key, client_ca, code_root,
+              no_code_watch):
     """Serve jobs to pull workers (--jobs, SPEC-0334) or the read-only dashboard (--dashboard,
     SPEC-0414) over HTTP(S). Exactly one mode flag is required."""
     if jobs == dashboard:
         raise click.UsageError("give exactly one of --jobs and --dashboard")
     if dashboard:
-        return _serve_dashboard(cfg, bind, tls_cert, tls_key, client_ca)
+        return _serve_dashboard(cfg, bind, tls_cert, tls_key, client_ca, code_root=code_root,
+                                no_code_watch=no_code_watch)
     from . import pull_jobs as PJ
     try:
         srv = PJ.make_server(cfg, bind or PJ.DEFAULT_BIND, tls_cert=tls_cert, tls_key=tls_key,
@@ -255,13 +262,17 @@ class _TailnetMissingExit(click.ClickException):
     exit_code = 3
 
 
-def _serve_dashboard(cfg, bind, tls_cert, tls_key, client_ca):
-    """`nw serve --dashboard` (SPEC-0414, SPEC-0416). Exit 2: `BindRefused` or a TLS flag; exit 3:
-    `TailnetMissing`; exit 1: an OSError from binding."""
+def _serve_dashboard(cfg, bind, tls_cert, tls_key, client_ca, *, code_root=None,
+                     no_code_watch=False):
+    """`nw serve --dashboard` (SPEC-0414, SPEC-0416, SPEC-0404). Exit 2: `BindRefused` or a TLS
+    flag; exit 3: `TailnetMissing`; exit 1: an OSError from binding; exit 0: SIGTERM/SIGINT or
+    nightwright's code changed (a supervisor restarts it onto the new code)."""
     import signal
     import threading
 
+    from .codewatch import AUTO
     from .dashboard import auth as DA
+    from .dashboard import lifecycle as LC
     from .dashboard import server as DS
     try:
         host, port = DA.resolve_bind(bind or DS.DEFAULT_BIND)
@@ -282,16 +293,36 @@ def _serve_dashboard(cfg, bind, tls_cert, tls_key, client_ca):
     stop = threading.Event()
     for sig in (signal.SIGTERM, signal.SIGINT):     # before server.json, so it is always cleaned up
         signal.signal(sig, lambda *_: stop.set())
+    watch = None
     try:
-        rec = DS.write_server_json(cfg, srv)
+        check_s = 0 if no_code_watch else LC.code_check_s(cfg)
+        if check_s > 0:
+            def on_change(change):
+                click.echo(LC.code_changed_line(change), err=True)
+                stop.set()
+            watch = LC.CodeWatchThread(stop, on_change, check_s,
+                                       AUTO if code_root is None else code_root)
+            if not watch.enabled:                   # no checkout, or git cannot read its HEAD
+                watch = None
+        root = None if watch is None else watch.root
+        rec = DS.write_server_json(cfg, srv, code_watch=watch is not None,
+                                   code_sha=LC.head_sha(root), bind=bind or DS.DEFAULT_BIND)
         click.echo(f"nw serve: dashboard on {rec['url']} (token auth, token in "
                    f"{DS.dashboard_dir(cfg) / 'local.token'})", err=True)
+        if watch is None:
+            click.echo("nw serve: no code watch (will not restart itself on a code change)",
+                       err=True)
         t = threading.Thread(target=srv.serve_forever, kwargs={"poll_interval": 0.2},
                              daemon=True)
         t.start()
-        stop.wait()
+        if watch is not None:
+            watch.start()
+        refresher = LC.RecordRefresher(cfg, rec, srv.client_count)
+        while not stop.wait(1.0):
+            refresher.tick()
         srv.shutdown()
         t.join()
     finally:
+        stop.set()
         DS.remove_server_json(cfg)
         srv.server_close()

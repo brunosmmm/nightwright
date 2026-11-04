@@ -276,7 +276,7 @@ def test_signal_handlers_are_installed_before_server_json_is_written(fx, monkeyp
     class Stop(Exception):
         pass
 
-    def fake_write(cfg, srv):
+    def fake_write(cfg, srv, **kw):
         seen["term"] = signal.getsignal(signal.SIGTERM)
         seen["int"] = signal.getsignal(signal.SIGINT)
         raise Stop

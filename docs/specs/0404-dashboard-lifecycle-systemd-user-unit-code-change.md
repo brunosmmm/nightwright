@@ -1,10 +1,10 @@
 ---
 id: SPEC-0404
 title: "Dashboard server lifecycle: code-change exit, exit 3 without a tailnet address, server.json record"
-status: accepted
+status: in-progress
 owner: user
 created: 2026-11-03
-updated: 2026-11-03
+updated: 2026-11-04
 kind: feature
 source_idea: IDEA-877
 parent: SPEC-0400
@@ -193,29 +193,29 @@ and before any record is written, so during a tailscale outage there is no `serv
 
 ## Acceptance criteria
 
-- [ ] When nightwright's code changes (HEAD moves with a `src/nightwright`, `pyproject.toml` or
+- [x] When nightwright's code changes (HEAD moves with a `src/nightwright`, `pyproject.toml` or
       `skills` change in the watched checkout), the running server writes a `code_changed` line
       to stderr, shuts down cleanly, removes `server.json` and exits **0**. A docs-only commit
       does not make it exit.
-- [ ] When the package is not imported from a git checkout, no watcher runs and `server.json` has
+- [x] When the package is not imported from a git checkout, no watcher runs and `server.json` has
       `code_watch: false`; `agentic.dashboard.code_check_s: 0` and `--no-code-watch` also
       disable it, and `--code-root PATH` retargets it.
 - [ ] When the bind needs a tailnet address and `own_tailnet_ips()` yields none, the server exits
       **3** with a message naming the cause, binds no socket and writes no `server.json`. A
       refused bind (for example `0.0.0.0`) keeps exit **2**, and a loopback bind never exits 3.
-- [ ] After a successful bind, `server.json` exists at `<data_dir>/agentic/dashboard/server.json`
+- [x] After a successful bind, `server.json` exists at `<data_dir>/agentic/dashboard/server.json`
       with `schema`, `pid`, `ticks`, `url`, `host`, `port`, `bind`, `scheme`, `started_at`,
       `code_sha`, `code_watch`, `clients` and `updated_at`, written atomically (no partial file
       is ever visible). `record_live` is true for the real running server and false for a
       record whose pid is dead or whose pid is alive with different start ticks.
-- [ ] SIGTERM and SIGINT make the server exit 0 and remove `server.json`; SIGKILL leaves a
+- [x] SIGTERM and SIGINT make the server exit 0 and remove `server.json`; SIGKILL leaves a
       record that `record_live` reads as not running.
-- [ ] `clients` in `server.json` follows the server's `client_count()` hook (0 until epic child
+- [x] `clients` in `server.json` follows the server's `client_count()` hook (0 until epic child
       3 wires it), is rewritten only when the count changed and at most every 5 s, and an idle
       server rewrites nothing.
-- [ ] `agentic.dashboard.code_check_s` is honoured: `0` disables the watcher, a malformed value
+- [x] `agentic.dashboard.code_check_s` is honoured: `0` disables the watcher, a malformed value
       falls back to 10, and the default is 10.
-- [ ] Nothing is written outside `<data_dir>/agentic/dashboard/` by this lifecycle code, and no
+- [x] Nothing is written outside `<data_dir>/agentic/dashboard/` by this lifecycle code, and no
       queue, runner, `runproc`, `events` or `escalations` module imports `agentic.dashboard`
       (the epic's import-graph test still passes and now covers `lifecycle.py`);
       `uv run pytest` affected tests pass and `python3 tools/spec_lint.py` exits 0.
@@ -270,6 +270,47 @@ fixed sleep before a positive assertion.
 - **Regression guard**: affected tests (`python3 tools/affected_tests.py --run uv run pytest
   -q`) plus the files touched; the epic's read-only and import-graph tests pass; `completion`
   test passes for the new hidden options; `python3 tools/spec_lint.py`.
+
+### Test record (2026-11-04)
+
+- `uv run pytest -q tests/test_dashboard_lifecycle.py`: 24 passed (real `nw serve --dashboard`
+  subprocesses against a tmp git checkout through `--code-root`: exit 0 + `code_changed` +
+  `server.json` removed on a `src/nightwright` commit; a `docs/` commit keeps it running and
+  SIGTERM exits 0; `--no-code-watch`, `code_check_s: 0` and a non-checkout root give
+  `code_watch: false`; record roundtrip, atomic writes under a looping reader, liveness (dead
+  pid, wrong ticks, real process), a `kill -9`'d server reads not running; `RecordRefresher`
+  with an injected clock; `code_check_s` parsing; the import graph and the writes-only-under-
+  `agentic/dashboard/` check).
+- `uv run pytest -q tests/test_dashboard_serve_cli.py tests/test_dashboard_server.py
+  tests/test_dashboard_imports.py`: pass (SIGINT/SIGTERM e2e cases of SPEC-0414 cover AC 5's
+  signal half).
+- `python3 tools/spec_lint.py` exits 0 after `--write-ledger`. The full suite was left to gating.
+- **Not done:** AC 3 (exit 3 without a tailnet address) and manual steps 1-3 (they need a
+  tailscale login and the real checkout; step 2 needs the tailnet bind). See "As shipped".
+
+### As shipped (2026-11-04)
+
+- **Exit 3 is not implemented.** SPEC-0414 narrowed itself to the loopback server: the tree has no
+  `own_tailnet_ips()`, no `--bind tailscale`, no fake-`tailscale` fixture, and `check_bind`
+  refuses every non-loopback address with exit 2 (a loopback bind never needs a tailnet address).
+  The "bind needs a tailnet address and none exists" case therefore cannot occur yet. It lands
+  with the tailnet-slice sibling of SPEC-0414: that spec's `serve` path should raise a distinct
+  `TailnetMissing` mapped to exit 3 before the socket opens and before `server.json`, and carry
+  the test cases of this spec's `test_server_exits_3_without_tailnet_address`. AC 3 stays unticked.
+- `lifecycle.py` holds the record and watcher logic as designed. `server.py` keeps
+  `server_json_path` / `remove_server_json` as aliases of `lifecycle`'s and
+  `write_server_json(cfg, server, *, code_watch, code_sha, bind)` builds the record through
+  `lifecycle.build_record`. The record keeps SPEC-0414's `auth: "token"` field and renames
+  `start_ticks` to `ticks`.
+- `DashboardServer.client_count()` returns 0 (the hook); `RecordRefresher.tick()` is driven once
+  per second by the serve loop in `cli_worker._serve_dashboard` (no separate refresh thread) and
+  rewrites the record only when `clients` changed and 5 s passed since the last write.
+- The watcher polls once per second (`Watcher.poll` throttles to `code_check_s`). On a change the
+  `code_changed` line goes to stderr and the serve loop stops, which is a normal shutdown (exit 0).
+- `agentic.dashboard.code_check_s` is read by `lifecycle.code_check_s(cfg)`;
+  `dashboard.settings()` is unchanged.
+- `tests/test_dashboard_lifecycle.py` starts the server with a PATH that keeps `git`, because
+  `test_dashboard_cli.nw_env` drops every PATH directory holding a `tailscale` (here `/usr/bin`).
 
 ## Rollout / migration
 

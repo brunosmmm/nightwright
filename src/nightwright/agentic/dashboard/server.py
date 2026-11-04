@@ -3,7 +3,7 @@ auth, the phone page (SPEC-0418: `GET /`, `/app.js`, `/app.css` via `assets.ROUT
 `GET /api/snapshot` from the shared `SnapshotCache`. The three static routes are the only
 unauthenticated ones (a browser cannot send a bearer on a navigation); they sit behind the
 `Host`/`Origin` check. Read-only: it writes only under `agentic/dashboard/` (`local.token`,
-`audit.jsonl`, `server.json`). stdlib only. Not imported by any queue-side module."""
+`audit.jsonl`, `server.json`, see `lifecycle`). stdlib only. Not imported by any queue-side module."""
 from __future__ import annotations
 
 import contextlib
@@ -14,14 +14,13 @@ import os
 import socket
 import sys
 import threading
-from pathlib import Path
 from urllib.parse import urlsplit
 
-from .. import store
 from . import assets as AS
 from . import auth as A
 from . import audit as AU
 from . import dashboard_dir
+from . import lifecycle as LC
 from .snapshot import SnapshotCache
 
 DEFAULT_BIND = f"127.0.0.1:{A.DEFAULT_PORT}"
@@ -52,6 +51,11 @@ class DashboardServer(http.server.ThreadingHTTPServer):
         """A peer that resets or drops its connection is not an error worth a traceback."""
         if not isinstance(sys.exc_info()[1], OSError):
             super().handle_error(request, client_address)
+
+    def client_count(self) -> int:
+        """Connected live-update clients (`server.json` `clients`). 0 until the SSE stream
+        (SPEC-0400 child 3) wires its real count in here."""
+        return 0
 
     def snapshot_body(self) -> tuple[str, bytes]:
         """`(rev, JSON bytes)` of the current snapshot; encoded once per `rev`."""
@@ -195,45 +199,14 @@ class _Handler(http.server.BaseHTTPRequestHandler):
     do_GET = do_POST = do_PUT = do_DELETE = do_PATCH = do_OPTIONS = do_HEAD = _handle
 
 
-# ---- server.json -----------------------------------------------------------------------------
+# ---- server.json (the record itself lives in `lifecycle`, SPEC-0404) -------------------------
 
-def _start_ticks(pid) -> int | None:
-    """Field 22 of `/proc/<pid>/stat`, None where `/proc` is not available."""
-    try:
-        raw = Path(f"/proc/{int(pid)}/stat").read_text()
-        return int(raw.rsplit(")", 1)[1].split()[19])
-    except (OSError, ValueError, IndexError, TypeError):
-        return None
+server_json_path = LC.server_json_path
+remove_server_json = LC.remove_server_record
 
 
-def server_json_path(cfg) -> Path:
-    return dashboard_dir(cfg) / "server.json"
-
-
-def write_server_json(cfg, server: DashboardServer) -> dict:
+def write_server_json(cfg, server: DashboardServer, *, code_watch=False, code_sha=None,
+                      bind=None) -> dict:
     host, port = server.server_address[:2]
-    h = f"[{host}]" if ":" in host else host
-    rec = {"schema": SERVER_SCHEMA, "pid": os.getpid(), "start_ticks": _start_ticks(os.getpid()),
-           "started_at": store.now_iso(), "host": host, "port": port,
-           "url": f"http://{h}:{port}", "auth": "token"}
-    p = server_json_path(cfg)
-    tmp = p.with_name(".server.json.tmp")
-    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-    try:
-        os.fchmod(fd, 0o600)
-        os.write(fd, (json.dumps(rec) + "\n").encode("utf-8"))
-    finally:
-        os.close(fd)
-    os.replace(tmp, p)
-    return rec
-
-
-def remove_server_json(cfg) -> None:
-    """Delete `server.json` only when it names this process."""
-    p = server_json_path(cfg)
-    try:
-        rec = json.loads(p.read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        return
-    if isinstance(rec, dict) and rec.get("pid") == os.getpid():
-        p.unlink(missing_ok=True)
+    return LC.write_server_record(cfg, LC.build_record(
+        server, code_watch=code_watch, code_sha=code_sha, bind=bind or f"{host}:{port}"))
