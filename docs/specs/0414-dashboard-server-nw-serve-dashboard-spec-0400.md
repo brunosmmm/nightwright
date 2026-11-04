@@ -437,6 +437,9 @@ Shipped to Design with these notes:
   failing; a `Content-Length` over 18 digits is handled as an unreadable body.
 - `auth.parse_bind` also accepts a bare IP (`::1`, `127.0.0.1`) and a bare bracketed IPv6
   (`[::]`) with the default port; `audit.record` drops keys outside the schema.
+- `nw serve --jobs` emits its readiness line (`job API on ...`) inside the `try` that handles
+  `KeyboardInterrupt`, so a SIGINT sent as soon as that line is seen exits 0 rather than
+  `Aborted!` (exit 1); this was a flaky failure under load.
 
 ## Rollout / migration
 

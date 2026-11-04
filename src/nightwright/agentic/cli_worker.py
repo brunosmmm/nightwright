@@ -238,9 +238,10 @@ def serve_cmd(cfg, jobs, dashboard, bind, tls_cert, tls_key, client_ca):
     except (ValueError, OSError) as e:
         raise click.ClickException(str(e))
     host, port = srv.server_address[:2]
-    click.echo(f"nw serve: job API on {'https' if tls_cert else 'http'}://{host}:{port}",
-               err=True)
     try:
+        # Echo inside the try: a SIGINT sent on seeing this line must reach the handler.
+        click.echo(f"nw serve: job API on {'https' if tls_cert else 'http'}://{host}:{port}",
+                   err=True)
         srv.serve_forever(poll_interval=0.5)
     except KeyboardInterrupt:
         pass
