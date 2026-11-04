@@ -1,0 +1,1967 @@
+{
+  "campaigns": [
+    {
+      "cid": "IDEA-606-20261101-df50",
+      "derived_from": null,
+      "has_stream": false,
+      "ledger_lines": 18,
+      "origin": "captured",
+      "project": "Meta-Tools",
+      "runs": 1,
+      "scenarios": [
+        "abandoned",
+        "pre_stream"
+      ],
+      "schema": "nw.campaign.v1",
+      "state": "ABANDONED"
+    },
+    {
+      "cid": "SPEC-0179-20261025-158c",
+      "derived_from": null,
+      "has_stream": false,
+      "ledger_lines": 32,
+      "origin": "captured",
+      "project": "Meta-Tools",
+      "runs": 4,
+      "scenarios": [
+        "pre_stream",
+        "legacy_schema",
+        "no_run_json"
+      ],
+      "schema": "wt.campaign.v1",
+      "state": "MERGED"
+    },
+    {
+      "cid": "SPEC-0180-20261025-f78d",
+      "derived_from": null,
+      "has_stream": false,
+      "ledger_lines": 15,
+      "origin": "captured",
+      "project": "Meta-Tools",
+      "runs": 1,
+      "scenarios": [
+        "pre_stream",
+        "legacy_schema",
+        "no_run_json"
+      ],
+      "schema": "wt.campaign.v1",
+      "state": "MERGED"
+    },
+    {
+      "cid": "SPEC-0195-20261025-f49a",
+      "derived_from": null,
+      "has_stream": false,
+      "ledger_lines": 27,
+      "origin": "captured",
+      "project": "Meta-Tools",
+      "runs": 2,
+      "scenarios": [
+        "merged_multi_loop",
+        "pre_stream",
+        "legacy_schema"
+      ],
+      "schema": "wt.campaign.v1",
+      "state": "MERGED"
+    },
+    {
+      "cid": "SPEC-0218-20261025-0131",
+      "derived_from": null,
+      "has_stream": false,
+      "ledger_lines": 4,
+      "origin": "captured",
+      "project": "Meta-Tools",
+      "runs": 0,
+      "scenarios": [
+        "legacy_schema"
+      ],
+      "schema": "wt.campaign.v1",
+      "state": "ABANDONED"
+    },
+    {
+      "cid": "SPEC-0336-20261031-6558",
+      "derived_from": null,
+      "has_stream": false,
+      "ledger_lines": 298,
+      "origin": "captured",
+      "project": "Meta-Tools",
+      "runs": 36,
+      "scenarios": [
+        "merged_multi_loop",
+        "human_escalation",
+        "pre_stream"
+      ],
+      "schema": "nw.campaign.v1",
+      "state": "MERGED"
+    },
+    {
+      "cid": "SPEC-0394-20261102-ae5b",
+      "derived_from": null,
+      "has_stream": true,
+      "ledger_lines": 114,
+      "origin": "captured",
+      "project": "Meta-Tools",
+      "runs": 13,
+      "scenarios": [
+        "merged_multi_loop",
+        "flaky_and_triage"
+      ],
+      "schema": "nw.campaign.v1",
+      "state": "MERGED"
+    },
+    {
+      "cid": "SPEC-0195-20261025-hdof",
+      "derived_from": "SPEC-0195-20261025-f49a",
+      "has_stream": false,
+      "ledger_lines": 27,
+      "origin": "derived",
+      "project": "Meta-Tools",
+      "runs": 2,
+      "scenarios": [
+        "handed_off"
+      ],
+      "schema": "wt.campaign.v1",
+      "state": "HANDED_OFF"
+    }
+  ],
+  "files": {
+    "agentic/campaigns/IDEA-606-20261101-df50/ledger.jsonl": {
+      "bytes": 6732,
+      "sha256": "05ea8401d2743ed88edc47a7545b075b811150206f7b91c8463330346150715f"
+    },
+    "agentic/campaigns/IDEA-606-20261101-df50/runs/001-spec_writer/exit.json": {
+      "bytes": 174,
+      "sha256": "e925ae0d3d02f33deb8a6d0079ee6e114f6bcf7b365661b06826bb1680b42557"
+    },
+    "agentic/campaigns/IDEA-606-20261101-df50/runs/001-spec_writer/request.json": {
+      "bytes": 855,
+      "sha256": "08549c201f8328ae4f4ca45c37827802ab839383b885efac84f998b1fc6f6a0c"
+    },
+    "agentic/campaigns/IDEA-606-20261101-df50/runs/001-spec_writer/result.json": {
+      "bytes": 3189,
+      "sha256": "f2689fd698bfb0209900099e147225d25738660a95af8b441844f192285c7b6d"
+    },
+    "agentic/campaigns/IDEA-606-20261101-df50/runs/001-spec_writer/run.json": {
+      "bytes": 2308,
+      "sha256": "9f0a0011a85a8bf145b54f70da4982bd43d3d89be98b6ed8b083c02f338e6415"
+    },
+    "agentic/campaigns/IDEA-606-20261101-df50/runs/001-spec_writer/stderr.log": {
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "agentic/campaigns/IDEA-606-20261101-df50/state.json": {
+      "bytes": 3786,
+      "sha256": "95bee353e751e621a6dd4b1b645d399a1cd6417a781d1bf01b551be2f0ab7e96"
+    },
+    "agentic/campaigns/SPEC-0179-20261025-158c/gates/001-pytest.log": {
+      "bytes": 1825,
+      "sha256": "31c1492c645ab5e622a2898ae440b515d44f17667994fef982f067297cc96588"
+    },
+    "agentic/campaigns/SPEC-0179-20261025-158c/gates/001-spec-lint.log": {
+      "bytes": 1192,
+      "sha256": "2b180aaef334fbf8285e9dc0ecd3ef089c9b6e7a987a9cca46519cd159772d5f"
+    },
+    "agentic/campaigns/SPEC-0179-20261025-158c/gates/002-pytest.log": {
+      "bytes": 1825,
+      "sha256": "6e578b465da7f1e96178d94944a90eb829a5aad2ecd331cfb11faf0a6da94990"
+    },
+    "agentic/campaigns/SPEC-0179-20261025-158c/gates/002-spec-lint.log": {
+      "bytes": 1192,
+      "sha256": "2b180aaef334fbf8285e9dc0ecd3ef089c9b6e7a987a9cca46519cd159772d5f"
+    },
+    "agentic/campaigns/SPEC-0179-20261025-158c/gates/003-pytest.log": {
+      "bytes": 1825,
+      "sha256": "0c434ac67c52fc4b114be8c1c51e63eca1e6a9e86aa70c947ff022745e620e66"
+    },
+    "agentic/campaigns/SPEC-0179-20261025-158c/gates/003-spec-lint.log": {
+      "bytes": 1192,
+      "sha256": "2b180aaef334fbf8285e9dc0ecd3ef089c9b6e7a987a9cca46519cd159772d5f"
+    },
+    "agentic/campaigns/SPEC-0179-20261025-158c/ledger.jsonl": {
+      "bytes": 25019,
+      "sha256": "acc6a39fc256c1a373b9a7c2625815462cf37ac59e05309e325db52b6ea0b480"
+    },
+    "agentic/campaigns/SPEC-0179-20261025-158c/runs/001-implementer/result.json": {
+      "bytes": 1311,
+      "sha256": "4933b906000750fd99b653f5e3501f8fe89a723ef9daa6aa58b1a565d0514281"
+    },
+    "agentic/campaigns/SPEC-0179-20261025-158c/runs/001-implementer/stderr.log": {
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "agentic/campaigns/SPEC-0179-20261025-158c/runs/002-gate_triager/result.json": {
+      "bytes": 1311,
+      "sha256": "ade212f8f3f0d636c4fa9f3ab7182d4f003fbebb68f1fe7f3060c420ca97fab6"
+    },
+    "agentic/campaigns/SPEC-0179-20261025-158c/runs/002-gate_triager/stderr.log": {
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "agentic/campaigns/SPEC-0179-20261025-158c/runs/003-gate_triager/result.json": {
+      "bytes": 1311,
+      "sha256": "d34dfb3db3eaa9dc371742477c5cdbd0070a8b59506c15f4ebbed3dcf12e2655"
+    },
+    "agentic/campaigns/SPEC-0179-20261025-158c/runs/003-gate_triager/stderr.log": {
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "agentic/campaigns/SPEC-0179-20261025-158c/runs/004-implementer/result.json": {
+      "bytes": 4716,
+      "sha256": "01fff8f796e5d95d3c1a8514db75f30e4984811686f809bfa48ea143b388fe66"
+    },
+    "agentic/campaigns/SPEC-0179-20261025-158c/runs/004-implementer/stderr.log": {
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "agentic/campaigns/SPEC-0179-20261025-158c/state.json": {
+      "bytes": 7997,
+      "sha256": "d43094d651de9fbc32ab0956909d2539a9060491e24a526fe57f8e7e290ac7d6"
+    },
+    "agentic/campaigns/SPEC-0180-20261025-f78d/gates/001-pytest.log": {
+      "bytes": 1825,
+      "sha256": "fc8ee74c1acc73b62e5df54ce73635f2e7bbe71f54a109a6f44731f77c8a4d38"
+    },
+    "agentic/campaigns/SPEC-0180-20261025-f78d/gates/001-spec-lint.log": {
+      "bytes": 1192,
+      "sha256": "dec58c7fb4b09c6d0a5252f612470f74a5d23d06724336889e378b352e933434"
+    },
+    "agentic/campaigns/SPEC-0180-20261025-f78d/gates/002-pytest.log": {
+      "bytes": 1825,
+      "sha256": "42af902be9b7e496f2c25ff409f4338982e8d5894be86185b157a4a57f40d43d"
+    },
+    "agentic/campaigns/SPEC-0180-20261025-f78d/gates/002-spec-lint.log": {
+      "bytes": 1192,
+      "sha256": "dec58c7fb4b09c6d0a5252f612470f74a5d23d06724336889e378b352e933434"
+    },
+    "agentic/campaigns/SPEC-0180-20261025-f78d/gates/003-pytest.log": {
+      "bytes": 1825,
+      "sha256": "1cdd7ddf5c93b18089f5de18e57bd8f54cfa29df2bb6c7fc09c949a357beb62c"
+    },
+    "agentic/campaigns/SPEC-0180-20261025-f78d/gates/003-spec-lint.log": {
+      "bytes": 1192,
+      "sha256": "dec58c7fb4b09c6d0a5252f612470f74a5d23d06724336889e378b352e933434"
+    },
+    "agentic/campaigns/SPEC-0180-20261025-f78d/ledger.jsonl": {
+      "bytes": 19750,
+      "sha256": "9e7269d45ebbf3a2e08eee3a844e55d5ada265f596e09316fc75af303eab8db3"
+    },
+    "agentic/campaigns/SPEC-0180-20261025-f78d/runs/001-implementer/result.json": {
+      "bytes": 6178,
+      "sha256": "b30054a014c09ca2bbfabc1d10c53a7362f90337d815c2485fc547ce220fb9a8"
+    },
+    "agentic/campaigns/SPEC-0180-20261025-f78d/runs/001-implementer/stderr.log": {
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "agentic/campaigns/SPEC-0180-20261025-f78d/state.json": {
+      "bytes": 8818,
+      "sha256": "2fe90b18a9070d3efc6038d228fccff822994ff0488f5b08f57301f1a44a3af5"
+    },
+    "agentic/campaigns/SPEC-0195-20261025-f49a/gates/001-pytest.json": {
+      "bytes": 367,
+      "sha256": "5cef696cef963f7fef2613345f9530f393d321ea76a0b80b6cd7ba12321fc614"
+    },
+    "agentic/campaigns/SPEC-0195-20261025-f49a/gates/001-pytest.log": {
+      "bytes": 1964,
+      "sha256": "9ea4d2ba77ff351c06d80baddfa95412fac23758810acae8bcdf074af87d20aa"
+    },
+    "agentic/campaigns/SPEC-0195-20261025-f49a/gates/001-spec-lint.json": {
+      "bytes": 433,
+      "sha256": "9dcc8969b28df18ba9c0bc54ee4525687ca67ebf5897f85d28fac25a2dae7ae8"
+    },
+    "agentic/campaigns/SPEC-0195-20261025-f49a/gates/001-spec-lint.log": {
+      "bytes": 1025,
+      "sha256": "0ead90d28040f6f4face258375c86e30ed622747ed91bb492629d121dd090482"
+    },
+    "agentic/campaigns/SPEC-0195-20261025-f49a/gates/002-pytest.json": {
+      "bytes": 367,
+      "sha256": "9d9b56ad7b3fc4ce9d9f49c1214d45b8409140a9ac818f86542b962c621571a4"
+    },
+    "agentic/campaigns/SPEC-0195-20261025-f49a/gates/002-pytest.log": {
+      "bytes": 1964,
+      "sha256": "a72d543f4645a42aca68528cf150257acec5c9647273c7c65e73a01ad468d0b6"
+    },
+    "agentic/campaigns/SPEC-0195-20261025-f49a/gates/002-spec-lint.json": {
+      "bytes": 433,
+      "sha256": "0292d8eb5887c6dd6da0be64d91c53b719e90f0ed871985fc0428b3375ed777c"
+    },
+    "agentic/campaigns/SPEC-0195-20261025-f49a/gates/002-spec-lint.log": {
+      "bytes": 1025,
+      "sha256": "a87100096f2298ceaaca9898819dfd8b1397e6821c8c2650f0d79b55d4975651"
+    },
+    "agentic/campaigns/SPEC-0195-20261025-f49a/gates/003-pytest.json": {
+      "bytes": 367,
+      "sha256": "2fbce3fde9d196a52592067c7dbe2fd31600187221c27e70959ee5af5d6ce348"
+    },
+    "agentic/campaigns/SPEC-0195-20261025-f49a/gates/003-pytest.log": {
+      "bytes": 1964,
+      "sha256": "fc1979f694a5d1fa1d4ced057503f4eac90a53e85e6988a837efc1b3fede025c"
+    },
+    "agentic/campaigns/SPEC-0195-20261025-f49a/gates/003-spec-lint.json": {
+      "bytes": 433,
+      "sha256": "5c664355807a1f93e37b08fc5698866c128d024cb45828db2bf26c88a32dd702"
+    },
+    "agentic/campaigns/SPEC-0195-20261025-f49a/gates/003-spec-lint.log": {
+      "bytes": 1025,
+      "sha256": "a87100096f2298ceaaca9898819dfd8b1397e6821c8c2650f0d79b55d4975651"
+    },
+    "agentic/campaigns/SPEC-0195-20261025-f49a/gates/004-pytest.json": {
+      "bytes": 367,
+      "sha256": "bd7dae61dbffb0451bf01c7b8972fc3ea1ef658c8aa9b536aaf0933fd40c7a04"
+    },
+    "agentic/campaigns/SPEC-0195-20261025-f49a/gates/004-pytest.log": {
+      "bytes": 1964,
+      "sha256": "70fe1ed53b8f10462dd7d76d8edcad36d10283462f9da96cb7af6388f6e7418a"
+    },
+    "agentic/campaigns/SPEC-0195-20261025-f49a/gates/004-spec-lint.json": {
+      "bytes": 433,
+      "sha256": "020785e2767f9baf8b725ab24c5716e96e5782eed512b3df6aeb498c2309a97f"
+    },
+    "agentic/campaigns/SPEC-0195-20261025-f49a/gates/004-spec-lint.log": {
+      "bytes": 1025,
+      "sha256": "bf19177523a7e0546bc3ff671ccfbeda67765f7fee1b5dbecb5f5327a4b55508"
+    },
+    "agentic/campaigns/SPEC-0195-20261025-f49a/ledger.jsonl": {
+      "bytes": 32249,
+      "sha256": "5d675a341fd7eb80b860e2eb4e9ca57599aae7e03c274badd5d3745d50b6d208"
+    },
+    "agentic/campaigns/SPEC-0195-20261025-f49a/runs/001-implementer/result.json": {
+      "bytes": 3928,
+      "sha256": "08e2dc2e520b0f68ea88843db649f8ba8810b53c05b14cfa0975df1ea6f73022"
+    },
+    "agentic/campaigns/SPEC-0195-20261025-f49a/runs/001-implementer/run.json": {
+      "bytes": 2741,
+      "sha256": "039648606b136a4aea91cbcac0233010d7c11d8b7ac9093fb0c888cdc2491dda"
+    },
+    "agentic/campaigns/SPEC-0195-20261025-f49a/runs/001-implementer/stderr.log": {
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "agentic/campaigns/SPEC-0195-20261025-f49a/runs/002-conformance_reviewer/result.json": {
+      "bytes": 6658,
+      "sha256": "e722e86d45732680f8b4ae21f971ba7ca5f66328b1785409629219c5cc8955f2"
+    },
+    "agentic/campaigns/SPEC-0195-20261025-f49a/runs/002-conformance_reviewer/run.json": {
+      "bytes": 4145,
+      "sha256": "2c057b9eb8a5c7eb9752b38a4f47c2ec10301bbc04473a218ed353950750f2ed"
+    },
+    "agentic/campaigns/SPEC-0195-20261025-f49a/runs/002-conformance_reviewer/stderr.log": {
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "agentic/campaigns/SPEC-0195-20261025-f49a/spec_at_open.md": {
+      "bytes": 3524,
+      "sha256": "660ddf9255fa5d2ea31edc9f21c49fb0f58e8cea5742a62730375b32e52d12fa"
+    },
+    "agentic/campaigns/SPEC-0195-20261025-f49a/state.json": {
+      "bytes": 10008,
+      "sha256": "b820e539a4b899d65d9a155a95c5c2ae6679278aa007e16c607080cb9263062d"
+    },
+    "agentic/campaigns/SPEC-0195-20261025-hdof/gates/001-pytest.json": {
+      "bytes": 367,
+      "sha256": "59cda2ea8e026c4db2044ba222f7d98904e23dec42149cbfe98044159a063123"
+    },
+    "agentic/campaigns/SPEC-0195-20261025-hdof/gates/001-pytest.log": {
+      "bytes": 1964,
+      "sha256": "9ea4d2ba77ff351c06d80baddfa95412fac23758810acae8bcdf074af87d20aa"
+    },
+    "agentic/campaigns/SPEC-0195-20261025-hdof/gates/001-spec-lint.json": {
+      "bytes": 433,
+      "sha256": "06fb316b1d64b4774c32f687c5ca932ab11ceddbdc09484a7bd60074433c8a57"
+    },
+    "agentic/campaigns/SPEC-0195-20261025-hdof/gates/001-spec-lint.log": {
+      "bytes": 1025,
+      "sha256": "0ead90d28040f6f4face258375c86e30ed622747ed91bb492629d121dd090482"
+    },
+    "agentic/campaigns/SPEC-0195-20261025-hdof/gates/002-pytest.json": {
+      "bytes": 367,
+      "sha256": "6951bdb1bba2ab32df6a2c22f9efb31c399173acb0aa919c851e83c430c98201"
+    },
+    "agentic/campaigns/SPEC-0195-20261025-hdof/gates/002-pytest.log": {
+      "bytes": 1964,
+      "sha256": "a72d543f4645a42aca68528cf150257acec5c9647273c7c65e73a01ad468d0b6"
+    },
+    "agentic/campaigns/SPEC-0195-20261025-hdof/gates/002-spec-lint.json": {
+      "bytes": 433,
+      "sha256": "0c70123c0e5295167e8a07b9bb163ea9fc1535fb44564dc37425147e2dcb4840"
+    },
+    "agentic/campaigns/SPEC-0195-20261025-hdof/gates/002-spec-lint.log": {
+      "bytes": 1025,
+      "sha256": "a87100096f2298ceaaca9898819dfd8b1397e6821c8c2650f0d79b55d4975651"
+    },
+    "agentic/campaigns/SPEC-0195-20261025-hdof/gates/003-pytest.json": {
+      "bytes": 367,
+      "sha256": "19f0ac41f814614c5c36dd567c31c68ba6140090281f5e34ea6e414216e62423"
+    },
+    "agentic/campaigns/SPEC-0195-20261025-hdof/gates/003-pytest.log": {
+      "bytes": 1964,
+      "sha256": "fc1979f694a5d1fa1d4ced057503f4eac90a53e85e6988a837efc1b3fede025c"
+    },
+    "agentic/campaigns/SPEC-0195-20261025-hdof/gates/003-spec-lint.json": {
+      "bytes": 433,
+      "sha256": "f32f89b176e2dc7cb22e859bf78753aae15a347575e48827db005937638f60ab"
+    },
+    "agentic/campaigns/SPEC-0195-20261025-hdof/gates/003-spec-lint.log": {
+      "bytes": 1025,
+      "sha256": "a87100096f2298ceaaca9898819dfd8b1397e6821c8c2650f0d79b55d4975651"
+    },
+    "agentic/campaigns/SPEC-0195-20261025-hdof/gates/004-pytest.json": {
+      "bytes": 367,
+      "sha256": "ae1e003bc142cc473144193523d37fc359529742ffdb724da31afff912c9c5e1"
+    },
+    "agentic/campaigns/SPEC-0195-20261025-hdof/gates/004-pytest.log": {
+      "bytes": 1964,
+      "sha256": "70fe1ed53b8f10462dd7d76d8edcad36d10283462f9da96cb7af6388f6e7418a"
+    },
+    "agentic/campaigns/SPEC-0195-20261025-hdof/gates/004-spec-lint.json": {
+      "bytes": 433,
+      "sha256": "d631b42e02e3813aec10526358857dcea0ddb4d5638f0f9027cf40324fb08fff"
+    },
+    "agentic/campaigns/SPEC-0195-20261025-hdof/gates/004-spec-lint.log": {
+      "bytes": 1025,
+      "sha256": "bf19177523a7e0546bc3ff671ccfbeda67765f7fee1b5dbecb5f5327a4b55508"
+    },
+    "agentic/campaigns/SPEC-0195-20261025-hdof/ledger.jsonl": {
+      "bytes": 32200,
+      "sha256": "9b10fa5026db2f4eb20fd69f1709cb7309259613b385a7f00b0d38adadd86ead"
+    },
+    "agentic/campaigns/SPEC-0195-20261025-hdof/runs/001-implementer/result.json": {
+      "bytes": 3928,
+      "sha256": "08e2dc2e520b0f68ea88843db649f8ba8810b53c05b14cfa0975df1ea6f73022"
+    },
+    "agentic/campaigns/SPEC-0195-20261025-hdof/runs/001-implementer/run.json": {
+      "bytes": 2741,
+      "sha256": "fe7de4f90df82308dd481394a563097c1cfb8516f69b939c16653d22ed736c14"
+    },
+    "agentic/campaigns/SPEC-0195-20261025-hdof/runs/001-implementer/stderr.log": {
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "agentic/campaigns/SPEC-0195-20261025-hdof/runs/002-conformance_reviewer/result.json": {
+      "bytes": 6658,
+      "sha256": "e722e86d45732680f8b4ae21f971ba7ca5f66328b1785409629219c5cc8955f2"
+    },
+    "agentic/campaigns/SPEC-0195-20261025-hdof/runs/002-conformance_reviewer/run.json": {
+      "bytes": 4145,
+      "sha256": "150eaf5972264f2693af8374d6e25e6fca701f7b8e8610985931d94c0a7a287e"
+    },
+    "agentic/campaigns/SPEC-0195-20261025-hdof/runs/002-conformance_reviewer/stderr.log": {
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "agentic/campaigns/SPEC-0195-20261025-hdof/spec_at_open.md": {
+      "bytes": 3524,
+      "sha256": "660ddf9255fa5d2ea31edc9f21c49fb0f58e8cea5742a62730375b32e52d12fa"
+    },
+    "agentic/campaigns/SPEC-0195-20261025-hdof/state.json": {
+      "bytes": 9997,
+      "sha256": "0f39b77f05bf48acae79e8dc69bc1b92784ec3060a34e036d627201831be2a96"
+    },
+    "agentic/campaigns/SPEC-0218-20261025-0131/ledger.jsonl": {
+      "bytes": 1109,
+      "sha256": "bfd874d84cc30b2e52a0b8f00fab76fe9f3bfdb5b51049a7916928181e23b793"
+    },
+    "agentic/campaigns/SPEC-0218-20261025-0131/state.json": {
+      "bytes": 1121,
+      "sha256": "4268ef17b8415d09611baacda1fca1c99158ce6cba3f572810aa7780532d8d74"
+    },
+    "agentic/campaigns/SPEC-0336-20261031-6558/gates/001-pytest-affected.json": {
+      "bytes": 1536,
+      "sha256": "1048669e527b317d0d5f87657cc80c2837fc7ba236231d8404da08d2325996fe"
+    },
+    "agentic/campaigns/SPEC-0336-20261031-6558/gates/001-pytest-affected.log": {
+      "bytes": 4532,
+      "sha256": "8169b6e716ff2fc361120e27cf008250812151f8474b83f7d14977da972f2f17"
+    },
+    "agentic/campaigns/SPEC-0336-20261031-6558/gates/001-pytest-affected.r1.json": {
+      "bytes": 715,
+      "sha256": "89fc4bfa6bf74feceee1931b0ed3bfb4dfd273d2f0187ebcd407d8c3b6a59d88"
+    },
+    "agentic/campaigns/SPEC-0336-20261031-6558/gates/001-pytest-affected.r1.log": {
+      "bytes": 1121,
+      "sha256": "d565b27d16879edf9535987d2079207bf7fdcf5ae61cac0f22d04e8cf1662499"
+    },
+    "agentic/campaigns/SPEC-0336-20261031-6558/gates/001-spec-lint.json": {
+      "bytes": 433,
+      "sha256": "3b359b04a6f59d88f03c9252894f9bbdf65f364d4c6ccc1e1ee030368e350ed7"
+    },
+    "agentic/campaigns/SPEC-0336-20261031-6558/gates/001-spec-lint.log": {
+      "bytes": 1025,
+      "sha256": "9f4817bf9ba883cc8b17cbbce4475dc25c71104d0b26ad27849b207c001b48e9"
+    },
+    "agentic/campaigns/SPEC-0336-20261031-6558/gates/002-pytest-affected.json": {
+      "bytes": 1470,
+      "sha256": "ac273a6e424b8ce2173470be99b8014dadb5d5fd258fd641736eeb0f0612302f"
+    },
+    "agentic/campaigns/SPEC-0336-20261031-6558/gates/002-pytest-affected.log": {
+      "bytes": 7772,
+      "sha256": "4491488acf39f43803014ddb6ddd13994f6edfe8ef50eb98e824c656de11541e"
+    },
+    "agentic/campaigns/SPEC-0336-20261031-6558/gates/002-pytest-affected.r1.json": {
+      "bytes": 671,
+      "sha256": "60e9ac10f642bae35b29ec850cbb0aca17ab7a50564a7c6a9775b1405b815c8a"
+    },
+    "agentic/campaigns/SPEC-0336-20261031-6558/gates/002-pytest-affected.r1.log": {
+      "bytes": 2011,
+      "sha256": "4404f397d2201cb3bcb0ee48ae859fe350ae6d8cc15fa632260c91e8ab5e8491"
+    },
+    "agentic/campaigns/SPEC-0336-20261031-6558/gates/002-spec-lint.json": {
+      "bytes": 433,
+      "sha256": "4a0885671abf044b0fbe9b3c7064a047356c2151baa56182d1303b2c22dfa047"
+    },
+    "agentic/campaigns/SPEC-0336-20261031-6558/gates/002-spec-lint.log": {
+      "bytes": 1025,
+      "sha256": "9f4817bf9ba883cc8b17cbbce4475dc25c71104d0b26ad27849b207c001b48e9"
+    },
+    "agentic/campaigns/SPEC-0336-20261031-6558/gates/003-pytest-affected.json": {
+      "bytes": 724,
+      "sha256": "cb63f2b86ccf8cd0ee534ebc87998e2545dea57a032b1892ef89c2842affc559"
+    },
+    "agentic/campaigns/SPEC-0336-20261031-6558/gates/003-pytest-affected.log": {
+      "bytes": 6205,
+      "sha256": "55438ec69b340c0ff641a886ee7b188456e85d6abc98611854d088ae68536836"
+    },
+    "agentic/campaigns/SPEC-0336-20261031-6558/gates/003-spec-lint.json": {
+      "bytes": 433,
+      "sha256": "0feaf4faaa3a35e09618bd9248fd177e826de76dff475d333ace94c79926797e"
+    },
+    "agentic/campaigns/SPEC-0336-20261031-6558/gates/003-spec-lint.log": {
+      "bytes": 1025,
+      "sha256": "9f4817bf9ba883cc8b17cbbce4475dc25c71104d0b26ad27849b207c001b48e9"
+    },
+    "agentic/campaigns/SPEC-0336-20261031-6558/gates/004-pytest-affected.json": {
+      "bytes": 724,
+      "sha256": "e1516448a7889f85864da24625717da1e4c1e1fc05d821ae6681ca54e6b3c512"
+    },
+    "agentic/campaigns/SPEC-0336-20261031-6558/gates/004-pytest-affected.log": {
+      "bytes": 6285,
+      "sha256": "2fb3030c58a52e81af32289e25e9ea5a8bcd95fa4ced8258cdd46fd0d36ec7de"
+    },
+    "agentic/campaigns/SPEC-0336-20261031-6558/gates/004-spec-lint.json": {
+      "bytes": 433,
+      "sha256": "25be8b009a377a6b0b91dc042aee63074e674b99912d7b8a07324a5a1b9a3c2c"
+    },
+    "agentic/campaigns/SPEC-0336-20261031-6558/gates/004-spec-lint.log": {
+      "bytes": 1025,
+      "sha256": "9f4817bf9ba883cc8b17cbbce4475dc25c71104d0b26ad27849b207c001b48e9"
+    },
+    "agentic/campaigns/SPEC-0336-20261031-6558/gates/005-pytest-affected.json": {
+      "bytes": 724,
+      "sha256": "f8207438ecc074b9b7a7ddd22b202df4d63efc5a251303db4c30543153d139be"
+    },
+    "agentic/campaigns/SPEC-0336-20261031-6558/gates/005-pytest-affected.log": {
+      "bytes": 6285,
+      "sha256": "6cf4acacfa54a2fd4e9a3bda38d332b2d9d94bba78baa80b9db95694903d11fc"
+    },
+    "agentic/campaigns/SPEC-0336-20261031-6558/gates/005-spec-lint.json": {
+      "bytes": 431,
+      "sha256": "e54ca71eadedfcd3ccc464b34730f9c89c2bb89b036dea929ed02b3fb686f812"
+    },
+    "agentic/campaigns/SPEC-0336-20261031-6558/gates/005-spec-lint.log": {
+      "bytes": 1025,
+      "sha256": "9f4817bf9ba883cc8b17cbbce4475dc25c71104d0b26ad27849b207c001b48e9"
+    },
+    "agentic/campaigns/SPEC-0336-20261031-6558/gates/006-pytest-affected.json": {
+      "bytes": 724,
+      "sha256": "53b3dc9a736901f9e1f4b933d6d6f7554b47f3959035e19393150e21cdc5c7cb"
+    },
+    "agentic/campaigns/SPEC-0336-20261031-6558/gates/006-pytest-affected.log": {
+      "bytes": 6281,
+      "sha256": "1e38b254d65fa486b2ba0e7a3978cafee9c9658349a5c434b8f77a83136cebb8"
+    },
+    "agentic/campaigns/SPEC-0336-20261031-6558/gates/006-spec-lint.json": {
+      "bytes": 433,
+      "sha256": "e010863bfc1c8efecea499c45ca99d4094b12920fb8d2c1b0c0e06dfa19d1249"
+    },
+    "agentic/campaigns/SPEC-0336-20261031-6558/gates/006-spec-lint.log": {
+      "bytes": 1025,
+      "sha256": "9f4817bf9ba883cc8b17cbbce4475dc25c71104d0b26ad27849b207c001b48e9"
+    },
+    "agentic/campaigns/SPEC-0336-20261031-6558/gates/007-pytest-affected.json": {
+      "bytes": 724,
+      "sha256": "6da4453696f9c54089abcead21ff0e98051e253e7137477cc7957fba4a7a7a2a"
+    },
+    "agentic/campaigns/SPEC-0336-20261031-6558/gates/007-pytest-affected.log": {
+      "bytes": 6464,
+      "sha256": "d5e775fd4abdc20464c994654ea22c850b81ae9e6a90ab9c41317bb75785c464"
+    },
+    "agentic/campaigns/SPEC-0336-20261031-6558/gates/007-spec-lint.json": {
+      "bytes": 433,
+      "sha256": "8319b3a2308b9abe3a4df77254d465b2f6bb27b071676e85a4f68e2ca16c68c1"
+    },
+    "agentic/campaigns/SPEC-0336-20261031-6558/gates/007-spec-lint.log": {
+      "bytes": 1025,
+      "sha256": "9f4817bf9ba883cc8b17cbbce4475dc25c71104d0b26ad27849b207c001b48e9"
+    },
+    "agentic/campaigns/SPEC-0336-20261031-6558/gates/008-pytest-affected.json": {
+      "bytes": 724,
+      "sha256": "4c81107079bd5b01c5c75a22a5443fbbd92be8d868a763b0c4311f9d82735fef"
+    },
+    "agentic/campaigns/SPEC-0336-20261031-6558/gates/008-pytest-affected.log": {
+      "bytes": 6363,
+      "sha256": "edbe96e7267fe962d4dfde7c332218a3f86b2c1f16dbae008f58eecbbdb6fb1d"
+    },
+    "agentic/campaigns/SPEC-0336-20261031-6558/gates/008-spec-lint.json": {
+      "bytes": 432,
+      "sha256": "45df4b93c8ec83c314e1ccc7567fb30c7e8c918cc134f22cf5103b5b1a89a978"
+    },
+    "agentic/campaigns/SPEC-0336-20261031-6558/gates/008-spec-lint.log": {
+      "bytes": 1025,
+      "sha256": "9f4817bf9ba883cc8b17cbbce4475dc25c71104d0b26ad27849b207c001b48e9"
+    },
+    "agentic/campaigns/SPEC-0336-20261031-6558/gates/009-pytest-affected.json": {
+      "bytes": 724,
+      "sha256": "254c8dbf1e53603823f667ab1208a88bb51e8fd453ba69ad34f8aa1a869a4c4c"
+    },
+    "agentic/campaigns/SPEC-0336-20261031-6558/gates/009-pytest-affected.log": {
+      "bytes": 6363,
+      "sha256": "99501e6148e6f30ee8f8c631f91cf210f26a4451fc3365e442730938eb527a1e"
+    },
+    "agentic/campaigns/SPEC-0336-20261031-6558/gates/009-spec-lint.json": {
+      "bytes": 433,
+      "sha256": "800f10fa283128aeeb26c43091967c0e9d1a67e257ea1e168a754adb845a1222"
+    },
+    "agentic/campaigns/SPEC-0336-20261031-6558/gates/009-spec-lint.log": {
+      "bytes": 1025,
+      "sha256": "9f4817bf9ba883cc8b17cbbce4475dc25c71104d0b26ad27849b207c001b48e9"
+    },
+    "agentic/campaigns/SPEC-0336-20261031-6558/gates/010-pytest.json": {
+      "bytes": 506,
+      "sha256": "cf0df404bfb506c56cb1824c85513c0ae7814a11727c3f1f3ae844bea8dd5413"
+    },
+    "agentic/campaigns/SPEC-0336-20261031-6558/gates/010-pytest.log": {
+      "bytes": 7125,
+      "sha256": "ad16d7c04a23aa9ab8f8e7bfd2c429c562b6dcb31d77224454b42f0b1ad3a713"
+    },
+    "agentic/campaigns/SPEC-0336-20261031-6558/gates/010-spec-lint.json": {
+      "bytes": 433,
+      "sha256": "14609b9944a658425977b643ac0f907dbf031fdc45dcb46dd4c43405ef087585"
+    },
+    "agentic/campaigns/SPEC-0336-20261031-6558/gates/010-spec-lint.log": {
+      "bytes": 1025,
+      "sha256": "48a928951cb81c4dd94cfe8cc5664a4dc11e7e8cb48bd760051cc64539154bce"
+    },
+    "agentic/campaigns/SPEC-0336-20261031-6558/ledger.jsonl": {
+      "bytes": 418256,
+      "sha256": "107dd0d4f074d1689b889d8e0b65425e77ef4b900f6ab7d5ba2f2d573b59a7ea"
+    },
+    "agentic/campaigns/SPEC-0336-20261031-6558/runs/001-implementer/exit.json": {
+      "bytes": 174,
+      "sha256": "dd8f9cb37ca7a5f83dfa6a5d71cee982e0d4e0d9e1be02641e5afc555ff0dc55"
+    },
+    "agentic/campaigns/SPEC-0336-20261031-6558/runs/001-implementer/request.json": {
+      "bytes": 1392,
+      "sha256": "d97f7d582b465ea98ad1b1fc5e4c90497c76b7a49691c579b40eec015133d242"
+    },
+    "agentic/campaigns/SPEC-0336-20261031-6558/runs/001-implementer/result.json": {
+      "bytes": 8061,
+      "sha256": "3f3074841ae7268d0d98b5e9b7d94fb87ce63f148b4b141c27437e84d13a2ad2"
+    },
+    "agentic/campaigns/SPEC-0336-20261031-6558/runs/001-implementer/run.json": {
+      "bytes": 5199,
+      "sha256": "8ef674441958467a8ceb0f0c54bb74af5ce910070b3d06a16911462fb0d3a3cf"
+    },
+    "agentic/campaigns/SPEC-0336-20261031-6558/runs/001-implementer/stderr.log": {
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "agentic/campaigns/SPEC-0336-20261031-6558/runs/002-gate_triager/exit.json": {
+      "bytes": 173,
+      "sha256": "5bce651c7bd6f1e05570e20f9de9b001d0c76bd08d1f8483489fa90a65ef9317"
+    },
+    "agentic/campaigns/SPEC-0336-20261031-6558/runs/002-gate_triager/request.json": {
+      "bytes": 1840,
+      "sha256": "4c7f89a977e154395ba70cfc75985fbdfeba37ddb21a1b243e76eb31b4a829ed"
+    },
+    "agentic/campaigns/SPEC-0336-20261031-6558/runs/002-gate_triager/result.json": {
+      "bytes": 6299,
+      "sha256": "0696dc4195e021324ebad4c89df8bf875fe4b34eaeb5fbb508220107ff89ce1c"
+    },
+    "agentic/campaigns/SPEC-0336-20261031-6558/runs/002-gate_triager/run.json": {
+      "bytes": 3890,
+      "sha256": "51115ab9517b8a617ad5d9a60f9ce7acc9a4eaf9f8ffc15557104fcaf61b17f6"
+    },
+    "agentic/campaigns/SPEC-0336-20261031-6558/runs/002-gate_triager/stderr.log": {
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "agentic/campaigns/SPEC-0336-20261031-6558/runs/003-implementer/exit.json": {
+      "bytes": 173,
+      "sha256": "2b9f9a6e55313c0a0d9140253b4c0851cd0cf024652c1dec867102d007978999"
+    },
+    "agentic/campaigns/SPEC-0336-20261031-6558/runs/003-implementer/request.json": {
+      "bytes": 1392,
+      "sha256": "808b8027c6be3aeaa96d23582e1a76970187dd219ad83fd5fd436316b9bb00fb"
+    },
+    "agentic/campaigns/SPEC-0336-20261031-6558/runs/003-implementer/result.json": {
+      "bytes": 5674,
+      "sha256": "d26d5329b1359a2a271e4894078b04ec5ddb46671787f20133c9dc87803a59c5"
+    },
+    "agentic/campaigns/SPEC-0336-20261031-6558/runs/003-implementer/run.json": {
+      "bytes": 3935,
+      "sha256": "d5085907728aa848ce0596ea7742a016b0371e5c5c9040ce4a00caccf1d492c8"
+    },
+    "agentic/campaigns/SPEC-0336-20261031-6558/runs/003-implementer/stderr.log": {
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "agentic/campaigns/SPEC-0336-20261031-6558/runs/004-gate_triager/exit.json": {
+      "bytes": 172,
+      "sha256": "53f6201dd6d947547264a898e50c8c6cf16485e6962a95ad3d84660e6fccb6d6"
+    },
+    "agentic/campaigns/SPEC-0336-20261031-6558/runs/004-gate_triager/request.json": {
+      "bytes": 1840,
+      "sha256": "42a440d34706d66fae0b39b49f8a919abd50289a76b8bef42b2f20899a5d2f03"
+    },
+    "agentic/campaigns/SPEC-0336-20261031-6558/runs/004-gate_triager/result.json": {
+      "bytes": 8202,
+      "sha256": "e5cc04bdde95579b8371b75b0cd056a1f1a17d7b91e487011143ea17938204ae"
+    },
+    "agentic/campaigns/SPEC-0336-20261031-6558/runs/004-gate_triager/run.json": {
+      "bytes": 4838,
+      "sha256": "e17c189bd4b3e60f237b784208dd216b99472b1bbbe1eaeb56ee972fe33248ac"
+    },
+    "agentic/campaigns/SPEC-0336-20261031-6558/runs/004-gate_triager/stderr.log": {
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "agentic/campaigns/SPEC-0336-20261031-6558/runs/005-implementer/exit.json": {
+      "bytes": 174,
+      "sha256": "107369e3b900a8300a91cb40dc78c1f7fa4c15898e309e776581abf797d89755"
+    },
+    "agentic/campaigns/SPEC-0336-20261031-6558/runs/005-implementer/request.json": {
+      "bytes": 1392,
+      "sha256": "e54bd5d2498cfefb938d4100544d870f40b331744b48d334a5eec8b18ffd2e9a"
+    },
+    "agentic/campaigns/SPEC-0336-20261031-6558/runs/005-implementer/result.json": {
+      "bytes": 5159,
+      "sha256": "3aef0f2db84160ca54b2c370a31bfd90f6ff446f478215e7e15fce7793e7be1f"
+    },
+    "agentic/campaigns/SPEC-0336-20261031-6558/runs/005-implementer/run.json": {
+      "bytes": 3678,
+      "sha256": "0737468b22b507c3a7ce912da8d014370d46a08728fd65b0a46ac23007c20daa"
+    },
+    "agentic/campaigns/SPEC-0336-20261031-6558/runs/005-implementer/stderr.log": {
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "agentic/campaigns/SPEC-0336-20261031-6558/runs/006-conformance_reviewer/exit.json": {
+      "bytes": 173,
+      "sha256": "5e14540a75e63745fb50c36bbba7cea593a6b5ae31618d22fe07b2509b2b7182"
+    },
+    "agentic/campaigns/SPEC-0336-20261031-6558/runs/006-conformance_reviewer/request.json": {
+      "bytes": 2191,
+      "sha256": "4904e1cc19b972f9e119ce1d148fc998b67a57226bd39af04dd734ce5575ff93"
+    },
+    "agentic/campaigns/SPEC-0336-20261031-6558/runs/006-conformance_reviewer/result.json": {
+      "bytes": 12849,
+      "sha256": "69708dacae2e886f3c7ebde980b815297cf8d545fc58912c317647f5f9712574"
+    },
+    "agentic/campaigns/SPEC-0336-20261031-6558/runs/006-conformance_reviewer/run.json": {
+      "bytes": 7670,
+      "sha256": "c4b95cd1450f0775d956fc67c489bb77d8c621af9e2a649673e2cf9d369fa103"
+    },
+    "agentic/campaigns/SPEC-0336-20261031-6558/runs/006-conformance_reviewer/stderr.log": {
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "agentic/campaigns/SPEC-0336-20261031-6558/runs/007-test_reviewer/exit.json": {
+      "bytes": 172,
+      "sha256": "2336d89abeb122e89086bad03aa6348d2c69bf3c13f0dbc40242a4b72e727b7e"
+    },
+    "agentic/campaigns/SPEC-0336-20261031-6558/runs/007-test_reviewer/request.json": {
+      "bytes": 2095,
+      "sha256": "6f2b49d8f901b38aee014ecbfc02e06bbe76401cef7e706c971e78b27d042fa0"
+    },
+    "agentic/campaigns/SPEC-0336-20261031-6558/runs/007-test_reviewer/result.json": {
+      "bytes": 14356,
+      "sha256": "8c2c0903c675daa5995cae8093822261eb20018192365ec057ed71a95bd677d6"
+    },
+    "agentic/campaigns/SPEC-0336-20261031-6558/runs/007-test_reviewer/run.json": {
+      "bytes": 9135,
+      "sha256": "5860c65ba56115b7730b7febd37ef4917d4a547e09c415600f924ecdaac450da"
+    },
+    "agentic/campaigns/SPEC-0336-20261031-6558/runs/007-test_reviewer/stderr.log": {
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "agentic/campaigns/SPEC-0336-20261031-6558/runs/008-adversarial_reviewer/exit.json": {
+      "bytes": 174,
+      "sha256": "41c4218fa44185357deefbdcae03a0d9e97e09cf92cc90a6e79d0841a4ee1760"
+    },
+    "agentic/campaigns/SPEC-0336-20261031-6558/runs/008-adversarial_reviewer/request.json": {
+      "bytes": 2188,
+      "sha256": "93f8797692b86cc94b981ca5c8114a665a6b560b9ae0860b0f67c836daa2a120"
+    },
+    "agentic/campaigns/SPEC-0336-20261031-6558/runs/008-adversarial_reviewer/result.json": {
+      "bytes": 12082,
+      "sha256": "02c49c1eec0deb0fd1e1194b4fb8f62bbdfa0070ba183e2c9b7a853458dba1e4"
+    },
+    "agentic/campaigns/SPEC-0336-20261031-6558/runs/008-adversarial_reviewer/run.json": {
+      "bytes": 7390,
+      "sha256": "cfbd1754ab02062b1397cc8789e2d9d6598beb3865b402778582cc626dd72254"
+    },
+    "agentic/campaigns/SPEC-0336-20261031-6558/runs/008-adversarial_reviewer/stderr.log": {
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "agentic/campaigns/SPEC-0336-20261031-6558/runs/009-implementer/exit.json": {
+      "bytes": 174,
+      "sha256": "a3d0bc42f2063e4ec3bf75acd0a147201bb8f8a4141ecaba72a69d90413df0d0"
+    },
+    "agentic/campaigns/SPEC-0336-20261031-6558/runs/009-implementer/request.json": {
+      "bytes": 1392,
+      "sha256": "96b98d773a5a201539b732a2486897915fbacd91316720fdaab3742dd49d883b"
+    },
+    "agentic/campaigns/SPEC-0336-20261031-6558/runs/009-implementer/result.json": {
+      "bytes": 6986,
+      "sha256": "e53a445941d03b2a8a9d5f37a6b52af3d9254eb70096d519c9acba1f9e74b1c9"
+    },
+    "agentic/campaigns/SPEC-0336-20261031-6558/runs/009-implementer/run.json": {
+      "bytes": 4620,
+      "sha256": "f8491eb9d52c06d0048ab827ae46dfe842a6b91ea6243c52dd3a0d33ab3a4694"
+    },
+    "agentic/campaigns/SPEC-0336-20261031-6558/runs/009-implementer/stderr.log": {
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "agentic/campaigns/SPEC-0336-20261031-6558/runs/010-conformance_reviewer/exit.json": {
+      "bytes": 173,
+      "sha256": "03428ac27eba6d93b8cc3efb011c92446b435566f14f60b698e0a89c5d3cfe8e"
+    },
+    "agentic/campaigns/SPEC-0336-20261031-6558/runs/010-conformance_reviewer/request.json": {
+      "bytes": 2191,
+      "sha256": "1d884aea31bfbd4febdc88eea32c2970fb72a9f9de89b27fafcc59ca3a96c4f8"
+    },
+    "agentic/campaigns/SPEC-0336-20261031-6558/runs/010-conformance_reviewer/result.json": {
+      "bytes": 14320,
+      "sha256": "2ee3dff852382892102da1e97649398a9453a22bf276c0bb65967f78caf811c6"
+    },
+    "agentic/campaigns/SPEC-0336-20261031-6558/runs/010-conformance_reviewer/run.json": {
+      "bytes": 8506,
+      "sha256": "d17553392860fb00dd373053c51d140fcac244a6709f509c4a0f041a443e8a32"
+    },
+    "agentic/campaigns/SPEC-0336-20261031-6558/runs/010-conformance_reviewer/stderr.log": {
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "agentic/campaigns/SPEC-0336-20261031-6558/runs/011-test_reviewer/exit.json": {
+      "bytes": 173,
+      "sha256": "5341fa2378d1f531c77a78ea22a7ce330b44903082b78b63dc282ec66221a055"
+    },
+    "agentic/campaigns/SPEC-0336-20261031-6558/runs/011-test_reviewer/request.json": {
+      "bytes": 2095,
+      "sha256": "0008b63600ec487785ce7e2b13f55b200c85e21b81d2843602d8bb330e3bcfb5"
+    },
+    "agentic/campaigns/SPEC-0336-20261031-6558/runs/011-test_reviewer/result.json": {
+      "bytes": 13180,
+      "sha256": "ce6688f803b28b94a0ae45f80fdd95d28e131556d2ccc27414f9c3888f9d7f18"
+    },
+    "agentic/campaigns/SPEC-0336-20261031-6558/runs/011-test_reviewer/run.json": {
+      "bytes": 8429,
+      "sha256": "487719c2bb706c6df74e2b4c0b2b9400e90250caa650b3835e9a5687e05c5c0b"
+    },
+    "agentic/campaigns/SPEC-0336-20261031-6558/runs/011-test_reviewer/stderr.log": {
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "agentic/campaigns/SPEC-0336-20261031-6558/runs/012-adversarial_reviewer/exit.json": {
+      "bytes": 174,
+      "sha256": "82b293bcd537ffd4530068b949f733a7f6121b1321ee8068127281a93050bb92"
+    },
+    "agentic/campaigns/SPEC-0336-20261031-6558/runs/012-adversarial_reviewer/request.json": {
+      "bytes": 2188,
+      "sha256": "84537f0cfde25ec191ec2bf9b7186ee1ffa3a3c3aca8a2025a4ea67752f4f2b3"
+    },
+    "agentic/campaigns/SPEC-0336-20261031-6558/runs/012-adversarial_reviewer/result.json": {
+      "bytes": 8102,
+      "sha256": "de3a10ccc913b09c07053961769a538f438d485fd5e0165cf537df6bfea9c0ee"
+    },
+    "agentic/campaigns/SPEC-0336-20261031-6558/runs/012-adversarial_reviewer/run.json": {
+      "bytes": 5200,
+      "sha256": "5d5b352c7e79811b7db836690711ab80c9cf6e0e56cb36fcfcb53cd6f6dda87b"
+    },
+    "agentic/campaigns/SPEC-0336-20261031-6558/runs/012-adversarial_reviewer/stderr.log": {
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "agentic/campaigns/SPEC-0336-20261031-6558/runs/013-review_triager/exit.json": {
+      "bytes": 173,
+      "sha256": "1e64b589a7a62066059507c3cfb77ab8f8dce464177036dbaa125a38c432aff8"
+    },
+    "agentic/campaigns/SPEC-0336-20261031-6558/runs/013-review_triager/request.json": {
+      "bytes": 862,
+      "sha256": "ea0a16a93bdb6324990fff5422e8b31b477295ec9c6920d8a00385ab697e9981"
+    },
+    "agentic/campaigns/SPEC-0336-20261031-6558/runs/013-review_triager/result.json": {
+      "bytes": 4339,
+      "sha256": "93a1f471a06468584bce40d7c5df87e3294c2a7552f75fd6af7c1e871cb1ef97"
+    },
+    "agentic/campaigns/SPEC-0336-20261031-6558/runs/013-review_triager/run.json": {
+      "bytes": 3040,
+      "sha256": "779c652c32f66f59a14681536898a0ad287574037a82772b42e38446dd75c12c"
+    },
+    "agentic/campaigns/SPEC-0336-20261031-6558/runs/013-review_triager/stderr.log": {
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "agentic/campaigns/SPEC-0336-20261031-6558/runs/014-implementer/exit.json": {
+      "bytes": 174,
+      "sha256": "2dceb1cfd9add27621c4988092ba59ffd28df23098b80ec20b980d7c26146ad8"
+    },
+    "agentic/campaigns/SPEC-0336-20261031-6558/runs/014-implementer/request.json": {
+      "bytes": 1392,
+      "sha256": "27ad800a2ed698cbd5e75d78851efaaec0c96beeafa6a02c5d6c012b10aa9563"
+    },
+    "agentic/campaigns/SPEC-0336-20261031-6558/runs/014-implementer/result.json": {
+      "bytes": 7525,
+      "sha256": "0eac8f5ee5ae36fd8cf462dc8fa76a1776448259b23e8b73a5dd1324397e07d1"
+    },
+    "agentic/campaigns/SPEC-0336-20261031-6558/runs/014-implementer/run.json": {
+      "bytes": 4848,
+      "sha256": "69e8c66add3ffc478eb73ee6a58e51939df01ea188c973d36e822ac965b65338"
+    },
+    "agentic/campaigns/SPEC-0336-20261031-6558/runs/014-implementer/stderr.log": {
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "agentic/campaigns/SPEC-0336-20261031-6558/runs/015-conformance_reviewer/exit.json": {
+      "bytes": 173,
+      "sha256": "cdcb559e6678e5dabee8a209cd099be257942b4318c99360dc4e5833be1f5980"
+    },
+    "agentic/campaigns/SPEC-0336-20261031-6558/runs/015-conformance_reviewer/request.json": {
+      "bytes": 2191,
+      "sha256": "288fe2139228df6c23d875225df3e6736d6f8bfc1781747ebdcb7300216bb6a3"
+    },
+    "agentic/campaigns/SPEC-0336-20261031-6558/runs/015-conformance_reviewer/result.json": {
+      "bytes": 13424,
+      "sha256": "db3f4154b1ecfdef8a141ad4ad212ccd67dda2fbdc3323db9593cb7694bc108f"
+    },
+    "agentic/campaigns/SPEC-0336-20261031-6558/runs/015-conformance_reviewer/run.json": {
+      "bytes": 8041,
+      "sha256": "05d027f32f17f6ee128d25550de0319b26d4fa672a81b20d23183ca9a3ff7da8"
+    },
+    "agentic/campaigns/SPEC-0336-20261031-6558/runs/015-conformance_reviewer/stderr.log": {
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "agentic/campaigns/SPEC-0336-20261031-6558/runs/016-test_reviewer/exit.json": {
+      "bytes": 173,
+      "sha256": "3a9859ef0ef9527b7a05d1e0e98b5ef5d7e42836cb0a7d36d0e488039b4a8048"
+    },
+    "agentic/campaigns/SPEC-0336-20261031-6558/runs/016-test_reviewer/request.json": {
+      "bytes": 2095,
+      "sha256": "95345317714efdfaddbbcf0297d8407dc756e5151fc00dc9564515b24f28457e"
+    },
+    "agentic/campaigns/SPEC-0336-20261031-6558/runs/016-test_reviewer/result.json": {
+      "bytes": 12392,
+      "sha256": "c565818f86854374f950b33e2dad863dc857fcab8a26cde6dd5e82c2b2710dfa"
+    },
+    "agentic/campaigns/SPEC-0336-20261031-6558/runs/016-test_reviewer/run.json": {
+      "bytes": 8000,
+      "sha256": "aed77c89e6f37eeb919c729f8fdc92903c99455c3813bdba35cd3508816cc020"
+    },
+    "agentic/campaigns/SPEC-0336-20261031-6558/runs/016-test_reviewer/stderr.log": {
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "agentic/campaigns/SPEC-0336-20261031-6558/runs/017-adversarial_reviewer/exit.json": {
+      "bytes": 173,
+      "sha256": "c913770fca02d5257d1c0a9c696592cc71f6833d4ef172a661fef1ff23b9d674"
+    },
+    "agentic/campaigns/SPEC-0336-20261031-6558/runs/017-adversarial_reviewer/request.json": {
+      "bytes": 2188,
+      "sha256": "d7a376de792b232df74d9f374b97b7f3f75d5643fc464647064e42a1fb10150a"
+    },
+    "agentic/campaigns/SPEC-0336-20261031-6558/runs/017-adversarial_reviewer/result.json": {
+      "bytes": 14580,
+      "sha256": "49a82f960d93f77ebdbe4bd6bcab4e666d12aa0b4fe41ed61d0288da76748202"
+    },
+    "agentic/campaigns/SPEC-0336-20261031-6558/runs/017-adversarial_reviewer/run.json": {
+      "bytes": 8578,
+      "sha256": "094a048acd312badea87becf345b3f8a04c7b396d9c54c0bba887ea05b3acc83"
+    },
+    "agentic/campaigns/SPEC-0336-20261031-6558/runs/017-adversarial_reviewer/stderr.log": {
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "agentic/campaigns/SPEC-0336-20261031-6558/runs/018-implementer/exit.json": {
+      "bytes": 173,
+      "sha256": "2e3fded49ba32d91009314cb82ab8310644dad990a1471c631350a19625387e0"
+    },
+    "agentic/campaigns/SPEC-0336-20261031-6558/runs/018-implementer/request.json": {
+      "bytes": 1392,
+      "sha256": "05c53c941c07568f905424c5b169d0a686fb0d2c60f5f9afd492f57372b340eb"
+    },
+    "agentic/campaigns/SPEC-0336-20261031-6558/runs/018-implementer/result.json": {
+      "bytes": 6999,
+      "sha256": "2edfb99d677387759927362bf3466bf74f2450252bbfeba20129a4f65ce6a237"
+    },
+    "agentic/campaigns/SPEC-0336-20261031-6558/runs/018-implementer/run.json": {
+      "bytes": 4621,
+      "sha256": "19698de7c110ce4e3cc020a03d9cb43de31bfedf4d1e877151d4a812c11d194c"
+    },
+    "agentic/campaigns/SPEC-0336-20261031-6558/runs/018-implementer/stderr.log": {
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "agentic/campaigns/SPEC-0336-20261031-6558/runs/019-conformance_reviewer/exit.json": {
+      "bytes": 173,
+      "sha256": "ad0122af93ac8026a42a7c3aac8c6cd36e8c1bd05ae82a5f55cc3c38ba4cd2cc"
+    },
+    "agentic/campaigns/SPEC-0336-20261031-6558/runs/019-conformance_reviewer/request.json": {
+      "bytes": 2191,
+      "sha256": "067bda5270b609c617cdd69af2852ae084e4f5d484611dffa6217e7eb07a93a4"
+    },
+    "agentic/campaigns/SPEC-0336-20261031-6558/runs/019-conformance_reviewer/result.json": {
+      "bytes": 15527,
+      "sha256": "ad974fec28a0a0d2187e1f0099470a3c324ffc519af99c595674b1a39c7b46e6"
+    },
+    "agentic/campaigns/SPEC-0336-20261031-6558/runs/019-conformance_reviewer/run.json": {
+      "bytes": 9017,
+      "sha256": "132b892882eeb3737e4971eb567d933e4695836883431b07fe40642225f781c1"
+    },
+    "agentic/campaigns/SPEC-0336-20261031-6558/runs/019-conformance_reviewer/stderr.log": {
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "agentic/campaigns/SPEC-0336-20261031-6558/runs/020-test_reviewer/exit.json": {
+      "bytes": 173,
+      "sha256": "75b39cc3c73dfe1c8c08da763e38e9b8fe03d5019e91c769197b0a36ad660b0c"
+    },
+    "agentic/campaigns/SPEC-0336-20261031-6558/runs/020-test_reviewer/request.json": {
+      "bytes": 2095,
+      "sha256": "7d78ad417c41c37d55c9f8ca3bc6abe1b133d9c8aeda304d596b6b61334b844e"
+    },
+    "agentic/campaigns/SPEC-0336-20261031-6558/runs/020-test_reviewer/result.json": {
+      "bytes": 15225,
+      "sha256": "30bf5ea453126a388ba14d5897264f4b4a967e3923eaf6eed78156ab3c893367"
+    },
+    "agentic/campaigns/SPEC-0336-20261031-6558/runs/020-test_reviewer/run.json": {
+      "bytes": 9690,
+      "sha256": "1c51c746adc4b3ef6c0ca2f0e78692b2a0975d4ba5b9e3ce0fc2e9f873a326bb"
+    },
+    "agentic/campaigns/SPEC-0336-20261031-6558/runs/020-test_reviewer/stderr.log": {
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "agentic/campaigns/SPEC-0336-20261031-6558/runs/021-adversarial_reviewer/exit.json": {
+      "bytes": 174,
+      "sha256": "35d42b64a67f63d20e5beebc19a5711255475a74c6a18560fa2bdf8175a193a3"
+    },
+    "agentic/campaigns/SPEC-0336-20261031-6558/runs/021-adversarial_reviewer/request.json": {
+      "bytes": 2188,
+      "sha256": "480d74b3a6a32016285d84e9b08558e69952aa115d0ae3a94d3a5866ab65e782"
+    },
+    "agentic/campaigns/SPEC-0336-20261031-6558/runs/021-adversarial_reviewer/result.json": {
+      "bytes": 9203,
+      "sha256": "d260d08c23045d3c4a747945f96b0062b42bffd4bab940f62cecdedc557d5bee"
+    },
+    "agentic/campaigns/SPEC-0336-20261031-6558/runs/021-adversarial_reviewer/run.json": {
+      "bytes": 5850,
+      "sha256": "3fb629a24ab6f80e260b6b4c1b9e7246c1c10b336e59aba5ef4f7c6242efeb07"
+    },
+    "agentic/campaigns/SPEC-0336-20261031-6558/runs/021-adversarial_reviewer/stderr.log": {
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "agentic/campaigns/SPEC-0336-20261031-6558/runs/022-implementer/exit.json": {
+      "bytes": 174,
+      "sha256": "2e8faaf5e7cb60b7b1fe7332065d923e81383a5f61397a5a648127563cadf9d1"
+    },
+    "agentic/campaigns/SPEC-0336-20261031-6558/runs/022-implementer/request.json": {
+      "bytes": 1392,
+      "sha256": "1973366217cffe7e3769babfb051bae72842eb1ec28111ab248b34b0e0d1485b"
+    },
+    "agentic/campaigns/SPEC-0336-20261031-6558/runs/022-implementer/result.json": {
+      "bytes": 8922,
+      "sha256": "0c23abc4109f2fdde18896678fbb413020de9ef8487621a857e856462fbb10e3"
+    },
+    "agentic/campaigns/SPEC-0336-20261031-6558/runs/022-implementer/run.json": {
+      "bytes": 5564,
+      "sha256": "f3a5986b0e0f4fd93f6db4797bac5b8218a41e1d3825bd40223d673f7efbd35f"
+    },
+    "agentic/campaigns/SPEC-0336-20261031-6558/runs/022-implementer/stderr.log": {
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "agentic/campaigns/SPEC-0336-20261031-6558/runs/023-conformance_reviewer/exit.json": {
+      "bytes": 173,
+      "sha256": "0f88a00601550518e40bb1926858644419c8efde667566a49af3c8bb552beae5"
+    },
+    "agentic/campaigns/SPEC-0336-20261031-6558/runs/023-conformance_reviewer/request.json": {
+      "bytes": 2191,
+      "sha256": "947c21d2ce1a9bbc1f5ea52ea8512d982b40709848d2b4283389354946eb4c77"
+    },
+    "agentic/campaigns/SPEC-0336-20261031-6558/runs/023-conformance_reviewer/result.json": {
+      "bytes": 14280,
+      "sha256": "bb736576415eb2a81f23287ef9427465b4eb864a25b1ff9921719d6f83ad0062"
+    },
+    "agentic/campaigns/SPEC-0336-20261031-6558/runs/023-conformance_reviewer/run.json": {
+      "bytes": 8478,
+      "sha256": "c9b04ff10ea69e9ce6bae24e6119eb04534f5127766f27b395ecfcc2c0945628"
+    },
+    "agentic/campaigns/SPEC-0336-20261031-6558/runs/023-conformance_reviewer/stderr.log": {
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "agentic/campaigns/SPEC-0336-20261031-6558/runs/024-test_reviewer/exit.json": {
+      "bytes": 173,
+      "sha256": "8aa8bd1144af8f6cae65ad1fdfeb7578b8988b89d7a8a8c43a73bfa7814f2022"
+    },
+    "agentic/campaigns/SPEC-0336-20261031-6558/runs/024-test_reviewer/request.json": {
+      "bytes": 2095,
+      "sha256": "2964879e20336ace5094930b0dcd5899c4e0271c1e2c19d5b40dc17cf67db180"
+    },
+    "agentic/campaigns/SPEC-0336-20261031-6558/runs/024-test_reviewer/result.json": {
+      "bytes": 12260,
+      "sha256": "24d75414023d31e396b7a569ccdf588012ea4ba0b648e53cfb2a8265b7161564"
+    },
+    "agentic/campaigns/SPEC-0336-20261031-6558/runs/024-test_reviewer/run.json": {
+      "bytes": 7926,
+      "sha256": "852bd52622deaff8fa0bbec780e4732de947c17c943f7806d5bfba19aa926f79"
+    },
+    "agentic/campaigns/SPEC-0336-20261031-6558/runs/024-test_reviewer/stderr.log": {
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "agentic/campaigns/SPEC-0336-20261031-6558/runs/025-adversarial_reviewer/exit.json": {
+      "bytes": 174,
+      "sha256": "cc62ec483d12084e2ed102c2af5119b7650b036bab75e4ef018c0d40107cf6c6"
+    },
+    "agentic/campaigns/SPEC-0336-20261031-6558/runs/025-adversarial_reviewer/request.json": {
+      "bytes": 2188,
+      "sha256": "865036b6cc0e2e2da4cd15e0aeea9d208c8b676a8d523af72ab9748104b6804f"
+    },
+    "agentic/campaigns/SPEC-0336-20261031-6558/runs/025-adversarial_reviewer/result.json": {
+      "bytes": 9991,
+      "sha256": "b8c3f64b16f3dfbf7b5c235b26f0b447d60aed78a7b195c04f3428b0418f5a60"
+    },
+    "agentic/campaigns/SPEC-0336-20261031-6558/runs/025-adversarial_reviewer/run.json": {
+      "bytes": 6246,
+      "sha256": "efa29ba748f83430c7b0840dcc4e1f6d24786e94a11dd095e4f0ea7e285c44d5"
+    },
+    "agentic/campaigns/SPEC-0336-20261031-6558/runs/025-adversarial_reviewer/stderr.log": {
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "agentic/campaigns/SPEC-0336-20261031-6558/runs/026-review_triager/exit.json": {
+      "bytes": 173,
+      "sha256": "05a85e423e9e920caf536eae30527af33ad2b5933a28e8c8309df26d6939a272"
+    },
+    "agentic/campaigns/SPEC-0336-20261031-6558/runs/026-review_triager/request.json": {
+      "bytes": 862,
+      "sha256": "48f2408f57bf6ced48a7cbf8072b44a4fc758fa96f00da265ed78e611aad1d36"
+    },
+    "agentic/campaigns/SPEC-0336-20261031-6558/runs/026-review_triager/result.json": {
+      "bytes": 4687,
+      "sha256": "55ebe9dccce03007fe3a1d137fe1e8b366e09075f22df42aaa71c8be74a3fb0f"
+    },
+    "agentic/campaigns/SPEC-0336-20261031-6558/runs/026-review_triager/run.json": {
+      "bytes": 3186,
+      "sha256": "e765c689527b0dc53098c69c060bd44104398bf64c55cbe0a854edc61cd4005c"
+    },
+    "agentic/campaigns/SPEC-0336-20261031-6558/runs/026-review_triager/stderr.log": {
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "agentic/campaigns/SPEC-0336-20261031-6558/runs/027-implementer/exit.json": {
+      "bytes": 173,
+      "sha256": "1cc0bf8be680a7aecc37ac00c8c00ea649ec95d171366e5cb63554415fcc995c"
+    },
+    "agentic/campaigns/SPEC-0336-20261031-6558/runs/027-implementer/request.json": {
+      "bytes": 1392,
+      "sha256": "5119b7892eecde176a574c01fec351b52fb12ffcc993eb2f22c90b73d6a3dc77"
+    },
+    "agentic/campaigns/SPEC-0336-20261031-6558/runs/027-implementer/result.json": {
+      "bytes": 6945,
+      "sha256": "c9389687428ef1a9cce16271b25807377eedb1714fc31d8fa8af0625143827b2"
+    },
+    "agentic/campaigns/SPEC-0336-20261031-6558/runs/027-implementer/run.json": {
+      "bytes": 4599,
+      "sha256": "4c9c8ba9499689bf9e826fb0c68d6a4738d4044090b34280c30fbf8e40477126"
+    },
+    "agentic/campaigns/SPEC-0336-20261031-6558/runs/027-implementer/stderr.log": {
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "agentic/campaigns/SPEC-0336-20261031-6558/runs/028-conformance_reviewer/exit.json": {
+      "bytes": 173,
+      "sha256": "08940fd548049b050fda12190bfa2ffea33dc8e7f1157cc0dcc812e70b4d54d7"
+    },
+    "agentic/campaigns/SPEC-0336-20261031-6558/runs/028-conformance_reviewer/request.json": {
+      "bytes": 2191,
+      "sha256": "b640557473203cbf1c6199efd19971a8072564740763475b0df096f1d693cef8"
+    },
+    "agentic/campaigns/SPEC-0336-20261031-6558/runs/028-conformance_reviewer/result.json": {
+      "bytes": 13755,
+      "sha256": "c9850673326dcbefd9cc5f8e55e38676fb8cb8b7cf999c7c6676b0ae2d2c8f50"
+    },
+    "agentic/campaigns/SPEC-0336-20261031-6558/runs/028-conformance_reviewer/run.json": {
+      "bytes": 8213,
+      "sha256": "286838818e7a454a147560426d3e22c06bf1773448372f451538153e6d476f37"
+    },
+    "agentic/campaigns/SPEC-0336-20261031-6558/runs/028-conformance_reviewer/stderr.log": {
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "agentic/campaigns/SPEC-0336-20261031-6558/runs/029-test_reviewer/exit.json": {
+      "bytes": 173,
+      "sha256": "395ec16ffd22a114dae133a7a6932b8e7d2b4242cf09d0b96f0fc2a22890db25"
+    },
+    "agentic/campaigns/SPEC-0336-20261031-6558/runs/029-test_reviewer/request.json": {
+      "bytes": 2095,
+      "sha256": "f139e607186e38b556af4d2d5bf117e485ba579b76697a2badb681e85450776b"
+    },
+    "agentic/campaigns/SPEC-0336-20261031-6558/runs/029-test_reviewer/result.json": {
+      "bytes": 12195,
+      "sha256": "59474dcce6879908a2fb4692e1ac73b0e7c71abde10ef9fe50e199ba49494d3b"
+    },
+    "agentic/campaigns/SPEC-0336-20261031-6558/runs/029-test_reviewer/run.json": {
+      "bytes": 7892,
+      "sha256": "716d1f31a316f97fad5fdc2a5731641d9ba1fe10ed206c3961e4d934d98efc12"
+    },
+    "agentic/campaigns/SPEC-0336-20261031-6558/runs/029-test_reviewer/stderr.log": {
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "agentic/campaigns/SPEC-0336-20261031-6558/runs/030-adversarial_reviewer/exit.json": {
+      "bytes": 173,
+      "sha256": "5a2f456a9ae3344b11552fdc11bc65634e03326dd180d0aa431b9597fad00689"
+    },
+    "agentic/campaigns/SPEC-0336-20261031-6558/runs/030-adversarial_reviewer/request.json": {
+      "bytes": 2188,
+      "sha256": "84fecda0df4dfab42f9d4fe94373c368f25e4056fad4703b61a6415556ca1103"
+    },
+    "agentic/campaigns/SPEC-0336-20261031-6558/runs/030-adversarial_reviewer/result.json": {
+      "bytes": 9244,
+      "sha256": "2e70d397585187cfecfe27b1d44b9b986a90f45711158445f626fe4b0ae7916c"
+    },
+    "agentic/campaigns/SPEC-0336-20261031-6558/runs/030-adversarial_reviewer/run.json": {
+      "bytes": 5779,
+      "sha256": "eab6cad07fa589b42f36a7262f7d0bdf38c16dbfcf498cd620dabe924a7dc3d5"
+    },
+    "agentic/campaigns/SPEC-0336-20261031-6558/runs/030-adversarial_reviewer/stderr.log": {
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "agentic/campaigns/SPEC-0336-20261031-6558/runs/031-review_triager/exit.json": {
+      "bytes": 172,
+      "sha256": "9c627b204857ec639999a361f1f25b8c79ae2bfb963eda00cd7560b83057b80b"
+    },
+    "agentic/campaigns/SPEC-0336-20261031-6558/runs/031-review_triager/request.json": {
+      "bytes": 862,
+      "sha256": "72628bb83fc3efaa3f0f7e56be7e39fceaf48edac4cdf23d118ab74c62d4e506"
+    },
+    "agentic/campaigns/SPEC-0336-20261031-6558/runs/031-review_triager/result.json": {
+      "bytes": 4026,
+      "sha256": "e65b3f7bb7c46fc1184ef2b7684a59632941ec2dae311aacfebb6e73b9dad6cd"
+    },
+    "agentic/campaigns/SPEC-0336-20261031-6558/runs/031-review_triager/run.json": {
+      "bytes": 2795,
+      "sha256": "0b5033c3356ad6ba1577dcf21d94289eb1de0993e303434b5051084430f2d295"
+    },
+    "agentic/campaigns/SPEC-0336-20261031-6558/runs/031-review_triager/stderr.log": {
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "agentic/campaigns/SPEC-0336-20261031-6558/runs/032-implementer/exit.json": {
+      "bytes": 175,
+      "sha256": "faf6fca5330c7a0b336006092e887a68d3eda85b4ea91ee126da1376eab2f3fe"
+    },
+    "agentic/campaigns/SPEC-0336-20261031-6558/runs/032-implementer/request.json": {
+      "bytes": 1392,
+      "sha256": "52ad6cfced59f2d5feac14f837b7620173869eaeee22b134108b8c8df2857e79"
+    },
+    "agentic/campaigns/SPEC-0336-20261031-6558/runs/032-implementer/result.json": {
+      "bytes": 7252,
+      "sha256": "4d38bb4318dad993e97531f8518fa5f6bfd1272b3dc0e2fc6a2f894ec593623d"
+    },
+    "agentic/campaigns/SPEC-0336-20261031-6558/runs/032-implementer/run.json": {
+      "bytes": 4780,
+      "sha256": "d6f6763c6ea559b4cb25d599989a85ff3576ba9de97159e37c882eb67edfb87e"
+    },
+    "agentic/campaigns/SPEC-0336-20261031-6558/runs/032-implementer/stderr.log": {
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "agentic/campaigns/SPEC-0336-20261031-6558/runs/033-conformance_reviewer/exit.json": {
+      "bytes": 173,
+      "sha256": "3426a64dcfa08a4b90f96362e0e102d1608650451bfe84934215b159535fd16d"
+    },
+    "agentic/campaigns/SPEC-0336-20261031-6558/runs/033-conformance_reviewer/request.json": {
+      "bytes": 2191,
+      "sha256": "4784fca91bb1e457b9a85afcd46c18569fa57699b8ba953f9820077e5eb9e435"
+    },
+    "agentic/campaigns/SPEC-0336-20261031-6558/runs/033-conformance_reviewer/result.json": {
+      "bytes": 13531,
+      "sha256": "45a1355229acf727ec0835e9680f13256fb24f0351e0b94f793008f94b458e30"
+    },
+    "agentic/campaigns/SPEC-0336-20261031-6558/runs/033-conformance_reviewer/run.json": {
+      "bytes": 8086,
+      "sha256": "3fd79570f2176515022340c4bc3a23e881d3fc5e2f2f278a250b37e899b04cac"
+    },
+    "agentic/campaigns/SPEC-0336-20261031-6558/runs/033-conformance_reviewer/stderr.log": {
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "agentic/campaigns/SPEC-0336-20261031-6558/runs/034-test_reviewer/exit.json": {
+      "bytes": 172,
+      "sha256": "fee99acdae65e1f4cce92512a559fc01778f22cecac5764a86fd682ddfbf6abc"
+    },
+    "agentic/campaigns/SPEC-0336-20261031-6558/runs/034-test_reviewer/request.json": {
+      "bytes": 2095,
+      "sha256": "e5bbd32a0841124141f1d32d57715077811818559bf45a0bd551a052b1ac1e74"
+    },
+    "agentic/campaigns/SPEC-0336-20261031-6558/runs/034-test_reviewer/result.json": {
+      "bytes": 11401,
+      "sha256": "ea657ddb7219ccdb974e7d4518ee0fef480fc7263cc545b6515131d913609e1a"
+    },
+    "agentic/campaigns/SPEC-0336-20261031-6558/runs/034-test_reviewer/run.json": {
+      "bytes": 7402,
+      "sha256": "b0a23fcc758a71809668703f54df98ac38c0c2d83fb555f4da33493277053325"
+    },
+    "agentic/campaigns/SPEC-0336-20261031-6558/runs/034-test_reviewer/stderr.log": {
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "agentic/campaigns/SPEC-0336-20261031-6558/runs/035-adversarial_reviewer/exit.json": {
+      "bytes": 174,
+      "sha256": "f8b2f749872d9071014478aebd751079b62ed518713029de128d2c0032d16343"
+    },
+    "agentic/campaigns/SPEC-0336-20261031-6558/runs/035-adversarial_reviewer/request.json": {
+      "bytes": 2188,
+      "sha256": "8ff757200a32cefcd357602a7125ff440f0153f6ec39105bc019830e44319cdb"
+    },
+    "agentic/campaigns/SPEC-0336-20261031-6558/runs/035-adversarial_reviewer/result.json": {
+      "bytes": 8392,
+      "sha256": "3202d287359c941c4fa2d0399d1aa4869668bbeb5d05b39fb3f7c2ea625be5b9"
+    },
+    "agentic/campaigns/SPEC-0336-20261031-6558/runs/035-adversarial_reviewer/run.json": {
+      "bytes": 5332,
+      "sha256": "bf33e42deb2f651e3662233493d0d6b6e7153d09d133cfd8c5b447c51c07297a"
+    },
+    "agentic/campaigns/SPEC-0336-20261031-6558/runs/035-adversarial_reviewer/stderr.log": {
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "agentic/campaigns/SPEC-0336-20261031-6558/runs/036-review_triager/exit.json": {
+      "bytes": 172,
+      "sha256": "4200c1d652ff5736afbd8cfb40abf3b0e215df790cca538a303dbd9434a42fa6"
+    },
+    "agentic/campaigns/SPEC-0336-20261031-6558/runs/036-review_triager/request.json": {
+      "bytes": 862,
+      "sha256": "f1eaff5932e11bfa243b34da3808c939bf2dab3392fa7db7cb64c7cee31ad601"
+    },
+    "agentic/campaigns/SPEC-0336-20261031-6558/runs/036-review_triager/result.json": {
+      "bytes": 3722,
+      "sha256": "506d6b71da65f5bbb996e8516ad860721e14573e23ffb411c854b480c7d74d2a"
+    },
+    "agentic/campaigns/SPEC-0336-20261031-6558/runs/036-review_triager/run.json": {
+      "bytes": 2643,
+      "sha256": "84aa0ae431400d50569845b70f4f4733d4bd7ecf7feb604773f6b8f98e7b8191"
+    },
+    "agentic/campaigns/SPEC-0336-20261031-6558/runs/036-review_triager/stderr.log": {
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "agentic/campaigns/SPEC-0336-20261031-6558/spec_at_open.md": {
+      "bytes": 15670,
+      "sha256": "fe44d3cf9f5e80895da6f3d9f625dbb30925a876441cad4f29a2d847381fe20b"
+    },
+    "agentic/campaigns/SPEC-0336-20261031-6558/state.json": {
+      "bytes": 80601,
+      "sha256": "112864538d4aa824e7fabeb02632c531000426cddcacf9f16d75e4e01fc5a294"
+    },
+    "agentic/campaigns/SPEC-0394-20261102-ae5b/gates/001-pytest-affected.json": {
+      "bytes": 1781,
+      "sha256": "ec8bce532d38244f381540511cfb11cdb40f21b29e58d64f174b58eda4026f4e"
+    },
+    "agentic/campaigns/SPEC-0394-20261102-ae5b/gates/001-pytest-affected.log": {
+      "bytes": 7308,
+      "sha256": "6d80e2d79a2cd627b4d8ad1eed802276295806126700d3d65f5cd81ced7c25e3"
+    },
+    "agentic/campaigns/SPEC-0394-20261102-ae5b/gates/001-pytest-affected.r1.json": {
+      "bytes": 868,
+      "sha256": "ada0fc3352a6018d15b5050833591ff77c11ab73395c365a0e68d1ad9aa71a8c"
+    },
+    "agentic/campaigns/SPEC-0394-20261102-ae5b/gates/001-pytest-affected.r1.log": {
+      "bytes": 4611,
+      "sha256": "63e4d0faf0abf7dbd831cd3d9d75cd5bfe0fe46128a853a661a3d6f0e5b5881d"
+    },
+    "agentic/campaigns/SPEC-0394-20261102-ae5b/gates/001-pytest-affected.report.json": {
+      "bytes": 5377,
+      "sha256": "fb8f3f59d894ab4494d4fa9990f8d8d2b0d0feece20ffee17285122dd4c55844"
+    },
+    "agentic/campaigns/SPEC-0394-20261102-ae5b/gates/001-spec-lint.json": {
+      "bytes": 433,
+      "sha256": "4be5bb1014c1ea0fb90b1e614cf7ac7e1790df61f45e8729eb985b7f2fb0c0ef"
+    },
+    "agentic/campaigns/SPEC-0394-20261102-ae5b/gates/001-spec-lint.log": {
+      "bytes": 1025,
+      "sha256": "62af6afb53cb19f13dfeaed0f63433dff705ad31e1b8fe57dd547440756a0296"
+    },
+    "agentic/campaigns/SPEC-0394-20261102-ae5b/gates/002-pytest-affected.json": {
+      "bytes": 1517,
+      "sha256": "c6fe819cde1fa7b47d704b3b3a2881fc27b7f938f71aa171e009a27f51a99963"
+    },
+    "agentic/campaigns/SPEC-0394-20261102-ae5b/gates/002-pytest-affected.log": {
+      "bytes": 8137,
+      "sha256": "7f397eee6733ef40feea6bb6a894f199efd1c0e30a4aaba5e26cb42069d316c1"
+    },
+    "agentic/campaigns/SPEC-0394-20261102-ae5b/gates/002-pytest-affected.r1.json": {
+      "bytes": 713,
+      "sha256": "063b68f4d06d561926378732818ff36b5ce66cef823e8b907d6714ffe895a21d"
+    },
+    "agentic/campaigns/SPEC-0394-20261102-ae5b/gates/002-pytest-affected.r1.log": {
+      "bytes": 1589,
+      "sha256": "522a37a6c2133e75ae06d37e3e68a829d9962b8bd4dedeafb1cd3ee6b81aad54"
+    },
+    "agentic/campaigns/SPEC-0394-20261102-ae5b/gates/002-spec-lint.json": {
+      "bytes": 465,
+      "sha256": "3fada7a3f09550bcf758066a2b1a6eabbe87567b2466e5edbf78b5ea0e4a89dc"
+    },
+    "agentic/campaigns/SPEC-0394-20261102-ae5b/gates/002-spec-lint.log": {
+      "bytes": 1025,
+      "sha256": "4ed50894789e194bec6913968c9931a99e9a8d74e93ba31cce454c160ad313af"
+    },
+    "agentic/campaigns/SPEC-0394-20261102-ae5b/gates/003-pytest-affected.json": {
+      "bytes": 756,
+      "sha256": "ce361d4cf8a1f3c212023a1af7f1c9e4680d21dc275c5474c028ee523a57d28a"
+    },
+    "agentic/campaigns/SPEC-0394-20261102-ae5b/gates/003-pytest-affected.log": {
+      "bytes": 6225,
+      "sha256": "d9b254c51d9f03b3f650e8981639c5813bb48e2026b53a6a6330914178406ff1"
+    },
+    "agentic/campaigns/SPEC-0394-20261102-ae5b/gates/003-spec-lint.json": {
+      "bytes": 465,
+      "sha256": "b4584ea50977c3e0c9330559cb96a8e58e489ddec606983d0426b68f7d73f4e5"
+    },
+    "agentic/campaigns/SPEC-0394-20261102-ae5b/gates/003-spec-lint.log": {
+      "bytes": 1025,
+      "sha256": "21cb3f9ff415fab495503ea91ef46452471565adcd0ebdd65e12c84f182e84cc"
+    },
+    "agentic/campaigns/SPEC-0394-20261102-ae5b/gates/004-pytest-affected.json": {
+      "bytes": 1767,
+      "sha256": "b0da9fd867ed84808ca5c5a00d56a9166e39b7dd5aaa71bc83dcb8c695be16f4"
+    },
+    "agentic/campaigns/SPEC-0394-20261102-ae5b/gates/004-pytest-affected.log": {
+      "bytes": 8055,
+      "sha256": "60fcbdaed2345ac60615120d012fb3cbc760141320975a0677f3ea2c9e07a9dc"
+    },
+    "agentic/campaigns/SPEC-0394-20261102-ae5b/gates/004-pytest-affected.r1.json": {
+      "bytes": 644,
+      "sha256": "bf4e5bffb487b74024cef75543d17f6a46698a5401d58aa17d87ec931721c983"
+    },
+    "agentic/campaigns/SPEC-0394-20261102-ae5b/gates/004-pytest-affected.r1.log": {
+      "bytes": 98,
+      "sha256": "5079c8cca297fd8595f3bdf8d54b559fad6777695e617a50fa1a35745ccba821"
+    },
+    "agentic/campaigns/SPEC-0394-20261102-ae5b/gates/004-pytest-affected.r2.json": {
+      "bytes": 851,
+      "sha256": "534c43cbeb07c7143838d8774c9d4a2453ebf8100d4d8f760c9931dd01d4f971"
+    },
+    "agentic/campaigns/SPEC-0394-20261102-ae5b/gates/004-pytest-affected.r2.log": {
+      "bytes": 4804,
+      "sha256": "3e8e554e4a3b8acfb852d52a00b29c9a0bb2fee7ae8981b82fb57b0e128a6d27"
+    },
+    "agentic/campaigns/SPEC-0394-20261102-ae5b/gates/004-spec-lint.json": {
+      "bytes": 465,
+      "sha256": "65dc3d4421bf5f8b358219810d37e7ae059c1b8b895579d632ef00acd129995b"
+    },
+    "agentic/campaigns/SPEC-0394-20261102-ae5b/gates/004-spec-lint.log": {
+      "bytes": 1025,
+      "sha256": "21cb3f9ff415fab495503ea91ef46452471565adcd0ebdd65e12c84f182e84cc"
+    },
+    "agentic/campaigns/SPEC-0394-20261102-ae5b/gates/005-pytest-affected.json": {
+      "bytes": 755,
+      "sha256": "58826e5377f997343bb0b704bb93ffbdca326516405dee76248a276d9093d7e8"
+    },
+    "agentic/campaigns/SPEC-0394-20261102-ae5b/gates/005-pytest-affected.log": {
+      "bytes": 6792,
+      "sha256": "0c8538b99a25c9a802f3eb0614d40183dd66aa86991469f2eef8310c80777776"
+    },
+    "agentic/campaigns/SPEC-0394-20261102-ae5b/gates/005-spec-lint.json": {
+      "bytes": 464,
+      "sha256": "af78f9d246af3cec0bf1e81db7a6170c58825f77784c5760942070e24edc7eee"
+    },
+    "agentic/campaigns/SPEC-0394-20261102-ae5b/gates/005-spec-lint.log": {
+      "bytes": 1025,
+      "sha256": "21cb3f9ff415fab495503ea91ef46452471565adcd0ebdd65e12c84f182e84cc"
+    },
+    "agentic/campaigns/SPEC-0394-20261102-ae5b/gates/006-docs-tests.json": {
+      "bytes": 637,
+      "sha256": "d048f6cddea2c1c37e6278c8bafb1ac291a0288f84fdf3301d5d73eeecb79a5e"
+    },
+    "agentic/campaigns/SPEC-0394-20261102-ae5b/gates/006-docs-tests.log": {
+      "bytes": 687,
+      "sha256": "8212162f0963b4cd77e5a6faf18179572845f1dc2408540fe3a87ac1414063b0"
+    },
+    "agentic/campaigns/SPEC-0394-20261102-ae5b/gates/006-pytest.json": {
+      "bytes": 663,
+      "sha256": "4a3bae539844e839ec58a3a3aa539b25b0e930d2656e41ae1c7dfc17ac0183d9"
+    },
+    "agentic/campaigns/SPEC-0394-20261102-ae5b/gates/006-pytest.log": {
+      "bytes": 6534,
+      "sha256": "91c99dc22c2d52e207e1542b6ca8e2b0cf439fbcfae1edca1acaaa291d738347"
+    },
+    "agentic/campaigns/SPEC-0394-20261102-ae5b/gates/006-spec-lint.json": {
+      "bytes": 465,
+      "sha256": "29972b64978f5da13f1cbc37ac77cb0ab5fda2e5081d7ee3c4a729b8fcaef59b"
+    },
+    "agentic/campaigns/SPEC-0394-20261102-ae5b/gates/006-spec-lint.log": {
+      "bytes": 1025,
+      "sha256": "ff2d6c90638dba9d691be0e68d6af3f98167d78f580ebffb5a67c6b78814a851"
+    },
+    "agentic/campaigns/SPEC-0394-20261102-ae5b/ledger.jsonl": {
+      "bytes": 194538,
+      "sha256": "365c7152422158559e08bc9464391d9851972e5131f6c28c4a0a19209bfe8408"
+    },
+    "agentic/campaigns/SPEC-0394-20261102-ae5b/runs/001-implementer/exit.json": {
+      "bytes": 175,
+      "sha256": "c4ac46d8d9f6dcc82d75dff75f5f61a9be4e259328354164b8b8ea929aec31ec"
+    },
+    "agentic/campaigns/SPEC-0394-20261102-ae5b/runs/001-implementer/request.json": {
+      "bytes": 1392,
+      "sha256": "f306ddfb8825ae2e73d3320920c7a8f3bcd3ae40adc4253b537929e580f25b43"
+    },
+    "agentic/campaigns/SPEC-0394-20261102-ae5b/runs/001-implementer/result.json": {
+      "bytes": 10455,
+      "sha256": "ea5ce62c73e0fd90a3cc97e1d3621bc407c6da0d8b6b5f8404826613fd7f196c"
+    },
+    "agentic/campaigns/SPEC-0394-20261102-ae5b/runs/001-implementer/run.json": {
+      "bytes": 6183,
+      "sha256": "4aa3bdf723317b8014cd4353d2eaf7fc0e565b78d5bbe263d06ffe159be46130"
+    },
+    "agentic/campaigns/SPEC-0394-20261102-ae5b/runs/001-implementer/stderr.log": {
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "agentic/campaigns/SPEC-0394-20261102-ae5b/runs/001-implementer/stream.jsonl": {
+      "bytes": 124080,
+      "sha256": "d0c360c4bc076c7b770acf7a989f2c6777205b4b48920ac5d9137a4f65100ff6"
+    },
+    "agentic/campaigns/SPEC-0394-20261102-ae5b/runs/002-gate_triager/exit.json": {
+      "bytes": 173,
+      "sha256": "f3e5e982855af6b37b3349fcdf4b4066add5b7582a4f6f1bb6a527e791df29fa"
+    },
+    "agentic/campaigns/SPEC-0394-20261102-ae5b/runs/002-gate_triager/request.json": {
+      "bytes": 1840,
+      "sha256": "d62b3a1a6704b348787d9857b9cb54a5d873339f0f4e93c3cdaf71bc1de22956"
+    },
+    "agentic/campaigns/SPEC-0394-20261102-ae5b/runs/002-gate_triager/result.json": {
+      "bytes": 6616,
+      "sha256": "05d380ee41afe81a9e9a06fbcb0e1b912fdba65ef6639cf7430f0f7f29bd9e75"
+    },
+    "agentic/campaigns/SPEC-0394-20261102-ae5b/runs/002-gate_triager/run.json": {
+      "bytes": 3824,
+      "sha256": "fe25a79cc0b7223afca68cb46995107dd80390866ba9f211c835ad8a3ca581ae"
+    },
+    "agentic/campaigns/SPEC-0394-20261102-ae5b/runs/002-gate_triager/stderr.log": {
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "agentic/campaigns/SPEC-0394-20261102-ae5b/runs/002-gate_triager/stream.jsonl": {
+      "bytes": 14868,
+      "sha256": "7070158d00419d18e4e7043017b0c1ee637777c9318857a521b793359d12442a"
+    },
+    "agentic/campaigns/SPEC-0394-20261102-ae5b/runs/003-gate_triager/exit.json": {
+      "bytes": 173,
+      "sha256": "e9056deaa697f249f291745748e7f8ca6fc9803276ecff7e2b67af814eda922b"
+    },
+    "agentic/campaigns/SPEC-0394-20261102-ae5b/runs/003-gate_triager/request.json": {
+      "bytes": 1840,
+      "sha256": "146b3e7643d22b5200629961878bb94c4e1733859c84bc735aa49c398cc90587"
+    },
+    "agentic/campaigns/SPEC-0394-20261102-ae5b/runs/003-gate_triager/result.json": {
+      "bytes": 6862,
+      "sha256": "3cd66213a1cec091e173005009c770d4f1b4f37eb6470b770a07b2a399d438f6"
+    },
+    "agentic/campaigns/SPEC-0394-20261102-ae5b/runs/003-gate_triager/run.json": {
+      "bytes": 3936,
+      "sha256": "fe52289813a370eed80916388870e9e62285c4d99f8fa80663c29b20be6aab53"
+    },
+    "agentic/campaigns/SPEC-0394-20261102-ae5b/runs/003-gate_triager/stderr.log": {
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "agentic/campaigns/SPEC-0394-20261102-ae5b/runs/003-gate_triager/stream.jsonl": {
+      "bytes": 33487,
+      "sha256": "57d69405ce83f5d4c0f8b60f77109497a23543866b371e65527c640e44414fc7"
+    },
+    "agentic/campaigns/SPEC-0394-20261102-ae5b/runs/004-conformance_reviewer/exit.json": {
+      "bytes": 173,
+      "sha256": "2de1c808836e912df815e1fe72e8ab00663eb59071e786c0b208505707341d37"
+    },
+    "agentic/campaigns/SPEC-0394-20261102-ae5b/runs/004-conformance_reviewer/request.json": {
+      "bytes": 2191,
+      "sha256": "3351d004100564174f7759edae61e6902186197e1409523fb19c5f20d684f684"
+    },
+    "agentic/campaigns/SPEC-0394-20261102-ae5b/runs/004-conformance_reviewer/result.json": {
+      "bytes": 14679,
+      "sha256": "ff929e68948798265a77e9f876b3249e29278d649d21d6d845b256623c030b24"
+    },
+    "agentic/campaigns/SPEC-0394-20261102-ae5b/runs/004-conformance_reviewer/run.json": {
+      "bytes": 8438,
+      "sha256": "c4a2d913f124d7ccdf1931e3de6ea9e4eb820a7e730d45880607010848718c6e"
+    },
+    "agentic/campaigns/SPEC-0394-20261102-ae5b/runs/004-conformance_reviewer/stderr.log": {
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "agentic/campaigns/SPEC-0394-20261102-ae5b/runs/004-conformance_reviewer/stream.jsonl": {
+      "bytes": 21243,
+      "sha256": "fbb22aed40e43f9baf1d4904968d5415cd98c940c0411076a6834284142625f2"
+    },
+    "agentic/campaigns/SPEC-0394-20261102-ae5b/runs/005-test_reviewer/exit.json": {
+      "bytes": 173,
+      "sha256": "65e89077d6a757107d3ee5881a54d95ca6565fb7feef412545111da28669a606"
+    },
+    "agentic/campaigns/SPEC-0394-20261102-ae5b/runs/005-test_reviewer/request.json": {
+      "bytes": 2095,
+      "sha256": "52f044bc076fcbbe1fa55f1d5a0cab0ab967c524e5be0cd51413f3e9cd9c08a9"
+    },
+    "agentic/campaigns/SPEC-0394-20261102-ae5b/runs/005-test_reviewer/result.json": {
+      "bytes": 12243,
+      "sha256": "d4e0e2fc03c38fc1d535db6d7442e3a14b8ce18f137123f3a125f685e8ebae27"
+    },
+    "agentic/campaigns/SPEC-0394-20261102-ae5b/runs/005-test_reviewer/run.json": {
+      "bytes": 7723,
+      "sha256": "501c132c432bcfdb5c817332c4bbf3db91be7f1bac1990ef80b154ba7ce34a15"
+    },
+    "agentic/campaigns/SPEC-0394-20261102-ae5b/runs/005-test_reviewer/stderr.log": {
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "agentic/campaigns/SPEC-0394-20261102-ae5b/runs/005-test_reviewer/stream.jsonl": {
+      "bytes": 9144,
+      "sha256": "4e23a9b82ff5175a34e7e25afcc6662ac1711855d030dd071df75f496e628ec8"
+    },
+    "agentic/campaigns/SPEC-0394-20261102-ae5b/runs/006-adversarial_reviewer/exit.json": {
+      "bytes": 172,
+      "sha256": "05430a85eb72387908668a6abb1bc6a3fcc9cc383703c471203f1e2249855e58"
+    },
+    "agentic/campaigns/SPEC-0394-20261102-ae5b/runs/006-adversarial_reviewer/request.json": {
+      "bytes": 2188,
+      "sha256": "ab1750025fc984631cc402a590370a01c52ae16a4d3232633c95944a12e4d8b4"
+    },
+    "agentic/campaigns/SPEC-0394-20261102-ae5b/runs/006-adversarial_reviewer/result.json": {
+      "bytes": 8631,
+      "sha256": "53bfeab06513184769a6a3de410b64f71b666fa4a0294fd1a49b091456583878"
+    },
+    "agentic/campaigns/SPEC-0394-20261102-ae5b/runs/006-adversarial_reviewer/run.json": {
+      "bytes": 5172,
+      "sha256": "65e381660cbaadc1b94b1c344d3cac2b57b931d64f7e72e94c431917ce9afe53"
+    },
+    "agentic/campaigns/SPEC-0394-20261102-ae5b/runs/006-adversarial_reviewer/stderr.log": {
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "agentic/campaigns/SPEC-0394-20261102-ae5b/runs/006-adversarial_reviewer/stream.jsonl": {
+      "bytes": 53170,
+      "sha256": "b85a37b1848d9ccca432d05a9ec8d249862b7e409f79748435dd3f725e0919cd"
+    },
+    "agentic/campaigns/SPEC-0394-20261102-ae5b/runs/007-review_triager/exit.json": {
+      "bytes": 172,
+      "sha256": "a7f9a538cee65b49ca926f520ebfdef85a568bde04640051e8778f92dc142478"
+    },
+    "agentic/campaigns/SPEC-0394-20261102-ae5b/runs/007-review_triager/request.json": {
+      "bytes": 862,
+      "sha256": "86ac1ce843858b69fac2a07aaa0d0030c9bab78ecf793bf1e046d23f5a362cd0"
+    },
+    "agentic/campaigns/SPEC-0394-20261102-ae5b/runs/007-review_triager/result.json": {
+      "bytes": 4044,
+      "sha256": "19afc84db69798b40a7549c9de7fa7f0d6754ef889dad32d11a7b61de78824c6"
+    },
+    "agentic/campaigns/SPEC-0394-20261102-ae5b/runs/007-review_triager/run.json": {
+      "bytes": 2605,
+      "sha256": "08be739cbb9dd4f093e80802dfbece875984f68d381394401c708aee03b956ac"
+    },
+    "agentic/campaigns/SPEC-0394-20261102-ae5b/runs/007-review_triager/stderr.log": {
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "agentic/campaigns/SPEC-0394-20261102-ae5b/runs/007-review_triager/stream.jsonl": {
+      "bytes": 15729,
+      "sha256": "3d8392714dcbc3f2357d9312b8f3fa3b0d258cf4f8552bfaad19e5bb3a19922f"
+    },
+    "agentic/campaigns/SPEC-0394-20261102-ae5b/runs/008-implementer/exit.json": {
+      "bytes": 173,
+      "sha256": "0b2d71d0f4472a6355e029a5193306e03304cf29882dacad256427d4f5ed7725"
+    },
+    "agentic/campaigns/SPEC-0394-20261102-ae5b/runs/008-implementer/request.json": {
+      "bytes": 1392,
+      "sha256": "4cb69cf64aea8a23a9a3471af7f683bd6614625c4df24554fe17cefb7603403d"
+    },
+    "agentic/campaigns/SPEC-0394-20261102-ae5b/runs/008-implementer/result.json": {
+      "bytes": 7154,
+      "sha256": "8d9f4d5636e66853c9b8d383d4843285e564182e07ebe6359913a4e73ea2d58c"
+    },
+    "agentic/campaigns/SPEC-0394-20261102-ae5b/runs/008-implementer/run.json": {
+      "bytes": 4487,
+      "sha256": "29cf4b529883f5622838a6445da945f9b47ff645339cb06ba7846ffed7fe4433"
+    },
+    "agentic/campaigns/SPEC-0394-20261102-ae5b/runs/008-implementer/stderr.log": {
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "agentic/campaigns/SPEC-0394-20261102-ae5b/runs/008-implementer/stream.jsonl": {
+      "bytes": 64507,
+      "sha256": "3bd15fbd011f9106b9a83a870445b196b351bb52c41d0ec2a36619399ff2f079"
+    },
+    "agentic/campaigns/SPEC-0394-20261102-ae5b/runs/009-gate_triager/exit.json": {
+      "bytes": 172,
+      "sha256": "6c151dd4b33a03ace57c6bfa87d51648cb6ca75117960fed0c83548a6ac3c14e"
+    },
+    "agentic/campaigns/SPEC-0394-20261102-ae5b/runs/009-gate_triager/request.json": {
+      "bytes": 1840,
+      "sha256": "5746d73d42796f1e0d127ad5f5a2ce3e6c3c93a6fe88f153003152e42882e719"
+    },
+    "agentic/campaigns/SPEC-0394-20261102-ae5b/runs/009-gate_triager/result.json": {
+      "bytes": 4662,
+      "sha256": "4719f8d3cc86373823e5164db13227dbd3be58e99c00123f9e98f93ce272ee64"
+    },
+    "agentic/campaigns/SPEC-0394-20261102-ae5b/runs/009-gate_triager/run.json": {
+      "bytes": 2845,
+      "sha256": "4fed55165cb9b94c51b401995d2d7ecd6db242405cd7a7b5ed85f131c21a76bc"
+    },
+    "agentic/campaigns/SPEC-0394-20261102-ae5b/runs/009-gate_triager/stderr.log": {
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "agentic/campaigns/SPEC-0394-20261102-ae5b/runs/009-gate_triager/stream.jsonl": {
+      "bytes": 10996,
+      "sha256": "5568f7d26adb1254112357644298fc70ce8c30fcc54bfa91fce276df160f5090"
+    },
+    "agentic/campaigns/SPEC-0394-20261102-ae5b/runs/010-conformance_reviewer/exit.json": {
+      "bytes": 173,
+      "sha256": "3ff86e88ff7f7768b350ade869fcb53b7765a16329f9d20a8be0fd5eb3eefcbd"
+    },
+    "agentic/campaigns/SPEC-0394-20261102-ae5b/runs/010-conformance_reviewer/request.json": {
+      "bytes": 2191,
+      "sha256": "20de43ebc85e8178863d1dbed29c70d8d432d791be4c39e5da41ef8171711ca4"
+    },
+    "agentic/campaigns/SPEC-0394-20261102-ae5b/runs/010-conformance_reviewer/result.json": {
+      "bytes": 13993,
+      "sha256": "fd7c010d5a6db37e3620e1ae9d84afeed3a1f0c1536ab0aa1d0673060e83887a"
+    },
+    "agentic/campaigns/SPEC-0394-20261102-ae5b/runs/010-conformance_reviewer/run.json": {
+      "bytes": 7997,
+      "sha256": "35361efa8c63a60576c9c6c7a93b0167c05d298f4b59c12a41c550f0aa4028a2"
+    },
+    "agentic/campaigns/SPEC-0394-20261102-ae5b/runs/010-conformance_reviewer/stderr.log": {
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "agentic/campaigns/SPEC-0394-20261102-ae5b/runs/010-conformance_reviewer/stream.jsonl": {
+      "bytes": 13703,
+      "sha256": "4ac605f99e504ba3928b88dcb46db5f367f9f6cd59400620ae7824cc9c3cd7f2"
+    },
+    "agentic/campaigns/SPEC-0394-20261102-ae5b/runs/011-test_reviewer/exit.json": {
+      "bytes": 173,
+      "sha256": "53314d5c62193a05e99e1f2566b87459cb1a98cbea0c5557c64a98e0c7ddc930"
+    },
+    "agentic/campaigns/SPEC-0394-20261102-ae5b/runs/011-test_reviewer/request.json": {
+      "bytes": 2095,
+      "sha256": "c459f566f74033d13740205394933d58bd05891c5939736fbc18f7aa2dadc9e7"
+    },
+    "agentic/campaigns/SPEC-0394-20261102-ae5b/runs/011-test_reviewer/result.json": {
+      "bytes": 11882,
+      "sha256": "181bde6cee95e950537f9a81ed4b5d75f1497168b3e01d0069f6ab90899f2f5b"
+    },
+    "agentic/campaigns/SPEC-0394-20261102-ae5b/runs/011-test_reviewer/run.json": {
+      "bytes": 7439,
+      "sha256": "1d1faf3e038732c0a479917c87178bc742d442535f471557313aeceef041fd7d"
+    },
+    "agentic/campaigns/SPEC-0394-20261102-ae5b/runs/011-test_reviewer/stderr.log": {
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "agentic/campaigns/SPEC-0394-20261102-ae5b/runs/011-test_reviewer/stream.jsonl": {
+      "bytes": 14740,
+      "sha256": "e1f1906897a6dd79a813df08f9c3506f88f0f7de365e123768706c2319635013"
+    },
+    "agentic/campaigns/SPEC-0394-20261102-ae5b/runs/012-adversarial_reviewer/exit.json": {
+      "bytes": 173,
+      "sha256": "8c527419ddaefdae9bf2e1cd89e711c411432e30fe654c4528ad6bee2f9ab010"
+    },
+    "agentic/campaigns/SPEC-0394-20261102-ae5b/runs/012-adversarial_reviewer/request.json": {
+      "bytes": 2188,
+      "sha256": "901dd44ffacaf8ce013457470985b9a33b528f6d6d87a11453be0b45f9f07bdc"
+    },
+    "agentic/campaigns/SPEC-0394-20261102-ae5b/runs/012-adversarial_reviewer/result.json": {
+      "bytes": 6542,
+      "sha256": "b80c76195dcdada2c50baa06ad6d7ed64c8cdf8ae41743e7b6eee090ddc8a3db"
+    },
+    "agentic/campaigns/SPEC-0394-20261102-ae5b/runs/012-adversarial_reviewer/run.json": {
+      "bytes": 4015,
+      "sha256": "6a15d438cfd3dce75e533252111f349ffc59014038c3ba115772ce1a67de4e4e"
+    },
+    "agentic/campaigns/SPEC-0394-20261102-ae5b/runs/012-adversarial_reviewer/stderr.log": {
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "agentic/campaigns/SPEC-0394-20261102-ae5b/runs/012-adversarial_reviewer/stream.jsonl": {
+      "bytes": 51854,
+      "sha256": "c5dcd251785e91dc39fef6cc7767a7206c2dc0bbe1ecfc75701c9bb866ba8ea2"
+    },
+    "agentic/campaigns/SPEC-0394-20261102-ae5b/runs/013-review_triager/exit.json": {
+      "bytes": 172,
+      "sha256": "e2612270b0c9eacdc840ba5a897f30e58209d56ef284a18700531436f71b72ab"
+    },
+    "agentic/campaigns/SPEC-0394-20261102-ae5b/runs/013-review_triager/request.json": {
+      "bytes": 862,
+      "sha256": "28eb7407db25700dc13a77a9cdd72ebc305bbbb6cf86205f7a6d10f9a9592709"
+    },
+    "agentic/campaigns/SPEC-0394-20261102-ae5b/runs/013-review_triager/result.json": {
+      "bytes": 4688,
+      "sha256": "de84c325ea24613430d9a9cd74230433b111e805773868398ccb4070f79a6ea0"
+    },
+    "agentic/campaigns/SPEC-0394-20261102-ae5b/runs/013-review_triager/run.json": {
+      "bytes": 2987,
+      "sha256": "14ebc71c00e7aa890ec0f91861fc1089294cf476caf979899dbba7a61e9ed801"
+    },
+    "agentic/campaigns/SPEC-0394-20261102-ae5b/runs/013-review_triager/stderr.log": {
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "agentic/campaigns/SPEC-0394-20261102-ae5b/runs/013-review_triager/stream.jsonl": {
+      "bytes": 12875,
+      "sha256": "fc64a2b82c0d506d923bb4bacd563ead5d40a4abc6887bea71c6dbbfeb9b5049"
+    },
+    "agentic/campaigns/SPEC-0394-20261102-ae5b/spec_at_open.md": {
+      "bytes": 20567,
+      "sha256": "f0442ce7a5dd541c89f3ed14e34238d1e39281492f7521ba386772126bdd0a16"
+    },
+    "agentic/campaigns/SPEC-0394-20261102-ae5b/state.json": {
+      "bytes": 71398,
+      "sha256": "3748eba61bfd1aef9d07a09956843311203053f7c82de18ae890dd357aeaf879"
+    },
+    "agentic/conductor/decisions.jsonl": {
+      "bytes": 4605,
+      "sha256": "8d05dad0429e03103e7607398444909bb4f837fc5fe90cf041105599205044d8"
+    },
+    "agentic/escalations/ESC-0003.json": {
+      "bytes": 2031,
+      "sha256": "cbce4445e29db3acdb07796b89397b19bcf4ebb4dc671133f2d7a8323fdf54d0"
+    },
+    "agentic/events.jsonl": {
+      "bytes": 23653,
+      "sha256": "3341db2b8123f6f81f87f201f4a156253bcb29d4da4ccd7bec6323c0617160e2"
+    },
+    "agentic/flaky-tests.json": {
+      "bytes": 408,
+      "sha256": "32ee0bbf39d503e09b4405cf2b1b781138be779f810dd1cf70925305c4a0097f"
+    },
+    "agentic/mailbox/conductor.jsonl": {
+      "bytes": 2365,
+      "sha256": "50f4f6be1ea8861dd9597738022033be1c9e3e5e6bbad8bcc6c605c37fab9afc"
+    },
+    "agentic/mailbox/human.jsonl": {
+      "bytes": 646,
+      "sha256": "6aab11cc77a0f231b584569e69ff51f9610bd6c8d639ca979a27d14f17f006dc"
+    },
+    "agentic/mailbox/steward_Meta-Tools.jsonl": {
+      "bytes": 5561,
+      "sha256": "9a375f61bdfe996699559b28c8ba6443ed938ceab62a5b26e0422ad776aea720"
+    },
+    "agentic/mailbox/steward_comfort-assistant.jsonl": {
+      "bytes": 503,
+      "sha256": "d9881df9e02cb96eeeb58ff8c65a87df03962b81386e495d7ca371e7ba4d518f"
+    },
+    "agentic/reviews/SPEC-0336/d5fdef8a2121e15016ca00c37ea4888a0d1ff480572807b9eef6a8da92522eab.json": {
+      "bytes": 11281,
+      "sha256": "58838503243acfb48ea0c2c71c9b4dde52ad084e00458538cb3f7bec9d2a8327"
+    },
+    "agentic/reviews/SPEC-0394/f0442ce7a5dd541c89f3ed14e34238d1e39281492f7521ba386772126bdd0a16.json": {
+      "bytes": 5390,
+      "sha256": "ae378847f4f0c7257c67445485ad3d652de0d89a903f76c7bba8f25ae8cc9c94"
+    },
+    "agentic/runner.jsonl": {
+      "bytes": 393464,
+      "sha256": "eb9f39b5364d8f9bc404213a6bec618298a5e6db71174352fd8d764ec424ce7d"
+    },
+    "agentic/sentinel/Meta-Tools.last.json": {
+      "bytes": 144,
+      "sha256": "f87d60e0c1e19a928dad1c2e14eff2b32d6571aa67b5dbaa753f9db1f44b9d32"
+    },
+    "agentic/spec-reviews.jsonl": {
+      "bytes": 1287,
+      "sha256": "0e4be8a78ae29d7cc6bb197618b680d3eafabecfec9f41332abc10d641509eca"
+    }
+  },
+  "sanitization": {
+    "rules": {
+      "email": 17,
+      "env": 0,
+      "home_path": 540,
+      "host": 0,
+      "ipv4": 0,
+      "pr_url_host": 0,
+      "secret": 12,
+      "user_name": 6
+    }
+  },
+  "scenarios": {
+    "abandoned": [
+      "IDEA-606-20261101-df50"
+    ],
+    "flaky_and_triage": [
+      "SPEC-0394-20261102-ae5b"
+    ],
+    "handed_off": [
+      "SPEC-0195-20261025-hdof"
+    ],
+    "human_escalation": [
+      "SPEC-0336-20261031-6558"
+    ],
+    "legacy_schema": [
+      "SPEC-0179-20261025-158c",
+      "SPEC-0180-20261025-f78d",
+      "SPEC-0195-20261025-f49a",
+      "SPEC-0218-20261025-0131"
+    ],
+    "merged_multi_loop": [
+      "SPEC-0195-20261025-f49a",
+      "SPEC-0336-20261031-6558",
+      "SPEC-0394-20261102-ae5b"
+    ],
+    "no_run_json": [
+      "SPEC-0179-20261025-158c",
+      "SPEC-0180-20261025-f78d"
+    ],
+    "pre_stream": [
+      "IDEA-606-20261101-df50",
+      "SPEC-0179-20261025-158c",
+      "SPEC-0180-20261025-f78d",
+      "SPEC-0195-20261025-f49a",
+      "SPEC-0336-20261031-6558"
+    ]
+  },
+  "schema": "nw.history.fixture.v1",
+  "source_label": "~/.local/share/nightwright",
+  "source_max_ts": "2026-11-03T21:14:52-05:00",
+  "sources": {
+    "decisions": "present",
+    "escalations": "present",
+    "events": "present",
+    "flaky-tests": "present",
+    "mailbox": "present",
+    "reviews": "present",
+    "runner": "present",
+    "sentinel": "present",
+    "spec-reviews": "present"
+  },
+  "tool": "tools/capture_history_fixture.py",
+  "tool_version": 1,
+  "totals": {
+    "bytes": 2989452,
+    "campaigns": 8,
+    "files": 441,
+    "records": {
+      "decisions": 12,
+      "escalations": 1,
+      "events": 46,
+      "mail": 17
+    }
+  }
+}

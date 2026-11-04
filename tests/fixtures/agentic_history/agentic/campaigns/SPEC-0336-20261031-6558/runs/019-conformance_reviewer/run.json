@@ -1,0 +1,145 @@
+{
+  "schema": "nw.run.v1",
+  "campaign": "SPEC-0336-20261031-6558",
+  "run_id": "019-conformance_reviewer",
+  "persona": "conformance_reviewer",
+  "model": "opus",
+  "effort": "high",
+  "max_budget_usd": 1.5,
+  "timeout_s": 2700,
+  "permission_mode": "dontAsk",
+  "started_at": "2026-10-31T23:14:10-04:00",
+  "duration_s": 50.212,
+  "exit_code": 0,
+  "timed_out": false,
+  "interrupted": false,
+  "is_error": false,
+  "cost_usd": 0.7222778,
+  "cost_estimated": false,
+  "usage": {
+    "input_tokens": 10,
+    "cache_creation_input_tokens": 70990,
+    "cache_read_input_tokens": 305289,
+    "output_tokens": 4663,
+    "output_tokens_details": {
+      "thinking_tokens": 1176
+    },
+    "server_tool_use": {
+      "web_search_requests": 0,
+      "web_fetch_requests": 0
+    },
+    "service_tier": "standard",
+    "cache_creation": {
+      "ephemeral_1h_input_tokens": 70990,
+      "ephemeral_5m_input_tokens": 0
+    },
+    "inference_geo": "global",
+    "iterations": [
+      {
+        "input_tokens": 2,
+        "output_tokens": 2938,
+        "cache_read_input_tokens": 81335,
+        "cache_creation_input_tokens": 1097,
+        "cache_creation": {
+          "ephemeral_5m_input_tokens": 0,
+          "ephemeral_1h_input_tokens": 1097
+        },
+        "type": "message"
+      }
+    ],
+    "speed": "standard",
+    "fallback_credit": null
+  },
+  "session_id": "c134c9d5-2e1c-4f3b-91b2-41202be8f01e",
+  "verdict_ok": true,
+  "verdict": {
+    "verdict": "pass",
+    "score": 93,
+    "findings": [
+      {
+        "severity": "nit",
+        "ac": "With the worker's slot held by another process, the worker emits `slot_wait` and then `started` only once the slot frees.",
+        "title": "Slot campaign id is `remote:<campaign>`, not the job's campaign as Design step 4 says",
+        "detail": "Design step 4 says gate_slots.acquire uses campaign id = the job's campaign. worker._run_gates passes SLOT_CAMPAIGN_PREFIX + h['campaign'] ('remote:C-1') instead. The spec's 'As shipped' section records this as a deliberate deviation, so a remote hold is never mistaken for a local campaign, and test_held_slot_gives_slot_wait_then_started pins it. The step 4 text itself still says the old thing, though.",
+        "suggested_fix": "In docs/specs/0336-gate-worker-job-runner-and-forced-command.md, change Design step 4 to say `campaign id = \"remote:\" + the job's campaign` (or point it at the As-shipped note), so the Design and the code agree.",
+        "acceptance": "Design step 4 and worker._run_gates name the same slot campaign id; spec_lint still OK.",
+        "files": [
+          "docs/specs/0336-gate-worker-job-runner-and-forced-command.md",
+          "src/nightwright/agentic/worker.py"
+        ]
+      }
+    ],
+    "ac_assessment": [
+      {
+        "ac": "Piping a valid header and bundle into `nw worker gate-job` runs the sent gates in a job worktree and emits accepted, started, one gate frame per gate (with .log, .json, .r<n> files) and done.",
+        "met": true,
+        "evidence": "worker.gate_job/_checkout/_run_gates/gate_files. test_pass_emits_frames_and_files asserts the frame types are exactly [accepted, started, gate, done], the files are {001-hello.log, 001-hello.json}, the log was written in the job tree (NW_WORKTREE), the frames.jsonl copy matches, and the tree is removed afterwards. test_retry_ladder_sends_r1_files asserts the .r1.log/.r1.json files are sent and contain the second attempt's output."
+      },
+      {
+        "ac": "A gate running `git merge-base $NW_BASE HEAD` on the worker succeeds and prints the same sha as in the coordinator's worktree.",
+        "met": true,
+        "evidence": "_checkout creates refs/heads/<name> (and refs/remotes/origin/<rest>) at base.sha inside the private clone. test_merge_base_and_base_placeholder_match_the_coordinator compares the worker log with the `git merge-base main HEAD` computed in the source repo, and also checks {base} and {spec_id}."
+      },
+      {
+        "ac": "A header whose env has a key outside the allowlist yields an error frame with stage validate and nothing runs; a reused job_id yields stage claim.",
+        "met": true,
+        "evidence": "validate_header checks ENV_ALLOWLIST before the claim. test_env_outside_allowlist_is_refused (LD_PRELOAD) asserts exit 3, only an error frame, no marker file and no job dir. test_duplicate_job_id_is_a_claim_error asserts stage claim, exit 3, and the first job's frames.jsonl left untouched."
+      },
+      {
+        "ac": "Two concurrent gate-jobs for the same repo_key with different base.sha for the same base.name each see their own base in `git rev-parse $NW_BASE`.",
+        "met": true,
+        "evidence": "Each job gets its own `git clone --shared` with private refs. test_concurrent_jobs_see_their_own_base runs two jobs at once (slots: 2, gates synchronised through a shared dir) and asserts each log shows its own base twice."
+      },
+      {
+        "ac": "EOF on stdin mid-gate ends the gate process and emits done interrupted; EOF during the slot wait emits done interrupted and no started.",
+        "met": true,
+        "evidence": "_watch_stdin sets cancel and calls G.terminate_all; acquire receives stop=cancel. test_eof_mid_gate_interrupts checks the sleep child's pid is gone and the done frame has interrupted true, exit 0. test_eof_while_waiting_for_the_slot asserts done interrupted with no started or gate frame and no marker file."
+      },
+      {
+        "ac": "With the worker's slot held by another process, the worker emits slot_wait and then started only once the slot frees.",
+        "met": true,
+        "evidence": "test_held_slot_gives_slot_wait_then_started holds the slot via GS.acquire with NW_WORKER_SLOT_WAIT_EVENT_S=0.5, asserts slot_wait arrives and started does not while the slot is held, then the full sequence [accepted, slot_wait, started, gate, done]. The test holds the slot in-process; gate_slots uses file locks, so this is equivalent to another process holding it."
+      },
+      {
+        "ac": "gate-job exits 0 after done (pass, fail or interrupted) and 3 after an error frame.",
+        "met": true,
+        "evidence": "gate_job/_fail return 0 or EXIT_ERROR. Exit 0 is asserted by test_pass..., test_fail_is_done_with_ok_false_and_exit_0 and the EOF/signal tests. Exit 3 is asserted for validate, claim, read, checkout and signal errors (the parametrized bad-header test, test_empty_bundle_against_a_warm_cache cold case, test_signal_before_the_slot_is_an_error_frame)."
+      },
+      {
+        "ac": "A log over 16 MiB arrives cut to 16 MiB with truncated_bytes in its sidecar.",
+        "met": true,
+        "evidence": "_file_payload/gate_files. test_log_over_16_mib_is_truncated writes about 17 MiB and asserts the decoded log is exactly MAX_LOG_BYTES, the tail marker survives and the head marker is cut, and the sidecar has the exact truncated_bytes."
+      },
+      {
+        "ac": "`nw worker have` reports commit and base after the job; after `gc --keep-days 0` have reports none, cat-file -e fails, job dirs gone, except a live job's dir survives a concurrent gc.",
+        "met": true,
+        "evidence": "test_have_then_gc_removes_refs_objects_and_job_dirs asserts have prints [head, base], gc reports pruned ['proj'], have afterwards prints nothing, `git cat-file -e` returns non-zero, and the job dir is gone. test_gc_during_a_live_job_keeps_its_dir asserts the live job's tree and job.lock survive and its commit object is still present."
+      },
+      {
+        "ac": "`nw worker info --json` prints the documented keys.",
+        "met": true,
+        "evidence": "worker.info. test_info_json_keys asserts the key set is exactly {schema, protocol, version, git_sha, data_dir, git, uv, free_bytes} and checks the schema, protocol, data_dir and free_bytes values."
+      },
+      {
+        "ac": "`nw worker ssh-command` execs the four allowed subcommands and refuses everything else with exit 2, running nothing.",
+        "met": true,
+        "evidence": "check_ssh_command/ssh_command. tests/test_worker_ssh_command.py: 6 allowed forms are exec'd with the worker's own nw path; 26 refusals (empty, nw queue run, shell metacharacters, unknown options, have --repo ../x, trailing newlines, a non-nw argv0) each return 2, write `refused:` to stderr, and leave execvp uncalled. own_nw never uses the path the client sent."
+      },
+      {
+        "ac": "docs/WORKFLOW.md documents the mandatory dedicated user and the absolute-path key line.",
+        "met": true,
+        "evidence": "The new 'Remote gate worker' section in docs/WORKFLOW.md says the dedicated, unprivileged user is mandatory, states the shell-equivalent threat model, documents uv tool install, and shows `command=\"/home/user/.local/bin/nw worker ssh-command\",restrict ssh-ed25519 ...`."
+      }
+    ],
+    "fix_brief": ""
+  },
+  "profile": "thorough",
+  "profile_sources": [
+    "builtin:thorough.yaml"
+  ],
+  "files": {
+    "prompt": "prompt.md",
+    "raw": "result.json",
+    "stderr": "stderr.log"
+  }
+}

@@ -1,0 +1,26 @@
+{
+  "schema": "nw.gate.v1",
+  "name": "pytest-affected",
+  "cmd": "uv run pytest -q -n 0 tests/test_remote_personas.py::test_write_back_equals_a_local_run",
+  "cwd": "/home/user/.local/share/nightwright/agentic/worker/jobs/SPEC-0394-20261102-ae5b-gate-002-a1/tree",
+  "required": true,
+  "ok": false,
+  "exit_code": 1,
+  "timed_out": false,
+  "timeout_s": 2400,
+  "started_at": "2026-11-02T22:27:31-05:00",
+  "duration_s": 7.483,
+  "log": "002-pytest-affected.r1.log",
+  "error": null,
+  "summary": {
+    "format": "pytest",
+    "passed": 0,
+    "failed": 1,
+    "errors": 0,
+    "skipped": 0,
+    "failing": [
+      "tests/test_remote_personas.py::test_write_back_equals_a_local_run"
+    ]
+  },
+  "attempt": 1
+}

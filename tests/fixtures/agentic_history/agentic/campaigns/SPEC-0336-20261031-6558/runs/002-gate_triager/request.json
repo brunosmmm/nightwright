@@ -1,0 +1,90 @@
+{
+  "schema": "nw.run.request.v1",
+  "persona": "gate_triager",
+  "model": "sonnet",
+  "effort": "high",
+  "max_budget_usd": 1.0,
+  "timeout_s": 2700,
+  "permission_mode": "dontAsk",
+  "read_only": true,
+  "cwd": "/home/user/work/.nw-worktrees/Meta-Tools/SPEC-0336-20261031-6558",
+  "json_schema": {
+    "type": "object",
+    "required": [
+      "disposition",
+      "fix_brief"
+    ],
+    "properties": {
+      "disposition": {
+        "type": "string",
+        "enum": [
+          "fix",
+          "retry_gate",
+          "waive",
+          "escalate"
+        ]
+      },
+      "confidence": {
+        "type": "string",
+        "enum": [
+          "low",
+          "medium",
+          "high"
+        ]
+      },
+      "suspected_flaky": {
+        "type": "boolean"
+      },
+      "must_fix": {
+        "type": "array",
+        "items": {
+          "type": "object",
+          "required": [
+            "title"
+          ],
+          "properties": {
+            "gate": {
+              "type": "string"
+            },
+            "title": {
+              "type": "string"
+            },
+            "detail": {
+              "type": "string"
+            },
+            "files": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            }
+          }
+        }
+      },
+      "waived": {
+        "type": "array",
+        "items": {
+          "type": "object",
+          "properties": {
+            "gate": {
+              "type": "string"
+            },
+            "reason": {
+              "type": "string"
+            }
+          }
+        }
+      },
+      "fix_brief": {
+        "type": "string"
+      },
+      "followup_ideas": {
+        "type": "array",
+        "items": {
+          "type": "string"
+        }
+      }
+    }
+  },
+  "started_at": "2026-10-31T21:04:54-04:00"
+}

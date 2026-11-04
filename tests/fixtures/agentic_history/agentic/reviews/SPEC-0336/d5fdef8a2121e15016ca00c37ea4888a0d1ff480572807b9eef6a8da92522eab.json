@@ -1,0 +1,91 @@
+{
+  "schema": "nw.spec.review.v1",
+  "spec_id": "SPEC-0336",
+  "verdict": "revise",
+  "spec_sha256": "d5fdef8a2121e15016ca00c37ea4888a0d1ff480572807b9eef6a8da92522eab",
+  "reviewed_at": "2026-10-31T19:32:51-04:00",
+  "model": "opus",
+  "reviewer_profile": "balanced",
+  "cost_usd": 0.399698,
+  "size": "l",
+  "tone": "critical",
+  "rationale": "There are 10 acceptance criteria. The spec adds a new CLI group with five subcommands, a new wire protocol (header and frames) and a persisted worker store. That is one subsystem, so size l rather than xl. The tone is critical because the spec defines a key that equals shell access, a forced-command allowlist and a shared object cache that concurrent jobs write to. A defect in any of these is a security problem or makes gate results wrong.",
+  "findings": [
+    {
+      "severity": "must_fix",
+      "section": "Design › gate-job steps (3. Check out)",
+      "title": "Base branch refs created \"in the job tree\" are shared by all concurrent jobs",
+      "detail": "Step 3 says: \"In the job tree, create `refs/heads/<name>` at `base.sha`, and also `refs/remotes/origin/<rest>`\". The job tree is a `git worktree add` of the shared bare cache `repos/<repo_key>.git`. In git only HEAD, refs/bisect/* and refs/worktree/* are per-worktree. `refs/heads/*` and `refs/remotes/*` live in the common repo. If two jobs for the same repo run at once (the worker has several gate slots, or two coordinators send jobs), both write `refs/heads/main`. If their base shas differ, one job's `git merge-base $NW_BASE HEAD` resolves against the other job's base. That gives wrong affected-test selection or a wrong diff with no error. Step 6 also never deletes these refs, so the next job inherits a stale `main`.",
+      "suggested_fix": "Replace the worktree-per-job checkout with a private repo per job that borrows the cache's objects. Write step 3 as: \"`git clone --shared --no-checkout repos/<repo_key>.git <job>/tree` (the objects are read through alternates; refs are private to the job), then `git -C <job>/tree checkout --detach <commit>`, then create `refs/heads/<name>` (and `refs/remotes/origin/<rest>` when `name` is `origin/<rest>`) at `base.sha` inside `<job>/tree`.\" Change step 6 to \"`rm -rf <job>/tree`\" in place of `git worktree remove --force`. Add an acceptance criterion: \"Two concurrent gate-jobs for the same repo_key with different `base.sha` for the same `base.name` each see their own base in `git rev-parse $NW_BASE`.\"",
+      "acceptance": "The Design no longer writes branch refs into the shared cache. An AC and a test case cover two concurrent jobs with different bases."
+    },
+    {
+      "severity": "major",
+      "section": "Design › Worker store / gate-job steps / gc",
+      "title": "Concurrency on the shared cache and have.json is unspecified",
+      "detail": "Several jobs can run at once on one worker, one per gate slot. Each one `git fetch`es into the same bare repo, sets `refs/nw/have/*` and updates `repos/<repo_key>.have.json`, and step 6 \"run[s] `gc`\" after every job. The spec has no lock. The read-modify-write of have.json races and can lose last-used times, so `gc` then ages refs out early. A `gc` triggered by job A can delete job B's in-flight `jobs/<job_id>/` (manual `gc --keep-days 0` certainly will) and its refs. Concurrent fetches into one repo can also fail on ref-lock contention.",
+      "suggested_fix": "Add to Design › Worker store: \"Each repo cache has a lock file `repos/<repo_key>.lock` (fcntl.flock). The bundle fetch, setting `refs/nw/have/*`, updating `<repo_key>.have.json` (written via temp file and os.replace) and `gc`'s deletions all happen under it. `gc` never deletes a job dir whose `job.lock` is flock-held by a live gate-job; every gate-job holds `jobs/<job_id>/job.lock` from claim until exit.\" Add a test: `gc --keep-days 0` run while a `sleep` gate job is live leaves that job's dir intact.",
+      "acceptance": "The spec names the lock and the in-flight-job exemption from gc, and a test covers gc during a live job."
+    },
+    {
+      "severity": "major",
+      "section": "Design › gc / Worker store",
+      "title": "gc never prunes objects, so the cache grows without bound",
+      "detail": "`nw worker gc` \"deletes job dirs and `refs/nw/have/*` refs older than N days\". Deleting a ref does not free its objects. Nothing runs `git gc --prune` or `git worktree prune` (if worktrees stay). Every bundle's objects accumulate in `repos/<repo_key>.git` forever, yet `info` reports `free_bytes` as if space were managed.",
+      "suggested_fix": "Extend the gc bullet: \"... then, under the repo lock, runs `git -C repos/<repo_key>.git gc --prune=now --quiet` for each repo whose refs changed (and `git worktree prune` if worktrees are kept).\" Extend the gc acceptance criterion: \"after `gc --keep-days 0`, `nw worker have` reports none of the job's shas and `git cat-file -e <commit>` fails in the cache.\"",
+      "acceptance": "gc's description includes object pruning, and the AC checks that the objects are gone."
+    },
+    {
+      "severity": "major",
+      "section": "Design › The job header",
+      "title": "Header fields `timeout_s`, `have` and `attempt`, and the 'protocol major' check, have no defined worker behaviour",
+      "detail": "The header carries `timeout_s`, `have: [...]` and `attempt: 0`, and step 1 validates \"protocol major\". None of these is defined. It is unclear whether `timeout_s` bounds the whole job, including the slot wait and checkout, or whether only `payload.gate_budget_s` (used as the deadline) applies. The worker's use of `have` and `attempt` is unspecified. The schema string is `nw.job.v1`, and no `protocol` field exists to take a major from. An implementer will guess, and SPEC-0338 will depend on that guess.",
+      "suggested_fix": "Add a bullet list under the header block: \"`timeout_s`: the worker ignores it (it is the coordinator's own wall-clock budget); the gate deadline is `slot hold + payload.gate_budget_s`. `have`: informational, the shas the coordinator assumed present when it cut the bundle; the worker does not read it, and a missing prerequisite surfaces as `error` with `stage: \\\"checkout\\\"`. `attempt`: echoed into `job.json` only. Protocol check: `schema` must equal `nw.job.v1`; any other value gives `error` with `stage: \\\"validate\\\"`.\" Alternatively, drop the fields the worker does not need.",
+      "acceptance": "Every header field has a stated worker behaviour or is removed."
+    },
+    {
+      "severity": "major",
+      "section": "Test plan / Acceptance criteria (slot_wait)",
+      "title": "The slot_wait test needs a 30 s wait that the subprocess test cannot shorten",
+      "detail": "`slot_wait` is \"emitted once the wait passes 30 s\". That is `gate_slots.WAIT_EVENT_S = 30.0`, a module constant (`gate_slots.py:25`). The test runs `nw worker gate-job` as a subprocess, so it cannot monkeypatch the constant. The \"held worker slot gives slot_wait/started\" case would take at least 30 s per run. The spec also does not say what happens on stdin EOF during the slot wait.",
+      "suggested_fix": "Add to Design step 4: \"The 30 s threshold is read from `NW_WORKER_SLOT_WAIT_EVENT_S` (default 30) so tests can lower it. `cancel_event` is passed as `stop=` to `gate_slots.acquire`, so EOF during the wait ends it, and the worker emits `done` with `interrupted: true` and no `started`.\" In the Test plan, set that variable to 0.5 for the held-slot case and add a case \"EOF while waiting for the slot\".",
+      "acceptance": "The held-slot test runs in seconds, and EOF during the slot wait is specified and tested."
+    },
+    {
+      "severity": "minor",
+      "section": "Design › Other subcommands (ssh-command)",
+      "title": "The forced command's per-subcommand option grammar is not enumerated",
+      "detail": "\"the rest match that subcommand's option grammar\" leaves the allowlist to the implementer, and this is the security boundary. The arguments of `have --repo KEY` are not charset-checked either, so `--repo ../../x` could address a path outside `repos/`.",
+      "suggested_fix": "Replace that phrase with an explicit grammar: \"`info` [`--json`]; `have` `--repo` <[A-Za-z0-9._-]+> <[0-9a-f]{40,64}>...; `gate-job` (no arguments); `gc` [`--keep-days` <[0-9]+>]. Any other token is refused.\" Also state that `have` itself validates `--repo` against the same charset as `repo_key`.",
+      "acceptance": "ssh-command's accepted argv grammar is listed literally, and the tests cover a `--repo ../x` refusal."
+    },
+    {
+      "severity": "minor",
+      "section": "Design › gate-job steps (5. Run each gate)",
+      "title": "Placeholder and environment sources are underspecified",
+      "detail": "\"with placeholders from the worker's tree path\" covers only `{worktree}`. `{base}` must be `base.name` (to match `gates.placeholders`), `{spec_id}` and `{campaign}` come from the header, and `NW_BASE` must equal `base.name`, not the sha. The spec also does not say whether gates inherit the worker process's own `os.environ` (PATH, HOME) on top of the allowlist.",
+      "suggested_fix": "Change the step to: \"placeholders `{worktree: <job>/tree, base: base.name, spec_id: header.spec_id, campaign: header.campaign}`; env = the worker process's own environment, plus the allowlisted keys from the header, plus `NW_WORKTREE`, `NW_DATA_DIR`, `NW_CONFIG_DIR` and `tmp_env(<job>/tmp)`. The header's `NW_BASE`, if present, must equal `base.name`, else `error` with `stage: \\\"validate\\\"`.\"",
+      "acceptance": "Each placeholder and env key has a stated source."
+    },
+    {
+      "severity": "minor",
+      "section": "Design › gate-job steps (6. Finish)",
+      "title": "Exit codes for normal completion are not stated",
+      "detail": "Only \"exit code 3\" for an exception and 2 for ssh-command refusal are given. It is not stated whether gate-job exits 0 after a `done` with `ok: false`, or what it exits on a validate or claim error. The coordinator (SPEC-0338) needs these to tell a transport failure from a gate failure.",
+      "suggested_fix": "Add: \"gate-job exits 0 after emitting `done` (whatever `ok` is, including `interrupted: true`), 3 after an `error` frame at any stage, and never exits without one of the two frames unless stdout is closed.\"",
+      "acceptance": "The exit codes are listed for done, error and interrupted."
+    },
+    {
+      "severity": "nit",
+      "section": "Test plan",
+      "title": "The docs acceptance criterion has no test plan entry",
+      "detail": "The AC \"`docs/WORKFLOW.md` documents the mandatory dedicated user and the absolute-path key line\" is not mentioned in the Test plan.",
+      "suggested_fix": "Add to the Test plan: \"**Manual:** check that `docs/WORKFLOW.md` has a 'Remote gate worker' section stating the dedicated unprivileged user is mandatory and showing the `command=\\\"/home/user/.local/bin/nw worker ssh-command\\\",restrict` key line.\"",
+      "acceptance": "Every AC maps to a test plan line."
+    }
+  ],
+  "suggested_splits": [],
+  "repo_root": "/home/user/work/nw-spec-0310",
+  "spec_path": "/home/user/work/nw-spec-0310/docs/specs/0336-gate-worker-job-runner-and-forced-command.md",
+  "origin": "main checkout"
+}

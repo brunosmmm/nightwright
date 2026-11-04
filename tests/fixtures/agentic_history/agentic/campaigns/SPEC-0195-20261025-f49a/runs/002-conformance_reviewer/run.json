@@ -1,0 +1,92 @@
+{
+  "schema": "wt.run.v1",
+  "campaign": "SPEC-0195-20261025-f49a",
+  "run_id": "002-conformance_reviewer",
+  "persona": "conformance_reviewer",
+  "model": "opus",
+  "effort": "high",
+  "max_budget_usd": 1.5,
+  "timeout_s": 1800,
+  "permission_mode": "dontAsk",
+  "started_at": "2026-10-25T16:04:49-04:00",
+  "duration_s": 16.602,
+  "exit_code": 0,
+  "timed_out": false,
+  "interrupted": false,
+  "is_error": false,
+  "cost_usd": 0.1977388,
+  "usage": {
+    "input_tokens": 4,
+    "cache_creation_input_tokens": 19347,
+    "cache_read_input_tokens": 36034,
+    "output_tokens": 1787,
+    "output_tokens_details": {
+      "thinking_tokens": 490
+    },
+    "server_tool_use": {
+      "web_search_requests": 0,
+      "web_fetch_requests": 0
+    },
+    "service_tier": "standard",
+    "cache_creation": {
+      "ephemeral_1h_input_tokens": 19347,
+      "ephemeral_5m_input_tokens": 0
+    },
+    "inference_geo": "global",
+    "iterations": [
+      {
+        "input_tokens": 2,
+        "output_tokens": 1351,
+        "cache_read_input_tokens": 25978,
+        "cache_creation_input_tokens": 3425,
+        "cache_creation": {
+          "ephemeral_5m_input_tokens": 0,
+          "ephemeral_1h_input_tokens": 3425
+        },
+        "type": "message"
+      }
+    ],
+    "speed": "standard",
+    "fallback_credit": null
+  },
+  "session_id": "222c479d-3740-484b-9469-e9da99d80d20",
+  "verdict_ok": true,
+  "verdict": {
+    "verdict": "pass",
+    "score": 95,
+    "findings": [
+      {
+        "severity": "nit",
+        "ac": "Summary text, headings and src fences are preserved; drawer-looking text inside a src block is preserved; an unterminated drawer is not removed.",
+        "title": "Drawers inside an unterminated #+begin_ block are still stripped",
+        "detail": "strip_drawers only skips a #+begin_… block when _block_end finds its #+end_. If the block is unterminated, any drawer or planning lines inside it are stripped. The Design says lines inside src/example blocks are 'never touched', but the docstring scopes this to terminated blocks. This only matters for malformed org, and it matches how from_org_body treats unterminated blocks.",
+        "files": [
+          "src/wt/org_markup.py"
+        ]
+      }
+    ],
+    "ac_assessment": [
+      {
+        "ac": "`wt spec new --from-idea` on an idea with a `:PROPERTIES:` drawer and a `:LOGBOOK:` CLOCK entry produces a Context without `:PROPERTIES:`, `:LOGBOOK:`, `:END:`, `:ID:` or `CLOCK:` lines.",
+        "met": true,
+        "evidence": "specs._idea_context now runs from_org_body(strip_drawers(...)). In tests/test_explore.py::test_promote_context_drops_drawers, a real idea gets a summary and is clocked in and out (the test asserts :LOGBOOK: is in the idea file), then scaffold_from_idea runs. The test asserts that none of :PROPERTIES:, :LOGBOOK:, :END:, :ID: or CLOCK: appears in the Context section. This is an end-to-end test with no mocking."
+      },
+      {
+        "ac": "Summary text, `** Summary` / `** Log` headings and src fences are preserved; drawer-looking text inside a src block is preserved; an unterminated drawer is not removed.",
+        "met": true,
+        "evidence": "test_promote_context_drops_drawers asserts that 'Durable finding about X' and '** Summary' stay in the Context. test_org_markup.py::test_strip_drawers_removes_drawers_and_planning checks the exact output: drawers and CLOSED/SCHEDULED lines are removed, while '** Summary', the body text and a ':ID:' line outside any drawer are kept. test_strip_drawers_leaves_blocks_and_unterminated_drawers checks that a #+begin_src block holding a :PROPERTIES:/:END:/CLOSED block comes back identical, and so does an unterminated :LOGBOOK: drawer. Src fences are still converted afterwards by the unchanged from_org_body."
+      },
+      {
+        "ac": "`uv run pytest` passes; `python3 tools/spec_lint.py` exits 0.",
+        "met": true,
+        "evidence": "pytest gate: 1661 passed, 1 skipped. spec-lint gate passed. The LEDGER moves SPEC-0195 to done."
+      }
+    ],
+    "fix_brief": ""
+  },
+  "files": {
+    "prompt": "prompt.md",
+    "raw": "result.json",
+    "stderr": "stderr.log"
+  }
+}

@@ -1,0 +1,26 @@
+{
+  "schema": "nw.gate.v1",
+  "name": "pytest-affected",
+  "cmd": "if [ -f tools/affected_tests.py ]; then python3 tools/affected_tests.py --include tests/test_agentic_dogfood_config.py --include tests/test_agentic_project.py --run uv run pytest -q -x -n 2; else uv run pytest -q -x -n 2; fi",
+  "cwd": "/home/user/.local/share/nightwright/agentic/worker/jobs/SPEC-0394-20261102-ae5b-gate-004-a1/tree",
+  "required": true,
+  "ok": false,
+  "exit_code": 2,
+  "timed_out": false,
+  "timeout_s": 2400,
+  "started_at": "2026-11-03T20:36:01-05:00",
+  "duration_s": 334.268,
+  "log": "004-pytest-affected.r2.log",
+  "error": null,
+  "summary": {
+    "format": "pytest",
+    "passed": 1037,
+    "failed": 1,
+    "errors": 0,
+    "skipped": 2,
+    "failing": [
+      "tests/test_agentic_exit_paths.py::test_handler_only_sets_stop"
+    ]
+  },
+  "attempt": 2
+}

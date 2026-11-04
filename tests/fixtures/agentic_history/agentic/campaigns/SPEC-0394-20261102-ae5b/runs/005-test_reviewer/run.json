@@ -1,0 +1,203 @@
+{
+  "schema": "nw.run.v1",
+  "campaign": "SPEC-0394-20261102-ae5b",
+  "run_id": "005-test_reviewer",
+  "persona": "test_reviewer",
+  "model": "opus",
+  "effort": "high",
+  "max_budget_usd": 1.0,
+  "timeout_s": 2700,
+  "permission_mode": "dontAsk",
+  "started_at": "2026-11-03T20:24:19-05:00",
+  "duration_s": 40.159,
+  "exit_code": 0,
+  "timed_out": false,
+  "interrupted": false,
+  "is_error": false,
+  "cost_usd": 0.563868,
+  "cost_estimated": false,
+  "usage": {
+    "input_tokens": 2,
+    "cache_creation_input_tokens": 59705,
+    "cache_read_input_tokens": 0,
+    "output_tokens": 4311,
+    "output_tokens_details": {
+      "thinking_tokens": 2253
+    },
+    "server_tool_use": {
+      "web_search_requests": 0,
+      "web_fetch_requests": 0
+    },
+    "service_tier": "standard",
+    "cache_creation": {
+      "ephemeral_1h_input_tokens": 59705,
+      "ephemeral_5m_input_tokens": 0
+    },
+    "inference_geo": "global",
+    "iterations": [
+      {
+        "input_tokens": 2,
+        "output_tokens": 4311,
+        "cache_read_input_tokens": 0,
+        "cache_creation_input_tokens": 59705,
+        "cache_creation": {
+          "ephemeral_5m_input_tokens": 0,
+          "ephemeral_1h_input_tokens": 59705
+        },
+        "type": "message"
+      }
+    ],
+    "speed": "standard",
+    "fallback_credit": null
+  },
+  "session_id": "e48d460e-81e1-4315-abc5-e0534f5a3d70",
+  "verdict_ok": true,
+  "verdict": {
+    "verdict": "pass",
+    "score": 88,
+    "findings": [
+      {
+        "severity": "minor",
+        "ac": "AC6",
+        "title": "test_files in the build_request context is asserted only through a separate build_context(review=True) call",
+        "detail": "test_build_request_declared_reviewer checks `ctx[\"test_files\"]` on a context it builds itself with review=True hard-coded, so that line does not exercise build_request's `review=is_reviewer(...)` path. The path is still covered indirectly: the branch diff (`print('hi')`) has to appear in req.prompt, and the implementer test checks it is absent there, so a regression in is_reviewer routing would still fail. Putting `{{test_files}}` in the test template and asserting `tests/test_a.py` in req.prompt would pin test_files directly.",
+        "files": [
+          "tests/test_agentic_persona_run_settings.py"
+        ]
+      },
+      {
+        "severity": "minor",
+        "ac": "AC4",
+        "title": "No test for a reviewer declared in the user layer",
+        "detail": "test_is_reviewer covers a project-declared reviewer and a user-declared triager, but not a reviewer declared in the user personas dir. Such a reviewer should be true with a root and false without one.",
+        "files": [
+          "tests/test_agentic_persona_run_settings.py"
+        ]
+      },
+      {
+        "severity": "minor",
+        "ac": "AC2",
+        "title": "Shape checks under an invalid role are untested",
+        "detail": "As shipped says that with an invalid role, check_declared_keys reports the role error and still checks the shape of required/when. No test feeds an unknown role together with a malformed `when` or `required`, so that branch (the `role in CUSTOM_ROLES` guard) could change without any test failing.",
+        "files": [
+          "src/nightwright/agentic/persona_registry.py",
+          "tests/test_agentic_persona_run_settings.py"
+        ]
+      },
+      {
+        "severity": "nit",
+        "ac": "AC2",
+        "title": "Whitespace-only when items are not exercised",
+        "detail": "The validator rejects whitespace-only strings (`v.strip()`), but the tests only try `''`. A case like `labels: ['  ']` would pin this.",
+        "files": [
+          "tests/test_agentic_persona_run_settings.py"
+        ]
+      },
+      {
+        "severity": "nit",
+        "ac": "AC9",
+        "title": "No automated check that queue.py, profiles.py and divergence.py are untouched",
+        "detail": "The test plan intends this to be checked with `git diff --stat main`, and the diff touches none of those files. Recorded here only for completeness.",
+        "files": []
+      }
+    ],
+    "coverage_assessment": [
+      {
+        "ac": "AC1",
+        "covered": true,
+        "tests": [
+          "tests/test_agentic_persona_run_settings.py::test_settings_keys_valid",
+          "tests/test_agentic_persona_run_settings.py::test_settings_keys_invalid",
+          "tests/test_agentic_persona_run_settings.py::test_declared_keys_refused_in_a_builtin_definition",
+          "tests/test_agentic_persona_run_settings.py::test_builtin_definitions_carry_no_declared_keys"
+        ]
+      },
+      {
+        "ac": "AC2",
+        "covered": true,
+        "tests": [
+          "tests/test_agentic_persona_run_settings.py::test_routing_keys_valid_for_reviewer",
+          "tests/test_agentic_persona_run_settings.py::test_routing_keys_reviewer_only_bad_shapes",
+          "tests/test_agentic_persona_run_settings.py::test_routing_keys_reviewer_only",
+          "tests/test_agentic_persona_run_settings.py::test_declared_mapping_defaults"
+        ]
+      },
+      {
+        "ac": "AC3",
+        "covered": true,
+        "tests": [
+          "tests/test_agentic_persona_run_settings.py::test_multi_fault_file_reports_every_problem_in_both_validators",
+          "tests/test_agentic_persona_run_settings.py::test_registry_validator_accepts_the_keys_in_user_and_project_layers",
+          "tests/test_agentic_personas_declared_cli.py::test_validate_and_list_agree_on_new_key_problems"
+        ]
+      },
+      {
+        "ac": "AC4",
+        "covered": true,
+        "tests": [
+          "tests/test_agentic_persona_run_settings.py::test_is_reviewer"
+        ]
+      },
+      {
+        "ac": "AC5",
+        "covered": true,
+        "tests": [
+          "tests/test_agentic_persona_run_settings.py::test_build_request_declared_reviewer_layering",
+          "tests/test_agentic_persona_run_settings.py::test_build_request_declared_reviewer",
+          "tests/test_agentic_persona_run_settings.py::test_build_request_declared_triager_forced_read_only",
+          "tests/test_agentic_persona_run_settings.py::test_build_request_declared_implementer_writable"
+        ]
+      },
+      {
+        "ac": "AC6",
+        "covered": true,
+        "tests": [
+          "tests/test_agentic_persona_run_settings.py::test_build_request_declared_reviewer",
+          "tests/test_agentic_persona_run_settings.py::test_build_request_declared_reviewer_needs_the_root",
+          "tests/test_agentic_persona_run_settings.py::test_build_request_declared_implementer_writable"
+        ]
+      },
+      {
+        "ac": "AC7",
+        "covered": true,
+        "tests": [
+          "tests/test_agentic_persona_run_settings.py::test_output_section",
+          "tests/test_agentic_persona_run_settings.py::test_builtin_prompts_unchanged"
+        ]
+      },
+      {
+        "ac": "AC8",
+        "covered": true,
+        "tests": [
+          "tests/test_agentic_personas_declared_cli.py::test_show_and_list_json_carry_declared_fields_and_omit_them_for_builtins",
+          "tests/test_agentic_personas_declared_cli.py::test_validate_and_list_agree_on_new_key_problems"
+        ]
+      },
+      {
+        "ac": "AC9",
+        "covered": true,
+        "tests": [
+          "tests/test_agentic_persona_run_settings.py::test_inert",
+          "tests/test_agentic_persona_run_settings.py::test_declared_mapping_defaults"
+        ]
+      },
+      {
+        "ac": "AC10",
+        "covered": true,
+        "tests": []
+      }
+    ],
+    "fix_brief": ""
+  },
+  "profile": "thorough",
+  "profile_sources": [
+    "builtin:thorough.yaml"
+  ],
+  "worker": null,
+  "files": {
+    "prompt": "prompt.md",
+    "raw": "result.json",
+    "stderr": "stderr.log",
+    "stream": "stream.jsonl"
+  }
+}

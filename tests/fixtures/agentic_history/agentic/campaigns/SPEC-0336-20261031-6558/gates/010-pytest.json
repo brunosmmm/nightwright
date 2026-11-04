@@ -1,0 +1,23 @@
+{
+  "schema": "nw.gate.v1",
+  "name": "pytest",
+  "cmd": "uv run pytest -q -x -n 4",
+  "cwd": "/home/user/work/.nw-worktrees/Meta-Tools/SPEC-0336-20261031-6558",
+  "required": true,
+  "ok": true,
+  "exit_code": 0,
+  "timed_out": false,
+  "timeout_s": 2400,
+  "started_at": "2026-11-01T06:59:40-05:00",
+  "duration_s": 371.624,
+  "log": "010-pytest.log",
+  "error": null,
+  "summary": {
+    "format": "pytest",
+    "passed": 4671,
+    "failed": 0,
+    "errors": 0,
+    "skipped": 3,
+    "failing": []
+  }
+}

@@ -1,0 +1,126 @@
+{
+  "schema": "nw.run.v1",
+  "campaign": "SPEC-0336-20261031-6558",
+  "run_id": "012-adversarial_reviewer",
+  "persona": "adversarial_reviewer",
+  "model": "opus",
+  "effort": "high",
+  "max_budget_usd": 2.5,
+  "timeout_s": 2700,
+  "permission_mode": "dontAsk",
+  "started_at": "2026-10-31T22:26:08-04:00",
+  "duration_s": 262.328,
+  "exit_code": 0,
+  "timed_out": false,
+  "interrupted": false,
+  "is_error": false,
+  "cost_usd": 1.3463136,
+  "cost_estimated": false,
+  "usage": {
+    "input_tokens": 16,
+    "cache_creation_input_tokens": 91728,
+    "cache_read_input_tokens": 520428,
+    "output_tokens": 25417,
+    "output_tokens_details": {
+      "thinking_tokens": 21546
+    },
+    "server_tool_use": {
+      "web_search_requests": 0,
+      "web_fetch_requests": 0
+    },
+    "service_tier": "standard",
+    "cache_creation": {
+      "ephemeral_1h_input_tokens": 91728,
+      "ephemeral_5m_input_tokens": 0
+    },
+    "inference_geo": "global",
+    "iterations": [
+      {
+        "input_tokens": 4,
+        "output_tokens": 1283,
+        "cache_read_input_tokens": 98144,
+        "cache_creation_input_tokens": 4998,
+        "cache_creation": {
+          "ephemeral_5m_input_tokens": 0,
+          "ephemeral_1h_input_tokens": 4998
+        },
+        "type": "message"
+      }
+    ],
+    "speed": "standard",
+    "fallback_credit": null
+  },
+  "session_id": "2d13f9db-d6f9-4bf2-879a-f1b348962db0",
+  "verdict_ok": true,
+  "verdict": {
+    "verdict": "pass",
+    "score": 85,
+    "findings": [
+      {
+        "severity": "minor",
+        "category": "concurrency",
+        "title": "Signal handler raises at arbitrary points before the slot stage; it can skip a lock release and deadlock the job's own cleanup",
+        "detail": "In the validate/claim/checkout stages on_signal raises WorkerError, which runs between any two bytecodes of the main thread. If it lands in the finally of repo_lock or jobs_lock, after the body but before fcntl.flock(fd, LOCK_UN)/os.close(fd), the new exception replaces the unwind and the fd stays open and locked. _fail then calls _cleanup, which calls _drop_job_refs (repo_lock) and gc (jobs_lock, repo_lock). Each opens a new open file description and blocks with LOCK_EX against the leaked lock held by the same process, so the process hangs forever while holding the repo or jobs lock. Every other job for that repo, or every claim on the worker, then stalls.",
+        "trigger": "SIGTERM/SIGINT/SIGHUP arriving while the main thread is leaving `with repo_lock(...)` in _checkout, or `with jobs_lock(...)` in the claim stage",
+        "files": [
+          "src/nightwright/agentic/worker.py"
+        ],
+        "lines": [
+          "src/nightwright/agentic/worker.py:96",
+          "src/nightwright/agentic/worker.py:111",
+          "src/nightwright/agentic/worker.py:420"
+        ]
+      },
+      {
+        "severity": "minor",
+        "category": "error_handling",
+        "title": "A signal during checkout SIGKILLs a running git, which can leave stale ref locks in the shared cache",
+        "detail": "When on_signal raises inside subprocess.run, subprocess kills the git child with SIGKILL, so git cannot remove its lock files. If that git was `update-ref refs/nw/have/<sha>` in _set_have, `refs/nw/have/<sha>.lock` stays behind. Every later job naming that sha (often a shared base sha) then fails _set_have (check=True) with stage checkout until someone deletes the lock by hand. gc does not clean .lock files.",
+        "trigger": "SIGTERM/SIGHUP arriving while _set_have or the bundle fetch is running under the repo lock",
+        "files": [
+          "src/nightwright/agentic/worker.py"
+        ],
+        "lines": [
+          "src/nightwright/agentic/worker.py:157",
+          "src/nightwright/agentic/worker.py:345"
+        ]
+      },
+      {
+        "severity": "nit",
+        "category": "logic",
+        "title": "info.git_sha can report an unrelated repository",
+        "detail": "`git -C <site-packages> rev-parse HEAD` walks up from the install directory. A uv-tool install under a home directory that is itself a git repo (for example dotfiles) reports that repo's HEAD. GIT_DIR from the environment is also not scrubbed for this call.",
+        "trigger": "worker user's home directory is a git work tree",
+        "files": [
+          "src/nightwright/agentic/worker.py"
+        ],
+        "lines": [
+          "src/nightwright/agentic/worker.py:676"
+        ]
+      },
+      {
+        "severity": "nit",
+        "category": "bug",
+        "title": "gate_budget_s accepts NaN/Infinity from the JSON header",
+        "detail": "json.loads accepts NaN and Infinity. NaN passes the `budget <= 0` check, so deadline becomes NaN and the retry ladder's deadline comparison never stops a full rerun.",
+        "trigger": "header payload.gate_budget_s set to NaN",
+        "files": [
+          "src/nightwright/agentic/worker.py"
+        ],
+        "lines": [
+          "src/nightwright/agentic/worker.py:214"
+        ]
+      }
+    ],
+    "fix_brief": ""
+  },
+  "profile": "thorough",
+  "profile_sources": [
+    "builtin:thorough.yaml"
+  ],
+  "files": {
+    "prompt": "prompt.md",
+    "raw": "result.json",
+    "stderr": "stderr.log"
+  }
+}

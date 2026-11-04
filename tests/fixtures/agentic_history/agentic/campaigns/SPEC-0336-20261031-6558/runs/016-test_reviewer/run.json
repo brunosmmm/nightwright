@@ -1,0 +1,204 @@
+{
+  "schema": "nw.run.v1",
+  "campaign": "SPEC-0336-20261031-6558",
+  "run_id": "016-test_reviewer",
+  "persona": "test_reviewer",
+  "model": "opus",
+  "effort": "high",
+  "max_budget_usd": 1.0,
+  "timeout_s": 2700,
+  "permission_mode": "dontAsk",
+  "started_at": "2026-10-31T22:46:08-04:00",
+  "duration_s": 28.793,
+  "exit_code": 0,
+  "timed_out": false,
+  "interrupted": false,
+  "is_error": false,
+  "cost_usd": 0.6410701999999999,
+  "cost_estimated": false,
+  "usage": {
+    "input_tokens": 6,
+    "cache_creation_input_tokens": 68873,
+    "cache_read_input_tokens": 155511,
+    "output_tokens": 2948,
+    "output_tokens_details": {
+      "thinking_tokens": 295
+    },
+    "server_tool_use": {
+      "web_search_requests": 0,
+      "web_fetch_requests": 0
+    },
+    "service_tier": "standard",
+    "cache_creation": {
+      "ephemeral_1h_input_tokens": 68873,
+      "ephemeral_5m_input_tokens": 0
+    },
+    "inference_geo": "global",
+    "iterations": [
+      {
+        "input_tokens": 2,
+        "output_tokens": 2524,
+        "cache_read_input_tokens": 79259,
+        "cache_creation_input_tokens": 1031,
+        "cache_creation": {
+          "ephemeral_5m_input_tokens": 0,
+          "ephemeral_1h_input_tokens": 1031
+        },
+        "type": "message"
+      }
+    ],
+    "speed": "standard",
+    "fallback_credit": null
+  },
+  "session_id": "73458081-f10c-41c8-b1a8-3c82a905a502",
+  "verdict_ok": true,
+  "verdict": {
+    "verdict": "pass",
+    "score": 92,
+    "findings": [
+      {
+        "severity": "minor",
+        "ac": "`nw worker info --json` prints the documented keys",
+        "title": "Plain (non-JSON) `nw worker info` output is untested",
+        "detail": "Only `info --json` is tested. The plain `key: value` path in cli_worker.worker_info is never run. It is cosmetic and outside the AC.",
+        "files": [
+          "src/nightwright/agentic/cli_worker.py",
+          "tests/test_worker.py"
+        ]
+      },
+      {
+        "severity": "minor",
+        "ac": "`nw worker ssh-command` execs the four allowed subcommands and refuses everything else",
+        "title": "ssh-command is only tested in-process, never through the click command",
+        "detail": "test_worker_ssh_command.py calls W.ssh_command(environ) directly. No test runs `nw worker ssh-command` as a subprocess with SSH_ORIGINAL_COMMAND set to a refused command to check exit 2 at the CLI layer, so the `raise SystemExit(...)` wiring is unverified. The risk is low.",
+        "files": [
+          "tests/test_worker_ssh_command.py",
+          "src/nightwright/agentic/cli_worker.py"
+        ]
+      },
+      {
+        "severity": "minor",
+        "ac": "Two concurrent gate-jobs for the same repo_key with different base.sha",
+        "title": "The concurrent-jobs gate busy-polls with `sleep 0.1` in shell",
+        "detail": "The rendezvous loop in test_concurrent_jobs_see_their_own_base polls the sync dir with `sleep 0.1`. It is bounded by the gate's 60 s timeout and the test pins slots: 2, but it still relies on a wall-clock wait under load. Accepted flakiness risk.",
+        "files": [
+          "tests/test_worker.py"
+        ]
+      }
+    ],
+    "coverage_assessment": [
+      {
+        "ac": "Piping a valid header and bundle runs the gates and emits accepted, started, a gate frame per gate (with .log, .json, .r<n>) and done",
+        "covered": true,
+        "tests": [
+          "tests/test_worker.py::test_pass_emits_frames_and_files",
+          "tests/test_worker.py::test_retry_ladder_sends_r1_files",
+          "tests/test_worker.py::test_fail_is_done_with_ok_false_and_exit_0"
+        ]
+      },
+      {
+        "ac": "git merge-base $NW_BASE HEAD on the worker prints the coordinator's sha",
+        "covered": true,
+        "tests": [
+          "tests/test_worker.py::test_merge_base_and_base_placeholder_match_the_coordinator"
+        ]
+      },
+      {
+        "ac": "An env key outside the allowlist gives an error frame with stage validate and nothing runs; a reused job_id gives stage claim",
+        "covered": true,
+        "tests": [
+          "tests/test_worker.py::test_env_outside_allowlist_is_refused",
+          "tests/test_worker.py::test_duplicate_job_id_is_a_claim_error",
+          "tests/test_worker.py::test_bad_schema_and_nw_base_mismatch_are_refused",
+          "tests/test_worker.py::test_bad_header_fields_are_refused_before_anything_runs"
+        ]
+      },
+      {
+        "ac": "Two concurrent jobs with different base.sha for the same base.name each see their own base",
+        "covered": true,
+        "tests": [
+          "tests/test_worker.py::test_concurrent_jobs_see_their_own_base"
+        ]
+      },
+      {
+        "ac": "EOF mid-gate kills the gate and sends done interrupted; EOF during the slot wait sends done interrupted with no started",
+        "covered": true,
+        "tests": [
+          "tests/test_worker.py::test_eof_mid_gate_interrupts",
+          "tests/test_worker.py::test_eof_while_waiting_for_the_slot",
+          "tests/test_worker.py::test_signal_mid_gate_kills_the_gate_and_sends_done"
+        ]
+      },
+      {
+        "ac": "With the slot held, slot_wait comes first and started only once the slot frees",
+        "covered": true,
+        "tests": [
+          "tests/test_worker.py::test_held_slot_gives_slot_wait_then_started"
+        ]
+      },
+      {
+        "ac": "Exit 0 after done (pass, fail or interrupted), 3 after error",
+        "covered": true,
+        "tests": [
+          "tests/test_worker.py::test_pass_emits_frames_and_files",
+          "tests/test_worker.py::test_fail_is_done_with_ok_false_and_exit_0",
+          "tests/test_worker.py::test_eof_mid_gate_interrupts",
+          "tests/test_worker.py::test_env_outside_allowlist_is_refused",
+          "tests/test_worker.py::test_stdin_short_of_bundle_bytes_is_a_read_error",
+          "tests/test_worker.py::test_signal_before_the_slot_is_an_error_frame"
+        ]
+      },
+      {
+        "ac": "A log over 16 MiB arrives cut to 16 MiB with truncated_bytes in its sidecar",
+        "covered": true,
+        "tests": [
+          "tests/test_worker.py::test_log_over_16_mib_is_truncated"
+        ]
+      },
+      {
+        "ac": "have reports the commit and base after the job; gc --keep-days 0 removes refs, objects and job dirs, but a live job's dir survives",
+        "covered": true,
+        "tests": [
+          "tests/test_worker.py::test_have_then_gc_removes_refs_objects_and_job_dirs",
+          "tests/test_worker.py::test_gc_during_a_live_job_keeps_its_dir",
+          "tests/test_worker.py::test_gc_drops_orphan_job_refs_and_keeps_fresh_have_refs",
+          "tests/test_worker.py::test_gc_reads_the_live_jobs_again_under_the_repo_lock"
+        ]
+      },
+      {
+        "ac": "info --json prints the documented keys",
+        "covered": true,
+        "tests": [
+          "tests/test_worker.py::test_info_json_keys"
+        ]
+      },
+      {
+        "ac": "ssh-command execs the four allowed subcommands and refuses everything else with exit 2, running nothing",
+        "covered": true,
+        "tests": [
+          "tests/test_worker_ssh_command.py::test_allowed_commands_are_execd",
+          "tests/test_worker_ssh_command.py::test_refused_commands_run_nothing",
+          "tests/test_worker_ssh_command.py::test_own_nw_execs_the_forced_command_path",
+          "tests/test_worker_ssh_command.py::test_own_nw_never_uses_the_client_path"
+        ]
+      },
+      {
+        "ac": "docs/WORKFLOW.md documents the mandatory dedicated user and the absolute-path key line",
+        "covered": true,
+        "tests": [
+          "manual (per test plan); the diff adds the 'Remote gate worker' section with the mandatory user and the command=\"/home/user/.local/bin/nw worker ssh-command\",restrict line"
+        ]
+      }
+    ],
+    "fix_brief": ""
+  },
+  "profile": "thorough",
+  "profile_sources": [
+    "builtin:thorough.yaml"
+  ],
+  "files": {
+    "prompt": "prompt.md",
+    "raw": "result.json",
+    "stderr": "stderr.log"
+  }
+}

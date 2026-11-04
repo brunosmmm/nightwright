@@ -1,0 +1,12 @@
+Using CPython 3.14.9 interpreter at: /usr/bin/python3
+Creating virtual environment at: .venv
+   Building nightwright @ file:///home/user/.local/share/nightwright/agentic/worker/jobs/SPEC-0394-20261102-ae5b-gate-006-a1/tree
+      Built nightwright @ file:///home/user/.local/share/nightwright/agentic/worker/jobs/SPEC-0394-20261102-ae5b-gate-006-a1/tree
+Installed 51 packages in 329ms
+bringing up nodes...
+bringing up nodes...
+
+........................................................................ [ 37%]
+........................................................................ [ 75%]
+..............................................                           [100%]
+190 passed in 9.48s

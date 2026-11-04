@@ -1,0 +1,15 @@
+{
+  "schema": "nw.gate.v1",
+  "name": "spec-lint",
+  "cmd": "python3 tools/spec_lint.py --write-ledger >/dev/null && python3 tools/spec_lint.py",
+  "cwd": "/home/user/.local/share/nightwright/agentic/worker/jobs/SPEC-0394-20261102-ae5b-gate-002-a1/tree",
+  "required": true,
+  "ok": true,
+  "exit_code": 0,
+  "timed_out": false,
+  "timeout_s": 120,
+  "started_at": "2026-11-02T22:19:30-05:00",
+  "duration_s": 3.874,
+  "log": "002-spec-lint.log",
+  "error": null
+}

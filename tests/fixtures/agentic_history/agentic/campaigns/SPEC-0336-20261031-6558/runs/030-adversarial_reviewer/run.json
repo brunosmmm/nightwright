@@ -1,0 +1,127 @@
+{
+  "schema": "nw.run.v1",
+  "campaign": "SPEC-0336-20261031-6558",
+  "run_id": "030-adversarial_reviewer",
+  "persona": "adversarial_reviewer",
+  "model": "opus",
+  "effort": "high",
+  "max_budget_usd": 2.5,
+  "timeout_s": 2700,
+  "permission_mode": "dontAsk",
+  "started_at": "2026-11-01T00:04:34-04:00",
+  "duration_s": 253.82,
+  "exit_code": 0,
+  "timed_out": false,
+  "interrupted": false,
+  "is_error": false,
+  "cost_usd": 1.41651,
+  "cost_estimated": false,
+  "usage": {
+    "input_tokens": 20,
+    "cache_creation_input_tokens": 97739,
+    "cache_read_input_tokens": 818690,
+    "output_tokens": 23539,
+    "output_tokens_details": {
+      "thinking_tokens": 20210
+    },
+    "server_tool_use": {
+      "web_search_requests": 0,
+      "web_fetch_requests": 0
+    },
+    "service_tier": "standard",
+    "cache_creation": {
+      "ephemeral_1h_input_tokens": 97739,
+      "ephemeral_5m_input_tokens": 0
+    },
+    "inference_geo": "global",
+    "iterations": [
+      {
+        "input_tokens": 2,
+        "output_tokens": 1509,
+        "cache_read_input_tokens": 106410,
+        "cache_creation_input_tokens": 2743,
+        "cache_creation": {
+          "ephemeral_5m_input_tokens": 0,
+          "ephemeral_1h_input_tokens": 2743
+        },
+        "type": "message"
+      }
+    ],
+    "speed": "standard",
+    "fallback_credit": null
+  },
+  "session_id": "a81635f5-c942-4e3c-868e-b8a5ed54be84",
+  "verdict_ok": true,
+  "verdict": {
+    "verdict": "pass",
+    "score": 82,
+    "findings": [
+      {
+        "severity": "minor",
+        "category": "concurrency",
+        "title": "A blocked frame write keeps the worker's gate slot held, and signals cannot interrupt it",
+        "detail": "`_Frames.emit` writes and flushes to stdout with no timeout, and it runs on the main thread inside `gate_slots.acquire` (gate frames can be about 16 MiB of base64 per file). A coordinator that stays connected but stops reading stdout fills the pipe, and the worker then blocks in `write` while holding its slot. From the `slot` stage on, `on_signal` only starts a `terminate_all` thread and does not raise. PEP 475 retries the interrupted write, so SIGTERM/SIGHUP cannot end the job either. The stdin watcher sets `cancel` on EOF, but the main thread never gets back to check it.",
+        "trigger": "A coordinator whose SSH session stays up but which stops draining stdout (for example, hung on a lock) while a gate frame larger than the pipe buffer is being written.",
+        "files": [
+          "src/nightwright/agentic/worker.py"
+        ],
+        "lines": [
+          "src/nightwright/agentic/worker.py:294",
+          "src/nightwright/agentic/worker.py:556",
+          "src/nightwright/agentic/worker.py:707"
+        ]
+      },
+      {
+        "severity": "minor",
+        "category": "logic",
+        "title": "Every job's exit waits on a global gc of all repo caches, which can include a full `git gc --prune=now`",
+        "detail": "`_cleanup` calls `gc(cfg)`, and `gc` walks every `repos/*.git`. For each one it takes that repo's lock, so it waits behind another repo's large bundle fetch. When any have ref has aged past 2 days, it also runs `git gc --prune=now` with no timeout. Have refs age continuously, so the first job to finish after each 2-day mark pays for a full repack of some cache. The process exits only afterwards, and the coordinator reads the exit code to tell transport failure from gate failure, so the job's end is delayed. Signals sent during this phase only start `terminate_all` threads and do not stop the process.",
+        "trigger": "A worker caching a large repo whose have refs are more than 2 days old: the next unrelated gate-job, for any repo, blocks its exit on `git gc --prune=now` of that cache after emitting `done`.",
+        "files": [
+          "src/nightwright/agentic/worker.py"
+        ],
+        "lines": [
+          "src/nightwright/agentic/worker.py:483",
+          "src/nightwright/agentic/worker.py:843"
+        ]
+      },
+      {
+        "severity": "nit",
+        "category": "logic",
+        "title": "`job_id` `.` or `..` passes validation and is refused at `claim` instead of `validate`",
+        "detail": "`KEY_RE` (`[A-Za-z0-9._-]+`) accepts `.` and `..`. `jobs_dir / '..'` is the existing `worker/` dir, so `mkdir` raises FileExistsError and the job is reported as a duplicate (`stage: claim`) even though no such job exists. Nothing escapes the store, but the error stage is misleading. The same names are also accepted as `repo_key`/`campaign`, where the appended suffixes produce odd file names such as `...git`.",
+        "trigger": "A header with `job_id: \"..\"`.",
+        "files": [
+          "src/nightwright/agentic/worker.py"
+        ],
+        "lines": [
+          "src/nightwright/agentic/worker.py:52",
+          "src/nightwright/agentic/worker.py:577"
+        ]
+      },
+      {
+        "severity": "nit",
+        "category": "other",
+        "title": "`info.git_sha` can report an unrelated repository's HEAD",
+        "detail": "`git -C <site-packages>/nightwright rev-parse HEAD` walks up the directory tree. For a `uv tool install`, this reports the HEAD of whatever git repo contains the tool directory (for example, a home directory tracked as a dotfiles repo), not nightwright's own commit.",
+        "trigger": "The worker user's home directory, or any parent of `~/.local/share/uv/tools`, is a git work tree.",
+        "files": [
+          "src/nightwright/agentic/worker.py"
+        ],
+        "lines": [
+          "src/nightwright/agentic/worker.py:860"
+        ]
+      }
+    ],
+    "fix_brief": ""
+  },
+  "profile": "thorough",
+  "profile_sources": [
+    "builtin:thorough.yaml"
+  ],
+  "files": {
+    "prompt": "prompt.md",
+    "raw": "result.json",
+    "stderr": "stderr.log"
+  }
+}

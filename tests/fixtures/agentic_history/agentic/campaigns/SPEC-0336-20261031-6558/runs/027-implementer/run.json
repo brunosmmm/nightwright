@@ -1,0 +1,134 @@
+{
+  "schema": "nw.run.v1",
+  "campaign": "SPEC-0336-20261031-6558",
+  "run_id": "027-implementer",
+  "persona": "implementer",
+  "model": "opus",
+  "effort": "high",
+  "max_budget_usd": 10.0,
+  "timeout_s": 2700,
+  "permission_mode": "bypassPermissions",
+  "started_at": "2026-10-31T23:47:11-04:00",
+  "duration_s": 438.41,
+  "exit_code": 0,
+  "timed_out": false,
+  "interrupted": false,
+  "is_error": false,
+  "cost_usd": 1.5041952,
+  "cost_estimated": false,
+  "usage": {
+    "input_tokens": 54,
+    "cache_creation_input_tokens": 83483,
+    "cache_read_input_tokens": 2100576,
+    "output_tokens": 20800,
+    "output_tokens_details": {
+      "thinking_tokens": 6538
+    },
+    "server_tool_use": {
+      "web_search_requests": 0,
+      "web_fetch_requests": 0
+    },
+    "service_tier": "standard",
+    "cache_creation": {
+      "ephemeral_1h_input_tokens": 83483,
+      "ephemeral_5m_input_tokens": 0
+    },
+    "inference_geo": "global",
+    "iterations": [
+      {
+        "input_tokens": 2,
+        "output_tokens": 1254,
+        "cache_read_input_tokens": 96552,
+        "cache_creation_input_tokens": 549,
+        "cache_creation": {
+          "ephemeral_5m_input_tokens": 0,
+          "ephemeral_1h_input_tokens": 549
+        },
+        "type": "message"
+      }
+    ],
+    "speed": "standard",
+    "fallback_credit": null
+  },
+  "session_id": "d8ef9087-fa59-473a-aaa2-f52b59d64be5",
+  "verdict_ok": true,
+  "verdict": {
+    "status": "done",
+    "summary": "SPEC-0336: base names git refuses are now caught at validate, a signal between checkout and the slot stage gives an error frame (stage signal, exit 3), one broken cache no longer stops gc for later repos (new `errors` key, CLI exits 1), and the budget tests no longer depend on wall-clock margins.",
+    "changed_files": [
+      "src/nightwright/agentic/worker.py",
+      "src/nightwright/agentic/cli_worker.py",
+      "tests/test_worker.py",
+      "docs/specs/0336-gate-worker-job-runner-and-forced-command.md"
+    ],
+    "tests_run": [
+      "uv run pytest -q -n {4,6,8,4,6} tests/test_worker.py tests/test_worker_ssh_command.py tests/test_gate_slots.py tests/test_cli_gate_slots.py tests/test_agentic_gates.py tests/test_rich_output_guard.py tests/test_test_waits.py (213 passed each of 5 runs; one more full run of the set also passed)",
+      "with the src/ diff reverse-applied: the new signal, broken-cache and 6 base-name cases fail (they test the fixes)",
+      "python3 tools/spec_lint.py --write-ledger && python3 tools/spec_lint.py (OK)"
+    ],
+    "ac_status": [
+      {
+        "ac": "valid header+bundle runs gates; accepted/started/gate/done frames",
+        "met": true
+      },
+      {
+        "ac": "merge-base $NW_BASE HEAD matches coordinator",
+        "met": true
+      },
+      {
+        "ac": "env outside allowlist -> validate error; reused job_id -> claim",
+        "met": true
+      },
+      {
+        "ac": "concurrent jobs with different base.sha see own base",
+        "met": true
+      },
+      {
+        "ac": "EOF mid-gate / during slot wait -> done interrupted",
+        "met": true
+      },
+      {
+        "ac": "held slot -> slot_wait then started",
+        "met": true
+      },
+      {
+        "ac": "exit 0 after done, 3 after error",
+        "met": true
+      },
+      {
+        "ac": "log over 16 MiB truncated with truncated_bytes",
+        "met": true
+      },
+      {
+        "ac": "have after job; gc --keep-days 0 removes refs/objects/dirs except live job",
+        "met": true
+      },
+      {
+        "ac": "info --json documented keys",
+        "met": true
+      },
+      {
+        "ac": "ssh-command execs four allowed subcommands, refuses rest with exit 2",
+        "met": true
+      },
+      {
+        "ac": "WORKFLOW.md documents mandatory dedicated user and key line",
+        "met": true
+      }
+    ],
+    "blockers": [],
+    "followup_ideas": [
+      "The older base-name refusal cases (`../main`, `-main`) were only passing because env.NW_BASE stayed `main`, so the NW_BASE mismatch check refused them first. They are now set through a helper that changes both fields. Other header-refusal parametrizations may hide the same problem and are worth an audit.",
+      "gate_slots.acquire takes a free slot even when stop= is already set, so a job cancelled just before the slot stage emits `started` before `done` interrupted. Worth deciding whether acquire should check stop first."
+    ]
+  },
+  "profile": "thorough",
+  "profile_sources": [
+    "builtin:thorough.yaml"
+  ],
+  "files": {
+    "prompt": "prompt.md",
+    "raw": "result.json",
+    "stderr": "stderr.log"
+  }
+}

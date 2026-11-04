@@ -1,0 +1,43 @@
+{
+  "schema": "nw.run.request.v1",
+  "persona": "spec_writer",
+  "model": "sonnet",
+  "effort": "high",
+  "max_budget_usd": 1.5,
+  "timeout_s": 2700,
+  "permission_mode": "bypassPermissions",
+  "read_only": false,
+  "cwd": "/home/user/work/.nw-worktrees/Meta-Tools/IDEA-606-20261101-df50",
+  "json_schema": {
+    "type": "object",
+    "required": [
+      "status",
+      "summary"
+    ],
+    "properties": {
+      "status": {
+        "type": "string",
+        "enum": [
+          "written",
+          "blocked"
+        ]
+      },
+      "spec_path": {
+        "type": "string"
+      },
+      "title": {
+        "type": "string"
+      },
+      "summary": {
+        "type": "string"
+      },
+      "blockers": {
+        "type": "array",
+        "items": {
+          "type": "string"
+        }
+      }
+    }
+  },
+  "started_at": "2026-11-01T10:47:11-05:00"
+}

@@ -1,0 +1,27 @@
+{
+  "schema": "nw.gate.v1",
+  "name": "pytest-affected",
+  "cmd": "uv run pytest -q -n 0 tests/test_agentic_exit_paths.py::test_admission_blocked_journaled_once_per_change tests/test_agentic_loop_state.py::test_run_stamps_slot_freed_at_on_drop",
+  "cwd": "/home/user/work/.nw-worktrees/Meta-Tools/SPEC-0394-20261102-ae5b",
+  "required": true,
+  "ok": false,
+  "exit_code": 1,
+  "timed_out": false,
+  "timeout_s": 2400,
+  "started_at": "2026-11-02T21:58:10-05:00",
+  "duration_s": 3.679,
+  "log": "001-pytest-affected.r1.log",
+  "error": null,
+  "summary": {
+    "format": "pytest",
+    "passed": 0,
+    "failed": 2,
+    "errors": 0,
+    "skipped": 0,
+    "failing": [
+      "tests/test_agentic_exit_paths.py::test_admission_blocked_journaled_once_per_change",
+      "tests/test_agentic_loop_state.py::test_run_stamps_slot_freed_at_on_drop"
+    ]
+  },
+  "attempt": 1
+}

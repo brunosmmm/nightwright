@@ -1,0 +1,59 @@
+{
+  "schema": "nw.spec.review.v1",
+  "spec_id": "SPEC-0394",
+  "verdict": "approve",
+  "spec_sha256": "f0442ce7a5dd541c89f3ed14e34238d1e39281492f7521ba386772126bdd0a16",
+  "reviewed_at": "2026-11-02T19:59:54-05:00",
+  "model": "opus",
+  "reviewer_profile": "balanced",
+  "cost_usd": 0.5056532,
+  "size": "l",
+  "tone": "high-end",
+  "rationale": "Ten acceptance criteria across persona_registry.py, persona_defs.py, personas.py (Persona, build_request, build_prompt, new is_reviewer/declared_settings), the `nw personas` CLI and the capability doc. It is high-end rather than cost-effective because it changes run-request construction and forces read-only/dontAsk permissions, although the queue and the builtin path stay untouched.",
+  "findings": [
+    {
+      "severity": "minor",
+      "section": "Design / build_request",
+      "title": "User personas layer for build_request is unspecified; get_persona defaults to the global config dir, not cfg",
+      "detail": "The spec writes `p = get_persona(persona, project_root)`. `get_persona` passes `user_dir=None` to `persona_defs.load_registry`, which falls back to `paths.config_dir()/personas`, not `cfg[\"config_dir\"]`. `persona_registry.load_registry` and the request env (`NW_CONFIG_DIR`) use `cfg`. A user-layer declared persona could resolve differently from what `nw personas` lists for that cfg. The Test plan's 'temp user personas dir' also cannot reach build_request without monkeypatching `paths`.",
+      "suggested_fix": "In Design / build_request, replace the get_persona bullet with: \"`p = get_persona(persona, project_root, user_dir=persona_defs.user_personas_dir(cfg))`; `is_reviewer` gets the same `user_dir`.\" In AC5, add: \"a user-layer declared reviewer under `cfg['config_dir']/personas` resolves.\"",
+      "acceptance": "build_request and is_reviewer derive user_dir from cfg, and a test puts a declared persona under a tmp cfg config_dir without patching paths."
+    },
+    {
+      "severity": "minor",
+      "section": "Design / build_request",
+      "title": "Declared reviewers may use {{tests_touched}} but never get it",
+      "detail": "`ROLE_PLACEHOLDERS[\"reviewer\"]` allows `tests_touched` (and `campaign_diff`), so the validator accepts a declared reviewer template that uses them. The spec keeps `with_tests = persona == \"test_reviewer\"`, so `tests_touched` always renders as '(none)' for a declared reviewer. The spec does not say this is intended.",
+      "suggested_fix": "In Design / build_request, change the with_tests line to: \"`with_tests` is `persona == \"test_reviewer\"` or a declared reviewer (`p.declared is not None and p.role == \"reviewer\"`), so every placeholder the reviewer role allows is filled.\" Alternatively, add a sentence that `tests_touched` is not filled for declared reviewers and remove it from `ROLE_PLACEHOLDERS[\"reviewer\"]`.",
+      "acceptance": "A test renders a declared reviewer template that uses {{tests_touched}} with a tests change and gets non-'(none)' content (or the placeholder is refused by validation)."
+    },
+    {
+      "severity": "nit",
+      "section": "Design / build_request",
+      "title": "is_reviewer re-scans the registry right after get_persona resolved the persona",
+      "detail": "`get_persona` and `is_reviewer` each call `persona_defs.load_registry`, which reads and validates every definition file. The role is already on the resolved `p`, so the second scan is redundant.",
+      "suggested_fix": "Change the review-context bullet to: \"Review context: `review = persona in REVIEWER_PERSONAS or (p.declared is not None and p.role == \\\"reviewer\\\")` (same answer as `is_reviewer(persona, project_root)`, without a second registry scan).\"",
+      "acceptance": "build_request scans the declared definitions once per call."
+    },
+    {
+      "severity": "nit",
+      "section": "Design / Generated Output section",
+      "title": "State that the listed categories include the appended `other`",
+      "detail": "`reviewer_schema(categories)` appends `other` when it is absent, so a list read from `p.schema` includes `other` even if the definition did not declare it. AC7 and its test should expect this.",
+      "suggested_fix": "Append to the Generated Output section: \"The list includes `other`, which `reviewer_schema` adds when the definition omits it.\"",
+      "acceptance": "test_output_section asserts `other` appears in the generated list."
+    },
+    {
+      "severity": "nit",
+      "section": "Design / Persona carries the declaration",
+      "title": "template_sha256 source is described as 'bytes read during validation', but validation reads text",
+      "detail": "`_check_template` uses `read_text(encoding=\"utf-8\")`. Hashing re-encoded text and hashing the raw file can differ (for example a BOM or CRLF handling), so the sentence is ambiguous.",
+      "suggested_fix": "Replace \"The sha256 is of the template bytes read during validation.\" with \"The sha256 is `hashlib.sha256(template_path.read_bytes()).hexdigest()` of the template file.\"",
+      "acceptance": "The spec names the exact hashing input, and the test compares it against sha256 of the file bytes."
+    }
+  ],
+  "suggested_splits": [],
+  "repo_root": "/home/user/work/nightwright",
+  "spec_path": "/home/user/work/nightwright/docs/specs/0394-declared-persona-run-settings-routing-and-requests.md",
+  "origin": "main checkout"
+}

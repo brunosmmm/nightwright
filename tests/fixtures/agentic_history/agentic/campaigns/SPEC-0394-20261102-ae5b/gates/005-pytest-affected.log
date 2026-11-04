@@ -1,0 +1,75 @@
+affected_tests: affected: 123/252 test files affected by 10 changed files (reference scan for docs/LEDGER.md; reference scan for docs/product/capabilities/agentic.md; reference scan for docs/product/reference/index.md; reference scan for docs/specs/0394-declared-persona-run-settings-routing-and-requests.md; name rule for src/nightwright/agentic/cli_personas.py)
+affected_tests: running uv run pytest -q -x -n 2 tests/test_agentic_adopt.py tests/test_agentic_campaign_export.py tests/test_agentic_campaign_runs.py tests/test_agentic_close.py tests/test_agentic_close_inflight.py tests/test_agentic_close_regenerate.py tests/test_agentic_close_reuse.py tests/test_agentic_close_train.py tests/test_agentic_conduct_cli.py tests/test_agentic_conductor_guard.py tests/test_agentic_config_reload.py tests/test_agentic_cost_estimate.py tests/test_agentic_dashboard.py tests/test_agentic_dashboard_journey.py tests/test_agentic_dashboard_spec_phase.py tests/test_agentic_dashboard_spec_reviews.py tests/test_agentic_detach.py tests/test_agentic_divergence.py tests/test_agentic_dogfood_config.py tests/test_agentic_drain_signal.py tests/test_agentic_e2e.py tests/test_agentic_escalations.py tests/test_agentic_events.py tests/test_agentic_events_settings.py tests/test_agentic_exit_paths.py tests/test_agentic_gate_limits.py tests/test_agentic_gate_paths.py tests/test_agentic_gates.py tests/te
+Using CPython 3.14.9 interpreter at: /usr/bin/python3
+Creating virtual environment at: .venv
+   Building nightwright @ file:///home/user/.local/share/nightwright/agentic/worker/jobs/SPEC-0394-20261102-ae5b-gate-005-a1/tree
+      Built nightwright @ file:///home/user/.local/share/nightwright/agentic/worker/jobs/SPEC-0394-20261102-ae5b-gate-005-a1/tree
+Installed 51 packages in 1.82s
+bringing up nodes...
+bringing up nodes...
+
+........................................................................ [  2%]
+........................................................................ [  4%]
+.....s..........................................s....................... [  6%]
+........................................................................ [  8%]
+........................................................................ [ 10%]
+........................................................................ [ 12%]
+........................................................................ [ 14%]
+........................................................................ [ 16%]
+........................................................................ [ 18%]
+........................................................................ [ 20%]
+........................................................................ [ 22%]
+........................................................................ [ 24%]
+........................................................................ [ 26%]
+........................................................................ [ 28%]
+........................................................................ [ 30%]
+........................................................................ [ 32%]
+........................................................................ [ 34%]
+........................................................................ [ 36%]
+........................................................................ [ 39%]
+........................................................................ [ 41%]
+........................................................................ [ 43%]
+........................................................................ [ 45%]
+........................................................................ [ 47%]
+........................................................................ [ 49%]
+........................................................................ [ 51%]
+........................................................................ [ 53%]
+........................................................................ [ 55%]
+........................................................................ [ 57%]
+........................................................................ [ 59%]
+........................................................................ [ 61%]
+........................................................................ [ 63%]
+........................................................................ [ 65%]
+........................................................................ [ 67%]
+........................................................................ [ 69%]
+........................................................................ [ 71%]
+........................................................................ [ 73%]
+........................................................................ [ 76%]
+........................................................................ [ 78%]
+........................................................................ [ 80%]
+...............ss....................................................... [ 82%]
+........................................................................ [ 84%]
+........................................................................ [ 86%]
+........................................................................ [ 88%]
+........................................................................ [ 90%]
+........................................................................ [ 92%]
+........................................................................ [ 94%]
+........................................................................ [ 96%]
+........................................................................ [ 98%]
+.................................................                        [100%]
+=============================== warnings summary ===============================
+tests/test_org_write_race.py: 8 warnings
+tests/test_spec_numbers.py: 8 warnings
+  /usr/lib/python3.14/multiprocessing/popen_fork.py:76: DeprecationWarning: This process (pid=2552866) is multi-threaded, use of fork() may lead to deadlocks in the child.
+    self.pid = os.fork()
+
+tests/test_spec_numbers.py::test_concurrent_release_and_list_lose_nothing
+tests/test_spec_numbers.py::test_concurrent_release_and_list_lose_nothing
+tests/test_spec_numbers.py::test_concurrent_release_and_list_lose_nothing
+tests/test_spec_numbers.py::test_concurrent_release_and_list_lose_nothing
+tests/test_spec_numbers.py::test_concurrent_release_and_list_lose_nothing
+  /usr/lib/python3.14/multiprocessing/popen_fork.py:76: DeprecationWarning: This process (pid=2552755) is multi-threaded, use of fork() may lead to deadlocks in the child.
+    self.pid = os.fork()
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+3501 passed, 4 skipped, 21 warnings in 946.80s (0:15:46)

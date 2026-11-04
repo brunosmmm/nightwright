@@ -1,0 +1,23 @@
+{
+  "schema": "nw.gate.v1",
+  "name": "docs-tests",
+  "cmd": "uv run pytest -q -n 2 tests/test_docs_*.py tests/test_spec_lint*.py tests/test_specs.py tests/test_agentic_profiles.py",
+  "cwd": "/home/user/.local/share/nightwright/agentic/worker/jobs/SPEC-0394-20261102-ae5b-gate-006-a1/tree",
+  "required": true,
+  "ok": true,
+  "exit_code": 0,
+  "timed_out": false,
+  "timeout_s": 900,
+  "started_at": "2026-11-03T21:06:40-05:00",
+  "duration_s": 11.143,
+  "log": "006-docs-tests.log",
+  "error": null,
+  "summary": {
+    "format": "pytest",
+    "passed": 190,
+    "failed": 0,
+    "errors": 0,
+    "skipped": 0,
+    "failing": []
+  }
+}

@@ -1,0 +1,152 @@
+{
+  "schema": "nw.run.v1",
+  "campaign": "SPEC-0336-20261031-6558",
+  "run_id": "008-adversarial_reviewer",
+  "persona": "adversarial_reviewer",
+  "model": "opus",
+  "effort": "high",
+  "max_budget_usd": 2.5,
+  "timeout_s": 2700,
+  "permission_mode": "dontAsk",
+  "started_at": "2026-10-31T22:05:14-04:00",
+  "duration_s": 242.514,
+  "exit_code": 0,
+  "timed_out": false,
+  "interrupted": false,
+  "is_error": false,
+  "cost_usd": 1.3015776,
+  "cost_estimated": false,
+  "usage": {
+    "input_tokens": 16,
+    "cache_creation_input_tokens": 88461,
+    "cache_read_input_tokens": 499428,
+    "output_tokens": 24697,
+    "output_tokens_details": {
+      "thinking_tokens": 19842
+    },
+    "server_tool_use": {
+      "web_search_requests": 0,
+      "web_fetch_requests": 0
+    },
+    "service_tier": "standard",
+    "cache_creation": {
+      "ephemeral_1h_input_tokens": 88461,
+      "ephemeral_5m_input_tokens": 0
+    },
+    "inference_geo": "global",
+    "iterations": [
+      {
+        "input_tokens": 4,
+        "output_tokens": 2000,
+        "cache_read_input_tokens": 94865,
+        "cache_creation_input_tokens": 3664,
+        "cache_creation": {
+          "ephemeral_5m_input_tokens": 0,
+          "ephemeral_1h_input_tokens": 3664
+        },
+        "type": "message"
+      }
+    ],
+    "speed": "standard",
+    "fallback_credit": null
+  },
+  "session_id": "aa8fcd73-5a4d-4e5f-9930-86840b0797bf",
+  "verdict_ok": true,
+  "verdict": {
+    "verdict": "pass",
+    "score": 82,
+    "findings": [
+      {
+        "severity": "minor",
+        "category": "concurrency",
+        "title": "gc --keep-days 0 can prune a job's objects if the job is claimed after gc has scanned the job dirs",
+        "detail": "gc() builds live_ids/live_shas from one scan of jobs/ without any repo lock. It then takes each repo lock and deletes every refs/nw/have/* ref that is not in live_shas and is at least keep_s old (keep_s is 0 here, so every ref qualifies), plus every job ref whose owner is not in live_ids, and then runs `git gc --prune=now`. A gate-job that claims and fetches after the scan has fresh have refs and job refs that this gc treats as orphans. Its commit and base objects are then pruned. If that happens between the fetch and the clone, the job fails with a checkout error. If it happens after the clone, the running gates hit missing objects through alternates. With the default --keep-days 2 the fresh have refs survive, so only an explicit keep-days 0 (or a coordinator that issues one) is exposed.",
+        "trigger": "`nw worker gc --keep-days 0` runs while a new gate-job for the same repo_key is between job.mkdir() and its clone/checkout (or already running gates whose objects come only through alternates).",
+        "files": [
+          "src/nightwright/agentic/worker.py"
+        ],
+        "lines": [
+          "src/nightwright/agentic/worker.py:518",
+          "src/nightwright/agentic/worker.py:546"
+        ]
+      },
+      {
+        "severity": "minor",
+        "category": "error_handling",
+        "title": "SIGTERM or SIGINT to gate-job orphans the running gate process groups and sends no final frame",
+        "detail": "gate_job catches only Exception. Gates run with start_new_session=True. A KeyboardInterrupt is not caught, and SIGTERM's default action kills Python without running cleanup. In both cases gates.terminate_all() never runs, so the gate's process group (for example a long pytest run) keeps running on the worker with no owner, and the job dir keeps tree/ until gc ages it out.",
+        "trigger": "An admin or systemd sends SIGTERM to the `nw worker gate-job` process while a gate is running.",
+        "files": [
+          "src/nightwright/agentic/worker.py"
+        ],
+        "lines": [
+          "src/nightwright/agentic/worker.py:384"
+        ]
+      },
+      {
+        "severity": "minor",
+        "category": "logic",
+        "title": "Gate fields other than name/cmd are not validated, so a bad field errors mid-run after earlier gates already ran",
+        "detail": "validate_header checks only gate name and cmd. timeout_s, retries, cwd and results are used later by run_gate (`int(gate.get('timeout_s'))`, `Path(worktree) / gate.get('cwd')`). A malformed value raises inside _run_gates after accepted, started and the earlier gate frames, giving error stage 'slot' instead of a 'validate' refusal before anything runs.",
+        "trigger": "A header whose second gate has \"timeout_s\": \"abc\" or \"cwd\": 5.",
+        "files": [
+          "src/nightwright/agentic/worker.py"
+        ],
+        "lines": [
+          "src/nightwright/agentic/worker.py:203"
+        ]
+      },
+      {
+        "severity": "minor",
+        "category": "logic",
+        "title": "The unvalidated campaign is used in the shared slot waiter filename and collides with the worker's own campaigns",
+        "detail": "gate_slots.acquire uses `waiting-{campaign}.json` and records the campaign in the slot-*.lock holds. header.campaign is only checked to be a string. A campaign containing '/' makes the waiter write fail whenever the slot is busy, so the job gets an error frame with stage 'slot'. A remote campaign id equal to one of the worker's own local campaigns makes gate_slots.holding() and waiting() report the remote job as the local campaign's hold.",
+        "trigger": "A header with campaign \"a/b\" while the worker's slot is held, or a remote campaign id that matches a campaign queued locally on the worker.",
+        "files": [
+          "src/nightwright/agentic/worker.py",
+          "src/nightwright/agentic/gate_slots.py"
+        ],
+        "lines": [
+          "src/nightwright/agentic/worker.py:425",
+          "src/nightwright/agentic/gate_slots.py:68"
+        ]
+      },
+      {
+        "severity": "nit",
+        "category": "security",
+        "title": "`$`-anchored regexes accept a trailing newline",
+        "detail": "KEY_RE, SHA_RE, DIGITS_RE and BASE_RE use `^...$` with re.match, so a value ending in '\\n' passes. For example, ssh-command accepts the quoted word 'proj\\n', and a header job_id 'x\\n' creates a job dir whose name ends in a newline. This is not exploitable, because the args are passed as argv and never reach a shell, but fullmatch or \\Z would make the grammar actually literal.",
+        "trigger": "SSH_ORIGINAL_COMMAND=\"nw worker have --repo 'proj\\n' <sha>\" or a header with \"job_id\": \"x\\n\".",
+        "files": [
+          "src/nightwright/agentic/worker.py"
+        ],
+        "lines": [
+          "src/nightwright/agentic/worker.py:44"
+        ]
+      },
+      {
+        "severity": "nit",
+        "category": "logic",
+        "title": "Duplicate gate names attach the earlier gate's stale .r<n> files to the later gate's frame",
+        "detail": "stem = seq-name, and gate_files globs out/ by stem. If a gate list repeats a name, the second gate's frame includes .r1.log/.json left by the first gate's retries.",
+        "trigger": "payload.gates contains two gates named 'tests' and the first one retried.",
+        "files": [
+          "src/nightwright/agentic/worker.py"
+        ],
+        "lines": [
+          "src/nightwright/agentic/worker.py:268"
+        ]
+      }
+    ],
+    "fix_brief": ""
+  },
+  "profile": "thorough",
+  "profile_sources": [
+    "builtin:thorough.yaml"
+  ],
+  "files": {
+    "prompt": "prompt.md",
+    "raw": "result.json",
+    "stderr": "stderr.log"
+  }
+}

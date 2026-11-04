@@ -1,0 +1,238 @@
+{
+  "schema": "nw.run.v1",
+  "campaign": "SPEC-0336-20261031-6558",
+  "run_id": "020-test_reviewer",
+  "persona": "test_reviewer",
+  "model": "opus",
+  "effort": "high",
+  "max_budget_usd": 1.0,
+  "timeout_s": 2700,
+  "permission_mode": "dontAsk",
+  "started_at": "2026-10-31T23:14:10-04:00",
+  "duration_s": 36.828,
+  "exit_code": 0,
+  "timed_out": false,
+  "interrupted": false,
+  "is_error": false,
+  "cost_usd": 0.6680328,
+  "cost_estimated": false,
+  "usage": {
+    "input_tokens": 4,
+    "cache_creation_input_tokens": 71394,
+    "cache_read_input_tokens": 77324,
+    "output_tokens": 4070,
+    "output_tokens_details": {
+      "thinking_tokens": 895
+    },
+    "server_tool_use": {
+      "web_search_requests": 0,
+      "web_fetch_requests": 0
+    },
+    "service_tier": "standard",
+    "cache_creation": {
+      "ephemeral_1h_input_tokens": 71394,
+      "ephemeral_5m_input_tokens": 0
+    },
+    "inference_geo": "global",
+    "iterations": [
+      {
+        "input_tokens": 2,
+        "output_tokens": 3799,
+        "cache_read_input_tokens": 65907,
+        "cache_creation_input_tokens": 16904,
+        "cache_creation": {
+          "ephemeral_5m_input_tokens": 0,
+          "ephemeral_1h_input_tokens": 16904
+        },
+        "type": "message"
+      }
+    ],
+    "speed": "standard",
+    "fallback_credit": null
+  },
+  "session_id": "1368b941-fd47-4016-ae51-c9fd184fd917",
+  "verdict_ok": true,
+  "verdict": {
+    "verdict": "pass",
+    "score": 88,
+    "findings": [
+      {
+        "severity": "major",
+        "ac": "A gate running `git merge-base $NW_BASE HEAD` on the worker succeeds and prints the same sha it prints in the coordinator's worktree",
+        "title": "`origin/<rest>` base name path (refs/remotes/origin/*) untested",
+        "detail": "The design also creates `refs/remotes/origin/<rest>` when `base.name` is `origin/<rest>` (`_checkout`, `name.startswith(\"origin/\")`), and a coordinator whose `repo.base` is `origin/main` depends on it. Every test uses `base.name: \"main\"`. If that branch were removed or got the prefix wrong, `git rev-parse origin/main` / `{base}` would not resolve the way it does locally, and no test would fail. Add a merge-base/rev-parse case with `base: {name: \"origin/main\", sha}`.",
+        "files": [
+          "src/nightwright/agentic/worker.py",
+          "tests/test_worker.py"
+        ]
+      },
+      {
+        "severity": "minor",
+        "ac": "worker.py:_run_gates",
+        "title": "Gate deadline (slot hold + payload.gate_budget_s) and its fallback are not exercised",
+        "detail": "No test sends a small `payload.gate_budget_s` to check that a long gate is cut at slot-hold + budget, or that the budget falls back to the worker's `gate_budget_s` when it is absent. Wiring a wrong `deadline` (for example, measured from the claim time, or ignored) would go unnoticed. The cut itself is reused `run_gate_with_retries` code, which lowers the risk.",
+        "files": [
+          "tests/test_worker.py"
+        ]
+      },
+      {
+        "severity": "minor",
+        "ac": "worker.py:_run_gates",
+        "title": "Worker-provided gate env keys NW_DATA_DIR/NW_CONFIG_DIR/TMPDIR-per-job not asserted",
+        "detail": "The pass test checks `NW_WORKTREE`, and the retry test uses `$TMPDIR` implicitly, but nothing asserts that `NW_DATA_DIR`/`NW_CONFIG_DIR` are the worker's own or that `TMPDIR` is under `jobs/<id>/tmp`.",
+        "files": [
+          "tests/test_worker.py"
+        ]
+      },
+      {
+        "severity": "minor",
+        "ac": "worker.py:have",
+        "title": "`have` edge cases: missing cache returns [] and last-used refresh",
+        "detail": "`have` against a repo_key with no cache, and the claim that `have` refreshes `refs/nw/have/<sha>` and its last-used time (so a reported sha survives gc), are not directly tested.",
+        "files": [
+          "tests/test_worker.py"
+        ]
+      },
+      {
+        "severity": "minor",
+        "ac": "SIGTERM/SIGINT/SIGHUP cancel",
+        "title": "SIGHUP not covered",
+        "detail": "SIGTERM and SIGINT are parametrized mid-gate. SIGHUP, which is part of `_STOP_SIGNALS` and the most likely signal when the SSH session drops, is not.",
+        "files": [
+          "tests/test_worker.py"
+        ]
+      },
+      {
+        "severity": "minor",
+        "ac": "flakiness",
+        "title": "Unidentified one-off failure in the targeted set",
+        "detail": "The loop 6 test record notes one failure in 43 runs that was never identified. The suite is subprocess-heavy and concurrency-heavy (concurrent jobs, slot waits, signals). The tests use `until()` waits rather than sleeps, which is good, but the flake remains a residual risk.",
+        "files": [
+          "tests/test_worker.py"
+        ]
+      },
+      {
+        "severity": "nit",
+        "ac": "`docs/WORKFLOW.md` documents the mandatory dedicated user and the absolute-path key line",
+        "title": "Docs AC is manual-only",
+        "detail": "The test plan makes this a manual check. The section is present in the diff. A small docs test that greps for the key line would keep it from regressing.",
+        "files": [
+          "docs/WORKFLOW.md"
+        ]
+      }
+    ],
+    "coverage_assessment": [
+      {
+        "ac": "Valid header+bundle runs gates, emits accepted/started/gate(s with .log/.json/.r<n>)/done",
+        "covered": true,
+        "tests": [
+          "tests/test_worker.py::test_pass_emits_frames_and_files",
+          "tests/test_worker.py::test_retry_ladder_sends_r1_files",
+          "tests/test_worker.py::test_fail_is_done_with_ok_false_and_exit_0"
+        ]
+      },
+      {
+        "ac": "merge-base $NW_BASE HEAD matches the coordinator",
+        "covered": true,
+        "tests": [
+          "tests/test_worker.py::test_merge_base_and_base_placeholder_match_the_coordinator",
+          "tests/test_worker.py::test_the_workers_own_nw_env_never_reaches_a_gate"
+        ]
+      },
+      {
+        "ac": "env outside allowlist -> validate error, nothing runs; reused job_id -> claim",
+        "covered": true,
+        "tests": [
+          "tests/test_worker.py::test_env_outside_allowlist_is_refused",
+          "tests/test_worker.py::test_bad_schema_and_nw_base_mismatch_are_refused",
+          "tests/test_worker.py::test_bad_header_fields_are_refused_before_anything_runs",
+          "tests/test_worker.py::test_duplicate_job_id_is_a_claim_error"
+        ]
+      },
+      {
+        "ac": "Two concurrent jobs, same repo_key/base.name, different base.sha each see their own base",
+        "covered": true,
+        "tests": [
+          "tests/test_worker.py::test_concurrent_jobs_see_their_own_base"
+        ]
+      },
+      {
+        "ac": "EOF mid-gate kills gate, done interrupted; EOF during slot wait -> done interrupted, no started",
+        "covered": true,
+        "tests": [
+          "tests/test_worker.py::test_eof_mid_gate_interrupts",
+          "tests/test_worker.py::test_eof_while_waiting_for_the_slot",
+          "tests/test_worker.py::test_signal_mid_gate_kills_the_gate_and_sends_done"
+        ]
+      },
+      {
+        "ac": "Held slot -> slot_wait then started only after the slot frees",
+        "covered": true,
+        "tests": [
+          "tests/test_worker.py::test_held_slot_gives_slot_wait_then_started"
+        ]
+      },
+      {
+        "ac": "Exit 0 after done (pass/fail/interrupted), 3 after error",
+        "covered": true,
+        "tests": [
+          "tests/test_worker.py::test_pass_emits_frames_and_files",
+          "tests/test_worker.py::test_fail_is_done_with_ok_false_and_exit_0",
+          "tests/test_worker.py::test_eof_mid_gate_interrupts",
+          "tests/test_worker.py::test_env_outside_allowlist_is_refused",
+          "tests/test_worker.py::test_stdin_short_of_bundle_bytes_is_a_read_error",
+          "tests/test_worker.py::test_signal_before_the_slot_is_an_error_frame"
+        ]
+      },
+      {
+        "ac": "Log over 16 MiB cut to 16 MiB with truncated_bytes",
+        "covered": true,
+        "tests": [
+          "tests/test_worker.py::test_log_over_16_mib_is_truncated"
+        ]
+      },
+      {
+        "ac": "have reports commit/base after job; gc --keep-days 0 removes refs, objects, job dirs; live job dir survives",
+        "covered": true,
+        "tests": [
+          "tests/test_worker.py::test_have_then_gc_removes_refs_objects_and_job_dirs",
+          "tests/test_worker.py::test_gc_during_a_live_job_keeps_its_dir",
+          "tests/test_worker.py::test_gc_reads_the_live_jobs_again_under_the_repo_lock",
+          "tests/test_worker.py::test_gc_drops_orphan_job_refs_and_keeps_fresh_have_refs"
+        ]
+      },
+      {
+        "ac": "info --json prints documented keys",
+        "covered": true,
+        "tests": [
+          "tests/test_worker.py::test_info_json_keys"
+        ]
+      },
+      {
+        "ac": "ssh-command execs the four allowed subcommands, refuses everything else with exit 2",
+        "covered": true,
+        "tests": [
+          "tests/test_worker_ssh_command.py::test_allowed_commands_are_execd",
+          "tests/test_worker_ssh_command.py::test_refused_commands_run_nothing",
+          "tests/test_worker_ssh_command.py::test_own_nw_execs_the_forced_command_path",
+          "tests/test_worker_ssh_command.py::test_own_nw_never_uses_the_client_path"
+        ]
+      },
+      {
+        "ac": "docs/WORKFLOW.md documents mandatory dedicated user and absolute-path key line",
+        "covered": false,
+        "tests": []
+      }
+    ],
+    "fix_brief": ""
+  },
+  "profile": "thorough",
+  "profile_sources": [
+    "builtin:thorough.yaml"
+  ],
+  "files": {
+    "prompt": "prompt.md",
+    "raw": "result.json",
+    "stderr": "stderr.log"
+  }
+}

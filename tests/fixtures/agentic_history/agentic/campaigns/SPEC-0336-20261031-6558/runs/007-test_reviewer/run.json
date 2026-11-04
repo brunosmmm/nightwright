@@ -1,0 +1,224 @@
+{
+  "schema": "nw.run.v1",
+  "campaign": "SPEC-0336-20261031-6558",
+  "run_id": "007-test_reviewer",
+  "persona": "test_reviewer",
+  "model": "opus",
+  "effort": "high",
+  "max_budget_usd": 1.0,
+  "timeout_s": 2700,
+  "permission_mode": "dontAsk",
+  "started_at": "2026-10-31T22:05:14-04:00",
+  "duration_s": 38.94,
+  "exit_code": 0,
+  "timed_out": false,
+  "interrupted": false,
+  "is_error": false,
+  "cost_usd": 0.5406401999999999,
+  "cost_estimated": false,
+  "usage": {
+    "input_tokens": 4,
+    "cache_creation_input_tokens": 56226,
+    "cache_read_input_tokens": 72981,
+    "output_tokens": 3811,
+    "output_tokens_details": {
+      "thinking_tokens": 1092
+    },
+    "server_tool_use": {
+      "web_search_requests": 0,
+      "web_fetch_requests": 0
+    },
+    "service_tier": "standard",
+    "cache_creation": {
+      "ephemeral_1h_input_tokens": 56226,
+      "ephemeral_5m_input_tokens": 0
+    },
+    "inference_geo": "global",
+    "iterations": [
+      {
+        "input_tokens": 2,
+        "output_tokens": 3688,
+        "cache_read_input_tokens": 62910,
+        "cache_creation_input_tokens": 3387,
+        "cache_creation": {
+          "ephemeral_5m_input_tokens": 0,
+          "ephemeral_1h_input_tokens": 3387
+        },
+        "type": "message"
+      }
+    ],
+    "speed": "standard",
+    "fallback_credit": null
+  },
+  "session_id": "9be0f317-ba19-4e49-b84f-4325eafd8e3c",
+  "verdict_ok": true,
+  "verdict": {
+    "verdict": "pass",
+    "score": 84,
+    "findings": [
+      {
+        "severity": "major",
+        "ac": "src/nightwright/agentic/worker.py:validate_header",
+        "title": "No test for the header charset checks that stop path traversal (job_id, repo_key, gate name, kind)",
+        "detail": "validate_header rejects a job_id or repo_key outside [A-Za-z0-9._-]+, gate names outside the same charset, kind != 'gate', a bad commit/base sha and a bad payload.seq. These values become filesystem paths (jobs/<job_id>, repos/<repo_key>.git, out/<seq>-<name>.log), so the checks matter for security. The tests only exercise the schema, env-allowlist and NW_BASE-mismatch refusals. If the KEY_RE check on job_id/repo_key or gate name were deleted, nothing would fail, and a header with job_id '../x' or gate name '../../evil' would write outside the job store. Add a parametrized gate-job test: each bad header gives exit 3, error stage 'validate', types == ['error'], and no job dir or marker is created.",
+        "files": [
+          "tests/test_worker.py",
+          "src/nightwright/agentic/worker.py"
+        ]
+      },
+      {
+        "severity": "minor",
+        "ac": "gate-job exits 0 after done and 3 after an error frame",
+        "title": "The 'read' stage (stdin shorter than bundle_bytes) is untested",
+        "detail": "_read_exact raises WorkerError('read') when stdin ends before bundle_bytes. No test sends a truncated bundle and asserts exit 3 with stage 'read', or checks that the claimed job dir is cleaned up.",
+        "files": [
+          "tests/test_worker.py"
+        ]
+      },
+      {
+        "severity": "minor",
+        "ac": "Gate env (As shipped)",
+        "title": "No test that the worker's own NW_CAMPAIGN/NW_SPEC_ID/NW_BASE never reach a gate",
+        "detail": "The wenv fixture removes every NW_* variable from the worker environment, so the claim 'values from the worker's own environment never leak into these keys' is never exercised. The concurrent test does check that the header defaults apply (env only sets NW_CAMPAIGN, and NW_BASE resolves).",
+        "files": [
+          "tests/test_worker.py"
+        ]
+      },
+      {
+        "severity": "minor",
+        "ac": "EOF on stdin mid-gate ends the gate process",
+        "title": "The test does not check that the gate's child process is actually killed",
+        "detail": "test_eof_mid_gate_interrupts asserts done/interrupted and that the worker exits. It does not check that the `sleep 600` process is gone. An orphaned child would still pass the test.",
+        "files": [
+          "tests/test_worker.py"
+        ]
+      },
+      {
+        "severity": "minor",
+        "ac": "A log over 16 MiB arrives cut to 16 MiB",
+        "title": "Truncation test checks the length but not that the tail is the part kept",
+        "detail": "The test asserts the length is MAX_LOG_BYTES and that truncated_bytes is set. A head-cut instead of a tail-cut would also pass. Writing a distinct marker at the end of the log would pin this.",
+        "files": [
+          "tests/test_worker.py"
+        ]
+      },
+      {
+        "severity": "minor",
+        "ac": "src/nightwright/agentic/worker.py:gc",
+        "title": "gc's cleanup of orphan job refs and its keep-days > 0 retention are only covered indirectly",
+        "detail": "Nothing tests that gc deletes refs/nw/gate-jobs/* left behind by a crashed job. The default-keep-days retention is covered only because test_pass checks that the have refs survive the gc that runs after the job.",
+        "files": [
+          "tests/test_worker.py"
+        ]
+      }
+    ],
+    "coverage_assessment": [
+      {
+        "ac": "Valid header+bundle runs the gates and emits accepted, started, one gate frame per gate (.log/.json/.r<n>), done",
+        "covered": true,
+        "tests": [
+          "tests/test_worker.py::test_pass_emits_frames_and_files",
+          "tests/test_worker.py::test_retry_ladder_sends_r1_files",
+          "tests/test_worker.py::test_fail_is_done_with_ok_false_and_exit_0"
+        ]
+      },
+      {
+        "ac": "git merge-base $NW_BASE HEAD on the worker matches the coordinator",
+        "covered": true,
+        "tests": [
+          "tests/test_worker.py::test_merge_base_and_base_placeholder_match_the_coordinator"
+        ]
+      },
+      {
+        "ac": "env key outside the allowlist gives validate error and nothing runs; reused job_id gives claim error",
+        "covered": true,
+        "tests": [
+          "tests/test_worker.py::test_env_outside_allowlist_is_refused",
+          "tests/test_worker.py::test_bad_schema_and_nw_base_mismatch_are_refused",
+          "tests/test_worker.py::test_duplicate_job_id_is_a_claim_error"
+        ]
+      },
+      {
+        "ac": "Two concurrent jobs, same repo_key, different base.sha for one base.name each see their own base",
+        "covered": true,
+        "tests": [
+          "tests/test_worker.py::test_concurrent_jobs_see_their_own_base"
+        ]
+      },
+      {
+        "ac": "EOF mid-gate gives done interrupted; EOF during the slot wait gives done interrupted with no started",
+        "covered": true,
+        "tests": [
+          "tests/test_worker.py::test_eof_mid_gate_interrupts",
+          "tests/test_worker.py::test_eof_while_waiting_for_the_slot"
+        ]
+      },
+      {
+        "ac": "Held slot gives slot_wait, then started only once the slot frees",
+        "covered": true,
+        "tests": [
+          "tests/test_worker.py::test_held_slot_gives_slot_wait_then_started"
+        ]
+      },
+      {
+        "ac": "Exit 0 after done (pass/fail/interrupted), 3 after error",
+        "covered": true,
+        "tests": [
+          "tests/test_worker.py::test_pass_emits_frames_and_files",
+          "tests/test_worker.py::test_fail_is_done_with_ok_false_and_exit_0",
+          "tests/test_worker.py::test_eof_mid_gate_interrupts",
+          "tests/test_worker.py::test_env_outside_allowlist_is_refused",
+          "tests/test_worker.py::test_empty_bundle_against_a_warm_cache"
+        ]
+      },
+      {
+        "ac": "Log over 16 MiB is cut to 16 MiB with truncated_bytes in the sidecar",
+        "covered": true,
+        "tests": [
+          "tests/test_worker.py::test_log_over_16_mib_is_truncated"
+        ]
+      },
+      {
+        "ac": "have reports commit/base after the job; gc --keep-days 0 removes refs, objects and job dirs; a live job's dir survives",
+        "covered": true,
+        "tests": [
+          "tests/test_worker.py::test_have_then_gc_removes_refs_objects_and_job_dirs",
+          "tests/test_worker.py::test_gc_during_a_live_job_keeps_its_dir"
+        ]
+      },
+      {
+        "ac": "nw worker info --json prints the documented keys",
+        "covered": true,
+        "tests": [
+          "tests/test_worker.py::test_info_json_keys"
+        ]
+      },
+      {
+        "ac": "ssh-command execs the four allowed subcommands and refuses everything else with exit 2",
+        "covered": true,
+        "tests": [
+          "tests/test_worker_ssh_command.py::test_allowed_commands_are_execd",
+          "tests/test_worker_ssh_command.py::test_refused_commands_run_nothing",
+          "tests/test_worker_ssh_command.py::test_own_nw_never_uses_the_client_path"
+        ]
+      },
+      {
+        "ac": "docs/WORKFLOW.md documents the mandatory dedicated user and the absolute-path key line",
+        "covered": true,
+        "tests": [
+          "manual (per test plan); verified in the diff of docs/WORKFLOW.md"
+        ]
+      }
+    ],
+    "fix_brief": ""
+  },
+  "profile": "thorough",
+  "profile_sources": [
+    "builtin:thorough.yaml"
+  ],
+  "files": {
+    "prompt": "prompt.md",
+    "raw": "result.json",
+    "stderr": "stderr.log"
+  }
+}

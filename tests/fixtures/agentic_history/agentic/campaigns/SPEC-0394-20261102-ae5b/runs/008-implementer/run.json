@@ -1,0 +1,130 @@
+{
+  "schema": "nw.run.v1",
+  "campaign": "SPEC-0394-20261102-ae5b",
+  "run_id": "008-implementer",
+  "persona": "implementer",
+  "model": "opus",
+  "effort": "high",
+  "max_budget_usd": 10.0,
+  "timeout_s": 2700,
+  "permission_mode": "bypassPermissions",
+  "started_at": "2026-11-03T20:25:33-05:00",
+  "duration_s": 99.099,
+  "exit_code": 0,
+  "timed_out": false,
+  "interrupted": false,
+  "is_error": false,
+  "cost_usd": 0.8232501999999999,
+  "cost_estimated": false,
+  "usage": {
+    "input_tokens": 24,
+    "cache_creation_input_tokens": 67067,
+    "cache_read_input_tokens": 640391,
+    "output_tokens": 7927,
+    "output_tokens_details": {
+      "thinking_tokens": 971
+    },
+    "server_tool_use": {
+      "web_search_requests": 0,
+      "web_fetch_requests": 0
+    },
+    "service_tier": "standard",
+    "cache_creation": {
+      "ephemeral_1h_input_tokens": 67067,
+      "ephemeral_5m_input_tokens": 0
+    },
+    "inference_geo": "global",
+    "iterations": [
+      {
+        "input_tokens": 2,
+        "output_tokens": 1161,
+        "cache_read_input_tokens": 65708,
+        "cache_creation_input_tokens": 1359,
+        "cache_creation": {
+          "ephemeral_5m_input_tokens": 0,
+          "ephemeral_1h_input_tokens": 1359
+        },
+        "type": "message"
+      }
+    ],
+    "speed": "standard",
+    "fallback_credit": null
+  },
+  "session_id": "fbf8966b-5ab9-4eb7-9bcc-3c9e2a84745c",
+  "verdict_ok": true,
+  "verdict": {
+    "status": "done",
+    "summary": "SPEC-0394 review fixes: refuse non-finite max_budget_usd, and build_request takes the review flag from the persona it already resolved, so the registry is scanned once per request. Also adds tests for user-layer reviewers, shape checks under an invalid role, whitespace-only when items, and test_files reaching the built prompt.",
+    "changed_files": [
+      "src/nightwright/agentic/persona_registry.py",
+      "src/nightwright/agentic/personas.py",
+      "tests/test_agentic_persona_run_settings.py",
+      "docs/product/capabilities/agentic.md",
+      "docs/specs/0394-declared-persona-run-settings-routing-and-requests.md",
+      "docs/LEDGER.md"
+    ],
+    "tests_run": [
+      "uv run pytest -q -n 4 tests/test_agentic_persona_run_settings.py tests/test_agentic_personas_declared_cli.py tests/test_agentic_persona_defs.py tests/test_agentic_personas.py tests/test_agentic_persona_registry.py tests/test_agentic_personas_cli.py tests/test_remote_personas.py (304 passed)",
+      "uv run pytest -q tests/test_agentic_persona_run_settings.py -k once against the old is_reviewer call (fails as expected; change restored)",
+      "uv run pytest -q tests/test_docs_product_ia.py (3 passed)",
+      "python3 tools/spec_lint.py --write-ledger && python3 tools/spec_lint.py (ok)"
+    ],
+    "ac_status": [
+      {
+        "ac": "AC1 run-default keys validated, refused in builtins (now also .inf/.nan budgets)",
+        "met": true
+      },
+      {
+        "ac": "AC2 reviewer-only routing keys, strict shapes, defaults",
+        "met": true
+      },
+      {
+        "ac": "AC3 one shared helper, all problems in one run",
+        "met": true
+      },
+      {
+        "ac": "AC4 is_reviewer for declared/builtin, root required",
+        "met": true
+      },
+      {
+        "ac": "AC5 build_request declared reviewer read-only + layered settings; implementer writable",
+        "met": true
+      },
+      {
+        "ac": "AC6 review diff and test_files in prompt; resolved from _root, worktree copy ignored",
+        "met": true
+      },
+      {
+        "ac": "AC7 generated Output section; builtin prompts unchanged",
+        "met": true
+      },
+      {
+        "ac": "AC8 CLI shows settings/required/when/template_sha256 for declared only",
+        "met": true
+      },
+      {
+        "ac": "AC9 inert: tables unchanged, queue.py/profiles.py/divergence.py untouched",
+        "met": true
+      },
+      {
+        "ac": "AC10 capability page documents declared personas",
+        "met": true
+      }
+    ],
+    "blockers": [],
+    "followup_ideas": [
+      "profiles.py max_budget_usd / campaign_cap_usd validators (profiles.py:111,148) and queue.py:5006 accept YAML .inf/.nan the same way; make them require finite numbers too (outside SPEC-0394's AC9 no-touch list)."
+    ]
+  },
+  "profile": "thorough",
+  "profile_sources": [
+    "builtin:thorough.yaml"
+  ],
+  "worker": null,
+  "files": {
+    "prompt": "prompt.md",
+    "raw": "result.json",
+    "stderr": "stderr.log",
+    "stream": "stream.jsonl"
+  }
+}

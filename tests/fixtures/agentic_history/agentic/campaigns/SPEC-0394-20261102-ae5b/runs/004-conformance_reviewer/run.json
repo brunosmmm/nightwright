@@ -1,0 +1,148 @@
+{
+  "schema": "nw.run.v1",
+  "campaign": "SPEC-0394-20261102-ae5b",
+  "run_id": "004-conformance_reviewer",
+  "persona": "conformance_reviewer",
+  "model": "opus",
+  "effort": "high",
+  "max_budget_usd": 1.5,
+  "timeout_s": 2700,
+  "permission_mode": "dontAsk",
+  "started_at": "2026-11-03T20:24:19-05:00",
+  "duration_s": 32.144,
+  "exit_code": 0,
+  "timed_out": false,
+  "interrupted": false,
+  "is_error": false,
+  "cost_usd": 0.6166784,
+  "cost_estimated": false,
+  "usage": {
+    "input_tokens": 6,
+    "cache_creation_input_tokens": 65507,
+    "cache_read_input_tokens": 123792,
+    "output_tokens": 3392,
+    "output_tokens_details": {
+      "thinking_tokens": 783
+    },
+    "server_tool_use": {
+      "web_search_requests": 0,
+      "web_fetch_requests": 0
+    },
+    "service_tier": "standard",
+    "cache_creation": {
+      "ephemeral_1h_input_tokens": 65507,
+      "ephemeral_5m_input_tokens": 0
+    },
+    "inference_geo": "global",
+    "iterations": [
+      {
+        "input_tokens": 2,
+        "output_tokens": 2690,
+        "cache_read_input_tokens": 64767,
+        "cache_creation_input_tokens": 740,
+        "cache_creation": {
+          "ephemeral_5m_input_tokens": 0,
+          "ephemeral_1h_input_tokens": 740
+        },
+        "type": "message"
+      }
+    ],
+    "speed": "standard",
+    "fallback_credit": null
+  },
+  "session_id": "1feba2fe-c123-4304-8bb1-1e55210a9bf9",
+  "verdict_ok": true,
+  "verdict": {
+    "verdict": "pass",
+    "score": 93,
+    "findings": [
+      {
+        "severity": "nit",
+        "ac": "AC7",
+        "title": "Output section lists `trigger`, which the Design's field list does not include",
+        "detail": "output_section derives the optional finding fields from reviewer_schema, so it lists `detail`, `trigger`, `files` and `lines`. The Design names only `detail`, `files` and `lines`. The 'As shipped' section records this deviation, and it follows the spec's own rule that the section is read from the enforced schema.",
+        "suggested_fix": "No code change. Keep the 'As shipped' note, or add `trigger` to the Design's list in the spec so the two agree.",
+        "acceptance": "The spec Design and the generated `## Output` text name the same optional fields.",
+        "files": [
+          "src/nightwright/agentic/personas.py",
+          "docs/specs/0394-declared-persona-run-settings-routing-and-requests.md"
+        ]
+      },
+      {
+        "severity": "nit",
+        "ac": "AC6",
+        "title": "The review-context test checks diff and test_files in two separate places",
+        "detail": "test_build_request_declared_reviewer checks that the diff content reaches req.prompt. It checks test_files only through a separate build_context(review=True) call, and only because the test template has no {{test_files}} placeholder. So the review=is_reviewer(...) wiring for test_files is covered only indirectly. The diff check does exercise that wiring.",
+        "suggested_fix": "In tests/test_agentic_persona_run_settings.py, add {{test_files}} to TEMPLATE (it is in the reviewer role's placeholders) and assert 'tests/test_a.py' in req.prompt inside test_build_request_declared_reviewer.",
+        "acceptance": "test_build_request_declared_reviewer asserts that the test file path appears in the built request's prompt.",
+        "files": [
+          "tests/test_agentic_persona_run_settings.py"
+        ]
+      }
+    ],
+    "ac_assessment": [
+      {
+        "ac": "AC1",
+        "met": true,
+        "evidence": "persona_registry.check_declared_keys validates model (MODEL_ALIASES/MODEL_RE), effort (EFFORTS) and max_budget_usd (_is_num, >0, bool refused), importing profiles lazily. validate_persona_doc refuses the keys in a builtin with 'allowed only in a user or project definition'. Tests: test_settings_keys_valid (all three roles), test_settings_keys_invalid (each bad value, asserts the origin file and the key), test_declared_keys_refused_in_a_builtin_definition."
+      },
+      {
+        "ac": "AC2",
+        "met": true,
+        "evidence": "check_declared_keys refuses required/when on implementer/triager ('only allowed for role reviewer'). It checks that required is a bool and that when is a mapping with only paths/labels, each a non-empty list of non-empty strings. declared_values defaults to required True and when {}. Tests: test_routing_keys_valid_for_reviewer, test_routing_keys_reviewer_only_bad_shapes (null, list, scalar, unknown key, empty list, non-string item, empty string), test_routing_keys_reviewer_only, and test_declared_mapping_defaults for the defaults."
+      },
+      {
+        "ac": "AC3",
+        "met": true,
+        "evidence": "persona_defs._read_file and persona_registry.validate_persona_doc both call PR.check_declared_keys. test_multi_fault_file_reports_every_problem_in_both_validators checks that the same messages come back from validate_persona_defs and from load_registry entry errors. The CLI test test_validate_and_list_agree_on_new_key_problems checks that validate, list and show agree."
+      },
+      {
+        "ac": "AC4",
+        "met": true,
+        "evidence": "personas.is_reviewer returns early for builtins and when no root is given; otherwise it checks the registry role. test_is_reviewer covers a declared reviewer, implementer and triager, the no-root case, a project that does not declare the persona, and every builtin with and without a root."
+      },
+      {
+        "ac": "AC5",
+        "met": true,
+        "evidence": "build_request resolves the persona with get_persona(persona, project_cfg['_root'], user_dir) and uses declared_settings for non-builtins. declared_settings layers DECLARED_DEFAULTS < the role-default profile entry < the definition < personas.<name>, and forces read_only/dontAsk for read-only roles. test_build_request_declared_reviewer_layering covers 6 layer combinations. test_build_request_declared_reviewer covers read_only/dontAsk overriding a profile entry with read_only false and bypassPermissions, an empty allowlist, and json_schema == reviewer_schema. The triager test and test_build_request_declared_implementer_writable (acceptEdits plus allowlist) cover the other roles."
+      },
+      {
+        "ac": "AC6",
+        "met": true,
+        "evidence": "build_context is called with review=is_reviewer(...). test_build_request_declared_reviewer checks that the diff content ('src/a.py', \"print('hi')\") is in the prompt, that a worktree .nw/personas copy (different template, model and categories) has no effect, and that a reviewer declared only in the worktree is unknown. test_files is checked through build_context."
+      },
+      {
+        "ac": "AC7",
+        "met": true,
+        "evidence": "personas.output_section builds the block from p.schema. build_prompt places it between the template and the invariant only when declared is set and role is reviewer. test_output_section checks the placement and the category list including `other`. test_builtin_prompts_unchanged checks that every builtin prompt equals render(template)+'\\n\\n'+render(invariant)+'\\n'."
+      },
+      {
+        "ac": "AC8",
+        "met": true,
+        "evidence": "cli_personas._declared_fields is added to _summary (list --json) and to the show output, both human and JSON. test_show_and_list_json_carry_declared_fields_and_omit_them_for_builtins checks settings, required, when and sha for a declared reviewer, leaves out required/when for an implementer, and finds none of these fields for builtins or broken entries."
+      },
+      {
+        "ac": "AC9",
+        "met": true,
+        "evidence": "The diff does not touch queue.py, profiles.py or divergence.py. The builtin Persona has declared=None, so PERSONAS is unchanged. test_inert checks the builtin tables and that resolve_profile still raises for a declared reviewer in reviewers:."
+      },
+      {
+        "ac": "AC10",
+        "met": true,
+        "evidence": "docs/product/capabilities/agentic.md has a new 'Declared personas' subsection with the security_reviewer example, the role table, the new keys and their layering, nw personas list|show|validate, and a bold statement that the queue does not run declared personas yet."
+      }
+    ],
+    "fix_brief": ""
+  },
+  "profile": "thorough",
+  "profile_sources": [
+    "builtin:thorough.yaml"
+  ],
+  "worker": null,
+  "files": {
+    "prompt": "prompt.md",
+    "raw": "result.json",
+    "stderr": "stderr.log",
+    "stream": "stream.jsonl"
+  }
+}

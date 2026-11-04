@@ -1,0 +1,23 @@
+{
+  "schema": "nw.gate.v1",
+  "name": "pytest-affected",
+  "cmd": "if [ -f tools/affected_tests.py ]; then python3 tools/affected_tests.py --include tests/test_agentic_dogfood_config.py --include tests/test_agentic_project.py --run uv run pytest -q -x -n 2; else uv run pytest -q -x -n 2; fi",
+  "cwd": "/home/user/work/.nw-worktrees/Meta-Tools/SPEC-0336-20261031-6558",
+  "required": true,
+  "ok": true,
+  "exit_code": 0,
+  "timed_out": false,
+  "timeout_s": 2400,
+  "started_at": "2026-10-31T22:15:14-04:00",
+  "duration_s": 645.727,
+  "log": "004-pytest-affected.log",
+  "error": null,
+  "summary": {
+    "format": "pytest",
+    "passed": 4565,
+    "failed": 0,
+    "errors": 0,
+    "skipped": 3,
+    "failing": []
+  }
+}

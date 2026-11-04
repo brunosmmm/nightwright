@@ -1,0 +1,203 @@
+{
+  "schema": "nw.run.v1",
+  "campaign": "SPEC-0336-20261031-6558",
+  "run_id": "029-test_reviewer",
+  "persona": "test_reviewer",
+  "model": "opus",
+  "effort": "high",
+  "max_budget_usd": 1.0,
+  "timeout_s": 2700,
+  "permission_mode": "dontAsk",
+  "started_at": "2026-11-01T00:04:34-04:00",
+  "duration_s": 33.729,
+  "exit_code": 0,
+  "timed_out": false,
+  "interrupted": false,
+  "is_error": false,
+  "cost_usd": 0.7639956,
+  "cost_estimated": false,
+  "usage": {
+    "input_tokens": 8,
+    "cache_creation_input_tokens": 81289,
+    "cache_read_input_tokens": 259458,
+    "output_tokens": 3088,
+    "output_tokens_details": {
+      "thinking_tokens": 250
+    },
+    "server_tool_use": {
+      "web_search_requests": 0,
+      "web_fetch_requests": 0
+    },
+    "service_tier": "standard",
+    "cache_creation": {
+      "ephemeral_1h_input_tokens": 81289,
+      "ephemeral_5m_input_tokens": 0
+    },
+    "inference_geo": "global",
+    "iterations": [
+      {
+        "input_tokens": 2,
+        "output_tokens": 2399,
+        "cache_read_input_tokens": 92038,
+        "cache_creation_input_tokens": 668,
+        "cache_creation": {
+          "ephemeral_5m_input_tokens": 0,
+          "ephemeral_1h_input_tokens": 668
+        },
+        "type": "message"
+      }
+    ],
+    "speed": "standard",
+    "fallback_credit": null
+  },
+  "session_id": "bda1b748-e26b-4613-b3d1-98a6f55b841b",
+  "verdict_ok": true,
+  "verdict": {
+    "verdict": "pass",
+    "score": 92,
+    "findings": [
+      {
+        "severity": "minor",
+        "ac": "`nw worker ssh-command` execs the four allowed subcommands and refuses everything else with exit 2",
+        "title": "ssh-command refusal exit code only tested in-process, not through the click command",
+        "detail": "test_refused_commands_run_nothing calls W.ssh_command() directly. No test runs `nw worker ssh-command` as a subprocess with a refused SSH_ORIGINAL_COMMAND to check that the CLI process exits 2 (the `raise SystemExit(W.ssh_command())` wiring in cli_worker.py). The test record says this was checked by hand. A one-line subprocess test would pin it.",
+        "files": [
+          "tests/test_worker_ssh_command.py",
+          "src/nightwright/agentic/cli_worker.py"
+        ]
+      },
+      {
+        "severity": "minor",
+        "ac": "flakiness",
+        "title": "Several tests depend on real-time waits and subprocess timing",
+        "detail": "test_gate_budget_runs_from_the_slot_hold (4.5 s slot wait against a 4 s budget), the held-slot tests and the concurrent-jobs test rely on wall-clock behaviour and on real subprocesses. Loop 8 made the margins one-sided, and the record notes one unexplained flake in loop 6. Acceptable, but worth watching.",
+        "files": [
+          "tests/test_worker.py"
+        ]
+      },
+      {
+        "severity": "nit",
+        "ac": "tests/test_worker.py helpers",
+        "title": "Redundant local `from pathlib import Path` imports in helpers",
+        "detail": "_job_dir, _cache and _slot_conf re-import Path even though it is imported at module level.",
+        "files": [
+          "tests/test_worker.py"
+        ]
+      }
+    ],
+    "coverage_assessment": [
+      {
+        "ac": "Valid header+bundle runs the gates and emits accepted, started, one gate frame per gate (.log/.json/.r<n>), done",
+        "covered": true,
+        "tests": [
+          "tests/test_worker.py::test_pass_emits_frames_and_files",
+          "tests/test_worker.py::test_fail_is_done_with_ok_false_and_exit_0",
+          "tests/test_worker.py::test_retry_ladder_sends_r1_files"
+        ]
+      },
+      {
+        "ac": "git merge-base $NW_BASE HEAD on the worker prints the coordinator's sha",
+        "covered": true,
+        "tests": [
+          "tests/test_worker.py::test_merge_base_and_base_placeholder_match_the_coordinator",
+          "tests/test_worker.py::test_origin_base_name_resolves_like_a_remote_tracking_branch"
+        ]
+      },
+      {
+        "ac": "env key outside the allowlist gives error stage validate and nothing runs; a reused job_id gives stage claim",
+        "covered": true,
+        "tests": [
+          "tests/test_worker.py::test_env_outside_allowlist_is_refused",
+          "tests/test_worker.py::test_duplicate_job_id_is_a_claim_error",
+          "tests/test_worker.py::test_bad_header_fields_are_refused_before_anything_runs",
+          "tests/test_worker.py::test_bad_schema_and_nw_base_mismatch_are_refused"
+        ]
+      },
+      {
+        "ac": "Two concurrent jobs with different base.sha for one base.name each see their own base",
+        "covered": true,
+        "tests": [
+          "tests/test_worker.py::test_concurrent_jobs_see_their_own_base"
+        ]
+      },
+      {
+        "ac": "EOF mid-gate kills the gate and sends done interrupted; EOF during the slot wait sends done interrupted with no started",
+        "covered": true,
+        "tests": [
+          "tests/test_worker.py::test_eof_mid_gate_interrupts",
+          "tests/test_worker.py::test_eof_while_waiting_for_the_slot",
+          "tests/test_worker.py::test_a_gate_reading_stdin_gets_eof_not_the_job_stream"
+        ]
+      },
+      {
+        "ac": "With the slot held, the worker emits slot_wait, then started only once the slot frees",
+        "covered": true,
+        "tests": [
+          "tests/test_worker.py::test_held_slot_gives_slot_wait_then_started"
+        ]
+      },
+      {
+        "ac": "Exit 0 after done (pass, fail, interrupted) and 3 after an error frame",
+        "covered": true,
+        "tests": [
+          "tests/test_worker.py::test_pass_emits_frames_and_files",
+          "tests/test_worker.py::test_fail_is_done_with_ok_false_and_exit_0",
+          "tests/test_worker.py::test_eof_mid_gate_interrupts",
+          "tests/test_worker.py::test_env_outside_allowlist_is_refused",
+          "tests/test_worker.py::test_stdin_short_of_bundle_bytes_is_a_read_error",
+          "tests/test_worker.py::test_signal_before_the_slot_is_an_error_frame"
+        ]
+      },
+      {
+        "ac": "A log over 16 MiB is cut to 16 MiB with truncated_bytes in its sidecar",
+        "covered": true,
+        "tests": [
+          "tests/test_worker.py::test_log_over_16_mib_is_truncated"
+        ]
+      },
+      {
+        "ac": "have reports the commit and base after the job; gc --keep-days 0 removes the refs, the objects and the job dirs; a live job's dir survives",
+        "covered": true,
+        "tests": [
+          "tests/test_worker.py::test_have_then_gc_removes_refs_objects_and_job_dirs",
+          "tests/test_worker.py::test_gc_during_a_live_job_keeps_its_dir",
+          "tests/test_worker.py::test_gc_reads_the_live_jobs_again_under_the_repo_lock",
+          "tests/test_worker.py::test_gc_drops_orphan_job_refs_and_keeps_fresh_have_refs"
+        ]
+      },
+      {
+        "ac": "info --json prints the documented keys",
+        "covered": true,
+        "tests": [
+          "tests/test_worker.py::test_info_json_keys"
+        ]
+      },
+      {
+        "ac": "ssh-command execs the four allowed subcommands and refuses everything else with exit 2, running nothing",
+        "covered": true,
+        "tests": [
+          "tests/test_worker_ssh_command.py::test_allowed_commands_are_execd",
+          "tests/test_worker_ssh_command.py::test_refused_commands_run_nothing",
+          "tests/test_worker_ssh_command.py::test_own_nw_execs_the_forced_command_path"
+        ]
+      },
+      {
+        "ac": "docs/WORKFLOW.md documents the mandatory dedicated user and the absolute-path key line",
+        "covered": true,
+        "tests": [
+          "tests/test_worker.py::test_workflow_docs_make_the_dedicated_user_mandatory_and_show_the_key_line"
+        ]
+      }
+    ],
+    "fix_brief": ""
+  },
+  "profile": "thorough",
+  "profile_sources": [
+    "builtin:thorough.yaml"
+  ],
+  "files": {
+    "prompt": "prompt.md",
+    "raw": "result.json",
+    "stderr": "stderr.log"
+  }
+}

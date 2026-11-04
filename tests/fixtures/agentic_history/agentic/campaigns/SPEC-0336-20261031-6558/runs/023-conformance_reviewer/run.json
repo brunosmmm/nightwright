@@ -1,0 +1,155 @@
+{
+  "schema": "nw.run.v1",
+  "campaign": "SPEC-0336-20261031-6558",
+  "run_id": "023-conformance_reviewer",
+  "persona": "conformance_reviewer",
+  "model": "opus",
+  "effort": "high",
+  "max_budget_usd": 1.5,
+  "timeout_s": 2700,
+  "permission_mode": "dontAsk",
+  "started_at": "2026-10-31T23:43:46-04:00",
+  "duration_s": 39.453,
+  "exit_code": 0,
+  "timed_out": false,
+  "interrupted": false,
+  "is_error": false,
+  "cost_usd": 0.6961183999999999,
+  "cost_estimated": false,
+  "usage": {
+    "input_tokens": 8,
+    "cache_creation_input_tokens": 72363,
+    "cache_read_input_tokens": 232612,
+    "output_tokens": 3533,
+    "output_tokens_details": {
+      "thinking_tokens": 325
+    },
+    "server_tool_use": {
+      "web_search_requests": 0,
+      "web_fetch_requests": 0
+    },
+    "service_tier": "standard",
+    "cache_creation": {
+      "ephemeral_1h_input_tokens": 72363,
+      "ephemeral_5m_input_tokens": 0
+    },
+    "inference_geo": "global",
+    "iterations": [
+      {
+        "input_tokens": 2,
+        "output_tokens": 2748,
+        "cache_read_input_tokens": 81220,
+        "cache_creation_input_tokens": 2585,
+        "cache_creation": {
+          "ephemeral_5m_input_tokens": 0,
+          "ephemeral_1h_input_tokens": 2585
+        },
+        "type": "message"
+      }
+    ],
+    "speed": "standard",
+    "fallback_credit": null
+  },
+  "session_id": "e473dc91-4f2d-45f5-9032-44ef16b4703d",
+  "verdict_ok": true,
+  "verdict": {
+    "verdict": "pass",
+    "score": 93,
+    "findings": [
+      {
+        "severity": "nit",
+        "ac": "Design step 4 (slot campaign id)",
+        "title": "The slot campaign id is `remote:<campaign>`, not the job's campaign",
+        "detail": "`_run_gates` calls `gate_slots.acquire(cfg, SLOT_CAMPAIGN_PREFIX + h['campaign'], ...)`. The Design says the campaign id is the job's campaign. The spec's As-shipped section records this change and gives the reason: a remote job should not look like one of the worker host's own local campaigns. `test_held_slot_gives_slot_wait_then_started` asserts the `remote:C-1` waiter.",
+        "suggested_fix": "No code change. When SPEC-0337 or SPEC-0338 adds the coordinator and the pool views, have them read the `remote:` prefix on the worker side, or change the Design text in a later spec revision.",
+        "acceptance": "SPEC-0337/0338 slot views show remote holds as `remote:<campaign>`.",
+        "files": [
+          "src/nightwright/agentic/worker.py"
+        ]
+      },
+      {
+        "severity": "minor",
+        "ac": "scope",
+        "title": "Work beyond the spec: `have` writes refs, signal handling, stale-lock clearing, stricter validation",
+        "detail": "`have` now creates or refreshes `refs/nw/have/<sha>`, where the spec only asks it to print. The change also adds SIGTERM/SIGINT/SIGHUP handling with a `signal` stage, clearing of stale git lock files, a `jobs.lock`, and extra header checks. Each one is documented in As shipped and has tests, and each makes the worker more robust. Still, the spec did not ask for them, and `have` writing state is a change in what that command means.",
+        "suggested_fix": "No change now. Make sure SPEC-0338's coordinator text treats `have` as an operation that refreshes state (it pins shas), not as a read-only query.",
+        "acceptance": "SPEC-0338 documents that `have` pins the shas it reports.",
+        "files": [
+          "src/nightwright/agentic/worker.py"
+        ]
+      }
+    ],
+    "ac_assessment": [
+      {
+        "ac": "Piping a valid header and bundle into gate-job runs the gates and emits accepted, started, one gate frame per gate (with .log/.json/.r<n> files) and done",
+        "met": true,
+        "evidence": "test_pass_emits_frames_and_files asserts the frame types are exactly [accepted, started, gate, done], checks the file set, the log content, the sidecar schema and the frames.jsonl copy. test_retry_ladder_sends_r1_files asserts the .r1.log and .r1.json files. Code: worker.gate_job, _run_gates, gate_files."
+      },
+      {
+        "ac": "`git merge-base $NW_BASE HEAD` on the worker prints the coordinator's sha",
+        "met": true,
+        "evidence": "test_merge_base_and_base_placeholder_match_the_coordinator compares the worker's output with `git merge-base main HEAD` run in the source repo. test_origin_base_name_resolves_like_a_remote_tracking_branch does the same for origin/main. Code: _checkout's update-ref of refs/heads/<name> and refs/remotes/<name>."
+      },
+      {
+        "ac": "A non-allowlisted env key gives an error frame with stage validate and nothing runs; a reused job_id gives stage claim",
+        "met": true,
+        "evidence": "test_env_outside_allowlist_is_refused asserts rc 3, stage validate, only an error frame, and that the marker file was not created. test_duplicate_job_id_is_a_claim_error asserts stage claim and that the first job's frames.jsonl is unchanged."
+      },
+      {
+        "ac": "Two concurrent jobs with different base.sha for the same base.name each see their own base",
+        "met": true,
+        "evidence": "test_concurrent_jobs_see_their_own_base syncs the two gates so they run at the same time (slots: 2) and asserts each prints its own base twice. Each job uses a private `git clone --shared` in _checkout."
+      },
+      {
+        "ac": "EOF mid-gate ends the gate and sends done interrupted; EOF during the slot wait sends done interrupted with no started",
+        "met": true,
+        "evidence": "test_eof_mid_gate_interrupts asserts done with interrupted, exit 0, and that the sleep child's pid is killed. test_eof_while_waiting_for_the_slot asserts done with interrupted, no started frame, no gate frame, and no marker. Code: _watch_stdin sets cancel and calls terminate_all; acquire(stop=cancel)."
+      },
+      {
+        "ac": "With the slot held, the worker emits slot_wait and sends started only once the slot frees",
+        "met": true,
+        "evidence": "test_held_slot_gives_slot_wait_then_started (NW_WORKER_SLOT_WAIT_EVENT_S=0.5) asserts no started while the slot is held, then the frame order [accepted, slot_wait, started, gate, done]."
+      },
+      {
+        "ac": "Exit 0 after done (pass, fail or interrupted); exit 3 after error",
+        "met": true,
+        "evidence": "test_fail_is_done_with_ok_false_and_exit_0, test_pass_*, test_eof_* and test_signal_mid_gate_* assert rc 0. The env, claim, validate, read and signal tests assert rc 3."
+      },
+      {
+        "ac": "A log over 16 MiB arrives cut to 16 MiB with truncated_bytes in its sidecar",
+        "met": true,
+        "evidence": "test_log_over_16_mib_is_truncated asserts len == MAX_LOG_BYTES, the tail is kept and the head cut, and truncated_bytes equals the bytes removed. Code: _file_payload, gate_files."
+      },
+      {
+        "ac": "have reports commit and base after the job; after gc --keep-days 0, have reports none, cat-file -e fails, job dirs are gone, but a live job's dir survives",
+        "met": true,
+        "evidence": "test_have_then_gc_removes_refs_objects_and_job_dirs checks have, gc, have again and cat-file -e, and that the job dir is gone. test_gc_during_a_live_job_keeps_its_dir asserts the live job's tree and objects survive. Code: gc, _live_jobs."
+      },
+      {
+        "ac": "info --json prints the documented keys",
+        "met": true,
+        "evidence": "test_info_json_keys asserts the exact key set plus the schema and protocol values."
+      },
+      {
+        "ac": "ssh-command execs the four allowed subcommands and refuses everything else with exit 2, running nothing",
+        "met": true,
+        "evidence": "test_allowed_commands_are_execd covers six forms of info, have, gate-job and gc with execvp patched. test_refused_commands_run_nothing has 25 cases (empty, nw queue run, metacharacters, unknown options, have --repo ../x, trailing newlines) and asserts exit 2, no exec, and `refused:` on stderr. Code: check_ssh_command, own_nw."
+      },
+      {
+        "ac": "docs/WORKFLOW.md documents the mandatory dedicated user and the absolute-path key line",
+        "met": true,
+        "evidence": "The 'Remote gate worker' section in the diff has these. test_workflow_docs_make_the_dedicated_user_mandatory_and_show_the_key_line asserts them."
+      }
+    ],
+    "fix_brief": ""
+  },
+  "profile": "thorough",
+  "profile_sources": [
+    "builtin:thorough.yaml"
+  ],
+  "files": {
+    "prompt": "prompt.md",
+    "raw": "result.json",
+    "stderr": "stderr.log"
+  }
+}

@@ -1,0 +1,82 @@
+{
+  "schema": "nw.run.v1",
+  "campaign": "SPEC-0336-20261031-6558",
+  "run_id": "002-gate_triager",
+  "persona": "gate_triager",
+  "model": "sonnet",
+  "effort": "high",
+  "max_budget_usd": 1.0,
+  "timeout_s": 2700,
+  "permission_mode": "dontAsk",
+  "started_at": "2026-10-31T21:04:54-04:00",
+  "duration_s": 13.212,
+  "exit_code": 0,
+  "timed_out": false,
+  "interrupted": false,
+  "is_error": false,
+  "cost_usd": 0.1501343,
+  "cost_estimated": false,
+  "usage": {
+    "input_tokens": 6,
+    "cache_creation_input_tokens": 32256,
+    "cache_read_input_tokens": 61383,
+    "output_tokens": 1496,
+    "output_tokens_details": {
+      "thinking_tokens": 41
+    },
+    "server_tool_use": {
+      "web_search_requests": 0,
+      "web_fetch_requests": 0
+    },
+    "service_tier": "standard",
+    "cache_creation": {
+      "ephemeral_1h_input_tokens": 32256,
+      "ephemeral_5m_input_tokens": 0
+    },
+    "inference_geo": "global",
+    "iterations": [
+      {
+        "input_tokens": 2,
+        "output_tokens": 936,
+        "cache_read_input_tokens": 31942,
+        "cache_creation_input_tokens": 314,
+        "cache_creation": {
+          "ephemeral_5m_input_tokens": 0,
+          "ephemeral_1h_input_tokens": 314
+        },
+        "type": "message"
+      }
+    ],
+    "speed": "standard",
+    "fallback_credit": null
+  },
+  "session_id": "e267e897-32c5-45eb-81da-4deb282a9967",
+  "verdict_ok": true,
+  "verdict": {
+    "disposition": "fix",
+    "confidence": "high",
+    "suspected_flaky": false,
+    "must_fix": [
+      {
+        "gate": "pytest-affected",
+        "title": "Command reference page does not list the new top-level `worker` command",
+        "detail": "tests/test_docs_product_reference.py::test_reference_lists_every_top_level_command asserts that every live top-level CLI command appears as `name` (backticked) in docs/product/reference/index.md. The new `nw worker` group is missing, so the test fails with \"reference missing top-level command 'worker'\". The failure was reproduced on a targeted rerun. Add a row to the command table in docs/product/reference/index.md, in the same format as the existing rows (e.g. line 35: | `queue` | Agentic work queue: ... | [Agentic loop](../capabilities/agentic.md) |). Keep the table's alphabetical/ordering convention. Suggested row: | `worker` | Remote gate worker: gate-job / have / gc / info / ssh-command (runs on the worker host) | [Workflow](../../WORKFLOW.md) | — adjust the relative link so it resolves, or reuse the agentic capability page. Optionally also check whether the capabilities page docs/product/capabilities/agentic.md should mention it.",
+        "files": [
+          "docs/product/reference/index.md"
+        ]
+      }
+    ],
+    "waived": [],
+    "fix_brief": "Single failure: tests/test_docs_product_reference.py::test_reference_lists_every_top_level_command fails because the new `nw worker` top-level command is not listed in docs/product/reference/index.md. Add one table row for `worker` (backticked, e.g. | `worker` | Remote gate worker: gate-job, have, gc, info, ssh-command | link |) next to the other rows (see the `queue` row at line 35 for the format; keep the link relative path valid so any doc link-check tests pass). Do not touch the spec file beyond allowed edits. After the edit, run the docs tests (uv run pytest -q tests/test_docs_product_reference.py and any other tests/test_docs_*.py) to confirm. Note the full-suite run stopped at the first failure (-x) at ~58%, so also scan for other docs/CLI-listing tests that enumerate commands (e.g. tests/test_completion.py, docs tests, help-text tests) and run them to catch any follow-on failures before the next gate run.",
+    "followup_ideas": []
+  },
+  "profile": "thorough",
+  "profile_sources": [
+    "builtin:thorough.yaml"
+  ],
+  "files": {
+    "prompt": "prompt.md",
+    "raw": "result.json",
+    "stderr": "stderr.log"
+  }
+}

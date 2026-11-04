@@ -1,0 +1,190 @@
+{
+  "schema": "nw.run.v1",
+  "campaign": "SPEC-0394-20261102-ae5b",
+  "run_id": "011-test_reviewer",
+  "persona": "test_reviewer",
+  "model": "opus",
+  "effort": "high",
+  "max_budget_usd": 1.0,
+  "timeout_s": 2700,
+  "permission_mode": "dontAsk",
+  "started_at": "2026-11-03T20:58:10-05:00",
+  "duration_s": 29.996,
+  "exit_code": 0,
+  "timed_out": false,
+  "interrupted": false,
+  "is_error": false,
+  "cost_usd": 0.5149424,
+  "cost_estimated": false,
+  "usage": {
+    "input_tokens": 4,
+    "cache_creation_input_tokens": 53926,
+    "cache_read_input_tokens": 72892,
+    "output_tokens": 3447,
+    "output_tokens_details": {
+      "thinking_tokens": 1227
+    },
+    "server_tool_use": {
+      "web_search_requests": 0,
+      "web_fetch_requests": 0
+    },
+    "service_tier": "standard",
+    "cache_creation": {
+      "ephemeral_1h_input_tokens": 53926,
+      "ephemeral_5m_input_tokens": 0
+    },
+    "inference_geo": "global",
+    "iterations": [
+      {
+        "input_tokens": 2,
+        "output_tokens": 2154,
+        "cache_read_input_tokens": 61448,
+        "cache_creation_input_tokens": 3922,
+        "cache_creation": {
+          "ephemeral_5m_input_tokens": 0,
+          "ephemeral_1h_input_tokens": 3922
+        },
+        "type": "message"
+      }
+    ],
+    "speed": "standard",
+    "fallback_credit": null
+  },
+  "session_id": "e0faf4da-a68a-4ca7-be35-4448e3acedd3",
+  "verdict_ok": true,
+  "verdict": {
+    "verdict": "pass",
+    "score": 90,
+    "findings": [
+      {
+        "severity": "minor",
+        "ac": "AC9",
+        "title": "\"Unchanged\" builtin tables are checked only by membership, not against a baseline",
+        "detail": "test_inert checks that PERSONAS equals the persona_defs/*.yaml stems and that the declared name is absent from PERSONAS, REVIEWER_PERSONAS and ADOPT_REGISTRY. It never compares REVIEWER_PERSONAS or ADOPT_REGISTRY to a pinned expected value, so a change that dropped or added a builtin reviewer or adopt entry would still pass. The diff does not edit these tables, and existing registry tests probably pin them, so the risk is low.",
+        "files": [
+          "tests/test_agentic_persona_run_settings.py"
+        ]
+      },
+      {
+        "severity": "minor",
+        "ac": "AC1",
+        "title": "Invalid run-setting values are tested only on the reviewer role and mostly through one validator",
+        "detail": "test_settings_keys_invalid runs only on role reviewer, and only through validate_persona_defs. The registry validator (persona_registry.validate_persona_doc) sees bad model, effort and budget values only through the one multi-fault file. That file covers each key, and the helper is shared, so the gap is small. A parametrized check of entry.errors per bad value, and one implementer or triager case, would pin AC3's \"same messages\" claim for each rule.",
+        "files": [
+          "tests/test_agentic_persona_run_settings.py"
+        ]
+      },
+      {
+        "severity": "nit",
+        "ac": "AC9",
+        "title": "\"Diff does not touch queue.py/profiles.py/divergence.py\" is a manual check",
+        "detail": "The spec says this is checked by hand with `git diff --stat main`, which is acceptable. No automated test guards it.",
+        "files": []
+      }
+    ],
+    "coverage_assessment": [
+      {
+        "ac": "AC1",
+        "covered": true,
+        "tests": [
+          "tests/test_agentic_persona_run_settings.py::test_settings_keys_valid",
+          "tests/test_agentic_persona_run_settings.py::test_settings_keys_invalid",
+          "tests/test_agentic_persona_run_settings.py::test_declared_keys_refused_in_a_builtin_definition",
+          "tests/test_agentic_persona_run_settings.py::test_builtin_definitions_carry_no_declared_keys"
+        ]
+      },
+      {
+        "ac": "AC2",
+        "covered": true,
+        "tests": [
+          "tests/test_agentic_persona_run_settings.py::test_routing_keys_valid_for_reviewer",
+          "tests/test_agentic_persona_run_settings.py::test_routing_keys_reviewer_only_bad_shapes",
+          "tests/test_agentic_persona_run_settings.py::test_routing_keys_reviewer_only",
+          "tests/test_agentic_persona_run_settings.py::test_routing_shape_still_checked_under_an_invalid_role",
+          "tests/test_agentic_persona_run_settings.py::test_declared_mapping_defaults"
+        ]
+      },
+      {
+        "ac": "AC3",
+        "covered": true,
+        "tests": [
+          "tests/test_agentic_persona_run_settings.py::test_multi_fault_file_reports_every_problem_in_both_validators",
+          "tests/test_agentic_persona_run_settings.py::test_routing_shape_still_checked_under_an_invalid_role",
+          "tests/test_agentic_persona_run_settings.py::test_registry_validator_accepts_the_keys_in_user_and_project_layers",
+          "tests/test_agentic_personas_declared_cli.py::test_validate_and_list_agree_on_new_key_problems"
+        ]
+      },
+      {
+        "ac": "AC4",
+        "covered": true,
+        "tests": [
+          "tests/test_agentic_persona_run_settings.py::test_is_reviewer"
+        ]
+      },
+      {
+        "ac": "AC5",
+        "covered": true,
+        "tests": [
+          "tests/test_agentic_persona_run_settings.py::test_build_request_declared_reviewer_layering",
+          "tests/test_agentic_persona_run_settings.py::test_build_request_declared_reviewer",
+          "tests/test_agentic_persona_run_settings.py::test_build_request_declared_triager_forced_read_only",
+          "tests/test_agentic_persona_run_settings.py::test_build_request_declared_implementer_writable"
+        ]
+      },
+      {
+        "ac": "AC6",
+        "covered": true,
+        "tests": [
+          "tests/test_agentic_persona_run_settings.py::test_build_request_declared_reviewer",
+          "tests/test_agentic_persona_run_settings.py::test_build_request_resolves_the_declared_registry_once",
+          "tests/test_agentic_persona_run_settings.py::test_build_request_declared_reviewer_needs_the_root"
+        ]
+      },
+      {
+        "ac": "AC7",
+        "covered": true,
+        "tests": [
+          "tests/test_agentic_persona_run_settings.py::test_output_section",
+          "tests/test_agentic_persona_run_settings.py::test_builtin_prompts_unchanged",
+          "tests/test_agentic_persona_run_settings.py::test_build_request_declared_implementer_writable",
+          "tests/test_agentic_persona_run_settings.py::test_build_request_declared_triager_forced_read_only"
+        ]
+      },
+      {
+        "ac": "AC8",
+        "covered": true,
+        "tests": [
+          "tests/test_agentic_personas_declared_cli.py::test_show_and_list_json_carry_declared_fields_and_omit_them_for_builtins",
+          "tests/test_agentic_personas_declared_cli.py::test_validate_and_list_agree_on_new_key_problems"
+        ]
+      },
+      {
+        "ac": "AC9",
+        "covered": true,
+        "tests": [
+          "tests/test_agentic_persona_run_settings.py::test_inert",
+          "tests/test_agentic_persona_run_settings.py::test_declared_mapping_defaults"
+        ]
+      },
+      {
+        "ac": "AC10",
+        "covered": true,
+        "tests": [
+          "manual: read docs/product/capabilities/agentic.md (per Test plan)"
+        ]
+      }
+    ],
+    "fix_brief": ""
+  },
+  "profile": "thorough",
+  "profile_sources": [
+    "builtin:thorough.yaml"
+  ],
+  "worker": null,
+  "files": {
+    "prompt": "prompt.md",
+    "raw": "result.json",
+    "stderr": "stderr.log",
+    "stream": "stream.jsonl"
+  }
+}

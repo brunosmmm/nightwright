@@ -1,0 +1,78 @@
+{
+  "schema": "nw.run.v1",
+  "campaign": "SPEC-0394-20261102-ae5b",
+  "run_id": "002-gate_triager",
+  "persona": "gate_triager",
+  "model": "sonnet",
+  "effort": "high",
+  "max_budget_usd": 1.0,
+  "timeout_s": 2700,
+  "permission_mode": "dontAsk",
+  "started_at": "2026-11-02T21:58:19-05:00",
+  "duration_s": 15.495,
+  "exit_code": 0,
+  "timed_out": false,
+  "interrupted": false,
+  "is_error": false,
+  "cost_usd": 0.12071660000000001,
+  "cost_estimated": false,
+  "usage": {
+    "input_tokens": 4,
+    "cache_creation_input_tokens": 24662,
+    "cache_read_input_tokens": 41906,
+    "output_tokens": 1787,
+    "output_tokens_details": {
+      "thinking_tokens": 702
+    },
+    "server_tool_use": {
+      "web_search_requests": 0,
+      "web_fetch_requests": 0
+    },
+    "service_tier": "standard",
+    "cache_creation": {
+      "ephemeral_1h_input_tokens": 24662,
+      "ephemeral_5m_input_tokens": 0
+    },
+    "inference_geo": "global",
+    "iterations": [
+      {
+        "input_tokens": 2,
+        "output_tokens": 1177,
+        "cache_read_input_tokens": 31872,
+        "cache_creation_input_tokens": 2824,
+        "cache_creation": {
+          "ephemeral_5m_input_tokens": 0,
+          "ephemeral_1h_input_tokens": 2824
+        },
+        "type": "message"
+      }
+    ],
+    "speed": "standard",
+    "fallback_credit": null
+  },
+  "session_id": "db78e7a5-c711-4954-9e4e-611621d1dacd",
+  "verdict_ok": true,
+  "verdict": {
+    "disposition": "escalate",
+    "confidence": "medium",
+    "suspected_flaky": false,
+    "must_fix": [],
+    "waived": [],
+    "fix_brief": "The only failing gate is the required `pytest-affected`. It stopped at the first two failures (`-x`): `tests/test_agentic_exit_paths.py::test_admission_blocked_journaled_once_per_change` and `tests/test_agentic_loop_state.py::test_run_stamps_slot_freed_at_on_drop`. Both concern queue slot and admission accounting, and a targeted rerun reproduced both, so this is not a flake. The SPEC-0394 diff does not touch `queue.py`, `profiles.py` or `divergence.py` (AC9). The spec's own Test record says 9 tests in this slot/admission family (these two plus others) fail the same way on an unmodified `git archive HEAD` copy. The most likely cause is the base commit 6e66fcda (\"SPEC-0395 GATING campaigns do not count against profile slots\"), which changed slot accounting without updating those tests. The persona work itself looks sound: spec-lint passes and 813 tests passed. I have no shell and did not rerun the tests on the base commit. A human should decide how to unblock this: (a) fix the SPEC-0395 regression or its tests on main, then rerun this campaign's gate; (b) waive these specific tests for this campaign; or (c) mark them xfail or skip with a reference to SPEC-0395. Do not edit `queue.py` or `profiles.py` in this campaign, because AC9 forbids it. If the steward authorises a test-only fix, the implementer should adjust only the two tests' expectations (the admission_blocked journal count and the `slot_freed_at` tick count) to match the SPEC-0395 semantics, and note that in `### As shipped`.",
+    "followup_ideas": [
+      "Fix the slot/admission accounting tests broken by SPEC-0395 on main: test_agentic_exit_paths admission_blocked (x3), test_agentic_watchdog_gaps waiting_not_admitted, test_agentic_loop_state slot_freed_at, test_agentic_queue_visibility width_snapshots (x3), test_tui_queue_model load_queue_sections.",
+      "Add a main-baseline check to the gate so failures that already exist on the base commit are flagged as pre-existing instead of blocking unrelated campaigns."
+    ]
+  },
+  "profile": "thorough",
+  "profile_sources": [
+    "builtin:thorough.yaml"
+  ],
+  "worker": null,
+  "files": {
+    "prompt": "prompt.md",
+    "raw": "result.json",
+    "stderr": "stderr.log",
+    "stream": "stream.jsonl"
+  }
+}

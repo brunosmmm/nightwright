@@ -1,0 +1,28 @@
+F                                                                        [100%]
+=================================== FAILURES ===================================
+_________________________ test_no_unlisted_raw_writes __________________________
+
+    def test_no_unlisted_raw_writes():
+        bad = []
+        for path in sorted(SRC.rglob("*.py")):
+            rel = path.relative_to(SRC).as_posix()
+            for rel_, func, line in raw_writes(path, rel):
+                if (rel_, func) not in ALLOWED:
+                    bad.append(f"src/nightwright/{rel_}:{line} in {func}()")
+>       assert not bad, ("raw output outside the allowlist — print through nightwright.console / "
+                         "nightwright.render (warn, print_code, …) or, for a machine path, add it to "
+                         "ALLOWED with a reason:\n  " + "\n  ".join(bad))
+E       AssertionError: raw output outside the allowlist — print through nightwright.console / nightwright.render (warn, print_code, …) or, for a machine path, add it to ALLOWED with a reason:
+E           src/nightwright/agentic/cli_worker.py:37 in worker_info()
+E           src/nightwright/agentic/cli_worker.py:51 in worker_have()
+E           src/nightwright/agentic/cli_worker.py:68 in worker_gc()
+E           src/nightwright/agentic/worker.py:429 in gate_job()
+E           src/nightwright/agentic/worker.py:436 in _fail()
+E           src/nightwright/agentic/worker.py:446 in _fail()
+E           src/nightwright/agentic/worker.py:666 in ssh_command()
+E       assert not ['src/nightwright/agentic/cli_worker.py:37 in worker_info()', 'src/nightwright/agentic/cli_worker.py:51 in worker_have...te_job()', 'src/nightwright/agentic/worker.py:436 in _fail()', 'src/nightwright/agentic/worker.py:446 in _fail()', ...]
+
+tests/test_rich_output_guard.py:75: AssertionError
+=========================== short test summary info ============================
+FAILED tests/test_rich_output_guard.py::test_no_unlisted_raw_writes - Asserti...
+1 failed in 1.17s

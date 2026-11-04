@@ -1,0 +1,1000 @@
+{
+  "schema": "nw.campaign.v1",
+  "id": "SPEC-0394-20261102-ae5b",
+  "kind": "implement",
+  "spec_id": "SPEC-0394",
+  "project": "Meta-Tools",
+  "profile": "thorough",
+  "state": "MERGED",
+  "prev_state": "CLOSING",
+  "created_at": "2026-11-02T20:08:49-05:00",
+  "priority": 3,
+  "force": false,
+  "backlog": {
+    "ready": true,
+    "blocked_by": [],
+    "since": "2026-11-02T20:09:11-05:00"
+  },
+  "profile_sources": [
+    "builtin:thorough.yaml"
+  ],
+  "repo": {
+    "root": "/home/user/work/nightwright",
+    "base": "main",
+    "base_sha_at_open": "6e66fcda87f3b8520cc4a489081a20940bb58a68",
+    "branch": "nw/SPEC-0394-20261102-ae5b",
+    "worktree": "/home/user/work/.nw-worktrees/Meta-Tools/SPEC-0394-20261102-ae5b",
+    "head": "67d892e450088307df6b0e0cdf455ab00d391dd6"
+  },
+  "spec": {
+    "rel_path": "docs/specs/0394-declared-persona-run-settings-routing-and-requests.md",
+    "internal": true,
+    "sha256_at_open": "f0442ce7a5dd541c89f3ed14e34238d1e39281492f7521ba386772126bdd0a16"
+  },
+  "counters": {
+    "loops": 1,
+    "runs": 13,
+    "gate_runs": 6,
+    "gate_retries": 1,
+    "timeout_regates": 0,
+    "triage_retries": 0,
+    "blocked_streak": 0,
+    "close_attempts": 1,
+    "parks": 2,
+    "review_retries": 0
+  },
+  "cost": {
+    "total_usd": 7.7666,
+    "cap_usd": 30.0,
+    "by_persona": {
+      "implementer": 3.33,
+      "gate_triager": 0.3897,
+      "conformance_reviewer": 1.1415,
+      "test_reviewer": 1.0788,
+      "adversarial_reviewer": 1.6085,
+      "review_triager": 0.2181
+    }
+  },
+  "last_gate": {
+    "gate_seq": 6,
+    "ok": true,
+    "started_at": "2026-11-03T21:06:36-05:00",
+    "duration_s": 487.126,
+    "slot_wait_s": 0.0,
+    "worker": "box",
+    "head": "1a3fa4be119a7da9893a2cf74bb1554b885201c9",
+    "tree": "5949da1541012c3a535fa2fcf04b3e443741b828",
+    "changed": [],
+    "results": [
+      {
+        "name": "spec-lint",
+        "required": true,
+        "ok": true,
+        "exit_code": 0,
+        "timed_out": false,
+        "duration_s": 4.282,
+        "log": "gates/006-spec-lint.log",
+        "tail": "✓ 395 spec(s) OK: SPEC-0000, SPEC-0001, SPEC-0002, SPEC-0003, SPEC-0004, SPEC-0005, SPEC-0006, SPEC-0007, SPEC-0008, SPEC-0009, SPEC-0010, SPEC-0011, SPEC-0012, SPEC-0013, SPEC-0014, SPEC-0015, SPEC-0016, SPEC-0017, SPEC-0018, SPEC-0019, SPEC-0020, SPEC-0021, SPEC-0022, SPEC-0023, SPEC-0024, SPEC-0025, SPEC-0026, SPEC-0027, SPEC-0028, SPEC-0029, SPEC-0030, SPEC-0031, SPEC-0032, SPEC-0033, SPEC-0034, SPEC-0035, SPEC-0036, SPEC-0037, SPEC-0038, SPEC-0039, SPEC-0040, SPEC-0041, SPEC-0042, SPEC-0043, SPEC-0044, SPEC-0045, SPEC-0046, SPEC-0047, SPEC-0048, SPEC-0049, SPEC-0050, SPEC-0051, SPEC-0052, SPEC-0053, SPEC-0054, SPEC-0055, SPEC-0056, SPEC-0057, SPEC-0058, SPEC-0059, SPEC-0060, SPEC-0061, SPEC-0062, SPEC-0063, SPEC-0064, SPEC-0065, SPEC-0066, SPEC-0067, SPEC-0068, SPEC-0069, SPEC-0070, SPEC-0071, SPEC-0072, SPEC-0073, SPEC-0074, SPEC-0075, SPEC-0076, SPEC-0077, SPEC-0078, SPEC-0079, SPEC-0080, SPEC-0081, SPEC-0082, SPEC-0083, SPEC-0084, SPEC-0085, SPEC-0086, SPEC-0087, SPEC-0088, SPEC-0089, SPEC-0090, SPEC-0091, SPEC-0092, SPEC-0093, SPEC-0094, SPEC-0095, SPEC-0096, SPEC-0097, SPEC-0098, SPEC-0099, SPEC-0100, SPEC-0101, SPEC-0102, SPEC-0103, SPEC-0104, SPEC-0105, SPEC-0106, SPEC-0107, SPEC-0108, SPEC-0109, SPEC-0110, SPEC-0111, SPEC-0112, SPEC-0113, SPEC-0114, SPEC-0115, SPEC-0116, SPEC-0117, SPEC-0118, SPEC-0119, SPEC-0120, SPEC-0121, SPEC-0122, SPEC-0123, SPEC-0124, SPEC-0125, SPEC-0126, SPEC-0127, SPEC-0128, SPEC-0129, SPEC-0130, SPEC-0131, SPEC-0132, SPEC-0133, SPEC-0134, SPEC-0135, SPEC-0136, SPEC-0137, SPEC-0138, SPEC-0139, SPEC-0140, SPEC-0141, SPEC-0142, SPEC-0143, SPEC-0144, SPEC-0145, SPEC-0146, SPEC-0147, SPEC-0148, SPEC-0149, SPEC-0150, SPEC-0151, SPEC-0152, SPEC-0153, SPEC-0154, SPEC-0155, SPEC-0156, SPEC-0157, SPEC-0158, SPEC-0159, SPEC-0160, SPEC-0161, SPEC-0162, SPEC-0163, SPEC-0164, SPEC-0165, SPEC-0166, SPEC-0167, SPEC-0168, SPEC-0169, SPEC-0170, SPEC-0171, SPEC-0172, SPEC-0173, SPEC-0174, SPEC-0175, SPEC-0176, SPEC-0177, SPEC-0178, SPEC-0179, SPEC-0180, SPEC-0181, SPEC-0182, SPEC-0183, SPEC-0184, SPEC-0185, SPEC-0186, SPEC-0187, SPEC-0188, SPEC-0189, SPEC-0190, SPEC-0191, SPEC-0192, SPEC-0193, SPEC-0194, SPEC-0195, SPEC-0196, SPEC-0197, SPEC-0198, SPEC-0199, SPEC-0200, SPEC-0201, SPEC-0202, SPEC-0203, SPEC-0204, SPEC-0205, SPEC-0206, SPEC-0207, SPEC-0208, SPEC-0209, SPEC-0210, SPEC-0211, SPEC-0212, SPEC-0213, SPEC-0214, SPEC-0215, SPEC-0217, SPEC-0218, SPEC-0219, SPEC-0220, SPEC-0221, SPEC-0222, SPEC-0223, SPEC-0224, SPEC-0225, SPEC-0226, SPEC-0227, SPEC-0228, SPEC-0229, SPEC-0230, SPEC-0231, SPEC-0232, SPEC-0233, SPEC-0234, SPEC-0235, SPEC-0236, SPEC-0237, SPEC-0238, SPEC-0239, SPEC-0241, SPEC-0242, SPEC-0243, SPEC-0244, SPEC-0246, SPEC-0247, SPEC-0248, SPEC-0249, SPEC-0250, SPEC-0251, SPEC-0252, SPEC-0253, SPEC-0254, SPEC-0255, SPEC-0256, SPEC-0257, SPEC-0258, SPEC-0259, SPEC-0260, SPEC-0261, SPEC-0262, SPEC-0263, SPEC-0264, SPEC-0265, SPEC-0266, SPEC-0267, SPEC-0268, SPEC-0269, SPEC-0270, SPEC-0271, SPEC-0272, SPEC-0273, SPEC-0274, SPEC-0275, SPEC-0276, SPEC-0277, SPEC-0278, SPEC-0279, SPEC-0280, SPEC-0281, SPEC-0282, SPEC-0283, SPEC-0284, SPEC-0285, SPEC-0286, SPEC-0287, SPEC-0288, SPEC-0289, SPEC-0290, SPEC-0291, SPEC-0292, SPEC-0293, SPEC-0294, SPEC-0295, SPEC-0296, SPEC-0297, SPEC-0298, SPEC-0299, SPEC-0300, SPEC-0301, SPEC-0302, SPEC-0303, SPEC-0304, SPEC-0305, SPEC-0306, SPEC-0307, SPEC-0308, SPEC-0309, SPEC-0310, SPEC-0311, SPEC-0312, SPEC-0313, SPEC-0314, SPEC-0315, SPEC-0316, SPEC-0317, SPEC-0318, SPEC-0319, SPEC-0320, SPEC-0321, SPEC-0322, SPEC-0323, SPEC-0325, SPEC-0326, SPEC-0327, SPEC-0328, SPEC-0329, SPEC-0330, SPEC-0331, SPEC-0332, SPEC-0333, SPEC-0334, SPEC-0335, SPEC-0336, SPEC-0337, SPEC-0338, SPEC-0339, SPEC-0340, SPEC-0341, SPEC-0342, SPEC-0343, SPEC-0344, SPEC-0345, SPEC-0346, SPEC-0347, SPEC-0348, SPEC-0349, SPEC-0350, SPEC-0351, SPEC-0353, SPEC-0354, SPEC-0355, SPEC-0356, SPEC-0357, SPEC-0358, SPEC-0359, SPEC-0360, SPEC-0361, SPEC-0362, SPEC-0363, SPEC-0364, SPEC-0365, SPEC-0366, SPEC-0367, SPEC-0368, SPEC-0369, SPEC-0370, SPEC-0371, SPEC-0372, SPEC-0373, SPEC-0374, SPEC-0375, SPEC-0376, SPEC-0377, SPEC-0378, SPEC-0379, SPEC-0380, SPEC-0381, SPEC-0382, SPEC-0383, SPEC-0384, SPEC-0385, SPEC-0386, SPEC-0387, SPEC-0388, SPEC-0389, SPEC-0390, SPEC-0391, SPEC-0393, SPEC-0394, SPEC-0395, SPEC-0396, SPEC-0398, SPEC-0399, SPEC-0400, SPEC-0405",
+        "cmd": "python3 tools/spec_lint.py --write-ledger >/dev/null && python3 tools/spec_lint.py",
+        "cwd": "/home/user/.local/share/nightwright/agentic/worker/jobs/SPEC-0394-20261102-ae5b-gate-006-a1/tree"
+      },
+      {
+        "name": "docs-tests",
+        "required": true,
+        "ok": true,
+        "exit_code": 0,
+        "timed_out": false,
+        "duration_s": 11.143,
+        "log": "gates/006-docs-tests.log",
+        "tail": "Using CPython 3.14.9 interpreter at: /usr/bin/python3\nCreating virtual environment at: .venv\n   Building nightwright @ file:///home/user/.local/share/nightwright/agentic/worker/jobs/SPEC-0394-20261102-ae5b-gate-006-a1/tree\n      Built nightwright @ file:///home/user/.local/share/nightwright/agentic/worker/jobs/SPEC-0394-20261102-ae5b-gate-006-a1/tree\nInstalled 51 packages in 329ms\nbringing up nodes...\nbringing up nodes...\n\n........................................................................ [ 37%]\n........................................................................ [ 75%]\n..............................................                           [100%]\n190 passed in 9.48s",
+        "cmd": "uv run pytest -q -n 2 tests/test_docs_*.py tests/test_spec_lint*.py tests/test_specs.py tests/test_agentic_profiles.py",
+        "cwd": "/home/user/.local/share/nightwright/agentic/worker/jobs/SPEC-0394-20261102-ae5b-gate-006-a1/tree",
+        "summary": {
+          "format": "pytest",
+          "passed": 190,
+          "failed": 0,
+          "errors": 0,
+          "skipped": 0,
+          "failing": []
+        }
+      },
+      {
+        "name": "pytest",
+        "required": true,
+        "ok": true,
+        "exit_code": 0,
+        "timed_out": false,
+        "duration_s": 471.688,
+        "log": "gates/006-pytest.log",
+        "tail": "........................................................................ [ 18%]\n........................................................................ [ 20%]\n........................................................................ [ 22%]\n........................................................................ [ 24%]\n........................................................................ [ 26%]\n........................................................................ [ 28%]\n........................................................................ [ 30%]\n........................................................................ [ 32%]\n........................................................................ [ 34%]\n........................................................................ [ 36%]\n........................................................................ [ 38%]\n........................................................................ [ 40%]\n........................................................................ [ 42%]\n........................................................................ [ 44%]\n........................................................................ [ 47%]\n........................................................................ [ 49%]\n........................................................................ [ 51%]\n........................................................................ [ 53%]\n........................................................................ [ 55%]\n........................................................................ [ 57%]\n........................................................................ [ 59%]\n........................................................................ [ 61%]\n........................................................................ [ 63%]\n........................................................................ [ 65%]\n........................................................................ [ 67%]\n........................................................................ [ 69%]\n........................................................................ [ 71%]\n........................................................................ [ 73%]\n........................................................................ [ 75%]\n........................................................................ [ 77%]\n........................................................................ [ 79%]\n........................................................................ [ 81%]\n...................................ss................................... [ 83%]\n........................................................................ [ 85%]\n........................................................................ [ 87%]\n........................................................................ [ 89%]\n........................................................................ [ 91%]\n........................................................................ [ 94%]\n........................................................................ [ 96%]\n........................................................................ [ 98%]\n...................................................................      [100%]\n=============================== warnings summary ===============================\ntests/test_org_write_race.py: 8 warnings\ntests/test_spec_numbers.py: 5 warnings\n  /usr/lib/python3.14/multiprocessing/popen_fork.py:76: DeprecationWarning: This process (pid=3494313) is multi-threaded, use of fork() may lead to deadlocks in the child.\n    self.pid = os.fork()\n\ntests/test_spec_numbers.py::test_concurrent_allocate_distinct\ntests/test_spec_numbers.py::test_concurrent_allocate_distinct\ntests/test_spec_numbers.py::test_concurrent_allocate_distinct\ntests/test_spec_numbers.py::test_concurrent_allocate_distinct\ntests/test_spec_numbers.py::test_concurrent_allocate_distinct\ntests/test_spec_numbers.py::test_concurrent_allocate_distinct\ntests/test_spec_numbers.py::test_concurrent_allocate_distinct\ntests/test_spec_numbers.py::test_concurrent_allocate_distinct\n  /usr/lib/python3.14/multiprocessing/popen_fork.py:76: DeprecationWarning: This process (pid=3494335) is multi-threaded, use of fork() may lead to deadlocks in the child.\n    self.pid = os.fork()\n\n-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html\n3519 passed, 4 skipped, 21 warnings in 465.88s (0:07:45)",
+        "cmd": "python3 tools/affected_tests.py --include tests/test_agentic_dogfood_config.py --include tests/test_agentic_project.py --run uv run pytest -q -x -n 4",
+        "cwd": "/home/user/.local/share/nightwright/agentic/worker/jobs/SPEC-0394-20261102-ae5b-gate-006-a1/tree",
+        "summary": {
+          "format": "pytest",
+          "passed": 3519,
+          "failed": 0,
+          "errors": 0,
+          "skipped": 4,
+          "failing": []
+        },
+        "report": {
+          "base_sha": "d5b737d489f38242db7766b4a00949cecc8a9a5c",
+          "changed": [
+            "docs/LEDGER.md",
+            "docs/product/capabilities/agentic.md",
+            "docs/product/reference/index.md",
+            "docs/specs/0394-declared-persona-run-settings-routing-and-requests.md",
+            "src/nightwright/agentic/cli_personas.py",
+            "src/nightwright/agentic/persona_defs.py",
+            "src/nightwright/agentic/persona_registry.py",
+            "src/nightwright/agentic/personas.py",
+            "tests/test_agentic_persona_run_settings.py",
+            "tests/test_agentic_personas_declared_cli.py"
+          ],
+          "full": false,
+          "head_sha": "1a3fa4be119a7da9893a2cf74bb1554b885201c9",
+          "head_tree": "5949da1541012c3a535fa2fcf04b3e443741b828",
+          "include": [
+            "tests/test_agentic_dogfood_config.py",
+            "tests/test_agentic_project.py"
+          ],
+          "reason": "123/252 test files affected by 10 changed files (reference scan for docs/LEDGER.md; reference scan for docs/product/capabilities/agentic.md; reference scan for docs/product/reference/index.md; reference scan for docs/specs/0394-declared-persona-run-settings-routing-and-requests.md; name rule for src/nightwright/agentic/cli_personas.py)",
+          "tests": [
+            "tests/test_agentic_adopt.py",
+            "tests/test_agentic_campaign_export.py",
+            "tests/test_agentic_campaign_runs.py",
+            "tests/test_agentic_close.py",
+            "tests/test_agentic_close_inflight.py",
+            "tests/test_agentic_close_regenerate.py",
+            "tests/test_agentic_close_reuse.py",
+            "tests/test_agentic_close_train.py",
+            "tests/test_agentic_conduct_cli.py",
+            "tests/test_agentic_conductor_guard.py",
+            "tests/test_agentic_config_reload.py",
+            "tests/test_agentic_cost_estimate.py",
+            "tests/test_agentic_dashboard.py",
+            "tests/test_agentic_dashboard_journey.py",
+            "tests/test_agentic_dashboard_spec_phase.py",
+            "tests/test_agentic_dashboard_spec_reviews.py",
+            "tests/test_agentic_detach.py",
+            "tests/test_agentic_divergence.py",
+            "tests/test_agentic_dogfood_config.py",
+            "tests/test_agentic_drain_signal.py",
+            "tests/test_agentic_e2e.py",
+            "tests/test_agentic_escalations.py",
+            "tests/test_agentic_events.py",
+            "tests/test_agentic_events_settings.py",
+            "tests/test_agentic_exit_paths.py",
+            "tests/test_agentic_gate_limits.py",
+            "tests/test_agentic_gate_paths.py",
+            "tests/test_agentic_gates.py",
+            "tests/test_agentic_gating_slots.py",
+            "tests/test_agentic_gitops.py",
+            "tests/test_agentic_heartbeat.py",
+            "tests/test_agentic_idea_campaign.py",
+            "tests/test_agentic_idea_link.py",
+            "tests/test_agentic_index_lock.py",
+            "tests/test_agentic_logs.py",
+            "tests/test_agentic_loop_state.py",
+            "tests/test_agentic_mvp_integration.py",
+            "tests/test_agentic_mvp_report.py",
+            "tests/test_agentic_nonblocking.py",
+            "tests/test_agentic_outbound_e2e.py",
+            "tests/test_agentic_persona_defs.py",
+            "tests/test_agentic_persona_registry.py",
+            "tests/test_agentic_persona_run_settings.py",
+            "tests/test_agentic_personas.py",
+            "tests/test_agentic_personas_cli.py",
+            "tests/test_agentic_personas_declared_cli.py",
+            "tests/test_agentic_ping.py",
+            "tests/test_agentic_pr_sweep.py",
+            "tests/test_agentic_profiles.py",
+            "tests/test_agentic_profiles_cli.py",
+            "tests/test_agentic_project.py",
+            "tests/test_agentic_queue.py",
+            "tests/test_agentic_queue_autopark.py",
+            "tests/test_agentic_queue_by.py",
+            "tests/test_agentic_queue_cli.py",
+            "tests/test_agentic_queue_finish_race.py",
+            "tests/test_agentic_queue_gc.py",
+            "tests/test_agentic_queue_merge.py",
+            "tests/test_agentic_queue_restart.py",
+            "tests/test_agentic_queue_visibility.py",
+            "tests/test_agentic_reexec.py",
+            "tests/test_agentic_resolver.py",
+            "tests/test_agentic_review_triage.py",
+            "tests/test_agentic_reviewers.py",
+            "tests/test_agentic_runner.py",
+            "tests/test_agentic_runproc.py",
+            "tests/test_agentic_sentinel.py",
+            "tests/test_agentic_spec_drift.py",
+            "tests/test_agentic_spec_review.py",
+            "tests/test_agentic_spec_review_loop.py",
+            "tests/test_agentic_spec_writer.py",
+            "tests/test_agentic_split.py",
+            "tests/test_agentic_split_queue.py",
+            "tests/test_agentic_steward_notify.py",
+            "tests/test_agentic_stream.py",
+            "tests/test_agentic_tmp_isolation.py",
+            "tests/test_agentic_waiting.py",
+            "tests/test_agentic_watch_height.py",
+            "tests/test_agentic_watch_idle_cost.py",
+            "tests/test_agentic_watchdog_gaps.py",
+            "tests/test_assoc.py",
+            "tests/test_console_piped.py",
+            "tests/test_docs_captures.py",
+            "tests/test_docs_product_capabilities.py",
+            "tests/test_docs_product_guides.py",
+            "tests/test_docs_product_ia.py",
+            "tests/test_docs_product_reference.py",
+            "tests/test_docs_two_pillars.py",
+            "tests/test_doctor.py",
+            "tests/test_export.py",
+            "tests/test_gate_slots.py",
+            "tests/test_gate_tiers.py",
+            "tests/test_generate.py",
+            "tests/test_herdr.py",
+            "tests/test_herdr_autowatch.py",
+            "tests/test_hub.py",
+            "tests/test_org_write_race.py",
+            "tests/test_outbox_migrate.py",
+            "tests/test_project_registry.py",
+            "tests/test_projects_add.py",
+            "tests/test_projects_json.py",
+            "tests/test_promote.py",
+            "tests/test_remote_personas.py",
+            "tests/test_rename_nightwright.py",
+            "tests/test_research_context.py",
+            "tests/test_routing.py",
+            "tests/test_spec_numbers.py",
+            "tests/test_spec_review_cwd.py",
+            "tests/test_spec_review_outbound_root.py",
+            "tests/test_spec_review_show.py",
+            "tests/test_spec_review_store.py",
+            "tests/test_spec_scope.py",
+            "tests/test_spec_status.py",
+            "tests/test_specs.py",
+            "tests/test_specs_dir.py",
+            "tests/test_tui_campaign_model.py",
+            "tests/test_tui_campaign_screen.py",
+            "tests/test_tui_escalations_tab.py",
+            "tests/test_tui_events_model.py",
+            "tests/test_tui_events_tab.py",
+            "tests/test_tui_mailbox_tab.py",
+            "tests/test_tui_queue_model.py",
+            "tests/test_tui_queue_tab.py"
+          ]
+        }
+      }
+    ],
+    "event_uid": "SPEC-0394-20261102-ae5b-gate-006-a1:6"
+  },
+  "last_verdict": {
+    "persona": "adversarial_reviewer",
+    "run": "012-adversarial_reviewer",
+    "verdict": {
+      "verdict": "pass",
+      "score": 87,
+      "findings": [
+        {
+          "severity": "minor",
+          "category": "logic",
+          "title": "template_sha256 describes the bytes read at scan time, but the prompt is rendered from a later re-read of the file",
+          "detail": "`persona_defs._check_template` hashes the template bytes while validating. `Persona.template` re-reads `template_file` from disk every time `build_prompt` runs. If the file changes between the registry scan and rendering, `Persona.declared[\"template_sha256\"]` (and the placeholder check) no longer describe the prompt that was sent. Today the hash is only displayed, but it is offered as the identity of the template, and Pipeline A3 may record or trust it. The placeholder confinement from SPEC-0371 has the same TOCTOU, so this is not new risk, but the new field claims more than it can guarantee.",
+          "trigger": "The main-checkout `.nw/personas/security_reviewer.md` is edited (e.g. by a `git pull` on main) between `get_persona(...)` in `build_request` and `build_prompt(p, ctx)`, or between `nw personas show` and a later run.",
+          "files": [
+            "src/nightwright/agentic/persona_defs.py",
+            "src/nightwright/agentic/personas.py"
+          ],
+          "lines": [
+            "src/nightwright/agentic/persona_defs.py:85",
+            "src/nightwright/agentic/personas.py:289"
+          ]
+        },
+        {
+          "severity": "nit",
+          "category": "other",
+          "title": "A declared model id with a trailing newline passes validation",
+          "detail": "`check_declared_keys` accepts a model if `MODEL_RE.match(model)` succeeds. `MODEL_RE` ends in `$`, which also matches just before a final `\\n`, so a quoted YAML value such as `model: \"claude-opus-4-1\\n\"` validates. It then reaches `RunRequest.model` and the claude argv unchanged and fails at run time instead of at `nw personas validate`. The regex already exists in profiles.py; a definition file is only a new place for such a value to come from. `fullmatch` (or `\\Z`) would close it.",
+          "trigger": "A definition file has `model: \"claude-opus-4-1\\n\"`.",
+          "files": [
+            "src/nightwright/agentic/persona_registry.py"
+          ],
+          "lines": [
+            "src/nightwright/agentic/persona_registry.py:173"
+          ]
+        }
+      ],
+      "fix_brief": ""
+    },
+    "verdict_ok": true
+  },
+  "pending_brief": null,
+  "park": null,
+  "close": {
+    "mode": "merge",
+    "merged_sha": "1a3fa4be119a7da9893a2cf74bb1554b885201c9",
+    "pr_url": null,
+    "gates_seq": 6,
+    "target_sha": "d5b737d489f38242db7766b4a00949cecc8a9a5c",
+    "followups": {
+      "filed": [
+        {
+          "severity": "minor",
+          "title": "\"Unchanged\" builtin tables are checked only by membership, not against a baseline",
+          "idea_id": "IDEA-893",
+          "origin": "waived"
+        },
+        {
+          "severity": "minor",
+          "title": "Invalid run-setting values are tested only on the reviewer role and mostly through one validator",
+          "idea_id": "IDEA-893",
+          "origin": "waived"
+        },
+        {
+          "severity": "minor",
+          "title": "template_sha256 describes the bytes read at scan time, but the prompt is rendered from a later re-read of the file",
+          "idea_id": "IDEA-893",
+          "origin": "waived"
+        },
+        {
+          "severity": "minor",
+          "title": "template_sha256 is of the validated bytes, not of the template the prompt renders",
+          "idea_id": "IDEA-893",
+          "origin": "waived"
+        }
+      ],
+      "unfiled": [],
+      "waived": [
+        {
+          "severity": "minor",
+          "title": "template_sha256 is of the validated bytes, not of the template the prompt renders",
+          "waive_reason": "The spec defines template_sha256 as the hash of the bytes read during validation. The reviewer calls it hardening only, and the spec does not ask for it."
+        },
+        {
+          "severity": "nit",
+          "title": "Output section lists `trigger`, which the Design's field list does not include",
+          "waive_reason": "The output section is derived from the enforced schema, and the spec's 'As shipped' section records the extra `trigger` field. Not a defect."
+        },
+        {
+          "severity": "nit",
+          "title": "No automated check that queue.py, profiles.py and divergence.py are untouched",
+          "waive_reason": "The test plan checks that queue.py, profiles.py and divergence.py are untouched with `git diff --stat main`, and the reviewer says that diff touches none of them. An automated test for this is not required."
+        },
+        {
+          "severity": "minor",
+          "title": "\"Unchanged\" builtin tables are checked only by membership, not against a baseline",
+          "waive_reason": "The diff does not edit the builtin tables, and existing registry tests pin them. The membership checks already cover the declared-name leak that AC9 cares about."
+        },
+        {
+          "severity": "minor",
+          "title": "Invalid run-setting values are tested only on the reviewer role and mostly through one validator",
+          "waive_reason": "Both validators share one helper, and the multi-fault file already covers every key through both. Extra parametrization would add little."
+        },
+        {
+          "severity": "minor",
+          "title": "template_sha256 describes the bytes read at scan time, but the prompt is rendered from a later re-read of the file",
+          "waive_reason": "The reviewer says this has the same TOCTOU as the SPEC-0371 placeholder confinement. The hash is display-only for now, and any use of it for identity belongs to Pipeline A3."
+        },
+        {
+          "severity": "nit",
+          "title": "build_request computes the review flag inline instead of calling is_reviewer as the Design says",
+          "waive_reason": "The deviation is documented in As shipped and pinned by a test. It gives the same answer with one registry scan. Where to put the predicate is a style choice."
+        },
+        {
+          "severity": "nit",
+          "title": "\"Diff does not touch queue.py/profiles.py/divergence.py\" is a manual check",
+          "waive_reason": "The spec explicitly makes AC9's not-touched check a manual `git diff --stat`. An automated test would be out of scope."
+        }
+      ],
+      "capped": [],
+      "idea_id": "IDEA-893"
+    }
+  },
+  "admission": "approved",
+  "sizing": {
+    "size": "l",
+    "tone": "high-end",
+    "rationale": "Ten acceptance criteria across persona_registry.py, persona_defs.py, personas.py (Persona, build_request, build_prompt, new is_reviewer/declared_settings), the `nw personas` CLI and the capability doc. It is high-end rather than cost-effective because it changes run-request construction and forces read-only/dontAsk permissions, although the queue and the builtin path stay untouched.",
+    "source": "flag",
+    "reason": "--profile thorough",
+    "review_sha256": "f0442ce7a5dd541c89f3ed14e34238d1e39281492f7521ba386772126bdd0a16"
+  },
+  "updated_at": "2026-11-03T21:14:52-05:00",
+  "gate_exclusive": null,
+  "last_green_loop": {
+    "gate_seq": 5,
+    "ok": true,
+    "started_at": "2026-11-03T20:41:48-05:00",
+    "duration_s": 981.06,
+    "slot_wait_s": 0.0,
+    "worker": "box",
+    "head": "67d892e450088307df6b0e0cdf455ab00d391dd6",
+    "tree": "22e088484e5b1f49d6a0a7fdd418ffd98e18d502",
+    "changed": [],
+    "results": [
+      {
+        "name": "spec-lint",
+        "required": true,
+        "ok": true,
+        "exit_code": 0,
+        "timed_out": false,
+        "duration_s": 15.1,
+        "log": "gates/005-spec-lint.log",
+        "tail": "✓ 392 spec(s) OK: SPEC-0000, SPEC-0001, SPEC-0002, SPEC-0003, SPEC-0004, SPEC-0005, SPEC-0006, SPEC-0007, SPEC-0008, SPEC-0009, SPEC-0010, SPEC-0011, SPEC-0012, SPEC-0013, SPEC-0014, SPEC-0015, SPEC-0016, SPEC-0017, SPEC-0018, SPEC-0019, SPEC-0020, SPEC-0021, SPEC-0022, SPEC-0023, SPEC-0024, SPEC-0025, SPEC-0026, SPEC-0027, SPEC-0028, SPEC-0029, SPEC-0030, SPEC-0031, SPEC-0032, SPEC-0033, SPEC-0034, SPEC-0035, SPEC-0036, SPEC-0037, SPEC-0038, SPEC-0039, SPEC-0040, SPEC-0041, SPEC-0042, SPEC-0043, SPEC-0044, SPEC-0045, SPEC-0046, SPEC-0047, SPEC-0048, SPEC-0049, SPEC-0050, SPEC-0051, SPEC-0052, SPEC-0053, SPEC-0054, SPEC-0055, SPEC-0056, SPEC-0057, SPEC-0058, SPEC-0059, SPEC-0060, SPEC-0061, SPEC-0062, SPEC-0063, SPEC-0064, SPEC-0065, SPEC-0066, SPEC-0067, SPEC-0068, SPEC-0069, SPEC-0070, SPEC-0071, SPEC-0072, SPEC-0073, SPEC-0074, SPEC-0075, SPEC-0076, SPEC-0077, SPEC-0078, SPEC-0079, SPEC-0080, SPEC-0081, SPEC-0082, SPEC-0083, SPEC-0084, SPEC-0085, SPEC-0086, SPEC-0087, SPEC-0088, SPEC-0089, SPEC-0090, SPEC-0091, SPEC-0092, SPEC-0093, SPEC-0094, SPEC-0095, SPEC-0096, SPEC-0097, SPEC-0098, SPEC-0099, SPEC-0100, SPEC-0101, SPEC-0102, SPEC-0103, SPEC-0104, SPEC-0105, SPEC-0106, SPEC-0107, SPEC-0108, SPEC-0109, SPEC-0110, SPEC-0111, SPEC-0112, SPEC-0113, SPEC-0114, SPEC-0115, SPEC-0116, SPEC-0117, SPEC-0118, SPEC-0119, SPEC-0120, SPEC-0121, SPEC-0122, SPEC-0123, SPEC-0124, SPEC-0125, SPEC-0126, SPEC-0127, SPEC-0128, SPEC-0129, SPEC-0130, SPEC-0131, SPEC-0132, SPEC-0133, SPEC-0134, SPEC-0135, SPEC-0136, SPEC-0137, SPEC-0138, SPEC-0139, SPEC-0140, SPEC-0141, SPEC-0142, SPEC-0143, SPEC-0144, SPEC-0145, SPEC-0146, SPEC-0147, SPEC-0148, SPEC-0149, SPEC-0150, SPEC-0151, SPEC-0152, SPEC-0153, SPEC-0154, SPEC-0155, SPEC-0156, SPEC-0157, SPEC-0158, SPEC-0159, SPEC-0160, SPEC-0161, SPEC-0162, SPEC-0163, SPEC-0164, SPEC-0165, SPEC-0166, SPEC-0167, SPEC-0168, SPEC-0169, SPEC-0170, SPEC-0171, SPEC-0172, SPEC-0173, SPEC-0174, SPEC-0175, SPEC-0176, SPEC-0177, SPEC-0178, SPEC-0179, SPEC-0180, SPEC-0181, SPEC-0182, SPEC-0183, SPEC-0184, SPEC-0185, SPEC-0186, SPEC-0187, SPEC-0188, SPEC-0189, SPEC-0190, SPEC-0191, SPEC-0192, SPEC-0193, SPEC-0194, SPEC-0195, SPEC-0196, SPEC-0197, SPEC-0198, SPEC-0199, SPEC-0200, SPEC-0201, SPEC-0202, SPEC-0203, SPEC-0204, SPEC-0205, SPEC-0206, SPEC-0207, SPEC-0208, SPEC-0209, SPEC-0210, SPEC-0211, SPEC-0212, SPEC-0213, SPEC-0214, SPEC-0215, SPEC-0217, SPEC-0218, SPEC-0219, SPEC-0220, SPEC-0221, SPEC-0222, SPEC-0223, SPEC-0224, SPEC-0225, SPEC-0226, SPEC-0227, SPEC-0228, SPEC-0229, SPEC-0230, SPEC-0231, SPEC-0232, SPEC-0233, SPEC-0234, SPEC-0235, SPEC-0236, SPEC-0237, SPEC-0238, SPEC-0239, SPEC-0241, SPEC-0242, SPEC-0243, SPEC-0244, SPEC-0246, SPEC-0247, SPEC-0248, SPEC-0249, SPEC-0250, SPEC-0251, SPEC-0252, SPEC-0253, SPEC-0254, SPEC-0255, SPEC-0256, SPEC-0257, SPEC-0258, SPEC-0259, SPEC-0260, SPEC-0261, SPEC-0262, SPEC-0263, SPEC-0264, SPEC-0265, SPEC-0266, SPEC-0267, SPEC-0268, SPEC-0269, SPEC-0270, SPEC-0271, SPEC-0272, SPEC-0273, SPEC-0274, SPEC-0275, SPEC-0276, SPEC-0277, SPEC-0278, SPEC-0279, SPEC-0280, SPEC-0281, SPEC-0282, SPEC-0283, SPEC-0284, SPEC-0285, SPEC-0286, SPEC-0287, SPEC-0288, SPEC-0289, SPEC-0290, SPEC-0291, SPEC-0292, SPEC-0293, SPEC-0294, SPEC-0295, SPEC-0296, SPEC-0297, SPEC-0298, SPEC-0299, SPEC-0300, SPEC-0301, SPEC-0302, SPEC-0303, SPEC-0304, SPEC-0305, SPEC-0306, SPEC-0307, SPEC-0308, SPEC-0309, SPEC-0310, SPEC-0311, SPEC-0312, SPEC-0313, SPEC-0314, SPEC-0315, SPEC-0316, SPEC-0317, SPEC-0318, SPEC-0319, SPEC-0320, SPEC-0321, SPEC-0322, SPEC-0323, SPEC-0325, SPEC-0326, SPEC-0327, SPEC-0328, SPEC-0329, SPEC-0330, SPEC-0331, SPEC-0332, SPEC-0333, SPEC-0334, SPEC-0335, SPEC-0336, SPEC-0337, SPEC-0338, SPEC-0339, SPEC-0340, SPEC-0341, SPEC-0342, SPEC-0343, SPEC-0344, SPEC-0345, SPEC-0346, SPEC-0347, SPEC-0348, SPEC-0349, SPEC-0350, SPEC-0351, SPEC-0353, SPEC-0354, SPEC-0355, SPEC-0356, SPEC-0357, SPEC-0358, SPEC-0359, SPEC-0360, SPEC-0361, SPEC-0362, SPEC-0363, SPEC-0364, SPEC-0365, SPEC-0366, SPEC-0367, SPEC-0368, SPEC-0369, SPEC-0370, SPEC-0371, SPEC-0372, SPEC-0373, SPEC-0374, SPEC-0375, SPEC-0376, SPEC-0377, SPEC-0378, SPEC-0379, SPEC-0380, SPEC-0381, SPEC-0382, SPEC-0383, SPEC-0384, SPEC-0385, SPEC-0386, SPEC-0387, SPEC-0388, SPEC-0389, SPEC-0390, SPEC-0391, SPEC-0393, SPEC-0394, SPEC-0395, SPEC-0396, SPEC-0398",
+        "cmd": "python3 tools/spec_lint.py --write-ledger >/dev/null && python3 tools/spec_lint.py",
+        "cwd": "/home/user/.local/share/nightwright/agentic/worker/jobs/SPEC-0394-20261102-ae5b-gate-005-a1/tree"
+      },
+      {
+        "name": "pytest-affected",
+        "required": true,
+        "ok": true,
+        "exit_code": 0,
+        "timed_out": false,
+        "duration_s": 965.95,
+        "log": "gates/005-pytest-affected.log",
+        "tail": "........................................................................ [ 12%]\n........................................................................ [ 14%]\n........................................................................ [ 16%]\n........................................................................ [ 18%]\n........................................................................ [ 20%]\n........................................................................ [ 22%]\n........................................................................ [ 24%]\n........................................................................ [ 26%]\n........................................................................ [ 28%]\n........................................................................ [ 30%]\n........................................................................ [ 32%]\n........................................................................ [ 34%]\n........................................................................ [ 36%]\n........................................................................ [ 39%]\n........................................................................ [ 41%]\n........................................................................ [ 43%]\n........................................................................ [ 45%]\n........................................................................ [ 47%]\n........................................................................ [ 49%]\n........................................................................ [ 51%]\n........................................................................ [ 53%]\n........................................................................ [ 55%]\n........................................................................ [ 57%]\n........................................................................ [ 59%]\n........................................................................ [ 61%]\n........................................................................ [ 63%]\n........................................................................ [ 65%]\n........................................................................ [ 67%]\n........................................................................ [ 69%]\n........................................................................ [ 71%]\n........................................................................ [ 73%]\n........................................................................ [ 76%]\n........................................................................ [ 78%]\n........................................................................ [ 80%]\n...............ss....................................................... [ 82%]\n........................................................................ [ 84%]\n........................................................................ [ 86%]\n........................................................................ [ 88%]\n........................................................................ [ 90%]\n........................................................................ [ 92%]\n........................................................................ [ 94%]\n........................................................................ [ 96%]\n........................................................................ [ 98%]\n.................................................                        [100%]\n=============================== warnings summary ===============================\ntests/test_org_write_race.py: 8 warnings\ntests/test_spec_numbers.py: 8 warnings\n  /usr/lib/python3.14/multiprocessing/popen_fork.py:76: DeprecationWarning: This process (pid=2552866) is multi-threaded, use of fork() may lead to deadlocks in the child.\n    self.pid = os.fork()\n\ntests/test_spec_numbers.py::test_concurrent_release_and_list_lose_nothing\ntests/test_spec_numbers.py::test_concurrent_release_and_list_lose_nothing\ntests/test_spec_numbers.py::test_concurrent_release_and_list_lose_nothing\ntests/test_spec_numbers.py::test_concurrent_release_and_list_lose_nothing\ntests/test_spec_numbers.py::test_concurrent_release_and_list_lose_nothing\n  /usr/lib/python3.14/multiprocessing/popen_fork.py:76: DeprecationWarning: This process (pid=2552755) is multi-threaded, use of fork() may lead to deadlocks in the child.\n    self.pid = os.fork()\n\n-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html\n3501 passed, 4 skipped, 21 warnings in 946.80s (0:15:46)",
+        "cmd": "if [ -f tools/affected_tests.py ]; then python3 tools/affected_tests.py --include tests/test_agentic_dogfood_config.py --include tests/test_agentic_project.py --run uv run pytest -q -x -n 2; else uv run pytest -q -x -n 2; fi",
+        "cwd": "/home/user/.local/share/nightwright/agentic/worker/jobs/SPEC-0394-20261102-ae5b-gate-005-a1/tree",
+        "summary": {
+          "format": "pytest",
+          "passed": 3501,
+          "failed": 0,
+          "errors": 0,
+          "skipped": 4,
+          "failing": []
+        },
+        "report": {
+          "base_sha": "e9af93638821090a3cda623bafc77bc963b6133d",
+          "changed": [
+            "docs/LEDGER.md",
+            "docs/product/capabilities/agentic.md",
+            "docs/product/reference/index.md",
+            "docs/specs/0394-declared-persona-run-settings-routing-and-requests.md",
+            "src/nightwright/agentic/cli_personas.py",
+            "src/nightwright/agentic/persona_defs.py",
+            "src/nightwright/agentic/persona_registry.py",
+            "src/nightwright/agentic/personas.py",
+            "tests/test_agentic_persona_run_settings.py",
+            "tests/test_agentic_personas_declared_cli.py"
+          ],
+          "full": false,
+          "head_sha": "67d892e450088307df6b0e0cdf455ab00d391dd6",
+          "head_tree": "22e088484e5b1f49d6a0a7fdd418ffd98e18d502",
+          "include": [
+            "tests/test_agentic_dogfood_config.py",
+            "tests/test_agentic_project.py"
+          ],
+          "reason": "123/252 test files affected by 10 changed files (reference scan for docs/LEDGER.md; reference scan for docs/product/capabilities/agentic.md; reference scan for docs/product/reference/index.md; reference scan for docs/specs/0394-declared-persona-run-settings-routing-and-requests.md; name rule for src/nightwright/agentic/cli_personas.py)",
+          "tests": [
+            "tests/test_agentic_adopt.py",
+            "tests/test_agentic_campaign_export.py",
+            "tests/test_agentic_campaign_runs.py",
+            "tests/test_agentic_close.py",
+            "tests/test_agentic_close_inflight.py",
+            "tests/test_agentic_close_regenerate.py",
+            "tests/test_agentic_close_reuse.py",
+            "tests/test_agentic_close_train.py",
+            "tests/test_agentic_conduct_cli.py",
+            "tests/test_agentic_conductor_guard.py",
+            "tests/test_agentic_config_reload.py",
+            "tests/test_agentic_cost_estimate.py",
+            "tests/test_agentic_dashboard.py",
+            "tests/test_agentic_dashboard_journey.py",
+            "tests/test_agentic_dashboard_spec_phase.py",
+            "tests/test_agentic_dashboard_spec_reviews.py",
+            "tests/test_agentic_detach.py",
+            "tests/test_agentic_divergence.py",
+            "tests/test_agentic_dogfood_config.py",
+            "tests/test_agentic_drain_signal.py",
+            "tests/test_agentic_e2e.py",
+            "tests/test_agentic_escalations.py",
+            "tests/test_agentic_events.py",
+            "tests/test_agentic_events_settings.py",
+            "tests/test_agentic_exit_paths.py",
+            "tests/test_agentic_gate_limits.py",
+            "tests/test_agentic_gate_paths.py",
+            "tests/test_agentic_gates.py",
+            "tests/test_agentic_gating_slots.py",
+            "tests/test_agentic_gitops.py",
+            "tests/test_agentic_heartbeat.py",
+            "tests/test_agentic_idea_campaign.py",
+            "tests/test_agentic_idea_link.py",
+            "tests/test_agentic_index_lock.py",
+            "tests/test_agentic_logs.py",
+            "tests/test_agentic_loop_state.py",
+            "tests/test_agentic_mvp_integration.py",
+            "tests/test_agentic_mvp_report.py",
+            "tests/test_agentic_nonblocking.py",
+            "tests/test_agentic_outbound_e2e.py",
+            "tests/test_agentic_persona_defs.py",
+            "tests/test_agentic_persona_registry.py",
+            "tests/test_agentic_persona_run_settings.py",
+            "tests/test_agentic_personas.py",
+            "tests/test_agentic_personas_cli.py",
+            "tests/test_agentic_personas_declared_cli.py",
+            "tests/test_agentic_ping.py",
+            "tests/test_agentic_pr_sweep.py",
+            "tests/test_agentic_profiles.py",
+            "tests/test_agentic_profiles_cli.py",
+            "tests/test_agentic_project.py",
+            "tests/test_agentic_queue.py",
+            "tests/test_agentic_queue_autopark.py",
+            "tests/test_agentic_queue_by.py",
+            "tests/test_agentic_queue_cli.py",
+            "tests/test_agentic_queue_finish_race.py",
+            "tests/test_agentic_queue_gc.py",
+            "tests/test_agentic_queue_merge.py",
+            "tests/test_agentic_queue_restart.py",
+            "tests/test_agentic_queue_visibility.py",
+            "tests/test_agentic_reexec.py",
+            "tests/test_agentic_resolver.py",
+            "tests/test_agentic_review_triage.py",
+            "tests/test_agentic_reviewers.py",
+            "tests/test_agentic_runner.py",
+            "tests/test_agentic_runproc.py",
+            "tests/test_agentic_sentinel.py",
+            "tests/test_agentic_spec_drift.py",
+            "tests/test_agentic_spec_review.py",
+            "tests/test_agentic_spec_review_loop.py",
+            "tests/test_agentic_spec_writer.py",
+            "tests/test_agentic_split.py",
+            "tests/test_agentic_split_queue.py",
+            "tests/test_agentic_steward_notify.py",
+            "tests/test_agentic_stream.py",
+            "tests/test_agentic_tmp_isolation.py",
+            "tests/test_agentic_waiting.py",
+            "tests/test_agentic_watch_height.py",
+            "tests/test_agentic_watch_idle_cost.py",
+            "tests/test_agentic_watchdog_gaps.py",
+            "tests/test_assoc.py",
+            "tests/test_console_piped.py",
+            "tests/test_docs_captures.py",
+            "tests/test_docs_product_capabilities.py",
+            "tests/test_docs_product_guides.py",
+            "tests/test_docs_product_ia.py",
+            "tests/test_docs_product_reference.py",
+            "tests/test_docs_two_pillars.py",
+            "tests/test_doctor.py",
+            "tests/test_export.py",
+            "tests/test_gate_slots.py",
+            "tests/test_gate_tiers.py",
+            "tests/test_generate.py",
+            "tests/test_herdr.py",
+            "tests/test_herdr_autowatch.py",
+            "tests/test_hub.py",
+            "tests/test_org_write_race.py",
+            "tests/test_outbox_migrate.py",
+            "tests/test_project_registry.py",
+            "tests/test_projects_add.py",
+            "tests/test_projects_json.py",
+            "tests/test_promote.py",
+            "tests/test_remote_personas.py",
+            "tests/test_rename_nightwright.py",
+            "tests/test_research_context.py",
+            "tests/test_routing.py",
+            "tests/test_spec_numbers.py",
+            "tests/test_spec_review_cwd.py",
+            "tests/test_spec_review_outbound_root.py",
+            "tests/test_spec_review_show.py",
+            "tests/test_spec_review_store.py",
+            "tests/test_spec_scope.py",
+            "tests/test_spec_status.py",
+            "tests/test_specs.py",
+            "tests/test_specs_dir.py",
+            "tests/test_tui_campaign_model.py",
+            "tests/test_tui_campaign_screen.py",
+            "tests/test_tui_escalations_tab.py",
+            "tests/test_tui_events_model.py",
+            "tests/test_tui_events_tab.py",
+            "tests/test_tui_mailbox_tab.py",
+            "tests/test_tui_queue_model.py",
+            "tests/test_tui_queue_tab.py"
+          ]
+        }
+      }
+    ],
+    "event_uid": "SPEC-0394-20261102-ae5b-gate-005-a1:5"
+  },
+  "steward_notified": [
+    "PARKED#18",
+    "PARKED#30",
+    "MERGED#114"
+  ],
+  "gate_retry_pending": false,
+  "last_review": {
+    "entry_run": 9,
+    "runs": {
+      "conformance_reviewer": "010-conformance_reviewer",
+      "test_reviewer": "011-test_reviewer",
+      "adversarial_reviewer": "012-adversarial_reviewer"
+    },
+    "run": "012-adversarial_reviewer",
+    "loop": 1,
+    "verdict": "pass",
+    "score": 99,
+    "findings": 1,
+    "must_fix": 0,
+    "advisory": [
+      {
+        "id": "adversarial_reviewer#1",
+        "personas": [
+          "adversarial_reviewer"
+        ],
+        "severity": "nit",
+        "title": "A declared model id with a trailing newline passes validation",
+        "detail": "`check_declared_keys` accepts a model if `MODEL_RE.match(model)` succeeds. `MODEL_RE` ends in `$`, which also matches just before a final `\\n`, so a quoted YAML value such as `model: \"claude-opus-4-1\\n\"` validates. It then reaches `RunRequest.model` and the claude argv unchanged and fails at run time instead of at `nw personas validate`. The regex already exists in profiles.py; a definition file is only a new place for such a value to come from. `fullmatch` (or `\\Z`) would close it.\ntrigger: A definition file has `model: \"claude-opus-4-1\\n\"`.",
+        "files": [
+          "src/nightwright/agentic/persona_registry.py"
+        ],
+        "ac": null,
+        "category": "other"
+      }
+    ],
+    "verdicts": {
+      "conformance_reviewer": {
+        "verdict": "pass",
+        "score": 93,
+        "fix_brief": "",
+        "findings": [
+          {
+            "severity": "nit",
+            "ac": "AC4/AC6",
+            "title": "build_request computes the review flag inline instead of calling is_reviewer as the Design says",
+            "detail": "Design §build_request says `review=is_reviewer(persona, project_root)`. The shipped code uses `persona in REVIEWER_PERSONAS or (p.declared is not None and p.role == \"reviewer\")` on the persona it has already resolved (personas.py:1003-1004). The answer is the same, and this way the registry is scanned once per request. The deviation is recorded in *As shipped* and pinned by test_build_request_resolves_the_declared_registry_once. Because the predicate now lives in two places, is_reviewer and build_request could drift apart later.",
+            "suggested_fix": "Optionally move the predicate into one private helper, e.g. `_is_review_persona(name, p)`, and call it from both is_reviewer (after its registry lookup) and build_request, so the rule is written once.",
+            "acceptance": "test_is_reviewer and test_build_request_declared_reviewer still pass, and grep finds the reviewer-role predicate in a single place.",
+            "files": [
+              "src/nightwright/agentic/personas.py"
+            ]
+          }
+        ],
+        "ac_assessment": [
+          {
+            "ac": "AC1",
+            "met": true,
+            "evidence": "persona_registry.check_declared_keys validates model (MODEL_ALIASES/MODEL_RE), effort (EFFORTS) and max_budget_usd (_is_budget: finite, >0, not bool). validate_persona_doc refuses the keys in a builtin layer with 'allowed only in a user or project definition'. Tests: test_settings_keys_valid (3 roles), test_settings_keys_invalid (gpt4, 'claude', 3, extreme, list, 0, inf, nan, -1.5, true, '2.0') each asserting file:key prefix, test_declared_keys_refused_in_a_builtin_definition."
+          },
+          {
+            "ac": "AC2",
+            "met": true,
+            "evidence": "check_declared_keys refuses required/when on implementer/triager ('only allowed for role reviewer'), checks required is a bool, when is a mapping, its keys are paths/labels only, and each value is a non-empty list of non-blank strings. declared_values defaults to required True and when {}. Tests: test_routing_keys_valid_for_reviewer, test_routing_keys_reviewer_only_bad_shapes (null, list, scalar, unknown key, empty, non-string, blank), test_routing_keys_reviewer_only, test_declared_mapping_defaults."
+          },
+          {
+            "ac": "AC3",
+            "met": true,
+            "evidence": "persona_defs._read_file and persona_registry.validate_persona_doc both call PR.check_declared_keys. test_multi_fault_file_reports_every_problem_in_both_validators compares validate_persona_defs output with load_registry entry errors (6 project plus 2 user problems). CLI test_validate_and_list_agree_on_new_key_problems compares validate, list and show."
+          },
+          {
+            "ac": "AC4",
+            "met": true,
+            "evidence": "personas.is_reviewer: checks builtin REVIEWER_PERSONAS first; without a root returns False; otherwise looks up role == 'reviewer' via persona_defs.load_registry. test_is_reviewer covers declared reviewer/implementer/triager, no root, another project, the user layer and every builtin unchanged."
+          },
+          {
+            "ac": "AC5",
+            "met": true,
+            "evidence": "build_request resolves get_persona(persona, project_cfg['_root'], user_dir=...). declared_settings layers DECLARED_DEFAULTS < ROLE_DEFAULT_PERSONA entry < p.declared.settings < personas.<name>, then forces read_only/dontAsk for read-only roles. The read_only branch gives allowed=(). test_build_request_declared_reviewer_layering (6 layer combinations), test_build_request_declared_reviewer (read_only:false + bypassPermissions overridden, allowed_tools==(), json_schema==reviewer_schema(cats)), test_build_request_declared_triager_forced_read_only, test_build_request_declared_implementer_writable (acceptEdits, allowlist + gate pattern, IMPLEMENTER_SCHEMA)."
+          },
+          {
+            "ac": "AC6",
+            "met": true,
+            "evidence": "The review flag is true for a declared reviewer, so build_context(review=True) fills diff/test_files. test_build_request_declared_reviewer asserts src/a.py, its diff content and tests/test_a.py appear in the prompt. A worktree .nw/personas copy (different template, model and categories, plus a rogue_reviewer) is ignored: model stays opus, 'WORKTREE COPY' is absent and rogue_reviewer is unknown. test_build_request_declared_reviewer_needs_the_root."
+          },
+          {
+            "ac": "AC7",
+            "met": true,
+            "evidence": "personas.output_section is built from p.schema (verdict, score, severity and category enums). build_prompt inserts it only for p.declared and role == reviewer, between the template and the invariant. test_output_section checks the order and that the category list includes 'other'. test_builtin_prompts_unchanged asserts every builtin equals render(template) + \\n\\n + render(invariant) + \\n."
+          },
+          {
+            "ac": "AC8",
+            "met": true,
+            "evidence": "cli_personas._declared_fields feeds _summary (list --json) and the show human/json output. Entry.declared is set only for a valid user/project entry. test_show_and_list_json_carry_declared_fields_and_omit_them_for_builtins asserts settings/required/when/template_sha256 for the declared reviewer, an implementer without required/when, and none of these fields for builtins (json and human)."
+          },
+          {
+            "ac": "AC9",
+            "met": true,
+            "evidence": "The diff touches no queue.py, profiles.py or divergence.py (only cli_personas, persona_defs, persona_registry, personas, docs and tests). Persona.declared defaults to None for builtins. test_inert checks PERSONAS/REVIEWER_PERSONAS/ADOPT_REGISTRY and that resolve_profile raises for a declared reviewer in reviewers:. test_declared_mapping_defaults asserts every builtin has declared None."
+          },
+          {
+            "ac": "AC10",
+            "met": true,
+            "evidence": "docs/product/capabilities/agentic.md gains a 'Declared personas (SPEC-0371, SPEC-0394)' subsection with the security_reviewer example, the role table, the new keys and their layering, nw personas list|show|validate, and the bold statement that the queue does not run them yet."
+          }
+        ],
+        "run": "010-conformance_reviewer",
+        "loop": 1
+      },
+      "test_reviewer": {
+        "verdict": "pass",
+        "score": 90,
+        "fix_brief": "",
+        "findings": [
+          {
+            "severity": "minor",
+            "ac": "AC9",
+            "title": "\"Unchanged\" builtin tables are checked only by membership, not against a baseline",
+            "detail": "test_inert checks that PERSONAS equals the persona_defs/*.yaml stems and that the declared name is absent from PERSONAS, REVIEWER_PERSONAS and ADOPT_REGISTRY. It never compares REVIEWER_PERSONAS or ADOPT_REGISTRY to a pinned expected value, so a change that dropped or added a builtin reviewer or adopt entry would still pass. The diff does not edit these tables, and existing registry tests probably pin them, so the risk is low.",
+            "files": [
+              "tests/test_agentic_persona_run_settings.py"
+            ]
+          },
+          {
+            "severity": "minor",
+            "ac": "AC1",
+            "title": "Invalid run-setting values are tested only on the reviewer role and mostly through one validator",
+            "detail": "test_settings_keys_invalid runs only on role reviewer, and only through validate_persona_defs. The registry validator (persona_registry.validate_persona_doc) sees bad model, effort and budget values only through the one multi-fault file. That file covers each key, and the helper is shared, so the gap is small. A parametrized check of entry.errors per bad value, and one implementer or triager case, would pin AC3's \"same messages\" claim for each rule.",
+            "files": [
+              "tests/test_agentic_persona_run_settings.py"
+            ]
+          },
+          {
+            "severity": "nit",
+            "ac": "AC9",
+            "title": "\"Diff does not touch queue.py/profiles.py/divergence.py\" is a manual check",
+            "detail": "The spec says this is checked by hand with `git diff --stat main`, which is acceptable. No automated test guards it.",
+            "files": []
+          }
+        ],
+        "coverage_assessment": [
+          {
+            "ac": "AC1",
+            "covered": true,
+            "tests": [
+              "tests/test_agentic_persona_run_settings.py::test_settings_keys_valid",
+              "tests/test_agentic_persona_run_settings.py::test_settings_keys_invalid",
+              "tests/test_agentic_persona_run_settings.py::test_declared_keys_refused_in_a_builtin_definition",
+              "tests/test_agentic_persona_run_settings.py::test_builtin_definitions_carry_no_declared_keys"
+            ]
+          },
+          {
+            "ac": "AC2",
+            "covered": true,
+            "tests": [
+              "tests/test_agentic_persona_run_settings.py::test_routing_keys_valid_for_reviewer",
+              "tests/test_agentic_persona_run_settings.py::test_routing_keys_reviewer_only_bad_shapes",
+              "tests/test_agentic_persona_run_settings.py::test_routing_keys_reviewer_only",
+              "tests/test_agentic_persona_run_settings.py::test_routing_shape_still_checked_under_an_invalid_role",
+              "tests/test_agentic_persona_run_settings.py::test_declared_mapping_defaults"
+            ]
+          },
+          {
+            "ac": "AC3",
+            "covered": true,
+            "tests": [
+              "tests/test_agentic_persona_run_settings.py::test_multi_fault_file_reports_every_problem_in_both_validators",
+              "tests/test_agentic_persona_run_settings.py::test_routing_shape_still_checked_under_an_invalid_role",
+              "tests/test_agentic_persona_run_settings.py::test_registry_validator_accepts_the_keys_in_user_and_project_layers",
+              "tests/test_agentic_personas_declared_cli.py::test_validate_and_list_agree_on_new_key_problems"
+            ]
+          },
+          {
+            "ac": "AC4",
+            "covered": true,
+            "tests": [
+              "tests/test_agentic_persona_run_settings.py::test_is_reviewer"
+            ]
+          },
+          {
+            "ac": "AC5",
+            "covered": true,
+            "tests": [
+              "tests/test_agentic_persona_run_settings.py::test_build_request_declared_reviewer_layering",
+              "tests/test_agentic_persona_run_settings.py::test_build_request_declared_reviewer",
+              "tests/test_agentic_persona_run_settings.py::test_build_request_declared_triager_forced_read_only",
+              "tests/test_agentic_persona_run_settings.py::test_build_request_declared_implementer_writable"
+            ]
+          },
+          {
+            "ac": "AC6",
+            "covered": true,
+            "tests": [
+              "tests/test_agentic_persona_run_settings.py::test_build_request_declared_reviewer",
+              "tests/test_agentic_persona_run_settings.py::test_build_request_resolves_the_declared_registry_once",
+              "tests/test_agentic_persona_run_settings.py::test_build_request_declared_reviewer_needs_the_root"
+            ]
+          },
+          {
+            "ac": "AC7",
+            "covered": true,
+            "tests": [
+              "tests/test_agentic_persona_run_settings.py::test_output_section",
+              "tests/test_agentic_persona_run_settings.py::test_builtin_prompts_unchanged",
+              "tests/test_agentic_persona_run_settings.py::test_build_request_declared_implementer_writable",
+              "tests/test_agentic_persona_run_settings.py::test_build_request_declared_triager_forced_read_only"
+            ]
+          },
+          {
+            "ac": "AC8",
+            "covered": true,
+            "tests": [
+              "tests/test_agentic_personas_declared_cli.py::test_show_and_list_json_carry_declared_fields_and_omit_them_for_builtins",
+              "tests/test_agentic_personas_declared_cli.py::test_validate_and_list_agree_on_new_key_problems"
+            ]
+          },
+          {
+            "ac": "AC9",
+            "covered": true,
+            "tests": [
+              "tests/test_agentic_persona_run_settings.py::test_inert",
+              "tests/test_agentic_persona_run_settings.py::test_declared_mapping_defaults"
+            ]
+          },
+          {
+            "ac": "AC10",
+            "covered": true,
+            "tests": [
+              "manual: read docs/product/capabilities/agentic.md (per Test plan)"
+            ]
+          }
+        ],
+        "run": "011-test_reviewer",
+        "loop": 1
+      },
+      "adversarial_reviewer": {
+        "verdict": "pass",
+        "score": 87,
+        "fix_brief": "",
+        "findings": [
+          {
+            "severity": "minor",
+            "category": "logic",
+            "title": "template_sha256 describes the bytes read at scan time, but the prompt is rendered from a later re-read of the file",
+            "detail": "`persona_defs._check_template` hashes the template bytes while validating. `Persona.template` re-reads `template_file` from disk every time `build_prompt` runs. If the file changes between the registry scan and rendering, `Persona.declared[\"template_sha256\"]` (and the placeholder check) no longer describe the prompt that was sent. Today the hash is only displayed, but it is offered as the identity of the template, and Pipeline A3 may record or trust it. The placeholder confinement from SPEC-0371 has the same TOCTOU, so this is not new risk, but the new field claims more than it can guarantee.",
+            "trigger": "The main-checkout `.nw/personas/security_reviewer.md` is edited (e.g. by a `git pull` on main) between `get_persona(...)` in `build_request` and `build_prompt(p, ctx)`, or between `nw personas show` and a later run.",
+            "files": [
+              "src/nightwright/agentic/persona_defs.py",
+              "src/nightwright/agentic/personas.py"
+            ],
+            "lines": [
+              "src/nightwright/agentic/persona_defs.py:85",
+              "src/nightwright/agentic/personas.py:289"
+            ]
+          },
+          {
+            "severity": "nit",
+            "category": "other",
+            "title": "A declared model id with a trailing newline passes validation",
+            "detail": "`check_declared_keys` accepts a model if `MODEL_RE.match(model)` succeeds. `MODEL_RE` ends in `$`, which also matches just before a final `\\n`, so a quoted YAML value such as `model: \"claude-opus-4-1\\n\"` validates. It then reaches `RunRequest.model` and the claude argv unchanged and fails at run time instead of at `nw personas validate`. The regex already exists in profiles.py; a definition file is only a new place for such a value to come from. `fullmatch` (or `\\Z`) would close it.",
+            "trigger": "A definition file has `model: \"claude-opus-4-1\\n\"`.",
+            "files": [
+              "src/nightwright/agentic/persona_registry.py"
+            ],
+            "lines": [
+              "src/nightwright/agentic/persona_registry.py:173"
+            ]
+          }
+        ],
+        "run": "012-adversarial_reviewer",
+        "loop": 1
+      }
+    },
+    "triage": "done",
+    "waived": [
+      {
+        "id": "test_reviewer#0",
+        "personas": [
+          "test_reviewer"
+        ],
+        "severity": "minor",
+        "title": "\"Unchanged\" builtin tables are checked only by membership, not against a baseline",
+        "detail": "test_inert checks that PERSONAS equals the persona_defs/*.yaml stems and that the declared name is absent from PERSONAS, REVIEWER_PERSONAS and ADOPT_REGISTRY. It never compares REVIEWER_PERSONAS or ADOPT_REGISTRY to a pinned expected value, so a change that dropped or added a builtin reviewer or adopt entry would still pass. The diff does not edit these tables, and existing registry tests probably pin them, so the risk is low.",
+        "files": [
+          "tests/test_agentic_persona_run_settings.py"
+        ],
+        "ac": "AC9",
+        "category": null,
+        "reason": "The diff does not edit the builtin tables, and existing registry tests pin them. The membership checks already cover the declared-name leak that AC9 cares about."
+      },
+      {
+        "id": "test_reviewer#1",
+        "personas": [
+          "test_reviewer"
+        ],
+        "severity": "minor",
+        "title": "Invalid run-setting values are tested only on the reviewer role and mostly through one validator",
+        "detail": "test_settings_keys_invalid runs only on role reviewer, and only through validate_persona_defs. The registry validator (persona_registry.validate_persona_doc) sees bad model, effort and budget values only through the one multi-fault file. That file covers each key, and the helper is shared, so the gap is small. A parametrized check of entry.errors per bad value, and one implementer or triager case, would pin AC3's \"same messages\" claim for each rule.",
+        "files": [
+          "tests/test_agentic_persona_run_settings.py"
+        ],
+        "ac": "AC1",
+        "category": null,
+        "reason": "Both validators share one helper, and the multi-fault file already covers every key through both. Extra parametrization would add little."
+      },
+      {
+        "id": "adversarial_reviewer#0",
+        "personas": [
+          "adversarial_reviewer"
+        ],
+        "severity": "minor",
+        "title": "template_sha256 describes the bytes read at scan time, but the prompt is rendered from a later re-read of the file",
+        "detail": "`persona_defs._check_template` hashes the template bytes while validating. `Persona.template` re-reads `template_file` from disk every time `build_prompt` runs. If the file changes between the registry scan and rendering, `Persona.declared[\"template_sha256\"]` (and the placeholder check) no longer describe the prompt that was sent. Today the hash is only displayed, but it is offered as the identity of the template, and Pipeline A3 may record or trust it. The placeholder confinement from SPEC-0371 has the same TOCTOU, so this is not new risk, but the new field claims more than it can guarantee.\ntrigger: The main-checkout `.nw/personas/security_reviewer.md` is edited (e.g. by a `git pull` on main) between `get_persona(...)` in `build_request` and `build_prompt(p, ctx)`, or between `nw personas show` and a later run.",
+        "files": [
+          "src/nightwright/agentic/persona_defs.py",
+          "src/nightwright/agentic/personas.py"
+        ],
+        "ac": null,
+        "category": "logic",
+        "reason": "The reviewer says this has the same TOCTOU as the SPEC-0371 placeholder confinement. The hash is display-only for now, and any use of it for identity belongs to Pipeline A3."
+      },
+      {
+        "id": "conformance_reviewer#0",
+        "personas": [
+          "conformance_reviewer"
+        ],
+        "severity": "nit",
+        "title": "build_request computes the review flag inline instead of calling is_reviewer as the Design says",
+        "detail": "Design §build_request says `review=is_reviewer(persona, project_root)`. The shipped code uses `persona in REVIEWER_PERSONAS or (p.declared is not None and p.role == \"reviewer\")` on the persona it has already resolved (personas.py:1003-1004). The answer is the same, and this way the registry is scanned once per request. The deviation is recorded in *As shipped* and pinned by test_build_request_resolves_the_declared_registry_once. Because the predicate now lives in two places, is_reviewer and build_request could drift apart later.\nFix: Optionally move the predicate into one private helper, e.g. `_is_review_persona(name, p)`, and call it from both is_reviewer (after its registry lookup) and build_request, so the rule is written once.\nDone when: test_is_reviewer and test_build_request_declared_reviewer still pass, and grep finds the reviewer-role predicate in a single place.",
+        "files": [
+          "src/nightwright/agentic/personas.py"
+        ],
+        "ac": "AC4/AC6",
+        "category": null,
+        "reason": "The deviation is documented in As shipped and pinned by a test. It gives the same answer with one registry scan. Where to put the predicate is a style choice."
+      },
+      {
+        "id": "test_reviewer#2",
+        "personas": [
+          "test_reviewer"
+        ],
+        "severity": "nit",
+        "title": "\"Diff does not touch queue.py/profiles.py/divergence.py\" is a manual check",
+        "detail": "The spec says this is checked by hand with `git diff --stat main`, which is acceptable. No automated test guards it.",
+        "files": [],
+        "ac": "AC9",
+        "category": null,
+        "reason": "The spec explicitly makes AC9's not-touched check a manual `git diff --stat`. An automated test would be out of scope."
+      }
+    ],
+    "triager_run": "013-review_triager"
+  },
+  "review_carry": [
+    {
+      "key": "1d4b7305d90b60971d7fca1f1b5f81084cfd001f",
+      "personas": [
+        "adversarial_reviewer"
+      ],
+      "severity": "minor",
+      "title": "template_sha256 is of the validated bytes, not of the template the prompt renders",
+      "detail": "_check_template hashes and placeholder-checks the bytes it reads during the scan. Persona.template re-reads the file from disk when the prompt is built. The recorded sha256 (and the role-placeholder confinement) can therefore describe different content than what the agent actually received, which weakens the sha as provenance once A3 records it. The spec defines the sha this way, so this is hardening only.\ntrigger: The template file is edited after load_registry and before build_prompt reads `p.template`.",
+      "files": [
+        "src/nightwright/agentic/persona_defs.py"
+      ],
+      "ac": null,
+      "category": "logic",
+      "origin": "waived",
+      "waive_reason": "The spec defines template_sha256 as the hash of the bytes read during validation. The reviewer calls it hardening only, and the spec does not ask for it."
+    },
+    {
+      "key": "083fb519b9302527417bf71a278f39b4f9b922ea",
+      "personas": [
+        "conformance_reviewer"
+      ],
+      "severity": "nit",
+      "title": "Output section lists `trigger`, which the Design's field list does not include",
+      "detail": "output_section derives the optional finding fields from reviewer_schema, so it lists `detail`, `trigger`, `files` and `lines`. The Design names only `detail`, `files` and `lines`. The 'As shipped' section records this deviation, and it follows the spec's own rule that the section is read from the enforced schema.\nFix: No code change. Keep the 'As shipped' note, or add `trigger` to the Design's list in the spec so the two agree.\nDone when: The spec Design and the generated `## Output` text name the same optional fields.",
+      "files": [
+        "src/nightwright/agentic/personas.py",
+        "docs/specs/0394-declared-persona-run-settings-routing-and-requests.md"
+      ],
+      "ac": "AC7",
+      "category": null,
+      "origin": "waived",
+      "waive_reason": "The output section is derived from the enforced schema, and the spec's 'As shipped' section records the extra `trigger` field. Not a defect."
+    },
+    {
+      "key": "c0076cf543e6e078dedbe7ed5facff03bec967e7",
+      "personas": [
+        "test_reviewer"
+      ],
+      "severity": "nit",
+      "title": "No automated check that queue.py, profiles.py and divergence.py are untouched",
+      "detail": "The test plan intends this to be checked with `git diff --stat main`, and the diff touches none of those files. Recorded here only for completeness.",
+      "files": [],
+      "ac": "AC9",
+      "category": null,
+      "origin": "waived",
+      "waive_reason": "The test plan checks that queue.py, profiles.py and divergence.py are untouched with `git diff --stat main`, and the reviewer says that diff touches none of them. An automated test for this is not required."
+    }
+  ],
+  "close_red": null
+}

@@ -1,0 +1,102 @@
+{
+  "schema": "nw.campaign.v1",
+  "id": "IDEA-606-20261101-df50",
+  "kind": "idea",
+  "spec_id": "SPEC-0352",
+  "idea": {
+    "schema": "nw.idea.v1",
+    "id": "IDEA-606",
+    "state": "INCUBATE",
+    "heading": "nw setup permissions: install/check canonical Claude Code allow rules (nw queue/mailbox/campaign/idea/spec, gh pr read-only) in ~/.claude/settings.json; dry-run diff then --yes; conductor-launch warns when missing, never edits settings itself",
+    "tags": [],
+    "kind": "improvement",
+    "summary": "",
+    "questions": "",
+    "question_items": [],
+    "log": "*** [2026-11-01 Sun 10:46]\n2026-11-01 human (conductor session): stewards need the same allow rules as the conductor for conflict resolution and PR rebasing, notably lease-pinned force-push (git push --force-with-lease=nw/<branch>) from rebase worktrees to nw/* PR branches, plus gh pr read/edit. Auto mode blocked the comfort-assistant steward (PR 9/10) and blocks agents from editing their own settings, so rules must be installed by a human-run command: extend nw setup permissions (and nw skills install per SPEC-0320) with a steward set, not only the conductor set.",
+    "project": "Meta-Tools",
+    "clock_open": false,
+    "clocked_hours": 0.0,
+    "open_questions": 0,
+    "research": {
+      "root": "/home/user/work/nightwright",
+      "source": "internal"
+    },
+    "epic": null,
+    "state_before": "INCUBATE"
+  },
+  "project": "Meta-Tools",
+  "profile": "balanced",
+  "state": "ABANDONED",
+  "prev_state": "PARKED",
+  "created_at": "2026-11-01T10:46:35-05:00",
+  "priority": 1,
+  "force": false,
+  "backlog": {
+    "ready": true,
+    "blocked_by": [],
+    "since": "2026-11-01T10:46:47-05:00"
+  },
+  "repo": {
+    "root": "/home/user/work/nightwright",
+    "base": "main",
+    "base_sha_at_open": "14d5a590bf8708e6485b644ad7bdef0dfb7032a3",
+    "branch": "nw/IDEA-606-20261101-df50",
+    "worktree": "/home/user/work/.nw-worktrees/Meta-Tools/IDEA-606-20261101-df50",
+    "head": "dbb3856c79bac0c928aa6520881278fca460e5bc"
+  },
+  "spec": {
+    "id": "SPEC-0352",
+    "rel_path": "docs/specs/0352-nw-setup-permissions-install-check-canonical.md",
+    "internal": true
+  },
+  "counters": {
+    "loops": 0,
+    "runs": 1,
+    "gate_runs": 0,
+    "gate_retries": 0,
+    "timeout_regates": 0,
+    "triage_retries": 0,
+    "blocked_streak": 0,
+    "close_attempts": 0,
+    "parks": 1,
+    "review_retries": 0,
+    "spec_write_retries": 0,
+    "spec_review_retries": 0
+  },
+  "cost": {
+    "total_usd": 0.3568,
+    "cap_usd": 15,
+    "by_persona": {
+      "spec_writer": 0.3568
+    }
+  },
+  "last_gate": null,
+  "last_verdict": {
+    "persona": "spec_writer",
+    "run": "001-spec_writer",
+    "verdict": {
+      "status": "written",
+      "spec_path": "docs/specs/0352-nw-setup-permissions-install-check-canonical.md",
+      "title": "`nw setup permissions`: install/check the canonical conductor and steward allow rules (dry-run diff, then `--yes`); launchers warn when missing",
+      "summary": "Wrote SPEC-0352 (proposed). It adds `nw setup permissions` with conductor and steward rule sets, a dry-run diff by default, `--yes`, `--check` and `--json`. `conductor-launch` and `steward-launch` warn when rules are missing and never edit settings. `spec_lint` reports only the stale generated LEDGER block, which nightwright regenerates.",
+      "blockers": []
+    },
+    "verdict_ok": true
+  },
+  "pending_brief": null,
+  "park": null,
+  "close": null,
+  "updated_at": "2026-11-01T11:48:01-05:00",
+  "spec_write": {
+    "mode": "write",
+    "number": 352,
+    "path": "docs/specs/0352-nw-setup-permissions-install-check-canonical.md",
+    "head_before": "14d5a590bf8708e6485b644ad7bdef0dfb7032a3",
+    "untracked_before": []
+  },
+  "steward_notified": [
+    "PARKED#13",
+    "ABANDONED#18"
+  ]
+}

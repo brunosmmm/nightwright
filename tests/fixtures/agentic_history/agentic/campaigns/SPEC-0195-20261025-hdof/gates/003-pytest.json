@@ -1,0 +1,15 @@
+{
+  "schema": "wt.gate.v1",
+  "name": "pytest",
+  "cmd": "uv run pytest -q -x",
+  "cwd": "/home/user/work/.wt-worktrees/Meta-Tools/SPEC-0195-20261025-hdof",
+  "required": true,
+  "ok": true,
+  "exit_code": 0,
+  "timed_out": false,
+  "timeout_s": 1200,
+  "started_at": "2026-10-25T16:10:45-04:00",
+  "duration_s": 159.088,
+  "log": "003-pytest.log",
+  "error": null
+}

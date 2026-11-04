@@ -1,0 +1,85 @@
+{
+  "schema": "nw.run.v1",
+  "campaign": "SPEC-0336-20261031-6558",
+  "run_id": "031-review_triager",
+  "persona": "review_triager",
+  "model": "sonnet",
+  "effort": "medium",
+  "max_budget_usd": 0.5,
+  "timeout_s": 2700,
+  "permission_mode": "dontAsk",
+  "started_at": "2026-11-01T00:08:48-04:00",
+  "duration_s": 5.207,
+  "exit_code": 0,
+  "timed_out": false,
+  "interrupted": false,
+  "is_error": false,
+  "cost_usd": 0.0923127,
+  "cost_estimated": false,
+  "usage": {
+    "input_tokens": 2,
+    "cache_creation_input_tokens": 21677,
+    "cache_read_input_tokens": 11107,
+    "output_tokens": 449,
+    "output_tokens_details": {
+      "thinking_tokens": 0
+    },
+    "server_tool_use": {
+      "web_search_requests": 0,
+      "web_fetch_requests": 0
+    },
+    "service_tier": "standard",
+    "cache_creation": {
+      "ephemeral_1h_input_tokens": 21677,
+      "ephemeral_5m_input_tokens": 0
+    },
+    "inference_geo": "global",
+    "iterations": [
+      {
+        "input_tokens": 2,
+        "output_tokens": 449,
+        "cache_read_input_tokens": 11107,
+        "cache_creation_input_tokens": 21677,
+        "cache_creation": {
+          "ephemeral_5m_input_tokens": 0,
+          "ephemeral_1h_input_tokens": 21677
+        },
+        "type": "message"
+      }
+    ],
+    "speed": "standard",
+    "fallback_credit": null
+  },
+  "session_id": "dd007375-bef2-4f8b-a4ef-700ca1944fd8",
+  "verdict_ok": true,
+  "verdict": {
+    "waive": [
+      {
+        "id": "conformance_reviewer#1",
+        "reason": "Reviewer says no code change needed; the extra hardening is documented in 'As shipped'. Follow-up docs belong to SPEC-0337/0338, out of scope here."
+      },
+      {
+        "id": "test_reviewer#1",
+        "reason": "Reviewer calls it acceptable; loop 8 already removed the wall-clock dependence. The remaining real-time waits are inherent to testing slots and subprocesses."
+      },
+      {
+        "id": "test_reviewer#2",
+        "reason": "Redundant local imports are a style matter that the repo conventions do not settle, and they are harmless."
+      },
+      {
+        "id": "adversarial_reviewer#3",
+        "reason": "info.git_sha reporting an enclosing repo's HEAD is an edge case (dotfiles repo above the tool dir) with no effect on correctness. It is informational only and the spec does not define it."
+      }
+    ],
+    "note": "I waived the style, informational and no-action findings. I kept the real defects: the blocked frame write that holds the slot, the global gc delaying job exit, the missing CLI-level exit-2 test, the combined execvp/own_nw test, and the `..` job_id stage."
+  },
+  "profile": "thorough",
+  "profile_sources": [
+    "builtin:thorough.yaml"
+  ],
+  "files": {
+    "prompt": "prompt.md",
+    "raw": "result.json",
+    "stderr": "stderr.log"
+  }
+}

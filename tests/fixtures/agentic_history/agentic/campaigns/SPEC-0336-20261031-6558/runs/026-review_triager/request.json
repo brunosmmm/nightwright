@@ -1,0 +1,42 @@
+{
+  "schema": "nw.run.request.v1",
+  "persona": "review_triager",
+  "model": "sonnet",
+  "effort": "medium",
+  "max_budget_usd": 0.5,
+  "timeout_s": 2700,
+  "permission_mode": "dontAsk",
+  "read_only": true,
+  "cwd": "/home/user/work/.nw-worktrees/Meta-Tools/SPEC-0336-20261031-6558",
+  "json_schema": {
+    "type": "object",
+    "required": [
+      "waive",
+      "note"
+    ],
+    "properties": {
+      "waive": {
+        "type": "array",
+        "items": {
+          "type": "object",
+          "required": [
+            "id",
+            "reason"
+          ],
+          "properties": {
+            "id": {
+              "type": "string"
+            },
+            "reason": {
+              "type": "string"
+            }
+          }
+        }
+      },
+      "note": {
+        "type": "string"
+      }
+    }
+  },
+  "started_at": "2026-10-31T23:46:38-04:00"
+}

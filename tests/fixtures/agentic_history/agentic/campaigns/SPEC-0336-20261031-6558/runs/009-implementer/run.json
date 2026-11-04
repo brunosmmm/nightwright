@@ -1,0 +1,134 @@
+{
+  "schema": "nw.run.v1",
+  "campaign": "SPEC-0336-20261031-6558",
+  "run_id": "009-implementer",
+  "persona": "implementer",
+  "model": "opus",
+  "effort": "high",
+  "max_budget_usd": 10.0,
+  "timeout_s": 2700,
+  "permission_mode": "bypassPermissions",
+  "started_at": "2026-10-31T22:09:17-04:00",
+  "duration_s": 353.193,
+  "exit_code": 0,
+  "timed_out": false,
+  "interrupted": false,
+  "is_error": false,
+  "cost_usd": 1.9454973999999998,
+  "cost_estimated": false,
+  "usage": {
+    "input_tokens": 54,
+    "cache_creation_input_tokens": 102502,
+    "cache_read_input_tokens": 2342827,
+    "output_tokens": 32835,
+    "output_tokens_details": {
+      "thinking_tokens": 12511
+    },
+    "server_tool_use": {
+      "web_search_requests": 0,
+      "web_fetch_requests": 0
+    },
+    "service_tier": "standard",
+    "cache_creation": {
+      "ephemeral_1h_input_tokens": 102502,
+      "ephemeral_5m_input_tokens": 0
+    },
+    "inference_geo": "global",
+    "iterations": [
+      {
+        "input_tokens": 2,
+        "output_tokens": 1202,
+        "cache_read_input_tokens": 115754,
+        "cache_creation_input_tokens": 366,
+        "cache_creation": {
+          "ephemeral_5m_input_tokens": 0,
+          "ephemeral_1h_input_tokens": 366
+        },
+        "type": "message"
+      }
+    ],
+    "speed": "standard",
+    "fallback_credit": null
+  },
+  "session_id": "81d8a84a-1249-42bb-82cf-37ffd9d52942",
+  "verdict_ok": true,
+  "verdict": {
+    "status": "done",
+    "summary": "SPEC-0336: harden nw worker gate-job (stricter header and gate validation, \\Z regexes, remote: slot ids, a jobs lock that fixes the gc race, SIGTERM/SIGINT/SIGHUP cancel) and add the missing tests. In this loop the targeted worker, slot, gate and rich-output-guard tests passed 157/157 three runs in a row, and spec-lint passed. The full suite is left to gating.",
+    "changed_files": [
+      "src/nightwright/agentic/worker.py",
+      "tests/test_worker.py",
+      "tests/test_worker_ssh_command.py",
+      "docs/specs/0336-gate-worker-job-runner-and-forced-command.md"
+    ],
+    "tests_run": [
+      "uv run pytest -q -n 4 tests/test_worker.py tests/test_worker_ssh_command.py tests/test_gate_slots.py tests/test_cli_gate_slots.py tests/test_agentic_gates.py tests/test_rich_output_guard.py (157 passed, x3)",
+      "uv run pytest -q tests/test_worker_ssh_command.py (36 passed)",
+      "python3 tools/spec_lint.py --write-ledger && python3 tools/spec_lint.py (OK)"
+    ],
+    "ac_status": [
+      {
+        "ac": "Valid header+bundle runs gates, emits accepted/started/gate/done with .log/.json/.r<n> files",
+        "met": true
+      },
+      {
+        "ac": "merge-base $NW_BASE HEAD on the worker matches the coordinator",
+        "met": true
+      },
+      {
+        "ac": "Env key outside allowlist -> validate error, nothing runs; reused job_id -> claim",
+        "met": true
+      },
+      {
+        "ac": "Two concurrent jobs, same repo_key/base.name, different base.sha each see their own base",
+        "met": true
+      },
+      {
+        "ac": "EOF mid-gate ends the gate process, done interrupted; EOF during slot wait -> done interrupted, no started",
+        "met": true
+      },
+      {
+        "ac": "Held slot -> slot_wait then started once it frees",
+        "met": true
+      },
+      {
+        "ac": "Exit 0 after done, 3 after error",
+        "met": true
+      },
+      {
+        "ac": "Log over 16 MiB cut to 16 MiB with truncated_bytes",
+        "met": true
+      },
+      {
+        "ac": "have reports commit/base after job; gc --keep-days 0 removes refs, objects, job dirs; live job dir survives",
+        "met": true
+      },
+      {
+        "ac": "nw worker info --json prints documented keys",
+        "met": true
+      },
+      {
+        "ac": "ssh-command execs the four allowed subcommands, refuses everything else with exit 2",
+        "met": true
+      },
+      {
+        "ac": "docs/WORKFLOW.md documents mandatory dedicated user and absolute-path key line",
+        "met": true
+      }
+    ],
+    "blockers": [],
+    "followup_ideas": [
+      "gate_slots.acquire builds waiting-<campaign>.json from an unvalidated campaign id; local callers could get the same charset check the worker now applies",
+      "uvx ruff with default rules flags pre-existing style nits in worker.py and tests/test_worker.py (blind except, removesuffix, import sort); the repo has no ruff gate, so decide whether to adopt one"
+    ]
+  },
+  "profile": "thorough",
+  "profile_sources": [
+    "builtin:thorough.yaml"
+  ],
+  "files": {
+    "prompt": "prompt.md",
+    "raw": "result.json",
+    "stderr": "stderr.log"
+  }
+}

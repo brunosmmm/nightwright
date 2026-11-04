@@ -1,0 +1,153 @@
+{
+  "schema": "nw.run.v1",
+  "campaign": "SPEC-0336-20261031-6558",
+  "run_id": "033-conformance_reviewer",
+  "persona": "conformance_reviewer",
+  "model": "opus",
+  "effort": "high",
+  "max_budget_usd": 1.5,
+  "timeout_s": 2700,
+  "permission_mode": "dontAsk",
+  "started_at": "2026-11-01T00:53:00-04:00",
+  "duration_s": 42.466,
+  "exit_code": 0,
+  "timed_out": false,
+  "interrupted": false,
+  "is_error": false,
+  "cost_usd": 0.7215796,
+  "cost_estimated": false,
+  "usage": {
+    "input_tokens": 8,
+    "cache_creation_input_tokens": 74279,
+    "cache_read_input_tokens": 241678,
+    "output_tokens": 3949,
+    "output_tokens_details": {
+      "thinking_tokens": 374
+    },
+    "server_tool_use": {
+      "web_search_requests": 0,
+      "web_fetch_requests": 0
+    },
+    "service_tier": "standard",
+    "cache_creation": {
+      "ephemeral_1h_input_tokens": 74279,
+      "ephemeral_5m_input_tokens": 0
+    },
+    "inference_geo": "global",
+    "iterations": [
+      {
+        "input_tokens": 2,
+        "output_tokens": 2704,
+        "cache_read_input_tokens": 85072,
+        "cache_creation_input_tokens": 649,
+        "cache_creation": {
+          "ephemeral_5m_input_tokens": 0,
+          "ephemeral_1h_input_tokens": 649
+        },
+        "type": "message"
+      }
+    ],
+    "speed": "standard",
+    "fallback_credit": null
+  },
+  "session_id": "2c1330af-e59f-4a85-88b9-23d6074fedde",
+  "verdict_ok": true,
+  "verdict": {
+    "verdict": "pass",
+    "score": 93,
+    "findings": [
+      {
+        "severity": "nit",
+        "title": "_slot_wait_event_s accepts NaN/inf from the environment",
+        "detail": "_float_env rejects values that are not finite, but _slot_wait_event_s does not. With NW_WORKER_SLOT_WAIT_EVENT_S=inf the slot_wait frame never goes out. With NaN, `v >= 0` is False, so the code falls back to the default. Only an operator or test env var can set this, so the risk is negligible.",
+        "suggested_fix": "In worker.py, have _slot_wait_event_s return _float_env(SLOT_WAIT_ENV, gate_slots.WAIT_EVENT_S) so it shares the finite/non-negative check.",
+        "acceptance": "A unit test with NW_WORKER_SLOT_WAIT_EVENT_S=inf gets back gate_slots.WAIT_EVENT_S.",
+        "files": [
+          "src/nightwright/agentic/worker.py"
+        ]
+      },
+      {
+        "severity": "nit",
+        "title": "NW_CONFIG_DIR is set to an empty string when cfg has no config_dir",
+        "detail": "_run_gates sets NW_CONFIG_DIR to str(cfg.get('config_dir') or ''). A gate would then see NW_CONFIG_DIR='' instead of the variable being unset, and that could make tools that read it look at the cwd.",
+        "suggested_fix": "Add NW_CONFIG_DIR to env only when cfg.get('config_dir') is truthy.",
+        "acceptance": "With no config_dir in cfg, a gate running `env` prints no NW_CONFIG_DIR= line.",
+        "files": [
+          "src/nightwright/agentic/worker.py"
+        ]
+      }
+    ],
+    "ac_assessment": [
+      {
+        "ac": "Piping a valid header and bundle runs the gates and emits accepted, started, one gate frame per gate (.log/.json/.r<n>), done",
+        "met": true,
+        "evidence": "test_pass_emits_frames_and_files checks that the frame types are exactly [accepted, started, gate, done] and that the files are {.log, .json}. test_retry_ladder_sends_r1_files checks for the .r1.log/.r1.json files. Code: worker.gate_job, _run_gates, gate_files."
+      },
+      {
+        "ac": "git merge-base $NW_BASE HEAD on the worker prints the coordinator's sha",
+        "met": true,
+        "evidence": "test_merge_base_and_base_placeholder_match_the_coordinator compares against `git merge-base main HEAD` run in the source repo. test_origin_base_name_resolves_like_a_remote_tracking_branch covers an origin/main base. Code: _checkout creates refs/heads/<name> and refs/remotes/origin/<rest> in the private clone."
+      },
+      {
+        "ac": "An env key outside the allowlist gives error stage validate and nothing runs; a reused job_id gives stage claim",
+        "met": true,
+        "evidence": "test_env_outside_allowlist_is_refused checks rc 3, stage validate, frames == [error] and that the marker file was not created. test_duplicate_job_id_is_a_claim_error checks stage claim and that the first job's frames.jsonl is unchanged. Code: validate_header, and the exclusive mkdir in gate_job."
+      },
+      {
+        "ac": "Two concurrent jobs, same repo_key and base.name with different base.sha, each see their own base",
+        "met": true,
+        "evidence": "In test_concurrent_jobs_see_their_own_base, two jobs synchronise on a shared dir (slots: 2) so they really run at the same time, and each one's log holds its own base sha twice. Code: git clone --shared gives each job private refs."
+      },
+      {
+        "ac": "EOF mid-gate ends the gate process and gives done interrupted; EOF during the slot wait gives done interrupted with no started",
+        "met": true,
+        "evidence": "test_eof_mid_gate_interrupts checks that the sleep child's pid is dead, interrupted is true and the next gate never ran. test_eof_while_waiting_for_the_slot checks for no started or gate frame and no marker file. Code: _watch_stdin, and cancel passed as stop= to gate_slots.acquire."
+      },
+      {
+        "ac": "With the slot held elsewhere, slot_wait then started only once the slot frees",
+        "met": true,
+        "evidence": "test_held_slot_gives_slot_wait_then_started holds GS.acquire, checks that no started frame appears while the slot is held, then checks the order accepted, slot_wait, started, gate, done. It uses NW_WORKER_SLOT_WAIT_EVENT_S through _slot_conf."
+      },
+      {
+        "ac": "Exit 0 after done (pass, fail, interrupted) and 3 after error",
+        "met": true,
+        "evidence": "The pass, fail, EOF and signal tests assert rc 0. The validate, claim, checkout and read error tests assert rc 3. Code: gate_job/_fail return 0 or EXIT_ERROR, and cli_worker raises SystemExit with that code."
+      },
+      {
+        "ac": "A log over 16 MiB arrives cut to 16 MiB with truncated_bytes",
+        "met": true,
+        "evidence": "test_log_over_16_mib_is_truncated checks that len == MAX_LOG_BYTES, the tail marker is kept, the head marker is cut, and truncated_bytes is exact. Code: _file_payload, gate_files."
+      },
+      {
+        "ac": "have reports commit and base after the job; after gc --keep-days 0 nothing is reported, cat-file -e fails, job dirs are gone; a live job's dir survives",
+        "met": true,
+        "evidence": "test_have_then_gc_removes_refs_objects_and_job_dirs runs the real CLI have and gc, then checks that git cat-file -e fails and the job dir is gone. test_gc_during_a_live_job_keeps_its_dir checks that the tree and the commit object survive. Code: have, gc, _gc_repo, _live_jobs."
+      },
+      {
+        "ac": "nw worker info --json prints the documented keys",
+        "met": true,
+        "evidence": "test_info_json_keys checks that the key set is exactly {schema, protocol, version, git_sha, data_dir, git, uv, free_bytes}."
+      },
+      {
+        "ac": "ssh-command execs the four allowed subcommands and refuses everything else with exit 2",
+        "met": true,
+        "evidence": "In tests/test_worker_ssh_command.py, test_allowed_commands_are_execd patches only os.execvp and covers six forms. test_refused_commands_run_nothing covers 24+ refusals, including `have --repo ../x`. The CLI subprocess tests check exit 2 with `refused:` and that an allowed command really execs. Code: check_ssh_command, own_nw, ssh_command."
+      },
+      {
+        "ac": "docs/WORKFLOW.md documents the mandatory dedicated user and the absolute-path key line",
+        "met": true,
+        "evidence": "The WORKFLOW.md section 'Remote gate worker' has both. test_workflow_docs_make_the_dedicated_user_mandatory_and_show_the_key_line checks for them."
+      }
+    ],
+    "fix_brief": ""
+  },
+  "profile": "thorough",
+  "profile_sources": [
+    "builtin:thorough.yaml"
+  ],
+  "files": {
+    "prompt": "prompt.md",
+    "raw": "result.json",
+    "stderr": "stderr.log"
+  }
+}

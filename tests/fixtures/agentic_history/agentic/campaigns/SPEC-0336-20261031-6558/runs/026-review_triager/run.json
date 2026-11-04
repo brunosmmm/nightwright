@@ -1,0 +1,93 @@
+{
+  "schema": "nw.run.v1",
+  "campaign": "SPEC-0336-20261031-6558",
+  "run_id": "026-review_triager",
+  "persona": "review_triager",
+  "model": "sonnet",
+  "effort": "medium",
+  "max_budget_usd": 0.5,
+  "timeout_s": 2700,
+  "permission_mode": "dontAsk",
+  "started_at": "2026-10-31T23:46:38-04:00",
+  "duration_s": 11.066,
+  "exit_code": 0,
+  "timed_out": false,
+  "interrupted": false,
+  "is_error": false,
+  "cost_usd": 0.10411540000000001,
+  "cost_estimated": false,
+  "usage": {
+    "input_tokens": 2,
+    "cache_creation_input_tokens": 22360,
+    "cache_read_input_tokens": 9814,
+    "output_tokens": 1369,
+    "output_tokens_details": {
+      "thinking_tokens": 305
+    },
+    "server_tool_use": {
+      "web_search_requests": 0,
+      "web_fetch_requests": 0
+    },
+    "service_tier": "standard",
+    "cache_creation": {
+      "ephemeral_1h_input_tokens": 22360,
+      "ephemeral_5m_input_tokens": 0
+    },
+    "inference_geo": "global",
+    "iterations": [
+      {
+        "input_tokens": 2,
+        "output_tokens": 1369,
+        "cache_read_input_tokens": 9814,
+        "cache_creation_input_tokens": 22360,
+        "cache_creation": {
+          "ephemeral_5m_input_tokens": 0,
+          "ephemeral_1h_input_tokens": 22360
+        },
+        "type": "message"
+      }
+    ],
+    "speed": "standard",
+    "fallback_credit": null
+  },
+  "session_id": "8c5f069e-7a7c-4555-856c-726997f74d2d",
+  "verdict_ok": true,
+  "verdict": {
+    "waive": [
+      {
+        "id": "conformance_reviewer#1",
+        "reason": "The reviewer's own fix is 'no change now'. The extra behaviour is documented in As shipped and tested. Whether SPEC-0338 treats `have` as state-refreshing is a follow-up for that spec."
+      },
+      {
+        "id": "conformance_reviewer#0",
+        "reason": "This is a documented, deliberate deviation. As shipped explains it, and a test pins it. It needs no code change."
+      },
+      {
+        "id": "test_reviewer#1",
+        "reason": "`cli_worker` only wraps `W.ssh_command()` in SystemExit. The function's exit code is tested, and the spec records a manual run of the CLI refusal. The gap is trivial."
+      },
+      {
+        "id": "test_reviewer#2",
+        "reason": "The plain `info` output is cosmetic. The spec only requires the `--json` keys, and those are tested."
+      },
+      {
+        "id": "adversarial_reviewer#3",
+        "reason": "This only matters when the install sits inside another git repo, such as a dotfiles-tracked home directory. `git_sha` is informational only."
+      },
+      {
+        "id": "adversarial_reviewer#4",
+        "reason": "The CLI process exit releases the fd and the lock. The only effect is on in-process test callers, so it is not a production defect."
+      }
+    ],
+    "note": "The real robustness defects stay for the loop: gc aborting on one broken cache, the base name validated too late, the signal window exit code, and the timing-sensitive budget tests. The spec-deviation, cosmetic and test-only nits are waived."
+  },
+  "profile": "thorough",
+  "profile_sources": [
+    "builtin:thorough.yaml"
+  ],
+  "files": {
+    "prompt": "prompt.md",
+    "raw": "result.json",
+    "stderr": "stderr.log"
+  }
+}

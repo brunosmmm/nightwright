@@ -1,0 +1,56 @@
+{
+  "schema": "nw.escalation.v1",
+  "id": "ESC-0003",
+  "created": "2026-11-01T00:57:25-04:00",
+  "by": "conductor",
+  "campaign": "SPEC-0336-20261031-6558",
+  "spec_id": "SPEC-0336",
+  "project": "Meta-Tools",
+  "question": "SPEC-0336 (remote gate worker, first slice of the remote-workers epic) hit its cost cap a second time: $32.14 spent of $40. Review is 87/90; only minor findings remain. How do we proceed?",
+  "options": [
+    {
+      "n": 1,
+      "label": "Raise cap to $50 and let it finish one more fix loop"
+    },
+    {
+      "n": 2,
+      "label": "Waive the remaining minor findings and send it to close now (nothing more spent on fixes)"
+    },
+    {
+      "n": 3,
+      "label": "Abandon / hold"
+    }
+  ],
+  "recommendation": 2,
+  "facts": [
+    "review score 87/90, remaining findings are minor/nit (cancel-write timeout, pre-slot signal, have() traceback, info.git_sha)",
+    "cap already raised once 30->40; 3 of 4 implement loops used; profile cap max would be 60"
+  ],
+  "park": {
+    "escalated_from": "cost_cap",
+    "resume_to": "IMPLEMENTING",
+    "mode": "immediate"
+  },
+  "status": "answered",
+  "mail_id": "human:4",
+  "notified": {
+    "via": "notify-send",
+    "ok": true,
+    "error": null,
+    "at": "2026-11-01T06:57:29-05:00"
+  },
+  "reminded_at": "2026-11-01T06:57:29-05:00",
+  "answer": {
+    "kind": "choose",
+    "choice": 2,
+    "label": "Waive the remaining minor findings and send it to close now (nothing more spent on fixes)",
+    "text": null,
+    "waive": [],
+    "attest": [],
+    "reason": null,
+    "note": "Human delegated: 'resolve the escalation as you see fit please'. Steward chose 2: review 87/90 with only minor/nit findings left (cancel-write retry, pre-slot signal vs repo-lock wait, 'nw worker have' traceback on git failure, wall-clock timing tests; nits: info.git_sha, info test values). File the 4 minors as one follow-up idea under the SPEC-0310 epic."
+  },
+  "answered_by": "steward:Meta-Tools",
+  "answered_at": "2026-11-01T06:59:01-05:00",
+  "withdrawn": null
+}

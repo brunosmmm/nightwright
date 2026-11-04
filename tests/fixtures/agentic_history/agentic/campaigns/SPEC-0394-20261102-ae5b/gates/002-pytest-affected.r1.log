@@ -1,0 +1,24 @@
+F                                                                        [100%]
+=================================== FAILURES ===================================
+______________________ test_write_back_equals_a_local_run ______________________
+
+tmp_path = PosixPath('/home/user/.local/share/nightwright/agentic/worker/jobs/SPEC-0394-20261102-ae5b-gate-002-a1/tmp/pytest-of-nw/pytest-1/test_write_back_equals_a_local0')
+
+    def test_write_back_equals_a_local_run(tmp_path):
+        from nightwright.agentic import gitops
+        script = _write_script(tmp_path / "writer.json", WRITER)
+        remote_w, local_w = _world(tmp_path, "remote"), _world(tmp_path, "local")
+        _remote(remote_w, script)
+        base = _git(remote_w.repo, "rev-parse", "HEAD")
+        st = S.read_state(remote_w.cfg, CID)
+        rr = RPS.dispatch(remote_w.cfg, st, "implement", _req(remote_w))
+        assert isinstance(rr, R.RemoteRunner)
+        got = rr.run(_req(remote_w))
+>       assert got.worker == "box" and got.verdict == VERDICT and got.verdict_ok
+E       AssertionError: assert (None == 'box')
+E        +  where None = RunResult(exit_code=0, timed_out=False, interrupted=False, duration_s=5.418, is_error=False, cost_usd=0.0430014, usage...mpaigns/SPEC-0900-20261101-abcd/runs/001-implementer/result.json'), worker=None, writeback_failed=False, saved_refs=()).worker
+
+tests/test_remote_personas.py:115: AssertionError
+=========================== short test summary info ============================
+FAILED tests/test_remote_personas.py::test_write_back_equals_a_local_run - As...
+1 failed in 7.17s

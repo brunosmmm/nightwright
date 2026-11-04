@@ -1,0 +1,77 @@
+FF                                                                       [100%]
+=================================== FAILURES ===================================
+_______________ test_admission_blocked_journaled_once_per_change _______________
+
+tmp_path = PosixPath('/home/user/.local/share/nightwright/agentic/campaigns/SPEC-0394-20261102-ae5b/tmp/gate-001/pytest-of-user/pytest-1/test_admission_blocked_journal0')
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x7ff28f441f30>
+
+    def test_admission_blocked_journaled_once_per_change(tmp_path, monkeypatch):
+        """SPEC-0268: full slots with a ready item waiting give one `admission_blocked` record per
+        distinct (ready, holders, deferred) set; a draining tick's skipped close is `deferred`."""
+        repo, cfg, a = gate_world(tmp_path, monkeypatch)
+        for i in (2, 3, 4):
+            _second_spec(repo, f"SPEC-000{i}", f"docs/specs/000{i}-x.md")
+        cfg["agentic"]["profiles"]["balanced"]["slots"] = 2
+        runner = Det(cfg)
+        runner.release.set()
+        seen, calls = {"n": 0}, []
+        monkeypatch.setattr(Q, "code_changes", lambda r, since: (
+            ("newsha", ["src/nightwright/x.py"]) if "changed" in seen else (since, [])))
+        monkeypatch.setattr(Q, "_EXEC", lambda exe, argv, env: calls.append(1))
+    
+        def hold(spec):                        # a CLOSING holder, made before the next tick
+            cid = added(cfg, monkeypatch, spec)
+            st = S.read_state(cfg, cid)
+            st["state"] = "CLOSING"
+            S.write_state(cfg, cid, st)
+            return cid
+    
+        def on_tick(report):
+            if "changed" not in seen and pid_file(tmp_path):         # A is in its held gate
+                seen["changed"] = True
+                seen["b"] = hold("SPEC-0002")
+                seen["c"] = added(cfg, monkeypatch, "SPEC-0003")     # ready, no slot
+                return
+            if "changed" not in seen:
+                return
+            seen["n"] += 1
+            if seen["n"] == 8:
+                seen["first"] = journal(cfg, "admission_blocked")
+                st = S.read_state(cfg, seen["b"])
+                st["state"] = "PARKED"                               # frees B's slot ...
+                S.write_state(cfg, seen["b"], st)
+                seen["d"] = hold("SPEC-0004")                        # ... which D takes at once
+            if seen["n"] == 16:
+                (tmp_path / "g1.rel").write_text("")
+    
+        Q.run(cfg, poll_interval_s=0.05, reexec=True, code_root=repo, on_tick=on_tick,
+              runner=runner, max_ticks=300)
+        first, second = seen["first"], journal(cfg, "admission_blocked")
+>       (rec,) = first
+        ^^^^^^
+E       ValueError: not enough values to unpack (expected 1, got 0)
+
+tests/test_agentic_exit_paths.py:859: ValueError
+____________________ test_run_stamps_slot_freed_at_on_drop _____________________
+
+tmp_path = PosixPath('/home/user/.local/share/nightwright/agentic/campaigns/SPEC-0394-20261102-ae5b/tmp/gate-001/pytest-of-user/pytest-1/test_run_stamps_slot_freed_at_0')
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x7ff28f441a70>
+spy = [({'poll_interval_s': 0.01, 'slot_freed_at': '2026-11-02T21:58:13-05:00'}, None), ({'code_sha': 'e122acb6ad32d69058d6d...y', None), ({'in_flight': [], 'tick_at': '2026-11-02T21:58:13-05:00', 'last_tick_s': 0.0, 'ticks': 1, ...}, None), ...]
+
+    def test_run_stamps_slot_freed_at_on_drop(tmp_path, monkeypatch, spy):
+        _repo, cfg, cid = _env(tmp_path, monkeypatch, profile={"slots": 1})   # full -> free (SPEC-0263)
+        Q.run(cfg, until_idle=True, poll_interval_s=0.01)
+        assert S.read_state(cfg, cid)["state"] == "MERGED"
+        assert "slot_freed_at" in spy[0][0] and spy[0][0]["poll_interval_s"] == 0.01   # at start
+        ticks = [kw for kw, _ in spy if isinstance(kw, dict) and "tick_at" in kw]
+        assert ticks and "slot_freed_at" not in ticks[0]            # admission raises the count
+        assert "slot_freed_at" in ticks[-1]                          # the merge tick lowered it
+>       assert sum("slot_freed_at" in kw for kw in ticks) == 1
+E       assert 2 == 1
+E        +  where 2 = sum(<generator object test_run_stamps_slot_freed_at_on_drop.<locals>.<genexpr> at 0x7ff28f596c20>)
+
+tests/test_agentic_loop_state.py:69: AssertionError
+=========================== short test summary info ============================
+FAILED tests/test_agentic_exit_paths.py::test_admission_blocked_journaled_once_per_change
+FAILED tests/test_agentic_loop_state.py::test_run_stamps_slot_freed_at_on_drop
+2 failed in 3.14s

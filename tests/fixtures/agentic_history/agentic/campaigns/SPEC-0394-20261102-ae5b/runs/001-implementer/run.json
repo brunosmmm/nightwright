@@ -1,0 +1,138 @@
+{
+  "schema": "nw.run.v1",
+  "campaign": "SPEC-0394-20261102-ae5b",
+  "run_id": "001-implementer",
+  "persona": "implementer",
+  "model": "opus",
+  "effort": "high",
+  "max_budget_usd": 10.0,
+  "timeout_s": 2700,
+  "permission_mode": "bypassPermissions",
+  "started_at": "2026-11-02T21:37:07-05:00",
+  "duration_s": 1072.012,
+  "exit_code": 0,
+  "timed_out": false,
+  "interrupted": false,
+  "is_error": false,
+  "cost_usd": 2.5066868,
+  "cost_estimated": false,
+  "usage": {
+    "input_tokens": 96,
+    "cache_creation_input_tokens": 111298,
+    "cache_read_input_tokens": 4092994,
+    "output_tokens": 39866,
+    "output_tokens_details": {
+      "thinking_tokens": 7737
+    },
+    "server_tool_use": {
+      "web_search_requests": 0,
+      "web_fetch_requests": 0
+    },
+    "service_tier": "standard",
+    "cache_creation": {
+      "ephemeral_1h_input_tokens": 111298,
+      "ephemeral_5m_input_tokens": 0
+    },
+    "inference_geo": "global",
+    "iterations": [
+      {
+        "input_tokens": 2,
+        "output_tokens": 1752,
+        "cache_read_input_tokens": 121891,
+        "cache_creation_input_tokens": 995,
+        "cache_creation": {
+          "ephemeral_5m_input_tokens": 0,
+          "ephemeral_1h_input_tokens": 995
+        },
+        "type": "message"
+      }
+    ],
+    "speed": "standard",
+    "fallback_credit": null
+  },
+  "session_id": "963bdd9f-5efe-4dcf-95b0-5236ef85ecc6",
+  "verdict_ok": true,
+  "verdict": {
+    "status": "done",
+    "summary": "SPEC-0394: declared personas now carry their own run settings and reviewer routing metadata, get correct run requests and a generated Output section, and show these fields in `nw personas`. The queue still cannot run them.\nA user or project definition can now set `model`/`effort`/`max_budget_usd`, and a reviewer can also set `required`/`when`. Both validators check these keys through one helper, `check_declared_keys`. `Persona.declared` holds the values plus the template's sha256, and `is_reviewer` is new. `build_request` finds the persona in `project_cfg[\"_root\"]` and layers settings as nightwright defaults < the profile's role-default entry < the definition < the profile's `personas.<name>` entry. Read-only roles are always forced to `read_only: true` / `dontAsk`. The capability page is updated.",
+    "changed_files": [
+      "src/nightwright/agentic/persona_registry.py",
+      "src/nightwright/agentic/persona_defs.py",
+      "src/nightwright/agentic/personas.py",
+      "src/nightwright/agentic/cli_personas.py",
+      "tests/test_agentic_persona_run_settings.py",
+      "tests/test_agentic_personas_declared_cli.py",
+      "docs/product/capabilities/agentic.md",
+      "docs/product/reference/index.md",
+      "docs/specs/0394-declared-persona-run-settings-routing-and-requests.md",
+      "docs/LEDGER.md"
+    ],
+    "tests_run": [
+      "uv run pytest -q -n 4 tests/test_agentic_persona_run_settings.py tests/test_agentic_personas_declared_cli.py tests/test_agentic_persona_defs.py tests/test_agentic_personas.py (189 passed)",
+      "uv run pytest -q -n 4 tests/test_agentic_persona_registry.py tests/test_agentic_personas_cli.py tests/test_remote_personas.py tests/test_docs_product_ia.py tests/test_agentic_profiles.py (pass)",
+      "python3 tools/affected_tests.py --run uv run pytest -q -n 8 (3463 passed, 9 failed; all 9 also fail on an unmodified git-archive copy of HEAD, so they were already failing before this change: slot/admission tests)",
+      "python3 tools/spec_lint.py --write-ledger; python3 tools/spec_lint.py (exit 0)",
+      "manual: real nw personas show/validate CLI against a scratch project with the example definition (recorded in the spec's Test record)",
+      "git diff --stat main (no queue.py/profiles.py/divergence.py)"
+    ],
+    "ac_status": [
+      {
+        "ac": "AC1 settings keys accepted/refused; refused in builtin definitions",
+        "met": true
+      },
+      {
+        "ac": "AC2 required/when reviewer-only with strict shapes and defaults",
+        "met": true
+      },
+      {
+        "ac": "AC3 validate and list/show report the same problems via one helper; all problems in one run",
+        "met": true
+      },
+      {
+        "ac": "AC4 is_reviewer for declared/builtin/no root",
+        "met": true
+      },
+      {
+        "ac": "AC5 build_request declared reviewer: read-only/dontAsk, schema, layered settings; declared implementer writable",
+        "met": true
+      },
+      {
+        "ac": "AC6 review context, resolved from _root, worktree copy ignored",
+        "met": true
+      },
+      {
+        "ac": "AC7 generated Output section; builtin prompts byte-identical",
+        "met": true
+      },
+      {
+        "ac": "AC8 show/list --json show settings/required/when/template_sha256 for declared, not builtins",
+        "met": true
+      },
+      {
+        "ac": "AC9 inert: tables unchanged, resolve_profile refuses a declared reviewer, queue/profiles/divergence untouched",
+        "met": true
+      },
+      {
+        "ac": "AC10 capability page documents declared personas",
+        "met": true
+      }
+    ],
+    "blockers": [],
+    "followup_ideas": [
+      "Nine queue tests already fail on main at 6e66fcda, before this change (slot/admission accounting, possibly after SPEC-0395): test_agentic_exit_paths admission_blocked x3, test_agentic_watchdog_gaps::test_waiting_not_admitted_quiet_when_full_or_park_requested, test_agentic_loop_state::test_run_stamps_slot_freed_at_on_drop, test_agentic_queue_visibility::test_width_snapshots x3, test_tui_queue_model::test_load_queue_sections_order_and_meta.",
+      "`nw idea clock-in/out` is refused inside campaign runs (NW_PERSONA_RUN=1), but AGENTS.md tells implementers to clock in. Either reconcile the contract or let clock entries be written from a campaign run.",
+      "Merge the two declared-persona validators (persona_registry.validate_persona_doc and persona_defs._read_file) into one, as the spec's Non-goals note."
+    ]
+  },
+  "profile": "thorough",
+  "profile_sources": [
+    "builtin:thorough.yaml"
+  ],
+  "worker": null,
+  "files": {
+    "prompt": "prompt.md",
+    "raw": "result.json",
+    "stderr": "stderr.log",
+    "stream": "stream.jsonl"
+  }
+}

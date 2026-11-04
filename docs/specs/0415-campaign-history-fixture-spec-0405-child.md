@@ -1,7 +1,7 @@
 ---
 id: SPEC-0415
 title: "Campaign history fixture: tools/capture_history_fixture.py, the sanitized tests/fixtures/agentic_history/ data dir with MANIFEST.json, and tests/history_scale.copy_fixture"
-status: accepted
+status: done
 owner: user
 created: 2026-11-04
 updated: 2026-11-04
@@ -330,48 +330,48 @@ def copy_fixture(dst: Path) -> Path
 
 ## Acceptance criteria
 
-- [ ] **AC1.** `tools/capture_history_fixture.py --help` exits 0 and documents `--src`,
+- [x] **AC1.** `tools/capture_history_fixture.py --help` exits 0 and documents `--src`,
   `--out`, `--cid`, `--no-derive-handed-off` and `--check`. The script imports only the
   standard library.
-- [ ] **AC2.** Running the tool on the maintainer's real data dir writes
+- [x] **AC2.** Running the tool on the maintainer's real data dir writes
   `tests/fixtures/agentic_history/` with at most 12 campaigns, at most 3 MiB of data files
   (excluding the manifest), and exits 0. The tree is committed, and `.gitattributes` carries
   the `tests/fixtures/agentic_history/** -text` entry.
-- [ ] **AC3.** The manifest's `scenarios` covers `merged_multi_loop`, `abandoned`,
+- [x] **AC3.** The manifest's `scenarios` covers `merged_multi_loop`, `abandoned`,
   `handed_off`, `human_escalation`, `pre_stream` and `flaky_and_triage`, each with at least
   one campaign. `legacy_schema` and `no_run_json` are covered or recorded `absent_in_source`.
   The fixture holds at least one MERGED, one ABANDONED and one HANDED_OFF campaign. A derived
   campaign is marked `origin: "derived"` with `derived_from`, has no `merged_sha`, its
   `state.json` `id` equals its directory name, and **no file of the derived campaign contains
   its `derived_from` cid**.
-- [ ] **AC4.** `--check` on the committed fixture exits 0: every file is listed with the
+- [x] **AC4.** `--check` on the committed fixture exits 0: every file is listed with the
   right sha256 and size and no unlisted file exists. Editing, adding or deleting any fixture
   file makes `--check` exit 1 and name the file.
-- [ ] **AC5.** The sanitization scan finds nothing in the committed fixture: no home path,
+- [x] **AC5.** The sanitization scan finds nothing in the committed fixture: no home path,
   no user-name path segment, no non-placeholder email, no secret pattern from *Sanitization*
   rule 4, no `env` object with keys. A planted secret in a synthetic source is redacted in
   the output (and counted in the manifest), and a planted secret that no rule redacts makes
   the tool exit 4 with no output left behind.
-- [ ] **AC6.** The tool is read-only on the source: a hash of every file under `--src` is
+- [x] **AC6.** The tool is read-only on the source: a hash of every file under `--src` is
   identical before and after. Two runs with the same source and arguments write byte-identical
   output, `MANIFEST.json` included.
-- [ ] **AC7.** Caps hold for every file in the cap table: no `stream.jsonl` has more than 120
+- [x] **AC7.** Caps hold for every file in the cap table: no `stream.jsonl` has more than 120
   lines or a line over 4 KiB, no gate log or `stderr.log` more than 200 lines, no ledger line
   is dropped (the line count in the fixture equals the source's), `runner.jsonl` holds only
   lines inside some chosen campaign's own ledger interval and at most 500 per interval, and a
   source over the whole-fixture budget makes the tool exit 3.
-- [ ] **AC8.** Records: every `campaign` named in the fixture's decisions, mail, events and
+- [x] **AC8.** Records: every `campaign` named in the fixture's decisions, mail, events and
   escalations is a fixture campaign other than the derived one; every escalation id cited by a
   fixture ledger has its `ESC-NNNN.json`; `flaky-tests.json` `campaigns[]` lists only fixture
   campaigns.
-- [ ] **AC9.** `tests/history_scale.copy_fixture(dst)` returns a data dir whose file hashes
+- [x] **AC9.** `tests/history_scale.copy_fixture(dst)` returns a data dir whose file hashes
   equal the manifest's, with no file sharing an inode with the committed fixture, and raises
   `FileExistsError` onto a non-empty `dst`. Over that copy, `store.campaigns_dir(cfg)` lists
   every campaign in the manifest, each `state.json` loads, every `ledger.jsonl` line is valid
   JSON with a `type` and a timestamp, and `queue.dashboard_payload` and `campaign_export` of
   every campaign run without error and leave the campaign dirs' hashes unchanged. The committed
   fixture's hashes are unchanged afterwards.
-- [ ] **AC10.** `python3 tools/spec_lint.py` exits 0, and `uv run pytest` is not slowed by the
+- [x] **AC10.** `python3 tools/spec_lint.py` exits 0, and `uv run pytest` is not slowed by the
   fixture: `tests/test_history_fixture.py` completes in under 20 s.
 
 ## Test plan
@@ -453,6 +453,24 @@ capture tool or a source schema changes):
 (`tests/test_agentic_dashboard*.py`) and `tests/test_agentic_campaign_export.py` run unchanged
 and green. `python3 tools/spec_lint.py` stays at exit 0.
 
+### Test record (2026-11-04)
+
+- `uv run pytest -q -n 0 tests/test_history_fixture.py`: 19 passed in about 5 s (synthetic source for the tool; the committed fixture for the integrity, scenario, sanitization, cap, record and `copy_fixture` / data-dir tests).
+- `python3 tools/affected_tests.py --run uv run pytest -q -x -n 2`: 4639 passed, 6 skipped, 1 failed: `tests/test_no_textual_skips.py` (an `importorskip` at `tests/test_tui_queue_parity.py:65`, a file this change does not touch; it comes from IDEA-886's commit). The run stopped at that failure (`-x`), and a second unstopped run exceeded the shell time limit. The full suite is left to gating.
+- `python3 tools/spec_lint.py` and `--write-ledger`: exit 0.
+- Manual: (1) `python3 tools/capture_history_fixture.py` on the real data dir: exit 0, 8 campaigns, 441 files, 2,989,452 bytes. (2) `--check`: exit 0; a second capture into another dir was byte-identical (`diff -r`). (3) `grep` for `$HOME` and for the user and host names in the fixture: no hits. (4) Stream, decisions and mail files read as real, redacted content. (5) `NW_DATA_DIR=<copy_fixture dir> uv run nw queue list --all` lists all 8 campaigns (the CLI verb is `list`, not `ls`).
+
+### As shipped (2026-11-04)
+
+- Chosen campaigns (8, one derived): `SPEC-0179-20261025-158c` (legacy, no `run.json`, no stream), `SPEC-0180-20261025-f78d`, `SPEC-0195-20261025-f49a` (merged; base of the derived `SPEC-0195-20261025-hdof`), `SPEC-0218-20261025-0131` (abandoned, legacy), `SPEC-0336-20261031-6558` (merged, answered escalation, 1.25 MB, the largest), `SPEC-0394-20261102-ae5b` (merged, flaky and triage), `IDEA-606-20261101-df50` (abandoned, pre-stream). The fixture is 2,989,452 bytes of the 3 MiB budget; `runner.jsonl` is 393 KB of that.
+- `legacy_schema` is optional (recorded `absent_in_source`), as AC3 says; the Design's required-keys sentence named it. Real data covers it.
+- Rule 1 replaces every `/home/<name>` and `/Users/<name>` path prefix with `/home/user`, which covers the home dir and the repo checkout paths; `~`-relative forms are left alone as they carry nothing private. Rule 2 applies to bare words only, for `$USER`, the home dir name and the `--src` owner.
+- A truncated stream line (over 4 KiB) takes its `text` from the line's decoded string values, not the raw JSON, so escapes cannot form false emails. Sanitization runs before the truncation, so a secret is never split by the cut.
+- The key-name secret rule applies to string values only (numbers such as `input_tokens` are untouched). It also redacts `apiKeySource` in stream init lines.
+- The verification scan reads JSON by decoded string value, and also flags a non-empty `env` and a secret-named key with an unredacted string value.
+- Selection reuses an already chosen campaign when a scenario's only candidates are already chosen. An escalation cited by a chosen ledger but belonging to another campaign is skipped with a note. `reviews/<spec_id>/` is copied for the chosen spec ids (16 KB).
+- `tools/capture_history_deny.txt` lists the maintainer's user and host literals (`bruno`, `morais`, `brunosmmm`) so the scan fails if one survives.
+
 ## Rollout / migration
 
 1. Land this spec as `accepted`, then implement: the tool, `tests/history_scale.py`
@@ -469,14 +487,14 @@ and green. `python3 tools/spec_lint.py` stays at exit 0.
 
 ## Definition of done
 
-- [ ] Acceptance criteria all met.
-- [ ] Test plan executed; affected tests pass (`python3 tools/affected_tests.py --run uv run pytest -q`);
+- [x] Acceptance criteria all met.
+- [x] Test plan executed; affected tests pass (`python3 tools/affected_tests.py --run uv run pytest -q`);
   manual steps performed and noted in the spec.
-- [ ] No regressions.
-- [ ] Spec body updated to match what shipped (chosen campaigns, final sizes, any rule
+- [x] No regressions.
+- [x] Spec body updated to match what shipped (chosen campaigns, final sizes, any rule
   added to the sanitization table).
-- [ ] `docs/LEDGER.md` regenerated (`python3 tools/spec_lint.py --write-ledger`).
-- [ ] `python3 tools/spec_lint.py` exits 0.
+- [x] `docs/LEDGER.md` regenerated (`python3 tools/spec_lint.py --write-ledger`).
+- [x] `python3 tools/spec_lint.py` exits 0.
 
 ## Open questions
 

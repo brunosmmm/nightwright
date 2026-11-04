@@ -1,0 +1,133 @@
+{
+  "schema": "nw.run.v1",
+  "campaign": "SPEC-0336-20261031-6558",
+  "run_id": "018-implementer",
+  "persona": "implementer",
+  "model": "opus",
+  "effort": "high",
+  "max_budget_usd": 10.0,
+  "timeout_s": 2700,
+  "permission_mode": "bypassPermissions",
+  "started_at": "2026-10-31T22:50:20-04:00",
+  "duration_s": 758.02,
+  "exit_code": 0,
+  "timed_out": false,
+  "interrupted": false,
+  "is_error": false,
+  "cost_usd": 0.819859,
+  "cost_estimated": false,
+  "usage": {
+    "input_tokens": 28,
+    "cache_creation_input_tokens": 56670,
+    "cache_read_input_tokens": 802435,
+    "output_tokens": 10295,
+    "output_tokens_details": {
+      "thinking_tokens": 2953
+    },
+    "server_tool_use": {
+      "web_search_requests": 0,
+      "web_fetch_requests": 0
+    },
+    "service_tier": "standard",
+    "cache_creation": {
+      "ephemeral_1h_input_tokens": 56670,
+      "ephemeral_5m_input_tokens": 0
+    },
+    "inference_geo": "global",
+    "iterations": [
+      {
+        "input_tokens": 2,
+        "output_tokens": 1191,
+        "cache_read_input_tokens": 68951,
+        "cache_creation_input_tokens": 1337,
+        "cache_creation": {
+          "ephemeral_5m_input_tokens": 0,
+          "ephemeral_1h_input_tokens": 1337
+        },
+        "type": "message"
+      }
+    ],
+    "speed": "standard",
+    "fallback_credit": null
+  },
+  "session_id": "55640a31-eccc-40b5-981d-31abdd57b918",
+  "verdict_ok": true,
+  "verdict": {
+    "status": "done",
+    "summary": "SPEC-0336: turn off git's own auto gc/maintenance in the worker cache, so the worker's gc, which runs under the repo lock, is the only gc. The cache fetch passes --no-auto-maintenance, and the cache config is set to gc.auto=0 and maintenance.auto=false under the repo lock. gc now lists a repo in pruned only when git gc exits 0, and a pending signal is checked after the clone and checkout.",
+    "changed_files": [
+      "src/nightwright/agentic/worker.py",
+      "tests/test_worker.py",
+      "docs/specs/0336-gate-worker-job-runner-and-forced-command.md"
+    ],
+    "tests_run": [
+      "uv run pytest -q tests/test_worker.py -k 'own_gc or pruned_only' (2 passed; with the fix reverted the gc.autoPackLimit test fails because auto gc merges the packs into one)",
+      "uv run pytest -q -n 4/6/8 tests/test_worker.py tests/test_worker_ssh_command.py tests/test_gate_slots.py tests/test_cli_gate_slots.py tests/test_agentic_gates.py tests/test_rich_output_guard.py tests/test_test_waits.py (165 tests) x43: 42 runs passed; one early run had 1 failure, not identified, which did not show up again in the next 42 runs",
+      "python3 tools/spec_lint.py --write-ledger && python3 tools/spec_lint.py (OK)"
+    ],
+    "ac_status": [
+      {
+        "ac": "valid header+bundle runs gates, emits accepted/started/gate/done",
+        "met": true
+      },
+      {
+        "ac": "merge-base $NW_BASE HEAD matches the coordinator",
+        "met": true
+      },
+      {
+        "ac": "env outside allowlist -> validate error; reused job_id -> claim",
+        "met": true
+      },
+      {
+        "ac": "concurrent jobs with different base.sha see their own base",
+        "met": true
+      },
+      {
+        "ac": "EOF mid-gate and during the slot wait -> done interrupted",
+        "met": true
+      },
+      {
+        "ac": "held slot -> slot_wait then started",
+        "met": true
+      },
+      {
+        "ac": "exit 0 after done, 3 after error",
+        "met": true
+      },
+      {
+        "ac": "log over 16 MiB truncated with truncated_bytes",
+        "met": true
+      },
+      {
+        "ac": "have after the job; gc --keep-days 0 removes refs/objects/dirs, live job survives",
+        "met": true
+      },
+      {
+        "ac": "info --json prints the documented keys",
+        "met": true
+      },
+      {
+        "ac": "ssh-command execs the 4 allowed subcommands, refuses the rest with exit 2",
+        "met": true
+      },
+      {
+        "ac": "WORKFLOW.md documents the dedicated user and the absolute-path key line",
+        "met": true
+      }
+    ],
+    "blockers": [],
+    "followup_ideas": [
+      "Run gate processes with stdin=DEVNULL in gates.run_gate (or as a worker-only option), so a gate that reads stdin cannot consume the job protocol stream. Skipped here because run_gate is shared with local runs.",
+      "Find the rare flake in the worker/gates targeted suite: 1 failure in 43 runs early in this loop, which did not show up again."
+    ]
+  },
+  "profile": "thorough",
+  "profile_sources": [
+    "builtin:thorough.yaml"
+  ],
+  "files": {
+    "prompt": "prompt.md",
+    "raw": "result.json",
+    "stderr": "stderr.log"
+  }
+}

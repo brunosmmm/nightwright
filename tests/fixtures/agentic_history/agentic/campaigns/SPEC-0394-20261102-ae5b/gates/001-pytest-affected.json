@@ -1,0 +1,56 @@
+{
+  "schema": "nw.gate.v1",
+  "name": "pytest-affected",
+  "cmd": "if [ -f tools/affected_tests.py ]; then python3 tools/affected_tests.py --include tests/test_agentic_dogfood_config.py --include tests/test_agentic_project.py --run uv run pytest -q -x -n 2; else uv run pytest -q -x -n 2; fi",
+  "cwd": "/home/user/work/.nw-worktrees/Meta-Tools/SPEC-0394-20261102-ae5b",
+  "required": true,
+  "ok": false,
+  "exit_code": 2,
+  "timed_out": false,
+  "timeout_s": 2400,
+  "started_at": "2026-11-02T21:55:31-05:00",
+  "duration_s": 162.74,
+  "log": "001-pytest-affected.log",
+  "error": null,
+  "summary": {
+    "format": "pytest",
+    "passed": 813,
+    "failed": 2,
+    "errors": 0,
+    "skipped": 2,
+    "failing": [
+      "tests/test_agentic_exit_paths.py::test_admission_blocked_journaled_once_per_change",
+      "tests/test_agentic_loop_state.py::test_run_stamps_slot_freed_at_on_drop"
+    ]
+  },
+  "attempts": [
+    {
+      "attempt": 0,
+      "kind": "full",
+      "ok": false,
+      "exit_code": 2,
+      "timed_out": false,
+      "interrupted": false,
+      "duration_s": 159.061,
+      "log": "gates/001-pytest-affected.log",
+      "failing": [
+        "tests/test_agentic_exit_paths.py::test_admission_blocked_journaled_once_per_change",
+        "tests/test_agentic_loop_state.py::test_run_stamps_slot_freed_at_on_drop"
+      ]
+    },
+    {
+      "attempt": 1,
+      "kind": "targeted",
+      "ok": false,
+      "exit_code": 1,
+      "timed_out": false,
+      "interrupted": false,
+      "duration_s": 3.679,
+      "log": "gates/001-pytest-affected.r1.log",
+      "failing": [
+        "tests/test_agentic_exit_paths.py::test_admission_blocked_journaled_once_per_change",
+        "tests/test_agentic_loop_state.py::test_run_stamps_slot_freed_at_on_drop"
+      ]
+    }
+  ]
+}

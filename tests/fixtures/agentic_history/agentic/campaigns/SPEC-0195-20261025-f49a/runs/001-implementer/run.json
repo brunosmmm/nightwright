@@ -1,0 +1,92 @@
+{
+  "schema": "wt.run.v1",
+  "campaign": "SPEC-0195-20261025-f49a",
+  "run_id": "001-implementer",
+  "persona": "implementer",
+  "model": "sonnet",
+  "effort": "high",
+  "max_budget_usd": 4.0,
+  "timeout_s": 1800,
+  "permission_mode": "bypassPermissions",
+  "started_at": "2026-10-25T15:58:12-04:00",
+  "duration_s": 201.376,
+  "exit_code": 0,
+  "timed_out": false,
+  "interrupted": false,
+  "is_error": false,
+  "cost_usd": 0.24932409999999997,
+  "usage": {
+    "input_tokens": 22,
+    "cache_creation_input_tokens": 37089,
+    "cache_read_input_tokens": 421241,
+    "output_tokens": 5880,
+    "output_tokens_details": {
+      "thinking_tokens": 371
+    },
+    "server_tool_use": {
+      "web_search_requests": 0,
+      "web_fetch_requests": 0
+    },
+    "service_tier": "standard",
+    "cache_creation": {
+      "ephemeral_1h_input_tokens": 37089,
+      "ephemeral_5m_input_tokens": 0
+    },
+    "inference_geo": "global",
+    "iterations": [
+      {
+        "input_tokens": 2,
+        "output_tokens": 606,
+        "cache_read_input_tokens": 48569,
+        "cache_creation_input_tokens": 176,
+        "cache_creation": {
+          "ephemeral_5m_input_tokens": 0,
+          "ephemeral_1h_input_tokens": 176
+        },
+        "type": "message"
+      }
+    ],
+    "speed": "standard",
+    "fallback_credit": null
+  },
+  "session_id": "fda947e6-b6b0-4633-9850-0ef04e56ef6e",
+  "verdict_ok": true,
+  "verdict": {
+    "status": "done",
+    "summary": "SPEC-0195: wt spec new --from-idea no longer copies org drawers or planning lines into the scaffolded Context. A new `org_markup.strip_drawers` helper runs before `from_org_body` in `specs._idea_context`.",
+    "changed_files": [
+      "src/wt/org_markup.py",
+      "src/wt/specs.py",
+      "tests/test_org_markup.py",
+      "tests/test_explore.py",
+      "docs/specs/0195-spec-new-drops-org-drawers-from-the-context.md",
+      "docs/LEDGER.md"
+    ],
+    "tests_run": [
+      "uv run pytest -q tests/test_org_markup.py tests/test_explore.py",
+      "uv run pytest -q (1661 passed, 1 skipped)",
+      "python3 tools/spec_lint.py --write-ledger && python3 tools/spec_lint.py (exit 0)"
+    ],
+    "ac_status": [
+      {
+        "ac": "spec new --from-idea on a clocked idea yields Context without :PROPERTIES:/:LOGBOOK:/:END:/:ID:/CLOCK: lines",
+        "met": true
+      },
+      {
+        "ac": "Summary text, ** Summary/Log headings, src fences preserved; drawer text inside src kept; unterminated drawer kept",
+        "met": true
+      },
+      {
+        "ac": "uv run pytest passes; spec_lint exits 0",
+        "met": true
+      }
+    ],
+    "blockers": [],
+    "followup_ideas": []
+  },
+  "files": {
+    "prompt": "prompt.md",
+    "raw": "result.json",
+    "stderr": "stderr.log"
+  }
+}

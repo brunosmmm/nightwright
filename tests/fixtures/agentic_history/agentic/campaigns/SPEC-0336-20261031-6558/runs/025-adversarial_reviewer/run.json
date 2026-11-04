@@ -1,0 +1,138 @@
+{
+  "schema": "nw.run.v1",
+  "campaign": "SPEC-0336-20261031-6558",
+  "run_id": "025-adversarial_reviewer",
+  "persona": "adversarial_reviewer",
+  "model": "opus",
+  "effort": "high",
+  "max_budget_usd": 2.5,
+  "timeout_s": 2700,
+  "permission_mode": "dontAsk",
+  "started_at": "2026-10-31T23:43:46-04:00",
+  "duration_s": 170.641,
+  "exit_code": 0,
+  "timed_out": false,
+  "interrupted": false,
+  "is_error": false,
+  "cost_usd": 1.0407812,
+  "cost_estimated": false,
+  "usage": {
+    "input_tokens": 6,
+    "cache_creation_input_tokens": 82203,
+    "cache_read_input_tokens": 145666,
+    "output_tokens": 17700,
+    "output_tokens_details": {
+      "thinking_tokens": 13473
+    },
+    "server_tool_use": {
+      "web_search_requests": 0,
+      "web_fetch_requests": 0
+    },
+    "service_tier": "standard",
+    "cache_creation": {
+      "ephemeral_1h_input_tokens": 82203,
+      "ephemeral_5m_input_tokens": 0
+    },
+    "inference_geo": "global",
+    "iterations": [
+      {
+        "input_tokens": 2,
+        "output_tokens": 2173,
+        "cache_read_input_tokens": 67126,
+        "cache_creation_input_tokens": 13260,
+        "cache_creation": {
+          "ephemeral_5m_input_tokens": 0,
+          "ephemeral_1h_input_tokens": 13260
+        },
+        "type": "message"
+      }
+    ],
+    "speed": "standard",
+    "fallback_credit": null
+  },
+  "session_id": "559e0d22-1019-4068-ae7f-925e28b3140e",
+  "verdict_ok": true,
+  "verdict": {
+    "verdict": "pass",
+    "score": 85,
+    "findings": [
+      {
+        "severity": "minor",
+        "category": "error_handling",
+        "title": "One broken cache makes `nw worker gc` abort for every repo after it",
+        "detail": "Inside gc's per-repo loop, `_no_auto_maintenance(cache)` calls `_git(..., 'config', key, value)` with check=True. If that fails it raises WorkerError, which nothing catches. The CLI `nw worker gc` exits with a traceback, and the repos that sort after the broken one are never aged or pruned. The end-of-job `_cleanup` → `gc(cfg)` path catches the error but still skips the remaining repos. So a single damaged cache keeps every later cache from being bounded.",
+        "trigger": "`repos/<key>.git` has a HEAD but an unwritable or corrupt `config` (for example `git init --bare` killed hard, a full disk, or wrong permissions), and another repo key sorts after it.",
+        "files": [
+          "src/nightwright/agentic/worker.py"
+        ],
+        "lines": [
+          "src/nightwright/agentic/worker.py:208",
+          "src/nightwright/agentic/worker.py:731"
+        ]
+      },
+      {
+        "severity": "minor",
+        "category": "logic",
+        "title": "The base name is only fully checked after the fetch and have refs are written",
+        "detail": "BASE_RE plus the `..` check accept names that git's check-ref-format rejects: `main.lock`, `a//b`, a trailing `/`, `x/.y`, `@{`-free but invalid forms. `check-ref-format` only runs in `_checkout` after the bundle fetch, after `_set_have` and after the clone. The job then fails with stage `checkout` instead of `validate`, and by then it has already written the cache and the have refs. This is harmless today, but it breaks the 'nothing runs before validate passes' intent for this input.",
+        "trigger": "A header with `base.name` = `main.lock` or `feature/`.",
+        "files": [
+          "src/nightwright/agentic/worker.py"
+        ],
+        "lines": [
+          "src/nightwright/agentic/worker.py:55",
+          "src/nightwright/agentic/worker.py:476"
+        ]
+      },
+      {
+        "severity": "minor",
+        "category": "logic",
+        "title": "A signal between checkout and the slot stage gives `done` interrupted instead of an `error` with stage `signal`",
+        "detail": "Once `_checkout` returns, `state['stage']` stays `checkout` while the watcher thread starts. A signal in that window only records `stop.name` and sets `cancel`. No `stop.check()` runs before the stage changes to `slot`, so `acquire` returns an interrupted hold, and the job emits `accepted` followed by `done` interrupted and exits 0. The As-shipped notes say a pre-slot signal ends in `error` with stage `signal` and exit 3. The outcome is still a clean cancel, but the documented exit-code contract is not exact here.",
+        "trigger": "SIGTERM delivered right after `_checkout` returns and before `state['stage'] = 'slot'`.",
+        "files": [
+          "src/nightwright/agentic/worker.py"
+        ],
+        "lines": [
+          "src/nightwright/agentic/worker.py:609"
+        ]
+      },
+      {
+        "severity": "nit",
+        "category": "other",
+        "title": "`info().git_sha` can report an unrelated repo's HEAD",
+        "detail": "`git -C <installed package dir> rev-parse HEAD` runs with the caller's environment unscrubbed (it does not use `_git_env`), and git walks up parent directories looking for a repo. If GIT_DIR is set, or a parent directory of the install is a git repo (for example a dotfiles-tracked home directory), the reported `git_sha` belongs to that other repo.",
+        "trigger": "A worker user whose home directory is a git repo, with nightwright installed via `uv tool install` under `~/.local/share/uv/tools/...`.",
+        "files": [
+          "src/nightwright/agentic/worker.py"
+        ],
+        "lines": [
+          "src/nightwright/agentic/worker.py:770"
+        ]
+      },
+      {
+        "severity": "nit",
+        "category": "resource_leak",
+        "title": "The `job.lock` fd is never closed",
+        "detail": "`lock_fd` is opened and flocked in `gate_job`, and nothing ever closes it. Process exit releases it for the CLI. An in-process caller, such as the tests that call `gate_job` directly, keeps both the fd and the lock, so that job looks live to every later gc in the same process.",
+        "trigger": "Repeated in-process calls to `W.gate_job(...)`.",
+        "files": [
+          "src/nightwright/agentic/worker.py"
+        ],
+        "lines": [
+          "src/nightwright/agentic/worker.py:596"
+        ]
+      }
+    ],
+    "fix_brief": ""
+  },
+  "profile": "thorough",
+  "profile_sources": [
+    "builtin:thorough.yaml"
+  ],
+  "files": {
+    "prompt": "prompt.md",
+    "raw": "result.json",
+    "stderr": "stderr.log"
+  }
+}

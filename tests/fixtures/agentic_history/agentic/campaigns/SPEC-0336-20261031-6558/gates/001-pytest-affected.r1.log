@@ -1,0 +1,16 @@
+F                                                                        [100%]
+=================================== FAILURES ===================================
+_________________ test_reference_lists_every_top_level_command _________________
+
+    def test_reference_lists_every_top_level_command():
+        text = REF.read_text(encoding="utf-8")
+        assert "**Status:** stub" not in text
+        for name in _live_top_level_commands():
+>           assert f"`{name}`" in text, f"reference missing top-level command {name!r}"
+E           AssertionError: reference missing top-level command 'worker'
+E           assert '`worker`' in '# Command reference\n\nLive CLI is authoritative: `nw --help` and `nw <command> --help`. This page is a\n**curated in...nw report 2026-06-01      # that day\nnw report -w 2026-06-01   # week containing that date\nnw report --last 7\n```\n'
+
+tests/test_docs_product_reference.py:42: AssertionError
+=========================== short test summary info ============================
+FAILED tests/test_docs_product_reference.py::test_reference_lists_every_top_level_command
+1 failed in 0.66s

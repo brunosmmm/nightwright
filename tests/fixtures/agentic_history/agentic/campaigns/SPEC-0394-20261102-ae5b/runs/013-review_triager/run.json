@@ -1,0 +1,91 @@
+{
+  "schema": "nw.run.v1",
+  "campaign": "SPEC-0394-20261102-ae5b",
+  "run_id": "013-review_triager",
+  "persona": "review_triager",
+  "model": "sonnet",
+  "effort": "medium",
+  "max_budget_usd": 0.5,
+  "timeout_s": 2700,
+  "permission_mode": "dontAsk",
+  "started_at": "2026-11-03T20:59:09-05:00",
+  "duration_s": 9.119,
+  "exit_code": 0,
+  "timed_out": false,
+  "interrupted": false,
+  "is_error": false,
+  "cost_usd": 0.0881233,
+  "cost_estimated": false,
+  "usage": {
+    "input_tokens": 6,
+    "cache_creation_input_tokens": 18156,
+    "cache_read_input_tokens": 39673,
+    "output_tokens": 1152,
+    "output_tokens_details": {
+      "thinking_tokens": 232
+    },
+    "server_tool_use": {
+      "web_search_requests": 0,
+      "web_fetch_requests": 0
+    },
+    "service_tier": "standard",
+    "cache_creation": {
+      "ephemeral_1h_input_tokens": 18156,
+      "ephemeral_5m_input_tokens": 0
+    },
+    "inference_geo": "global",
+    "iterations": [
+      {
+        "input_tokens": 4,
+        "output_tokens": 487,
+        "cache_read_input_tokens": 28562,
+        "cache_creation_input_tokens": 705,
+        "cache_creation": {
+          "ephemeral_5m_input_tokens": 0,
+          "ephemeral_1h_input_tokens": 705
+        },
+        "type": "message"
+      }
+    ],
+    "speed": "standard",
+    "fallback_credit": null
+  },
+  "session_id": "24f984fa-a2ef-42f0-be2a-42e3f0926110",
+  "verdict_ok": true,
+  "verdict": {
+    "waive": [
+      {
+        "id": "test_reviewer#0",
+        "reason": "The diff does not edit the builtin tables, and existing registry tests pin them. The membership checks already cover the declared-name leak that AC9 cares about."
+      },
+      {
+        "id": "test_reviewer#1",
+        "reason": "Both validators share one helper, and the multi-fault file already covers every key through both. Extra parametrization would add little."
+      },
+      {
+        "id": "adversarial_reviewer#0",
+        "reason": "The reviewer says this has the same TOCTOU as the SPEC-0371 placeholder confinement. The hash is display-only for now, and any use of it for identity belongs to Pipeline A3."
+      },
+      {
+        "id": "conformance_reviewer#0",
+        "reason": "The deviation is documented in As shipped and pinned by a test. It gives the same answer with one registry scan. Where to put the predicate is a style choice."
+      },
+      {
+        "id": "test_reviewer#2",
+        "reason": "The spec explicitly makes AC9's not-touched check a manual `git diff --stat`. An automated test would be out of scope."
+      }
+    ],
+    "note": "I waived the five test-gap, TOCTOU and style findings. I kept adversarial_reviewer#1: the MODEL_RE trailing-newline hole is a real, cheap-to-fix validation defect (use fullmatch)."
+  },
+  "profile": "thorough",
+  "profile_sources": [
+    "builtin:thorough.yaml"
+  ],
+  "worker": null,
+  "files": {
+    "prompt": "prompt.md",
+    "raw": "result.json",
+    "stderr": "stderr.log",
+    "stream": "stream.jsonl"
+  }
+}

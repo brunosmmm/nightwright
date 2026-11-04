@@ -1,0 +1,76 @@
+{
+  "schema": "nw.run.v1",
+  "campaign": "SPEC-0394-20261102-ae5b",
+  "run_id": "009-gate_triager",
+  "persona": "gate_triager",
+  "model": "sonnet",
+  "effort": "high",
+  "max_budget_usd": 1.0,
+  "timeout_s": 2700,
+  "permission_mode": "dontAsk",
+  "started_at": "2026-11-03T20:41:36-05:00",
+  "duration_s": 7.464,
+  "exit_code": 0,
+  "timed_out": false,
+  "interrupted": false,
+  "is_error": false,
+  "cost_usd": 0.0974934,
+  "cost_estimated": false,
+  "usage": {
+    "input_tokens": 2,
+    "cache_creation_input_tokens": 22059,
+    "cache_read_input_tokens": 10034,
+    "output_tokens": 825,
+    "output_tokens_details": {
+      "thinking_tokens": 281
+    },
+    "server_tool_use": {
+      "web_search_requests": 0,
+      "web_fetch_requests": 0
+    },
+    "service_tier": "standard",
+    "cache_creation": {
+      "ephemeral_1h_input_tokens": 22059,
+      "ephemeral_5m_input_tokens": 0
+    },
+    "inference_geo": "global",
+    "iterations": [
+      {
+        "input_tokens": 2,
+        "output_tokens": 825,
+        "cache_read_input_tokens": 10034,
+        "cache_creation_input_tokens": 22059,
+        "cache_creation": {
+          "ephemeral_5m_input_tokens": 0,
+          "ephemeral_1h_input_tokens": 22059
+        },
+        "type": "message"
+      }
+    ],
+    "speed": "standard",
+    "fallback_credit": null
+  },
+  "session_id": "2070fedd-4925-47bc-bd31-345b4abd4b40",
+  "verdict_ok": true,
+  "verdict": {
+    "disposition": "retry_gate",
+    "confidence": "medium",
+    "suspected_flaky": true,
+    "fix_brief": "No code change needed. The failure is unrelated to SPEC-0394, which only touches personas, persona_registry, persona_defs, CLI personas and docs. The log shows tests/test_herdr_autowatch.py::test_manual_watcher_is_not_doubled_nor_killed failing with ProcessLookupError in the test's own `finally` cleanup: `os.kill(pid, SIGKILL)` on a watcher pid that had already exited. That is a process-lifetime race in the test teardown, not an assertion about the change. The summary line names a different test, tests/test_agentic_exit_paths.py::test_handler_only_sets_stop, and says it passed on a targeted rerun. Both are process/timing tests under -n 2 load. Retry the gate once. If the same test fails again deterministically, re-triage.",
+    "followup_ideas": [
+      "tests/test_herdr_autowatch.py cleanup loop should tolerate ProcessLookupError when killing already-exited watcher pids",
+      "Gate summary reported a failing id (test_agentic_exit_paths::test_handler_only_sets_stop) that differs from the failure in the log (test_herdr_autowatch); check the gate result parser"
+    ]
+  },
+  "profile": "thorough",
+  "profile_sources": [
+    "builtin:thorough.yaml"
+  ],
+  "worker": null,
+  "files": {
+    "prompt": "prompt.md",
+    "raw": "result.json",
+    "stderr": "stderr.log",
+    "stream": "stream.jsonl"
+  }
+}

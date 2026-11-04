@@ -1,0 +1,26 @@
+{
+  "schema": "nw.gate.v1",
+  "name": "pytest-affected",
+  "cmd": "uv run pytest -q -n 0 tests/test_docs_product_reference.py::test_reference_lists_every_top_level_command",
+  "cwd": "/home/user/work/.nw-worktrees/Meta-Tools/SPEC-0336-20261031-6558",
+  "required": true,
+  "ok": false,
+  "exit_code": 1,
+  "timed_out": false,
+  "timeout_s": 2400,
+  "started_at": "2026-10-31T21:04:37-04:00",
+  "duration_s": 1.471,
+  "log": "001-pytest-affected.r1.log",
+  "error": null,
+  "summary": {
+    "format": "pytest",
+    "passed": 0,
+    "failed": 1,
+    "errors": 0,
+    "skipped": 0,
+    "failing": [
+      "tests/test_docs_product_reference.py::test_reference_lists_every_top_level_command"
+    ]
+  },
+  "attempt": 1
+}

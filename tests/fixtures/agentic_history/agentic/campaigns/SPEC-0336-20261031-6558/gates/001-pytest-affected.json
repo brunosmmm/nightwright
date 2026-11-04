@@ -1,0 +1,53 @@
+{
+  "schema": "nw.gate.v1",
+  "name": "pytest-affected",
+  "cmd": "if [ -f tools/affected_tests.py ]; then python3 tools/affected_tests.py --include tests/test_agentic_dogfood_config.py --include tests/test_agentic_project.py --run uv run pytest -q -x -n 2; else uv run pytest -q -x -n 2; fi",
+  "cwd": "/home/user/work/.nw-worktrees/Meta-Tools/SPEC-0336-20261031-6558",
+  "required": true,
+  "ok": false,
+  "exit_code": 2,
+  "timed_out": false,
+  "timeout_s": 2400,
+  "started_at": "2026-10-31T20:53:10-04:00",
+  "duration_s": 688.493,
+  "log": "001-pytest-affected.log",
+  "error": null,
+  "summary": {
+    "format": "pytest",
+    "passed": 2715,
+    "failed": 1,
+    "errors": 0,
+    "skipped": 2,
+    "failing": [
+      "tests/test_docs_product_reference.py::test_reference_lists_every_top_level_command"
+    ]
+  },
+  "attempts": [
+    {
+      "attempt": 0,
+      "kind": "full",
+      "ok": false,
+      "exit_code": 2,
+      "timed_out": false,
+      "interrupted": false,
+      "duration_s": 687.022,
+      "log": "gates/001-pytest-affected.log",
+      "failing": [
+        "tests/test_docs_product_reference.py::test_reference_lists_every_top_level_command"
+      ]
+    },
+    {
+      "attempt": 1,
+      "kind": "targeted",
+      "ok": false,
+      "exit_code": 1,
+      "timed_out": false,
+      "interrupted": false,
+      "duration_s": 1.471,
+      "log": "gates/001-pytest-affected.r1.log",
+      "failing": [
+        "tests/test_docs_product_reference.py::test_reference_lists_every_top_level_command"
+      ]
+    }
+  ]
+}

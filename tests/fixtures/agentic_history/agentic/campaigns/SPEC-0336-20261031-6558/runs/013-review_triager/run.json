@@ -1,0 +1,97 @@
+{
+  "schema": "nw.run.v1",
+  "campaign": "SPEC-0336-20261031-6558",
+  "run_id": "013-review_triager",
+  "persona": "review_triager",
+  "model": "sonnet",
+  "effort": "medium",
+  "max_budget_usd": 0.5,
+  "timeout_s": 2700,
+  "permission_mode": "dontAsk",
+  "started_at": "2026-10-31T22:30:32-04:00",
+  "duration_s": 12.597,
+  "exit_code": 0,
+  "timed_out": false,
+  "interrupted": false,
+  "is_error": false,
+  "cost_usd": 0.11626710000000001,
+  "cost_estimated": false,
+  "usage": {
+    "input_tokens": 6,
+    "cache_creation_input_tokens": 24439,
+    "cache_read_input_tokens": 35491,
+    "output_tokens": 1495,
+    "output_tokens_details": {
+      "thinking_tokens": 0
+    },
+    "server_tool_use": {
+      "web_search_requests": 0,
+      "web_fetch_requests": 0
+    },
+    "service_tier": "standard",
+    "cache_creation": {
+      "ephemeral_1h_input_tokens": 24439,
+      "ephemeral_5m_input_tokens": 0
+    },
+    "inference_geo": "global",
+    "iterations": [
+      {
+        "input_tokens": 4,
+        "output_tokens": 502,
+        "cache_read_input_tokens": 25677,
+        "cache_creation_input_tokens": 4804,
+        "cache_creation": {
+          "ephemeral_5m_input_tokens": 0,
+          "ephemeral_1h_input_tokens": 4804
+        },
+        "type": "message"
+      }
+    ],
+    "speed": "standard",
+    "fallback_credit": null
+  },
+  "session_id": "45ae3b5c-5eea-4b3e-8501-0eb413b21323",
+  "verdict_ok": true,
+  "verdict": {
+    "waive": [
+      {
+        "id": "conformance_reviewer#0",
+        "reason": "Deviation is intentional, justified and documented in As shipped; CPU budget still shared. Not a code defect."
+      },
+      {
+        "id": "conformance_reviewer#1",
+        "reason": "Ref refresh in have is intentional and documented in As shipped; spec-text tweak only."
+      },
+      {
+        "id": "test_reviewer#0",
+        "reason": "Test plan explicitly allows manual verification of the docs section."
+      },
+      {
+        "id": "test_reviewer#1",
+        "reason": "Coverage gap for SIGHUP only; SIGTERM and SIGINT share the same handler and are tested."
+      },
+      {
+        "id": "test_reviewer#3",
+        "reason": "Test already satisfies the AC; value-type checks are optional polish."
+      },
+      {
+        "id": "adversarial_reviewer#2",
+        "reason": "info.git_sha is informational; only affects an unusual setup where the worker home is a git repo."
+      },
+      {
+        "id": "adversarial_reviewer#3",
+        "reason": "NaN would come from the trusted coordinator's own header; negligible impact."
+      }
+    ],
+    "note": "Waived the doc-only, coverage-polish and negligible-edge findings, and kept the signal-handler lock/stale-ref bugs and the slot-count test fragility as real defects. I did not check any of this against the code, so these calls come from the findings' own descriptions."
+  },
+  "profile": "thorough",
+  "profile_sources": [
+    "builtin:thorough.yaml"
+  ],
+  "files": {
+    "prompt": "prompt.md",
+    "raw": "result.json",
+    "stderr": "stderr.log"
+  }
+}

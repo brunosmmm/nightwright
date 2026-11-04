@@ -1,0 +1,48 @@
+{
+  "schema": "wt.campaign.v1",
+  "id": "SPEC-0218-20261025-0131",
+  "kind": "implement",
+  "spec_id": "SPEC-0218",
+  "project": "Meta-Tools",
+  "profile": "balanced",
+  "state": "ABANDONED",
+  "prev_state": "QUEUED",
+  "created_at": "2026-10-25T17:16:00-04:00",
+  "priority": 3,
+  "force": false,
+  "backlog": null,
+  "repo": {
+    "root": "/home/user/work/nightwright",
+    "base": "main",
+    "base_sha_at_open": null,
+    "branch": "wt/SPEC-0218-20261025-0131",
+    "worktree": "/home/user/work/.nw-worktrees/Meta-Tools/SPEC-0218-20261025-0131",
+    "head": null
+  },
+  "spec": {
+    "rel_path": "docs/specs/0218-agentic-workflow-docs-refresh.md",
+    "internal": true,
+    "sha256_at_open": null
+  },
+  "counters": {
+    "loops": 0,
+    "runs": 0,
+    "gate_runs": 0,
+    "gate_retries": 0,
+    "triage_retries": 0,
+    "blocked_streak": 0,
+    "close_attempts": 0,
+    "parks": 0
+  },
+  "cost": {
+    "total_usd": 0.0,
+    "cap_usd": 10.0,
+    "by_persona": {}
+  },
+  "last_gate": null,
+  "last_verdict": null,
+  "pending_brief": null,
+  "park": null,
+  "close": null,
+  "updated_at": "2026-10-25T17:26:08-04:00"
+}

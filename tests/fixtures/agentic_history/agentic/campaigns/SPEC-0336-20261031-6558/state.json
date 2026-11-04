@@ -1,0 +1,1301 @@
+{
+  "schema": "nw.campaign.v1",
+  "id": "SPEC-0336-20261031-6558",
+  "kind": "implement",
+  "spec_id": "SPEC-0336",
+  "project": "Meta-Tools",
+  "profile": "thorough",
+  "state": "MERGED",
+  "prev_state": "CLOSING",
+  "created_at": "2026-10-31T20:39:15-04:00",
+  "priority": 3,
+  "force": false,
+  "backlog": {
+    "ready": true,
+    "blocked_by": [],
+    "since": "2026-10-31T20:39:27-04:00"
+  },
+  "profile_sources": [
+    "builtin:thorough.yaml"
+  ],
+  "repo": {
+    "root": "/home/user/work/nightwright",
+    "base": "main",
+    "base_sha_at_open": "1245b1ad7ad1f9adf59fa8ec7df8c5a8ebf2ce63",
+    "branch": "nw/SPEC-0336-20261031-6558",
+    "worktree": "/home/user/work/.nw-worktrees/Meta-Tools/SPEC-0336-20261031-6558",
+    "head": "fd9a259bfed51c0589b3c99900c6505c4d17b5a4"
+  },
+  "spec": {
+    "rel_path": "docs/specs/0336-gate-worker-job-runner-and-forced-command.md",
+    "internal": true,
+    "sha256_at_open": "e3749a9e1c44d00d200c1bf3765730a48ef5cbe74daf355de78af985e31db4fd"
+  },
+  "counters": {
+    "loops": 4,
+    "runs": 36,
+    "gate_runs": 10,
+    "gate_retries": 0,
+    "timeout_regates": 0,
+    "triage_retries": 0,
+    "blocked_streak": 0,
+    "close_attempts": 1,
+    "parks": 3,
+    "review_retries": 0
+  },
+  "cost": {
+    "total_usd": 32.142,
+    "cap_usd": 40.0,
+    "by_persona": {
+      "implementer": 13.5535,
+      "gate_triager": 0.2807,
+      "conformance_reviewer": 4.6386,
+      "test_reviewer": 4.6971,
+      "adversarial_reviewer": 8.5593,
+      "review_triager": 0.4128
+    }
+  },
+  "last_gate": {
+    "gate_seq": 10,
+    "ok": true,
+    "started_at": "2026-11-01T06:59:36-05:00",
+    "duration_s": 381.097,
+    "slot_wait_s": 0.0,
+    "results": [
+      {
+        "name": "spec-lint",
+        "required": true,
+        "ok": true,
+        "exit_code": 0,
+        "timed_out": false,
+        "duration_s": 3.668,
+        "log": "gates/010-spec-lint.log",
+        "tail": "✓ 332 spec(s) OK: SPEC-0000, SPEC-0001, SPEC-0002, SPEC-0003, SPEC-0004, SPEC-0005, SPEC-0006, SPEC-0007, SPEC-0008, SPEC-0009, SPEC-0010, SPEC-0011, SPEC-0012, SPEC-0013, SPEC-0014, SPEC-0015, SPEC-0016, SPEC-0017, SPEC-0018, SPEC-0019, SPEC-0020, SPEC-0021, SPEC-0022, SPEC-0023, SPEC-0024, SPEC-0025, SPEC-0026, SPEC-0027, SPEC-0028, SPEC-0029, SPEC-0030, SPEC-0031, SPEC-0032, SPEC-0033, SPEC-0034, SPEC-0035, SPEC-0036, SPEC-0037, SPEC-0038, SPEC-0039, SPEC-0040, SPEC-0041, SPEC-0042, SPEC-0043, SPEC-0044, SPEC-0045, SPEC-0046, SPEC-0047, SPEC-0048, SPEC-0049, SPEC-0050, SPEC-0051, SPEC-0052, SPEC-0053, SPEC-0054, SPEC-0055, SPEC-0056, SPEC-0057, SPEC-0058, SPEC-0059, SPEC-0060, SPEC-0061, SPEC-0062, SPEC-0063, SPEC-0064, SPEC-0065, SPEC-0066, SPEC-0067, SPEC-0068, SPEC-0069, SPEC-0070, SPEC-0071, SPEC-0072, SPEC-0073, SPEC-0074, SPEC-0075, SPEC-0076, SPEC-0077, SPEC-0078, SPEC-0079, SPEC-0080, SPEC-0081, SPEC-0082, SPEC-0083, SPEC-0084, SPEC-0085, SPEC-0086, SPEC-0087, SPEC-0088, SPEC-0089, SPEC-0090, SPEC-0091, SPEC-0092, SPEC-0093, SPEC-0094, SPEC-0095, SPEC-0096, SPEC-0097, SPEC-0098, SPEC-0099, SPEC-0100, SPEC-0101, SPEC-0102, SPEC-0103, SPEC-0104, SPEC-0105, SPEC-0106, SPEC-0107, SPEC-0108, SPEC-0109, SPEC-0110, SPEC-0111, SPEC-0112, SPEC-0113, SPEC-0114, SPEC-0115, SPEC-0116, SPEC-0117, SPEC-0118, SPEC-0119, SPEC-0120, SPEC-0121, SPEC-0122, SPEC-0123, SPEC-0124, SPEC-0125, SPEC-0126, SPEC-0127, SPEC-0128, SPEC-0129, SPEC-0130, SPEC-0131, SPEC-0132, SPEC-0133, SPEC-0134, SPEC-0135, SPEC-0136, SPEC-0137, SPEC-0138, SPEC-0139, SPEC-0140, SPEC-0141, SPEC-0142, SPEC-0143, SPEC-0144, SPEC-0145, SPEC-0146, SPEC-0147, SPEC-0148, SPEC-0149, SPEC-0150, SPEC-0151, SPEC-0152, SPEC-0153, SPEC-0154, SPEC-0155, SPEC-0156, SPEC-0157, SPEC-0158, SPEC-0159, SPEC-0160, SPEC-0161, SPEC-0162, SPEC-0163, SPEC-0164, SPEC-0165, SPEC-0166, SPEC-0167, SPEC-0168, SPEC-0169, SPEC-0170, SPEC-0171, SPEC-0172, SPEC-0173, SPEC-0174, SPEC-0175, SPEC-0176, SPEC-0177, SPEC-0178, SPEC-0179, SPEC-0180, SPEC-0181, SPEC-0182, SPEC-0183, SPEC-0184, SPEC-0185, SPEC-0186, SPEC-0187, SPEC-0188, SPEC-0189, SPEC-0190, SPEC-0191, SPEC-0192, SPEC-0193, SPEC-0194, SPEC-0195, SPEC-0196, SPEC-0197, SPEC-0198, SPEC-0199, SPEC-0200, SPEC-0201, SPEC-0202, SPEC-0203, SPEC-0204, SPEC-0205, SPEC-0206, SPEC-0207, SPEC-0208, SPEC-0209, SPEC-0210, SPEC-0211, SPEC-0212, SPEC-0213, SPEC-0214, SPEC-0215, SPEC-0217, SPEC-0218, SPEC-0219, SPEC-0220, SPEC-0221, SPEC-0222, SPEC-0223, SPEC-0224, SPEC-0225, SPEC-0226, SPEC-0227, SPEC-0228, SPEC-0229, SPEC-0230, SPEC-0231, SPEC-0232, SPEC-0233, SPEC-0234, SPEC-0235, SPEC-0236, SPEC-0237, SPEC-0238, SPEC-0239, SPEC-0241, SPEC-0242, SPEC-0243, SPEC-0244, SPEC-0246, SPEC-0247, SPEC-0248, SPEC-0249, SPEC-0250, SPEC-0251, SPEC-0252, SPEC-0253, SPEC-0254, SPEC-0255, SPEC-0256, SPEC-0257, SPEC-0258, SPEC-0259, SPEC-0260, SPEC-0261, SPEC-0262, SPEC-0263, SPEC-0264, SPEC-0265, SPEC-0266, SPEC-0267, SPEC-0268, SPEC-0269, SPEC-0270, SPEC-0271, SPEC-0272, SPEC-0273, SPEC-0274, SPEC-0275, SPEC-0276, SPEC-0277, SPEC-0278, SPEC-0279, SPEC-0280, SPEC-0281, SPEC-0282, SPEC-0283, SPEC-0284, SPEC-0285, SPEC-0286, SPEC-0287, SPEC-0288, SPEC-0289, SPEC-0290, SPEC-0291, SPEC-0292, SPEC-0293, SPEC-0294, SPEC-0295, SPEC-0297, SPEC-0298, SPEC-0299, SPEC-0300, SPEC-0301, SPEC-0302, SPEC-0303, SPEC-0304, SPEC-0305, SPEC-0306, SPEC-0307, SPEC-0308, SPEC-0309, SPEC-0310, SPEC-0311, SPEC-0312, SPEC-0313, SPEC-0314, SPEC-0315, SPEC-0316, SPEC-0317, SPEC-0318, SPEC-0319, SPEC-0320, SPEC-0323, SPEC-0325, SPEC-0326, SPEC-0327, SPEC-0328, SPEC-0329, SPEC-0330, SPEC-0331, SPEC-0332, SPEC-0333, SPEC-0334, SPEC-0335, SPEC-0336, SPEC-0337, SPEC-0338",
+        "cmd": "python3 tools/spec_lint.py --write-ledger >/dev/null && python3 tools/spec_lint.py",
+        "cwd": "/home/user/work/.nw-worktrees/Meta-Tools/SPEC-0336-20261031-6558"
+      },
+      {
+        "name": "pytest",
+        "required": true,
+        "ok": true,
+        "exit_code": 0,
+        "timed_out": false,
+        "duration_s": 371.624,
+        "log": "gates/010-pytest.log",
+        "tail": "........................................................................ [ 47%]\n........................................................................ [ 49%]\n........................................................................ [ 50%]\n........................................................................ [ 52%]\n........................................................................ [ 53%]\n........................................................................ [ 55%]\n........................................................................ [ 56%]\n........................................................................ [ 58%]\n........................................................................ [ 60%]\n........................................................................ [ 61%]\n........................................................................ [ 63%]\n........................................................................ [ 64%]\n........................................................................ [ 66%]\n........................................................................ [ 67%]\n........................................................................ [ 69%]\ns....................................................................... [ 70%]\n........................................................................ [ 72%]\n........................................................................ [ 73%]\n........................................................................ [ 75%]\n........................................................................ [ 77%]\n........................................................................ [ 78%]\n........................................................................ [ 80%]\n........................................................................ [ 81%]\n........................................................................ [ 83%]\n........................................................................ [ 84%]\n........................................................................ [ 86%]\n........................................................................ [ 87%]\n........................................................................ [ 89%]\n........................................................................ [ 90%]\n........................................................................ [ 92%]\n........................................................................ [ 93%]\n........................................................................ [ 95%]\n........................................................................ [ 97%]\n........................................................................ [ 98%]\n..................................................................       [100%]\n=============================== warnings summary ===============================\ntests/test_org_write_race.py::test_concurrent_processes_lose_nothing_and_never_reuse_an_id\ntests/test_org_write_race.py::test_concurrent_processes_lose_nothing_and_never_reuse_an_id\ntests/test_org_write_race.py::test_concurrent_processes_lose_nothing_and_never_reuse_an_id\ntests/test_org_write_race.py::test_concurrent_processes_lose_nothing_and_never_reuse_an_id\ntests/test_org_write_race.py::test_concurrent_processes_lose_nothing_and_never_reuse_an_id\ntests/test_org_write_race.py::test_concurrent_processes_lose_nothing_and_never_reuse_an_id\ntests/test_org_write_race.py::test_concurrent_processes_lose_nothing_and_never_reuse_an_id\ntests/test_org_write_race.py::test_concurrent_processes_lose_nothing_and_never_reuse_an_id\n  /usr/lib64/python3.14/multiprocessing/popen_fork.py:76: DeprecationWarning: This process (pid=910027) is multi-threaded, use of fork() may lead to deadlocks in the child.\n    self.pid = os.fork()\n\ntests/test_spec_numbers.py: 13 warnings\n  /usr/lib64/python3.14/multiprocessing/popen_fork.py:76: DeprecationWarning: This process (pid=910040) is multi-threaded, use of fork() may lead to deadlocks in the child.\n    self.pid = os.fork()\n\ntests/test_tui_real_terminal.py::test_tree_mode_renders_real_nesting_in_a_real_terminal\ntests/test_tui_real_terminal.py::test_tree_mode_renders_real_nesting_in_a_real_terminal\ntests/test_tui_real_terminal.py::test_tree_mode_renders_real_nesting_in_a_real_terminal\ntests/test_tui_real_terminal.py::test_tree_is_not_monochrome\n  /usr/lib64/python3.14/pty.py:66: DeprecationWarning: This process (pid=910027) is multi-threaded, use of forkpty() may lead to deadlocks in the child.\n    pid, fd = os.forkpty()\n\n-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html\n4671 passed, 3 skipped, 25 warnings in 371.00s (0:06:11)",
+        "cmd": "uv run pytest -q -x -n 4",
+        "cwd": "/home/user/work/.nw-worktrees/Meta-Tools/SPEC-0336-20261031-6558",
+        "summary": {
+          "format": "pytest",
+          "passed": 4671,
+          "failed": 0,
+          "errors": 0,
+          "skipped": 3,
+          "failing": []
+        }
+      }
+    ]
+  },
+  "last_verdict": {
+    "persona": "adversarial_reviewer",
+    "run": "035-adversarial_reviewer",
+    "verdict": {
+      "verdict": "pass",
+      "score": 84,
+      "findings": [
+        {
+          "severity": "minor",
+          "category": "error_handling",
+          "title": "After a cancel, a frame write gives up after one 0.5 s unwritable select, leaving a half-written line and no `done`",
+          "detail": "In `_Frames._write_fd`, once `cancel` is set (stdin EOF or a signal), the first `select` that times out after 0.5 s sets `closed=True` and returns. A frame that was partly written in PIPE_BUF pieces stays on stdout as a truncated JSON line. Every later frame, including the `done` with `interrupted: true` that the spec says is sent \"if it can\", is then dropped, even though the coordinator is still reading. The process still exits 0, so the coordinator gets exit 0 with a broken last line and no `done`. That contradicts \"gate-job never exits without one of the two frames unless stdout is closed\".",
+          "trigger": "The coordinator cancels by closing stdin (or SIGTERM arrives) while a multi-MiB `gate` frame is being written, and the coordinator's read side pauses for more than 0.5 s, for example a full SSH channel window on a slow link.",
+          "files": [
+            "src/nightwright/agentic/worker.py"
+          ],
+          "lines": [
+            "src/nightwright/agentic/worker.py:351"
+          ]
+        },
+        {
+          "severity": "minor",
+          "category": "concurrency",
+          "title": "A pre-slot signal does not interrupt a wait on the repo flock",
+          "detail": "Before the slot stage the signal handler only records the signal unless the job is blocked reading stdin. `fcntl.flock(LOCK_EX)` in `repo_lock` is retried after EINTR (PEP 475), so a job waiting for the repo lock ignores SIGTERM/SIGHUP until the holder releases it. The holder may be another job's slow fetch or a `git gc --prune=now` on a big cache, so the job can outlive the connection by minutes.",
+          "trigger": "Job A's checkout waits on `repos/<key>.lock` while gc prunes a large cache, and sshd or the coordinator sends SIGTERM/SIGHUP to job A.",
+          "files": [
+            "src/nightwright/agentic/worker.py"
+          ],
+          "lines": [
+            "src/nightwright/agentic/worker.py:112",
+            "src/nightwright/agentic/worker.py:479"
+          ]
+        },
+        {
+          "severity": "minor",
+          "category": "error_handling",
+          "title": "`nw worker have` turns a git failure into a traceback",
+          "detail": "`have()` calls `_set_have`, which uses `_git(..., check=True)`. A failing `update-ref` (disk full, an unwritable ref) raises `WorkerError`, but `worker_have` only catches `ValueError`. Over SSH the coordinator gets a Python traceback on stderr and exit 1, not a clean error.",
+          "trigger": "`update-ref refs/nw/have/<sha>` fails in the cache during `nw worker have --repo K <sha>`.",
+          "files": [
+            "src/nightwright/agentic/worker.py",
+            "src/nightwright/agentic/cli_worker.py"
+          ],
+          "lines": [
+            "src/nightwright/agentic/cli_worker.py:47"
+          ]
+        },
+        {
+          "severity": "nit",
+          "category": "other",
+          "title": "`info.git_sha` can report an unrelated repository",
+          "detail": "`git -C <site-packages>/nightwright rev-parse HEAD` searches up the directory tree. In a `uv tool install` under a home directory that is itself a git repo (dotfiles), it reports that repo's HEAD as nightwright's `git_sha`.",
+          "trigger": "The worker user's home or one of its parent directories is a git work tree.",
+          "files": [
+            "src/nightwright/agentic/worker.py"
+          ],
+          "lines": [
+            "src/nightwright/agentic/worker.py:893"
+          ]
+        }
+      ],
+      "fix_brief": ""
+    },
+    "verdict_ok": true
+  },
+  "pending_brief": {
+    "source": "review",
+    "fix_brief": "Review score 87 is below the pass score 90; address the highest-weight findings first.\n- [minor] After a cancel, a frame write gives up after one 0.5 s unwritable select, leaving a half-written line and no `done` (src/nightwright/agentic/worker.py): In `_Frames._write_fd`, once `cancel` is set (stdin EOF or a signal), the first `select` that times out after 0.5 s sets `closed=True` and returns. A frame that was partly written in PIPE_BUF pieces stays on stdout as a truncated JSON line. Every later frame, including the `done` with `interrupted: true` that the spec says is sent \"if it can\", is then dropped, even though the coordinator is still reading. The process still exits 0, so the coordinator gets exit 0 with a broken last line and no `done`. That contradicts \"gate-job never exits without one of the two frames unless stdout is closed\".\ntrigger: The coordinator cancels by closing stdin (or SIGTERM arrives) while a multi-MiB `gate` frame is being written, and the coordinator's read side pauses for more than 0.5 s, for example a full SSH channel window on a slow link.\n- [minor] A pre-slot signal does not interrupt a wait on the repo flock (src/nightwright/agentic/worker.py): Before the slot stage the signal handler only records the signal unless the job is blocked reading stdin. `fcntl.flock(LOCK_EX)` in `repo_lock` is retried after EINTR (PEP 475), so a job waiting for the repo lock ignores SIGTERM/SIGHUP until the holder releases it. The holder may be another job's slow fetch or a `git gc --prune=now` on a big cache, so the job can outlive the connection by minutes.\ntrigger: Job A's checkout waits on `repos/<key>.lock` while gc prunes a large cache, and sshd or the coordinator sends SIGTERM/SIGHUP to job A.\n- [minor] `nw worker have` turns a git failure into a traceback (src/nightwright/agentic/worker.py, src/nightwright/agentic/cli_worker.py): `have()` calls `_set_have`, which uses `_git(..., check=True)`. A failing `update-ref` (disk full, an unwritable ref) raises `WorkerError`, but `worker_have` only catches `ValueError`. Over SSH the coordinator gets a Python traceback on stderr and exit 1, not a clean error.\ntrigger: `update-ref refs/nw/have/<sha>` fails in the cache during `nw worker have --repo K <sha>`.\n- [nit] NW_CONFIG_DIR is set to an empty string when cfg has no config_dir (src/nightwright/agentic/worker.py): _run_gates sets NW_CONFIG_DIR to str(cfg.get('config_dir') or ''). A gate would then see NW_CONFIG_DIR='' instead of the variable being unset, and that could make tools that read it look at the cwd.\nFix: Add NW_CONFIG_DIR to env only when cfg.get('config_dir') is truthy.\nDone when: With no config_dir in cfg, a gate running `env` prints no NW_CONFIG_DIR= line.",
+    "must_fix": [
+      {
+        "ac": null,
+        "title": "After a cancel, a frame write gives up after one 0.5 s unwritable select, leaving a half-written line and no `done`",
+        "detail": "In `_Frames._write_fd`, once `cancel` is set (stdin EOF or a signal), the first `select` that times out after 0.5 s sets `closed=True` and returns. A frame that was partly written in PIPE_BUF pieces stays on stdout as a truncated JSON line. Every later frame, including the `done` with `interrupted: true` that the spec says is sent \"if it can\", is then dropped, even though the coordinator is still reading. The process still exits 0, so the coordinator gets exit 0 with a broken last line and no `done`. That contradicts \"gate-job never exits without one of the two frames unless stdout is closed\".\ntrigger: The coordinator cancels by closing stdin (or SIGTERM arrives) while a multi-MiB `gate` frame is being written, and the coordinator's read side pauses for more than 0.5 s, for example a full SSH channel window on a slow link.",
+        "files": [
+          "src/nightwright/agentic/worker.py"
+        ],
+        "id": "adversarial_reviewer#0",
+        "severity": "minor",
+        "personas": [
+          "adversarial_reviewer"
+        ],
+        "category": "error_handling"
+      },
+      {
+        "ac": null,
+        "title": "A pre-slot signal does not interrupt a wait on the repo flock",
+        "detail": "Before the slot stage the signal handler only records the signal unless the job is blocked reading stdin. `fcntl.flock(LOCK_EX)` in `repo_lock` is retried after EINTR (PEP 475), so a job waiting for the repo lock ignores SIGTERM/SIGHUP until the holder releases it. The holder may be another job's slow fetch or a `git gc --prune=now` on a big cache, so the job can outlive the connection by minutes.\ntrigger: Job A's checkout waits on `repos/<key>.lock` while gc prunes a large cache, and sshd or the coordinator sends SIGTERM/SIGHUP to job A.",
+        "files": [
+          "src/nightwright/agentic/worker.py"
+        ],
+        "id": "adversarial_reviewer#1",
+        "severity": "minor",
+        "personas": [
+          "adversarial_reviewer"
+        ],
+        "category": "concurrency"
+      },
+      {
+        "ac": null,
+        "title": "`nw worker have` turns a git failure into a traceback",
+        "detail": "`have()` calls `_set_have`, which uses `_git(..., check=True)`. A failing `update-ref` (disk full, an unwritable ref) raises `WorkerError`, but `worker_have` only catches `ValueError`. Over SSH the coordinator gets a Python traceback on stderr and exit 1, not a clean error.\ntrigger: `update-ref refs/nw/have/<sha>` fails in the cache during `nw worker have --repo K <sha>`.",
+        "files": [
+          "src/nightwright/agentic/worker.py",
+          "src/nightwright/agentic/cli_worker.py"
+        ],
+        "id": "adversarial_reviewer#2",
+        "severity": "minor",
+        "personas": [
+          "adversarial_reviewer"
+        ],
+        "category": "error_handling"
+      },
+      {
+        "ac": null,
+        "title": "NW_CONFIG_DIR is set to an empty string when cfg has no config_dir",
+        "detail": "_run_gates sets NW_CONFIG_DIR to str(cfg.get('config_dir') or ''). A gate would then see NW_CONFIG_DIR='' instead of the variable being unset, and that could make tools that read it look at the cwd.\nFix: Add NW_CONFIG_DIR to env only when cfg.get('config_dir') is truthy.\nDone when: With no config_dir in cfg, a gate running `env` prints no NW_CONFIG_DIR= line.",
+        "files": [
+          "src/nightwright/agentic/worker.py"
+        ],
+        "id": "conformance_reviewer#1",
+        "severity": "nit",
+        "personas": [
+          "conformance_reviewer"
+        ]
+      }
+    ],
+    "human_notes": [
+      "Close as-is; remaining review findings are waived and tracked in IDEA-601. Do not run more fix loops."
+    ],
+    "personas": [
+      "conformance_reviewer",
+      "adversarial_reviewer"
+    ]
+  },
+  "park": null,
+  "close": {
+    "mode": "merge",
+    "merged_sha": "fa9803aab7359b279590995a7a23386a71bbc2b7",
+    "pr_url": null,
+    "gates_seq": 10,
+    "target_sha": "1dd678ab05f75077663ae82aa4e548f80754b4c7",
+    "followups": {
+      "filed": [
+        {
+          "severity": "minor",
+          "title": "Extra hardening beyond the spec (signal handling, stale git lock clearing, jobs.lock)",
+          "idea_id": "IDEA-602",
+          "origin": "advisory"
+        },
+        {
+          "severity": "minor",
+          "title": "Gate processes inherit the job's stdin (the SSH channel), not /dev/null",
+          "idea_id": "IDEA-602",
+          "origin": "advisory"
+        },
+        {
+          "severity": "minor",
+          "title": "Plain (non-JSON) `nw worker info` output is untested",
+          "idea_id": "IDEA-602",
+          "origin": "advisory"
+        },
+        {
+          "severity": "minor",
+          "title": "The concurrent-jobs gate busy-polls with `sleep 0.1` in shell",
+          "idea_id": "IDEA-602",
+          "origin": "advisory"
+        },
+        {
+          "severity": "minor",
+          "title": "`gc` reports a repo as pruned even when `git gc --prune=now` failed",
+          "idea_id": "IDEA-602",
+          "origin": "advisory"
+        },
+        {
+          "severity": "minor",
+          "title": "ssh-command is only tested in-process, never through the click command",
+          "idea_id": "IDEA-602",
+          "origin": "advisory"
+        },
+        {
+          "severity": "minor",
+          "title": "Refusal exit code is only tested on the function, not through the CLI",
+          "idea_id": "IDEA-602",
+          "origin": "waived"
+        },
+        {
+          "severity": "minor",
+          "title": "SIGHUP cancel is not tested",
+          "idea_id": "IDEA-602",
+          "origin": "waived"
+        },
+        {
+          "severity": "minor",
+          "title": "Scope beyond the spec is documented but not small",
+          "idea_id": "IDEA-602",
+          "origin": "waived"
+        },
+        {
+          "severity": "minor",
+          "title": "Several tests depend on real-time waits and subprocess timing",
+          "idea_id": "IDEA-602",
+          "origin": "waived"
+        }
+      ],
+      "unfiled": [],
+      "waived": [
+        {
+          "severity": "minor",
+          "title": "Worker slot is taken as `remote:<campaign>` rather than the job's campaign",
+          "waive_reason": "Deviation is intentional, justified and documented in As shipped; CPU budget still shared. Not a code defect."
+        },
+        {
+          "severity": "minor",
+          "title": "`nw worker have` writes refs and have.json, beyond 'prints the given shas present'",
+          "waive_reason": "Ref refresh in have is intentional and documented in As shipped; spec-text tweak only."
+        },
+        {
+          "severity": "minor",
+          "title": "WORKFLOW.md section is checked only by hand",
+          "waive_reason": "Test plan explicitly allows manual verification of the docs section."
+        },
+        {
+          "severity": "minor",
+          "title": "SIGHUP cancel is not tested",
+          "waive_reason": "Coverage gap for SIGHUP only; SIGTERM and SIGINT share the same handler and are tested."
+        },
+        {
+          "severity": "nit",
+          "title": "info test checks key names, not value types",
+          "waive_reason": "Test already satisfies the AC; value-type checks are optional polish."
+        },
+        {
+          "severity": "nit",
+          "title": "info.git_sha can report an unrelated repository",
+          "waive_reason": "info.git_sha is informational; only affects an unusual setup where the worker home is a git repo."
+        },
+        {
+          "severity": "nit",
+          "title": "gate_budget_s accepts NaN/Infinity from the JSON header",
+          "waive_reason": "NaN would come from the trusted coordinator's own header; negligible impact."
+        },
+        {
+          "severity": "minor",
+          "title": "Work beyond the spec: `have` writes refs, signal handling, stale-lock clearing, stricter validation",
+          "waive_reason": "The reviewer's own fix is 'no change now'. The extra behaviour is documented in As shipped and tested. Whether SPEC-0338 treats `have` as state-refreshing is a follow-up for that spec."
+        },
+        {
+          "severity": "nit",
+          "title": "The slot campaign id is `remote:<campaign>`, not the job's campaign",
+          "waive_reason": "This is a documented, deliberate deviation. As shipped explains it, and a test pins it. It needs no code change."
+        },
+        {
+          "severity": "minor",
+          "title": "Refusal exit code is only tested on the function, not through the CLI",
+          "waive_reason": "`cli_worker` only wraps `W.ssh_command()` in SystemExit. The function's exit code is tested, and the spec records a manual run of the CLI refusal. The gap is trivial."
+        },
+        {
+          "severity": "nit",
+          "title": "Plain (non --json) `info` output is untested",
+          "waive_reason": "The plain `info` output is cosmetic. The spec only requires the `--json` keys, and those are tested."
+        },
+        {
+          "severity": "nit",
+          "title": "`info().git_sha` can report an unrelated repo's HEAD",
+          "waive_reason": "This only matters when the install sits inside another git repo, such as a dotfiles-tracked home directory. `git_sha` is informational only."
+        },
+        {
+          "severity": "nit",
+          "title": "The `job.lock` fd is never closed",
+          "waive_reason": "The CLI process exit releases the fd and the lock. The only effect is on in-process test callers, so it is not a production defect."
+        },
+        {
+          "severity": "minor",
+          "title": "Scope beyond the spec is documented but not small",
+          "waive_reason": "Reviewer says no code change needed; the extra hardening is documented in 'As shipped'. Follow-up docs belong to SPEC-0337/0338, out of scope here."
+        },
+        {
+          "severity": "minor",
+          "title": "Several tests depend on real-time waits and subprocess timing",
+          "waive_reason": "Reviewer calls it acceptable; loop 8 already removed the wall-clock dependence. The remaining real-time waits are inherent to testing slots and subprocesses."
+        },
+        {
+          "severity": "nit",
+          "title": "Redundant local `from pathlib import Path` imports in helpers",
+          "waive_reason": "Redundant local imports are a style matter that the repo conventions do not settle, and they are harmless."
+        },
+        {
+          "severity": "nit",
+          "title": "`info.git_sha` can report an unrelated repository's HEAD",
+          "waive_reason": "info.git_sha reporting an enclosing repo's HEAD is an edge case (dotfiles repo above the tool dir) with no effect on correctness. It is informational only and the spec does not define it."
+        },
+        {
+          "severity": "minor",
+          "title": "Some cases still depend on wall-clock timing",
+          "waive_reason": "Timing margins are already about 3.8 s and the tests use tests/waits.py where possible. The reviewer describes only a possible flake, not a defect."
+        },
+        {
+          "severity": "nit",
+          "title": "_slot_wait_event_s accepts NaN/inf from the environment",
+          "waive_reason": "Only an operator or test env var can set NW_WORKER_SLOT_WAIT_EVENT_S. The reviewer rates the risk as negligible."
+        },
+        {
+          "severity": "nit",
+          "title": "info test does not check git/uv/version values",
+          "waive_reason": "Extra assertions on version/git values are a matter of test taste. The info key set is already tested."
+        },
+        {
+          "severity": "nit",
+          "title": "`info.git_sha` can report an unrelated repository",
+          "waive_reason": "This needs the worker user's home to be a git work tree. The spec does not define how git_sha is computed, and the field is informational."
+        }
+      ],
+      "capped": [
+        {
+          "severity": "minor",
+          "title": "Some cases still depend on wall-clock timing"
+        },
+        {
+          "severity": "minor",
+          "title": "WORKFLOW.md section is checked only by hand"
+        },
+        {
+          "severity": "minor",
+          "title": "Work beyond the spec: `have` writes refs, signal handling, stale-lock clearing, stricter validation"
+        },
+        {
+          "severity": "minor",
+          "title": "Worker slot is taken as `remote:<campaign>` rather than the job's campaign"
+        },
+        {
+          "severity": "minor",
+          "title": "`nw worker have` writes refs and have.json, beyond 'prints the given shas present'"
+        }
+      ],
+      "idea_id": "IDEA-602"
+    }
+  },
+  "admission": "after_revision",
+  "sizing": {
+    "size": "l",
+    "tone": "critical",
+    "rationale": "There are 10 acceptance criteria. The spec adds a new CLI group with five subcommands, a new wire protocol (header and frames) and a persisted worker store. That is one subsystem, so size l rather than xl. The tone is critical because the spec defines a key that equals shell access, a forced-command allowlist and a shared object cache that concurrent jobs write to. A defect in any of these is a security problem or makes gate results wrong.",
+    "source": "review",
+    "reason": "size l, tone critical → thorough (revise review, applied without re-review)",
+    "review_sha256": "d5fdef8a2121e15016ca00c37ea4888a0d1ff480572807b9eef6a8da92522eab"
+  },
+  "updated_at": "2026-11-01T07:06:08-05:00",
+  "idea_link": {
+    "id": "IDEA-564"
+  },
+  "gate_exclusive": null,
+  "last_review": {
+    "entry_run": 32,
+    "runs": {
+      "conformance_reviewer": "033-conformance_reviewer",
+      "test_reviewer": "034-test_reviewer",
+      "adversarial_reviewer": "035-adversarial_reviewer"
+    },
+    "run": "035-adversarial_reviewer",
+    "loop": 3,
+    "verdict": "fix",
+    "score": 87,
+    "findings": 4,
+    "must_fix": 0,
+    "advisory": [],
+    "verdicts": {
+      "conformance_reviewer": {
+        "verdict": "pass",
+        "score": 93,
+        "fix_brief": "",
+        "findings": [
+          {
+            "severity": "nit",
+            "title": "_slot_wait_event_s accepts NaN/inf from the environment",
+            "detail": "_float_env rejects values that are not finite, but _slot_wait_event_s does not. With NW_WORKER_SLOT_WAIT_EVENT_S=inf the slot_wait frame never goes out. With NaN, `v >= 0` is False, so the code falls back to the default. Only an operator or test env var can set this, so the risk is negligible.",
+            "suggested_fix": "In worker.py, have _slot_wait_event_s return _float_env(SLOT_WAIT_ENV, gate_slots.WAIT_EVENT_S) so it shares the finite/non-negative check.",
+            "acceptance": "A unit test with NW_WORKER_SLOT_WAIT_EVENT_S=inf gets back gate_slots.WAIT_EVENT_S.",
+            "files": [
+              "src/nightwright/agentic/worker.py"
+            ]
+          },
+          {
+            "severity": "nit",
+            "title": "NW_CONFIG_DIR is set to an empty string when cfg has no config_dir",
+            "detail": "_run_gates sets NW_CONFIG_DIR to str(cfg.get('config_dir') or ''). A gate would then see NW_CONFIG_DIR='' instead of the variable being unset, and that could make tools that read it look at the cwd.",
+            "suggested_fix": "Add NW_CONFIG_DIR to env only when cfg.get('config_dir') is truthy.",
+            "acceptance": "With no config_dir in cfg, a gate running `env` prints no NW_CONFIG_DIR= line.",
+            "files": [
+              "src/nightwright/agentic/worker.py"
+            ]
+          }
+        ],
+        "ac_assessment": [
+          {
+            "ac": "Piping a valid header and bundle runs the gates and emits accepted, started, one gate frame per gate (.log/.json/.r<n>), done",
+            "met": true,
+            "evidence": "test_pass_emits_frames_and_files checks that the frame types are exactly [accepted, started, gate, done] and that the files are {.log, .json}. test_retry_ladder_sends_r1_files checks for the .r1.log/.r1.json files. Code: worker.gate_job, _run_gates, gate_files."
+          },
+          {
+            "ac": "git merge-base $NW_BASE HEAD on the worker prints the coordinator's sha",
+            "met": true,
+            "evidence": "test_merge_base_and_base_placeholder_match_the_coordinator compares against `git merge-base main HEAD` run in the source repo. test_origin_base_name_resolves_like_a_remote_tracking_branch covers an origin/main base. Code: _checkout creates refs/heads/<name> and refs/remotes/origin/<rest> in the private clone."
+          },
+          {
+            "ac": "An env key outside the allowlist gives error stage validate and nothing runs; a reused job_id gives stage claim",
+            "met": true,
+            "evidence": "test_env_outside_allowlist_is_refused checks rc 3, stage validate, frames == [error] and that the marker file was not created. test_duplicate_job_id_is_a_claim_error checks stage claim and that the first job's frames.jsonl is unchanged. Code: validate_header, and the exclusive mkdir in gate_job."
+          },
+          {
+            "ac": "Two concurrent jobs, same repo_key and base.name with different base.sha, each see their own base",
+            "met": true,
+            "evidence": "In test_concurrent_jobs_see_their_own_base, two jobs synchronise on a shared dir (slots: 2) so they really run at the same time, and each one's log holds its own base sha twice. Code: git clone --shared gives each job private refs."
+          },
+          {
+            "ac": "EOF mid-gate ends the gate process and gives done interrupted; EOF during the slot wait gives done interrupted with no started",
+            "met": true,
+            "evidence": "test_eof_mid_gate_interrupts checks that the sleep child's pid is dead, interrupted is true and the next gate never ran. test_eof_while_waiting_for_the_slot checks for no started or gate frame and no marker file. Code: _watch_stdin, and cancel passed as stop= to gate_slots.acquire."
+          },
+          {
+            "ac": "With the slot held elsewhere, slot_wait then started only once the slot frees",
+            "met": true,
+            "evidence": "test_held_slot_gives_slot_wait_then_started holds GS.acquire, checks that no started frame appears while the slot is held, then checks the order accepted, slot_wait, started, gate, done. It uses NW_WORKER_SLOT_WAIT_EVENT_S through _slot_conf."
+          },
+          {
+            "ac": "Exit 0 after done (pass, fail, interrupted) and 3 after error",
+            "met": true,
+            "evidence": "The pass, fail, EOF and signal tests assert rc 0. The validate, claim, checkout and read error tests assert rc 3. Code: gate_job/_fail return 0 or EXIT_ERROR, and cli_worker raises SystemExit with that code."
+          },
+          {
+            "ac": "A log over 16 MiB arrives cut to 16 MiB with truncated_bytes",
+            "met": true,
+            "evidence": "test_log_over_16_mib_is_truncated checks that len == MAX_LOG_BYTES, the tail marker is kept, the head marker is cut, and truncated_bytes is exact. Code: _file_payload, gate_files."
+          },
+          {
+            "ac": "have reports commit and base after the job; after gc --keep-days 0 nothing is reported, cat-file -e fails, job dirs are gone; a live job's dir survives",
+            "met": true,
+            "evidence": "test_have_then_gc_removes_refs_objects_and_job_dirs runs the real CLI have and gc, then checks that git cat-file -e fails and the job dir is gone. test_gc_during_a_live_job_keeps_its_dir checks that the tree and the commit object survive. Code: have, gc, _gc_repo, _live_jobs."
+          },
+          {
+            "ac": "nw worker info --json prints the documented keys",
+            "met": true,
+            "evidence": "test_info_json_keys checks that the key set is exactly {schema, protocol, version, git_sha, data_dir, git, uv, free_bytes}."
+          },
+          {
+            "ac": "ssh-command execs the four allowed subcommands and refuses everything else with exit 2",
+            "met": true,
+            "evidence": "In tests/test_worker_ssh_command.py, test_allowed_commands_are_execd patches only os.execvp and covers six forms. test_refused_commands_run_nothing covers 24+ refusals, including `have --repo ../x`. The CLI subprocess tests check exit 2 with `refused:` and that an allowed command really execs. Code: check_ssh_command, own_nw, ssh_command."
+          },
+          {
+            "ac": "docs/WORKFLOW.md documents the mandatory dedicated user and the absolute-path key line",
+            "met": true,
+            "evidence": "The WORKFLOW.md section 'Remote gate worker' has both. test_workflow_docs_make_the_dedicated_user_mandatory_and_show_the_key_line checks for them."
+          }
+        ],
+        "run": "033-conformance_reviewer",
+        "loop": 3
+      },
+      "test_reviewer": {
+        "verdict": "pass",
+        "score": 93,
+        "fix_brief": "",
+        "findings": [
+          {
+            "severity": "minor",
+            "ac": "tests/test_worker.py (timing-dependent cases)",
+            "title": "Some cases still depend on wall-clock timing",
+            "detail": "The gate-budget tests (test_gate_budget_runs_from_the_slot_hold, test_gate_budget_falls_back_to_the_workers_own) rely on sleep durations measured against small budgets, with about 3.8 s of slack. test_concurrent_jobs_see_their_own_base polls a sync dir from a shell loop inside a 60 s gate timeout. test_held_slot_gives_slot_wait_then_started asserts waited_s >= 0.5. These have margins and use tests/waits.py `until` where they can, but they could still flake on a very loaded CI host.",
+            "files": [
+              "tests/test_worker.py"
+            ]
+          },
+          {
+            "severity": "nit",
+            "ac": "`nw worker info --json` prints the documented keys",
+            "title": "info test does not check git/uv/version values",
+            "detail": "test_info_json_keys checks the exact key set, schema, protocol, data_dir and that free_bytes is an int. It does not check that `version` matches nightwright.__version__ or that `git` is non-null on a host that has git. A regression that always returned None for these values would still pass.",
+            "files": [
+              "tests/test_worker.py"
+            ]
+          }
+        ],
+        "coverage_assessment": [
+          {
+            "ac": "Valid header+bundle runs gates and emits accepted, started, one gate frame per gate (.log/.json/.r<n>), done",
+            "covered": true,
+            "tests": [
+              "tests/test_worker.py::test_pass_emits_frames_and_files",
+              "tests/test_worker.py::test_retry_ladder_sends_r1_files",
+              "tests/test_worker.py::test_fail_is_done_with_ok_false_and_exit_0"
+            ]
+          },
+          {
+            "ac": "git merge-base $NW_BASE HEAD on the worker prints the coordinator's sha",
+            "covered": true,
+            "tests": [
+              "tests/test_worker.py::test_merge_base_and_base_placeholder_match_the_coordinator",
+              "tests/test_worker.py::test_origin_base_name_resolves_like_a_remote_tracking_branch"
+            ]
+          },
+          {
+            "ac": "env key outside allowlist -> error stage validate, nothing runs; reused job_id -> stage claim",
+            "covered": true,
+            "tests": [
+              "tests/test_worker.py::test_env_outside_allowlist_is_refused",
+              "tests/test_worker.py::test_duplicate_job_id_is_a_claim_error",
+              "tests/test_worker.py::test_bad_schema_and_nw_base_mismatch_are_refused",
+              "tests/test_worker.py::test_bad_header_fields_are_refused_before_anything_runs"
+            ]
+          },
+          {
+            "ac": "Two concurrent jobs, same repo_key and base.name, different base.sha each see their own base",
+            "covered": true,
+            "tests": [
+              "tests/test_worker.py::test_concurrent_jobs_see_their_own_base"
+            ]
+          },
+          {
+            "ac": "EOF mid-gate kills the gate and sends done interrupted; EOF in the slot wait sends done interrupted and no started",
+            "covered": true,
+            "tests": [
+              "tests/test_worker.py::test_eof_mid_gate_interrupts",
+              "tests/test_worker.py::test_eof_while_waiting_for_the_slot",
+              "tests/test_worker.py::test_signal_mid_gate_kills_the_gate_and_sends_done"
+            ]
+          },
+          {
+            "ac": "Held slot gives slot_wait, then started only once the slot frees",
+            "covered": true,
+            "tests": [
+              "tests/test_worker.py::test_held_slot_gives_slot_wait_then_started"
+            ]
+          },
+          {
+            "ac": "Exit 0 after done (pass, fail or interrupted), 3 after error",
+            "covered": true,
+            "tests": [
+              "tests/test_worker.py::test_pass_emits_frames_and_files",
+              "tests/test_worker.py::test_fail_is_done_with_ok_false_and_exit_0",
+              "tests/test_worker.py::test_eof_mid_gate_interrupts",
+              "tests/test_worker.py::test_env_outside_allowlist_is_refused",
+              "tests/test_worker.py::test_empty_bundle_against_a_warm_cache"
+            ]
+          },
+          {
+            "ac": "Log over 16 MiB arrives cut to 16 MiB with truncated_bytes in its sidecar",
+            "covered": true,
+            "tests": [
+              "tests/test_worker.py::test_log_over_16_mib_is_truncated"
+            ]
+          },
+          {
+            "ac": "have reports commit and base after the job; gc --keep-days 0 removes refs, objects and job dirs; a live job's dir survives gc",
+            "covered": true,
+            "tests": [
+              "tests/test_worker.py::test_have_then_gc_removes_refs_objects_and_job_dirs",
+              "tests/test_worker.py::test_gc_during_a_live_job_keeps_its_dir",
+              "tests/test_worker.py::test_gc_reads_the_live_jobs_again_under_the_repo_lock"
+            ]
+          },
+          {
+            "ac": "nw worker info --json prints the documented keys",
+            "covered": true,
+            "tests": [
+              "tests/test_worker.py::test_info_json_keys"
+            ]
+          },
+          {
+            "ac": "ssh-command execs the four allowed subcommands and refuses everything else with exit 2, running nothing",
+            "covered": true,
+            "tests": [
+              "tests/test_worker_ssh_command.py::test_allowed_commands_are_execd",
+              "tests/test_worker_ssh_command.py::test_refused_commands_run_nothing",
+              "tests/test_worker_ssh_command.py::test_the_cli_command_exits_2_on_a_refusal",
+              "tests/test_worker_ssh_command.py::test_the_cli_command_execs_an_allowed_command"
+            ]
+          },
+          {
+            "ac": "docs/WORKFLOW.md documents the mandatory dedicated user and the absolute-path key line",
+            "covered": true,
+            "tests": [
+              "tests/test_worker.py::test_workflow_docs_make_the_dedicated_user_mandatory_and_show_the_key_line"
+            ]
+          }
+        ],
+        "run": "034-test_reviewer",
+        "loop": 3
+      },
+      "adversarial_reviewer": {
+        "verdict": "pass",
+        "score": 84,
+        "fix_brief": "",
+        "findings": [
+          {
+            "severity": "minor",
+            "category": "error_handling",
+            "title": "After a cancel, a frame write gives up after one 0.5 s unwritable select, leaving a half-written line and no `done`",
+            "detail": "In `_Frames._write_fd`, once `cancel` is set (stdin EOF or a signal), the first `select` that times out after 0.5 s sets `closed=True` and returns. A frame that was partly written in PIPE_BUF pieces stays on stdout as a truncated JSON line. Every later frame, including the `done` with `interrupted: true` that the spec says is sent \"if it can\", is then dropped, even though the coordinator is still reading. The process still exits 0, so the coordinator gets exit 0 with a broken last line and no `done`. That contradicts \"gate-job never exits without one of the two frames unless stdout is closed\".",
+            "trigger": "The coordinator cancels by closing stdin (or SIGTERM arrives) while a multi-MiB `gate` frame is being written, and the coordinator's read side pauses for more than 0.5 s, for example a full SSH channel window on a slow link.",
+            "files": [
+              "src/nightwright/agentic/worker.py"
+            ],
+            "lines": [
+              "src/nightwright/agentic/worker.py:351"
+            ]
+          },
+          {
+            "severity": "minor",
+            "category": "concurrency",
+            "title": "A pre-slot signal does not interrupt a wait on the repo flock",
+            "detail": "Before the slot stage the signal handler only records the signal unless the job is blocked reading stdin. `fcntl.flock(LOCK_EX)` in `repo_lock` is retried after EINTR (PEP 475), so a job waiting for the repo lock ignores SIGTERM/SIGHUP until the holder releases it. The holder may be another job's slow fetch or a `git gc --prune=now` on a big cache, so the job can outlive the connection by minutes.",
+            "trigger": "Job A's checkout waits on `repos/<key>.lock` while gc prunes a large cache, and sshd or the coordinator sends SIGTERM/SIGHUP to job A.",
+            "files": [
+              "src/nightwright/agentic/worker.py"
+            ],
+            "lines": [
+              "src/nightwright/agentic/worker.py:112",
+              "src/nightwright/agentic/worker.py:479"
+            ]
+          },
+          {
+            "severity": "minor",
+            "category": "error_handling",
+            "title": "`nw worker have` turns a git failure into a traceback",
+            "detail": "`have()` calls `_set_have`, which uses `_git(..., check=True)`. A failing `update-ref` (disk full, an unwritable ref) raises `WorkerError`, but `worker_have` only catches `ValueError`. Over SSH the coordinator gets a Python traceback on stderr and exit 1, not a clean error.",
+            "trigger": "`update-ref refs/nw/have/<sha>` fails in the cache during `nw worker have --repo K <sha>`.",
+            "files": [
+              "src/nightwright/agentic/worker.py",
+              "src/nightwright/agentic/cli_worker.py"
+            ],
+            "lines": [
+              "src/nightwright/agentic/cli_worker.py:47"
+            ]
+          },
+          {
+            "severity": "nit",
+            "category": "other",
+            "title": "`info.git_sha` can report an unrelated repository",
+            "detail": "`git -C <site-packages>/nightwright rev-parse HEAD` searches up the directory tree. In a `uv tool install` under a home directory that is itself a git repo (dotfiles), it reports that repo's HEAD as nightwright's `git_sha`.",
+            "trigger": "The worker user's home or one of its parent directories is a git work tree.",
+            "files": [
+              "src/nightwright/agentic/worker.py"
+            ],
+            "lines": [
+              "src/nightwright/agentic/worker.py:893"
+            ]
+          }
+        ],
+        "run": "035-adversarial_reviewer",
+        "loop": 3
+      }
+    },
+    "triage": "done",
+    "waived": [
+      {
+        "id": "test_reviewer#0",
+        "personas": [
+          "test_reviewer"
+        ],
+        "severity": "minor",
+        "title": "Some cases still depend on wall-clock timing",
+        "detail": "The gate-budget tests (test_gate_budget_runs_from_the_slot_hold, test_gate_budget_falls_back_to_the_workers_own) rely on sleep durations measured against small budgets, with about 3.8 s of slack. test_concurrent_jobs_see_their_own_base polls a sync dir from a shell loop inside a 60 s gate timeout. test_held_slot_gives_slot_wait_then_started asserts waited_s >= 0.5. These have margins and use tests/waits.py `until` where they can, but they could still flake on a very loaded CI host.",
+        "files": [
+          "tests/test_worker.py"
+        ],
+        "ac": "tests/test_worker.py (timing-dependent cases)",
+        "category": null,
+        "reason": "Timing margins are already about 3.8 s and the tests use tests/waits.py where possible. The reviewer describes only a possible flake, not a defect."
+      },
+      {
+        "id": "conformance_reviewer#0",
+        "personas": [
+          "conformance_reviewer"
+        ],
+        "severity": "nit",
+        "title": "_slot_wait_event_s accepts NaN/inf from the environment",
+        "detail": "_float_env rejects values that are not finite, but _slot_wait_event_s does not. With NW_WORKER_SLOT_WAIT_EVENT_S=inf the slot_wait frame never goes out. With NaN, `v >= 0` is False, so the code falls back to the default. Only an operator or test env var can set this, so the risk is negligible.\nFix: In worker.py, have _slot_wait_event_s return _float_env(SLOT_WAIT_ENV, gate_slots.WAIT_EVENT_S) so it shares the finite/non-negative check.\nDone when: A unit test with NW_WORKER_SLOT_WAIT_EVENT_S=inf gets back gate_slots.WAIT_EVENT_S.",
+        "files": [
+          "src/nightwright/agentic/worker.py"
+        ],
+        "ac": null,
+        "category": null,
+        "reason": "Only an operator or test env var can set NW_WORKER_SLOT_WAIT_EVENT_S. The reviewer rates the risk as negligible."
+      },
+      {
+        "id": "test_reviewer#1",
+        "personas": [
+          "test_reviewer"
+        ],
+        "severity": "nit",
+        "title": "info test does not check git/uv/version values",
+        "detail": "test_info_json_keys checks the exact key set, schema, protocol, data_dir and that free_bytes is an int. It does not check that `version` matches nightwright.__version__ or that `git` is non-null on a host that has git. A regression that always returned None for these values would still pass.",
+        "files": [
+          "tests/test_worker.py"
+        ],
+        "ac": "`nw worker info --json` prints the documented keys",
+        "category": null,
+        "reason": "Extra assertions on version/git values are a matter of test taste. The info key set is already tested."
+      },
+      {
+        "id": "adversarial_reviewer#3",
+        "personas": [
+          "adversarial_reviewer"
+        ],
+        "severity": "nit",
+        "title": "`info.git_sha` can report an unrelated repository",
+        "detail": "`git -C <site-packages>/nightwright rev-parse HEAD` searches up the directory tree. In a `uv tool install` under a home directory that is itself a git repo (dotfiles), it reports that repo's HEAD as nightwright's `git_sha`.\ntrigger: The worker user's home or one of its parent directories is a git work tree.",
+        "files": [
+          "src/nightwright/agentic/worker.py"
+        ],
+        "ac": null,
+        "category": "other",
+        "reason": "This needs the worker user's home to be a git work tree. The spec does not define how git_sha is computed, and the field is informational."
+      }
+    ],
+    "triager_run": "036-review_triager"
+  },
+  "review_carry": [
+    {
+      "key": "9c9e9663bf83891f5cd6b62792da536368def5b1",
+      "personas": [
+        "conformance_reviewer"
+      ],
+      "severity": "minor",
+      "title": "Worker slot is taken as `remote:<campaign>` rather than the job's campaign",
+      "detail": "The spec says to call `gate_slots.acquire` with campaign id = the job's campaign. `_run_gates` passes `SLOT_CAMPAIGN_PREFIX + h['campaign']` instead. The deviation is written up under 'As shipped' and has a reason (a remote job should not look like a local campaign in `holding()`/`waiting()`), and the CPU budget is still shared. It still departs from the Design text, and SPEC-0337/0338 will need to know about it.\nFix: Leave the code as it is. In the Design section, change step 4 to read 'campaign id = `remote:<campaign>`' so it no longer depends on the As-shipped note, and point to this in SPEC-0337's slot-pool design.\nDone when: The spec's Design step 4 and worker.py `_run_gates` give the same slot id. `test_held_slot_gives_slot_wait_then_started` still checks `remote:C-1`.",
+      "files": [
+        "src/nightwright/agentic/worker.py",
+        "docs/specs/0336-gate-worker-job-runner-and-forced-command.md"
+      ],
+      "ac": "Design step 4 (slot campaign id)",
+      "category": null,
+      "origin": "waived",
+      "waive_reason": "Deviation is intentional, justified and documented in As shipped; CPU budget still shared. Not a code defect."
+    },
+    {
+      "key": "5223593b33169b945e713244320ec8275895630e",
+      "personas": [
+        "conformance_reviewer"
+      ],
+      "severity": "minor",
+      "title": "`nw worker have` writes refs and have.json, beyond 'prints the given shas present'",
+      "detail": "The spec describes `have` as a query. The implementation also sets or refreshes `refs/nw/have/<sha>` and its last-used time under the repo lock. This is documented under 'As shipped' and makes sense for the coordinator's bundle-pruning race, but it is a side effect the spec did not ask for.\nFix: Keep it, and add a line to the Design's `have` bullet: 'and refreshes refs/nw/have/<sha> plus its last-used time for each reported sha'.\nDone when: The spec's Design bullet for `have` describes the ref refresh.",
+      "files": [
+        "src/nightwright/agentic/worker.py"
+      ],
+      "ac": "Other subcommands: have",
+      "category": null,
+      "origin": "waived",
+      "waive_reason": "Ref refresh in have is intentional and documented in As shipped; spec-text tweak only."
+    },
+    {
+      "key": "3bd66ff6606146f5b9ebbb0cc9c001bde60e338c",
+      "personas": [
+        "test_reviewer"
+      ],
+      "severity": "minor",
+      "title": "WORKFLOW.md section is checked only by hand",
+      "detail": "No automated test asserts that the 'Remote gate worker' section exists, says the dedicated unprivileged user is mandatory, or contains the `command=\"/home/user/.local/bin/nw worker ssh-command\",restrict` line. The test plan allows a manual check, so this is not blocking. A small grep test would catch the section being deleted later.",
+      "files": [
+        "docs/WORKFLOW.md"
+      ],
+      "ac": "docs/WORKFLOW.md documents the mandatory dedicated user and the absolute-path key line",
+      "category": null,
+      "origin": "waived",
+      "waive_reason": "Test plan explicitly allows manual verification of the docs section."
+    },
+    {
+      "key": "21fda44e67b3b8263ec7a5241d26c795c150a224",
+      "personas": [
+        "test_reviewer"
+      ],
+      "severity": "minor",
+      "title": "SIGHUP cancel is not tested",
+      "detail": "The spec's As-shipped section says SIGTERM, SIGINT and SIGHUP all cancel a job. test_signal_mid_gate_kills_the_gate_and_sends_done only parametrizes SIGTERM and SIGINT, and test_signal_before_the_slot_is_an_error_frame only sends SIGTERM. If SIGHUP were dropped from _STOP_SIGNALS, no test would fail.",
+      "files": [
+        "tests/test_worker.py"
+      ],
+      "ac": "worker.py:gate_job (signal handling)",
+      "category": null,
+      "origin": "waived",
+      "waive_reason": "Coverage gap for SIGHUP only; SIGTERM and SIGINT share the same handler and are tested."
+    },
+    {
+      "key": "e5e1efa3583a77f779168485bfde01cac51956c2",
+      "personas": [
+        "test_reviewer"
+      ],
+      "severity": "nit",
+      "title": "info test checks key names, not value types",
+      "detail": "test_info_json_keys checks the exact key set, schema, protocol, data_dir and that free_bytes is an int. It does not check version, git or uv. That is enough for the AC.",
+      "files": [
+        "tests/test_worker.py"
+      ],
+      "ac": "nw worker info --json prints the documented keys",
+      "category": null,
+      "origin": "waived",
+      "waive_reason": "Test already satisfies the AC; value-type checks are optional polish."
+    },
+    {
+      "key": "085ade0aca660849aeaf0ea594c188d168455209",
+      "personas": [
+        "adversarial_reviewer"
+      ],
+      "severity": "nit",
+      "title": "info.git_sha can report an unrelated repository",
+      "detail": "`git -C <site-packages> rev-parse HEAD` walks up from the install directory. A uv-tool install under a home directory that is itself a git repo (for example dotfiles) reports that repo's HEAD. GIT_DIR from the environment is also not scrubbed for this call.\ntrigger: worker user's home directory is a git work tree",
+      "files": [
+        "src/nightwright/agentic/worker.py"
+      ],
+      "ac": null,
+      "category": "logic",
+      "origin": "waived",
+      "waive_reason": "info.git_sha is informational; only affects an unusual setup where the worker home is a git repo."
+    },
+    {
+      "key": "47d34aa94d15050bd41aeaedce929c3f83fb695e",
+      "personas": [
+        "adversarial_reviewer"
+      ],
+      "severity": "nit",
+      "title": "gate_budget_s accepts NaN/Infinity from the JSON header",
+      "detail": "json.loads accepts NaN and Infinity. NaN passes the `budget <= 0` check, so deadline becomes NaN and the retry ladder's deadline comparison never stops a full rerun.\ntrigger: header payload.gate_budget_s set to NaN",
+      "files": [
+        "src/nightwright/agentic/worker.py"
+      ],
+      "ac": null,
+      "category": "bug",
+      "origin": "waived",
+      "waive_reason": "NaN would come from the trusted coordinator's own header; negligible impact."
+    },
+    {
+      "key": "9331500fcf929c8233451a19194106b144c64a99",
+      "personas": [
+        "conformance_reviewer"
+      ],
+      "severity": "nit",
+      "title": "Slot campaign id deviates from the spec's wording",
+      "detail": "The spec says to take the slot with campaign id = the job's campaign. _run_gates uses `remote:<campaign>` instead. The deviation is written up in 'As shipped' and tested (test_held_slot_gives_slot_wait_then_started asserts the waiter is `remote:C-1`), so it is a documented choice and not a defect.\nFix: None needed. Optionally edit the Design step 4 text so it says `remote:<campaign>` directly.\nDone when: The spec Design text and worker._run_gates agree.",
+      "files": [
+        "src/nightwright/agentic/worker.py",
+        "docs/specs/0336-gate-worker-job-runner-and-forced-command.md"
+      ],
+      "ac": null,
+      "category": null,
+      "origin": "advisory"
+    },
+    {
+      "key": "e3c98579b234ea8f281f81b7e3609ba04e95dc6a",
+      "personas": [
+        "conformance_reviewer"
+      ],
+      "severity": "minor",
+      "title": "Extra hardening beyond the spec (signal handling, stale git lock clearing, jobs.lock)",
+      "detail": "Handling SIGTERM, SIGINT and SIGHUP, clearing stale git lock files and the jobs.lock claim lock were not in the original Design. They came out of review loops, they are documented under 'As shipped' and they have tests. This is mild scope growth and it stays inside `nw worker`.\nFix: None needed. Keep it covered by the existing tests (test_signal_under_the_repo_lock_waits_for_the_git_and_the_lock, test_a_stale_git_ref_lock_in_the_cache_is_cleared).\nDone when: The existing tests pass.",
+      "files": [
+        "src/nightwright/agentic/worker.py"
+      ],
+      "ac": null,
+      "category": null,
+      "origin": "advisory"
+    },
+    {
+      "key": "b38b9246cfc86a88da2ed70d9d18b4716ad35ecf",
+      "personas": [
+        "test_reviewer"
+      ],
+      "severity": "minor",
+      "title": "Plain (non-JSON) `nw worker info` output is untested",
+      "detail": "Only `info --json` is tested. The plain `key: value` path in cli_worker.worker_info is never run. It is cosmetic and outside the AC.",
+      "files": [
+        "src/nightwright/agentic/cli_worker.py",
+        "tests/test_worker.py"
+      ],
+      "ac": "`nw worker info --json` prints the documented keys",
+      "category": null,
+      "origin": "advisory"
+    },
+    {
+      "key": "23f0f4f21d2e61736bd9c3779edf127065ed5b79",
+      "personas": [
+        "test_reviewer"
+      ],
+      "severity": "minor",
+      "title": "ssh-command is only tested in-process, never through the click command",
+      "detail": "test_worker_ssh_command.py calls W.ssh_command(environ) directly. No test runs `nw worker ssh-command` as a subprocess with SSH_ORIGINAL_COMMAND set to a refused command to check exit 2 at the CLI layer, so the `raise SystemExit(...)` wiring is unverified. The risk is low.",
+      "files": [
+        "tests/test_worker_ssh_command.py",
+        "src/nightwright/agentic/cli_worker.py"
+      ],
+      "ac": "`nw worker ssh-command` execs the four allowed subcommands and refuses everything else",
+      "category": null,
+      "origin": "advisory"
+    },
+    {
+      "key": "1559d7c2f03266834ef811da7ec7350d036bc8b4",
+      "personas": [
+        "test_reviewer"
+      ],
+      "severity": "minor",
+      "title": "The concurrent-jobs gate busy-polls with `sleep 0.1` in shell",
+      "detail": "The rendezvous loop in test_concurrent_jobs_see_their_own_base polls the sync dir with `sleep 0.1`. It is bounded by the gate's 60 s timeout and the test pins slots: 2, but it still relies on a wall-clock wait under load. Accepted flakiness risk.",
+      "files": [
+        "tests/test_worker.py"
+      ],
+      "ac": "Two concurrent gate-jobs for the same repo_key with different base.sha",
+      "category": null,
+      "origin": "advisory"
+    },
+    {
+      "key": "63f46bd99bfec81d694588493fc1abedb1b32389",
+      "personas": [
+        "adversarial_reviewer"
+      ],
+      "severity": "minor",
+      "title": "Gate processes inherit the job's stdin (the SSH channel), not /dev/null",
+      "detail": "`run_gate` starts gates with `Popen(..., stdout=log, stderr=STDOUT)` and no `stdin=`, so on the worker each gate inherits fd 0. That fd is the coordinator's still-open job pipe, which the `_watch_stdin` thread is also reading. A gate (or a tool it calls) that reads stdin, for example a prompt, `read`, or a test runner reading input, blocks until the gate timeout or until the coordinator ends the job. In a local run it would get EOF or a tty instead. Its reads also compete with the watcher for the cancel signal.\ntrigger: A gate command that reads stdin, e.g. `read x` or a tool that prompts, run through `nw worker gate-job` over SSH.",
+      "files": [
+        "src/nightwright/agentic/gates.py",
+        "src/nightwright/agentic/worker.py"
+      ],
+      "ac": null,
+      "category": "subprocess",
+      "origin": "advisory"
+    },
+    {
+      "key": "d8d31c8a42ee3ad6d13f165de855b2ae4b837441",
+      "personas": [
+        "adversarial_reviewer"
+      ],
+      "severity": "minor",
+      "title": "`gc` reports a repo as pruned even when `git gc --prune=now` failed",
+      "detail": "`_git(..., 'gc', '--prune=now', '--quiet', check=False)` ignores the return code, and `out['pruned'].append(key)` runs regardless. If the gc fails (for example 'gc is already running', see the finding above, or a full disk), the objects stay while the summary says the repo was pruned.\ntrigger: `nw worker gc --keep-days 0` while another git gc holds the cache's gc.pid.",
+      "files": [
+        "src/nightwright/agentic/worker.py"
+      ],
+      "ac": null,
+      "category": "error_handling",
+      "origin": "advisory"
+    },
+    {
+      "key": "3f128cd3f46007daa4657e40386f6cd7e1fe2b0f",
+      "personas": [
+        "adversarial_reviewer"
+      ],
+      "severity": "nit",
+      "title": "A signal during the clone/checkout gives `done interrupted`, not the documented `error stage: signal`",
+      "detail": "`_checkout`'s last `stop.check()` runs before the clone, checkout and update-ref steps, and `gate_job` does not check again before it sets stage `slot`. Because `on_signal` has already set `cancel`, the job emits `accepted` and then `done` with interrupted true (exit 0). The spec says pre-slot signals end with `error` stage `signal` and exit 3, and lists 'after the checkout' as one of the check points.\ntrigger: SIGTERM while `git clone --shared` or `git checkout --detach` is running in `_checkout`.",
+      "files": [
+        "src/nightwright/agentic/worker.py"
+      ],
+      "ac": null,
+      "category": "logic",
+      "origin": "advisory"
+    },
+    {
+      "key": "2be460f1e254a50a4a732f811dbe3191ead89672",
+      "personas": [
+        "adversarial_reviewer"
+      ],
+      "severity": "nit",
+      "title": "Frames use ensure_ascii=False, so U+2028/U+0085 from gate output appear raw in a JSON-lines frame",
+      "detail": "`result.tail` (gate output) is placed raw in the `gate` frame. JSON does not escape U+2028, U+2029 or U+0085. A reader that splits with `str.splitlines()` instead of on b'\\n' would split one frame into two.\ntrigger: A gate whose last log lines contain U+2028 or NEL, read by a coordinator that uses splitlines().",
+      "files": [
+        "src/nightwright/agentic/worker.py"
+      ],
+      "ac": null,
+      "category": "other",
+      "origin": "advisory"
+    },
+    {
+      "key": "679b287bc87b5380e11d36cffccd6dcaec3a56e0",
+      "personas": [
+        "conformance_reviewer"
+      ],
+      "severity": "minor",
+      "title": "Work beyond the spec: `have` writes refs, signal handling, stale-lock clearing, stricter validation",
+      "detail": "`have` now creates or refreshes `refs/nw/have/<sha>`, where the spec only asks it to print. The change also adds SIGTERM/SIGINT/SIGHUP handling with a `signal` stage, clearing of stale git lock files, a `jobs.lock`, and extra header checks. Each one is documented in As shipped and has tests, and each makes the worker more robust. Still, the spec did not ask for them, and `have` writing state is a change in what that command means.\nFix: No change now. Make sure SPEC-0338's coordinator text treats `have` as an operation that refreshes state (it pins shas), not as a read-only query.\nDone when: SPEC-0338 documents that `have` pins the shas it reports.",
+      "files": [
+        "src/nightwright/agentic/worker.py"
+      ],
+      "ac": "scope",
+      "category": null,
+      "origin": "waived",
+      "waive_reason": "The reviewer's own fix is 'no change now'. The extra behaviour is documented in As shipped and tested. Whether SPEC-0338 treats `have` as state-refreshing is a follow-up for that spec."
+    },
+    {
+      "key": "81dbf20c0f817ef17e85f67543f704f191dc7042",
+      "personas": [
+        "conformance_reviewer"
+      ],
+      "severity": "nit",
+      "title": "The slot campaign id is `remote:<campaign>`, not the job's campaign",
+      "detail": "`_run_gates` calls `gate_slots.acquire(cfg, SLOT_CAMPAIGN_PREFIX + h['campaign'], ...)`. The Design says the campaign id is the job's campaign. The spec's As-shipped section records this change and gives the reason: a remote job should not look like one of the worker host's own local campaigns. `test_held_slot_gives_slot_wait_then_started` asserts the `remote:C-1` waiter.\nFix: No code change. When SPEC-0337 or SPEC-0338 adds the coordinator and the pool views, have them read the `remote:` prefix on the worker side, or change the Design text in a later spec revision.\nDone when: SPEC-0337/0338 slot views show remote holds as `remote:<campaign>`.",
+      "files": [
+        "src/nightwright/agentic/worker.py"
+      ],
+      "ac": "Design step 4 (slot campaign id)",
+      "category": null,
+      "origin": "waived",
+      "waive_reason": "This is a documented, deliberate deviation. As shipped explains it, and a test pins it. It needs no code change."
+    },
+    {
+      "key": "dc77dc6c585aa4814d4da27fc4547b9a4902c7f0",
+      "personas": [
+        "test_reviewer"
+      ],
+      "severity": "minor",
+      "title": "Refusal exit code is only tested on the function, not through the CLI",
+      "detail": "test_worker_ssh_command.py calls W.ssh_command(), which returns 2. No test runs `nw worker ssh-command` as a subprocess with a refused SSH_ORIGINAL_COMMAND to check that the process exits 2. cli_worker wraps the call in SystemExit, which is trivial but untested. The spec records this check as done by hand.",
+      "files": [
+        "tests/test_worker_ssh_command.py",
+        "src/nightwright/agentic/cli_worker.py"
+      ],
+      "ac": "nw worker ssh-command execs the four allowed subcommands and refuses everything else with exit 2",
+      "category": null,
+      "origin": "waived",
+      "waive_reason": "`cli_worker` only wraps `W.ssh_command()` in SystemExit. The function's exit code is tested, and the spec records a manual run of the CLI refusal. The gap is trivial."
+    },
+    {
+      "key": "f73e3f0e662d459702b863a73f3b91ffdcd372cb",
+      "personas": [
+        "test_reviewer"
+      ],
+      "severity": "nit",
+      "title": "Plain (non --json) `info` output is untested",
+      "detail": "Only `info --json` is asserted. The plain key: value output is cosmetic.",
+      "files": [
+        "src/nightwright/agentic/cli_worker.py"
+      ],
+      "ac": "src/nightwright/agentic/cli_worker.py:worker_info",
+      "category": null,
+      "origin": "waived",
+      "waive_reason": "The plain `info` output is cosmetic. The spec only requires the `--json` keys, and those are tested."
+    },
+    {
+      "key": "a1e06f1ad3d6fa64634ff6e41e10435aeb0accb8",
+      "personas": [
+        "adversarial_reviewer"
+      ],
+      "severity": "nit",
+      "title": "`info().git_sha` can report an unrelated repo's HEAD",
+      "detail": "`git -C <installed package dir> rev-parse HEAD` runs with the caller's environment unscrubbed (it does not use `_git_env`), and git walks up parent directories looking for a repo. If GIT_DIR is set, or a parent directory of the install is a git repo (for example a dotfiles-tracked home directory), the reported `git_sha` belongs to that other repo.\ntrigger: A worker user whose home directory is a git repo, with nightwright installed via `uv tool install` under `~/.local/share/uv/tools/...`.",
+      "files": [
+        "src/nightwright/agentic/worker.py"
+      ],
+      "ac": null,
+      "category": "other",
+      "origin": "waived",
+      "waive_reason": "This only matters when the install sits inside another git repo, such as a dotfiles-tracked home directory. `git_sha` is informational only."
+    },
+    {
+      "key": "341e855fcb7482c35714538560610d9ac36b1a9b",
+      "personas": [
+        "adversarial_reviewer"
+      ],
+      "severity": "nit",
+      "title": "The `job.lock` fd is never closed",
+      "detail": "`lock_fd` is opened and flocked in `gate_job`, and nothing ever closes it. Process exit releases it for the CLI. An in-process caller, such as the tests that call `gate_job` directly, keeps both the fd and the lock, so that job looks live to every later gc in the same process.\ntrigger: Repeated in-process calls to `W.gate_job(...)`.",
+      "files": [
+        "src/nightwright/agentic/worker.py"
+      ],
+      "ac": null,
+      "category": "resource_leak",
+      "origin": "waived",
+      "waive_reason": "The CLI process exit releases the fd and the lock. The only effect is on in-process test callers, so it is not a production defect."
+    },
+    {
+      "key": "6ff2ebac4c5be6670f8d6a3a5b56337bfa0c2063",
+      "personas": [
+        "conformance_reviewer"
+      ],
+      "severity": "minor",
+      "title": "Scope beyond the spec is documented but not small",
+      "detail": "Several things the spec did not ask for were shipped: signal handling (SIGTERM/INT/HUP with a stage 'signal'), a jobs.lock, stale git lock cleanup, an `errors` key with exit 1 for gc, `have` refreshing refs, and the `remote:` slot prefix. All of them are recorded in 'As shipped' and are reasonable hardening, but they make this worker larger than the Design described.\nFix: No code change needed. Make sure SPEC-0337 and SPEC-0338 refer to the shipped `remote:<campaign>` slot id and the gc `errors` exit code.\nDone when: SPEC-0338's dispatch design names the `remote:` prefix and the error stages read/slot/signal.",
+      "files": [
+        "src/nightwright/agentic/worker.py"
+      ],
+      "ac": "",
+      "category": null,
+      "origin": "waived",
+      "waive_reason": "Reviewer says no code change needed; the extra hardening is documented in 'As shipped'. Follow-up docs belong to SPEC-0337/0338, out of scope here."
+    },
+    {
+      "key": "711f58e1db4bac5a8bdfc56336f32a580c967199",
+      "personas": [
+        "test_reviewer"
+      ],
+      "severity": "minor",
+      "title": "Several tests depend on real-time waits and subprocess timing",
+      "detail": "test_gate_budget_runs_from_the_slot_hold (4.5 s slot wait against a 4 s budget), the held-slot tests and the concurrent-jobs test rely on wall-clock behaviour and on real subprocesses. Loop 8 made the margins one-sided, and the record notes one unexplained flake in loop 6. Acceptable, but worth watching.",
+      "files": [
+        "tests/test_worker.py"
+      ],
+      "ac": "flakiness",
+      "category": null,
+      "origin": "waived",
+      "waive_reason": "Reviewer calls it acceptable; loop 8 already removed the wall-clock dependence. The remaining real-time waits are inherent to testing slots and subprocesses."
+    },
+    {
+      "key": "437a497d144c19783761ee4fe9ead571ca705d6a",
+      "personas": [
+        "test_reviewer"
+      ],
+      "severity": "nit",
+      "title": "Redundant local `from pathlib import Path` imports in helpers",
+      "detail": "_job_dir, _cache and _slot_conf re-import Path even though it is imported at module level.",
+      "files": [
+        "tests/test_worker.py"
+      ],
+      "ac": "tests/test_worker.py helpers",
+      "category": null,
+      "origin": "waived",
+      "waive_reason": "Redundant local imports are a style matter that the repo conventions do not settle, and they are harmless."
+    },
+    {
+      "key": "f63c945fdc75c56407c544a2d275723b0cb8d5f2",
+      "personas": [
+        "adversarial_reviewer"
+      ],
+      "severity": "nit",
+      "title": "`info.git_sha` can report an unrelated repository's HEAD",
+      "detail": "`git -C <site-packages>/nightwright rev-parse HEAD` walks up the directory tree. For a `uv tool install`, this reports the HEAD of whatever git repo contains the tool directory (for example, a home directory tracked as a dotfiles repo), not nightwright's own commit.\ntrigger: The worker user's home directory, or any parent of `~/.local/share/uv/tools`, is a git work tree.",
+      "files": [
+        "src/nightwright/agentic/worker.py"
+      ],
+      "ac": null,
+      "category": "other",
+      "origin": "waived",
+      "waive_reason": "info.git_sha reporting an enclosing repo's HEAD is an edge case (dotfiles repo above the tool dir) with no effect on correctness. It is informational only and the spec does not define it."
+    },
+    {
+      "key": "0adf9395613eeba9287a3ce230da5eeb246b207d",
+      "personas": [
+        "test_reviewer"
+      ],
+      "severity": "minor",
+      "title": "Some cases still depend on wall-clock timing",
+      "detail": "The gate-budget tests (test_gate_budget_runs_from_the_slot_hold, test_gate_budget_falls_back_to_the_workers_own) rely on sleep durations measured against small budgets, with about 3.8 s of slack. test_concurrent_jobs_see_their_own_base polls a sync dir from a shell loop inside a 60 s gate timeout. test_held_slot_gives_slot_wait_then_started asserts waited_s >= 0.5. These have margins and use tests/waits.py `until` where they can, but they could still flake on a very loaded CI host.",
+      "files": [
+        "tests/test_worker.py"
+      ],
+      "ac": "tests/test_worker.py (timing-dependent cases)",
+      "category": null,
+      "origin": "waived",
+      "waive_reason": "Timing margins are already about 3.8 s and the tests use tests/waits.py where possible. The reviewer describes only a possible flake, not a defect."
+    },
+    {
+      "key": "f9b3d5635be1f471c686a844f260d71edb6463c8",
+      "personas": [
+        "conformance_reviewer"
+      ],
+      "severity": "nit",
+      "title": "_slot_wait_event_s accepts NaN/inf from the environment",
+      "detail": "_float_env rejects values that are not finite, but _slot_wait_event_s does not. With NW_WORKER_SLOT_WAIT_EVENT_S=inf the slot_wait frame never goes out. With NaN, `v >= 0` is False, so the code falls back to the default. Only an operator or test env var can set this, so the risk is negligible.\nFix: In worker.py, have _slot_wait_event_s return _float_env(SLOT_WAIT_ENV, gate_slots.WAIT_EVENT_S) so it shares the finite/non-negative check.\nDone when: A unit test with NW_WORKER_SLOT_WAIT_EVENT_S=inf gets back gate_slots.WAIT_EVENT_S.",
+      "files": [
+        "src/nightwright/agentic/worker.py"
+      ],
+      "ac": null,
+      "category": null,
+      "origin": "waived",
+      "waive_reason": "Only an operator or test env var can set NW_WORKER_SLOT_WAIT_EVENT_S. The reviewer rates the risk as negligible."
+    },
+    {
+      "key": "630219f38425a9a7db327eb695b200c31447a7d7",
+      "personas": [
+        "test_reviewer"
+      ],
+      "severity": "nit",
+      "title": "info test does not check git/uv/version values",
+      "detail": "test_info_json_keys checks the exact key set, schema, protocol, data_dir and that free_bytes is an int. It does not check that `version` matches nightwright.__version__ or that `git` is non-null on a host that has git. A regression that always returned None for these values would still pass.",
+      "files": [
+        "tests/test_worker.py"
+      ],
+      "ac": "`nw worker info --json` prints the documented keys",
+      "category": null,
+      "origin": "waived",
+      "waive_reason": "Extra assertions on version/git values are a matter of test taste. The info key set is already tested."
+    },
+    {
+      "key": "fe791a6ae9ea95f41627148465b3093438d05fc4",
+      "personas": [
+        "adversarial_reviewer"
+      ],
+      "severity": "nit",
+      "title": "`info.git_sha` can report an unrelated repository",
+      "detail": "`git -C <site-packages>/nightwright rev-parse HEAD` searches up the directory tree. In a `uv tool install` under a home directory that is itself a git repo (dotfiles), it reports that repo's HEAD as nightwright's `git_sha`.\ntrigger: The worker user's home or one of its parent directories is a git work tree.",
+      "files": [
+        "src/nightwright/agentic/worker.py"
+      ],
+      "ac": null,
+      "category": "other",
+      "origin": "waived",
+      "waive_reason": "This needs the worker user's home to be a git work tree. The spec does not define how git_sha is computed, and the field is informational."
+    }
+  ],
+  "steward_notified": [
+    "PARKED#131",
+    "PARKED#204",
+    "PARKED#276",
+    "MERGED#298"
+  ]
+}

@@ -1,0 +1,99 @@
+{
+  "schema": "nw.run.request.v1",
+  "persona": "test_reviewer",
+  "model": "opus",
+  "effort": "high",
+  "max_budget_usd": 1.0,
+  "timeout_s": 2700,
+  "permission_mode": "dontAsk",
+  "read_only": true,
+  "cwd": "/home/user/work/.nw-worktrees/Meta-Tools/SPEC-0394-20261102-ae5b",
+  "json_schema": {
+    "type": "object",
+    "required": [
+      "verdict",
+      "score",
+      "findings",
+      "coverage_assessment",
+      "fix_brief"
+    ],
+    "properties": {
+      "verdict": {
+        "type": "string",
+        "enum": [
+          "pass",
+          "fix"
+        ]
+      },
+      "score": {
+        "type": "integer",
+        "minimum": 0,
+        "maximum": 100
+      },
+      "findings": {
+        "type": "array",
+        "items": {
+          "type": "object",
+          "required": [
+            "severity",
+            "title"
+          ],
+          "properties": {
+            "severity": {
+              "type": "string",
+              "enum": [
+                "must_fix",
+                "major",
+                "minor",
+                "nit"
+              ]
+            },
+            "ac": {
+              "type": "string"
+            },
+            "title": {
+              "type": "string"
+            },
+            "detail": {
+              "type": "string"
+            },
+            "files": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            }
+          }
+        }
+      },
+      "coverage_assessment": {
+        "type": "array",
+        "items": {
+          "type": "object",
+          "required": [
+            "ac",
+            "covered"
+          ],
+          "properties": {
+            "ac": {
+              "type": "string"
+            },
+            "covered": {
+              "type": "boolean"
+            },
+            "tests": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            }
+          }
+        }
+      },
+      "fix_brief": {
+        "type": "string"
+      }
+    }
+  },
+  "started_at": "2026-11-03T20:24:19-05:00"
+}

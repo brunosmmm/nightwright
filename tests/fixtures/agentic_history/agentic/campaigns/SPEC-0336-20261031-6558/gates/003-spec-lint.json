@@ -1,0 +1,15 @@
+{
+  "schema": "nw.gate.v1",
+  "name": "spec-lint",
+  "cmd": "python3 tools/spec_lint.py --write-ledger >/dev/null && python3 tools/spec_lint.py",
+  "cwd": "/home/user/work/.nw-worktrees/Meta-Tools/SPEC-0336-20261031-6558",
+  "required": true,
+  "ok": true,
+  "exit_code": 0,
+  "timed_out": false,
+  "timeout_s": 120,
+  "started_at": "2026-10-31T21:51:54-04:00",
+  "duration_s": 5.571,
+  "log": "003-spec-lint.log",
+  "error": null
+}

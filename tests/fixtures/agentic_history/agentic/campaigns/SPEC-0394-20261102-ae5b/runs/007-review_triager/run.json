@@ -1,0 +1,83 @@
+{
+  "schema": "nw.run.v1",
+  "campaign": "SPEC-0394-20261102-ae5b",
+  "run_id": "007-review_triager",
+  "persona": "review_triager",
+  "model": "sonnet",
+  "effort": "medium",
+  "max_budget_usd": 0.5,
+  "timeout_s": 2700,
+  "permission_mode": "dontAsk",
+  "started_at": "2026-11-03T20:25:24-05:00",
+  "duration_s": 9.164,
+  "exit_code": 0,
+  "timed_out": false,
+  "interrupted": false,
+  "is_error": false,
+  "cost_usd": 0.1300055,
+  "cost_estimated": false,
+  "usage": {
+    "input_tokens": 6,
+    "cache_creation_input_tokens": 29467,
+    "cache_read_input_tokens": 28855,
+    "output_tokens": 924,
+    "output_tokens_details": {
+      "thinking_tokens": 279
+    },
+    "server_tool_use": {
+      "web_search_requests": 0,
+      "web_fetch_requests": 0
+    },
+    "service_tier": "standard",
+    "cache_creation": {
+      "ephemeral_1h_input_tokens": 29467,
+      "ephemeral_5m_input_tokens": 0
+    },
+    "inference_geo": "global",
+    "iterations": [
+      {
+        "input_tokens": 4,
+        "output_tokens": 352,
+        "cache_read_input_tokens": 28855,
+        "cache_creation_input_tokens": 612,
+        "cache_creation": {
+          "ephemeral_5m_input_tokens": 0,
+          "ephemeral_1h_input_tokens": 612
+        },
+        "type": "message"
+      }
+    ],
+    "speed": "standard",
+    "fallback_credit": null
+  },
+  "session_id": "1106545f-06e1-47de-877d-35cf8630bbf0",
+  "verdict_ok": true,
+  "verdict": {
+    "waive": [
+      {
+        "id": "adversarial_reviewer#2",
+        "reason": "The spec defines template_sha256 as the hash of the bytes read during validation. The reviewer calls it hardening only, and the spec does not ask for it."
+      },
+      {
+        "id": "conformance_reviewer#0",
+        "reason": "The output section is derived from the enforced schema, and the spec's 'As shipped' section records the extra `trigger` field. Not a defect."
+      },
+      {
+        "id": "test_reviewer#4",
+        "reason": "The test plan checks that queue.py, profiles.py and divergence.py are untouched with `git diff --stat main`, and the reviewer says that diff touches none of them. An automated test for this is not required."
+      }
+    ],
+    "note": "I waived three findings that were out of scope, already documented, or only hardening. I kept the real minor defects: nan/inf budgets, the double registry scan, and the test-coverage gaps."
+  },
+  "profile": "thorough",
+  "profile_sources": [
+    "builtin:thorough.yaml"
+  ],
+  "worker": null,
+  "files": {
+    "prompt": "prompt.md",
+    "raw": "result.json",
+    "stderr": "stderr.log",
+    "stream": "stream.jsonl"
+  }
+}

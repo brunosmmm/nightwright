@@ -1,0 +1,98 @@
+{
+  "schema": "nw.run.request.v1",
+  "persona": "adversarial_reviewer",
+  "model": "opus",
+  "effort": "high",
+  "max_budget_usd": 2.5,
+  "timeout_s": 2700,
+  "permission_mode": "dontAsk",
+  "read_only": true,
+  "cwd": "/home/user/work/.nw-worktrees/Meta-Tools/SPEC-0336-20261031-6558",
+  "json_schema": {
+    "type": "object",
+    "required": [
+      "verdict",
+      "score",
+      "findings",
+      "fix_brief"
+    ],
+    "properties": {
+      "verdict": {
+        "type": "string",
+        "enum": [
+          "pass",
+          "fix"
+        ]
+      },
+      "score": {
+        "type": "integer",
+        "minimum": 0,
+        "maximum": 100
+      },
+      "findings": {
+        "type": "array",
+        "items": {
+          "type": "object",
+          "required": [
+            "severity",
+            "category",
+            "title"
+          ],
+          "properties": {
+            "severity": {
+              "type": "string",
+              "enum": [
+                "must_fix",
+                "major",
+                "minor",
+                "nit"
+              ]
+            },
+            "category": {
+              "type": "string",
+              "enum": [
+                "bug",
+                "logic",
+                "security",
+                "injection",
+                "path_traversal",
+                "subprocess",
+                "secrets",
+                "concurrency",
+                "error_handling",
+                "data_loss",
+                "resource_leak",
+                "other"
+              ]
+            },
+            "title": {
+              "type": "string"
+            },
+            "detail": {
+              "type": "string"
+            },
+            "trigger": {
+              "type": "string"
+            },
+            "files": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "lines": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            }
+          }
+        }
+      },
+      "fix_brief": {
+        "type": "string"
+      }
+    }
+  },
+  "started_at": "2026-11-01T00:53:00-04:00"
+}

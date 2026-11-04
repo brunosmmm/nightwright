@@ -1,0 +1,9 @@
+{
+  "exit_code": 0,
+  "timed_out": false,
+  "killed_by": null,
+  "signal": null,
+  "ended_at": "2026-11-01T00:57:05-04:00",
+  "duration_s": 244.357,
+  "synthesized": false
+}

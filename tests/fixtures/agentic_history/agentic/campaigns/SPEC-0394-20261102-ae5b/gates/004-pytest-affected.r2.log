@@ -1,0 +1,58 @@
+affected_tests: affected: 123/252 test files affected by 10 changed files (reference scan for docs/LEDGER.md; reference scan for docs/product/capabilities/agentic.md; reference scan for docs/product/reference/index.md; reference scan for docs/specs/0394-declared-persona-run-settings-routing-and-requests.md; name rule for src/nightwright/agentic/cli_personas.py)
+affected_tests: running uv run pytest -q -x -n 2 tests/test_agentic_adopt.py tests/test_agentic_campaign_export.py tests/test_agentic_campaign_runs.py tests/test_agentic_close.py tests/test_agentic_close_inflight.py tests/test_agentic_close_regenerate.py tests/test_agentic_close_reuse.py tests/test_agentic_close_train.py tests/test_agentic_conduct_cli.py tests/test_agentic_conductor_guard.py tests/test_agentic_config_reload.py tests/test_agentic_cost_estimate.py tests/test_agentic_dashboard.py tests/test_agentic_dashboard_journey.py tests/test_agentic_dashboard_spec_phase.py tests/test_agentic_dashboard_spec_reviews.py tests/test_agentic_detach.py tests/test_agentic_divergence.py tests/test_agentic_dogfood_config.py tests/test_agentic_drain_signal.py tests/test_agentic_e2e.py tests/test_agentic_escalations.py tests/test_agentic_events.py tests/test_agentic_events_settings.py tests/test_agentic_exit_paths.py tests/test_agentic_gate_limits.py tests/test_agentic_gate_paths.py tests/test_agentic_gates.py tests/te
+bringing up nodes...
+bringing up nodes...
+
+........................................................................ [  2%]
+........................................................................ [  4%]
+....s.........................................s......................... [  6%]
+........................................................................ [  8%]
+........................................................................ [ 10%]
+..................................................................F..... [ 12%]
+........................................................................ [ 14%]
+........................................................................ [ 16%]
+........................................................................ [ 18%]
+........................................................................ [ 20%]
+........................................................................ [ 22%]
+........................................................................ [ 24%]
+........................................................................ [ 26%]
+........................................................................ [ 28%]
+................................
+=================================== FAILURES ===================================
+_________________________ test_handler_only_sets_stop __________________________
+[gw1] linux -- Python 3.14.9 /home/user/.local/share/nightwright/agentic/worker/jobs/SPEC-0394-20261102-ae5b-gate-004-a1/tree/.venv/bin/python
+
+tmp_path = PosixPath('/home/user/.local/share/nightwright/agentic/worker/jobs/SPEC-0394-20261102-ae5b-gate-004-a1/tmp/pytest-of-nw/pytest-2/popen-gw1/test_handler_only_sets_stop0')
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x7f2083212f90>
+
+    def test_handler_only_sets_stop(tmp_path, monkeypatch):
+        repo, cfg, a = gate_world(tmp_path, monkeypatch)
+        calls, handlers = [], {}
+        real_terminate = G.terminate_all
+        monkeypatch.setattr(G, "terminate_all", lambda: (calls.append(time.monotonic()),
+                                                         real_terminate()))
+        real_signal = signal.signal
+        monkeypatch.setattr(signal, "signal", lambda s, h: (handlers.__setitem__(s, h),
+                                                            real_signal(s, h))[1])
+        seen = {}
+    
+        def when():
+            if pid_file(tmp_path) is None or "t" in seen:
+                return False
+            seen["t"] = time.monotonic()
+            handlers[signal.SIGTERM](signal.SIGTERM, None)       # a signal with a gate in flight
+            seen["returned"] = time.monotonic()
+            seen["calls_at_return"] = len(calls)
+            return False
+    
+        run_with_stop(cfg, when, max_ticks=400)
+        assert seen["returned"] - seen["t"] < 0.2 and seen["calls_at_return"] == 0
+>       assert calls and calls[0] - seen["t"] < 0.5
+E       assert ([273617.335045973] and (273617.335045973 - 273616.502280339) < 0.5)
+
+tests/test_agentic_exit_paths.py:146: AssertionError
+=========================== short test summary info ============================
+FAILED tests/test_agentic_exit_paths.py::test_handler_only_sets_stop - assert...
+!!!!!!!!!!!!!!!!!!!!!!!!!! stopping after 1 failures !!!!!!!!!!!!!!!!!!!!!!!!!!!
+!!!!!!!!!!!! xdist.dsession.Interrupted: stopping after 1 failures !!!!!!!!!!!!!
+1 failed, 1037 passed, 2 skipped in 324.23s (0:05:24)
