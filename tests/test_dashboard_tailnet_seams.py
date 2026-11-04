@@ -47,3 +47,10 @@ def test_no_dashboard_module_runs_a_tailscale_form_but_ip():
         for n in ast.walk(ast.parse(p.read_text())):
             if isinstance(n, ast.Call) and getattr(n.func, "id", None) == "run_tailscale":
                 assert [a.value for a in n.args[0].elts] == ["ip"], (p, ast.dump(n))
+
+
+def test_reference_doc_lists_bind_tailscale_and_exit_3():
+    doc = (Path(__file__).parent.parent / "docs/product/reference/index.md").read_text()
+    row = next(ln for ln in doc.splitlines() if ln.startswith("| `serve` |"))
+    assert "--bind tailscale" in row and "exits **3**" in row
+    assert "naming `tailscale up`. Exactly one" in row

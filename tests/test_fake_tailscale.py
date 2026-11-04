@@ -6,9 +6,9 @@ import pytest
 from fixtures import fake_tailscale as FT
 
 
-def run(env, *args):
+def run(env, *args, timeout=30):
     return subprocess.run(["tailscale", *args], env=env, capture_output=True, text=True,
-                          timeout=30)
+                          timeout=timeout)
 
 
 def test_ip_prints_own_ips_and_logs_argv(tmp_path):
@@ -28,6 +28,12 @@ def test_modes(tmp_path):
     assert run(FT.install(tmp_path, mode="fail"), "ip").returncode == 1
     r = run(FT.install(tmp_path, mode="garbage"), "ip")
     assert r.returncode == 0 and "100." not in r.stdout
+
+
+def test_hang_mode_outlasts_a_short_timeout(tmp_path):
+    env = FT.install(tmp_path, mode="hang")
+    with pytest.raises(subprocess.TimeoutExpired):
+        run(env, "ip", timeout=0.5)
 
 
 @pytest.mark.parametrize("sub", [["up"], ["set", "--operator=x"], ["serve"], ["cert", "h"],

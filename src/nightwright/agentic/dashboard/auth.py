@@ -58,6 +58,11 @@ def is_tailnet_ip(addr) -> bool:
     return ip in (TAILNET_V4 if ip.version == 4 else TAILNET_V6)
 
 
+_NO_TAILNET = (
+    "no tailnet address on this host (`tailscale` is missing, logged out or stopped): "
+    "run `tailscale up`, or bind loopback with `--bind 127.0.0.1:PORT`")
+
+
 def run_tailscale(args, *, timeout: float = 5.0) -> str:
     """stdout of `tailscale <args>` (an argv list, no shell). `TailscaleError` for a missing
     binary, a timeout, a non-zero exit or output that is not UTF-8."""
@@ -66,10 +71,10 @@ def run_tailscale(args, *, timeout: float = 5.0) -> str:
                            timeout=timeout, check=False)
     except subprocess.TimeoutExpired:
         raise TailscaleError(f"`tailscale {' '.join(args)}` timed out")
+    except UnicodeError:                        # a ValueError subclass: must come first
+        raise TailscaleError("`tailscale` printed non-UTF-8 output")
     except (OSError, ValueError) as e:          # not on PATH, not executable
         raise TailscaleError(f"cannot run `tailscale`: {e}")
-    except UnicodeError:
-        raise TailscaleError("`tailscale` printed non-UTF-8 output")
     if r.returncode != 0:
         raise TailscaleError(f"`tailscale {' '.join(args)}` exited {r.returncode}")
     return r.stdout
@@ -89,9 +94,7 @@ def own_tailnet_ips(run=run_tailscale) -> list[str]:
         if ip is not None and is_tailnet_ip(ip):
             ips.append(str(ip))
     if not ips:
-        raise TailnetMissing(
-            "no tailnet address on this host (`tailscale` is missing, logged out or stopped): "
-            "run `tailscale up`, or bind loopback with `--bind 127.0.0.1:PORT`")
+        raise TailnetMissing(_NO_TAILNET)
     return sorted(dict.fromkeys(ips), key=lambda a: ":" in a)
 
 
@@ -165,6 +168,8 @@ def resolve_bind(spec, own_fn=own_tailnet_ips) -> tuple[str, int]:
     own: list[str] = []
     if host.lower() == "tailscale":
         own = own_fn()
+        if not own:
+            raise TailnetMissing(_NO_TAILNET)
         host = own[0]
     elif is_tailnet_ip(host):
         own = own_fn()

@@ -67,10 +67,15 @@ def test_run_tailscale_non_utf8_output_is_a_tailscale_error(monkeypatch):
     def boom(*a, **k):
         raise UnicodeDecodeError("utf-8", b"\xff", 0, 1, "bad")
     monkeypatch.setattr(A.subprocess, "run", boom)
-    with pytest.raises(A.TailscaleError):
+    with pytest.raises(A.TailscaleError, match="non-UTF-8"):
         A.run_tailscale(["ip"])
     with pytest.raises(A.TailnetMissing):
         A.own_tailnet_ips()
+
+
+def test_resolve_bind_tailscale_with_an_empty_own_list_is_tailnet_missing():
+    with pytest.raises(A.TailnetMissing, match="tailscale up"):
+        A.resolve_bind("tailscale", own_fn=lambda: [])
 
 
 def test_run_tailscale_uses_an_argv_list_without_a_shell(monkeypatch):

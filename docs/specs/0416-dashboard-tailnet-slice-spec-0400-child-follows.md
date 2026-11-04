@@ -357,6 +357,15 @@ run the venv's `nw` as a real subprocess with `NW_DATA_DIR` set to the
   Step 3 (logged in: exit 2 naming the identity gate and the `tailscale ip -4` address) is
   **pending the human's `tailscale up`**; it is covered meanwhile by the fake (`100.64.0.5`).
 
+### Test record, review fixes (2026-11-04)
+
+- Added `test_hang_mode_outlasts_a_short_timeout` (fake self-test), an empty-`own_fn` unit test
+  (`TailnetMissing`, `resolve_bind` now guards `own[0]`), a `non-UTF-8` message assertion (the
+  `UnicodeError` branch of `run_tailscale` moved above `OSError, ValueError`) and a reference-doc
+  grep test (`--bind tailscale`, exit 3, full stop fixed). `uv run pytest -q` on the fake,
+  tailnet auth/server/seams, `test_dashboard_auth.py` and `test_docs_product_reference.py`:
+  152 passed; `spec_lint` exits 0. The full suite is left to gating.
+
 ### As shipped (2026-11-04)
 
 - As designed: `TailnetMissing`, `TailscaleError`, `is_tailnet_ip`, `run_tailscale`,
