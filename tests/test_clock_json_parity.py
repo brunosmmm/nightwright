@@ -12,6 +12,7 @@ from zoneinfo import ZoneInfo
 
 import pytest
 from click.testing import CliRunner
+from waits import pilot_until
 
 from nightwright import explore as EX
 from nightwright import report as R
@@ -238,12 +239,13 @@ def test_desk_shows_open_question_count_and_clock_marker(tmp_path, monkeypatch):
     async def drive():
         app = IdeaDesk(cfg)
         async with app.run_test(size=(110, 24)) as pilot:
-            await pilot.pause()
-            await pilot.pause()
+            def shown(*needles):
+                return all(n in "\n".join(_grid(app)) for n in needles)
+
+            await pilot_until(pilot, lambda: shown("2 open"))
             assert "2 open" in "\n".join(_grid(app))     # detail questions rule
             await pilot.press("i")                       # clock in → marker appears
-            await pilot.pause()
-            await pilot.pause()
+            await pilot_until(pilot, lambda: shown("◕", "clocked in"))
             screen = "\n".join(_grid(app))
             assert "◕" in screen
             assert "clocked in" in screen

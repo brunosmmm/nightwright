@@ -11,6 +11,7 @@ from zoneinfo import ZoneInfo
 
 import pytest
 from click.testing import CliRunner
+from waits import pilot_until
 
 from nightwright import tui as T
 from nightwright.cli import cli
@@ -272,7 +273,7 @@ def test_desk_lists_ideas_selects_and_shows_detail(tmp_path, monkeypatch):
     async def drive():
         app = IdeaDesk(cfg)
         async with app.run_test(size=(100, 30)) as pilot:
-            await pilot.pause()
+            await pilot_until(pilot, lambda: "Two panes beat one table" in "\n".join(_grid(app)))
             screen = "\n".join(_grid(app))
             assert "IDEA-001" in screen
             assert "desk needs panes" in screen          # detail header
@@ -283,7 +284,7 @@ def test_desk_lists_ideas_selects_and_shows_detail(tmp_path, monkeypatch):
             assert "IDEA-002" not in screen              # non-active hidden by default
 
             await pilot.press("a")                       # reveal non-active
-            await pilot.pause()
+            await pilot_until(pilot, lambda: "IDEA-002" in "\n".join(_grid(app)))
             screen = "\n".join(_grid(app))
             assert "IDEA-002" in screen
             assert "all states" in screen

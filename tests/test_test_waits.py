@@ -35,6 +35,24 @@ def bare_joins(source):
     return found
 
 
+POSITIVE_GRID_ASSERT = re.compile(r"""^\s*assert\s+(?:"[^"\n]*"|'[^'\n]*')\s+in\s+.*_grid\(""")
+
+
+def pause_then_grid_assert(source):
+    """Line numbers of a positive `assert "text" in ..._grid(app)` right after `await pilot.pause()`:
+    a fixed pause is a load race; use `waits.pilot_until`. (Narrow on purpose: negative asserts and
+    assigned screens are not flagged.)"""
+    lines = source.splitlines()
+    return [i + 1 for i in range(1, len(lines))
+            if lines[i - 1].strip() == "await pilot.pause()" and POSITIVE_GRID_ASSERT.match(lines[i])]
+
+
+def test_no_pilot_pause_before_positive_grid_assert():
+    bad = {p.name: pause_then_grid_assert(p.read_text()) for p in _modules()}
+    bad = {k: v for k, v in bad.items() if v}
+    assert not bad, f"poll with waits.pilot_until, not a fixed pilot.pause(): {bad}"
+
+
 def test_no_private_wait_helpers():
     bad = {p.name: private_helpers(p.read_text()) for p in _modules()}
     bad = {k: v for k, v in bad.items() if v}
@@ -54,6 +72,8 @@ def test_guard_scans_catch_the_shapes():
     assert bare_joins('t.join(10)\nres = out["res"]\n') == [1]
     assert bare_joins("side.join(60)\n\nassert not side.is_alive()\n") == []
     assert bare_joins('x = "".join(parts)\n') == []
+    assert pause_then_grid_assert('await pilot.pause()\nassert "a" in "\\n".join(_grid(app))\n') == [2]
+    assert pause_then_grid_assert('await pilot.pause()\nassert "a" not in _grid(app)\n') == []
 
 
 def test_until_and_join_bounds():

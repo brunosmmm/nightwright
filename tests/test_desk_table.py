@@ -11,6 +11,7 @@ from zoneinfo import ZoneInfo
 
 import pytest
 from click.testing import CliRunner
+from waits import pilot_until
 
 from nightwright import report as R
 from nightwright import tui as T
@@ -319,8 +320,7 @@ def test_project_column_is_visible_in_the_desk(tmp_path, monkeypatch):
             assert "Meta-" in screen
 
             await pilot.press("z")             # …and shown in full once wide
-            await pilot.pause()
-            await pilot.pause()
+            await pilot_until(pilot, lambda: "Meta-Tools" in "\n".join(_grid(app)))
             assert "Meta-Tools" in "\n".join(_grid(app))
 
     asyncio.run(drive())
