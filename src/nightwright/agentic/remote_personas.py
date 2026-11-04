@@ -138,7 +138,8 @@ def run_job(cfg, h: dict, job: Path, frames, cancel: threading.Event) -> None:
         if W._git("-C", tree, "config", key, stage="run", check=False).returncode != 0:
             _tree_git(tree, "config", key, value)
     reset = {"NW_WORKTREE": str(tree), "NW_DATA_DIR": str(cfg["data_dir"]),
-             "NW_CONFIG_DIR": str(cfg.get("config_dir") or ""), **G.tmp_env(tmp)}
+             "NW_CONFIG_DIR": str(cfg.get("config_dir") or ""), **G.tmp_env(tmp),
+             "NW_PERSONA": str(payload.get("persona") or "")}         # SPEC-0425
     try:
         req = R.request_from_job(payload["request"], tree, run_dir, env=reset)
         runner = R.select_runner(cfg)
@@ -346,7 +347,8 @@ def adopted_request(cfg, state: dict, rec: dict, run_dir):
     if not isinstance(doc, dict) or not wt:
         return None
     env = {"NW_WORKTREE": str(wt), "NW_DATA_DIR": str(cfg.get("data_dir") or ""),
-           "NW_CONFIG_DIR": str(cfg.get("config_dir") or "")}
+           "NW_CONFIG_DIR": str(cfg.get("config_dir") or ""),
+           "NW_PERSONA": str(doc.get("persona") or "")}               # SPEC-0425
     try:
         cid = str(state.get("id") or "")
         if cid:          # SPEC-0253: the run's private TMPDIR

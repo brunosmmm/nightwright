@@ -157,6 +157,67 @@ def _print_run(rec: dict) -> None:
         kv(key, path)
 
 
+_NAME_OK = frozenset("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-.")
+
+
+def _session_reader(cfg, sid) -> str | None:
+    """The `conductor` / `steward:<P>` reader the Claude Code session `sid` is registered as in
+    `conductor_cost.sessions` (SPEC-0299), or None."""
+    from . import conductor_cost as CC
+    from . import mailbox as M
+    try:
+        text = CC._sessions_path(cfg).read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return None
+    for raw in reversed(text.splitlines()):
+        try:
+            row = json.loads(raw)
+        except ValueError:
+            continue
+        if isinstance(row, dict) and row.get("session_id") == sid:
+            try:
+                reader = M.validate_address(cfg, row.get("reader"))
+            except ValueError:
+                continue
+            if reader != "human":
+                return reader
+    return None
+
+
+def note_actor(cfg, env, author=None) -> tuple[str, str]:
+    """SPEC-0425: `(by, author)` of a `nw campaign note`, first match wins: `--author X` →
+    `agent:X`; `NW_PERSONA` → `agent:<persona>`; `NW_PERSONA_RUN=1` → `agent:persona`; a valid
+    `NW_MAILBOX_ADDR` → that address; a `CLAUDE_CODE_SESSION_ID` registered for the conductor or
+    a steward → that reader; `CLAUDECODE=1` → `agent:session`; else `human`. `author` is `by`
+    without the `agent:` prefix."""
+    from . import mailbox as M
+
+    def agent(name):
+        return f"agent:{name}", name
+    if author:
+        return agent(author)
+    persona = (env.get("NW_PERSONA") or "").strip()
+    if persona and set(persona) <= _NAME_OK:
+        return agent(persona)
+    if env.get("NW_PERSONA_RUN") == "1":
+        return agent("persona")
+    addr = (env.get("NW_MAILBOX_ADDR") or "").strip()
+    if addr:
+        try:
+            a = M.validate_address(cfg, addr)
+            return a, a
+        except ValueError:
+            pass
+    sid = (env.get("CLAUDE_CODE_SESSION_ID") or "").strip()
+    if sid:
+        reader = _session_reader(cfg, sid)
+        if reader:
+            return reader, reader
+    if env.get("CLAUDECODE") == "1":
+        return agent("session")
+    return "human", "human"
+
+
 def _export_dir(cfg, out, now) -> Path:
     """The directory an export goes into, created. An explicit `--out` must be missing or empty;
     the default is timestamped, with `-2`, `-3`, … when it exists. Never reuses an export."""
@@ -410,9 +471,8 @@ def attach(campaign_group):
             store.read_state(cfg, campaign)
         except ValueError as e:
             raise click.ClickException(str(e))
-        by = f"agent:{author}" if author else "human"
-        rec = store.append_event(cfg, campaign, "note",
-                                 {"text": text, "author": author or "human"}, by=by)
+        by, who = note_actor(cfg, os.environ, author)
+        rec = store.append_event(cfg, campaign, "note", {"text": text, "author": who}, by=by)
         console.print(f"[green]✓[/] note #{rec['seq']} ← {campaign}")
 
     @campaign_group.command("export")

@@ -17,7 +17,7 @@ def run(cfg, monkeypatch, *args):
 
 
 ESCALATE = ["queue", "escalate", CID, "--question", "ship it?", "--option", "yes",
-            "--option", "no", "--recommend", "1", "--fact", "gate green"]
+            "--option", "no", "--recommend", "1", "--topic", "scope", "--fact", "gate green"]
 
 
 def test_escalate_dry_run_then_yes(tmp_path, monkeypatch):

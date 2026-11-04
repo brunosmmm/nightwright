@@ -56,6 +56,8 @@ def _esc(cfg, cid=CID, **kw):
     kw.setdefault("question", "ship it?")
     kw.setdefault("options", ["yes", "no"])
     kw.setdefault("recommend", 1)
+    if kw["recommend"] is not None:
+        kw.setdefault("topic", "scope")          # SPEC-0425: human-only, never times out
     plan = ESC.plan_escalate(cfg, cid, **kw)
     return ESC.apply_escalate(cfg, plan)
 
@@ -69,7 +71,8 @@ def _state(cfg, cid=CID):
 def test_campaignless_plan_writes_nothing_and_apply_writes_every_field(tmp_path):
     cfg = _cfg(tmp_path)
     plan = ESC.plan_escalate(cfg, None, question="runner broken?", options=["restart", "wait"],
-                             recommend=2, facts=["dead 10m"], frm="conductor")
+                             recommend=2, facts=["dead 10m"], frm="conductor",
+                             topic="scope")
     assert plan["park"] is None and ESC.list_all(cfg) == []
     rec = ESC.apply_escalate(cfg, plan)
     assert rec["id"] == "ESC-0001"

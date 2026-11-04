@@ -80,6 +80,8 @@ EVENT_TYPES = {
     "escalation_withdrawn": ("escalation_id", "reason"),
     # SPEC-0235
     "escalation_answered": ("escalation_id", "kind", "summary"),
+    # SPEC-0425: an eligible escalation went unanswered past its due time
+    "escalation_timeout": ("escalation_id", "recommendation", "topic"),
     # SPEC-0253
     "temp_pressure": ("path", "free_mb", "free_inodes", "free_inodes_pct", "thresholds"),
     # SPEC-0217: the spec phase of an idea campaign
@@ -920,6 +922,7 @@ def sync(cfg, now=None, ping=False) -> list[dict]:
             ESC.remind_due(cfg, now)
         except Exception:                         # a reminder never breaks the follower
             pass
+        ESC.timeouts_due(cfg, now)                # SPEC-0425; never raises
         _maybe_sweep_prs(cfg, now)
     return out
 

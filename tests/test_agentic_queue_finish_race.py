@@ -33,7 +33,7 @@ def _park_writer(cfg, cid):
 
 def _escalate_writer(cfg, cid):
     ESC.apply_escalate(cfg, ESC.plan_escalate(cfg, cid, question="ship it?", options=["yes", "no"],
-                                              recommend=1))
+                                              recommend=1, topic="scope"))
 
 
 def _reviewing(cfg, cid):

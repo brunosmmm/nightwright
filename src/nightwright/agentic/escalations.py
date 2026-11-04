@@ -2,6 +2,9 @@
 `<agentic_dir>/escalations/`, created by `nw queue escalate`, which also parks the campaign as
 `human_decision` (the human-owned reason of SPEC-0222), appends an `escalation` event, mails
 `human` and runs a configurable desktop notifier. Answering (SPEC-0235) only records the answer; the conductor applies it.
+A record with a recommendation and a non-human-only `topic` times out (SPEC-0425): the follower
+emits `escalation_timeout` once it is due and the conductor auto-applies the recommendation
+(`answer --auto`), which a later human / steward answer may reverse.
 
 Lock order is always the campaign's `item_lock`, then the escalations lock."""
 from __future__ import annotations
@@ -21,7 +24,14 @@ from . import store
 
 SCHEMA = "nw.escalation.v1"
 STATUSES = ("open", "answered", "withdrawn")
-DEFAULTS = {"notify": "auto", "remind_s": 3600}
+DEFAULTS = {"notify": "auto", "remind_s": 3600, "auto_apply_after_s": 1800}
+# SPEC-0425: every escalation names what it is about; only `AUTO_TOPICS` may time out
+TOPICS = ("recovery", "judgment", "scope", "product", "spend_ceiling", "spend_diverging",
+          "manual_ac", "push_main", "pr_merge", "human_checkout", "human_settings")
+AUTO_TOPICS = ("recovery", "judgment")
+HUMAN_ONLY_TOPICS = tuple(t for t in TOPICS if t not in AUTO_TOPICS)
+RECOVERY_KINDS = frozenset({"red_main", "worker_lost"})   # topic-less: counts as `recovery`
+HUMAN_ONLY_KINDS = frozenset({"cost"})                    # whatever the topic says (SPEC-0422)
 NOTIFY_TIMEOUT_S = 5
 _ID_RE = re.compile(r"^ESC-(\d{4,})$")
 _SUBST_RE = re.compile(r"\{(id|campaign|question|recommendation)\}")
@@ -31,6 +41,87 @@ def settings(cfg) -> dict:
     ag = cfg.get("agentic")
     esc = ag.get("escalations") if isinstance(ag, dict) else None
     return {**DEFAULTS, **(esc if isinstance(esc, dict) else {})}      # malformed: defaults
+
+
+def auto_apply_after_s(cfg) -> float:
+    """`agentic.escalations.auto_apply_after_s`; a malformed or negative value is the default,
+    0 disables timeouts (SPEC-0425)."""
+    try:
+        v = float(settings(cfg)["auto_apply_after_s"])
+    except (TypeError, ValueError):
+        return float(DEFAULTS["auto_apply_after_s"])
+    return v if v >= 0 else float(DEFAULTS["auto_apply_after_s"])
+
+
+# ---- topics and eligibility (SPEC-0425) ------------------------------------------------------
+
+def topic_of(rec: dict) -> str | None:
+    """The record's topic; `recovery` for a topic-less `RECOVERY_KINDS` record; else None (a
+    legacy record, or an unknown topic string)."""
+    t = rec.get("topic")
+    if t is None:
+        return "recovery" if rec.get("kind") in RECOVERY_KINDS else None
+    return t if t in TOPICS else None
+
+
+def eligibility(rec: dict) -> tuple[bool, str]:
+    """`(eligible, why)`: may this record's recommendation be auto-applied once due?"""
+    if rec.get("kind") in HUMAN_ONLY_KINDS:
+        return False, f"kind {rec.get('kind')} is human-only"
+    if rec.get("recommendation") is None:
+        return False, "no recommendation"
+    t = topic_of(rec)
+    if t is None:
+        return False, "no topic"
+    if t in HUMAN_ONLY_TOPICS:
+        return False, f"topic {t} is human-only"
+    return True, f"topic {t} with a recommendation"
+
+
+def eligible(rec: dict) -> bool:
+    return eligibility(rec)[0]
+
+
+def _auto_block(cfg, rec: dict, created: dt.datetime) -> dict:
+    ok, why = eligibility(rec)
+    after = auto_apply_after_s(cfg)
+    due = None
+    if ok and after > 0:
+        due = store.now_iso(created + dt.timedelta(seconds=after))
+    elif ok:
+        why += "; timeouts disabled (auto_apply_after_s: 0)"
+    return {"eligible": ok, "due_at": due, "why": why}
+
+
+def _until_s(ts, now) -> float | None:
+    """Seconds from `now` to `ts` (negative once past), None when unparseable."""
+    try:
+        t = dt.datetime.fromisoformat(ts)
+    except (TypeError, ValueError):
+        return None
+    if t.tzinfo is None:
+        t = t.astimezone()
+    return (t - now).total_seconds()
+
+
+def auto_marker(rec: dict, now) -> str:
+    """The `nw escalations list` / brief marker: `auto-applied`, `reversed`, `due in 12m`,
+    `due now`, `human-only`, or `-` (no recommendation, a legacy record, disabled)."""
+    a = rec.get("answer") or {}
+    if a.get("auto"):
+        return "auto-applied"
+    if any((h.get("answer") or {}).get("auto") for h in rec.get("answer_history") or []
+           if isinstance(h, dict)):
+        return "reversed"
+    auto = rec.get("auto") if isinstance(rec.get("auto"), dict) else {}
+    if rec.get("status") == "open" and auto.get("eligible") and auto.get("due_at"):
+        left = _until_s(auto["due_at"], now)
+        if left is None:
+            return "-"
+        return "due now" if left <= 0 else f"due in {max(1, int(left // 60))}m"
+    if rec.get("kind") in HUMAN_ONLY_KINDS or rec.get("topic") in HUMAN_ONLY_TOPICS:
+        return "human-only"
+    return "-"
 
 
 # ---- storage ---------------------------------------------------------------------------------
@@ -155,9 +246,11 @@ def _create(cfg, fields: dict) -> dict:
     with E._locked(_lock_path(cfg)):
         ids = _ids(cfg)
         esc_id = f"ESC-{(ids[-1] if ids else 0) + 1:04d}"
-        rec = {"schema": SCHEMA, "id": esc_id, "created": store.now_iso(), **fields,
+        now = dt.datetime.now().astimezone()
+        rec = {"schema": SCHEMA, "id": esc_id, "created": store.now_iso(now), **fields,
                "status": "open", "mail_id": None, "notified": None, "reminded_at": None,
                "answer": None, "answered_by": None, "answered_at": None, "withdrawn": None}
+        rec["auto"] = _auto_block(cfg, rec, now)
         _write(cfg, rec)
     return rec
 
@@ -165,9 +258,11 @@ def _create(cfg, fields: dict) -> dict:
 # ---- escalate --------------------------------------------------------------------------------
 
 def plan_escalate(cfg, campaign, *, question, options=(), recommend=None, facts=(),
-                  frm=None, kind=None) -> dict:
+                  frm=None, kind=None, topic=None) -> dict:
     """Validate and describe an escalation (pure: writes nothing). `kind` (SPEC-0342) says
-    what a record is about (`worker_lost`); None for an ordinary question."""
+    what a record is about (`worker_lost`); None for an ordinary question. `topic` (SPEC-0425)
+    is one of `TOPICS`; a recommended escalation needs one (a `RECOVERY_KINDS` kind counts as
+    `recovery`), so whether it may time out is always a deliberate choice."""
     from . import queue as Q
     frm = M.validate_address(cfg, frm or os.environ.get("NW_MAILBOX_ADDR") or "conductor")
     question = (question or "").strip()
@@ -181,10 +276,16 @@ def plan_escalate(cfg, campaign, *, question, options=(), recommend=None, facts=
             raise ValueError("--recommend needs at least one --option")
         if not 1 <= recommend <= len(opts):
             raise ValueError(f"--recommend {recommend} is not an option (1-{len(opts)})")
+    if topic is not None and topic not in TOPICS:
+        raise ValueError(f"--topic {topic!r} is not a topic ({', '.join(TOPICS)})")
+    if recommend is not None and topic is None and kind not in RECOVERY_KINDS:
+        raise ValueError("a recommended escalation needs --topic "
+                         f"({', '.join(TOPICS)}; human-only: {', '.join(HUMAN_ONLY_TOPICS)})")
     facts = [str(f) for f in facts]
     plan = {"campaign": campaign, "spec_id": None, "project": None, "state": None,
             "park_reason_now": None, "by": frm, "question": question, "options": opts,
-            "recommendation": recommend, "facts": facts, "park": None, "kind": kind}
+            "recommendation": recommend, "facts": facts, "park": None, "kind": kind,
+            "topic": topic}
     if not campaign:
         return plan
     st = store.read_state(cfg, campaign)           # ValueError when unknown
@@ -234,7 +335,8 @@ def apply_escalate(cfg, plan: dict) -> dict:
     fields = {"by": plan["by"], "campaign": cid, "spec_id": plan["spec_id"],
               "project": plan["project"], "question": plan["question"],
               "options": plan["options"], "recommendation": plan["recommendation"],
-              "facts": plan["facts"], "park": plan["park"], "kind": plan.get("kind")}
+              "facts": plan["facts"], "park": plan["park"], "kind": plan.get("kind"),
+              "topic": plan.get("topic")}
     if not cid:
         rec = _create(cfg, fields)
     else:
@@ -479,11 +581,56 @@ def _plan_override(cfg, rec, waive, attest, reason) -> dict:
             "implicitly_attested": implicit, "reach": reach}
 
 
+def _check_auto(cfg, rec: dict, by: str, now) -> int:
+    """SPEC-0425: refuse an `--auto` answer unless the record is open, eligible (stored at
+    create and still now), due and answered by the conductor; the minutes since it opened."""
+    esc_id = rec["id"]
+    if by != "conductor":
+        raise ValueError(f"--auto is the conductor's (--by conductor), not {by}'s")
+    if rec.get("status") != "open":
+        raise ValueError(f"{esc_id} is {rec.get('status')}; only an open escalation is "
+                         f"auto-applied")
+    auto = rec.get("auto") if isinstance(rec.get("auto"), dict) else None
+    ok, why = eligibility(rec)
+    if auto is None:
+        raise ValueError(f"{esc_id} predates escalation timeouts (no auto block); it waits "
+                         f"for the human")
+    if not (ok and auto.get("eligible")):
+        raise ValueError(f"{esc_id} is not eligible for an auto answer: "
+                         f"{why if not ok else auto.get('why')}")
+    if auto_apply_after_s(cfg) <= 0 or not auto.get("due_at"):
+        raise ValueError(f"{esc_id} has no timeout (auto_apply_after_s: 0)")
+    left = _until_s(auto["due_at"], now)
+    if left is None or left > 0:
+        raise ValueError(f"{esc_id} is not due yet: due at {auto['due_at']}"
+                         + (f" (in {int(left // 60)}m {int(left % 60)}s)" if left else ""))
+    return round((E._age_s(rec.get("created"), now) or 0) / 60)
+
+
 def plan_answer(cfg, esc_id, *, choose=None, text=None, waive=(), attest=(), reason=None,
-                note=None, by=None) -> dict:
+                note=None, by=None, auto=False, now=None) -> dict:
     """Validate and describe an answer (pure: writes nothing). Exactly one form: `choose`, `text`
-    or an override (`waive` / `attest` with `reason`)."""
+    or an override (`waive` / `attest` with `reason`). `auto` (SPEC-0425) takes no form: it
+    chooses the recommendation of a due, eligible record, by the conductor only. A human or
+    steward answer to an `answered` record whose answer was auto-applied reverses it."""
     waive, attest = list(waive or ()), list(attest or ())
+    if auto:
+        if choose is not None or text is not None or waive or attest or reason is not None:
+            raise AnswerFormError("--auto takes no other answer form (it chooses the "
+                                  "recommendation)")
+        by = M.validate_address(cfg, by or "human")
+        now = now or dt.datetime.now().astimezone()
+        rec = read(cfg, esc_id)
+        mins = _check_auto(cfg, rec, by, now)
+        if rec.get("campaign"):
+            _check_parked(esc_id, _campaign_state(cfg, rec["campaign"]))
+        auto_note = f"auto-applied after {mins} min without an answer (SPEC-0425)"
+        plan = plan_answer(cfg, esc_id, choose=str(rec["recommendation"]), by=by,
+                           note=note or auto_note)
+        plan["answer"]["auto"] = True
+        plan["auto"] = True
+        plan["summary"] = summarize(plan["answer"])
+        return plan
     forms = [k for k, on in (("choose", choose is not None), ("text", text is not None),
                              ("override", bool(waive or attest))) if on]
     if len(forms) != 1:
@@ -494,19 +641,23 @@ def plan_answer(cfg, esc_id, *, choose=None, text=None, waive=(), attest=(), rea
         raise AnswerFormError("--reason belongs to --waive/--attest")
     by = M.validate_address(cfg, by or "human")
     rec = read(cfg, esc_id)
-    if rec.get("status") != "open":
+    reverses = _reversible(rec, by)
+    if rec.get("status") != "open" and not reverses:
         when = (rec.get("answered_at") if rec.get("status") == "answered"
                 else (rec.get("withdrawn") or {}).get("at"))
         raise ValueError(f"{esc_id} is {rec.get('status')} since {when}; only an open "
-                         f"escalation can be answered")
-    if rec.get("campaign"):
+                         f"escalation can be answered" +
+                         ("" if not (rec.get("answer") or {}).get("auto") else
+                          " (an auto-applied answer is reversed by the human or a steward)"))
+    if rec.get("campaign") and not reverses:   # a reversal: the campaign has moved on
         _check_parked(esc_id, _campaign_state(cfg, rec["campaign"]))
     kind = forms[0]
     answer = {"kind": kind, "choice": None, "label": None, "text": None, "waive": [],
               "attest": [], "reason": None, "note": (note or "").strip() or None}
     plan = {"id": esc_id, "campaign": rec.get("campaign"), "by": by,
             "question": rec["question"], "options": rec.get("options") or [],
-            "answer": answer, "override": None}
+            "answer": answer, "override": None,
+            "reverses": dict(rec["answer"]) if reverses else None}
     if kind == "choose":
         opts = rec.get("options") or []
         if not opts:
@@ -532,6 +683,13 @@ def plan_answer(cfg, esc_id, *, choose=None, text=None, waive=(), attest=(), rea
         plan["override"] = ov
     plan["summary"] = summarize(answer)
     return plan
+
+
+def _reversible(rec: dict, by: str) -> bool:
+    """SPEC-0425: an `answered` record whose answer was auto-applied takes one more answer, from
+    the human or a steward."""
+    return (rec.get("status") == "answered" and bool((rec.get("answer") or {}).get("auto"))
+            and (by == "human" or by.startswith(M._STEWARD)))
 
 
 def summarize(answer: dict) -> str:
@@ -567,18 +725,26 @@ def apply_answer(cfg, plan: dict) -> dict:
     record closes leaves it open to retry (ledger events may repeat). A failed wake-up append is
     returned as `event_error` (not persisted). Never moves the campaign."""
     esc_id, cid, by, answer = plan["id"], plan["campaign"], plan["by"], plan["answer"]
-    known = bool(cid)
-    if known:
+    reverses = plan.get("reverses")
+    # a reversal (SPEC-0425) does not need the park: the campaign moved on after the auto answer
+    known = bool(cid) and (not reverses or _campaign_state(cfg, cid) is not None)
+    if known and not reverses:
         _check_parked(esc_id, _campaign_state(cfg, cid))   # unreadable ⇒ refused before any lock
     now = store.now_iso()
     with store.item_lock(cfg, cid) if known else contextlib.nullcontext():
-        if known:
+        if known and not reverses:
             _check_parked(esc_id, _campaign_state(cfg, cid))
         with E._locked(_lock_path(cfg)):
             rec = read(cfg, esc_id)
-            if rec.get("status") != "open":
+            if reverses:
+                if not _reversible(rec, by):
+                    raise ValueError(f"{esc_id} changed since the plan ({rec.get('status')}, "
+                                     f"answered by {rec.get('answered_by')}); re-run")
+            elif rec.get("status") != "open":
                 when = rec.get("answered_at") or (rec.get("withdrawn") or {}).get("at")
                 raise ValueError(f"{esc_id} is {rec.get('status')} since {when}")
+            elif plan.get("auto") and not eligible(rec):
+                raise ValueError(f"{esc_id} is no longer eligible for an auto answer")
             # the record closes last: a failure before it leaves the escalation open to retry
             if known:
                 summary = plan["summary"]
@@ -611,16 +777,52 @@ def apply_answer(cfg, plan: dict) -> dict:
                         _write(cfg, rec)
                     store.write_state(cfg, cid, st)
             rec.pop("overrides_removed", None)   # a failed withdraw's count no longer holds
+            if reverses:
+                rec.setdefault("answer_history", []).append(
+                    {"answer": rec.get("answer"), "answered_by": rec.get("answered_by"),
+                     "answered_at": rec.get("answered_at")})
             rec.update(status="answered", answer=answer, answered_by=by, answered_at=now)
             _write(cfg, rec)
+    data = {"escalation_id": esc_id, "kind": answer["kind"], "summary": plan["summary"],
+            "answer": answer}
+    if answer.get("auto"):
+        data["auto"] = True
+    if reverses:
+        data.update(reverses_auto=True, previous=reverses)
+    ev_err = None
     try:
         E.append(cfg, "escalation_answered", campaign=cid, spec_id=rec.get("spec_id"),
-                 project=rec.get("project"), by=by,
-                 data={"escalation_id": esc_id, "kind": answer["kind"],
-                       "summary": plan["summary"], "answer": answer})
+                 project=rec.get("project"), by=by, data=data)
     except (ValueError, OSError) as e:
-        return {**rec, "event_error": str(e)}     # returned only, never persisted
-    return rec
+        ev_err = str(e)
+    if answer.get("auto"):
+        rec = _announce_auto(cfg, rec)
+    return {**rec, "event_error": ev_err} if ev_err else rec   # the error is never persisted
+
+
+def _announce_auto(cfg, rec: dict) -> dict:
+    """SPEC-0425: tell the human an answer was auto-applied and how to reverse it (an info mail
+    and a notification); recorded under `auto`. Never raises."""
+    a = rec.get("answer") or {}
+    others = [o["n"] for o in rec.get("options") or [] if o["n"] != a.get("choice")]
+    alt = others[0] if others else "N"
+    mins = round(auto_apply_after_s(cfg) / 60)
+    text = (f"{rec['id']}: no answer in {mins} min; applied option {a.get('choice')} "
+            f"({a.get('label')}). To reverse: nw escalations answer {rec['id']} --choose {alt}"
+            f" --yes\n{rec.get('question')}")
+    mail_id, err = None, None
+    try:
+        mail_id = M.send(cfg, to="human", frm="conductor", kind="info",
+                         campaign=rec.get("campaign"), text=text)["id"]
+    except (ValueError, OSError) as e:
+        err = f"mail: {e}"[:300]
+    outcome = notify(cfg, rec, title=f"nw: {rec['id']} auto-applied")
+    try:
+        return _mutate(cfg, rec["id"], lambda r: r.setdefault("auto", {}).update(
+            applied_at=r.get("answered_at"), mail_id=mail_id, notified=outcome,
+            **({"error": err} if err else {})))
+    except (ValueError, OSError):
+        return rec
 
 
 # ---- notification ----------------------------------------------------------------------------
@@ -712,6 +914,69 @@ def _claim(cfg, esc_id, now, remind_s) -> bool:
         if age is None or age < remind_s:
             return False
         rec["reminded_at"] = store.now_iso(now)
+        _write(cfg, rec)
+    return True
+
+
+def timeouts_due(cfg, now=None) -> list[dict]:
+    """SPEC-0425: append one `escalation_timeout` per open, live, eligible record past its
+    `auto.due_at` (a campaign-bound one only once it is PARKED `human_decision`, so it is
+    answerable). The record is claimed first under the escalations lock (`auto.announced_at`),
+    so concurrent followers announce once; a failed append gives the claim back. Records
+    without an `auto` block (from before SPEC-0425) never time out. Never raises."""
+    out = []
+    try:
+        if auto_apply_after_s(cfg) <= 0:
+            return out
+        now = now or dt.datetime.now().astimezone()
+        for rec in list_all(cfg, "open"):
+            try:
+                auto = rec.get("auto")
+                if not (isinstance(auto, dict) and auto.get("eligible") and auto.get("due_at")
+                        and not auto.get("announced_at") and eligible(rec)):
+                    continue
+                left = _until_s(auto["due_at"], now)
+                if left is None or left > 0:
+                    continue
+                cid = rec.get("campaign")
+                if cid:
+                    st = _campaign_state(cfg, cid) or {}
+                    if not (st.get("state") == "PARKED"
+                            and (st.get("park") or {}).get("reason") == "human_decision"):
+                        continue
+                if not _claim_timeout(cfg, rec["id"], now):
+                    continue
+            except (ValueError, OSError):              # one bad record must not stop the pass
+                continue
+            opt = next((o for o in rec.get("options") or []
+                        if o["n"] == rec.get("recommendation")), {})
+            try:
+                out.append(E.append(cfg, "escalation_timeout", campaign=cid,
+                                    spec_id=rec.get("spec_id"), project=rec.get("project"),
+                                    by="watchdog",
+                                    data={"escalation_id": rec["id"], "campaign": cid,
+                                          "recommendation": rec.get("recommendation"),
+                                          "label": opt.get("label"), "topic": topic_of(rec)}))
+            except (ValueError, OSError):
+                with contextlib.suppress(ValueError, OSError):
+                    _mutate(cfg, rec["id"], lambda r: (r.get("auto") or {}).pop("announced_at",
+                                                                               None))
+    except Exception:                                  # a timeout never breaks the follower
+        pass
+    return out
+
+
+def _claim_timeout(cfg, esc_id, now) -> bool:
+    with E._locked(_lock_path(cfg)):
+        try:
+            rec = read(cfg, esc_id)
+        except ValueError:
+            return False
+        auto = rec.get("auto")
+        if rec.get("status") != "open" or not isinstance(auto, dict) \
+                or auto.get("announced_at"):
+            return False
+        auto["announced_at"] = store.now_iso(now)
         _write(cfg, rec)
     return True
 

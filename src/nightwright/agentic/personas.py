@@ -1019,6 +1019,7 @@ def build_request(cfg, profile, project_cfg, state, persona, *, run_dir,
         "NW_WORKTREE": str(worktree),
         "NW_BASE": str(repo.get("base") or ""),
         "NW_PERSONA_RUN": "1",     # SPEC-0272: org writes refuse inside an agent run
+        "NW_PERSONA": str(persona),   # SPEC-0425: `nw campaign note` attributes to it
     }
     cid = str(state.get("id") or "")
     if cid:           # SPEC-0253: a private TMPDIR per run, removed when its result is recorded

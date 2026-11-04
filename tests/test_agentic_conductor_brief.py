@@ -136,7 +136,8 @@ def test_brief_escalation_and_mail_parts(cfg, clock, monkeypatch):
     mk(cfg, "E2")
     park(cfg, "E2")
     rec = ESC.apply_escalate(cfg, ESC.plan_escalate(cfg, "E1", question="ship it? " + "q" * 300,
-                                                    options=["yes", "no"], recommend=1))
+                                                    options=["yes", "no"], recommend=1,
+                                                    topic="scope"))
     for i in range(13):
         M.send(cfg, to="conductor", frm="human", kind="question", text=f"m{i} " + "t" * 300)
     M.send(cfg, to="conductor", frm="human", kind="info", text="fyi, no reply needed")
@@ -231,7 +232,8 @@ def test_brief_caps_open_dispatches_and_escalations(cfg, clock, monkeypatch):
         park(cfg, cid)
         decide(cfg, cid, kind="dispatch", rule="run_overdue", why=f"check {i}")
         ESC.apply_escalate(cfg, ESC.plan_escalate(cfg, cid, question=f"q{i}",
-                                                  options=["yes", "no"], recommend=1))
+                                                  options=["yes", "no"], recommend=1,
+                                                    topic="scope"))
     b = brief(cfg)
     assert len(b["open_dispatches"]) == 10 and b["more"]["open_dispatches"] == 2
     assert len(b["escalations_open"]) == 10 and b["more"]["escalations_open"] == 2

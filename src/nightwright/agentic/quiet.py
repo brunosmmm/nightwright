@@ -52,6 +52,7 @@ RULES = {
     "runner_draining": "cond", "campaign_silent": "cond", "state_stuck": "cond", "parked": "cond",
     "park_undecided": "wake", "runner_dead": "wake", "lease_stale": "wake",
     "run_overdue": "wake", "message": "wake", "escalation_answered": "wake",
+    "escalation_timeout": "wake",       # SPEC-0425: the conductor auto-applies the recommendation
     "ready_not_admitted": "wake", "waiting_not_admitted": "wake",
     "runner_journal_silent": "wake", "temp_pressure": "wake", "runner_config_invalid": "wake",
     "code_changed": "wake", "auto_resume_failed": "wake",

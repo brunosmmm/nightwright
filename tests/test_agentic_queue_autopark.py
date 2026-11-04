@@ -273,7 +273,7 @@ def test_escalation_drops_auto(opened, monkeypatch):
     _park(cfg, cid)
     Q._record_auto_waits(cfg)
     ESC.apply_escalate(cfg, ESC.plan_escalate(cfg, cid, question="ship?", options=["y", "n"],
-                                              recommend=1))
+                                              recommend=1, topic="scope"))
     st = S.read_state(cfg, cid)
     assert st["park"]["reason"] == "human_decision" and "auto" not in st["park"]
     _step0a(cfg)

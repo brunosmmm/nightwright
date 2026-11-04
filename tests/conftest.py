@@ -66,6 +66,9 @@ def _no_persona_run(monkeypatch):
     SPEC-0291's NW_RUNNER_LOG, should pytest run under a detached runner."""
     monkeypatch.delenv("NW_PERSONA_RUN", raising=False)
     monkeypatch.delenv("NW_RUNNER_LOG", raising=False)
+    # SPEC-0425: `nw campaign note` attributes from these; a test sets the ones it needs
+    for k in ("NW_PERSONA", "NW_MAILBOX_ADDR", "CLAUDECODE", "CLAUDE_CODE_SESSION_ID"):
+        monkeypatch.delenv(k, raising=False)
 
 
 @pytest.fixture(autouse=True)

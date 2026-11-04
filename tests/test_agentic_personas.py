@@ -179,7 +179,8 @@ def test_build_request_implementer(tmp_path):
     assert req.env == {"NW_CAMPAIGN": st["id"], "NW_DATA_DIR": cfg["data_dir"],
                        "NW_CONFIG_DIR": cfg["config_dir"], "NW_SPEC_ID": "SPEC-0001",
                        "NW_WORKTREE": st["repo"]["worktree"], "NW_BASE": "main",
-                       "NW_PERSONA_RUN": "1", "TMPDIR": tmp, "TEMP": tmp, "TMP": tmp}
+                       "NW_PERSONA_RUN": "1", "NW_PERSONA": "implementer",   # SPEC-0425
+                       "TMPDIR": tmp, "TEMP": tmp, "TMP": tmp}
     assert req.system_append.startswith("## nw queue invariants")
     assert req.prompt.endswith(req.system_append + "\n")
 
@@ -189,6 +190,7 @@ def test_build_request_sets_persona_flag(tmp_path):
     req = PS.build_request(cfg, resolve_profile(cfg), _project_cfg(), st, "implementer",
                            run_dir=tmp_path / "runs" / "001-implementer")
     assert req.env["NW_PERSONA_RUN"] == "1"
+    assert req.env["NW_PERSONA"] == "implementer"           # SPEC-0425: note attribution
 
 
 def test_build_request_project_allowlist_override(tmp_path):

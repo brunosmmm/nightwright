@@ -18,10 +18,11 @@ SCHEMA = "nw.conductor.brief.v1"
 TEXT_LIMIT = 12000
 COMPACT_AT_DEFAULT = 150000
 CAPS = {"parked": 20, "active": 20, "open_dispatches": 10, "escalations_open": 10,
-        "unanswered_mail": 10, "recent_decisions": 10}
+        "unanswered_mail": 10, "recent_decisions": 10, "auto_applied_24h": 10}
 # Highest priority first; truncation removes items from the end of this list first.
 SECTION_ORDER = ("runner", "conductor", "counts", "parked", "open_dispatches",
-                 "escalations_open", "unanswered_mail", "active", "recent_decisions", "standing")
+                 "escalations_open", "auto_applied_24h", "unanswered_mail", "active",
+                 "recent_decisions", "standing")
 
 
 def _clip(text, n) -> str:
@@ -57,6 +58,25 @@ def _session(cfg) -> tuple[str | None, int | None]:
 def _cap(name, rows) -> tuple[list, int]:
     n = CAPS[name]
     return rows[:n], max(0, len(rows) - n)
+
+
+def _auto_applied(cfg, now) -> list[dict]:
+    """SPEC-0425: escalations auto-applied in the last 24 h (`reversed` once a human or steward
+    answered again)."""
+    out = []
+    for e in ESC.list_all(cfg, "answered"):
+        hist = [h for h in e.get("answer_history") or [] if isinstance(h, dict)]
+        auto = next((h for h in hist if (h.get("answer") or {}).get("auto")), None)
+        if auto is None and (e.get("answer") or {}).get("auto"):
+            auto = {"answer": e["answer"], "answered_at": e.get("answered_at")}
+        age = E._age_s((auto or {}).get("answered_at"), now)
+        if auto is None or age is None or age > 86400:
+            continue
+        a = auto["answer"]
+        out.append({"id": e.get("id"), "campaign": e.get("campaign"),
+                    "choice": a.get("choice"), "label": _clip(a.get("label"), 80),
+                    "at": auto.get("answered_at"), "reversed": bool(hist)})
+    return out
 
 
 def conductor_brief(cfg, now=None) -> dict:
@@ -107,14 +127,18 @@ def conductor_brief(cfg, now=None) -> dict:
                "rule": r["rule"], "rationale": _clip(r.get("rationale"), 200)}
               for r in reversed(records[-CAPS["recent_decisions"]:])]
     escs = [{"id": e.get("id"), "campaign": e.get("campaign"),
-             "question": _clip(e.get("question"), 160)} for e in escalations]
+             "question": _clip(e.get("question"), 160), "topic": ESC.topic_of(e),
+             "due_at": (e.get("auto") or {}).get("due_at") if isinstance(e.get("auto"), dict)
+             else None} for e in escalations]
+    auto_rows = _auto_applied(cfg, now)
     mail_rows = [{"id": m.get("id"), "from": m.get("from"), "kind": m.get("kind"),
                   "text": _clip(m.get("text"), 160)} for m in mail]
 
     more = {}
     out_lists = {}
     for name, rows in (("parked", parked), ("active", active), ("open_dispatches", dispatches),
-                       ("escalations_open", escs), ("unanswered_mail", mail_rows)):
+                       ("escalations_open", escs), ("auto_applied_24h", auto_rows),
+                       ("unanswered_mail", mail_rows)):
         out_lists[name], more[name] = _cap(name, rows)
     more["recent_decisions"] = max(0, len(records) - CAPS["recent_decisions"])
 
@@ -170,8 +194,14 @@ def _sections(b) -> dict:
         f"- #{d['seq']} {d['campaign'] or '-'} {d['rule']} {d['action']}"
         for d in b["open_dispatches"]], more.get("open_dispatches", 0))
     s["escalations_open"] = ("open escalations:", [
-        f"- {e['id']} {e['campaign'] or '-'} {e['question']}"
+        f"- {e['id']} {e['campaign'] or '-'}"
+        + (f" [{e['topic']}{' due ' + e['due_at'] if e.get('due_at') else ''}]"
+           if e.get("topic") else "") + f" {e['question']}"
         for e in b["escalations_open"]], more.get("escalations_open", 0))
+    s["auto_applied_24h"] = ("auto-applied escalations (24h):", [
+        f"- {e['id']} {e['campaign'] or '-'} option {e['choice']} ({e['label']}) at {e['at']}"
+        + (" REVERSED" if e["reversed"] else "")
+        for e in b.get("auto_applied_24h") or []], more.get("auto_applied_24h", 0))
     s["unanswered_mail"] = ("unanswered mail:", [
         f"- {m['id']} from {m['from']} ({m['kind']}) {m['text']}"
         for m in b["unanswered_mail"]], more.get("unanswered_mail", 0))

@@ -35,6 +35,8 @@ def esc(cfg, cid="SPEC-0001-hd", **kw):
     kw.setdefault("question", "ship it?")
     kw.setdefault("options", ["yes", "no"])
     kw.setdefault("recommend", 2 if kw["options"] else None)
+    if kw["recommend"] is not None:
+        kw.setdefault("topic", "scope")          # SPEC-0425: human-only, never times out
     return ESC.apply_escalate(cfg, ESC.plan_escalate(cfg, cid, **kw))
 
 

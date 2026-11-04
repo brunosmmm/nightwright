@@ -195,3 +195,54 @@ def test_show_lists_split_parts(tmp_path, monkeypatch):               # SPEC-029
     assert "part 1: SPEC-0101 First half" in r.output
     assert "part 2: SPEC-0102 Second half" in r.output
     assert "part 3: (pending) Rest" in r.output
+
+
+# ---- SPEC-0425: note attribution -------------------------------------------------------------
+
+def _register(cfg, reader, sid):
+    from nightwright.agentic import conductor_cost as CC
+    CC.record_session(cfg, reader, {"CLAUDE_CODE_SESSION_ID": sid}, source="manual")
+
+
+def test_note_actor_matrix(tmp_path, monkeypatch):
+    from nightwright.agentic.cli_campaign import note_actor
+    monkeypatch.setattr("nightwright.rules.projects_payload",
+                        lambda cfg: {"projects": [{"name": "Meta-Tools"}]})
+    cfg = _cfg(tmp_path)
+    _register(cfg, "conductor", "sid-c")
+    _register(cfg, "steward:Meta-Tools", "sid-s")
+    _register(cfg, "steward", "sid-bad")              # not an address: ignored
+    cases = [
+        ({}, "x", ("agent:x", "x")),
+        ({"NW_PERSONA": "implementer", "NW_PERSONA_RUN": "1", "CLAUDECODE": "1"}, None,
+         ("agent:implementer", "implementer")),
+        ({"NW_PERSONA_RUN": "1"}, None, ("agent:persona", "persona")),
+        ({"NW_MAILBOX_ADDR": "conductor", "CLAUDECODE": "1"}, None, ("conductor", "conductor")),
+        ({"NW_MAILBOX_ADDR": "nobody", "CLAUDECODE": "1"}, None, ("agent:session", "session")),
+        ({"CLAUDE_CODE_SESSION_ID": "sid-s", "CLAUDECODE": "1"}, None,
+         ("steward:Meta-Tools", "steward:Meta-Tools")),
+        ({"CLAUDE_CODE_SESSION_ID": "sid-c", "CLAUDECODE": "1"}, None, ("conductor", "conductor")),
+        ({"CLAUDE_CODE_SESSION_ID": "sid-bad", "CLAUDECODE": "1"}, None,
+         ("agent:session", "session")),
+        ({"CLAUDE_CODE_SESSION_ID": "unknown", "CLAUDECODE": "1"}, None,
+         ("agent:session", "session")),
+        ({}, None, ("human", "human")),
+    ]
+    for env, author, want in cases:
+        assert note_actor(cfg, env, author) == want, (env, author)
+
+
+def test_note_cli_attribution(tmp_path, monkeypatch):
+    cfg = _cfg(tmp_path)
+    _seed(cfg)
+    cid = "SPEC-0170-20261025-aaaa"
+    for env in ({"NW_PERSONA": "implementer", "NW_PERSONA_RUN": "1"},
+                {"NW_MAILBOX_ADDR": "conductor"}, {"CLAUDECODE": "1"}, {}):
+        r = _run(cfg, monkeypatch, ["campaign", "note", cid, "x"], env=env)
+        assert r.exit_code == 0, r.output
+        for k in env:
+            monkeypatch.delenv(k, raising=False)
+    notes = S.read_ledger(cfg, cid, types=["note"])
+    assert [(e["by"], e["author"]) for e in notes] == [
+        ("agent:implementer", "implementer"), ("conductor", "conductor"),
+        ("agent:session", "session"), ("human", "human")]

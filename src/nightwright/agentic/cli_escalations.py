@@ -29,6 +29,7 @@ def escalations_group():
     nw escalations list                open escalations
     nw escalations show ESC-0001       the question, options, recommendation and facts
     nw escalations answer ESC-0001 --choose 2 --yes     (or --text, or --waive/--attest)
+    nw escalations answer ESC-0001 --auto --by conductor --yes   (a due one, SPEC-0425)
     nw escalations withdraw ESC-0001 --reason "…" --yes
     """
 
@@ -56,11 +57,12 @@ def escalations_list(cfg, show_all, as_json):
     import datetime as dt
     now = dt.datetime.now().astimezone()
     table = Table(title=f"Escalations  ({len(recs)} shown)")
-    for col in ("id", "age", "campaign", "status", "question", "options"):
+    for col in ("id", "age", "campaign", "status", "topic", "auto", "question", "options"):
         table.add_column(col, max_width=60 if col == "question" else None,
-                         overflow="fold" if col == "question" else None)
+                         overflow="fold", no_wrap=col in ("id", "status", "age", "topic", "auto"))
     for r in recs:
         table.add_row(r["id"], _age(r, now), r.get("campaign") or "-", r.get("status", "?"),
+                      ESC.topic_of(r) or "-", ESC.auto_marker(r, now),
                       r.get("question", ""), str(len(r.get("options") or [])))
     console.print(table)
 
@@ -98,6 +100,22 @@ def escalations_show(cfg, esc_id, as_json):
         a = rec["answer"]
         console.print(f"\nanswered by {rec.get('answered_by')} at {rec.get('answered_at')}: "
                       f"{ESC.summarize(a)}", highlight=False)
+    auto = rec.get("auto") if isinstance(rec.get("auto"), dict) else None
+    console.print(f"\ntopic: {ESC.topic_of(rec) or '-'}  auto: "
+                  + (f"{'eligible' if auto['eligible'] else 'not eligible'} ({auto.get('why')})"
+                     + (f", due {auto['due_at']}" if auto.get("due_at") else "")
+                     + (f", announced {auto['announced_at']}" if auto.get("announced_at") else "")
+                     if auto else "none (predates SPEC-0425 timeouts)"), highlight=False)
+    if (rec.get("answer") or {}).get("auto"):
+        alt = next((o["n"] for o in rec.get("options") or []
+                    if o["n"] != rec["answer"].get("choice")), "N")
+        console.print(f"auto-applied: reverse with nw escalations answer {rec['id']} "
+                      f"--choose {alt} --yes", highlight=False)
+    for h in rec.get("answer_history") or []:
+        ha = h.get("answer") or {}
+        console.print(f"earlier answer by {h.get('answered_by')} at {h.get('answered_at')}"
+                      f"{' (auto, reversed)' if ha.get('auto') else ''}: "
+                      f"{ESC.summarize(ha) if ha else '?'}", highlight=False)
     if rec.get("withdrawn"):
         w = rec["withdrawn"]
         console.print(f"\nwithdrawn by {w.get('by')}: {w.get('reason')}", highlight=False)
@@ -116,17 +134,21 @@ def escalations_show(cfg, esc_id, as_json):
 @click.option("--note", default=None, help="optional free text kept with the answer")
 @click.option("--by", default=None, help="who answers (default: human; the steward passes "
                                          "steward:<Project>)")
+@click.option("--auto", "auto", is_flag=True,
+              help="the conductor applies the recommendation of a due, eligible escalation "
+                   "(SPEC-0425; needs --by conductor)")
 @click.option("--yes", "do_write", is_flag=True, help="apply (default is dry-run)")
 @click.option("--json", "as_json", is_flag=True, help="emit nw.escalation.answer.v1 JSON")
 @click.pass_obj
-def escalations_answer(cfg, esc_id, choose, text, waive, attest, reason, note, by, do_write,
-                       as_json):
+def escalations_answer(cfg, esc_id, choose, text, waive, attest, reason, note, by, auto,
+                       do_write, as_json):
     """Answer an open escalation. Records the answer and wakes the conductor, which applies it;
     the campaign stays PARKED until then. Exactly one form: --choose, --text, or --waive /
-    --attest with --reason."""
+    --attest with --reason. An auto-applied answer (`--auto`, SPEC-0425) may be reversed once
+    by the human or a steward with a new answer."""
     try:
         plan = ESC.plan_answer(cfg, esc_id, choose=choose, text=text, waive=waive,
-                               attest=attest, reason=reason, note=note, by=by)
+                               attest=attest, reason=reason, note=note, by=by, auto=auto)
         done = ESC.apply_answer(cfg, plan) if do_write else {}
     except ESC.AnswerFormError as e:
         raise click.UsageError(str(e))
@@ -139,13 +161,16 @@ def escalations_answer(cfg, esc_id, choose, text, waive, attest, reason, note, b
         _dump_json({"schema": "nw.escalation.answer.v1", "id": esc_id,
                     "campaign": plan["campaign"], "by": plan["by"],
                     "answer": plan["answer"], "summary": plan["summary"],
-                    "override": plan["override"], "written": bool(do_write),
+                    "override": plan["override"], "auto": bool(plan.get("auto")),
+                    "reverses": plan.get("reverses"), "written": bool(do_write),
                     **({"event_error": ev_err} if ev_err else {})})
         return
     console.print(f"{esc_id}: {plan['question']}", highlight=False)
     for o in plan["options"]:
         console.print(f"  {o['n']}. {o['label']}", highlight=False)
     rows = {"campaign": plan["campaign"], "by": plan["by"], "answer": plan["summary"]}
+    if plan.get("reverses"):
+        rows["reverses"] = f"auto answer: {ESC.summarize(plan['reverses'])}"
     ov = plan["override"]
     if ov:
         for w in ov["waive"]:
@@ -158,7 +183,13 @@ def escalations_answer(cfg, esc_id, choose, text, waive, attest, reason, note, b
     if not do_write:
         console.print("[yellow]not written — re-run with --yes to commit[/]")
         return
-    console.print(f"[green]✓[/] {esc_id} answered; the conductor applies it")
+    if plan.get("reverses"):
+        console.print(f"[green]✓[/] {esc_id} answered; reverses the auto answer — the "
+                      f"conductor undoes what it can, then applies this one")
+    elif plan.get("auto"):
+        console.print(f"[green]✓[/] {esc_id} auto-applied; the human was mailed and notified")
+    else:
+        console.print(f"[green]✓[/] {esc_id} answered; the conductor applies it")
 
 
 @escalations_group.command("withdraw")

@@ -553,7 +553,10 @@ class NotRemotable(ValueError):
 # passed to the worker verbatim / stripped here and re-set by the worker to its own values
 ENV_VERBATIM = frozenset({"NW_CAMPAIGN", "NW_SPEC_ID", "NW_BASE", "NW_PERSONA_RUN",
                           "NW_REBASE_TARGET"})
-ENV_RESET = frozenset({"NW_WORKTREE", "NW_DATA_DIR", "NW_CONFIG_DIR", "TMPDIR", "TEMP", "TMP"})
+# `NW_PERSONA` (SPEC-0425) is re-set from the job's `persona`, so a worker on older code that
+# would refuse an unknown key still takes the job
+ENV_RESET = frozenset({"NW_WORKTREE", "NW_DATA_DIR", "NW_CONFIG_DIR", "TMPDIR", "TEMP", "TMP",
+                       "NW_PERSONA"})
 TREE_TOKEN = "${NW_TREE}"                     # a worktree-relative path in `allowed_tools`
 _ROOT_END = r"""(?=[/\s()*'"`,;|&<>:]|$)"""     # a path separator or the end of the token
 _TREE_PATH_RE = re.compile(re.escape(TREE_TOKEN) + r"""([^\s()*'"`,;|&<>]*)""")
