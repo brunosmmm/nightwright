@@ -507,3 +507,18 @@ def test_committed_fixture_is_a_data_dir(tmp_path):
     assert tree_hashes(dst) == before
     assert {k: v["sha256"] for k, v in m["files"].items()} == {
         k: v for k, v in tree_hashes(HS.FIXTURE_DIR).items() if k != "MANIFEST.json"}
+
+
+@pytest.mark.parametrize("user,home", [("nw", "/home/nw"), ("agentic", "/home/agentic"),
+                                       ("campaigns", "/home/campaigns"), ("bruno", "/home/bruno")])
+def test_check_is_independent_of_the_running_user(user, home):
+    """`--check` of the committed fixture must not depend on $USER or $HOME (gate workers differ)."""
+    r = run_tool("--check", env={"USER": user, "HOME": home})
+    assert r.returncode == 0, r.stderr
+
+
+def test_scan_user_segments_only_when_given(tool, tmp_path):
+    (tmp_path / "a.txt").write_text("see /nw/thing and /home/user/x\n")
+    assert tool.scan(tmp_path, []) == []
+    assert ("a.txt", 1, "user_segment") in tool.scan(tmp_path, [], users=["nw"])
+    assert tool.scan(tmp_path, [], users=["user", ""]) == []

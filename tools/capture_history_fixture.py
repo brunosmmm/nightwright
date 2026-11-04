@@ -598,12 +598,14 @@ def _text_rules(part: str, deny, seg_res) -> set:
     return rules
 
 
-def scan(root: Path, deny: list[str]) -> list[tuple[str, int, str]]:
+def scan(root: Path, deny: list[str], users=()) -> list[tuple[str, int, str]]:
     """Re-read every file under `root` and report (relative path, line, rule) hits: a home path
-    of anyone but `user`, the local user name as a path segment, an email other than the
+    of anyone but `user`, a name in `users` as a path segment, an email other than the
     placeholder, a secret pattern or key, a non-empty `env` object, any literal in `deny`.
-    JSON is scanned by decoded string value (line 0 for a whole .json file)."""
-    users = {u for u in (os.environ.get("USER"), Path.home().name) if u and u != "user"}
+    JSON is scanned by decoded string value (line 0 for a whole .json file).
+    `users` is empty by default and is filled only by a capture run (from the environment and
+    --src), so the scan of a committed tree gives the same answer on every machine."""
+    users = {u for u in users if u and u != "user"}
     seg_res = [re.compile(r"/" + re.escape(u) + r"(?![\w.-])") for u in users]
     hits = []
     for p in sorted(root.rglob("*")):
@@ -799,7 +801,7 @@ def capture(args) -> int:
             p.write_bytes(raw)
         (tmp / "MANIFEST.json").write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n",
                                            encoding="utf-8")
-        hits = scan(tmp, load_deny())
+        hits = scan(tmp, load_deny(), users)
         if hits:
             for rel, line, rule in hits[:20]:
                 print(f"scan: {rel}:{line} {rule}", file=sys.stderr)

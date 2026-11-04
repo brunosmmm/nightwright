@@ -460,6 +460,11 @@ and green. `python3 tools/spec_lint.py` stays at exit 0.
 - `python3 tools/spec_lint.py` and `--write-ledger`: exit 0.
 - Manual: (1) `python3 tools/capture_history_fixture.py` on the real data dir: exit 0, 8 campaigns, 441 files, 2,989,452 bytes. (2) `--check`: exit 0; a second capture into another dir was byte-identical (`diff -r`). (3) `grep` for `$HOME` and for the user and host names in the fixture: no hits. (4) Stream, decisions and mail files read as real, redacted content. (5) `NW_DATA_DIR=<copy_fixture dir> uv run nw queue list --all` lists all 8 campaigns (the CLI verb is `list`, not `ls`).
 
+### Test record, loop 2 (2026-11-04)
+
+- Gate failure reproduced with `USER=nw HOME=/home/nw ... --check`: `scan()` took the user-name path segments from `$USER` and the home dir name, so `/nw/` in SPEC-0336 paths and text matched on the gate worker. `scan()` now takes a `users` argument (default empty); `--check` and the committed-tree scan use none, and only a capture run passes the names (environment and `--src`). The fixture bytes did not change; no re-capture.
+- `uv run pytest -q -n 0 tests/test_history_fixture.py`: 24 passed (new: `--check` under `USER`/`HOME` of `nw`, `agentic`, `campaigns`, `bruno`; `scan()` user segments only when given). `--check` exits 0 under both the real and the `nw` environment. `spec_lint` exit 0.
+
 ### As shipped (2026-11-04)
 
 - Chosen campaigns (8, one derived): `SPEC-0179-20261025-158c` (legacy, no `run.json`, no stream), `SPEC-0180-20261025-f78d`, `SPEC-0195-20261025-f49a` (merged; base of the derived `SPEC-0195-20261025-hdof`), `SPEC-0218-20261025-0131` (abandoned, legacy), `SPEC-0336-20261031-6558` (merged, answered escalation, 1.25 MB, the largest), `SPEC-0394-20261102-ae5b` (merged, flaky and triage), `IDEA-606-20261101-df50` (abandoned, pre-stream). The fixture is 2,989,452 bytes of the 3 MiB budget; `runner.jsonl` is 393 KB of that.
