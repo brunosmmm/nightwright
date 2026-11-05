@@ -163,7 +163,9 @@ def counted(c, seq=1):
     """How many times the blocking gate ran for gate run `seq` (anywhere)."""
     if not c.counter.is_file():
         return 0
-    return sum(f"gate-{seq:03d}" in ln for ln in c.counter.read_text().splitlines())
+    # match this campaign's job id, not just "gate-001": when the suite itself runs as a gate job on
+    # a worker box, every temp path carries that outer job's own `...-gate-001-a1` name
+    return sum(f"/{c.cid}-gate-{seq:03d}-" in ln for ln in c.counter.read_text().splitlines())
 
 
 def start_queue(c):

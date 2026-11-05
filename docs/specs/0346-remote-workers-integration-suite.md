@@ -155,6 +155,12 @@ Each case is a whole fake campaign unless noted.
   `test_agentic_e2e` and `remote_support` are widely imported) was started to cover the
   `Remote` helper change; its result is the close gate's, and the full suite was left to
   gating.
+- Gate-run follow-up: `test_a_duplicate_submit_...` failed only when the suite itself ran as a gate job
+  on the worker box. `counted` matched the substring `gate-001`, and every temp path there carries the
+  outer job's own `...-gate-001-a1` name, so each inner line counted twice. It now matches
+  `/<cid>-gate-NNN-` (the campaign's own job id); the one-process-per-job-id assertion is unchanged and
+  the worker submit was never non-idempotent. `uv run pytest tests/test_remote_workers_integration.py`:
+  14 passed.
 - Manual step (a real campaign on the second machine) not performed: this run is an offline
   agent with no second machine. The spec stays `in-progress` for it.
 
