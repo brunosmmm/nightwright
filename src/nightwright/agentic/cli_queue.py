@@ -1304,8 +1304,9 @@ def _journal_lines(rec: dict) -> Group:
                     f"{rec.get('occupied')}/{rec.get('slots')} (held: {held})",
                     style="yellow")
         return Group(head)
-    if kind == "runner_changed":                           # SPEC-0436
-        head.append(f"⟳ backend {rec.get('campaign')}: ", style="bold cyan")
+    if kind == "runner_changed":                           # SPEC-0436 / SPEC-0439
+        who = "host" if rec.get("host") else rec.get("campaign")
+        head.append(f"⟳ backend {who}: ", style="bold cyan")
         head.append(f"{rec.get('from') or 'default'} → {rec.get('to') or 'default'}")
         return Group(head)
     if rec.get("drain") and rec.get("tick") is not None:
@@ -1782,31 +1783,68 @@ def attach(queue_group):
                       if do_write else _NOT_WRITTEN)
 
     @queue_group.command("backend")
-    @click.argument("campaign", shell_complete=C.complete_campaign_id)
-    @click.argument("runner", type=click.Choice(["cursor", "claude", "default"]))
+    @click.argument("target", shell_complete=C.complete_campaign_id)
+    @click.argument("runner", required=False, type=click.Choice(["cursor", "claude", "default"]))
+    @click.option("--host", is_flag=True,
+                  help="write user agentic.runner (in-flight: the loop reloads)")
+    @click.option("--all", "all_items", is_flag=True,
+                  help="pin or clear every non-terminal campaign")
     @click.option("--by", default=None,
                   help="who acts (default: $NW_MAILBOX_ADDR, then human)")
     @click.option("--yes", "do_write", is_flag=True, help="apply (default is dry-run)")
     @click.option("--json", "as_json", is_flag=True, help="emit nw.queue.backend.v1 JSON")
     @click.pass_obj
-    def queue_backend(cfg, campaign, runner, by, do_write, as_json):
-        """Pin a non-terminal campaign to cursor or claude, or `default` to follow host/project.
+    def queue_backend(cfg, target, runner, host, all_items, by, do_write, as_json):
+        """Switch persona backend: CAMPAIGN cursor|claude|default, or --host/--all cursor.
 
         Does not park or kill the live persona; the next spawn uses the new resolution.
         """
+        if host or all_items:
+            if runner is not None:
+                raise click.UsageError("with --host/--all, pass only the backend "
+                                       "(e.g. nw queue backend --host cursor)")
+            if target not in ("cursor", "claude", "default"):
+                raise click.UsageError("backend must be cursor, claude, or default")
+            runner, campaign = target, None
+        else:
+            campaign = target
+            if runner is None:
+                raise click.UsageError("missing backend (cursor, claude, or default)")
+        actor = _actor(cfg, by)
         try:
-            plan = Q.plan_backend(cfg, campaign, runner, by=_actor(cfg, by))
-            if do_write:
-                Q.apply_backend(cfg, plan)
+            parts = []
+            if host:
+                hplan = Q.plan_host_backend(cfg, runner, by=actor)
+                if do_write:
+                    Q.apply_host_backend(cfg, hplan)
+                parts.append(("host", hplan))
+            if all_items:
+                aplan = Q.plan_backend_all(cfg, runner, by=actor)
+                if do_write:
+                    Q.apply_backend_all(cfg, aplan)
+                parts.append(("all", aplan))
+            if campaign:
+                plan = Q.plan_backend(cfg, campaign, runner, by=actor)
+                if do_write:
+                    Q.apply_backend(cfg, plan)
+                parts.append((campaign, plan))
         except ValueError as e:
             raise click.ClickException(str(e))
+        plan = {"parts": [{"scope": k, **p} for k, p in parts]}
         if as_json:
             _dump_json({"schema": "nw.queue.backend.v1", **plan, "written": bool(do_write)})
             return
-        _print_plan(f"backend {campaign}", plan)
-        frm, to = plan.get("from") or "default", plan.get("to") or "default"
-        console.print(f"[green]✓[/] {campaign} backend {frm} → {to}"
-                      if do_write else _NOT_WRITTEN)
+        for scope, p in parts:
+            if scope == "all":
+                n = len(p.get("items") or [])
+                console.print(f"backend --all: {n} campaign(s)"
+                              + ("" if do_write else f" {_NOT_WRITTEN}"))
+                continue
+            frm, to = p.get("from") or "default", p.get("to") or "default"
+            label = "host" if scope == "host" else scope
+            _print_plan(f"backend {label}", p)
+            console.print(f"[green]✓[/] {label} backend {frm} → {to}"
+                          if do_write else _NOT_WRITTEN)
 
     @queue_group.command("watch")
     @click.option("--interval", type=float, default=2.0, show_default=True,

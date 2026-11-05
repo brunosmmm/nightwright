@@ -103,6 +103,38 @@ def test_campaign_pin_and_backend_on_implementing(tmp_path):
     assert "runner" not in store.read_state(cfg, cid)
 
 
+def test_host_backend_writes_and_clears_user_config(tmp_path):
+    cfg_dir = tmp_path / "cfg"
+    cfg_dir.mkdir()
+    (cfg_dir / "config.yaml").write_text("outbox_targets: {}\nagentic:\n  gates:\n    slots: 2\n")
+    cfg = {"data_dir": str(tmp_path / "data"), "config_dir": str(cfg_dir), "agentic": {}}
+    plan = Q.plan_host_backend(cfg, "cursor")
+    assert plan["from"] is None and plan["to"] == "cursor"
+    Q.apply_host_backend(cfg, plan)
+    text = (cfg_dir / "config.yaml").read_text()
+    assert "runner: cursor" in text and "slots: 2" in text
+    assert cfg["agentic"]["runner"] == "cursor"
+    Q.apply_host_backend(cfg, Q.plan_host_backend(cfg, "default"))
+    text = (cfg_dir / "config.yaml").read_text()
+    assert "runner:" not in text and "slots: 2" in text
+    assert "runner" not in cfg["agentic"]
+
+
+def test_backend_all_pins_non_terminal_only(tmp_path):
+    cfg = {"data_dir": str(tmp_path / "data")}
+    live = "SPEC-0001-live"
+    dead = "SPEC-0001-dead"
+    store.create_campaign(cfg, {"id": live, "spec_id": "SPEC-0001", "state": "IMPLEMENTING"})
+    store.create_campaign(cfg, {"id": dead, "spec_id": "SPEC-0001", "state": "MERGED"})
+    plan = Q.plan_backend_all(cfg, "cursor")
+    assert [i["campaign"] for i in plan["items"]] == [live]
+    Q.apply_backend_all(cfg, plan)
+    assert store.read_state(cfg, live)["runner"] == "cursor"
+    assert "runner" not in store.read_state(cfg, dead)
+    again = Q.plan_backend_all(cfg, "cursor")
+    assert again["items"] == []
+
+
 def test_backend_refused_on_terminal(tmp_path):
     cfg = {"data_dir": str(tmp_path / "data")}
     cid = "SPEC-0001-y"

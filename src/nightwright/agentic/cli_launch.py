@@ -13,6 +13,8 @@ from . import launch as L
 def _show(plan):
     if plan.get("runner"):
         console.print(f"runner: {plan['runner']}", highlight=False, markup=False)
+    if plan.get("host_backend"):
+        console.print(f"host: {plan['host_backend']}", highlight=False, markup=False)
     console.print(f"cwd: {plan['cwd']}", highlight=False, markup=False)
     console.print("env:", highlight=False, markup=False)
     for k in sorted(plan["env"]):
@@ -27,9 +29,12 @@ def _show(plan):
 
 
 def _go(cfg, role, project, dry_run, resume, as_json, runner=None):
+    from . import queue as Q
     if as_json and not dry_run:
         raise click.UsageError("--json is accepted only together with --dry-run")
     plan = L.build_plan(cfg, role, project, resume=resume, runner=runner)
+    if role == "conductor" and runner in ("claude", "cursor"):
+        plan["host_backend"] = runner
     if dry_run:
         if as_json:
             _dump_json(plan)
@@ -37,6 +42,8 @@ def _go(cfg, role, project, dry_run, resume, as_json, runner=None):
             _show(plan)
         L.check_price(plan)
         return
+    if role == "conductor" and runner in ("claude", "cursor"):
+        Q.apply_host_backend(cfg, Q.plan_host_backend(cfg, runner))
     L.run(cfg, plan)
 
 

@@ -693,6 +693,7 @@ progress. This is the single place to see *what has been decided* and *what is i
 | [SPEC-0436](./specs/0436-persona-cursorrunner-and-cursor-model-maps.md) | Persona CursorRunner and Cursor model maps | feature | done | — | 2026-11-05 |
 | [SPEC-0437](./specs/0437-conductor-and-steward-launch-via-cursor-agent.md) | Conductor and steward launch via cursor-agent | feature | done | — | 2026-11-05 |
 | [SPEC-0438](./specs/0438-conductor-launch-steward-launch-runner-cursor.md) | conductor-launch / steward-launch --runner cursor|claude | feature | done | — | 2026-11-05 |
+| [SPEC-0439](./specs/0439-in-flight-host-backend-switch-nw-queue-backend.md) | In-flight host backend switch (`nw queue backend --host` / `--all`) | feature | done | — | 2026-11-05 |
 
 ## Superseded / rejected
 

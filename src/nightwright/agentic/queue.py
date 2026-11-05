@@ -8736,6 +8736,80 @@ def apply_backend(cfg, plan: dict) -> dict:
                                                    "author": plan.get("by") or "human"})])
 
 
+def _user_config_path(cfg) -> Path:
+    d = cfg.get("config_dir")
+    if not d:
+        raise ValueError("config_dir is required to change the host backend")
+    return Path(d) / "config.yaml"
+
+
+def _load_user_yaml(path: Path) -> dict:
+    if not path.is_file():
+        return {}
+    loaded = yaml.safe_load(path.read_text(encoding="utf-8"))
+    return loaded if isinstance(loaded, dict) else {}
+
+
+def plan_host_backend(cfg, runner, *, by="human") -> dict:
+    """SPEC-0439: set or clear user `agentic.runner` (no writes)."""
+    if runner not in ("claude", "cursor", "default"):
+        raise ValueError(f"unknown runner {runner!r} (expected cursor, claude or default)")
+    path = _user_config_path(cfg)
+    current = (_load_user_yaml(path).get("agentic") or {}).get("runner")
+    return {"scope": "host", "from": current, "to": None if runner == "default" else runner,
+            "path": str(path), "by": by}
+
+
+def apply_host_backend(cfg, plan: dict) -> dict:
+    """Write user `agentic.runner`. Does not SIGTERM a live persona; the loop reloads."""
+    from datetime import datetime
+    path = Path(plan["path"])
+    path.parent.mkdir(parents=True, exist_ok=True)
+    user = _load_user_yaml(path)
+    if path.is_file():
+        bak = path.with_name(f"config.yaml.bak.{datetime.now().strftime('%Y%m%d%H%M%S')}")
+        bak.write_bytes(path.read_bytes())
+    agentic = dict(user.get("agentic") or {})
+    new = plan["to"]
+    if new is None:
+        agentic.pop("runner", None)
+    else:
+        agentic["runner"] = new
+    if agentic:
+        user["agentic"] = agentic
+    elif "agentic" in user:
+        user.pop("agentic")
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    tmp.write_text(yaml.safe_dump(user, sort_keys=False, default_flow_style=False),
+                   encoding="utf-8")
+    os.replace(tmp, path)
+    mem = dict(cfg.get("agentic") or {})
+    if new is None:
+        mem.pop("runner", None)
+    else:
+        mem["runner"] = new
+    cfg["agentic"] = mem
+    journal(cfg, "runner_changed", host=True, campaign=None,
+            **{"from": plan.get("from"), "to": new})
+    return plan
+
+
+def plan_backend_all(cfg, runner, *, by="human") -> dict:
+    """SPEC-0439: pin or clear `state.runner` on every non-terminal campaign."""
+    items = []
+    for st in store.list_campaigns(cfg):
+        item = plan_backend(cfg, st["id"], runner, by=by)
+        if item["from"] == item["to"]:
+            continue
+        items.append(item)
+    return {"scope": "all", "runner": runner, "items": items, "by": by}
+
+
+def apply_backend_all(cfg, plan: dict) -> dict:
+    written = [apply_backend(cfg, item) for item in plan.get("items") or ()]
+    return {**plan, "written": len(written)}
+
+
 def plan_prioritize(cfg, campaign, priority, *, by="human") -> dict:
     priority = check_priority(priority)
     st = store.read_state(cfg, campaign)

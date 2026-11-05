@@ -9,6 +9,7 @@ from nightwright.agentic import conductor_cost as CC
 from nightwright.agentic import launch as L
 from nightwright.agentic import runner as R
 from nightwright.agentic import runproc as RP
+from nightwright.agentic import store
 from nightwright.cli import cli
 
 PRICE = {"input": 3.0, "output": 15.0}
@@ -175,6 +176,62 @@ def test_resume_runner_mismatch_refused(cfg):
                       extra={"runner": "claude"})
     r = invoke("conductor-launch", "--resume", "--runner", "cursor", "--dry-run")
     assert r.exit_code != 0 and "claude" in r.output
+
+
+def test_conductor_dry_run_does_not_write_host(cfg, tmp_path):
+    r = invoke("conductor-launch", "--runner", "cursor", "--dry-run")
+    assert r.exit_code == 0, r.output
+    assert "host: cursor" in r.output
+    assert not (tmp_path / "config" / "config.yaml").exists()
+
+
+def test_conductor_runner_writes_host(cfg, ex, tmp_path, monkeypatch):
+    monkeypatch.setattr(RP, "resolve_cursor_agent", lambda environ=None: "/bin/cursor-agent")
+    monkeypatch.setattr(RP, "create_cursor_chat", lambda exe=None, **k: "chat-uuid")
+    monkeypatch.setattr(RP, "with_cursor_agent",
+                        lambda argv, env: (["/bin/cursor-agent", *argv[1:]], env))
+    r = invoke("conductor-launch", "--runner", "cursor")
+    assert r.exit_code == 0, r.output
+    assert "runner: cursor" in (tmp_path / "config" / "config.yaml").read_text()
+
+
+def test_steward_runner_does_not_write_host(cfg, tmp_path):
+    r = invoke("steward-launch", "Foo", "--runner", "cursor", "--dry-run")
+    assert r.exit_code == 0, r.output
+    assert "host:" not in r.output
+    assert not (tmp_path / "config" / "config.yaml").exists()
+
+
+def test_cli_host_backend_writes_config(cfg, tmp_path):
+    r = invoke("backend", "--host", "cursor", "--yes")
+    assert r.exit_code == 0, r.output
+    assert "runner: cursor" in (tmp_path / "config" / "config.yaml").read_text()
+    r = invoke("backend", "--host", "cursor")
+    assert r.exit_code == 0 and "not written" in r.output
+    r = invoke("backend", "--host", "default", "--yes")
+    assert r.exit_code == 0, r.output
+    assert "runner:" not in (tmp_path / "config" / "config.yaml").read_text()
+
+
+def test_cli_backend_all_and_campaign(cfg, tmp_path):
+    live, dead = "SPEC-0001-live", "SPEC-0001-dead"
+    store.create_campaign(cfg, {"id": live, "spec_id": "SPEC-0001", "state": "IMPLEMENTING"})
+    store.create_campaign(cfg, {"id": dead, "spec_id": "SPEC-0001", "state": "MERGED"})
+    r = invoke("backend", "--all", "cursor", "--yes")
+    assert r.exit_code == 0, r.output
+    assert store.read_state(cfg, live)["runner"] == "cursor"
+    assert "runner" not in store.read_state(cfg, dead)
+    other = "SPEC-0002-x"
+    store.create_campaign(cfg, {"id": other, "spec_id": "SPEC-0002", "state": "QUEUED"})
+    r = invoke("backend", other, "claude", "--yes")
+    assert r.exit_code == 0, r.output
+    assert store.read_state(cfg, other)["runner"] == "claude"
+    r = invoke("backend", live, "cursor", "--all")
+    assert r.exit_code != 0
+    r = invoke("backend", "--host", "--all", "cursor", "--yes")
+    assert r.exit_code == 0, r.output
+    assert store.read_state(cfg, other)["runner"] == "cursor"
+    assert "runner: cursor" in (tmp_path / "config" / "config.yaml").read_text()
 
 
 def test_create_cursor_chat_parses_uuid():
