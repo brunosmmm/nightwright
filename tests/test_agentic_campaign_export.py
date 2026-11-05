@@ -172,7 +172,8 @@ def test_columns_and_key_order(cfg):
         "campaign", "spec_id", "profile", "size", "tone", "run_id", "persona", "model", "effort",
         "max_budget_usd", "timeout_s", "started_at", "duration_s", "cost_usd", "charged_usd",
         "budget_frac", "exit_code", "is_error", "timed_out", "interrupted", "transient",
-        "verdict_status", "status", "input_tokens", "output_tokens", "cache_read_tokens"]
+        "verdict_status", "status", "input_tokens", "output_tokens", "cache_read_tokens",
+        "worker"]
     assert [n for n, _ in CE.FINDING_COLUMNS] == [
         "campaign", "spec_id", "seq", "ts", "state_at", "persona", "severity", "gate", "ac",
         "title", "detail", "files"]
@@ -222,7 +223,8 @@ def test_column_types_pinned():
         ("exit_code", "int"), ("is_error", "bool"), ("timed_out", "bool"),
         ("interrupted", "bool"), ("transient", "bool"), ("verdict_status", "str"),
         ("status", "str"),
-        ("input_tokens", "int"), ("output_tokens", "int"), ("cache_read_tokens", "int"))
+        ("input_tokens", "int"), ("output_tokens", "int"), ("cache_read_tokens", "int"),
+        ("worker", "str"))
     assert CE.FINDING_COLUMNS == (
         ("campaign", "str"), ("spec_id", "str"),
         ("seq", "int"), ("ts", "str"), ("state_at", "str"),
@@ -401,6 +403,7 @@ def test_run_rows(cfg):
     assert (b["input_tokens"], b["output_tokens"], b["cache_read_tokens"]) == (None,) * 3
     c = by["003-implementer"]
     assert c["status"] == "running" and c["budget_frac"] is None and c["charged_usd"] is None
+    assert (a["worker"], b["worker"], c["worker"]) == ("local", "local", None)     # SPEC-0346
 
 
 def test_finding_rows_state_at(cfg):

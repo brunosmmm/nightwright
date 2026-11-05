@@ -10,6 +10,7 @@ SPEC-0334 adds its pull-worker cases to this file; shared loopback fixtures stay
 `remote_support`."""
 import json
 import os
+import re
 import signal
 import subprocess
 import sys
@@ -72,11 +73,13 @@ def _inspect(name):
             f"GIT_TERMINAL_PROMPT=0 git push > ../{name}-push.txt 2>&1; echo $? > ../{name}-push.rc")
 
 
-def build(tmp_path, monkeypatch, workers=None, *, blocking=False, lease_s=None, env_files=False):
+def build(tmp_path, monkeypatch, workers=None, *, blocking=False, lease_s=None, env_files=False,
+          persona_blocks=False):
     """A queued fake campaign. `workers`: None (no `workers.json`), "empty" (an empty registry)
     or "two" (two loopback workers, both gate- and persona-capable). `blocking`: the lint gate
     blocks on a sentinel. `env_files`: the gates and the persona write their env to a file in
-    the worker's job dir."""
+    the worker's job dir. `persona_blocks`: the worker's `FakeRunner` says it started and blocks
+    until `c.go` exists, before it writes anything."""
     c = SimpleNamespace(tmp=tmp_path, go=tmp_path / "GO", started=tmp_path / "STARTED",
                         counter=tmp_path / "counter", remotes=[])
     c.go.unlink(missing_ok=True)
@@ -86,6 +89,7 @@ def build(tmp_path, monkeypatch, workers=None, *, blocking=False, lease_s=None, 
     if env_files:
         lint = _inspect("gate") + "; " + lint
     c.repo = make_repo(tmp_path, lint_gate=lint)
+    GOLD.add_shared_gate(c.repo)
     c.cfg = make_cfg(tmp_path, c.repo, script(tmp_path, [impl_done(), review()]))
     if lease_s:
         c.cfg["agentic"]["workers"] = {"job_lease_s": lease_s}
@@ -97,6 +101,8 @@ def build(tmp_path, monkeypatch, workers=None, *, blocking=False, lease_s=None, 
         entry["verdict"].update(review()["verdict"])
         if env_files:
             entry["pre_shell"] = [_inspect("persona")]
+        if persona_blocks:
+            entry["pre_shell"] = [f"touch {c.started}; while [ ! -f {c.go} ]; do sleep 0.05; done"]
         wscript = script(tmp_path, [entry], "worker-script.json")
         shim = SimpleNamespace(tmp=tmp_path, cfg=c.cfg)
         records = []
@@ -203,13 +209,40 @@ def test_no_workers_run_matches_the_pre_epic_golden(tmp_path, monkeypatch):
     assert GOLD.comparable(snap) == GOLD.comparable(golden)
     assert not any("worker" in e for e in ledger(c))
     assert not WK.path(c.cfg).exists()
-    # the gate portion has the shape of SPEC-0338's golden gate event and files
+    # the gate portion equals SPEC-0338's golden on the masked fields, for the gate both share
     theirs = json.loads(GATES_GOLDEN.read_text(encoding="utf-8"))
-    gate_of = lambda events: next(e for e in events if e["type"] == "gate")  # noqa: E731
-    mine, base = GOLD.comparable(gate_of(snap["events"])), GOLD.comparable(gate_of(theirs["events"]))
-    assert set(mine) == set(base)
-    assert set(mine["results"][0]) == set(base["results"][0])
-    assert {n.split("-", 1)[1].split(".")[0] for n in snap["files"]} == {"lint", "test"}
+    assert GOLD.SHARED_GATE.split("name: ")[1].split(",")[0] == "ok"
+    sha = re.compile(r"\b[0-9a-f]{40}\b")
+    fields = ("cmd", "name", "required", "ok", "exit_code", "timed_out")
+
+    def result(events, name):
+        ev = next(e for e in events if e["type"] == "gate" and e["gate_seq"] == 1)
+        return next(r for r in ev["results"] if r["name"] == name)
+
+    mine_r, base_r = result(snap["events"], "ok"), result(theirs["events"], "ok")
+    assert {k: mine_r[k] for k in fields} == {k: base_r[k] for k in fields}
+    assert mine_r["exit_code"] == 0 and mine_r["cmd"] == "echo hello; git rev-parse HEAD"
+    # the tail is `hello` and the head sha, which differs per repo: masked
+    assert sha.sub("<SHA>", mine_r["tail"]) == sha.sub("<SHA>", base_r["tail"]) == "hello\n<SHA>"
+    assert mine_r["log"] == base_r["log"] == "gates/001-ok.log"      # the `NNN-<name>.log` pattern
+    # cwd (campaign worktree versus the golden's repo), duration_s: masked, but present
+    assert mine_r["cwd"] and base_r["cwd"] and mine_r["duration_s"] == base_r["duration_s"] == "<X>"
+    # the nw.gate.v1 sidecar
+    def side(files):                  # the snapshot masks a sidecar's timings in its text: `<X>`
+        v = files["001-ok.json"]
+        return json.loads(v.replace(": <X>", ': "<X>"')) if isinstance(v, str) else v
+
+    mine_s, base_s = side(snap["files"]), side(theirs["files"])
+    sfields = ("schema", "name", "cmd", "required", "ok", "exit_code", "timed_out", "timeout_s",
+               "error", "log")
+    assert {k: mine_s[k] for k in sfields} == {k: base_s[k] for k in sfields}
+    assert mine_s["schema"] == "nw.gate.v1" and mine_s["timeout_s"] == 60 and mine_s["error"] is None
+    assert set(mine_s) == set(base_s) and mine_s["cwd"] and base_s["cwd"]
+    assert mine_s["started_at"] and base_s["started_at"]
+    assert mine_s["duration_s"] == base_s["duration_s"] == "<X>"
+    assert sha.sub("<SHA>", snap["files"]["001-ok.log"]) == \
+        sha.sub("<SHA>", theirs["files"]["001-ok.log"]) == "hello\n<SHA>\n"
+    assert {n.split("-", 1)[1].split(".")[0] for n in snap["files"]} == {"lint", "ok", "test"}
 
 
 def test_empty_workers_json_equals_the_absent_file(tmp_path, monkeypatch):
@@ -271,7 +304,9 @@ def test_export_lists_cost_per_run_and_per_worker(tmp_path, monkeypatch):
     ends = {e["run_id"]: e for e in ledger(c, ["run.end"])}
     assert set(runs) == set(ends) and len(ends) == 2
     for rid, e in ends.items():
-        assert runs[rid]["cost_usd"] == e["cost_usd"] and e["worker"] in ("wa", "wb")
+        # cost and worker straight from the export's rows (SPEC-0346: `worker` column)
+        assert runs[rid]["cost_usd"] == e["cost_usd"] and runs[rid]["worker"] == e["worker"]
+        assert runs[rid]["worker"] in ("wa", "wb")
     by = {}
     for e in ends.values():
         by[e["worker"]] = round(by.get(e["worker"], 0.0) + e["cost_usd"], 4)
@@ -336,11 +371,73 @@ def test_a_killed_worker_job_is_retried_and_the_campaign_merges(tmp_path, monkey
     assert _git(c.repo, "rev-parse", "main") == st["close"]["merged_sha"]
 
 
+def test_a_killed_persona_job_is_retried_and_the_campaign_merges(tmp_path, monkeypatch, camps):
+    c = tracked(camps, build(tmp_path, monkeypatch, "two", persona_blocks=True, lease_s=3))
+    t, _out = start_queue(c)
+    first = job_id_of(c, "persona")
+    assert first == RPS.job_id_for(c.cid, "001-implementer", 1)
+    assert until(lambda: c.started.is_file() and first in worker_jobs(c)
+                 and (worker_jobs(c)[first][1] / "proc.json").is_file())
+    remote, jdir = worker_jobs(c)[first]
+    pid = json.loads((jdir / "proc.json").read_text())["pid"]
+    os.killpg(os.getpgid(pid), signal.SIGKILL)              # the persona job and its fake runner
+    c.go.write_text("go\n")                                 # the retry's fake may finish
+    join(t, timeout=120)
+    st = S.read_state(c.cfg, c.cid)
+    assert st["state"] == "MERGED"
+    lost = [e for e in ledger(c, ["worker_job_lost"]) if e["job_id"] == first]
+    assert len(lost) == 1 and lost[0]["attempt"] == 1
+    # a lost persona job is retried by running the persona on the coordinator's own runner (there
+    # is no `worker_job_retried`, which is the gate job's event): one implementer run ended, and
+    # it is the local one
+    ends = [e for e in ledger(c, ["run.end"]) if e["persona"] == "implementer"]
+    assert len(ends) == 1 and not ends[0].get("worker")
+    # the dead attempt delivered nothing: the worker reaped it as `lost` with no result frame and
+    # no `done` frame, and exactly one implementer commit is on the merged branch (the retry's)
+    assert json.loads((jdir / "result.json").read_text()) == {
+        "state": "lost", "frame": None, "reaped_at": json.loads(
+            (jdir / "result.json").read_text())["reaped_at"]}
+    assert '"done"' not in (jdir / "frames.jsonl").read_text()
+    merged = _git(c.repo, "rev-parse", "main")
+    assert merged == st["close"]["merged_sha"]
+    base = _git(c.repo, "rev-list", "--max-parents=0", "main").split()[0]
+    commits = _git(c.repo, "log", "--format=%s", f"{base}..main").splitlines()
+    assert sum("implementer" in ln for ln in commits) == 1, commits
+    assert not any(str(e.get("event_uid", "")).startswith(first) for e in ledger(c))
+
+
 def remote_name(remote, c):
     for rec in WK.load(c.cfg):
         if str(remote.wdata).endswith("wdata" + rec["name"][1:]):
             return rec["name"]
     raise AssertionError("unknown remote")
+
+
+def test_a_late_frame_of_the_dead_attempt_is_ignored(tmp_path, monkeypatch, camps):
+    """Attempt 1 is killed and the job retried; a well-formed `gate` frame naming attempt 1 then
+    reaches the coordinator on attempt 2's stream. It is refused: nothing carries the dead
+    attempt's uid, the campaign still merges, and the one seq-1 gate event is not the forged one."""
+    c = tracked(camps, build(tmp_path, monkeypatch, "two", blocking=True, lease_s=3))
+    first = job_id_of(c)
+    install_forge(c, "stale", first, argv_glob="*-gate-001-a2*")
+    # the rejected worker is on cooldown, so the reviewer runs on the coordinator's own runner:
+    # its script (the implementer ran on a worker, which never advanced it) starts at the review
+    script(tmp_path, [review()])
+    t, _out = start_queue(c)
+    assert until(lambda: c.started.is_file() and first in worker_jobs(c)
+                 and (worker_jobs(c)[first][1] / "proc.json").is_file())
+    jdir = worker_jobs(c)[first][1]
+    os.killpg(os.getpgid(json.loads((jdir / "proc.json").read_text())["pid"]), signal.SIGKILL)
+    c.go.write_text("go\n")
+    join(t, timeout=120)
+    assert S.read_state(c.cfg, c.cid)["state"] == "MERGED"
+    marks = [json.loads(ln) for f in tmp_path.glob("forged-*") for ln in f.read_text().splitlines()]
+    assert marks and all(m["job_id"] == first for m in marks)      # the late frame was delivered
+    assert [e["job_id"] for e in ledger(c, ["worker_job_lost"])][:1] == [first]
+    gates = [g for g in ledger(c, ["gate"]) if g["gate_seq"] == 1]
+    assert len(gates) == 1 and "stale" not in json.dumps(gates[0])
+    assert not any(str(e.get("event_uid", "")).startswith(first) for e in ledger(c))
+    assert any(e["type"] in ("worker_failed", "worker_job_retried") for e in ledger(c))
 
 
 # ---- a coordinator restart --------------------------------------------------------------------
@@ -417,8 +514,8 @@ def test_a_persona_job_returning_no_bundle_leaves_the_branch_and_main(tmp_path, 
 # ---- forged frames ----------------------------------------------------------------------------
 
 _FORGE = """import json, subprocess, sys
-mode, spec = sys.argv[1], sys.argv[2]
-p = subprocess.Popen(sys.argv[3:], stdout=subprocess.PIPE)
+mode, spec, marker = sys.argv[1], sys.argv[2], sys.argv[3]
+p = subprocess.Popen(sys.argv[4:], stdout=subprocess.PIPE)
 shift = 0
 for line in p.stdout:
     try:
@@ -434,31 +531,50 @@ for line in p.stdout:
         forged = {"schema": frame["schema"], "n": frame["n"] + 1, "at": frame.get("at")}
         if mode == "campaign":      # a frame for another campaign's job
             forged.update(type="gate", job_id=spec + "-gate-001-a1")
+        elif mode == "stale":       # a late, well-formed gate frame of the dead attempt `spec`
+            forged.update(type="gate", job_id=spec, files={}, result={
+                "name": "lint", "required": True, "ok": True, "exit_code": 0, "timed_out": False,
+                "cmd": "sh gates/lint.sh", "cwd": "/", "duration_s": 0.0, "tail": "stale"})
         else:                       # a worker event of a type no worker may send
             forged.update(type="event", job_id=frame["job_id"], event={"type": spec})
         shift = 1
         sys.stdout.buffer.write((json.dumps(forged) + "\\n").encode())
         sys.stdout.buffer.flush()
+        with open(marker, "a") as m:         # proof that a forged frame went onto the stream
+            m.write(json.dumps(forged) + "\\n")
 sys.exit(p.wait())
 """
+
+
+def install_forge(c, mode, spec, argv_glob="*attach*|*gate-job*|*persona*"):
+    """Put the frame forger (`_FORGE`) in front of every worker's `ssh_argv`: it forges one frame
+    after the `started` frame of each stream whose argv matches `argv_glob`, and notes it in
+    `<tmp>/forged-<worker>`."""
+    tmp_path = c.tmp
+    forge = tmp_path / "forge.py"
+    forge.write_text(_FORGE)
+    for rec in WK.load(c.cfg):
+        ssh = rec["ssh_argv"][0]
+        _script(tmp_path / f"forge-{rec['name']}",
+                f'case "$*" in {argv_glob}) exec {sys.executable} {forge} '
+                f'{mode} {spec} {tmp_path / ("forged-" + rec["name"])} {ssh} "$@";; esac\n'
+                f'exec {ssh} "$@"')
+    reg = json.loads(WK.path(c.cfg).read_text())
+    for rec in reg["workers"]:
+        rec["ssh_argv"] = [str(tmp_path / f"forge-{rec['name']}")]
+    WK.path(c.cfg).write_text(json.dumps(reg))
 
 
 @pytest.mark.parametrize("mode,spec", [("campaign", "SPEC-0999-20261101-ffff"), ("type", "close"),
                                        ("type", "park"), ("type", "merge")])
 def test_forged_worker_frames_are_refused_and_append_nothing(tmp_path, monkeypatch, mode, spec):
     c = build(tmp_path, monkeypatch, "two")
-    forge = tmp_path / "forge.py"
-    forge.write_text(_FORGE)
-    for rec in WK.load(c.cfg):
-        ssh = rec["ssh_argv"][0]
-        _script(tmp_path / f"forge-{rec['name']}",
-                f'case "$*" in *attach*|*gate-job*|*persona*) exec {sys.executable} {forge} '
-                f'{mode} {spec} {ssh} "$@";; esac\nexec {ssh} "$@"')
-    reg = json.loads(WK.path(c.cfg).read_text())
-    for rec in reg["workers"]:
-        rec["ssh_argv"] = [str(tmp_path / f"forge-{rec['name']}")]
-    WK.path(c.cfg).write_text(json.dumps(reg))
+    install_forge(c, mode, spec)
     assert run_queue(c, monkeypatch)["state"] == "MERGED"
+    # the forged frame really went onto a worker's stream (a wrapper that never matched the
+    # real argv, or a stream without a `started` frame, would leave no marker and test nothing)
+    marks = [json.loads(ln) for f in tmp_path.glob("forged-*") for ln in f.read_text().splitlines()]
+    assert marks and all(m["type"] == ("gate" if mode == "campaign" else "event") for m in marks)
     allowed = {"open", "backlog", "transition", "run.start", "run.end", "cost", "commit", "gate",
                "review_outcome", "note", "close", "worker_failed", "worker_job_lost",
                "worker_job_retried", "finding"}
@@ -471,6 +587,11 @@ def test_forged_worker_frames_are_refused_and_append_nothing(tmp_path, monkeypat
     assert not any(str(e.get("by", "")).startswith("worker") for e in evs)
     if mode == "campaign":                                   # refused as a protocol failure
         assert any(e["type"] in ("worker_failed", "worker_job_lost") for e in evs)
+        # ...and nothing landed in the other campaign, where a forged write would go
+        other = spec
+        with pytest.raises(ValueError):
+            S.read_state(c.cfg, other)
+        assert S.read_ledger(c.cfg, other) == [] and not S.gates_dir(c.cfg, other).exists()
     else:       # the forged frame sat in a live stream whose jobs still ran on the workers
         assert all(g.get("worker") for g in evs if g["type"] == "gate")
         assert not any(e["type"] in ("worker_failed", "worker_job_lost") for e in evs)

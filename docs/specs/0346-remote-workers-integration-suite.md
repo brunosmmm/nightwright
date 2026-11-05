@@ -106,7 +106,7 @@ Each case is a whole fake campaign unless noted.
 ## Acceptance criteria
 
 - [x] `tests/test_remote_workers_integration.py` exists and every case above passes offline.
-- [ ] The no-workers whole-campaign run matches the golden fixture
+- [x] The no-workers whole-campaign run matches the golden fixture
       `tests/data/remote_workers/no_workers_golden.json` (event types and payloads, ledger
       rows, gate artifacts; timestamps, durations, ids, `nw_sha` and temp paths masked).
       The fixture was recorded at `1f0311c4^` in a temp worktree, its gate portion equals
@@ -131,7 +131,7 @@ Each case is a whole fake campaign unless noted.
       checkout prints nothing, and `git push` from the worker checkout to the coordinator
       repo fails.
 - [x] The merge happens on the coordinator, after a coordinator re-gate.
-- [ ] `nw campaign export` lists `cost_usd` per job with its `worker` id.
+- [x] `nw campaign export` lists `cost_usd` per job with its `worker` id.
 - [ ] Manual: a real campaign with gate and persona jobs on the second machine merged; the
       epic's rollout notes record whether a 429 backoff occurred (with its event) and the
       median gate wall time over that campaign from `nw campaign export`.
@@ -161,6 +161,11 @@ Each case is a whole fake campaign unless noted.
   `/<cid>-gate-NNN-` (the campaign's own job id); the one-process-per-job-id assertion is unchanged and
   the worker submit was never non-idempotent. `uv run pytest tests/test_remote_workers_integration.py`:
   14 passed.
+- Loop 2 (review follow-up): `uv run pytest tests/test_remote_workers_integration.py
+  tests/test_agentic_campaign_export.py tests/test_agentic_campaign_runs.py`: 121 passed, 3 skipped
+  (16 cases in the integration file: the killed-persona and stale-late-frame cases are new, the
+  forged-frame cases now assert a marker, the golden case compares values, the export case reads
+  `worker` from `runs.jsonl`). The full suite was left to gating.
 - Manual step (a real campaign on the second machine) not performed: this run is an offline
   agent with no second machine. The spec stays `in-progress` for it.
 
@@ -178,10 +183,17 @@ Each case is a whole fake campaign unless noted.
   `seq` and the `review_outcome` event type; any other difference fails the comparison. The
   empty-versus-absent comparison goes through `comparable` too (the prompt text carries the
   temp path).
-- **Gate portion versus SPEC-0338's golden:** that golden is another campaign (other gates),
-  so only the *shape* is compared: the same gate event keys and the same result keys. The
-  literal "equals on masked fields" of the AC is therefore not met, and that criterion stays
-  unticked.
+- **Gate portion versus SPEC-0338's golden:** the two campaigns had no gate in common, so the
+  fixture campaign gained one (`remote_workers_golden.add_shared_gate`, used by the recorder and
+  by `build`): `ok`, `echo hello; git rev-parse HEAD`, `timeout_s: 60`, required, the same as that
+  golden's `ok`. The golden was re-recorded at `1f0311c4^` with it. The test compares the `ok`
+  gate of gate run 1 field by field with `remote_gates_golden.json`: per result `cmd`, `name`,
+  `required`, `ok`, `exit_code`, `timed_out`, `tail` (the head sha masked), the
+  `gates/001-ok.log` log name, and the `nw.gate.v1` sidecar's `schema`, `name`, `cmd`,
+  `required`, `ok`, `exit_code`, `timed_out`, `timeout_s`, `error`, `log`, with `cwd`,
+  `started_at` and `duration_s` masked (the cwd differs by design: the campaign's worktree
+  versus that golden's repo) and the gate log text equal. Only those fields are shared; the other
+  gates (`test`, `lint`; `opt`, `flaky`) belong to one golden each.
 - **Persona jobs:** the worker's `FakeRunner` cursor is per job, so every persona job takes
   entry 0 of the worker script. The script is one entry whose verdict satisfies both the
   implementer's and the conformance reviewer's schemas.
@@ -190,10 +202,12 @@ Each case is a whole fake campaign unless noted.
   gate event with its `event_uid`; `append_event` drops it. The SSH protocol has no worker
   `event` frames.
 - **Forged events:** since the SSH path has no worker-event merge (no `worker_event_refused`
-  finding exists in the code), the cases forge frames on the loopback stream: a frame naming
-  another campaign's job is a protocol failure (the gate falls back, `worker_failed`), and an
-  `event` frame carrying `close`, `park` or `merge` is never acted on (one `close`, written by
-  the queue; no worker-authored event).
+  finding exists in the code), the cases forge frames on the loopback stream, and the forger
+  writes a marker file for each frame it injects (every variant asserts the marker exists, so a
+  wrapper that never matched or a stream without a `started` frame fails). A frame naming
+  another campaign's job is a protocol failure (the gate falls back, `worker_failed`) and the
+  other campaign has no state, ledger or gate files; an `event` frame carrying `close`, `park`
+  or `merge` is never acted on (one `close`, written by the queue; no worker-authored event).
 - **Credentials:** the gate and the persona run `env`, `git config --get-regexp credential`,
   `git remote -v`, `git config --list` and `git push` inside the worker's checkout (it is gone
   when the job ends) and write the results to the job dir. The fake `ssh` starts the worker
@@ -206,13 +220,23 @@ Each case is a whole fake campaign unless noted.
   (the Design's "no `worker` key" does not match the code). The test checks that the re-gate
   event precedes `close`, that its `head` equals `close.merged_sha`, and that main's tip is
   that sha on the coordinator.
-- **Killed worker:** a gate-only kill (process group of the pid in `proc.json`, `job_lease_s`
-  of 3 s); the persona kill is not covered here.
-- **Cost:** `nw campaign export` has `cost_by_worker` in `campaigns.jsonl` and `cost_usd` per
-  run in `runs.jsonl`, but the runs table has no `worker` column (the run's worker is on its
-  `run.end` event). The test checks both against the events; the AC "per job with its worker
-  id" is not met as written and stays unticked. Adding a `worker` column to the runs export is
-  a follow-up.
+- **Killed worker:** the gate job's process group (pid in `proc.json`, `job_lease_s` of 3 s) is
+  killed, and so is the persona job's (`test_a_killed_persona_job_is_retried_...`: the worker's
+  `FakeRunner` blocks in a `pre_shell` on a sentinel). A lost gate job is retried
+  (`worker_job_retried`); a lost persona job is retried by running the persona on the
+  coordinator's own runner (there is no `worker_job_retried` for personas): one `worker_job_lost`
+  for attempt 1, one local `run.end`, a `lost` result with no frame in the dead job's dir, and
+  exactly one implementer commit on the merged branch. A killed process sends nothing, so
+  `test_a_late_frame_of_the_dead_attempt_is_ignored` delivers a late frame: a well-formed `gate`
+  frame naming attempt 1 on attempt 2's stream. `_frame` refuses it (`protocol: frame for job
+  ...-a1, not ...-a2`, the worker is rejected and the gates run locally), the forger's marker
+  proves the delivery, and the ledger has one seq-1 gate event without the forged content and no
+  event uid of the dead job.
+- **Cost:** `nw campaign export` has `cost_by_worker` in `campaigns.jsonl` and, new in this
+  spec, a `worker` column at the end of `runs.jsonl` (`campaign_export.RUN_COLUMNS`, the run.end
+  event's `worker`, `local` for a coordinator run as `cost_by_worker` labels it, null for a run
+  with no run.end). The test reads `cost_usd` and `worker` from the export rows. The runs
+  table of `nw campaign runs` is unchanged.
 
 ## Clock Log
 

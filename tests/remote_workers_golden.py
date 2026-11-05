@@ -72,6 +72,22 @@ def snapshot(cfg: dict, cid: str, tmp) -> dict:
             "final": {"state": st["state"], "close": _walk(st.get("close"), tmp)}}
 
 
+# The one gate the fixture campaign shares with SPEC-0338's golden (`remote_gates_golden.json`):
+# the same name, command, timeout and `required` as that golden's `ok` gate.
+SHARED_GATE = "  - {name: ok, cmd: 'echo hello; git rev-parse HEAD', timeout_s: 60, required: true}\n"
+
+
+def add_shared_gate(repo: Path) -> None:
+    """Append `SHARED_GATE` to the fixture repo's project gates and commit it."""
+    from test_agentic_e2e import _git
+    yml = Path(repo) / ".nw" / "project.yaml"
+    text = yml.read_text(encoding="utf-8")
+    assert "\nmerge:" in text
+    yml.write_text(text.replace("\nmerge:", "\n" + SHARED_GATE.rstrip("\n") + "\nmerge:", 1),
+                   encoding="utf-8")
+    _git(repo, "commit", "-qam", "a gate shared with SPEC-0338's golden")
+
+
 def record(out: Path) -> None:
     """Run the plain (no workers) fake campaign of `test_agentic_e2e` and write its snapshot."""
     import os
@@ -87,6 +103,7 @@ def record(out: Path) -> None:
                 mod, _, attr = target.rpartition(".")
                 setattr(__import__(mod, fromlist=["x"]), attr, value)
         repo = make_repo(tmp)
+        add_shared_gate(repo)
         cfg = make_cfg(tmp, repo, script(tmp, [impl_done(), review()]))
         cid = added(cfg, _MP())
         r = run_cli(cfg, _MP(), ["queue", "run", "--until-idle", "--json-lines"])

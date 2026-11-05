@@ -62,6 +62,7 @@ RUN_COLUMNS = (
     ("exit_code", "int"), ("is_error", "bool"), ("timed_out", "bool"), ("interrupted", "bool"),
     ("transient", "bool"), ("verdict_status", "str"), ("status", "str"),
     ("input_tokens", "int"), ("output_tokens", "int"), ("cache_read_tokens", "int"),
+    ("worker", "str"),                                                     # SPEC-0346
 )
 FINDING_COLUMNS = (
     ("campaign", "str"), ("spec_id", "str"),
@@ -345,7 +346,11 @@ def _active_states():
     return ACTIVE_STATES
 
 
-def run_rows(cfg, crow: dict) -> list[dict]:
+def run_rows(cfg, crow: dict, events=None) -> list[dict]:
+    """One row per run. `worker` is the run.end event's worker id, `local` for a run that ran on
+    the coordinator (as `cost_by_worker` labels it), null for a run with no run.end (SPEC-0346)."""
+    workers = {e.get("run_id"): e.get("worker") or "local"
+               for e in (events or []) if e.get("type") == "run.end" and e.get("run_id")}
     out = []
     for r in RN.campaign_runs(cfg, crow["campaign"]):
         usage = r.get("usage") if isinstance(r.get("usage"), dict) else {}
@@ -353,7 +358,8 @@ def run_rows(cfg, crow: dict) -> list[dict]:
                **r, "budget_frac": _frac(r.get("charged_usd"), r.get("max_budget_usd")),
                "input_tokens": usage.get("input_tokens"),
                "output_tokens": usage.get("output_tokens"),
-               "cache_read_tokens": usage.get("cache_read_input_tokens")}
+               "cache_read_tokens": usage.get("cache_read_input_tokens"),
+               "worker": workers.get(r.get("run_id"))}
         out.append(_project(row, RUN_COLUMNS))
     return out
 
@@ -404,7 +410,7 @@ def export_tables(cfg, *, project=None, since=None, terminal_only=False, now=Non
             crow["conductor_usd"] = _coerce(share, "float")
             crow["cost_with_conductor_usd"] = (crow["cost_usd"] or 0) + share
         tables["campaigns"].append(crow)
-        tables["runs"].extend(run_rows(cfg, crow))
+        tables["runs"].extend(run_rows(cfg, crow, events))
         tables["findings"].extend(finding_rows(crow, events))
     return tables
 

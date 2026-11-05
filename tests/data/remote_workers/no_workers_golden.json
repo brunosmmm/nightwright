@@ -65,7 +65,7 @@
       "permission_mode": "bypassPermissions",
       "persona": "implementer",
       "profile": "balanced",
-      "prompt_sha256": "c7700a938983785c9a5f6fafeacd4f2eaf642f63271dd3dafebe7c51d9842e16",
+      "prompt_sha256": "7bf27b599e71f4d79062b2f58759fbbc911c092b4a4cdf220a300de62997c6d8",
       "run_id": "001-implementer",
       "schema": "nw.ledger.event.v1",
       "seq": 5,
@@ -177,6 +177,18 @@
           "required": true,
           "tail": "",
           "timed_out": false
+        },
+        {
+          "cmd": "echo hello; git rev-parse HEAD",
+          "cwd": "<TMP>/.nw-worktrees/Meta-Tools/<CID>",
+          "duration_s": "<X>",
+          "exit_code": 0,
+          "log": "gates/001-ok.log",
+          "name": "ok",
+          "ok": true,
+          "required": true,
+          "tail": "hello\n<SHA>",
+          "timed_out": false
         }
       ],
       "schema": "nw.ledger.event.v1",
@@ -206,7 +218,7 @@
       "permission_mode": "dontAsk",
       "persona": "conformance_reviewer",
       "profile": "balanced",
-      "prompt_sha256": "37af8ec7244262616d631a795e12a0aed6e291e561ecebc6e6953df5fb2aa59c",
+      "prompt_sha256": "2dbb0507cad4a387d6e57ec64454502f8f273ff3557dde5dc047d259f024559b",
       "run_id": "002-conformance_reviewer",
       "schema": "nw.ledger.event.v1",
       "seq": 12,
@@ -320,6 +332,18 @@
           "required": true,
           "tail": "",
           "timed_out": false
+        },
+        {
+          "cmd": "echo hello; git rev-parse HEAD",
+          "cwd": "<TMP>/.nw-worktrees/Meta-Tools/<CID>",
+          "duration_s": "<X>",
+          "exit_code": 0,
+          "log": "gates/002-ok.log",
+          "name": "ok",
+          "ok": true,
+          "required": true,
+          "tail": "hello\n<SHA>",
+          "timed_out": false
         }
       ],
       "schema": "nw.ledger.event.v1",
@@ -357,10 +381,14 @@
   "files": {
     "001-lint.json": "{\n  \"schema\": \"nw.gate.v1\",\n  \"name\": \"lint\",\n  \"cmd\": \"sh gates/lint.sh\",\n  \"cwd\": \"<TMP>/.nw-worktrees/Meta-Tools/<CID>\",\n  \"required\": true,\n  \"ok\": true,\n  \"exit_code\": 0,\n  \"timed_out\": false,\n  \"timeout_s\": 30,\n  \"started_at\": \"<TS>\",\n  \"duration_s\": <X>,\n  \"log\": \"001-lint.log\",\n  \"error\": null\n}\n",
     "001-lint.log": "",
+    "001-ok.json": "{\n  \"schema\": \"nw.gate.v1\",\n  \"name\": \"ok\",\n  \"cmd\": \"echo hello; git rev-parse HEAD\",\n  \"cwd\": \"<TMP>/.nw-worktrees/Meta-Tools/<CID>\",\n  \"required\": true,\n  \"ok\": true,\n  \"exit_code\": 0,\n  \"timed_out\": false,\n  \"timeout_s\": 60,\n  \"started_at\": \"<TS>\",\n  \"duration_s\": <X>,\n  \"log\": \"001-ok.log\",\n  \"error\": null\n}\n",
+    "001-ok.log": "hello\n<SHA>\n",
     "001-test.json": "{\n  \"schema\": \"nw.gate.v1\",\n  \"name\": \"test\",\n  \"cmd\": \"sh gates/test.sh\",\n  \"cwd\": \"<TMP>/.nw-worktrees/Meta-Tools/<CID>\",\n  \"required\": true,\n  \"ok\": true,\n  \"exit_code\": 0,\n  \"timed_out\": false,\n  \"timeout_s\": 30,\n  \"started_at\": \"<TS>\",\n  \"duration_s\": <X>,\n  \"log\": \"001-test.log\",\n  \"error\": null\n}\n",
     "001-test.log": "",
     "002-lint.json": "{\n  \"schema\": \"nw.gate.v1\",\n  \"name\": \"lint\",\n  \"cmd\": \"sh gates/lint.sh\",\n  \"cwd\": \"<TMP>/.nw-worktrees/Meta-Tools/<CID>\",\n  \"required\": true,\n  \"ok\": true,\n  \"exit_code\": 0,\n  \"timed_out\": false,\n  \"timeout_s\": 30,\n  \"started_at\": \"<TS>\",\n  \"duration_s\": <X>,\n  \"log\": \"002-lint.log\",\n  \"error\": null\n}\n",
     "002-lint.log": "",
+    "002-ok.json": "{\n  \"schema\": \"nw.gate.v1\",\n  \"name\": \"ok\",\n  \"cmd\": \"echo hello; git rev-parse HEAD\",\n  \"cwd\": \"<TMP>/.nw-worktrees/Meta-Tools/<CID>\",\n  \"required\": true,\n  \"ok\": true,\n  \"exit_code\": 0,\n  \"timed_out\": false,\n  \"timeout_s\": 60,\n  \"started_at\": \"<TS>\",\n  \"duration_s\": <X>,\n  \"log\": \"002-ok.log\",\n  \"error\": null\n}\n",
+    "002-ok.log": "hello\n<SHA>\n",
     "002-test.json": "{\n  \"schema\": \"nw.gate.v1\",\n  \"name\": \"test\",\n  \"cmd\": \"sh gates/test.sh\",\n  \"cwd\": \"<TMP>/.nw-worktrees/Meta-Tools/<CID>\",\n  \"required\": true,\n  \"ok\": true,\n  \"exit_code\": 0,\n  \"timed_out\": false,\n  \"timeout_s\": 30,\n  \"started_at\": \"<TS>\",\n  \"duration_s\": <X>,\n  \"log\": \"002-test.log\",\n  \"error\": null\n}\n",
     "002-test.log": ""
   },
