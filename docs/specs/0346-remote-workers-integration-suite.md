@@ -4,7 +4,7 @@ title: "Remote workers integration suite for gate and persona workers"
 status: accepted
 owner: user
 created: 2026-11-01
-updated: 2026-11-01
+updated: 2026-11-04
 source_idea: IDEA-560
 parent: SPEC-0310
 tags: [agentic, remote, workers, testing]
@@ -32,50 +32,119 @@ same file for pull workers and signing.
 
 **Goals**
 - `tests/test_remote_workers_integration.py` covers the epic's acceptance criteria that
-  concern gate and persona workers, and passes.
+  concern gate and persona workers, and passes. Each of these SPEC-0310 criteria maps to a
+  Design case and an acceptance criterion below: no-workers golden, gate and persona jobs
+  on a worker, duplicate delivery, coordinator restart, killed worker, no push
+  credentials and merge locality, forged worker events, and per-worker cost in
+  `nw campaign export`.
+- The measurement re-check from SPEC-0310's last criterion (median gate wall time with
+  persona runs remote) has this spec as its owner, as a manual step.
 
 **Non-goals**
 - New product behaviour. This spec adds tests only (and fixes any bug the tests expose in
   the code of its dependencies).
-- Pull-worker and signing cases (SPEC-0334).
+- Pull-worker and signing cases, the "same gate job through SSH and through a pull worker"
+  criterion and the unsigned-job refusal (SPEC-0334).
+- Federation criteria (SPEC-0335).
+- The threat-model unit tests for the restricted SSH command (SPEC-0336); this file covers
+  only the env, credential and forged-event items listed below.
 
 ## Decision
 
-One integration file, driven through the real queue with `FakeRunner` and two loopback
-workers (two temp data dirs), from admission to merge.
+One integration file, driven through the real queue, from admission to merge. It uses two
+loopback SSH workers built on the existing loopback `ssh_argv` script and helpers in
+`tests/remote_support.py` (`Remote`, `World`, `_script`; extended there if a helper is
+missing, never a second loopback harness). Each worker has its own temp `NW_DATA_DIR` and
+`NW_CONFIG_DIR`, and the coordinator has its own temp data dir: three data dirs in all.
+Persona jobs use `FakeRunner` on the worker side; gate jobs use tiny shell gates.
 
 ## Design
 
-The cases, each a whole fake campaign:
-- **no workers:** a golden ledger comparison against the pre-epic behaviour;
-- **with workers:** same final branch and the same event types, plus `worker` keys;
-- **a worker killed mid-run:** the job is retried on the other worker or locally and the
-  campaign still merges;
-- **a coordinator restart mid-job:** the job is adopted and the campaign still merges;
-- **no git credentials on the worker side:** the job env is checked.
+Each case is a whole fake campaign unless noted.
+- **no workers:** the campaign runs with `workers.json` absent and again with it empty. The
+  first run is compared to the golden fixture `tests/data/remote_workers/no_workers_golden.json`
+  (event types and payloads, ledger rows, gate artifacts; timestamps, durations, ids,
+  `nw_sha` and temp paths masked, using the masking in `tests/test_remote_gates.py`). The
+  fixture is recorded once, with `NW_RECORD_GOLDEN=1`, from the code at the commit before
+  SPEC-0337 (`1f0311c4^`, the first child that changed dispatch) checked out in a temp
+  worktree, never from post-epic code. Its gate portion must match the gate events and
+  files in SPEC-0338's golden `tests/data/remote_gates_golden.json` on the masked fields.
+  The empty-registry run must equal the absent-file run.
+- **with workers:** same final branch tree and same event types as the no-workers run, plus
+  `worker` keys on gate and persona events.
+- **duplicate delivery:** the same job id submitted twice starts one worker process; the
+  same worker event delivered twice appends one coordinator event.
+- **killed worker:** the fake gate/persona blocks on a sentinel file. The test kills the
+  worker job's process group (pid read from the worker's job record) and lets the lease
+  expire with a shortened `lease_s`. The job is retried on the other worker or locally,
+  the dead attempt's late events are ignored (stale `attempt`), nothing from it is merged,
+  and the campaign still merges.
+- **coordinator restart:** the test stops the queue loop while the job is running, builds a
+  new queue/coordinator over the same coordinator data dir, and asserts the job is adopted
+  via attach/poll. The job's sentinel is released only after adoption is asserted. The
+  worker process runs exactly once (a counter file the fake appends to has one line) and
+  the campaign merges.
+- **no bundle:** a persona job whose worker returns no bundle leaves the campaign branch
+  and `main` at their prior shas.
+- **forged events:** a worker event for another campaign, or with a non-allowlisted type,
+  is refused and appends nothing.
+- **credentials and merge locality:** the fake gate and `FakeRunner` each write their
+  process env to a file in the worker's job dir. The worker checkout is also inspected.
+  The merge happens on the coordinator after a coordinator re-gate (a gate event with no
+  `worker` key follows the worker's, before the merge event).
+- **cost:** `nw campaign export` lists `cost_usd` per job together with its `worker` id.
 
 ## Alternatives considered
 
 - **Leave coverage to the per-spec tests.** They pass in isolation but never prove the
   pieces compose through the queue.
+- **Mock the transport to simulate a kill or a restart.** It would fake the failure at the
+  wrong layer; the tests kill a real process group and rebuild the coordinator instead.
+- **Capture the golden from post-epic code.** It would prove nothing about unchanged
+  behaviour; hence the pre-SPEC-0337 commit.
 
 ## Acceptance criteria
 
-- [ ] `tests/test_remote_workers_integration.py` exists and its cases above pass offline.
-- [ ] The no-workers golden ledger is byte-equal to the pre-epic ledger for the same fake
-      campaign.
-- [ ] With workers, the final branch and the event types equal the no-workers run, plus
-      `worker` keys.
-- [ ] A killed worker and a restarted coordinator each still end in a merged campaign.
-- [ ] The worker-side env contains no git credentials.
-- [ ] One 429 backoff is observed on the real account (manual), or recorded as not yet seen.
+- [ ] `tests/test_remote_workers_integration.py` exists and every case above passes offline.
+- [ ] The no-workers whole-campaign run matches the golden fixture
+      `tests/data/remote_workers/no_workers_golden.json` (event types and payloads, ledger
+      rows, gate artifacts; timestamps, durations, ids, `nw_sha` and temp paths masked).
+      The fixture was recorded at `1f0311c4^` in a temp worktree, its gate portion equals
+      SPEC-0338's golden on the masked fields, and a run with an empty `workers.json`
+      equals the run with the file absent.
+- [ ] With workers, the final branch tree and the event types equal the no-workers run,
+      plus `worker` keys.
+- [ ] The same job id submitted twice starts one worker process, and the same worker event
+      delivered twice appends one coordinator event.
+- [ ] After a killed worker, the job is retried on the other worker or locally, the dead
+      attempt's late events are ignored, nothing from it is merged, and the campaign
+      merges.
+- [ ] After a coordinator restart mid-job, the job is adopted through attach/poll, the
+      worker process ran exactly once, and the campaign merges.
+- [ ] A persona job whose worker returns no bundle leaves the campaign branch and `main` at
+      their prior shas.
+- [ ] A worker event for another campaign, or with a non-allowlisted type, is refused.
+- [ ] For a gate job and a persona job, the env recorded by the worker-side process
+      (written to a file by the fake gate / `FakeRunner`) contains only the keys in the
+      worker env allowlist, and none of `GIT_ASKPASS`, `SSH_AUTH_SOCK`, `GH_TOKEN`,
+      `GITHUB_TOKEN`, `GIT_CONFIG_*`; `git config --get-regexp credential` in the worker
+      checkout prints nothing, and `git push` from the worker checkout to the coordinator
+      repo fails.
+- [ ] The merge happens on the coordinator, after a coordinator re-gate.
+- [ ] `nw campaign export` lists `cost_usd` per job with its `worker` id.
+- [ ] Manual: a real campaign with gate and persona jobs on the second machine merged; the
+      epic's rollout notes record whether a 429 backoff occurred (with its event) and the
+      median gate wall time over that campaign from `nw campaign export`.
 
 ## Test plan
 
 - **Automated tests:** the file itself (`tests/test_remote_workers_integration.py`), run with
-  `uv run pytest tests/test_remote_workers_integration.py`.
+  `uv run pytest tests/test_remote_workers_integration.py`; one test per Design case, plus
+  the empty-versus-absent `workers.json` comparison. Waits use `tests/waits.py`, never fixed
+  sleeps; the kill and restart cases synchronise on sentinel files.
 - **Manual verification:** run a real campaign with gate and persona jobs on the second
-  machine; note any 429 backoff in the epic's rollout notes.
+  machine; record in the epic's rollout notes whether a 429 backoff occurred (with its
+  event) and the median gate wall time from `nw campaign export`.
 - **Regression guard:** affected tests while iterating.
 
 ## Clock Log
@@ -97,4 +166,5 @@ Use `nw idea clock-in IDEA-560` / `nw idea clock-out IDEA-560`.
 ## Open questions
 
 None. Decided while splitting SPEC-0333:
-- The file is shared: SPEC-0334 appends its cases rather than creating a second file.
+- The file is shared with SPEC-0334: whichever lands first creates it, the other adds its
+  cases to it, and shared loopback fixtures live in one helper (`tests/remote_support.py`).
