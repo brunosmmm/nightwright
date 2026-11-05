@@ -26,10 +26,10 @@ def _show(plan):
                   highlight=False, markup=False)
 
 
-def _go(cfg, role, project, dry_run, resume, as_json):
+def _go(cfg, role, project, dry_run, resume, as_json, runner=None):
     if as_json and not dry_run:
         raise click.UsageError("--json is accepted only together with --dry-run")
-    plan = L.build_plan(cfg, role, project, resume=resume)
+    plan = L.build_plan(cfg, role, project, resume=resume, runner=runner)
     if dry_run:
         if as_json:
             _dump_json(plan)
@@ -44,19 +44,23 @@ def attach(queue_group):
     @queue_group.command("conductor-launch")
     @click.option("--dry-run", is_flag=True, help="print the plan; start nothing")
     @click.option("--resume", is_flag=True, help="restart the newest launched conductor session")
+    @click.option("--runner", "runner", default=None, type=click.Choice(["claude", "cursor"]),
+                  help="backend for this launch (omit = host default / last --resume)")
     @click.option("--json", "as_json", is_flag=True, help="with --dry-run: emit the plan as JSON")
     @click.pass_obj
-    def queue_conductor_launch(cfg, dry_run, resume, as_json):
-        """Start the conductor (claude or cursor-agent via resolve_runner) with forced
-        context limits, a pinned model and a pre-registered session id."""
-        _go(cfg, "conductor", None, dry_run, resume, as_json)
+    def queue_conductor_launch(cfg, dry_run, resume, as_json, runner):
+        """Start the conductor (claude or cursor-agent) with forced context limits, a pinned
+        model and a pre-registered session id."""
+        _go(cfg, "conductor", None, dry_run, resume, as_json, runner=runner)
 
     @queue_group.command("steward-launch")
     @click.argument("project")
     @click.option("--dry-run", is_flag=True, help="print the plan; start nothing")
     @click.option("--resume", is_flag=True, help="restart the newest launched steward session")
+    @click.option("--runner", "runner", default=None, type=click.Choice(["claude", "cursor"]),
+                  help="backend for this launch (omit = project/host default / last --resume)")
     @click.option("--json", "as_json", is_flag=True, help="with --dry-run: emit the plan as JSON")
     @click.pass_obj
-    def queue_steward_launch(cfg, project, dry_run, resume, as_json):
-        """Start the steward of PROJECT (claude or cursor-agent via resolve_runner)."""
-        _go(cfg, "steward", project, dry_run, resume, as_json)
+    def queue_steward_launch(cfg, project, dry_run, resume, as_json, runner):
+        """Start the steward of PROJECT (claude or cursor-agent)."""
+        _go(cfg, "steward", project, dry_run, resume, as_json, runner=runner)

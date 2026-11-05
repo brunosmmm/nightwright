@@ -139,6 +139,44 @@ def test_resume_claude_record_as_cursor_refused(cfg, monkeypatch):
     assert r.exit_code != 0 and "not cursor-agent" in r.output
 
 
+def test_runner_flag_selects_cursor_without_env(cfg, tmp_path):
+    plan = L.build_plan(cfg, "conductor", runner="cursor")
+    assert plan["runner"] == "cursor" and plan["argv"][0] == "cursor-agent"
+    assert plan["argv"][plan["argv"].index("--model") + 1] == "grok-4.7-high"
+    r = invoke("conductor-launch", "--runner", "cursor", "--dry-run")
+    assert r.exit_code == 0, r.output
+    assert "runner: cursor" in r.output and "cursor-agent --resume" in r.output
+
+
+def test_runner_flag_claude_beats_env(cfg, monkeypatch):
+    monkeypatch.setenv("NW_AGENTIC_RUNNER", "cursor")
+    plan = L.build_plan(cfg, "conductor", runner="claude")
+    assert plan["runner"] == "claude" and plan["argv"][0] == "claude"
+    r = invoke("conductor-launch", "--runner", "claude", "--dry-run")
+    assert r.exit_code == 0, r.output
+    assert "runner: claude" in r.output
+
+
+def test_resume_without_flag_uses_stored_cursor(cfg, ex, monkeypatch):
+    CC.record_session(cfg, "conductor", {}, source="launch", session_id="old-chat",
+                      extra={"runner": "cursor", "launch_hash": "x"})
+    monkeypatch.setattr(RP, "resolve_cursor_agent", lambda environ=None: "/bin/cursor-agent")
+    monkeypatch.setattr(RP, "create_cursor_chat",
+                        lambda *a, **k: (_ for _ in ()).throw(AssertionError("no create-chat")))
+    monkeypatch.setattr(RP, "with_cursor_agent",
+                        lambda argv, env: (["/bin/cursor-agent", *argv[1:]], env))
+    r = invoke("conductor-launch", "--resume")
+    assert r.exit_code == 0, r.output
+    assert ex.calls[0][1][ex.calls[0][1].index("--resume") + 1] == "old-chat"
+
+
+def test_resume_runner_mismatch_refused(cfg):
+    CC.record_session(cfg, "conductor", {}, source="launch", session_id="claude-uuid",
+                      extra={"runner": "claude"})
+    r = invoke("conductor-launch", "--resume", "--runner", "cursor", "--dry-run")
+    assert r.exit_code != 0 and "claude" in r.output
+
+
 def test_create_cursor_chat_parses_uuid():
     class Rec:
         returncode = 0

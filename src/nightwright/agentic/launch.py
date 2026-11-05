@@ -293,9 +293,16 @@ def reader_for(role, project=None) -> str:
     return "conductor" if role == "conductor" else f"steward:{project}"
 
 
-def _session_kind(cfg, role, project=None) -> str:
-    """SPEC-0437: conductor follows the host default; steward follows the project overlay."""
+def _session_kind(cfg, role, project=None, *, runner=None, resume=False, last=None) -> str:
+    """SPEC-0438: `--runner` wins; else resume uses the last launch record; else SPEC-0437."""
     from .runner import resolve_runner
+    if runner in ("claude", "cursor"):
+        return runner
+    if runner not in (None,):
+        raise ValueError(f"unknown runner {runner!r} (expected claude or cursor)")
+    stored = (last or {}).get("runner") if resume else None
+    if stored in ("claude", "cursor"):
+        return stored
     return resolve_runner(cfg, project=project if role == "steward" else None)
 
 
@@ -308,7 +315,7 @@ def _with_resume(argv, sid) -> list:
     return out
 
 
-def build_plan(cfg, role, project=None, *, resume=False, session_id=None) -> dict:
+def build_plan(cfg, role, project=None, *, resume=False, session_id=None, runner=None) -> dict:
     """The launch plan; touches nothing. With `resume`, the id is the newest launched session
     of the reader (a ClickException when there is none or its transcript is gone)."""
     from ..rules import INTERNAL_PROJECT
@@ -318,18 +325,26 @@ def build_plan(cfg, role, project=None, *, resume=False, session_id=None) -> dic
     sett = settings(cfg, role)
     name = reader_for(role, project)
     cwd = _project_root(cfg, INTERNAL_PROJECT if role == "conductor" else project)
-    kind = _session_kind(cfg, role, project)
+    launched = ([r for r in CC.sessions(cfg, name) if r.get("source") == "launch"]
+                if resume else [])
+    last = launched[-1] if launched else None
+    try:
+        kind = _session_kind(cfg, role, project, runner=runner, resume=resume, last=last)
+    except ValueError as e:
+        raise click.ClickException(str(e))
     if resume:
-        launched = [r for r in CC.sessions(cfg, name) if r.get("source") == "launch"]
-        last = launched[-1] if launched else None
         sid = last["session_id"] if last else None
-        if kind == "cursor":
-            if not sid:
-                raise click.ClickException("no launched session to resume; run without --resume")
-            if last.get("runner") != "cursor":
-                raise click.ClickException(
-                    "newest launch was not cursor-agent; start fresh without --resume")
-        elif not sid or CC.find_transcript(cfg, sid) is None:
+        if not sid:
+            raise click.ClickException("no launched session to resume; run without --resume")
+        stored = last.get("runner")
+        if stored in ("claude", "cursor") and stored != kind:
+            raise click.ClickException(
+                f"newest launch was {stored}; start fresh without --resume "
+                f"or pass --runner {stored}")
+        if kind == "cursor" and stored != "cursor":
+            raise click.ClickException(
+                "newest launch was not cursor-agent; start fresh without --resume")
+        if kind == "claude" and CC.find_transcript(cfg, sid) is None:
             raise click.ClickException("no launched session to resume; run without --resume")
     else:
         sid = session_id or str(uuid.uuid4())
