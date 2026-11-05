@@ -63,6 +63,13 @@ def test_profile_cursor_model_is_a_valid_persona_key(tmp_path):
     assert any("cursor_model" in e and "Claude" in e for e in err)
 
 
+def test_map_launch_model_claude_sonnet_is_sonnet_default_effort(tmp_path):
+    cfg = {"config_dir": str(tmp_path)}
+    assert CM.map_launch_model("claude-sonnet-5-5", "medium", cfg) == "grok-4.7-high"
+    assert CM.map_launch_model("claude-opus-4", None, cfg) == "gpt-5.6-sol-high"
+    assert CM.map_launch_model("sonnet", "medium", cfg) == "grok-4.7-medium"
+
+
 def test_mapped_model_only_translates_when_runner_is_cursor(tmp_path, monkeypatch):
     monkeypatch.delenv("NW_AGENTIC_RUNNER", raising=False)
     cfg = {"config_dir": str(tmp_path), "agentic": {"runner": "claude"}}

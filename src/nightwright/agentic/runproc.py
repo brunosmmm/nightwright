@@ -103,6 +103,25 @@ def with_agent(argv, env) -> tuple[list, dict]:
     return with_claude(argv, env)
 
 
+def create_cursor_chat(exe=None, run=None, timeout=30.0) -> str:
+    """SPEC-0437: `cursor-agent create-chat` stdout is a UUID (the chat id to `--resume`)."""
+    run = subprocess.run if run is None else run
+    exe = exe or resolve_cursor_agent()
+    if not exe:
+        raise FileNotFoundError(2, "cursor-agent not found on PATH or in the standard install dirs",
+                                "cursor-agent")
+    rec = run([exe, "create-chat"], capture_output=True, text=True, timeout=timeout)
+    stdout = (getattr(rec, "stdout", None) or "")
+    stderr = (getattr(rec, "stderr", None) or "")
+    if getattr(rec, "returncode", 1):
+        tail = (stderr or stdout).strip().splitlines()
+        raise RuntimeError(tail[-1] if tail else f"create-chat exit {rec.returncode}")
+    sid = stdout.strip().splitlines()[-1].strip() if stdout.strip() else ""
+    if not sid:
+        raise RuntimeError("cursor-agent create-chat produced no id")
+    return sid
+
+
 _CURSOR_LOGIN_FAIL = ("not logged", "not authenticated", "please log in", "login required",
                       "unauthorized")
 

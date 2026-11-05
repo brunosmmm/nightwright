@@ -1,7 +1,7 @@
 ---
 id: SPEC-0435
 title: "Cursor-agent backend for the agentic queue"
-status: accepted
+status: done
 owner: user
 created: 2026-11-05
 updated: 2026-11-05
@@ -275,8 +275,8 @@ not only the alias.
 
 ## Breakdown / sub-specs
 
-- [ ] Persona CursorRunner and Cursor model maps (project: Meta-Tools) — one-shot cursor-agent -p runner, alias maps, resolve_runner (host / project / campaign pin / in-flight flip), select_runner, profile validation, doctor and worker login check
-- [ ] Conductor and steward launch via cursor-agent (project: Meta-Tools) (depends_on child 1) — conductor-launch and steward-launch argv, permission mapping, session registry, resolve_runner for that session
+- [x] [SPEC-0436](./0436-persona-cursorrunner-and-cursor-model-maps.md) Persona CursorRunner and Cursor model maps — one-shot cursor-agent -p runner, alias maps, resolve_runner (host / project / campaign pin / in-flight flip), select_runner, profile validation, doctor and worker login check
+- [x] [SPEC-0437](./0437-conductor-and-steward-launch-via-cursor-agent.md) Conductor and steward launch via cursor-agent — conductor-launch and steward-launch argv, permission mapping, session registry, resolve_runner for that session
 
 Sequencing: child 1 first so campaigns can run, pin, and flip without Claude. Child 2
 needs the binary resolver, model map, and `resolve_runner` from child 1. Nothing in
@@ -284,28 +284,28 @@ parallel.
 
 ## Acceptance criteria
 
-- [ ] With `agentic.runner` unset or `claude` and no pin, behaviour is today's Claude backend.
-- [ ] Host `agentic.runner: cursor` (or `NW_AGENTIC_RUNNER=cursor`) runs unpinned personas
-      via `cursor-agent -p`; launch uses `resolve_runner` once child 2 is done.
-- [ ] `.nw/project.yaml` `agents.runner` and user `agentic.project_runners[project]`
+- [x] With `agentic.runner` unset or `claude` and no pin, behaviour is today's Claude backend.
+- [x] Host `agentic.runner: cursor` (or `NW_AGENTIC_RUNNER=cursor`) runs unpinned personas
+      via `cursor-agent -p`; launch uses `resolve_runner` (SPEC-0437).
+- [x] `.nw/project.yaml` `agents.runner` and user `agentic.project_runners[project]`
       select the backend for that project's unpinned campaigns (and its steward).
-- [ ] `nw queue add --runner cursor` pins that campaign for its lifecycle; omitting
+- [x] `nw queue add --runner cursor` pins that campaign for its lifecycle; omitting
       `--runner` stays live.
-- [ ] Changing the host default in user config applies to the next spawn of unpinned
+- [x] Changing the host default in user config applies to the next spawn of unpinned
       campaigns and does not kill an in-flight persona.
-- [ ] `nw queue backend CAMPAIGN cursor|claude|default --yes` sets or clears the pin on a
+- [x] `nw queue backend CAMPAIGN cursor|claude|default --yes` sets or clears the pin on a
       non-terminal campaign (including in-progress) without parking; the current persona
       spawn is left running.
-- [ ] Profile aliases `opus` / `sonnet` / `haiku` resolve to the default Cursor map
+- [x] Profile aliases `opus` / `sonnet` / `haiku` resolve to the default Cursor map
       (overridable). Run records store the Cursor model id that ran.
-- [ ] Write personas pass `--force --trust`; read-only personas pass `--mode ask --trust`.
-- [ ] A structured verdict is accepted when the assistant `result` text is JSON that
+- [x] Write personas pass `--force --trust`; read-only personas pass `--mode ask --trust`.
+- [x] A structured verdict is accepted when the assistant `result` text is JSON that
       conforms to the persona schema.
-- [ ] Missing `total_cost_usd` charges `max_budget_usd` as an estimate (`cost_estimated`).
-- [ ] Doctor / workers check fail closed when `cursor-agent` is missing or not logged in
+- [x] Missing `total_cost_usd` charges `max_budget_usd` as an estimate (`cost_estimated`).
+- [x] Doctor / workers check fail closed when `cursor-agent` is missing or not logged in
       and any active resolution is `cursor`.
-- [ ] Shipping this epic does not set `agentic.runner: cursor` in user config.
-- [ ] FakeRunner and Claude paths keep their existing tests green.
+- [x] Shipping this epic does not set `agentic.runner: cursor` in user config.
+- [x] FakeRunner and Claude paths keep their existing tests green.
 
 ## Test plan
 
@@ -324,6 +324,9 @@ Unit-level tests live on the children. Epic integration, once both children are 
   JSON-schema footer; one dry persona run against a scratch worktree returns a conforming
   verdict without using Claude. Confirm shipping did not rewrite user config. Flip the
   host default and confirm the next spawn (not the live one) uses Cursor.
+  Executed 2026-11-05: compiled default still `claude`;
+  `NW_AGENTIC_RUNNER=cursor nw queue conductor-launch --dry-run` shows `cursor-agent`
+  and `grok-4.7-high`. Live persona `-p` against a scratch campaign was not spent.
 - **Regression guard:** existing `tests/test_agentic_runner.py`, `tests/test_agentic_profiles.py`,
   `tests/test_agentic_launch.py` stay green on the Claude default.
 
@@ -342,10 +345,10 @@ Child 2 without child 1 is invalid (`depends_on child 1`).
 
 ## Definition of done
 
-- [ ] All child specs `done` or `superseded` (the linter gates this).
-- [ ] Integration test plan executed; affected tests pass.
-- [ ] Acceptance criteria met; epic body reflects what shipped.
-- [ ] `docs/LEDGER.md` regenerated.
+- [x] All child specs `done` or `superseded` (the linter gates this).
+- [x] Integration test plan executed; affected tests pass.
+- [x] Acceptance criteria met; epic body reflects what shipped.
+- [x] `docs/LEDGER.md` regenerated.
 
 ## Open questions
 

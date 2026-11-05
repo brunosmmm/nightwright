@@ -11,10 +11,12 @@ from . import launch as L
 
 
 def _show(plan):
+    if plan.get("runner"):
+        console.print(f"runner: {plan['runner']}", highlight=False, markup=False)
     console.print(f"cwd: {plan['cwd']}", highlight=False, markup=False)
     console.print("env:", highlight=False, markup=False)
     for k in sorted(plan["env"]):
-        console.print(f"  {k}={plan['env'][k]}", highlight=False, markup=False)
+        console.print(f"  {k}={plan['env'][k]}", highlight=False, markup=False, soft_wrap=True)
     for k in plan["env_remove"]:
         console.print(f"unset: {k}", highlight=False, markup=False)
     for key in ("allowed_tools", "disallowed_tools"):
@@ -45,8 +47,8 @@ def attach(queue_group):
     @click.option("--json", "as_json", is_flag=True, help="with --dry-run: emit the plan as JSON")
     @click.pass_obj
     def queue_conductor_launch(cfg, dry_run, resume, as_json):
-        """Start the conductor as a Claude Code session with forced context limits, a pinned
-        model and a pre-registered session id (agentic.conductor.launch.*)."""
+        """Start the conductor (claude or cursor-agent via resolve_runner) with forced
+        context limits, a pinned model and a pre-registered session id."""
         _go(cfg, "conductor", None, dry_run, resume, as_json)
 
     @queue_group.command("steward-launch")
@@ -56,5 +58,5 @@ def attach(queue_group):
     @click.option("--json", "as_json", is_flag=True, help="with --dry-run: emit the plan as JSON")
     @click.pass_obj
     def queue_steward_launch(cfg, project, dry_run, resume, as_json):
-        """Start the steward of PROJECT as a Claude Code session, like conductor-launch."""
+        """Start the steward of PROJECT (claude or cursor-agent via resolve_runner)."""
         _go(cfg, "steward", project, dry_run, resume, as_json)

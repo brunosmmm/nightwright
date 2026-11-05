@@ -1,6 +1,6 @@
-"""`nw queue conductor-launch` / `steward-launch` (SPEC-0319): start the conductor or a steward
-as a Claude Code session with forced context limits, a pinned model and a session id nightwright
-registered (SPEC-0299) before `claude` starts.
+"""`nw queue conductor-launch` / `steward-launch` (SPEC-0319 / SPEC-0437): start the conductor
+or a steward as a Claude Code or cursor-agent session with forced context limits, a pinned
+model and a session id nightwright registered (SPEC-0299) before the binary starts.
 
 `settings` and `build_plan` are pure; `run` is the only function with process side effects."""
 from __future__ import annotations
@@ -21,6 +21,28 @@ from . import conductor_cost as CC
 
 CONDUCTOR_PROMPT = "Run the /nw-orient skill, then the /nw-conduct skill."
 STEWARD_PROMPT = "Run the /nw-orient skill, then the /nw-steward skill for project {project}."
+# SPEC-0437: Cursor has no --allowedTools/--disallowedTools. Short policy, not the glob explosion.
+CONDUCTOR_CURSOR_POLICY = (
+    "Cursor has no tool allow/deny flags. You MUST follow these without waiting for the human:\n"
+    "- Do not use AskUserQuestion.\n"
+    "- Do not push to main or master; do not force-push except origin nw/* or origin wt/* "
+    "with --force-with-lease.\n"
+    "- Do not run `gh pr merge`.\n"
+    "- Do not edit the main checkout; write only under `.nw-worktrees/`.\n"
+    "- Git: read-only verbs, worktree add, switch --create, add -A, commit -m. "
+    "No reset --hard, clean, branch -D, switch -f.\n"
+    "- You may Read/Grep/Glob, Edit/Write under `.nw-worktrees/`, and run `uv run nw`, "
+    "`uv run pytest`, spec_lint.")
+STEWARD_CURSOR_POLICY = (
+    "Cursor has no tool allow/deny flags. You MUST follow these without waiting for the human:\n"
+    "- Do not push to main or master; do not force-push except origin nw/* or origin wt/* "
+    "with --force-with-lease.\n"
+    "- Do not run `gh pr merge`.\n"
+    "- Do not edit the main checkout; write only under `.nw-worktrees/`.\n"
+    "- Git in worktrees: fetch, rebase, add, commit, restore. "
+    "No reset --hard, clean, branch -D.\n"
+    "- You may Read/Grep/Glob, Edit/Write under `.nw-worktrees/`, and run `uv run nw`, "
+    "`uv run pytest`, spec_lint.")
 
 # Rule generators (SPEC-0353). `*` matches any characters, spaces included, so allow rules that end
 # in a wildcard are guarded by a deny rule for every argument that can follow the ref.
@@ -271,19 +293,43 @@ def reader_for(role, project=None) -> str:
     return "conductor" if role == "conductor" else f"steward:{project}"
 
 
+def _session_kind(cfg, role, project=None) -> str:
+    """SPEC-0437: conductor follows the host default; steward follows the project overlay."""
+    from .runner import resolve_runner
+    return resolve_runner(cfg, project=project if role == "steward" else None)
+
+
+def _with_resume(argv, sid) -> list:
+    out = list(argv)
+    for i, a in enumerate(out[:-1]):
+        if a == "--resume":
+            out[i + 1] = sid
+            break
+    return out
+
+
 def build_plan(cfg, role, project=None, *, resume=False, session_id=None) -> dict:
     """The launch plan; touches nothing. With `resume`, the id is the newest launched session
     of the reader (a ClickException when there is none or its transcript is gone)."""
     from ..rules import INTERNAL_PROJECT
+    from .cursor_map import map_launch_model
     if role not in ("conductor", "steward"):
         raise ValueError(role)
     sett = settings(cfg, role)
     name = reader_for(role, project)
     cwd = _project_root(cfg, INTERNAL_PROJECT if role == "conductor" else project)
+    kind = _session_kind(cfg, role, project)
     if resume:
         launched = [r for r in CC.sessions(cfg, name) if r.get("source") == "launch"]
-        sid = launched[-1]["session_id"] if launched else None
-        if not sid or CC.find_transcript(cfg, sid) is None:
+        last = launched[-1] if launched else None
+        sid = last["session_id"] if last else None
+        if kind == "cursor":
+            if not sid:
+                raise click.ClickException("no launched session to resume; run without --resume")
+            if last.get("runner") != "cursor":
+                raise click.ClickException(
+                    "newest launch was not cursor-agent; start fresh without --resume")
+        elif not sid or CC.find_transcript(cfg, sid) is None:
             raise click.ClickException("no launched session to resume; run without --resume")
     else:
         sid = session_id or str(uuid.uuid4())
@@ -301,17 +347,30 @@ def build_plan(cfg, role, project=None, *, resume=False, session_id=None) -> dic
            "disallowed_tools": _dedup(sett["disallowed_tools"] + extra_deny)}
     perms = [x for key, flag in TOOL_FLAGS.items() if eff[key] for x in (flag, *eff[key])]
     mode = sett[f"{role}_permission_mode"]                 # SPEC-0424: both roles
-    argv = ["claude", "-n", name, "--resume" if resume else "--session-id", sid, *perms,
-            *(["--permission-mode", mode] if mode else []),
-            "--model", sett["model"], "--effort", sett["effort"],
-            "--autocompact", str(sett["autocompact"]), prompt]
-    env = {var: str(sett[key]) for key, var in ENV_KEYS.items()}
-    env[LAUNCH_KEYS_VAR] = ",".join(ENV_KEYS.values())
+    if kind == "cursor":
+        model = map_launch_model(sett["model"], sett["effort"], cfg)
+        policy = CONDUCTOR_CURSOR_POLICY if role == "conductor" else STEWARD_CURSOR_POLICY
+        prompt = prompt + "\n\n" + policy
+        force = [] if mode == "plan" else ["--force"]
+        plan_mode = ["--mode", "plan"] if mode == "plan" else []
+        argv = ["cursor-agent", "--resume", sid, *force, *plan_mode, "--trust", "--approve-mcps",
+                "--workspace", str(cwd), "--model", model, prompt]
+        env = {}
+        price = None
+    else:
+        argv = ["claude", "-n", name, "--resume" if resume else "--session-id", sid, *perms,
+                *(["--permission-mode", mode] if mode else []),
+                "--model", sett["model"], "--effort", sett["effort"],
+                "--autocompact", str(sett["autocompact"]), prompt]
+        env = {var: str(sett[key]) for key, var in ENV_KEYS.items()}
+        env[LAUNCH_KEYS_VAR] = ",".join(ENV_KEYS.values())
+        model = sett["model"]
+        price = CC.price_for(cfg, sett["model"])
     plan = {"role": role, "name": name, "cwd": str(cwd), "session_id": sid, "resumed": resume,
-            "argv": argv, "env": env, "env_remove": list(ENV_REMOVE), "prompt": prompt,
-            "model": sett["model"], "permission_mode": mode,
+            "runner": kind, "argv": argv, "env": env, "env_remove": list(ENV_REMOVE),
+            "prompt": prompt, "model": model, "permission_mode": mode,
             "allowed_tools": list(eff["allowed_tools"]),
-            "disallowed_tools": list(eff["disallowed_tools"]), "price": CC.price_for(cfg, sett["model"])}
+            "disallowed_tools": list(eff["disallowed_tools"]), "price": price}
     plan["launch_hash"] = launch_hash(plan)
     return plan
 
@@ -337,7 +396,11 @@ def launch_hash(plan) -> str:
 def missing_prices(cfg) -> list:
     """`[(role, model)]` for each launch role (conductor, steward) whose model has no price in
     `agentic.conductor.prices`: the same lookup `build_plan` makes, without a project root.
-    `nw doctor` reports these (SPEC-0349); `check_price` refuses the launch."""
+    `nw doctor` reports these (SPEC-0349); `check_price` refuses the launch.
+    SPEC-0437: empty when the host default is cursor (no USD table)."""
+    from .runner import resolve_runner
+    if resolve_runner(cfg) == "cursor":
+        return []
     out = []
     for role in ("conductor", "steward"):
         model = settings(cfg, role)["model"]
@@ -347,6 +410,8 @@ def missing_prices(cfg) -> list:
 
 
 def check_price(plan):
+    if plan.get("runner") == "cursor":
+        return
     if plan["price"] is None:
         raise click.ClickException(
             f"no price for model {plan['model']}; set agentic.conductor.prices.<model-prefix> "
@@ -374,16 +439,31 @@ def register(cfg, plan):
         CC.record_session(cfg, plan["name"], {}, source="launch", session_id=plan["session_id"],
                           extra={"disallowed_tools": plan["disallowed_tools"],
                                  "launch_hash": plan.get("launch_hash") or launch_hash(plan),
-                                 "nw_build": build},
+                                 "nw_build": build,
+                                 "runner": plan.get("runner") or "claude"},
                           refresh=bool(plan.get("resumed")))
     except OSError as e:
         raise click.ClickException(f"cannot register the session: {e}")
 
 
 def run(cfg, plan):
-    """Check the price and the binary, chdir to the plan's cwd, register, exec `claude`."""
+    """Check the price and the binary, chdir to the plan's cwd, register, exec the backend."""
+    from . import runproc as RP
+    kind = plan.get("runner") or "claude"
     check_price(plan)
-    if shutil.which("claude") is None:
+    if kind == "cursor":
+        exe = RP.resolve_cursor_agent()
+        if exe is None:
+            raise click.ClickException(
+                "`cursor-agent` not found on PATH or in the standard install dirs")
+        if not plan.get("resumed"):
+            try:
+                sid = RP.create_cursor_chat(exe)
+            except (OSError, RuntimeError, FileNotFoundError) as e:
+                raise click.ClickException(f"cursor-agent create-chat failed: {e}")
+            plan["session_id"] = sid
+            plan["argv"] = _with_resume(plan["argv"], sid)
+    elif shutil.which("claude") is None:
         raise click.ClickException("`claude` not found on PATH")
     try:
         os.chdir(plan["cwd"])
@@ -391,9 +471,14 @@ def run(cfg, plan):
         raise click.ClickException(f"cannot enter {plan['cwd']}: {e}")
     register(cfg, plan)
     try:
-        os.execvpe("claude", plan["argv"], exec_env(plan))
-    except OSError as e:   # e.g. a broken `claude` wrapper: an error, not a traceback
-        raise click.ClickException(f"cannot start claude: {e}; the registered launch record "
+        if kind == "cursor":
+            argv, env = RP.with_cursor_agent(plan["argv"], exec_env(plan))
+            os.execvpe(argv[0], argv, env)
+        else:
+            os.execvpe("claude", plan["argv"], exec_env(plan))
+    except OSError as e:   # e.g. a broken wrapper: an error, not a traceback
+        name = "cursor-agent" if kind == "cursor" else "claude"
+        raise click.ClickException(f"cannot start {name}: {e}; the registered launch record "
                                    "has no session, so start fresh (without --resume)")
 
 

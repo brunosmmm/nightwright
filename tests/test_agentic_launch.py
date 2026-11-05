@@ -48,6 +48,7 @@ def _wire(cfg, monkeypatch, tmp_path):
     cfg_holder[0] = cfg
     monkeypatch.delenv("CLAUDE_CODE_EFFORT_LEVEL", raising=False)
     monkeypatch.delenv("NW_LAUNCH_KEYS", raising=False)
+    monkeypatch.delenv("NW_AGENTIC_RUNNER", raising=False)
     monkeypatch.chdir(tmp_path)
 
 

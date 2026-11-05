@@ -169,6 +169,29 @@ def reject_claude_model(model: str) -> None:
         raise ValueError(f"cursor runner rejects Claude model id {raw!r}")
 
 
+def claude_family_alias(model) -> str | None:
+    """`opus` / `sonnet` / `haiku` when `model` is a `claude-*` family id, else None."""
+    raw = str(model or "").strip().lower()
+    if not raw.startswith("claude"):
+        return None
+    if "opus" in raw:
+        return "opus"
+    if "haiku" in raw:
+        return "haiku"
+    if "sonnet" in raw:
+        return "sonnet"
+    return None
+
+
+def map_launch_model(model, effort=None, cfg=None, *, project_root=None) -> str:
+    """SPEC-0437: launch `model` through the YAML map. `claude-sonnet-5-5` is sonnet with
+    the YAML default effort (builtin high → grok-4.7-high)."""
+    alias = claude_family_alias(model)
+    if alias:
+        return map_model(alias, None, cfg, project_root=project_root)
+    return map_model(model, effort, cfg, project_root=project_root)
+
+
 def map_model(model, effort=None, cfg=None, *, project_root=None, cursor_model=None) -> str:
     """The Cursor id for this spawn. `cursor_model` (profile persona setting) wins."""
     if cursor_model is not None and str(cursor_model).strip():

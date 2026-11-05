@@ -259,8 +259,12 @@ def resolve_runner(cfg, *, campaign=None, project=None) -> str:
 
 
 def cursor_needed(cfg, campaigns=None) -> bool:
-    """True when the host default or any given (else live) campaign resolves to `cursor`."""
+    """True when the host default, a project overlay, or any given (else live) campaign
+    resolves to `cursor`."""
     if resolve_runner(cfg) == "cursor":
+        return True
+    mapping = ((cfg or {}).get("agentic") or {}).get("project_runners")
+    if isinstance(mapping, dict) and any(v == "cursor" for v in mapping.values()):
         return True
     if campaigns is None:
         try:
