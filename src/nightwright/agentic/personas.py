@@ -21,7 +21,7 @@ from . import persona_registry as PR
 from . import store
 from .gates import TARGETED_UNRESOLVED_EXITS, tmp_env
 from .profiles import persona_settings
-from .runner import RunRequest
+from .runner import RunRequest, mapped_model
 
 _PLACEHOLDER_RE = re.compile(r"\{\{(\w+)\}\}")
 _TEMPLATES_DIR = Path(__file__).resolve().parent / "personas"
@@ -1026,13 +1026,18 @@ def build_request(cfg, profile, project_cfg, state, persona, *, run_dir,
         env.update(tmp_env(store.child_tmp(cfg, cid, f"run-{Path(run_dir).name}", create=True)))
     if persona == "conflict_resolver":
         env["NW_REBASE_TARGET"] = str(ctx.get("rebase_target") or "")
+    alias = str(settings.get("model") or "sonnet")
+    effort = settings.get("effort")
+    model, model_alias = mapped_model(
+        cfg, alias, effort, campaign=state, project=state.get("project"),
+        project_root=project_root, cursor_model=settings.get("cursor_model"))
     return RunRequest(
         persona=persona,
         prompt=build_prompt(p, ctx) if invariant is None else build_prompt(p, ctx, invariant),
         system_append=render(p.invariant if invariant is None else invariant, ctx),
         cwd=worktree,
-        model=str(settings.get("model") or "sonnet"),
-        effort=settings.get("effort"),
+        model=model,
+        effort=effort,
         max_budget_usd=float(settings.get("max_budget_usd") or 1.0),
         timeout_s=int(profile.get("run_timeout_s") or 1800),
         permission_mode=permission_mode,
@@ -1044,4 +1049,5 @@ def build_request(cfg, profile, project_cfg, state, persona, *, run_dir,
         run_dir=Path(run_dir),
         profile=profile.get("name"),
         profile_sources=tuple(profile.get("sources") or ()),
+        model_alias=model_alias,
     )

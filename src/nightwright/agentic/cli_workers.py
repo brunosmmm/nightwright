@@ -313,6 +313,7 @@ def workers_check(cfg, name, as_json, auth):
     worker; exits 1 if any fails (a version or sha mismatch only warns). A worker whose
     `kinds` contain `persona` must also have a working `claude` (SPEC-0344)."""
     from . import remote_personas as RPS
+    from . import runner as R
     records = _load_or_fail(cfg)
     if name is not None:
         records = [_find(records, name)]
@@ -322,6 +323,8 @@ def workers_check(cfg, name, as_json, auth):
         w = WK.normalize(cfg, r)
         if "persona" in w["kinds"] and not res["errors"]:
             res["errors"] += RPS.claude_check(cfg, w, auth)
+            if R.cursor_needed(cfg):
+                res["errors"] += RPS.cursor_check(cfg, w)
             res["ok"] = not res["errors"]
             if not res["ok"]:
                 WK.record_check(cfg, w["name"], False, failed="claude")  # SPEC-0345

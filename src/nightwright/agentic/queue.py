@@ -67,7 +67,7 @@ from .profiles import (SEVERITIES, persona_settings, profile_sha256, resolve_pro
 from .events import settings as events_settings
 from .events import temp_pressure as events_temp_pressure
 from . import runproc as RP
-from .runner import DETACHED, RunHooks, RunResult, rebuild_request, select_runner
+from .runner import DETACHED, RunHooks, RunResult, rebuild_request, resolve_runner, select_runner
 
 STATES = ("QUEUED", "WAITING", "OPENING", "SPEC_WRITING", "SPEC_REVIEW", "IMPLEMENTING", "GATING", "TRIAGING", "REVIEWING",
           "CLOSING", "PARKED", "MERGED", "HANDED_OFF", "ABANDONED")
@@ -1376,7 +1376,8 @@ class _Ctx:
         self.cfg = cfg
         self.stop = stop or threading.Event()
         self.lease = lease            # SPEC-0228: where `_busy` declares long main-thread steps
-        self._runner = runner
+        self._injected_runner = runner
+        self._runners: dict = {}
         self._profiles: dict = {}
         self._projects: dict = {}
         self._progress_mono: float | None = None
@@ -1394,9 +1395,17 @@ class _Ctx:
 
     @property
     def runner(self):
-        if self._runner is None:
-            self._runner = select_runner(self.cfg)
-        return self._runner
+        return self.runner_for(None)
+
+    def runner_for(self, state=None):
+        """The persona backend for this spawn (SPEC-0436). An injected test runner wins."""
+        if self._injected_runner is not None:
+            return self._injected_runner
+        kind = resolve_runner(self.cfg, campaign=state,
+                              project=(state or {}).get("project") if state else None)
+        if kind not in self._runners:
+            self._runners[kind] = select_runner(self.cfg, runner=kind)
+        return self._runners[kind]
 
     def profile(self, state) -> dict:
         name = state.get("profile")
@@ -1851,7 +1860,7 @@ def _do_write_spec(ctx: _Ctx, state: dict, step: Step, run_id: str, req,
 
     try:
         started = time.time()
-        res.run_result = rr = _gated_runner(ctx, req).run(req)
+        res.run_result = rr = _gated_runner(ctx, req, state).run(req)
         _note_rate_limit(ctx, state, rr, started, _run_persona(req, step))      # SPEC-0345
         res.interrupted = ctx.stop.is_set()
         verdict = rr.verdict if isinstance(rr.verdict, dict) else {}
@@ -1977,7 +1986,7 @@ def _do_spec_review(ctx: _Ctx, state: dict, step: Step, run_id: str, req,
     try:
         head = git.rev_parse(worktree)
         try:
-            res.run_result = ctx.runner.run(req)
+            res.run_result = ctx.runner_for(state).run(req)
         except Exception as e:                  # the reset below must still run
             res.error = getattr(e, "tail", None) or str(e)
             if not isinstance(e, (GitError, ValueError, OSError)):
@@ -2064,9 +2073,10 @@ def _do_persona(ctx: _Ctx, state: dict, step: Step, run_id: str, req, budget: fl
     try:
         # SPEC-0344: a persona-capable worker may take the run (or holds an adopted one)
         cfg = getattr(ctx, "cfg", None)
+        local = ctx.runner_for(state)
         remote = RPS.dispatch(cfg, state, step.kind, req, adopted=adopted is not None,
-                              local=ctx.runner) if cfg is not None else None
-        runner = remote or ctx.runner
+                              local=local) if cfg is not None else None
+        runner = remote or local
         detachable = bool(getattr(runner, "detachable", False))
         started = time.time() if adopted is None else None     # SPEC-0345: an adopted run's is unknown
         outcome = runner.run(req, hooks=hooks) if (hooks and detachable) else runner.run(req)
@@ -2085,7 +2095,7 @@ def _do_persona(ctx: _Ctx, state: dict, step: Step, run_id: str, req, budget: fl
             run_id, req, outcome = _rerun_locally(ctx, state, step, run_id, rerun_req, budget,
                                                   outcome, hooks)
             res.run_id = run_id
-            detachable = bool(getattr(ctx.runner, "detachable", False))
+            detachable = bool(getattr(ctx.runner_for(state), "detachable", False))
             if outcome is DETACHED:
                 res.detached = True
                 return res
@@ -2124,7 +2134,7 @@ def _do_persona(ctx: _Ctx, state: dict, step: Step, run_id: str, req, budget: fl
     return res
 
 
-def _gated_runner(ctx: _Ctx, req):
+def _gated_runner(ctx: _Ctx, req, state=None):
     """SPEC-0345: the runner of a gated `write_spec` / `resolve` run. The tick's gate read the
     backoff before the run was admitted; one begun since (another run's 429) holds it at its
     start too: a `HeldRunner`, so it ends interrupted (no attempt charged) and the next tick's
@@ -2136,7 +2146,7 @@ def _gated_runner(ctx: _Ctx, req):
                 return RPS.HeldRunner()
         except (OSError, ValueError):
             pass
-    return ctx.runner
+    return ctx.runner_for(state)
 
 
 def _run_persona(req, step: Step) -> str | None:
@@ -2215,11 +2225,12 @@ def _rerun_locally(ctx: _Ctx, state: dict, step: Step, run_id: str, req, budget:
         mark_held(new_req)
         return new_id, new_req, _synthetic(new_req, "the write-back re-run was not started "
                                                     "during the rate-limit backoff", cost_usd=0.0)
-    if hooks is not None and getattr(ctx.runner, "detachable", False):
+    local = ctx.runner_for(state)
+    if hooks is not None and getattr(local, "detachable", False):
         if not hooks.restart(new_req.run_dir):
             return new_id, new_req, DETACHED
-        return new_id, new_req, ctx.runner.run(new_req, hooks=hooks)
-    return new_id, new_req, ctx.runner.run(new_req)
+        return new_id, new_req, local.run(new_req, hooks=hooks)
+    return new_id, new_req, local.run(new_req)
 
 
 def _commit_resolver_changes(ctx: _Ctx, state: dict, worktree, branch, run_id: str,
@@ -2274,7 +2285,7 @@ def _do_resolve(ctx: _Ctx, state: dict, step: Step, run_id: str, req, budget: fl
         crash = None
         try:
             started = time.time()
-            res.run_result = rr = _gated_runner(ctx, req).run(req)
+            res.run_result = rr = _gated_runner(ctx, req, state).run(req)
             _note_rate_limit(ctx, state, rr, started, _run_persona(req, step))  # SPEC-0345
         except Exception as e:          # a crashing resolver is a failed attempt, not a stuck close
             crash = f"the run raised: {e}"
@@ -5779,9 +5790,20 @@ def validate_runner_cfg(cfg: dict, campaigns=()) -> None:
     workers_cfg = agentic.get("workers")
     if isinstance(workers_cfg, dict):                         # SPEC-0345
         PG.check_max_personas(workers_cfg.get("max_personas"))
-    if agentic.get("runner") not in (None, "claude", "fake"):
+    if agentic.get("runner") not in (None, "claude", "fake", "cursor"):
         raise ValueError(f"unknown agentic.runner {agentic['runner']!r} "
-                         f"(expected claude or fake)")
+                         f"(expected claude, cursor or fake)")
+    mapping = agentic.get("project_runners")
+    if mapping is not None:
+        if not isinstance(mapping, dict):
+            raise ValueError("agentic.project_runners must be a mapping")
+        for proj, kind in mapping.items():
+            if kind not in ("claude", "cursor"):
+                raise ValueError(f"agentic.project_runners[{proj}]: unknown runner {kind!r} "
+                                 f"(expected claude or cursor)")
+    if agentic.get("cursor") is not None:
+        from . import cursor_map as CM
+        CM.load_cursor_map(cfg)   # validates agentic.cursor against the YAML schema
 
 
 _UNSEEN = object()                                # a stat key no file can have
@@ -7829,8 +7851,17 @@ def _note_after(cfg, state: dict, by: str) -> None:
             "author": "queue"}, by=by)
 
 
+def _campaign_runner_pin(runner) -> dict:
+    """SPEC-0436: `{runner}` when `--runner` was passed; empty when the campaign stays live."""
+    if runner is None:
+        return {}
+    if runner not in ("claude", "cursor"):
+        raise ValueError(f"unknown runner {runner!r} (expected claude or cursor)")
+    return {"runner": runner}
+
+
 def plan_add(cfg, spec_id, *, project=None, profile=None, base=None, force=False,
-             priority=PRIORITY_DEFAULT, split_origin=None, after=()) -> dict:
+             priority=PRIORITY_DEFAULT, split_origin=None, after=(), runner=None) -> dict:
     """Resolve everything `nw queue add` needs and return the plan (no writes). Raises
     ValueError with the fix when the spec is not admissible. SPEC-0294: a spec with no review
     that a split campaign wrote as a part is admitted as `split_child` (`split_origin` is the
@@ -7931,6 +7962,7 @@ def plan_add(cfg, spec_id, *, project=None, profile=None, base=None, force=False
         "spec_fm": {"source_idea": str(fm.get("source_idea") or ""),    # SPEC-0292
                     "created": str(fm.get("created") or "")},
         "split": split, "split_origin": origin["id"] if origin else None,
+        **_campaign_runner_pin(runner),
     }
 
 
@@ -7960,6 +7992,8 @@ def apply_add(cfg, plan: dict, *, by="human") -> dict:
                    "source": plan.get("profile_source"), "reason": plan.get("profile_reason"),
                    "review_sha256": plan.get("review_sha256")},
     }
+    if plan.get("runner"):                                             # SPEC-0436
+        state["runner"] = plan["runner"]
     if plan.get("after"):
         state["after"] = list(plan["after"])                           # SPEC-0423
     if plan.get("split_origin"):
@@ -8225,7 +8259,7 @@ def _open_idea_campaign(cfg, idea_id) -> dict | None:
 
 
 def plan_add_idea(cfg, idea_id, *, project=None, profile=None, base=None,
-                  priority=PRIORITY_DEFAULT, after=()) -> dict:
+                  priority=PRIORITY_DEFAULT, after=(), runner=None) -> dict:
     """`plan_add` for an idea (SPEC-0209): no writes. Refusals, first match wins: unknown idea,
     idea with a `:SPEC:`, closed idea, open campaign for the idea, unloadable project."""
     idea_id = (idea_id or "").strip()
@@ -8262,6 +8296,7 @@ def plan_add_idea(cfg, idea_id, *, project=None, profile=None, base=None,
         "cap_usd": prof.get("campaign_cap_usd"), "loop_max": prof.get("loop_max"),
         "slots": prof.get("slots"), "merge_policy": (pcfg.get("merge") or {}).get("policy"),
         "profile_sha256": profile_sha256(prof),                         # SPEC-0397
+        **_campaign_runner_pin(runner),
     }
 
 
@@ -8300,6 +8335,8 @@ def apply_add_idea(cfg, plan: dict, *, by="human") -> dict:
             "last_gate": None, "last_verdict": None,
             "pending_brief": None, "park": None, "close": None,
         }
+        if plan.get("runner"):                                         # SPEC-0436
+            state["runner"] = plan["runner"]
         if plan.get("after"):
             state["after"] = list(plan["after"])                       # SPEC-0423
         store.create_campaign(cfg, state, by=by)
@@ -8531,14 +8568,14 @@ def _cascade(items, deps_of) -> None:
 
 
 def plan_add_batch(cfg, ids, *, project=None, profile=None, base=None, force=False,
-                   priority=PRIORITY_DEFAULT, split_origin=None, after=()) -> dict:
+                   priority=PRIORITY_DEFAULT, split_origin=None, after=(), runner=None) -> dict:
     """SPEC-0276: plan several specs and ideas as one batch (no writes). Each id goes through
     `plan_add` / `plan_add_idea`; on top, specs are ordered by their in-batch `depends_on`
     (ideas follow), cycles and dependents of refused items are refused, and dependencies that
     would block a spec forever are listed in its `would_block`."""
     ids = list(dict.fromkeys(_canon_id(i) for i in ids if i and i.strip()))
     params = {"project": project, "profile": profile, "base": base, "force": bool(force),
-              "priority": priority}
+              "priority": priority, **_campaign_runner_pin(runner)}
     after = [str(a) for a in (after or ())]
     if after:
         params["after"] = after                                 # SPEC-0423
@@ -8553,10 +8590,11 @@ def plan_add_batch(cfg, ids, *, project=None, profile=None, base=None, force=Fal
         item = {"id": i, "kind": kind}
         try:
             item["plan"] = (plan_add_idea(cfg, i, project=project, profile=profile, base=base,
-                                          priority=priority, after=after) if kind == "idea" else
+                                          priority=priority, after=after, runner=runner)
+                            if kind == "idea" else
                             plan_add(cfg, i, project=project, profile=profile, base=base,
                                      force=force, priority=priority, split_origin=split_origin,
-                                     after=after))
+                                     after=after, runner=runner))
         except ValueError as e:
             item["error"] = str(e)
         items[i] = item
@@ -8606,7 +8644,7 @@ def apply_add_batch(cfg, batch: dict, *, skip_invalid=False, by="human") -> dict
                 plan = plan_add_idea(cfg, it["id"], project=prm.get("project"),
                                      profile=prm.get("profile"), base=prm.get("base"),
                                      priority=prm.get("priority", PRIORITY_DEFAULT),
-                                     after=prm.get("after") or ())
+                                     after=prm.get("after") or (), runner=prm.get("runner"))
                 apply_add_idea(cfg, plan, by=by)
             else:
                 plan = plan_add(cfg, it["id"], project=prm.get("project"),
@@ -8614,7 +8652,7 @@ def apply_add_batch(cfg, batch: dict, *, skip_invalid=False, by="human") -> dict
                                 force=bool(prm.get("force")),
                                 priority=prm.get("priority", PRIORITY_DEFAULT),
                                 split_origin=prm.get("split_origin"),
-                                after=prm.get("after") or ())
+                                after=prm.get("after") or (), runner=prm.get("runner"))
                 apply_add(cfg, plan, by=by)
         except ValueError as e:
             it["error"] = str(e)
@@ -8662,6 +8700,40 @@ def apply_after(cfg, plan: dict) -> dict:
         text = "after: " + (", ".join(f"{e['ref']} ({e['kind']})" for e in plan["to"]) or "(none)")
         return _transition(cfg, st, st["state"], "after edited", by=plan.get("by") or "human",
                            extra_events=[("note", {"text": text, "author": plan.get("by") or "human"})])
+
+
+def plan_backend(cfg, campaign, runner, *, by="human") -> dict:
+    """SPEC-0436: set or clear `state.runner` on a non-terminal campaign (no writes)."""
+    if runner not in ("claude", "cursor", "default"):
+        raise ValueError(f"unknown runner {runner!r} (expected cursor, claude or default)")
+    st = store.read_state(cfg, campaign)
+    if st.get("state") in TERMINAL_STATES:
+        raise ValueError(f"{campaign} is {st.get('state')}; only a non-terminal campaign "
+                         "can change backend")
+    return {"campaign": campaign, "state": st.get("state"), "from": st.get("runner"),
+            "to": None if runner == "default" else runner, "by": by}
+
+
+def apply_backend(cfg, plan: dict) -> dict:
+    """Write or clear `state.runner`. Does not park or SIGTERM the live persona."""
+    cid = plan["campaign"]
+    with store.item_lock(cfg, cid):
+        st = store.read_state(cfg, cid)
+        if st.get("state") in TERMINAL_STATES:
+            raise ValueError(f"{cid} is {st.get('state')}; only a non-terminal campaign "
+                             "can change backend")
+        old = st.get("runner")
+        new = plan["to"]
+        if new is None:
+            st.pop("runner", None)
+        else:
+            st["runner"] = new
+        journal(cfg, "runner_changed", campaign=cid, **{"from": old, "to": new})
+        text = f"backend: {old or 'default'} → {new or 'default'}"
+        return _transition(cfg, st, st["state"], "backend changed",
+                           by=plan.get("by") or "human",
+                           extra_events=[("note", {"text": text,
+                                                   "author": plan.get("by") or "human"})])
 
 
 def plan_prioritize(cfg, campaign, priority, *, by="human") -> dict:

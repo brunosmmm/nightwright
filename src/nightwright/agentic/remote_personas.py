@@ -142,10 +142,14 @@ def run_job(cfg, h: dict, job: Path, frames, cancel: threading.Event) -> None:
              "NW_PERSONA": str(payload.get("persona") or "")}         # SPEC-0425
     try:
         req = R.request_from_job(payload["request"], tree, run_dir, env=reset)
-        runner = R.select_runner(cfg)
+        runner = R.select_runner(cfg, runner=payload.get("runner"))
     except (KeyError, TypeError, ValueError) as e:
         raise W.WorkerError("run", f"cannot run the persona: {e}")
-    if isinstance(runner, R.ClaudeRunner) and RP.resolve_claude() is None:
+    if isinstance(runner, R.CursorRunner) and RP.resolve_cursor_agent() is None:
+        raise FileNotFoundError(2, "cursor-agent not found on PATH or in the standard install dirs",
+                                "cursor-agent")
+    if isinstance(runner, R.ClaudeRunner) and not isinstance(runner, R.CursorRunner) \
+            and RP.resolve_claude() is None:
         # SPEC-0389: an infrastructure failure, not a persona verdict (no $ estimate charged)
         raise FileNotFoundError(2, "claude not found on PATH or in the standard install dirs",
                                 "claude")
@@ -406,7 +410,9 @@ def _header(cfg, w: dict, state: dict, req, job_id: str, bundle: Path) -> dict:
          "timeout_s": int(req.timeout_s) + TIMEOUT_MARGIN_S, "attempt": 1,
          "payload": {"run_id": Path(req.run_dir).name, "persona": req.persona, "request": doc,
                      "json_schema": req.json_schema, "read_only": req.read_only,
-                     "timeout_s": req.timeout_s, "max_budget_usd": req.max_budget_usd}}
+                     "timeout_s": req.timeout_s, "max_budget_usd": req.max_budget_usd,
+                     "runner": R.resolve_runner(cfg, campaign=state,
+                                                project=state.get("project"))}}
     W.validate_header(h)
     return h
 
@@ -904,5 +910,21 @@ def claude_check(cfg, w: dict, auth: bool) -> list[str]:
         return [f"`nw worker claude-check` failed (exit {rc}): {tail[0]}".rstrip(": ")]
     if not rec.get("ok"):
         return [str(rec.get("error") or "claude check failed")]
+    return []
+
+
+def cursor_check(cfg, w: dict) -> list[str]:
+    """SPEC-0436: `nw worker cursor-check` on the worker; the errors (empty: ok)."""
+    from . import remote_gates as RG
+    got = RG._call(w, "cursor-check", timeout=WK.CHECK_TIMEOUT_S)
+    if got is None:
+        return ["`nw worker cursor-check` could not run over SSH"]
+    rc, lines, err = got
+    rec = next((r for r in lines if r.get("schema") == W.CURSOR_CHECK_SCHEMA), None)
+    if rec is None:
+        tail = (err or b"").decode("utf-8", "replace").strip().splitlines()[-1:] or [""]
+        return [f"`nw worker cursor-check` failed (exit {rc}): {tail[0]}".rstrip(": ")]
+    if not rec.get("ok"):
+        return [str(rec.get("error") or "cursor check failed")]
     return []
 

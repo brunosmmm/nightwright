@@ -60,6 +60,17 @@ def worker_claude_check(cfg, auth):
         raise SystemExit(1)
 
 
+@worker_group.command("cursor-check")
+@click.pass_obj
+def worker_cursor_check(cfg):
+    """SPEC-0436: whether this worker's `cursor-agent` works and is logged in: one
+    nw.worker.cursor_check.v1 JSON line; exit 1 when it fails. Not a paid `-p`."""
+    rec = W.cursor_check()
+    click.echo(json.dumps(rec))
+    if not rec["ok"]:
+        raise SystemExit(1)
+
+
 @worker_group.command("have")
 @click.option("--repo", "repo", required=True, help="the repo_key of the object cache")
 @click.argument("shas", nargs=-1, required=True)
@@ -182,7 +193,7 @@ def worker_update(cfg, force):
 @worker_group.command("ssh-command")
 def worker_ssh_command():
     """The SSH forced command: exec `nw worker
-    <info|have|gate-job|gc|submit|attach|poll|cancel|jobs|claude-check|update>` from SSH_ORIGINAL_COMMAND, refuse
+    <info|have|gate-job|gc|submit|attach|poll|cancel|jobs|claude-check|cursor-check|update>` from SSH_ORIGINAL_COMMAND, refuse
     anything else (exit 2)."""
     raise SystemExit(W.ssh_command())
 

@@ -69,7 +69,7 @@ def test_run_job_raises_job_level_error_without_claude(tmp_path, monkeypatch):
     """Unresolvable claude is an exception out of run_job (worker_job turns it into a
     `job_error` frame), raised before `started`, not a persona verdict."""
     monkeypatch.setattr(RP, "resolve_claude", lambda environ=None: None)
-    monkeypatch.setattr(R, "select_runner", lambda cfg: R.ClaudeRunner())
+    monkeypatch.setattr(R, "select_runner", lambda cfg, runner=None: R.ClaudeRunner())
     monkeypatch.setattr(R, "request_from_job", lambda *a, **k: object())
     monkeypatch.setattr(RPS, "_tree_git", lambda *a, **k: "")
     monkeypatch.setattr(W, "_git", lambda *a, **k: type("P", (), {"returncode": 0})())

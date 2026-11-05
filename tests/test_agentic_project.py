@@ -74,6 +74,7 @@ def test_valid_loads_with_defaults(tmp_path):
     ("schema: nw.project.v1\nworktrees:\n  cleanup: sometimes\n", "worktrees.cleanup"),
     ("schema: nw.project.v1\nagents:\n  permission_mode: yolo\n", "agents.permission_mode"),
     ("schema: nw.project.v1\nagents:\n  allowed_tools: Bash\n", "agents.allowed_tools"),
+    ("schema: nw.project.v1\nagents:\n  runner: fake\n", "agents.runner"),
 ])
 def test_invalid_reports_key_path(tmp_path, text, needle):
     p = tmp_path / "project.yaml"

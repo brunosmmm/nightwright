@@ -40,39 +40,109 @@ def child_env(extra=None, environ=None) -> dict:
 
 _CLAUDE_HOMES = (".local/bin", ".claude/local", ".npm-global/bin", ".bun/bin", ".volta/bin")
 _CLAUDE_SYSTEM = ("/usr/local/bin", "/opt/homebrew/bin", "/usr/bin")
+_AGENT_HOMES = _CLAUDE_HOMES
+_AGENT_SYSTEM = _CLAUDE_SYSTEM
+
+
+def _resolve_binary(name: str, environ=None) -> str | None:
+    """`PATH` first, then the standard install dirs a non-login ssh `PATH` lacks."""
+    import shutil
+    env = os.environ if environ is None else environ
+    found = shutil.which(name, path=env.get("PATH"))
+    if found:
+        return found
+    home = Path(env.get("HOME") or os.path.expanduser("~"))
+    for d in [home / h for h in _AGENT_HOMES] + [Path(x) for x in _AGENT_SYSTEM]:
+        c = d / name
+        if c.is_file() and os.access(c, os.X_OK):
+            return str(c)
+    return None
 
 
 def resolve_claude(environ=None) -> str | None:
     """SPEC-0389: the one `claude` lookup of a worker (`claude-check` and the job's exec):
     `PATH` first, then the standard install dirs a non-login ssh `PATH` lacks
     (`~/.local/bin`, ...). The absolute path, or None."""
-    import shutil
-    env = os.environ if environ is None else environ
-    found = shutil.which("claude", path=env.get("PATH"))
-    if found:
-        return found
-    home = Path(env.get("HOME") or os.path.expanduser("~"))
-    for d in [home / h for h in _CLAUDE_HOMES] + [Path(x) for x in _CLAUDE_SYSTEM]:
-        c = d / "claude"
-        if c.is_file() and os.access(c, os.X_OK):
-            return str(c)
-    return None
+    return _resolve_binary("claude", environ)
 
 
-def with_claude(argv, env) -> tuple[list, dict]:
-    """SPEC-0389: `argv` with a leading `claude` made absolute and its dir put on `env`'s
-    `PATH` (claude re-executes itself and its helpers). `FileNotFoundError` when none."""
-    if not argv or argv[0] != "claude":
+def resolve_cursor_agent(environ=None) -> str | None:
+    """SPEC-0436: the same lookup as `resolve_claude`, for `cursor-agent`."""
+    return _resolve_binary("cursor-agent", environ)
+
+
+def _with_binary(argv, env, name: str, resolve) -> tuple[list, dict]:
+    if not argv or argv[0] != name:
         return list(argv), env
-    exe = resolve_claude(env)
+    exe = resolve(env)
     if exe is None:
-        raise FileNotFoundError(2, "claude not found on PATH or in the standard install dirs",
-                                "claude")
+        raise FileNotFoundError(2, f"{name} not found on PATH or in the standard install dirs",
+                                name)
     d = str(Path(exe).parent)
     parts = (env.get("PATH") or "").split(os.pathsep)
     if d not in parts:
         env = {**env, "PATH": os.pathsep.join([*parts, d]) if env.get("PATH") else d}
     return [exe, *argv[1:]], env
+
+
+def with_claude(argv, env) -> tuple[list, dict]:
+    """SPEC-0389: `argv` with a leading `claude` made absolute and its dir put on `env`'s
+    `PATH` (claude re-executes itself and its helpers). `FileNotFoundError` when none."""
+    return _with_binary(argv, env, "claude", resolve_claude)
+
+
+def with_cursor_agent(argv, env) -> tuple[list, dict]:
+    """SPEC-0436: `argv` with a leading `cursor-agent` made absolute, dir on `PATH`."""
+    return _with_binary(argv, env, "cursor-agent", resolve_cursor_agent)
+
+
+def with_agent(argv, env) -> tuple[list, dict]:
+    """Resolve a leading `claude` or `cursor-agent` the way the job's exec does."""
+    if argv and argv[0] == "cursor-agent":
+        return with_cursor_agent(argv, env)
+    return with_claude(argv, env)
+
+
+_CURSOR_LOGIN_FAIL = ("not logged", "not authenticated", "please log in", "login required",
+                      "unauthorized")
+
+
+def probe_cursor_agent(environ=None, run=None, timeout=10.0) -> dict:
+    """SPEC-0436: `{ok, exe, version, login, error}` from `--version` plus `status`/`whoami`.
+    Not a paid `-p`."""
+    run = subprocess.run if run is None else run
+    exe = resolve_cursor_agent(environ)
+    out = {"ok": False, "exe": exe, "version": None, "login": None, "error": None}
+    if not exe:
+        out["error"] = "cursor-agent not found on PATH or in the standard install dirs"
+        return out
+    try:
+        p = run([exe, "--version"], capture_output=True, text=True, timeout=timeout)
+        out["version"] = (p.stdout or p.stderr or "").strip() or None if p.returncode == 0 else None
+    except (OSError, subprocess.TimeoutExpired) as e:
+        out["error"] = f"`cursor-agent --version` failed: {e}"
+        return out
+    if not out["version"]:
+        out["error"] = "`cursor-agent --version` failed"
+        return out
+    for args in ([exe, "status"], [exe, "whoami"]):
+        try:
+            p = run(args, capture_output=True, text=True, timeout=timeout)
+        except (OSError, subprocess.TimeoutExpired) as e:
+            out["error"] = f"`cursor-agent {args[1]}` failed: {e}"
+            continue
+        text = ((p.stdout or "") + "\n" + (p.stderr or "")).strip()
+        low = text.lower()
+        if p.returncode == 0 and not any(s in low for s in _CURSOR_LOGIN_FAIL):
+            out["ok"] = True
+            out["login"] = text.splitlines()[0] if text else "logged in"
+            out["error"] = None
+            return out
+        if any(s in low for s in _CURSOR_LOGIN_FAIL):
+            out["error"] = f"`cursor-agent {args[1]}`: not logged in"
+            return out
+    out["error"] = out["error"] or "cursor-agent status/whoami did not show a logged-in session"
+    return out
 
 
 def _now_iso() -> str:
@@ -369,7 +439,7 @@ def main(argv=None) -> int:
             with open(run_dir / "prompt.md", "rb") as stdin, \
                     open(run_dir / ("stream.jsonl" if stream else "result.json"), "wb") as out, \
                     open(run_dir / "stderr.log", "wb") as err:
-                argv, env = with_claude(launch["argv"], env)     # SPEC-0389
+                argv, env = with_agent(launch["argv"], env)     # SPEC-0389 / SPEC-0436
                 child = subprocess.Popen(argv, stdin=stdin, stdout=out, stderr=err,
                                          cwd=launch.get("cwd"), env=env, process_group=0)
         except OSError as e:

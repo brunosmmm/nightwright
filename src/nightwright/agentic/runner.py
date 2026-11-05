@@ -1,11 +1,12 @@
-"""Headless persona runner (SPEC-0174): the only place that knows `claude`'s command line.
+"""Headless persona runner (SPEC-0174 / SPEC-0436): the only place that knows `claude` /
+`cursor-agent` command lines.
 
-A persona run is one fresh `claude -p` with a structured verdict (`--json-schema`), a dollar
-budget, a wall-clock timeout and an explicit permission mode. The runner saves the prompt and
-the raw result under the campaign's `runs/` dir and turns the JSON result into a `RunResult`
-(verdict, cost, usage, session id). `FakeRunner` replays a scripted JSON file (edits inside the
-worktree + canned verdicts) so the whole loop is testable offline; `select_runner(cfg)` picks
-one from config or the `NW_AGENTIC_RUNNER` env var.
+A persona run is one fresh `-p` with a structured verdict, a dollar budget, a wall-clock
+timeout and an explicit permission mode. The runner saves the prompt and the raw result under
+the campaign's `runs/` dir and turns the JSON result into a `RunResult` (verdict, cost, usage,
+session id). `FakeRunner` replays a scripted JSON file (edits inside the worktree + canned
+verdicts) so the whole loop is testable offline; `select_runner(cfg)` picks one from
+`resolve_runner` / the `NW_AGENTIC_RUNNER` env var.
 
 Compared with the older `meetings.refresh_meetings` call: there is a timeout, the exit code is
 checked, and the cost is read."""
@@ -48,6 +49,7 @@ class RunRequest:
     run_dir: Path
     profile: str | None = None                  # SPEC-0238: the resolved profile and its sources
     profile_sources: tuple = ()
+    model_alias: str | None = None              # SPEC-0436: profile alias when `model` is mapped
 
 
 @dataclass(frozen=True)
@@ -190,6 +192,115 @@ def build_argv(req: RunRequest, stream: bool = True) -> list[str]:
     return argv
 
 
+LIVE_RUNNERS = ("claude", "cursor")
+ALL_RUNNERS = ("claude", "cursor", "fake")
+CURSOR_SCHEMA_FOOTER = (
+    "Reply with a single JSON object matching this schema and nothing else.\n\n{schema}"
+)
+
+
+def _runner_kind_error(kind, *, allow_fake: bool) -> ValueError:
+    allowed = ALL_RUNNERS if allow_fake else LIVE_RUNNERS
+    return ValueError(f"unknown agentic.runner {kind!r} (expected {' or '.join(allowed)})")
+
+
+def _check_runner_kind(kind, *, allow_fake: bool = False, fake_ok_host: bool = False) -> str:
+    if kind == "fake" and not (allow_fake or fake_ok_host):
+        raise ValueError("fake runner is only valid from NW_AGENTIC_RUNNER")
+    allowed = ALL_RUNNERS if (allow_fake or fake_ok_host) else LIVE_RUNNERS
+    if kind not in allowed:
+        raise _runner_kind_error(kind, allow_fake=allow_fake or fake_ok_host)
+    return kind
+
+
+def map_cursor_model(model, effort=None, cfg=None, *, project_root=None, cursor_model=None) -> str:
+    """The Cursor model id for a profile `model` / `effort` (SPEC-0436 YAML map)."""
+    from . import cursor_map as CM
+    return CM.map_model(model, effort, cfg, project_root=project_root, cursor_model=cursor_model)
+
+
+def mapped_model(cfg, model, effort=None, *, campaign=None, project=None,
+                 project_root=None, cursor_model=None) -> tuple[str, str | None]:
+    """`(req.model, model_alias)` for this spawn: mapped Cursor id when the runner is cursor."""
+    kind = resolve_runner(cfg, campaign=campaign, project=project)
+    alias = str(model or "sonnet")
+    if kind != "cursor":
+        return alias, None
+    return map_cursor_model(alias, effort, cfg, project_root=project_root,
+                            cursor_model=cursor_model), alias
+
+
+def resolve_runner(cfg, *, campaign=None, project=None) -> str:
+    """The backend kind for this spawn (SPEC-0436). Env wins; then campaign pin, per-project
+    overlay, committed `agents.runner`, host `agentic.runner`, else `claude`."""
+    env = os.environ.get("NW_AGENTIC_RUNNER")
+    if env:
+        return _check_runner_kind(env, allow_fake=True)
+    pin = (campaign or {}).get("runner") if isinstance(campaign, dict) else None
+    if pin:
+        return _check_runner_kind(pin)
+    project = project or ((campaign or {}).get("project") if isinstance(campaign, dict) else None)
+    agentic = (cfg or {}).get("agentic") or {}
+    mapping = agentic.get("project_runners") if isinstance(agentic, dict) else None
+    if project and isinstance(mapping, dict) and mapping.get(project):
+        return _check_runner_kind(mapping[project])
+    if project:
+        try:
+            from . import project as P
+            kind = ((P.project_config(cfg, project).get("agents") or {}).get("runner"))
+        except (ValueError, KeyError, OSError, TypeError):
+            kind = None
+        if kind:
+            return _check_runner_kind(kind)
+    host = agentic.get("runner") if isinstance(agentic, dict) else None
+    if host:
+        return _check_runner_kind(host, fake_ok_host=True)
+    return "claude"
+
+
+def cursor_needed(cfg, campaigns=None) -> bool:
+    """True when the host default or any given (else live) campaign resolves to `cursor`."""
+    if resolve_runner(cfg) == "cursor":
+        return True
+    if campaigns is None:
+        try:
+            from . import store
+            campaigns = [st for st in store.list_campaigns(cfg)
+                         if st.get("state") not in store.TERMINAL_STATES]
+        except (OSError, TypeError, ValueError, KeyError):
+            campaigns = ()
+    for st in campaigns or ():
+        try:
+            if resolve_runner(cfg, campaign=st, project=st.get("project")) == "cursor":
+                return True
+        except ValueError:
+            continue
+    return False
+
+
+def cursor_prompt(req: RunRequest) -> str:
+    """Stdin for `cursor-agent -p`: prompt + system_append + JSON-schema footer."""
+    parts = [req.prompt or ""]
+    if req.system_append:
+        parts.append(req.system_append)
+    schema = json.dumps(req.json_schema or {}, indent=2)
+    parts.append(CURSOR_SCHEMA_FOOTER.format(schema=schema))
+    return "\n\n".join(parts)
+
+
+def build_cursor_argv(req: RunRequest) -> list[str]:
+    """`cursor-agent -p` command line for a run (SPEC-0436); the prompt goes on stdin."""
+    argv = ["cursor-agent", "-p", "--output-format", "stream-json",
+            "--model", req.model, "--trust", "--workspace", str(req.cwd)]
+    for d in req.add_dirs:
+        argv += ["--add-dir", str(d)]
+    if req.read_only:
+        argv += ["--mode", "ask"]
+    else:
+        argv.append("--force")
+    return argv
+
+
 def _tail(text: str, n: int = _TAIL_CHARS) -> str:
     text = text or ""
     return text[-n:]
@@ -251,9 +362,10 @@ def parse_result(stdout: str, schema: dict, *, exit_code: int) -> dict:
     }
 
 
-def _save_inputs(req: RunRequest) -> None:
+def _save_inputs(req: RunRequest, text: str | None = None) -> None:
     req.run_dir.mkdir(parents=True, exist_ok=True)
-    (req.run_dir / "prompt.md").write_text(req.prompt, encoding="utf-8")
+    (req.run_dir / "prompt.md").write_text(text if text is not None else req.prompt,
+                                           encoding="utf-8")
 
 
 def _now_iso() -> str:
@@ -298,11 +410,14 @@ def _child_env(req: RunRequest) -> dict:
 # ---- the real thing ---------------------------------------------------------------------------
 
 def _request_doc(req: RunRequest, started_at: str) -> dict:
-    return {"schema": "nw.run.request.v1", "persona": req.persona, "model": req.model,
-            "effort": req.effort, "max_budget_usd": req.max_budget_usd,
-            "timeout_s": req.timeout_s, "permission_mode": req.permission_mode,
-            "read_only": req.read_only, "cwd": str(req.cwd), "json_schema": req.json_schema,
-            "started_at": started_at}
+    doc = {"schema": "nw.run.request.v1", "persona": req.persona, "model": req.model,
+           "effort": req.effort, "max_budget_usd": req.max_budget_usd,
+           "timeout_s": req.timeout_s, "permission_mode": req.permission_mode,
+           "read_only": req.read_only, "cwd": str(req.cwd), "json_schema": req.json_schema,
+           "started_at": started_at}
+    if req.model_alias:
+        doc["model_alias"] = req.model_alias
+    return doc
 
 
 def rebuild_request(run_dir, *, budget: float | None = None) -> RunRequest:
@@ -409,18 +524,24 @@ class ClaudeRunner:
         self.spawn_timeout_s = spawn_timeout_s
         self.stream = stream                        # SPEC-0362: stream-json capture
 
+    def _launch_argv(self, req: RunRequest) -> list[str]:
+        return build_argv(req, stream=self.stream)
+
+    def _prompt_text(self, req: RunRequest) -> str:
+        return req.prompt
+
     def run(self, req: RunRequest, *, hooks: RunHooks | None = None):
         run_dir = req.run_dir
         attach = (run_dir / "proc.json").exists() or bool(hooks and hooks.adopt)
         if not attach:
-            _save_inputs(req)
+            _save_inputs(req, text=self._prompt_text(req))
         started_at = _now_iso()
         started = time.monotonic()
         wrapper = None
         try:
             if not attach and not (run_dir / "proc.json").exists():
                 RP.write_json_atomic(run_dir / "request.json", _request_doc(req, started_at))
-                launch = {"argv": build_argv(req, stream=self.stream), "cwd": str(req.cwd),
+                launch = {"argv": self._launch_argv(req), "cwd": str(req.cwd),
                           "env": dict(req.env)}
                 if self.stream:
                     launch["stream"] = True         # fixed at launch (SPEC-0360 invariant 9)
@@ -551,6 +672,17 @@ class ClaudeRunner:
                 pass
 
 
+class CursorRunner(ClaudeRunner):
+    """Spawn `cursor-agent -p` per `build_cursor_argv` (SPEC-0436). Same detach/adopt
+    wrapper as `ClaudeRunner`; stdin is the concatenated prompt + schema footer."""
+
+    def _launch_argv(self, req: RunRequest) -> list[str]:
+        return build_cursor_argv(req)
+
+    def _prompt_text(self, req: RunRequest) -> str:
+        return cursor_prompt(req)
+
+
 def _epoch(iso: str) -> float:
     import datetime as dt
     try:
@@ -634,12 +766,15 @@ def request_to_job(req: RunRequest, worktree) -> dict:
             env[k] = str(v)
         elif k not in ENV_RESET:
             raise NotRemotable(f"env key {k} is outside the remote allowlist")
-    return {"persona": req.persona, "prompt": req.prompt, "system_append": req.system_append,
-            "cwd": cwd, "model": req.model, "effort": req.effort,
-            "max_budget_usd": req.max_budget_usd, "timeout_s": req.timeout_s,
-            "permission_mode": req.permission_mode, "read_only": req.read_only,
-            "allowed_tools": tools, "add_dirs": add_dirs, "json_schema": req.json_schema,
-            "env": env, "profile": req.profile, "profile_sources": list(req.profile_sources)}
+    doc = {"persona": req.persona, "prompt": req.prompt, "system_append": req.system_append,
+           "cwd": cwd, "model": req.model, "effort": req.effort,
+           "max_budget_usd": req.max_budget_usd, "timeout_s": req.timeout_s,
+           "permission_mode": req.permission_mode, "read_only": req.read_only,
+           "allowed_tools": tools, "add_dirs": add_dirs, "json_schema": req.json_schema,
+           "env": env, "profile": req.profile, "profile_sources": list(req.profile_sources)}
+    if req.model_alias:
+        doc["model_alias"] = req.model_alias
+    return doc
 
 
 def request_from_job(doc: dict, tree, run_dir, env: dict | None = None) -> RunRequest:
@@ -669,7 +804,8 @@ def request_from_job(doc: dict, tree, run_dir, env: dict | None = None) -> RunRe
         json_schema=doc.get("json_schema") or {},
         env={**{k: str(v) for k, v in (doc.get("env") or {}).items()}, **(env or {})},
         run_dir=Path(run_dir), profile=doc.get("profile"),
-        profile_sources=tuple(doc.get("profile_sources") or ()))
+        profile_sources=tuple(doc.get("profile_sources") or ()),
+        model_alias=doc.get("model_alias"))
 
 
 class RemoteRunner:
@@ -795,17 +931,22 @@ class FakeRunner:
             started_at)
 
 
-def select_runner(cfg) -> PersonaRunner:
-    """`NW_AGENTIC_RUNNER` / `agentic.runner` == "fake" ⇒ FakeRunner(script), else ClaudeRunner."""
+def select_runner(cfg, runner=None) -> PersonaRunner:
+    """Construct the persona backend. `runner` is an already-resolved kind; env still wins.
+    `NW_AGENTIC_RUNNER` / `agentic.runner` == "fake" ⇒ FakeRunner(script); `cursor` ⇒
+    CursorRunner; else ClaudeRunner."""
     agentic = (cfg or {}).get("agentic") or {}
-    kind = os.environ.get("NW_AGENTIC_RUNNER") or agentic.get("runner") or "claude"
+    kind = os.environ.get("NW_AGENTIC_RUNNER") or runner or resolve_runner(cfg)
     if kind == "fake":
         script = os.environ.get("NW_AGENTIC_FAKE_SCRIPT") or agentic.get("fake_script")
         if not script:
             raise ValueError("fake runner selected but no script: set agentic.fake_script or "
                              "NW_AGENTIC_FAKE_SCRIPT")
         return FakeRunner(script)
+    timeout = float(agentic.get("spawn_timeout_s") or 30.0)
+    stream = bool(agentic.get("stream_runs", True))
+    if kind == "cursor":
+        return CursorRunner(timeout, stream=stream)
     if kind != "claude":
-        raise ValueError(f"unknown agentic.runner {kind!r} (expected claude or fake)")
-    return ClaudeRunner(float(agentic.get("spawn_timeout_s") or 30.0),
-                        stream=bool(agentic.get("stream_runs", True)))
+        raise ValueError(f"unknown agentic.runner {kind!r} (expected claude, cursor or fake)")
+    return ClaudeRunner(timeout, stream=stream)

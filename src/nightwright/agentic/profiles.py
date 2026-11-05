@@ -52,7 +52,7 @@ REQUIRED_KEYS = ("slots", "loop_max", "campaign_cap_usd", "run_timeout_s", "revi
                  "personas")
 META_KEYS = ("schema", "extends", "description")      # in a file, not part of the resolved profile
 PERSONA_SETTING_KEYS = frozenset({"model", "effort", "max_budget_usd", "permission_mode",
-                                  "read_only"})
+                                  "read_only", "cursor_model"})   # SPEC-0436: Cursor id for this persona
 MODEL_ALIASES = ("opus", "sonnet", "haiku")
 MODEL_RE = re.compile(r"^claude-[a-z0-9][a-z0-9.-]*(\[1m\])?$")
 EFFORTS = ("low", "medium", "high", "xhigh", "max")
@@ -142,6 +142,12 @@ def validate_profile_doc(doc, *, origin, in_file) -> list:
                     model in MODEL_ALIASES or MODEL_RE.match(model))):
                 bad(f"{path}.model", f"must be one of {', '.join(MODEL_ALIASES)} or a "
                     f"claude-* model id, got {model!r}")
+            cursor_model = settings.get("cursor_model")
+            if "cursor_model" in settings:
+                if not (isinstance(cursor_model, str) and cursor_model.strip()):
+                    bad(f"{path}.cursor_model", f"must be a Cursor model id, got {cursor_model!r}")
+                elif MODEL_RE.match(cursor_model) or cursor_model.startswith("claude-"):
+                    bad(f"{path}.cursor_model", f"must not be a Claude id, got {cursor_model!r}")
             if "effort" in settings and settings["effort"] not in EFFORTS:
                 bad(f"{path}.effort", f"must be one of {', '.join(EFFORTS)}, "
                     f"got {settings['effort']!r}")

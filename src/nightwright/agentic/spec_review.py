@@ -515,13 +515,19 @@ def run_spec_review(cfg, spec_path, spec_id, *, profile=None, idea_text=None,
     persona = PS.get_persona(PERSONA)
     prof, settings = resolved or reviewer_run_settings(cfg, path, profile)
     run_id = _RUN_ID_RE.sub("-", f"{spec_id}-{store.now_iso()}-{os.getpid()}-{secrets.token_hex(2)}")
+    from .runner import mapped_model
+    alias = str(settings.get("model") or "sonnet")
+    effort = settings.get("effort")
+    model, model_alias = mapped_model(
+        cfg, alias, effort, project_root=str(root) if root else None,
+        cursor_model=settings.get("cursor_model"))
     req = PS.RunRequest(
         persona=PERSONA,
         prompt=PS.build_prompt(persona, ctx),
         system_append=PS.render(persona.invariant, ctx),
         cwd=root,
-        model=str(settings.get("model") or "sonnet"),
-        effort=settings.get("effort"),
+        model=model,
+        effort=effort,
         max_budget_usd=float(settings.get("max_budget_usd") or 0.8),
         timeout_s=int(prof.get("run_timeout_s") or 1800),
         permission_mode=settings.get("permission_mode") or "dontAsk",
@@ -535,6 +541,7 @@ def run_spec_review(cfg, spec_path, spec_id, *, profile=None, idea_text=None,
         run_dir=store.agentic_dir(cfg) / "spec-reviews" / run_id,
         profile=prof.get("name"),
         profile_sources=tuple(prof.get("sources") or ()),
+        model_alias=model_alias,
     )
     journal_start(cfg, run_id, spec_id, req.timeout_s, req.run_dir,
                   reviewer_profile=prof.get("name"), model=req.model)

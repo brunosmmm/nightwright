@@ -97,7 +97,7 @@ progress. This is the single place to see *what has been decided* and *what is i
   - [x] [SPEC-0156](./specs/0156-architecture-and-lifecycle-pages.md) Architecture and lifecycle pages — done
   - [x] [SPEC-0157](./specs/0157-agent-surface-guide-schemas-skills-map-json.md) Agent surface guide: schemas, skills map, JSON recipes — done
   - [x] [SPEC-0158](./specs/0158-outbound-multi-project-depth-and-wave-c-captures.md) Outbound/multi-project depth and Wave C captures — done
-- **[SPEC-0169](./specs/0169-mini-agentic-workflow-queue-campaigns-headless.md) — Mini agentic workflow: queue, campaigns, headless personas, conductor** · accepted · (104/105 done)
+- **[SPEC-0169](./specs/0169-mini-agentic-workflow-queue-campaigns-headless.md) — Mini agentic workflow: queue, campaigns, headless personas, conductor** · accepted · (104/106 done)
   - [x] [SPEC-0170](./specs/0170-per-project-config-wt-project-yaml-and-wt.md) Per-project config .wt/project.yaml and wt projects config|init — done
   - [x] [SPEC-0171](./specs/0171-workflow-profiles-campaign-store-ledger-locks-and.md) Workflow profiles, campaign store, ledger, locks and wt campaign commands — done
   - [x] [SPEC-0172](./specs/0172-git-worktree-and-branch-operations-for-campaigns.md) Git worktree and branch operations for campaigns (gitops) — done
@@ -203,6 +203,7 @@ progress. This is the single place to see *what has been decided* and *what is i
   - [x] [SPEC-0298](./specs/0298-agentic-mvp-cheap-durable-quiet-conductor.md) Agentic MVP: a cheap, durable, quiet conductor on a second project — done
   - [ ] [SPEC-0310](./specs/0310-remote-workers-run-gates-persona-runs-and.md) Remote workers: run gates, persona runs and campaigns on other machines — accepted
   - [x] [SPEC-0350](./specs/0350-per-gate-path-sensitivity.md) Per-gate path sensitivity for the close re-gate — done
+  - [ ] [SPEC-0435](./specs/0435-cursor-agent-backend-for-the-agentic-queue.md) Cursor-agent backend for the agentic queue — accepted
 - **[SPEC-0298](./specs/0298-agentic-mvp-cheap-durable-quiet-conductor.md) — Agentic MVP: a cheap, durable, quiet conductor on a second project** · done · (15/15 done)
   - [x] [SPEC-0299](./specs/0299-conductor-cost-measurement.md) Conductor cost measurement: session registry, `wt queue conductor-cost`, conductor share in the export — done
   - [x] [SPEC-0300](./specs/0300-quiet-conductor-follower-digest.md) Quiet conductor: the conductor follower holds informational events, prints a digest, and counts wakeups — done
@@ -270,6 +271,8 @@ progress. This is the single place to see *what has been decided* and *what is i
   - [x] [SPEC-0423](./specs/0423-idea-campaign-ordering-with-after-and-epic.md) Idea-campaign ordering with --after and epic derivation — done
   - [x] [SPEC-0424](./specs/0424-launch-freshness-and-steward-dontask.md) Launch freshness and steward dontAsk — done
   - [x] [SPEC-0425](./specs/0425-escalation-timeout-and-note-attribution.md) Escalation timeout and note attribution — done
+- **[SPEC-0435](./specs/0435-cursor-agent-backend-for-the-agentic-queue.md) — Cursor-agent backend for the agentic queue** · accepted · (1/1 done)
+  - [x] [SPEC-0436](./specs/0436-persona-cursorrunner-and-cursor-model-maps.md) Persona CursorRunner and Cursor model maps — done
 
 ## Active & planned
 
@@ -289,6 +292,7 @@ progress. This is the single place to see *what has been decided* and *what is i
 | [SPEC-0391](./specs/0391-worker-host-slots-from-registry.md) | A gate job carries the worker's registry slots as the worker host's slot limit | feature | in-progress | — | 2026-11-02 |
 | [SPEC-0400](./specs/0400-remote-web-dashboard-live-view-of-active-queue.md) | Remote web dashboard and decisions inbox over Tailscale (nw serve --dashboard) | epic | accepted | M9: agentic workflow | 2026-11-03 |
 | [SPEC-0405](./specs/0405-rich-queue-tui-prioritized-live-queue-campaign.md) | Rich queue TUI: prioritized live queue, campaign detail popup, closed-campaign history and a cross-campaign findings and decisions browser over one shared history layer | epic | accepted | — | 2026-11-03 |
+| [SPEC-0435](./specs/0435-cursor-agent-backend-for-the-agentic-queue.md) | Cursor-agent backend for the agentic queue | epic | accepted | — | 2026-11-05 |
 
 ## Done
 
@@ -685,6 +689,7 @@ progress. This is the single place to see *what has been decided* and *what is i
 | [SPEC-0432](./specs/0432-dashboard-default-bind-loopback-always-plus-the.md) | Dashboard default bind: loopback always plus the tailnet address whenever one exists | feature | done | M9: agentic workflow | 2026-11-04 |
 | [SPEC-0433](./specs/0433-human-readable-campaign-story-one-shared-timeline.md) | Human-readable campaign story: one shared timeline formatter for the TUI, the dashboard drilldown and nw campaign show | feature | done | M9: agentic workflow | 2026-11-04 |
 | [SPEC-0434](./specs/0434-dashboard-page-survives-restarts-answers-land.md) | Dashboard page: answers land at once, the page survives server restarts, the data stamp is truthful | feature | done | M9: agentic workflow | 2026-11-04 |
+| [SPEC-0436](./specs/0436-persona-cursorrunner-and-cursor-model-maps.md) | Persona CursorRunner and Cursor model maps | feature | done | — | 2026-11-05 |
 
 ## Superseded / rejected
 

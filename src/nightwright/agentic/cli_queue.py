@@ -1304,6 +1304,10 @@ def _journal_lines(rec: dict) -> Group:
                     f"{rec.get('occupied')}/{rec.get('slots')} (held: {held})",
                     style="yellow")
         return Group(head)
+    if kind == "runner_changed":                           # SPEC-0436
+        head.append(f"⟳ backend {rec.get('campaign')}: ", style="bold cyan")
+        head.append(f"{rec.get('from') or 'default'} → {rec.get('to') or 'default'}")
+        return Group(head)
     if rec.get("drain") and rec.get("tick") is not None:
         label = f"tick {rec['tick']} (drain)"
     else:
@@ -1387,17 +1391,17 @@ def _print_plan(title: str, plan: dict) -> None:
 
 
 def _queue_add_one(cfg, spec_id, project, profile, base, force, priority, do_write, as_json,
-                    by="human", after=()):
+                    by="human", after=(), runner=None):
     """The single-id `nw queue add` (nw.queue.add.v1)."""
     try:
         if Q._IDEA_ID_RE.match((spec_id or "").strip()):
             plan = Q.plan_add_idea(cfg, spec_id, project=project, profile=profile,
-                                   base=base, priority=priority, after=after)
+                                   base=base, priority=priority, after=after, runner=runner)
             if do_write:
                 Q.apply_add_idea(cfg, plan, by=by)
         else:
             plan = Q.plan_add(cfg, spec_id, project=project, profile=profile, base=base,
-                              force=force, priority=priority, after=after)
+                              force=force, priority=priority, after=after, runner=runner)
             if do_write:
                 Q.apply_add(cfg, plan, by=by)
     except ValueError as e:
@@ -1556,11 +1560,13 @@ def attach(queue_group):
     @click.option("--yes", "do_write", is_flag=True, help="create the campaign (default is dry-run)")
     @click.option("--json", "as_json", is_flag=True,
                   help="emit nw.queue.add.v1 JSON (nw.queue.add.batch.v1 for a batch)")
+    @click.option("--runner", "runner", default=None, type=click.Choice(["claude", "cursor"]),
+                  help="pin this campaign to claude or cursor (omit = follow host/project)")
     @click.option("--by", default=None,
                   help="who acts (default: $NW_MAILBOX_ADDR, then human)")
     @click.pass_obj
     def queue_add(cfg, ids, from_file, epic, after, skip_invalid, project, profile, base, force,
-                  priority, do_write, as_json, by):
+                  priority, do_write, as_json, by, runner):
         """Queue accepted specs and ideas as new campaigns (dry-run unless --yes).
 
         \b
@@ -1581,7 +1587,7 @@ def attach(queue_group):
             raise click.ClickException(str(e))
         if len(ids) == 1 and not from_file and not epic:
             return _queue_add_one(cfg, ids[0], project, profile, base, force, priority,
-                                  do_write, as_json, by=actor, after=after)
+                                  do_write, as_json, by=actor, after=after, runner=runner)
         try:
             batch_ids = list(ids)
             if from_file:
@@ -1593,7 +1599,8 @@ def attach(queue_group):
                 epic_ids, skipped = Q.expand_epic(cfg, epic)
                 batch_ids += epic_ids
             batch = Q.plan_add_batch(cfg, batch_ids, project=project, profile=profile,
-                                     base=base, force=force, priority=priority, after=after)
+                                     base=base, force=force, priority=priority, after=after,
+                                     runner=runner)
             batch["skipped"] = [s for s in skipped if s["id"] not in explicit]
             refused = None
             if do_write:
@@ -1772,6 +1779,33 @@ def attach(queue_group):
             return
         _print_plan(f"prioritize {campaign}", plan)
         console.print(f"[green]✓[/] {campaign} priority {plan['from']} → {plan['to']}"
+                      if do_write else _NOT_WRITTEN)
+
+    @queue_group.command("backend")
+    @click.argument("campaign", shell_complete=C.complete_campaign_id)
+    @click.argument("runner", type=click.Choice(["cursor", "claude", "default"]))
+    @click.option("--by", default=None,
+                  help="who acts (default: $NW_MAILBOX_ADDR, then human)")
+    @click.option("--yes", "do_write", is_flag=True, help="apply (default is dry-run)")
+    @click.option("--json", "as_json", is_flag=True, help="emit nw.queue.backend.v1 JSON")
+    @click.pass_obj
+    def queue_backend(cfg, campaign, runner, by, do_write, as_json):
+        """Pin a non-terminal campaign to cursor or claude, or `default` to follow host/project.
+
+        Does not park or kill the live persona; the next spawn uses the new resolution.
+        """
+        try:
+            plan = Q.plan_backend(cfg, campaign, runner, by=_actor(cfg, by))
+            if do_write:
+                Q.apply_backend(cfg, plan)
+        except ValueError as e:
+            raise click.ClickException(str(e))
+        if as_json:
+            _dump_json({"schema": "nw.queue.backend.v1", **plan, "written": bool(do_write)})
+            return
+        _print_plan(f"backend {campaign}", plan)
+        frm, to = plan.get("from") or "default", plan.get("to") or "default"
+        console.print(f"[green]✓[/] {campaign} backend {frm} → {to}"
                       if do_write else _NOT_WRITTEN)
 
     @queue_group.command("watch")

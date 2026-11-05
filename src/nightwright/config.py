@@ -81,7 +81,7 @@ DEFAULT_CONFIG = {
     # (SPEC-0237). load_config merges one level deep, so resolve_profile deep-merges the
     # layers in code. Scalar keys replace outright.
     "agentic": {
-        "runner": "claude",            # claude | fake (tests; SPEC-0174)
+        "runner": "claude",            # claude | cursor | fake (tests; SPEC-0174 / SPEC-0436)
         "fake_script": None,           # FakeRunner script path (SPEC-0174)
         "default_profile": "balanced",
         "spec_review_profile": None,   # `nw spec review` default profile; None = default_profile (SPEC-0278)

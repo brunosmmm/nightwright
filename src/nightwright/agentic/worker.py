@@ -56,7 +56,7 @@ EXIT_ERROR = 3
 EXIT_REFUSED = 2
 UPDATING_ERROR = "worker updating"
 SSH_SUBCOMMANDS = ("info", "have", "gate-job", "gc", "submit", "attach", "poll", "cancel", "jobs",
-                   "claude-check", "update")
+                   "claude-check", "cursor-check", "update")
 # when this interpreter started (SPEC-0369): a claim that began before an install did is the old
 # code, and must not run against the venv that install replaced
 PROCESS_STARTED = time.time()
@@ -626,6 +626,9 @@ def _validate_persona(payload: dict, bad) -> None:
         R.request_from_job(req, "/nonexistent-tree", "/nonexistent-run")
     except (KeyError, TypeError, ValueError) as e:
         bad(f"payload.request: {e}")
+    kind = payload.get("runner")
+    if kind is not None and kind not in ("claude", "cursor"):
+        bad("payload.runner must be claude or cursor")
 
 
 # ---- frames ----------------------------------------------------------------------------------
@@ -1380,6 +1383,17 @@ def claude_check(auth: bool = False) -> dict:
     return out
 
 
+CURSOR_CHECK_SCHEMA = "nw.worker.cursor_check.v1"
+
+
+def cursor_check() -> dict:
+    """SPEC-0436: `cursor-agent --version` plus login (`status`/`whoami`, not a paid `-p`)."""
+    from . import runproc as RP
+    rec = RP.probe_cursor_agent()
+    return {"schema": CURSOR_CHECK_SCHEMA, "ok": rec["ok"], "version": rec.get("version"),
+            "login": rec.get("login"), "error": rec.get("error")}
+
+
 # ---- ssh-command -----------------------------------------------------------------------------
 
 def _job_arg(word: str) -> bool:
@@ -1392,8 +1406,8 @@ def check_ssh_command(original: str | None) -> list[str]:
     `ValueError(reason)`. The grammar is literal: `info [--json]`;
     `have --repo <key> <sha>...`; `gate-job`; `gc [--keep-days <n>]`; and SPEC-0340's
     `submit`; `attach <job> [--from <n>]`; `poll <job> [--from <n>] [--renew]`;
-    `cancel <job>`; `jobs [--json]`; SPEC-0344's `claude-check [--auth]`; SPEC-0369's
-    `update [--force]`."""
+    `cancel <job>`; `jobs [--json]`; SPEC-0344's `claude-check [--auth]`; SPEC-0436's
+    `cursor-check`; SPEC-0369's `update [--force]`."""
     if not original or not original.strip():
         raise ValueError("empty command")
     try:
@@ -1421,6 +1435,8 @@ def check_ssh_command(original: str | None) -> list[str]:
         ok = args in ([], ["--json"])
     elif sub == "claude-check":                 # SPEC-0344
         ok = args in ([], ["--auth"])
+    elif sub == "cursor-check":                 # SPEC-0436
+        ok = args == []
     elif sub == "update":                       # SPEC-0369
         ok = args in ([], ["--force"])
     elif sub == "cancel":

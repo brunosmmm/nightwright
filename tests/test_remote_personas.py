@@ -547,6 +547,12 @@ def test_ssh_grammar_allows_claude_check():
         W.check_ssh_command("nw worker claude-check --other")
 
 
+def test_ssh_grammar_allows_cursor_check():
+    assert W.check_ssh_command("nw worker cursor-check") == ["cursor-check"]
+    with pytest.raises(ValueError):
+        W.check_ssh_command("nw worker cursor-check --auth")
+
+
 # ---- adoption through the queue (queue._adopt) -----------------------------------------------
 
 def _queue_adopt(w, local):

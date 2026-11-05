@@ -386,6 +386,26 @@ def check_runner(cfg, *, now=None) -> dict:
     return check(id, "skip", "no campaigns")
 
 
+def check_cursor_agent(cfg, *, run_cmd=None) -> dict:
+    """`agentic.cursor`: `cursor-agent` version + login when any active resolution is cursor."""
+    id = "agentic.cursor"
+    if cfg is None:
+        return _skip_no_config(id)
+    from .agentic.runner import cursor_needed
+    from .agentic import runproc as RP
+    try:
+        needed = cursor_needed(cfg)
+    except ValueError:
+        needed = False
+    if not needed:
+        return check(id, "skip", "no campaign resolves to cursor")
+    rec = RP.probe_cursor_agent(run=run_cmd or subprocess.run)
+    if rec["ok"]:
+        return check(id, "ok", rec.get("login") or rec.get("version") or "logged in")
+    return check(id, "fail", rec.get("error") or "cursor-agent check failed",
+                 fix="install cursor-agent and run `cursor-agent login`")
+
+
 def _unguarded_launch(sessions):
     """The newest registered conductor record when it is a `source: launch` one whose launch
     lacked the AskUserQuestion deny (older records carry no argv fields, so they count as
@@ -679,6 +699,7 @@ def run(cfg, *, project=None, config_error=None, which=None, run_cmd=None,
     out.append(_safe("agentic.prices", check_prices, cfg))
     out.append(_safe("agentic.dirs", check_agentic_dirs, cfg))
     out.append(_safe("agentic.runner", check_runner, cfg))
+    out.append(_safe("agentic.cursor", check_cursor_agent, cfg, run_cmd=run_cmd))
     out.append(_safe("agentic.conductor", check_conductor, cfg))
     out.append(_safe("agentic.launch_fresh", check_launch_fresh, cfg))
     out.append(_safe("agentic.workers", check_workers, cfg))
