@@ -2071,9 +2071,12 @@ def _do_persona(ctx: _Ctx, state: dict, step: Step, run_id: str, req, budget: fl
     runner's lease started, so a commit made but never recorded is recorded now)."""
     res = StepResult(state["id"], step, state["state"], run_id=run_id, budget=budget)
     try:
-        # SPEC-0344: a persona-capable worker may take the run (or holds an adopted one)
+        # SPEC-0344: a persona-capable worker may take the run (or holds an adopted one).
+        # A tick context resolves the persona backend per campaign (SPEC-0436). A caller
+        # that only carries `.runner` (the pre-0436 test doubles) is used as-is.
         cfg = getattr(ctx, "cfg", None)
-        local = ctx.runner_for(state)
+        resolve = getattr(ctx, "runner_for", None)
+        local = resolve(state) if callable(resolve) else ctx.runner
         remote = RPS.dispatch(cfg, state, step.kind, req, adopted=adopted is not None,
                               local=local) if cfg is not None else None
         runner = remote or local
