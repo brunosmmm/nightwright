@@ -1,0 +1,384 @@
+{
+  "events": [
+    {
+      "admission": "approved",
+      "base": "main",
+      "base_sha": null,
+      "branch": "nw/<CID>",
+      "by": "human",
+      "campaign": "<CID>",
+      "profile": "balanced",
+      "profile_reason": "review predates sizing (no size/tone)",
+      "profile_source": "default",
+      "profile_sources": [
+        "builtin:balanced.yaml",
+        "config.yaml:agentic.profiles.balanced"
+      ],
+      "project": "Meta-Tools",
+      "schema": "nw.ledger.event.v1",
+      "seq": 1,
+      "size": null,
+      "spec_id": "SPEC-0001",
+      "tone": null,
+      "ts": "<X>",
+      "type": "open",
+      "worktree": "<TMP>/.nw-worktrees/Meta-Tools/<CID>"
+    },
+    {
+      "blocked_by": [],
+      "by": "tick",
+      "campaign": "<CID>",
+      "ready": true,
+      "schema": "nw.ledger.event.v1",
+      "seq": 2,
+      "ts": "<X>",
+      "type": "backlog"
+    },
+    {
+      "by": "tick",
+      "campaign": "<CID>",
+      "from": "QUEUED",
+      "reason": "admitted",
+      "schema": "nw.ledger.event.v1",
+      "seq": 3,
+      "to": "OPENING",
+      "ts": "<X>",
+      "type": "transition"
+    },
+    {
+      "by": "tick",
+      "campaign": "<CID>",
+      "from": "OPENING",
+      "reason": "opened",
+      "schema": "nw.ledger.event.v1",
+      "seq": 4,
+      "to": "IMPLEMENTING",
+      "ts": "<X>",
+      "type": "transition"
+    },
+    {
+      "by": "tick",
+      "campaign": "<CID>",
+      "effort": "high",
+      "max_budget_usd": 4.0,
+      "model": "sonnet",
+      "permission_mode": "bypassPermissions",
+      "persona": "implementer",
+      "profile": "balanced",
+      "prompt_sha256": "c7700a938983785c9a5f6fafeacd4f2eaf642f63271dd3dafebe7c51d9842e16",
+      "run_id": "001-implementer",
+      "schema": "nw.ledger.event.v1",
+      "seq": 5,
+      "state": "IMPLEMENTING",
+      "step": {
+        "kind": "implement",
+        "personas": []
+      },
+      "timeout_s": 1800,
+      "ts": "<X>",
+      "type": "run.start"
+    },
+    {
+      "by": "tick",
+      "campaign": "<CID>",
+      "charged_usd": 0.5,
+      "cost_estimated": false,
+      "cost_usd": 0.5,
+      "duration_s": "<X>",
+      "exit_code": 0,
+      "interrupted": false,
+      "is_error": false,
+      "persona": "implementer",
+      "result_tail": "",
+      "run_id": "001-implementer",
+      "schema": "nw.ledger.event.v1",
+      "seq": 6,
+      "session_id": "fake-implementer",
+      "timed_out": false,
+      "ts": "<X>",
+      "type": "run.end",
+      "usage": {},
+      "verdict": {
+        "ac_status": [],
+        "blockers": [],
+        "changed_files": [
+          "feature.txt"
+        ],
+        "followup_ideas": [],
+        "status": "done",
+        "summary": "wrote feature.txt",
+        "tests_run": [
+          "sh gates/test.sh"
+        ]
+      },
+      "verdict_ok": true
+    },
+    {
+      "by": "tick",
+      "campaign": "<CID>",
+      "cap_usd": 10.0,
+      "delta_usd": 0.5,
+      "estimated": false,
+      "persona": "implementer",
+      "schema": "nw.ledger.event.v1",
+      "seq": 7,
+      "total_usd": 0.5,
+      "ts": "<X>",
+      "type": "cost"
+    },
+    {
+      "by": "tick",
+      "campaign": "<CID>",
+      "message": "nw(<CID>): implementer run 001 \u2014 wrote feature.txt\n\nCo-Authored-By: nightwright test <nightwright@test>",
+      "schema": "nw.ledger.event.v1",
+      "seq": 8,
+      "sha": "<SHA>",
+      "ts": "<X>",
+      "type": "commit"
+    },
+    {
+      "by": "tick",
+      "campaign": "<CID>",
+      "from": "IMPLEMENTING",
+      "reason": "implemented",
+      "schema": "nw.ledger.event.v1",
+      "seq": 9,
+      "to": "GATING",
+      "ts": "<X>",
+      "type": "transition"
+    },
+    {
+      "by": "tick",
+      "campaign": "<CID>",
+      "duration_s": "<X>",
+      "gate_seq": 1,
+      "ok": true,
+      "results": [
+        {
+          "cmd": "sh gates/test.sh",
+          "cwd": "<TMP>/.nw-worktrees/Meta-Tools/<CID>",
+          "duration_s": "<X>",
+          "exit_code": 0,
+          "log": "gates/001-test.log",
+          "name": "test",
+          "ok": true,
+          "required": true,
+          "tail": "",
+          "timed_out": false
+        },
+        {
+          "cmd": "sh gates/lint.sh",
+          "cwd": "<TMP>/.nw-worktrees/Meta-Tools/<CID>",
+          "duration_s": "<X>",
+          "exit_code": 0,
+          "log": "gates/001-lint.log",
+          "name": "lint",
+          "ok": true,
+          "required": true,
+          "tail": "",
+          "timed_out": false
+        }
+      ],
+      "schema": "nw.ledger.event.v1",
+      "seq": 10,
+      "slot_wait_s": "<X>",
+      "started_at": "<X>",
+      "ts": "<X>",
+      "type": "gate"
+    },
+    {
+      "by": "tick",
+      "campaign": "<CID>",
+      "from": "GATING",
+      "reason": "gates_green",
+      "schema": "nw.ledger.event.v1",
+      "seq": 11,
+      "to": "REVIEWING",
+      "ts": "<X>",
+      "type": "transition"
+    },
+    {
+      "by": "tick",
+      "campaign": "<CID>",
+      "effort": "high",
+      "max_budget_usd": 1.5,
+      "model": "opus",
+      "permission_mode": "dontAsk",
+      "persona": "conformance_reviewer",
+      "profile": "balanced",
+      "prompt_sha256": "37af8ec7244262616d631a795e12a0aed6e291e561ecebc6e6953df5fb2aa59c",
+      "run_id": "002-conformance_reviewer",
+      "schema": "nw.ledger.event.v1",
+      "seq": 12,
+      "state": "REVIEWING",
+      "step": {
+        "kind": "review",
+        "personas": [
+          "conformance_reviewer"
+        ]
+      },
+      "timeout_s": 1800,
+      "ts": "<X>",
+      "type": "run.start"
+    },
+    {
+      "by": "tick",
+      "campaign": "<CID>",
+      "charged_usd": 0.2,
+      "cost_estimated": false,
+      "cost_usd": 0.2,
+      "duration_s": "<X>",
+      "exit_code": 0,
+      "interrupted": false,
+      "is_error": false,
+      "persona": "conformance_reviewer",
+      "result_tail": "",
+      "run_id": "002-conformance_reviewer",
+      "schema": "nw.ledger.event.v1",
+      "seq": 13,
+      "session_id": "fake-conformance_reviewer",
+      "timed_out": false,
+      "ts": "<X>",
+      "type": "run.end",
+      "usage": {},
+      "verdict": {
+        "ac_assessment": [
+          {
+            "ac": "feature.txt exists",
+            "evidence": "feature.txt",
+            "met": true
+          }
+        ],
+        "findings": [],
+        "fix_brief": "",
+        "score": 95,
+        "verdict": "pass"
+      },
+      "verdict_ok": true
+    },
+    {
+      "by": "tick",
+      "campaign": "<CID>",
+      "cap_usd": 10.0,
+      "delta_usd": 0.2,
+      "estimated": false,
+      "persona": "conformance_reviewer",
+      "schema": "nw.ledger.event.v1",
+      "seq": 14,
+      "total_usd": 0.7,
+      "ts": "<X>",
+      "type": "cost"
+    },
+    {
+      "author": "queue",
+      "by": "tick",
+      "campaign": "<CID>",
+      "schema": "nw.ledger.event.v1",
+      "seq": 15,
+      "text": "review score 100/80 pass",
+      "ts": "<X>",
+      "type": "note"
+    },
+    {
+      "by": "tick",
+      "campaign": "<CID>",
+      "from": "REVIEWING",
+      "reason": "review_pass",
+      "schema": "nw.ledger.event.v1",
+      "seq": 16,
+      "to": "CLOSING",
+      "ts": "<X>",
+      "type": "transition"
+    },
+    {
+      "by": "tick",
+      "campaign": "<CID>",
+      "duration_s": "<X>",
+      "gate_seq": 2,
+      "ok": true,
+      "results": [
+        {
+          "cmd": "sh gates/test.sh",
+          "cwd": "<TMP>/.nw-worktrees/Meta-Tools/<CID>",
+          "duration_s": "<X>",
+          "exit_code": 0,
+          "log": "gates/002-test.log",
+          "name": "test",
+          "ok": true,
+          "required": true,
+          "tail": "",
+          "timed_out": false
+        },
+        {
+          "cmd": "sh gates/lint.sh",
+          "cwd": "<TMP>/.nw-worktrees/Meta-Tools/<CID>",
+          "duration_s": "<X>",
+          "exit_code": 0,
+          "log": "gates/002-lint.log",
+          "name": "lint",
+          "ok": true,
+          "required": true,
+          "tail": "",
+          "timed_out": false
+        }
+      ],
+      "schema": "nw.ledger.event.v1",
+      "seq": 17,
+      "slot_wait_s": "<X>",
+      "started_at": "<X>",
+      "ts": "<X>",
+      "type": "gate"
+    },
+    {
+      "by": "tick",
+      "campaign": "<CID>",
+      "gates_seq": 2,
+      "merged_sha": "<SHA>",
+      "mode": "merge",
+      "pr_url": null,
+      "schema": "nw.ledger.event.v1",
+      "seq": 18,
+      "target_sha": "<SHA>",
+      "ts": "<X>",
+      "type": "close"
+    },
+    {
+      "by": "tick",
+      "campaign": "<CID>",
+      "from": "CLOSING",
+      "reason": "closed",
+      "schema": "nw.ledger.event.v1",
+      "seq": 19,
+      "to": "MERGED",
+      "ts": "<X>",
+      "type": "transition"
+    }
+  ],
+  "files": {
+    "001-lint.json": "{\n  \"schema\": \"nw.gate.v1\",\n  \"name\": \"lint\",\n  \"cmd\": \"sh gates/lint.sh\",\n  \"cwd\": \"<TMP>/.nw-worktrees/Meta-Tools/<CID>\",\n  \"required\": true,\n  \"ok\": true,\n  \"exit_code\": 0,\n  \"timed_out\": false,\n  \"timeout_s\": 30,\n  \"started_at\": \"<TS>\",\n  \"duration_s\": <X>,\n  \"log\": \"001-lint.log\",\n  \"error\": null\n}\n",
+    "001-lint.log": "",
+    "001-test.json": "{\n  \"schema\": \"nw.gate.v1\",\n  \"name\": \"test\",\n  \"cmd\": \"sh gates/test.sh\",\n  \"cwd\": \"<TMP>/.nw-worktrees/Meta-Tools/<CID>\",\n  \"required\": true,\n  \"ok\": true,\n  \"exit_code\": 0,\n  \"timed_out\": false,\n  \"timeout_s\": 30,\n  \"started_at\": \"<TS>\",\n  \"duration_s\": <X>,\n  \"log\": \"001-test.log\",\n  \"error\": null\n}\n",
+    "001-test.log": "",
+    "002-lint.json": "{\n  \"schema\": \"nw.gate.v1\",\n  \"name\": \"lint\",\n  \"cmd\": \"sh gates/lint.sh\",\n  \"cwd\": \"<TMP>/.nw-worktrees/Meta-Tools/<CID>\",\n  \"required\": true,\n  \"ok\": true,\n  \"exit_code\": 0,\n  \"timed_out\": false,\n  \"timeout_s\": 30,\n  \"started_at\": \"<TS>\",\n  \"duration_s\": <X>,\n  \"log\": \"002-lint.log\",\n  \"error\": null\n}\n",
+    "002-lint.log": "",
+    "002-test.json": "{\n  \"schema\": \"nw.gate.v1\",\n  \"name\": \"test\",\n  \"cmd\": \"sh gates/test.sh\",\n  \"cwd\": \"<TMP>/.nw-worktrees/Meta-Tools/<CID>\",\n  \"required\": true,\n  \"ok\": true,\n  \"exit_code\": 0,\n  \"timed_out\": false,\n  \"timeout_s\": 30,\n  \"started_at\": \"<TS>\",\n  \"duration_s\": <X>,\n  \"log\": \"002-test.log\",\n  \"error\": null\n}\n",
+    "002-test.log": ""
+  },
+  "final": {
+    "close": {
+      "followups": {
+        "capped": [],
+        "filed": [],
+        "idea_id": null,
+        "unfiled": [],
+        "waived": []
+      },
+      "gates_seq": 2,
+      "merged_sha": "<SHA>",
+      "mode": "merge",
+      "pr_url": null,
+      "target_sha": "<SHA>"
+    },
+    "state": "MERGED"
+  }
+}
