@@ -234,11 +234,10 @@ def attach(queue_group):
             ev = (E.read_since(cfg, event_id - 1)[:1] if event_id is not None and event_id >= 1
                   else [])
             ev_campaign = ev[0].get("campaign") if ev and ev[0].get("id") == event_id else None
-            if ev_campaign:                     # a mirrored mail event may carry a bogus campaign
-                try:
-                    S.read_state(cfg, ev_campaign)
-                except (ValueError, OSError, TypeError):    # TypeError: a non-string value
-                    ev_campaign = None
+            # a mirrored mail event may carry a bogus campaign, or one whose state is not
+            # an object; only a real campaign state is inherited
+            if ev_campaign and S.campaign_state(cfg, ev_campaign) is None:
+                ev_campaign = None
             if ev_campaign:
                 campaign, campaign_from = ev_campaign, "event"
             else:

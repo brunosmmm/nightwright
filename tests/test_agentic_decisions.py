@@ -337,6 +337,31 @@ def test_cli_explicit_campaign_wins_and_has_no_campaign_from(cfg, run):
     assert not [e for e in S.read_ledger(cfg, CB) if e["type"] == "note"]
 
 
+def test_cli_rationale_and_action_naming_different_campaigns(cfg, run):
+    """Campaign A in the rationale and campaign B in --action is ambiguous: stamp neither."""
+    mk(cfg, CA)
+    mk(cfg, CB)
+    r = _dec(run, f"waiting on {CA}", extra=("--action", f"nudged {CB}"))
+    assert r.exit_code == 0, r.output
+    rec = D.read(cfg)[0]
+    assert rec["campaign"] is None and "campaign_from" not in rec
+    for c in (CA, CB):
+        assert not [e for e in S.read_ledger(cfg, c) if e["type"] == "note"]
+
+
+def test_cli_digit_leading_outbound_campaign_is_stamped(cfg, run):
+    from nightwright.specs import _proj_code
+    code = _proj_code("3M")
+    cid = S.new_campaign_id(cfg, f"{code}-0001", now=dt.datetime(2026, 11, 6))
+    mk(cfg, cid)
+    r = _dec(run, f"waiting on {cid} to land")
+    assert r.exit_code == 0, r.output
+    assert f"on {cid} (campaign inferred from text)" in r.output
+    rec = D.read(cfg)[0]
+    assert rec["campaign"] == cid and rec["campaign_from"] == "text"
+    assert [e for e in S.read_ledger(cfg, cid) if e["type"] == "note"]
+
+
 def test_cli_ambiguous_or_none_is_queue_level(cfg, run):
     mk(cfg, CA)
     mk(cfg, CB)
@@ -440,6 +465,18 @@ def test_cli_event_with_non_string_campaign_falls_through(cfg, run):
         assert r.exit_code == 0, r.output
     recs = D.read(cfg)
     assert [(x["campaign"], x["campaign_from"]) for x in recs] == [(CB, "text")] * 2
+
+
+def test_cli_event_campaign_with_non_object_state_falls_through(cfg, run):
+    mk(cfg, CA)
+    mk(cfg, CB)
+    S.campaign_dir(cfg, CA).joinpath("state.json").write_text("[1, 2]\n")
+    _msg_event(cfg, 1, CA)
+    r = _dec(run, f"about {CB}", extra=("--event", "1"))
+    assert r.exit_code == 0, r.output
+    rec = D.read(cfg)[0]
+    assert rec["campaign"] == CB and rec["campaign_from"] == "text"
+    assert not [e for e in S.read_ledger(cfg, CA) if e["type"] == "note"]
 
 
 def test_cli_event_with_unknown_campaign_falls_through(cfg, run):

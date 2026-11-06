@@ -1272,8 +1272,8 @@ def test_queue_gates_worker_and_local(world, remote, invoke):
     assert r.exit_code != 0 and "not eligible" in r.output
     r = invoke("queue", "gates", CID, "--worker", "box", "--local")
     assert r.exit_code != 0
-    r = invoke("campaign", "show", CID, "--raw")
-    assert "worker=box" in r.output
+    r = invoke("campaign", "show", CID)
+    assert "Gate #1 on box" in r.output          # story line (SPEC-0433); raw events are --raw
     workers = [e.get("worker") for e in world.ledger(["gate"])]
     assert workers == ["box", None]
 

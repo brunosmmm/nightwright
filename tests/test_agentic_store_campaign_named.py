@@ -52,6 +52,19 @@ def test_unreadable_state_drops_the_candidate(cfg):
     assert S.sole_campaign_named(cfg, B) is None
 
 
+def test_non_object_state_is_not_a_campaign(cfg):
+    mk(cfg, A)
+    mk(cfg, B)
+    path = S.campaign_dir(cfg, B).joinpath("state.json")
+    for raw in ("[1, 2]", '"nope"', "null", "1"):
+        path.write_text(raw)
+        assert S.campaign_state(cfg, B) is None
+        assert S.sole_campaign_named(cfg, B) is None
+        assert S.sole_campaign_named(cfg, f"{A} vs {B}") == A
+    assert S.campaign_state(cfg, 123) is None
+    assert S.campaign_state(cfg, ["x"]) is None
+
+
 def test_empty_and_missing_dir(cfg):
     assert S.sole_campaign_named(cfg, None) is None
     assert S.sole_campaign_named(cfg, "") is None
@@ -81,3 +94,26 @@ def test_redmain_ids_minted_for_dotted_and_unicode_projects(cfg):
     ghost = minted[0].replace(E._safe("acme.io"), "no.such", 1)
     assert ghost != minted[0]
     assert S.sole_campaign_named(cfg, f"{ghost} vs {minted[2]}") == minted[2]
+
+
+def test_digit_leading_outbound_id_from_project_3m(cfg):
+    """`_proj_code('3M')` is `3M`; `new_campaign_id` then mints `3M-0001-<date>-<hex>`."""
+    import datetime as dt
+
+    from nightwright.specs import _proj_code
+
+    code = _proj_code("3M")
+    assert code == "3M" and code[0].isdigit()
+    day = dt.datetime(2026, 11, 6)
+    cid = S.new_campaign_id(cfg, f"{code}-0001", now=day)
+    other = S.new_campaign_id(cfg, f"{code}-0002", now=day)
+    assert cid.startswith("3M-0001-") and other.startswith("3M-0002-")
+    mk(cfg, cid)
+    mk(cfg, other)
+    assert S.sole_campaign_named(cfg, f"waiting on {cid} today") == cid
+    assert S.sole_campaign_named(cfg, f"see {cid}.") == cid
+    assert S.sole_campaign_named(cfg, f"({cid}), then {cid}") == cid
+    assert S.sole_campaign_named(cfg, f"x-{cid}y") is None
+    assert S.sole_campaign_named(cfg, f"{cid}-x") is None
+    assert S.sole_campaign_named(cfg, f"9{cid}") is None
+    assert S.sole_campaign_named(cfg, f"{cid} and {other}") is None

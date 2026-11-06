@@ -359,6 +359,20 @@ def test_cli_send_re_with_non_string_campaign_falls_through(tmp_path):
         assert out["campaign"] == CA and out["campaign_from"] == "text"
 
 
+def test_cli_send_re_campaign_with_non_object_state_falls_through(tmp_path):
+    from nightwright.agentic import store as S
+    cfg = _cfg(tmp_path)
+    _mk(cfg, CA)
+    _mk(cfg, CB)
+    q = M.send(cfg, to="conductor", frm="steward:Demo", text="question", kind="question",
+               campaign=CA)
+    S.campaign_dir(cfg, CA).joinpath("state.json").write_text("[]\n")
+    r = _send(cfg, "--to", "steward:Demo", "--re", q["id"], f"about {CB}")
+    assert r.exit_code == 0, r.output
+    rec = json.loads(r.output)
+    assert rec["campaign"] == CB and rec["campaign_from"] == "text"
+
+
 def test_cli_send_unknown_re_falls_through_to_text(tmp_path):
     cfg = _cfg(tmp_path)
     _mk(cfg, CA)
@@ -381,6 +395,9 @@ def test_find_message_streams_only_the_inbox_named_by_the_id(tmp_path):
     assert M.find_message(cfg, "steward:Demo:99") is None
     assert M.find_message(cfg, "nope") is None
     assert M.find_message(cfg, None) is None
+    # a seq past the interpreter's int digit limit must miss, not raise
+    assert M.find_message(cfg, "steward:Demo:" + "9" * 5000) is None
+    assert M.find_message(cfg, "steward:Demo:" + "1" * (M._REPLY_SEQ_MAX_DIGITS + 1)) is None
 
 
 def test_cli_send_is_append_only(tmp_path):

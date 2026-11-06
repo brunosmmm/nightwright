@@ -163,25 +163,36 @@ def new_campaign_id(cfg, spec_id, now=None) -> str:
     raise ValueError(f"could not mint a free campaign id for {spec_id}")
 
 
-# `new_campaign_id` shape, including red-main prefixes from `events._safe` (dots and Unicode
-# alphanumerics stay inside the id). A trailing `.` still ends the match.
+# `new_campaign_id` shape: `<prefix>-<YYYYMMDD>-<4 hex>`. The prefix is whatever was minted —
+# a SPEC/IDEA id, a red-main `events._safe` name (dots and Unicode alphanumerics stay inside
+# the id), or an outbound `PROJ-NNNN` whose project code may start with a digit (`3M-0001`).
+# A trailing `.` still ends the match; a word character or hyphen glued to either side does not.
 _CID_RE = re.compile(
-    r"(?<![\w.\-])[^\W\d_][\w.\-]*-\d{8}-[0-9a-f]{4}(?![\w-])")
+    r"(?<![\w.\-])[^\W_][\w.\-]*-\d{8}-[0-9a-f]{4}(?![\w-])")
+
+
+def campaign_state(cfg, campaign_id) -> dict | None:
+    """The campaign's state object, or None when it is missing, unreadable, or not a JSON
+    object. Inference accepts only this (SPEC-0431): a list, string, or other JSON value is
+    not a campaign, and a non-string id is not an error."""
+    try:
+        st = read_state(cfg, campaign_id)
+    except (ValueError, OSError, TypeError):
+        return None
+    return st if isinstance(st, dict) else None
 
 
 def sole_campaign_named(cfg, text) -> str | None:
     """The campaign id `text` names, iff it names exactly one distinct id that resolves to a
     readable campaign (SPEC-0431). Matches every id `new_campaign_id` mints, including red-main
-    ids whose prefix keeps dots and Unicode alphanumerics. Unknown or unreadable candidates are
-    dropped before counting; zero or two-or-more survivors give None. Pure read; never raises."""
+    ids and outbound ids whose project code starts with a digit. Unknown, unreadable, or
+    non-object candidates are dropped before counting; zero or two-or-more survivors give
+    None. Pure read; never raises."""
     try:
         found = []
         for cid in dict.fromkeys(_CID_RE.findall(text or "")):
-            try:
-                read_state(cfg, cid)
-            except (ValueError, OSError):
-                continue
-            found.append(cid)
+            if campaign_state(cfg, cid) is not None:
+                found.append(cid)
         return found[0] if len(found) == 1 else None
     except Exception:
         return None

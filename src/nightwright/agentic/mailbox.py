@@ -155,6 +155,11 @@ def _all_messages(cfg) -> list[dict]:
     return out
 
 
+# A reply seq is a short decimal. Longer than this, `int()` raises ValueError once the
+# digit string passes the interpreter's limit, so the id is treated as missing.
+_REPLY_SEQ_MAX_DIGITS = 18
+
+
 def find_message(cfg, msg_id) -> dict | None:
     """The message with this id, or None. The id is `<addr>:<seq>` (the address may itself
     contain colons, as in `steward:P:5`), so only that inbox is streamed; a missing or
@@ -164,10 +169,15 @@ def find_message(cfg, msg_id) -> dict | None:
     addr, sep, seq_s = msg_id.rpartition(":")
     if not sep or not addr or not seq_s.isascii() or not seq_s.isdigit():
         return None
+    if len(seq_s) > _REPLY_SEQ_MAX_DIGITS:
+        return None
     path = _inbox_path(cfg, addr)
     if not path.is_file():
         return None
-    want = int(seq_s)
+    try:
+        want = int(seq_s)
+    except ValueError:
+        return None
     try:
         f = open(path, encoding="utf-8")
     except OSError:

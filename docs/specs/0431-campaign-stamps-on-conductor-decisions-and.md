@@ -4,7 +4,7 @@ title: "Campaign stamps on conductor decisions and mailbox messages"
 status: done
 owner: user
 created: 2026-11-04
-updated: 2026-11-05
+updated: 2026-11-06
 kind: feature
 parent: SPEC-0405
 source_idea: IDEA-966
@@ -296,6 +296,35 @@ except that they now gain a stamp when the text names exactly one existing campa
 - `env -u FORCE_COLOR uv run pytest -q tests/test_agentic_store_campaign_named.py
   tests/test_agentic_mailbox.py tests/test_agentic_decisions.py tests/test_docs_captures.py`:
   74 passed. `python3 tools/spec_lint.py` OK, ledger regenerated. The full suite is left to gating.
+
+### As shipped (2026-11-06, review round 5)
+
+- Campaign recognition matches every id `new_campaign_id` mints, including outbound ids whose
+  project code starts with a digit. `_proj_code("3M")` is `3M`, so a campaign for outbound
+  spec `3M-0001` is `3M-0001-<YYYYMMDD>-<hex>`. The first character may be a Unicode letter or
+  a digit. A word character or hyphen glued to either side still rejects the token, and a
+  trailing period still ends it.
+- An inferred or inherited candidate counts only when parsed `state.json` is a JSON object.
+  A list, string, number, or null is dropped and text inference continues. `--event` and
+  `--re` use the same check.
+- `mailbox.find_message` treats a reply seq longer than 18 digits as a missing id. `int()`
+  raises ValueError past the interpreter's digit limit; those ids return None.
+- `tests/test_remote_gates.py` no longer passes `--raw` to `nw campaign show`. SPEC-0433's
+  story line is `Gate #1 on box`; the raw `worker=box` key is only on `--raw`. The ledger
+  assertion (`workers == ["box", None]`) is unchanged.
+
+### Test record (2026-11-06, review round 5)
+
+- CLI regression: rationale names campaign A and `--action` names campaign B; `campaign` is
+  null, `campaign_from` is absent, and neither ledger gets a note. Digit-leading recognition
+  uses an id minted from project `3M` (helper and `nw queue decision`). Non-object
+  `state.json` is rejected for text, `--event`, and `--re`. An over-long `--re` seq returns
+  None.
+- `env -u FORCE_COLOR uv run pytest -q tests/test_agentic_store_campaign_named.py
+  tests/test_agentic_decisions.py tests/test_agentic_mailbox.py tests/test_docs_captures.py`:
+  80 passed. `env -u FORCE_COLOR uv run pytest -q
+  tests/test_remote_gates.py::test_queue_gates_worker_and_local`: 1 passed.
+  `python3 tools/spec_lint.py` OK, ledger regenerated. The full suite is left to gating.
 
 ## Rollout / migration
 

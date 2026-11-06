@@ -61,11 +61,10 @@ def mailbox_send(cfg, to, frm, kind, campaign, no_campaign, re_, no_reply, as_js
     if campaign is None and not no_campaign:
         replied = M.find_message(cfg, re_) if re_ else None
         re_campaign = replied.get("campaign") if replied else None
-        if re_campaign:                         # inherit only a campaign that exists
-            try:
-                S.read_state(cfg, re_campaign)
-            except (ValueError, OSError, TypeError):    # TypeError: a non-string value
-                re_campaign = None
+        # inherit only a campaign whose state is a JSON object (a missing, unreadable,
+        # or non-object state falls through to the text)
+        if re_campaign and S.campaign_state(cfg, re_campaign) is None:
+            re_campaign = None
         if re_campaign:
             campaign, campaign_from = re_campaign, "re"
         else:
