@@ -156,8 +156,39 @@ def _all_messages(cfg) -> list[dict]:
 
 
 def find_message(cfg, msg_id) -> dict | None:
-    """The message with this id from any inbox (its id `<addr>:<seq>` names the inbox), or None."""
-    return next((m for m in _all_messages(cfg) if m["id"] == msg_id), None)
+    """The message with this id, or None. The id is `<addr>:<seq>` (the address may itself
+    contain colons, as in `steward:P:5`), so only that inbox is streamed; a missing or
+    malformed id is not an error."""
+    if not isinstance(msg_id, str):
+        return None
+    addr, sep, seq_s = msg_id.rpartition(":")
+    if not sep or not addr or not seq_s.isascii() or not seq_s.isdigit():
+        return None
+    path = _inbox_path(cfg, addr)
+    if not path.is_file():
+        return None
+    want = int(seq_s)
+    try:
+        f = open(path, encoding="utf-8")
+    except OSError:
+        return None
+    with f:
+        for raw in f:
+            raw = raw.strip()
+            if not raw:
+                continue
+            try:
+                rec = json.loads(raw)
+            except ValueError:
+                continue
+            if not isinstance(rec, dict):
+                continue
+            if rec.get("id") == msg_id:
+                return rec
+            seq = rec.get("seq")
+            if isinstance(seq, int) and seq > want:    # append-only; later lines are newer
+                return None
+    return None
 
 
 def unanswered(cfg, addr) -> list[dict]:

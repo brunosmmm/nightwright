@@ -4,7 +4,7 @@ title: "Campaign stamps on conductor decisions and mailbox messages"
 status: done
 owner: user
 created: 2026-11-04
-updated: 2026-11-04
+updated: 2026-11-05
 kind: feature
 parent: SPEC-0405
 source_idea: IDEA-966
@@ -268,6 +268,34 @@ except that they now gain a stamp when the text names exactly one existing campa
 - `uv run pytest -q tests/test_agentic_decisions.py tests/test_agentic_mailbox.py
   tests/test_agentic_store_campaign_named.py`: 60 passed. `python3 tools/spec_lint.py` OK. The
   full suite is left to gating.
+
+### As shipped (2026-11-05, review round 4)
+
+- Campaign-id recognition covers every id `new_campaign_id` mints. The Design pattern allowed
+  only ASCII letters, digits, underscores and hyphens; red-main ids embed `events._safe(project)`,
+  which also keeps `.` and Unicode alphanumerics (`FIX-acme.io-…`, `REVERT-München-…`). A dot
+  inside the prefix is part of the id. A period after the hex suffix still ends the match, and a
+  word character or hyphen glued to either side still rejects the token.
+- `mailbox.find_message` streams only the inbox named by `<addr>:<seq>` (the address may contain
+  colons, as in `steward:P:5`) and stops once a later `seq` is passed. It no longer loads every
+  inbox via `_all_messages`.
+- An explicit `--campaign` is any supplied value, including empty. `--campaign ''` is stored as
+  given and is not inferred from `--re` or the text. Combined with `--no-campaign` it is a usage
+  error and writes nothing.
+- The `nw.message.v1` row in `docs/product/guides/agent-surface.md` now states the inference
+  precedence and `--no-campaign` as well as `campaign_from`.
+
+### Test record (2026-11-05, review round 4)
+
+- Extended `tests/test_agentic_store_campaign_named.py` with ids minted by `new_campaign_id` for
+  `acme.io`, `München` and `acme.München` (alone, sentence period, glued token, two ids, one
+  unknown dotted id). Extended `tests/test_agentic_mailbox.py` for empty `--campaign` alone and
+  with `--no-campaign`, human output of `--re` inference, and `find_message` reading only the
+  inbox the id names. Added `tests/test_docs_captures.py` assertions that `agent-surface.md` and
+  `agentic.md` describe `campaign_from`, inference precedence and `--no-campaign`.
+- `env -u FORCE_COLOR uv run pytest -q tests/test_agentic_store_campaign_named.py
+  tests/test_agentic_mailbox.py tests/test_agentic_decisions.py tests/test_docs_captures.py`:
+  74 passed. `python3 tools/spec_lint.py` OK, ledger regenerated. The full suite is left to gating.
 
 ## Rollout / migration
 

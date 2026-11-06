@@ -49,15 +49,16 @@ def mailbox_group():
 def mailbox_send(cfg, to, frm, kind, campaign, no_campaign, re_, no_reply, as_json, text):
     """Append a message to TO's inbox (mail to the conductor also wakes its event stream).
     Without --campaign the campaign of the --re message, or the one campaign the text names, is
-    stamped (SPEC-0431); --no-campaign skips that."""
+    stamped (SPEC-0431). An explicit --campaign, including an empty one, is stored as given.
+    --no-campaign skips inference and conflicts with --campaign."""
     frm = frm or os.environ.get("NW_MAILBOX_ADDR")
     if not frm:
         raise click.UsageError("sender required: pass --from or set NW_MAILBOX_ADDR")
-    if campaign and no_campaign:
+    if campaign is not None and no_campaign:
         raise click.UsageError("--no-campaign conflicts with --campaign")
     body = " ".join(text)
     campaign_from = None
-    if not campaign and not no_campaign:
+    if campaign is None and not no_campaign:
         replied = M.find_message(cfg, re_) if re_ else None
         re_campaign = replied.get("campaign") if replied else None
         if re_campaign:                         # inherit only a campaign that exists

@@ -131,6 +131,28 @@ def test_architecture_and_lifecycle_concept_pages():
     assert "architecture.md" in idx and "lifecycle.md" in idx
 
 
+def test_campaign_stamp_docs_state_field_precedence_and_opt_out():
+    """SPEC-0431: both product docs describe campaign_from, inference precedence and --no-campaign."""
+    surface = " ".join((GUIDES / "agent-surface.md").read_text(encoding="utf-8").split())
+    agentic = " ".join(
+        (ROOT / "docs" / "product" / "capabilities" / "agentic.md").read_text(encoding="utf-8").split())
+    for name, text in (("agent-surface.md", surface), ("agentic.md", agentic)):
+        assert "campaign_from" in text, name
+        assert "--no-campaign" in text, name
+        assert "the one existing campaign" in text, name
+        assert "inferred" in text, name
+        assert "--re" in text, name
+    assert "explicit `--campaign` wins" in surface
+    assert "campaign of the `--re` message" in surface
+    assert "skips inference" in surface
+    assert "without `--campaign`" in agentic
+    assert "campaign of the `--re` message" in agentic
+    assert "else the one existing campaign id" in agentic
+    assert "conflicts with `--campaign`" in agentic
+    assert "campaign of the `--event N` queue event" in agentic
+    assert "`--no-campaign` skips inference" in agentic
+
+
 def test_agent_surface_guide_schemas_and_skills():
     text = (GUIDES / "agent-surface.md").read_text(encoding="utf-8")
     for schema in (

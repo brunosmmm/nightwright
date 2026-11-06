@@ -274,6 +274,17 @@ def test_cli_send_text_inference_and_output(tmp_path):
     assert rec["campaign"] is None and "campaign_from" not in rec
 
 
+def test_cli_send_empty_explicit_campaign_is_not_inferred(tmp_path):
+    cfg = _cfg(tmp_path)
+    _mk(cfg, CA)
+    rec = json.loads(_send(cfg, "--to", "conductor", "--campaign", "", f"about {CA}").output)
+    assert rec["campaign"] == "" and "campaign_from" not in rec
+    n = len(M.read_inbox(cfg, "conductor"))
+    r = _send(cfg, "--to", "conductor", "--campaign", "", "--no-campaign", "x")
+    assert r.exit_code != 0 and "--no-campaign" in r.output
+    assert len(M.read_inbox(cfg, "conductor")) == n
+
+
 def test_cli_send_no_campaign_flag(tmp_path):
     cfg = _cfg(tmp_path)
     _mk(cfg, CA)
@@ -296,6 +307,10 @@ def test_cli_send_re_inherits_campaign_from_sender_inbox(tmp_path):
                       "--kind", "answer", "--re", q["id"], "--json", "no ids here"])
     rec = json.loads(r.output)
     assert rec["campaign"] == CA and rec["campaign_from"] == "re"
+    human = _invoke(cfg, ["mailbox", "send", "--from", "conductor", "--to", "steward:Demo",
+                          "--kind", "answer", "--re", q["id"], "no ids here"])
+    assert human.exit_code == 0
+    assert f"[{CA}, inferred from re]" in " ".join(human.output.split())
     # --re outranks conflicting text
     rec = json.loads(_send(cfg, "--to", "conductor", "--re", q["id"], f"about {CB}").output)
     assert rec["campaign"] == CA and rec["campaign_from"] == "re"
@@ -353,6 +368,19 @@ def test_cli_send_unknown_re_falls_through_to_text(tmp_path):
     assert rec["campaign"] == CA and rec["campaign_from"] == "text"
     rec = json.loads(_send(cfg, "--to", "conductor", "--re", "nope:1", "plain").output)
     assert rec["campaign"] is None
+
+
+def test_find_message_streams_only_the_inbox_named_by_the_id(tmp_path):
+    cfg = _cfg(tmp_path)
+    q = M.send(cfg, to="steward:Demo", frm="conductor", text="why?", kind="question",
+               campaign="C1")
+    assert q["id"] == "steward:Demo:1"          # address itself contains a colon
+    (M.mailbox_dir(cfg) / "other.jsonl").mkdir()  # a full-history scan would try to open this
+    found = M.find_message(cfg, q["id"])
+    assert found["id"] == q["id"] and found["campaign"] == "C1"
+    assert M.find_message(cfg, "steward:Demo:99") is None
+    assert M.find_message(cfg, "nope") is None
+    assert M.find_message(cfg, None) is None
 
 
 def test_cli_send_is_append_only(tmp_path):
