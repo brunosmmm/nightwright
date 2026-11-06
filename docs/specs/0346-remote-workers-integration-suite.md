@@ -4,7 +4,7 @@ title: "Remote workers integration suite for gate and persona workers"
 status: in-progress
 owner: user
 created: 2026-11-01
-updated: 2026-11-05
+updated: 2026-11-06
 source_idea: IDEA-560
 parent: SPEC-0310
 tags: [agentic, remote, workers, testing]
@@ -181,6 +181,29 @@ Each case is a whole fake campaign unless noted.
   The full suite was left to gating.
 - `nw idea clock-in IDEA-560` is refused for a campaign agent (`NW_PERSONA_RUN=1`).
 
+### Test record (2026-11-06)
+
+- Gate 5 failed `tests/test_worker_disk_guard.py::test_aborted_job_ends_with_disk_error_frame`:
+  the error frame's stage was `gate:unit`. An in-run abort now emits `stage: disk` and
+  `job_error: true` whether the gate call returns or raises after the guard aborts.
+- `uv run pytest tests/test_worker_disk_guard.py tests/test_worker_infra_error.py`: 17 passed.
+- `uv run pytest tests/test_remote_workers_integration.py::test_a_worker_gets_no_git_credentials_and_no_push_path tests/test_remote_workers_integration.py::test_with_workers_same_tree_and_event_types_plus_worker_keys`: 2 passed.
+- `uv run pytest tests/test_remote_workers_integration.py tests/test_worker.py`: 131 passed.
+- The full suite was left to gating.
+- The manual second-machine step was not performed. That acceptance criterion stays open and
+  the spec stays `in-progress`.
+
+### As shipped (2026-11-06)
+
+- **In-run disk abort:** `_run_gates` sets `frames.stage` to `disk` and raises `DiskAbort` when
+  the guard has aborted, including when `run_gate_with_retries` raises while the kill is
+  already in. The error frame is `stage: disk`, `job_error: true`, with the floor in the
+  message. A gate that raises on its own (no abort) still reports `gate:<name>`.
+- **Worker gate env:** inheritance is turned off with `gates._GATE_INHERIT_ENV` around
+  `_run_gates`, which `run_gate` reads. The call does not pass `inherit_env`, so a stand-in
+  with the old signature still runs. The child env is unchanged: PATH, HOME, the header
+  allowlist, and the keys the worker sets.
+
 ### As shipped (2026-11-05)
 
 - **Close re-gate:** `close.py` calls `run_all(..., tier="close", local=True)`. The merge is
@@ -291,6 +314,7 @@ Use `nw idea clock-in IDEA-560` / `nw idea clock-out IDEA-560`.
 
 - 2026-11-05: `nw idea clock-in IDEA-560` refused (`refusing to write the org from a campaign
   agent (NW_PERSONA_RUN=1)`). No clock-out.
+- 2026-11-06: `nw idea clock-in IDEA-560` refused again (`NW_PERSONA_RUN=1`). No clock-out.
 
 ## Rollout / migration
 

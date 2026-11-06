@@ -1137,25 +1137,39 @@ def _run_gates(cfg, h: dict, job: Path, frames: _Frames, cancel: threading.Event
         ph = {"worktree": str(tree), "base": base["name"], "spec_id": h["spec_id"],
               "campaign": h["campaign"]}
         results, cut = [], False
-        with DiskGuard(cfg, job, cancel) as guard:
-            for gate in payload["gates"]:
-                if cancel.is_set():
-                    cut = True
-                    break
-                stem = f"{seq:03d}-{gate['name']}"
-                frames.stage = f"gate:{gate['name']}"
-                r = G.run_gate_with_retries(gate, tree, env, out / f"{stem}.log", ph,
-                                            log_rel=f"gates/{stem}.log", stop=cancel,
-                                            deadline=deadline, inherit_env=False)
-                if guard.aborted:               # SPEC-0388: killed for the host's sake
+        # SPEC-0346: the child env is the dict above. Set on the gates module, not as a
+        # keyword, so the call stays the signature an in-run abort's stand-in already has.
+        token = G._GATE_INHERIT_ENV.set(False)
+        try:
+            with DiskGuard(cfg, job, cancel) as guard:
+                for gate in payload["gates"]:
+                    if cancel.is_set():
+                        cut = True
+                        break
+                    stem = f"{seq:03d}-{gate['name']}"
+                    frames.stage = f"gate:{gate['name']}"
+                    try:
+                        r = G.run_gate_with_retries(gate, tree, env, out / f"{stem}.log", ph,
+                                                    log_rel=f"gates/{stem}.log", stop=cancel,
+                                                    deadline=deadline)
+                    except Exception:
+                        # SPEC-0388: the kill can land while the gate call is still on the
+                        # stack. The error frame must say `disk`, not `gate:<name>`.
+                        if guard.aborted:
+                            frames.stage = "disk"
+                            raise DiskAbort(errno.ENOSPC, guard.aborted) from None
+                        raise
+                    if guard.aborted:           # SPEC-0388: killed for the host's sake
+                        frames.stage = "disk"
+                        raise DiskAbort(errno.ENOSPC, guard.aborted)
+                    results.append(r)
+                    frames.stage = "frame"
+                    frames.emit("gate", result=asdict(r), files=gate_files(out, stem))
+                if guard.aborted:
                     frames.stage = "disk"
                     raise DiskAbort(errno.ENOSPC, guard.aborted)
-                results.append(r)
-                frames.stage = "frame"
-                frames.emit("gate", result=asdict(r), files=gate_files(out, stem))
-            if guard.aborted:
-                frames.stage = "disk"
-                raise DiskAbort(errno.ENOSPC, guard.aborted)
+        finally:
+            G._GATE_INHERIT_ENV.reset(token)
         frames.stage = "frame"
         frames.emit("done", ok=all(r.ok for r in results if r.required),
                     started_at=started_at, duration_s=round(time.monotonic() - t0, 3),

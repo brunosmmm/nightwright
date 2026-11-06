@@ -8,6 +8,7 @@ bounded tail travels in the result for prompts and `nw campaign show`. `required
 whether a failure blocks; optional failures are recorded and never block."""
 from __future__ import annotations
 
+import contextvars
 import json
 import os
 import re
@@ -30,6 +31,11 @@ from . import runproc
 from .project import expand_cmd
 
 TAIL_LINES = 60
+# SPEC-0346: false means `run_gate` starts the child from the env dict it was given, not from
+# this process. The worker sets it around its own gates. The call keeps the signature it had
+# before that choice, so a stand-in for `run_gate_with_retries` still runs and an in-run disk
+# abort can finish the job.
+_GATE_INHERIT_ENV = contextvars.ContextVar("nw_gate_inherit_env", default=True)
 REPORT_MAX_BYTES = 64 * 1024    # SPEC-0359: a larger selection report is dropped
 _KILL_GRACE_S = 5
 # SPEC-0392: a gate's timeout is a hard bound. After TERM the tree gets `_KILL_GRACE_S`, after KILL
@@ -386,10 +392,10 @@ def run_gate(gate: dict, worktree, env: dict, log_path, placeholders: dict, *,
     except OSError as e:                            # SPEC-0387: a full disk is the host's, not a crash
         return _infra_result(gate, cmd, cwd, log_path, log_rel, e, timeout_s, started_at,
                              attempt)
-    # SPEC-0346: a worker gate passes `inherit_env=False` and an env that is already the
-    # allowset (PATH, HOME, the header keys, the worker's own). Inheriting the process env
-    # would hand the gate sshd's and the job lock's keys.
-    base = os.environ if inherit_env else {}
+    # SPEC-0346: a worker gate sets `_GATE_INHERIT_ENV` false (or passes `inherit_env=False`).
+    # The env dict is already the allowset (PATH, HOME, the header keys, the worker's own).
+    # Inheriting the process env would hand the gate sshd's and the job lock's keys.
+    base = os.environ if inherit_env and _GATE_INHERIT_ENV.get() else {}
     child_env = {**base, **env, "NW_GATE_REPORT": str(report_path)}
     started = time.monotonic()
     started_ns = time.time_ns()     # SPEC-0284: a junit file older than this is a leftover
