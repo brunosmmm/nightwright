@@ -2,12 +2,14 @@
 SPEC-0176 end-to-end harness (temp repo as project, FakeRunner) and SPEC-0209's idea helpers.
 The fixture repo carries the real linter, schema and TEMPLATE/SCHEMA text, a LEDGER.md and a
 `merge.regenerate` entry, so a written spec is checked by the same tooling as in nightwright itself."""
+import dataclasses
 import json
 import re
 import shutil
 import subprocess
 import sys
 import threading
+import time
 from pathlib import Path
 
 import pytest
@@ -1164,3 +1166,77 @@ def test_a_backoff_begun_after_the_gate_holds_the_spec_writer_at_its_start(tmp_p
     Q.tick(cfg)
     assert len(ledger(cfg, cid, "run.end")) == 2
     in_review(cfg, cid)
+
+
+# ---- SPEC-0441: an adopted spec write must not kill the runner -------------------------------------
+
+class _Blocked(FakeRunner):
+    """The 'dead runner' of SPEC-0441: its writer never finishes, so the run stays open."""
+
+    def __init__(self, path, release):
+        super().__init__(path)
+        self.release = release
+
+    def run(self, req, *, hooks=None):
+        self.release.wait(30)
+        raise ValueError("the old runner's writer was killed")
+
+
+class _Adopter(FakeRunner):
+    """`detachable` lets the first tick of a new pool adopt open runs. An adopted request is
+    rebuilt without a `cwd` (FakeRunner leaves no `request.json`), so the writer's worktree is
+    given here, as the real runner's request record would."""
+    detachable = True
+
+    def __init__(self, path, cwd):
+        super().__init__(path)
+        self.cwd = cwd
+
+    def run(self, req, *, hooks=None):
+        return super().run(dataclasses.replace(req, cwd=self.cwd), hooks=hooks)
+
+
+def test_adopted_open_write_spec_run_finishes_through_the_spec_writer_path(tmp_path, monkeypatch):
+    """SPEC-0441: a new runner adopts the open `write_spec` run and applies it like a freshly
+    submitted one. It used to go through `_do_persona`, which never sets `res.write`, and the
+    unguarded harvest died on `w["blocked"]`."""
+    cfg, repo, iid, cid = start(tmp_path, monkeypatch, lambda i: [spec_written(2, i)])
+    release, old = threading.Event(), Q.StepPool()
+    try:
+        Q.tick(cfg, runner=_Blocked(tmp_path / "script.json", release), pool=old)
+        assert [e["persona"] for e in Q._open_runs(cfg, cid)] == ["spec_writer"]
+        assert not ledger(cfg, cid, "run.end")
+        new, adopter = Q.StepPool(), _Adopter(tmp_path / "script.json", wtree(cfg, cid))
+        report = Q.tick(cfg, runner=adopter, pool=new)
+        deadline = time.monotonic() + 30
+        while not ledger(cfg, cid, "run.end") and time.monotonic() < deadline:
+            new.wait_all()
+            report = Q.tick(cfg, runner=adopter, pool=new)
+        assert not report.errors
+        (end,) = ledger(cfg, cid, "run.end")
+        assert end["persona"] == "spec_writer"
+        in_review(cfg, cid)                                  # the normal outcome of a good write
+        assert S.read_state(cfg, cid)["spec_id"] == "SPEC-0002"
+        assert (wtree(cfg, cid) / "docs/specs/0002-add-a-thing.md").exists()
+        new.shutdown()
+    finally:
+        release.set()
+        old.shutdown()
+
+
+def test_spec_write_without_a_write_result_parks_instead_of_raising(tmp_path, monkeypatch):
+    """SPEC-0441 backstop: a result with no `write` records the run and parks."""
+    cfg, repo, iid, cid = start(tmp_path, monkeypatch, lambda i: [spec_written(2, i)])
+    real = Q._do_write_spec
+
+    def no_write(*a, **k):
+        res = real(*a, **k)
+        res.write = None
+        return res
+
+    monkeypatch.setattr(Q, "_do_write_spec", no_write)
+    Q.tick(cfg)
+    park = parked(cfg, cid)
+    assert park["reason"] == "spec_write_failed" and park["resume_to"] == "SPEC_WRITING"
+    assert park["detail"] == "spec writer returned no write result"
+    assert len(ledger(cfg, cid, "run.end")) == 1

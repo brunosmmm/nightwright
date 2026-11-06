@@ -3425,6 +3425,10 @@ def _apply_spec_write(ctx, state, counters, res, row, events, finish):
         row["to"], row["reason"] = res.from_state, "interrupted"
         return row
     park_back = {"resume_to": "SPEC_WRITING"}
+    if not isinstance(w, dict):          # SPEC-0441: no payload must park, never raise
+        return finish("PARKED", "spec_write_failed", park={
+            "reason": "spec_write_failed", "detail": "spec writer returned no write result",
+            **park_back})
     if w["blocked"]:
         return finish("PARKED", "spec_write_failed", park={
             "reason": "spec_write_failed", "detail": "blocked: " + "; ".join(w["blocked"]),
@@ -5343,8 +5347,14 @@ def _adopt(cfg, ctx: _Ctx, pool: StepPool, report: TickReport) -> None:
                 group.meta[persona] = (rid, budget)
             else:
                 step = Step(cls[0], persona=persona)
-            fl.tasks.append((step, pool.submit(_do_persona, ctx, snap, step, rid, req, budget,
-                                               hooks, adopted), hooks))
+            if step.kind == "write_spec":
+                # SPEC-0441: in-process like `_submit`'s; `_do_write_spec` fills `res.write`,
+                # which `_do_persona` never does (it would kill the runner at harvest)
+                fl.tasks.append((step, pool.submit(_do_write_spec, ctx, snap, step, rid, req,
+                                                   budget), None))
+            else:
+                fl.tasks.append((step, pool.submit(_do_persona, ctx, snap, step, rid, req,
+                                                   budget, hooks, adopted), hooks))
             fl.runs.append((rid, req.timeout_s))
             rows.append({"campaign": cid, "run_id": rid, "persona": persona, "status": label})
         report.started.append({"campaign": cid, "action": "adopt", "state": start_state,
