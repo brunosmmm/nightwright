@@ -936,7 +936,11 @@ def prepare_close(cfg, state: dict, project_cfg: dict, *, gate_seq=None,
     gate_cfg, reused = _reuse_loop_green(cfg, state, project_cfg, gate_cfg, policy=policy,
                                          root=root, worktree=worktree, target_sha=target_sha,
                                          head=head, events=events)              # SPEC-0359
-    gate_run = G.run_all(gate_cfg, state, cfg, seq=seq, stop=stop, tier="close")   # SPEC-0328
+    # SPEC-0346: the merge follows a coordinator re-gate, so this run stays on the coordinator
+    # (its `gate` event has no `worker` key). A direct `run_all(..., tier="close")` can still
+    # go to a worker (SPEC-0338/0341); only the close that is about to merge is local.
+    gate_run = G.run_all(gate_cfg, state, cfg, seq=seq, stop=stop, tier="close",
+                         local=True)   # SPEC-0328
     if reused:
         gate_run = replace(gate_run, reused=tuple(reused))
     seq = gate_run.seq                          # run_all moves on when the seq's tmp dir is taken

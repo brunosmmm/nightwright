@@ -155,13 +155,17 @@ def run_job(cfg, h: dict, job: Path, frames, cancel: threading.Event) -> None:
     frames.emit("started", slot_wait_s=0.0)
     started_at, t0 = store.now_iso(), time.monotonic()
     box: dict = {}
+    # SPEC-0346: the persona's shell gets PATH and HOME plus the request env (the allowlist
+    # and the keys this job sets), not the worker process env.
+    child_base = {k: os.environ[k] for k in ("PATH", "HOME") if k in os.environ}
+    ctx = R.child_base_context(child_base)
 
     def target():
         try:
             box["result"] = runner.run(req)
         except BaseException as e:              # reported as the job's error frame
             box["error"] = e
-    th = threading.Thread(target=target, daemon=True)
+    th = threading.Thread(target=ctx.run, args=(target,), daemon=True)
     th.start()
     every = _progress_s()
     next_at = t0 + every
@@ -569,6 +573,10 @@ def _attach(rr: R.RemoteRunner, req, hooks, job: dict):
                 continue
             job["last_seen"] = time.time()
             kind = frame.get("type")
+            if isinstance(kind, str) and kind not in W.FRAME_TYPES:
+                # SPEC-0346: a non-allowlisted type (`event` carrying close/park/merge) is
+                # refused. Nothing from the frame is applied.
+                return "lost", f"protocol: frame type {kind!r} is not allowlisted"
             if kind == "status":
                 if frame.get("state") in ("lost", "unknown", "error"):
                     return "lost", str(frame.get("state"))

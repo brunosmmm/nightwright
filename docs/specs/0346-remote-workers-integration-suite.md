@@ -4,7 +4,7 @@ title: "Remote workers integration suite for gate and persona workers"
 status: in-progress
 owner: user
 created: 2026-11-01
-updated: 2026-11-04
+updated: 2026-11-05
 source_idea: IDEA-560
 parent: SPEC-0310
 tags: [agentic, remote, workers, testing]
@@ -169,6 +169,53 @@ Each case is a whole fake campaign unless noted.
 - Manual step (a real campaign on the second machine) not performed: this run is an offline
   agent with no second machine. The spec stays `in-progress` for it.
 
+### Test record (2026-11-05)
+
+- Restored the governing contract (ESC-0036 still defers the manual second-machine AC; it stays
+  unchecked and the spec stays `in-progress`).
+- `uv run pytest tests/test_remote_workers_integration.py tests/test_agentic_campaign_export.py
+  tests/test_agentic_campaign_runs.py`: 120 passed, 3 skipped, 2 failed. The 2 failures were the
+  human `nw campaign runs` view (`test_charged_usd_in_human_view`, `test_human_views_render`);
+  every integration case passed in that run.
+- After the width fix: `uv run pytest tests/test_agentic_campaign_runs.py`: 22 passed.
+  The full suite was left to gating.
+- `nw idea clock-in IDEA-560` is refused for a campaign agent (`NW_PERSONA_RUN=1`).
+
+### As shipped (2026-11-05)
+
+- **Close re-gate:** `close.py` calls `run_all(..., tier="close", local=True)`. The merge is
+  preceded by a `gate` event with no `worker` key. A direct `run_all(..., tier="close")` can
+  still go to a worker.
+- **Forged frames:** `worker.FRAME_TYPES` is the allowlist. `remote_gates._frame` raises
+  `protocol` for any other type; `remote_personas._attach` returns `lost` for one. Nothing from
+  the frame is appended. The integration cases still forge on the loopback stream and require
+  the marker file.
+- **Duplicate delivery:** the same job id is submitted twice through `remote_gates._submit`
+  (one worker process). The same `gate` frame (same `n`) is written twice on the attach stream;
+  `feed` keeps one. The seq-1 gate event still has a `worker` key.
+- **No bundle:** a whole `queue run`. The persona stream's `done` frame has its `bundle`
+  cleared; the coordinator script has no edits, so the local re-run commits nothing. The
+  campaign branch and `main` stay at the sha from before the run.
+- **Env:** a worker gate is started with `inherit_env=False` and only PATH, HOME, the header
+  allowlist and the keys the worker sets (`NW_WORKTREE`, `NW_DATA_DIR`, `NW_CONFIG_DIR`,
+  `tmp_env`, plus `NW_GATE_REPORT`). A worker persona's shell gets PATH and HOME plus the
+  request env, via `runner._CHILD_BASE` (a thread context, because Python 3.14 threads do not
+  inherit contextvars). The recorded env is that set plus `PWD`, `SHLVL` and `_`, which the
+  shell that runs the command adds. `git push <coordinator repo> HEAD:refs/heads/main` is
+  refused (`receive.denyCurrentBranch`); the persona makes an empty commit first so the push
+  is an update rather than "everything up-to-date".
+- **Export snapshot:** `runs.campaign_runs` and `campaign_export.run_rows` take one already-read
+  ledger. `nw campaign runs` still re-reads.
+- **Golden:** the checked-in fixture is the recording of `1f0311c4^` (`git archive` into a temp
+  dir; the queue forbids another worktree). `comparable` no longer drops fields.
+  `with_kept_fields` adds the stable ledger fields gained since that commit and the comparison
+  keeps them: masked `nw_sha` and `profile_sha256` on `open`, masked `head` and `tree` on each
+  `gate`, and the `review_outcome` (score 100, outcome pass) before the review note, with `seq`
+  renumbered. Any other difference fails.
+- **Runs view:** `tests/test_agentic_campaign_runs.py` also sets the console `_height`. Rich
+  ignores a lone `_width` when the terminal is dumb, so the human table was ellipsized to 80
+  columns under pytest and the run ids disappeared. The table columns are unchanged.
+
 ### As shipped (2026-11-04)
 
 - **Files:** `tests/test_remote_workers_integration.py` (the cases),
@@ -242,6 +289,9 @@ Each case is a whole fake campaign unless noted.
 
 Use `nw idea clock-in IDEA-560` / `nw idea clock-out IDEA-560`.
 
+- 2026-11-05: `nw idea clock-in IDEA-560` refused (`refusing to write the org from a campaign
+  agent (NW_PERSONA_RUN=1)`). No clock-out.
+
 ## Rollout / migration
 
 1. Tests only. Nothing to migrate.
@@ -251,8 +301,8 @@ Use `nw idea clock-in IDEA-560` / `nw idea clock-out IDEA-560`.
 - [ ] Acceptance criteria all met.
 - [ ] Test plan executed; automated tests pass (`uv run pytest`); manual steps performed.
 - [ ] No regressions.
-- [ ] Spec body updated to match what shipped.
-- [ ] `docs/LEDGER.md` updated (status + date).
+- [x] Spec body updated to match what shipped.
+- [x] `docs/LEDGER.md` updated (status + date).
 
 ## Open questions
 

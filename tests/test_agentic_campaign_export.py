@@ -406,6 +406,26 @@ def test_run_rows(cfg):
     assert (a["worker"], b["worker"], c["worker"]) == ("local", "local", None)     # SPEC-0346
 
 
+def test_run_rows_join_the_worker_from_the_same_ledger_snapshot(cfg, monkeypatch):
+    """SPEC-0346: the run records and the worker column are one read. A later ledger must not
+    be consulted for either."""
+    cid = "C-SNAP"
+    make(cfg, cid, [
+        (1, "run.start", run_start("implementer", "001-implementer")),
+        (2, "run.end", run_end("implementer", "001-implementer", cost_usd=1.0, worker="wa")),
+    ])
+    events = S.read_ledger(cfg, cid)
+
+    def boom(*_a, **_k):
+        raise AssertionError("run records re-read the ledger")
+
+    monkeypatch.setattr(S, "read_ledger", boom)
+    rows = CE.run_rows(cfg, {"campaign": cid, "spec_id": None, "profile": "balanced",
+                             "size": "m", "tone": "solid"}, events)
+    assert [(r["run_id"], r["worker"], r["status"], r["cost_usd"]) for r in rows] == [
+        ("001-implementer", "wa", "done", 1.0)]
+
+
 def test_finding_rows_state_at(cfg):
     full_campaign(cfg)
     rows = CE.export_tables(cfg, now=NOW)["findings"]

@@ -21,8 +21,10 @@ _MASKS = (
     # a gate sidecar's text is a string inside the snapshot: its timings are masked too
     (re.compile(r'("(?:duration_s|slot_wait_s|elapsed_s)": )[0-9.]+'), r"\1<X>"),
 )
+# `prompt_sha256` / `profile_sha256` hash text that contains the temp path, so they are masked
+# like `nw_sha`. `head`, `tree` and `seq` are stable once shas are masked and are not dropped.
 _MASKED_KEYS = frozenset({"ts", "duration_s", "nw_sha", "slot_wait_s", "started_at", "at",
-                          "finished_at", "elapsed_s", "uid"})
+                          "finished_at", "elapsed_s", "uid", "prompt_sha256", "profile_sha256"})
 
 
 def _walk(obj, tmp: str):
@@ -38,22 +40,41 @@ def _walk(obj, tmp: str):
     return obj
 
 
-# What other specs changed in the ledger since the golden was recorded (the code before
-# SPEC-0337): keys they added or whose value follows the prompt text or the git history, and
-# the `review_outcome` event (SPEC-0402). `comparable` drops them from both sides, so a diff in
-# anything else (an event type or payload key the worker epic touched) fails the comparison.
-DRIFT_KEYS = frozenset({"nw_sha", "profile_sha256", "prompt_sha256", "head", "tree", "seq"})
-DRIFT_TYPES = frozenset({"review_outcome"})
-
-
 def comparable(obj):
-    """`obj` (a snapshot, an event or a list of them) without the drift keys and types."""
-    if isinstance(obj, dict):
-        return {k: comparable(v) for k, v in obj.items() if k not in DRIFT_KEYS}
-    if isinstance(obj, list):
-        return [comparable(v) for v in obj
-                if not (isinstance(v, dict) and v.get("type") in DRIFT_TYPES)]
+    """The snapshot the golden comparison uses. Masking is done in `snapshot`; `review_outcome`
+    and the stable fields (`head`, `tree`, `seq`) are kept, so a change in any of them fails."""
     return obj
+
+
+# The one `review_outcome` a passing conformance review appends (SPEC-0422), after the
+# pre-epic fixture was recorded. The comparison keeps it: a different score or outcome fails.
+_REVIEW_OUTCOME = {
+    "by": "tick", "campaign": "<CID>", "loop": 0, "major": 0, "must_fix": 0,
+    "outcome": "pass", "pass_score": 80, "schema": "nw.ledger.event.v1",
+    "score": 100, "ts": "<X>", "type": "review_outcome",
+}
+
+
+def with_kept_fields(golden: dict) -> dict:
+    """The fixture recorded at `1f0311c4^`, plus the stable fields the ledger gained after that
+    commit and that the comparison keeps: `nw_sha` and `profile_sha256` on `open` (masked),
+    `head` and `tree` on each `gate` (masked), and the `review_outcome` before the review
+    note. `seq` is renumbered. Anything else that differs still fails the comparison."""
+    events = []
+    for e in golden["events"]:
+        e = dict(e)
+        if e.get("type") == "open":
+            e["nw_sha"] = "<X>"
+            e["profile_sha256"] = "<X>"
+        if e.get("type") == "gate":
+            e["head"] = "<SHA>"
+            e["tree"] = "<SHA>"
+        if e.get("type") == "note" and not any(x.get("type") == "review_outcome" for x in events):
+            events.append(dict(_REVIEW_OUTCOME))
+        events.append(e)
+    for i, e in enumerate(events, 1):
+        e["seq"] = i
+    return {"events": events, "files": golden["files"], "final": golden["final"]}
 
 
 def snapshot(cfg: dict, cid: str, tmp) -> dict:

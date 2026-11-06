@@ -39,6 +39,11 @@ from .store import agentic_dir, now_iso
 JOB_SCHEMA = "nw.job.v1"
 FRAME_SCHEMA = "nw.job.frame.v1"
 INFO_SCHEMA = "nw.worker.info.v1"
+# frames a coordinator accepts on a job stream (SPEC-0346). Any other type is refused, so a
+# worker cannot append `close` / `park` / `merge` by sending an `event` frame.
+FRAME_TYPES = frozenset({
+    "accepted", "slot_wait", "started", "gate", "done", "error", "status", "progress",
+})
 # SPEC-0420: NW_AFFECTED_FULL makes a red-base fix's gates run the full suite on the worker too
 ENV_ALLOWLIST = frozenset({"NW_CAMPAIGN", "NW_SPEC_ID", "NW_BASE", "NW_AFFECTED_FULL"})
 MAX_LOG_BYTES = 16 * 1024 * 1024
@@ -1122,8 +1127,11 @@ def _run_gates(cfg, h: dict, job: Path, frames: _Frames, cancel: threading.Event
         tree, out, tmp = job / "tree", job / "out", job / "tmp"
         out.mkdir(exist_ok=True)
         tmp.mkdir(exist_ok=True)
-        env = {"NW_CAMPAIGN": h["campaign"], "NW_SPEC_ID": h["spec_id"], "NW_BASE": base["name"],
-               **(h.get("env") or {}),
+        # SPEC-0336/0346: the child gets PATH and HOME from this process, the allowlisted
+        # header keys, and the keys the worker sets. Not the rest of the process env.
+        own = {k: os.environ[k] for k in ("PATH", "HOME") if k in os.environ}
+        env = {**own, "NW_CAMPAIGN": h["campaign"], "NW_SPEC_ID": h["spec_id"],
+               "NW_BASE": base["name"], **(h.get("env") or {}),
                "NW_WORKTREE": str(tree), "NW_DATA_DIR": str(cfg["data_dir"]),
                "NW_CONFIG_DIR": str(cfg.get("config_dir") or ""), **G.tmp_env(tmp)}
         ph = {"worktree": str(tree), "base": base["name"], "spec_id": h["spec_id"],
@@ -1138,7 +1146,7 @@ def _run_gates(cfg, h: dict, job: Path, frames: _Frames, cancel: threading.Event
                 frames.stage = f"gate:{gate['name']}"
                 r = G.run_gate_with_retries(gate, tree, env, out / f"{stem}.log", ph,
                                             log_rel=f"gates/{stem}.log", stop=cancel,
-                                            deadline=deadline)
+                                            deadline=deadline, inherit_env=False)
                 if guard.aborted:               # SPEC-0388: killed for the host's sake
                     frames.stage = "disk"
                     raise DiskAbort(errno.ENOSPC, guard.aborted)

@@ -348,11 +348,13 @@ def _active_states():
 
 def run_rows(cfg, crow: dict, events=None) -> list[dict]:
     """One row per run. `worker` is the run.end event's worker id, `local` for a run that ran on
-    the coordinator (as `cost_by_worker` labels it), null for a run with no run.end (SPEC-0346)."""
+    the coordinator (as `cost_by_worker` labels it), null for a run with no run.end (SPEC-0346).
+    The run records and that worker map are both taken from `events` when it is passed, so a
+    ledger that grows between two reads cannot split them."""
     workers = {e.get("run_id"): e.get("worker") or "local"
                for e in (events or []) if e.get("type") == "run.end" and e.get("run_id")}
     out = []
-    for r in RN.campaign_runs(cfg, crow["campaign"]):
+    for r in RN.campaign_runs(cfg, crow["campaign"], events):
         usage = r.get("usage") if isinstance(r.get("usage"), dict) else {}
         row = {**{k: crow.get(k) for k in ("campaign", "spec_id", "profile", "size", "tone")},
                **r, "budget_frac": _frac(r.get("charged_usd"), r.get("max_budget_usd")),

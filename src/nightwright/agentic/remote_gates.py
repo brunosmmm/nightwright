@@ -506,6 +506,8 @@ def _frame(line: bytes, job_id: str) -> dict:
     if not isinstance(rec, dict) or rec.get("schema") != W.FRAME_SCHEMA \
             or not isinstance(rec.get("type"), str):
         raise RemoteFailure("protocol", f"not a {W.FRAME_SCHEMA} frame: {line[:200]!r}")
+    if rec["type"] not in W.FRAME_TYPES:
+        raise RemoteFailure("protocol", f"frame type {rec['type']!r} is not allowlisted")
     if rec.get("job_id") not in (job_id, None):
         raise RemoteFailure("protocol", f"frame for job {rec.get('job_id')!r}, not {job_id}")
     return rec

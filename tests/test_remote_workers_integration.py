@@ -45,9 +45,16 @@ GATES_GOLDEN = Path(__file__).parent / "data" / "remote_gates_golden.json"
 # keys of the environment a worker job's process may carry from the coordinator's job header:
 # the allowlist itself plus the keys the worker sets itself (`runner.ENV_RESET`, the persona
 # markers) and the launch environment of the fake `ssh` (what sshd gives a forced command)
+# The worker process's own environment (what the fake ssh, standing in for sshd, may pass) plus
+# the keys the worker sets for the child (SPEC-0336). Nothing else, and none of the header
+# allowlist's complement.
 WORKER_OWN = frozenset({"NW_DATA_DIR", "NW_CONFIG_DIR", "NW_WORKTREE", "NW_PERSONA",
                         "NW_PERSONA_RUN", "NW_REBASE_TARGET", "NW_GATE_REPORT", "NW_AGENTIC_RUNNER",
                         "NW_AGENTIC_FAKE_SCRIPT"})
+# `PWD`, `SHLVL` and `_` are set by the shell that runs the command, after the worker has
+# already handed it only the allowset. They are not inherited from the coordinator.
+EXACT_ENV = W.ENV_ALLOWLIST | WORKER_OWN | frozenset({
+    "PATH", "HOME", "TMPDIR", "TEMP", "TMP", "NW_WORKER_PROGRESS_S", "PWD", "SHLVL", "_"})
 FORBIDDEN_ENV = ("GIT_ASKPASS", "SSH_AUTH_SOCK", "GH_TOKEN", "GITHUB_TOKEN")
 POISON = {"GH_TOKEN": "poison-gh", "GITHUB_TOKEN": "poison-github", "GIT_ASKPASS": "/poison/askpass",
           "SSH_AUTH_SOCK": "/poison/agent.sock", "GIT_CONFIG_COUNT": "1",
@@ -63,14 +70,17 @@ def _blocking_gate(c, name="lint"):
             f'while [ ! -f {c.go} ]; do sleep 0.05; done')
 
 
-def _inspect(name):
+def _inspect(name, repo, *, ahead=False):
     """Shell run inside the worker's checkout (a gate's or a persona's cwd): its env and what
     git finds there, written next to the checkout in the job dir (the checkout itself is gone
-    when the job ends)."""
+    when the job ends). The push targets the coordinator repo. `ahead` makes a commit the
+    coordinator does not have, so the push is an update and not "everything up-to-date"."""
+    prep = "git commit --allow-empty -q -m 'not on main'; " if ahead else ""
     return (f"env > ../{name}-env.txt; git config --get-regexp credential > ../{name}-cred.txt; "
             f"echo $? > ../{name}-cred.rc; git remote -v > ../{name}-remote.txt; "
-            f"git config --list > ../{name}-config.txt; "
-            f"GIT_TERMINAL_PROMPT=0 git push > ../{name}-push.txt 2>&1; echo $? > ../{name}-push.rc")
+            f"git config --list > ../{name}-config.txt; {prep}"
+            f"GIT_TERMINAL_PROMPT=0 git push {repo} HEAD:refs/heads/main "
+            f"> ../{name}-push.txt 2>&1; echo $? > ../{name}-push.rc")
 
 
 def build(tmp_path, monkeypatch, workers=None, *, blocking=False, lease_s=None, env_files=False,
@@ -87,7 +97,7 @@ def build(tmp_path, monkeypatch, workers=None, *, blocking=False, lease_s=None, 
     if blocking:
         lint = _blocking_gate(c)
     if env_files:
-        lint = _inspect("gate") + "; " + lint
+        lint = _inspect("gate", tmp_path / "repo") + "; " + lint
     c.repo = make_repo(tmp_path, lint_gate=lint)
     GOLD.add_shared_gate(c.repo)
     c.cfg = make_cfg(tmp_path, c.repo, script(tmp_path, [impl_done(), review()]))
@@ -100,7 +110,7 @@ def build(tmp_path, monkeypatch, workers=None, *, blocking=False, lease_s=None, 
         entry.pop("persona")
         entry["verdict"].update(review()["verdict"])
         if env_files:
-            entry["pre_shell"] = [_inspect("persona")]
+            entry["pre_shell"] = [_inspect("persona", c.repo, ahead=True)]
         if persona_blocks:
             entry["pre_shell"] = [f"touch {c.started}; while [ ! -f {c.go} ]; do sleep 0.05; done"]
         wscript = script(tmp_path, [entry], "worker-script.json")
@@ -206,7 +216,9 @@ def test_no_workers_run_matches_the_pre_epic_golden(tmp_path, monkeypatch):
     c = finished(tmp_path, monkeypatch)
     snap = GOLD.snapshot(c.cfg, c.cid, tmp_path)
     golden = json.loads(GOLDEN.read_text(encoding="utf-8"))
-    assert GOLD.comparable(snap) == GOLD.comparable(golden)
+    # the fixture is the `1f0311c4^` recording; the comparison keeps review_outcome and the
+    # stable head/tree/seq/nw_sha/profile fields rather than dropping them
+    assert GOLD.comparable(snap) == GOLD.comparable(GOLD.with_kept_fields(golden))
     assert not any("worker" in e for e in ledger(c))
     assert not WK.path(c.cfg).exists()
     # the gate portion equals SPEC-0338's golden on the masked fields, for the gate both share
@@ -264,12 +276,15 @@ def test_with_workers_same_tree_and_event_types_plus_worker_keys(tmp_path, monke
     assert types(remote) == types(local)
     assert not any("worker" in e for e in ledger(local))
     on_worker = [e for e in ledger(remote) if e.get("worker")]
-    assert [e["type"] for e in on_worker] == ["run.end", "gate", "run.end", "gate"]
+    # the close re-gate is the coordinator's: it has no worker key, so it is not in this list
+    assert [e["type"] for e in on_worker] == ["run.end", "gate", "run.end"]
     assert {e["worker"] for e in on_worker} <= {"wa", "wb"}
-    # gate and persona jobs really ran on the workers (their own data dirs), once each
+    gates = [e for e in ledger(remote) if e["type"] == "gate"]
+    assert gates[0].get("worker") in ("wa", "wb") and "worker" not in gates[1]
+    # the loop gate and the persona jobs ran on the workers; the close re-gate did not
     jobs = worker_jobs(remote)
     assert sorted(jobs) == sorted([
-        f"{remote.cid}-gate-001-a1", f"{remote.cid}-gate-002-a1",
+        f"{remote.cid}-gate-001-a1",
         RPS.job_id_for(remote.cid, "001-implementer"),
         RPS.job_id_for(remote.cid, "002-conformance_reviewer")])
 
@@ -280,6 +295,10 @@ def test_the_merge_happens_on_the_coordinator_after_the_close_regate(tmp_path, m
     close = next(e for e in evs if e["type"] == "close")
     regate = [e for e in evs if e["type"] == "gate" and e["gate_seq"] == close["gates_seq"]]
     assert regate and evs.index(regate[0]) < evs.index(close)
+    # the re-gate is the coordinator's: no worker key, and it follows the worker's gate
+    assert "worker" not in regate[0]
+    earlier = [e for e in evs if e["type"] == "gate" and e.get("worker")]
+    assert earlier and evs.index(earlier[0]) < evs.index(regate[0])
     st = S.read_state(c.cfg, c.cid)
     # the head the re-gate ran on is the one the coordinator fast-forwarded main to
     assert st["close"]["merged_sha"] == _git(c.repo, "rev-parse", "main")
@@ -318,6 +337,7 @@ def test_export_lists_cost_per_run_and_per_worker(tmp_path, monkeypatch):
 def test_a_duplicate_submit_starts_one_process_and_a_duplicate_event_appends_one(
         tmp_path, monkeypatch):
     c = build(tmp_path, monkeypatch, "two")
+    install_dup(c)                                          # one gate frame goes out twice
     c.cfg["agentic"]["gates"] = {"slots": 2}
     real = RG._submit
     again = []
@@ -331,16 +351,15 @@ def test_a_duplicate_submit_starts_one_process_and_a_duplicate_event_appends_one
     proj.write_text(f'echo "$TMPDIR" >> {c.counter}\n')
     _git(c.repo, "commit", "-qam", "count the lint gate's runs")
     assert run_queue(c, monkeypatch)["state"] == "MERGED"
-    assert sorted(again) == sorted(worker_jobs(c))          # every job went to its worker twice
-    assert len(again) == 4
-    assert counted(c, 1) == 1 and counted(c, 2) == 1      # one worker process per job id
+    assert sorted(again) == sorted(worker_jobs(c))          # every remote job went out twice
+    assert again                                                    # and there was at least one
+    assert counted(c, 1) == 1                                 # one worker process for that job id
+    # the same gate frame delivered twice on the worker stream appends one coordinator event
+    marks = list(tmp_path.glob("dup-*.mark"))
+    assert marks and all(p.read_text().strip() for p in marks)   # the frame was delivered twice
     gates = ledger(c, ["gate"])
-    assert [g["gate_seq"] for g in gates] == [1, 2]
-    # the same worker event delivered twice: `append_event` drops it by its `event_uid`
-    for g in gates:
-        S.append_event(c.cfg, c.cid, "gate", {k: v for k, v in g.items()
-                                              if k not in ("seq", "ts", "type", "schema")})
-    assert len(ledger(c, ["gate"])) == 2
+    assert [g["gate_seq"] for g in gates] == [1, 2] and len(gates) == 2
+    assert gates[0].get("worker") in ("wa", "wb")           # the duplicate did not fail the job
 
 
 # ---- a killed worker --------------------------------------------------------------------------
@@ -485,30 +504,30 @@ def test_a_coordinator_restart_mid_job_adopts_the_job(tmp_path, monkeypatch, cam
 # ---- no bundle --------------------------------------------------------------------------------
 
 def test_a_persona_job_returning_no_bundle_leaves_the_branch_and_main(tmp_path, monkeypatch):
-    script_ = _write_script(tmp_path / "writer.json", WRITER)
-    local = _write_script(tmp_path / "local.json", LOCAL_OK)
-    w = _world(tmp_path)
-    _remote(w, script_)
-    branch0 = _git(w.repo, "rev-parse", f"nw/{w.state['id']}")
-    main0 = _git(w.repo, "rev-parse", "main")
-    seen = []
-
-    def no_bundle(worktree, bundle):
-        seen.append(dict(bundle))
-        bundle.clear()                                      # the worker sent no bundle
-    monkeypatch.setattr(RPS, "_before_writeback", no_bundle)
-    from test_remote_personas import _ctx, _start
-    req = _req(w)
-    _start(w, req)
-    res = Q._do_persona(_ctx(w, local), S.read_state(w.cfg, w.state["id"]),
-                        Q.Step("implement", persona="implementer"), "001-implementer", req, 1.0)
-    assert seen and seen[0].get("head")                     # the worker did commit
-    end = w.ledger(["run.end"])[0]
-    assert end["writeback_failed"] and end["worker"] == "box"
-    assert res.run_result.worker is None                    # re-run locally, which commits nothing
-    assert _git(w.repo, "rev-parse", f"nw/{w.state['id']}") == branch0
-    assert _git(w.repo, "rev-parse", "main") == main0
-    assert not (w.repo / "c.txt").exists()
+    """A whole queued campaign. The worker's implementer commits, but the stream's `done`
+    frame carries no bundle; the local re-run commits nothing, so the branch and main stay."""
+    c = build(tmp_path, monkeypatch, "two")
+    quiet = impl_done()
+    quiet.pop("edits")
+    script(tmp_path, [quiet, review()])                     # the coordinator commits nothing
+    # the worker does commit (entry 0 of its own script); the stream then drops the bundle
+    entry = impl_done()
+    entry.pop("persona")
+    entry["verdict"].update(review()["verdict"])
+    entry["shell"] = ["git add -A && git commit -q -m 'on the worker'"]
+    script(tmp_path, [entry], "worker-script.json")
+    (c.repo / "gates" / "test.sh").write_text("true\n")     # the coordinator never writes feature.txt
+    _git(c.repo, "commit", "-qam", "gates pass with no feature file")
+    install_forge(c, "nobundle", "-", argv_glob="*-persona-*")
+    main0 = _git(c.repo, "rev-parse", "main")
+    run_queue(c, monkeypatch)
+    marks = [f.read_text() for f in tmp_path.glob("forged-*")]
+    assert any("nobundle" in m for m in marks)              # a done frame left with no bundle
+    ends = [e for e in ledger(c, ["run.end"]) if e.get("persona") == "implementer"]
+    assert any(e.get("writeback_failed") for e in ends)
+    assert _git(c.repo, "rev-parse", "main") == main0
+    assert _git(c.repo, "rev-parse", f"nw/{c.cid}") == main0
+    assert not (c.repo / "c.txt").exists() and not (c.repo / "feature.txt").exists()
 
 
 # ---- forged frames ----------------------------------------------------------------------------
@@ -522,12 +541,17 @@ for line in p.stdout:
         frame = json.loads(line)
     except ValueError:
         frame = None
+    if mode == "nobundle" and frame and frame.get("type") == "done" and frame.get("bundle"):
+        frame["bundle"] = None               # the worker returned no bundle
+        line = (json.dumps(frame) + "\\n").encode()
+        with open(marker, "a") as m:
+            m.write("nobundle\\n")
     if frame and isinstance(frame.get("n"), int):
         frame["n"] += shift                  # the real frames follow the forged one, renumbered
         line = (json.dumps(frame) + "\\n").encode()
     sys.stdout.buffer.write(line)
     sys.stdout.buffer.flush()
-    if frame and frame.get("type") == "started" and not shift:
+    if mode != "nobundle" and frame and frame.get("type") == "started" and not shift:
         forged = {"schema": frame["schema"], "n": frame["n"] + 1, "at": frame.get("at")}
         if mode == "campaign":      # a frame for another campaign's job
             forged.update(type="gate", job_id=spec + "-gate-001-a1")
@@ -544,6 +568,46 @@ for line in p.stdout:
             m.write(json.dumps(forged) + "\\n")
 sys.exit(p.wait())
 """
+
+
+_DUP = """import json, subprocess, sys
+marker = sys.argv[1]
+p = subprocess.Popen(sys.argv[2:], stdout=subprocess.PIPE)
+sent = False
+for line in p.stdout:
+    sys.stdout.buffer.write(line)
+    sys.stdout.buffer.flush()
+    if sent:
+        continue
+    try:
+        frame = json.loads(line)
+    except ValueError:
+        frame = None
+    if frame and frame.get("type") == "gate":
+        sys.stdout.buffer.write(line)          # the same frame, the same n, once more
+        sys.stdout.buffer.flush()
+        sent = True
+        with open(marker, "a") as m:
+            m.write(line.decode())
+sys.exit(p.wait())
+"""
+
+
+def install_dup(c):
+    """Deliver one `gate` frame twice on each worker's gate-job stream."""
+    tmp_path = c.tmp
+    dup = tmp_path / "dup.py"
+    dup.write_text(_DUP)
+    for rec in WK.load(c.cfg):
+        ssh = rec["ssh_argv"][0]
+        mark = tmp_path / f"dup-{rec['name']}.mark"
+        _script(tmp_path / f"dup-{rec['name']}",
+                f'case "$*" in *-gate-*) exec {sys.executable} {dup} {mark} {ssh} "$@";; esac\n'
+                f'exec {ssh} "$@"')
+    reg = json.loads(WK.path(c.cfg).read_text())
+    for rec in reg["workers"]:
+        rec["ssh_argv"] = [str(tmp_path / f"dup-{rec['name']}")]
+    WK.path(c.cfg).write_text(json.dumps(reg))
 
 
 def install_forge(c, mode, spec, argv_glob="*attach*|*gate-job*|*persona*"):
@@ -592,9 +656,11 @@ def test_forged_worker_frames_are_refused_and_append_nothing(tmp_path, monkeypat
         with pytest.raises(ValueError):
             S.read_state(c.cfg, other)
         assert S.read_ledger(c.cfg, other) == [] and not S.gates_dir(c.cfg, other).exists()
-    else:       # the forged frame sat in a live stream whose jobs still ran on the workers
-        assert all(g.get("worker") for g in evs if g["type"] == "gate")
-        assert not any(e["type"] in ("worker_failed", "worker_job_lost") for e in evs)
+    else:       # a non-allowlisted type is refused: the job falls back, and the forged type is
+        # not appended (the one `close` is the queue's own, already checked above)
+        assert any(e["type"] in ("worker_failed", "worker_job_lost") for e in evs)
+        if spec != "close":
+            assert not any(e["type"] == spec for e in evs)
 
 
 # ---- credentials ------------------------------------------------------------------------------
@@ -605,13 +671,12 @@ def _env_keys(path: Path) -> dict:
 
 def _check_env(path: Path):
     env = _env_keys(path)
-    for k in env:
-        assert k not in FORBIDDEN_ENV and not k.startswith("GIT_CONFIG_"), k
-        if k.startswith("NW_"):
-            # `NW_WORKER_*`: the worker's own knobs (its job lock fd, progress, gc), set by it
-            assert k in W.ENV_ALLOWLIST or k in WORKER_OWN or k.startswith("NW_WORKER_"), k
+    assert set(env) <= EXACT_ENV, sorted(set(env) - EXACT_ENV)
+    for k in FORBIDDEN_ENV:
+        assert k not in env
+    assert not any(k.startswith("GIT_CONFIG_") for k in env)
     assert not any(v.startswith("poison") or "/poison/" in v for v in env.values())
-    assert env["NW_CAMPAIGN"]
+    assert env["NW_CAMPAIGN"] and "NW_SPEC_ID" in env and "NW_BASE" in env
 
 
 def test_a_worker_gets_no_git_credentials_and_no_push_path(tmp_path, monkeypatch):
@@ -628,6 +693,10 @@ def test_a_worker_gets_no_git_credentials_and_no_push_path(tmp_path, monkeypatch
         assert (jdir / f"{name}-cred.txt").read_text() == ""
         assert (jdir / f"{name}-cred.rc").read_text().strip() == "1"
         assert (jdir / f"{name}-push.rc").read_text().strip() != "0"
+        push = (jdir / f"{name}-push.txt").read_text()
+        # git's refusal names the branch as `HEAD -> main`; a push that landed would
+        # not say it failed
+        assert "failed to push" in push or "refusing to update" in push
         # the checkout's only remote is the worker's own object cache, and nothing in its git
         # config names the coordinator's repo: it has no way to push there
         wdata = str(remote.wdata)

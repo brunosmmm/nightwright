@@ -12,6 +12,7 @@ Compared with the older `meetings.refresh_meetings` call: there is a timeout, th
 checked, and the cost is read."""
 from __future__ import annotations
 
+import contextvars
 import json
 import os
 import re
@@ -411,10 +412,32 @@ def write_run_record(req: RunRequest, result: RunResult, started_at: str) -> Run
     return result
 
 
+# Set by a worker persona job (SPEC-0346) so the shell sees PATH and HOME plus `req.env`,
+# not the worker process's own keys (the job lock, `SSH_ORIGINAL_COMMAND`).
+_CHILD_BASE: contextvars.ContextVar[dict | None] = contextvars.ContextVar(
+    "nw_child_base", default=None)
+
+
+def child_base_context(base: dict) -> contextvars.Context:
+    """A context in which a worker persona's shell sees `base` instead of the process env.
+    Python 3.14 threads do not inherit contextvars unless asked, so the caller runs the
+    job thread with `ctx.run`."""
+    ctx = contextvars.copy_context()
+
+    def arm():
+        _CHILD_BASE.set(base)
+    ctx.run(arm)
+    return ctx
+
+
 def _child_env(req: RunRequest) -> dict:
     """The ambient environment plus `req.env`, minus a launched session's limits (SPEC-0319;
-    the same filter the detached wrapper applies, `runproc.child_env`)."""
-    return RP.child_env(req.env)
+    the same filter the detached wrapper applies, `runproc.child_env`). A worker job sets
+    `_CHILD_BASE` to PATH and HOME; then that, not the process env, is the base."""
+    base = _CHILD_BASE.get()
+    if base is None:
+        return RP.child_env(req.env)
+    return {**base, **req.env}
 
 
 # ---- the real thing ---------------------------------------------------------------------------
