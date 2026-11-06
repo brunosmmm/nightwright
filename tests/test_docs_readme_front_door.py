@@ -15,6 +15,7 @@ def test_readme_is_slim_front_door():
     assert "docs/product" in text
     assert "scripts/docs-serve.sh" in text or "mkdocs" in text
     assert "| command | purpose |" not in text
+    assert "cursor" in text and "cursor-agent" in text
 
 
 def test_time_and_retention_page_exists():

@@ -2,7 +2,7 @@
 
 **nightwright** (CLI `nw`) runs a spec-first, agentic development pipeline. Ideas become
 governing specs. Accepted specs are written, implemented, gated, reviewed and merged by
-headless Claude Code personas on a deterministic queue, and a human is pulled in only when
+headless Claude or Cursor personas on a deterministic queue, and a human is pulled in only when
 the queue parks something. The same CLI also does **passive time tracking**. This repo is
 built with nightwright itself: read [`AGENTS.md`](AGENTS.md) before changing anything.
 
@@ -45,8 +45,8 @@ accepted, not built. A declarative pipeline definition is planned.
 
 ## Install and start working
 
-Needs git, [uv](https://docs.astral.sh/uv/) and the `claude` CLI (personas, launched
-sessions); `gh` too if a project merges by PR.
+Needs git, [uv](https://docs.astral.sh/uv/) and the `claude` CLI. Optional: `cursor-agent`
+(`cursor-agent login`) for the Cursor backend. `gh` if a project merges by PR.
 
 ```bash
 git clone https://github.com/brunosmmm/nightwright.git && cd nightwright   # or git@github.com:brunosmmm/nightwright.git
@@ -59,8 +59,8 @@ nw queue conductor-launch             # then `nw queue steward-launch Acme` in a
 ```
 
 Before launching, create `~/.config/nightwright/config.yaml` with at least `timezone:` and
-`agentic.conductor.prices` (per model prefix, e.g. `claude-: {input: 3, output: 15}`; launches
-refuse unpriced models). Ideas go to `org_ideas_file` (default `~/work/org/ai/ideas.org`).
+`agentic.conductor.prices` (Claude prefixes, e.g. `claude-: {input: 3, output: 15}`; Cursor
+launches skip the USD table). Ideas go to `org_ideas_file` (default `~/work/org/ai/ideas.org`).
 Data lives in `~/.local/share/nightwright/`; `NW_CONFIG_DIR` / `NW_DATA_DIR` override both.
 Install **editable** so `git pull` updates skills and specs (else set `nw_checkout:`). Coming
 from `wt`? Run `nw migrate-from-wt` once. Next: [Run the agentic loop](docs/product/guides/agentic-workflow.md).
@@ -79,14 +79,14 @@ nw campaign show CAMPAIGN               # state + recent ledger events
 nw queue resume CAMPAIGN                # continue a parked campaign
 nw queue merge my-branch --yes          # rebase + re-gate + ff-merge a local branch
 nw profiles list                        # then `show NAME` or `check`
-nw queue conductor-launch               # Claude Code /nw-conduct session; `steward-launch PROJECT`
+nw queue conductor-launch               # /nw-conduct (`--runner cursor` opt-in); `steward-launch PROJECT`
 nw escalations list                     # `answer ID` wakes the conductor; also `nw mailbox`
 nw tui                                  # ideas desk; --tab queue|events|mailbox, --campaign ID
 ```
 
 ## Agent skills
 
-`nw skills install` links the playbooks in [`skills/`](skills/) into Claude Code.
+`nw skills install` links the playbooks in [`skills/`](skills/) into Claude Code / Cursor.
 `/nw-orient` is the bootstrap; load it first. `/nw-conduct` and `/nw-steward` turn a session
 into the conductor or a project steward. `/nw-capture`, `/nw-seed` and `/nw-related` record
 ideas; `/nw-explore` enriches one; `/nw-new-work` and `/nw-rework` make or supersede a spec;

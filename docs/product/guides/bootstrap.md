@@ -26,6 +26,11 @@ nw skills install                       # installs /nw-* skills for Claude Code 
 Install **editable**. The skills, the internal specs, and the agentic runner all run from
 this checkout, and a `git pull` (or a merge by the loop) takes effect without reinstalling.
 
+The queue defaults to the `claude` CLI. For Cursor personas and launches, install
+`cursor-agent`, run `cursor-agent login`, then
+`nw queue backend --host cursor --yes` (or `--runner cursor` on `queue add` /
+`conductor-launch`).
+
 ## 2 · Configure
 
 nightwright keeps its config and data outside the repo (XDG):
@@ -155,13 +160,14 @@ nw queue add SPEC-0001                # dry run: shows the plan
 nw queue add SPEC-0001 --yes          # queue it
 ```
 
-Then, in Claude Code, start the conductor: `/nw-conduct`. It starts the runner
+Then start the conductor in Claude Code or Cursor: `/nw-conduct`. It starts the runner
 (`nw queue run`) if it isn't running, and watches every event from then on.
 
 Prefer to have nightwright start the conductor session for you? `nw queue conductor-launch`
-does, but it exits 1 until `config.yaml` has a price for the model, for example
+does (`--runner cursor` for Cursor). A Claude launch exits 1 until `config.yaml` has a price
+for the model, for example
 `agentic: {conductor: {prices: {"claude-": {input: 3, output: 15}}}}` (dollars per million
-tokens, keys are model-name prefixes). See
+tokens, keys are model-name prefixes). Cursor launches skip that table. See
 [Operating the loop](../loop/operate.md#launching-the-conductor-and-stewards).
 
 !!! check "Check"

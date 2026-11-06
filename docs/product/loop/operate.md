@@ -20,10 +20,10 @@ flowchart LR
 2. **Start the runner.** There is one `nw queue run` per machine; a lease stops a second one.
    The conductor starts it for you if it isn't running. It picks up merged changes to nightwright
    itself by re-executing between ticks, so you never have to restart it after an upgrade.
-3. **Open a conductor session.** In Claude Code, run `/nw-conduct`, or let nightwright start
-   the session with `nw queue conductor-launch` (see below). It watches the event
-   stream and reacts to every park, merge, failure or stuck run using its decision table.
-   It never writes code.
+3. **Open a conductor session.** In Claude Code or Cursor, run `/nw-conduct`, or let
+   nightwright start the session with `nw queue conductor-launch` (see below; `--runner cursor`
+   for Cursor). It watches the event stream and reacts to every park, merge, failure or stuck
+   run using its decision table. It never writes code.
 4. **Optionally, a steward per project.** In a session that knows the project, run
    `/nw-steward`, or start one with `nw queue steward-launch <Project>`. The conductor asks it
    project questions over the mailbox. Everything still works without one.
@@ -32,20 +32,24 @@ flowchart LR
 
 ### Launching the conductor and stewards
 
-`nw queue conductor-launch` and `nw queue steward-launch PROJECT` start the session for you as
-a Claude Code process: a pinned model and effort, forced context limits (`autocompact`, output
-caps), a tool allow/deny list that lets it push `nw/*` branches and open PRs but never push to
-`main` or merge a PR, and a session id that nightwright registers before `claude` starts so
-the conductor's cost can be tracked. `--dry-run` prints the plan (add `--json` for
-machine-readable output) without starting anything, and `--resume` restarts the newest
-launched session. The defaults can be overridden under `agentic.conductor.launch` (a
-`steward:` sub-mapping overrides them for stewards).
+`nw queue conductor-launch` and `nw queue steward-launch PROJECT` start the session for you.
+Default is Claude Code: a pinned model and effort, forced context limits (`autocompact`,
+output caps), a tool allow/deny list that lets it push `nw/*` branches and open PRs but never
+push to `main` or merge a PR, and a session id registered before `claude` starts so the
+conductor's cost can be tracked. `--runner cursor` starts `cursor-agent` instead (logged in
+with `cursor-agent login`; no `CURSOR_API_KEY`). Cursor has no allow/deny CLI: the launch
+passes `--force --trust` and a policy footer. Conductor `--runner cursor|claude` also writes
+host `agentic.runner` so unpinned personas follow (SPEC-0439); steward-launch does not.
+`--dry-run` prints the plan (add `--json`) without starting anything; `--resume` restarts the
+newest launched session (without `--runner`, it follows that session's stored backend).
+Defaults live under `agentic.conductor.launch` (a `steward:` sub-mapping overrides them for
+stewards).
 
-!!! warning "Both commands exit 1 until you configure prices"
-    Launching is refused when the model has no price, so that every conductor session's spend
-    can be reported (`nw queue conductor-cost`). nightwright ships no price table: add one to
-    `config.yaml`. Keys are model-name **prefixes** (the longest match wins) and values are
-    dollars per million tokens:
+!!! warning "Claude launches exit 1 until you configure prices"
+    A **Claude** launch is refused when the model has no price, so every conductor session's
+    spend can be reported (`nw queue conductor-cost`). Cursor launches skip the USD table.
+    nightwright ships no price table: add one to `config.yaml` for Claude. Keys are model-name
+    **prefixes** (the longest match wins) and values are dollars per million tokens:
 
     ```yaml
     agentic:

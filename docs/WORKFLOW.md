@@ -33,8 +33,9 @@ nw mailbox send|follow|list|thread   conductor <-> steward <-> human messages (S
 nw escalations list|show|answer|withdraw   questions the conductor escalated to you (SPEC-0232)
 nw profiles list|show|check   workflow profiles and which file set each value (SPEC-0238)
 nw personas list|show        persona registry across builtin/user/project layers (SPEC-0370)
-nw queue conductor-launch / steward-launch PROJECT   start the conductor / a steward session
-                     (needs agentic.conductor.prices in config)
+nw queue conductor-launch [--runner cursor] / steward-launch PROJECT
+                     start the conductor / a steward (Claude default; Cursor opt-in)
+nw queue backend --host|--all cursor --yes   in-flight switch (next spawn; no SIGTERM)
 implement            you or the agent
 /nw-verify           Cursor: post-hoc DoD audit (global) — internal: `nw spec verify`;
                      outbound portable: audit the file in the target repo

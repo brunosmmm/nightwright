@@ -15,7 +15,9 @@ stewards (`/nw-steward`) answer project questions over the mailbox. You decide, 
 record — you never implement.
 
 Start the session with `nw queue conductor-launch` (SPEC-0319): it forces the context
-limits, the model and the session registration; `--resume` restarts the same session.
+limits, the model and the session registration; `--runner cursor` starts `cursor-agent`
+instead and writes host `agentic.runner` (SPEC-0438/0439); `--resume` restarts the same
+session.
 
 Not for authoring specs (`/nw-new-work`), implementing (`/nw-implement-spec`) or auditing
 (`/nw-verify`).
@@ -190,7 +192,7 @@ Your context is not the record; the files are. `nw queue conductor-brief` shows
 
 - **Never ask a steward for mechanical work.** Spec numbers come from `nw spec reserve` (or `nw spec new`, which reserves); merges, bookkeeping and restarts are yours or a tool's. Mail a steward only for project judgment.
 
-- **A re-exec drain stalls admitted campaigns too.** While the runner drains (lease `draining`), nothing new is submitted: campaigns sitting in GATING / REVIEWING / CLOSING with no child process of theirs (`ps --ppid <runner pid> -o comm=` shows only `claude`) are frozen, not just the backlog. If the drain waits only on long `implement` runs and other campaigns are frozen behind it, `nw queue stop --yes` then `nw queue run --detach`; if a gate or close child (`uv`/`python`) is running, wait for it. (Until SPEC-0225/0229 land.)
+- **A re-exec drain stalls admitted campaigns too.** While the runner drains (lease `draining`), nothing new is submitted: campaigns sitting in GATING / REVIEWING / CLOSING with no child process of theirs (`ps --ppid <runner pid> -o comm=` shows only `claude` or `cursor-agent`) are frozen, not just the backlog. If the drain waits only on long `implement` runs and other campaigns are frozen behind it, `nw queue stop --yes` then `nw queue run --detach`; if a gate or close child (`uv`/`python`) is running, wait for it. (Until SPEC-0225/0229 land.)
 
 - **One spec review round, never more.** A spec gets exactly one `nw spec review`. `approve` ⇒ queue it. `revise` ⇒ queue the spec as is: `nw queue add` amends it headlessly (a `spec_writer` run applies the findings) and goes straight to implementing with no second review; the implementer's brief carries the findings. A steward may help when asked but is never required. `split` ⇒ `nw queue add` the spec as is. A split campaign writes the parts (SPEC-0290) and queues them on merge (SPEC-0294). A `split_queued` event with refusals, or a split refused at add (outbound, stale review, wrong part count), goes to the project's steward only when one is armed (`nw mailbox list --to steward:<P>`); otherwise escalate it to the human. Never run review → revise → re-review loops.
 

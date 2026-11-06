@@ -2,14 +2,15 @@
 
 A deterministic queue moves **accepted specs** through implementation, gates, triage and
 merge without a human at the keyboard. Judgment steps (implement, triage a gate failure)
-run as fresh headless Claude personas with a budget and a timeout; every transition, run,
+run as fresh headless Claude or Cursor personas with a budget and a timeout; every transition, run,
 gate result, finding and dollar lands in a per-campaign ledger. Humans see an item only
 when the loop has **parked** it. Governing epic: SPEC-0169; the sections below are filled
 in by its child specs as they land.
 
 `nw doctor` (SPEC-0349) checks the agentic setup read-only: launch-model prices, the agentic
 and mailbox dirs, the runner lease, the conductor session, the worker registry and each
-project's `.nw/project.yaml` and profiles.
+project's `.nw/project.yaml` and profiles. When any live resolution is `cursor`, it also
+probes `cursor-agent --version` and login (`status` / `whoami`, not a paid `-p`).
 
 ## Project configuration
 
@@ -23,7 +24,7 @@ to know about it (SPEC-0170):
 - `worktrees`: `root` (default `<repo>/../.nw-worktrees/<project>`), `setup` commands,
   `cleanup` (`on_merge` | `on_close` | `never`).
 - `agents`: `context_files` read first by every persona, `permission_mode`,
-  `allowed_tools`, `commit_trailer`.
+  `allowed_tools`, `commit_trailer`, optional `runner` (`claude` | `cursor`).
 
 Unknown keys fail; every problem is reported by key path. Gate commands may use the
 placeholders `{spec_id}`, `{campaign}`, `{worktree}`, `{base}`.
@@ -133,7 +134,8 @@ personas:
 
 Keys: `slots`, `loop_max`, `run_timeout_s` (integers >= 1), `campaign_cap_usd`, `reviewers`, the
 `review:` block (below) and `personas.<name>` with `model` (`opus|sonnet|haiku` or a
-`claude-*` id), `effort` (`low|medium|high|xhigh|max`), `max_budget_usd`, `permission_mode`
+`claude-*` id; Cursor maps aliases via `cursor_map.yaml`), `effort`
+(`low|medium|high|xhigh|max`), `max_budget_usd`, `permission_mode`
 (`default|acceptEdits|bypassPermissions|dontAsk|plan`) and `read_only`. Every source is
 validated: an unknown key, persona, model, effort or permission mode, or a wrong type, fails
 with `<file>: <key.path>: <problem>`, and only the profile that file defines breaks. A campaign
@@ -145,6 +147,7 @@ The `config.yaml` block holds the same deltas:
 ```yaml
 agentic:
   default_profile: balanced
+  runner: claude                 # or cursor (SPEC-0436); default stays claude
   lease_ttl_s: 120
   profiles:
     balanced:
@@ -270,19 +273,54 @@ on a parked item — and logs a `gate` event. It never changes the campaign's st
 
 ## Personas
 
-Each judgment step is one fresh `claude -p` run (SPEC-0174): a persona markdown template
-(`implementer`, `gate_triager`, `conformance_reviewer`) is filled with the campaign's context
-— the spec text as it is on the branch, the worktree path, the last gate logs, the brief
-from the previous loop — and ends with a fixed invariant block (work only in the worktree,
-do not commit, finish with the JSON verdict). The runner passes a `--json-schema` so the
-verdict is structured, a `--max-budget-usd`, a wall-clock timeout, the profile's model and
-effort, and an explicit permission mode (`bypassPermissions` scoped to the worktree for the
-implementer; `--restricted` for read-only personas). Cost, usage and session id come back in
-the result and go to the ledger. Identical inputs give a byte-identical prompt; `nw campaign
-prompt CAMPAIGN PERSONA` prints it without running anything.
+Each judgment step is one fresh headless run (SPEC-0174, SPEC-0436): a persona markdown
+template (`implementer`, `gate_triager`, `conformance_reviewer`) is filled with the campaign's
+context — the spec text as it is on the branch, the worktree path, the last gate logs, the
+brief from the previous loop — and ends with a fixed invariant block (work only in the
+worktree, do not commit, finish with the JSON verdict). Default is `claude -p` with
+`--json-schema`. Opt in to `cursor-agent -p` (logged in with `cursor-agent login`; no
+`CURSOR_API_KEY`); Cursor has no schema flag, so the same JSON object is asked for in a
+prompt footer. Both get a `--max-budget-usd` (Cursor reports no USD, so the queue estimates
+from the cap), a wall-clock timeout, the profile's model and effort, and an explicit
+permission mode (`bypassPermissions` scoped to the worktree for the implementer;
+`--restricted` / Cursor `--mode ask` for read-only personas). Cost, usage and session id
+come back in the result and go to the ledger. Identical inputs give a byte-identical prompt;
+`nw campaign prompt CAMPAIGN PERSONA` prints it without running anything.
 
 For tests and dry runs, `agentic.runner: fake` (or `NW_AGENTIC_RUNNER=fake`) replays a JSON
-script of scripted edits and canned verdicts instead of calling `claude`.
+script of scripted edits and canned verdicts instead of calling `claude` or `cursor-agent`.
+
+### Backend (Claude or Cursor)
+
+Default is `claude`. Cursor is opt-in. A queue process may mix backends. Resolution is per
+spawn (SPEC-0436), highest first:
+
+1. `NW_AGENTIC_RUNNER` (`claude` / `cursor` / `fake`; `fake` is valid only here)
+2. campaign pin `state.runner`
+3. `agentic.project_runners[project]`
+4. `.nw/project.yaml` `agents.runner`
+5. host `agentic.runner` in user `config.yaml`
+6. `claude`
+
+An in-flight persona finishes on the backend it started; the next spawn uses the new
+resolution. Nothing is SIGTERM'd.
+
+```bash
+nw queue add SPEC-0170 --runner cursor --yes     # pin this campaign
+nw queue backend CAMPAIGN cursor --yes           # pin or clear (`default`) a live campaign
+nw queue backend --host cursor --yes             # write user agentic.runner (loop reloads)
+nw queue backend --all cursor --yes              # pin every non-terminal campaign
+nw queue backend --host --all cursor --yes       # full in-flight switch
+```
+
+`--host` and `--all` take the backend as the only argument (`nw queue backend --host cursor`).
+`conductor-launch --runner cursor` also writes the host default; `steward-launch --runner`
+does not (SPEC-0438, SPEC-0439).
+
+Profile `model: opus|sonnet|haiku` is unchanged. On a Cursor spawn those aliases map through
+YAML (`src/nightwright/agentic/cursor_map.yaml`, overlay
+`<config_dir>/cursor_map.yaml`, `agentic.cursor` in config, `<project>/.nw/cursor_map.yaml`).
+A persona may set `cursor_model:` in a user/project profile to pin a Cursor id.
 
 ### Declared personas (SPEC-0371, SPEC-0394)
 
@@ -586,6 +624,7 @@ nw spec review SPEC-0170 --show   # read the stored review; runs nothing (SPEC-0
 nw spec reviews --verdict revise  # the latest review of every spec
 nw queue add SPEC-0170            # plan only (dry-run)
 nw queue add SPEC-0170 --yes      # create the campaign in QUEUED
+nw queue add SPEC-0170 --runner cursor --yes   # pin this campaign to Cursor
 nw queue list                     # Active (slots) and Backlog (admission order) tables
 nw queue backlog                  # only the backlog: priority, what each item waits on
 nw queue add SPEC-0171 --priority 1 --yes   # 1 (first) .. 5; default 3
@@ -699,8 +738,8 @@ conductor also appear in its event stream, so one Monitor wakes it for both.
 
 ## Conductor
 
-`/nw-conduct` (SPEC-0182) turns a session into the **conductor**: it arms Claude Code's
-Monitor on `nw queue events --follow --for conductor` and is woken by every event — a park,
+`/nw-conduct` (SPEC-0182) turns a session into the **conductor**: it arms a Monitor (Claude
+Code or Cursor) on `nw queue events --follow --for conductor` and is woken by every event — a park,
 a merge, a dead or hung runner, an overdue run, a steward's message — and resolves it from a
 decision table (resume, raise the cap once, ask the project's steward, restart the loop,
 reconcile ideas after a merge), escalating to the human only for design questions and the
@@ -709,13 +748,16 @@ follower's reader lock means only one conductor can be armed.
 
 ## Launching the conductor and stewards
 
-`nw queue conductor-launch` and `nw queue steward-launch PROJECT` start the session as a Claude
-Code process with a pinned model and effort, forced context limits and a tool allow/deny list
-(push `nw/*` branches and open PRs; never push `main` or merge a PR). The session id is
-registered before `claude` starts, so its cost is tracked (`nw queue conductor-session`,
-`nw queue conductor-cost`). `--dry-run [--json]` prints the plan; `--resume` restarts the newest
-launched session. Settings live under `agentic.conductor.launch` (a `steward:` sub-mapping
-overrides them for stewards).
+`nw queue conductor-launch` and `nw queue steward-launch PROJECT` start the session with a
+pinned model and effort, forced context limits and (on Claude) a tool allow/deny list
+(push `nw/*` branches and open PRs; never push `main` or merge a PR). Default is `claude`.
+`--runner cursor` starts `cursor-agent` instead (`cursor-agent login`; `--force --trust` plus
+a policy footer — Cursor has no allow/deny CLI). Conductor `--runner` also writes host
+`agentic.runner`; steward-launch does not. The session id is registered before the binary
+starts, so Claude cost is tracked (`nw queue conductor-session`, `nw queue conductor-cost`).
+`--dry-run [--json]` prints the plan; `--resume` restarts the newest launched session
+(without `--runner`, it follows that session's stored backend). Settings live under
+`agentic.conductor.launch` (a `steward:` sub-mapping overrides them for stewards).
 
 Default permission rules (SPEC-0353; code-held in `launch.py`, a configured `allowed_tools` /
 `disallowed_tools` list replaces the default wholesale and gets none of the widening):
@@ -753,8 +795,9 @@ Default permission rules (SPEC-0353; code-held in `launch.py`, a configured `all
 Permission flags are fixed when a session starts: relaunch running conductors and stewards
 (`nw queue steward-launch PROJECT --resume`) to pick up changed rules.
 
-Both commands exit 1 when the model has no price. nightwright ships no price table; set one
-(keys are model-name prefixes, longest match wins; values are dollars per million tokens):
+Claude launches exit 1 when the model has no price; Cursor launches skip the USD table.
+nightwright ships no price table; set one for Claude (keys are model-name prefixes, longest
+match wins; values are dollars per million tokens):
 
 ```yaml
 agentic:

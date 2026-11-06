@@ -29,7 +29,7 @@ flowchart LR
 
 Follow [Bootstrap from zero, steps 1 and 2](bootstrap.md#1-install): clone
 `https://github.com/brunosmmm/nightwright.git`, `uv sync`, `uv tool install --editable .`, `nw skills install`, and a `config.yaml` with `timezone:` and
-`agentic.conductor.prices`. `nw doctor --fix-hints` checks the install.
+(for Claude launches) `agentic.conductor.prices`. `nw doctor --fix-hints` checks the install.
 
 ## 1 · Register the project
 
@@ -92,19 +92,28 @@ A runner started with `--no-reexec` (or one stuck in a long drain) keeps the old
 
 ## 5 · Launch the conductor, then a steward per project
 
-Use one Claude Code session for the conductor and one per project for stewards:
+Use one Claude Code or Cursor session for the conductor and one per project for stewards:
 
 ```bash
 nw queue conductor-launch          # session 1: runs /nw-orient, then /nw-conduct
+nw queue conductor-launch --runner cursor   # same, on cursor-agent; writes host agentic.runner
 nw queue steward-launch Acme       # session 2, opened in Acme's repo: /nw-steward
+nw queue steward-launch Acme --runner cursor
 nw queue steward-launch Acme --dry-run   # print the plan first (also on conductor-launch)
 ```
 
 Typing `/nw-orient` then `/nw-conduct` (or `/nw-steward`) in an existing session also works;
 the launch commands add a pinned model, forced context limits and a registered session id.
-Both refuse to start until the session model has a price in `config.yaml`
+Claude launches refuse to start until the session model has a price in `config.yaml`
 (`agentic.conductor.prices`, keyed by model prefix, e.g. `claude-: {input: 3, output: 15}`).
-`--resume` restarts the newest launched session.
+Cursor launches skip the USD table (`cursor-agent login` instead). `--resume` restarts the
+newest launched session (and follows its stored backend when `--runner` is omitted).
+
+To flip personas already in the queue without killing a live run:
+
+```bash
+nw queue backend --host --all cursor --yes    # next spawn uses Cursor
+```
 
 **What the conductor watches.** It arms a Monitor on `nw queue events --follow --for conductor`
 and is woken by every park, merge, failed run, stuck or dead runner and steward mail. It

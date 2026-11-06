@@ -52,8 +52,11 @@ These apply to every session that touches nightwright — conductor, steward, bu
 
 ## What `nw` is
 
-`nw` turns Claude transcripts + meetings into per-topic hours, and separately runs an
-idea→explore→spec→task→export pipeline for turning a stray thought into shipped, tracked work:
+`nw` turns Claude / Cursor transcripts + meetings into per-topic hours, and separately runs an
+idea→explore→spec→task→export pipeline for turning a stray thought into shipped, tracked work.
+The agentic queue's personas and launches default to `claude`; opt in to `cursor-agent` with
+`agentic.runner: cursor`, `nw queue add --runner cursor`, or
+`nw queue backend --host|--all cursor --yes` (next spawn; no SIGTERM).
 
 ```
 idea  →  explore  →  accepted spec  →  (internal: generate → PROMOTED)

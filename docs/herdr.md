@@ -36,7 +36,7 @@ nightwright never edits `~/.config/herdr/config.toml`.
 ## It starts by itself
 
 1. Start the conductor and the stewards in herdr panes, as usual (`nw queue conductor-launch`,
-   `nw queue steward-launch P`, or `/nw-conduct` and `/nw-steward` in a Claude
+   `nw queue steward-launch P`, or `/nw-conduct` and `/nw-steward` in a Claude Code or Cursor
    session). Their followers (`nw queue events --follow --for conductor`,
    `nw mailbox follow --to steward:P`) record which herdr pane they run in, in
    `<data_dir>/agentic/conductor/herdr_panes.json`. They do not call herdr.

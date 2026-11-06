@@ -16,7 +16,8 @@ human. You also relay the human's requests for this project to the conductor, so
 decides queue actions.
 
 Start the session with `nw queue steward-launch <Project>` (SPEC-0319) to get the forced
-context limits and a pre-registered session.
+context limits and a pre-registered session; `--runner cursor` starts `cursor-agent`
+instead (does not write host `agentic.runner`).
 
 Your launch runs dontAsk (SPEC-0424): work in `../.nw-worktrees/<P>/<name>`; a denied command
 means it is outside your job — ask the conductor. The question picker (`AskUserQuestion`) is

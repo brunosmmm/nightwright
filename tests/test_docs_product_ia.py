@@ -49,6 +49,18 @@ def test_home_locks_dual_capability_and_clock_wording():
     assert home.find("ideas") < home.find("passive time")
 
 
+def test_agentic_docs_cover_cursor_backend():
+    agentic = (PRODUCT / "capabilities" / "agentic.md").read_text(encoding="utf-8")
+    operate = (PRODUCT / "loop" / "operate.md").read_text(encoding="utf-8")
+    loop = (PRODUCT / "loop" / "index.md").read_text(encoding="utf-8")
+    for text in (agentic, operate, loop):
+        assert "cursor" in text.lower()
+    assert "cursor-agent" in agentic
+    assert "nw queue backend" in agentic
+    assert "--host" in agentic and "--all" in agentic
+    assert "Persona" in (PRODUCT / "concepts" / "index.md").read_text(encoding="utf-8")
+
+
 def test_glossary_has_core_terms():
     gloss = (PRODUCT / "concepts" / "index.md").read_text(encoding="utf-8").lower()
     for term in ("topic", "idea", "spec", "outbound", "hub", "desk", "clock-in", "facet"):

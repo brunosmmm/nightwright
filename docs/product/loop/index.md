@@ -12,7 +12,7 @@ It is built from a few plain parts. Each part does one job, and every step is wr
 flowchart TB
     H(["👤 You"])
 
-    subgraph SES["Sessions — Claude Code"]
+    subgraph SES["Sessions — Claude Code or Cursor"]
         direction LR
         C["🎛️ Conductor · /nw-conduct<br/>wakes on events, decides queue actions"]
         ST["🧭 Steward · /nw-steward<br/>knows one project (optional)"]
@@ -27,7 +27,7 @@ flowchart TB
 
     subgraph CAMP["Per campaign — its own branch + worktree"]
         direction LR
-        P["🤖 Personas · claude -p<br/>implementer · triager · reviewers"]
+        P["🤖 Personas · claude -p / cursor-agent -p<br/>implementer · triager · reviewers"]
         G["🧪 Gates<br/>your tests and linters"]
     end
 
@@ -47,10 +47,10 @@ flowchart TB
 | **Queue** | Campaign state files under `<data_dir>/agentic/` | Holds the backlog (not started), what's waiting for a slot, what's active, what's parked |
 | **Runner** | One `nw queue run` process holding a lease | Each *tick*: admit work into free slots, run the next step of every active campaign, record everything |
 | **Campaign** | One spec's trip through the loop | Has its own branch and worktree, a state, counters, a cost, and an append-only ledger |
-| **Personas** | Fresh headless `claude -p` runs | Do the judgment work: implement, triage a failing gate, review. Each run starts with fresh context and a budget |
+| **Personas** | Fresh headless `claude -p` or `cursor-agent -p` runs | Do the judgment work: implement, triage a failing gate, review. Each run starts with fresh context and a budget. Default is Claude; Cursor is opt-in |
 | **Gates** | Shell commands from `.nw/project.yaml` | Your tests and linters, run deterministically in the worktree. Gates are where code meets reality |
 | **Event stream** | A projection of every ledger | Turns "campaign parked", "merged", "runner dead" into alerts |
-| **Conductor** | A long-lived Claude Code session | Wakes on events and decides from a fixed decision table. It never implements anything |
+| **Conductor** | A long-lived Claude Code or Cursor session | Wakes on events and decides from a fixed decision table. It never implements anything |
 | **Steward** | A project session (optional) | Answers project questions the conductor asks over the mailbox |
 | **You** | — | You're asked only when the conductor's table says so |
 

@@ -70,7 +70,7 @@ flowchart LR
 | **Ideas you own** | Plain-text org files with stable ids (`IDEA-042`), a lifecycle, and next-step hints (`nw next`) |
 | **Specs that mean something** | Short governing specs: acceptance criteria and a test plan, reviewed before build, verified after (`nw spec verify`, `/nw-verify`) |
 | **An unattended build loop** | Queue → implement → your gates → conformance review → rebase, re-gate, merge, with every step in a ledger |
-| **Agents in the right places** | Headless personas for judgment, plain code for everything else, and a conductor session that handles the alerts |
+| **Agents in the right places** | Headless Claude or Cursor personas for judgment, plain code for everything else, and a conductor session that handles the alerts |
 | **Passive time** | Hours per topic and project, with no timer. `nw idea clock-in` / `clock-out` adds supplemental wall-time when you want it ([Clock](capabilities/clock.md)) |
 
 You meet nightwright as a command-line tool (`nw ideas`, `nw queue watch`, `nw report`), as the

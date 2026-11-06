@@ -78,12 +78,14 @@ for the per-project `.nw/project.yaml` ([Agentic loop](../capabilities/agentic.m
 
 ### `nw queue …`
 
-`add` (specs or `IDEA-NNN`), `list`, `watch`, `run`, `tick`, `stop`, `park`, `resume`,
-`abandon`, `prioritize`, `backlog`, `merge`, `gc`, `gates`, `gate-slots`, `sweep-prs`, plus
-the conductor tooling: `events`, `followers`, `wakeups`, `runner-log`, `decision`,
-`decisions`, `escalate`, `conduct-status`, `conductor-brief`, `conductor-cost`,
-`conductor-session`, `conductor-launch`, `steward-launch` and `mvp-report`. Full list:
-`nw queue --help`.
+`add` (specs or `IDEA-NNN`; `--runner cursor|claude` pins the campaign), `list`, `watch`,
+`run`, `tick`, `stop`, `park`, `resume`, `abandon`, `prioritize`, `backlog`, `backend`
+(per-campaign pin, or `--host` / `--all` for an in-flight Claude↔Cursor switch), `merge`,
+`gc`, `gates`, `gate-slots`, `sweep-prs`, plus the conductor tooling: `events`,
+`followers`, `wakeups`, `runner-log`, `decision`, `decisions`, `escalate`,
+`conduct-status`, `conductor-brief`, `conductor-cost`, `conductor-session`,
+`conductor-launch` / `steward-launch` (`--runner cursor|claude`) and `mvp-report`. Full
+list: `nw queue --help`.
 
 ### `nw dashboard …`
 
