@@ -342,7 +342,8 @@ def build_cursor_argv(req: RunRequest) -> list[str]:
 def build_pi_argv(req: RunRequest) -> list[str]:
     """Local Pi SDK child (SPEC-0451). Credentials stay in the environment."""
     script = Path(__file__).resolve().parent / "pi_exec.mjs"
-    return ["node", str(script), str(req.run_dir)]
+    node = RP._resolve_binary("node", os.environ) or "node"
+    return [node, str(script), str(req.run_dir)]
 
 
 def _tail(text: str, n: int = _TAIL_CHARS) -> str:
@@ -461,12 +462,12 @@ def _request_doc(req: RunRequest, started_at: str) -> dict:
            "started_at": started_at}
     if req.model_alias:
         doc["model_alias"] = req.model_alias
-    if req.system_append:
-        doc["system_append"] = req.system_append
     if req.pi_provider:
         doc["pi_provider"] = req.pi_provider
         doc["pi_id"] = req.pi_id
         doc["pi_thinking"] = req.pi_thinking
+        if req.system_append:
+            doc["system_append"] = req.system_append
     return doc
 
 

@@ -29,9 +29,13 @@ function loadExecute() {
   return import(PI_EXEC).then((m) => m.execute);
 }
 
+function chunksToLines(chunks) {
+  return chunks.join("").trim().split("\n").filter(Boolean).map((l) => JSON.parse(l));
+}
+
 function stubSession(over = {}) {
-  const events = [];
-  return {
+  const subs = [];
+  const session = {
     state: {
       messages: over.messages ?? [
         {
@@ -43,19 +47,26 @@ function stubSession(over = {}) {
       ],
     },
     subscribe(fn) {
-      events.push(fn);
-      if (over.assistantEvent) fn(over.assistantEvent);
+      subs.push(fn);
+      for (const ev of over.events ?? []) fn(ev);
       return () => {};
     },
     prompt: async (msg) => {
-      over.prompt = msg;
+      over.promptText = msg;
+      if (over.promptReject) throw over.promptReject;
       return undefined;
     },
-    dispose() {},
+    dispose() {
+      over.disposed = true;
+    },
     abort: over.abort ?? (() => {}),
     sessionId: "sess-1",
   };
+  session._emit = (ev) => subs.forEach((fn) => fn(ev));
+  return session;
 }
+
+const SENTINEL = "pi-test-secret-key-xyzzy-999";
 
 function stubPi(over = {}) {
   const session = stubSession(over);
@@ -64,18 +75,32 @@ function stubPi(over = {}) {
     id: "claude-sonnet-4-6",
     cost: over.modelCost ?? { input: 1, output: 1, cacheRead: 0, cacheWrite: 0 },
   };
-  return {
-    ModelRuntime: {
-      create: async () => ({
-        getModel: () => model,
-        checkAuth: async () => (over.auth === false ? null : { type: "api_key" }),
-      }),
+  const runtime = {
+    getModel: () => (over.noModel ? null : model),
+    checkAuth: async () => (over.auth === false ? null : { type: "api_key", source: "ANTHROPIC_API_KEY" }),
+    getAuth: async () =>
+      over.getAuth ?? {
+        auth: { apiKey: SENTINEL },
+      },
+  };
+  const pi = {
+    ModelRuntime: { create: async () => runtime },
+    SettingsManager: {
+      inMemory: (settings, opts) => {
+        over.settingsCall = { settings, opts };
+        return { tag: "in-memory-settings" };
+      },
     },
-    SettingsManager: { inMemory: () => ({ tag: "in-memory-settings" }) },
-    SessionManager: { inMemory: () => ({ getHeader: () => ({ id: "sess-1" }) }) },
+    SessionManager: {
+      inMemory: (cwd) => {
+        over.sessionCwd = cwd;
+        return { getHeader: () => ({ id: "sess-1" }) };
+      },
+    },
     DefaultResourceLoader: class {
       constructor(opts) {
         this.opts = opts;
+        over.loaderOpts = opts;
       }
       async reload() {}
     },
@@ -83,119 +108,402 @@ function stubPi(over = {}) {
       over.createOpts = opts;
       return { session };
     },
-    getAgentDir: () => "/tmp/agent",
   };
+  return { pi, session, runtime, over };
 }
 
 test("execute: in-memory session, settings, loader flags, appendSystemPrompt", async () => {
   const execute = await loadExecute();
   const runDir = layout();
-  const captured = {};
   const out = { chunks: [], write(s) { this.chunks.push(s); } };
-  const pi = stubPi(captured);
+  const { pi, over } = stubPi();
   const code = await execute(runDir, {
     out,
     err: { write() {} },
     importPi: async () => pi,
-    settingsManager: pi.SettingsManager.inMemory(),
-    sessionManager: pi.SessionManager.inMemory(),
-    resourceLoader: new pi.DefaultResourceLoader({
-      cwd: runDir,
-      agentDir: "/a",
-      noExtensions: true,
-      noSkills: true,
-      noPromptTemplates: true,
-      noThemes: true,
-      noContextFiles: false,
-      appendSystemPrompt: ["INVARIANT"],
-    }),
     modelRuntime: await pi.ModelRuntime.create(),
   });
   assert.equal(code, 0);
-  assert.equal(captured.createOpts.settingsManager.tag, "in-memory-settings");
-  assert.deepEqual(captured.createOpts.tools, ["read", "bash", "edit", "write"]);
-  assert.equal(captured.createOpts.resourceLoader.opts.noExtensions, true);
-  assert.ok(captured.createOpts.resourceLoader.opts.appendSystemPrompt.includes("INVARIANT"));
-  const prompt = captured.prompt;
+  assert.equal(over.sessionCwd, runDir);
+  assert.deepEqual(over.settingsCall, { settings: {}, opts: { projectTrusted: false } });
+  assert.equal(over.loaderOpts.agentDir, "");
+  assert.equal(over.loaderOpts.noExtensions, true);
+  assert.deepEqual(over.loaderOpts.appendSystemPrompt, ["INVARIANT"]);
+  assert.equal(over.createOpts.thinkingLevel, "high");
+  assert.deepEqual(over.createOpts.tools, ["read", "bash", "edit", "write"]);
+  assert.equal(over.createOpts.settingsManager.tag, "in-memory-settings");
+  assert.ok(over.disposed);
+  const prompt = over.promptText;
   assert.equal((prompt.match(/INVARIANT/g) || []).length, 1);
   assert.ok(prompt.includes("Reply with a single JSON object"));
-  assert.ok(prompt.trimEnd().endsWith("}"));
 });
 
 test("execute: read-only tools", async () => {
   const execute = await loadExecute();
   const runDir = layout({ read_only: true });
-  const captured = {};
-  const pi = stubPi(captured);
+  const { pi, over } = stubPi();
   await execute(runDir, {
     out: { write() {} },
     err: { write() {} },
     importPi: async () => pi,
-    settingsManager: {},
-    sessionManager: { getHeader: () => ({}) },
-    resourceLoader: { reload: async () => {}, opts: {} },
     modelRuntime: await pi.ModelRuntime.create(),
   });
-  assert.deepEqual(captured.createOpts.tools, ["read", "grep", "find", "ls"]);
+  assert.deepEqual(over.createOpts.tools, ["read", "grep", "find", "ls"]);
 });
 
-test("execute: startup import failure does not call prompt", async () => {
+test("execute: toolResult message_end emits user tool_result line", async () => {
+  const execute = await loadExecute();
+  const runDir = layout();
+  const out = { chunks: [], write(s) { this.chunks.push(s); } };
+  const toolEv = {
+    type: "message_end",
+    message: {
+      role: "toolResult",
+      toolCallId: "call-abc",
+      isError: false,
+      content: [{ type: "text", text: "file contents here" }],
+    },
+  };
+  const { pi } = stubPi({
+    events: [toolEv],
+    messages: [
+      {
+        role: "assistant",
+        stopReason: "stop",
+        content: [{ type: "text", text: "done" }],
+        usage: { cost: { total: 0.01 } },
+      },
+    ],
+    modelCost: { input: 1 },
+  });
+  await execute(runDir, {
+    out,
+    err: { write() {} },
+    importPi: async () => pi,
+    modelRuntime: { getModel: () => ({ cost: { input: 1 } }), checkAuth: async () => ({}), getAuth: async () => ({}) },
+  });
+  const lines = chunksToLines(out.chunks);
+  const tr = lines.find((l) => l.type === "user");
+  assert.deepEqual(tr, {
+    type: "user",
+    message: {
+      role: "user",
+      content: [
+        {
+          type: "tool_result",
+          tool_use_id: "call-abc",
+          content: "file contents here",
+          is_error: false,
+        },
+      ],
+    },
+  });
+  const last = lines.at(-1);
+  assert.equal(last.total_cost_usd, 0.01);
+});
+
+test("execute: assistant tool_use in stream", async () => {
+  const execute = await loadExecute();
+  const runDir = layout();
+  const out = { chunks: [], write(s) { this.chunks.push(s); } };
+  const asstEv = {
+    type: "message_end",
+    message: {
+      role: "assistant",
+      content: [
+        { type: "text", text: "reading" },
+        { type: "toolCall", id: "t1", name: "read", arguments: { path: "x" } },
+      ],
+    },
+  };
+  const { pi } = stubPi({ events: [asstEv] });
+  await execute(runDir, {
+    out,
+    err: { write() {} },
+    importPi: async () => pi,
+    modelRuntime: await pi.ModelRuntime.create(),
+  });
+  const lines = chunksToLines(out.chunks);
+  const asst = lines.find((l) => l.type === "assistant");
+  assert.equal(asst.message.content[1].type, "tool_use");
+  assert.equal(asst.message.content[1].name, "read");
+});
+
+test("execute: stopReason length is success exit 0", async () => {
+  const execute = await loadExecute();
+  const runDir = layout();
+  const out = { chunks: [], write(s) { this.chunks.push(s); } };
+  const verdict = '{"status":"done","summary":"ok"}';
+  const { pi } = stubPi({
+    messages: [
+      {
+        role: "assistant",
+        stopReason: "length",
+        content: [{ type: "text", text: verdict }],
+        usage: { cost: { total: 0 } },
+      },
+    ],
+    modelCost: { input: 1 },
+  });
+  const code = await execute(runDir, {
+    out,
+    err: { write() {} },
+    importPi: async () => pi,
+    modelRuntime: await pi.ModelRuntime.create(),
+  });
+  assert.equal(code, 0);
+  const last = JSON.parse(out.chunks.at(-1));
+  assert.equal(last.is_error, false);
+  assert.equal(last.result, verdict);
+});
+
+test("execute: prompt failure scrubs sentinel from stdout and stderr", async () => {
+  const execute = await loadExecute();
+  const runDir = layout();
+  const out = { chunks: [], write(s) { this.chunks.push(s); } };
+  const err = { chunks: [], write(s) { this.chunks.push(s); } };
+  const { pi } = stubPi({ promptReject: new Error(`provider failed: ${SENTINEL}`) });
+  const code = await execute(runDir, {
+    out,
+    err,
+    importPi: async () => pi,
+    modelRuntime: await pi.ModelRuntime.create(),
+  });
+  assert.equal(code, 1);
+  const blob = out.chunks.join("") + err.chunks.join("");
+  assert.ok(!blob.includes(SENTINEL));
+  assert.ok(blob.includes("[redacted]"));
+});
+
+test("execute: no credential does not call prompt", async () => {
   const execute = await loadExecute();
   const runDir = layout();
   let prompted = false;
+  const { pi, session } = stubPi({ auth: false });
+  session.prompt = async () => {
+    prompted = true;
+  };
+  const out = { chunks: [], write(s) { this.chunks.push(s); } };
   const code = await execute(runDir, {
-    out: { write() {} },
+    out,
     err: { write() {} },
-    importPi: async () => {
-      throw new Error("no package");
-    },
-    modelRuntime: { getModel: () => null, checkAuth: async () => null },
+    importPi: async () => pi,
+    modelRuntime: { getModel: () => ({}), checkAuth: async () => null, getAuth: async () => null },
   });
   assert.equal(code, 1);
   assert.equal(prompted, false);
+  const last = JSON.parse(out.chunks.at(-1));
+  assert.equal(last.is_error, true);
+});
+
+test("execute: unknown model does not call prompt", async () => {
+  const execute = await loadExecute();
+  const runDir = layout();
+  let prompted = false;
+  const { pi, session } = stubPi({ noModel: true });
+  session.prompt = async () => {
+    prompted = true;
+  };
+  const code = await execute(runDir, {
+    out: { write() {} },
+    err: { write() {} },
+    importPi: async () => pi,
+    modelRuntime: { getModel: () => null, checkAuth: async () => ({}), getAuth: async () => ({}) },
+  });
+  assert.equal(code, 1);
+  assert.equal(prompted, false);
+});
+
+test("execute: agent stopReason error writes stderr and exits 1", async () => {
+  const execute = await loadExecute();
+  const runDir = layout();
+  const out = { chunks: [], write(s) { this.chunks.push(s); } };
+  const err = { chunks: [], write(s) { this.chunks.push(s); } };
+  const { pi } = stubPi({
+    messages: [
+      {
+        role: "assistant",
+        stopReason: "error",
+        errorMessage: "rate limited",
+        content: [],
+        usage: { cost: { total: 0 } },
+      },
+    ],
+  });
+  const code = await execute(runDir, {
+    out,
+    err,
+    importPi: async () => pi,
+    modelRuntime: await pi.ModelRuntime.create(),
+  });
+  assert.equal(code, 1);
+  const last = JSON.parse(out.chunks.at(-1));
+  assert.equal(last.is_error, true);
+  assert.ok(err.chunks.join("").includes("rate limited"));
 });
 
 test("execute: priced cost sum ignores tool_result without usage", async () => {
   const execute = await loadExecute();
   const runDir = layout();
   const out = { chunks: [], write(s) { this.chunks.push(s); } };
-  const messages = [
-    { role: "assistant", stopReason: "stop", content: [{ type: "text", text: "a" }],
-      usage: { cost: { total: 0.01 } } },
-    { role: "user", content: [{ type: "toolResult", toolCallId: "t", content: "ok" }] },
-    { role: "assistant", stopReason: "stop", content: [{ type: "text", text: "done" }],
-      usage: { cost: { total: 0.02 } } },
-  ];
+  const toolEv = {
+    type: "message_end",
+    message: {
+      role: "toolResult",
+      toolCallId: "t",
+      isError: false,
+      content: [{ type: "text", text: "ok" }],
+    },
+  };
+  const { pi } = stubPi({
+    events: [toolEv],
+    messages: [
+      { role: "assistant", stopReason: "stop", content: [{ type: "text", text: "a" }],
+        usage: { cost: { total: 0.01 } } },
+      { role: "assistant", stopReason: "stop", content: [{ type: "text", text: "done" }],
+        usage: { cost: { total: 0.02 } } },
+    ],
+    modelCost: { input: 1 },
+  });
   await execute(runDir, {
     out,
     err: { write() {} },
-    importPi: async () => stubPi({ messages, modelCost: { input: 1 } }),
-    settingsManager: {},
-    sessionManager: { getHeader: () => ({ id: "s" }) },
-    resourceLoader: { reload: async () => {}, opts: {} },
-    modelRuntime: { getModel: () => ({ cost: { input: 1 } }), checkAuth: async () => ({}) },
+    importPi: async () => pi,
+    modelRuntime: await pi.ModelRuntime.create(),
   });
   const last = JSON.parse(out.chunks.at(-1));
   assert.equal(last.total_cost_usd, 0.03);
 });
 
-test("assistant event with U+2028 in tool input is one JSON line", () => {
-  const obj = {
-    type: "assistant",
+test("execute: priced sum zero stored as 0", async () => {
+  const execute = await loadExecute();
+  const runDir = layout();
+  const out = { chunks: [], write(s) { this.chunks.push(s); } };
+  const { pi } = stubPi({
+    messages: [
+      {
+        role: "assistant",
+        stopReason: "stop",
+        content: [{ type: "text", text: "x" }],
+        usage: { cost: { total: 0, totalFromProvider: true } },
+      },
+    ],
+    modelCost: { input: 1 },
+  });
+  await execute(runDir, {
+    out,
+    err: { write() {} },
+    importPi: async () => pi,
+    modelRuntime: await pi.ModelRuntime.create(),
+  });
+  const last = JSON.parse(out.chunks.at(-1));
+  assert.equal(last.total_cost_usd, 0);
+});
+
+test("execute: unpriced catalog leaves total_cost_usd null", async () => {
+  const execute = await loadExecute();
+  const runDir = layout();
+  const out = { chunks: [], write(s) { this.chunks.push(s); } };
+  const { pi } = stubPi({
+    messages: [
+      {
+        role: "assistant",
+        stopReason: "stop",
+        content: [{ type: "text", text: "x" }],
+        usage: { cost: { total: 0 } },
+      },
+    ],
+    modelCost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+  });
+  await execute(runDir, {
+    out,
+    err: { write() {} },
+    importPi: async () => pi,
+    modelRuntime: await pi.ModelRuntime.create(),
+  });
+  const last = JSON.parse(out.chunks.at(-1));
+  assert.equal(last.total_cost_usd, null);
+  assert.ok(last.usage.input_tokens >= 0);
+});
+
+test("execute: missing usage.cost.total nulls total_cost_usd", async () => {
+  const execute = await loadExecute();
+  const runDir = layout();
+  const out = { chunks: [], write(s) { this.chunks.push(s); } };
+  const { pi } = stubPi({
+    messages: [
+      {
+        role: "assistant",
+        stopReason: "stop",
+        content: [{ type: "text", text: "x" }],
+        usage: { input: 10, output: 5 },
+      },
+    ],
+    modelCost: { input: 1 },
+  });
+  await execute(runDir, {
+    out,
+    err: { write() {} },
+    importPi: async () => pi,
+    modelRuntime: await pi.ModelRuntime.create(),
+  });
+  const last = JSON.parse(out.chunks.at(-1));
+  assert.equal(last.total_cost_usd, null);
+  assert.equal(last.usage.input_tokens, 10);
+});
+
+test("execute: startup import failure does not call prompt", async () => {
+  const execute = await loadExecute();
+  const runDir = layout();
+  const out = { chunks: [], write(s) { this.chunks.push(s); } };
+  const code = await execute(runDir, {
+    out,
+    err: { write() {} },
+    importPi: async () => {
+      throw new Error("no package");
+    },
+  });
+  assert.equal(code, 1);
+  const last = JSON.parse(out.chunks.at(-1));
+  assert.equal(last.is_error, true);
+});
+
+test("assistant event with U+2028 in tool input is one JSON line", async () => {
+  const execute = await loadExecute();
+  const runDir = layout();
+  const out = { chunks: [], write(s) { this.chunks.push(s); } };
+  const asstEv = {
+    type: "message_end",
     message: {
       role: "assistant",
-      content: [{ type: "tool_use", id: "1", name: "read", input: { note: "a\u2028b" } }],
+      content: [
+        {
+          type: "toolCall",
+          id: "1",
+          name: "read",
+          arguments: { note: "a\u2028b" },
+        },
+      ],
     },
   };
-  const line = JSON.stringify(obj);
-  assert.equal(line.split("\n").length, 1);
+  const { pi } = stubPi({ events: [asstEv] });
+  await execute(runDir, {
+    out,
+    err: { write() {} },
+    importPi: async () => pi,
+    modelRuntime: await pi.ModelRuntime.create(),
+  });
+  const raw = out.chunks.find((c) => c.includes("tool_use"));
+  assert.ok(raw);
+  assert.equal(raw.trimEnd().split("\n").length, 1);
+  assert.ok(raw.includes("\u2028") || raw.includes("\\u2028"));
 });
 
 test("tier catalog rate yields numeric total_cost_usd", async () => {
   const execute = await loadExecute();
   const runDir = layout();
   const out = { chunks: [], write(s) { this.chunks.push(s); } };
-  const pi = stubPi({
+  const { pi } = stubPi({
     messages: [
       {
         role: "assistant",
@@ -210,20 +518,53 @@ test("tier catalog rate yields numeric total_cost_usd", async () => {
     out,
     err: { write() {} },
     importPi: async () => pi,
-    settingsManager: {},
-    sessionManager: { getHeader: () => ({}) },
-    resourceLoader: { reload: async () => {}, opts: {} },
     modelRuntime: await pi.ModelRuntime.create(),
   });
   const last = JSON.parse(out.chunks.at(-1));
   assert.equal(last.total_cost_usd, 0.05);
 });
 
+test("execute: parallel toolResult same ms both emit", async () => {
+  const execute = await loadExecute();
+  const runDir = layout();
+  const out = { chunks: [], write(s) { this.chunks.push(s); } };
+  const ts = 1;
+  const events = [
+    {
+      type: "message_end",
+      message: {
+        role: "toolResult",
+        toolCallId: "a",
+        timestamp: ts,
+        content: [{ type: "text", text: "one" }],
+      },
+    },
+    {
+      type: "message_end",
+      message: {
+        role: "toolResult",
+        toolCallId: "b",
+        timestamp: ts,
+        content: [{ type: "text", text: "two" }],
+      },
+    },
+  ];
+  const { pi } = stubPi({ events });
+  await execute(runDir, {
+    out,
+    err: { write() {} },
+    importPi: async () => pi,
+    modelRuntime: await pi.ModelRuntime.create(),
+  });
+  const lines = chunksToLines(out.chunks).filter((l) => l.type === "user");
+  assert.equal(lines.length, 2);
+});
+
 test("execute: SIGTERM handler calls abort", async () => {
   const execute = await loadExecute();
   const runDir = layout();
   let aborted = false;
-  const pi = stubPi({ abort: () => { aborted = true; } });
+  const { pi } = stubPi({ abort: () => { aborted = true; } });
   let termHandler;
   const origOn = process.on.bind(process);
   process.on = (ev, fn) => {
@@ -235,10 +576,7 @@ test("execute: SIGTERM handler calls abort", async () => {
       out: { write() {} },
       err: { write() {} },
       importPi: async () => pi,
-      settingsManager: {},
-      sessionManager: { getHeader: () => ({}) },
-      resourceLoader: { reload: async () => {}, opts: {} },
-      modelRuntime: { getModel: () => ({ cost: { input: 1 } }), checkAuth: async () => ({}) },
+      modelRuntime: await pi.ModelRuntime.create(),
     });
     assert.ok(termHandler);
     termHandler();

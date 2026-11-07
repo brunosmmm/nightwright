@@ -443,6 +443,13 @@ fails the check with that fact.
 - Full `uv run pytest` left to queue gating
 - `python3 tools/spec_lint.py` — pass
 
+### Test record (loop 1, 2026-11-07)
+
+- `uv run pytest tests/test_pi_runner.py tests/test_pi_exec_js.py -q` — pass
+- `node --test tests/js/pi_exec.test.js` — pass (toolResult stream, scrub, length stop, cost cases)
+- Full `uv run pytest` left to queue gating
+- `python3 tools/spec_lint.py --write-ledger` && `python3 tools/spec_lint.py` — pass
+
 ## Rollout / migration
 
 Hosts and workers that run Pi personas need `node` on `PATH` and

@@ -80,6 +80,27 @@ function mapUserContent(content = []) {
   return blocks;
 }
 
+function emitToolResultLine(out, message) {
+  const text = (message.content ?? [])
+    .filter((b) => b?.type === "text")
+    .map((b) => b.text ?? "")
+    .join("");
+  writeLine(out, {
+    type: "user",
+    message: {
+      role: "user",
+      content: [
+        {
+          type: "tool_result",
+          tool_use_id: message.toolCallId ?? "",
+          content: text,
+          is_error: Boolean(message.isError),
+        },
+      ],
+    },
+  });
+}
+
 function emitMessage(out, role, content) {
   if (role === "assistant") {
     const blocks = mapAssistantContent(content);
@@ -96,6 +117,24 @@ function emitMessage(out, role, content) {
       message: { role: "user", content: blocks },
     });
   }
+}
+
+async function collectSecretsAsync(modelRuntime, provider, authCheck) {
+  const secrets = [];
+  const add = (s) => {
+    if (typeof s === "string" && s) secrets.push(s);
+  };
+  try {
+    const detail = await modelRuntime.getAuth(provider);
+    add(detail?.apiKey);
+    add(detail?.token);
+    add(detail?.auth?.apiKey);
+    add(detail?.auth?.token);
+  } catch {
+    /* ignore */
+  }
+  if (authCheck?.source) add(process.env[authCheck.source]);
+  return secrets;
 }
 
 function usageFromAssistant(messages) {
@@ -203,11 +242,10 @@ export async function execute(runDir, deps = {}) {
     return 1;
   }
 
-  const secrets = [];
   const modelRuntime = deps.modelRuntime ?? (await pi.ModelRuntime.create());
   const model = modelRuntime.getModel(provider, modelId);
   if (!model) {
-    failResult(out, err, `unknown model ${provider}/${modelId}`);
+    failResult(out, err, `unknown model ${provider}/${modelId}`, { secrets: [] });
     return 1;
   }
 
@@ -222,19 +260,21 @@ export async function execute(runDir, deps = {}) {
     return 1;
   }
 
+  const secrets = await collectSecretsAsync(modelRuntime, provider, auth);
+
   const cwd = req.cwd || ".";
   const readOnly = Boolean(req.read_only);
   const tools = readOnly ? ["read", "grep", "find", "ls"] : ["read", "bash", "edit", "write"];
 
   const settingsManager =
     deps.settingsManager ??
-    pi.SettingsManager.inMemory();
+    pi.SettingsManager.inMemory({}, { projectTrusted: false });
 
   const resourceLoader =
     deps.resourceLoader ??
     new pi.DefaultResourceLoader({
       cwd,
-      agentDir: pi.getAgentDir?.() ?? path.join(process.env.HOME || "", ".pi", "agent"),
+      agentDir: "",
       settingsManager,
       noExtensions: true,
       noSkills: true,
@@ -267,22 +307,31 @@ export async function execute(runDir, deps = {}) {
     holder.session = session;
 
     const emitted = new Set();
+    let streamSeq = 0;
     const unsub = session.subscribe((event) => {
-      if (event.type === "message_end" && event.message) {
-        const key = `${event.message.role}:${event.message.timestamp ?? emitted.size}`;
+      if (event.type !== "message_end" || !event.message) return;
+      const msg = event.message;
+      if (msg.role === "toolResult") {
+        const key = `tr:${msg.toolCallId ?? ""}`;
         if (emitted.has(key)) return;
         emitted.add(key);
-        if (event.message.role === "assistant" && event.message.stopReason === "error") {
-          return;
-        }
-        emitMessage(out, event.message.role, event.message.content);
+        emitToolResultLine(out, msg);
+        return;
+      }
+      if (msg.role === "assistant" && msg.stopReason === "error") {
+        return;
+      }
+      if (msg.role === "assistant" || msg.role === "user") {
+        const key = `msg:${streamSeq++}`;
+        emitted.add(key);
+        emitMessage(out, msg.role, msg.content);
       }
     });
 
     if (deps.sigtermHandler) {
-      process.on("SIGTERM", deps.sigtermHandler);
+      process.once("SIGTERM", deps.sigtermHandler);
     } else {
-      process.on("SIGTERM", () => {
+      process.once("SIGTERM", () => {
         try {
           session.abort?.();
         } catch {
@@ -297,15 +346,18 @@ export async function execute(runDir, deps = {}) {
     const messages = session.state?.messages ?? [];
     const assistants = messages.filter((m) => m.role === "assistant");
     const last = assistants[assistants.length - 1];
-    const failed =
-      !last ||
-      last.stopReason === "error" ||
-      last.stopReason === "aborted" ||
-      last.stopReason === "length";
-    const resultText = (last?.content ?? [])
+    const failed = !last || last.stopReason === "error" || last.stopReason === "aborted";
+    let resultText = (last?.content ?? [])
       .filter((b) => b?.type === "text")
       .map((b) => b.text)
       .join("");
+    if (failed) {
+      const errMsg = last?.errorMessage ?? resultText;
+      if (errMsg) {
+        err.write(scrub(errMsg, secrets) + "\n");
+        resultText = errMsg;
+      }
+    }
     const usage = usageFromAssistant(assistants);
     const totalCost = sumCostUsd(assistants, model);
     const sessionId = sessionManager.getHeader?.()?.id ?? session.sessionId ?? null;
@@ -314,7 +366,7 @@ export async function execute(runDir, deps = {}) {
       type: "result",
       subtype: failed ? "error" : "success",
       is_error: failed,
-      result: resultText,
+      result: scrub(resultText, secrets),
       session_id: sessionId,
       usage,
       total_cost_usd: totalCost,
