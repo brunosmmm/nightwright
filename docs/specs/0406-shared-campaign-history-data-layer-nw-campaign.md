@@ -533,24 +533,29 @@ parsed as markup (SPEC-0265).
 
 ### Test record (2026-11-06)
 
-- `uv run pytest -q tests/test_history.py::test_field_inferred_gate_and_triage_links`:
-  1 passed.
-- `uv run pytest -q tests/test_history.py tests/test_history_fixture.py
-  tests/test_cli_campaign_history.py tests/test_agentic_campaign_export.py`: 147 passed,
-  3 skipped.
+- `uv run pytest -q tests/test_history.py tests/test_cli_campaign_history.py` plus the five
+  focused fixture derivation/schema tests: 33 passed.
+- `uv run pytest -q tests/test_history_fixture.py`: 55 passed.
+- `uv run pytest -q tests/test_agentic_campaign_export.py tests/test_agentic_spec_review.py
+  tests/test_agentic_spec_review_loop.py`: 204 passed, 3 skipped.
+- The affected gate passed: 3762 passed, 8 skipped. `python3 tools/spec_lint.py` passed.
 - Manual verification covered all 241 real campaign directories with
   `nw campaign history <cid> --json`; all exited 0. A schema spot-check returned `[]`.
-- The must-fix finding query returned its known finding with run `027-adversarial_reviewer`.
+- The must-fix finding query returned its known finding with run
+  `010-conformance_reviewer`.
   For merged campaign `SPEC-0179-20261025-158c`, the history timeline matched the ledger,
-  history and export both reported zero loops, and parked was the intuitive dominant phase.
-- The full affected suite is left to the queue close gate.
+  history and export both reported zero loops, and parked remained the intuitive dominant
+  phase.
+- The periodic full-suite sentinel remains the queue's responsibility.
 
 ### As shipped (2026-11-06)
 
 Shipped the pure history derivation, read-side schemas, export reuse, and uncached history
-and records CLIs as designed. Legacy triager `persona#index` waivers resolve within the
-latest preceding review round while preserving field provenance on findings that carry
-explicit `run_id` and `key`.
+and records CLIs as designed. The review repair preserves unknown-state time, outage
+boundaries and chronological ordering; resolves legacy and human waivers against stable
+rounds; derives fixed status from the latest later round; normalizes gate metadata, mailbox
+threads, escalation links and queue authors; deduplicates spec reviews by sha; and reports
+malformed partial sources as deterministic gaps.
 
 ## Rollout / migration
 

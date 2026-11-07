@@ -104,3 +104,49 @@ def test_history_clis_do_not_write(invoke):
     assert invoke("history", "--list", "--json").exit_code == 0
     assert invoke("records", "--json").exit_code == 0
     assert hashes() == before
+
+
+def test_each_records_filter_and_or_group_is_non_vacuous(invoke):
+    all_rows = json.loads(invoke("records", "--json").output)["records"]
+    assert all_rows
+
+    cid = "SPEC-0394-20261102-ae5b"
+    campaign = json.loads(invoke("records", "--campaign", cid, "--json").output)["records"]
+    assert campaign and all(row["campaign"] == cid for row in campaign)
+
+    for option, field in (
+        ("--kind", "kind"), ("--agent", "agent"), ("--severity", "severity"),
+        ("--status", "status"),
+    ):
+        values = list(dict.fromkeys(row[field] for row in all_rows if row.get(field)))[:2]
+        assert len(values) == 2
+        args = [part for value in values for part in (option, value)]
+        rows = json.loads(invoke("records", *args, "--json").output)["records"]
+        assert rows and {row[field] for row in rows} == set(values)
+
+    finding = next(row for row in all_rows if row["kind"] == "finding" and row["title"])
+    query = finding["title"][:12]
+    queried = json.loads(invoke("records", "--query", query, "--json").output)["records"]
+    assert queried and finding["id"] in {row["id"] for row in queried}
+
+    newest = json.loads(invoke("records", "--limit", "2", "--json").output)["records"]
+    assert newest == all_rows[:2]
+    assert json.loads(invoke("records", "--limit", "0", "--json").output)["records"] == []
+    assert invoke("records", "--since", "not-a-date").exit_code == 2
+    assert invoke("history", "--list", "--until", "not-a-date").exit_code == 2
+
+
+def test_records_text_default_limit_and_json_is_unlimited(invoke):
+    path = invoke.root / "agentic" / "conductor" / "decisions.jsonl"
+    with path.open("a") as stream:
+        for index in range(205):
+            stream.write(json.dumps({
+                "event_id": f"bulk-{index}", "ts": f"2026-11-04T00:{index // 60:02d}:"
+                f"{index % 60:02d}+00:00", "text": f"bulk-default {index}",
+            }) + "\n")
+    text = invoke("records", "--query", "bulk-default")
+    assert text.exit_code == 0
+    assert len(text.output.splitlines()) == 200
+    rows = json.loads(invoke(
+        "records", "--query", "bulk-default", "--json").output)["records"]
+    assert len(rows) == 205

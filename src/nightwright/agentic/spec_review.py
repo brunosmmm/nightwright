@@ -425,10 +425,12 @@ def journal_start(cfg, run_id, spec_id, timeout_s, run_dir, *, reviewer_profile=
 
 
 def journal_end(cfg, run_id, spec_id, *, verdict=None, counts=None, cost_usd=None,
-                duration_s=None, error=None) -> None:
+                duration_s=None, error=None, spec_sha256=None) -> None:
     rec = {"schema": RUN_SCHEMA, "kind": "end", "run_id": run_id, "spec_id": spec_id,
            "ts": store.now_iso(), "verdict": verdict, "counts": counts, "cost_usd": cost_usd,
            "duration_s": duration_s, "error": error}
+    if spec_sha256 is not None:
+        rec["spec_sha256"] = spec_sha256
     _journal_append(cfg, rec)
 
 
@@ -564,7 +566,7 @@ def run_spec_review(cfg, spec_path, spec_id, *, profile=None, idea_text=None,
         raise
     journal_end(cfg, run_id, spec_id, verdict=payload["verdict"],
                 counts=_counts(payload["findings"]), cost_usd=payload["cost_usd"],
-                duration_s=round(time.monotonic() - t0, 1))
+                duration_s=round(time.monotonic() - t0, 1), spec_sha256=sha)
     return payload
 
 

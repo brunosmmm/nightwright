@@ -7,6 +7,7 @@ inside and outside the campaigns' intervals). The tests never read the developer
 from __future__ import annotations
 
 import ast
+import copy
 import datetime as dt
 import hashlib
 import importlib.util
@@ -862,6 +863,29 @@ def test_history_fixture_documents_index_phases_and_records_validate(tmp_path):
             assert sum(phase[key] for key in (
                 "run_s", "gate_s", "gate_wait_s", "runner_down_s", "other_s"
             )) == phase["wall_s"]
+        state = S.read_state(cfg, row["campaign"])
+        events = S.read_ledger(cfg, row["campaign"])
+        visits = H.phase_visits(
+            state, events, H._parse_ts(doc["header"]["created_at"]),
+            H._parse_ts(doc["header"]["closed_at"]) or HISTORY_NOW,
+        )
+        assert max((visit.loop for visit in visits), default=0) == doc["header"]["loops"]
+
+    question = next(rec for rec in records if rec["source"] == "mailbox"
+                    and rec["title"] == "question"
+                    and rec["campaign"] == "SPEC-0394-20261102-ae5b")
+    assert question["title"] == "question"
+    assert question["status"] == "answered"
+    queue_notes = [rec for rec in records if rec["kind"] == "note" and rec["agent"] == "queue"]
+    assert queue_notes
+    assert any(rec["kind"] == "note" and rec["agent"] == "conductor" for rec in records)
+
+    gate_doc = H.campaign_history(cfg, "SPEC-0394-20261102-ae5b", now=HISTORY_NOW)
+    first = next(gate for gate in gate_doc["gates"] if gate["gate_seq"] == 1)
+    result = next(item for item in first["results"] if item["name"] == "pytest-affected")
+    assert result["retries"] == 1
+    assert all(item["log"].startswith("gates/")
+               for gate in gate_doc["gates"] for item in gate["results"] if item["log"])
 
 
 def test_history_fixture_export_agreement(tmp_path):
@@ -933,3 +957,56 @@ def test_history_bad_inputs_become_gaps(tmp_path):
     assert "state UNKNOWN_X: no phase" in doc["gaps"]
     assert "decisions.jsonl: line 1 unparsable" in doc["gaps"]
     assert "runner.jsonl: missing" in doc["gaps"]
+
+
+def test_history_schema_validators_reject_independent_contract_mutations(tmp_path):
+    cfg = history_cfg(tmp_path)
+    doc = H.campaign_history(cfg, "SPEC-0394-20261102-ae5b", now=HISTORY_NOW)
+    row = next(item for item in H.history_index(cfg, now=HISTORY_NOW)
+               if item["campaign"] == doc["campaign"])
+    rec = next(item for item in doc["records"] if item["kind"] == "finding")
+
+    def bad_history(change):
+        altered = copy.deepcopy(doc)
+        change(altered)
+        assert SC.history_problems(altered)
+
+    bad_history(lambda value: value.__setitem__("schema", "bad"))
+    bad_history(lambda value: value["header"].pop("campaign"))
+    bad_history(lambda value: value["phases"][0].pop("wall_s"))
+    bad_history(lambda value: value["timeline"][0].pop("kind"))
+    bad_history(lambda value: value["runs"][0].pop("status"))
+    bad_history(lambda value: value["gates"][0]["results"][0].pop("retries"))
+    bad_history(lambda value: value["records"][0].pop("links"))
+    bad_history(lambda value: value["header"].__setitem__("outcome", "unknown"))
+    bad_history(lambda value: value["phases"][0].__setitem__("phase", "unknown"))
+    bad_history(lambda value: value["runs"][0].__setitem__("status", "unknown"))
+    bad_history(lambda value: value["header"].__setitem__("wall_s", -1))
+    bad_history(lambda value: value.__setitem__("timeline", {}))
+
+    allowed = copy.deepcopy(doc)
+    allowed["extra"] = True
+    allowed["header"]["title"] = None
+    assert SC.history_problems(allowed) == []
+
+    broken_rec = copy.deepcopy(rec)
+    broken_rec["schema"] = "bad"
+    assert SC.record_problems_v1(broken_rec)
+    broken_rec = copy.deepcopy(rec)
+    broken_rec["links"]["gate_seq"] = -1
+    assert SC.record_problems_v1(broken_rec)
+    allowed_rec = copy.deepcopy(rec)
+    allowed_rec["extra"] = True
+    allowed_rec["text"] = None
+    assert SC.record_problems_v1(allowed_rec) == []
+
+    broken_index = copy.deepcopy(row)
+    broken_index.pop("signature")
+    assert SC.index_problems(broken_index)
+    broken_index = copy.deepcopy(row)
+    broken_index["phase_wall_s"]["queue"] = -1
+    assert SC.index_problems(broken_index)
+    allowed_index = copy.deepcopy(row)
+    allowed_index["extra"] = True
+    allowed_index["closed_at"] = None
+    assert SC.index_problems(allowed_index) == []

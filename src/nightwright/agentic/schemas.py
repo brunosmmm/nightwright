@@ -240,6 +240,16 @@ def _nonnegative(obj, keys, where) -> list[str]:
     return out
 
 
+def _array(obj, key, where, out):
+    value = obj.get(key) if isinstance(obj, dict) else None
+    if value is None:
+        return []
+    if not isinstance(value, list):
+        out.append(f"{where} is not an array")
+        return []
+    return value
+
+
 def record_problems_v1(rec) -> list[str]:
     """Problems with one additive `nw.history.record.v1` record."""
     out = _required(rec, RECORD_KEYS, "record")
@@ -280,7 +290,7 @@ def history_problems(doc) -> list[str]:
         for key in ("wall", "cost", "working"):
             if dominant.get(key) is not None and dominant[key] not in _HISTORY_PHASES:
                 out.append(f"dominant.{key}: unknown phase {dominant[key]!r}")
-    for i, phase in enumerate(doc.get("phases") or []):
+    for i, phase in enumerate(_array(doc, "phases", "phases", out)):
         where = f"phases[{i}]"
         out += _required(phase, HISTORY_PHASE_KEYS, where)
         out += _nonnegative(
@@ -289,14 +299,14 @@ def history_problems(doc) -> list[str]:
         )
         if isinstance(phase, dict) and phase.get("phase") not in _HISTORY_PHASES:
             out.append(f"{where}: unknown phase {phase.get('phase')!r}")
-    for i, row in enumerate(doc.get("timeline") or []):
+    for i, row in enumerate(_array(doc, "timeline", "timeline", out)):
         where = f"timeline[{i}]"
         out += _required(row, HISTORY_TIMELINE_KEYS, where)
         out += _nonnegative(row, ("seq", "loop"), where)
         if isinstance(row, dict) and row.get("phase") is not None \
                 and row.get("phase") not in _HISTORY_PHASES:
             out.append(f"{where}: unknown phase {row.get('phase')!r}")
-    for i, run in enumerate(doc.get("runs") or []):
+    for i, run in enumerate(_array(doc, "runs", "runs", out)):
         where = f"runs[{i}]"
         out += _required(run, HISTORY_RUN_KEYS, where)
         out += _nonnegative(run, ("loop", "duration_s", "cost_usd", "budget_frac"), where)
@@ -305,17 +315,20 @@ def history_problems(doc) -> list[str]:
         if isinstance(run, dict) and run.get("phase") is not None \
                 and run.get("phase") not in _HISTORY_PHASES:
             out.append(f"{where}: unknown phase {run.get('phase')!r}")
-    for i, gate in enumerate(doc.get("gates") or []):
+    for i, gate in enumerate(_array(doc, "gates", "gates", out)):
         where = f"gates[{i}]"
         out += _required(gate, HISTORY_GATE_KEYS, where)
         out += _nonnegative(gate, ("gate_seq", "duration_s"), where)
-        results = gate.get("results") if isinstance(gate, dict) else []
-        for j, result in enumerate(results or []):
+        results = _array(gate, "results", f"{where}.results", out)
+        for j, result in enumerate(results):
             rwhere = f"{where}.results[{j}]"
             out += _required(result, HISTORY_GATE_RESULT_KEYS, rwhere)
             out += _nonnegative(result, ("retries",), rwhere)
-    for rec in doc.get("records") or []:
+    for rec in _array(doc, "records", "records", out):
         out += record_problems_v1(rec)
+    gaps = doc.get("gaps")
+    if gaps is not None and not isinstance(gaps, list):
+        out.append("gaps is not an array")
     return out
 
 
