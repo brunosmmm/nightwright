@@ -4,6 +4,7 @@ const assert = require("node:assert/strict");
 const path = require("node:path");
 const fs = require("node:fs");
 const os = require("node:os");
+const { pathToFileURL } = require("node:url");
 
 const PI_EXEC = path.join(__dirname, "..", "..", "src", "nightwright", "agentic", "pi_exec.mjs");
 
@@ -161,6 +162,8 @@ test("execute: in-memory session, settings, loader flags, appendSystemPrompt", a
   assert.equal(filtered.agentsFiles.length, 1);
   assert.equal(filtered.agentsFiles[0].path, inside);
   assert.ok(over.disposed);
+  const resultLine = chunksToLines(out.chunks).at(-1);
+  assert.equal(resultLine.session_id, "sess-1");
   const prompt = over.promptText;
   assert.equal((prompt.match(/INVARIANT/g) || []).length, 1);
   assert.ok(prompt.includes("Reply with a single JSON object"));
@@ -938,11 +941,178 @@ test("probeProviders: import failure sets error and ok false", async () => {
   assert.ok(rec.error);
 });
 
+test("execute: assistant without usage object nulls total_cost_usd", async () => {
+  const execute = await loadExecute();
+  const runDir = layout();
+  const out = { chunks: [], write(s) { this.chunks.push(s); } };
+  const { pi } = stubPi({
+    messages: [
+      {
+        role: "assistant",
+        stopReason: "stop",
+        content: [{ type: "text", text: "a" }],
+        usage: { cost: { total: 0.01 } },
+      },
+      {
+        role: "assistant",
+        stopReason: "stop",
+        content: [{ type: "text", text: '{"status":"done"}' }],
+      },
+    ],
+    modelCost: { input: 1 },
+  });
+  await execute(runDir, {
+    out,
+    err: { write() {} },
+    importPi: async () => pi,
+    modelRuntime: await pi.ModelRuntime.create(),
+  });
+  const last = JSON.parse(out.chunks.at(-1));
+  assert.equal(last.total_cost_usd, null);
+});
+
+test("execute: scrubs auth.json key access refresh env when getAuth throws", async () => {
+  const ACCESS = "pi-oauth-access-token-xy";
+  const REFRESH = "pi-oauth-refresh-token-zz";
+  const KEY = "pi-api-key-other-provider";
+  const ENVSECRET = "pi-cf-env-secret-qq";
+  const authDir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-auth-"));
+  fs.writeFileSync(
+    path.join(authDir, "auth.json"),
+    JSON.stringify({
+      anthropic: { type: "oauth", access: ACCESS, refresh: REFRESH, expires: 1 },
+      cloudflare: { type: "api_key", key: KEY, env: { CF_API_TOKEN: ENVSECRET } },
+    }),
+  );
+  const prevAgentDir = process.env.PI_CODING_AGENT_DIR;
+  process.env.PI_CODING_AGENT_DIR = authDir;
+  try {
+    const execute = await loadExecute();
+    const runDir = layout();
+    const out = { chunks: [], write(s) { this.chunks.push(s); } };
+    const err = { chunks: [], write(s) { this.chunks.push(s); } };
+    const runtime = {
+      getModel: () => ({ cost: { input: 1 } }),
+      checkAuth: async () => ({ type: "oauth", source: "ANTHROPIC_API_KEY" }),
+      getAuth: async () => {
+        throw new Error("getAuth failed");
+      },
+    };
+    const { pi } = stubPi({
+      messages: [
+        {
+          role: "assistant",
+          stopReason: "stop",
+          content: [
+            {
+              type: "text",
+              text: `leaked ${REFRESH} env ${ENVSECRET} key ${KEY}`,
+            },
+          ],
+          usage: { cost: { total: 0.01 } },
+        },
+      ],
+    });
+    await execute(runDir, {
+      out,
+      err,
+      importPi: async () => pi,
+      modelRuntime: runtime,
+    });
+    const blob = out.chunks.join("") + err.chunks.join("");
+    assert.ok(!blob.includes(REFRESH));
+    assert.ok(!blob.includes(ENVSECRET));
+    assert.ok(!blob.includes(KEY));
+    assert.ok(!blob.includes(ACCESS));
+    assert.ok(blob.includes("[redacted]"));
+  } finally {
+    if (prevAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
+    else process.env.PI_CODING_AGENT_DIR = prevAgentDir;
+  }
+});
+
+function shellImportDeps(over = {}) {
+  const fakeEntry = pathToFileURL(path.join("/fake", "pkg", "dist", "index.js")).href;
+  return {
+    resolvePiPackageEntry: () => fakeEntry,
+    importShellModule: async (url) => {
+      over.shellUrl = url;
+      return {
+        killTrackedDetachedChildren: () => {
+          over.killed = true;
+        },
+      };
+    },
+  };
+}
+
+test("execute: finally kills detached children via dist/utils/shell.js", async () => {
+  const execute = await loadExecute();
+  const runDir = layout();
+  const out = { chunks: [], write(s) { this.chunks.push(s); } };
+  const track = {};
+  const { pi } = stubPi();
+  await execute(runDir, {
+    out,
+    err: { write() {} },
+    importPi: async () => pi,
+    modelRuntime: await pi.ModelRuntime.create(),
+    ...shellImportDeps(track),
+  });
+  assert.ok(track.shellUrl);
+  assert.ok(track.shellUrl.endsWith("/dist/utils/shell.js"));
+  assert.ok(!track.shellUrl.includes("/dist/dist/"));
+  assert.ok(track.killed);
+});
+
+test("execute: finally kills detached children after thrown prompt", async () => {
+  const execute = await loadExecute();
+  const runDir = layout();
+  const out = { chunks: [], write(s) { this.chunks.push(s); } };
+  const track = {};
+  const { pi } = stubPi({ promptReject: new Error("prompt boom") });
+  await execute(runDir, {
+    out,
+    err: { write() {} },
+    importPi: async () => pi,
+    modelRuntime: await pi.ModelRuntime.create(),
+    ...shellImportDeps(track),
+  });
+  assert.ok(track.killed);
+});
+
+test("execute: resource loader failure removes nw-pi-agent temp dir", async () => {
+  const execute = await loadExecute();
+  const runDir = layout();
+  const out = { chunks: [], write(s) { this.chunks.push(s); } };
+  const track = {};
+  const { pi, over } = stubPi();
+  pi.DefaultResourceLoader = class {
+    constructor(opts) {
+      over.loaderOpts = opts;
+      track.agentDir = opts.agentDir;
+    }
+    async reload() {
+      throw new Error("reload failed");
+    }
+  };
+  await execute(runDir, {
+    out,
+    err: { write() {} },
+    importPi: async () => pi,
+    modelRuntime: await pi.ModelRuntime.create(),
+    ...shellImportDeps(track),
+  });
+  assert.ok(track.agentDir);
+  assert.equal(fs.existsSync(track.agentDir), false);
+  assert.ok(track.killed);
+});
+
 test("execute: SIGTERM handler kills detached children and aborts", async () => {
   const execute = await loadExecute();
   const runDir = layout();
   let aborted = false;
-  let killed = false;
+  const track = {};
   const { pi } = stubPi({ abort: () => { aborted = true; } });
   let termHandler;
   const origOn = process.on.bind(process);
@@ -956,13 +1126,11 @@ test("execute: SIGTERM handler kills detached children and aborts", async () => 
       err: { write() {} },
       importPi: async () => pi,
       modelRuntime: await pi.ModelRuntime.create(),
-      killTrackedDetachedChildren: () => {
-        killed = true;
-      },
+      ...shellImportDeps(track),
     });
     assert.ok(termHandler);
     termHandler();
-    assert.ok(killed);
+    assert.ok(track.killed);
     assert.ok(aborted);
   } finally {
     process.on = origOn;

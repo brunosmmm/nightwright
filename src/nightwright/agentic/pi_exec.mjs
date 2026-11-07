@@ -55,11 +55,14 @@ async function killDetachedChildren(piMod, deps) {
       piMod.killTrackedDetachedChildren();
       return;
     }
-    const entry = import.meta.resolve("@earendil-works/pi-coding-agent");
+    const entry =
+      typeof deps.resolvePiPackageEntry === "function"
+        ? deps.resolvePiPackageEntry()
+        : import.meta.resolve("@earendil-works/pi-coding-agent");
     const pkgDir = path.dirname(fileURLToPath(entry));
-    const shell = await import(
-      pathToFileURL(path.join(pkgDir, "dist", "utils", "shell.js")).href,
-    );
+    const shellUrl = pathToFileURL(path.join(pkgDir, "utils", "shell.js")).href;
+    const importShell = deps.importShellModule ?? ((u) => import(u));
+    const shell = await importShell(shellUrl);
     shell.killTrackedDetachedChildren?.();
   } catch {
     /* optional export */
@@ -171,14 +174,26 @@ function emitMessage(out, role, content, secrets = []) {
   }
 }
 
+function agentAuthJsonPath() {
+  const base =
+    process.env.PI_CODING_AGENT_DIR || path.join(os.homedir(), ".pi", "agent");
+  return path.join(base, "auth.json");
+}
+
 function addStoredAuthSecrets(store, add) {
   if (!store || typeof store !== "object") return;
   for (const entry of Object.values(store)) {
     if (!entry || typeof entry !== "object") continue;
     add(entry.apiKey);
+    add(entry.key);
     add(entry.token);
     add(entry.refreshToken);
+    add(entry.refresh);
     add(entry.accessToken);
+    add(entry.access);
+    if (entry.env && typeof entry.env === "object") {
+      for (const v of Object.values(entry.env)) add(v);
+    }
     if (entry.auth && typeof entry.auth === "object") {
       add(entry.auth.apiKey);
       add(entry.auth.token);
@@ -207,16 +222,15 @@ async function collectSecretsAsync(modelRuntime, provider, authCheck) {
     if (headers && typeof headers === "object") {
       for (const v of Object.values(headers)) add(v);
     }
+    if (detail?.env && typeof detail.env === "object") {
+      for (const v of Object.values(detail.env)) add(v);
+    }
   } catch {
-    /* ignore */
+    /* keep auth.json backup */
   }
   if (authCheck?.source) add(process.env[authCheck.source]);
-  if (authCheck?.env && typeof authCheck.env === "object") {
-    for (const v of Object.values(authCheck.env)) add(v);
-  }
   try {
-    const authPath = path.join(os.homedir(), ".pi", "agent", "auth.json");
-    const raw = fs.readFileSync(authPath, "utf8");
+    const raw = fs.readFileSync(agentAuthJsonPath(), "utf8");
     addStoredAuthSecrets(JSON.parse(raw), add);
   } catch {
     /* optional store */
@@ -399,22 +413,26 @@ export async function execute(runDir, deps = {}) {
       agentsFilesOverride: agentsUnderCwdOnly(cwd),
       appendSystemPrompt: req.system_append ? [req.system_append] : [],
     });
-  if (deps.resourceLoader == null) {
-    try {
-      await resourceLoader.reload();
-    } catch (e) {
-      const msg = e instanceof Error ? e.message : String(e);
-      failResult(out, err, `resource loader failed (${msg})`, { secrets });
-      return 1;
-    }
-  }
 
   const sessionManager =
     deps.sessionManager ?? pi.SessionManager.inMemory(cwd);
 
   let session;
-  const holder = { session: null };
+  let exitCode = 1;
+  let proceed = true;
   try {
+    if (deps.resourceLoader == null) {
+      try {
+        await resourceLoader.reload();
+      } catch (e) {
+        proceed = false;
+        const msg = e instanceof Error ? e.message : String(e);
+        failResult(out, err, `resource loader failed (${msg})`, { secrets });
+      }
+    }
+    if (!proceed) {
+      /* fall through to finally cleanup */
+    } else {
     const created = await pi.createAgentSession({
       cwd,
       model,
@@ -426,7 +444,6 @@ export async function execute(runDir, deps = {}) {
       settingsManager,
     });
     session = created.session;
-    holder.session = session;
 
     const emitted = new Set();
     let streamSeq = 0;
@@ -498,12 +515,14 @@ export async function execute(runDir, deps = {}) {
       },
       secrets,
     );
-    return failed ? 1 : 0;
+    exitCode = failed ? 1 : 0;
+    }
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);
     failResult(out, err, scrub(msg, secrets));
-    return 1;
+    exitCode = 1;
   } finally {
+    await killDetachedChildren(pi, deps);
     try {
       session?.dispose?.();
     } catch {
@@ -511,6 +530,7 @@ export async function execute(runDir, deps = {}) {
     }
     removeAgentDir();
   }
+  return exitCode;
 }
 
 export async function probeProviders(providers, deps = {}) {

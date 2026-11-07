@@ -1397,8 +1397,11 @@ def pi_check(cfg, *, providers=None) -> dict:
     if not providers:
         return {"schema": PI_CHECK_SCHEMA, "ok": True, "missing": [], "error": None}
     rec = RP.probe_pi(providers)
+    err = rec.get("error")
+    if isinstance(err, str):
+        err = RP._redact_secrets(err, RP._pi_probe_secret_values(os.environ))
     return {"schema": PI_CHECK_SCHEMA, "ok": rec.get("ok"), "missing": rec.get("missing") or [],
-            "error": rec.get("error")}
+            "error": err}
 
 
 def cursor_check() -> dict:

@@ -566,6 +566,7 @@ def test_workers_check_pi_needed_ssh_pi_check(tmp_path, monkeypatch):
 
     KEY = "workers-check-pi-sentinel-key"
     w = _world(tmp_path)
+    monkeypatch.setenv("ANTHROPIC_API_KEY", KEY)
     monkeypatch.setattr("nightwright.cli.load_config", lambda: w.cfg)
     r = _remote(w, _write_script(tmp_path / "s.json", WRITER))
     r.register(kinds=["gate", "persona"])
@@ -616,6 +617,68 @@ def test_workers_check_pi_needed_ssh_pi_check(tmp_path, monkeypatch):
     want = PM.probe_providers(w.cfg)
     assert pi_inputs and pi_inputs[0]["providers"] == want
     assert KEY not in run.output
+
+
+def test_workers_check_skips_pi_check_when_not_needed(tmp_path, monkeypatch):
+    from nightwright.agentic import remote_gates as RG
+    from nightwright.cli import cli
+
+    w = _world(tmp_path)
+    monkeypatch.setattr("nightwright.cli.load_config", lambda: w.cfg)
+    r = _remote(w, _write_script(tmp_path / "s.json", WRITER))
+    r.register(kinds=["gate", "persona"])
+    subs = []
+
+    def fake_call(worker, sub, *rest, timeout=None, input=None):
+        subs.append(sub)
+        if sub == "claude-check":
+            return (0, [{"schema": W.CLAUDE_CHECK_SCHEMA, "ok": True}], b"")
+        return None
+
+    monkeypatch.setattr(RG, "_call", fake_call)
+    monkeypatch.setattr(R, "pi_needed", lambda cfg, campaigns=None: False)
+    monkeypatch.setattr(R, "cursor_needed", lambda cfg, campaigns=None: False)
+    monkeypatch.setattr(
+        WK,
+        "check",
+        lambda cfg, rec, **kw: {
+            "name": rec["name"],
+            "ok": True,
+            "errors": [],
+            "warnings": [],
+            "info": INFO,
+        },
+    )
+    run = CliRunner().invoke(cli, ["workers", "check", "box", "--json"])
+    assert run.exit_code == 0, run.output
+    assert "pi-check" not in subs
+    assert "claude-check" in subs
+
+
+def test_worker_pi_check_stdout_single_json_object(tmp_path, monkeypatch):
+    from nightwright.agentic import runproc as RP
+    from nightwright.cli import cli
+
+    KEY = "workers-check-pi-sentinel-key"
+    cfg = {"data_dir": str(tmp_path / "d"), "agentic": {"runner": "claude"}}
+    (tmp_path / "d").mkdir(parents=True)
+    monkeypatch.setattr("nightwright.cli.load_config", lambda: cfg)
+    monkeypatch.setenv("ANTHROPIC_API_KEY", KEY)
+    monkeypatch.setattr(
+        RP,
+        "probe_pi",
+        lambda providers, **kw: {"ok": False, "missing": providers, "error": f"need {KEY}"},
+    )
+    stdin = json.dumps({"providers": ["anthropic"]})
+    run = CliRunner().invoke(cli, ["worker", "pi-check"], input=stdin)
+    assert run.exit_code == 1, run.output
+    lines = [ln for ln in run.output.strip().split("\n") if ln.strip()]
+    assert len(lines) == 1
+    body = json.loads(lines[0])
+    assert body.get("schema") == W.PI_CHECK_SCHEMA
+    assert body.get("ok") is False
+    assert KEY not in run.output
+    assert "[redacted]" in run.output
 
 
 def test_worker_pi_check_uses_stdin_providers_not_local_map(tmp_path, monkeypatch):

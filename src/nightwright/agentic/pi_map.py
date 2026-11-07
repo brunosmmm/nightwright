@@ -93,6 +93,21 @@ def validate_pi_map_doc(doc, *, origin, in_file) -> list:
     return out
 
 
+def _coerce_thinking_levels(doc) -> None:
+    """YAML 1.1 parses unquoted ``off`` as False; normalize before validation."""
+    if not isinstance(doc, dict):
+        return
+    aliases = doc.get("aliases")
+    if not isinstance(aliases, dict):
+        return
+    for efforts in aliases.values():
+        if not isinstance(efforts, dict):
+            continue
+        for row in efforts.values():
+            if isinstance(row, dict) and row.get("thinking") is False:
+                row["thinking"] = "off"
+
+
 def _read_file(path: Path, *, origin, required: bool) -> dict:
     if not path.is_file():
         if required:
@@ -102,6 +117,7 @@ def _read_file(path: Path, *, origin, required: bool) -> dict:
         doc = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
     except (OSError, yaml.YAMLError) as e:
         raise ValueError(f"{origin}: not valid YAML ({e})") from e
+    _coerce_thinking_levels(doc)
     problems = validate_pi_map_doc(doc, origin=origin, in_file=True)
     if problems:
         raise ValueError("invalid pi map:\n  - " + "\n  - ".join(problems))
@@ -114,6 +130,7 @@ def _config_delta(cfg) -> dict:
         return {}
     if not isinstance(raw, dict):
         raise ValueError("agentic.pi must be a mapping")
+    _coerce_thinking_levels(raw)
     problems = validate_pi_map_doc(raw, origin="config.yaml:agentic.pi", in_file=False)
     if problems:
         raise ValueError("invalid pi map:\n  - " + "\n  - ".join(problems))

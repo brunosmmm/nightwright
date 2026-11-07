@@ -80,15 +80,19 @@ def test_request_round_trip_pi_fields(tmp_path):
 
 
 def test_request_doc_omits_pi_for_claude(tmp_path, monkeypatch):
+    from nightwright.agentic import personas as PS
+    from nightwright.agentic.profiles import resolve_profile
+
     monkeypatch.delenv("NW_AGENTIC_RUNNER", raising=False)
-    inv = "SPEC invariant must stay in prompt only"
-    req = R.RunRequest(
-        persona="x", prompt="p", system_append=inv, cwd=tmp_path, model="sonnet", effort=None,
-        max_budget_usd=1, timeout_s=30, permission_mode="x", read_only=True, allowed_tools=(),
-        add_dirs=(), json_schema={}, env={}, run_dir=tmp_path / "r")
+    cfg = {"agentic": {"runner": "claude"}, "data_dir": str(tmp_path / "d")}
+    wt = tmp_path / "wt"
+    wt.mkdir()
+    st = {"id": "c1", "repo": {"worktree": str(wt)}}
+    req = PS.build_request(cfg, resolve_profile(cfg), {"_root": str(wt)}, st, "implementer",
+                           run_dir=tmp_path / "runs" / "001-implementer")
     doc = R._request_doc(req, "t")
     assert "pi_provider" not in doc
-    assert "system_append" not in doc
+    assert "pi_id" not in doc
     assert "pi_thinking" not in doc
     pi_req = _req(tmp_path)
     pi_doc = R._request_doc(pi_req, "t")
@@ -154,6 +158,19 @@ def test_doctor_pi_runs_when_project_runners_maps_pi(tmp_path, monkeypatch):
     )
     assert D.check_pi_agent(cfg)["status"] == "fail"
     assert calls
+
+
+def test_load_pi_map_accepts_unquoted_thinking_off(tmp_path):
+    p = tmp_path / "pi_map.yaml"
+    p.write_text(
+        "schema: nw.pi_map.v1\naliases:\n  sonnet:\n    low:\n"
+        "      provider: anthropic\n      id: claude-sonnet-4-6\n      thinking: off\n",
+        encoding="utf-8",
+    )
+    doc = PM._read_file(p, origin="test", required=True)
+    assert doc["aliases"]["sonnet"]["low"]["thinking"] == "off"
+    row = PM.map_pi_model("sonnet", "low", {"config_dir": str(tmp_path)})
+    assert row["thinking"] == "off"
 
 
 def test_map_pi_overlay_order(tmp_path):
@@ -264,8 +281,10 @@ def test_personas_build_request_pi_fields(tmp_path, monkeypatch):
     st = {"id": "c1", "repo": {"worktree": str(wt)}}
     req = PS.build_request(cfg, resolve_profile(cfg), {"_root": str(wt)}, st, "implementer",
                            run_dir=tmp_path / "runs" / "001-implementer")
+    assert req.model == "anthropic/claude-sonnet-4-6"
     assert req.pi_provider == "anthropic"
-    assert req.pi_id and req.pi_thinking
+    assert req.pi_id == "claude-sonnet-4-6"
+    assert req.pi_thinking == "high"
 
 
 def test_remote_header_runner_pi(tmp_path, monkeypatch):
@@ -533,8 +552,10 @@ def test_spec_review_run_request_pi_fields(tmp_path, monkeypatch):
     with pytest.raises(ValueError, match="stop after capture"):
         SR.run_spec_review(cfg, p, "SPEC-0999")
     req = captured[0]
+    assert req.model == "anthropic/claude-sonnet-4-6"
     assert req.pi_provider == "anthropic"
-    assert req.pi_id and req.pi_thinking
+    assert req.pi_id == "claude-sonnet-4-6"
+    assert req.pi_thinking == "high"
 
 
 def test_validate_runner_cfg_accepts_pi():
