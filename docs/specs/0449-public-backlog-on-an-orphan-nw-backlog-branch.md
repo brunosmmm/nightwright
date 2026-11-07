@@ -1,7 +1,7 @@
 ---
 id: SPEC-0449
 title: Public backlog on an orphan nw-backlog branch
-status: proposed
+status: accepted
 owner: user
 created: 2026-11-07
 updated: 2026-11-07
