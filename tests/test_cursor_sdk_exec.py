@@ -255,6 +255,40 @@ def test_tail_tool_call_thinking_and_tool_count():
     assert "2 tools" in counted and "gpt" in counted
 
 
+def test_sdk_tool_results_render_the_value_not_the_json():
+    r = TL.Renderer()
+    edit = r.feed({"type": "tool_call", "name": "edit", "status": "completed", "result": {
+        "status": "success", "value": {
+            "linesAdded": 1, "linesRemoved": 1,
+            "diffString": "--- a//home/bruno/secret/file.md\n+++ b//home/bruno/secret/file.md\n"
+                          "@@ -1 +1 @@\n-status: accepted\n+status: in-progress\n"}}})
+    plain = [t.plain for t in edit]
+    assert plain[0] == "  ← +1 −1"
+    assert "    -status: accepted" in plain and "    +status: in-progress" in plain
+    assert "secret" not in "\n".join(plain) and "diffString" not in "\n".join(plain)
+    huge = "\n".join(f"+line {i}" for i in range(40))
+    clipped = r.feed({"type": "tool_call", "name": "edit", "status": "completed", "result": {
+        "status": "success", "value": {"linesAdded": 40, "linesRemoved": 0, "diffString": huge}}})
+    assert any(t.plain.startswith("    … ") and t.plain.endswith("more lines") for t in clipped)
+    shell = r.feed({"type": "tool_call", "name": "shell", "status": "completed", "result": {
+        "status": "success", "value": {"exitCode": 1, "stdout": "", "stderr": "Error: nw: refusing\n"}}})
+    assert shell[0].plain == "  ← exit 1"
+    assert "refusing" in shell[1].plain and "exitCode" not in shell[1].plain
+    read = r.feed({"type": "tool_call", "name": "read", "status": "completed", "result": {
+        "status": "success", "value": {"content": "SECRET", "totalLines": 347, "fileSize": 20}}})
+    assert read[0].plain == "  ← 347 lines · 20 bytes" and "SECRET" not in read[0].plain
+    glob = r.feed({"type": "tool_call", "name": "glob", "status": "completed", "result": {
+        "status": "success", "value": {"files": ["tests/history_scale.py"], "totalFiles": 1}}})
+    assert glob[0].plain == "  ← 1 file: tests/history_scale.py"
+    grep = r.feed({"type": "tool_call", "name": "grep", "status": "completed", "result": {
+        "status": "success", "value": {"workspaceResults": {"/work": {"output": {"matches": [
+            {"file": "./src/nightwright/agentic/tail.py"}]}}}}}})
+    assert grep[0].plain == "  ← 1 file: src/nightwright/agentic/tail.py"
+    todos = r.feed({"type": "tool_call", "name": "updateTodos", "status": "running", "args": {
+        "todos": [{"content": "Read the spec", "status": "inProgress"}]}})
+    assert "1 items" in todos[0].plain and "todos" not in todos[0].plain.split("updateTodos", 1)[-1]
+
+
 def test_probe_hides_the_key_and_worker_check(monkeypatch):
     monkeypatch.setitem(sys.modules, "cursor_sdk", types.ModuleType("cursor_sdk"))
     monkeypatch.setenv("CURSOR_API_KEY", KEY)

@@ -708,6 +708,7 @@ progress. This is the single place to see *what has been decided* and *what is i
 | [SPEC-0445](./specs/0445-sdk-persona-model-selection.md) | Persona SDK runs pass a model id and an effort parameter | feature | done | — | 2026-11-07 |
 | [SPEC-0446](./specs/0446-sdk-model-effort-catalog.md) | Persona SDK effort follows each model's own parameter | feature | done | — | 2026-11-07 |
 | [SPEC-0447](./specs/0447-tail-joins-sdk-text-tokens.md) | The run tail joins SDK text tokens into a sentence | feature | done | — | 2026-11-07 |
+| [SPEC-0448](./specs/0448-tail-renders-sdk-tool-results.md) | The run tail renders SDK tool results instead of their JSON | feature | done | — | 2026-11-07 |
 
 ## Superseded / rejected
 

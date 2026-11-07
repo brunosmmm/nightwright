@@ -26,6 +26,8 @@ TOOL_W = 120
 RESULT_W = 100
 STDERR_LINES = 10
 RESULT_TEXT_LINES = 15
+DIFF_LINES = 20                      # added and removed lines shown for one edit
+OUTPUT_LINES = 8                     # stdout or stderr lines shown for one shell
 END_STATES = ("finished", "vanished", "orphaned")
 RUNNING = ("running", "orphan_group")
 RUN_LOOKBACK = 8                     # newest run dirs looked at per campaign
@@ -93,6 +95,12 @@ def _fragment(path, offset: int) -> str:
 
 def _clip(text: str, n: int) -> str:
     text = " ".join(str(text).split())
+    return text if len(text) <= n else text[:n - 1] + "…"
+
+
+def _cut(text: str, n: int) -> str:
+    """Clip one display line without collapsing the indentation a diff relies on."""
+    text = str(text).replace("\t", "    ")
     return text if len(text) <= n else text[:n - 1] + "…"
 
 
@@ -230,6 +238,9 @@ class Renderer:
                     if key in ("path", "file_path"):
                         val = self._rel(val)
                     return _clip(_first_line(val), TOOL_W)
+            todos = args.get("todos")
+            if isinstance(todos, list) and todos:
+                return f"{len(todos)} items"
             return _clip(json.dumps(args, separators=(",", ":"), ensure_ascii=False), TOOL_W)
         if args:
             return _clip(_first_line(args), TOOL_W)
@@ -262,6 +273,112 @@ class Renderer:
             return json.dumps(result, ensure_ascii=False)
         return str(result)
 
+    def _diff_result(self, value: dict, nest: str) -> list[Text]:
+        added = value.get("linesAdded")
+        removed = value.get("linesRemoved")
+        head = Text(f"{nest}  ← ")
+        head.append(f"+{added if added is not None else '?'}", style="green")
+        head.append(" ")
+        head.append(f"−{removed if removed is not None else '?'}", style="red")
+        body = [ln for ln in str(value.get("diffString") or "").splitlines()
+                if not ln.startswith("---") and not ln.startswith("+++")]
+        out = [head]
+        for ln in body[:DIFF_LINES]:
+            style = "green" if ln.startswith("+") else "red" if ln.startswith("-") else "dim"
+            out.append(Text(f"{nest}    {_cut(ln, RESULT_W)}", style=style))
+        extra = len(body) - DIFF_LINES
+        if extra > 0:
+            out.append(Text(f"{nest}    … {extra} more lines", style="dim"))
+        return out
+
+    def _shell_result(self, value: dict, nest: str) -> list[Text]:
+        code = value.get("exitCode", value.get("exit_code"))
+        err = str(value.get("stderr") or "").strip()
+        stdout = str(value.get("stdout") or "").strip()
+        text, style = (err, "red") if err else (stdout, "dim")
+        head = Text(f"{nest}  ← exit {code}", style="red" if code else "dim")
+        rows = text.splitlines()
+        out = [head]
+        for ln in rows[:OUTPUT_LINES]:
+            out.append(Text(f"{nest}    {_cut(ln, RESULT_W)}", style=style))
+        extra = len(rows) - OUTPUT_LINES
+        if extra > 0:
+            out.append(Text(f"{nest}    … {extra} more lines", style="dim"))
+        return out
+
+    def _file_list(self, files, total, nest: str) -> list[Text]:
+        shown = [str(f).removeprefix("./") for f in files[:OUTPUT_LINES]]
+        label = f"{total} file" if total == 1 else f"{total} files"
+        head = Text(f"{nest}  ← {label}", style="dim")
+        if shown:
+            head.append(": " + ", ".join(shown))
+        out = [head]
+        extra = len(files) - len(shown)
+        if extra > 0:
+            out.append(Text(f"{nest}    … {extra} more", style="dim"))
+        return out
+
+    def _grep_files(self, value: dict) -> list[str]:
+        files = []
+        workspaces = value.get("workspaceResults")
+        if not isinstance(workspaces, dict):
+            return files
+        for body in workspaces.values():
+            if not isinstance(body, dict):
+                continue
+            output = body.get("output") if isinstance(body.get("output"), dict) else body
+            matches = output.get("matches") if isinstance(output, dict) else None
+            for match in matches or []:
+                if isinstance(match, dict) and match.get("file"):
+                    files.append(str(match["file"]))
+                elif isinstance(match, str):
+                    files.append(match)
+        return files
+
+    def _sdk_rich_result(self, result, nest: str) -> list[Text] | None:
+        """Cursor SDK tool results are ``{status, value}``. Render the value, not the JSON."""
+        if not isinstance(result, dict) or "status" not in result or "value" not in result:
+            return None
+        value = result.get("value")
+        if result.get("status") == "error":
+            if isinstance(value, str):
+                msg = value
+            elif isinstance(value, dict):
+                msg = str(value.get("error") or value.get("message") or value.get("stderr") or "")
+            else:
+                msg = ""
+            return [Text(f"{nest}  ← error: {_clip(msg, RESULT_W) or 'failed'}", style="red")]
+        if not isinstance(value, dict):
+            return None
+        if "diffString" in value or ("linesAdded" in value and "linesRemoved" in value):
+            return self._diff_result(value, nest)
+        if "exitCode" in value or "exit_code" in value:
+            return self._shell_result(value, nest)
+        if "totalLines" in value:
+            size = value.get("fileSize")
+            extra = f" · {size} bytes" if size is not None else ""
+            return [Text(f"{nest}  ← {value.get('totalLines')} lines{extra}", style="dim")]
+        if "files" in value and "totalFiles" in value:
+            files = value.get("files") if isinstance(value.get("files"), list) else []
+            return self._file_list(files, value.get("totalFiles") or len(files), nest)
+        if "workspaceResults" in value:
+            files = self._grep_files(value)
+            return self._file_list(files, len(files), nest)
+        todos = value.get("todos")
+        if isinstance(todos, list):
+            out = [Text(f"{nest}  ← {len(todos)} todos", style="dim")]
+            for todo in todos[:OUTPUT_LINES]:
+                if not isinstance(todo, dict):
+                    continue
+                state = str(todo.get("status") or "")
+                out.append(Text(f"{nest}    {state}  {_clip(todo.get('content') or '', RESULT_W)}",
+                                style="dim"))
+            extra = len(todos) - OUTPUT_LINES
+            if extra > 0:
+                out.append(Text(f"{nest}    … {extra} more", style="dim"))
+            return out
+        return None
+
     def _sdk_tool_call(self, ev: dict, nest: str) -> list[Text]:
         name = str(ev.get("name") or "?")
         status = str(ev.get("status") or "")
@@ -269,6 +386,9 @@ class Renderer:
             first = _clip(_first_line(self._sdk_result_text(ev.get("result"))), RESULT_W)
             return [Text(f"{nest}  ← error: {first or name}", style="red")]
         if status == "completed":
+            rich = self._sdk_rich_result(ev.get("result"), nest)
+            if rich is not None:
+                return rich
             text = self._sdk_result_text(ev.get("result"))
             n = len(str(text).splitlines()) if text else 0
             first = _clip(_first_line(text), RESULT_W)
