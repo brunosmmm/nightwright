@@ -156,7 +156,7 @@ def test_campaign_without_after_is_unchanged(env, monkeypatch):
     assert "after" not in row
 
 
-# ---- SPEC-0458: dependency conflict resolution (AC1–AC3) -----------------------------------
+# ---- SPEC-0463: dependency conflict resolution (AC1–AC3) -----------------------------------
 
 def test_idea_after_holds_on_main_done_file_until_merged(env, monkeypatch):
     cfg, repo = env

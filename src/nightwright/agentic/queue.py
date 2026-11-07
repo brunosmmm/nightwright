@@ -1183,7 +1183,7 @@ def _after_blocked(cfg, state: dict) -> list[str]:
 
 
 def resolve_dependency_conflicts(cfg, queued: list[dict]) -> None:
-    """SPEC-0458: one conductor mail per waiter blocked on an idea with no campaign; records the
+    """SPEC-0463: one conductor mail per waiter blocked on an idea with no campaign; records the
     marker on the QUEUED dicts the tick is about to persist."""
     from . import mailbox as M
     for st in queued:
@@ -1609,7 +1609,7 @@ class StepResult:
     spec_review: dict | None = None                  # SPEC-0214: a spec_review step's outcome
     deferred: str | None = None                      # SPEC-0341: a gate step that did nothing yet
     revert_conflict: str | None = None               # SPEC-0420: a revert open that conflicted
-    resumed_to: str | None = None                    # SPEC-0458: adopt into an existing worktree
+    resumed_to: str | None = None                    # SPEC-0463: adopt into an existing worktree
 
 
 _PROGRESS_MIN_INTERVAL_S = 1.0      # SPEC-0313: at most one `progress_at` lease write per second
@@ -1718,7 +1718,7 @@ def _do_open(ctx: _Ctx, state: dict) -> StepResult:
 
 
 def worktree_resume_state(state: dict, worktree: Path) -> tuple[str | None, str | None]:
-    """Target state for resuming into an existing checkout (SPEC-0458): `(state, error)`."""
+    """Target state for resuming into an existing checkout (SPEC-0463): `(state, error)`."""
     spec = state.get("spec") or {}
     rel = spec.get("rel_path")
     admission = state.get("admission")
@@ -1774,7 +1774,7 @@ def _worktree_conflict_mail_status(err: str) -> str | None:
 
 
 def _worktree_conflict_mail(cfg, state: dict, worktree: Path, status: str) -> None:
-    """One conductor mail when an adopted worktree's spec cannot be resumed (SPEC-0458)."""
+    """One conductor mail when an adopted worktree's spec cannot be resumed (SPEC-0463)."""
     from . import mailbox as M
     marker = f"worktree:{status}"
     mailed = list(state.setdefault("conflict_mail", []))
@@ -1842,7 +1842,7 @@ def _do_open_unwrapped(ctx: _Ctx, state: dict) -> StepResult:
                             if spec_file.is_file():
                                 cdir = store.campaign_dir(ctx.cfg, state["id"])
                                 snap = cdir / CL.SPEC_AT_OPEN
-                                if spec.get("sha256_at_open") is None or not snap.is_file():
+                                if not snap.is_file():
                                     try:
                                         cdir.mkdir(parents=True, exist_ok=True)
                                         snap.write_text(spec_file.read_text(encoding="utf-8"),

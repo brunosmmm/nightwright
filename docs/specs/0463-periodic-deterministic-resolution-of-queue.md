@@ -1,10 +1,10 @@
 ---
-id: SPEC-0458
+id: SPEC-0463
 title: Periodic deterministic resolution of queue dependency conflicts
 status: done
 owner: user
 created: 2026-11-07
-updated: 2026-11-08
+updated: 2026-11-07
 milestone: "M9: agentic workflow"
 kind: feature
 tags: [agentic, queue]
@@ -147,6 +147,19 @@ Merge, split, revert, and red-main opens do not use this adopt path. A revert op
 - `uv run pytest -q tests/test_idea_ordering.py tests/test_queue_conflict_resolve.py tests/test_agentic_quiet.py` — 205 passed.
 - `python3 tools/spec_lint.py --write-ledger` && `python3 tools/spec_lint.py` — passed.
 - Full suite left to gating.
+
+### Test record (2026-11-07, loop 0 implementer)
+
+- `uv run pytest -q tests/test_idea_ordering.py tests/test_queue_conflict_resolve.py tests/test_agentic_quiet.py` — passed.
+- `python3 tools/spec_lint.py --write-ledger` && `python3 tools/spec_lint.py` — passed.
+- Full suite left to gating.
+
+### As shipped
+
+- Renumbered to **SPEC-0463** so **SPEC-0458** on `main` stays the tail-cards spec.
+- `dependency_wait` holds the full campaign-wait shape for every state (`(\S+)` backreference): `HANDED_OFF` without a live id, other states when that full campaign id is live (fixes minted ids such as `MERGE-…`, `3M-…`, `FIX-…`).
+- Worktree adopt: `spec_at_open.md` is written only when missing, not when `sha256_at_open` is null.
+- `worktree_resume_state`: `admission == "revise_pending"` with `accepted`/`in-progress` resumes to `SPEC_WRITING`; `after_revision` with a pending brief still resumes to `IMPLEMENTING`.
 
 ## Clock Log
 

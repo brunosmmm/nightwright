@@ -1,4 +1,4 @@
-"""SPEC-0458: resolve_dependency_conflicts, worktree resume, conflict mail."""
+"""SPEC-0463: resolve_dependency_conflicts, worktree resume, conflict mail."""
 from pathlib import Path
 
 import pytest
@@ -668,6 +668,31 @@ def test_dependency_wait_holds_handed_off_for_minted_campaign_ids(env, monkeypat
     assert QT.dependency_wait(blocked, ctx.live_specs, st["project"])
 
 
+@pytest.mark.parametrize("prereq_id", [
+    "MERGE-20261107-a1b2",
+    "3M-0001-20261107-c3d4",
+    "FIX-acme.io-20261107-e5f6",
+])
+def test_dependency_wait_holds_live_campaign_wait_for_minted_ids(env, monkeypatch, prereq_id):
+    cfg, _repo = env
+    waiter = capture(cfg, "after live minted")
+    wcid = add_idea_campaign(cfg, monkeypatch, waiter)
+    st = _state(cfg, wcid)
+    st["after"] = [{"ref": prereq_id, "kind": "campaign"}]
+    S.write_state(cfg, wcid, st)
+    root = S.campaign_dir(cfg, prereq_id)
+    root.mkdir(parents=True)
+    S.write_state(cfg, prereq_id, {
+        "id": prereq_id, "state": "REVIEWING", "project": st["project"], "kind": "merge",
+        "created_at": "2026-11-07T00:00:00",
+    })
+    wait = f"waiting on {prereq_id} (after: campaign {prereq_id} is REVIEWING)"
+    blocked = Q.backlog_readiness(cfg, _state(cfg, wcid))[1]
+    assert blocked == [wait]
+    ctx = QT.Ctx(cfg, "conductor")
+    assert QT.dependency_wait(blocked, ctx.live_specs, st["project"])
+
+
 def test_mailed_wait_replaced_when_prerequisite_campaign_appears(env, monkeypatch):
     cfg, _repo = env
     idea, cid, st = _no_campaign_waiter(cfg, monkeypatch)
@@ -762,6 +787,17 @@ def test_resume_revise_pending_accepted_goes_spec_writing(env, monkeypatch):
     row, after = _open_resume(cfg, monkeypatch, st)
     assert after["state"] == "SPEC_WRITING" and row["reason"] == "resumed_worktree"
     assert Q.plan_step(after, Q._Ctx(cfg).profile(after)).kind == "write_spec"
+
+
+def test_resume_after_revision_accepted_goes_implementing(env, monkeypatch):
+    cfg, repo = env
+    cid = add_idea_campaign(cfg, monkeypatch, capture(cfg, "after revision"))
+    st = _prep_worktree(cfg, repo, cid, ACCEPTED, extra_state={
+        "admission": "after_revision", "pending_brief": "implement these findings"})
+    row, after = _open_resume(cfg, monkeypatch, st)
+    assert after["state"] == "IMPLEMENTING" and row["reason"] == "resumed_worktree"
+    step = Q.plan_step(after, Q._Ctx(cfg).profile(after))
+    assert step.kind != "write_spec"
 
 
 def test_resume_draft_with_pending_brief_to_spec_writing(env, monkeypatch):

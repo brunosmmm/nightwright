@@ -71,8 +71,8 @@ DEFAULTS = {"enabled": True, "readers": ["conductor"], "digest_interval_s": 1800
 # `backlog_blocked_long` and the ping also require a live campaign per dependency (SPEC-0306)
 _BENIGN_BLOCKED = ("waiting on ", "mailed conductor: ", "spec status is draft",
                    "spec status is proposed", "spec status is in-progress")
-_HANDED_OFF_WAIT_RE = re.compile(
-    r"^waiting on (\S+) \(after: campaign \1 is HANDED_OFF\)$")
+_CAMPAIGN_WAIT_RE = re.compile(
+    r"^waiting on (\S+) \(after: campaign \1 is (\S+)\)$")
 _ID_RE = re.compile(r"[A-Za-z]+-\d+(?:-\d{8}-[0-9a-f]{4})?")   # + campaign ids (SPEC-0423)
 _GRACE_S = 300                     # the table's own "wait" window past a drain's step timeout
 
@@ -122,8 +122,11 @@ def dependency_wait(blocked_by, live_specs, project=None) -> bool:
         if not _benign(b):
             return False
         if b.startswith("waiting on "):
-            if _HANDED_OFF_WAIT_RE.match(b):
-                continue
+            m = _CAMPAIGN_WAIT_RE.match(b)
+            if m:
+                cid, st = m.group(1), m.group(2)
+                if st == "HANDED_OFF" or cid in live:
+                    continue
             ids = waited_ids(b)
             if not ids or not set(ids) <= live:
                 return False
