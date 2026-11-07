@@ -15,7 +15,9 @@ def env(tmp_path, monkeypatch):
     proj = tmp_path / "proj"
     (proj / ".nw" / "personas").mkdir(parents=True)
     monkeypatch.setattr("nightwright.cli.load_config", lambda: cfg)
+    # Rich 15: size overrides require both dimensions (see tests/test_ideas.py).
     monkeypatch.setattr("nightwright.console.console._width", 400)
+    monkeypatch.setattr("nightwright.console.console._height", 80)
     monkeypatch.setattr("nightwright.agentic.project.project_root", lambda c, name: proj.resolve())
     monkeypatch.setattr("nightwright.agentic.project.find_project_for_cwd", lambda c, cwd=None: None)
     return cfg, proj / ".nw" / "personas"
@@ -44,7 +46,7 @@ def test_list_text_and_json(env):
     d = json.loads(r.output)
     assert d["schema"] == "nw.personas.v1"
     by = {p["name"]: p for p in d["personas"]}
-    assert sum(1 for p in d["personas"] if p["scope"] == "builtin") == 9
+    assert sum(1 for p in d["personas"] if p["scope"] == "builtin") == 10
     assert by["security_reviewer"]["scope"] == "project" and by["security_reviewer"]["reviewer"]
     assert by["conformance_reviewer"]["scope"] == "builtin"
     assert by["implementer"]["reviewer"] is False

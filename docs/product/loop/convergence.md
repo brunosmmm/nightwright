@@ -94,9 +94,9 @@ its idea or its spec, with a brief that carries what was learned:
 For an accepted spec that means superseding it with a new one (`/nw-rework`), never quietly
 editing the old one.
 
-The implementation loop already does this. [SPEC-0247](../../specs/0247-divergence-detection-in-the-implementation-loop.md)
+The implementation loop already does this. [SPEC-0247](https://github.com/brunosmmm/nightwright/blob/main/docs/specs/0247-divergence-detection-in-the-implementation-loop.md)
 computes trend, churn, recurrence and a repeated gate failure from the ledger. When one trips, the
-campaign enters `DIVERGENCE_TRIAGE` ([SPEC-0462](../../specs/0462-triage-a-diverging-campaign.md)).
+campaign enters `DIVERGENCE_TRIAGE` ([SPEC-0462](https://github.com/brunosmmm/nightwright/blob/main/docs/specs/0462-triage-a-diverging-campaign.md)).
 One read-only persona labels each latest blocker against the spec and picks one extra implement
 round (once per campaign), a spec rework, or a human escalation. A rework is carried out by the
 conductor and the project's steward. The human is asked only for the escalation, and that question
