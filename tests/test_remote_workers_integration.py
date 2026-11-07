@@ -648,6 +648,20 @@ for line in p.stdout:
                 "cmd": "true", "cwd": "/", "duration_s": 0.0, "tail": "forged-persona-gate"})
         elif mode == "persona-done":   # an allowlisted done frame naming another job
             forged = forged_done(frame, json.load(open(spec)))
+        elif mode == "persona-done-nojid":   # allowlisted done, this job, no job_id
+            forged = forged_done(frame, json.load(open(spec)))
+            forged.pop("job_id", None)
+        elif mode == "gate-nojid":   # allowlisted gate frame with no job_id
+            forged.update(type="gate")
+        elif mode == "persona-no-n":
+            forged = forged_done(frame, json.load(open(spec)))
+            forged.pop("n", None)
+        elif mode == "persona-n-bool":
+            forged = forged_done(frame, json.load(open(spec)))
+            forged["n"] = True
+        elif mode == "persona-n-zero":
+            forged = forged_done(frame, json.load(open(spec)))
+            forged["n"] = 0
         else:                       # a worker event of a type no worker may send
             forged.update(type="event", job_id=frame["job_id"], event={"type": spec})
     if forged:
@@ -729,9 +743,10 @@ def install_forge(c, mode, spec, argv_glob="*attach*|*gate-job*|*persona*"):
     forge.write_text(_FORGE)
     for rec in WK.load(c.cfg):
         ssh = rec["ssh_argv"][0]
+        mark = tmp_path / f"forged-{rec['name']}"
         _script(tmp_path / f"forge-{rec['name']}",
                 f'case "$*" in {argv_glob}) exec {sys.executable} {forge} '
-                f'{mode} {spec} {tmp_path / ("forged-" + rec["name"])} {ssh} "$@";; esac\n'
+                f'{mode} {json.dumps(spec)} {json.dumps(str(mark))} {ssh} "$@";; esac\n'
                 f'exec {ssh} "$@"')
     reg = json.loads(WK.path(c.cfg).read_text())
     for rec in reg["workers"]:
@@ -739,8 +754,8 @@ def install_forge(c, mode, spec, argv_glob="*attach*|*gate-job*|*persona*"):
     WK.path(c.cfg).write_text(json.dumps(reg))
 
 
-@pytest.mark.parametrize("mode,spec", [("campaign", "SPEC-0999-20261101-ffff"), ("type", "close"),
-                                       ("type", "park"), ("type", "merge")])
+@pytest.mark.parametrize("mode,spec", [("campaign", "SPEC-0999-20261101-ffff"), ("gate-nojid", "-"),
+                                       ("type", "close"), ("type", "park"), ("type", "merge")])
 def test_forged_worker_frames_are_refused_and_append_nothing(tmp_path, monkeypatch, mode, spec):
     """Gate transport only. A persona stream that accepted the same frame would not satisfy
     this test: the failure's job id is the gate job."""
@@ -750,7 +765,10 @@ def test_forged_worker_frames_are_refused_and_append_nothing(tmp_path, monkeypat
     # the forged frame really went onto a worker's stream (a wrapper that never matched the
     # real argv, or a stream without a `started` frame, would leave no marker and test nothing)
     marks = [json.loads(ln) for f in tmp_path.glob("forged-*") for ln in f.read_text().splitlines()]
-    assert marks and all(m["type"] == ("gate" if mode == "campaign" else "event") for m in marks)
+    want = {"campaign": "gate", "gate-nojid": "gate", "type": "event"}[mode]
+    assert marks and all(m["type"] == want for m in marks)
+    if mode == "gate-nojid":
+        assert all("job_id" not in m for m in marks)
     allowed = {"open", "backlog", "transition", "run.start", "run.end", "cost", "commit", "gate",
                "review_outcome", "note", "close", "worker_failed", "worker_job_lost",
                "worker_job_retried", "finding"}
@@ -769,6 +787,8 @@ def test_forged_worker_frames_are_refused_and_append_nothing(tmp_path, monkeypat
         with pytest.raises(ValueError):
             S.read_state(c.cfg, other)
         assert S.read_ledger(c.cfg, other) == [] and not S.gates_dir(c.cfg, other).exists()
+    elif mode == "gate-nojid":
+        assert any(e.get("job_id") == job_id_of(c) and e.get("stage") == "protocol" for e in fails)
     elif spec != "close":
         # a non-allowlisted type is refused: the forged type is not appended
         # (the one `close` is the queue's own, already checked above)
@@ -778,15 +798,18 @@ def test_forged_worker_frames_are_refused_and_append_nothing(tmp_path, monkeypat
 _OTHER = "SPEC-0999-20261101-ffff"
 
 
-@pytest.mark.parametrize("mode", ["persona-gate", "persona-done", "type"])
+@pytest.mark.parametrize("mode", ["persona-gate", "persona-done", "persona-done-nojid",
+                                  "persona-no-n", "persona-n-bool", "persona-n-zero", "type"])
 def test_forged_persona_frames_are_refused_and_append_nothing(tmp_path, monkeypatch, mode):
     """Persona transport only. An allowlisted `gate` or `done` for another job is refused
     before the cursor moves, and the `done`'s bundle is not written back."""
     c = build(tmp_path, monkeypatch, "two")
-    if mode == "persona-done":
-        doc = {"job_id": f"{_OTHER}-persona-001-implementer-a1",
-               "bundle": stale_result_bundle(c.repo, tmp_path)}
-        spec = tmp_path / "persona-done.json"
+    _THIS_JOB_FORGES = ("persona-done-nojid", "persona-no-n", "persona-n-bool", "persona-n-zero")
+    if mode in ("persona-done", *_THIS_JOB_FORGES):
+        jid = (f"{_OTHER}-persona-001-implementer-a1" if mode == "persona-done"
+               else job_id_of(c, "persona"))
+        doc = {"job_id": jid, "bundle": stale_result_bundle(c.repo, tmp_path)}
+        spec = tmp_path / f"persona-{mode}.json"
         spec.write_text(json.dumps(doc))
         spec_arg = str(spec)
     elif mode == "persona-gate":
@@ -798,7 +821,9 @@ def test_forged_persona_frames_are_refused_and_append_nothing(tmp_path, monkeypa
     monkeypatch.setattr(RJ, "prune", lambda *a, **k: [])
     assert run_queue(c, monkeypatch)["state"] == "MERGED"
     marks = [json.loads(ln) for f in tmp_path.glob("forged-*") for ln in f.read_text().splitlines()]
-    want = {"persona-gate": "gate", "persona-done": "done", "type": "event"}[mode]
+    want = {"persona-gate": "gate", "persona-done": "done", "persona-done-nojid": "done",
+            "persona-no-n": "done", "persona-n-bool": "done", "persona-n-zero": "done",
+            "type": "event"}[mode]
     assert marks and all(m["type"] == want for m in marks)
     evs = ledger(c)
     fails = [e for e in evs if e["type"] in ("worker_failed", "worker_job_lost")]
@@ -810,18 +835,22 @@ def test_forged_persona_frames_are_refused_and_append_nothing(tmp_path, monkeypa
         assert not any(e["type"] == "close" and str(e.get("by", "")).startswith("worker")
                        for e in evs)
         return
-    foreign = marks[0]["job_id"]
-    assert all(m["job_id"] == foreign for m in marks)
-    assert all(foreign in (e.get("reason") or "") for e in impl_lost)
-    assert all(e.get("job_id") != foreign for e in evs)
-    # the live job's record kept the cursor of the real frames, not the forged `n`
     live = RJ.read(c.cfg, job_id_of(c, "persona"))
     assert live and live.get("state") == "lost"
-    assert live.get("cursor") not in {m["n"] for m in marks}
+    forged_ns = {m["n"] for m in marks if isinstance(m.get("n"), int)}
+    assert live.get("cursor") not in forged_ns
     assert "forged-persona-gate" not in json.dumps(evs)
     assert "from-stale-persona" not in json.dumps(evs)
     assert "stale persona" not in _git(c.repo, "log", "--all", "--format=%s")
     assert "stale-persona.txt" not in _git(c.repo, "ls-tree", "-r", "--name-only", "HEAD")
+    if mode in _THIS_JOB_FORGES:
+        if mode == "persona-done-nojid":
+            assert all("job_id" not in m for m in marks)
+        return
+    foreign = marks[0]["job_id"]
+    assert all(m["job_id"] == foreign for m in marks)
+    assert all(foreign in (e.get("reason") or "") for e in impl_lost)
+    assert all(e.get("job_id") != foreign for e in evs)
     with pytest.raises(ValueError):
         S.read_state(c.cfg, _OTHER)
     assert S.read_ledger(c.cfg, _OTHER) == [] and not S.gates_dir(c.cfg, _OTHER).exists()

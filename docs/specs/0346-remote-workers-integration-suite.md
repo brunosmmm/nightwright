@@ -4,7 +4,7 @@ title: "Remote workers integration suite for gate and persona workers"
 status: in-progress
 owner: user
 created: 2026-11-01
-updated: 2026-11-06
+updated: 2026-11-07
 source_idea: IDEA-560
 parent: SPEC-0310
 tags: [agentic, remote, workers, testing]
@@ -200,6 +200,19 @@ Each case is a whole fake campaign unless noted.
   `TMPDIR=<long> uv run pytest tests/test_agentic_launch.py::test_default_plan_argv_and_env`:
   passed. The full suite was left to gating.
 
+### Test record (2026-11-07, review fixes loop 2)
+
+- `remote_gates._frame` now requires `job_id ==` this job on every frame except `error` (missing/`null`
+  no longer match). `tests/test_remote_gates.py::test_frame_job_id_is_required_except_on_error_frames`
+  and `tests/test_remote_gates.py::test_a_validate_rejection_is_loud_and_deduplicated`: passed.
+- Integration: `gate-nojid` on gate streams and `persona-done-nojid`, `persona-no-n`, `persona-n-bool`,
+  `persona-n-zero` on persona streams refuse before the cursor moves; `install_forge` passes `spec`
+  through `json.dumps` so an empty parameter is not dropped by the shell.
+- `uv run pytest tests/test_remote_workers_integration.py
+  tests/test_remote_gates.py::test_a_validate_rejection_is_loud_and_deduplicated
+  tests/test_remote_personas.py -q`: 87 passed (about 268 s). The full suite was left to gating.
+- Manual second-machine step not performed; that acceptance criterion stays open.
+
 ### Test record (2026-11-06, review fixes)
 
 - `uv run pytest tests/test_remote_workers_integration.py::test_pre_epic_golden_reproduces_from_the_pinned_commit`: passed. The checked-in fixture matches a fresh `NW_RECORD_GOLDEN=1` recording from a temporary worktree of `1f0311c4^`.
@@ -208,6 +221,15 @@ Each case is a whole fake campaign unless noted.
 - `uv run pytest tests/test_worker_disk_guard.py tests/test_agentic_close.py::test_close_regate_is_local_only_for_a_merge tests/test_agentic_close.py::test_pr_close_regate_is_not_forced_local tests/test_agentic_close.py::test_pr_policy_hands_off_with_body tests/test_agentic_gates.py::test_ff_continuation_keeps_inherit_env_false tests/test_agentic_gates.py::test_ff_green_prelude_runs_main_and_ladder`: 14 passed. `tests/test_agentic_runproc.py::test_worker_base_env_is_what_the_wrapper_and_claude_receive` and `tests/test_remote_personas.py` passed in the same session (the persona file with the disk-guard and runproc files: 99 passed before five later tests that only failed because an earlier disk-guard test left `gates._stopping` set; the new disk test resets it, and the rerun above is green).
 - The full suite was left to gating.
 - The manual second-machine step was not performed. That acceptance criterion stays open and the spec stays `in-progress`.
+
+### As shipped (2026-11-07)
+
+- **`job_id` on frames:** `remote_gates._frame` keeps `None`/absent `job_id` only for `error`
+  frames; every other type must echo this job's id (forged gate/persona `done` cases without it
+  are protocol failures). Persona schema/`n` refusals are covered on the persona stream
+  (`persona-no-n`, `persona-n-bool`, `persona-n-zero`).
+- **`install_forge`:** the shell wrapper passes `spec` and the marker path as JSON strings so a
+  blank `spec` cannot shift `sys.argv` and silence a forge mode.
 
 ### As shipped (2026-11-06)
 
