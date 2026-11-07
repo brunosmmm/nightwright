@@ -20,6 +20,7 @@ from nightwright import report as R
 from nightwright.agentic import queue as Q
 from nightwright.tui import agentic_model as AM
 from nightwright.tui.app import IdeaDesk
+from nightwright.tui.campaign_detail import CampaignDetail
 from nightwright.tui.queue_tab import QueueTable, QueueView, _ID_W
 from waits import pilot_until
 
@@ -365,12 +366,10 @@ def test_double_click_dispatches_to_the_queue_table(tmp_path):
             await pilot.pause(0.05)
             assert landed is True
             assert sum(event.chain == 2 for event in seen) == 1
-            assert len(app.screen_stack) == len(before)
-            assert list(app.screen_stack) == before
+            assert len(app.screen_stack) == len(before) + 1
+            assert isinstance(app.screen_stack[-1], CampaignDetail)
+            assert list(app.screen_stack)[:-1] == before
             assert isinstance(app, IdeaDesk)
-            assert app.screen is before[-1]
-            assert not any(screen.__class__.__name__ == "CampaignDetail"
-                           for screen in app.screen_stack)
 
     try:
         _run(drive())

@@ -462,11 +462,17 @@ delivered rows are on screen, and they read campaign ids from the mounted queue 
 - Full suite left to gating; manual verification steps not run on the developer data dir.
 - Not yet automated: harness double-click opener (AC1), minimal `DetailOpener` app (AC2), frame sizing (AC4), `[`/`]` loop jumps, idle stat/open spies (AC8), `load_detail` load-error Pilot, no-write sha256 tour (AC10).
 
+### Test record (2026-11-07, loop 1 gate fix)
+
+- `uv run pytest -q tests/test_tui_fixture_harness.py::test_double_click_dispatches_to_the_queue_table tests/test_tui_campaign_detail.py tests/test_tui_campaign_detail_model.py` — 22 passed.
+- Full suite left to gating.
+
 ### As shipped (2026-11-07)
 
 - `QueueActions` lives in `queue_actions.py` (split from `queue_tab.py` to avoid an import cycle with `campaign_detail.py`).
 - Queue unavailable-action notify text uses `not available in <state>` (SPEC-0407 AC7).
 - Manual verification: pending.
+- `DetailOpener.on_click` resolves the data row from `Click.style.meta['row']` (Textual 8); `_open_row` uses `RowKey.value` for `detail_target`.
 
 **Manual verification.** On the real data dir, record the results in *As shipped*:
 

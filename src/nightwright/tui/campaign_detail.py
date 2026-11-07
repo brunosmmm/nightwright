@@ -48,6 +48,8 @@ class DetailOpener:
         raise NotImplementedError
 
     def _open_row(self, row_key) -> None:
+        if hasattr(row_key, "value"):
+            row_key = row_key.value
         target = self.detail_target(row_key)
         if target is None:
             return
@@ -60,14 +62,12 @@ class DetailOpener:
             return
         if event.chain != 2:
             return
-        row, _ = event.mouse_offset
-        if row is None or row < 0:
-            row, _ = self.cursor_coordinate
-        if row < 0 or row >= self.row_count:
+        meta = getattr(event.style, "meta", None) or {}
+        row = meta.get("row")
+        if row is None or row < 0 or row >= self.row_count:
             return
         self.move_cursor(row=row)
-        key = self.get_row_at(row).key
-        self._open_row(key)
+        self._open_row(self.ordered_rows[row].key)
 
 
 class CampaignDetail(QueueActions, ModalScreen):
