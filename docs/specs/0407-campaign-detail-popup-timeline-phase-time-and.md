@@ -1,7 +1,7 @@
 ---
 id: SPEC-0407
 title: "Campaign detail popup shell: opener, Timeline, queue actions, polling, retire SPEC-0246"
-status: accepted
+status: in-progress
 owner: user
 created: 2026-11-03
 updated: 2026-11-07
