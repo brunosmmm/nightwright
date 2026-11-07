@@ -156,6 +156,88 @@ def test_campaign_without_after_is_unchanged(env, monkeypatch):
     assert "after" not in row
 
 
+# ---- SPEC-0458: dependency conflict resolution (AC1–AC3) -----------------------------------
+
+def test_idea_after_holds_on_main_done_file_until_merged(env, monkeypatch):
+    cfg, repo = env
+    a = capture(cfg, "First")
+    ca = add_idea_campaign(cfg, monkeypatch, a)
+    st = _state(cfg, ca)
+    st["state"] = "REVIEWING"
+    st["spec_id"] = "SPEC-0001"
+    S.write_state(cfg, ca, st)
+    spec = repo / "docs/specs/0001-trivial.md"
+    spec.write_text(spec.read_text().replace("status: accepted", "status: done"))
+    b = capture(cfg, "Second")
+    cb = add_idea_campaign(cfg, monkeypatch, b, "--after", a)
+    wait = f"waiting on {ca} (after: campaign {ca} is REVIEWING)"
+    blocked = Q.backlog_readiness(cfg, _state(cfg, cb))[1]
+    assert blocked == [wait]
+    ctx = QT.Ctx(cfg, "conductor")
+    assert QT.dependency_wait(blocked, ctx.live_specs, _state(cfg, cb)["project"])
+    Q._transition(cfg, _state(cfg, ca), "HANDED_OFF", "test")
+    handed = f"waiting on {ca} (after: campaign {ca} is HANDED_OFF)"
+    blocked = Q.backlog_readiness(cfg, _state(cfg, cb))[1]
+    assert blocked == [handed]
+    ctx2 = QT.Ctx(cfg, "conductor")
+    live = {x[1] for x in ctx2.live_specs if x[0] == _state(cfg, cb)["project"]}
+    assert ca not in live
+    assert QT.dependency_wait(blocked, ctx2.live_specs, _state(cfg, cb)["project"])
+    _merge(cfg, ca)
+    assert Q.backlog_readiness(cfg, _state(cfg, cb)) == (True, [])
+
+
+def test_after_missing_spec_waits_on_carrying_campaign(env, monkeypatch):
+    cfg, _repo = env
+    dep = "SPEC-0407"
+    a, b = capture(cfg, "Prereq A"), capture(cfg, "Prereq B")
+    ca = add_idea_campaign(cfg, monkeypatch, a)
+    cb = add_idea_campaign(cfg, monkeypatch, b)
+    for cid in (ca, cb):
+        st = _state(cfg, cid)
+        st["spec_id"] = dep
+        S.write_state(cfg, cid, st)
+    waiter_idea = capture(cfg, "Waiter idea")
+    cw = add_idea_campaign(cfg, monkeypatch, waiter_idea, "--after", a)
+    waiter_spec = add_idea_campaign(cfg, monkeypatch, capture(cfg, "Waiter spec"))
+    st_ws = _state(cfg, waiter_spec)
+    st_ws["after"] = [{"ref": dep, "kind": "spec"}]
+    S.write_state(cfg, waiter_spec, st_ws)
+    st = _state(cfg, ca)
+    want_idea = f"waiting on {ca} (after: campaign {ca} is QUEUED)"
+    assert Q.backlog_readiness(cfg, _state(cfg, cw))[1] == [want_idea]
+    assert "not found" not in Q.backlog_readiness(cfg, _state(cfg, cw))[1][0]
+    assert QT.dependency_wait(Q.backlog_readiness(cfg, _state(cfg, cw))[1],
+                            QT.Ctx(cfg, "conductor").live_specs, st["project"])
+    # spec ref follows list_campaigns' first hit for the id (cb if newer)
+    hits = S.list_campaigns(cfg, spec_id=dep)
+    first = hits[0]["id"]
+    want_spec = f"waiting on {first} (after: campaign {first} is QUEUED)"
+    blocked_spec = Q.backlog_readiness(cfg, _state(cfg, waiter_spec))[1]
+    assert blocked_spec == [want_spec]
+    assert "not found" not in blocked_spec[0]
+    Q._transition(cfg, _state(cfg, ca), "ABANDONED", "test")
+    Q._transition(cfg, _state(cfg, cb), "ABANDONED", "test")
+    abandoned = Q.backlog_readiness(cfg, _state(cfg, waiter_spec))[1]
+    assert abandoned == [f"after {dep} not found"]
+    assert not QT.dependency_wait(abandoned, QT.Ctx(cfg, "conductor").live_specs,
+                                  _state(cfg, waiter_spec)["project"])
+
+
+def test_spec_ref_done_met_while_other_campaign_carries_id(env, monkeypatch):
+    cfg, repo = env
+    a = capture(cfg, "Carrier")
+    ca = add_idea_campaign(cfg, monkeypatch, a)
+    st = _state(cfg, ca)
+    st["state"] = "IMPLEMENTING"
+    st["spec_id"] = "SPEC-0001"
+    S.write_state(cfg, ca, st)
+    spec = repo / "docs/specs/0001-trivial.md"
+    spec.write_text(spec.read_text().replace("status: accepted", "status: done"))
+    cb = add_idea_campaign(cfg, monkeypatch, capture(cfg, "Waiter"), "--after", "SPEC-0001")
+    assert Q.backlog_readiness(cfg, _state(cfg, cb)) == (True, [])
+
+
 # ---- AC3: the spec writer --------------------------------------------------------------------
 
 def test_write_rules_and_front_matter_must_depend_on():

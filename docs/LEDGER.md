@@ -299,7 +299,6 @@ progress. This is the single place to see *what has been decided* and *what is i
 | [SPEC-0400](./specs/0400-remote-web-dashboard-live-view-of-active-queue.md) | Remote web dashboard and decisions inbox over Tailscale (nw serve --dashboard) | epic | accepted | M9: agentic workflow | 2026-11-03 |
 | [SPEC-0405](./specs/0405-rich-queue-tui-prioritized-live-queue-campaign.md) | Rich queue TUI: prioritized live queue, campaign detail popup, closed-campaign history and a cross-campaign findings and decisions browser over one shared history layer | epic | accepted | — | 2026-11-03 |
 | [SPEC-0411](./specs/0411-closed-campaign-history-browser-tab.md) | Closed-campaign history browser tab | feature | accepted | — | 2026-11-03 |
-| [SPEC-0458](./specs/0458-periodic-deterministic-resolution-of-queue.md) | Periodic deterministic resolution of queue dependency conflicts | feature | accepted | M9: agentic workflow | 2026-11-07 |
 | [SPEC-0465](./specs/0465-run-pi-personas-through-the-node-sdk.md) | Run Pi personas through the Node SDK | feature | in-progress | — | 2026-11-08 |
 | [SPEC-0466](./specs/0466-gpt-only-pi-sdk-model-set-for-all-nightwright.md) | GPT-only Pi SDK model set for all nightwright personas | feature | in-progress | — | 2026-11-08 |
 | [SPEC-0468](./specs/0468-stop-queue-thrash.md) | Stop the queue from thrashing a finished campaign | feature | accepted | — | 2026-11-08 |
@@ -726,6 +725,7 @@ progress. This is the single place to see *what has been decided* and *what is i
 | [SPEC-0455](./specs/0455-selectable-model-sets.md) | A model set chooses the runner and the concrete model | feature | done | — | 2026-11-07 |
 | [SPEC-0456](./specs/0456-readonly-cursor-personas-keep-read-tools.md) | Read-only Cursor personas keep the file-inspection tools | feature | done | — | 2026-11-07 |
 | [SPEC-0457](./specs/0457-readonly-cursor-tools-are-lowercase.md) | Read-only Cursor tool names are lowercase | feature | done | — | 2026-11-07 |
+| [SPEC-0458](./specs/0458-periodic-deterministic-resolution-of-queue.md) | Periodic deterministic resolution of queue dependency conflicts | feature | done | M9: agentic workflow | 2026-11-07 |
 | [SPEC-0458](./specs/0458-tail-renders-triage-and-implementer-cards.md) | The run tail renders a triage and an implementer result as cards | feature | done | — | 2026-11-07 |
 | [SPEC-0459](./specs/0459-real-app-tui-test-harness-on-the-real-data.md) | Real-fixture IdeaDesk Pilot harness and queue-window preparation | feature | done | M9: agentic workflow | 2026-11-07 |
 | [SPEC-0460](./specs/0460-cursor-spawns-force-fast-off.md) | Cursor spawns keep the effort and force fast off | feature | done | — | 2026-11-07 |

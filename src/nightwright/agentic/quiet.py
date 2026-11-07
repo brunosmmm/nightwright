@@ -69,8 +69,11 @@ DEFAULTS = {"enabled": True, "readers": ["conductor"], "digest_interval_s": 1800
 # a `backlog` event is held when it only restates an ordinary dependency wait; any other
 # `blocked_by` text (a missing spec, a missing branch ...) wakes, see `backlog_resolved`.
 # `backlog_blocked_long` and the ping also require a live campaign per dependency (SPEC-0306)
-_BENIGN_BLOCKED = ("waiting on ", "spec status is draft", "spec status is proposed",
-                   "spec status is in-progress")
+_BENIGN_BLOCKED = ("waiting on ", "mailed conductor: ", "spec status is draft",
+                   "spec status is proposed", "spec status is in-progress")
+_HANDED_OFF_WAIT_RE = re.compile(
+    r"^waiting on ([A-Za-z]+-\d+(?:-\d{8}-[0-9a-f]{4})?) "
+    r"\(after: campaign \1 is HANDED_OFF\)$")
 _ID_RE = re.compile(r"[A-Za-z]+-\d+(?:-\d{8}-[0-9a-f]{4})?")   # + campaign ids (SPEC-0423)
 _GRACE_S = 300                     # the table's own "wait" window past a drain's step timeout
 
@@ -120,6 +123,8 @@ def dependency_wait(blocked_by, live_specs, project=None) -> bool:
         if not _benign(b):
             return False
         if b.startswith("waiting on "):
+            if _HANDED_OFF_WAIT_RE.match(b):
+                continue
             ids = waited_ids(b)
             if not ids or not set(ids) <= live:
                 return False

@@ -1066,6 +1066,10 @@ def _specs_dir_of(state: dict) -> Path:
     return (root / rel).parent if rel else root / "docs" / "specs"
 
 
+_NO_CAMPAIGN_AFTER_RE = re.compile(
+    r"^waiting on (IDEA-\d+) \(after: no campaign queued for \1\)$")
+
+
 def _spec_after_met(cfg, state: dict, spec_id: str) -> tuple[bool, str, bool]:
     """`(met, why, live)` for a prerequisite spec id: the spec file through `dependency_met`,
     else a MERGED campaign of it (an outbound PR or a lagging base checkout)."""
@@ -1122,7 +1126,22 @@ def after_met(cfg, state: dict, ref) -> tuple[bool, str]:
             if spec:
                 met, why, _live = _spec_after_met(cfg, state, spec)
                 if met:
+                    st = newest.get("state")
+                    if st == "MERGED":
+                        return True, ""
+                    try:
+                        dep_fm, _ = split_frontmatter(
+                            _find_dep_spec(_specs_dir_of(state), spec).read_text(encoding="utf-8"))
+                        file_met, _ = dependency_met(_specs_dir_of(state), spec, dep_fm or {}, set())
+                    except (OSError, ValueError):
+                        file_met = False
+                    if file_met:
+                        return False, (f"waiting on {newest['id']} (after: campaign {newest['id']} "
+                                       f"is {st})")
                     return True, ""
+                if "not found" in why:
+                    return False, (f"waiting on {newest['id']} (after: campaign {newest['id']} "
+                                   f"is {newest.get('state')})")
                 return False, f"waiting on {spec} (after: {rid} -> {why})"
             return False, (f"waiting on {rid} (after: campaign {newest['id']} "
                            f"is {newest.get('state')})")
@@ -1147,18 +1166,58 @@ def after_met(cfg, state: dict, ref) -> tuple[bool, str]:
     if hits and hits[0].get("state") == "ABANDONED" and "not found" not in why:
         return False, f"after {rid}: campaign {hits[0]['id']} abandoned"
     if why.endswith("not found"):
+        if hits and hits[0].get("state") not in TERMINAL_STATES:
+            c = hits[0]
+            return False, (f"waiting on {c['id']} (after: campaign {c['id']} is {c.get('state')})")
         return False, f"after {why}"
     return False, f"waiting on {rid} (after: {why})"
 
 
 def _after_blocked(cfg, state: dict) -> list[str]:
     """The `blocked_by` entries of every unmet `after` prerequisite of `state` (SPEC-0423)."""
+    mailed = set(state.get("conflict_mail") or [])
     out = []
     for entry in after_entries(state):
         met, why = after_met(cfg, state, entry)
-        if not met and why not in out:
+        if met:
+            continue
+        m = _NO_CAMPAIGN_AFTER_RE.match(why)
+        if m and m.group(1) in mailed:
+            why = f"mailed conductor: {m.group(1)} has no campaign ({state['id']})"
+        if why not in out:
             out.append(why)
     return out
+
+
+def resolve_dependency_conflicts(cfg, queued: list[dict]) -> None:
+    """SPEC-0458: one conductor mail per waiter blocked on an idea with no campaign; records the
+    marker on the QUEUED dicts the tick is about to persist."""
+    from . import mailbox as M
+    for st in queued:
+        if st.get("state") != "QUEUED":
+            continue
+        mailed = list(st.setdefault("conflict_mail", []))
+        seen = set(mailed)
+        for entry in after_entries(st):
+            met, why = after_met(cfg, st, entry)
+            if met:
+                continue
+            m = _NO_CAMPAIGN_AFTER_RE.match(why)
+            if not m:
+                continue
+            idea = m.group(1)
+            if idea in seen:
+                continue
+            text = (f"{st['id']} waits on {idea}. {idea} has no campaign and no spec. "
+                    f"Do not queue {idea}.")
+            try:
+                M.send(cfg, to="conductor", frm="conductor", kind="request", campaign=st["id"],
+                       text=text, needs_reply=True)
+            except (OSError, ValueError):
+                continue
+            mailed.append(idea)
+            seen.add(idea)
+        st["conflict_mail"] = mailed
 
 
 def _find_dep_spec(specs_dir, dep) -> Path:
@@ -1555,6 +1614,7 @@ class StepResult:
     spec_review: dict | None = None                  # SPEC-0214: a spec_review step's outcome
     deferred: str | None = None                      # SPEC-0341: a gate step that did nothing yet
     revert_conflict: str | None = None               # SPEC-0420: a revert open that conflicted
+    resumed_to: str | None = None                    # SPEC-0458: adopt into an existing worktree
 
 
 _PROGRESS_MIN_INTERVAL_S = 1.0      # SPEC-0313: at most one `progress_at` lease write per second
@@ -1662,6 +1722,55 @@ def _do_open(ctx: _Ctx, state: dict) -> StepResult:
         return _do_open_unwrapped(ctx, state)
 
 
+def worktree_resume_state(state: dict, worktree: Path) -> tuple[str | None, str | None]:
+    """Target state for resuming into an existing checkout (SPEC-0458): `(state, error)`."""
+    spec = state.get("spec") or {}
+    rel = spec.get("rel_path")
+    spec_path = (worktree / rel) if rel else None
+    admission = state.get("admission")
+    sid = spec.get("id") or state.get("spec_id")
+    pending = state.get("pending_brief")
+    if not rel or spec_path is None or not spec_path.is_file():
+        if has_no_spec(state) or admission == "revise_pending":
+            return "SPEC_WRITING", None
+        if sid:
+            return None, f"spec file missing at {spec_path or rel}"
+        return "SPEC_WRITING", None
+    try:
+        fm, _ = split_frontmatter(spec_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as e:
+        return None, f"spec file unreadable at {spec_path}: {e}"
+    status = str((fm or {}).get("status") or "")
+    if status in ("accepted", "in-progress"):
+        return "IMPLEMENTING", None
+    if status == "proposed" and sid and not pending:
+        return "SPEC_REVIEW", None
+    if status in ("draft", "proposed") and (not sid or pending):
+        return "SPEC_WRITING", None
+    if status == "draft" and sid and not pending:
+        return None, "spec status is draft"
+    return None, f"spec status is {status or 'empty'}"
+
+
+def _worktree_conflict_mail(cfg, state: dict, worktree: Path, status: str) -> None:
+    """One conductor mail when an adopted worktree's spec cannot be resumed (SPEC-0458)."""
+    from . import mailbox as M
+    marker = f"worktree:{status}"
+    mailed = list(state.setdefault("conflict_mail", []))
+    if marker in mailed:
+        return
+    repo = state.get("repo") or {}
+    text = (f"{state['id']} already has worktree {worktree} on {repo.get('branch')}, "
+            f"and its spec status is {status}. Not opened.")
+    try:
+        M.send(cfg, to="conductor", frm="conductor", kind="request", campaign=state["id"],
+               text=text, needs_reply=True)
+    except (OSError, ValueError):
+        return
+    mailed.append(marker)
+    state["conflict_mail"] = mailed
+
+
 def _do_open_unwrapped(ctx: _Ctx, state: dict) -> StepResult:
     res = StepResult(state["id"], Step("open"), "OPENING")
     repo = state.setdefault("repo", {})
@@ -1672,10 +1781,38 @@ def _do_open_unwrapped(ctx: _Ctx, state: dict) -> StepResult:
         pcfg = ctx.project(state)
         root = Path(repo["root"])
         base = repo.get("base") or pcfg.get("base") or "main"
-        base_sha = git.rev_parse(root, _open_start(root, pcfg, base))
         worktree = Path(repo["worktree"])
+        branch = repo["branch"]
+        kind = state.get("kind")
+        if kind not in ("merge", "split", "revert", *RM.RED_KINDS):
+            elsewhere = git.worktree_for_branch(root, branch)
+            if elsewhere is not None and elsewhere == worktree.resolve():
+                if not repo.get("base_sha_at_open"):
+                    base_sha = git.rev_parse(root, _open_start(root, pcfg, base))
+                    repo["base_sha_at_open"] = base_sha
+                    _run_worktree_setup(pcfg, worktree)
+                repo["head"] = git.rev_parse(worktree)
+                if kind not in RM.RED_KINDS and not has_no_spec(state):
+                    spec = state.setdefault("spec", {})
+                    spec_file = worktree / spec.get("rel_path", "")
+                    if (spec.get("sha256_at_open") is None and spec.get("rel_path")
+                            and spec_file.is_file()):
+                        spec["sha256_at_open"] = _spec_sha(spec_file)
+                        store.campaign_dir(ctx.cfg, state["id"]).mkdir(parents=True, exist_ok=True)
+                        (store.campaign_dir(ctx.cfg, state["id"]) / CL.SPEC_AT_OPEN).write_text(
+                            spec_file.read_text(encoding="utf-8"), encoding="utf-8")
+                target, err = worktree_resume_state(state, worktree)
+                if err:
+                    res.error = err
+                    if err.startswith("spec status is "):
+                        _worktree_conflict_mail(ctx.cfg, state, worktree,
+                                                err.removeprefix("spec status is "))
+                else:
+                    res.resumed_to = target
+                return res
+        base_sha = git.rev_parse(root, _open_start(root, pcfg, base))
         # the sha, not `<remote>/<base>`: no upstream is set on the campaign branch
-        git.worktree_add(root, worktree, repo["branch"], base_sha)
+        git.worktree_add(root, worktree, branch, base_sha)
         _run_worktree_setup(pcfg, worktree)
         repo["base_sha_at_open"] = base_sha
         if state.get("kind") == "revert":                       # SPEC-0420 §6
@@ -2733,7 +2870,7 @@ def _apply(ctx: _Ctx, state: dict, res: StepResult) -> dict:
                       "pending_brief", "close", "review_carry", "closing", "spec_write", "spec_id",
                       "merge", "admission", "spec_review", "split",   # SPEC-0279: amend flips it
                       "gate_exclusive", "last_green_loop", "close_red", "gate_retry_pending",
-                      "divergence"):
+                      "divergence", "conflict_mail"):
                 if k in state:
                     current[k] = state[k]
             requested = current.get("park_requested")
@@ -2837,6 +2974,10 @@ def _apply(ctx: _Ctx, state: dict, res: StepResult) -> dict:
             return finish("CLOSING", "opened")
         if state.get("kind") == "split":                               # SPEC-0290
             return finish("SPEC_WRITING", "opened")
+        if res.resumed_to:
+            events.append(("note", {"text": f"resumed into existing worktree → {res.resumed_to}",
+                                    "author": "queue"}))
+            return finish(res.resumed_to, "resumed_worktree")
         pending = state.get("admission") == "revise_pending"           # SPEC-0279
         return finish("SPEC_WRITING" if has_no_spec(state) or pending else "IMPLEMENTING",
                       "opened")
@@ -5313,6 +5454,8 @@ def _tick(cfg, ctx: _Ctx, pool: StepPool, report: TickReport, *, admit: bool, ow
                              "action": "continue", "reason": "slot_free",
                              "run_id": None, "cost_usd": None})
         busy.append(st)
+
+    resolve_dependency_conflicts(cfg, queued)
 
     # 1. admission + opening (serial); an item admitted now waits for the next tick
     ready = {}
