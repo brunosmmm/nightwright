@@ -1046,9 +1046,13 @@ class IdeaDesk(App):
         "explored", "metadata", "clock_toggle", "close_idea"})
 
     def check_action(self, action: str, parameters: tuple) -> bool | None:
+        on_detail = any(isinstance(s, CampaignDetail) for s in self.screen_stack)
+        if (on_detail and action == "tab" and parameters
+                and parameters[0] in {"tab-ideas", "tab-hub", "tab-queue",
+                                      "tab-mailbox", "tab-events"}):
+            return False
         if action in self._IDEA_ACTIONS and (
-                self._active_tab != "tab-ideas"
-                or any(isinstance(s, CampaignDetail) for s in self.screen_stack)):
+                self._active_tab != "tab-ideas" or on_detail):
             return False
         return True
 

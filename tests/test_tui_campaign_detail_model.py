@@ -89,11 +89,15 @@ def test_load_detail_header_lines_match_load_campaign(tmp_path):
     assert [t.plain for t in detail.header_lines] == [t.plain for t in camp.header]
 
 
-def test_markup_in_summary_and_header_stays_literal_in_text():
+def test_markup_in_summary_and_header_stays_literal_in_text(tmp_path):
     markup = "[bold red]x[/] and [link=file:///etc]y[/link]"
-    clipped = Text(R._clip(markup, 200))
-    assert clipped.plain == markup
-    line = Text()
-    line.append("SPEC-1", style="bold")
-    line.append(f"  QUEUED  {markup}")
-    assert markup in line.plain and "[bold red]" in line.plain
+    _, cfg, ids = _fixture(tmp_path)
+    cid = ids["ready"]
+    from test_agentic_dashboard import _ev
+    _ev(cfg, cid, "note", {"text": markup})
+    detail = AM.load_detail(cfg, cid)
+    note = next(r for r in detail.history["timeline"] if markup in (r.get("summary") or ""))
+    clipped = Text(R._clip(note["summary"], 200))
+    assert clipped.plain == note["summary"] and "[bold red]" in clipped.plain
+    header_plain = "\n".join(t.plain for t in detail.header_lines)
+    assert markup not in header_plain

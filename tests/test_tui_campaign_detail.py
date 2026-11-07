@@ -343,10 +343,13 @@ def test_a_signature_error_in_poll_is_contained(tmp_path, monkeypatch):
             s._signature = "stale"
             monkeypatch.setattr(AM, "detail_signature", boom)
             s._poll()
+            assert await pilot_until(pilot, lambda: s._signature != "stale")
             await settle(app, pilot)
-            assert app.is_running and s._signature != "stale"
+            assert app.is_running
             monkeypatch.setattr(AM, "load_detail", lambda cfg, cid: {}["missing"])
             s._poll()
+            assert await pilot_until(pilot, lambda: "history unavailable" in text_of(
+                s.query_one("#load-error")))
             await settle(app, pilot)
             assert app.is_running
             assert "history unavailable" in text_of(s.query_one("#load-error"))

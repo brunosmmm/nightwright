@@ -473,12 +473,19 @@ delivered rows are on screen, and they read campaign ids from the mounted queue 
 - Queue Enter spy records `OpenCampaign` instead of `CampaignSelected` (SPEC-0407 enter path).
 - Full suite left to gating.
 
+### Test record (2026-11-07, loop 3)
+
+- `uv run pytest -q tests/test_tui_campaign_detail.py tests/test_tui_campaign_detail_ac.py tests/test_tui_campaign_detail_model.py tests/test_tui_queue_view.py::test_enter_key_on_a_header_row_posts_nothing` — 31 passed.
+- Full suite left to gating.
+- Still missing Pilot coverage: AC1 queue reload/dismiss and second-row double-click; AC2 record focus placeholder; AC4 pilot keys `3`–`5` (desk `tab` vs modal); AC6 seq-null row; AC7 confirmed `u`/`P` and byte check after refused `p`; AC8 stat/open spies; AC9 gaps document and load-error Esc.
+
 ### As shipped (2026-11-07)
 
 - `QueueActions` lives in `queue_actions.py` (split from `queue_tab.py` to avoid an import cycle with `campaign_detail.py`).
 - Queue unavailable-action notify text uses `not available in <state>` (SPEC-0407 AC7).
 - Manual verification: pending.
 - `DetailOpener.on_click` resolves the data row from `Click.style.meta['row']` (Textual 8); `_open_row` uses `RowKey.value` for `detail_target`.
+- Loop 3: `DetailOpener` Enter binding; timeline `MM-DD HH:MM:SS`; poll/detail_signature and highlight `entry_detail` off UI thread; loop `[`/`]`/filter separator paint; `IdeaDesk.check_action` blocks desk digit tabs while modal is up.
 
 **Manual verification.** On the real data dir, record the results in *As shipped*:
 
