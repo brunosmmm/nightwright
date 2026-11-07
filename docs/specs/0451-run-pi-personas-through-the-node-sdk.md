@@ -484,6 +484,17 @@ fails the check with that fact.
 - Full `uv run pytest` left to queue gating
 - `python3 tools/spec_lint.py --write-ledger` && `python3 tools/spec_lint.py` — pass
 
+### Test record (loop 0 implementer, 2026-11-07)
+
+- `node --test tests/js/pi_exec.test.js` — pass (pre-stringify redact, post-prompt secret refresh, nasty sentinel)
+- `uv run pytest tests/test_pi_runner.py tests/test_pi_exec_js.py -q` — pass
+- Full `uv run pytest` left to queue gating
+- `python3 tools/spec_lint.py --write-ledger` && `python3 tools/spec_lint.py` — pass
+
+### As shipped (loop 0 implementer, 2026-11-07)
+
+- `writeLine` runs `redactDeep` before `JSON.stringify` (longest secret first); result line reuses secrets from a second `collectSecretsAsync` after `prompt`.
+
 ### As shipped (loop 2 implementer, 2026-11-07)
 
 - `probe_pi` parses probe stdout as JSON before redacting; only credential-like env values are scrubbed from `error` and decode-failure text (CI=true no longer breaks ok).

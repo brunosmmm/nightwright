@@ -910,6 +910,57 @@ test("execute: stream lines scrub assistant text secrets", async () => {
   assert.ok(blob.includes("[redacted]"));
 });
 
+test("execute: pre-stringify redact hides quote backslash newline in stream", async () => {
+  const execute = await loadExecute();
+  const runDir = layout();
+  const out = { chunks: [], write(s) { this.chunks.push(s); } };
+  const nasty = 'pi-key"slash\\' + "\n" + "tail";
+  const jsonFragment = JSON.stringify(nasty).slice(1, -1);
+  const asstEv = {
+    type: "message_end",
+    message: {
+      role: "assistant",
+      content: [
+        { type: "text", text: nasty },
+        { type: "toolCall", id: "w1", name: "write", input: { body: nasty } },
+      ],
+    },
+  };
+  const toolEv = {
+    type: "message_end",
+    message: {
+      role: "toolResult",
+      toolCallId: "w1",
+      isError: false,
+      content: [{ type: "text", text: nasty }],
+    },
+  };
+  let getAuthCalls = 0;
+  const runtime = {
+    getModel: () => ({ cost: { input: 1 } }),
+    checkAuth: async () => ({}),
+    getAuth: async () => {
+      getAuthCalls += 1;
+      return { auth: { apiKey: nasty } };
+    },
+  };
+  const { pi } = stubPi({ events: [asstEv, toolEv] });
+  await execute(runDir, {
+    out,
+    err: { write() {} },
+    importPi: async () => pi,
+    modelRuntime: runtime,
+  });
+  const blob = out.chunks.join("");
+  assert.ok(!blob.includes(nasty));
+  assert.ok(!blob.includes(jsonFragment));
+  assert.ok(blob.includes("[redacted]"));
+  assert.ok(getAuthCalls >= 2);
+  for (const line of blob.trim().split("\n")) {
+    assert.doesNotThrow(() => JSON.parse(line));
+  }
+});
+
 test("probeProviders: missing credential lists missing and does not call model", async () => {
   const { probeProviders } = await import(PI_EXEC);
   let modelCalls = 0;

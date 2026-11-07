@@ -15,7 +15,20 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const SCHEMA_FOOTER =
   "Reply with a single JSON object matching this schema and nothing else.\n\n{schema}";
 
-function redact(text, secrets = []) {
+function secretsLongestFirst(secrets = []) {
+  const seen = new Set();
+  const out = [];
+  for (const s of secrets) {
+    if (typeof s === "string" && s && !seen.has(s)) {
+      seen.add(s);
+      out.push(s);
+    }
+  }
+  out.sort((a, b) => b.length - a.length);
+  return out;
+}
+
+function redactString(text, secrets = []) {
   let out = String(text ?? "");
   for (const s of secrets) {
     if (s) out = out.split(s).join("[redacted]");
@@ -23,12 +36,24 @@ function redact(text, secrets = []) {
   return out;
 }
 
+function redactDeep(value, secrets = []) {
+  if (typeof value === "string") return redactString(value, secrets);
+  if (value === null || typeof value !== "object") return value;
+  if (Array.isArray(value)) return value.map((v) => redactDeep(v, secrets));
+  const out = {};
+  for (const [k, v] of Object.entries(value)) {
+    out[k] = redactDeep(v, secrets);
+  }
+  return out;
+}
+
 function scrub(text, secrets = []) {
-  return redact(text, secrets).slice(0, 2000);
+  return redactString(text, secrets).slice(0, 2000);
 }
 
 function writeLine(out, obj, secrets = []) {
-  out.write(redact(JSON.stringify(obj), secrets) + "\n");
+  const sorted = secretsLongestFirst(secrets);
+  out.write(JSON.stringify(redactDeep(obj, sorted)) + "\n");
   const flush = out.flush;
   if (typeof flush === "function") {
     flush.call(out);
@@ -180,6 +205,56 @@ function agentAuthJsonPath() {
   return path.join(base, "auth.json");
 }
 
+const PROVIDER_ENV_KEYS = {
+  anthropic: ["ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN"],
+  openai: ["OPENAI_API_KEY"],
+  google: ["GOOGLE_API_KEY", "GEMINI_API_KEY"],
+  "google-vertex": ["GOOGLE_API_KEY"],
+  "amazon-bedrock": [
+    "AWS_ACCESS_KEY_ID",
+    "AWS_SECRET_ACCESS_KEY",
+    "AWS_SESSION_TOKEN",
+  ],
+  bedrock: ["AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "AWS_SESSION_TOKEN"],
+};
+
+function readTrimmedFile(filePath, add) {
+  try {
+    const text = fs.readFileSync(filePath, "utf8").trim();
+    if (text) add(text);
+  } catch {
+    /* optional */
+  }
+}
+
+function addProviderCredentialEnv(provider, authCheck, add) {
+  if (authCheck && typeof authCheck === "object") {
+    add(authCheck.apiKey);
+    add(authCheck.token);
+    if (authCheck.env && typeof authCheck.env === "object") {
+      for (const v of Object.values(authCheck.env)) add(v);
+    }
+    if (authCheck.source) add(process.env[authCheck.source]);
+  }
+  for (const key of PROVIDER_ENV_KEYS[provider] ?? []) {
+    add(process.env[key]);
+  }
+  const wit = process.env.AWS_WEB_IDENTITY_TOKEN_FILE;
+  if (wit) readTrimmedFile(wit, add);
+  const gac = process.env.GOOGLE_APPLICATION_CREDENTIALS;
+  if (gac) {
+    readTrimmedFile(gac, add);
+    try {
+      const cred = JSON.parse(fs.readFileSync(gac, "utf8"));
+      add(cred.private_key);
+      add(cred.client_secret);
+      add(cred.client_email);
+    } catch {
+      /* not JSON */
+    }
+  }
+}
+
 function addStoredAuthSecrets(store, add) {
   if (!store || typeof store !== "object") return;
   for (const entry of Object.values(store)) {
@@ -218,6 +293,8 @@ async function collectSecretsAsync(modelRuntime, provider, authCheck) {
     add(detail?.token);
     add(detail?.auth?.apiKey);
     add(detail?.auth?.token);
+    add(detail?.auth?.refreshToken);
+    add(detail?.auth?.accessToken);
     const headers = detail?.auth?.headers ?? detail?.headers;
     if (headers && typeof headers === "object") {
       for (const v of Object.values(headers)) add(v);
@@ -228,14 +305,14 @@ async function collectSecretsAsync(modelRuntime, provider, authCheck) {
   } catch {
     /* keep auth.json backup */
   }
-  if (authCheck?.source) add(process.env[authCheck.source]);
+  addProviderCredentialEnv(provider, authCheck, add);
   try {
     const raw = fs.readFileSync(agentAuthJsonPath(), "utf8");
     addStoredAuthSecrets(JSON.parse(raw), add);
   } catch {
     /* optional store */
   }
-  return secrets;
+  return secretsLongestFirst(secrets);
 }
 
 function usageFromAssistant(messages) {
@@ -491,10 +568,13 @@ export async function execute(runDir, deps = {}) {
       .filter((b) => b?.type === "text")
       .map((b) => b.text)
       .join("");
+    const secretsAfter = await collectSecretsAsync(modelRuntime, provider, auth);
+    const streamSecrets = secretsLongestFirst([...secrets, ...secretsAfter]);
+
     if (failed) {
       const errMsg = last?.errorMessage ?? resultText;
       if (errMsg) {
-        err.write(scrub(errMsg, secrets) + "\n");
+        err.write(scrub(errMsg, streamSecrets) + "\n");
         resultText = errMsg;
       }
     }
@@ -508,18 +588,18 @@ export async function execute(runDir, deps = {}) {
         type: "result",
         subtype: failed ? "error" : "success",
         is_error: failed,
-        result: redact(resultText, secrets),
+        result: resultText,
         session_id: sessionId,
         usage,
         total_cost_usd: totalCost,
       },
-      secrets,
+      streamSecrets,
     );
     exitCode = failed ? 1 : 0;
     }
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);
-    failResult(out, err, scrub(msg, secrets));
+    failResult(out, err, msg, { secrets });
     exitCode = 1;
   } finally {
     await killDetachedChildren(pi, deps);
