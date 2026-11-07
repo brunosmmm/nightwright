@@ -70,7 +70,8 @@ def test_cursor_conductor_argv(cfg, tmp_path, monkeypatch):
     assert argv[0] == "cursor-agent" and argv[1] == "--resume"
     assert "--force" in argv and "--trust" in argv and "--approve-mcps" in argv
     assert argv[argv.index("--workspace") + 1] == str(tmp_path / "nw")
-    assert argv[argv.index("--model") + 1] == "grok-4.7-high"
+    assert argv[argv.index("--model") + 1] == (
+        "grok-4.7[reasoning_effort=high,fast=false]")
     assert argv[-1].startswith(L.CONDUCTOR_PROMPT) and "AskUserQuestion" in argv[-1]
     assert "--permission-mode" not in argv and "--allowedTools" not in argv
     assert "--effort" not in argv and "--autocompact" not in argv and "-p" not in argv
@@ -79,7 +80,7 @@ def test_cursor_conductor_argv(cfg, tmp_path, monkeypatch):
     r = invoke("conductor-launch", "--dry-run")
     assert r.exit_code == 0, r.output
     assert "runner: cursor" in r.output and "cursor-agent --resume" in r.output
-    assert "grok-4.7-high" in r.output
+    assert "grok-4.7[reasoning_effort=high,fast=false]" in r.output
 
 
 def test_steward_follows_project_overlay(cfg, monkeypatch):
@@ -143,7 +144,8 @@ def test_resume_claude_record_as_cursor_refused(cfg, monkeypatch):
 def test_runner_flag_selects_cursor_without_env(cfg, tmp_path):
     plan = L.build_plan(cfg, "conductor", runner="cursor")
     assert plan["runner"] == "cursor" and plan["argv"][0] == "cursor-agent"
-    assert plan["argv"][plan["argv"].index("--model") + 1] == "grok-4.7-high"
+    assert plan["argv"][plan["argv"].index("--model") + 1] == (
+        "grok-4.7[reasoning_effort=high,fast=false]")
     r = invoke("conductor-launch", "--runner", "cursor", "--dry-run")
     assert r.exit_code == 0, r.output
     assert "runner: cursor" in r.output and "cursor-agent --resume" in r.output

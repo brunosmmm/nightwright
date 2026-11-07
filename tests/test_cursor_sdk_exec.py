@@ -115,7 +115,9 @@ def test_stream_result_cost_and_parse(tmp_path):
     assert seen["options"]["read_only"] is False
     assert seen["options"]["setting_sources"] == ["project"]
     assert seen["options"]["model"] == {
-        "id": "grok-4.7", "params": [{"id": "reasoning_effort", "value": "high"}]}
+        "id": "grok-4.7", "params": [
+            {"id": "reasoning_effort", "value": "high"},
+            {"id": "fast", "value": "false"}]}
     assert seen["options"]["api_key"] == KEY
     assert "sandbox" not in seen["options"] and "auto_review" not in seen["options"]
     assert KEY not in text
