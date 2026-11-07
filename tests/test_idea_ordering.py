@@ -158,6 +158,25 @@ def test_campaign_without_after_is_unchanged(env, monkeypatch):
 
 # ---- SPEC-0463: dependency conflict resolution (AC1–AC3) -----------------------------------
 
+def test_idea_ref_waits_on_spec_arrow_when_prereq_file_not_done(env, monkeypatch):
+    """Non-done main spec: idea ref keeps today's ``waiting on SPEC-… (after: idea -> why)`` text."""
+    cfg, repo = env
+    dep = "SPEC-0407"
+    path = repo / "docs/specs/0407-on-main.md"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("---\nid: SPEC-0407\nstatus: in-progress\n---\n\nx\n", encoding="utf-8")
+    a = capture(cfg, "Prereq spec wait")
+    ca = add_idea_campaign(cfg, monkeypatch, a)
+    st = _state(cfg, ca)
+    st["spec_id"] = dep
+    st["state"] = "REVIEWING"
+    S.write_state(cfg, ca, st)
+    cb = add_idea_campaign(cfg, monkeypatch, capture(cfg, "waiter"), "--after", a)
+    blocked = Q.backlog_readiness(cfg, _state(cfg, cb))[1]
+    assert len(blocked) == 1
+    assert blocked[0] == f"waiting on {dep} (after: {a} -> in-progress; campaign {ca} is REVIEWING)"
+
+
 def test_idea_after_holds_on_main_done_file_until_merged(env, monkeypatch):
     cfg, repo = env
     a = capture(cfg, "First")

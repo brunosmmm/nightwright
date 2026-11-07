@@ -1,4 +1,5 @@
 """SPEC-0463: resolve_dependency_conflicts, worktree resume, conflict mail."""
+import hashlib
 import os
 from pathlib import Path
 
@@ -587,7 +588,8 @@ def test_resolve_on_same_queued_dict_then_record_backlog(env, monkeypatch):
     assert any("mailed conductor:" in b for b in after["backlog"]["blocked_by"])
 
 
-def _open_kind_at_existing_worktree(cfg, repo, monkeypatch, *, kind, extra=None):
+def _open_kind_at_existing_worktree(cfg, repo, monkeypatch, *, kind, extra=None,
+                                   revert_result="revert failed for test"):
     cid = add_idea_campaign(cfg, monkeypatch, capture(cfg, kind))
     st = _state(cfg, cid)
     st["kind"] = kind
@@ -607,7 +609,7 @@ def _open_kind_at_existing_worktree(cfg, repo, monkeypatch, *, kind, extra=None)
     monkeypatch.setattr(git, "worktree_add", lambda *a, **k: add_calls.append(1))
     monkeypatch.setattr(Q, "_run_worktree_setup", lambda *a, **k: None)
     monkeypatch.setattr(CL, "revert_campaign_range",
-                        lambda *a, **k: revert_calls.append(1) or "revert failed for test")
+                        lambda *a, **k: revert_calls.append(1) or revert_result)
     Q._transition(cfg, _state(cfg, cid), "OPENING", "t")
     st = _state(cfg, cid)
     res = Q._do_open(Q._Ctx(cfg), st)
@@ -622,12 +624,28 @@ def test_non_adopt_kinds_still_call_worktree_add_at_existing_path(env, monkeypat
     extra = {"revert": {"target_sha": head, "merged_sha": head}} if kind == "revert" else {}
     if kind == "fixforward":
         extra = {"fixes_red": True, "red_episode": 1}
+    revert_result = None if kind == "revert" else "revert failed for test"
     add_calls, revert_calls, row = _open_kind_at_existing_worktree(
-        cfg, repo, monkeypatch, kind=kind, extra=extra)
+        cfg, repo, monkeypatch, kind=kind, extra=extra, revert_result=revert_result)
     assert add_calls == [1]
     assert row["reason"] != "resumed_worktree"
     if kind == "revert":
         assert revert_calls == [1]
+        assert row["to"] == "CLOSING" and row["reason"] == "opened"
+    if kind == "split":
+        assert row["to"] == "SPEC_WRITING" and row["reason"] == "opened"
+
+
+def test_revert_open_conflict_parks_revert_conflict(env, monkeypatch):
+    cfg, repo = env
+    head = git.rev_parse(repo, "main")
+    add_calls, revert_calls, row = _open_kind_at_existing_worktree(
+        cfg, repo, monkeypatch, kind="revert",
+        extra={"revert": {"target_sha": head, "merged_sha": head}})
+    assert add_calls == [1] and revert_calls == [1]
+    assert row["to"] == "PARKED" and row["reason"] == "revert_conflict"
+    st = _state(cfg, row["campaign"])
+    assert st["state"] == "PARKED" and st["park"]["reason"] == "revert_conflict"
 
 
 def test_mixed_blocked_by_wakes_when_not_all_benign(env, monkeypatch):
@@ -746,23 +764,24 @@ def test_adopt_rejects_spec_path_outside_worktree(env, monkeypatch):
     assert row.get("reason") != "resumed_worktree"
 
 
-def test_adopt_snapshot_hash_unchanged_when_copy_exists(env, monkeypatch):
+def test_adopt_snapshot_hash_unchanged_when_copy_matches(env, monkeypatch):
     cfg, repo = env
     cid = add_idea_campaign(cfg, monkeypatch, capture(cfg, "snap keep"))
     st = _prep_worktree(cfg, repo, cid, ACCEPTED)
-    digest = "deadbeef"
-    st["spec"]["sha256_at_open"] = digest
     cdir = S.campaign_dir(cfg, cid)
     cdir.mkdir(parents=True, exist_ok=True)
-    (cdir / CL.SPEC_AT_OPEN).write_text("old snapshot", encoding="utf-8")
+    snap_text = "old snapshot"
+    digest = hashlib.sha256(snap_text.encode("utf-8")).hexdigest()
+    st["spec"]["sha256_at_open"] = digest
+    (cdir / CL.SPEC_AT_OPEN).write_text(snap_text, encoding="utf-8")
     S.write_state(cfg, cid, st)
     _open_resume(cfg, monkeypatch, _state(cfg, cid))
     after = _state(cfg, cid)
     assert after["spec"]["sha256_at_open"] == digest
-    assert (cdir / CL.SPEC_AT_OPEN).read_text(encoding="utf-8") == "old snapshot"
+    assert (cdir / CL.SPEC_AT_OPEN).read_text(encoding="utf-8") == snap_text
 
 
-def test_adopt_snapshot_unchanged_when_hash_null_and_copy_exists(env, monkeypatch):
+def test_adopt_rewrites_untrusted_snapshot_when_hash_null(env, monkeypatch):
     cfg, repo = env
     cid = add_idea_campaign(cfg, monkeypatch, capture(cfg, "snap null hash"))
     st = _prep_worktree(cfg, repo, cid, ACCEPTED)
@@ -773,8 +792,25 @@ def test_adopt_snapshot_unchanged_when_hash_null_and_copy_exists(env, monkeypatc
     S.write_state(cfg, cid, st)
     _open_resume(cfg, monkeypatch, _state(cfg, cid))
     after = _state(cfg, cid)
-    assert not after["spec"].get("sha256_at_open")
-    assert (cdir / CL.SPEC_AT_OPEN).read_text(encoding="utf-8") == "drift baseline"
+    wt_spec = Path(after["repo"]["worktree"]) / after["spec"]["rel_path"]
+    assert after["spec"]["sha256_at_open"] == SR.spec_sha256(wt_spec)
+    assert (cdir / CL.SPEC_AT_OPEN).read_text(encoding="utf-8") == wt_spec.read_text(encoding="utf-8")
+
+
+def test_adopt_rewrites_snapshot_when_hash_mismatches_copy(env, monkeypatch):
+    cfg, repo = env
+    cid = add_idea_campaign(cfg, monkeypatch, capture(cfg, "snap mismatch"))
+    st = _prep_worktree(cfg, repo, cid, ACCEPTED)
+    cdir = S.campaign_dir(cfg, cid)
+    cdir.mkdir(parents=True, exist_ok=True)
+    st["spec"]["sha256_at_open"] = "deadbeef"
+    (cdir / CL.SPEC_AT_OPEN).write_text("stale bytes", encoding="utf-8")
+    S.write_state(cfg, cid, st)
+    _open_resume(cfg, monkeypatch, _state(cfg, cid))
+    after = _state(cfg, cid)
+    wt_spec = Path(after["repo"]["worktree"]) / after["spec"]["rel_path"]
+    assert after["spec"]["sha256_at_open"] == SR.spec_sha256(wt_spec)
+    assert (cdir / CL.SPEC_AT_OPEN).read_text(encoding="utf-8") == wt_spec.read_text(encoding="utf-8")
 
 
 def test_adopt_rewrites_empty_snapshot_when_hash_null(env, monkeypatch):

@@ -4,7 +4,7 @@ title: Periodic deterministic resolution of queue dependency conflicts
 status: done
 owner: user
 created: 2026-11-07
-updated: 2026-11-08
+updated: 2026-11-07
 milestone: "M9: agentic workflow"
 kind: feature
 tags: [agentic, queue]
@@ -148,6 +148,12 @@ Merge, split, revert, and red-main opens do not use this adopt path. A revert op
 - `python3 tools/spec_lint.py --write-ledger` && `python3 tools/spec_lint.py` — passed.
 - Full suite left to gating.
 
+### Test record (2026-11-07, loop 2 implementer)
+
+- `uv run pytest -q tests/test_idea_ordering.py tests/test_queue_conflict_resolve.py tests/test_agentic_quiet.py` — 214 passed.
+- `python3 tools/spec_lint.py --write-ledger` && `python3 tools/spec_lint.py` — passed.
+- Full suite left to gating.
+
 ### Test record (2026-11-07, loop 1 implementer)
 
 - `uv run pytest -q tests/test_idea_ordering.py tests/test_queue_conflict_resolve.py tests/test_agentic_quiet.py` — passed.
@@ -164,9 +170,10 @@ Merge, split, revert, and red-main opens do not use this adopt path. A revert op
 
 - Renumbered to **SPEC-0463** so **SPEC-0458** on `main` stays the tail-cards spec.
 - `dependency_wait` holds the full campaign-wait shape for every state (`(\S+)` backreference): `HANDED_OFF` without a live id, other states when that full campaign id is live (fixes minted ids such as `MERGE-…`, `3M-…`, `FIX-…`).
-- Worktree adopt: `spec_at_open.md` is written via a temp file and `os.replace` when the copy is
-  missing or empty after a failed write; on failure the partial copy is removed and the open parks.
-  An existing non-empty copy is kept when `sha256_at_open` is null (drift baseline).
+- Worktree adopt: `spec_at_open.md` is kept only when it is a regular file under the campaign dir
+  and its bytes match `sha256_at_open`; otherwise it is rewritten from the worktree spec via
+  `O_CREAT|O_EXCL` temp + `os.replace` (fresh open uses the same path). A failed write clears
+  the hash and parks; partial or mismatched copies are not drift baselines.
 - `worktree_resume_state`: `admission == "revise_pending"` with `accepted`/`in-progress` resumes to `SPEC_WRITING`; `after_revision` with a pending brief still resumes to `IMPLEMENTING`.
 
 ## Clock Log

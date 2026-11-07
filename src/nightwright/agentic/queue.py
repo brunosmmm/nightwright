@@ -1773,39 +1773,70 @@ def _worktree_conflict_mail_status(err: str) -> str | None:
     return None
 
 
+def _spec_at_open_snapshot_ok(cdir: Path, snap: Path, want_hash: str) -> bool:
+    """True when ``snap`` is a non-empty regular file in ``cdir`` whose bytes match ``want_hash``."""
+    try:
+        cdir_res = cdir.resolve()
+        if not snap.is_file() or snap.is_symlink():
+            return False
+        if not snap.resolve().is_relative_to(cdir_res):
+            return False
+        data = snap.read_bytes()
+        if not data:
+            return False
+        return hashlib.sha256(data).hexdigest() == want_hash
+    except OSError:
+        return False
+
+
+def _replace_spec_at_open_snapshot(cdir: Path, snap: Path, data: bytes, spec: dict) -> str | None:
+    """Write ``spec_at_open.md`` from ``data`` via a private temp file and ``os.replace``."""
+    tmp = cdir / f".{CL.SPEC_AT_OPEN}.{os.getpid()}.{threading.get_ident()}.tmp"
+    try:
+        cdir.mkdir(parents=True, exist_ok=True)
+        flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
+        if hasattr(os, "O_NOFOLLOW"):
+            flags |= os.O_NOFOLLOW
+        fd = os.open(tmp, flags, 0o644)
+        try:
+            os.write(fd, data)
+            os.fsync(fd)
+        finally:
+            os.close(fd)
+        os.replace(tmp, snap)
+        spec["sha256_at_open"] = hashlib.sha256(data).hexdigest()
+        return None
+    except (OSError, ValueError):
+        try:
+            if tmp.is_file():
+                tmp.unlink()
+        except OSError:
+            pass
+        spec.pop("sha256_at_open", None)
+        return f"could not write spec snapshot at {snap}"
+
+
 def _adopt_spec_open_snapshot(cfg, state: dict, worktree: Path) -> str | None:
-    """Create ``spec_at_open.md`` on worktree adopt when missing or empty after a failed write."""
+    """Create or restore ``spec_at_open.md`` on worktree adopt when missing or untrusted."""
     spec = state.setdefault("spec", {})
     rel_p = spec.get("rel_path")
     if not rel_p:
+        return None
+    cdir = store.campaign_dir(cfg, state["id"])
+    snap = cdir / CL.SPEC_AT_OPEN
+    want = spec.get("sha256_at_open")
+    if want and _spec_at_open_snapshot_ok(cdir, snap, want):
         return None
     wt_resolved = worktree.resolve()
     spec_file = (worktree / rel_p).resolve()
     if not spec_file.is_relative_to(wt_resolved) or not spec_file.is_file():
         return None
-    cdir = store.campaign_dir(cfg, state["id"])
-    snap = cdir / CL.SPEC_AT_OPEN
-    if snap.is_file():
-        if spec.get("sha256_at_open"):
-            return None
-        if snap.stat().st_size > 0:
-            return None
-    tmp = cdir / f".{CL.SPEC_AT_OPEN}.tmp"
     try:
-        cdir.mkdir(parents=True, exist_ok=True)
-        tmp.write_text(spec_file.read_text(encoding="utf-8"), encoding="utf-8")
-        os.replace(tmp, snap)
-        spec["sha256_at_open"] = _spec_sha(spec_file)
-    except (OSError, ValueError):
-        for path in (tmp, snap):
-            try:
-                if path.is_file():
-                    path.unlink()
-            except OSError:
-                pass
+        data = spec_file.read_bytes()
+    except OSError:
         spec.pop("sha256_at_open", None)
         return f"could not write spec snapshot at {snap}"
-    return None
+    return _replace_spec_at_open_snapshot(cdir, snap, data, spec)
 
 
 def _worktree_conflict_mail(cfg, state: dict, worktree: Path, status: str) -> None:
@@ -1888,13 +1919,19 @@ def _do_open_unwrapped(ctx: _Ctx, state: dict) -> StepResult:
             pass                                                # SPEC-0420: no spec
         elif not has_no_spec(state):
             spec = state.setdefault("spec", {})
-            spec["sha256_at_open"] = _spec_sha(worktree / spec.get("rel_path", ""))
             # SPEC-0186: keep the accepted text so the close step can detect spec drift
             spec_file = worktree / spec.get("rel_path", "")
             if spec.get("rel_path") and spec_file.is_file():
-                store.campaign_dir(ctx.cfg, state["id"]).mkdir(parents=True, exist_ok=True)
-                (store.campaign_dir(ctx.cfg, state["id"]) / CL.SPEC_AT_OPEN).write_text(
-                    spec_file.read_text(encoding="utf-8"), encoding="utf-8")
+                cdir = store.campaign_dir(ctx.cfg, state["id"])
+                try:
+                    data = spec_file.read_bytes()
+                except OSError as e:
+                    res.error = str(e)
+                else:
+                    snap_err = _replace_spec_at_open_snapshot(
+                        cdir, cdir / CL.SPEC_AT_OPEN, data, spec)
+                    if snap_err:
+                        res.error = snap_err
     except (GitError, ValueError, OSError) as e:
         res.error = getattr(e, "tail", None) or str(e)
         res.config_error = isinstance(e, ProjectConfigError)
