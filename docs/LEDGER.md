@@ -705,6 +705,7 @@ progress. This is the single place to see *what has been decided* and *what is i
 | [SPEC-0442](./specs/0442-cursor-sdk-persona-runs.md) | Cursor SDK persona runs | feature | done | — | 2026-11-07 |
 | [SPEC-0443](./specs/0443-piped-output-ignores-force-color.md) | Piped output ignores FORCE_COLOR when deciding to wrap | feature | done | — | 2026-11-07 |
 | [SPEC-0444](./specs/0444-conductor-follower-acks-before-advancing.md) | The conductor follower commits an event only after the session acks it | feature | done | — | 2026-11-07 |
+| [SPEC-0445](./specs/0445-sdk-persona-model-selection.md) | Persona SDK runs pass a model id and an effort parameter | feature | done | — | 2026-11-07 |
 
 ## Superseded / rejected
 

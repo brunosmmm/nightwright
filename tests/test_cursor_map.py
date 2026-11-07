@@ -70,6 +70,18 @@ def test_map_launch_model_claude_sonnet_is_sonnet_default_effort(tmp_path):
     assert CM.map_launch_model("sonnet", "medium", cfg) == "grok-4.7-medium"
 
 
+def test_sdk_selection_splits_effort_into_the_model_parameter(tmp_path):
+    cfg = {"config_dir": str(tmp_path)}
+    assert CM.sdk_selection(CM.map_model("sonnet", "high", cfg)) == {
+        "id": "grok-4.7", "params": [{"id": "reasoning_effort", "value": "high"}]}
+    assert CM.sdk_selection(CM.map_model("haiku", "medium", cfg)) == {
+        "id": "grok-4.7", "params": [{"id": "reasoning_effort", "value": "low"}]}
+    assert CM.sdk_selection(CM.map_model("opus", "xhigh", cfg)) == {
+        "id": "gpt-5.6-sol", "params": [{"id": "reasoning", "value": "xhigh"}]}
+    assert CM.sdk_selection("composer-2.5") == {"id": "composer-2.5", "params": []}
+    assert CM.sdk_selection("grok-4.7-high")["id"] == "grok-4.7"
+
+
 def test_mapped_model_only_translates_when_runner_is_cursor(tmp_path, monkeypatch):
     monkeypatch.delenv("NW_AGENTIC_RUNNER", raising=False)
     cfg = {"config_dir": str(tmp_path), "agentic": {"runner": "claude"}}

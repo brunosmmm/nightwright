@@ -1,6 +1,8 @@
-# SPEC-0436: alias + effort → Cursor model id. Overlay with
+# SPEC-0436 / SPEC-0445: alias + effort → cursor-agent CLI id. Overlay with
 # <config_dir>/cursor_map.yaml, agentic.cursor in config.yaml, or
 # <project>/.nw/cursor_map.yaml. A profile persona may also set cursor_model.
+# Persona SDK runs split a trailing -low|-medium|-high|-xhigh|-max off a known
+# base. grok-4.7's parameter is reasoning_effort. gpt-5.6-sol's is reasoning.
 schema: nw.cursor_map.v1
 defaults:                 # effort when the profile's effort is missing or unknown
   haiku: medium

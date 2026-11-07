@@ -20,6 +20,15 @@ from .profiles import EFFORTS, MODEL_ALIASES, MODEL_RE, deep_merge
 SCHEMA_ID = "nw.cursor_map.v1"
 MAP_FILENAME = "cursor_map.yaml"
 _BUILTIN = Path(__file__).resolve().parent / MAP_FILENAME
+# cursor-agent takes one id with the effort baked in (`grok-4.7-high`). The SDK
+# takes the base id plus a parameter, and the parameter name is not the same on
+# every model (the account's model list: grok-4.7 uses reasoning_effort,
+# gpt-5.6-sol uses reasoning). `xhigh` is first so it is not parsed as `high`.
+_SDK_EFFORT_PARAM = {
+    "grok-4.7": "reasoning_effort",
+    "gpt-5.6-sol": "reasoning",
+}
+_SDK_EFFORT_SUFFIXES = ("xhigh", "medium", "high", "low", "max")
 _FILE_KEYS = frozenset({"schema", "defaults", "aliases", "alias_map"})
 _CLAUDE_MODEL_RE = MODEL_RE
 
@@ -190,6 +199,26 @@ def map_launch_model(model, effort=None, cfg=None, *, project_root=None) -> str:
     if alias:
         return map_model(alias, None, cfg, project_root=project_root)
     return map_model(model, effort, cfg, project_root=project_root)
+
+
+def sdk_selection(model_id) -> dict:
+    """The SDK model selection for a mapped Cursor id.
+
+    ``grok-4.7-high`` becomes ``{id: grok-4.7, params: [{id: reasoning_effort,
+    value: high}]}``. ``gpt-5.6-sol-xhigh`` becomes ``{id: gpt-5.6-sol, params:
+    [{id: reasoning, value: xhigh}]}``. An id that is not one of those bases
+    plus an effort suffix is passed through with no parameters.
+    """
+    raw = str(model_id or "").strip()
+    for effort in _SDK_EFFORT_SUFFIXES:
+        suffix = f"-{effort}"
+        if not raw.endswith(suffix):
+            continue
+        base = raw[: -len(suffix)]
+        param = _SDK_EFFORT_PARAM.get(base)
+        if param:
+            return {"id": base, "params": [{"id": param, "value": effort}]}
+    return {"id": raw, "params": []}
 
 
 def map_model(model, effort=None, cfg=None, *, project_root=None, cursor_model=None) -> str:

@@ -15,6 +15,8 @@ import signal
 import sys
 from pathlib import Path
 
+from .cursor_map import sdk_selection
+
 
 def _plain(value):
     """JSON-safe copy of an SDK object. Last resort is ``str``; callers scrub secrets."""
@@ -307,7 +309,7 @@ def execute(run_dir, *, argv=None, environ=None, out=None, err=None,
         agent_create = _default_create
     persona = req.get("persona") or ""
     options = {
-        "model": model,
+        "model": sdk_selection(model),
         "api_key": key,
         "cwd": req.get("cwd") or ".",
         "dirs": dirs,
