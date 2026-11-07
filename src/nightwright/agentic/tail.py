@@ -28,6 +28,7 @@ STDERR_LINES = 10
 RESULT_TEXT_LINES = 15
 DIFF_LINES = 20                      # added and removed lines shown for one edit
 OUTPUT_LINES = 8                     # stdout or stderr lines shown for one shell
+SPEECH = "bold yellow"               # the agent's own words, against dim tool output
 END_STATES = ("finished", "vanished", "orphaned")
 RUNNING = ("running", "orphan_group")
 RUN_LOOKBACK = 8                     # newest run dirs looked at per campaign
@@ -447,6 +448,13 @@ class Renderer:
     def _nest(self, key: str) -> str:
         return "  ┆ " if key else ""
 
+    def _speech_line(self, nest: str, ln: str) -> Text:
+        """One spoken line: a yellow marker, then the words."""
+        t = Text(f"{nest}  ")
+        t.append("▸ ", style=SPEECH)
+        t.append(ln, style=SPEECH)
+        return t
+
     def _append_prose(self, key: str, text: str) -> list[Text]:
         """Hold assistant text. A newline flushes the finished lines; a token fragment stays."""
         if not text:
@@ -458,13 +466,13 @@ class Renderer:
         parts = buf.split("\n")
         self._prose[key] = parts[-1]
         nest = self._nest(key)
-        return [Text(f"{nest}  {ln}") for ln in parts[:-1] if ln.strip()]
+        return [self._speech_line(nest, ln) for ln in parts[:-1] if ln.strip()]
 
     def _flush_key(self, key: str) -> list[Text]:
         """Emit held text for one stream as a single line, then a cost line that was waiting."""
         buf = self._prose.pop(key, "") or ""
         nest = self._nest(key)
-        out = [Text(f"{nest}  {ln}") for ln in buf.split("\n") if ln.strip()]
+        out = [self._speech_line(nest, ln) for ln in buf.split("\n") if ln.strip()]
         if out and not key and self._pending_cost is not None:
             out.append(self._pending_cost)
             self._pending_cost = None

@@ -710,6 +710,7 @@ progress. This is the single place to see *what has been decided* and *what is i
 | [SPEC-0447](./specs/0447-tail-joins-sdk-text-tokens.md) | The run tail joins SDK text tokens into a sentence | feature | done | — | 2026-11-07 |
 | [SPEC-0448](./specs/0448-tail-renders-sdk-tool-results.md) | The run tail renders SDK tool results instead of their JSON | feature | done | — | 2026-11-07 |
 | [SPEC-0449](./specs/0449-tail-shows-shell-output-deltas.md) | The run tail shows shell output while the command is running | feature | done | — | 2026-11-07 |
+| [SPEC-0451](./specs/0451-tail-marks-spoken-lines.md) | The run tail marks the agent's spoken lines | feature | done | — | 2026-11-07 |
 
 ## Superseded / rejected
 

@@ -258,7 +258,7 @@ def test_render_real_tool_sample(tmp_path):
 def test_render_unpriced_shows_tokens(tmp_path):
     d = _stream_run_dir(tmp_path, OK_SAMPLE.read_text())
     out = _rendered({}, d)
-    assert "  ok" in out
+    assert "  ▸ ok" in out
     assert "tokens in 2 · out 4 · cache 23.7k (turn 1; no price for claude-opus-5-5)" in out
 
 
@@ -300,20 +300,22 @@ def test_sdk_token_deltas_join_until_the_next_event():
     assert lines == []
     lines.extend(t.plain for t in r.feed(
         {"type": "tool_call", "name": "Read", "status": "running", "args": {"path": "a.md"}}))
-    assert lines[0] == "  I'll implement SPEC-0446"
+    assert lines[0] == "  ▸ I'll implement SPEC-0446"
     assert lines[1].startswith("→ Read")
 
 
 def test_assistant_newline_prints_the_finished_line_and_holds_the_rest():
     r = TL.Renderer()
-    assert [t.plain for t in r.feed(_assistant_text("hello\nworld"))] == ["  hello"]
-    assert [t.plain for t in r.flush_prose()] == ["  world"]
+    assert [t.plain for t in r.feed(_assistant_text("hello\nworld"))] == ["  ▸ hello"]
+    held = r.flush_prose()
+    assert [t.plain for t in held] == ["  ▸ world"]
+    assert held[0].spans[-1].style == TL.SPEECH or str(held[0].spans[-1].style) == TL.SPEECH
 
 
 def test_held_tokens_print_when_the_viewer_finishes_the_file(tmp_path):
     body = "\n".join(json.dumps(_assistant_text(part)) for part in ("I'll", " implement")) + "\n"
     out = _rendered({}, _stream_run_dir(tmp_path, body))
-    assert "  I'll implement" in out
+    assert "  ▸ I'll implement" in out
     assert out.count("I'll") == 1
 
 
