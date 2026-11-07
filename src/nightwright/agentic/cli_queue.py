@@ -1562,7 +1562,7 @@ def attach(queue_group):
     @click.option("--json", "as_json", is_flag=True,
                   help="emit nw.queue.add.v1 JSON (nw.queue.add.batch.v1 for a batch)")
     @click.option("--runner", "runner", default=None, type=click.Choice(["claude", "cursor", "pi"]),
-                  help="pin this campaign to claude or cursor (omit = follow host/project)")
+                  help="pin this campaign to claude, cursor, or pi (omit = follow host/project)")
     @click.option("--by", default=None,
                   help="who acts (default: $NW_MAILBOX_ADDR, then human)")
     @click.pass_obj

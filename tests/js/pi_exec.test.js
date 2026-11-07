@@ -115,6 +115,7 @@ function stubPi(over = {}) {
 test("execute: in-memory session, settings, loader flags, appendSystemPrompt", async () => {
   const execute = await loadExecute();
   const runDir = layout();
+  const doc = JSON.parse(fs.readFileSync(path.join(runDir, "request.json"), "utf8"));
   const out = { chunks: [], write(s) { this.chunks.push(s); } };
   const { pi, over } = stubPi();
   const code = await execute(runDir, {
@@ -126,16 +127,25 @@ test("execute: in-memory session, settings, loader flags, appendSystemPrompt", a
   assert.equal(code, 0);
   assert.equal(over.sessionCwd, runDir);
   assert.deepEqual(over.settingsCall, { settings: {}, opts: { projectTrusted: false } });
-  assert.equal(over.loaderOpts.agentDir, "");
+  assert.notEqual(over.loaderOpts.agentDir, runDir);
+  assert.ok(over.loaderOpts.agentDir);
   assert.equal(over.loaderOpts.noExtensions, true);
+  assert.equal(over.loaderOpts.noSkills, true);
+  assert.equal(over.loaderOpts.noPromptTemplates, true);
+  assert.equal(over.loaderOpts.noThemes, true);
+  assert.equal(over.loaderOpts.noContextFiles, false);
   assert.deepEqual(over.loaderOpts.appendSystemPrompt, ["INVARIANT"]);
   assert.equal(over.createOpts.thinkingLevel, "high");
   assert.deepEqual(over.createOpts.tools, ["read", "bash", "edit", "write"]);
   assert.equal(over.createOpts.settingsManager.tag, "in-memory-settings");
+  assert.equal(over.createOpts.jsonSchema, undefined);
+  assert.equal(over.createOpts.responseFormat, undefined);
   assert.ok(over.disposed);
   const prompt = over.promptText;
   assert.equal((prompt.match(/INVARIANT/g) || []).length, 1);
   assert.ok(prompt.includes("Reply with a single JSON object"));
+  const schemaBody = JSON.stringify(doc.json_schema, null, 2);
+  assert.equal((prompt.match(new RegExp(schemaBody.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "g")) || []).length, 1);
 });
 
 test("execute: read-only tools", async () => {
@@ -558,6 +568,124 @@ test("execute: parallel toolResult same ms both emit", async () => {
   });
   const lines = chunksToLines(out.chunks).filter((l) => l.type === "user");
   assert.equal(lines.length, 2);
+});
+
+test("execute: thinking block is not written to stdout", async () => {
+  const execute = await loadExecute();
+  const runDir = layout();
+  const out = { chunks: [], write(s) { this.chunks.push(s); } };
+  const asstEv = {
+    type: "message_end",
+    message: {
+      role: "assistant",
+      content: [
+        { type: "thinking", text: "secret chain of thought" },
+        { type: "text", text: '{"status":"done"}' },
+      ],
+    },
+  };
+  const { pi } = stubPi({ events: [asstEv] });
+  await execute(runDir, {
+    out,
+    err: { write() {} },
+    importPi: async () => pi,
+    modelRuntime: await pi.ModelRuntime.create(),
+  });
+  const blob = out.chunks.join("");
+  assert.ok(!blob.includes("secret chain of thought"));
+  const lines = chunksToLines(out.chunks).filter((l) => l.type === "assistant");
+  assert.equal(lines[0].message.content.length, 1);
+  assert.equal(lines[0].message.content[0].type, "text");
+});
+
+test("execute: long verdict redacts without length cap", async () => {
+  const execute = await loadExecute();
+  const runDir = layout();
+  const padding = "x".repeat(2100);
+  const verdictObj = { status: "done", summary: "ok", padding, secret: SENTINEL };
+  const verdict = JSON.stringify(verdictObj);
+  assert.ok(verdict.length > 2000);
+  const out = { chunks: [], write(s) { this.chunks.push(s); } };
+  const { pi } = stubPi({
+    messages: [
+      {
+        role: "assistant",
+        stopReason: "stop",
+        content: [{ type: "text", text: verdict }],
+        usage: { cost: { total: 0.01 } },
+      },
+    ],
+    modelCost: { input: 1 },
+    getAuth: { auth: { apiKey: SENTINEL } },
+  });
+  const code = await execute(runDir, {
+    out,
+    err: { write() {} },
+    importPi: async () => pi,
+    modelRuntime: await pi.ModelRuntime.create(),
+  });
+  assert.equal(code, 0);
+  const last = JSON.parse(out.chunks.at(-1));
+  assert.ok(last.result.length > 2000);
+  assert.ok(last.result.includes("[redacted]"));
+  assert.ok(!last.result.includes(SENTINEL));
+  const parsed = JSON.parse(last.result);
+  assert.equal(parsed.status, "done");
+  assert.equal(parsed.secret, "[redacted]");
+});
+
+test("execute: all-zero catalog with totalFromProvider stores 0", async () => {
+  const execute = await loadExecute();
+  const runDir = layout();
+  const out = { chunks: [], write(s) { this.chunks.push(s); } };
+  const { pi } = stubPi({
+    messages: [
+      {
+        role: "assistant",
+        stopReason: "stop",
+        content: [{ type: "text", text: "x" }],
+        usage: { cost: { total: 0, totalFromProvider: true } },
+      },
+    ],
+    modelCost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+  });
+  await execute(runDir, {
+    out,
+    err: { write() {} },
+    importPi: async () => pi,
+    modelRuntime: await pi.ModelRuntime.create(),
+  });
+  const last = JSON.parse(out.chunks.at(-1));
+  assert.equal(last.total_cost_usd, 0);
+});
+
+test("execute: no assistant message leaves total_cost_usd null", async () => {
+  const execute = await loadExecute();
+  const runDir = layout();
+  const out = { chunks: [], write(s) { this.chunks.push(s); } };
+  const { pi } = stubPi({
+    messages: [],
+    events: [
+      {
+        type: "message_end",
+        message: {
+          role: "assistant",
+          stopReason: "error",
+          errorMessage: "fail",
+          content: [],
+        },
+      },
+    ],
+  });
+  const code = await execute(runDir, {
+    out,
+    err: { write() {} },
+    importPi: async () => pi,
+    modelRuntime: await pi.ModelRuntime.create(),
+  });
+  assert.equal(code, 1);
+  const last = JSON.parse(out.chunks.at(-1));
+  assert.equal(last.total_cost_usd, null);
 });
 
 test("execute: SIGTERM handler calls abort", async () => {

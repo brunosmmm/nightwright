@@ -456,6 +456,13 @@ fails the check with that fact.
 - Full `uv run pytest` left to queue gating
 - `python3 tools/spec_lint.py --write-ledger` && `python3 tools/spec_lint.py` — pass
 
+### Test record (loop 3, 2026-11-07)
+
+- `node --test tests/js/pi_exec.test.js` — pass (long verdict redact, loader flags, thinking omitted, cost edge cases)
+- `uv run pytest tests/test_pi_runner.py tests/test_remote_personas.py::test_workers_check_pi_needed_ssh_pi_check tests/test_pi_exec_js.py -q` — pass
+- Full `uv run pytest` left to queue gating
+- `python3 tools/spec_lint.py --write-ledger` && `python3 tools/spec_lint.py` — pass
+
 ## Rollout / migration
 
 Hosts and workers that run Pi personas need `node` on `PATH` and

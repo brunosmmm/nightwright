@@ -400,7 +400,7 @@ def check_pi_agent(cfg, *, run_cmd=None) -> dict:
         needed = False
     if not needed:
         return check(id, "skip", "no campaign resolves to pi")
-    providers = PM.distinct_providers(cfg=cfg)
+    providers = PM.probe_providers(cfg)
     rec = RP.probe_pi(providers)
     if rec.get("ok"):
         return check(id, "ok", f"{len(providers)} provider(s) ready")

@@ -5,6 +5,7 @@
  * Exports `execute(runDir, deps)` for tests with a stub SDK.
  */
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import process from "node:process";
 import { fileURLToPath } from "node:url";
@@ -14,16 +15,24 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const SCHEMA_FOOTER =
   "Reply with a single JSON object matching this schema and nothing else.\n\n{schema}";
 
-function scrub(text, secrets = []) {
+function redact(text, secrets = []) {
   let out = String(text ?? "");
   for (const s of secrets) {
     if (s) out = out.split(s).join("[redacted]");
   }
-  return out.slice(0, 2000);
+  return out;
+}
+
+function scrub(text, secrets = []) {
+  return redact(text, secrets).slice(0, 2000);
 }
 
 function writeLine(out, obj) {
   out.write(JSON.stringify(obj) + "\n");
+  const flush = out.flush;
+  if (typeof flush === "function") {
+    flush.call(out);
+  }
 }
 
 function failResult(out, err, message, { code = "startup", secrets = [] } = {}) {
@@ -242,7 +251,8 @@ export async function execute(runDir, deps = {}) {
     return 1;
   }
 
-  const modelRuntime = deps.modelRuntime ?? (await pi.ModelRuntime.create());
+  const modelRuntime =
+    deps.modelRuntime ?? (await pi.ModelRuntime.create({ modelsPath: null }));
   const model = modelRuntime.getModel(provider, modelId);
   if (!model) {
     failResult(out, err, `unknown model ${provider}/${modelId}`, { secrets: [] });
@@ -266,6 +276,8 @@ export async function execute(runDir, deps = {}) {
   const readOnly = Boolean(req.read_only);
   const tools = readOnly ? ["read", "grep", "find", "ls"] : ["read", "bash", "edit", "write"];
 
+  const agentDir = deps.agentDir ?? fs.mkdtempSync(path.join(os.tmpdir(), "nw-pi-agent-"));
+
   const settingsManager =
     deps.settingsManager ??
     pi.SettingsManager.inMemory({}, { projectTrusted: false });
@@ -274,7 +286,7 @@ export async function execute(runDir, deps = {}) {
     deps.resourceLoader ??
     new pi.DefaultResourceLoader({
       cwd,
-      agentDir: "",
+      agentDir,
       settingsManager,
       noExtensions: true,
       noSkills: true,
@@ -366,7 +378,7 @@ export async function execute(runDir, deps = {}) {
       type: "result",
       subtype: failed ? "error" : "success",
       is_error: failed,
-      result: scrub(resultText, secrets),
+      result: redact(resultText, secrets),
       session_id: sessionId,
       usage,
       total_cost_usd: totalCost,
@@ -389,7 +401,7 @@ export async function probeProviders(providers, deps = {}) {
   const importPi = deps.importPi ?? (() => import("@earendil-works/pi-coding-agent"));
   try {
     const pi = await importPi();
-    const runtime = deps.modelRuntime ?? (await pi.ModelRuntime.create());
+    const runtime = deps.modelRuntime ?? (await pi.ModelRuntime.create({ modelsPath: null }));
     const missing = [];
     for (const p of providers) {
       let ok = false;

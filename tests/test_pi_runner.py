@@ -132,17 +132,39 @@ def test_doctor_pi_skip_and_probe(tmp_path, monkeypatch):
 
 
 def test_map_pi_overlay_order(tmp_path):
-    proj = tmp_path / "proj"
-    proj.mkdir()
-    (proj / ".nw").mkdir()
-    (proj / ".nw" / "pi_map.yaml").write_text(
-        "schema: nw.pi_map.v1\n"
-        "aliases:\n  haiku:\n    medium:\n      provider: openai\n"
-        "      id: gpt-test\n      thinking: medium\n",
+    cfg_dir = tmp_path / "cfg"
+    cfg_dir.mkdir()
+    (cfg_dir / "pi_map.yaml").write_text(
+        "schema: nw.pi_map.v1\naliases:\n  sonnet:\n    high:\n"
+        "      provider: anthropic\n      id: user-sonnet\n      thinking: high\n",
         encoding="utf-8",
     )
-    row = PM.map_pi_model("haiku", "medium", {}, project_root=proj)
-    assert row["provider"] == "openai" and row["id"] == "gpt-test"
+    project = tmp_path / "proj"
+    (project / ".nw").mkdir(parents=True)
+    (project / ".nw" / "pi_map.yaml").write_text(
+        "schema: nw.pi_map.v1\naliases:\n  sonnet:\n    high:\n"
+        "      provider: openai\n      id: project-sonnet\n      thinking: high\n",
+        encoding="utf-8",
+    )
+    cfg = {
+        "config_dir": str(cfg_dir),
+        "agentic": {
+            "pi": {
+                "aliases": {
+                    "sonnet": {
+                        "medium": {
+                            "provider": "anthropic",
+                            "id": "config-sonnet",
+                            "thinking": "medium",
+                        }
+                    }
+                }
+            }
+        },
+    }
+    assert PM.map_pi_model("sonnet", "high", cfg)["id"] == "user-sonnet"
+    assert PM.map_pi_model("sonnet", "medium", cfg)["id"] == "config-sonnet"
+    assert PM.map_pi_model("sonnet", "high", cfg, project_root=project)["id"] == "project-sonnet"
 
 
 def test_map_pi_haiku_default_medium():
@@ -223,17 +245,18 @@ def test_run_job_pi_ensure_pi_skips_claude_requirement(tmp_path, monkeypatch):
         "ensure_pi_persona",
         lambda p, environ=None: ensured.append(p) or {"ok": True},
     )
-    req = _req(tmp_path)
-    monkeypatch.setattr(R, "request_from_job", lambda *a, **k: req)
+    req = _req(tmp_path, pi_provider="anthropic", pi_id="job-model", pi_thinking="low")
+    seen = []
 
-    class FakePi(R.PiRunner):
+    class CapturingPi(R.PiRunner):
         def run(self, r):
+            seen.append(r)
             return R.RunResult(
                 exit_code=0, timed_out=False, interrupted=False, duration_s=0.1,
                 is_error=False, cost_usd=None,
             )
 
-    monkeypatch.setattr(R, "select_runner", lambda cfg, runner=None: FakePi())
+    monkeypatch.setattr(R, "PiRunner", CapturingPi)
     monkeypatch.setattr(RPS, "_tree_git", lambda *a, **k: "")
     monkeypatch.setattr(W, "_git", lambda *a, **k: type("P", (), {"returncode": 0})())
 
@@ -247,6 +270,23 @@ def test_run_job_pi_ensure_pi_skips_claude_requirement(tmp_path, monkeypatch):
     job.mkdir()
     (job / "tree").mkdir()
     (job / "run").mkdir()
+    worker_cfg = {
+        "data_dir": str(tmp_path),
+        "agentic": {
+            "runner": "pi",
+            "pi": {
+                "aliases": {
+                    "sonnet": {
+                        "high": {
+                            "provider": "openai",
+                            "id": "worker-wrong",
+                            "thinking": "high",
+                        }
+                    }
+                }
+            },
+        },
+    }
     h = {
         "job_id": "j",
         "payload": {
@@ -254,10 +294,13 @@ def test_run_job_pi_ensure_pi_skips_claude_requirement(tmp_path, monkeypatch):
             "request": R.request_to_job(req, tmp_path),
         },
     }
-    cfg = {"data_dir": str(tmp_path)}
-    RPS.run_job(cfg, h, job, Frames(), threading.Event())
+    RPS.run_job(worker_cfg, h, job, Frames(), threading.Event())
     assert ensured == ["anthropic"]
     assert kinds[0] == "started"
+    assert len(seen) == 1
+    assert seen[0].pi_provider == "anthropic"
+    assert seen[0].pi_id == "job-model"
+    assert seen[0].pi_thinking == "low"
 
 
 def test_ensure_pi_persona_provider_only(tmp_path, monkeypatch):
@@ -305,3 +348,106 @@ def test_plan_backend_pi(tmp_path):
     plan = Q.plan_backend(cfg, cid, "pi")
     Q.apply_backend(cfg, plan)
     assert store.read_state(cfg, cid)["runner"] == "pi"
+
+
+def test_probe_pi_subprocess_argv_and_no_key_text(tmp_path, monkeypatch):
+    import subprocess
+
+    PROBE_KEY = "probe-sentinel-key-xyzzy"
+    calls = []
+    script = RP._pi_exec_script()
+
+    def fake_run(argv, **kw):
+        calls.append(argv)
+        return subprocess.CompletedProcess(
+            argv, 0, stdout=json.dumps({"ok": True, "missing": [], "error": None}), stderr="")
+
+    monkeypatch.setattr(RP, "_resolve_binary", lambda name, env=None: "/bin/node" if name == "node" else None)
+    rec = RP.probe_pi(["anthropic", "openai"], run=fake_run)
+    assert rec["ok"] is True
+    assert calls[0][:3] == ["/bin/node", str(script), "--probe"]
+    assert calls[0][3:] == ["anthropic", "openai"]
+    blob = json.dumps(rec)
+    assert PROBE_KEY not in blob
+
+    monkeypatch.setattr(RP, "_resolve_binary", lambda name, env=None: None)
+    assert RP.probe_pi(["anthropic"], run=fake_run)["error"] == "node not found on PATH"
+
+
+def test_doctor_pi_unions_project_map_providers(tmp_path, monkeypatch):
+    from nightwright.agentic import store
+
+    cfg = {"data_dir": str(tmp_path / "d"), "agentic": {"runner": "pi"}}
+    wt = tmp_path / "wt"
+    wt.mkdir()
+    (wt / ".nw").mkdir()
+    (wt / ".nw" / "pi_map.yaml").write_text(
+        "schema: nw.pi_map.v1\naliases:\n  sonnet:\n    high:\n"
+        "      provider: openai\n      id: x\n      thinking: high\n",
+        encoding="utf-8",
+    )
+    store.create_campaign(cfg, {
+        "id": "c-pi", "spec_id": "SPEC-pi", "state": "IMPLEMENTING",
+        "repo": {"worktree": str(wt)},
+    })
+    calls = []
+    monkeypatch.setattr(RP, "probe_pi", lambda providers, **kw: (calls.append(list(providers)), {"ok": True, "missing": []})[1])
+    D.check_pi_agent(cfg)
+    assert set(calls[0]) == {"anthropic", "openai"}
+
+
+def test_spec_review_run_request_pi_fields(tmp_path, monkeypatch):
+    from nightwright.agentic import spec_review as SR
+
+    spec = tmp_path / "docs" / "specs"
+    spec.mkdir(parents=True)
+    p = spec / "0999-test.md"
+    p.write_text(
+        "---\nid: SPEC-0999\nstatus: accepted\n---\n# Test\n",
+        encoding="utf-8",
+    )
+    cfg = {"data_dir": str(tmp_path / "d"), "agentic": {"runner": "pi"}}
+    captured = []
+
+    class CapRunner(R.PiRunner):
+        def run(self, req):
+            captured.append(req)
+            raise ValueError("stop after capture")
+
+    monkeypatch.setattr("nightwright.agentic.spec_review.select_runner", lambda c: CapRunner())
+    monkeypatch.setattr(SR, "journal_start", lambda *a, **k: None)
+    monkeypatch.setattr(SR, "journal_end", lambda *a, **k: None)
+    monkeypatch.setattr(SR, "review_payload", lambda *a, **k: {})
+    monkeypatch.setattr(SR, "save_review", lambda *a, **k: tmp_path / "review.json")
+    with pytest.raises(ValueError, match="stop after capture"):
+        SR.run_spec_review(cfg, p, "SPEC-0999")
+    req = captured[0]
+    assert req.pi_provider == "anthropic"
+    assert req.pi_id and req.pi_thinking
+
+
+def test_validate_runner_cfg_accepts_pi():
+    Q.validate_runner_cfg({"agentic": {"poll_interval_s": 1, "lease_ttl_s": 5, "runner": "pi"}})
+
+
+def test_project_agents_runner_accepts_pi(tmp_path):
+    from nightwright.agentic import project as P
+
+    p = tmp_path / "project.yaml"
+    p.write_text("schema: nw.project.v1\nagents:\n  runner: pi\n", encoding="utf-8")
+    assert P.load_project_config(p)["agents"]["runner"] == "pi"
+
+
+def test_queue_cli_runner_choices_include_pi_exclude_conductor():
+    from nightwright.cli import cli
+
+    add = cli.commands["queue"].commands["add"]
+    backend = cli.commands["queue"].commands["backend"]
+    add_runner = next(p for p in add.params if p.name == "runner")
+    backend_runner = next(p for p in backend.params if p.name == "runner")
+    assert "pi" in add_runner.type.choices
+    assert "pi" in backend_runner.type.choices
+    cond = cli.commands["queue"].commands["conductor-launch"]
+    stew = cli.commands["queue"].commands["steward-launch"]
+    assert "pi" not in next(p for p in cond.params if p.name == "runner").type.choices
+    assert "pi" not in next(p for p in stew.params if p.name == "runner").type.choices

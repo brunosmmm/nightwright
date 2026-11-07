@@ -151,6 +151,33 @@ def distinct_providers(doc: dict | None = None, *, cfg=None, project_root=None) 
     return sorted(providers)
 
 
+def probe_providers(cfg, *, campaigns=None) -> list[str]:
+    """Providers to probe on the host: merged host map plus each live pi campaign's project map."""
+    from . import runner as R
+    from . import store
+
+    providers: set[str] = set(distinct_providers(cfg=cfg))
+    if campaigns is None:
+        try:
+            campaigns = [st for st in store.list_campaigns(cfg)
+                         if st.get("state") not in store.TERMINAL_STATES]
+        except (OSError, TypeError, ValueError, KeyError):
+            campaigns = ()
+    for st in campaigns or ():
+        try:
+            if R.resolve_runner(cfg, campaign=st, project=st.get("project")) != "pi":
+                continue
+        except ValueError:
+            continue
+        wt = (st.get("repo") or {}).get("worktree")
+        if not wt:
+            continue
+        root = Path(wt)
+        if root.is_dir():
+            providers.update(distinct_providers(cfg=cfg, project_root=root))
+    return sorted(providers)
+
+
 def _flatten(doc: dict) -> tuple[dict, dict]:
     defaults = dict(doc.get("defaults") or {})
     table: dict[str, dict] = {}

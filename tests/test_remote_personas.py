@@ -559,6 +559,58 @@ def test_ssh_grammar_allows_pi_check():
         W.check_ssh_command("nw worker pi-check --auth")
 
 
+def test_workers_check_pi_needed_ssh_pi_check(tmp_path, monkeypatch):
+    from nightwright.agentic import remote_gates as RG
+    from nightwright.agentic import runproc as RP
+    from nightwright.cli import cli
+
+    KEY = "workers-check-pi-sentinel-key"
+    w = _world(tmp_path)
+    monkeypatch.setattr("nightwright.cli.load_config", lambda: w.cfg)
+    r = _remote(w, _write_script(tmp_path / "s.json", WRITER))
+    r.register(kinds=["gate", "persona"])
+    subs = []
+    probe_local = []
+
+    def fake_call(worker, sub, *rest, timeout=None):
+        subs.append(sub)
+        if sub == "pi-check":
+            return (
+                0,
+                [{"schema": W.PI_CHECK_SCHEMA, "ok": True, "missing": [], "error": None}],
+                b"",
+            )
+        if sub == "claude-check":
+            return (
+                0,
+                [{"schema": W.CLAUDE_CHECK_SCHEMA, "ok": True}],
+                b"",
+            )
+        return None
+
+    monkeypatch.setattr(RG, "_call", fake_call)
+    monkeypatch.setattr(R, "pi_needed", lambda cfg, campaigns=None: True)
+    monkeypatch.setattr(R, "cursor_needed", lambda cfg, campaigns=None: False)
+    monkeypatch.setattr(RP, "probe_pi", lambda *a, **k: probe_local.append(1) or {"ok": True})
+    monkeypatch.setattr(
+        WK,
+        "check",
+        lambda cfg, rec, **kw: {
+            "name": rec["name"],
+            "ok": True,
+            "errors": [],
+            "warnings": [],
+            "info": INFO,
+        },
+    )
+    run = CliRunner().invoke(cli, ["workers", "check", "box", "--json"])
+    assert run.exit_code == 0, run.output
+    assert "pi-check" in subs
+    assert "claude-check" in subs
+    assert probe_local == []
+    assert KEY not in run.output
+
+
 # ---- adoption through the queue (queue._adopt) -----------------------------------------------
 
 def _queue_adopt(w, local):

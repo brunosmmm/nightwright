@@ -1391,7 +1391,7 @@ def pi_check(cfg) -> dict:
     """SPEC-0451: probe distinct providers from this host's pi map."""
     from . import pi_map as PM
     from . import runproc as RP
-    providers = PM.distinct_providers(cfg=cfg)
+    providers = PM.probe_providers(cfg)
     if not providers:
         return {"schema": PI_CHECK_SCHEMA, "ok": True, "missing": [], "error": None}
     rec = RP.probe_pi(providers)
