@@ -424,6 +424,10 @@ product git directory.
   ``title`` and ``created_by`` before ``render_item``. ``rev-parse
   --show-toplevel`` is decoded with ``surrogateescape`` and only a trailing
   newline is stripped.
+- Review loop 2: ``_safe_path`` escapes newline, CR, and ESC in stderr paths.
+  ``parse_item`` maps ``RecursionError`` to ``invalid yaml``. ``user.name`` that
+  consists only of git-disallowed characters is refused before ``hash-object``
+  with ``user.name consists only of disallowed characters``.
 
 ### Commands
 
@@ -724,6 +728,16 @@ drops unknown keys, and refreshes `updated` and `updated_by`.
   ``created_by`` and YAML-surviving ``title`` escapes, edit ``%B`` message,
   title-only no-op, ``Hello\\rworld`` summary normalization, non-strict-UTF-8
   toplevel ``--repo``).
+- `python3 tools/spec_lint.py --write-ledger` and `python3 tools/spec_lint.py` — exit 0.
+- Full suite left to gating.
+
+### Test record (loop 2, 2026-11-07)
+
+- `uv run pytest -q tests/test_backlog.py` — 75 passed (CAS retry lands commit,
+  README stable on edit/close/reopen, ``show`` uses captured tip sha, detached
+  and unborn full command set, unknown id with missing ref, empty-tree parent,
+  safe-path stderr controls, deep YAML ``invalid yaml``, git-only-disallowed
+  name).
 - `python3 tools/spec_lint.py --write-ledger` and `python3 tools/spec_lint.py` — exit 0.
 - Full suite left to gating.
 

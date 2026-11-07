@@ -171,7 +171,7 @@ def parse_item(filename: str, blob: bytes | str):
     except _DuplicateKey as e:
         key = e.key if isinstance(e.key, str) else str(e.key)
         return f"duplicate key {key}"
-    except (yaml.YAMLError, ValueError, TypeError):
+    except (yaml.YAMLError, ValueError, TypeError, RecursionError):
         return "invalid yaml"
     if isinstance(doc, dict) and any(not isinstance(key, str) for key in doc):
         return "invalid yaml"
@@ -262,11 +262,23 @@ def mint_id(existing, draw=None) -> str:
 
 
 def _safe_path(path: str) -> str:
-    """Path text for stderr. ``backslashreplace`` never raises on encode."""
-    return path.encode("utf-8", "backslashreplace").decode("utf-8")
+    """Path text for stderr: no raw newlines, CR, or ESC; ``backslashreplace`` on encode."""
+    out: list[str] = []
+    for ch in path:
+        o = ord(ch)
+        if ch == "\n":
+            out.append("\\n")
+        elif ch == "\r":
+            out.append("\\r")
+        elif o == 0x1B:
+            out.append("\\x1b")
+        else:
+            out.append(ch)
+    return "".join(out).encode("utf-8", "backslashreplace").decode("utf-8")
 
 
 _NON_PRINTABLE = yaml.reader.Reader.NON_PRINTABLE
+_GIT_NAME_ONLY = set(' \t\n\r<>()\\"')
 
 
 def _yaml_unsafe_char(value: str) -> str | None:
@@ -348,6 +360,8 @@ def _identity_error(key: str, value: str, kind: str) -> str | None:
         esc = _safe_path(repr(bad)[1:-1])
         return f"{key} contains control character {esc}"
     if kind == "name":
+        if value and all(c in _GIT_NAME_ONLY for c in value):
+            return "user.name consists only of disallowed characters"
         if "<" in value:
             return "user.name contains '<'"
         if ">" in value:

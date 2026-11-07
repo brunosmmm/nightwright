@@ -330,6 +330,23 @@ def test_existing_readme_bytes_are_left_alone(tmp_path, monkeypatch):
     assert cat(repo, "README.md") == custom
 
 
+def test_custom_readme_bytes_stable_on_edit_close_reopen(tmp_path, monkeypatch):
+    freeze(monkeypatch)
+    repo = init_repo(tmp_path / "repo")
+    custom = b"# custom\nnot the fixed text\n"
+    sha = commit_tree(repo, {"README.md": custom, "REQ-K7H3MQ2P.md": VALID})
+    point(repo, sha)
+    before = rev(repo, "nw-backlog:README.md")
+    ident = "REQ-K7H3MQ2P"
+    assert nw(repo, ["edit", ident, "--title", "Next"]).exit_code == 0
+    assert rev(repo, "nw-backlog:README.md") == before
+    assert nw(repo, ["close", ident]).exit_code == 0
+    assert rev(repo, "nw-backlog:README.md") == before
+    assert nw(repo, ["reopen", ident]).exit_code == 0
+    assert rev(repo, "nw-backlog:README.md") == before
+    assert cat(repo, "README.md") == custom
+
+
 def test_edit_restores_missing_readme_only(tmp_path, monkeypatch):
     freeze(monkeypatch)
     repo = init_repo(tmp_path / "repo")
@@ -674,6 +691,10 @@ def test_refuses_unset_or_illegal_identity(tmp_path, monkeypatch, git_log):
          "user.email contains '>'\n"),
         ({"user.name": "Ada Lovelace", "user.email": r"a\b@example.com"},
          "user.email contains '\\'\n"),
+        ({"user.name": '"', "user.email": "ada@example.com"},
+         "user.name consists only of disallowed characters\n"),
+        ({"user.name": '\\"', "user.email": "ada@example.com"},
+         "user.name consists only of disallowed characters\n"),
     ]
     for number, (values, message) in enumerate(cases):
         repo = init_repo(tmp_path / f"repo-{number}")
@@ -800,6 +821,26 @@ def test_empty_tree_is_valid_empty_backlog(tmp_path, monkeypatch, git_log):
     point(repo, empty)
     ident = added(nw(repo, ["add", "--title", "T", "--summary", "S"]))
     assert f"{ident}.md" in names(repo)
+    tip = rev(repo, "nw-backlog")
+    assert rev(repo, f"{tip}^") == empty
+
+
+def test_unknown_id_when_backlog_ref_is_missing(tmp_path, monkeypatch, git_log):
+    freeze(monkeypatch)
+    repo = init_repo(tmp_path / "repo")
+    assert rev(repo, "nw-backlog") is None
+    cases = [
+        (["edit", "REQ-K7H3MQ2P", "--title", "T"], "REQ-K7H3MQ2P is not on nw-backlog\n"),
+        (["close", "REQ-K7H3MQ2P"], "REQ-K7H3MQ2P is not on nw-backlog\n"),
+        (["reopen", "REQ-K7H3MQ2P"], "REQ-K7H3MQ2P is not on nw-backlog\n"),
+    ]
+    for args, message in cases:
+        git_log.clear()
+        proc = nw(repo, args)
+        assert proc.exit_code == 1, (args, proc.stderr)
+        assert proc.stderr == message
+        assert rev(repo, "nw-backlog") is None
+        assert not any(call[0] == "hash-object" for call in git_log)
 
 
 def test_refuses_a_root_that_contains_product_history(tmp_path, git_log):
@@ -839,6 +880,7 @@ def test_dirty_detached_and_unborn_checkout_stay_put(tmp_path, monkeypatch, git_
     assert [args for args in git_log if args[0] == "update-ref"][0][3] == "0" * 40
     (repo / f"{ident}.md").write_text("NOT THE BLOB\n")
     dirty_file = snapshot(repo)
+    tip_for_edit = rev(repo, "nw-backlog")
     mark = len(git_log)
     proc = nw(repo, ["edit", ident, "--title", "Next"])
     assert proc.exit_code == 0, (proc.stdout, proc.stderr, proc.exception)
@@ -848,7 +890,8 @@ def test_dirty_detached_and_unborn_checkout_stay_put(tmp_path, monkeypatch, git_
     assert b"NOT THE BLOB" not in branch
     assert b'title: "Next"' in branch
     shows = [args for args in git_log[mark:] if args[0] == "show"]
-    assert any(args[1].endswith(f":{ident}.md") for args in shows)
+    assert any(args[1] == f"{tip_for_edit}:{ident}.md" for args in shows)
+    assert not any(args[1] == f"nw-backlog:{ident}.md" for args in shows)
     assert nw(repo, ["close", ident]).exit_code == 0
     assert snapshot(repo) == dirty_file
     assert nw(repo, ["reopen", ident]).exit_code == 0
@@ -879,22 +922,37 @@ def test_dirty_detached_and_unborn_checkout_stay_put(tmp_path, monkeypatch, git_
     (detached / "README").write_text("staged\n")
     git(detached, "add", "README")
     held = snapshot(detached)
-    added(nw(detached, ["add", "--title", "D", "--summary", "S"]))
+    det_id = added(nw(detached, ["add", "--title", "D", "--summary", "S"]))
     assert snapshot(detached) == held
     assert head_state(detached)[0] == "detached"
+    assert nw(detached, ["edit", det_id, "--title", "Next"]).exit_code == 0
+    assert snapshot(detached) == held
+    assert nw(detached, ["close", det_id]).exit_code == 0
+    assert snapshot(detached) == held
+    assert nw(detached, ["reopen", det_id]).exit_code == 0
+    assert snapshot(detached) == held
 
     unborn = init_repo(tmp_path / "unborn", commit=False)
     assert head_state(unborn)[0] == "unborn"
     unborn_index = index_bytes(unborn)
     unborn_head = head_state(unborn)
     mark = len(git_log)
-    added(nw(unborn, ["add", "--title", "U", "--summary", "S"]))
+    unborn_id = added(nw(unborn, ["add", "--title", "U", "--summary", "S"]))
     assert index_bytes(unborn) == unborn_index
     assert head_state(unborn) == unborn_head
     assert git(unborn, "status", "--porcelain").stdout == b""
     assert extras(unborn) == (False, False, False)
     creates = [args for args in git_log[mark:] if args[0] == "update-ref"]
     assert len(creates) == 1 and creates[0][3] == "0" * 40
+    assert nw(unborn, ["edit", unborn_id, "--title", "V"]).exit_code == 0
+    assert index_bytes(unborn) == unborn_index
+    assert head_state(unborn) == unborn_head
+    assert nw(unborn, ["close", unborn_id]).exit_code == 0
+    assert index_bytes(unborn) == unborn_index
+    assert head_state(unborn) == unborn_head
+    assert nw(unborn, ["reopen", unborn_id]).exit_code == 0
+    assert index_bytes(unborn) == unborn_index
+    assert head_state(unborn) == unborn_head
     assert_allowlist(git_log)
 
 
@@ -1019,6 +1077,37 @@ def test_update_ref_failure_without_a_moved_ref_does_not_retry(tmp_path, monkeyp
     assert proc.stderr == "update-ref failed\n"
     assert len(calls) == 1
     assert rev(repo, "nw-backlog") == tip
+
+
+def test_compare_and_swap_retry_lands_commit(tmp_path, monkeypatch):
+    monkeypatch.setattr(B.secrets, "token_bytes", lambda n: bytes.fromhex("99e23a5c56"))
+    freeze(monkeypatch, "2026-11-07T15:41:00Z")
+    repo = init_repo(tmp_path / "repo")
+    rivals = []
+
+    def on_call(args):
+        if len(rivals) == 0:
+            rival = commit_tree(repo, {"README.md": b"rival tip\n"})
+            point(repo, rival)
+            rivals.append(rival)
+            return _Failed()
+        return None
+
+    calls = _fail_update(monkeypatch, repo, on_call)
+    proc = nw(repo, ["add", "--title", "T", "--summary", "S"])
+    assert proc.exit_code == 0, (proc.stdout, proc.stderr, proc.exception)
+    assert len(calls) == 2
+    assert calls[0][3] == "0" * 40
+    rival = rivals[0]
+    assert calls[1][3] == rival
+    tip = rev(repo, "nw-backlog")
+    assert tip == calls[1][2]
+    assert rev(repo, f"{tip}^") == rival
+    assert "REQ-K7H3MQ2P.md" in names(repo)
+    assert rev(repo, "nw-backlog:README.md") == rev(repo, f"{rival}:README.md")
+    text = cat(repo, "REQ-K7H3MQ2P.md").decode()
+    assert "created: 2026-11-07T15:41:00Z" in text
+    assert 'title: "T"' in text
 
 
 def test_retry_stops_when_the_minted_id_appears(tmp_path, monkeypatch):
@@ -1224,12 +1313,24 @@ def test_safe_path_backslashreplace_on_stderr():
     assert "ud800" in text.lower() or "\\ud800" in text
 
 
+def test_safe_path_sanitizes_newline_cr_and_esc():
+    assert B._safe_path("a\nfake: line") == "a\\nfake: line"
+    assert B._safe_path("a\rb") == "a\\rb"
+    assert B._safe_path("a\x1bb") == "a\\x1bb"
+    assert "\n" not in B._safe_path("ok\nfake")
+    assert "\r" not in B._safe_path("ok\r")
+    assert "\x1b" not in B._safe_path("ok\x1b")
+
+
 def test_stray_stderr_uses_safe_path_encoding():
     path = "stray\ud800.txt"
     line = B._problem_lines([("100644", path)])[0]
     assert line.startswith("stray: ")
     assert path not in line
     assert "ud800" in line.lower()
+    line_nl = B._problem_lines([("100644", "ok\nstray.txt")])[0]
+    assert "\n" not in line_nl
+    assert "\\n" in line_nl
 
 
 def test_aware_clock_is_stored_as_utc(tmp_path, monkeypatch):
@@ -1497,3 +1598,42 @@ def test_created_by_escapes_leading_trailing_quotes_in_name(tmp_path, monkeypatc
     text = cat(repo, f"{ident}.md").decode()
     assert 'created_by: "\\"Ada\\" <ada@example.com>"' in text
     assert B.parse_item(f"{ident}.md", text)["created_by"] == '"Ada" <ada@example.com>'
+
+
+def _deep_frontmatter(depth: int) -> bytes:
+    lines = [
+        "---",
+        "id: REQ-K7H3MQ2P",
+        'title: "Public backlog"',
+        "status: open",
+        "created: 2026-11-07T15:41:00Z",
+        "updated: 2026-11-07T15:41:00Z",
+        'created_by: "Ada Lovelace <ada@example.com>"',
+        'updated_by: "Ada Lovelace <ada@example.com>"',
+        "junk:",
+    ]
+    indent = 1
+    for i in range(depth):
+        lines.append("  " * indent + f"k{i}:")
+        indent += 1
+    lines.extend(["---", "", "Body."])
+    return "\n".join(lines).encode() + b"\n"
+
+
+def test_parse_item_deep_nesting_is_invalid_yaml():
+    blob = _deep_frontmatter(1000)
+    assert B.parse_item("REQ-K7H3MQ2P.md", blob) == "invalid yaml"
+
+
+def test_close_refuses_deeply_nested_yaml_without_traceback(tmp_path, monkeypatch, git_log):
+    freeze(monkeypatch)
+    repo = init_repo(tmp_path / "repo")
+    blob = _deep_frontmatter(1000)
+    sha = commit_tree(repo, {"README.md": B.README_TEXT, "REQ-K7H3MQ2P.md": blob})
+    point(repo, sha)
+    git_log.clear()
+    proc = nw(repo, ["close", "REQ-K7H3MQ2P"])
+    assert proc.exit_code == 1
+    assert proc.stderr == "invalid backlog item REQ-K7H3MQ2P: invalid yaml\n"
+    assert rev(repo, "nw-backlog") == sha
+    assert not any(call[0] == "hash-object" for call in git_log)
