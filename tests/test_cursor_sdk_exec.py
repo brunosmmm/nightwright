@@ -289,6 +289,60 @@ def test_sdk_tool_results_render_the_value_not_the_json():
     assert "1 items" in todos[0].plain and "todos" not in todos[0].plain.split("updateTodos", 1)[-1]
 
 
+def test_shell_output_deltas_are_kept_and_shown_once(tmp_path):
+    delta = NS(type="shell-output-delta", event={"type": "stdout", "data": "collected 3 items\n"})
+    frame = NS(sdk_message=None, interaction_update=delta)
+    skipped = NS(sdk_message=None, interaction_update=NS(type="text-delta", text="I'll"))
+    assert CE.frame_dicts(frame) == [
+        {"type": "shell_output", "event": {"type": "stdout", "data": "collected 3 items\n"}}]
+    assert CE.frame_dicts(skipped) == []
+
+    class _Live:
+        def events(self):
+            yield frame
+            yield NS(type="tool_call", name="shell", status="completed", call_id="c",
+                     args={"command": "uv run pytest -q"},
+                     result={"status": "success", "value": {
+                         "exitCode": 0, "stdout": "collected 3 items\n", "stderr": ""}})
+
+        def wait(self):
+            return NS(status="finished", id="run-1", result="ok", duration_ms=1,
+                      usage=None, error_code=None, error_message=None)
+
+        def cancel(self):
+            pass
+
+    class _Agent2(_Agent):
+        def send(self, prompt):
+            self.prompt = prompt
+            self.run = _Live()
+            return self.run
+
+    d = _layout(tmp_path)
+    out, err = StringIO(), StringIO()
+
+    def create(options):
+        return _Agent2(options)
+
+    assert CE.execute(d, environ={"CURSOR_API_KEY": KEY}, out=out, err=err,
+                      agent_create=create) == 0
+    kinds = [json.loads(ln)["type"] for ln in out.getvalue().splitlines() if ln]
+    assert "shell_output" in kinds and "text-delta" not in kinds
+    r = TL.Renderer()
+    shown = []
+    for ln in out.getvalue().splitlines():
+        if ln:
+            shown.extend(t.plain for t in r.feed_line(ln))
+    assert "  │ collected 3 items" in shown
+    assert shown.count("  ← exit 0") == 1
+    assert not any("collected 3 items" in ln and ln.strip().startswith("←") for ln in shown)
+    fresh = TL.Renderer()
+    body = fresh.feed({"type": "tool_call", "name": "shell", "status": "completed",
+                       "result": {"status": "success", "value": {
+                           "exitCode": 1, "stdout": "", "stderr": "boom"}}})
+    assert [t.plain for t in body] == ["  ← exit 1", "    boom"]
+
+
 def test_probe_hides_the_key_and_worker_check(monkeypatch):
     monkeypatch.setitem(sys.modules, "cursor_sdk", types.ModuleType("cursor_sdk"))
     monkeypatch.setenv("CURSOR_API_KEY", KEY)

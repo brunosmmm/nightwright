@@ -162,6 +162,41 @@ def event_dict(msg) -> dict:
     return {"type": str(typ or "unknown")}
 
 
+def _frames(run):
+    """SDK events when the run exposes them, otherwise the message iterator.
+
+    ``events()`` carries ``shell-output-delta`` frames. ``messages()`` drops
+    every frame that is not an ``sdk_message``.
+    """
+    events = getattr(run, "events", None)
+    if callable(events):
+        yield from events()
+        return
+    yield from run.messages()
+
+
+def frame_dicts(frame) -> list[dict]:
+    """JSON objects to write for one run frame.
+
+    Shell output deltas are kept. Text, thinking, and step deltas are not:
+    the message stream already carries that text.
+    """
+    update = getattr(frame, "interaction_update", None)
+    if update is not None:
+        if getattr(update, "type", None) != "shell-output-delta":
+            return []
+        event = _plain(getattr(update, "event", None) or {})
+        if not isinstance(event, dict):
+            event = {}
+        return [{"type": "shell_output", "event": event}]
+    msg = getattr(frame, "sdk_message", None)
+    if msg is not None:
+        return [event_dict(msg)]
+    if getattr(frame, "type", None):
+        return [event_dict(frame)]
+    return []
+
+
 def _scrub(text, key: str) -> str:
     text = str(text or "")
     if key:
@@ -324,8 +359,9 @@ def execute(run_dir, *, argv=None, environ=None, out=None, err=None,
         run = agent.send(prompt)
         if holder is not None:
             holder["run"] = run
-        for msg in run.messages():
-            _write(out, event_dict(msg))
+        for frame in _frames(run):
+            for obj in frame_dicts(frame):
+                _write(out, obj)
         result = run.wait()
         cost, cost_error = _fetch_cost(agent)
         _write(out, _result_event(agent, result, cost, cost_error))

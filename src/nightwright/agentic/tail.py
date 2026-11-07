@@ -156,6 +156,7 @@ class Renderer:
         self.result = None
         self._prose: dict[str, str] = {}            # parent id → held assistant text
         self._pending_cost: Text | None = None      # cost line waiting behind held text
+        self._shell_live = False                    # stdout already shown for the open shell
 
     # -- tallies --
     def _note_usage(self, msg) -> bool:
@@ -293,10 +294,14 @@ class Renderer:
 
     def _shell_result(self, value: dict, nest: str) -> list[Text]:
         code = value.get("exitCode", value.get("exit_code"))
+        head = Text(f"{nest}  ← exit {code}", style="red" if code else "dim")
+        # The live deltas already printed this output. The exit line is enough.
+        if self._shell_live:
+            self._shell_live = False
+            return [head]
         err = str(value.get("stderr") or "").strip()
         stdout = str(value.get("stdout") or "").strip()
         text, style = (err, "red") if err else (stdout, "dim")
-        head = Text(f"{nest}  ← exit {code}", style="red" if code else "dim")
         rows = text.splitlines()
         out = [head]
         for ln in rows[:OUTPUT_LINES]:
@@ -305,6 +310,26 @@ class Renderer:
         if extra > 0:
             out.append(Text(f"{nest}    … {extra} more lines", style="dim"))
         return out
+
+    def _shell_delta(self, ev: dict, nest: str) -> list[Text]:
+        """One ``shell-output-delta`` chunk: stdout, stderr, a trim notice, or the real exit."""
+        event = ev.get("event") if isinstance(ev.get("event"), dict) else {}
+        kind = str(event.get("type") or "")
+        if kind in ("stdout", "stderr"):
+            self._shell_live = True
+            style = "red" if kind == "stderr" else "dim"
+            rows = [ln for ln in str(event.get("data") or "").splitlines() if ln.strip()]
+            out = [Text(f"{nest}  │ {_cut(ln, RESULT_W)}", style=style) for ln in rows[:OUTPUT_LINES]]
+            extra = len(rows) - OUTPUT_LINES
+            if extra > 0:
+                out.append(Text(f"{nest}  │ … {extra} more lines", style="dim"))
+            return out
+        if kind in ("stdout_trimmed", "stderr_trimmed"):
+            return [Text(f"{nest}  │ … output trimmed", style="dim")]
+        if kind == "exit":
+            code = event.get("code", event.get("exitCode"))
+            return [Text(f"{nest}  · shell exit {code}", style="red" if code else "dim")]
+        return []
 
     def _file_list(self, files, total, nest: str) -> list[Text]:
         shown = [str(f).removeprefix("./") for f in files[:OUTPUT_LINES]]
@@ -471,7 +496,7 @@ class Renderer:
         key = ev.get("parent_tool_use_id") or ""
         nest = self._nest(key)
         # Thinking stays between tokens. Anything else closes the sentence so far.
-        out: list[Text] = [] if typ in ("assistant", "thinking") else self._flush_key(key)
+        out: list[Text] = [] if typ in ("assistant", "thinking", "shell_output") else self._flush_key(key)
         if typ == "system" and ev.get("subtype") == "init":
             model = ev.get("model")
             if isinstance(model, dict):
@@ -481,6 +506,8 @@ class Renderer:
             out.append(Text(f"● session · model {model}{extra}", style="bold"))
         elif typ == "thinking":
             return out
+        elif typ == "shell_output":
+            out.extend(self._shell_delta(ev, nest))
         elif typ == "tool_call":
             out.extend(self._sdk_tool_call(ev, nest))
         elif typ == "usage":
