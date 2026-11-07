@@ -40,3 +40,6 @@ personas:
   review_triager:
     {model: haiku, effort: medium, max_budget_usd: 0.25,
      permission_mode: dontAsk, read_only: true}
+  divergence_triager:
+    {model: haiku, effort: medium, max_budget_usd: 0.25,
+     permission_mode: dontAsk, read_only: true}

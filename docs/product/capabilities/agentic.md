@@ -651,6 +651,7 @@ any state → PARKED (humans only) → resume | abandon
 - **IMPLEMENTING** spawns a fresh implementer; the runner commits whatever changed.
 - **GATING** runs every gate; all required green ⇒ REVIEWING, else TRIAGING.
 - **TRIAGING** spawns the read-only gate triager only after a failure.
+- **DIVERGENCE_TRIAGE** runs when the fix rounds stop converging. One read-only persona picks one extra implement round (once per campaign), a spec rework, or a human escalation.
 - **REVIEWING** spawns the read-only reviewers in parallel (see Reviews); all pass ⇒ CLOSING.
 - **CLOSING** rebases, re-gates, audits the spec's Definition of Done, then fast-forwards
   the base or opens a PR.

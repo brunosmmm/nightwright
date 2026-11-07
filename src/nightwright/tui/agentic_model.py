@@ -40,8 +40,8 @@ QUEUE_GROUPS = ("needs you", "conductor", "closing", "reviewing", "gating", "bui
                 "waiting", "queued", "delivered")
 _SOURCE_GROUP = {"needs_you": "needs you", "conductor_handling": "conductor", "waiting": "waiting",
                  "backlog": "queued", "delivered": "delivered"}
-_ACTIVE_GROUP = {"CLOSING": "closing", "REVIEWING": "reviewing", "GATING": "gating",
-                 "TRIAGING": "gating"}          # anything else active is `building`
+_ACTIVE_GROUP = {"CLOSING": "closing", "REVIEWING": "reviewing", "DIVERGENCE_TRIAGE": "reviewing",
+                 "GATING": "gating", "TRIAGING": "gating"}          # anything else active is `building`
 _DEFAULT_PRIORITY = 3
 _SOURCES = ("needs_you", "conductor_handling", "active", "waiting", "backlog", "delivered")
 _REVIEW_GLYPH = {"running": "▶", "pass": "✓", "fix": "✗", "failed": "!", "not_run": "·"}

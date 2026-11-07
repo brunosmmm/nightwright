@@ -8,3 +8,4 @@ personas:
   spec_reviewer: {runner: cursor, model: grok-4.7}
   review_triager: {runner: cursor, model: grok-4.7}
   gate_triager: {runner: cursor, model: grok-4.7}
+  divergence_triager: {runner: cursor, model: grok-4.7}

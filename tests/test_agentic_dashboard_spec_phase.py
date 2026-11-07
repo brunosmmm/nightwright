@@ -167,7 +167,8 @@ def test_spec_campaign_phases_unchanged(env):
     repo, cfg = env
     _campaign(cfg, repo, "SPEC-0001-impl", "IMPLEMENTING")
     it = _item(cfg, "SPEC-0001-impl")
-    assert it["phases"] == ["OPENING", "IMPLEMENTING", "GATING", "TRIAGING", "REVIEWING", "CLOSING"]
+    assert it["phases"] == ["OPENING", "IMPLEMENTING", "GATING", "TRIAGING", "REVIEWING",
+                            "DIVERGENCE_TRIAGE", "CLOSING"]
     assert it["phase_index"] == 1
     assert "spec_review" not in str(CQ._stepper("IMPLEMENTING", 1, it["phases"]))
     out = _text(CQ._active_panel(it), 160)

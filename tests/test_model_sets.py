@@ -50,7 +50,8 @@ def test_mixed_sends_writers_to_claude_and_reviewers_to_grok():
             ("adversarial_reviewer", "opus", "high", "grok-4.7-high"),
             ("spec_reviewer", "sonnet", "high", "grok-4.7-high"),
             ("review_triager", "sonnet", "medium", "grok-4.7-medium"),
-            ("gate_triager", "sonnet", "medium", "grok-4.7-medium")):
+            ("gate_triager", "sonnet", "medium", "grok-4.7-medium"),
+            ("divergence_triager", "sonnet", "medium", "grok-4.7-medium")):
         assert bind(mixed, persona, alias, effort) == {
             "runner": "cursor", "model": model, "model_alias": alias}
 

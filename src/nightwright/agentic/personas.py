@@ -169,6 +169,20 @@ TEST_REVIEWER_SCHEMA = {
     },
 }
 
+DIVERGENCE_TRIAGER_SCHEMA = {
+    "type": "object",
+    "required": ["pick", "why", "items"],
+    "properties": {
+        "pick": {"type": "string", "enum": ["extra_round", "rework", "escalate"]},
+        "why": {"type": "string"},
+        "items": {"type": "array", "items": {
+            "type": "object", "required": ["title", "label"],
+            "properties": {"title": {"type": "string"},
+                           "label": {"type": "string",
+                                     "enum": ["impl_miss", "spec_silent", "spec_contradicts"]}}}},
+    },
+}
+
 REVIEW_TRIAGER_SCHEMA = {
     "type": "object",
     "required": ["waive", "note"],
@@ -300,6 +314,7 @@ SCHEMAS = {
     "spec_reviewer": SPEC_REVIEWER_SCHEMA,
     "spec_writer": SPEC_WRITER_SCHEMA,
     "review_triager": REVIEW_TRIAGER_SCHEMA,
+    "divergence_triager": DIVERGENCE_TRIAGER_SCHEMA,
     "conflict_resolver": CONFLICT_RESOLVER_SCHEMA,
 }
 INVARIANTS = {
@@ -312,7 +327,7 @@ INVARIANTS = {
 PLACEHOLDERS = ("campaign", "spec_id", "spec_rel_path", "spec_text", "worktree", "base",
                 "loop", "loop_max", "context_files", "gate_results", "pending_brief",
                 "previous_verdicts", "diff", "test_files", "tests_touched", "changed_files",
-                "schema_text", "idea_text", "triage_input", "rebase_target", "conflicts",
+                "schema_text", "idea_text", "triage_input", "divergence_input", "rebase_target", "conflicts",
                 "campaign_diff", "base_diff", "landed", "regenerate", "template_text",
                 "write_problems", "write_rules", "epic_text", "human_overrides", "flaky_history")
 
@@ -852,7 +867,15 @@ def resolve_context(state, resolve, project_cfg) -> dict:
 
 
 def persona_extra(state, persona, project_cfg) -> dict | None:
-    """Persona-specific prompt values built from campaign state (resolver only)."""
+    """Persona-specific prompt values built from campaign state."""
+    if persona == "divergence_triager":
+        div = state.get("divergence") if isinstance(state.get("divergence"), dict) else {}
+        counters = state.get("counters") or {}
+        payload = {"signals": div.get("signals"), "loop": div.get("loop"),
+                   "rounds": div.get("rounds"),
+                   "extra_rounds_used": int(counters.get("divergence_extras") or 0),
+                   "extra_rounds_cap": 1}
+        return {"divergence_input": json.dumps(payload, indent=2, sort_keys=True, default=str)}
     if persona != "conflict_resolver":
         return None
     return resolve_context(state, (state.get("closing") or {}).get("resolve"), project_cfg)
@@ -1008,7 +1031,7 @@ def build_request(cfg, profile, project_cfg, state, persona, *, run_dir,
     extra = {**(persona_extra(state, persona, project_cfg) or {}), **(extra or {})} or None
     ctx = build_context(cfg, state, project_cfg, loop_max=profile.get("loop_max"),
                         previous=previous,
-                        review=persona in REVIEWER_PERSONAS
+                        review=persona in REVIEWER_PERSONAS or persona == "divergence_triager"
                         or (p.declared is not None and p.role == "reviewer"),
                         with_tests=persona == "test_reviewer", extra=extra)
     env = {

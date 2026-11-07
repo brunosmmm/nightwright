@@ -30,7 +30,7 @@ PHASES = {
     "spec": ("SPEC_WRITING", "SPEC_REVIEW"),
     "implement": ("IMPLEMENTING",),
     "gate": ("GATING", "TRIAGING"),
-    "review": ("REVIEWING",),
+    "review": ("REVIEWING", "DIVERGENCE_TRIAGE"),
     "close": ("CLOSING",),
     "parked": ("PARKED",),
     "waiting": ("WAITING",),

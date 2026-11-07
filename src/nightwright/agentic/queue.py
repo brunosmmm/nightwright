@@ -69,20 +69,21 @@ from .events import temp_pressure as events_temp_pressure
 from . import runproc as RP
 from .runner import DETACHED, RunHooks, RunResult, rebuild_request, resolve_runner, select_runner
 
-STATES = ("QUEUED", "WAITING", "OPENING", "SPEC_WRITING", "SPEC_REVIEW", "IMPLEMENTING", "GATING", "TRIAGING", "REVIEWING",
-          "CLOSING", "PARKED", "MERGED", "HANDED_OFF", "ABANDONED")
+STATES = ("QUEUED", "WAITING", "OPENING", "SPEC_WRITING", "SPEC_REVIEW", "IMPLEMENTING", "GATING", "TRIAGING",
+          "REVIEWING", "DIVERGENCE_TRIAGE", "CLOSING", "PARKED", "MERGED", "HANDED_OFF", "ABANDONED")
 # Slots are for campaigns that are open and delivering (ACTIVE_STATES). QUEUED = the backlog,
 # never started. WAITING (SPEC-0200) = started (worktree, commits, counters, brief) and ready to
 # continue, but no slot was free; it takes the next free slot ahead of the backlog and resumes
 # at `waiting.resume_to` without re-opening. PARKED = needs a decision; holds no slot.
 TERMINAL_STATES = store.TERMINAL_STATES
 ACTIVE_STATES = frozenset({"OPENING", "SPEC_WRITING", "SPEC_REVIEW", "IMPLEMENTING", "GATING", "TRIAGING", "REVIEWING",
-                           "CLOSING"})
+                           "DIVERGENCE_TRIAGE", "CLOSING"})
 # SPEC-0394: GATING costs no Claude spend (it waits on / runs box gates, whose concurrency is
 # bounded by the gate slot pools, gate_slots.py), so it does not count against the profile
 # `slots`. Every other active state does.
 SLOT_STATES = ACTIVE_STATES - {"GATING"}
-RESUMABLE_STATES = ("SPEC_WRITING", "SPEC_REVIEW", "IMPLEMENTING", "GATING", "REVIEWING", "CLOSING", "QUEUED")
+RESUMABLE_STATES = ("SPEC_WRITING", "SPEC_REVIEW", "IMPLEMENTING", "GATING", "REVIEWING",
+                    "DIVERGENCE_TRIAGE", "CLOSING", "QUEUED")
 PARK_REASONS = frozenset({
     "cost_cap", "loop_exhausted", "implementer_blocked", "triage_escalated", "open_failed",
     "rebase_conflict", "main_dirty", "main_not_on_base", "base_moving", "gh_failed", "human",
@@ -91,6 +92,7 @@ PARK_REASONS = frozenset({
     "gates_failed", "worktree_dirty",                  # SPEC-0233: merge campaigns
     "not_docs_only",                                   # SPEC-0234: --docs-only diff left the allowlist
     "diverging",                                       # SPEC-0247: the fix loop is not converging
+    "diverging_rework",                               # SPEC-0461: the triager says the spec is the problem
     "regenerate_failed",                               # SPEC-0255: close-time regenerate failed/dirtied
     "gate_timeout",                                    # SPEC-0311: gates keep timing out under load
     "restart",                                         # SPEC-0375: parked across `nw queue restart`
@@ -304,6 +306,12 @@ def plan_step(state: dict, profile: dict, project_cfg: dict | None = None, *, re
             return Step("park", persona=pending[0], personas=tuple(pending), reason="cost_cap",
                         detail=blocked, resume_to=st, budget=budget)
         return Step("review", persona=pending[0], personas=tuple(pending))
+    if st == "DIVERGENCE_TRIAGE":                    # SPEC-0461
+        blocked, budget = _cap_blocks(state, profile, "divergence_triager", **cap_kw)
+        if blocked:
+            return Step("park", persona="divergence_triager", reason="cost_cap", detail=blocked,
+                        resume_to=st, budget=budget)
+        return Step("divergence", persona="divergence_triager")
     persona, kind = ("implementer", "implement") if st == "IMPLEMENTING" \
         else ("gate_triager", "triage")
     blocked, budget = _cap_blocks(state, profile, persona, **cap_kw)
@@ -357,6 +365,35 @@ def _resume_target(st: str) -> str:
     (OPENING restarts from QUEUED; TRIAGING re-runs its gates; REVIEWING re-runs the review)."""
     return {"OPENING": "QUEUED", "TRIAGING": "GATING"}.get(st, st if st in RESUMABLE_STATES
                                                             else "IMPLEMENTING")
+
+
+DIVERGENCE_EXTRA_MAX = 1          # SPEC-0461: one extra implement round per campaign
+DIVERGENCE_RETRY_MAX = 1
+_DIVERGENCE_PICKS = ("extra_round", "rework", "escalate")
+
+
+def decide_divergence(state: dict, verdict, verdict_ok: bool) -> tuple[str, str]:
+    """`(action, detail)` for one divergence-triager verdict (SPEC-0461).
+
+    `action` is `extra_round`, `rework`, `escalate`, or `retry`. A second extra round, and a
+    second unusable verdict, are both an escalation. The counter is the caller's."""
+    counters = state.get("counters") or {}
+    retries = int(counters.get("divergence_retries") or 0)
+    extras = int(counters.get("divergence_extras") or 0)
+    pick = verdict.get("pick") if isinstance(verdict, dict) else None
+    why = str(verdict.get("why") or "").strip() if isinstance(verdict, dict) else ""
+    if not verdict_ok or pick not in _DIVERGENCE_PICKS:
+        if retries < DIVERGENCE_RETRY_MAX:
+            return "retry", "the divergence triager returned no usable verdict"
+        return "escalate", "the divergence triager returned no usable verdict twice"
+    if pick == "extra_round":
+        if extras >= DIVERGENCE_EXTRA_MAX:
+            cap = "the one extra implement round was already used"
+            return "escalate", f"{why} — {cap}" if why else cap
+        return "extra_round", why or "one more implement round"
+    if pick == "rework":
+        return "rework", why or "the spec is the problem"
+    return "escalate", why or "the divergence triager escalated"
 
 
 def decide_triage(state: dict, profile: dict, verdict: dict | None, verdict_ok: bool) -> Step:
@@ -2575,7 +2612,8 @@ def _apply(ctx: _Ctx, state: dict, res: StepResult) -> dict:
             for k in ("counters", "cost", "repo", "spec", "last_gate", "last_verdict", "last_review",
                       "pending_brief", "close", "review_carry", "closing", "spec_write", "spec_id",
                       "merge", "admission", "spec_review", "split",   # SPEC-0279: amend flips it
-                      "gate_exclusive", "last_green_loop", "close_red", "gate_retry_pending"):
+                      "gate_exclusive", "last_green_loop", "close_red", "gate_retry_pending",
+                      "divergence"):
                 if k in state:
                     current[k] = state[k]
             requested = current.get("park_requested")
@@ -2606,8 +2644,11 @@ def _apply(ctx: _Ctx, state: dict, res: StepResult) -> dict:
                 row["to"], row["reason"] = "PARKED", "human_decision"
                 return row
             if park:
+                extra = {}
+                if park.get("escalated_from"):
+                    extra["escalated_from"] = park["escalated_from"]
                 _park(cfg, current, park["reason"], park["detail"], park["resume_to"],
-                      extra_events=events, auto_ok=not park.get("no_auto"))
+                      extra_events=events, extra=extra or None, auto_ok=not park.get("no_auto"))
                 row["to"], row["reason"] = "PARKED", park["reason"]
                 return row
             _transition(cfg, current, to, reason, extra_events=events)
@@ -2650,6 +2691,7 @@ def _apply(ctx: _Ctx, state: dict, res: StepResult) -> dict:
                                   res.budget, interrupted=res.interrupted)
         resume = {"open": "QUEUED", "implement": "IMPLEMENTING", "gate": "GATING",
                   "triage": "GATING", "review": "REVIEWING",
+                  "divergence": "DIVERGENCE_TRIAGE",
                   "resolve": "CLOSING", "write_spec": "SPEC_WRITING",
                   "spec_review": "SPEC_REVIEW",
                   "finalize_split": "SPEC_WRITING"}.get(kind, "IMPLEMENTING")
@@ -2698,7 +2740,7 @@ def _apply(ctx: _Ctx, state: dict, res: StepResult) -> dict:
                                            "parts": [p["spec_id"] for p in sp["parts"]]}))
         return finish("CLOSING", "split_written")
 
-    if kind in ("implement", "triage", "resolve"):
+    if kind in ("implement", "triage", "resolve", "divergence"):
         persona = res.step.persona
         rr = res.run_result
         events += _record_run(state, persona, res.run_id, rr, res.budget,
@@ -2719,6 +2761,8 @@ def _apply(ctx: _Ctx, state: dict, res: StepResult) -> dict:
             return row
         if kind == "resolve":
             return _apply_resolve(state, counters, res, rr, row, events, finish)
+        if kind == "divergence":
+            return _apply_divergence(ctx, state, counters, res, rr, events, finish)
         if kind == "implement":
             if res.commit_sha is not None or res.commit_message:
                 events.append(("commit", {"sha": res.commit_sha, "message": res.commit_message}))
@@ -3931,14 +3975,64 @@ def _carry_source(state: dict, tri: dict) -> dict:
 
 def _finish_fix(ctx, state, events, finish, kind, reason):
     """The fix outcome of a review or a gate triage (`loops` already counted, `pending_brief`
-    set): back to IMPLEMENTING, or park `diverging` when the fix rounds show no convergence
-    (SPEC-0247). The park keeps the brief, so a resume continues with it."""
+    set): back to IMPLEMENTING, or into DIVERGENCE_TRIAGE when the fix rounds show no
+    convergence (SPEC-0247 detects, SPEC-0461 triages). The brief stays, so an extra round
+    continues with it. A campaign already parked `diverging` is left where it is."""
     div = DV.check(ctx.cfg, state, events, kind)
     if div is None:
         return finish("IMPLEMENTING", reason)
     events.append(("loop_divergence", div))
-    return finish("PARKED", "diverging", park={
-        "reason": "diverging", "detail": DV.summary(div), "resume_to": "IMPLEMENTING"})
+    state["divergence"] = div
+    counters = _counters(state)
+    counters["divergence_retries"] = 0
+    return finish("DIVERGENCE_TRIAGE", "diverging")
+
+
+def _apply_divergence(ctx, state, counters, res, rr, events, finish):
+    """One divergence-triager verdict (SPEC-0461)."""
+    action, detail = decide_divergence(state, rr.verdict, rr.verdict_ok)
+    if action == "retry":
+        counters["divergence_retries"] = int(counters.get("divergence_retries") or 0) + 1
+        return finish("DIVERGENCE_TRIAGE", "divergence_retry")
+    verdict = rr.verdict if isinstance(rr.verdict, dict) else {}
+    if rr.verdict_ok:
+        events.append(("triage", {"persona": res.step.persona, "run_id": res.run_id,
+                                  "kind": "divergence", "disposition": verdict.get("pick") or action,
+                                  "waive": []}))
+    events.append(("note", {"text": f"divergence triage {action}: {detail}"[:500],
+                            "author": "queue"}))
+    counters["divergence_retries"] = 0
+    if action == "extra_round":
+        counters["divergence_extras"] = int(counters.get("divergence_extras") or 0) + 1
+        return finish("IMPLEMENTING", "divergence_extra")
+    if action == "rework":
+        return finish("PARKED", "diverging_rework", park={
+            "reason": "diverging_rework", "detail": detail, "resume_to": "IMPLEMENTING"})
+    row = finish("PARKED", "human_decision", park={
+        "reason": "human_decision", "detail": detail, "resume_to": "IMPLEMENTING",
+        "escalated_from": "diverging"})
+    _file_divergence_escalation(ctx.cfg, state["id"], detail, verdict or None)
+    return row
+
+
+def _file_divergence_escalation(cfg, cid, detail, verdict) -> None:
+    """A human-only escalation. Topic `scope` does not time out. No recommendation."""
+    from . import escalations as ESC
+    items = []
+    if isinstance(verdict, dict):
+        for it in verdict.get("items") or []:
+            if isinstance(it, dict) and it.get("title"):
+                items.append(f"{it.get('title')}: {it.get('label')}")
+    question = (detail or "The fix loop diverged.").strip()[:500]
+    try:
+        plan = ESC.plan_escalate(
+            cfg, cid, frm="conductor", topic="scope", question=question,
+            options=("one more implement round", "rework the spec", "stop this campaign"),
+            facts=[question, *items][:12])
+        ESC.apply_escalate(cfg, plan)
+    except (ValueError, OSError) as e:
+        store.append_event(cfg, cid, "note", {
+            "text": f"divergence escalation was not filed: {e}", "author": "queue"})
 
 
 def _merge_carry(state: dict, review: dict) -> None:
@@ -5224,7 +5318,8 @@ def _tick(cfg, ctx: _Ctx, pool: StepPool, report: TickReport, *, admit: bool, ow
 _ADOPT_GRACE_S = 10.0              # a wrapper that was just started may still claim its run dir
 _LEGACY_EXTRA_S = 60.0             # slack after `timeout_s` before a pre-wrapper run is closed
 _HUMAN_EVENTS = frozenset({"transition", "park", "resume", "resumed", "abandon", "abandoned"})
-_STATE_OF_KIND = {"implement": "IMPLEMENTING", "triage": "TRIAGING", "review": "REVIEWING"}
+_STATE_OF_KIND = {"implement": "IMPLEMENTING", "triage": "TRIAGING", "review": "REVIEWING",
+                  "divergence": "DIVERGENCE_TRIAGE"}
 
 
 def _open_runs(cfg, cid) -> list:
@@ -6823,7 +6918,7 @@ def queue_payload(cfg, *, include_terminal=False, project=None, state=None, now=
 # ---- dashboard (nw queue watch, SPEC-0185) -------------------------------------------------------
 
 PHASES = ("OPENING", "SPEC_WRITING", "SPEC_REVIEW", "IMPLEMENTING", "GATING", "TRIAGING",
-          "REVIEWING", "CLOSING")
+          "REVIEWING", "DIVERGENCE_TRIAGE", "CLOSING")
 _SPEC_PHASES = ("SPEC_WRITING", "SPEC_REVIEW")
 _TITLE_CACHE: dict = {}
 

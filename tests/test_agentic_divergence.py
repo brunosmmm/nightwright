@@ -1,11 +1,13 @@
 """SPEC-0247: divergence detection in the implementation loop — `rounds`, finding matching, the
-four signals, the trip rule, settings, and the queue integration (park `diverging`, resume)."""
+four signals, the trip rule, settings, and the queue integration. SPEC-0461 sends a trip to
+`DIVERGENCE_TRIAGE` instead of parking it."""
 import json
 import types
 
 import pytest
 
 from nightwright.agentic import divergence as DV
+from nightwright.agentic import escalations as ESC
 from nightwright.agentic import queue as Q
 from nightwright.agentic import schemas as SC
 from nightwright.agentic import store as S
@@ -81,6 +83,28 @@ def test_rounds_before_the_resume_of_a_diverging_park_are_dropped():
                  rec("park", reason="human_decision", escalated_from="diverging"),
                  rec("resume"), finding("b"), fix()]
     assert len(DV.rounds(escalated)) == 1
+
+
+def test_extra_round_cuts_rounds():
+    """SPEC-0461: a granted extra round is judged on what it produces."""
+    ledger = [finding("a"), fix(), finding("b"), fix(),
+              rec("transition", **{"from": "DIVERGENCE_TRIAGE", "to": "IMPLEMENTING",
+                                   "reason": "divergence_extra"}),
+              finding("c"), fix()]
+    assert [[f.title for f in r.findings] for r in DV.rounds(ledger)] == [["c"]]
+
+
+def test_decide_divergence_caps_the_extra_round_and_retries_once():
+    ok = {"pick": "extra_round", "why": "the spec still holds",
+          "items": [{"title": "a", "label": "impl_miss"}]}
+    assert Q.decide_divergence({"counters": {}}, ok, True)[0] == "extra_round"
+    action, detail = Q.decide_divergence({"counters": {"divergence_extras": 1}}, ok, True)
+    assert action == "escalate" and "already used" in detail
+    assert Q.decide_divergence({"counters": {}}, {"pick": "rework", "why": "silent"}, True)[0] \
+        == "rework"
+    assert Q.decide_divergence({"counters": {}}, None, False)[0] == "retry"
+    assert Q.decide_divergence({"counters": {"divergence_retries": 1}}, None, False)[0] \
+        == "escalate"
 
 
 def test_reset_loops_resume_cuts_rounds():
@@ -397,32 +421,30 @@ def _drive(tmp_path, monkeypatch, entries, **profile):
     return cfg, cid
 
 
-def test_e2e_recurrence_parks_diverging_then_resume_continues(tmp_path, monkeypatch):
+def _divergence(pick="extra_round", why="the spec still holds", *, ok=True):
+    verdict = {"pick": pick, "why": why,
+               "items": [{"title": "feature.txt is wrong", "label": "impl_miss"}]}
+    if not ok:
+        verdict = {"pick": "nope"}
+    return {"persona": "divergence_triager", "verdict": verdict, "cost_usd": 0.1}
+
+
+def test_e2e_recurrence_takes_one_extra_round_then_merges(tmp_path, monkeypatch):
     entries = [impl_done(), _fix_review(X), impl_done(), _fix_review(Y), impl_done(),
-               _fix_review(X),
-               # after the resume
+               _fix_review(X), _divergence("extra_round"),
                impl_done(), _fix_review(Y), impl_done(), review("pass")]
     cfg, cid = _drive(tmp_path, monkeypatch, entries, loop_max=4)
     st = S.read_state(cfg, cid)
-    assert st["state"] == "PARKED" and st["park"]["reason"] == "diverging", st
-    assert st["park"]["resume_to"] == "IMPLEMENTING" and st["counters"]["loops"] == 3
-    assert st["pending_brief"] and st["pending_brief"]["fix_brief"]
-    assert Q.park_owner("diverging") == "conductor"
-    assert 'recurrence: "feature.txt is wrong" (r1, r3)' in st["park"]["detail"]
+    assert st["state"] == "MERGED", st
+    assert st["counters"]["divergence_extras"] == 1
     [div] = S.read_ledger(cfg, cid, types=["loop_divergence"])
     assert "recurrence" in names(div) and div["rounds"] == 3 and div["loop"] == 3
     assert SC.ledger_problems(div) == []
-    assert not any(e["to"] == "IMPLEMENTING" and e["reason"] == "review_fix"
-                   for e in S.read_ledger(cfg, cid, types=["transition"])[-1:])
-    # resume: the implementer runs again and the next fix round does not re-park
-    r = run_cli(cfg, monkeypatch, ["queue", "resume", cid, "--yes", "--json"])
-    assert r.exit_code == 0, r.output
-    r = run_cli(cfg, monkeypatch, ["queue", "run", "--until-idle"])
-    assert r.exit_code == 0, r.output
-    st = S.read_state(cfg, cid)
-    assert st["state"] == "MERGED", st
-    assert len(S.read_ledger(cfg, cid, types=["loop_divergence"])) == 1
-    assert [p["reason"] for p in S.read_ledger(cfg, cid, types=["park"])] == ["diverging"]
+    trans = [(e["from"], e["to"], e["reason"])
+             for e in S.read_ledger(cfg, cid, types=["transition"])]
+    assert ("REVIEWING", "DIVERGENCE_TRIAGE", "diverging") in trans
+    assert ("DIVERGENCE_TRIAGE", "IMPLEMENTING", "divergence_extra") in trans
+    assert [p["reason"] for p in S.read_ledger(cfg, cid, types=["park"])] == []
 
 
 def test_e2e_loop_exhausted_wins_over_diverging(tmp_path, monkeypatch):
@@ -448,20 +470,55 @@ def test_e2e_disabled_never_parks_diverging(tmp_path, monkeypatch):
     assert S.read_ledger(cfg, cid, types=["loop_divergence"]) == []
 
 
-def test_e2e_gate_repeat_trips_on_the_third_failed_fix(tmp_path, monkeypatch):
+def test_e2e_gate_repeat_rework_parks(tmp_path, monkeypatch):
     repo = make_repo(tmp_path, test_gate="exit 1")
-    entries = [impl_done(), triage("fix"), impl_done(), triage("fix"), impl_done(), triage("fix")]
+    entries = [impl_done(), triage("fix"), impl_done(), triage("fix"), impl_done(), triage("fix"),
+               _divergence("rework", "the spec never required this check")]
     cfg = make_cfg(tmp_path, repo, script(tmp_path, entries), profile={"loop_max": 4})
     cid = added(cfg, monkeypatch)
     r = run_cli(cfg, monkeypatch, ["queue", "run", "--until-idle"])
     assert r.exit_code == 0, r.output
     st = S.read_state(cfg, cid)
-    assert st["park"]["reason"] == "diverging" and st["counters"]["loops"] == 3, st
+    assert st["park"]["reason"] == "diverging_rework" and st["counters"]["loops"] == 3, st
     [div] = S.read_ledger(cfg, cid, types=["loop_divergence"])
     assert names(div) == ["trend", "gate_repeat"]
     assert st["park"]["resume_to"] == "IMPLEMENTING"
     assert st["pending_brief"] and st["pending_brief"]["source"] == "gate_triager"
     assert Q.park_owner("diverging") == "conductor"
+    assert Q.park_owner("diverging_rework") == "conductor"
+    assert ESC.open_for(cfg, cid) is None
+
+
+def test_e2e_triager_escalate_files_a_human_escalation(tmp_path, monkeypatch):
+    entries = [impl_done(), _fix_review(X), impl_done(), _fix_review(Y), impl_done(),
+               _fix_review(X), _divergence("escalate", "the comparison is not decisive")]
+    cfg, cid = _drive(tmp_path, monkeypatch, entries, loop_max=4)
+    st = S.read_state(cfg, cid)
+    assert st["state"] == "PARKED" and st["park"]["reason"] == "human_decision", st
+    assert st["park"]["escalated_from"] == "diverging"
+    assert st["park"]["resume_to"] == "IMPLEMENTING"
+    rec = ESC.open_for(cfg, cid)
+    assert rec["topic"] == "scope" and rec["recommendation"] is None
+    assert [o["label"] for o in rec["options"]] == [
+        "one more implement round", "rework the spec", "stop this campaign"]
+    assert st["counters"].get("divergence_extras", 0) == 0
+
+
+def test_e2e_two_bad_divergence_verdicts_escalate(tmp_path, monkeypatch):
+    repo = make_repo(tmp_path, test_gate="exit 1")
+    entries = [impl_done(), triage("fix"), impl_done(), triage("fix"), impl_done(), triage("fix"),
+               _divergence(ok=False), _divergence(ok=False)]
+    cfg = make_cfg(tmp_path, repo, script(tmp_path, entries), profile={"loop_max": 4})
+    cid = added(cfg, monkeypatch)
+    r = run_cli(cfg, monkeypatch, ["queue", "run", "--until-idle"])
+    assert r.exit_code == 0, r.output
+    st = S.read_state(cfg, cid)
+    assert st["park"]["reason"] == "human_decision", st
+    runs = [e for e in S.read_ledger(cfg, cid, types=["run.end"])
+            if e.get("persona") == "divergence_triager"]
+    assert len(runs) == 2
+    assert "twice" in st["park"]["detail"]
+    assert ESC.open_for(cfg, cid)["topic"] == "scope"
 
 
 def test_check_read_error_notes_and_returns_none(monkeypatch):
