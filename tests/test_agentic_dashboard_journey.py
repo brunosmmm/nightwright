@@ -217,7 +217,7 @@ def test_layout_picks_the_densest_style_that_fits():
     items = [_item(i) for i in range(5)]
     full = CQ._lines(CQ._card_grid(items, 100, "full"), 100)
     compact = CQ._lines(CQ._card_grid(items, 100, "compact"), 100)
-    assert compact == 15 and full > compact
+    assert compact == 20 and full > compact
     assert CQ.active_region(items, 100, None)[0] == "full"
     assert CQ.active_region(items, 100, full)[0] == "full"
     assert CQ.active_region(items, 100, full - 1)[0] == "compact"
@@ -234,6 +234,22 @@ def _plain(renderable, width):
     c = Console(width=width, file=io.StringIO(), record=True, force_terminal=False)
     c.print(renderable)
     return c.export_text()
+
+
+def test_title_is_inside_the_card_and_leads_the_row():
+    """SPEC-0453: the border is the id and the state. The title gets the card body,
+    the compact card's first line, and the front of the row's flexible column."""
+    it = _item(0)
+    border = CQ._card_title(it).plain
+    assert it["campaign"] in border and it["state"] in border and "loop 1/3" in border
+    assert "A title" not in border and "SPEC-300" not in border
+    panel = _plain(CQ._active_panel(it), 120)
+    assert "A title" in panel and "SPEC-300" in panel
+    compact = [ln.strip() for ln in _plain(CQ._card_compact(it), 120).splitlines() if ln.strip()]
+    assert "A title" in compact[0] and it["campaign"] in compact[1]
+    row = _plain(CQ._cards_rows([it]), 160)
+    assert "A title" in row and "gating the fix" in row
+    assert row.find("A title") < row.find("gating the fix")
 
 
 def test_bottom_sections_truncate_with_more_rows(tmp_path):

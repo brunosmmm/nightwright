@@ -366,30 +366,19 @@ def _bar(frac: float, width: int = 12, style: str = "green") -> Text:
     return Text.assemble(("━" * full, style), ("━" * (width - full), "grey30"))
 
 
-def _spec_cell(spec_id, title) -> Text:
-    t = Text(str(spec_id or "?"), style="bold")
+def _human_title(it: dict) -> Text:
+    """The words that say what the campaign is (SPEC-0453): the spec title, or the idea
+    heading while no spec exists. A spec id leads the row when one exists. Layout cuts
+    this at the card width; nothing here pre-cuts it."""
+    title = (it.get("spec_title") or "").strip()
+    spec_id = it.get("spec_id")
+    if spec_id and title:
+        return Text.assemble((str(spec_id), "bold"), "  ", title)
+    if spec_id:
+        return Text(str(spec_id), style="bold")
     if title:
-        t.append("  ")
-        t.append(title, style="dim")
-    return t
-
-
-_SPEC_CELL_MAX = 60
-
-
-def _idea_spec_cell(it: dict) -> Text:
-    """SPEC-0211: an idea campaign's spec row — `SPEC-NNNN <title>`, or `writing… <heading>`
-    before a spec exists; the whole cell is cut to 60 characters."""
-    if it.get("spec_id"):
-        text, head = f"{it['spec_id']} {it.get('spec_title') or ''}".rstrip(), len(str(it["spec_id"]))
-    else:
-        text, head = f"writing… {it.get('spec_title') or ''}".rstrip(), 0
-    if len(text) > _SPEC_CELL_MAX:
-        text = text[:_SPEC_CELL_MAX - 1] + "…"
-    t = Text(text, style="dim")
-    if head:
-        t.stylize("bold", 0, head)
-    return t
+        return Text(title, style="bold")
+    return Text("—", style="dim")
 
 
 def _spec_review_text(it: dict):
@@ -796,8 +785,8 @@ def _now_text(it: dict) -> Text:
 
 
 def _card_title(it: dict, width=None) -> Text:
-    """`campaign · spec title · STATE 12m · loop N/M · project` (SPEC-0326). With `width`, the
-    spec title is cut so the state, loop and project still fit."""
+    """`campaign · STATE 12m · loop N/M · project` (SPEC-0453). The human title is a row
+    inside the card, not a fragment of this line. With `width`, the line is cut at the end."""
     state = it["state"]
     head = Text(it["campaign"], style="bold")
     if it.get("kind") == "split":                                      # SPEC-0290
@@ -811,14 +800,11 @@ def _card_title(it: dict, width=None) -> Text:
     tail.append(f" · loop {it.get('loops')}", style="bold")
     tail.append(" · ", style="grey50")
     tail.append_text(R.project_text(it.get("project")))
-    spec = (_idea_spec_cell(it) if it.get("idea") else
-            _spec_cell(it.get("label") or it.get("spec_id") or it.get("idea_id"),
-                       it.get("spec_title")))
-    room = 40 if width is None else max(9, width - len(head) - len(tail) - 3)
-    if len(spec) > room:
-        spec.truncate(room - 1)
-        spec.append("…", style="dim")
-    return Text.assemble(head, (" · ", "grey50"), spec, tail)
+    title = Text.assemble(head, tail)
+    if width is not None and len(title) > width:
+        title.truncate(max(1, width - 1))
+        title.append("…", style="dim")
+    return title
 
 
 def _cost_text(it: dict) -> Text:
@@ -839,17 +825,19 @@ def _cost_text(it: dict) -> Text:
 
 
 def _active_panel(it: dict, *, last_n: int = 2, width=None) -> Panel:
-    """SPEC-0326 full card: track, why, now, cost, review chips (when present), the last events
-    as sentences; the title carries campaign · spec · STATE time · loop N/M · project.
-    `width` is the card's width (for cutting the title and the track to fit)."""
+    """SPEC-0326 full card, title row from SPEC-0453. The border carries campaign · STATE
+    time · loop N/M · project. The body starts with the human title, then track, why, now,
+    cost, review chips (when present) and the last events. `width` cuts the border and the
+    track."""
     review = _spec_review_text(it) if it.get("idea") and it["state"] in Q._SPEC_PHASES else None
-    labels = ["track", "why", "now", "cost", "last"] + (["spec review"] if review else []) + (
-        ["reviews"] if it.get("reviews") else [])
+    labels = ["title", "track", "why", "now", "cost", "last"] + (
+        ["spec review"] if review else []) + (["reviews"] if it.get("reviews") else [])
     label_w = max(len(x) for x in labels)
     inner = None if width is None else width - 4 - label_w - 1
     grid = Table.grid(padding=(0, 1))
     grid.add_column(style="dim", no_wrap=True, justify="right", min_width=label_w)
     grid.add_column(overflow="ellipsis", no_wrap=True)
+    grid.add_row("title", _human_title(it))
     grid.add_row("track", _track_text(it, inner))
     grid.add_row("why", Text(it.get("why") or "", style="italic"))
     if review:
@@ -868,14 +856,15 @@ def _active_panel(it: dict, *, last_n: int = 2, width=None) -> Panel:
 
 
 def _card_compact(it: dict, width=None) -> Group:
-    """SPEC-0326 compact card (3 lines): title, track, why (a gate-slot wait shows as ⏳)."""
+    """SPEC-0453 compact card (4 lines): human title, identity, track, why (a gate-slot
+    wait shows as ⏳)."""
     why = Text("  ")
     w = it.get("waiting_for")
     if w and w.get("kind") == "gate_slot":
         why.append("⏳ " + JY.waiting_text(w) + " · ", style="yellow")
     why.append(it.get("why") or "", style="italic")
-    lines = [Text.assemble(("▌", R.state_style(it["state"]) or "cyan"),
-                           _card_title(it, None if width is None else width - 1)),
+    lines = [Text.assemble(("▌", R.state_style(it["state"]) or "cyan"), _human_title(it)),
+             Text("  ") + _card_title(it, None if width is None else width - 2),
              Text("  ") + _track_text(it, None if width is None else width - 2), why]
     for ln in lines:
         ln.no_wrap, ln.overflow = True, "ellipsis"
@@ -892,7 +881,8 @@ def _run_glyph(it: dict) -> Text:
 
 
 def _cards_rows(items: list, limit=None) -> Table:
-    """SPEC-0326 row style: `campaign  STATE ⏳/▶  loop N/M  $cost  why`, one line each."""
+    """SPEC-0326 row style, title from SPEC-0453: `campaign  STATE ⏳/▶  loop N/M  $cost
+    title  why`, one line each. The title leads the flexible column."""
     t = Table(box=None, pad_edge=False, expand=True, show_header=False, padding=(0, 1))
     t.add_column(no_wrap=True, style="bold")
     t.add_column(no_wrap=True)
@@ -905,11 +895,12 @@ def _cards_rows(items: list, limit=None) -> Table:
         state = Text(it["state"], style=R.state_style(it["state"]))
         if it.get("state_age_s") is not None:
             state.append(f" {_ago(it['state_age_s'])}", style="dim")
-        why = Text()
+        why = _human_title(it)
         w = it.get("waiting_for")
         if w and w.get("kind") == "gate_slot":
-            why.append("gate slot · ", style="yellow")
-        why.append(it.get("why") or "")
+            why.append("  gate slot", style="yellow")
+        if it.get("why"):
+            why.append("  " + str(it.get("why")), style="dim")
         t.add_row(it["campaign"], state, _run_glyph(it), f"loop {it.get('loops')}",
                   f"${it['cost_usd']:.2f}", why)
     if len(shown) < len(items):
