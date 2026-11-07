@@ -384,7 +384,7 @@ def validate(doc):
         _check_str_list(problems, agents.get("allowed_tools"), "agents.allowed_tools")
         if "commit_trailer" in agents and not isinstance(agents["commit_trailer"], str):
             problems.append("agents.commit_trailer: must be a string")
-        _check_enum(problems, agents.get("runner"), "agents.runner", ("claude", "cursor"))
+        _check_enum(problems, agents.get("runner"), "agents.runner", ("claude", "cursor", "pi"))
 
     if problems:
         raise ValueError("invalid project config:\n  - " + "\n  - ".join(problems))

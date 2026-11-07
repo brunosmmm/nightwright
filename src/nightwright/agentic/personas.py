@@ -1031,6 +1031,11 @@ def build_request(cfg, profile, project_cfg, state, persona, *, run_dir,
     model, model_alias = mapped_model(
         cfg, alias, effort, campaign=state, project=state.get("project"),
         project_root=project_root, cursor_model=settings.get("cursor_model"))
+    from . import runner as _R
+    pi_provider = pi_id = pi_thinking = None
+    if _R.resolve_runner(cfg, campaign=state, project=state.get("project")) == "pi":
+        row = _R.map_pi_model(alias, effort, cfg, project_root=project_root)
+        pi_provider, pi_id, pi_thinking = row["provider"], row["id"], row["thinking"]
     return RunRequest(
         persona=persona,
         prompt=build_prompt(p, ctx) if invariant is None else build_prompt(p, ctx, invariant),
@@ -1050,4 +1055,7 @@ def build_request(cfg, profile, project_cfg, state, persona, *, run_dir,
         profile=profile.get("name"),
         profile_sources=tuple(profile.get("sources") or ()),
         model_alias=model_alias,
+        pi_provider=pi_provider,
+        pi_id=pi_id,
+        pi_thinking=pi_thinking,
     )

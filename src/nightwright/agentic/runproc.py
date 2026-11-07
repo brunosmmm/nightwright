@@ -97,10 +97,68 @@ def with_cursor_agent(argv, env) -> tuple[list, dict]:
 
 
 def with_agent(argv, env) -> tuple[list, dict]:
-    """Resolve a leading `claude` or `cursor-agent` the way the job's exec does."""
+    """Resolve a leading `claude` or `cursor-agent` the way the job's exec does.
+    A leading `node` (Pi child) is left unchanged (SPEC-0451)."""
+    if argv and argv[0] == "node":
+        return list(argv), env
     if argv and argv[0] == "cursor-agent":
         return with_cursor_agent(argv, env)
     return with_claude(argv, env)
+
+
+def _pi_exec_script() -> Path:
+    return Path(__file__).resolve().parent / "pi_exec.mjs"
+
+
+def probe_pi(providers, environ=None, *, run=None) -> dict:
+    """SPEC-0451: `{ok, error, missing}` from `pi_exec.mjs --probe` (no key text)."""
+    run = subprocess.run if run is None else run
+    env = os.environ if environ is None else environ
+    providers = [str(p).strip() for p in (providers or []) if str(p).strip()]
+    out = {"ok": False, "error": None, "missing": list(providers)}
+    node = _resolve_binary("node", env)
+    if not node:
+        out["error"] = "node not found on PATH"
+        return out
+    script = _pi_exec_script()
+    if not script.is_file():
+        out["error"] = f"pi_exec.mjs missing at {script}"
+        return out
+    try:
+        rec = run([node, str(script), "--probe", *providers],
+                  capture_output=True, text=True, timeout=30.0, env=env)
+    except (OSError, subprocess.TimeoutExpired) as e:
+        out["error"] = f"pi probe failed: {e}"
+        return out
+    text = (rec.stdout or "").strip().splitlines()
+    line = text[-1] if text else ""
+    try:
+        payload = json.loads(line) if line else {}
+    except json.JSONDecodeError:
+        out["error"] = (rec.stderr or rec.stdout or "").strip() or f"probe exit {rec.returncode}"
+        return out
+    if isinstance(payload, dict):
+        out.update({k: payload.get(k) for k in ("ok", "error", "missing") if k in payload})
+        out["ok"] = bool(payload.get("ok"))
+        out["missing"] = list(payload.get("missing") or [])
+        out["error"] = payload.get("error")
+    if out["ok"]:
+        out["missing"] = []
+    elif not out["error"]:
+        out["error"] = "one or more providers lack a credential"
+    return out
+
+
+def ensure_pi_persona(pi_provider, environ=None) -> dict:
+    """Raise `FileNotFoundError` when the request's Pi provider has no credential."""
+    prov = str(pi_provider or "").strip()
+    if not prov:
+        raise FileNotFoundError(2, "pi_provider is missing", "pi")
+    rec = probe_pi([prov], environ)
+    if not rec.get("ok"):
+        detail = rec.get("error") or f"no credential for provider {prov!r}"
+        raise FileNotFoundError(2, detail, "pi")
+    return rec
 
 
 def create_cursor_chat(exe=None, run=None, timeout=30.0) -> str:

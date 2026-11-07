@@ -523,6 +523,11 @@ def run_spec_review(cfg, spec_path, spec_id, *, profile=None, idea_text=None,
     model, model_alias = mapped_model(
         cfg, alias, effort, project_root=str(root) if root else None,
         cursor_model=settings.get("cursor_model"))
+    from .runner import map_pi_model, resolve_runner
+    pi_provider = pi_id = pi_thinking = None
+    if resolve_runner(cfg) == "pi":
+        row = map_pi_model(alias, effort, cfg, project_root=str(root) if root else None)
+        pi_provider, pi_id, pi_thinking = row["provider"], row["id"], row["thinking"]
     req = PS.RunRequest(
         persona=PERSONA,
         prompt=PS.build_prompt(persona, ctx),
@@ -544,6 +549,9 @@ def run_spec_review(cfg, spec_path, spec_id, *, profile=None, idea_text=None,
         profile=prof.get("name"),
         profile_sources=tuple(prof.get("sources") or ()),
         model_alias=model_alias,
+        pi_provider=pi_provider,
+        pi_id=pi_id,
+        pi_thinking=pi_thinking,
     )
     journal_start(cfg, run_id, spec_id, req.timeout_s, req.run_dir,
                   reviewer_profile=prof.get("name"), model=req.model)

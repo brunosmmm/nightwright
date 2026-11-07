@@ -325,6 +325,8 @@ def workers_check(cfg, name, as_json, auth):
             res["errors"] += RPS.claude_check(cfg, w, auth)
             if R.cursor_needed(cfg):
                 res["errors"] += RPS.cursor_check(cfg, w)
+            if R.pi_needed(cfg):
+                res["errors"] += RPS.pi_check(cfg, w)
             res["ok"] = not res["errors"]
             if not res["ok"]:
                 WK.record_check(cfg, w["name"], False, failed="claude")  # SPEC-0345

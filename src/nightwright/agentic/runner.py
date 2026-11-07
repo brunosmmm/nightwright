@@ -50,6 +50,9 @@ class RunRequest:
     profile: str | None = None                  # SPEC-0238: the resolved profile and its sources
     profile_sources: tuple = ()
     model_alias: str | None = None              # SPEC-0436: profile alias when `model` is mapped
+    pi_provider: str | None = None              # SPEC-0451: Pi provider when runner is pi
+    pi_id: str | None = None
+    pi_thinking: str | None = None
 
 
 @dataclass(frozen=True)
@@ -192,8 +195,8 @@ def build_argv(req: RunRequest, stream: bool = True) -> list[str]:
     return argv
 
 
-LIVE_RUNNERS = ("claude", "cursor")
-ALL_RUNNERS = ("claude", "cursor", "fake")
+LIVE_RUNNERS = ("claude", "cursor", "pi")
+ALL_RUNNERS = ("claude", "cursor", "pi", "fake")
 CURSOR_SCHEMA_FOOTER = (
     "Reply with a single JSON object matching this schema and nothing else.\n\n{schema}"
 )
@@ -219,11 +222,19 @@ def map_cursor_model(model, effort=None, cfg=None, *, project_root=None, cursor_
     return CM.map_model(model, effort, cfg, project_root=project_root, cursor_model=cursor_model)
 
 
+def map_pi_model(model, effort=None, cfg=None, *, project_root=None) -> dict:
+    """Pi `{provider, id, thinking, model}` for a profile alias (SPEC-0451)."""
+    from . import pi_map as PM
+    return PM.map_pi_model(model, effort, cfg, project_root=project_root)
+
+
 def mapped_model(cfg, model, effort=None, *, campaign=None, project=None,
                  project_root=None, cursor_model=None) -> tuple[str, str | None]:
     """`(req.model, model_alias)` for this spawn: mapped Cursor id when the runner is cursor."""
     kind = resolve_runner(cfg, campaign=campaign, project=project)
     alias = str(model or "sonnet")
+    if kind == "pi":
+        return map_pi_model(alias, effort, cfg, project_root=project_root)["model"], alias
     if kind != "cursor":
         return alias, None
     return map_cursor_model(alias, effort, cfg, project_root=project_root,
@@ -282,6 +293,30 @@ def cursor_needed(cfg, campaigns=None) -> bool:
     return False
 
 
+def pi_needed(cfg, campaigns=None) -> bool:
+    """True when the host default, a project overlay, or any given (else live) campaign
+    resolves to `pi`."""
+    if resolve_runner(cfg) == "pi":
+        return True
+    mapping = ((cfg or {}).get("agentic") or {}).get("project_runners")
+    if isinstance(mapping, dict) and any(v == "pi" for v in mapping.values()):
+        return True
+    if campaigns is None:
+        try:
+            from . import store
+            campaigns = [st for st in store.list_campaigns(cfg)
+                         if st.get("state") not in store.TERMINAL_STATES]
+        except (OSError, TypeError, ValueError, KeyError):
+            campaigns = ()
+    for st in campaigns or ():
+        try:
+            if resolve_runner(cfg, campaign=st, project=st.get("project")) == "pi":
+                return True
+        except ValueError:
+            continue
+    return False
+
+
 def cursor_prompt(req: RunRequest) -> str:
     """Prompt file for a Cursor persona (SPEC-0442): prompt + system_append + schema footer.
     Python ``AgentOptions`` has no system prompt, so the footer stays in the user message."""
@@ -302,6 +337,12 @@ def build_cursor_argv(req: RunRequest) -> list[str]:
     for d in req.add_dirs:
         argv += ["--add-dir", str(d)]
     return argv
+
+
+def build_pi_argv(req: RunRequest) -> list[str]:
+    """Local Pi SDK child (SPEC-0451). Credentials stay in the environment."""
+    script = Path(__file__).resolve().parent / "pi_exec.mjs"
+    return ["node", str(script), str(req.run_dir)]
 
 
 def _tail(text: str, n: int = _TAIL_CHARS) -> str:
@@ -420,6 +461,12 @@ def _request_doc(req: RunRequest, started_at: str) -> dict:
            "started_at": started_at}
     if req.model_alias:
         doc["model_alias"] = req.model_alias
+    if req.system_append:
+        doc["system_append"] = req.system_append
+    if req.pi_provider:
+        doc["pi_provider"] = req.pi_provider
+        doc["pi_id"] = req.pi_id
+        doc["pi_thinking"] = req.pi_thinking
     return doc
 
 
@@ -434,13 +481,15 @@ def rebuild_request(run_dir, *, budget: float | None = None) -> RunRequest:
         prompt = ""
     return RunRequest(
         persona=doc.get("persona") or run_dir.name.split("-", 1)[-1], prompt=prompt,
-        system_append="", cwd=Path(doc.get("cwd") or "."), model=doc.get("model") or "",
+        system_append=str(doc.get("system_append") or ""),
+        cwd=Path(doc.get("cwd") or "."), model=doc.get("model") or "",
         effort=doc.get("effort"),
         max_budget_usd=float(budget if budget is not None else doc.get("max_budget_usd") or 0),
         timeout_s=int(doc.get("timeout_s") or 0),
         permission_mode=doc.get("permission_mode") or "", read_only=bool(doc.get("read_only")),
         allowed_tools=(), add_dirs=(), json_schema=doc.get("json_schema") or {}, env={},
-        run_dir=run_dir)
+        run_dir=run_dir, pi_provider=doc.get("pi_provider"), pi_id=doc.get("pi_id"),
+        pi_thinking=doc.get("pi_thinking"))
 
 
 def _read_text(path) -> str:
@@ -688,6 +737,16 @@ class CursorRunner(ClaudeRunner):
         return cursor_prompt(req)
 
 
+class PiRunner(ClaudeRunner):
+    """Spawn the local Pi SDK child per `build_pi_argv` (SPEC-0451)."""
+
+    def _launch_argv(self, req: RunRequest) -> list[str]:
+        return build_pi_argv(req)
+
+    def _prompt_text(self, req: RunRequest) -> str:
+        return req.prompt
+
+
 def _epoch(iso: str) -> float:
     import datetime as dt
     try:
@@ -779,6 +838,10 @@ def request_to_job(req: RunRequest, worktree) -> dict:
            "env": env, "profile": req.profile, "profile_sources": list(req.profile_sources)}
     if req.model_alias:
         doc["model_alias"] = req.model_alias
+    if req.pi_provider:
+        doc["pi_provider"] = req.pi_provider
+        doc["pi_id"] = req.pi_id
+        doc["pi_thinking"] = req.pi_thinking
     return doc
 
 
@@ -810,7 +873,9 @@ def request_from_job(doc: dict, tree, run_dir, env: dict | None = None) -> RunRe
         env={**{k: str(v) for k, v in (doc.get("env") or {}).items()}, **(env or {})},
         run_dir=Path(run_dir), profile=doc.get("profile"),
         profile_sources=tuple(doc.get("profile_sources") or ()),
-        model_alias=doc.get("model_alias"))
+        model_alias=doc.get("model_alias"),
+        pi_provider=doc.get("pi_provider"), pi_id=doc.get("pi_id"),
+        pi_thinking=doc.get("pi_thinking"))
 
 
 class RemoteRunner:
@@ -952,6 +1017,8 @@ def select_runner(cfg, runner=None) -> PersonaRunner:
     stream = bool(agentic.get("stream_runs", True))
     if kind == "cursor":
         return CursorRunner(timeout, stream=stream)
+    if kind == "pi":
+        return PiRunner(timeout, stream=stream)
     if kind != "claude":
-        raise ValueError(f"unknown agentic.runner {kind!r} (expected claude, cursor or fake)")
+        raise ValueError(f"unknown agentic.runner {kind!r} (expected claude, cursor, pi or fake)")
     return ClaudeRunner(timeout, stream=stream)

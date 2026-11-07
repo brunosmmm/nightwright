@@ -386,6 +386,28 @@ def check_runner(cfg, *, now=None) -> dict:
     return check(id, "skip", "no campaigns")
 
 
+def check_pi_agent(cfg, *, run_cmd=None) -> dict:
+    """`agentic.pi`: Pi package + map provider credentials when resolution is pi (SPEC-0451)."""
+    id = "agentic.pi"
+    if cfg is None:
+        return _skip_no_config(id)
+    from .agentic.runner import pi_needed
+    from .agentic import pi_map as PM
+    from .agentic import runproc as RP
+    try:
+        needed = pi_needed(cfg)
+    except ValueError:
+        needed = False
+    if not needed:
+        return check(id, "skip", "no campaign resolves to pi")
+    providers = PM.distinct_providers(cfg=cfg)
+    rec = RP.probe_pi(providers)
+    if rec.get("ok"):
+        return check(id, "ok", f"{len(providers)} provider(s) ready")
+    return check(id, "fail", rec.get("error") or "pi check failed",
+                 fix="install @earendil-works/pi-coding-agent and export provider API keys")
+
+
 def check_cursor_agent(cfg, *, run_cmd=None) -> dict:
     """`agentic.cursor`: Cursor SDK import + `CURSOR_API_KEY` when a persona resolves to cursor.
     Conductor launch still probes the `cursor-agent` binary on its own (SPEC-0442)."""
@@ -702,6 +724,7 @@ def run(cfg, *, project=None, config_error=None, which=None, run_cmd=None,
     out.append(_safe("agentic.dirs", check_agentic_dirs, cfg))
     out.append(_safe("agentic.runner", check_runner, cfg))
     out.append(_safe("agentic.cursor", check_cursor_agent, cfg, run_cmd=run_cmd))
+    out.append(_safe("agentic.pi", check_pi_agent, cfg, run_cmd=run_cmd))
     out.append(_safe("agentic.conductor", check_conductor, cfg))
     out.append(_safe("agentic.launch_fresh", check_launch_fresh, cfg))
     out.append(_safe("agentic.workers", check_workers, cfg))

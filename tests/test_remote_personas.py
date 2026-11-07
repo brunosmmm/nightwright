@@ -553,6 +553,12 @@ def test_ssh_grammar_allows_cursor_check():
         W.check_ssh_command("nw worker cursor-check --auth")
 
 
+def test_ssh_grammar_allows_pi_check():
+    assert W.check_ssh_command("nw worker pi-check") == ["pi-check"]
+    with pytest.raises(ValueError):
+        W.check_ssh_command("nw worker pi-check --auth")
+
+
 # ---- adoption through the queue (queue._adopt) -----------------------------------------------
 
 def _queue_adopt(w, local):

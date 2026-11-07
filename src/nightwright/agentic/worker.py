@@ -56,7 +56,7 @@ EXIT_ERROR = 3
 EXIT_REFUSED = 2
 UPDATING_ERROR = "worker updating"
 SSH_SUBCOMMANDS = ("info", "have", "gate-job", "gc", "submit", "attach", "poll", "cancel", "jobs",
-                   "claude-check", "cursor-check", "update")
+                   "claude-check", "cursor-check", "pi-check", "update")
 # when this interpreter started (SPEC-0369): a claim that began before an install did is the old
 # code, and must not run against the venv that install replaced
 PROCESS_STARTED = time.time()
@@ -627,8 +627,8 @@ def _validate_persona(payload: dict, bad) -> None:
     except (KeyError, TypeError, ValueError) as e:
         bad(f"payload.request: {e}")
     kind = payload.get("runner")
-    if kind is not None and kind not in ("claude", "cursor"):
-        bad("payload.runner must be claude or cursor")
+    if kind is not None and kind not in ("claude", "cursor", "pi"):
+        bad("payload.runner must be claude, cursor, or pi")
 
 
 # ---- frames ----------------------------------------------------------------------------------
@@ -1384,6 +1384,19 @@ def claude_check(auth: bool = False) -> dict:
 
 
 CURSOR_CHECK_SCHEMA = "nw.worker.cursor_check.v1"
+PI_CHECK_SCHEMA = "nw.worker.pi_check.v1"
+
+
+def pi_check(cfg) -> dict:
+    """SPEC-0451: probe distinct providers from this host's pi map."""
+    from . import pi_map as PM
+    from . import runproc as RP
+    providers = PM.distinct_providers(cfg=cfg)
+    if not providers:
+        return {"schema": PI_CHECK_SCHEMA, "ok": True, "missing": [], "error": None}
+    rec = RP.probe_pi(providers)
+    return {"schema": PI_CHECK_SCHEMA, "ok": rec.get("ok"), "missing": rec.get("missing") or [],
+            "error": rec.get("error")}
 
 
 def cursor_check() -> dict:
@@ -1408,7 +1421,7 @@ def check_ssh_command(original: str | None) -> list[str]:
     `have --repo <key> <sha>...`; `gate-job`; `gc [--keep-days <n>]`; and SPEC-0340's
     `submit`; `attach <job> [--from <n>]`; `poll <job> [--from <n>] [--renew]`;
     `cancel <job>`; `jobs [--json]`; SPEC-0344's `claude-check [--auth]`; SPEC-0436's
-    `cursor-check`; SPEC-0369's `update [--force]`."""
+    `cursor-check`; SPEC-0451's `pi-check`; SPEC-0369's `update [--force]`."""
     if not original or not original.strip():
         raise ValueError("empty command")
     try:
@@ -1437,6 +1450,8 @@ def check_ssh_command(original: str | None) -> list[str]:
     elif sub == "claude-check":                 # SPEC-0344
         ok = args in ([], ["--auth"])
     elif sub == "cursor-check":                 # SPEC-0436
+        ok = args == []
+    elif sub == "pi-check":                      # SPEC-0451
         ok = args == []
     elif sub == "update":                       # SPEC-0369
         ok = args in ([], ["--force"])

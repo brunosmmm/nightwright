@@ -1561,7 +1561,7 @@ def attach(queue_group):
     @click.option("--yes", "do_write", is_flag=True, help="create the campaign (default is dry-run)")
     @click.option("--json", "as_json", is_flag=True,
                   help="emit nw.queue.add.v1 JSON (nw.queue.add.batch.v1 for a batch)")
-    @click.option("--runner", "runner", default=None, type=click.Choice(["claude", "cursor"]),
+    @click.option("--runner", "runner", default=None, type=click.Choice(["claude", "cursor", "pi"]),
                   help="pin this campaign to claude or cursor (omit = follow host/project)")
     @click.option("--by", default=None,
                   help="who acts (default: $NW_MAILBOX_ADDR, then human)")
@@ -1784,7 +1784,7 @@ def attach(queue_group):
 
     @queue_group.command("backend")
     @click.argument("target", shell_complete=C.complete_campaign_id)
-    @click.argument("runner", required=False, type=click.Choice(["cursor", "claude", "default"]))
+    @click.argument("runner", required=False, type=click.Choice(["cursor", "claude", "pi", "default"]))
     @click.option("--host", is_flag=True,
                   help="write user agentic.runner (in-flight: the loop reloads)")
     @click.option("--all", "all_items", is_flag=True,

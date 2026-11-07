@@ -71,6 +71,16 @@ def worker_cursor_check(cfg):
         raise SystemExit(1)
 
 
+@worker_group.command("pi-check")
+@click.pass_obj
+def worker_pi_check(cfg):
+    """SPEC-0451: Pi package import and map provider credentials: one JSON line."""
+    rec = W.pi_check(cfg)
+    click.echo(json.dumps(rec))
+    if not rec["ok"]:
+        raise SystemExit(1)
+
+
 @worker_group.command("have")
 @click.option("--repo", "repo", required=True, help="the repo_key of the object cache")
 @click.argument("shas", nargs=-1, required=True)

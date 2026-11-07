@@ -145,9 +145,11 @@ def run_job(cfg, h: dict, job: Path, frames, cancel: threading.Event) -> None:
         runner = R.select_runner(cfg, runner=payload.get("runner"))
     except (KeyError, TypeError, ValueError) as e:
         raise W.WorkerError("run", f"cannot run the persona: {e}")
-    if isinstance(runner, R.CursorRunner):
+    if isinstance(runner, R.PiRunner):
+        RP.ensure_pi_persona(req.pi_provider)
+    elif isinstance(runner, R.CursorRunner):
         RP.ensure_cursor_persona()
-    if isinstance(runner, R.ClaudeRunner) and not isinstance(runner, R.CursorRunner) \
+    if isinstance(runner, R.ClaudeRunner) and not isinstance(runner, (R.CursorRunner, R.PiRunner)) \
             and RP.resolve_claude() is None:
         # SPEC-0389: an infrastructure failure, not a persona verdict (no $ estimate charged)
         raise FileNotFoundError(2, "claude not found on PATH or in the standard install dirs",
@@ -413,7 +415,7 @@ def _header(cfg, w: dict, state: dict, req, job_id: str, bundle: Path) -> dict:
          "payload": {"run_id": Path(req.run_dir).name, "persona": req.persona, "request": doc,
                      "json_schema": req.json_schema, "read_only": req.read_only,
                      "timeout_s": req.timeout_s, "max_budget_usd": req.max_budget_usd,
-                     "runner": kind if kind in ("claude", "cursor") else None}}
+                     "runner": kind if kind in ("claude", "cursor", "pi") else None}}
     W.validate_header(h)
     return h
 
@@ -911,6 +913,22 @@ def claude_check(cfg, w: dict, auth: bool) -> list[str]:
         return [f"`nw worker claude-check` failed (exit {rc}): {tail[0]}".rstrip(": ")]
     if not rec.get("ok"):
         return [str(rec.get("error") or "claude check failed")]
+    return []
+
+
+def pi_check(cfg, w: dict) -> list[str]:
+    """SPEC-0451: `nw worker pi-check` on the worker; the errors (empty: ok)."""
+    from . import remote_gates as RG
+    got = RG._call(w, "pi-check", timeout=WK.CHECK_TIMEOUT_S)
+    if got is None:
+        return ["`nw worker pi-check` could not run over SSH"]
+    rc, lines, err = got
+    rec = next((r for r in lines if r.get("schema") == W.PI_CHECK_SCHEMA), None)
+    if rec is None:
+        tail = (err or b"").decode("utf-8", "replace").strip().splitlines()[-1:] or [""]
+        return [f"`nw worker pi-check` failed (exit {rc}): {tail[0]}".rstrip(": ")]
+    if not rec.get("ok"):
+        return [str(rec.get("error") or "pi check failed")]
     return []
 
 

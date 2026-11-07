@@ -1,7 +1,7 @@
 ---
 id: SPEC-0451
 title: Run Pi personas through the Node SDK
-status: accepted
+status: done
 owner: user
 created: 2026-11-07
 updated: 2026-11-07
@@ -309,15 +309,15 @@ fails the check with that fact.
 
 ## Acceptance criteria
 
-- [ ] A Pi persona launch argv is `node` plus `pi_exec.mjs` plus the run dir.
+- [x] A Pi persona launch argv is `node` plus `pi_exec.mjs` plus the run dir.
       The provider credential is not in the argv or in `launch.json`.
       `runproc` leaves a leading `node` unchanged and records stdout as
       `stream.jsonl` when the launch is a stream.
-- [ ] The queue process does not import `@earendil-works/pi-coding-agent`.
+- [x] The queue process does not import `@earendil-works/pi-coding-agent`.
       The child dynamic-imports it, creates one in-memory session, calls
       `prompt` once, and `dispose`s. No session file is written under the
       worktree `cwd`.
-- [ ] Each assistant event is
+- [x] Each assistant event is
       `{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"…"},{"type":"tool_use","id":"…","name":"…","input":{}}]}}`
       and each tool result is
       `{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"…","content":"…","is_error":false}]}}`.
@@ -327,7 +327,7 @@ fails the check with that fact.
       `result.json`. `parse_result` reads the verdict from the final assistant
       text, `session_id`, usage, and `total_cost_usd`. A JSON line containing
       U+2028 stays one event.
-- [ ] Read-only runs pass tools `read`, `grep`, `find`, `ls`. Write runs pass
+- [x] Read-only runs pass tools `read`, `grep`, `find`, `ls`. Write runs pass
       `read`, `bash`, `edit`, `write`. The resource loader disables
       extensions, skills, prompt templates, and themes, and leaves context
       files on. `SettingsManager.inMemory()` is the settings manager, so
@@ -339,11 +339,11 @@ fails the check with that fact.
       tail of `req.prompt`. `appendSystemPrompt` is `system_append` from
       `request.json`. The user message contains the invariant once and the
       schema footer once. No JSON schema is passed to the session.
-- [ ] A missing package, a missing credential for the selected provider, or
+- [x] A missing package, a missing credential for the selected provider, or
       an unknown `provider` / `id` writes `is_error: true` and exits 1
       without calling `prompt`. An agent failure exits 1. Key text is absent
       from the result line and stderr.
-- [ ] `map_pi_model` turns `(alias, effort)` into `provider`, `id`, and
+- [x] `map_pi_model` turns `(alias, effort)` into `provider`, `id`, and
       `thinking`. `req.model` is `provider/id`. A Cursor slug and any other
       non-alias are refused. Overlay order matches `cursor_map`. A remote
       header whose resolution is `pi` has `payload.runner` `pi`, and
@@ -352,7 +352,7 @@ fails the check with that fact.
       `pi_map`. `request_to_job` and `request_from_job` carry `pi_provider`,
       `pi_id`, and `pi_thinking`. Claude and Cursor `request.json` files gain
       none of these keys.
-- [ ] When every assistant message has numeric `cost.total` and the model has
+- [x] When every assistant message has numeric `cost.total` and the model has
       a configured price, `total_cost_usd` is the sum, including a sum of `0`.
       A user or tool event with no `usage` does not null that sum: two
       assistant messages that each have numeric `cost.total`, plus a
@@ -363,7 +363,7 @@ fails the check with that fact.
       `cost.total`, or the model is unpriced, `total_cost_usd` is null so the
       queue charges `max_budget_usd`. Token counts present on assistant
       messages are still summed.
-- [ ] `nw doctor` `agentic.pi` probes the distinct providers in the map loaded
+- [x] `nw doctor` `agentic.pi` probes the distinct providers in the map loaded
       on the host that builds requests. It fails when `node` is missing, the
       package does not import, or one of those providers has no credential,
       and it passes when the import works and every such provider has one,
@@ -376,7 +376,7 @@ fails the check with that fact.
       `cursor-check`, and still runs `claude-check` for every persona worker.
       The `run_job` preflight does not require the `claude` binary for a
       `PiRunner`.
-- [ ] `resolve_runner` / `select_runner` / `nw queue add --runner pi` /
+- [x] `resolve_runner` / `select_runner` / `nw queue add --runner pi` /
       `nw queue backend … pi` accept `pi`. Claude launch argv and Cursor
       launch argv are unchanged. Conductor and steward `--runner` choices
       stay `claude` and `cursor`.
@@ -436,6 +436,13 @@ fails the check with that fact.
 - **Regression guard:** affected tests via `tools/affected_tests.py`. Claude
   argv, Cursor argv, and conductor `--runner` choices stay.
 
+### Test record (2026-11-07)
+
+- `uv run pytest tests/test_pi_runner.py tests/test_remote_personas.py::test_ssh_grammar_allows_pi_check tests/test_cursor_runner.py tests/test_rich_output_guard.py -q` — pass
+- `node --test tests/js/pi_exec.test.js` — pass
+- Full `uv run pytest` left to queue gating
+- `python3 tools/spec_lint.py` — pass
+
 ## Rollout / migration
 
 Hosts and workers that run Pi personas need `node` on `PATH` and
@@ -452,13 +459,13 @@ doctor passes.
 
 ## Definition of done
 
-- [ ] Acceptance criteria all met.
-- [ ] Test plan executed; automated tests pass (`uv run pytest` on the
+- [x] Acceptance criteria all met.
+- [x] Test plan executed; automated tests pass (`uv run pytest` on the
       affected set, plus `node --test tests/js/pi_exec.test.js`); manual
       live prompt not required when the stub covers the contract.
-- [ ] No regressions.
-- [ ] Spec body updated to match what shipped.
-- [ ] `docs/LEDGER.md` updated (status + date).
+- [x] No regressions.
+- [x] Spec body updated to match what shipped.
+- [x] `docs/LEDGER.md` updated (status + date).
 
 ## Open questions
 

@@ -5803,20 +5803,23 @@ def validate_runner_cfg(cfg: dict, campaigns=()) -> None:
     workers_cfg = agentic.get("workers")
     if isinstance(workers_cfg, dict):                         # SPEC-0345
         PG.check_max_personas(workers_cfg.get("max_personas"))
-    if agentic.get("runner") not in (None, "claude", "fake", "cursor"):
+    if agentic.get("runner") not in (None, "claude", "fake", "cursor", "pi"):
         raise ValueError(f"unknown agentic.runner {agentic['runner']!r} "
-                         f"(expected claude, cursor or fake)")
+                         f"(expected claude, cursor, pi or fake)")
     mapping = agentic.get("project_runners")
     if mapping is not None:
         if not isinstance(mapping, dict):
             raise ValueError("agentic.project_runners must be a mapping")
         for proj, kind in mapping.items():
-            if kind not in ("claude", "cursor"):
+            if kind not in ("claude", "cursor", "pi"):
                 raise ValueError(f"agentic.project_runners[{proj}]: unknown runner {kind!r} "
-                                 f"(expected claude or cursor)")
+                                 f"(expected claude, cursor or pi)")
     if agentic.get("cursor") is not None:
         from . import cursor_map as CM
         CM.load_cursor_map(cfg)   # validates agentic.cursor against the YAML schema
+    if agentic.get("pi") is not None:
+        from . import pi_map as PM
+        PM.load_pi_map(cfg)
 
 
 _UNSEEN = object()                                # a stat key no file can have
@@ -7868,8 +7871,8 @@ def _campaign_runner_pin(runner) -> dict:
     """SPEC-0436: `{runner}` when `--runner` was passed; empty when the campaign stays live."""
     if runner is None:
         return {}
-    if runner not in ("claude", "cursor"):
-        raise ValueError(f"unknown runner {runner!r} (expected claude or cursor)")
+    if runner not in ("claude", "cursor", "pi"):
+        raise ValueError(f"unknown runner {runner!r} (expected claude, cursor or pi)")
     return {"runner": runner}
 
 
@@ -8717,8 +8720,8 @@ def apply_after(cfg, plan: dict) -> dict:
 
 def plan_backend(cfg, campaign, runner, *, by="human") -> dict:
     """SPEC-0436: set or clear `state.runner` on a non-terminal campaign (no writes)."""
-    if runner not in ("claude", "cursor", "default"):
-        raise ValueError(f"unknown runner {runner!r} (expected cursor, claude or default)")
+    if runner not in ("claude", "cursor", "pi", "default"):
+        raise ValueError(f"unknown runner {runner!r} (expected cursor, claude, pi or default)")
     st = store.read_state(cfg, campaign)
     if st.get("state") in TERMINAL_STATES:
         raise ValueError(f"{campaign} is {st.get('state')}; only a non-terminal campaign "
@@ -8765,8 +8768,8 @@ def _load_user_yaml(path: Path) -> dict:
 
 def plan_host_backend(cfg, runner, *, by="human") -> dict:
     """SPEC-0439: set or clear user `agentic.runner` (no writes)."""
-    if runner not in ("claude", "cursor", "default"):
-        raise ValueError(f"unknown runner {runner!r} (expected cursor, claude or default)")
+    if runner not in ("claude", "cursor", "pi", "default"):
+        raise ValueError(f"unknown runner {runner!r} (expected cursor, claude, pi or default)")
     path = _user_config_path(cfg)
     current = (_load_user_yaml(path).get("agentic") or {}).get("runner")
     return {"scope": "host", "from": current, "to": None if runner == "default" else runner,
