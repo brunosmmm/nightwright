@@ -444,10 +444,11 @@ def wrapper_env(req: RunRequest) -> dict:
     """The environment of the detached wrapper and of the `claude` it starts (SPEC-0346).
 
     A worker persona sets `_CHILD_BASE` to PATH and HOME. That, plus `req.env`, is the whole
-    environment: `ClaudeRunner` starts the wrapper with it, and the wrapper reads the same
-    dict back from `launch.json` (`base_env`) instead of its inherited process environment.
-    Without `_CHILD_BASE` the wrapper gets `runproc.child_env` (the process environment minus
-    the launcher's keys), which is what a local child already received."""
+    environment: `ClaudeRunner` starts the wrapper with it, and persists the same dict in
+    `launch.json` (`base_env`, mode 0600) so a re-exec still builds `claude` from it.
+    Without `_CHILD_BASE` the wrapper is started with `runproc.child_env` (the process
+    environment minus the launcher's keys); `launch.json` omits `base_env` and the wrapper
+    falls back to its inherited process environment on re-exec, as a local child used to."""
     return _child_env(req)
 
 

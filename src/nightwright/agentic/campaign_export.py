@@ -351,8 +351,10 @@ def run_rows(cfg, crow: dict, events=None) -> list[dict]:
     the coordinator (as `cost_by_worker` labels it), null for a run with no run.end (SPEC-0346).
     The run records and that worker map are both taken from `events` when it is passed, so a
     ledger that grows between two reads cannot split them."""
+    if events is None:
+        events = store.read_ledger(cfg, crow["campaign"], types=["run.start", "run.end"])
     workers = {e.get("run_id"): e.get("worker") or "local"
-               for e in (events or []) if e.get("type") == "run.end" and e.get("run_id")}
+               for e in events if e.get("type") == "run.end" and e.get("run_id")}
     out = []
     for r in RN.campaign_runs(cfg, crow["campaign"], events):
         usage = r.get("usage") if isinstance(r.get("usage"), dict) else {}

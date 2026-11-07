@@ -213,6 +213,15 @@ Each case is a whole fake campaign unless noted.
   tests/test_remote_personas.py -q`: 87 passed (about 268 s). The full suite was left to gating.
 - Manual second-machine step not performed; that acceptance criterion stays open.
 
+### Test record (2026-11-07, review fixes loop 3)
+
+- Local `ClaudeRunner` launches omit `launch.json` `base_env`; worker personas persist
+  PATH/HOME+`req.env` as `base_env` at mode 0600. `campaign_export.run_rows` reads one ledger
+  when `events` is `None`.
+- `uv run pytest tests/test_agentic_runproc.py::test_worker_base_env_is_what_the_wrapper_and_claude_receive tests/test_agentic_runproc.py::test_local_launch_omits_base_env tests/test_agentic_campaign_export.py::test_run_rows_without_events_uses_one_ledger_read tests/test_agentic_campaign_export.py::test_run_rows_join_the_worker_from_the_same_ledger_snapshot tests/test_remote_workers_integration.py -q`: 29 passed.
+  The full suite was left to gating.
+- Manual second-machine step not performed; that acceptance criterion stays open.
+
 ### Test record (2026-11-06, review fixes)
 
 - `uv run pytest tests/test_remote_workers_integration.py::test_pre_epic_golden_reproduces_from_the_pinned_commit`: passed. The checked-in fixture matches a fresh `NW_RECORD_GOLDEN=1` recording from a temporary worktree of `1f0311c4^`.
@@ -221,6 +230,14 @@ Each case is a whole fake campaign unless noted.
 - `uv run pytest tests/test_worker_disk_guard.py tests/test_agentic_close.py::test_close_regate_is_local_only_for_a_merge tests/test_agentic_close.py::test_pr_close_regate_is_not_forced_local tests/test_agentic_close.py::test_pr_policy_hands_off_with_body tests/test_agentic_gates.py::test_ff_continuation_keeps_inherit_env_false tests/test_agentic_gates.py::test_ff_green_prelude_runs_main_and_ladder`: 14 passed. `tests/test_agentic_runproc.py::test_worker_base_env_is_what_the_wrapper_and_claude_receive` and `tests/test_remote_personas.py` passed in the same session (the persona file with the disk-guard and runproc files: 99 passed before five later tests that only failed because an earlier disk-guard test left `gates._stopping` set; the new disk test resets it, and the rerun above is green).
 - The full suite was left to gating.
 - The manual second-machine step was not performed. That acceptance criterion stays open and the spec stays `in-progress`.
+
+### As shipped (2026-11-07, review fixes loop 3)
+
+- **`launch.json` `base_env`:** local personas omit it; the wrapper inherits `child_env` at
+  spawn and `runproc` falls back to the process environment when `base_env` is absent. Worker
+  personas write PATH/HOME+`req.env` as `base_env` and `chmod` the file to 0600.
+- **`run_rows`:** when `events` is `None`, the ledger read matches `campaign_runs` (run.start
+  and run.end only) so the worker column is populated.
 
 ### As shipped (2026-11-07)
 

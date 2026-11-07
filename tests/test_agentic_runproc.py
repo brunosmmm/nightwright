@@ -104,6 +104,17 @@ def test_worker_base_env_is_what_the_wrapper_and_claude_receive(tmp_path, monkey
     launch = json.loads((req.run_dir / "launch.json").read_text())
     assert launch["base_env"] == seen["env"]
     assert not (forbidden & set(launch["base_env"]))
+    assert (req.run_dir / "launch.json").stat().st_mode & 0o777 == 0o600
+
+
+def test_local_launch_omits_base_env(tmp_path, monkeypatch):
+    """Local personas do not persist the process environment in `launch.json`."""
+    monkeypatch.setenv("GH_TOKEN", "must-not-appear-on-disk")
+    req = mkreq(tmp_path)
+    assert R.ClaudeRunner().run(req).verdict_ok
+    launch = json.loads((req.run_dir / "launch.json").read_text())
+    assert "base_env" not in launch
+    assert "GH_TOKEN" not in launch.get("env", {})
 
 
 def test_spawn_writes_contract_files(tmp_path):
