@@ -4,6 +4,7 @@ title: Public backlog on an orphan nw-backlog branch
 status: proposed
 owner: user
 created: 2026-11-07
+updated: 2026-11-07
 kind: feature
 tags: [public-backlog]
 source_idea: IDEA-1019
@@ -16,120 +17,184 @@ branch every new item and every title or summary edit is a pull request, and a
 backlog cannot bear that. The item list also cannot be an index file in that
 tree: every create would conflict on the index.
 
-nightwright already reads foreign blobs with `git show <ref>:<path>` and already
-builds commits through a temporary index (`src/nightwright/agentic/gitops.py`).
-It has no backlog ref, no per-item file format, and no push of a branch other
-than a campaign branch.
+nightwright already reads blobs with `git show <ref>:<path>` and already builds
+commits through a temporary index (`src/nightwright/agentic/gitops.py`). It has
+no backlog ref and no per-item file format.
 
 The store has to be a real branch. A ref outside `refs/heads`, such as
 `refs/nw/backlog`, is the same commit and does not show up as a branch. GitHub
 accepts pushes to branches and tags, so the branch is `refs/heads/nw-backlog`.
 The file format does not record which ref points at the commit.
 
+This spec is the first slice: recognize that branch, serialize `README.md` and
+one file per item, mint ids, and commit `add`, `edit`, `close`, and `reopen`
+without moving the product checkout. Reads and provenance, fetch and
+fast-forward publication, and concurrent merge and resolution are later specs.
+Their binding rules are listed under Non-goals so this slice does not invent
+a conflicting contract for them.
+
 ## Goals / Non-goals
 
 **Goals**
 
-- One backlog item is one file on an orphan `refs/heads/nw-backlog` in the
-  project's git repo, named only by its id, so a title change does not rename it.
-- nightwright reads those files with `git show` and writes them with a temporary
-  index and `commit-tree`. The product checkout, its index, and its current
-  branch do not move.
+- One backlog item is one regular file at the root of an orphan
+  `refs/heads/nw-backlog`, named only by its id, so a title change does not
+  rename it.
+- `add`, `edit`, `close`, and `reopen` read blobs with `git show` of a captured
+  sha and write them with a temporary index and `commit-tree`. The product
+  checkout, its index, and its current branch stay as they were.
 - The commit's author and committer are the git identity of the person running
-  the command. A write is refused when `user.name` or `user.email` is unset.
-- A push is a fast-forward of `nw-backlog`. Different files merge. The same file
-  stops and a person chooses. nightwright does not force-push, and it does not
-  delete the branch.
-- Creator and modifier displayed for an item come from the commits that added
-  and last changed that file. A merge that only brought in other files does not
-  count. When the frontmatter copy disagrees, history is the authority.
+  the command. A write is refused when `user.name` or `user.email` is missing,
+  whitespace-only, or contains a character this spec forbids.
+- A commit this spec writes matches the file format below. `add` requires a
+  summary flag, an empty summary is a real empty body, `--spec` and
+  `--clear-spec` cannot be combined, and an edit whose requested values equal
+  the stored values writes nothing.
+- A tip that is not an orphan backlog is refused before any object write. The
+  selected item is validated. An invalid selected item is not rewritten. No
+  command in this spec deletes a `REQ-*.md` path.
 
 **Non-goals**
 
-- An operation log, per-item refs, or Lamport clocks. Concurrent comments that
-  both survive are out of scope. git-bug is that design; this backlog's write
-  is a new file or a replacement of one file's title, summary, status, or spec id.
-- GitHub issues, or any forge issue mirror. That is a later opt-in, not this store.
-- Calling the forge API to install branch rules. This spec states the rule the
-  forge must already enforce.
+- **Backlog reads and provenance** (later spec). That spec adds `list` and
+  `show`, human output, `nw.backlog.list.v1`, and `nw.backlog.show.v1`. `list`
+  tolerates a stray path and reports it, including beside valid items. `show`
+  reads one named valid item; a stray path or an invalid item makes `show` exit
+  1 and write nothing. Displayed creator and modifier come from history: the
+  creator is the commit that added the file, the modifier is the latest commit
+  that changed that file's blob, and a merge that only brought in other files
+  is not the modifier. When the frontmatter copy disagrees, the displayed
+  identity is the history value and the JSON marks the disagreement. A read
+  does not rewrite the file. Every invalid form in this spec's validation table
+  has a deterministic list entry that carries this spec's reason token. That
+  spec's tests include `test_list_reports_stray_paths`,
+  `test_show_reads_one_valid_item_when_the_tip_has_a_stray_path`, and
+  `test_show_and_list_render_each_invalid_form`. This spec does not add those
+  commands.
+- **Backlog fetch and fast-forward publication** (later spec). That spec fetches
+  `nw-backlog` by name, fast-forwards the local branch when the remote is ahead,
+  and pushes `refs/heads/nw-backlog:refs/heads/nw-backlog` with no force and no
+  delete. A fetch that would fast-forward, and a push, reject a tip that
+  contains a stray path. The forge has to allow a fast-forward of this one
+  branch, including the push that creates it, refuse force-push, refuse
+  deletion, and not require a pull request. nightwright does not call the forge
+  API to install that rule, does not force-push, and does not delete the branch.
+  Commands in this spec take no `--push` and no `--remote`.
+- **Concurrent backlog merge and resolution** (later spec). Different item
+  files merge. Before accepting a clean merge, that spec computes the paths
+  changed by each tip relative to their merge base. If any `REQ-*.md` path
+  changed on both sides, it exits 3 and requires a person's choice, including
+  when one side changed the title and the other changed the summary and a
+  content merge would have been clean. Its test is
+  `test_same_item_title_and_summary_edits_stop_for_a_person`. Resolve refuses
+  any choice that would remove a `REQ-*.md` path, exits 1, and writes no
+  commit. A modify/delete conflict is resolved only by keeping one side's
+  existing item blob. Its test is
+  `test_resolve_refuses_a_choice_that_deletes_an_item`. The person takes one
+  existing side, then may `edit` afterwards. This spec does not merge.
+- An operation log, per-item refs, or Lamport clocks. git-bug is that design.
+  This slice's write is a new file or a replacement of one file's title,
+  summary, status, or spec id.
+- GitHub issues, or any forge issue mirror.
 - Storing an `IDEA-NNN`, a visibility flag, comments, labels, assignees, or a
-  sort order.
-- Deleting an item, renaming its file, or composing a third text during a
-  conflict. The person takes one existing side, then may `edit` afterwards.
-- A TUI or dashboard editor for the backlog.
+  sort order. The writer never emits those keys.
+- A command that deletes an item, renames its file, or composes a third text.
+- A TUI or dashboard editor.
 
 ## Decision
 
-The public backlog of a project is the orphan branch `refs/heads/nw-backlog` in
-that project's git repository. Each item is one markdown file at the branch
-root, `REQ-` plus eight Crockford characters, minted on the machine that creates
-the file. A fixed `README.md` is the only other file nightwright adds. There is
-no index file.
+The backlog of a project is the orphan branch `refs/heads/nw-backlog` in that
+project's git repository. Each item is one markdown file at the branch root,
+`REQ-` plus eight Crockford characters, minted on the machine that creates the
+file. A fixed `README.md` is the only other file these commands add. There is
+no index file. The file format has no `IDEA-NNN` and no visibility field.
 
-The frontmatter holds `id`, `title`, `status` (`open` or `closed`), `created`,
-`updated`, `created_by`, `updated_by`, and `spec` once a spec id has been set.
-`created_by` and `updated_by` are copies of the git author at write time.
-History is the authority when a copy disagrees. The file format has no
-`IDEA-NNN` and no visibility field. Public means everyone who can fetch that
-repo. On a private repository the branch is as private as the code.
-
-nightwright fetches and pushes `nw-backlog` by name. Cloning the repo fetches
-the branch with the default refspec. Pulling the default branch does not update
-it. A push that is not a fast-forward is fetched and merged: different files
-merge, the same file stops for a person. Any other rejection means this
-repository cannot host the backlog. nightwright does not force-push and does
-not delete the branch.
-
-The forge has to allow a fast-forward of this one branch, including the push
-that creates it, refuse force-push, refuse deletion, and not require a pull
-request. A repository that cannot say that cannot host the backlog.
+`nw backlog add`, `edit`, `close`, and `reopen` commit onto that branch through
+a temporary index. They leave the checkout where it was. The first `add`
+creates the branch as a parentless commit. Later commands in this spec add one
+parent, the previous tip. Publication, history-derived display, and same-file
+choice are the later specs named above.
 
 ## Design
 
-### Branch and checkout
+### Repository and refs
 
-The ref is `refs/heads/nw-backlog`. Commands take the git toplevel of `--repo`,
-or of the current directory when `--repo` is omitted. The directory must be a
-non-bare work tree. The remote defaults to `origin` and `--remote` overrides it.
+Commands take the git toplevel of `--repo`, or of the current directory when
+`--repo` is omitted. The directory must be a non-bare work tree
+(`git rev-parse --is-inside-work-tree` is `true` and
+`--is-bare-repository` is `false`). Anything else exits 1 with
+`not a git work tree`.
 
-Every mutating command (`add`, `edit`, `close`, `reopen`, `fetch` when it
-fast-forwards, `push`, `resolve`) refuses, before it updates any ref, when
-`git worktree list --porcelain` shows any worktree whose branch is
-`refs/heads/nw-backlog`. The refusal exits 1 and names the worktree. That keeps
-`update-ref` from moving a checked-out branch and leaving its work tree stale.
+The backlog ref is `refs/heads/nw-backlog`. A missing ref is an empty backlog.
+`add` creates it. `edit`, `close`, and `reopen` of an id that is not on the
+tip exit 1 with `<id> is not on nw-backlog`.
 
-The product checkout is the work tree the command was started in. Before and
-after every command, all of these are unchanged: `HEAD` (sha and whether it is
-detached or which branch it names), the path and bytes of that work tree's
-index, `git status --porcelain`, and the files in the work tree. The command
-never runs `checkout`, `switch`, `merge`, `rebase`, `reset`, or `clean`. It
-never pushes `HEAD` or the current branch name. The push refspec is always
-`refs/heads/nw-backlog:refs/heads/nw-backlog`.
+Every command in this spec refuses, before `hash-object`, when
+`git worktree list --porcelain` shows a worktree whose `branch` line is
+`refs/heads/nw-backlog`. Stderr is one line per such worktree,
+`nw-backlog is checked out at <path>`, using the absolute `worktree` path from
+that porcelain record. Exit 1. The ref is unchanged.
 
-A missing `refs/heads/nw-backlog` is an empty backlog. `list` and `show` succeed
-with no items. `add` creates the branch.
+The product checkout is the work tree the command resolved. After every
+command, all of these are unchanged: `HEAD` (sha, and whether it is unborn,
+detached, or which branch it names), the bytes of that work tree's index file
+when it exists and its absence when it does not, `git status --porcelain`, and
+the files in the work tree. The command does not create `MERGE_HEAD`,
+`MERGE_MSG`, or `CHERRY_PICK_HEAD`. It does not check the backlog files out
+into the work tree.
 
-A tip that already exists is a backlog only when every root commit
-(`git rev-list --max-parents=0`) and the tip tree itself contain only root-level
-paths matching `README.md` or `REQ-[0-9A-HJKMNP-TV-Z]{8}.md`. Otherwise the
-command exits 1 and says `refs/heads/nw-backlog is not an orphan backlog`. It
-does not commit on top of product history.
+The only git subcommands these commands run are `rev-parse`, `rev-list`,
+`ls-tree`, `show`, `config`, `worktree`, `hash-object`, `read-tree`,
+`update-index`, `write-tree`, `commit-tree`, and `update-ref`. `worktree` is
+only `worktree list --porcelain`. `config` is only `config --get user.name`
+and `config --get user.email`. `update-ref` is only
+`update-ref refs/heads/nw-backlog <new> <expected>` and never includes `-d`.
+`<expected>` is the full sha read at the start of that attempt, or forty `0`
+digits when the ref was missing. `GIT_INDEX_FILE` is set only on those child
+processes, pointing at a file in a temporary directory that the command
+deletes before it returns.
 
-### File format
+Reads in an attempt use the sha captured at the start of that attempt:
+`git ls-tree -r <sha>`, `git show <sha>:<path>`, and
+`git rev-list --max-parents=0 <sha>`. They do not read `HEAD` or the work tree.
+A file of the same name in the checkout is not the backlog.
 
-The id is `REQ-` plus eight characters from the Crockford alphabet
-`0123456789ABCDEFGHJKMNPQRSTVWXYZ` (no `I`, `L`, `O`, or `U`). The minter draws
-`secrets.token_bytes(5)` (40 bits) and encodes five bits per character, high
-bits first. It does not add a checksum. The filename is `<id>.md` at the branch
-root. The id inside the file equals the filename stem.
+### Stray paths
 
-If that filename, compared case-insensitively, is already on the tip, the
-minter draws again, up to eight draws. The ninth collision exits 1 and writes
-nothing.
+A tip is an orphan backlog when every root commit reachable from it, and the
+tip tree itself, contain only root-level regular files (`mode` `100644`) whose
+path is `README.md` or `REQ-[0-9A-HJKMNP-TV-Z]{8}.md`. An empty tree satisfies
+that. Any other path is stray. Any other mode is a mode problem. A missing ref
+is an empty backlog, not a stray tip.
 
-`add` writes this shape, UTF-8, LF, no BOM. The file ends with one newline.
-`title`, `created_by`, and `updated_by` are double-quoted YAML scalars with
-`\` and `"` escaped. Keys stay in this order. `spec` is omitted until set.
+`add`, `edit`, `close`, and `reopen` are the mutating commands of this spec.
+Each rejects a tip with any problem: exit 1, no `hash-object`, ref unchanged.
+Stderr is the header `refs/heads/nw-backlog is not an orphan backlog`, then
+one line per finding:
+
+- tip: `stray: <path>` or `mode: <path>`
+- a root commit: `root <fullsha> stray: <path>` or `root <fullsha> mode: <path>`
+
+Tip lines come first, then roots in ascending sha order. Within one tree,
+lines sort by path and then by kind (`mode` before `stray`). A path that is
+both stray and the wrong mode produces both lines.
+
+`list` reports stray paths and still succeeds. `show` may read one named valid
+item and exits 1 for a stray path. Fetch that fast-forwards, push, merge, and
+resolve reject a stray tip. Those five commands belong to the later specs in
+Non-goals. This spec's tests cover the four mutating refusals. The reporting
+tests are named on that later reads spec.
+
+### File bytes
+
+The id is `REQ-` plus eight characters from
+`0123456789ABCDEFGHJKMNPQRSTVWXYZ` (no `I`, `L`, `O`, or `U`). The filename is
+`<id>.md` at the branch root. The id inside the file equals the filename stem.
+
+`add` writes UTF-8, LF, no BOM. The file ends with one newline. `title`,
+`created_by`, and `updated_by` are double-quoted YAML scalars. Inside the
+quotes, `\` is written `\\` and `"` is written `\"`. No other escapes are
+used. Keys stay in this order. `spec` is omitted until set.
 
 ```markdown
 ---
@@ -145,229 +210,263 @@ updated_by: "Ada Lovelace <ada@example.com>"
 The summary.
 ```
 
-`created` and `updated` are UTC instants `YYYY-MM-DDTHH:MM:SSZ`, equal to the
-commit's author instant. `status` is `open` or `closed`. The summary is the
-markdown body after the blank line that follows the closing `---`. An empty
-summary omits that blank line and the body; the file ends at the closing `---`
-line's newline. A non-empty summary is stored with its newlines normalized to
-LF and exactly one trailing newline.
+`created` and `updated` are UTC instants `YYYY-MM-DDTHH:MM:SSZ`. They equal
+the commit's author instant, which equals its committer instant. `status` is
+`open` or `closed`. `spec`, when present, is the last key and matches
+`^SPEC-[0-9]{4}$`. nightwright does not check that a spec file exists.
 
-On `edit`, `created` and `created_by` are copied from the file being replaced.
-`updated` and `updated_by` are set from this write. Title, summary, and `spec`
-change only when the command says so. The path does not change.
+The summary is the markdown body. A non-empty summary is written after a
+blank line that follows the closing `---`, with LF newlines and exactly one
+trailing newline. An empty summary omits that blank line and the body; the
+file ends at the newline of the closing `---` line.
 
-The writer emits only the keys above. A later edit of a file that contains
-`idea`, an `IDEA-NNN`, a visibility key, or any other key drops those keys.
-`spec`, when set, matches `^SPEC-[0-9]{4}$`. nightwright does not check that a
-spec file exists in this repo.
+On `edit`, `close`, and `reopen`, `created` and `created_by` are the logical
+strings parsed from the blob being replaced. `updated` and `updated_by` are
+set from this write. Title, summary, and `spec` change when the command says
+so. The path does not change. A commit that changes the item drops every key
+other than the keys above, including `idea`, an `IDEA-NNN`, and a visibility
+key. A no-op edit writes nothing, so those extra keys stay until a later
+commit actually changes a field.
 
 The first backlog commit, and any later write whose tip lacks `README.md`,
-adds this exact file (trailing newline included):
+adds this exact file. The lines are `# nw-backlog`, an empty line,
+`This branch is the public backlog for this repository. It is not a product checkout.`,
+`Do not build or run anything from it.`, an empty line, and
+``Each `REQ-*.md` file at the root is one backlog item. There is no index file.``
+Those lines are joined with `\n` and the blob ends with `\n`. If `README.md`
+is already on the tip, a later write leaves those bytes alone.
 
-```markdown
-# nw-backlog
-
-This branch is the public backlog for this repository. It is not a product checkout.
-Do not build or run anything from it.
-
-Each `REQ-*.md` file at the root is one backlog item. There is no index file.
-```
-
-If `README.md` is already on the tip, a later write leaves those bytes alone,
-whether or not they match the text above.
-
-Commit subjects, with no body:
+Commit messages are a single line and a newline, with no body:
 
 - add: `backlog: add REQ-K7H3MQ2P`
 - edit: `backlog: edit REQ-K7H3MQ2P`
 - close: `backlog: close REQ-K7H3MQ2P`
 - reopen: `backlog: reopen REQ-K7H3MQ2P`
-- merge: `backlog: merge nw-backlog`
 
-An add commit touches the new item and, when the tip lacked it, `README.md`.
-An edit, close, or reopen commit touches that one item file. nightwright never
-deletes a `REQ-*.md` path itself.
+An add commit names the new item and, when the tip lacked it, `README.md`.
+An edit, close, or reopen commit names that item and, when the tip lacked it,
+`README.md`. It names no other path. None of these commits delete a path.
+
+### Validation
+
+`parse_item(filename, blob)` splits a blob that passed the byte checks with
+the DOTALL regex `\A---\n(.*?)\n---\n(.*)\Z`. Group 1 plus a newline is the
+YAML document. Group 2 is the raw body. The first `\n---\n` closes the
+frontmatter. The loader is PyYAML's safe loader (YAML 1.1, so `yes`, `no`,
+`on`, and `off` are booleans) with a mapping constructor that raises on a
+repeated key. That repeated-key failure is the `duplicate key <key>` token.
+Every other loader failure is `invalid yaml`.
+
+The logical summary of group 2: if it is empty or only `\n` characters, the
+summary is `""`. Otherwise drop one leading `\n` when present, and if what
+remains is empty or only `\n` characters the summary is `""`. Otherwise the
+summary is that remainder with trailing `\n` characters removed and exactly
+one `\n` appended.
+
+Checks run in this order. The first match is the reason token. A fixture for
+a row passes every earlier check.
+
+| # | Form | Reason token |
+|---|---|---|
+| 1 | Prefix bytes `EF BB BF` | `bom` |
+| 2 | Not valid UTF-8 | `not utf-8` |
+| 3 | Contains a CR byte | `cr` |
+| 4 | Does not match the frontmatter regex | `no frontmatter` |
+| 5 | YAML error, or a non-string key | `invalid yaml` |
+| 6 | Duplicate key | `duplicate key <key>` |
+| 7 | Document is not a mapping | `not a mapping` |
+| 8 | First missing key among `id`, `title`, `status`, `created`, `updated`, `created_by`, `updated_by` | `missing <key>` |
+| 9 | `id` is not a string matching `^REQ-[0-9A-HJKMNP-TV-Z]{8}$` | `bad id` |
+| 10 | `id` does not equal the filename stem | `id mismatch` |
+| 11 | `title` is not a string, is empty after `strip`, or contains a newline | `title` |
+| 12 | `status` is not the string `open` or `closed` | `status` |
+| 13 | `created` is not a string matching `^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$` that `strptime` accepts with `%Y-%m-%dT%H:%M:%SZ` | `created` |
+| 14 | `updated` fails the same instant check | `updated` |
+| 15 | `created_by` is not a string whose `strip` is non-empty | `created_by` |
+| 16 | `updated_by` fails the same string check | `updated_by` |
+| 17 | `spec` is present and is not a string matching `^SPEC-[0-9]{4}$` | `spec` |
+
+Unknown keys, any key order, an unquoted title, a body that uses or omits the
+separator blank line, and extra trailing newlines in the body are valid.
+`updated` may be an earlier instant than `created`. A `summary` key is an
+unknown key; the body is the summary.
+
+`edit`, `close`, and `reopen` run `parse_item` on the selected blob. Any
+reason exits 1 with `invalid backlog item <id>: <token>`, does not call
+`hash-object`, and leaves that blob's sha unchanged. They validate the
+selected blob only. A malformed sibling with a legal filename does not block
+`add` or a mutation of a different valid item, and its blob sha stays.
+`add` writes a blob that passes every row.
 
 ### Identity
 
-A write reads `git config --get user.name` and `git config --get user.email`
-(local, then global, then system, which is what `--get` already walks). A
-missing, empty, or whitespace-only value is unset. The check runs before
-`hash-object`, `commit-tree`, or `update-ref`. When either is unset the command
-exits 1, names each missing key, and leaves the object database and
-`refs/heads/nw-backlog` unchanged. A name or email containing CR or LF is
-refused the same way.
+A write reads `git config --get user.name` and `git config --get user.email`,
+which walk local, then global, then system. For each key, the first match
+below is the error:
 
-The backlog commit sets both author and committer to that pair. The
-`commit-tree` child receives `GIT_AUTHOR_NAME`, `GIT_AUTHOR_EMAIL`,
-`GIT_COMMITTER_NAME`, and `GIT_COMMITTER_EMAIL` from those values, overriding
-any ambient `GIT_AUTHOR_*` or `GIT_COMMITTER_*`. `created_by` on add, and
-`updated_by` on every write, are `Name <email>` from that same pair. Author and
-committer dates are that same instant.
+1. `git config --get` fails: `<key> is unset`.
+2. The raw value contains CR or LF: `<key> contains a line break`.
+3. `strip` of the value is empty: `<key> is unset`.
+4. For the name, `<` is checked before `>`. The message is
+   `user.name contains '<'` or `user.name contains '>'`.
+5. For the email, whitespace is checked first and the message is
+   `user.email contains whitespace`. Otherwise the first of `<`, `>`, a
+   double quote, and a backslash produces `user.email contains '<char>'`.
 
-Displayed identity comes from history, not from the frontmatter copy.
+Both keys are checked. Name errors are printed before email errors. Exit 1.
+The check runs after the work tree is known to be non-bare and before the
+checked-out refusal, and it does not call `hash-object`. The ref stays
+unchanged.
 
-- The creator commit is the `--diff-filter=A` commit for the path, searched with
-  `git log --full-history --root`. If two adds exist, the earlier committer
-  timestamp wins, and an equal timestamp yields to the lexicographically smaller
-  sha. `created_by` is that commit's `%an <%ae>`.
-- The modifier candidates are `git log --full-history --root` for the path.
-  Drop a commit whose blob for the path equals its first parent's blob. Drop a
-  merge (two or more parents) whose blob equals the blob at any parent, which
-  is a merge that took one side or only brought the file in. The newest
-  remaining commit by committer timestamp, with the same sha tie-break, is the
-  modifier. `updated_by` is that commit's `%an <%ae>`.
-- A merge whose diff does not touch the path never appears in that log, so a
-  merge that only brought in other files is not the modifier.
+The stored identity string is the raw config name, a space, `<`, the raw
+config email, and `>`. The backlog commit sets both author and committer to
+that pair. The `commit-tree` child receives `GIT_AUTHOR_NAME`,
+`GIT_AUTHOR_EMAIL`, `GIT_COMMITTER_NAME`, `GIT_COMMITTER_EMAIL`,
+`GIT_AUTHOR_DATE`, and `GIT_COMMITTER_DATE` from those values and from the
+write instant, overriding any ambient `GIT_AUTHOR_*` or `GIT_COMMITTER_*`.
+Dates are `<unix-seconds> +0000`.
 
-`list` and `show` report the history values. `show --json` also reports
-`frontmatter_created_by`, `frontmatter_updated_by`, and `identity_disagrees`.
-A read does not rewrite the file.
+`created_by` on add, and `updated_by` on every commit this spec writes, are
+that `Name <email>` string. `created_by` on edit, close, and reopen is the
+parsed string from the previous blob.
 
-### Read and write
+### Minting
 
-`show` and `list` read blobs with
-`git show refs/heads/nw-backlog:<path>`. They do not read the work tree. A file
-of the same name in the checkout is not the backlog.
+`mint_id(existing, draw=secrets.token_bytes)` draws five bytes and packs them
+high bits first. `n = int.from_bytes(raw, "big")`. Character `i` for `i` in
+`0..7` is `alphabet[(n >> ((7 - i) * 5)) & 31]` with
+`alphabet = "0123456789ABCDEFGHJKMNPQRSTVWXYZ"`. Pinned vectors:
+`99e23a5c56` encodes `K7H3MQ2P`, and `abcd123456` encodes `NF6H4D2P`.
 
-`list` orders items by id. A path that is not `README.md` and not a `REQ-*.md`
-name is not an item: human output prints `stray: <path>` on stderr, and
-`--json` lists it under `stray`. An unreadable `REQ-*.md` (not valid UTF-8, or
-no YAML frontmatter) is an item with status `?` and title `unreadable`.
+The candidate is compared case-insensitively with the filenames already on
+the tip. A collision draws again, up to eight draws. If all eight collide,
+`mint_id` raises and the command exits 1 with `could not mint an id`, without
+a ninth draw and without `hash-object`. The id is minted once per `add`, after
+the tip check, and reused on a compare-and-swap retry. A retry whose tip
+already contains that filename exits 1 with `<id> is already on nw-backlog`
+and does not draw again and does not call `update-ref` again.
 
-`--json` for `list` is `nw.backlog.list.v1`:
+### Commit
 
-```json
-{
-  "schema": "nw.backlog.list.v1",
-  "ref": "refs/heads/nw-backlog",
-  "items": [
-    {
-      "id": "REQ-K7H3MQ2P",
-      "path": "REQ-K7H3MQ2P.md",
-      "title": "Public backlog",
-      "status": "open",
-      "created": "2026-11-07T15:41:00Z",
-      "updated": "2026-11-07T15:41:00Z",
-      "created_by": "Ada Lovelace <ada@example.com>",
-      "updated_by": "Ada Lovelace <ada@example.com>"
-    }
-  ],
-  "stray": []
-}
-```
+The write instant comes from `current_time()`, which returns
+`datetime.now(timezone.utc)`. Library functions take a `now` callable that
+defaults to `current_time`. A naive value is given `timezone.utc`. An aware
+value is converted with `astimezone(timezone.utc)`. The unix second is then
+`int(instant.timestamp())`, which floors a positive instant. Frontmatter and
+both git dates use that same second.
 
-`spec` is present on an item only when the file has a valid spec id. `show
---json` is one item plus `summary`, `frontmatter_created_by`,
-`frontmatter_updated_by`, and `identity_disagrees`.
+Before the first attempt the command has checked arguments, refused a
+directory that is not a non-bare work tree, checked identity, and refused a
+checked-out `nw-backlog`. Those four checks are not repeated on a retry.
 
-The write builds a commit without the product index:
+Each attempt:
 
-1. Check the git identity and the worktree-not-checked-out rule.
-2. Read the current tip sha, or note that the ref is missing.
-3. Reject a tip that is not a backlog, as defined above.
-4. Put `GIT_INDEX_FILE` on a new file in a temporary directory. That variable
-   is set only on the child git processes.
-5. `git read-tree` of the tip tree, or an empty index when the branch is new.
-6. `git hash-object -w` the new blob and `git update-index --add --cacheinfo`
-   it. Add `README.md` the same way when the index lacks it.
-7. `git write-tree`, then `git commit-tree` of that tree. The first commit has
-   no `-p`. Every later item commit has `-p <old tip>`.
-8. `git update-ref refs/heads/nw-backlog <new> <old>` where `<old>` is forty
-   zeros when the ref was missing. A failed compare-and-swap retries the whole
-   write against the new tip, up to three attempts, then exits 1. No attempt
-   uses `update-ref -d`.
+1. Read the tip sha, or note that the ref is missing.
+2. Reject a tip that is not an orphan backlog.
+3. On the first attempt of `add`, mint the id from the filenames on that tip.
+   Later attempts reuse it. If a later tip already contains that filename,
+   exit 1 with `<id> is already on nw-backlog` and do not call `update-ref`.
+4. For edit, close, and reopen, load `<sha>:<id>.md` and validate it. A missing
+   path exits 1 with `<id> is not on nw-backlog`. Close of `closed` exits 1
+   with `<id> is already closed`. Reopen of `open` exits 1 with
+   `<id> is already open`. An edit whose requested logical values equal the
+   stored ones exits 0 and stops, with no `hash-object`.
+5. Put `GIT_INDEX_FILE` on a new file in a temporary directory.
+6. `git read-tree <tip tree>`, or `git read-tree --empty` when the ref is
+   missing.
+7. `git hash-object -w` the new item blob and
+   `git update-index --add --cacheinfo 100644,<blob>,<path>`. Add `README.md`
+   the same way when the index lacks it. Leave an existing `README.md` blob
+   as `read-tree` loaded it.
+8. `git write-tree`, then `git commit-tree`. A commit created when the ref was
+   missing has no `-p`. Every commit onto an existing tip has
+   `-p <tip sha of this attempt>`.
+9. `git update-ref` compare-and-swaps. A miss is a non-zero `update-ref` after
+   which the ref sha differs from `<expected>`. That starts another attempt
+   against the new tip, up to three attempts. The minted id, the requested
+   field values, and the write instant stay fixed across attempts. A
+   precondition failure on a later attempt (stray tip, missing item, invalid
+   item, status already at the target, minted id now present, or a no-op)
+   returns immediately and does not use the remaining attempts. A non-zero
+   `update-ref` that leaves the ref at `<expected>` exits 1 with
+   `update-ref failed` and does not retry. After the third miss the command
+   exits 1 with `nw-backlog changed` and the ref is the sha the last attempt
+   read as the winner. Dangling blobs from the failed attempts may remain.
+   The ref does not point at those attempts' commits.
 
-### Fetch, push, and the person's choice
-
-`nw backlog fetch` runs
-`git fetch <remote> refs/heads/nw-backlog:refs/remotes/<remote>/nw-backlog`
-with no leading `+`. A remote that lacks the branch exits 1, says
-`nw-backlog is not on <remote>`, and does not create a local ref. When the
-remote tip fast-forwards the local branch (or the local ref is missing),
-nightwright points `refs/heads/nw-backlog` at it with `update-ref`. When the
-two tips have diverged, fetch leaves the local branch where it is, updates only
-the remote-tracking ref, and exits 0. It does not merge.
-
-`git pull` of the default branch is not how the backlog updates. nightwright
-never runs it for this ref.
-
-`nw backlog push` pushes
-`refs/heads/nw-backlog:refs/heads/nw-backlog` with no `--force`, no
-`--force-with-lease`, no `--delete`, and no `+` refspec. A remote that does
-not yet have the branch receives the commit that creates it. That is the
-ordinary first push, not a force-push.
-
-When the rejection text says the update was not a fast-forward (`non-fast-forward`
-or `failed to push some refs` together with the tip being behind), nightwright
-fetches by name as above and merges:
-
-1. Both tips must pass the backlog-tree check. A failure exits 1 and does not
-   update the local ref.
-2. `git merge-tree --write-tree` of the local tip and the fetched tip. Pass
-   `--allow-unrelated-histories` only when `git merge-base` finds no base, and
-   only after both tips passed the backlog-tree check. Two orphan backlog roots
-   are allowed to merge. A product commit is not.
-3. Exit status 0 is a clean merge. `commit-tree` records the printed tree with
-   `-p <local> -p <fetched>`, subject `backlog: merge nw-backlog`, and the
-   identity of the person running the command. `update-ref` compare-and-swaps
-   the local tip to that merge, then push runs again.
-4. Exit status 1 is a same-file conflict (content, add/add, or modify/delete).
-   nightwright does not commit the tree `merge-tree` wrote: that tree can
-   contain conflict markers. It does not move the local ref. Stderr lists
-   `conflict: <path>` for each conflicted path. The exit code is 3.
-5. Any other `merge-tree` status exits 1 and does not move the local ref.
-
-After five rejected pushes, nightwright exits 4, says the remote kept moving,
-and does not merge again and does not push a sixth time. The local tip is
-whatever the last successful local commit or clean merge left.
-
-Any push rejection that is not a non-fast-forward — a hook that requires a pull
-request, a permission error, a refused branch creation — exits 2, prints the
-remote's message, and does not fetch, merge, or force-push. That repository
-cannot host the backlog until a fast-forward of `nw-backlog` is allowed, a
-force-push is refused, deletion is refused, and no pull request is required.
-
-`nw backlog resolve` is the person's choice after exit 3. It merges the current
-local tip with `refs/remotes/<remote>/nw-backlog`. `--take local` or
-`--take remote` is the default side. `--file REQ-K7H3MQ2P=local` (repeatable)
-overrides one path. Every conflicted path needs a side, from `--take` or from
-`--file`. A `--file` for a path that is not conflicted, or a missing side,
-exits 1 and writes no commit. The new tree takes the clean merge blob for
-every unconflicted path and the chosen side's blob (or that side's absence,
-for a deletion) for every conflicted path. It is a merge commit with the same
-two parents and the same push rules. Resolve does not invent a third text.
-
-No command creates `MERGE_HEAD` or `MERGE_MSG` in the product git directory.
+No attempt uses `update-ref -d`. No command creates `MERGE_HEAD` in the
+product git directory.
 
 ### Commands
 
-The Click group lives in `src/nightwright/backlog.py` and is registered on the
-root `cli` from `src/nightwright/cli.py`. Library functions in that module do
-the work; the commands parse arguments and set the exit code.
+The Click group `backlog` lives in `src/nightwright/backlog.py` and is
+registered on the root `cli` from `src/nightwright/cli.py` by importing the
+group and calling `add_command`. `backlog.py` does not import `cli`. Library
+functions do the work and raise `BacklogError`. The CLI prints `str(error)`
+on stderr and exits with `error.exit_code`. Every error defined here uses
+exit code 1. Success and a no-op edit use exit code 0. Required flags are
+checked in the callback so a missing flag is exit 1 with the message below,
+rather than Click's missing-option exit.
+
+Argument checks run before the repo is opened. The first failure is the only
+message. `add` checks: `--title` omitted (`title is required`), `--summary`
+omitted (`summary is required`), title empty after `strip` (`title is empty`),
+title containing CR or LF (`title must be one line`), then a present `--spec`
+that fails the pattern (`invalid spec id`). `edit` checks: `invalid id`, then
+`spec and clear-spec are mutually exclusive`, then `nothing to change`, then
+the same title checks when `--title` is present, then the spec pattern when
+`--spec` is present. `close` and `reopen` check `invalid id` only.
 
 | Command | Effect |
 |---|---|
-| `nw backlog add --title TEXT --summary TEXT [--spec SPEC-NNNN] [--push]` | Mint an id, commit one open item. `--push` then runs push. |
-| `nw backlog edit ID [--title TEXT] [--summary TEXT] [--spec SPEC-NNNN] [--clear-spec] [--push]` | Replace the named fields. At least one field flag is required. The path is unchanged. |
-| `nw backlog close ID [--push]` | Set `status: closed`. Already closed exits 1 with no commit. |
-| `nw backlog reopen ID [--push]` | Set `status: open`. Already open exits 1 with no commit. |
-| `nw backlog list [--json]` | Read the local ref. A missing ref prints no items and exits 0. |
-| `nw backlog show ID [--json]` | Read one blob. Unknown id exits 1. |
-| `nw backlog fetch` | Fetch `nw-backlog` by name. |
-| `nw backlog push` | Fast-forward push, or merge, as above. |
-| `nw backlog resolve [--take local\|remote] [--file ID=local\|remote ...] [--push]` | Record the choice. `--push` defaults on for resolve, because the choice exists to publish it. `--no-push` leaves the merge commit local. |
+| `nw backlog add --title TEXT --summary TEXT [--spec SPEC-NNNN] [--repo PATH]` | Mint an id, commit one open item, print `<id>\n` on stdout and nothing else. Stderr is empty. |
+| `nw backlog edit ID [--title TEXT] [--summary TEXT] [--spec SPEC-NNNN] [--clear-spec] [--repo PATH]` | Replace the named fields. At least one of those four flags is required. Stdout and stderr are empty on success. |
+| `nw backlog close ID [--repo PATH]` | Set `status: closed`. |
+| `nw backlog reopen ID [--repo PATH]` | Set `status: open`. |
 
-`ID` is `REQ-` plus eight alphabet characters, with an optional `.md` suffix.
-Any other spelling exits 1. An empty or whitespace-only title or a summary
-flag that was not passed when required exits 1 with no commit. `--summary` may
-contain newlines. `--repo` and `--remote` exist on every command; `--remote`
-matters for fetch, push, and resolve.
+`ID` matches `^(REQ-[0-9A-HJKMNP-TV-Z]{8})(?:\.md)?$`. Any other spelling exits
+1 with `invalid id`. The path on the branch is always the stem plus `.md`.
 
-Exit codes: `0` success, `1` usage, validation, identity, checkout, or a tip
-that is not a backlog, `2` the remote rejected the push for a reason other than
-non-fast-forward, `3` same-file conflict, `4` the remote was still not a
-fast-forward after five merges.
+`add` requires `--title` and `--summary`. Omitting `--title` exits 1 with
+`title is required`. Omitting `--summary` exits 1 with `summary is required`.
+`--summary ""` is present and stores an empty body. A summary that normalizes
+to empty does the same. A summary that still has non-newline characters is
+stored, including a whitespace-only summary.
+
+Summary arguments are normalized before compare and before store: `\r\n`
+becomes `\n`, then remaining `\r` become `\n`; if the result is empty or only
+`\n` characters the summary is `""`; otherwise trailing `\n` characters are
+removed and one `\n` is appended. This normalization does not drop a leading
+newline. The one-leading-newline drop belongs to parsing a file's separator
+blank line, not to the argument.
+
+A title flag that is present and whose `strip` is empty exits 1 with
+`title is empty`. A title that contains CR or LF exits 1 with
+`title must be one line`. A title that still has characters is stored
+unchanged, including leading or trailing spaces. `--spec` that does not match
+`^SPEC-[0-9]{4}$` exits 1 with `invalid spec id`.
+
+On `edit`, `--spec` and `--clear-spec` are mutually exclusive. Passing both
+exits 1 with `spec and clear-spec are mutually exclusive` and does not commit,
+including when the repo path does not exist and including when the item is
+invalid. Omitting both leaves `spec` as parsed. `--clear-spec` when `spec` is
+absent is a matching value, not an error. `--summary ""` clears the body.
+Omitting `--summary` leaves the summary as parsed.
+
+An edit whose every provided flag matches the stored logical value exits 0,
+writes no commit, and does not call `hash-object`. Matching means: provided
+title equals the parsed title, provided summary equals the parsed logical
+summary, provided spec equals the parsed spec, and `--clear-spec` agrees with
+a parsed spec of `None`. Flags that were omitted do not have to match anything.
+When at least one provided flag differs, the commit stores the new values and
+keeps the omitted fields, then refreshes `updated` and `updated_by`.
+
+`edit` with none of `--title`, `--summary`, `--spec`, and `--clear-spec`
+exits 1 with `nothing to change`.
+
+`close` and `reopen` do not take field flags. A second `close` or a second
+`reopen` exits 1 and does not commit. The first one canonicalizes the file,
+drops unknown keys, and refreshes `updated` and `updated_by`.
 
 ## Alternatives considered
 
@@ -375,172 +474,196 @@ fast-forward after five merges.
   every new item and every summary edit is a pull request. A backlog cannot
   bear that.
 - **`refs/nw/backlog`.** The commit is the same, and the file format does not
-  care which ref points at it, but GitHub accepts pushes to branches and tags.
-  A ref outside `refs/heads` does not show up as a branch. The first ref is
-  `refs/heads/nw-backlog`.
-- **A git-bug operation DAG, one ref per item, ordered by Lamport clocks.**
-  Concurrent comments both survive. This backlog's writes are a new file or a
-  replacement of one file. New files merge. A same-file edit is shown to a
-  person. The operation log, identities-as-a-protocol, and clocks are out of
-  scope.
-- **GitHub issues as the store.** A later opt-in mirror, not this store. The
-  files stay readable with git alone.
+  record the ref, but a ref outside `refs/heads` does not show up as a branch.
+  The ref is `refs/heads/nw-backlog`.
 - **An index file listing every id.** Every create would conflict on it.
-- **Force-push or rebase so the second writer wins.** That drops a person's
-  write. nightwright stops and the person chooses a side.
-- **`git merge` in the product checkout.** That moves the current branch and
-  touches the index. `merge-tree` plus `commit-tree` keeps the checkout still.
+- **One spec that also reads, publishes, and merges.** A defect in those paths
+  can drop a write or move a ref. They are later specs, with the stray, same-file,
+  and delete rules fixed in Non-goals rather than left to a content merge.
+- **Repairing an invalid item inside `edit` or `close`.** A selected blob that
+  fails validation is left unchanged so a command cannot rewrite a file it
+  cannot parse.
 
 ## Acceptance criteria
 
-- [ ] `nw backlog add` creates `refs/heads/nw-backlog` as a parentless commit
-      whose tree is `README.md` plus one `REQ-????????.md`. The eight
-      characters are from `0123456789ABCDEFGHJKMNPQRSTVWXYZ`. The id inside the
-      file equals the filename stem. The README bytes are the fixed text in
-      Design. No other path is in the tree.
-- [ ] A second `add` leaves the filename of the first item unchanged and adds
-      no index file. `git ls-tree -r --name-only` of the tip is `README.md` and
-      the `REQ-*.md` files only. If `README.md` on the tip already differs from
-      the fixed text, that second `add` leaves those bytes unchanged.
-- [ ] An add commit's subject is `backlog: add <id>`. An edit, close, reopen,
-      and merge use the subjects in Design. An edit, close, or reopen commit
-      names only that item path. An add commit names the new item and, only
-      when the tip lacked it, `README.md`.
-- [ ] `edit` with no field flag, a whitespace-only `--title`, an id that is not
-      `REQ-` plus eight alphabet characters, and `fetch` when the remote has no
-      `nw-backlog`, each exit 1 and add no commit. `list` on a missing ref
-      exits 0 with no items. `list --json` is `nw.backlog.list.v1` sorted by
-      id, omits `README.md`, and reports any other path under `stray`.
-- [ ] `edit --title` changes the title in that blob and the path stays the same.
-      `git log --diff-filter=R --name-only` for the branch is empty.
-- [ ] Frontmatter of a new item has `id`, `title`, `status: open`, `created`,
-      `updated`, `created_by`, and `updated_by` in that order. `created` and
-      `updated` equal the commit's author instant in `YYYY-MM-DDTHH:MM:SSZ`.
-      `spec` is absent until `--spec SPEC-NNNN`, and a value that is not
-      `SPEC-` plus four digits is refused with no commit.
-- [ ] `close` sets `status: closed` and refreshes `updated` and `updated_by`,
-      leaving `created`, `created_by`, title, summary, and `spec` as they were.
-      A second `close` exits 1 and adds no commit. `reopen` returns `status` to
-      `open` and a second `reopen` exits 1 with no commit.
-- [ ] With `user.name` or `user.email` unset, or set to whitespace, `add` exits
-      1, names each missing key, and does not change the object count or the
-      `nw-backlog` ref. When both are set, the new commit's author and
-      committer are that name and email, including when `GIT_AUTHOR_NAME` in
-      the environment is a different string.
-- [ ] After a merge that brings in a second file and does not change the first
-      file's blob, `show` of the first file reports `updated_by` as the author
-      of the commit that last changed that file, not the author of the merge.
-      When the frontmatter `created_by` or `updated_by` differs from those
-      history values, `show --json` sets `identity_disagrees` and the reported
-      `created_by` and `updated_by` are the history values.
-- [ ] `show` prints the blob from `git show refs/heads/nw-backlog:<path>` when
-      the work tree has a different file at the same relative path.
-- [ ] After `add`, `edit`, `push`, a rejected push, `fetch`, and `resolve`, the
-      starting work tree's `HEAD` sha, branch name or detached state, index
-      bytes, and `git status --porcelain` are unchanged, including when the
-      work tree was dirty. No command creates `MERGE_HEAD`. If any worktree has
-      `nw-backlog` checked out, the command exits 1 and the ref is unchanged.
-- [ ] A tip whose root or tree contains a path other than `README.md` or a
-      `REQ-*.md` file is refused. `add` exits 1 and the tip sha is unchanged.
-- [ ] An `edit` of a file that contains an `idea` key or an `IDEA-NNN` writes a
-      blob whose frontmatter has none of those keys and no key outside the
-      format above.
-- [ ] `push` from a clone whose current branch is `main` updates only
-      `refs/heads/nw-backlog` on a bare remote. The remote branch's root has no
-      parent, and the clone's `main` commit is not an ancestor of it. The push
-      arguments contain `refs/heads/nw-backlog:refs/heads/nw-backlog` and do not
-      contain `--force`, `--force-with-lease`, `--delete`, or a refspec that
-      starts with `+`.
-- [ ] Two clones that add different ids: the second `push` fast-forwards the
-      remote to a merge commit with both files. Each file's displayed
-      `created_by` stays the author who added it.
-- [ ] Two clones that change the same id: the second `push` exits 3, prints
-      `conflict:` and that path, leaves the remote at the first clone's tip,
-      and leaves the second clone's local tip at its own edit. `resolve --take
-      remote` then publishes a merge whose blob for that path equals the
-      remote side. `resolve --take local` publishes the local side. A resolve
-      that leaves a conflicted path without a side exits 1 and adds no commit.
-- [ ] A pre-receive hook that rejects with a pull-request message makes `push`
-      exit 2. The remote sha is unchanged and the local tip gains no merge
-      commit.
-- [ ] After the remote branch has moved forward, `git pull` of the default
-      branch in a clone does not move `refs/remotes/origin/nw-backlog`.
-      `nw backlog fetch` does, and it does so by fetching
-      `refs/heads/nw-backlog` by name. When the histories have diverged, `fetch`
-      exits 0 and does not move the local branch.
-- [ ] When `update-ref` compare-and-swap fails on all three attempts, `add`
-      exits 1 and `refs/heads/nw-backlog` remains the tip that won the race.
-- [ ] Five consecutive non-fast-forward rejections after clean merges exit 4
-      without a sixth push.
+- [ ] `nw backlog add --title "Public backlog" --summary "The summary."` with
+      `current_time` fixed at `2026-11-07T15:41:00.900000Z` and identity
+      `Ada Lovelace` / `ada@example.com` creates a parentless
+      `refs/heads/nw-backlog`. The tree is the fixed README bytes plus one
+      `REQ-????????.md` whose stem matches `id` and whose eight characters are
+      from `0123456789ABCDEFGHJKMNPQRSTVWXYZ`. Frontmatter keys are `id`,
+      `title`, `status`, `created`, `updated`, `created_by`, `updated_by` in
+      that order, `status` is `open`, both instants are
+      `2026-11-07T15:41:00Z`, and both identities are
+      `Ada Lovelace <ada@example.com>`. `spec` is absent. Stdout is `<id>\n`
+      and stderr is empty. The work tree does not gain those files.
+      `git log -1 --format=%B` is `backlog: add <id>\n`. Author and committer
+      names, emails, and unix times equal that identity and that second.
+- [ ] A second `add` leaves the first filename in place and adds no path other
+      than the new item. If `README.md` already differs from the fixed text,
+      its blob sha is unchanged. If a plumbing commit removes `README.md`,
+      the next `edit` commit names `README.md` and that one item, the README
+      bytes are the fixed text, and every other `REQ-*.md` blob is unchanged.
+      `git log --diff-filter=R --name-only` for the branch is empty. No `add`,
+      `edit`, `close`, or `reopen` commit deletes a path.
+- [ ] `--title` is required on add. A whitespace-only title and a title that
+      contains a newline each exit 1 with `title is empty` or
+      `title must be one line` and do not call `hash-object`. `--summary` is
+      required on add; omitting it exits 1 with `summary is required` and
+      writes nothing. `--summary ""` and a summary that normalizes to empty
+      store no body: the blob ends at the closing `---` line's newline.
+      `--summary "  "` stores a body of two spaces and one newline.
+      `--summary "Hello\r\n"` stores `Hello` plus one LF. `--title` whose text is
+      `a`, a double quote, `b`, a backslash, and `c` is stored as a line
+      `title: "a\"b\\c"`. An edit `--summary ""`
+      clears an existing body. `--spec SPEC-0449` adds that key last, and
+      `--spec SPEC-449` exits 1 with `invalid spec id` and no commit.
+- [ ] `--spec` together with `--clear-spec` exits 1 with
+      `spec and clear-spec are mutually exclusive` and no commit, including
+      when `--repo` is not a git directory. `edit` with no field flag exits 1
+      with `nothing to change`. An id that is not `REQ-` plus eight alphabet
+      characters, with an optional `.md`, exits 1 with `invalid id`. An edit
+      whose provided title, summary, spec, and clear-spec all equal the stored
+      logical values exits 0, does not call `hash-object`, and leaves an
+      `idea` key in the blob. An edit that changes the title of a file that
+      also contains `idea` and `IDEA-1019` writes a blob with no key outside
+      the format, the new title, and the previous `created` and `created_by`.
+- [ ] `parse_item` returns the reason token of the first matching validation
+      row for a fixture of each row, including YAML 1.1 `status: yes`, a
+      duplicate key, a filename/id mismatch, `SPEC-12`, an offset timestamp,
+      and `2026-02-31T00:00:00Z`. `edit`, `close`, and `reopen` of that blob
+      exit 1 with `invalid backlog item <id>: <token>` and leave the tip sha
+      unchanged. A sibling blob that fails validation does not block `add` or
+      an edit of a different valid item, and the sibling's blob sha is
+      unchanged. A valid file whose `updated` is earlier than `created`, or
+      whose keys are permuted, can be closed; the new blob is canonical and
+      keeps those instants' `created` value and the parsed `created_by`.
+- [ ] `close` sets `status: closed`, refreshes `updated` and `updated_by`,
+      drops unknown keys, and leaves title, summary, spec, `created`, and
+      `created_by` as parsed. A second `close` exits 1 with
+      `<id> is already closed` and does not call `hash-object`. `reopen`
+      returns `status` to `open`, and a second `reopen` exits 1 with
+      `<id> is already open` and no commit. Unknown id exits 1 with
+      `<id> is not on nw-backlog`.
+- [ ] With `user.name` or `user.email` missing or whitespace-only, `add` exits
+      1, prints `<key> is unset` for each such key with the name line first,
+      and does not call `hash-object`. A value that contains a line break
+      prints `<key> contains a line break`. A name containing `<` or `>`, and
+      an email containing whitespace or `"`, exit 1 the same way and do not
+      move the ref. When the only identity is in the global config, the commit
+      uses it. When local config and `GIT_AUTHOR_NAME`, `GIT_AUTHOR_EMAIL`,
+      `GIT_AUTHOR_DATE`, and `GIT_COMMITTER_NAME` are all set to different
+      values, the commit's author and committer are the local pair and the
+      injected instant. A name that contains a double quote is stored in
+      `created_by` with the same backslash and quote escaping as a title.
+- [ ] A tip whose tree or whose root commit contains `notes.txt`,
+      `REQ-IIIIIIII.md`, a slash path, or mode `100755` makes `add`, `edit`,
+      `close`, and `reopen` exit 1 with the header
+      `refs/heads/nw-backlog is not an orphan backlog` and the matching
+      `stray:` or `mode:` line, without `hash-object`. A tip that is only
+      legal backlog files, reached by a root commit that contains `src/main.c`,
+      is refused with a `root <sha> stray: src/main.c` line and the same
+      unchanged ref.
+- [ ] After `add`, `edit`, `close`, `reopen`, a no-op edit, a stray refusal,
+      and an invalid-item refusal, the starting work tree's `HEAD`, index
+      bytes or index absence, and `git status --porcelain` are unchanged,
+      including a dirty index, a detached `HEAD`, and an unborn `HEAD`. No
+      command creates `MERGE_HEAD`. The git spy records only the allowlisted
+      subcommands. Every `update-ref` is
+      `refs/heads/nw-backlog <new> <expected>` with no `-d`, and `<expected>`
+      is forty zeros on the creating add. If any worktree has `nw-backlog`
+      checked out, the command exits 1, stderr names that worktree path, and
+      `hash-object` is not called. `edit` reads `git show <sha>:<path>`: a
+      dirty work-tree file of the same relative path is unchanged and is not
+      the source of the new blob.
+- [ ] `mint_id` maps `99e23a5c56` to `REQ-K7H3MQ2P` and `abcd123456` to
+      `REQ-NF6H4D2P`. Eight colliding draws exit 1 with `could not mint an id`
+      and do not draw a ninth time. When `update-ref` compare-and-swap fails
+      three times and each failure leaves a different valid backlog tip that
+      does not contain the minted id, `add` exits 1 with `nw-backlog changed`,
+      calls `update-ref` three times and not a fourth, and the ref remains the
+      last winner. The expected old sha of each call is the sha that attempt
+      read. If `update-ref` fails and the ref sha is still `<expected>`, `add`
+      exits 1 with `update-ref failed` after that one call and does not retry.
+      If the second tip already contains the minted id, `add` exits 1 with
+      `<id> is already on nw-backlog`, does not call `update-ref` again, and
+      does not mint a different id.
+- [ ] `--repo` selects the repository that receives the branch. The current
+      directory is the default. A `--repo` that is not a non-bare work tree
+      exits 1 with `not a git work tree` after argument validation.
+      `nw backlog --help` lists `add`, `edit`, `close`, and `reopen` and does
+      not list `list`, `show`, `fetch`, `push`, or `resolve`. `add --help`
+      lists `--title`, `--summary`, `--spec`, and `--repo`, and does not list
+      `--push` or `--clear-spec`. An aware `current_time` of
+      `2026-11-07T10:41:00-05:00` is stored as `2026-11-07T15:41:00Z`.
 
 ## Test plan
 
-- **Automated tests:** `tests/test_backlog.py`, using temporary repos and a bare
-  remote the way `tests/conftest.py` sets `user.name` and `user.email`. CliRunner
-  covers exit codes; the library functions cover trees and history. The tests
-  and the criteria they lock:
+- **Automated tests:** `tests/test_backlog.py`, using temporary repos.
+  `tests/conftest.py` sets `user.name` and `user.email` on its git fixture;
+  tests that isolate identity point `GIT_CONFIG_GLOBAL` and
+  `GIT_CONFIG_SYSTEM` at their own files. A git spy records subcommands.
+  `current_time` is monkeypatched. CliRunner covers exit codes and stdout.
+  The tests and the criteria they lock:
   - `test_add_writes_orphan_readme_and_req_file` — parentless root, README
-    bytes, filename alphabet, frontmatter order, no index path.
-  - `test_second_add_does_not_add_an_index` and
-    `test_existing_readme_bytes_are_left_alone`.
-  - `test_commit_subjects_and_paths` — add, edit, close, reopen, and merge
-    subjects, and the paths each commit names.
-  - `test_title_edit_keeps_the_path` — `--diff-filter=R` is empty.
-  - `test_rejected_invocation_writes_nothing` — no field flag, blank title,
-    bad id, fetch of a missing remote branch.
-  - `test_list_json_orders_items_and_reports_stray`.
-  - `test_spec_field_and_rejected_spec_id`.
-  - `test_close_and_reopen_are_single_file_commits`.
-  - `test_refuses_unset_identity_before_any_object` — object count unchanged;
-    `test_author_and_committer_follow_config_not_environment`.
-  - `test_merge_of_another_file_is_not_the_modifier` and
-    `test_show_prefers_history_when_frontmatter_disagrees` — a hand-built
-    `commit-tree` replaces the blob's `created_by` while the add commit keeps
-    the real author.
-  - `test_show_reads_git_show_not_the_worktree`.
-  - `test_dirty_checkout_and_index_stay_put` — staged change, unstaged change,
-    and a detached `HEAD`, across add, push, exit 3, fetch, and resolve.
+    bytes, alphabet, frontmatter order, stdout, author instant floored from
+    a microsecond clock, work tree untouched.
+  - `test_second_add_does_not_add_an_index`,
+    `test_existing_readme_bytes_are_left_alone`,
+    `test_edit_restores_missing_readme_only`, and
+    `test_commands_do_not_delete_or_rename_items`.
+  - `test_add_summary_contract` — missing summary, `""`, whitespace-only,
+    CR/LF normalization, and title escaping.
+  - `test_rejected_arguments_write_nothing` — missing title, blank title,
+    multiline title, bad id, bad spec id, no field flag, mutual exclusion
+    before a missing repo.
+  - `test_edit_equal_values_do_not_write` and
+    `test_edit_drops_unknown_keys_when_a_field_changes`.
+  - `test_parse_item_reason_tokens` and
+    `test_mutation_refuses_each_invalid_form` — one fixture per validation
+    row, first-match token, tip unchanged.
+  - `test_malformed_sibling_does_not_block_other_writes`.
+  - `test_close_and_reopen_are_single_file_commits` — field preservation,
+    copied `created_by`, repeated status, permuted keys, `updated` earlier
+    than `created`.
+  - `test_refuses_unset_or_illegal_identity` and
+    `test_author_follows_local_config_not_environment_or_global` — local
+    identity wins, and a double quote in the name is escaped in `created_by`.
+  - `test_mutations_reject_stray_and_bad_mode` and
+    `test_refuses_a_root_that_contains_product_history`.
+  - `test_dirty_detached_and_unborn_checkout_stay_put` — index bytes, porcelain
+    status, no `MERGE_HEAD`, allowlisted git subcommands, creating
+    `update-ref` expected sha of forty zeros, work-tree file is not the blob
+    `edit` reads.
   - `test_refuses_when_nw_backlog_is_checked_out`.
-  - `test_refuses_a_branch_that_contains_product_history`.
-  - `test_edit_drops_idea_and_unknown_keys`.
-  - `test_push_argv_is_a_fast_forward_of_nw_backlog` — argv assertions and the
-    bare remote containing only `nw-backlog`, with `main` not an ancestor.
-  - `test_push_merges_different_files` — two clones, two ids, both creators
-    preserved.
-  - `test_push_stops_on_the_same_file` and
-    `test_resolve_takes_one_side` — exit 3, remote sha unchanged, then
-    `--take remote` and `--take local` in separate repos; missing side exits 1.
-  - `test_pull_request_hook_exits_2_without_merging` — bare-repo pre-receive
-    hook.
-  - `test_pull_of_default_does_not_update_nw_backlog` and
-    `test_fetch_by_name_fast_forwards_or_leaves_a_diverged_local`.
-  - `test_stops_after_five_non_fast_forwards` — a stub of the push function that
-    returns non-fast-forward five times. The assertion is exit 4 and five push
-    calls, with no sixth.
-  - `test_compare_and_swap_gives_up_after_three_attempts` — `update-ref` fails
-    three times, exit 1, and the ref stays at the tip that won.
-  - `test_unrelated_orphan_roots_merge` — two independent backlog roots with
-    different ids merge; a root that contains `src/main.c` does not.
+  - `test_mint_vectors_and_eight_draw_cap`.
+  - `test_compare_and_swap_gives_up_after_three_attempts`,
+    `test_update_ref_failure_without_a_moved_ref_does_not_retry`, and
+    `test_retry_stops_when_the_minted_id_appears`.
+  - `test_repo_flag_and_command_surface` — `--repo`, default directory,
+    non-work-tree, help text has the local commands and omits the later
+    slices' commands and `--push`.
+  - `test_aware_clock_is_stored_as_utc`.
   Implementers run `uv run pytest -q tests/test_backlog.py` and
-  `python3 tools/affected_tests.py --run uv run pytest -q`. They do not run the
-  full suite.
-- **Manual verification:** on a forge repository whose `nw-backlog` rule allows
-  a fast-forward (including the push that creates the branch), refuses
-  force-push, refuses deletion, and does not require a pull request:
-  `nw backlog add --title "Try" --summary "One item" --push` from a product
-  checkout. `git rev-parse HEAD` is unchanged, `git status --porcelain` shows
-  no backlog path, and `git log -1 --format='%an <%ae>' nw-backlog` is
-  `user.name` and `user.email`. A second clone's `git branch -r` lists
-  `origin/nw-backlog` after clone. `git pull` on the default branch, after the
-  first clone adds another item, leaves `origin/nw-backlog` where it was until
-  `nw backlog fetch`. `git push --force origin refs/heads/nw-backlog` is
-  rejected by the forge. A repository whose rule requires a pull request makes
-  `nw backlog push` exit 2.
-- **Regression guard:** `test_dirty_checkout_and_index_stay_put` and
-  `test_push_argv_is_a_fast_forward_of_nw_backlog`. The new module is the only
-  test file this work adds. `src/nightwright/agentic/gitops.py` is unchanged, so
-  campaign commits keep their existing temporary-index behavior. Affected tests
-  cover the `cli.py` registration line.
+  `python3 tools/affected_tests.py --run uv run pytest -q`. They do not run
+  the full suite. Reporting, show-beside-stray, same-file merge, and
+  resolve-deletes tests are named under Non-goals and are not part of
+  `tests/test_backlog.py`.
+- **Manual verification:** from a product checkout whose current branch is not
+  `nw-backlog`, record `git rev-parse HEAD` and `git status --porcelain`.
+  Run `nw backlog add --title "Try" --summary "One item"`. `HEAD` and the
+  porcelain status are unchanged, and the work tree has no new backlog path.
+  `git rev-parse nw-backlog^` fails. `git log -1 --format='%an <%ae>' nw-backlog`
+  is the repo's `user.name` and `user.email` as `Name <email>`.
+  `git ls-tree -r --name-only nw-backlog` prints `README.md` and one
+  `REQ-????????.md`. `nw backlog edit <that id> --title "Next"` keeps that
+  filename. A second `nw backlog close <that id>` exits 1. No forge is
+  required for this slice.
+- **Regression guard:** `test_dirty_detached_and_unborn_checkout_stay_put`
+  and the git allowlist assertion. `src/nightwright/agentic/gitops.py` stays
+  unchanged, so campaign commits keep their existing temporary-index behavior.
+  The new module is the test file this work adds, plus the `cli.py`
+  registration. `tests/test_gate_docs.py` still sees `gate` in the root help.
 
 ## Clock Log
 
@@ -550,24 +673,15 @@ No session is recorded in this file. Implementation clocks IDEA-1019 with
 ## Rollout / migration
 
 There is no `docs/backlog` tree to import. The first `nw backlog add` creates
-the orphan branch locally. The first `nw backlog push` creates it on the remote
-when the forge allows that fast-forward.
-
-Before that push, the repository owner sets the forge rule for
-`refs/heads/nw-backlog`: allow a fast-forward, including branch creation; refuse
-force-push; refuse deletion; do not require a pull request. nightwright does
-not set this rule. A push that the forge rejects for any other reason exits 2
-and leaves the local branch as the only copy.
-
-A clone made after the branch exists receives `nw-backlog` through the default
-fetch refspec. Existing clones see new items by `nw backlog fetch`, not by
-pulling the default branch.
+the orphan branch in the local repository. This spec does not push it and does
+not set a forge rule. Existing clones are unchanged until the publication spec
+fast-forwards `nw-backlog`. The product checkout does not move.
 
 ## Definition of done
 
 - [ ] Acceptance criteria all met.
-- [ ] Test plan executed; automated tests pass; manual steps performed where a
-      forge repository is available, and the spec notes it when one is not.
+- [ ] Test plan executed; automated tests pass; manual steps performed and
+      noted in the spec.
 - [ ] No regressions.
 - [ ] Spec body updated to match what shipped.
 - [ ] `docs/LEDGER.md` regenerated (`python3 tools/spec_lint.py --write-ledger`).
