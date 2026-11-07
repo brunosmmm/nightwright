@@ -72,8 +72,7 @@ DEFAULTS = {"enabled": True, "readers": ["conductor"], "digest_interval_s": 1800
 _BENIGN_BLOCKED = ("waiting on ", "mailed conductor: ", "spec status is draft",
                    "spec status is proposed", "spec status is in-progress")
 _HANDED_OFF_WAIT_RE = re.compile(
-    r"^waiting on ([A-Za-z]+-\d+(?:-\d{8}-[0-9a-f]{4})?) "
-    r"\(after: campaign \1 is HANDED_OFF\)$")
+    r"^waiting on (\S+) \(after: campaign \1 is HANDED_OFF\)$")
 _ID_RE = re.compile(r"[A-Za-z]+-\d+(?:-\d{8}-[0-9a-f]{4})?")   # + campaign ids (SPEC-0423)
 _GRACE_S = 300                     # the table's own "wait" window past a drain's step timeout
 

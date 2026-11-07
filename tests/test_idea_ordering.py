@@ -263,6 +263,54 @@ def test_after_missing_spec_waits_on_carrying_campaign(env, monkeypatch):
                                   _state(cfg, waiter_spec)["project"])
 
 
+def test_idea_ref_holds_when_merged_campaign_reuses_spec_id_no_file(env, monkeypatch):
+    cfg, _repo = env
+    dep = "SPEC-0407"
+    a = capture(cfg, "Prereq")
+    ca = add_idea_campaign(cfg, monkeypatch, a)
+    st = _state(cfg, ca)
+    st["spec_id"] = dep
+    st["state"] = "QUEUED"
+    S.write_state(cfg, ca, st)
+    newer = add_idea_campaign(cfg, monkeypatch, capture(cfg, "merged carrier"))
+    st_new = _state(cfg, newer)
+    st_new["spec_id"] = dep
+    S.write_state(cfg, newer, st_new)
+    _merge(cfg, newer)
+    waiter = add_idea_campaign(cfg, monkeypatch, capture(cfg, "waiter"), "--after", a)
+    want = f"waiting on {ca} (after: campaign {ca} is QUEUED)"
+    blocked = Q.backlog_readiness(cfg, _state(cfg, waiter))[1]
+    assert blocked == [want]
+    assert "not found" not in blocked[0]
+    hits = S.list_campaigns(cfg, spec_id=dep, include_terminal=True)
+    assert hits[0]["id"] == newer
+    assert QT.dependency_wait(blocked, QT.Ctx(cfg, "conductor").live_specs, st["project"])
+
+
+def test_idea_ref_holds_when_file_not_done_and_merged_reuses_spec_id(env, monkeypatch):
+    cfg, repo = env
+    dep = "SPEC-0407"
+    path = repo / "docs/specs/0407-on-main.md"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("---\nid: SPEC-0407\nstatus: accepted\n---\n\nx\n", encoding="utf-8")
+    a = capture(cfg, "Prereq")
+    ca = add_idea_campaign(cfg, monkeypatch, a)
+    st = _state(cfg, ca)
+    st["spec_id"] = dep
+    st["state"] = "REVIEWING"
+    S.write_state(cfg, ca, st)
+    newer = add_idea_campaign(cfg, monkeypatch, capture(cfg, "merged carrier"))
+    st_new = _state(cfg, newer)
+    st_new["spec_id"] = dep
+    S.write_state(cfg, newer, st_new)
+    _merge(cfg, newer)
+    waiter = add_idea_campaign(cfg, monkeypatch, capture(cfg, "waiter"), "--after", a)
+    ready, blocked = Q.backlog_readiness(cfg, _state(cfg, waiter))
+    assert not ready and blocked
+    assert blocked[0].startswith(f"waiting on {dep} (after: {a} ->")
+    assert QT.dependency_wait(blocked, QT.Ctx(cfg, "conductor").live_specs, st["project"])
+
+
 def test_spec_ref_done_met_while_other_campaign_carries_id(env, monkeypatch):
     cfg, repo = env
     a = capture(cfg, "Carrier")

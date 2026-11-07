@@ -1129,16 +1129,18 @@ def after_met(cfg, state: dict, ref) -> tuple[bool, str]:
                     st = newest.get("state")
                     if st == "MERGED":
                         return True, ""
+                    camp_wait = (f"waiting on {newest['id']} (after: campaign {newest['id']} "
+                                 f"is {st})")
                     try:
                         dep_fm, _ = split_frontmatter(
                             _find_dep_spec(_specs_dir_of(state), spec).read_text(encoding="utf-8"))
-                        file_met, _ = dependency_met(_specs_dir_of(state), spec, dep_fm or {}, set())
+                        file_met, file_why = dependency_met(
+                            _specs_dir_of(state), spec, dep_fm or {}, set())
                     except (OSError, ValueError):
-                        file_met = False
+                        return False, camp_wait
                     if file_met:
-                        return False, (f"waiting on {newest['id']} (after: campaign {newest['id']} "
-                                       f"is {st})")
-                    return True, ""
+                        return False, camp_wait
+                    return False, f"waiting on {spec} (after: {rid} -> {file_why})"
                 if "not found" in why:
                     return False, (f"waiting on {newest['id']} (after: campaign {newest['id']} "
                                    f"is {newest.get('state')})")
@@ -1175,7 +1177,8 @@ def after_met(cfg, state: dict, ref) -> tuple[bool, str]:
 
 def _after_blocked(cfg, state: dict) -> list[str]:
     """The `blocked_by` entries of every unmet `after` prerequisite of `state` (SPEC-0423)."""
-    mailed = set(state.get("conflict_mail") or [])
+    raw_mail = state.get("conflict_mail")
+    mailed = set(raw_mail if isinstance(raw_mail, list) else [])
     out = []
     for entry in after_entries(state):
         met, why = after_met(cfg, state, entry)
@@ -1196,7 +1199,9 @@ def resolve_dependency_conflicts(cfg, queued: list[dict]) -> None:
     for st in queued:
         if st.get("state") != "QUEUED":
             continue
-        mailed = list(st.setdefault("conflict_mail", []))
+        raw = st.get("conflict_mail")
+        mailed = list(raw if isinstance(raw, list) else [])
+        st["conflict_mail"] = mailed
         seen = set(mailed)
         for entry in after_entries(st):
             met, why = after_met(cfg, st, entry)
@@ -1728,12 +1733,13 @@ def worktree_resume_state(state: dict, worktree: Path) -> tuple[str | None, str 
     rel = spec.get("rel_path")
     spec_path = (worktree / rel) if rel else None
     admission = state.get("admission")
-    sid = spec.get("id") or state.get("spec_id")
+    file_id = spec.get("id")
+    campaign_spec_id = file_id or state.get("spec_id")
     pending = state.get("pending_brief")
     if not rel or spec_path is None or not spec_path.is_file():
         if has_no_spec(state) or admission == "revise_pending":
             return "SPEC_WRITING", None
-        if sid:
+        if campaign_spec_id:
             return None, f"spec file missing at {spec_path or rel}"
         return "SPEC_WRITING", None
     try:
@@ -1742,14 +1748,14 @@ def worktree_resume_state(state: dict, worktree: Path) -> tuple[str | None, str 
         return None, f"spec file unreadable at {spec_path}: {e}"
     if not isinstance(fm, dict):
         return None, f"spec file unreadable at {spec_path}: front matter is not a mapping"
-    status = str(fm.get("status") or "")
+    status = str(fm.get("status") or "").strip()
     if status in ("accepted", "in-progress"):
         return "IMPLEMENTING", None
-    if status == "proposed" and sid and not pending:
+    if status == "proposed" and file_id and not pending:
         return "SPEC_REVIEW", None
-    if status in ("draft", "proposed") and (not sid or pending):
+    if status in ("draft", "proposed") and (not file_id or pending):
         return "SPEC_WRITING", None
-    if status == "draft" and sid and not pending:
+    if status == "draft" and file_id and not pending:
         return None, "draft spec has an id and an empty pending_brief"
     return None, f"spec status is {status or 'empty'}"
 
@@ -1761,6 +1767,8 @@ _WORKTREE_CONFLICT_MAIL_STATUSES = frozenset(
 def _worktree_conflict_mail_status(err: str) -> str | None:
     if err.startswith("spec status is "):
         st = err.removeprefix("spec status is ").strip()
+        if not st or not st.split():
+            return "empty"
         if st.split()[0] in _WORKTREE_CONFLICT_MAIL_STATUSES:
             return st.split()[0]
     if "unreadable" in err:
@@ -1823,13 +1831,23 @@ def _do_open_unwrapped(ctx: _Ctx, state: dict) -> StepResult:
                     res.resumed_to = target
                     if kind not in RM.RED_KINDS and not has_no_spec(state):
                         spec = state.setdefault("spec", {})
-                        spec_file = worktree / spec.get("rel_path", "")
-                        if (spec.get("sha256_at_open") is None and spec.get("rel_path")
-                                and spec_file.is_file()):
-                            spec["sha256_at_open"] = _spec_sha(spec_file)
-                            store.campaign_dir(ctx.cfg, state["id"]).mkdir(parents=True, exist_ok=True)
-                            (store.campaign_dir(ctx.cfg, state["id"]) / CL.SPEC_AT_OPEN).write_text(
-                                spec_file.read_text(encoding="utf-8"), encoding="utf-8")
+                        rel_p = spec.get("rel_path")
+                        if rel_p:
+                            spec_file = (worktree / rel_p).resolve()
+                            if not spec_file.is_relative_to(worktree.resolve()):
+                                res.error = f"spec path escapes worktree: {rel_p}"
+                                return res
+                            if spec_file.is_file():
+                                cdir = store.campaign_dir(ctx.cfg, state["id"])
+                                snap = cdir / CL.SPEC_AT_OPEN
+                                if spec.get("sha256_at_open") is None or not snap.is_file():
+                                    try:
+                                        cdir.mkdir(parents=True, exist_ok=True)
+                                        snap.write_text(spec_file.read_text(encoding="utf-8"),
+                                                        encoding="utf-8")
+                                        spec["sha256_at_open"] = _spec_sha(spec_file)
+                                    except OSError:
+                                        pass
                 return res
         base_sha = git.rev_parse(root, _open_start(root, pcfg, base))
         # the sha, not `<remote>/<base>`: no upstream is set on the campaign branch
