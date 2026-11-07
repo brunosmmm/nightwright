@@ -40,21 +40,26 @@ process must not import or call Pi.
 - Read-only personas get the tools `read`, `grep`, `find`, and `ls`. Writers
   get Pi's defaults `read`, `bash`, `edit`, and `write`. The allowlist is the
   boundary. There is no permission popup.
-- Discovered extensions and skills stay off, so `~/.pi` does not enter the
-  run. Project `AGENTS.md` from the worktree still loads.
+- Discovered extensions and skills stay off, and
+  `SettingsManager.inMemory()` is the settings manager, so `~/.pi` does not
+  change tools, model, or thinking. Project `AGENTS.md` from the worktree
+  still loads.
 - Persona instructions go in the system prompt. The schema footer stays in the
   user message. The verdict is parsed from the final assistant text. No JSON
   schema is sent to the model.
 - A missing `pi` package and a missing credential for the selected provider
-  are job errors, not a hang. Credentials are per provider. The doctor check
-  is: the package resolves, and the provider for the mapped model has a key.
+  are job errors, not a hang. Credentials are per provider. `nw doctor`
+  `agentic.pi`, on the host that builds requests, checks that the package
+  resolves and that each distinct provider in the loaded map has a key.
+  `ensure_pi_persona` checks the request's `pi_provider`.
 - The queue model id maps to a Pi `provider` / `id` plus a thinking level
   through a map parallel to `cursor_map.yaml`. A Cursor model slug is not a
   Pi model.
 - Assistant usage includes token counts and `cost.total` in USD. When that
   cost is present and the model has a configured price, store it as
-  `total_cost_usd`. Missing usage keeps the existing budget estimate
-  (`cost_usd` null, the queue charges the cap). A reported `0` is a free run
+  `total_cost_usd`. Missing assistant usage keeps the existing budget estimate
+  (`cost_usd` null, the queue charges the cap). A user or tool event without
+  usage does not null a priced sum. A reported `0` is a free run
   only after a model with no price is distinguished from a real zero.
 
 **Non-goals**
@@ -76,15 +81,20 @@ Its argv is `node` plus the package script `pi_exec.mjs` and the run dir.
 opens one `SessionManager.inMemory(cwd)` session, calls `prompt` once, writes
 the result line, and `dispose`s. Startup failures and a failed agent turn
 write `is_error: true` and exit 1. The Python process never imports the
-package; doctor and the worker preflight run the script's `--probe`.
+package. `nw doctor` `agentic.pi` and `nw worker pi-check` run the script's
+`--probe` for the distinct providers in the map loaded on that host.
+`ensure_pi_persona` runs `--probe` for the request's `pi_provider` only.
 
 Profile aliases stay `opus` / `sonnet` / `haiku`. A `pi_map` resolves
 `(alias, effort)` to `{provider, id, thinking}`. `req.model` stored on the run
 is `provider/id`. Thinking is a separate field. Persona instructions are
-`appendSystemPrompt`. The user message is the prompt plus the existing schema
-footer. Dollar cost is the sum of assistant `usage.cost.total` when every
-message has that number and the model is priced; otherwise `total_cost_usd`
-is null and the queue charges `max_budget_usd`.
+`appendSystemPrompt` (`system_append` from `request.json`).
+`PiRunner._prompt_text` stays `req.prompt`; `execute` appends the schema
+footer once, so the user message contains the invariant once and the footer
+once. Dollar cost is the sum of assistant `usage.cost.total` when every
+assistant message has that number and the model is priced. A user or tool
+event is not a usage message and does not null the sum. Otherwise
+`total_cost_usd` is null and the queue charges `max_budget_usd`.
 
 ## Design
 
@@ -100,13 +110,19 @@ still clears a pin). Conductor and steward launch in `cli_launch.py` stay
 `claude` | `cursor`.
 
 `pi_needed` mirrors `cursor_needed`. Doctor check id `agentic.pi` skips when
-no campaign resolves to `pi`.
+`pi_needed` is false.
 
-`PiRunner` subclasses `ClaudeRunner`, so detach and adopt stay. The remote
-persona preflight that treats a `ClaudeRunner` as "need the `claude` binary"
-excludes `PiRunner` the same way it excludes `CursorRunner`. A `PiRunner` job
-calls `ensure_pi_persona` instead. `nw workers check` runs that probe when
-`pi_needed`, beside the existing Cursor probe.
+`PiRunner` subclasses `ClaudeRunner`, so detach and adopt stay. The persona
+job field `runner` is `pi` when resolution is `pi`. `remote_personas` keeps
+`pi` in that field (it currently keeps only `claude` and `cursor`) and
+`worker._validate_persona` accepts `pi`. `select_runner` on the worker
+receives `pi`, so it does not fall through to the worker's host runner and
+does not remap. The worker constructs `PiRunner` from `payload.runner` and
+does not read its own `pi_map`. `request_to_job` and `request_from_job` still
+carry `pi_provider`, `pi_id`, and `pi_thinking`. The `run_job` preflight does
+not require the `claude` binary for a `PiRunner`: the `ClaudeRunner` binary
+check excludes `PiRunner` the same way it excludes `CursorRunner`, and a
+`PiRunner` job calls `ensure_pi_persona` instead.
 
 ### Model map
 
@@ -178,7 +194,7 @@ the error result and exits 1. `--probe` (below) never calls `prompt`.
   model, or thinking
 - `DefaultResourceLoader` with `noExtensions`, `noSkills`,
   `noPromptTemplates`, and `noThemes` true, `noContextFiles` false, and
-  `appendSystemPrompt` set to `system_append` when that string is non-empty.
+  `appendSystemPrompt` set to `system_append` from `request.json`.
   Context-file discovery from `cwd` still loads the worktree `AGENTS.md`
 - `tools`: `["read", "grep", "find", "ls"]` when `read_only` is true, otherwise
   `["read", "bash", "edit", "write"]`. The list is passed explicitly. No
@@ -193,18 +209,22 @@ checks it before `prompt`. A miss writes `is_error` and exits 1. Unknown
 provider or unknown model id is the same startup error. The key text is
 scrubbed from the result line and from stderr.
 
-`prompt.md` is the user message: `req.prompt`, then the schema footer already
-used by `cursor_prompt` (`CURSOR_SCHEMA_FOOTER` with `req.json_schema`).
-`system_append` is not copied into that file. Nothing on the session call
-sends a JSON schema. `prompt` is called once. `finally` calls `dispose`.
+`PiRunner._prompt_text` stays `req.prompt` and does not use `cursor_prompt`.
+`prompt.md` is that text. `execute` appends `CURSOR_SCHEMA_FOOTER` once, using
+`json_schema` from `request.json`, and does not append `system_append` again.
+The invariant is already the tail of `req.prompt`. `appendSystemPrompt` is
+`system_append` from `request.json`. The user message contains the invariant
+once and the schema footer once. Nothing on the session call sends a JSON
+schema. `prompt` is called once. `finally` calls `dispose`.
 SIGTERM best-effort calls `session.abort()`; `runproc` still SIGKILLs the
 group after the grace period.
 
-Stdout is one JSON object per `\n`. The child maps session events into the
-shapes `Renderer.feed` already prints: an `assistant` line with `text` and
-`tool_use` blocks, and a `user` line with `tool_result` blocks. Thinking text
-is not written. A tool argument that contains U+2028 stays inside that one
-JSON line.
+Stdout is one JSON object per `\n`. Each assistant event is
+`{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"…"},{"type":"tool_use","id":"…","name":"…","input":{}}]}}`
+and each tool result is
+`{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"…","content":"…","is_error":false}]}}`.
+Thinking text is not written. A tool argument that contains U+2028 stays
+inside that one JSON line.
 
 The last line is:
 
@@ -232,9 +252,10 @@ exits 0. A missing `node` binary is the wrapper's existing `OSError` finish
 
 Across assistant messages:
 
-- If there is no assistant message, any message lacks `usage`, or any
-  `usage` lacks a numeric `cost.total`, `total_cost_usd` is null. Token
-  counts that are present are still summed into `usage`.
+- If there is no assistant message, any assistant message lacks `usage`, or
+  any assistant `usage` lacks a numeric `cost.total`, `total_cost_usd` is
+  null. Token counts that are present on assistant messages are still summed
+  into `usage`. User and tool events are not usage messages.
 - Otherwise the model has a configured price when the session model's catalog
   `cost` has a non-zero `input`, `output`, `cacheRead`, or `cacheWrite`
   (including a tier rate), or any assistant message has
@@ -256,10 +277,18 @@ is true only when the import works and every provider has a credential.
 `missing` lists providers without one. `error` names a failed import. The
 output never contains key text. `--probe` does not call the model.
 
-`probe_pi` runs that command for the distinct providers in the loaded map and
-returns `{ok, error, missing}`. `ensure_pi_persona` raises `FileNotFoundError`
-when `ok` is false. Doctor `agentic.pi` uses it when `pi_needed`, and skips
-otherwise. A missing `node` fails the check with that fact.
+`probe_pi` runs that command for a caller-chosen provider list and returns
+`{ok, error, missing}`. `ensure_pi_persona` probes the request's
+`pi_provider` and raises `FileNotFoundError` when that provider has no
+credential, even when every provider in the worker's map has one. `nw doctor`
+`agentic.pi` probes the distinct providers in the map loaded on the host that
+builds requests, and skips when `pi_needed` is false. `nw workers check` runs
+that map probe on the worker through a new allowlisted SSH subcommand
+`nw worker pi-check` (one JSON object, no key text), the same path as
+`cursor-check`, not as a local process on the coordinator. The `run_job`
+preflight does not require the `claude` binary for a `PiRunner`. `nw workers
+check` still runs `claude-check` for every persona worker. A missing `node`
+fails the check with that fact.
 
 ## Alternatives considered
 
@@ -287,38 +316,65 @@ otherwise. A missing `node` fails the check with that fact.
       The child dynamic-imports it, creates one in-memory session, calls
       `prompt` once, and `dispose`s. No session file is written under the
       worktree `cwd`.
-- [ ] The child writes assistant and tool events as JSON lines `Renderer.feed`
-      already renders, then a final `type: result` line. `extract_result` /
-      `parse_result` read the verdict from the final assistant text,
-      `session_id`, usage, and `total_cost_usd`. A JSON line containing
+- [ ] Each assistant event is
+      `{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"…"},{"type":"tool_use","id":"…","name":"…","input":{}}]}}`
+      and each tool result is
+      `{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"…","content":"…","is_error":false}]}}`.
+      Thinking text is not written. `Renderer.feed` prints a non-empty tool
+      line for an assistant event whose content holds a Pi `read` `tool_use`.
+      `extract_result` copies that stream's `type: result` line to
+      `result.json`. `parse_result` reads the verdict from the final assistant
+      text, `session_id`, usage, and `total_cost_usd`. A JSON line containing
       U+2028 stays one event.
 - [ ] Read-only runs pass tools `read`, `grep`, `find`, `ls`. Write runs pass
       `read`, `bash`, `edit`, `write`. The resource loader disables
       extensions, skills, prompt templates, and themes, and leaves context
-      files on. `appendSystemPrompt` is the persona `system_append`. The user
-      message is the prompt plus the schema footer and does not include
-      `system_append`. No JSON schema is passed to the session.
+      files on. `SettingsManager.inMemory()` is the settings manager, so
+      `~/.pi` settings do not change tools, model, or thinking.
+      `PiRunner._prompt_text` stays `req.prompt` and does not use
+      `cursor_prompt`. `prompt.md` is that text. `execute` appends
+      `CURSOR_SCHEMA_FOOTER` once, using `json_schema` from `request.json`,
+      and does not append `system_append` again. The invariant is already the
+      tail of `req.prompt`. `appendSystemPrompt` is `system_append` from
+      `request.json`. The user message contains the invariant once and the
+      schema footer once. No JSON schema is passed to the session.
 - [ ] A missing package, a missing credential for the selected provider, or
       an unknown `provider` / `id` writes `is_error: true` and exits 1
       without calling `prompt`. An agent failure exits 1. Key text is absent
       from the result line and stderr.
 - [ ] `map_pi_model` turns `(alias, effort)` into `provider`, `id`, and
       `thinking`. `req.model` is `provider/id`. A Cursor slug and any other
-      non-alias are refused. Overlay order matches `cursor_map`. A remote job
-      carries `pi_provider`, `pi_id`, and `pi_thinking` and the worker does
-      not remap. Claude and Cursor `request.json` files gain none of these
-      keys.
+      non-alias are refused. Overlay order matches `cursor_map`. A remote
+      header whose resolution is `pi` has `payload.runner` `pi`, and
+      `worker._validate_persona` accepts it. `select_runner` on the worker
+      receives `pi`, constructs `PiRunner`, and does not read the worker's
+      `pi_map`. `request_to_job` and `request_from_job` carry `pi_provider`,
+      `pi_id`, and `pi_thinking`. Claude and Cursor `request.json` files gain
+      none of these keys.
 - [ ] When every assistant message has numeric `cost.total` and the model has
       a configured price, `total_cost_usd` is the sum, including a sum of `0`.
+      A user or tool event with no `usage` does not null that sum: two
+      assistant messages that each have numeric `cost.total`, plus a
+      `tool_result` line with no `usage`, still sum when the model is priced.
       A configured price is a non-zero catalog rate (or tier) or
-      `cost.totalFromProvider === true`. Missing usage, a missing `cost.total`,
-      or an unpriced model leaves `total_cost_usd` null so the queue charges
-      `max_budget_usd`.
-- [ ] `agentic.pi` doctor and `ensure_pi_persona` fail when `node` is missing,
-      the package does not import, or a mapped provider has no credential,
-      and they pass when the import works and every mapped provider has one,
-      without printing a key. The check skips when no campaign resolves to
-      `pi`. A remote `PiRunner` is not required to have the `claude` binary.
+      `cost.totalFromProvider === true`. If there is no assistant message, any
+      assistant message lacks `usage`, any assistant `usage` lacks a numeric
+      `cost.total`, or the model is unpriced, `total_cost_usd` is null so the
+      queue charges `max_budget_usd`. Token counts present on assistant
+      messages are still summed.
+- [ ] `nw doctor` `agentic.pi` probes the distinct providers in the map loaded
+      on the host that builds requests. It fails when `node` is missing, the
+      package does not import, or one of those providers has no credential,
+      and it passes when the import works and every such provider has one,
+      without printing a key. It skips when `pi_needed` is false.
+      `ensure_pi_persona` probes the request's `pi_provider` and raises
+      `FileNotFoundError` when that provider has no credential, even if every
+      provider in the worker's map has one. `nw workers check` runs that map
+      probe on the worker through the allowlisted SSH subcommand
+      `nw worker pi-check` (one JSON object, no key text), the same path as
+      `cursor-check`, and still runs `claude-check` for every persona worker.
+      The `run_job` preflight does not require the `claude` binary for a
+      `PiRunner`.
 - [ ] `resolve_runner` / `select_runner` / `nw queue add --runner pi` /
       `nw queue backend … pi` accept `pi`. Claude launch argv and Cursor
       launch argv are unchanged. Conductor and steward `--runner` choices
@@ -333,19 +389,44 @@ otherwise. A missing `node` fails the check with that fact.
   `spec_review` request builders set `pi_provider`, `pi_id`, `pi_thinking`;
   `request_to_job` / `request_from_job` round-trip those fields; Claude and
   Cursor request docs omit them; `select_runner("pi")` is a `PiRunner`;
-  `resolve_runner` accepts `pi` in the existing precedence; doctor skip,
-  fail, and pass via a fake `--probe` subprocess; `ensure_pi_persona`;
-  the remote preflight calls it for `PiRunner` and does not require `claude`.
-  `tests/js/pi_exec.test.js` (`node --test`, stub SDK passed into `execute`):
-  one `inMemory` session, one `prompt`, `dispose`; tool lists; loader flags
-  and `appendSystemPrompt`; user text is prompt plus footer; startup errors
-  (thrown import, no credential, unknown model) write `is_error` and do not
-  call `prompt`; agent error exits 1; success exits 0; key scrubbing; cost
-  cases (priced sum, priced `0`, `totalFromProvider` `0`, unpriced `0`,
-  missing `usage`, missing `cost.total`); a U+2028 tool argument is one
-  line; `parse_result` on that result line yields the verdict and
-  `cost_usd`. `tests/test_cursor_runner.py` and the Claude argv tests in
-  `tests/test_agentic_runner.py` stay green.
+  `resolve_runner` accepts `pi` in the existing precedence. A remote header
+  whose resolution is `pi` has `payload.runner` `pi` and
+  `worker._validate_persona` accepts it. `select_runner` on the worker
+  receives `pi`, constructs `PiRunner`, and does not read the worker's
+  `pi_map` (a worker map that would resolve the alias differently is not
+  consulted; the session uses the job's `pi_provider`, `pi_id`, and
+  `pi_thinking`). Doctor `agentic.pi` skip, fail, and pass via a fake
+  `--probe` subprocess, probing the distinct providers in the map loaded on
+  the host that builds requests, and skipping when `pi_needed` is false.
+  `ensure_pi_persona` raises `FileNotFoundError` when the request's
+  `pi_provider` has no credential even if every provider in the worker's map
+  has one. The `run_job` preflight calls `ensure_pi_persona` for a
+  `PiRunner` and does not require `claude`. `Renderer.feed` prints a
+  non-empty tool line for a fixture assistant event whose
+  `message.content` holds a Pi `read` `tool_use` block.
+  `extract_result` writes that stream's `type: result` line to `result.json`.
+  `parse_result` on that result line yields the verdict and `cost_usd`.
+  `tests/test_remote_personas.py` (beside the `cursor-check` cases):
+  `check_ssh_command("nw worker pi-check")` allows that subcommand and no
+  extra arguments; `nw workers check` invokes `nw worker pi-check` on the
+  worker over SSH when `pi_needed`, does not run the map probe as a local
+  process on the coordinator, and still runs `claude-check` for every
+  persona worker. `tests/js/pi_exec.test.js` (`node --test`, stub SDK passed
+  into `execute`): one `inMemory` session, one `prompt`, `dispose`; tool
+  lists; loader flags and, beside them, a recorded `SettingsManager.inMemory()`
+  (the test fails if `execute` uses the default settings manager);
+  `appendSystemPrompt`. A fixture whose `req.prompt` ends with
+  `system_append` produces one user message that ends with the footer,
+  contains the invariant once, and passes `system_append` only as
+  `appendSystemPrompt`. Startup errors (thrown import, no credential, unknown
+  model) write `is_error` and do not call `prompt`; agent error exits 1;
+  success exits 0; key scrubbing; cost cases (priced sum, priced `0`,
+  `totalFromProvider` `0`, unpriced `0`, missing assistant `usage`, missing
+  assistant `cost.total`, and two assistant messages that each have numeric
+  `cost.total` plus a `tool_result` line with no `usage`, which still sums
+  `total_cost_usd` when the model is priced); a U+2028 tool argument is one
+  line. This file does not call `parse_result`. `tests/test_cursor_runner.py`
+  and the Claude argv tests in `tests/test_agentic_runner.py` stay green.
 - **Manual verification:** with `node` on `PATH`, the package resolvable from
   `pi_exec.mjs`, and the mapped provider's key set, `nw doctor` reports
   `agentic.pi` ok and one local persona run shows tool lines in
@@ -360,8 +441,10 @@ Hosts and workers that run Pi personas need `node` on `PATH` and
 `@earendil-works/pi-coding-agent` resolvable by a dynamic `import` from
 `pi_exec.mjs` (a `node_modules` walk from that file, or `NODE_PATH`). Export
 the provider's own key there (`ANTHROPIC_API_KEY` for the builtin map).
-`nw doctor` reports a missing binary, package, or key. In-flight runs keep
-the argv they launched with. The next spawn whose resolution is `pi` uses
+`nw doctor` reports a missing binary, package, or key on the host that
+builds requests. `nw workers check` runs the same map probe on a persona
+worker through `nw worker pi-check`, and still runs `claude-check`. In-flight
+runs keep the argv they launched with. The next spawn whose resolution is `pi` uses
 the Node child. Conductor and steward hosts are unchanged. An overlay map
 that names another provider requires that provider's credential before
 doctor passes.
