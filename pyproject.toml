@@ -25,6 +25,11 @@ dependencies = [
 tui = []
 # SPEC-0143: product docs site (`mkdocs.yml` → docs/product/).
 docs = ["mkdocs-material>=9"]
+# SPEC-0442: local Cursor SDK for persona runs. Not a core dependency — the wheel
+# bundles a Node bridge (~56MB). Hosts that spawn Cursor personas install it with
+# `uv sync --extra cursor` and export CURSOR_API_KEY. Conductor/steward still use
+# the cursor-agent CLI and do not need this extra.
+cursor = ["cursor-sdk>=1.3.1"]
 
 [project.scripts]
 nw = "nightwright.cli:cli"

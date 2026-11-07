@@ -64,6 +64,13 @@ def test_plan_one_line_per_key():
     assert value in lines[1] and lines[2].strip() == "beta: short"
 
 
+def test_force_color_does_not_wrap_a_pipe():
+    buf = io.StringIO()
+    text = _words(200)
+    NwConsole(file=buf, width=80, _environ={"FORCE_COLOR": "0"}).print(text)
+    _one_line(buf.getvalue(), text)
+
+
 def test_terminal_still_wraps():
     out = _render(_words(200), terminal=True)
     assert len(out.splitlines()) > 1

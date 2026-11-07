@@ -72,7 +72,12 @@ def read_lines(path, offset: int = 0) -> tuple[list[str], int]:
     if end < 0:
         return [], offset
     chunk = data[:end + 1]
-    return chunk.decode("utf-8", errors="replace").splitlines(), offset + len(chunk)
+    # `\n` only. `splitlines` also breaks on U+2028/U+2029 inside JSON strings (SPEC-0442).
+    text = chunk.decode("utf-8", errors="replace")
+    if text.endswith("\n"):
+        text = text[:-1]
+    lines = [ln[:-1] if ln.endswith("\r") else ln for ln in text.split("\n")] if text else []
+    return lines, offset + len(chunk)
 
 
 def _fragment(path, offset: int) -> str:
@@ -214,6 +219,84 @@ class Renderer:
             return f"{len(inp.get('todos') or [])} items"
         return _clip(json.dumps(inp, separators=(",", ":"), ensure_ascii=False), TOOL_W)
 
+    def _sdk_arg_summary(self, args) -> str:
+        if isinstance(args, dict):
+            for key in ("command", "path", "file_path", "pattern", "glob_pattern",
+                        "globPattern", "description", "url", "query"):
+                if args.get(key):
+                    val = args[key]
+                    if key in ("path", "file_path"):
+                        val = self._rel(val)
+                    return _clip(_first_line(val), TOOL_W)
+            return _clip(json.dumps(args, separators=(",", ":"), ensure_ascii=False), TOOL_W)
+        if args:
+            return _clip(_first_line(args), TOOL_W)
+        return ""
+
+    @staticmethod
+    def _sdk_result_text(result) -> str:
+        if result is None:
+            return ""
+        if isinstance(result, str):
+            return result
+        if isinstance(result, dict):
+            inner = result.get("result") if isinstance(result.get("result"), dict) else result
+            if isinstance(inner, dict):
+                if "exitCode" in inner or "exit_code" in inner:
+                    code = inner.get("exitCode", inner.get("exit_code"))
+                    first = _first_line(inner.get("stderr") or inner.get("error")
+                                        or inner.get("stdout") or "")
+                    return f"exit {code}" + (f": {first}" if first else "")
+                failure, success = inner.get("failure"), inner.get("success")
+                if isinstance(failure, dict):
+                    return Renderer._sdk_result_text(failure)
+                if isinstance(success, dict):
+                    if "content" in success or "file" in success or "fileContent" in success:
+                        return "ok"
+                    return Renderer._sdk_result_text(success)
+                for key in ("error", "message", "stdout", "output", "text"):
+                    if inner.get(key):
+                        return str(inner[key])
+            return json.dumps(result, ensure_ascii=False)
+        return str(result)
+
+    def _sdk_tool_call(self, ev: dict, nest: str) -> list[Text]:
+        name = str(ev.get("name") or "?")
+        status = str(ev.get("status") or "")
+        if status == "error":
+            first = _clip(_first_line(self._sdk_result_text(ev.get("result"))), RESULT_W)
+            return [Text(f"{nest}  ← error: {first or name}", style="red")]
+        if status == "completed":
+            text = self._sdk_result_text(ev.get("result"))
+            n = len(str(text).splitlines()) if text else 0
+            first = _clip(_first_line(text), RESULT_W)
+            label = f"{n} line{'s' if n != 1 else ''}" if text else "done"
+            return [Text(f"{nest}  ← {label}" + (f": {first}" if first else ""), style="dim")]
+        t = Text(f"{nest}→ ")
+        t.append(name, style="cyan")
+        summary = self._sdk_arg_summary(ev.get("args"))
+        if summary:
+            t.append(" " + summary)
+        return [t]
+
+    def _sdk_usage_line(self, ev: dict) -> Text | None:
+        usage = ev.get("usage") if isinstance(ev.get("usage"), dict) else {}
+
+        def num(*names) -> int:
+            for name in names:
+                if usage.get(name) is not None:
+                    try:
+                        return int(usage[name])
+                    except (TypeError, ValueError):
+                        return 0
+            return 0
+
+        inp = num("input_tokens", "inputTokens")
+        out_n = num("output_tokens", "outputTokens")
+        if not inp and not out_n:
+            return None
+        return Text(f"  tokens in {_k(inp)} · out {_k(out_n)}", style="dim")
+
     def feed_line(self, line: str) -> list[Text]:
         line = line.strip()
         if not line:
@@ -229,8 +312,20 @@ class Renderer:
         nest = "  ┆ " if ev.get("parent_tool_use_id") else ""
         out: list[Text] = []
         if typ == "system" and ev.get("subtype") == "init":
-            out.append(Text(f"● session · model {ev.get('model')} · "
-                            f"{len(ev.get('tools') or [])} tools", style="bold"))
+            model = ev.get("model")
+            if isinstance(model, dict):
+                model = model.get("id") or model
+            tools = ev.get("tools")
+            extra = f" · {len(tools)} tools" if isinstance(tools, list) else ""
+            out.append(Text(f"● session · model {model}{extra}", style="bold"))
+        elif typ == "thinking":
+            return out
+        elif typ == "tool_call":
+            out.extend(self._sdk_tool_call(ev, nest))
+        elif typ == "usage":
+            line = self._sdk_usage_line(ev)
+            if line is not None:
+                out.append(line)
         elif typ == "assistant":
             msg = ev.get("message") if isinstance(ev.get("message"), dict) else {}
             new_turn = self._note_usage(msg)

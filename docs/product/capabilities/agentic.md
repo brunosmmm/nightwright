@@ -273,19 +273,19 @@ on a parked item — and logs a `gate` event. It never changes the campaign's st
 
 ## Personas
 
-Each judgment step is one fresh headless run (SPEC-0174, SPEC-0436): a persona markdown
-template (`implementer`, `gate_triager`, `conformance_reviewer`) is filled with the campaign's
-context — the spec text as it is on the branch, the worktree path, the last gate logs, the
-brief from the previous loop — and ends with a fixed invariant block (work only in the
-worktree, do not commit, finish with the JSON verdict). Default is `claude -p` with
-`--json-schema`. Opt in to `cursor-agent -p` (logged in with `cursor-agent login`; no
-`CURSOR_API_KEY`); Cursor has no schema flag, so the same JSON object is asked for in a
-prompt footer. Both get a `--max-budget-usd` (Cursor reports no USD, so the queue estimates
-from the cap), a wall-clock timeout, the profile's model and effort, and an explicit
-permission mode (`bypassPermissions` scoped to the worktree for the implementer;
-`--restricted` / Cursor `--mode ask` for read-only personas). Cost, usage and session id
-come back in the result and go to the ledger. Identical inputs give a byte-identical prompt;
-`nw campaign prompt CAMPAIGN PERSONA` prints it without running anything.
+Each judgment step is one fresh headless run (SPEC-0174, SPEC-0436, SPEC-0442): a persona
+markdown template (`implementer`, `gate_triager`, `conformance_reviewer`) is filled with the
+campaign's context — the spec text as it is on the branch, the worktree path, the last gate
+logs, the brief from the previous loop — and ends with a fixed invariant block (work only in
+the worktree, do not commit, finish with the JSON verdict). Default is `claude -p` with
+`--json-schema`. Opt in to Cursor and the run goes through the local Cursor Python SDK
+(`cursor-sdk`, the optional `cursor` extra) with `CURSOR_API_KEY`, inside the same detached
+wrapper. Cursor has no schema flag, so the same JSON object is asked for in a prompt footer.
+Both get a budget and a wall-clock timeout. When the account returns SDK usage cost, the
+result carries that dollar amount; otherwise the queue estimates from the cap. Read-only
+personas run with no built-in tools. Cost, usage and session id come back in the result and
+go to the ledger. Identical inputs give a byte-identical prompt; `nw campaign prompt
+CAMPAIGN PERSONA` prints it without running anything.
 
 For tests and dry runs, `agentic.runner: fake` (or `NW_AGENTIC_RUNNER=fake`) replays a JSON
 script of scripted edits and canned verdicts instead of calling `claude` or `cursor-agent`.
@@ -303,7 +303,8 @@ spawn (SPEC-0436), highest first:
 6. `claude`
 
 An in-flight persona finishes on the backend it started; the next spawn uses the new
-resolution. Nothing is SIGTERM'd.
+resolution. Nothing is SIGTERM'd. A cursor persona spawn runs the local SDK child.
+Conductor and steward `--runner cursor` still start the `cursor-agent` CLI.
 
 ```bash
 nw queue add SPEC-0170 --runner cursor --yes     # pin this campaign

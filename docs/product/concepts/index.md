@@ -26,8 +26,8 @@ Core vocabulary for nightwright product docs. Prefer these terms; link SPECs onl
 | **Passive tracking** | Hours from transcripts/meetings — no start/stop timer. |
 | **RESEARCHED** | Terminal idea state: explored, **no** spec. |
 | **Skill** | Agent playbook installed via `nw skills`. |
-| **Persona** | One headless `claude -p` or `cursor-agent -p` run that returns a JSON verdict. |
-| **Backend** | Which CLI a persona or launch uses: `claude` (default) or opt-in `cursor`. |
+| **Persona** | One headless `claude -p` or Cursor SDK run that returns a JSON verdict. |
+| **Backend** | Which runtime a persona uses: `claude` (default) or opt-in `cursor`. Conductor and steward Cursor sessions still use the `cursor-agent` CLI. |
 | **Sheet sync** | Optional Google Sheet triage for a configured project. |
 
 ## Concept pages

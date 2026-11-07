@@ -145,9 +145,8 @@ def run_job(cfg, h: dict, job: Path, frames, cancel: threading.Event) -> None:
         runner = R.select_runner(cfg, runner=payload.get("runner"))
     except (KeyError, TypeError, ValueError) as e:
         raise W.WorkerError("run", f"cannot run the persona: {e}")
-    if isinstance(runner, R.CursorRunner) and RP.resolve_cursor_agent() is None:
-        raise FileNotFoundError(2, "cursor-agent not found on PATH or in the standard install dirs",
-                                "cursor-agent")
+    if isinstance(runner, R.CursorRunner):
+        RP.ensure_cursor_persona()
     if isinstance(runner, R.ClaudeRunner) and not isinstance(runner, R.CursorRunner) \
             and RP.resolve_claude() is None:
         # SPEC-0389: an infrastructure failure, not a persona verdict (no $ estimate charged)

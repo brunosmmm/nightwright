@@ -23,7 +23,7 @@ from rich.text import Text
 from .. import completion as C
 from .. import render as R
 from ..config import load_config
-from ..console import console
+from ..console import console, stdout_is_tty
 from ..report import _dump_json
 from . import flaky as FL
 from . import gate_progress as GPG
@@ -1880,9 +1880,10 @@ def attach(queue_group):
             _dump_json(payload())
             return
         def frame():
-            h = height or (console.height if console.is_terminal else DEFAULT_HEIGHT)
+            tty = stdout_is_tty(console)
+            h = height or (console.height if tty else DEFAULT_HEIGHT)
             return _dashboard(payload(), console.width, recent_hours, h,
-                              fill=bool(height) or console.is_terminal)
+                              fill=bool(height) or tty)
 
         if once:
             console.print(frame())
@@ -1894,7 +1895,7 @@ def attach(queue_group):
         # re-rendering a static frame 4x/s; the frame is rebuilt when the data changed (a
         # cheap stat fingerprint) or every IDLE_REFRESH_S so ages stay fresh.
         with Live(frame(), console=console, auto_refresh=False,
-                  screen=console.is_terminal) as live:
+                  screen=stdout_is_tty(console)) as live:
             fp, last = _watch_fingerprint(cfg), time.monotonic()
             while True:
                 n += 1

@@ -26,9 +26,10 @@ nw skills install                       # installs /nw-* skills for Claude Code 
 Install **editable**. The skills, the internal specs, and the agentic runner all run from
 this checkout, and a `git pull` (or a merge by the loop) takes effect without reinstalling.
 
-The queue defaults to the `claude` CLI. For Cursor personas and launches, install
-`cursor-agent`, run `cursor-agent login`, then
-`nw queue backend --host cursor --yes` (or `--runner cursor` on `queue add` /
+The queue defaults to the `claude` CLI. Cursor personas need the optional `cursor`
+extra (`uv sync --extra cursor`) and `CURSOR_API_KEY` in the environment.
+Conductor and steward launches still use `cursor-agent` (`cursor-agent login`).
+Then `nw queue backend --host cursor --yes` (or `--runner cursor` on `queue add` /
 `conductor-launch`).
 
 ## 2 · Configure

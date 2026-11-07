@@ -387,7 +387,8 @@ def check_runner(cfg, *, now=None) -> dict:
 
 
 def check_cursor_agent(cfg, *, run_cmd=None) -> dict:
-    """`agentic.cursor`: `cursor-agent` version + login when any active resolution is cursor."""
+    """`agentic.cursor`: Cursor SDK import + `CURSOR_API_KEY` when a persona resolves to cursor.
+    Conductor launch still probes the `cursor-agent` binary on its own (SPEC-0442)."""
     id = "agentic.cursor"
     if cfg is None:
         return _skip_no_config(id)
@@ -399,11 +400,12 @@ def check_cursor_agent(cfg, *, run_cmd=None) -> dict:
         needed = False
     if not needed:
         return check(id, "skip", "no campaign resolves to cursor")
-    rec = RP.probe_cursor_agent(run=run_cmd or subprocess.run)
+    rec = RP.probe_cursor_sdk()
     if rec["ok"]:
-        return check(id, "ok", rec.get("login") or rec.get("version") or "logged in")
-    return check(id, "fail", rec.get("error") or "cursor-agent check failed",
-                 fix="install cursor-agent and run `cursor-agent login`")
+        return check(id, "ok", rec.get("login") or rec.get("version") or "CURSOR_API_KEY is set")
+    return check(id, "fail", rec.get("error") or "cursor SDK check failed",
+                 fix="install the nightwright cursor extra (`uv sync --extra cursor`) "
+                     "and export CURSOR_API_KEY")
 
 
 def _unguarded_launch(sessions):

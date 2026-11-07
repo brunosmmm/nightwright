@@ -54,13 +54,13 @@ def test_resolve_runner_precedence(tmp_path, monkeypatch):
 
 def test_build_cursor_argv_write_and_read_only(tmp_path):
     write = R.build_cursor_argv(_req(tmp_path))
-    assert write[:4] == ["cursor-agent", "-p", "--output-format", "stream-json"]
-    assert write[write.index("--model") + 1] == "grok-4.7-high"
-    assert "--trust" in write and "--force" in write and "--mode" not in write
-    assert write[write.index("--workspace") + 1] == str(tmp_path / "nw")
+    assert write[1:4] == ["-m", "nightwright.agentic.cursor_exec", str(tmp_path / "runs" / "001")]
+    assert "cursor-agent" not in write and "--force" not in write and "--mode" not in write
+    assert "--read-only" not in write
+    assert write[write.index("--add-dir") + 1] == str(tmp_path / "nw")
+    assert "CURSOR_API_KEY" not in " ".join(write)
     read = R.build_cursor_argv(_req(tmp_path, read_only=True))
-    assert "--mode" in read and read[read.index("--mode") + 1] == "ask"
-    assert "--force" not in read and "--trust" in read
+    assert "--read-only" in read and "--force" not in read
 
 
 def test_cursor_prompt_includes_schema_footer(tmp_path):
@@ -157,9 +157,15 @@ def test_doctor_cursor_skip_and_fail(tmp_path, monkeypatch):
     (tmp_path / "d").mkdir()
     assert D.check_cursor_agent(cfg)["status"] == "skip"
     monkeypatch.setenv("NW_AGENTIC_RUNNER", "cursor")
-    monkeypatch.setattr(RP, "resolve_cursor_agent", lambda environ=None: None)
+    monkeypatch.setattr(RP, "probe_cursor_sdk",
+                        lambda environ=None: {"ok": False, "version": None, "login": None,
+                                              "error": "cursor-sdk is not installed"})
     c = D.check_cursor_agent(cfg)
-    assert c["status"] == "fail" and "not found" in c["summary"]
+    assert c["status"] == "fail" and "not installed" in c["summary"]
+    monkeypatch.setattr(RP, "probe_cursor_sdk",
+                        lambda environ=None: {"ok": True, "version": "1.3.1",
+                                              "login": "CURSOR_API_KEY is set", "error": None})
+    assert D.check_cursor_agent(cfg)["status"] == "ok"
 
 
 def test_probe_cursor_agent_login(tmp_path, monkeypatch):

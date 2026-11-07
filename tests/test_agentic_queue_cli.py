@@ -395,7 +395,8 @@ def test_list_marks_overdue_and_colours_parks_by_owner(tmp_path, monkeypatch):
         if noted:
             ev_at(cfg, ids[key], "note", {"text": "ok", "author": "conductor"}, ago_s=10)
     buf = StringIO()
-    Console(file=buf, width=200, force_terminal=True, color_system="standard").print(
+    Console(file=buf, width=200, force_terminal=True, color_system="standard",
+           no_color=False).print(
         CQ._queue_table(Q.queue_payload(cfg)))
     rows = {k: next(l for l in buf.getvalue().splitlines() if ids[k] in l) for k in ids}
     assert "!" in rows["old"] and "\x1b[31m!" in rows["old"]            # red overdue marker

@@ -1,5 +1,5 @@
-"""Headless persona runner (SPEC-0174 / SPEC-0436): the only place that knows `claude` /
-`cursor-agent` command lines.
+"""Headless persona runner (SPEC-0174 / SPEC-0436 / SPEC-0442): the only place that knows
+`claude -p` and the Cursor SDK child command lines.
 
 A persona run is one fresh `-p` with a structured verdict, a dollar budget, a wall-clock
 timeout and an explicit permission mode. The runner saves the prompt and the raw result under
@@ -283,7 +283,8 @@ def cursor_needed(cfg, campaigns=None) -> bool:
 
 
 def cursor_prompt(req: RunRequest) -> str:
-    """Stdin for `cursor-agent -p`: prompt + system_append + JSON-schema footer."""
+    """Prompt file for a Cursor persona (SPEC-0442): prompt + system_append + schema footer.
+    Python ``AgentOptions`` has no system prompt, so the footer stays in the user message."""
     parts = [req.prompt or ""]
     if req.system_append:
         parts.append(req.system_append)
@@ -293,15 +294,13 @@ def cursor_prompt(req: RunRequest) -> str:
 
 
 def build_cursor_argv(req: RunRequest) -> list[str]:
-    """`cursor-agent -p` command line for a run (SPEC-0436); the prompt goes on stdin."""
-    argv = ["cursor-agent", "-p", "--output-format", "stream-json",
-            "--model", req.model, "--trust", "--workspace", str(req.cwd)]
+    """Local Cursor SDK child (SPEC-0442). The prompt is ``prompt.md``; the key stays in
+    the environment. ``runproc`` supervises this argv the same way it supervises ``claude``."""
+    argv = [sys.executable, "-m", "nightwright.agentic.cursor_exec", str(req.run_dir)]
+    if req.read_only:
+        argv.append("--read-only")
     for d in req.add_dirs:
         argv += ["--add-dir", str(d)]
-    if req.read_only:
-        argv += ["--mode", "ask"]
-    else:
-        argv.append("--force")
     return argv
 
 
@@ -677,8 +676,10 @@ class ClaudeRunner:
 
 
 class CursorRunner(ClaudeRunner):
-    """Spawn `cursor-agent -p` per `build_cursor_argv` (SPEC-0436). Same detach/adopt
-    wrapper as `ClaudeRunner`; stdin is the concatenated prompt + schema footer."""
+    """Spawn the local Cursor SDK child per `build_cursor_argv` (SPEC-0442). Same
+    detach/adopt wrapper as `ClaudeRunner`. The prompt file is the schema footer
+    concatenated onto the persona prompt. Conductor and steward launch stay on
+    the `cursor-agent` CLI."""
 
     def _launch_argv(self, req: RunRequest) -> list[str]:
         return build_cursor_argv(req)

@@ -1387,9 +1387,10 @@ CURSOR_CHECK_SCHEMA = "nw.worker.cursor_check.v1"
 
 
 def cursor_check() -> dict:
-    """SPEC-0436: `cursor-agent --version` plus login (`status`/`whoami`, not a paid `-p`)."""
+    """SPEC-0442: `cursor-sdk` imports and `CURSOR_API_KEY` is set. Not a billed request.
+    Conductor hosts still need `cursor-agent` separately."""
     from . import runproc as RP
-    rec = RP.probe_cursor_agent()
+    rec = RP.probe_cursor_sdk()
     return {"schema": CURSOR_CHECK_SCHEMA, "ok": rec["ok"], "version": rec.get("version"),
             "login": rec.get("login"), "error": rec.get("error")}
 

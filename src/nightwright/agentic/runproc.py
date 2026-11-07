@@ -126,6 +126,39 @@ _CURSOR_LOGIN_FAIL = ("not logged", "not authenticated", "please log in", "login
                       "unauthorized")
 
 
+def probe_cursor_sdk(environ=None) -> dict:
+    """SPEC-0442: `{ok, version, login, error}` for a Cursor persona host.
+    The package must import and `CURSOR_API_KEY` must be set. The key is never copied
+    into the record. This is not a billed request."""
+    env = os.environ if environ is None else environ
+    out = {"ok": False, "version": None, "login": None, "error": None}
+    try:
+        import cursor_sdk  # noqa: F401
+    except ImportError as e:
+        out["error"] = (f"cursor-sdk is not installed ({e}). "
+                        "Install the nightwright cursor extra.")
+        return out
+    try:
+        from importlib.metadata import version
+        out["version"] = version("cursor-sdk")
+    except Exception:
+        out["version"] = "unknown"
+    if not (env.get("CURSOR_API_KEY") or "").strip():
+        out["error"] = "CURSOR_API_KEY is not set"
+        return out
+    out["ok"] = True
+    out["login"] = "CURSOR_API_KEY is set"
+    return out
+
+
+def ensure_cursor_persona(environ=None) -> dict:
+    """Raise `FileNotFoundError` when a Cursor persona cannot start (SPEC-0442)."""
+    rec = probe_cursor_sdk(environ)
+    if not rec["ok"]:
+        raise FileNotFoundError(2, rec["error"] or "cursor-sdk unavailable", "cursor-sdk")
+    return rec
+
+
 def probe_cursor_agent(environ=None, run=None, timeout=10.0) -> dict:
     """SPEC-0436: `{ok, exe, version, login, error}` from `--version` plus `status`/`whoami`.
     Not a paid `-p`."""
@@ -358,9 +391,19 @@ def is_stream(run_dir) -> bool:
     return bool((read_json(Path(run_dir) / "launch.json") or {}).get("stream"))
 
 
+def physical_lines(text: str) -> list[str]:
+    """Split on ``\\n`` only. ``str.splitlines`` also breaks on U+2028/U+2029, which
+    appear inside JSON strings (a tool result) and must stay one event (SPEC-0442)."""
+    if text.endswith("\n"):
+        text = text[:-1]
+    if not text:
+        return []
+    return [ln[:-1] if ln.endswith("\r") else ln for ln in text.split("\n")]
+
+
 def _result_line(text: str) -> str | None:
     """The last line of a stream-json text that is a `type: result` object, verbatim."""
-    for line in reversed(text.splitlines()):
+    for line in reversed(physical_lines(text)):
         line = line.strip()
         if not line.startswith("{"):
             continue
