@@ -311,8 +311,9 @@ def test_hard_failure_is_missing_and_sibling_costs_are_recorded(opened2):
     row, st = apply_reviews(ctx, cfg, cid, [(A, _rr(rv("pass"))), (B, timed_out)])
     assert row["reason"] == "review_retry"
     costs = {e["persona"]: e["delta_usd"] for e in S.read_ledger(cfg, cid, types=["cost"])}
-    assert costs == {A: 0.25, B: 1.0}          # the hard failure is charged its budget
-    assert st["cost"]["total_usd"] == 1.25
+    assert costs == {A: 0.25, B: 0.0}          # the timeout reported no cost, so it is not spend
+    assert st["cost"]["total_usd"] == 0.25
+    assert st["cost"]["estimated_usd"] == 1.0
 
 
 def test_prepare_failure_leaves_no_run_start_only_a_note(opened2):
@@ -542,7 +543,7 @@ def test_e2e_worker_exception_charges_budget_and_is_retried_alone(e2e):
     assert any("worker blew up" in e for r in reports for e in r.errors)
     ends = [e for e in S.read_ledger(cfg, cid, types=["run.end"]) if e["persona"] == B]
     assert len(ends) == 2 and ends[0]["is_error"] and ends[0]["verdict_ok"] is False
-    assert ends[0]["charged_usd"] == 1.0 and runner.calls.count(A) == 1
+    assert ends[0]["charged_usd"] == 0.0 and runner.calls.count(A) == 1
 
 
 def test_e2e_prepare_failure_for_second_reviewer_leaves_no_trace(e2e, monkeypatch):

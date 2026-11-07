@@ -187,7 +187,7 @@ def _cap_blocks(state: dict, profile: dict, persona, allowance: float = 0.0, res
     names = [persona] if isinstance(persona, str) else list(persona)
     budgets = [float(persona_settings(profile, p).get("max_budget_usd") or 0.0) for p in names]
     budget = sum(budgets)
-    total = float(cost.get("total_usd") or 0.0)
+    total = _known_spend(cost)
     who = f"a {names[0]} run" if len(names) == 1 else f"{', '.join(names)} runs"
     close = f" (including a ${allowance:.2f} close allowance)" if allowance else ""
     if ceiling is None or float(cap) < float(ceiling):
@@ -1253,20 +1253,46 @@ def _park(cfg, state: dict, reason: str, detail: str, resume_to: str, *, by="tic
     return _transition(cfg, state, "PARKED", reason, by=by, extra_events=events)
 
 
+def _known_spend(cost: dict) -> float:
+    """Dollars a run reported. An unknown cost lives on `estimated_usd` and is not spend
+    (SPEC-0461). A state written before that still has the estimate folded into `total_usd`."""
+    total = float(cost.get("total_usd") or 0.0)
+    if cost.get("estimate_separated"):
+        return total
+    estimated = float(cost.get("estimated_usd") or 0.0)
+    return round(max(0.0, total - estimated), 4)
+
+
+def _separate_estimate(cost: dict) -> None:
+    """Move a folded estimate out of `total_usd` once, so later known charges are not
+    reduced again."""
+    if cost.get("estimate_separated"):
+        return
+    estimated = float(cost.get("estimated_usd") or 0.0)
+    if estimated:
+        cost["total_usd"] = round(max(0.0, float(cost.get("total_usd") or 0.0) - estimated), 4)
+    cost["estimate_separated"] = True
+
+
 def _record_run(state: dict, persona: str, run_id: str, result, budget: float, *,
                 interrupted: bool = False) -> list:
     """Cost + run.end + findings for a finished persona run. Returns ledger events; mutates
     the counters and cost in `state`. `interrupted` is the step's view (the loop was told to
-    stop while the run was in flight), which the RunResult cannot know."""
+    stop while the run was in flight), which the RunResult cannot know.
+
+    A missing cost is not spend (SPEC-0461). The budget is recorded on `estimated_usd` and
+    is not added to the total the cap checks."""
     interrupted = bool(interrupted or result.interrupted)
     cost = _cost(state)
+    _separate_estimate(cost)
     estimated = result.cost_usd is None
-    charged = budget if estimated else result.cost_usd
-    cost["total_usd"] = round(float(cost["total_usd"]) + float(charged), 4)
+    charged = 0.0 if estimated else float(result.cost_usd)
+    cost["total_usd"] = round(float(cost["total_usd"]) + charged, 4)
     if estimated:
-        cost["estimated_usd"] = round(float(cost.get("estimated_usd") or 0.0) + float(charged), 4)
-    cost["by_persona"][persona] = round(float(cost["by_persona"].get(persona, 0.0))
-                                        + float(charged), 4)
+        cost["estimated_usd"] = round(float(cost.get("estimated_usd") or 0.0) + float(budget), 4)
+    else:
+        cost["by_persona"][persona] = round(float(cost["by_persona"].get(persona, 0.0))
+                                            + charged, 4)
     events = [("run.end", {
         "persona": persona, "run_id": run_id, "exit_code": result.exit_code,
         "is_error": result.is_error, "timed_out": result.timed_out,
@@ -1285,8 +1311,8 @@ def _record_run(state: dict, persona: str, run_id: str, result, budget: float, *
         reason = ("interrupted" if interrupted else "timed out" if result.timed_out
                   else "no cost reported")
         events.append(("finding", {"persona": persona, "severity": "info", "gate": None,
-                                   "title": "run cost unknown; charged its budget as an estimate",
-                                   "detail": f"${budget:.2f} charged as an upper bound ({reason})",
+                                   "title": "run cost unknown; not counted against the cap",
+                                   "detail": f"${budget:.2f} not counted ({reason})",
                                    "files": []}))
     verdict = result.verdict if isinstance(result.verdict, dict) else {}
     for item in verdict.get("must_fix") or []:

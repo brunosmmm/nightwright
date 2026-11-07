@@ -721,6 +721,7 @@ progress. This is the single place to see *what has been decided* and *what is i
 | [SPEC-0458](./specs/0458-tail-renders-triage-and-implementer-cards.md) | The run tail renders a triage and an implementer result as cards | feature | done | — | 2026-11-07 |
 | [SPEC-0459](./specs/0459-real-app-tui-test-harness-on-the-real-data.md) | Real-fixture IdeaDesk Pilot harness and queue-window preparation | feature | done | M9: agentic workflow | 2026-11-07 |
 | [SPEC-0460](./specs/0460-cursor-spawns-force-fast-off.md) | Cursor spawns keep the effort and force fast off | feature | done | — | 2026-11-07 |
+| [SPEC-0461](./specs/0461-cap-counts-only-known-cost.md) | A campaign cap counts only a cost the run reported | feature | done | — | 2026-11-07 |
 
 ## Superseded / rejected
 

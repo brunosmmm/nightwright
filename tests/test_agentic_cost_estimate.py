@@ -1,6 +1,5 @@
-"""SPEC-0224: a run's cost is the real one whenever its output carries it; otherwise the budget
-is charged and marked as an estimate everywhere (run.end, cost event, campaign cost, run.json,
-tick row, displays)."""
+"""SPEC-0224 / SPEC-0461: a run's cost is the real one whenever its output carries it.
+A missing cost is marked as an estimate and is not added to the spend the cap checks."""
 import json
 import subprocess
 from pathlib import Path
@@ -36,14 +35,14 @@ def test_interrupted_run_without_cost_is_estimated():
     events = Q._record_run(state, "implementer", "001-implementer", _res(None, exit_code=-15),
                            4.0, interrupted=True)
     ev = _by_type(events)
-    assert ev["run.end"]["cost_usd"] is None and ev["run.end"]["charged_usd"] == 4.0
+    assert ev["run.end"]["cost_usd"] is None and ev["run.end"]["charged_usd"] == 0.0
     assert ev["run.end"]["cost_estimated"] is True and ev["run.end"]["interrupted"] is True
-    assert ev["cost"]["estimated"] is True and ev["cost"]["delta_usd"] == 4.0
-    assert state["cost"]["total_usd"] == 4.0 and state["cost"]["estimated_usd"] == 4.0
+    assert ev["cost"]["estimated"] is True and ev["cost"]["delta_usd"] == 0.0
+    assert state["cost"]["total_usd"] == 0.0 and state["cost"]["estimated_usd"] == 4.0
     (f,) = _finding(events)
     assert f["severity"] == "info" and "(interrupted)" in f["detail"] and "$4.00" in f["detail"]
     Q._record_run(state, "implementer", "002-implementer", _res(None), 1.5, interrupted=True)
-    assert state["cost"]["estimated_usd"] == 5.5 and state["cost"]["total_usd"] == 5.5
+    assert state["cost"]["estimated_usd"] == 5.5 and state["cost"]["total_usd"] == 0.0
 
 
 @pytest.mark.parametrize("kw,reason", [({"timed_out": True, "exit_code": -1, "is_error": True},
@@ -56,7 +55,8 @@ def test_timeout_and_no_cost_reasons(kw, reason):
     assert ev["run.end"]["cost_estimated"] is True and ev["cost"]["estimated"] is True
     assert state["cost"]["estimated_usd"] == 2.0
     (f,) = _finding(events)
-    assert f["detail"] == f"$2.00 charged as an upper bound ({reason})"
+    assert f["detail"] == f"$2.00 not counted ({reason})"
+    assert state["cost"]["total_usd"] == 0.0
 
 
 @pytest.mark.parametrize("kw", [{"timed_out": True, "exit_code": -1, "is_error": True},
@@ -149,8 +149,8 @@ def test_e2e_null_cost_reaches_the_displays(tmp_path, monkeypatch):
     end = S.read_ledger(cfg, cid, types=["run.end"])[0]
     assert end["cost_usd"] is None and end["cost_estimated"] is True
     est = st["cost"]["estimated_usd"]
-    assert est == end["charged_usd"] > 0
-    assert st["cost"]["total_usd"] == round(est + 0.2, 4)
+    assert end["charged_usd"] == 0.0 and est > 0
+    assert st["cost"]["total_usd"] == 0.2
     rj = json.loads((S.runs_dir(cfg, cid) / "001-implementer" / "run.json").read_text())
     assert rj["cost_estimated"] is True
     rows = [json.loads(ln) for ln in r.output.splitlines() if ln.startswith("{")]
