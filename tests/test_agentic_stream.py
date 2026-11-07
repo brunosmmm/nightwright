@@ -342,6 +342,67 @@ def test_a_spoken_verdict_renders_as_a_review_not_json():
     assert [t.plain for t in held.feed(_assistant_text('it"}'))] == ["  ▸ split"]
 
 
+def test_a_spoken_gate_triage_renders_as_a_card_not_json():
+    blob = json.dumps({
+        "disposition": "fix", "confidence": "high", "suspected_flaky": False,
+        "must_fix": [{
+            "gate": "pytest-affected", "title": "Allowlist the backlog machine writes",
+            "detail": "The guard fails deterministically.",
+            "files": ["tests/test_rich_output_guard.py", "src/nightwright/backlog.py"],
+        }],
+        "waived": [], "fix_brief": "Add the two ALLOWED entries and re-run the gate.",
+        "followup_ideas": [],
+    }, indent=2)
+    r = TL.Renderer()
+    lines = []
+    for i in range(0, len(blob), 7):
+        lines.extend(r.feed(_assistant_text(blob[i:i + 7])))
+    assert r.flush_prose() == []
+    plain = [t.plain for t in lines]
+    assert plain[0] == "  ▸ fix · high"
+    assert "    pytest-affected · Allowlist the backlog machine writes" in plain
+    assert "      The guard fails deterministically." in plain
+    assert "      files: tests/test_rich_output_guard.py, src/nightwright/backlog.py" in plain
+    assert "    brief: Add the two ALLOWED entries and re-run the gate." in plain
+    assert not any('"disposition"' in p or '"must_fix"' in p for p in plain)
+    flaky = TL.Renderer().feed(_assistant_text(
+        '{"disposition":"retry_gate","confidence":"low","suspected_flaky":true,'
+        '"fix_brief":"Run the gate again."}'))
+    assert flaky[0].plain == "  ▸ retry_gate · low · flaky"
+
+
+def test_a_spoken_implementer_result_renders_as_a_card_not_json():
+    blob = json.dumps({
+        "status": "done",
+        "summary": "Allowlist the two click.echo paths.",
+        "changed_files": ["tests/test_rich_output_guard.py"],
+        "tests_run": ["uv run pytest -q tests/test_rich_output_guard.py"],
+        "ac_status": [
+            {"ac": "add prints the id", "met": True},
+            {"ac": "errors print the exact line", "met": False},
+        ],
+        "blockers": [], "followup_ideas": [],
+    }, indent=2)
+    r = TL.Renderer()
+    lines = []
+    for i in range(0, len(blob), 9):
+        lines.extend(r.feed(_assistant_text(blob[i:i + 9])))
+    assert r.flush_prose() == []
+    plain = [t.plain for t in lines]
+    assert plain[0] == "  ▸ done"
+    assert "    Allowlist the two click.echo paths." in plain
+    assert "    files: tests/test_rich_output_guard.py" in plain
+    assert "    test: uv run pytest -q tests/test_rich_output_guard.py" in plain
+    assert "      met · add prints the id" in plain
+    assert "      unmet · errors print the exact line" in plain
+    assert "blocker" not in "\n".join(plain)
+    assert not any('"status"' in p or '"ac_status"' in p for p in plain)
+    blocked = TL.Renderer().feed(_assistant_text(
+        '{"status":"blocked","summary":"The gate is red.","blockers":["no network"]}'))
+    assert [t.plain for t in blocked] == [
+        "  ▸ blocked", "    The gate is red.", "    blocker · no network"]
+
+
 def test_prose_before_a_verdict_stays_a_sentence():
     r = TL.Renderer()
     said = [t.plain for t in r.feed(_assistant_text("Checking the spec.\n"))]

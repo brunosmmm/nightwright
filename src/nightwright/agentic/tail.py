@@ -558,6 +558,99 @@ class Renderer:
                                 style="dim" if ac.get("met") else ""))
         return out
 
+    def _card_head(self, nest: str, label: str, style: str) -> Text:
+        head = Text(f"{nest}  ")
+        head.append("▸ ", style=SPEECH)
+        head.append(label, style=style)
+        return head
+
+    def _triage_lines(self, obj: dict, nest: str) -> list[Text] | None:
+        """A spoken gate-triage object (`disposition`), as a card instead of JSON."""
+        disp = obj.get("disposition")
+        if disp not in ("fix", "retry_gate", "waive", "escalate"):
+            return None
+        if not any(obj.get(k) not in (None, "", []) for k in
+                   ("fix_brief", "must_fix", "waived", "confidence", "followup_ideas")) \
+                and obj.get("suspected_flaky") is not True:
+            return None
+        bits = [disp]
+        if obj.get("confidence"):
+            bits.append(str(obj["confidence"]))
+        if obj.get("suspected_flaky") is True:
+            bits.append("flaky")
+        style = {"fix": "bold red", "escalate": "bold red", "waive": "bold green"}.get(
+            disp, "bold yellow")
+        out = [self._card_head(nest, " · ".join(bits), style)]
+        for item in obj.get("must_fix") or []:
+            if not isinstance(item, dict):
+                continue
+            line = Text(f"{nest}    ")
+            if item.get("gate"):
+                line.append(str(item["gate"]), style="dim")
+                line.append(" · ")
+            line.append(str(item.get("title") or "?"), style="bold")
+            out.append(line)
+            if item.get("detail"):
+                out.append(Text(f"{nest}      {_one_line(item['detail'])}"))
+            files = item.get("files")
+            if isinstance(files, list) and files:
+                out.append(Text(f"{nest}      files: {', '.join(map(str, files))}", style="dim"))
+        for item in obj.get("waived") or []:
+            if not isinstance(item, dict):
+                continue
+            gate = item.get("gate") or "?"
+            reason = _one_line(item.get("reason") or "")
+            out.append(Text(f"{nest}    waived · {gate}" + (f" — {reason}" if reason else ""),
+                            style="dim"))
+        brief = obj.get("fix_brief")
+        if isinstance(brief, str) and brief.strip():
+            out.append(Text(f"{nest}    brief: {_one_line(brief)}"))
+        ideas = [str(i) for i in obj.get("followup_ideas") or [] if str(i).strip()]
+        if ideas:
+            out.append(Text(f"{nest}    followups", style="bold"))
+            for idea in ideas:
+                out.append(Text(f"{nest}      · {_one_line(idea)}", style="dim"))
+        return out
+
+    def _status_lines(self, obj: dict, nest: str) -> list[Text] | None:
+        """A spoken implementer object (`status`), as a card instead of JSON."""
+        status = obj.get("status")
+        if status not in ("done", "partial", "blocked"):
+            return None
+        if not any(obj.get(k) not in (None, "", []) for k in
+                   ("summary", "changed_files", "tests_run", "ac_status", "blockers",
+                    "followup_ideas")):
+            return None
+        style = {"done": "bold green", "blocked": "bold red"}.get(status, "bold yellow")
+        out = [self._card_head(nest, status, style)]
+        if obj.get("summary"):
+            out.append(Text(f"{nest}    {_one_line(obj['summary'])}"))
+        files = obj.get("changed_files")
+        if isinstance(files, list) and files:
+            out.append(Text(f"{nest}    files: {', '.join(map(str, files))}", style="dim"))
+        for cmd in obj.get("tests_run") or []:
+            if str(cmd).strip():
+                out.append(Text(f"{nest}    test: {_one_line(cmd)}", style="dim"))
+        acs = [a for a in obj.get("ac_status") or [] if isinstance(a, dict)]
+        if acs:
+            out.append(Text(f"{nest}    acceptance", style="bold"))
+            for ac in acs:
+                mark = "met" if ac.get("met") else "unmet"
+                out.append(Text(f"{nest}      {mark} · {_one_line(ac.get('ac') or '?')}",
+                                style="dim" if ac.get("met") else ""))
+        for blocker in obj.get("blockers") or []:
+            if str(blocker).strip():
+                line = Text(f"{nest}    ")
+                line.append("blocker", style="bold red")
+                line.append(f" · {_one_line(blocker)}")
+                out.append(line)
+        ideas = [str(i) for i in obj.get("followup_ideas") or [] if str(i).strip()]
+        if ideas:
+            out.append(Text(f"{nest}    followups", style="bold"))
+            for idea in ideas:
+                out.append(Text(f"{nest}      · {_one_line(idea)}", style="dim"))
+        return out
+
     def _render_held(self, nest: str, buf: str) -> list[Text]:
         if not buf.strip():
             return []
@@ -568,9 +661,10 @@ class Renderer:
             except ValueError:
                 obj = None
             if isinstance(obj, dict):
-                review = self._review_lines(obj, nest)
-                if review:
-                    return review
+                card = (self._review_lines(obj, nest) or self._triage_lines(obj, nest)
+                        or self._status_lines(obj, nest))
+                if card:
+                    return card
         return [self._speech_line(nest, ln) for ln in buf.split("\n") if ln.strip()]
 
     def _drain(self, nest: str, buf: str, *, hold_sentence: bool,
