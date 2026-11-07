@@ -918,8 +918,12 @@ def claude_check(cfg, w: dict, auth: bool) -> list[str]:
 
 def pi_check(cfg, w: dict) -> list[str]:
     """SPEC-0451: `nw worker pi-check` on the worker; the errors (empty: ok)."""
+    from . import pi_map as PM
     from . import remote_gates as RG
-    got = RG._call(w, "pi-check", timeout=WK.CHECK_TIMEOUT_S)
+
+    providers = PM.probe_providers(cfg)
+    payload = json.dumps({"providers": providers}).encode("utf-8") if providers else b""
+    got = RG._call(w, "pi-check", timeout=WK.CHECK_TIMEOUT_S, input=payload or None)
     if got is None:
         return ["`nw worker pi-check` could not run over SSH"]
     rc, lines, err = got

@@ -27,11 +27,38 @@ function scrub(text, secrets = []) {
   return redact(text, secrets).slice(0, 2000);
 }
 
-function writeLine(out, obj) {
-  out.write(JSON.stringify(obj) + "\n");
+function writeLine(out, obj, secrets = []) {
+  out.write(redact(JSON.stringify(obj), secrets) + "\n");
   const flush = out.flush;
   if (typeof flush === "function") {
     flush.call(out);
+  }
+}
+
+function agentsUnderCwdOnly(cwd) {
+  const root = path.resolve(cwd);
+  return ({ agentsFiles }) => ({
+    agentsFiles: agentsFiles.filter((f) => {
+      const rel = path.relative(root, path.resolve(f.path));
+      return rel !== ".." && !rel.startsWith(`..${path.sep}`) && !path.isAbsolute(rel);
+    }),
+  });
+}
+
+async function killDetachedChildren(piMod, deps) {
+  try {
+    if (typeof deps.killTrackedDetachedChildren === "function") {
+      deps.killTrackedDetachedChildren();
+      return;
+    }
+    if (typeof piMod.killTrackedDetachedChildren === "function") {
+      piMod.killTrackedDetachedChildren();
+      return;
+    }
+    const shell = await import("@earendil-works/pi-coding-agent/dist/utils/shell.js");
+    shell.killTrackedDetachedChildren?.();
+  } catch {
+    /* optional export */
   }
 }
 
@@ -89,12 +116,14 @@ function mapUserContent(content = []) {
   return blocks;
 }
 
-function emitToolResultLine(out, message) {
+function emitToolResultLine(out, message, secrets = []) {
   const text = (message.content ?? [])
     .filter((b) => b?.type === "text")
     .map((b) => b.text ?? "")
     .join("");
-  writeLine(out, {
+  writeLine(
+    out,
+    {
     type: "user",
     message: {
       role: "user",
@@ -107,24 +136,34 @@ function emitToolResultLine(out, message) {
         },
       ],
     },
-  });
+    },
+    secrets,
+  );
 }
 
-function emitMessage(out, role, content) {
+function emitMessage(out, role, content, secrets = []) {
   if (role === "assistant") {
     const blocks = mapAssistantContent(content);
     if (!blocks.length) return;
-    writeLine(out, {
-      type: "assistant",
-      message: { role: "assistant", content: blocks },
-    });
+    writeLine(
+      out,
+      {
+        type: "assistant",
+        message: { role: "assistant", content: blocks },
+      },
+      secrets,
+    );
   } else if (role === "user") {
     const blocks = mapUserContent(content);
     if (!blocks.length) return;
-    writeLine(out, {
-      type: "user",
-      message: { role: "user", content: blocks },
-    });
+    writeLine(
+      out,
+      {
+        type: "user",
+        message: { role: "user", content: blocks },
+      },
+      secrets,
+    );
   }
 }
 
@@ -139,6 +178,10 @@ async function collectSecretsAsync(modelRuntime, provider, authCheck) {
     add(detail?.token);
     add(detail?.auth?.apiKey);
     add(detail?.auth?.token);
+    const headers = detail?.auth?.headers ?? detail?.headers;
+    if (headers && typeof headers === "object") {
+      for (const v of Object.values(headers)) add(v);
+    }
   } catch {
     /* ignore */
   }
@@ -168,19 +211,25 @@ function usageFromAssistant(messages) {
   return totals;
 }
 
+function rateIsNonZero(n) {
+  if (n === undefined || n === null) return false;
+  const x = Number(n);
+  return Number.isFinite(x) && x !== 0;
+}
+
 function catalogPriced(model) {
   const cost = model?.cost;
-  if (!cost) return false;
+  if (!cost || typeof cost !== "object") return false;
   const nums = [cost.input, cost.output, cost.cacheRead, cost.cacheWrite];
   for (const n of nums) {
-    if (Number(n) !== 0) return true;
+    if (rateIsNonZero(n)) return true;
   }
   for (const tier of cost.tiers ?? []) {
     if (
-      Number(tier?.input) !== 0 ||
-      Number(tier?.output) !== 0 ||
-      Number(tier?.cacheRead) !== 0 ||
-      Number(tier?.cacheWrite) !== 0
+      rateIsNonZero(tier?.input) ||
+      rateIsNonZero(tier?.output) ||
+      rateIsNonZero(tier?.cacheRead) ||
+      rateIsNonZero(tier?.cacheWrite)
     ) {
       return true;
     }
@@ -251,8 +300,14 @@ export async function execute(runDir, deps = {}) {
     return 1;
   }
 
-  const modelRuntime =
-    deps.modelRuntime ?? (await pi.ModelRuntime.create({ modelsPath: null }));
+  let modelRuntime;
+  try {
+    modelRuntime = deps.modelRuntime ?? (await pi.ModelRuntime.create({ modelsPath: null }));
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    failResult(out, err, `ModelRuntime.create failed (${msg})`);
+    return 1;
+  }
   const model = modelRuntime.getModel(provider, modelId);
   if (!model) {
     failResult(out, err, `unknown model ${provider}/${modelId}`, { secrets: [] });
@@ -280,7 +335,10 @@ export async function execute(runDir, deps = {}) {
 
   const settingsManager =
     deps.settingsManager ??
-    pi.SettingsManager.inMemory({}, { projectTrusted: false });
+    pi.SettingsManager.inMemory(
+      { cacheWarming: "off", compaction: { enabled: false } },
+      { projectTrusted: false },
+    );
 
   const resourceLoader =
     deps.resourceLoader ??
@@ -293,10 +351,17 @@ export async function execute(runDir, deps = {}) {
       noPromptTemplates: true,
       noThemes: true,
       noContextFiles: false,
+      agentsFilesOverride: agentsUnderCwdOnly(cwd),
       appendSystemPrompt: req.system_append ? [req.system_append] : [],
     });
   if (deps.resourceLoader == null) {
-    await resourceLoader.reload();
+    try {
+      await resourceLoader.reload();
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      failResult(out, err, `resource loader failed (${msg})`, { secrets: [] });
+      return 1;
+    }
   }
 
   const sessionManager =
@@ -327,7 +392,7 @@ export async function execute(runDir, deps = {}) {
         const key = `tr:${msg.toolCallId ?? ""}`;
         if (emitted.has(key)) return;
         emitted.add(key);
-        emitToolResultLine(out, msg);
+        emitToolResultLine(out, msg, secrets);
         return;
       }
       if (msg.role === "assistant" && msg.stopReason === "error") {
@@ -336,7 +401,7 @@ export async function execute(runDir, deps = {}) {
       if (msg.role === "assistant" || msg.role === "user") {
         const key = `msg:${streamSeq++}`;
         emitted.add(key);
-        emitMessage(out, msg.role, msg.content);
+        emitMessage(out, msg.role, msg.content, secrets);
       }
     });
 
@@ -344,6 +409,7 @@ export async function execute(runDir, deps = {}) {
       process.once("SIGTERM", deps.sigtermHandler);
     } else {
       process.once("SIGTERM", () => {
+        void killDetachedChildren(pi, deps);
         try {
           session.abort?.();
         } catch {
@@ -374,15 +440,19 @@ export async function execute(runDir, deps = {}) {
     const totalCost = sumCostUsd(assistants, model);
     const sessionId = sessionManager.getHeader?.()?.id ?? session.sessionId ?? null;
 
-    writeLine(out, {
-      type: "result",
-      subtype: failed ? "error" : "success",
-      is_error: failed,
-      result: redact(resultText, secrets),
-      session_id: sessionId,
-      usage,
-      total_cost_usd: totalCost,
-    });
+    writeLine(
+      out,
+      {
+        type: "result",
+        subtype: failed ? "error" : "success",
+        is_error: failed,
+        result: redact(resultText, secrets),
+        session_id: sessionId,
+        usage,
+        total_cost_usd: totalCost,
+      },
+      secrets,
+    );
     return failed ? 1 : 0;
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);

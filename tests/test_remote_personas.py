@@ -571,10 +571,13 @@ def test_workers_check_pi_needed_ssh_pi_check(tmp_path, monkeypatch):
     r.register(kinds=["gate", "persona"])
     subs = []
     probe_local = []
+    pi_inputs = []
 
-    def fake_call(worker, sub, *rest, timeout=None):
+    def fake_call(worker, sub, *rest, timeout=None, input=None):
         subs.append(sub)
         if sub == "pi-check":
+            if input:
+                pi_inputs.append(json.loads(input.decode("utf-8")))
             return (
                 0,
                 [{"schema": W.PI_CHECK_SCHEMA, "ok": True, "missing": [], "error": None}],
@@ -608,6 +611,7 @@ def test_workers_check_pi_needed_ssh_pi_check(tmp_path, monkeypatch):
     assert "pi-check" in subs
     assert "claude-check" in subs
     assert probe_local == []
+    assert pi_inputs and "providers" in pi_inputs[0]
     assert KEY not in run.output
 
 

@@ -84,7 +84,12 @@ function stubPi(over = {}) {
       },
   };
   const pi = {
-    ModelRuntime: { create: async () => runtime },
+    ModelRuntime: {
+      create: async (opts) => {
+        over.modelRuntimeCreate = opts;
+        return runtime;
+      },
+    },
     SettingsManager: {
       inMemory: (settings, opts) => {
         over.settingsCall = { settings, opts };
@@ -126,7 +131,11 @@ test("execute: in-memory session, settings, loader flags, appendSystemPrompt", a
   });
   assert.equal(code, 0);
   assert.equal(over.sessionCwd, runDir);
-  assert.deepEqual(over.settingsCall, { settings: {}, opts: { projectTrusted: false } });
+  assert.deepEqual(over.settingsCall, {
+    settings: { cacheWarming: "off", compaction: { enabled: false } },
+    opts: { projectTrusted: false },
+  });
+  assert.equal(typeof over.loaderOpts.agentsFilesOverride, "function");
   assert.notEqual(over.loaderOpts.agentDir, runDir);
   assert.ok(over.loaderOpts.agentDir);
   assert.equal(over.loaderOpts.noExtensions, true);
@@ -235,8 +244,16 @@ test("execute: assistant tool_use in stream", async () => {
   });
   const lines = chunksToLines(out.chunks);
   const asst = lines.find((l) => l.type === "assistant");
-  assert.equal(asst.message.content[1].type, "tool_use");
-  assert.equal(asst.message.content[1].name, "read");
+  assert.deepEqual(asst, {
+    type: "assistant",
+    message: {
+      role: "assistant",
+      content: [
+        { type: "text", text: "reading" },
+        { type: "tool_use", id: "t1", name: "read", input: { path: "x" } },
+      ],
+    },
+  });
 });
 
 test("execute: stopReason length is success exit 0", async () => {
@@ -688,10 +705,128 @@ test("execute: no assistant message leaves total_cost_usd null", async () => {
   assert.equal(last.total_cost_usd, null);
 });
 
-test("execute: SIGTERM handler calls abort", async () => {
+test("execute: ModelRuntime.create uses modelsPath null without deps", async () => {
+  const execute = await loadExecute();
+  const runDir = layout();
+  const out = { chunks: [], write(s) { this.chunks.push(s); } };
+  const { pi, over } = stubPi();
+  await execute(runDir, {
+    out,
+    err: { write() {} },
+    importPi: async () => pi,
+  });
+  assert.deepEqual(over.modelRuntimeCreate, { modelsPath: null });
+});
+
+test("execute: catalog-priced zero without totalFromProvider stores 0", async () => {
+  const execute = await loadExecute();
+  const runDir = layout();
+  const out = { chunks: [], write(s) { this.chunks.push(s); } };
+  const { pi } = stubPi({
+    messages: [
+      {
+        role: "assistant",
+        stopReason: "stop",
+        content: [{ type: "text", text: "x" }],
+        usage: { cost: { total: 0 } },
+      },
+    ],
+    modelCost: { input: 0.000003, output: 0, cacheRead: 0, cacheWrite: 0 },
+  });
+  await execute(runDir, {
+    out,
+    err: { write() {} },
+    importPi: async () => pi,
+    modelRuntime: await pi.ModelRuntime.create(),
+  });
+  const last = JSON.parse(out.chunks.at(-1));
+  assert.equal(last.total_cost_usd, 0);
+});
+
+test("execute: sparse unpriced catalog leaves total_cost_usd null", async () => {
+  const execute = await loadExecute();
+  const runDir = layout();
+  const out = { chunks: [], write(s) { this.chunks.push(s); } };
+  const { pi } = stubPi({
+    messages: [
+      {
+        role: "assistant",
+        stopReason: "stop",
+        content: [{ type: "text", text: "x" }],
+        usage: { cost: { total: 0 } },
+      },
+    ],
+    modelCost: {},
+  });
+  await execute(runDir, {
+    out,
+    err: { write() {} },
+    importPi: async () => pi,
+    modelRuntime: await pi.ModelRuntime.create(),
+  });
+  const last = JSON.parse(out.chunks.at(-1));
+  assert.equal(last.total_cost_usd, null);
+});
+
+test("execute: stream lines scrub assistant text secrets", async () => {
+  const execute = await loadExecute();
+  const runDir = layout();
+  const out = { chunks: [], write(s) { this.chunks.push(s); } };
+  const asstEv = {
+    type: "message_end",
+    message: {
+      role: "assistant",
+      content: [{ type: "text", text: `leaked ${SENTINEL} here` }],
+    },
+  };
+  const { pi } = stubPi({ events: [asstEv] });
+  await execute(runDir, {
+    out,
+    err: { write() {} },
+    importPi: async () => pi,
+    modelRuntime: await pi.ModelRuntime.create(),
+  });
+  const blob = out.chunks.join("");
+  assert.ok(!blob.includes(SENTINEL));
+  assert.ok(blob.includes("[redacted]"));
+});
+
+test("probeProviders: missing credential lists missing and does not call model", async () => {
+  const { probeProviders } = await import(PI_EXEC);
+  let modelCalls = 0;
+  const runtime = {
+    checkAuth: async (p) => (p === "anthropic" ? { type: "api_key" } : null),
+    getAuth: async () => {
+      modelCalls += 1;
+      return { auth: { apiKey: SENTINEL } };
+    },
+  };
+  const rec = await probeProviders(["anthropic", "openai"], {
+    importPi: async () => ({ ModelRuntime: { create: async () => runtime } }),
+  });
+  assert.equal(rec.ok, false);
+  assert.deepEqual(rec.missing, ["openai"]);
+  assert.equal(rec.error, null);
+  assert.equal(modelCalls, 0);
+  assert.ok(!JSON.stringify(rec).includes(SENTINEL));
+});
+
+test("probeProviders: import failure sets error and ok false", async () => {
+  const { probeProviders } = await import(PI_EXEC);
+  const rec = await probeProviders(["anthropic"], {
+    importPi: async () => {
+      throw new Error("no package");
+    },
+  });
+  assert.equal(rec.ok, false);
+  assert.ok(rec.error);
+});
+
+test("execute: SIGTERM handler kills detached children and aborts", async () => {
   const execute = await loadExecute();
   const runDir = layout();
   let aborted = false;
+  let killed = false;
   const { pi } = stubPi({ abort: () => { aborted = true; } });
   let termHandler;
   const origOn = process.on.bind(process);
@@ -705,9 +840,13 @@ test("execute: SIGTERM handler calls abort", async () => {
       err: { write() {} },
       importPi: async () => pi,
       modelRuntime: await pi.ModelRuntime.create(),
+      killTrackedDetachedChildren: () => {
+        killed = true;
+      },
     });
     assert.ok(termHandler);
     termHandler();
+    assert.ok(killed);
     assert.ok(aborted);
   } finally {
     process.on = origOn;

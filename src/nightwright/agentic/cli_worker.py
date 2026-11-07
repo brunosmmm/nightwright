@@ -74,8 +74,19 @@ def worker_cursor_check(cfg):
 @worker_group.command("pi-check")
 @click.pass_obj
 def worker_pi_check(cfg):
-    """SPEC-0451: Pi package import and map provider credentials: one JSON line."""
-    rec = W.pi_check(cfg)
+    """SPEC-0451: Pi package import and map provider credentials: one JSON line.
+    Optional stdin JSON `{"providers":["anthropic",...]}` from the coordinator."""
+    import sys
+
+    providers = None
+    if not sys.stdin.isatty():
+        try:
+            payload = json.loads(sys.stdin.read() or "{}")
+            if isinstance(payload.get("providers"), list):
+                providers = [str(p) for p in payload["providers"] if p]
+        except (json.JSONDecodeError, TypeError, ValueError):
+            providers = None
+    rec = W.pi_check(cfg, providers=providers)
     click.echo(json.dumps(rec))
     if not rec["ok"]:
         raise SystemExit(1)

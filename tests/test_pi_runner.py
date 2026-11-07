@@ -136,7 +136,7 @@ def test_map_pi_overlay_order(tmp_path):
     cfg_dir.mkdir()
     (cfg_dir / "pi_map.yaml").write_text(
         "schema: nw.pi_map.v1\naliases:\n  sonnet:\n    high:\n"
-        "      provider: anthropic\n      id: user-sonnet\n      thinking: high\n",
+        "      provider: anthropic\n      id: user-file-sonnet\n      thinking: high\n",
         encoding="utf-8",
     )
     project = tmp_path / "proj"
@@ -152,17 +152,22 @@ def test_map_pi_overlay_order(tmp_path):
             "pi": {
                 "aliases": {
                     "sonnet": {
+                        "high": {
+                            "provider": "anthropic",
+                            "id": "config-yaml-sonnet",
+                            "thinking": "high",
+                        },
                         "medium": {
                             "provider": "anthropic",
                             "id": "config-sonnet",
                             "thinking": "medium",
-                        }
+                        },
                     }
                 }
             }
         },
     }
-    assert PM.map_pi_model("sonnet", "high", cfg)["id"] == "user-sonnet"
+    assert PM.map_pi_model("sonnet", "high", cfg)["id"] == "config-yaml-sonnet"
     assert PM.map_pi_model("sonnet", "medium", cfg)["id"] == "config-sonnet"
     assert PM.map_pi_model("sonnet", "high", cfg, project_root=project)["id"] == "project-sonnet"
 
@@ -273,7 +278,7 @@ def test_run_job_pi_ensure_pi_skips_claude_requirement(tmp_path, monkeypatch):
     worker_cfg = {
         "data_dir": str(tmp_path),
         "agentic": {
-            "runner": "pi",
+            "runner": "claude",
             "pi": {
                 "aliases": {
                     "sonnet": {
@@ -321,19 +326,54 @@ def test_renderer_feed_pi_read_tool():
     ]}}
     lines = TL.Renderer().feed_line(json.dumps(ev))
     assert lines and lines[0].plain.strip()
+    assert lines[0].plain.count("read")
 
 
 def test_extract_result_pi_stream(tmp_path):
     d = tmp_path / "run"
     d.mkdir()
+    usage = {
+        "input_tokens": 10,
+        "output_tokens": 5,
+        "cache_read_tokens": 2,
+        "cache_write_tokens": 1,
+        "cache_read_input_tokens": 2,
+        "cache_creation_input_tokens": 1,
+    }
     result = {"type": "result", "result": json.dumps({"status": "done", "summary": "ok"}),
-              "total_cost_usd": 0.01, "session_id": "s1", "usage": {}}
+              "total_cost_usd": 0.01, "session_id": "s1", "usage": usage}
     (d / "stream.jsonl").write_text(json.dumps({"type": "assistant", "message": {}}) + "\n"
                                 + json.dumps(result) + "\n", encoding="utf-8")
     assert RP.extract_result(d)
     raw = json.loads((d / "result.json").read_text())
     p = R.parse_result(json.dumps(raw), IMPLEMENTER_SCHEMA, exit_code=0)
     assert p["verdict"]["status"] == "done" and p["cost_usd"] == 0.01
+    assert raw.get("session_id") == "s1"
+    assert raw["usage"]["cache_read_input_tokens"] == raw["usage"]["cache_read_tokens"]
+    assert raw["usage"]["cache_creation_input_tokens"] == raw["usage"]["cache_write_tokens"]
+
+
+def test_pi_launch_json_stream_no_provider_key(tmp_path, monkeypatch):
+    run_dir = tmp_path / "runs" / "001"
+    run_dir.mkdir(parents=True)
+    wt = tmp_path / "nw"
+    wt.mkdir()
+    req = _req(tmp_path, run_dir=run_dir, cwd=wt, env={})
+
+    class StopLaunch(Exception):
+        pass
+
+    def popen(*args, **kwargs):
+        launch = json.loads((run_dir / "launch.json").read_text(encoding="utf-8"))
+        assert launch.get("stream") is True
+        blob = json.dumps(launch)
+        assert "pi_provider" not in blob
+        assert "ANTHROPIC" not in blob
+        raise StopLaunch()
+
+    monkeypatch.setattr("subprocess.Popen", popen)
+    with pytest.raises(StopLaunch):
+        R.PiRunner(stream=True).run(req)
 
 
 def test_queue_pin_pi(tmp_path):
@@ -354,13 +394,16 @@ def test_probe_pi_subprocess_argv_and_no_key_text(tmp_path, monkeypatch):
     import subprocess
 
     PROBE_KEY = "probe-sentinel-key-xyzzy"
+    monkeypatch.setenv("ANTHROPIC_API_KEY", PROBE_KEY)
     calls = []
     script = RP._pi_exec_script()
 
     def fake_run(argv, **kw):
         calls.append(argv)
         return subprocess.CompletedProcess(
-            argv, 0, stdout=json.dumps({"ok": True, "missing": [], "error": None}), stderr="")
+            argv, 0,
+            stdout=json.dumps({"ok": True, "missing": [], "error": PROBE_KEY}),
+            stderr="")
 
     monkeypatch.setattr(RP, "_resolve_binary", lambda name, env=None: "/bin/node" if name == "node" else None)
     rec = RP.probe_pi(["anthropic", "openai"], run=fake_run)

@@ -463,6 +463,19 @@ fails the check with that fact.
 - Full `uv run pytest` left to queue gating
 - `python3 tools/spec_lint.py --write-ledger` && `python3 tools/spec_lint.py` — pass
 
+### Test record (loop 1 implementer, 2026-11-07)
+
+- `node --test tests/js/pi_exec.test.js` — pass (probeProviders, modelsPath null, scrubbed stream, sparse catalog)
+- `uv run pytest tests/test_pi_runner.py tests/test_remote_personas.py::test_workers_check_pi_needed_ssh_pi_check tests/test_pi_exec_js.py -q` — pass
+- Full `uv run pytest` left to queue gating
+- `python3 tools/spec_lint.py --write-ledger` && `python3 tools/spec_lint.py` — pass
+
+### As shipped (loop 1 implementer, 2026-11-07)
+
+- `pi_exec.mjs` disables cache warming and compaction in `SettingsManager.inMemory`, limits context files to the worktree via `agentsFilesOverride`, scrubs streamed stdout JSON, calls `killTrackedDetachedChildren` on SIGTERM, and treats omitted catalog rates as unpriced (`catalogPriced`).
+- `nw workers check` passes the coordinator's `probe_providers(cfg)` list to `nw worker pi-check` on stdin (SSH argv unchanged).
+- `probe_pi` redacts environment secret values from probe stdout before returning.
+
 ## Rollout / migration
 
 Hosts and workers that run Pi personas need `node` on `PATH` and

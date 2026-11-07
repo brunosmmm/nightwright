@@ -1387,11 +1387,13 @@ CURSOR_CHECK_SCHEMA = "nw.worker.cursor_check.v1"
 PI_CHECK_SCHEMA = "nw.worker.pi_check.v1"
 
 
-def pi_check(cfg) -> dict:
-    """SPEC-0451: probe distinct providers from this host's pi map."""
+def pi_check(cfg, *, providers=None) -> dict:
+    """SPEC-0451: probe provider credentials. Optional `providers` (e.g. from coordinator stdin)
+    override this host's merged map."""
     from . import pi_map as PM
     from . import runproc as RP
-    providers = PM.probe_providers(cfg)
+    if providers is None:
+        providers = PM.probe_providers(cfg)
     if not providers:
         return {"schema": PI_CHECK_SCHEMA, "ok": True, "missing": [], "error": None}
     rec = RP.probe_pi(providers)

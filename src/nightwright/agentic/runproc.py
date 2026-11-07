@@ -110,6 +110,18 @@ def _pi_exec_script() -> Path:
     return Path(__file__).resolve().parent / "pi_exec.mjs"
 
 
+def _pi_probe_secret_values(environ) -> list[str]:
+    env = os.environ if environ is None else environ
+    return [v for v in env.values() if isinstance(v, str) and v]
+
+
+def _redact_secrets(text: str, secrets: list[str]) -> str:
+    out = text or ""
+    for s in secrets:
+        out = out.replace(s, "[redacted]")
+    return out
+
+
 def probe_pi(providers, environ=None, *, run=None) -> dict:
     """SPEC-0451: `{ok, error, missing}` from `pi_exec.mjs --probe` (no key text)."""
     run = subprocess.run if run is None else run
@@ -130,8 +142,9 @@ def probe_pi(providers, environ=None, *, run=None) -> dict:
     except (OSError, subprocess.TimeoutExpired) as e:
         out["error"] = f"pi probe failed: {e}"
         return out
+    secrets = _pi_probe_secret_values(env)
     text = (rec.stdout or "").strip().splitlines()
-    line = text[-1] if text else ""
+    line = _redact_secrets(text[-1] if text else "", secrets)
     try:
         payload = json.loads(line) if line else {}
     except json.JSONDecodeError:
@@ -141,7 +154,8 @@ def probe_pi(providers, environ=None, *, run=None) -> dict:
         out.update({k: payload.get(k) for k in ("ok", "error", "missing") if k in payload})
         out["ok"] = bool(payload.get("ok"))
         out["missing"] = list(payload.get("missing") or [])
-        out["error"] = payload.get("error")
+        err = payload.get("error")
+        out["error"] = _redact_secrets(err, secrets) if isinstance(err, str) else err
     if out["ok"]:
         out["missing"] = []
     elif not out["error"]:
