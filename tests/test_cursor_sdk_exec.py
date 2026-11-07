@@ -177,7 +177,7 @@ def test_read_only_keeps_file_inspection_tools(tmp_path, monkeypatch):
     _, _, _, seen = _run(tmp_path, read_only=True, argv=["--add-dir", str(tmp_path / "extra")])
     assert seen["options"]["read_only"] is True
     assert seen["options"]["dirs"] == [str(tmp_path / "extra")]
-    assert CE.agent_tools(True) == ["Read", "Grep", "Glob", "LS"]
+    assert CE.agent_tools(True) == ["read", "grep", "glob", "ls"]
     assert CE.agent_tools(False) is None
     captured = {}
 
@@ -200,7 +200,7 @@ def test_read_only_keeps_file_inspection_tools(tmp_path, monkeypatch):
         "model": "grok-4.7", "api_key": KEY, "cwd": str(tmp_path), "dirs": [],
         "read_only": True, "setting_sources": ["project"], "name": "nw-conformance_reviewer",
     })
-    assert captured["tools"] == ["Read", "Grep", "Glob", "LS"]
+    assert captured["tools"] == ["read", "grep", "glob", "ls"]
     CE._default_create({
         "model": "grok-4.7", "api_key": KEY, "cwd": str(tmp_path), "dirs": [],
         "read_only": False, "setting_sources": ["project"], "name": "nw-implementer",

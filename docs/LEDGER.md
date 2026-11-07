@@ -716,6 +716,7 @@ progress. This is the single place to see *what has been decided* and *what is i
 | [SPEC-0454](./specs/0454-live-idea-after-does-not-reread-ideas.md) | A live idea after-wait does not reread the idea corpus | feature | done | — | 2026-11-07 |
 | [SPEC-0455](./specs/0455-selectable-model-sets.md) | A model set chooses the runner and the concrete model | feature | done | — | 2026-11-07 |
 | [SPEC-0456](./specs/0456-readonly-cursor-personas-keep-read-tools.md) | Read-only Cursor personas keep the file-inspection tools | feature | done | — | 2026-11-07 |
+| [SPEC-0457](./specs/0457-readonly-cursor-tools-are-lowercase.md) | Read-only Cursor tool names are lowercase | feature | done | — | 2026-11-07 |
 
 ## Superseded / rejected
 

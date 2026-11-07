@@ -17,10 +17,11 @@ from pathlib import Path
 
 from .cursor_map import sdk_selection
 
-# SPEC-0456. An empty list is "no built-in tools" in the SDK, which is how
-# read-only reviewers lost Read. These four are the file tools the SDK marks
-# read-only. Shell, Write, StrReplace, and Delete stay off.
-READ_ONLY_TOOLS = ("Read", "Grep", "Glob", "LS")
+# SPEC-0456 / SPEC-0457. An empty list is "no built-in tools" in the SDK, which
+# is how read-only reviewers lost file access. The API accepts the lowercase
+# names only; the capitalized ones are rejected as unknown. Shell, Write,
+# StrReplace, and Delete stay off.
+READ_ONLY_TOOLS = ("read", "grep", "glob", "ls")
 
 
 def agent_tools(read_only: bool) -> list[str] | None:
