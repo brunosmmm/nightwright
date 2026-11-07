@@ -146,6 +146,8 @@ class Renderer:
         self.cost_usd = None                        # the result event's real cost
         self.done = False
         self.result = None
+        self._prose: dict[str, str] = {}            # parent id → held assistant text
+        self._pending_cost: Text | None = None      # cost line waiting behind held text
 
     # -- tallies --
     def _note_usage(self, msg) -> bool:
@@ -297,6 +299,43 @@ class Renderer:
             return None
         return Text(f"  tokens in {_k(inp)} · out {_k(out_n)}", style="dim")
 
+    def _nest(self, key: str) -> str:
+        return "  ┆ " if key else ""
+
+    def _append_prose(self, key: str, text: str) -> list[Text]:
+        """Hold assistant text. A newline flushes the finished lines; a token fragment stays."""
+        if not text:
+            return []
+        buf = (self._prose.get(key) or "") + text
+        if "\n" not in buf:
+            self._prose[key] = buf
+            return []
+        parts = buf.split("\n")
+        self._prose[key] = parts[-1]
+        nest = self._nest(key)
+        return [Text(f"{nest}  {ln}") for ln in parts[:-1] if ln.strip()]
+
+    def _flush_key(self, key: str) -> list[Text]:
+        """Emit held text for one stream as a single line, then a cost line that was waiting."""
+        buf = self._prose.pop(key, "") or ""
+        nest = self._nest(key)
+        out = [Text(f"{nest}  {ln}") for ln in buf.split("\n") if ln.strip()]
+        if out and not key and self._pending_cost is not None:
+            out.append(self._pending_cost)
+            self._pending_cost = None
+        return out
+
+    def flush_prose(self) -> list[Text]:
+        """Emit every held fragment. The viewer calls this at the end of a poll."""
+        keys = [k for k in self._prose if not k] + [k for k in self._prose if k]
+        out: list[Text] = []
+        for key in keys:
+            out.extend(self._flush_key(key))
+        if self._pending_cost is not None:
+            out.append(self._pending_cost)
+            self._pending_cost = None
+        return out
+
     def feed_line(self, line: str) -> list[Text]:
         line = line.strip()
         if not line:
@@ -309,8 +348,10 @@ class Renderer:
 
     def feed(self, ev: dict) -> list[Text]:
         typ = ev.get("type")
-        nest = "  ┆ " if ev.get("parent_tool_use_id") else ""
-        out: list[Text] = []
+        key = ev.get("parent_tool_use_id") or ""
+        nest = self._nest(key)
+        # Thinking stays between tokens. Anything else closes the sentence so far.
+        out: list[Text] = [] if typ in ("assistant", "thinking") else self._flush_key(key)
         if typ == "system" and ev.get("subtype") == "init":
             model = ev.get("model")
             if isinstance(model, dict):
@@ -333,13 +374,13 @@ class Renderer:
                 if not isinstance(block, dict):
                     continue
                 kind = block.get("type")
-                if kind == "text" and str(block.get("text") or "").strip():
-                    for ln in str(block["text"]).strip().splitlines():
-                        out.append(Text(f"{nest}  {ln}"))
+                if kind == "text":
+                    out.extend(self._append_prose(key, str(block.get("text") or "")))
                 elif kind == "thinking":
                     n = len(str(block.get("thinking") or ""))
                     out.append(Text(f"{nest}· thinking ({n} chars)", style="dim"))
                 elif kind == "tool_use":
+                    out.extend(self._flush_key(key))
                     name = str(block.get("name") or "?")
                     self.tools[str(block.get("id"))] = name
                     t = Text(f"{nest}→ ")
@@ -348,8 +389,11 @@ class Renderer:
                     if summary:
                         t.append(" " + summary)
                     out.append(t)
-            if new_turn and not nest:
-                out.append(self.cost_line())
+            if new_turn and not key:
+                if (self._prose.get(key) or "").strip():
+                    self._pending_cost = self.cost_line()
+                else:
+                    out.append(self.cost_line())
         elif typ == "user":
             msg = ev.get("message") if isinstance(ev.get("message"), dict) else {}
             content = msg.get("content")
@@ -492,6 +536,8 @@ def tail(cfg, run_dir, *, follow=False, raw=False, out: Console | None = None,
                 _raw(out, line)
             else:
                 _print(out, r.feed_line(line))
+        if lines and not raw:
+            _print(out, r.flush_prose())
 
     offset = 0
     waiting_said = False

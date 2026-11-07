@@ -287,6 +287,36 @@ def test_render_tool_summaries_and_errors():
                             "3m10s · verdict —")
 
 
+def _assistant_text(text):
+    return {"type": "assistant", "message": {"content": [{"type": "text", "text": text}]}}
+
+
+def test_sdk_token_deltas_join_until_the_next_event():
+    r = TL.Renderer()
+    lines = []
+    for part in ("I'll", " implement", " SPEC", "-", "044", "6"):
+        lines.extend(t.plain for t in r.feed(_assistant_text(part)))
+    lines.extend(t.plain for t in r.feed({"type": "thinking", "text": "still going"}))
+    assert lines == []
+    lines.extend(t.plain for t in r.feed(
+        {"type": "tool_call", "name": "Read", "status": "running", "args": {"path": "a.md"}}))
+    assert lines[0] == "  I'll implement SPEC-0446"
+    assert lines[1].startswith("→ Read")
+
+
+def test_assistant_newline_prints_the_finished_line_and_holds_the_rest():
+    r = TL.Renderer()
+    assert [t.plain for t in r.feed(_assistant_text("hello\nworld"))] == ["  hello"]
+    assert [t.plain for t in r.flush_prose()] == ["  world"]
+
+
+def test_held_tokens_print_when_the_viewer_finishes_the_file(tmp_path):
+    body = "\n".join(json.dumps(_assistant_text(part)) for part in ("I'll", " implement")) + "\n"
+    out = _rendered({}, _stream_run_dir(tmp_path, body))
+    assert "  I'll implement" in out
+    assert out.count("I'll") == 1
+
+
 def test_unparseable_and_incomplete_lines(tmp_path):
     d = _stream_run_dir(tmp_path, "not json\n" + "".join(
         ln + "\n" for ln in lines_of(TOOL_SAMPLE)[:4]) + '{"type":"user","mess')

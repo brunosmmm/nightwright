@@ -175,6 +175,7 @@ class Tailer:
         out: list[str] = []
         for line in raw:
             out.extend(clean(t.plain) for t in self.renderer.feed_line(line))
+        out.extend(clean(t.plain) for t in self.renderer.flush_prose())
         return out
 
     def summary_lines(self) -> list[str]:
