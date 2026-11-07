@@ -82,7 +82,13 @@ def sessions_lines(cfg):
     return [json.loads(l) for f in p.rglob("sessions.jsonl") for l in f.read_text().splitlines()]
 
 
-def test_default_plan_argv_and_env(cfg, tmp_path):
+def test_default_plan_argv_and_env(cfg, tmp_path, monkeypatch):
+    # The gate child keeps the credential allowlist (PATH and HOME). The runner's
+    # terminal is dumb, so Rich hard-wraps the dry-run cwd at 80 columns and ignores
+    # COLUMNS unless both console dimensions are set. Pass a wide COLUMNS.
+    monkeypatch.setenv("COLUMNS", "1000")
+    monkeypatch.setattr("nightwright.console.console._width", 1000)
+    monkeypatch.setattr("nightwright.console.console._height", 40)
     plan = L.build_plan(cfg, "conductor")
     sid = plan["session_id"]
     assert plan["argv"] == ["claude", "-n", "conductor", "--session-id", sid,

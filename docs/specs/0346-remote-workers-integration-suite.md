@@ -192,6 +192,13 @@ Each case is a whole fake campaign unless noted.
 - The full suite was left to gating.
 - The manual second-machine step was not performed. That acceptance criterion stays open and
   the spec stays `in-progress`.
+- Gate 6 failed `tests/test_agentic_launch.py::test_default_plan_argv_and_env`: the dry-run
+  cwd wrapped because the gate child keeps the credential allowlist (PATH and HOME) and the
+  runner terminal is dumb, so Rich wraps at 80 columns. The test now passes `COLUMNS=1000`
+  and sets both console dimensions (a dumb terminal ignores a lone width). The credential
+  allowlist is unchanged. `test_watch_renders` was left as it failed.
+  `TMPDIR=<long> uv run pytest tests/test_agentic_launch.py::test_default_plan_argv_and_env`:
+  passed. The full suite was left to gating.
 
 ### As shipped (2026-11-06)
 
