@@ -470,6 +470,19 @@ fails the check with that fact.
 - Full `uv run pytest` left to queue gating
 - `python3 tools/spec_lint.py --write-ledger` && `python3 tools/spec_lint.py` — pass
 
+### Test record (loop 2 implementer, 2026-11-07)
+
+- `node --test tests/js/pi_exec.test.js` — pass (cache aliases, loader/settings, OAuth scrub, CI-safe probe fixtures)
+- `uv run pytest tests/test_pi_runner.py tests/test_remote_personas.py::test_workers_check_pi_needed_ssh_pi_check tests/test_remote_personas.py::test_worker_pi_check_uses_stdin_providers_not_local_map tests/test_pi_exec_js.py -q` — pass
+- Full `uv run pytest` left to queue gating
+- `python3 tools/spec_lint.py --write-ledger` && `python3 tools/spec_lint.py` — pass
+
+### As shipped (loop 2 implementer, 2026-11-07)
+
+- `probe_pi` parses probe stdout as JSON before redacting; only credential-like env values are scrubbed from `error` and decode-failure text (CI=true no longer breaks ok).
+- `collectSecretsAsync` includes `~/.pi/agent/auth.json`, OAuth header values, and `checkAuth` env map entries; resource-loader failures scrub with the collected list.
+- `nw queue backend --host|--all` accepts `pi`; worker `pi-check` honors stdin provider lists over the local map.
+
 ### As shipped (loop 1 implementer, 2026-11-07)
 
 - `pi_exec.mjs` disables cache warming and compaction in `SettingsManager.inMemory`, limits context files to the worktree via `agentsFilesOverride`, scrubs streamed stdout JSON, calls `killTrackedDetachedChildren` on SIGTERM, and treats omitted catalog rates as unpriced (`catalogPriced`).

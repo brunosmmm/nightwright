@@ -8,7 +8,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import process from "node:process";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -55,7 +55,11 @@ async function killDetachedChildren(piMod, deps) {
       piMod.killTrackedDetachedChildren();
       return;
     }
-    const shell = await import("@earendil-works/pi-coding-agent/dist/utils/shell.js");
+    const entry = import.meta.resolve("@earendil-works/pi-coding-agent");
+    const pkgDir = path.dirname(fileURLToPath(entry));
+    const shell = await import(
+      pathToFileURL(path.join(pkgDir, "dist", "utils", "shell.js")).href,
+    );
     shell.killTrackedDetachedChildren?.();
   } catch {
     /* optional export */
@@ -167,6 +171,27 @@ function emitMessage(out, role, content, secrets = []) {
   }
 }
 
+function addStoredAuthSecrets(store, add) {
+  if (!store || typeof store !== "object") return;
+  for (const entry of Object.values(store)) {
+    if (!entry || typeof entry !== "object") continue;
+    add(entry.apiKey);
+    add(entry.token);
+    add(entry.refreshToken);
+    add(entry.accessToken);
+    if (entry.auth && typeof entry.auth === "object") {
+      add(entry.auth.apiKey);
+      add(entry.auth.token);
+      add(entry.auth.refreshToken);
+      add(entry.auth.accessToken);
+      const headers = entry.auth.headers;
+      if (headers && typeof headers === "object") {
+        for (const v of Object.values(headers)) add(v);
+      }
+    }
+  }
+}
+
 async function collectSecretsAsync(modelRuntime, provider, authCheck) {
   const secrets = [];
   const add = (s) => {
@@ -186,6 +211,16 @@ async function collectSecretsAsync(modelRuntime, provider, authCheck) {
     /* ignore */
   }
   if (authCheck?.source) add(process.env[authCheck.source]);
+  if (authCheck?.env && typeof authCheck.env === "object") {
+    for (const v of Object.values(authCheck.env)) add(v);
+  }
+  try {
+    const authPath = path.join(os.homedir(), ".pi", "agent", "auth.json");
+    const raw = fs.readFileSync(authPath, "utf8");
+    addStoredAuthSecrets(JSON.parse(raw), add);
+  } catch {
+    /* optional store */
+  }
   return secrets;
 }
 
@@ -331,7 +366,17 @@ export async function execute(runDir, deps = {}) {
   const readOnly = Boolean(req.read_only);
   const tools = readOnly ? ["read", "grep", "find", "ls"] : ["read", "bash", "edit", "write"];
 
-  const agentDir = deps.agentDir ?? fs.mkdtempSync(path.join(os.tmpdir(), "nw-pi-agent-"));
+  let agentDir = deps.agentDir ?? fs.mkdtempSync(path.join(os.tmpdir(), "nw-pi-agent-"));
+  const removeAgentDir =
+    deps.agentDir == null
+      ? () => {
+          try {
+            fs.rmSync(agentDir, { recursive: true, force: true });
+          } catch {
+            /* ignore */
+          }
+        }
+      : () => {};
 
   const settingsManager =
     deps.settingsManager ??
@@ -359,7 +404,7 @@ export async function execute(runDir, deps = {}) {
       await resourceLoader.reload();
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
-      failResult(out, err, `resource loader failed (${msg})`, { secrets: [] });
+      failResult(out, err, `resource loader failed (${msg})`, { secrets });
       return 1;
     }
   }
@@ -464,6 +509,7 @@ export async function execute(runDir, deps = {}) {
     } catch {
       /* ignore */
     }
+    removeAgentDir();
   }
 }
 

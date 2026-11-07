@@ -11,6 +11,7 @@ from __future__ import annotations
 import datetime as dt
 import json
 import os
+import re
 import signal
 import socket
 import subprocess
@@ -110,9 +111,23 @@ def _pi_exec_script() -> Path:
     return Path(__file__).resolve().parent / "pi_exec.mjs"
 
 
+_CREDENTIAL_ENV = re.compile(
+    r"(?i)(api[_-]?key|secret|token|password|credential|auth|private[_-]?key)")
+_JSON_TOKEN_VALUES = frozenset({"true", "false", "null", "ok", "error", "missing"})
+
+
 def _pi_probe_secret_values(environ) -> list[str]:
+    """Credential-like env values only (not every value — CI=true breaks probe JSON)."""
     env = os.environ if environ is None else environ
-    return [v for v in env.values() if isinstance(v, str) and v]
+    secrets = []
+    for name, val in env.items():
+        if not isinstance(val, str) or not val:
+            continue
+        if len(val) < 8 or val.lower() in _JSON_TOKEN_VALUES:
+            continue
+        if _CREDENTIAL_ENV.search(name):
+            secrets.append(val)
+    return secrets
 
 
 def _redact_secrets(text: str, secrets: list[str]) -> str:
@@ -144,11 +159,12 @@ def probe_pi(providers, environ=None, *, run=None) -> dict:
         return out
     secrets = _pi_probe_secret_values(env)
     text = (rec.stdout or "").strip().splitlines()
-    line = _redact_secrets(text[-1] if text else "", secrets)
+    raw_line = text[-1] if text else ""
     try:
-        payload = json.loads(line) if line else {}
+        payload = json.loads(raw_line) if raw_line else {}
     except json.JSONDecodeError:
-        out["error"] = (rec.stderr or rec.stdout or "").strip() or f"probe exit {rec.returncode}"
+        raw = (rec.stderr or rec.stdout or "").strip() or f"probe exit {rec.returncode}"
+        out["error"] = _redact_secrets(raw, secrets)
         return out
     if isinstance(payload, dict):
         out.update({k: payload.get(k) for k in ("ok", "error", "missing") if k in payload})

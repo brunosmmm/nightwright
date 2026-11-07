@@ -611,8 +611,37 @@ def test_workers_check_pi_needed_ssh_pi_check(tmp_path, monkeypatch):
     assert "pi-check" in subs
     assert "claude-check" in subs
     assert probe_local == []
-    assert pi_inputs and "providers" in pi_inputs[0]
+    from nightwright.agentic import pi_map as PM
+
+    want = PM.probe_providers(w.cfg)
+    assert pi_inputs and pi_inputs[0]["providers"] == want
     assert KEY not in run.output
+
+
+def test_worker_pi_check_uses_stdin_providers_not_local_map(tmp_path, monkeypatch):
+    from nightwright.agentic import pi_map as PM
+    from nightwright.agentic import runproc as RP
+    from nightwright.cli import cli
+
+    cfg = {"data_dir": str(tmp_path / "d"), "agentic": {"runner": "claude"}}
+    (tmp_path / "d").mkdir(parents=True)
+    monkeypatch.setattr("nightwright.cli.load_config", lambda: cfg)
+    (tmp_path / "d" / "pi_map.yaml").write_text(
+        "schema: nw.pi_map.v1\naliases:\n  sonnet:\n    high:\n"
+        "      provider: anthropic\n      id: x\n      thinking: high\n",
+        encoding="utf-8",
+    )
+    calls = []
+    monkeypatch.setattr(
+        RP, "probe_pi",
+        lambda providers, **kw: (calls.append(list(providers)), {"ok": True, "missing": []})[1],
+    )
+    stdin = json.dumps({"providers": ["openai", "anthropic"]})
+    run = CliRunner().invoke(
+        cli, ["worker", "pi-check"], input=stdin, catch_exceptions=False)
+    assert run.exit_code == 0, run.output
+    assert calls == [["openai", "anthropic"]]
+    assert PM.probe_providers(cfg) == ["anthropic"]
 
 
 # ---- adoption through the queue (queue._adopt) -----------------------------------------------

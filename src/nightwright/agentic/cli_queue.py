@@ -1803,8 +1803,8 @@ def attach(queue_group):
             if runner is not None:
                 raise click.UsageError("with --host/--all, pass only the backend "
                                        "(e.g. nw queue backend --host cursor)")
-            if target not in ("cursor", "claude", "default"):
-                raise click.UsageError("backend must be cursor, claude, or default")
+            if target not in ("cursor", "claude", "pi", "default"):
+                raise click.UsageError("backend must be cursor, claude, pi, or default")
             runner, campaign = target, None
         else:
             campaign = target

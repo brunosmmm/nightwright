@@ -131,6 +131,31 @@ def test_doctor_pi_skip_and_probe(tmp_path, monkeypatch):
     assert D.check_pi_agent(cfg)["status"] == "ok"
 
 
+def test_doctor_pi_runs_when_campaign_pins_pi_on_claude_host(tmp_path, monkeypatch):
+    from nightwright.agentic import store
+
+    cfg = {"data_dir": str(tmp_path / "d"), "agentic": {"runner": "claude"}}
+    store.create_campaign(cfg, {
+        "id": "c-pi-pin", "spec_id": "SPEC-pi", "state": "IMPLEMENTING", "runner": "pi",
+    })
+    monkeypatch.setattr(RP, "probe_pi", lambda providers, **kw: {"ok": True, "missing": []})
+    assert D.check_pi_agent(cfg)["status"] == "ok"
+
+
+def test_doctor_pi_runs_when_project_runners_maps_pi(tmp_path, monkeypatch):
+    cfg = {
+        "data_dir": str(tmp_path / "d"),
+        "agentic": {"runner": "claude", "project_runners": {"Meta-Tools": "pi"}},
+    }
+    calls = []
+    monkeypatch.setattr(
+        RP, "probe_pi",
+        lambda providers, **kw: (calls.append(1), {"ok": False, "error": "no keys"})[1],
+    )
+    assert D.check_pi_agent(cfg)["status"] == "fail"
+    assert calls
+
+
 def test_map_pi_overlay_order(tmp_path):
     cfg_dir = tmp_path / "cfg"
     cfg_dir.mkdir()
@@ -172,6 +197,24 @@ def test_map_pi_overlay_order(tmp_path):
     assert PM.map_pi_model("sonnet", "high", cfg, project_root=project)["id"] == "project-sonnet"
 
 
+def test_map_pi_config_dir_layer_without_higher_override(tmp_path):
+    cfg_dir = tmp_path / "cfg"
+    cfg_dir.mkdir()
+    (cfg_dir / "pi_map.yaml").write_text(
+        "schema: nw.pi_map.v1\naliases:\n  opus:\n    low:\n"
+        "      provider: google\n      id: config-only-opus\n      thinking: low\n",
+        encoding="utf-8",
+    )
+    cfg = {"config_dir": str(cfg_dir), "agentic": {}}
+    row = PM.map_pi_model("opus", "low", cfg)
+    assert row == {
+        "provider": "google",
+        "id": "config-only-opus",
+        "thinking": "low",
+        "model": "google/config-only-opus",
+    }
+
+
 def test_map_pi_haiku_default_medium():
     row = PM.map_pi_model("haiku", None, {})
     assert row["thinking"] == "medium"
@@ -197,10 +240,15 @@ def test_with_agent_preserves_pi_argv(tmp_path):
 
 def test_no_python_imports_pi_package():
     root = Path(__file__).resolve().parent.parent / "src" / "nightwright"
+    pkg = "@earendil-works/pi-coding-agent"
     hits = []
     for py in root.rglob("*.py"):
+        if py.name == "doctor.py":
+            continue
         text = py.read_text(encoding="utf-8", errors="replace")
-        if "import @earendil-works" in text or "from @earendil-works" in text:
+        if pkg in text or (
+            "pi-coding-agent" in text and "install @" not in text
+        ):
             hits.append(str(py.relative_to(root.parent.parent)))
     assert hits == []
 
@@ -390,6 +438,18 @@ def test_plan_backend_pi(tmp_path):
     assert store.read_state(cfg, cid)["runner"] == "pi"
 
 
+def test_queue_backend_host_accepts_pi(tmp_path, monkeypatch):
+    from click.testing import CliRunner
+    from nightwright.cli import cli
+
+    cfg = {"data_dir": str(tmp_path / "data"), "config_dir": str(tmp_path / "config")}
+    (tmp_path / "config").mkdir(parents=True)
+    monkeypatch.setattr("nightwright.cli.load_config", lambda: cfg)
+    run = CliRunner().invoke(cli, ["queue", "backend", "pi", "--host", "--yes"])
+    assert run.exit_code == 0, run.output
+    assert "runner: pi" in (tmp_path / "config" / "config.yaml").read_text(encoding="utf-8")
+
+
 def test_probe_pi_subprocess_argv_and_no_key_text(tmp_path, monkeypatch):
     import subprocess
 
@@ -406,6 +466,7 @@ def test_probe_pi_subprocess_argv_and_no_key_text(tmp_path, monkeypatch):
             stderr="")
 
     monkeypatch.setattr(RP, "_resolve_binary", lambda name, env=None: "/bin/node" if name == "node" else None)
+    monkeypatch.setenv("CI", "true")
     rec = RP.probe_pi(["anthropic", "openai"], run=fake_run)
     assert rec["ok"] is True
     assert calls[0][:3] == ["/bin/node", str(script), "--probe"]
@@ -415,6 +476,13 @@ def test_probe_pi_subprocess_argv_and_no_key_text(tmp_path, monkeypatch):
 
     monkeypatch.setattr(RP, "_resolve_binary", lambda name, env=None: None)
     assert RP.probe_pi(["anthropic"], run=fake_run)["error"] == "node not found on PATH"
+
+    def fake_missing(argv, **kw):
+        return subprocess.CompletedProcess(
+            argv, 1,
+            stdout=json.dumps({"ok": False, "missing": ["anthropic"], "error": None}),
+            stderr="")
+    assert RP.probe_pi(["anthropic"], run=fake_missing)["ok"] is False
 
 
 def test_doctor_pi_unions_project_map_providers(tmp_path, monkeypatch):

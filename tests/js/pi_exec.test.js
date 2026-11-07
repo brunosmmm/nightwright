@@ -70,13 +70,16 @@ const SENTINEL = "pi-test-secret-key-xyzzy-999";
 
 function stubPi(over = {}) {
   const session = stubSession(over);
-  const model = {
+  const model = over.model ?? {
     provider: "anthropic",
     id: "claude-sonnet-4-6",
     cost: over.modelCost ?? { input: 1, output: 1, cacheRead: 0, cacheWrite: 0 },
   };
   const runtime = {
-    getModel: () => (over.noModel ? null : model),
+    getModel: (provider, id) => {
+      over.getModelCall = { provider, id };
+      return over.noModel ? null : model;
+    },
     checkAuth: async () => (over.auth === false ? null : { type: "api_key", source: "ANTHROPIC_API_KEY" }),
     getAuth: async () =>
       over.getAuth ?? {
@@ -147,14 +150,41 @@ test("execute: in-memory session, settings, loader flags, appendSystemPrompt", a
   assert.equal(over.createOpts.thinkingLevel, "high");
   assert.deepEqual(over.createOpts.tools, ["read", "bash", "edit", "write"]);
   assert.equal(over.createOpts.settingsManager.tag, "in-memory-settings");
+  assert.equal(over.loaderOpts.settingsManager, over.createOpts.settingsManager);
   assert.equal(over.createOpts.jsonSchema, undefined);
   assert.equal(over.createOpts.responseFormat, undefined);
+  const inside = path.join(runDir, "AGENTS.md");
+  const outside = path.join(path.dirname(runDir), "parent-AGENTS.md");
+  const filtered = over.loaderOpts.agentsFilesOverride({
+    agentsFiles: [{ path: inside }, { path: outside }],
+  });
+  assert.equal(filtered.agentsFiles.length, 1);
+  assert.equal(filtered.agentsFiles[0].path, inside);
   assert.ok(over.disposed);
   const prompt = over.promptText;
   assert.equal((prompt.match(/INVARIANT/g) || []).length, 1);
   assert.ok(prompt.includes("Reply with a single JSON object"));
   const schemaBody = JSON.stringify(doc.json_schema, null, 2);
   assert.equal((prompt.match(new RegExp(schemaBody.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "g")) || []).length, 1);
+});
+
+test("execute: getModel and thinking from request fields", async () => {
+  const execute = await loadExecute();
+  const runDir = layout({
+    pi_provider: "openai",
+    pi_id: "gpt-5",
+    pi_thinking: "low",
+  });
+  const custom = { provider: "openai", id: "gpt-5", cost: { input: 1 } };
+  const { pi, over } = stubPi({ model: custom });
+  await execute(runDir, {
+    out: { write() {} },
+    err: { write() {} },
+    importPi: async () => pi,
+    modelRuntime: await pi.ModelRuntime.create(),
+  });
+  assert.deepEqual(over.getModelCall, { provider: "openai", id: "gpt-5" });
+  assert.equal(over.createOpts.thinkingLevel, "low");
 });
 
 test("execute: read-only tools", async () => {
@@ -284,6 +314,54 @@ test("execute: stopReason length is success exit 0", async () => {
   assert.equal(last.result, verdict);
 });
 
+test("execute: scrub auth.token only", async () => {
+  const execute = await loadExecute();
+  const runDir = layout();
+  const out = { chunks: [], write(s) { this.chunks.push(s); } };
+  const err = { chunks: [], write(s) { this.chunks.push(s); } };
+  const { pi } = stubPi({
+    getAuth: { auth: { token: SENTINEL } },
+    promptReject: new Error(`boom ${SENTINEL}`),
+  });
+  const code = await execute(runDir, {
+    out,
+    err,
+    importPi: async () => pi,
+    modelRuntime: await pi.ModelRuntime.create(),
+  });
+  assert.equal(code, 1);
+  assert.ok(!out.chunks.join("").includes(SENTINEL));
+  assert.ok(!err.chunks.join("").includes(SENTINEL));
+});
+
+test("execute: scrub OAuth header value only", async () => {
+  const execute = await loadExecute();
+  const runDir = layout();
+  const out = { chunks: [], write(s) { this.chunks.push(s); } };
+  const bearer = `Bearer ${SENTINEL}`;
+  const { pi } = stubPi({
+    getAuth: { auth: { headers: { Authorization: bearer } } },
+    messages: [
+      {
+        role: "assistant",
+        stopReason: "stop",
+        content: [{ type: "text", text: `echo ${bearer}` }],
+        usage: { cost: { total: 0.01 } },
+      },
+    ],
+    modelCost: { input: 1 },
+  });
+  await execute(runDir, {
+    out,
+    err: { write() {} },
+    importPi: async () => pi,
+    modelRuntime: await pi.ModelRuntime.create(),
+  });
+  const blob = out.chunks.join("");
+  assert.ok(!blob.includes(SENTINEL));
+  assert.ok(!blob.includes(bearer));
+});
+
 test("execute: prompt failure scrubs sentinel from stdout and stderr", async () => {
   const execute = await loadExecute();
   const runDir = layout();
@@ -387,6 +465,8 @@ test("execute: priced cost sum ignores tool_result without usage", async () => {
     messages: [
       { role: "assistant", stopReason: "stop", content: [{ type: "text", text: "a" }],
         usage: { cost: { total: 0.01 } } },
+      { role: "toolResult", content: [{ type: "text", text: "ignored" }] },
+      { role: "user", content: [{ type: "text", text: "nudge" }] },
       { role: "assistant", stopReason: "stop", content: [{ type: "text", text: "done" }],
         usage: { cost: { total: 0.02 } } },
     ],
@@ -400,6 +480,42 @@ test("execute: priced cost sum ignores tool_result without usage", async () => {
   });
   const last = JSON.parse(out.chunks.at(-1));
   assert.equal(last.total_cost_usd, 0.03);
+});
+
+test("execute: usage sums cache fields and Claude aliases", async () => {
+  const execute = await loadExecute();
+  const runDir = layout();
+  const out = { chunks: [], write(s) { this.chunks.push(s); } };
+  const { pi } = stubPi({
+    messages: [
+      {
+        role: "assistant",
+        stopReason: "stop",
+        content: [{ type: "text", text: "a" }],
+        usage: { input: 1, output: 2, cacheRead: 3, cacheWrite: 4, cost: { total: 0.01 } },
+      },
+      {
+        role: "assistant",
+        stopReason: "stop",
+        content: [{ type: "text", text: "b" }],
+        usage: { input: 10, output: 20, cacheRead: 30, cacheWrite: 40, cost: { total: 0.02 } },
+      },
+    ],
+    modelCost: { input: 1 },
+  });
+  await execute(runDir, {
+    out,
+    err: { write() {} },
+    importPi: async () => pi,
+    modelRuntime: await pi.ModelRuntime.create(),
+  });
+  const last = JSON.parse(out.chunks.at(-1));
+  assert.equal(last.usage.input_tokens, 11);
+  assert.equal(last.usage.output_tokens, 22);
+  assert.equal(last.usage.cache_read_tokens, 33);
+  assert.equal(last.usage.cache_write_tokens, 44);
+  assert.equal(last.usage.cache_read_input_tokens, 33);
+  assert.equal(last.usage.cache_creation_input_tokens, 44);
 });
 
 test("execute: priced sum zero stored as 0", async () => {
