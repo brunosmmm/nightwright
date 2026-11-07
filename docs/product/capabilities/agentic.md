@@ -283,7 +283,8 @@ the worktree, do not commit, finish with the JSON verdict). Default is `claude -
 wrapper. Cursor has no schema flag, so the same JSON object is asked for in a prompt footer.
 Both get a budget and a wall-clock timeout. When the account returns SDK usage cost, the
 result carries that dollar amount; otherwise the queue estimates from the cap. Read-only
-personas run with no built-in tools. Cost, usage and session id come back in the result and
+personas keep the file-inspection tools (Read, Grep, Glob, LS) and do not get Shell or the
+edit tools (SPEC-0456). Cost, usage and session id come back in the result and
 go to the ledger. Identical inputs give a byte-identical prompt; `nw campaign prompt
 CAMPAIGN PERSONA` prints it without running anything.
 

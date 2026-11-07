@@ -17,6 +17,16 @@ from pathlib import Path
 
 from .cursor_map import sdk_selection
 
+# SPEC-0456. An empty list is "no built-in tools" in the SDK, which is how
+# read-only reviewers lost Read. These four are the file tools the SDK marks
+# read-only. Shell, Write, StrReplace, and Delete stay off.
+READ_ONLY_TOOLS = ("Read", "Grep", "Glob", "LS")
+
+
+def agent_tools(read_only: bool) -> list[str] | None:
+    """The SDK ``tools`` value. ``None`` keeps the default toolset for writers."""
+    return list(READ_ONLY_TOOLS) if read_only else None
+
 
 def _plain(value):
     """JSON-safe copy of an SDK object. Last resort is ``str``; callers scrub secrets."""
@@ -305,7 +315,7 @@ def _default_create(options):
         api_key=options["api_key"],
         name=options.get("name") or None,
         local=local,
-        tools=[] if options["read_only"] else None,
+        tools=agent_tools(options["read_only"]),
     ))
 
 

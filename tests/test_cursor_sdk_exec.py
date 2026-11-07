@@ -173,10 +173,39 @@ def test_reported_zero_is_a_real_zero(tmp_path):
     assert R.parse_result(text, IMPLEMENTER_SCHEMA, exit_code=0)["cost_usd"] == 0.0
 
 
-def test_read_only_passes_no_tools(tmp_path):
+def test_read_only_keeps_file_inspection_tools(tmp_path, monkeypatch):
     _, _, _, seen = _run(tmp_path, read_only=True, argv=["--add-dir", str(tmp_path / "extra")])
     assert seen["options"]["read_only"] is True
     assert seen["options"]["dirs"] == [str(tmp_path / "extra")]
+    assert CE.agent_tools(True) == ["Read", "Grep", "Glob", "LS"]
+    assert CE.agent_tools(False) is None
+    captured = {}
+
+    class AgentOptions:
+        def __init__(self, **kwargs):
+            captured.update(kwargs)
+
+    class Agent:
+        @staticmethod
+        def create(opts):
+            return opts
+
+    class LocalAgentOptions:
+        def __init__(self, **kwargs):
+            captured["local"] = kwargs
+
+    monkeypatch.setitem(sys.modules, "cursor_sdk", types.SimpleNamespace(
+        Agent=Agent, AgentOptions=AgentOptions, LocalAgentOptions=LocalAgentOptions))
+    CE._default_create({
+        "model": "grok-4.7", "api_key": KEY, "cwd": str(tmp_path), "dirs": [],
+        "read_only": True, "setting_sources": ["project"], "name": "nw-conformance_reviewer",
+    })
+    assert captured["tools"] == ["Read", "Grep", "Glob", "LS"]
+    CE._default_create({
+        "model": "grok-4.7", "api_key": KEY, "cwd": str(tmp_path), "dirs": [],
+        "read_only": False, "setting_sources": ["project"], "name": "nw-implementer",
+    })
+    assert captured["tools"] is None
 
 
 def test_missing_key_does_not_call_the_agent(tmp_path):
