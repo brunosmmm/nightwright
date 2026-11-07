@@ -65,6 +65,47 @@ def release(req):
     (req.cwd / "release").write_text("")
 
 
+def test_worker_base_env_is_what_the_wrapper_and_claude_receive(tmp_path, monkeypatch):
+    """A worker persona's `_CHILD_BASE` is PATH and HOME. The wrapper process is started
+    with that plus `req.env`, and `claude` is built from `launch.json`'s `base_env`, so a
+    secret in the worker process does not reach either."""
+    for key, value in (("SSH_AUTH_SOCK", "/poison/agent.sock"), ("GH_TOKEN", "poison-gh"),
+                       ("GITHUB_TOKEN", "poison-github"), ("GIT_ASKPASS", "/poison/askpass")):
+        monkeypatch.setenv(key, value)
+    dump = tmp_path / "child-env.json"
+    claude = tmp_path / "bin" / "claude"
+    claude.unlink()
+    claude.write_text(
+        "#!/usr/bin/env python3\n"
+        "import json, os\n"
+        f"json.dump(dict(os.environ), open({str(dump)!r}, 'w'))\n"
+        "print(json.dumps({'type': 'result', 'subtype': 'success', 'is_error': False,\n"
+        " 'result': 'ok', 'session_id': 's', 'usage': {}, 'total_cost_usd': 0,\n"
+        " 'structured_output': {'status': 'done', 'summary': 'ok'}}))\n",
+        encoding="utf-8")
+    claude.chmod(0o755)
+    seen = {}
+    real = R.subprocess.Popen
+
+    def spy(argv, *a, **kw):
+        if isinstance(argv, (list, tuple)) and "runproc" in " ".join(map(str, argv)):
+            seen["env"] = kw.get("env")
+        return real(argv, *a, **kw)
+
+    monkeypatch.setattr(R.subprocess, "Popen", spy)
+    base = {k: os.environ[k] for k in ("PATH", "HOME") if k in os.environ}
+    req = mkreq(tmp_path)
+    res = R.child_base_context(base).run(lambda: R.ClaudeRunner().run(req))
+    assert res.verdict_ok
+    forbidden = {"SSH_AUTH_SOCK", "GH_TOKEN", "GITHUB_TOKEN", "GIT_ASKPASS"}
+    assert seen["env"] and not (forbidden & set(seen["env"]))
+    child = json.loads(dump.read_text())
+    assert not (forbidden & set(child))
+    launch = json.loads((req.run_dir / "launch.json").read_text())
+    assert launch["base_env"] == seen["env"]
+    assert not (forbidden & set(launch["base_env"]))
+
+
 def test_spawn_writes_contract_files(tmp_path):
     req = mkreq(tmp_path, FAKE_CLAUDE_VERDICT='{"status": "done", "summary": "ok"}')
     res = R.ClaudeRunner().run(req)

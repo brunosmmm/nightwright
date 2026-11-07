@@ -200,6 +200,15 @@ Each case is a whole fake campaign unless noted.
   `TMPDIR=<long> uv run pytest tests/test_agentic_launch.py::test_default_plan_argv_and_env`:
   passed. The full suite was left to gating.
 
+### Test record (2026-11-06, review fixes)
+
+- `uv run pytest tests/test_remote_workers_integration.py::test_pre_epic_golden_reproduces_from_the_pinned_commit`: passed. The checked-in fixture matches a fresh `NW_RECORD_GOLDEN=1` recording from a temporary worktree of `1f0311c4^`.
+- `uv run pytest tests/test_remote_workers_integration.py::test_a_duplicate_submit_starts_one_process_and_a_duplicate_event_appends_one`: passed. The worker `gate` event is applied, the queue crashes before the state write, and the restarted queue adopts it; that `event_uid` is one ledger row and the process counter stays 1.
+- `uv run pytest tests/test_remote_workers_integration.py`: 17 passed, then the three cases the review changed (`test_a_killed_persona_job_is_retried_and_the_campaign_merges` and the three `test_forged_persona_frames_are_refused_and_append_nothing` modes) passed (4 passed). The file is 20 cases.
+- `uv run pytest tests/test_worker_disk_guard.py tests/test_agentic_close.py::test_close_regate_is_local_only_for_a_merge tests/test_agentic_close.py::test_pr_close_regate_is_not_forced_local tests/test_agentic_close.py::test_pr_policy_hands_off_with_body tests/test_agentic_gates.py::test_ff_continuation_keeps_inherit_env_false tests/test_agentic_gates.py::test_ff_green_prelude_runs_main_and_ladder`: 14 passed. `tests/test_agentic_runproc.py::test_worker_base_env_is_what_the_wrapper_and_claude_receive` and `tests/test_remote_personas.py` passed in the same session (the persona file with the disk-guard and runproc files: 99 passed before five later tests that only failed because an earlier disk-guard test left `gates._stopping` set; the new disk test resets it, and the rerun above is green).
+- The full suite was left to gating.
+- The manual second-machine step was not performed. That acceptance criterion stays open and the spec stays `in-progress`.
+
 ### As shipped (2026-11-06)
 
 - **In-run disk abort:** `_run_gates` sets `frames.stage` to `disk` and raises `DiskAbort` when
@@ -210,6 +219,38 @@ Each case is a whole fake campaign unless noted.
   `_run_gates`, which `run_gate` reads. The call does not pass `inherit_env`, so a stand-in
   with the old signature still runs. The child env is unchanged: PATH, HOME, the header
   allowlist, and the keys the worker sets.
+
+### As shipped (2026-11-06, review fixes)
+
+- **Golden:** `tests/remote_workers_golden.reproduce` checks out `1f0311c4^` in a temporary
+  worktree, copies this module in, and runs it with `NW_RECORD_GOLDEN=1`. `record` refuses to
+  write without that variable. The worktree is removed before `reproduce` returns.
+  `test_pre_epic_golden_reproduces_from_the_pinned_commit` compares the bytes with
+  `tests/data/remote_workers/no_workers_golden.json`. The earlier note that the fixture came
+  from `git archive` is not how it is reproduced.
+- **Duplicate delivery:** the same job id is still submitted twice (one worker process), and
+  one `gate` frame is still written twice on the stream. The coordinator proof is the job's
+  own final `gate` event: `append_event` raises after that row is on the ledger and before
+  `write_state` / `mark_done` (including the crash sweep's re-harvest). The restarted queue
+  adopts the live job; `event_uid` leaves one ledger row and the process counter stays 1.
+- **Persona frames:** `_accepted_frame` runs `remote_gates._frame` (schema, allowlisted type,
+  this job's id) and then requires a persona kind (`accepted`, `started`, `progress`, `done`,
+  `error`, `status`) and a frame number for every kind except `status`. A failure returns
+  `lost` with `protocol:` before `last_seen` or the cursor moves. Gate-stream forgeries and
+  persona-stream forgeries are separate tests. The persona cases cover a foreign allowlisted
+  `gate`, a foreign `done` whose bundle would fast-forward, and a non-allowlisted `event`.
+- **Killed persona:** the dead attempt commits `dead-attempt.txt` before it blocks. A `done`
+  for attempt 9 carrying that commit's bundle is injected on the persona stream. The campaign
+  merges without that commit message or file, and without the forged result text.
+- **Claude env:** `ClaudeRunner` starts the wrapper with `wrapper_env` (PATH and HOME plus
+  `req.env` when `_CHILD_BASE` is set) and stores that dict as `launch.json`'s `base_env`.
+  `runproc` builds `claude`'s environment from `base_env` when it is a dict. A launch file
+  without `base_env` still uses the process environment.
+- **inherit_env:** the failed-first continuation passes `inherit_env` into the main ladder.
+- **Close re-gate:** `prepare_close` passes `local=(policy == "merge")`. pr and draft-pr stay
+  eligible for a worker. A merge still re-gates on the coordinator.
+- **Disk abort:** a gate that raises after `DiskGuard` has aborted still emits `stage: disk`.
+  The test resets `gates._stopping`, which `terminate_all` leaves set.
 
 ### As shipped (2026-11-05)
 
@@ -322,6 +363,8 @@ Use `nw idea clock-in IDEA-560` / `nw idea clock-out IDEA-560`.
 - 2026-11-05: `nw idea clock-in IDEA-560` refused (`refusing to write the org from a campaign
   agent (NW_PERSONA_RUN=1)`). No clock-out.
 - 2026-11-06: `nw idea clock-in IDEA-560` refused again (`NW_PERSONA_RUN=1`). No clock-out.
+- 2026-11-06: `nw idea clock-in IDEA-560` refused again on the review-fix loop
+  (`NW_PERSONA_RUN=1`). No clock-out.
 
 ## Rollout / migration
 

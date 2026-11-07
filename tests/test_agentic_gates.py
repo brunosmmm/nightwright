@@ -813,6 +813,20 @@ def test_ff_uses_retry_cmd(world, tmp_path):
     assert _args(tmp_path) == ["-k tests/a.py::t1"] and _kinds(r) == ["failed-first"]
 
 
+def test_ff_continuation_keeps_inherit_env_false(world, tmp_path, monkeypatch):
+    """A green prelude continues into the main run. `inherit_env=False` covers that run too:
+    the process environment (a token, an ssh agent) is not in either invocation."""
+    monkeypatch.setenv("GH_TOKEN", "poison-gh")
+    monkeypatch.setenv("SSH_AUTH_SOCK", "/poison/agent.sock")
+    leak = tmp_path / "leak"
+    snippet = f"env >> {leak}\n"
+    g = _fake(tmp_path, [snippet + PY_PASS, snippet + PY_PASS], retries=0, failed_first=True)
+    r = _ladder(world, tmp_path, g, previous=_prev(), inherit_env=False)
+    assert r.ok and _kinds(r) == ["failed-first", "full"]
+    text = leak.read_text()
+    assert "GH_TOKEN" not in text and "SSH_AUTH_SOCK" not in text
+
+
 def test_ff_green_prelude_runs_main_and_ladder(world, tmp_path):
     g, r = _ff(world, tmp_path, [PY_PASS, PY_FAIL, PY_PASS, PY_PASS])
     assert _kinds(r) == ["failed-first", "full", "targeted", "full"] and r.ok

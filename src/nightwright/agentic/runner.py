@@ -440,6 +440,17 @@ def _child_env(req: RunRequest) -> dict:
     return {**base, **req.env}
 
 
+def wrapper_env(req: RunRequest) -> dict:
+    """The environment of the detached wrapper and of the `claude` it starts (SPEC-0346).
+
+    A worker persona sets `_CHILD_BASE` to PATH and HOME. That, plus `req.env`, is the whole
+    environment: `ClaudeRunner` starts the wrapper with it, and the wrapper reads the same
+    dict back from `launch.json` (`base_env`) instead of its inherited process environment.
+    Without `_CHILD_BASE` the wrapper gets `runproc.child_env` (the process environment minus
+    the launcher's keys), which is what a local child already received."""
+    return _child_env(req)
+
+
 # ---- the real thing ---------------------------------------------------------------------------
 
 def _request_doc(req: RunRequest, started_at: str) -> dict:
@@ -576,15 +587,24 @@ class ClaudeRunner:
         try:
             if not attach and not (run_dir / "proc.json").exists():
                 RP.write_json_atomic(run_dir / "request.json", _request_doc(req, started_at))
+                # SPEC-0346: worker personas persist PATH/HOME+`req.env` as `base_env`; local
+                # runs omit it and rely on the wrapper's inherited process environment.
+                child = wrapper_env(req)
                 launch = {"argv": self._launch_argv(req), "cwd": str(req.cwd),
                           "env": dict(req.env)}
+                if _CHILD_BASE.get() is not None:
+                    launch["base_env"] = child
                 if self.stream:
                     launch["stream"] = True         # fixed at launch (SPEC-0360 invariant 9)
-                RP.write_json_atomic(run_dir / "launch.json", launch)
+                launch_path = run_dir / "launch.json"
+                RP.write_json_atomic(launch_path, launch)
+                if _CHILD_BASE.get() is not None:
+                    os.chmod(launch_path, 0o600)
                 with open(run_dir / "wrapper.log", "ab") as log:
                     wrapper = subprocess.Popen(
                         [sys.executable, "-m", "nightwright.agentic.runproc", str(run_dir)],
-                        stdin=subprocess.DEVNULL, stdout=log, stderr=log, start_new_session=True)
+                        stdin=subprocess.DEVNULL, stdout=log, stderr=log,
+                        start_new_session=True, env=child)
                 err = self._await_claim(req, wrapper, started)
                 if err:
                     return _error_result(req, err, started_at, time.monotonic() - started)

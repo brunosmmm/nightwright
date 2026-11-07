@@ -1,13 +1,22 @@
 """SPEC-0346: the masked snapshot of a whole fake campaign, and its recorder. Depends only on
 the campaign store and `test_agentic_e2e`'s helpers, so it also runs on the code before the
-SPEC-0310 epic (the commit before SPEC-0337), where `no_workers_golden.json` is recorded:
+SPEC-0310 epic (the commit before SPEC-0337). `no_workers_golden.json` is recorded from that
+commit checked out in a temporary worktree, with `NW_RECORD_GOLDEN=1`:
 
-    git archive 1f0311c4^ | tar -x -C /tmp/pre          # a plain export, not a worktree
+    git worktree add --detach /tmp/pre 1f0311c4^
     cp tests/remote_workers_golden.py /tmp/pre/tests/
-    PYTHONPATH=/tmp/pre/src:/tmp/pre/tests python /tmp/pre/tests/remote_workers_golden.py OUT.json
+    NW_RECORD_GOLDEN=1 PYTHONPATH=/tmp/pre/src:/tmp/pre/tests \\
+        python /tmp/pre/tests/remote_workers_golden.py OUT.json
+    git worktree remove --force /tmp/pre
+
+`reproduce` runs that procedure and removes the worktree. The pin predates this module, so
+the file is copied in; the campaign it runs is that commit's code.
 """
 import json
+import os
 import re
+import shutil
+import subprocess
 import sys
 import tempfile
 from pathlib import Path
@@ -110,8 +119,12 @@ def add_shared_gate(repo: Path) -> None:
 
 
 def record(out: Path) -> None:
-    """Run the plain (no workers) fake campaign of `test_agentic_e2e` and write its snapshot."""
-    import os
+    """Run the plain (no workers) fake campaign of `test_agentic_e2e` and write its snapshot.
+
+    Refuses to write unless `NW_RECORD_GOLDEN=1`, which is how the pre-epic worktree records
+    the fixture (`reproduce`)."""
+    if os.environ.get("NW_RECORD_GOLDEN") != "1":
+        raise SystemExit("NW_RECORD_GOLDEN=1 is required to record the pre-epic golden")
     from click.testing import CliRunner  # noqa: F401
     from test_agentic_e2e import ENV, added, impl_done, make_cfg, make_repo, review, run_cli, script
     for k, v in ENV.items():
@@ -130,6 +143,36 @@ def record(out: Path) -> None:
         r = run_cli(cfg, _MP(), ["queue", "run", "--until-idle", "--json-lines"])
         assert r.exit_code == 0, r.output
         out.write_text(json.dumps(snapshot(cfg, cid, tmp), indent=2, sort_keys=True) + "\n")
+
+
+def _repo_root() -> str:
+    return subprocess.check_output(
+        ["git", "rev-parse", "--show-toplevel"], text=True,
+        cwd=Path(__file__).resolve().parents[1]).strip()
+
+
+def reproduce(out: Path) -> None:
+    """Record `out` from `PRE_EPIC` with `NW_RECORD_GOLDEN=1` in a temporary worktree.
+
+    The worktree is removed before this returns. The bytes are the masked snapshot
+    `record` writes at that commit (this module copied in, because the pin predates it)."""
+    repo = _repo_root()
+    parent = Path(tempfile.mkdtemp(prefix="nw-pre-epic-"))
+    dest = parent / "wt"
+    try:
+        subprocess.run(["git", "-C", repo, "worktree", "add", "--detach", str(dest),
+                        PRE_EPIC], check=True)
+        target = dest / "tests" / Path(__file__).name
+        target.write_text(Path(__file__).read_text(encoding="utf-8"), encoding="utf-8")
+        env = {k: v for k, v in os.environ.items() if not k.startswith("NW_")}
+        env["NW_RECORD_GOLDEN"] = "1"
+        env["PYTHONPATH"] = os.pathsep.join((str(dest / "src"), str(dest / "tests")))
+        subprocess.run([sys.executable, str(target), str(out)], cwd=dest, env=env, check=True)
+    finally:
+        subprocess.run(["git", "-C", repo, "worktree", "remove", "--force", str(dest)],
+                       check=False)
+        subprocess.run(["git", "-C", repo, "worktree", "prune"], check=False)
+        shutil.rmtree(parent, ignore_errors=True)
 
 
 if __name__ == "__main__":

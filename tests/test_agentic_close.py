@@ -294,6 +294,36 @@ def test_push_after_merge(world):
 
 # ---- pr policy -------------------------------------------------------------------------
 
+def test_close_regate_is_local_only_for_a_merge(world, monkeypatch):
+    """`local=True` is the merge policy. pr / draft-pr do not merge on the coordinator, so
+    their close gates stay eligible for a worker."""
+    seen = []
+    real = CL.G.run_all
+
+    def spy(*a, **kw):
+        seen.append(kw.get("local"))
+        return real(*a, **kw)
+
+    monkeypatch.setattr(CL.G, "run_all", spy)
+    out = CL.close_campaign(world["cfg"], world["state"], _pcfg(world))
+    assert out.next_state == "MERGED" and seen == [True]
+
+
+def test_pr_close_regate_is_not_forced_local(world, monkeypatch):
+    seen = []
+    real = CL.G.run_all
+
+    def spy(*a, **kw):
+        seen.append(kw.get("local"))
+        return real(*a, **kw)
+
+    monkeypatch.setattr(CL.G, "run_all", spy)
+    _fake_gh(world["tmp"], monkeypatch)
+    out = CL.close_campaign(world["cfg"], world["state"], _pcfg(world, policy="pr"))
+    assert out.next_state == "HANDED_OFF", out
+    assert seen == [False]
+
+
 def test_pr_policy_hands_off_with_body(world, monkeypatch):
     log = _fake_gh(world["tmp"], monkeypatch)
     pcfg = _pcfg(world, policy="pr")

@@ -530,6 +530,28 @@ def _failed(cfg, cid, w: dict, job_id: str, f) -> None:
         RG.set_cooldown(cfg, w["name"])
 
 
+# Kinds a persona attach applies. `gate` / `slot_wait` are allowlisted for gate jobs; on a
+# persona stream they are the wrong kind and are refused, as is any other frame whose
+# `job_id` is not this job's (`remote_gates._frame`).
+_PERSONA_FRAMES = frozenset({"accepted", "started", "progress", "done", "error", "status"})
+
+
+def _accepted_frame(line: bytes, job_id: str) -> dict:
+    """One persona-stream frame, or `RemoteFailure` before the caller touches `last_seen`
+    or the cursor. The gate path's checks (schema, allowlisted type, this job's id) plus a
+    frame number for every kind except `status`, and the persona kind set above."""
+    from . import remote_gates as RG
+    frame = RG._frame(line, job_id)
+    kind = frame["type"]
+    if kind not in _PERSONA_FRAMES:
+        raise RG.RemoteFailure("protocol", f"frame type {kind!r} is not a persona frame")
+    if kind != "status":
+        n = frame.get("n")
+        if not isinstance(n, int) or isinstance(n, bool) or n < 1:
+            raise RG.RemoteFailure("protocol", f"`{kind}` frame without a frame number")
+    return frame
+
+
 def _reader(stream, lines) -> None:
     try:
         for line in iter(stream.readline, b""):
@@ -565,29 +587,26 @@ def _attach(rr: R.RemoteRunner, req, hooks, job: dict):
                 continue
             if line is None or not line.endswith(b"\n"):
                 return "dropped", None
+            if not line.strip():
+                continue
             try:
-                frame = json.loads(line.decode("utf-8"))
-            except (UnicodeDecodeError, ValueError):
-                continue
-            if not isinstance(frame, dict):
-                continue
+                frame = _accepted_frame(line, job["id"])
+            except RG.RemoteFailure as f:
+                # SPEC-0346: schema, kind, job id or sequence failed. Nothing from the frame
+                # is applied, and neither `last_seen` nor the cursor moves for it.
+                return "lost", f"protocol: {f.error}"
             job["last_seen"] = time.time()
-            kind = frame.get("type")
-            if isinstance(kind, str) and kind not in W.FRAME_TYPES:
-                # SPEC-0346: a non-allowlisted type (`event` carrying close/park/merge) is
-                # refused. Nothing from the frame is applied.
-                return "lost", f"protocol: frame type {kind!r} is not allowlisted"
+            kind = frame["type"]
             if kind == "status":
                 if frame.get("state") in ("lost", "unknown", "error"):
                     return "lost", str(frame.get("state"))
                 continue
             if kind == "error":
                 return "lost", f"error: {frame.get('stage')}: {frame.get('error')}"
-            n = frame.get("n")
-            if isinstance(n, int) and not isinstance(n, bool):
-                if n <= job["seen"]:
-                    continue
-                job["seen"] = n
+            n = frame["n"]
+            if n <= job["seen"]:
+                continue
+            job["seen"] = n
             if kind == "done":
                 return "done", frame
             fields = {"cursor": job["seen"], "state": "attached",

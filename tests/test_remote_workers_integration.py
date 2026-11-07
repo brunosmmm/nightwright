@@ -8,6 +8,7 @@ killed process group and a killed coordinator process, never a mocked transport.
 
 SPEC-0334 adds its pull-worker cases to this file; shared loopback fixtures stay in
 `remote_support`."""
+import base64
 import json
 import os
 import re
@@ -112,7 +113,11 @@ def build(tmp_path, monkeypatch, workers=None, *, blocking=False, lease_s=None, 
         if env_files:
             entry["pre_shell"] = [_inspect("persona", c.repo, ahead=True)]
         if persona_blocks:
-            entry["pre_shell"] = [f"touch {c.started}; while [ ! -f {c.go} ]; do sleep 0.05; done"]
+            # commit something the dead attempt could have merged, then block before `done`
+            entry["pre_shell"] = [
+                "echo from-dead-attempt > dead-attempt.txt && git add dead-attempt.txt && "
+                "git commit -q -m 'dead attempt'; "
+                f"touch {c.started}; while [ ! -f {c.go} ]; do sleep 0.05; done"]
         wscript = script(tmp_path, [entry], "worker-script.json")
         shim = SimpleNamespace(tmp=tmp_path, cfg=c.cfg)
         records = []
@@ -211,6 +216,14 @@ def tracked(camps, c):
 
 
 # ---- no workers: the pre-epic golden ----------------------------------------------------------
+
+def test_pre_epic_golden_reproduces_from_the_pinned_commit(tmp_path):
+    """The checked-in fixture is what `NW_RECORD_GOLDEN=1` records in a temp worktree of
+    `1f0311c4^`. Replacing the file with output from current code fails this."""
+    out = tmp_path / "again.json"
+    GOLD.reproduce(out)
+    assert out.read_bytes() == GOLDEN.read_bytes()
+
 
 def test_no_workers_run_matches_the_pre_epic_golden(tmp_path, monkeypatch):
     c = finished(tmp_path, monkeypatch)
@@ -350,10 +363,35 @@ def test_a_duplicate_submit_starts_one_process_and_a_duplicate_event_appends_one
     proj = (c.repo / "gates" / "lint.sh")
     proj.write_text(f'echo "$TMPDIR" >> {c.counter}\n')
     _git(c.repo, "commit", "-qam", "count the lint gate's runs")
+    # The worker's final `gate` event is on the ledger, and the transition that would write
+    # the state (and `mark_done`) has not run. The restarted queue adopts the same job and
+    # appends that event again; `event_uid` keeps a single ledger row.
+    real_append = S.append_event
+    hit = {"n": 0}
+
+    def crash_after_the_worker_gate(cfg, campaign_id, type, payload=None, *, by="tick"):
+        rec = real_append(cfg, campaign_id, type, payload, by=by)
+        # every application of this event, including the crash sweep's re-harvest, stops
+        # before the transition writes the state or marks the job done
+        if type == "gate" and rec.get("worker") and rec.get("event_uid"):
+            hit["n"] += 1
+            raise RuntimeError("stop after the worker gate event, before the state is written")
+        return rec
+    monkeypatch.setattr(S, "append_event", crash_after_the_worker_gate)
+    with pytest.raises(RuntimeError, match="before the state is written"):
+        Q.run(c.cfg, until_idle=True, poll_interval_s=0.01)
+    monkeypatch.setattr(S, "append_event", real_append)
+    first = [g for g in ledger(c, ["gate"]) if g.get("event_uid")]
+    assert len(first) == 1 and first[0].get("worker") in ("wa", "wb")
+    uid = first[0]["event_uid"]
+    assert S.read_state(c.cfg, c.cid)["state"] == "GATING"
+    assert (RJ.read(c.cfg, job_id_of(c)) or {}).get("state") in RJ.LIVE
+    assert counted(c, 1) == 1
     assert run_queue(c, monkeypatch)["state"] == "MERGED"
+    assert [g["event_uid"] for g in ledger(c, ["gate"]) if g.get("event_uid") == uid] == [uid]
+    assert counted(c, 1) == 1                               # adoption did not start a second process
     assert sorted(again) == sorted(worker_jobs(c))          # every remote job went out twice
     assert again                                                    # and there was at least one
-    assert counted(c, 1) == 1                                 # one worker process for that job id
     # the same gate frame delivered twice on the worker stream appends one coordinator event
     marks = list(tmp_path.glob("dup-*.mark"))
     assert marks and all(p.read_text().strip() for p in marks)   # the frame was delivered twice
@@ -392,14 +430,27 @@ def test_a_killed_worker_job_is_retried_and_the_campaign_merges(tmp_path, monkey
 
 def test_a_killed_persona_job_is_retried_and_the_campaign_merges(tmp_path, monkeypatch, camps):
     c = tracked(camps, build(tmp_path, monkeypatch, "two", persona_blocks=True, lease_s=3))
+    late = tmp_path / "late-done.json"
+    # once the dead attempt has committed, the next persona frame carries a `done` for another
+    # attempt whose bundle is that commit: accepting it would fast-forward the campaign
+    install_forge(c, "late-done", str(late), argv_glob="*-persona-*")
     t, _out = start_queue(c)
     first = job_id_of(c, "persona")
     assert first == RPS.job_id_for(c.cid, "001-implementer", 1)
     assert until(lambda: c.started.is_file() and first in worker_jobs(c)
                  and (worker_jobs(c)[first][1] / "proc.json").is_file())
     remote, jdir = worker_jobs(c)[first]
+    tree = jdir / "tree"
+    assert until(lambda: (tree / "dead-attempt.txt").is_file())
+    late.write_text(json.dumps({
+        "job_id": RPS.job_id_for(c.cid, "001-implementer", 9),
+        "bundle": bundle_from(tree, tmp_path / "dead.bundle")}))
+    assert until(lambda: any(tmp_path.glob("forged-*")))    # the stale done was delivered
     pid = json.loads((jdir / "proc.json").read_text())["pid"]
-    os.killpg(os.getpgid(pid), signal.SIGKILL)              # the persona job and its fake runner
+    try:
+        os.killpg(os.getpgid(pid), signal.SIGKILL)          # the persona job and its fake runner
+    except ProcessLookupError:
+        pass
     c.go.write_text("go\n")                                 # the retry's fake may finish
     join(t, timeout=120)
     st = S.read_state(c.cfg, c.cid)
@@ -423,6 +474,12 @@ def test_a_killed_persona_job_is_retried_and_the_campaign_merges(tmp_path, monke
     commits = _git(c.repo, "log", "--format=%s", f"{base}..main").splitlines()
     assert sum("implementer" in ln for ln in commits) == 1, commits
     assert not any(str(e.get("event_uid", "")).startswith(first) for e in ledger(c))
+    # the dead attempt's commit, and the stale `done` that carried its bundle, never landed
+    marks = [json.loads(ln) for f in tmp_path.glob("forged-*") for ln in f.read_text().splitlines()]
+    assert marks and all(m["job_id"].endswith("-a9") and m["type"] == "done" for m in marks)
+    assert "from-stale-persona" not in json.dumps(ledger(c))
+    assert "dead attempt" not in _git(c.repo, "log", "--all", "--format=%s")
+    assert "dead-attempt.txt" not in _git(c.repo, "ls-tree", "-r", "--name-only", "HEAD")
 
 
 def remote_name(remote, c):
@@ -532,10 +589,30 @@ def test_a_persona_job_returning_no_bundle_leaves_the_branch_and_main(tmp_path, 
 
 # ---- forged frames ----------------------------------------------------------------------------
 
-_FORGE = """import json, subprocess, sys
+_FORGE = """import json, os, subprocess, sys
 mode, spec, marker = sys.argv[1], sys.argv[2], sys.argv[3]
 p = subprocess.Popen(sys.argv[4:], stdout=subprocess.PIPE)
 shift = 0
+
+def forged_done(frame, doc):
+    # a `done` whose bundle a write-back would fast-forward, naming another job
+    return {"schema": frame["schema"], "type": "done", "n": frame["n"] + 1,
+            "at": frame.get("at"), "job_id": doc["job_id"], "ok": True, "interrupted": False,
+            "started_at": frame.get("at"), "duration_s": 0.0,
+            "result": {"exit_code": 0, "timed_out": False, "interrupted": False,
+                       "duration_s": 0.0, "is_error": False, "cost_usd": 0.0,
+                       "verdict_ok": True, "verdict": {"status": "done", "summary": "stale"},
+                       "result_text": "from-stale-persona"},
+            "files": {}, "bundle": doc["bundle"]}
+
+def emit(forged):
+    global shift
+    shift = 1
+    sys.stdout.buffer.write((json.dumps(forged) + "\\n").encode())
+    sys.stdout.buffer.flush()
+    with open(marker, "a") as m:             # proof that a forged frame went onto the stream
+        m.write(json.dumps(forged) + "\\n")
+
 for line in p.stdout:
     try:
         frame = json.loads(line)
@@ -551,7 +628,13 @@ for line in p.stdout:
         line = (json.dumps(frame) + "\\n").encode()
     sys.stdout.buffer.write(line)
     sys.stdout.buffer.flush()
-    if mode != "nobundle" and frame and frame.get("type") == "started" and not shift:
+    if mode == "nobundle" or not frame or not isinstance(frame.get("n"), int) or shift:
+        continue
+    forged = None
+    if mode == "late-done" and frame.get("type") in ("started", "progress", "accepted") \\
+            and os.path.isfile(spec):
+        forged = forged_done(frame, json.load(open(spec)))
+    elif frame.get("type") == "started":
         forged = {"schema": frame["schema"], "n": frame["n"] + 1, "at": frame.get("at")}
         if mode == "campaign":      # a frame for another campaign's job
             forged.update(type="gate", job_id=spec + "-gate-001-a1")
@@ -559,13 +642,16 @@ for line in p.stdout:
             forged.update(type="gate", job_id=spec, files={}, result={
                 "name": "lint", "required": True, "ok": True, "exit_code": 0, "timed_out": False,
                 "cmd": "sh gates/lint.sh", "cwd": "/", "duration_s": 0.0, "tail": "stale"})
+        elif mode == "persona-gate":   # an allowlisted gate frame naming another job
+            forged.update(type="gate", job_id=spec, files={}, result={
+                "name": "lint", "required": True, "ok": True, "exit_code": 0, "timed_out": False,
+                "cmd": "true", "cwd": "/", "duration_s": 0.0, "tail": "forged-persona-gate"})
+        elif mode == "persona-done":   # an allowlisted done frame naming another job
+            forged = forged_done(frame, json.load(open(spec)))
         else:                       # a worker event of a type no worker may send
             forged.update(type="event", job_id=frame["job_id"], event={"type": spec})
-        shift = 1
-        sys.stdout.buffer.write((json.dumps(forged) + "\\n").encode())
-        sys.stdout.buffer.flush()
-        with open(marker, "a") as m:         # proof that a forged frame went onto the stream
-            m.write(json.dumps(forged) + "\\n")
+    if forged:
+        emit(forged)
 sys.exit(p.wait())
 """
 
@@ -591,6 +677,30 @@ for line in p.stdout:
             m.write(line.decode())
 sys.exit(p.wait())
 """
+
+
+def bundle_from(tree: Path, dest: Path) -> dict:
+    """A bundle of `tree`'s HEAD against its parent, packed the way a worker's `done` frame
+    packs one (`refs/nw/job-result/head` plus the parent as the basis). Write-back
+    fast-forwards a worktree sitting on that parent onto HEAD."""
+    head = _git(tree, "rev-parse", "HEAD")
+    parent = _git(tree, "rev-parse", "HEAD^")
+    ref = "refs/nw/job-result/head"
+    _git(tree, "update-ref", ref, head)
+    _git(tree, "bundle", "create", "-q", str(dest), ref, f"^{parent}")
+    return {"head": head, "wip": None,
+            "bundle_b64": base64.b64encode(dest.read_bytes()).decode("ascii")}
+
+
+def stale_result_bundle(repo: Path, tmp: Path) -> dict:
+    """A commit on top of `repo` HEAD that adds `stale-persona.txt`, packed as a result bundle."""
+    clone = tmp / "stale-src"
+    subprocess.run(["git", "clone", "-q", str(repo), str(clone)], check=True,
+                   env={**os.environ, **ENV})
+    (clone / "stale-persona.txt").write_text("from-stale-persona\n")
+    _git(clone, "add", "stale-persona.txt")
+    _git(clone, "commit", "-qm", "stale persona")
+    return bundle_from(clone, tmp / "stale.bundle")
 
 
 def install_dup(c):
@@ -632,8 +742,10 @@ def install_forge(c, mode, spec, argv_glob="*attach*|*gate-job*|*persona*"):
 @pytest.mark.parametrize("mode,spec", [("campaign", "SPEC-0999-20261101-ffff"), ("type", "close"),
                                        ("type", "park"), ("type", "merge")])
 def test_forged_worker_frames_are_refused_and_append_nothing(tmp_path, monkeypatch, mode, spec):
+    """Gate transport only. A persona stream that accepted the same frame would not satisfy
+    this test: the failure's job id is the gate job."""
     c = build(tmp_path, monkeypatch, "two")
-    install_forge(c, mode, spec)
+    install_forge(c, mode, spec, argv_glob="*-gate-*")
     assert run_queue(c, monkeypatch)["state"] == "MERGED"
     # the forged frame really went onto a worker's stream (a wrapper that never matched the
     # real argv, or a stream without a `started` frame, would leave no marker and test nothing)
@@ -649,18 +761,70 @@ def test_forged_worker_frames_are_refused_and_append_nothing(tmp_path, monkeypat
     assert not str(close.get("by", "")).startswith("worker")
     assert not any(e["type"] == "park" for e in evs)
     assert not any(str(e.get("by", "")).startswith("worker") for e in evs)
+    fails = [e for e in evs if e["type"] in ("worker_failed", "worker_job_lost")]
+    assert fails and all("gate" in str(e.get("job_id")) for e in fails)
     if mode == "campaign":                                   # refused as a protocol failure
-        assert any(e["type"] in ("worker_failed", "worker_job_lost") for e in evs)
         # ...and nothing landed in the other campaign, where a forged write would go
         other = spec
         with pytest.raises(ValueError):
             S.read_state(c.cfg, other)
         assert S.read_ledger(c.cfg, other) == [] and not S.gates_dir(c.cfg, other).exists()
-    else:       # a non-allowlisted type is refused: the job falls back, and the forged type is
-        # not appended (the one `close` is the queue's own, already checked above)
-        assert any(e["type"] in ("worker_failed", "worker_job_lost") for e in evs)
-        if spec != "close":
-            assert not any(e["type"] == spec for e in evs)
+    elif spec != "close":
+        # a non-allowlisted type is refused: the forged type is not appended
+        # (the one `close` is the queue's own, already checked above)
+        assert not any(e["type"] == spec for e in evs)
+
+
+_OTHER = "SPEC-0999-20261101-ffff"
+
+
+@pytest.mark.parametrize("mode", ["persona-gate", "persona-done", "type"])
+def test_forged_persona_frames_are_refused_and_append_nothing(tmp_path, monkeypatch, mode):
+    """Persona transport only. An allowlisted `gate` or `done` for another job is refused
+    before the cursor moves, and the `done`'s bundle is not written back."""
+    c = build(tmp_path, monkeypatch, "two")
+    if mode == "persona-done":
+        doc = {"job_id": f"{_OTHER}-persona-001-implementer-a1",
+               "bundle": stale_result_bundle(c.repo, tmp_path)}
+        spec = tmp_path / "persona-done.json"
+        spec.write_text(json.dumps(doc))
+        spec_arg = str(spec)
+    elif mode == "persona-gate":
+        spec_arg = f"{_OTHER}-gate-001-a1"
+    else:
+        spec_arg = "close"
+    install_forge(c, mode, spec_arg, argv_glob="*-persona-*")
+    # close prunes a final job record; keep it so the cursor assertion can read it
+    monkeypatch.setattr(RJ, "prune", lambda *a, **k: [])
+    assert run_queue(c, monkeypatch)["state"] == "MERGED"
+    marks = [json.loads(ln) for f in tmp_path.glob("forged-*") for ln in f.read_text().splitlines()]
+    want = {"persona-gate": "gate", "persona-done": "done", "type": "event"}[mode]
+    assert marks and all(m["type"] == want for m in marks)
+    evs = ledger(c)
+    fails = [e for e in evs if e["type"] in ("worker_failed", "worker_job_lost")]
+    impl = job_id_of(c, "persona")
+    impl_lost = [e for e in fails if e.get("job_id") == impl]
+    assert impl_lost and all("protocol" in (e.get("reason") or "") for e in impl_lost)
+    assert fails and all("persona" in str(e.get("job_id")) for e in fails)
+    if mode == "type":
+        assert not any(e["type"] == "close" and str(e.get("by", "")).startswith("worker")
+                       for e in evs)
+        return
+    foreign = marks[0]["job_id"]
+    assert all(m["job_id"] == foreign for m in marks)
+    assert all(foreign in (e.get("reason") or "") for e in impl_lost)
+    assert all(e.get("job_id") != foreign for e in evs)
+    # the live job's record kept the cursor of the real frames, not the forged `n`
+    live = RJ.read(c.cfg, job_id_of(c, "persona"))
+    assert live and live.get("state") == "lost"
+    assert live.get("cursor") not in {m["n"] for m in marks}
+    assert "forged-persona-gate" not in json.dumps(evs)
+    assert "from-stale-persona" not in json.dumps(evs)
+    assert "stale persona" not in _git(c.repo, "log", "--all", "--format=%s")
+    assert "stale-persona.txt" not in _git(c.repo, "ls-tree", "-r", "--name-only", "HEAD")
+    with pytest.raises(ValueError):
+        S.read_state(c.cfg, _OTHER)
+    assert S.read_ledger(c.cfg, _OTHER) == [] and not S.gates_dir(c.cfg, _OTHER).exists()
 
 
 # ---- credentials ------------------------------------------------------------------------------

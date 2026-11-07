@@ -580,7 +580,7 @@ def run_gate_with_retries(gate: dict, worktree, env: dict, log_path, placeholder
     if _stop_requested(stop):                       # a stop between the prelude and the main run
         return replace(pre, ok=False, interrupted=True, attempts=(rec,))
     final = _run_ladder(gate, worktree, env, log_path, placeholders, log_rel=log_rel,
-                        stop=stop, deadline=deadline)
+                        stop=stop, deadline=deadline, inherit_env=inherit_env)
     attempts = (rec, *(final.attempts or (_attempt(0, "full", final),)))
     final = replace(final, attempts=attempts,
                     duration_s=round(final.duration_s + pre.duration_s, 3))

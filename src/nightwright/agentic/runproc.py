@@ -491,7 +491,10 @@ def main(argv=None) -> int:
         launch = json.loads((run_dir / "launch.json").read_text(encoding="utf-8"))
         req = json.loads((run_dir / "request.json").read_text(encoding="utf-8"))
         timeout_s = float(req.get("timeout_s") or 0) or None
-        env = child_env(launch.get("env"))
+        # SPEC-0346: `base_env` is the sanitized environment the runner started this wrapper
+        # with. The child is built from that, not from whatever this process inherited.
+        base = launch.get("base_env")
+        env = child_env(launch.get("env"), environ=base if isinstance(base, dict) else None)
         stream = bool(launch.get("stream"))
         state["stream"] = stream
         if state["term"]:
