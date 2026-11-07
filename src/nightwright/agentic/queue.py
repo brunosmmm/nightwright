@@ -1773,6 +1773,41 @@ def _worktree_conflict_mail_status(err: str) -> str | None:
     return None
 
 
+def _adopt_spec_open_snapshot(cfg, state: dict, worktree: Path) -> str | None:
+    """Create ``spec_at_open.md`` on worktree adopt when missing or empty after a failed write."""
+    spec = state.setdefault("spec", {})
+    rel_p = spec.get("rel_path")
+    if not rel_p:
+        return None
+    wt_resolved = worktree.resolve()
+    spec_file = (worktree / rel_p).resolve()
+    if not spec_file.is_relative_to(wt_resolved) or not spec_file.is_file():
+        return None
+    cdir = store.campaign_dir(cfg, state["id"])
+    snap = cdir / CL.SPEC_AT_OPEN
+    if snap.is_file():
+        if spec.get("sha256_at_open"):
+            return None
+        if snap.stat().st_size > 0:
+            return None
+    tmp = cdir / f".{CL.SPEC_AT_OPEN}.tmp"
+    try:
+        cdir.mkdir(parents=True, exist_ok=True)
+        tmp.write_text(spec_file.read_text(encoding="utf-8"), encoding="utf-8")
+        os.replace(tmp, snap)
+        spec["sha256_at_open"] = _spec_sha(spec_file)
+    except (OSError, ValueError):
+        for path in (tmp, snap):
+            try:
+                if path.is_file():
+                    path.unlink()
+            except OSError:
+                pass
+        spec.pop("sha256_at_open", None)
+        return f"could not write spec snapshot at {snap}"
+    return None
+
+
 def _worktree_conflict_mail(cfg, state: dict, worktree: Path, status: str) -> None:
     """One conductor mail when an adopted worktree's spec cannot be resumed (SPEC-0463)."""
     from . import mailbox as M
@@ -1835,22 +1870,10 @@ def _do_open_unwrapped(ctx: _Ctx, state: dict) -> StepResult:
                 elif target is not None:
                     res.resumed_to = target
                     if kind not in RM.RED_KINDS and not has_no_spec(state):
-                        spec = state.setdefault("spec", {})
-                        rel_p = spec.get("rel_path")
-                        if rel_p:
-                            spec_file = (worktree / rel_p).resolve()
-                            if spec_file.is_file():
-                                cdir = store.campaign_dir(ctx.cfg, state["id"])
-                                snap = cdir / CL.SPEC_AT_OPEN
-                                if not snap.is_file():
-                                    try:
-                                        cdir.mkdir(parents=True, exist_ok=True)
-                                        snap.write_text(spec_file.read_text(encoding="utf-8"),
-                                                        encoding="utf-8")
-                                        spec["sha256_at_open"] = _spec_sha(spec_file)
-                                    except OSError:
-                                        res.error = f"could not write spec snapshot at {snap}"
-                                        res.resumed_to = None
+                        snap_err = _adopt_spec_open_snapshot(ctx.cfg, state, worktree)
+                        if snap_err:
+                            res.error = snap_err
+                            res.resumed_to = None
                 return res
         base_sha = git.rev_parse(root, _open_start(root, pcfg, base))
         # the sha, not `<remote>/<base>`: no upstream is set on the campaign branch

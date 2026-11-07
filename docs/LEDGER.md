@@ -730,7 +730,7 @@ progress. This is the single place to see *what has been decided* and *what is i
 | [SPEC-0460](./specs/0460-cursor-spawns-force-fast-off.md) | Cursor spawns keep the effort and force fast off | feature | done | — | 2026-11-07 |
 | [SPEC-0461](./specs/0461-cap-counts-only-known-cost.md) | A campaign cap counts only a cost the run reported | feature | done | — | 2026-11-07 |
 | [SPEC-0462](./specs/0462-triage-a-diverging-campaign.md) | Triage a diverging campaign before another implement round | feature | done | — | 2026-11-07 |
-| [SPEC-0463](./specs/0463-periodic-deterministic-resolution-of-queue.md) | Periodic deterministic resolution of queue dependency conflicts | feature | done | M9: agentic workflow | 2026-11-07 |
+| [SPEC-0463](./specs/0463-periodic-deterministic-resolution-of-queue.md) | Periodic deterministic resolution of queue dependency conflicts | feature | done | M9: agentic workflow | 2026-11-08 |
 | [SPEC-0469](./specs/0469-release-red-hold-when-base-moves.md) | Release the red-base hold once the base moves past the red sha | feature | done | — | 2026-11-08 |
 
 ## Superseded / rejected

@@ -1,4 +1,5 @@
 """SPEC-0463: resolve_dependency_conflicts, worktree resume, conflict mail."""
+import os
 from pathlib import Path
 
 import pytest
@@ -541,20 +542,21 @@ def test_adopt_spec_snapshot_write_failure_leaves_hash_unset(env, monkeypatch):
     cfg, repo = env
     cid = add_idea_campaign(cfg, monkeypatch, capture(cfg, "snap fail"))
     st = _prep_worktree(cfg, repo, cid, ACCEPTED)
-    real_write = Path.write_text
+    real_replace = os.replace
+    fail_once = []
 
-    def boom(self, *a, **k):
-        if self.name == CL.SPEC_AT_OPEN:
+    def boom(src, dst):
+        if Path(dst).name == CL.SPEC_AT_OPEN and not fail_once:
+            fail_once.append(1)
             raise OSError("disk full")
-        return real_write(self, *a, **k)
+        return real_replace(src, dst)
 
-    monkeypatch.setattr(Path, "write_text", boom)
+    monkeypatch.setattr(os, "replace", boom)
     row, after = _open_resume(cfg, monkeypatch, _state(cfg, cid))
     assert after["state"] == "PARKED" and after["park"]["reason"] == "open_failed"
     assert "resumed_worktree" not in (row.get("reason") or "")
     assert not after.get("spec", {}).get("sha256_at_open")
     assert not (S.campaign_dir(cfg, cid) / CL.SPEC_AT_OPEN).is_file()
-    monkeypatch.setattr(Path, "write_text", real_write)
     Q._transition(cfg, after, "QUEUED", "retry")
     Q._transition(cfg, _state(cfg, cid), "OPENING", "retry")
     row2, after2 = _open_resume(cfg, monkeypatch, _state(cfg, cid))
@@ -709,20 +711,18 @@ def test_mailed_wait_replaced_when_prerequisite_campaign_appears(env, monkeypatc
 
 def test_tick_conflict_mail_on_config_recovered_waiter(env, monkeypatch):
     cfg, repo = env
-    idea, cid, st = _no_campaign_waiter(cfg, monkeypatch)
-    other = add_idea_campaign(cfg, monkeypatch, capture(cfg, "recover me"))
-    broken = Path(repo) / ".nw" / "project.yaml"
-    good = broken.read_text()
-    broken.write_text(good + "bogus_key: 1\n")
-    try:
-        S.write_state(cfg, other, dict(S.read_state(cfg, other), state="PARKED", park={
-            "reason": "config_invalid", "detail": "bogus", "resume_to": "QUEUED"}))
-        Q.tick(cfg)
-        st = _state(cfg, cid)
-        assert idea in (st.get("conflict_mail") or [])
-        assert any("mailed conductor:" in b for b in (st.get("backlog") or {}).get("blocked_by") or [])
-    finally:
-        broken.write_text(good)
+    idea_w, cid_w, _st_w = _no_campaign_waiter(cfg, monkeypatch)
+    idea_o, cid_o, st_o = _no_campaign_waiter(cfg, monkeypatch)
+    S.write_state(cfg, cid_o, dict(st_o, state="PARKED", park={
+        "reason": "config_invalid", "detail": "bogus", "resume_to": "QUEUED"}))
+    Q.tick(cfg)
+    st_w = _state(cfg, cid_w)
+    st_o = _state(cfg, cid_o)
+    assert st_o["state"] == "QUEUED"
+    assert idea_w in (st_w.get("conflict_mail") or [])
+    assert idea_o in (st_o.get("conflict_mail") or [])
+    assert any("mailed conductor:" in b for b in (st_w.get("backlog") or {}).get("blocked_by") or [])
+    assert any("mailed conductor:" in b for b in (st_o.get("backlog") or {}).get("blocked_by") or [])
 
 
 def test_adopt_rejects_spec_path_outside_worktree(env, monkeypatch):
@@ -760,6 +760,37 @@ def test_adopt_snapshot_hash_unchanged_when_copy_exists(env, monkeypatch):
     after = _state(cfg, cid)
     assert after["spec"]["sha256_at_open"] == digest
     assert (cdir / CL.SPEC_AT_OPEN).read_text(encoding="utf-8") == "old snapshot"
+
+
+def test_adopt_snapshot_unchanged_when_hash_null_and_copy_exists(env, monkeypatch):
+    cfg, repo = env
+    cid = add_idea_campaign(cfg, monkeypatch, capture(cfg, "snap null hash"))
+    st = _prep_worktree(cfg, repo, cid, ACCEPTED)
+    st["spec"].pop("sha256_at_open", None)
+    cdir = S.campaign_dir(cfg, cid)
+    cdir.mkdir(parents=True, exist_ok=True)
+    (cdir / CL.SPEC_AT_OPEN).write_text("drift baseline", encoding="utf-8")
+    S.write_state(cfg, cid, st)
+    _open_resume(cfg, monkeypatch, _state(cfg, cid))
+    after = _state(cfg, cid)
+    assert not after["spec"].get("sha256_at_open")
+    assert (cdir / CL.SPEC_AT_OPEN).read_text(encoding="utf-8") == "drift baseline"
+
+
+def test_adopt_rewrites_empty_snapshot_when_hash_null(env, monkeypatch):
+    cfg, repo = env
+    cid = add_idea_campaign(cfg, monkeypatch, capture(cfg, "snap empty"))
+    st = _prep_worktree(cfg, repo, cid, ACCEPTED)
+    st["spec"].pop("sha256_at_open", None)
+    cdir = S.campaign_dir(cfg, cid)
+    cdir.mkdir(parents=True, exist_ok=True)
+    (cdir / CL.SPEC_AT_OPEN).write_text("", encoding="utf-8")
+    S.write_state(cfg, cid, st)
+    _open_resume(cfg, monkeypatch, _state(cfg, cid))
+    after = _state(cfg, cid)
+    wt_spec = Path(after["repo"]["worktree"]) / after["spec"]["rel_path"]
+    assert after["spec"]["sha256_at_open"] == SR.spec_sha256(wt_spec)
+    assert (cdir / CL.SPEC_AT_OPEN).read_text(encoding="utf-8") == wt_spec.read_text(encoding="utf-8")
 
 
 def test_adopt_rewrites_snapshot_when_hash_set_but_copy_missing(env, monkeypatch):
