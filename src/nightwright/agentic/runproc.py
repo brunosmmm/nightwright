@@ -132,7 +132,7 @@ def _pi_probe_secret_values(environ) -> list[str]:
 
 def _redact_secrets(text: str, secrets: list[str]) -> str:
     out = text or ""
-    for s in secrets:
+    for s in sorted({s for s in secrets if s}, key=len, reverse=True):
         out = out.replace(s, "[redacted]")
     return out
 

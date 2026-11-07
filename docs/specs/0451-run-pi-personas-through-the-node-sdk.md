@@ -491,6 +491,13 @@ fails the check with that fact.
 - Full `uv run pytest` left to queue gating
 - `python3 tools/spec_lint.py --write-ledger` && `python3 tools/spec_lint.py` — pass
 
+### Test record (campaign loop 1 implementer, 2026-11-07)
+
+- `node --test tests/js/pi_exec.test.js` — pass (cwd vs run dir, once session/prompt, symlink context drop, OAuth stream refresh)
+- `uv run pytest tests/test_pi_runner.py -q` — pass (argv shape, haiku/opus map, launch cwd, probe redact longest-first)
+- Full `uv run pytest` left to queue gating
+- `python3 tools/spec_lint.py --write-ledger` && `python3 tools/spec_lint.py` — pass
+
 ### As shipped (loop 0 implementer, 2026-11-07)
 
 - `writeLine` runs `redactDeep` before `JSON.stringify` (longest secret first); result line reuses secrets from a second `collectSecretsAsync` after `prompt`.
@@ -506,6 +513,10 @@ fails the check with that fact.
 - `pi_exec.mjs` disables cache warming and compaction in `SettingsManager.inMemory`, limits context files to the worktree via `agentsFilesOverride`, scrubs streamed stdout JSON, calls `killTrackedDetachedChildren` on SIGTERM, and treats omitted catalog rates as unpriced (`catalogPriced`).
 - `nw workers check` passes the coordinator's `probe_providers(cfg)` list to `nw worker pi-check` on stdin (SSH argv unchanged).
 - `probe_pi` redacts environment secret values from probe stdout before returning.
+
+### As shipped (campaign loop 1 implementer, 2026-11-07)
+
+- `agentsUnderCwdOnly` uses `realpathSync` on cwd and each context file path; stream `message_end` writes chain `collectSecretsAsync` before each stdout line and before `failResult` in the prompt catch; `_redact_secrets` sorts longest-first.
 
 ## Rollout / migration
 

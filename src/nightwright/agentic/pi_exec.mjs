@@ -61,10 +61,21 @@ function writeLine(out, obj, secrets = []) {
 }
 
 function agentsUnderCwdOnly(cwd) {
-  const root = path.resolve(cwd);
+  let root;
+  try {
+    root = fs.realpathSync(cwd);
+  } catch {
+    root = path.resolve(cwd);
+  }
   return ({ agentsFiles }) => ({
     agentsFiles: agentsFiles.filter((f) => {
-      const rel = path.relative(root, path.resolve(f.path));
+      let resolved;
+      try {
+        resolved = fs.realpathSync(f.path);
+      } catch {
+        return false;
+      }
+      const rel = path.relative(root, resolved);
       return rel !== ".." && !rel.startsWith(`..${path.sep}`) && !path.isAbsolute(rel);
     }),
   });
@@ -524,6 +535,13 @@ export async function execute(runDir, deps = {}) {
 
     const emitted = new Set();
     let streamSeq = 0;
+    let streamWriteChain = Promise.resolve();
+    const emitWithFreshSecrets = (emitFn) => {
+      streamWriteChain = streamWriteChain.then(async () => {
+        const fresh = await collectSecretsAsync(modelRuntime, provider, auth);
+        emitFn(fresh);
+      });
+    };
     const unsub = session.subscribe((event) => {
       if (event.type !== "message_end" || !event.message) return;
       const msg = event.message;
@@ -531,7 +549,7 @@ export async function execute(runDir, deps = {}) {
         const key = `tr:${msg.toolCallId ?? ""}`;
         if (emitted.has(key)) return;
         emitted.add(key);
-        emitToolResultLine(out, msg, secrets);
+        emitWithFreshSecrets((fresh) => emitToolResultLine(out, msg, fresh));
         return;
       }
       if (msg.role === "assistant" && msg.stopReason === "error") {
@@ -540,7 +558,7 @@ export async function execute(runDir, deps = {}) {
       if (msg.role === "assistant" || msg.role === "user") {
         const key = `msg:${streamSeq++}`;
         emitted.add(key);
-        emitMessage(out, msg.role, msg.content, secrets);
+        emitWithFreshSecrets((fresh) => emitMessage(out, msg.role, msg.content, fresh));
       }
     });
 
@@ -558,6 +576,7 @@ export async function execute(runDir, deps = {}) {
     }
 
     await session.prompt(userMessage);
+    await streamWriteChain;
     unsub?.();
 
     const messages = session.state?.messages ?? [];
@@ -599,7 +618,15 @@ export async function execute(runDir, deps = {}) {
     }
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);
-    failResult(out, err, msg, { secrets });
+    let catchSecrets = secrets;
+    try {
+      if (modelRuntime && provider) {
+        catchSecrets = await collectSecretsAsync(modelRuntime, provider, auth);
+      }
+    } catch {
+      /* keep initial list */
+    }
+    failResult(out, err, msg, { secrets: catchSecrets });
     exitCode = 1;
   } finally {
     await killDetachedChildren(pi, deps);

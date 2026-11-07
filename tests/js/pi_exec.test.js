@@ -9,21 +9,26 @@ const { pathToFileURL } = require("node:url");
 const PI_EXEC = path.join(__dirname, "..", "..", "src", "nightwright", "agentic", "pi_exec.mjs");
 
 function layout(over = {}) {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-run-"));
+  const runDir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-run-"));
+  const worktree = fs.mkdtempSync(path.join(os.tmpdir(), "pi-wt-"));
   const doc = {
     pi_provider: "anthropic",
     pi_id: "claude-sonnet-4-6",
     pi_thinking: "high",
     read_only: false,
-    cwd: dir,
+    cwd: worktree,
     persona: "implementer",
     system_append: "INVARIANT",
     json_schema: { type: "object", properties: { status: { type: "string" } } },
     ...over,
   };
-  fs.writeFileSync(path.join(dir, "request.json"), JSON.stringify(doc));
-  fs.writeFileSync(path.join(dir, "prompt.md"), `task text\n\nINVARIANT`);
-  return dir;
+  fs.writeFileSync(path.join(runDir, "request.json"), JSON.stringify(doc));
+  fs.writeFileSync(path.join(runDir, "prompt.md"), `task text\n\nINVARIANT`);
+  return runDir;
+}
+
+function worktreeCwd(runDir) {
+  return JSON.parse(fs.readFileSync(path.join(runDir, "request.json"), "utf8")).cwd;
 }
 
 function loadExecute() {
@@ -52,8 +57,10 @@ function stubSession(over = {}) {
       for (const ev of over.events ?? []) fn(ev);
       return () => {};
     },
-    prompt: async (msg) => {
+    prompt: async (msg, ...extra) => {
+      over.promptCalls = (over.promptCalls ?? 0) + 1;
       over.promptText = msg;
+      over.promptExtra = extra;
       if (over.promptReject) throw over.promptReject;
       return undefined;
     },
@@ -114,6 +121,7 @@ function stubPi(over = {}) {
       async reload() {}
     },
     createAgentSession: async (opts) => {
+      over.createSessionCalls = (over.createSessionCalls ?? 0) + 1;
       over.createOpts = opts;
       return { session };
     },
@@ -134,7 +142,18 @@ test("execute: in-memory session, settings, loader flags, appendSystemPrompt", a
     modelRuntime: await pi.ModelRuntime.create(),
   });
   assert.equal(code, 0);
-  assert.equal(over.sessionCwd, runDir);
+  const wt = worktreeCwd(runDir);
+  assert.notEqual(runDir, wt);
+  assert.equal(over.sessionCwd, wt);
+  assert.equal(over.createSessionCalls, 1);
+  assert.equal(over.promptCalls, 1);
+  assert.equal(over.createOpts.cwd, wt);
+  assert.equal(over.promptExtra.length, 0);
+  for (const [k, v] of Object.entries(over.createOpts)) {
+    if (typeof v === "function" && /approval|permission/i.test(k)) {
+      assert.fail(`unexpected session callback ${k}`);
+    }
+  }
   assert.deepEqual(over.settingsCall, {
     settings: { cacheWarming: "off", compaction: { enabled: false } },
     opts: { projectTrusted: false },
@@ -154,13 +173,27 @@ test("execute: in-memory session, settings, loader flags, appendSystemPrompt", a
   assert.equal(over.loaderOpts.settingsManager, over.createOpts.settingsManager);
   assert.equal(over.createOpts.jsonSchema, undefined);
   assert.equal(over.createOpts.responseFormat, undefined);
-  const inside = path.join(runDir, "AGENTS.md");
-  const outside = path.join(path.dirname(runDir), "parent-AGENTS.md");
+  assert.equal(over.createOpts.schema, undefined);
+  assert.equal(over.createOpts.json_schema, undefined);
+  const inside = path.join(wt, "AGENTS.md");
+  fs.writeFileSync(inside, "# in-worktree agents\n");
+  const outside = path.join(path.dirname(wt), "parent-AGENTS.md");
+  fs.writeFileSync(outside, "# outside\n");
   const filtered = over.loaderOpts.agentsFilesOverride({
     agentsFiles: [{ path: inside }, { path: outside }],
   });
   assert.equal(filtered.agentsFiles.length, 1);
   assert.equal(filtered.agentsFiles[0].path, inside);
+  const secretOutside = fs.mkdtempSync(path.join(os.tmpdir(), "pi-secret-"));
+  const secretFile = path.join(secretOutside, "secret-AGENTS.md");
+  fs.writeFileSync(secretFile, "outside secret");
+  fs.unlinkSync(inside);
+  const linkInside = path.join(wt, "AGENTS.md");
+  fs.symlinkSync(secretFile, linkInside);
+  const symlinkFiltered = over.loaderOpts.agentsFilesOverride({
+    agentsFiles: [{ path: linkInside }],
+  });
+  assert.equal(symlinkFiltered.agentsFiles.length, 0);
   assert.ok(over.disposed);
   const resultLine = chunksToLines(out.chunks).at(-1);
   assert.equal(resultLine.session_id, "sess-1");
@@ -1157,6 +1190,43 @@ test("execute: resource loader failure removes nw-pi-agent temp dir", async () =
   assert.ok(track.agentDir);
   assert.equal(fs.existsSync(track.agentDir), false);
   assert.ok(track.killed);
+});
+
+test("execute: stream write uses post-refresh OAuth token from getAuth", async () => {
+  const execute = await loadExecute();
+  const runDir = layout();
+  const out = { chunks: [], write(s) { this.chunks.push(s); } };
+  const INITIAL = "oauth-access-initial-abc";
+  const REFRESHED = "oauth-access-refreshed-xyz";
+  let getAuthCalls = 0;
+  const runtime = {
+    getModel: () => ({ cost: { input: 1 } }),
+    checkAuth: async () => ({ type: "oauth" }),
+    getAuth: async () => {
+      getAuthCalls += 1;
+      const token = getAuthCalls === 1 ? INITIAL : REFRESHED;
+      return { auth: { accessToken: token } };
+    },
+  };
+  const asstEv = {
+    type: "message_end",
+    message: {
+      role: "assistant",
+      content: [{ type: "text", text: `tool dumped ${REFRESHED}` }],
+    },
+  };
+  const { pi } = stubPi({ events: [asstEv] });
+  await execute(runDir, {
+    out,
+    err: { write() {} },
+    importPi: async () => pi,
+    modelRuntime: runtime,
+  });
+  const blob = out.chunks.join("");
+  assert.ok(getAuthCalls >= 2);
+  assert.ok(!blob.includes(REFRESHED));
+  assert.ok(!blob.includes(INITIAL));
+  assert.ok(blob.includes("[redacted]"));
 });
 
 test("execute: SIGTERM handler kills detached children and aborts", async () => {

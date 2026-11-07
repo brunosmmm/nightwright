@@ -29,11 +29,16 @@ def _req(tmp_path, **over):
     return R.RunRequest(**base)
 
 
-def test_build_pi_argv_no_credential(tmp_path):
-    argv = R.build_pi_argv(_req(tmp_path))
-    assert Path(argv[0]).name == "node" and argv[-1] == str(tmp_path / "runs" / "001")
-    assert "pi_exec.mjs" in argv[1]
-    assert "ANTHROPIC" not in " ".join(argv)
+def test_build_pi_argv_no_credential(tmp_path, monkeypatch):
+    secret = "super-secret-api-key-not-anthropic-substr"
+    monkeypatch.setenv("PI_PROBE_SECRET", secret)
+    argv = R.build_pi_argv(_req(tmp_path, env={"PI_PROBE_SECRET": secret}))
+    assert argv == [argv[0], argv[1], str(tmp_path / "runs" / "001")]
+    assert Path(argv[0]).name == "node"
+    assert argv[1].endswith("pi_exec.mjs") or "pi_exec.mjs" in argv[1]
+    blob = " ".join(argv)
+    assert secret not in blob
+    assert "ANTHROPIC" not in blob
 
 
 def test_with_agent_leaves_node(tmp_path):
@@ -47,8 +52,16 @@ def test_select_runner_pi():
 
 def test_map_pi_builtin():
     row = PM.map_pi_model("sonnet", "high", {})
-    assert row["model"] == "anthropic/claude-sonnet-4-6"
-    assert row["thinking"] == "high"
+    assert row == {
+        "provider": "anthropic",
+        "id": "claude-sonnet-4-6",
+        "thinking": "high",
+        "model": "anthropic/claude-sonnet-4-6",
+    }
+    haiku = PM.map_pi_model("haiku", "low", {})
+    assert haiku["id"] == "claude-haiku-4-5" and haiku["thinking"] == "low"
+    opus = PM.map_pi_model("opus", None, {})
+    assert opus["id"] == "claude-opus-4-7" and opus["thinking"] == "high"
 
 
 def test_map_pi_rejects_slug():
@@ -242,6 +255,16 @@ def test_pi_prompt_text_is_req_prompt(tmp_path):
     assert R.PiRunner()._prompt_text(req) == "persona body only"
 
 
+def test_redact_secrets_longest_first_substring():
+    parent = "abcdefghijklmnopqrst"
+    child = "abcdefgh"
+    text = f"token={parent}"
+    out = RP._redact_secrets(text, [child, parent])
+    assert parent not in out
+    assert child not in out
+    assert "[redacted]" in out
+
+
 def test_build_pi_argv_uses_resolved_node(tmp_path, monkeypatch):
     monkeypatch.setattr(RP, "_resolve_binary", lambda name, env=None: "/opt/node/bin/node")
     argv = R.build_pi_argv(_req(tmp_path))
@@ -425,17 +448,23 @@ def test_pi_launch_json_stream_no_provider_key(tmp_path, monkeypatch):
     run_dir.mkdir(parents=True)
     wt = tmp_path / "nw"
     wt.mkdir()
-    req = _req(tmp_path, run_dir=run_dir, cwd=wt, env={})
-
     class StopLaunch(Exception):
         pass
+
+    secret = "sk-ant-launch-credential-test-unique"
+    monkeypatch.setenv("ANTHROPIC_API_KEY", secret)
+    req = _req(tmp_path, run_dir=run_dir, cwd=wt, env={})
 
     def popen(*args, **kwargs):
         launch = json.loads((run_dir / "launch.json").read_text(encoding="utf-8"))
         assert launch.get("stream") is True
+        assert launch.get("cwd") == str(wt)
         blob = json.dumps(launch)
         assert "pi_provider" not in blob
+        assert secret not in blob
         assert "ANTHROPIC" not in blob
+        env_blob = json.dumps(launch.get("env") or {})
+        assert secret not in env_blob
         raise StopLaunch()
 
     monkeypatch.setattr("subprocess.Popen", popen)
