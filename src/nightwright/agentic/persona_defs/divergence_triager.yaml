@@ -1,4 +1,4 @@
-# builtin persona (SPEC-0461); the template is agentic/personas/divergence_triager.md
+# builtin persona (SPEC-0462); the template is agentic/personas/divergence_triager.md
 schema: nw.persona.v1
 name: divergence_triager
 role: system

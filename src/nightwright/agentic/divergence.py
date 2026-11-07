@@ -123,7 +123,7 @@ def rounds(records) -> list[Round]:
     `diverging` park are dropped, so a resumed campaign has to diverge again on fresh rounds;
     so are those up to a `resume` with `loops_reset` (`--reset-loops`, SPEC-0266), whatever
     park it ended: the conductor's reset gives divergence a fresh start too. A granted extra
-    round (SPEC-0461, transition `divergence_extra`) is the same kind of cut: that round is
+    round (SPEC-0462, transition `divergence_extra`) is the same kind of cut: that round is
     judged on what it produces, not on the rounds that tripped the detector."""
     records = list(records)
     cut, diverging = 0, False

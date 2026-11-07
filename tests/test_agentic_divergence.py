@@ -1,5 +1,5 @@
 """SPEC-0247: divergence detection in the implementation loop — `rounds`, finding matching, the
-four signals, the trip rule, settings, and the queue integration. SPEC-0461 sends a trip to
+four signals, the trip rule, settings, and the queue integration. SPEC-0462 sends a trip to
 `DIVERGENCE_TRIAGE` instead of parking it."""
 import json
 import types
@@ -86,7 +86,7 @@ def test_rounds_before_the_resume_of_a_diverging_park_are_dropped():
 
 
 def test_extra_round_cuts_rounds():
-    """SPEC-0461: a granted extra round is judged on what it produces."""
+    """SPEC-0462: a granted extra round is judged on what it produces."""
     ledger = [finding("a"), fix(), finding("b"), fix(),
               rec("transition", **{"from": "DIVERGENCE_TRIAGE", "to": "IMPLEMENTING",
                                    "reason": "divergence_extra"}),

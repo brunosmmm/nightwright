@@ -96,7 +96,7 @@ editing the old one.
 
 The implementation loop already does this. [SPEC-0247](../../specs/0247-divergence-detection-in-the-implementation-loop.md)
 computes trend, churn, recurrence and a repeated gate failure from the ledger. When one trips, the
-campaign enters `DIVERGENCE_TRIAGE` ([SPEC-0461](../../specs/0461-triage-a-diverging-campaign.md)).
+campaign enters `DIVERGENCE_TRIAGE` ([SPEC-0462](../../specs/0462-triage-a-diverging-campaign.md)).
 One read-only persona labels each latest blocker against the spec and picks one extra implement
 round (once per campaign), a spec rework, or a human escalation. A rework is carried out by the
 conductor and the project's steward. The human is asked only for the escalation, and that question

@@ -297,7 +297,6 @@ progress. This is the single place to see *what has been decided* and *what is i
 | [SPEC-0391](./specs/0391-worker-host-slots-from-registry.md) | A gate job carries the worker's registry slots as the worker host's slot limit | feature | in-progress | — | 2026-11-02 |
 | [SPEC-0400](./specs/0400-remote-web-dashboard-live-view-of-active-queue.md) | Remote web dashboard and decisions inbox over Tailscale (nw serve --dashboard) | epic | accepted | M9: agentic workflow | 2026-11-03 |
 | [SPEC-0405](./specs/0405-rich-queue-tui-prioritized-live-queue-campaign.md) | Rich queue TUI: prioritized live queue, campaign detail popup, closed-campaign history and a cross-campaign findings and decisions browser over one shared history layer | epic | accepted | — | 2026-11-03 |
-| [SPEC-0461](./specs/0461-triage-a-diverging-campaign.md) | Triage a diverging campaign before another implement round | feature | in-progress | — | 2026-11-07 |
 
 ## Done
 
@@ -723,6 +722,7 @@ progress. This is the single place to see *what has been decided* and *what is i
 | [SPEC-0459](./specs/0459-real-app-tui-test-harness-on-the-real-data.md) | Real-fixture IdeaDesk Pilot harness and queue-window preparation | feature | done | M9: agentic workflow | 2026-11-07 |
 | [SPEC-0460](./specs/0460-cursor-spawns-force-fast-off.md) | Cursor spawns keep the effort and force fast off | feature | done | — | 2026-11-07 |
 | [SPEC-0461](./specs/0461-cap-counts-only-known-cost.md) | A campaign cap counts only a cost the run reported | feature | done | — | 2026-11-07 |
+| [SPEC-0462](./specs/0462-triage-a-diverging-campaign.md) | Triage a diverging campaign before another implement round | feature | done | — | 2026-11-07 |
 
 ## Superseded / rejected
 

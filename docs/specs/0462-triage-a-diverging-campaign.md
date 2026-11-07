@@ -1,5 +1,5 @@
 ---
-id: SPEC-0461
+id: SPEC-0462
 title: Triage a diverging campaign before another implement round
 status: done
 owner: user

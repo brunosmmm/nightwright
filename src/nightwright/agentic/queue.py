@@ -92,7 +92,7 @@ PARK_REASONS = frozenset({
     "gates_failed", "worktree_dirty",                  # SPEC-0233: merge campaigns
     "not_docs_only",                                   # SPEC-0234: --docs-only diff left the allowlist
     "diverging",                                       # SPEC-0247: the fix loop is not converging
-    "diverging_rework",                               # SPEC-0461: the triager says the spec is the problem
+    "diverging_rework",                               # SPEC-0462: the triager says the spec is the problem
     "regenerate_failed",                               # SPEC-0255: close-time regenerate failed/dirtied
     "gate_timeout",                                    # SPEC-0311: gates keep timing out under load
     "restart",                                         # SPEC-0375: parked across `nw queue restart`
@@ -306,7 +306,7 @@ def plan_step(state: dict, profile: dict, project_cfg: dict | None = None, *, re
             return Step("park", persona=pending[0], personas=tuple(pending), reason="cost_cap",
                         detail=blocked, resume_to=st, budget=budget)
         return Step("review", persona=pending[0], personas=tuple(pending))
-    if st == "DIVERGENCE_TRIAGE":                    # SPEC-0461
+    if st == "DIVERGENCE_TRIAGE":                    # SPEC-0462
         blocked, budget = _cap_blocks(state, profile, "divergence_triager", **cap_kw)
         if blocked:
             return Step("park", persona="divergence_triager", reason="cost_cap", detail=blocked,
@@ -367,13 +367,13 @@ def _resume_target(st: str) -> str:
                                                             else "IMPLEMENTING")
 
 
-DIVERGENCE_EXTRA_MAX = 1          # SPEC-0461: one extra implement round per campaign
+DIVERGENCE_EXTRA_MAX = 1          # SPEC-0462: one extra implement round per campaign
 DIVERGENCE_RETRY_MAX = 1
 _DIVERGENCE_PICKS = ("extra_round", "rework", "escalate")
 
 
 def decide_divergence(state: dict, verdict, verdict_ok: bool) -> tuple[str, str]:
-    """`(action, detail)` for one divergence-triager verdict (SPEC-0461).
+    """`(action, detail)` for one divergence-triager verdict (SPEC-0462).
 
     `action` is `extra_round`, `rework`, `escalate`, or `retry`. A second extra round, and a
     second unusable verdict, are both an escalation. The counter is the caller's."""
@@ -3976,7 +3976,7 @@ def _carry_source(state: dict, tri: dict) -> dict:
 def _finish_fix(ctx, state, events, finish, kind, reason):
     """The fix outcome of a review or a gate triage (`loops` already counted, `pending_brief`
     set): back to IMPLEMENTING, or into DIVERGENCE_TRIAGE when the fix rounds show no
-    convergence (SPEC-0247 detects, SPEC-0461 triages). The brief stays, so an extra round
+    convergence (SPEC-0247 detects, SPEC-0462 triages). The brief stays, so an extra round
     continues with it. A campaign already parked `diverging` is left where it is."""
     div = DV.check(ctx.cfg, state, events, kind)
     if div is None:
@@ -3989,7 +3989,7 @@ def _finish_fix(ctx, state, events, finish, kind, reason):
 
 
 def _apply_divergence(ctx, state, counters, res, rr, events, finish):
-    """One divergence-triager verdict (SPEC-0461)."""
+    """One divergence-triager verdict (SPEC-0462)."""
     action, detail = decide_divergence(state, rr.verdict, rr.verdict_ok)
     if action == "retry":
         counters["divergence_retries"] = int(counters.get("divergence_retries") or 0) + 1
