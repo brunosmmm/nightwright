@@ -1,9 +1,10 @@
 ---
 id: SPEC-0458
 title: Periodic deterministic resolution of queue dependency conflicts
-status: proposed
+status: accepted
 owner: user
 created: 2026-11-07
+updated: 2026-11-07
 milestone: "M9: agentic workflow"
 kind: feature
 tags: [agentic, queue]
