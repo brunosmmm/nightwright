@@ -550,7 +550,8 @@ def test_adopt_spec_snapshot_write_failure_leaves_hash_unset(env, monkeypatch):
 
     monkeypatch.setattr(Path, "write_text", boom)
     row, after = _open_resume(cfg, monkeypatch, _state(cfg, cid))
-    assert after["state"] == "IMPLEMENTING" and row["reason"] == "resumed_worktree"
+    assert after["state"] == "PARKED" and after["park"]["reason"] == "open_failed"
+    assert "resumed_worktree" not in (row.get("reason") or "")
     assert not after.get("spec", {}).get("sha256_at_open")
     assert not (S.campaign_dir(cfg, cid) / CL.SPEC_AT_OPEN).is_file()
     monkeypatch.setattr(Path, "write_text", real_write)
@@ -638,3 +639,155 @@ def test_mixed_blocked_by_wakes_when_not_all_benign(env, monkeypatch):
     handed = [f"waiting on {cid} (after: campaign {cid} is HANDED_OFF)"]
     assert QT.dependency_wait(handed + ["after IDEA-404: idea not found"],
                               ctx.live_specs, st["project"]) is False
+
+
+@pytest.mark.parametrize("prereq_id", [
+    "MERGE-20261107-a1b2",
+    "3M-0001-20261107-c3d4",
+    "FIX-acme.io-20261107-e5f6",
+])
+def test_dependency_wait_holds_handed_off_for_minted_campaign_ids(env, monkeypatch, prereq_id):
+    cfg, _repo = env
+    waiter = capture(cfg, "after minted id")
+    wcid = add_idea_campaign(cfg, monkeypatch, waiter)
+    st = _state(cfg, wcid)
+    st["after"] = [{"ref": prereq_id, "kind": "campaign"}]
+    S.write_state(cfg, wcid, st)
+    root = S.campaign_dir(cfg, prereq_id)
+    root.mkdir(parents=True)
+    S.write_state(cfg, prereq_id, {
+        "id": prereq_id, "state": "HANDED_OFF", "project": st["project"], "kind": "merge",
+        "created_at": "2026-11-07T00:00:00",
+    })
+    handed = f"waiting on {prereq_id} (after: campaign {prereq_id} is HANDED_OFF)"
+    blocked = Q.backlog_readiness(cfg, _state(cfg, wcid))[1]
+    assert blocked == [handed]
+    ctx = QT.Ctx(cfg, "conductor")
+    live = {x[1] for x in ctx.live_specs if x[0] == st["project"]}
+    assert prereq_id not in live
+    assert QT.dependency_wait(blocked, ctx.live_specs, st["project"])
+
+
+def test_mailed_wait_replaced_when_prerequisite_campaign_appears(env, monkeypatch):
+    cfg, _repo = env
+    idea, cid, st = _no_campaign_waiter(cfg, monkeypatch)
+    Q.resolve_dependency_conflicts(cfg, [st])
+    S.write_state(cfg, cid, st)
+    assert Q.backlog_readiness(cfg, st)[1] == [f"mailed conductor: {idea} has no campaign ({cid})"]
+    prereq_cid = add_idea_campaign(cfg, monkeypatch, idea)
+    wait = f"waiting on {idea} (after: campaign {prereq_cid} is QUEUED)"
+    blocked = Q.backlog_readiness(cfg, _state(cfg, cid))[1]
+    assert blocked == [wait]
+    assert idea in (_state(cfg, cid).get("conflict_mail") or [])
+    assert QT.dependency_wait(blocked, QT.Ctx(cfg, "conductor").live_specs, st["project"])
+
+
+def test_tick_conflict_mail_on_config_recovered_waiter(env, monkeypatch):
+    cfg, repo = env
+    idea, cid, st = _no_campaign_waiter(cfg, monkeypatch)
+    other = add_idea_campaign(cfg, monkeypatch, capture(cfg, "recover me"))
+    broken = Path(repo) / ".nw" / "project.yaml"
+    good = broken.read_text()
+    broken.write_text(good + "bogus_key: 1\n")
+    try:
+        S.write_state(cfg, other, dict(S.read_state(cfg, other), state="PARKED", park={
+            "reason": "config_invalid", "detail": "bogus", "resume_to": "QUEUED"}))
+        Q.tick(cfg)
+        st = _state(cfg, cid)
+        assert idea in (st.get("conflict_mail") or [])
+        assert any("mailed conductor:" in b for b in (st.get("backlog") or {}).get("blocked_by") or [])
+    finally:
+        broken.write_text(good)
+
+
+def test_adopt_rejects_spec_path_outside_worktree(env, monkeypatch):
+    cfg, repo = env
+    cid = add_idea_campaign(cfg, monkeypatch, capture(cfg, "escape"))
+    outside = Path(repo) / "docs/specs/outsider.md"
+    outside.parent.mkdir(parents=True, exist_ok=True)
+    outside.write_text(ACCEPTED.format(sid="SPEC-0001"), encoding="utf-8")
+    st = _state(cfg, cid)
+    root = Path(repo)
+    wt = Path(st["repo"]["worktree"])
+    wt.parent.mkdir(parents=True, exist_ok=True)
+    git.worktree_add(root, wt, st["repo"]["branch"], git.rev_parse(root, "main"))
+    st["spec"] = {"id": "SPEC-0001", "rel_path": "../docs/specs/outsider.md", "internal": True}
+    st["spec_id"] = "SPEC-0001"
+    st["repo"]["base_sha_at_open"] = git.rev_parse(root, "main")
+    S.write_state(cfg, cid, st)
+    row, after = _open_resume(cfg, monkeypatch, _state(cfg, cid))
+    assert after["state"] == "PARKED" and after["park"]["reason"] == "open_failed"
+    assert "escapes worktree" in after["park"]["detail"]
+    assert row.get("reason") != "resumed_worktree"
+
+
+def test_adopt_snapshot_hash_unchanged_when_copy_exists(env, monkeypatch):
+    cfg, repo = env
+    cid = add_idea_campaign(cfg, monkeypatch, capture(cfg, "snap keep"))
+    st = _prep_worktree(cfg, repo, cid, ACCEPTED)
+    digest = "deadbeef"
+    st["spec"]["sha256_at_open"] = digest
+    cdir = S.campaign_dir(cfg, cid)
+    cdir.mkdir(parents=True, exist_ok=True)
+    (cdir / CL.SPEC_AT_OPEN).write_text("old snapshot", encoding="utf-8")
+    S.write_state(cfg, cid, st)
+    _open_resume(cfg, monkeypatch, _state(cfg, cid))
+    after = _state(cfg, cid)
+    assert after["spec"]["sha256_at_open"] == digest
+    assert (cdir / CL.SPEC_AT_OPEN).read_text(encoding="utf-8") == "old snapshot"
+
+
+def test_adopt_rewrites_snapshot_when_hash_set_but_copy_missing(env, monkeypatch):
+    cfg, repo = env
+    cid = add_idea_campaign(cfg, monkeypatch, capture(cfg, "snap restore"))
+    st = _prep_worktree(cfg, repo, cid, ACCEPTED)
+    st["spec"]["sha256_at_open"] = "stale"
+    S.write_state(cfg, cid, st)
+    snap = S.campaign_dir(cfg, cid) / CL.SPEC_AT_OPEN
+    if snap.is_file():
+        snap.unlink()
+    _open_resume(cfg, monkeypatch, _state(cfg, cid))
+    after = _state(cfg, cid)
+    assert snap.is_file()
+    assert after["spec"]["sha256_at_open"] != "stale"
+    assert after["spec"]["sha256_at_open"] == SR.spec_sha256(
+        Path(after["repo"]["worktree"]) / after["spec"]["rel_path"])
+
+
+def test_resume_revise_pending_accepted_goes_spec_writing(env, monkeypatch):
+    cfg, repo = env
+    cid = add_idea_campaign(cfg, monkeypatch, capture(cfg, "revise accepted"))
+    st = _prep_worktree(cfg, repo, cid, ACCEPTED, extra_state={
+        "admission": "revise_pending", "pending_brief": "address review"})
+    row, after = _open_resume(cfg, monkeypatch, st)
+    assert after["state"] == "SPEC_WRITING" and row["reason"] == "resumed_worktree"
+    assert Q.plan_step(after, Q._Ctx(cfg).profile(after)).kind == "write_spec"
+
+
+def test_resume_draft_with_pending_brief_to_spec_writing(env, monkeypatch):
+    cfg, repo = env
+    cid = add_idea_campaign(cfg, monkeypatch, capture(cfg, "draft brief"))
+    st = _prep_worktree(cfg, repo, cid, DRAFT, extra_state={"pending_brief": "write more"})
+    row, after = _open_resume(cfg, monkeypatch, st)
+    assert after["state"] == "SPEC_WRITING" and row["reason"] == "resumed_worktree"
+    assert Q.plan_step(after, Q._Ctx(cfg).profile(after)).kind == "write_spec"
+
+
+@pytest.mark.parametrize("status,marker", [
+    ("rejected", "worktree:rejected"),
+    ("superseded", "worktree:superseded"),
+])
+def test_resume_rejected_or_superseded_spec_mails_once(env, monkeypatch, status, marker):
+    cfg, repo = env
+    cid = add_idea_campaign(cfg, monkeypatch, capture(cfg, status))
+    text = ACCEPTED.replace("status: accepted", f"status: {status}")
+    st = _prep_worktree(cfg, repo, cid, text)
+    _open_resume(cfg, monkeypatch, st)
+    after = _state(cfg, cid)
+    assert after["state"] == "PARKED"
+    assert marker in (after.get("conflict_mail") or [])
+    assert len([m for m in M.read_inbox(cfg, "conductor") if m.get("kind") == "request"]) == 1
+    after.pop("park", None)
+    S.write_state(cfg, cid, after)
+    _open_resume(cfg, monkeypatch, _state(cfg, cid))
+    assert len([m for m in M.read_inbox(cfg, "conductor") if m.get("kind") == "request"]) == 1

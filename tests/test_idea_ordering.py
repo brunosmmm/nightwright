@@ -204,6 +204,36 @@ def test_abandoned_idea_ref_stays_abandoned_when_main_spec_is_done(env, monkeypa
                                   _state(cfg, cd)["project"])
 
 
+def test_idea_after_holds_handed_off_when_merged_campaign_reused_spec_id(env, monkeypatch):
+    """Wait on idea A while A is HANDED_OFF but a newer MERGED row reused the same spec_id."""
+    cfg, repo = env
+    a = capture(cfg, "Prereq")
+    ca = add_idea_campaign(cfg, monkeypatch, a)
+    shared = "SPEC-0446"
+    st = _state(cfg, ca)
+    st["spec_id"] = shared
+    st["state"] = "HANDED_OFF"
+    S.write_state(cfg, ca, st)
+    cb = add_idea_campaign(cfg, monkeypatch, capture(cfg, "merged reuse"))
+    st_b = _state(cfg, cb)
+    st_b["state"] = "MERGED"
+    st_b["created_at"] = "2026-11-08T00:00:01"
+    S.write_state(cfg, cb, st_b)
+    st_a = _state(cfg, ca)
+    st_a["created_at"] = "2026-11-07T00:00:00"
+    S.write_state(cfg, ca, st_a)
+    done_path = repo / "docs/specs/0446-sdk-model-effort-catalog.md"
+    done_path.parent.mkdir(parents=True, exist_ok=True)
+    done_path.write_text("---\nid: SPEC-0446\nstatus: done\n---\n\n", encoding="utf-8")
+    waiter = add_idea_campaign(cfg, monkeypatch, capture(cfg, "waiter"), "--after", a)
+    handed = f"waiting on {ca} (after: campaign {ca} is HANDED_OFF)"
+    blocked = Q.backlog_readiness(cfg, _state(cfg, waiter))[1]
+    assert blocked == [handed]
+    ctx = QT.Ctx(cfg, "conductor")
+    assert ca not in {x[1] for x in ctx.live_specs if x[0] == _state(cfg, waiter)["project"]}
+    assert QT.dependency_wait(blocked, ctx.live_specs, _state(cfg, waiter)["project"])
+
+
 def test_spec_ref_not_found_when_newest_carrier_is_abandoned(env, monkeypatch):
     cfg, _repo = env
     dep = "SPEC-0407"
@@ -305,9 +335,9 @@ def test_idea_ref_holds_when_file_not_done_and_merged_reuses_spec_id(env, monkey
     S.write_state(cfg, newer, st_new)
     _merge(cfg, newer)
     waiter = add_idea_campaign(cfg, monkeypatch, capture(cfg, "waiter"), "--after", a)
-    ready, blocked = Q.backlog_readiness(cfg, _state(cfg, waiter))
-    assert not ready and blocked
-    assert blocked[0].startswith(f"waiting on {dep} (after: {a} ->")
+    want = f"waiting on {ca} (after: campaign {ca} is REVIEWING)"
+    blocked = Q.backlog_readiness(cfg, _state(cfg, waiter))[1]
+    assert blocked == [want]
     assert QT.dependency_wait(blocked, QT.Ctx(cfg, "conductor").live_specs, st["project"])
 
 

@@ -1129,18 +1129,8 @@ def after_met(cfg, state: dict, ref) -> tuple[bool, str]:
                     st = newest.get("state")
                     if st == "MERGED":
                         return True, ""
-                    camp_wait = (f"waiting on {newest['id']} (after: campaign {newest['id']} "
-                                 f"is {st})")
-                    try:
-                        dep_fm, _ = split_frontmatter(
-                            _find_dep_spec(_specs_dir_of(state), spec).read_text(encoding="utf-8"))
-                        file_met, file_why = dependency_met(
-                            _specs_dir_of(state), spec, dep_fm or {}, set())
-                    except (OSError, ValueError):
-                        return False, camp_wait
-                    if file_met:
-                        return False, camp_wait
-                    return False, f"waiting on {spec} (after: {rid} -> {file_why})"
+                    return False, (f"waiting on {newest['id']} (after: campaign {newest['id']} "
+                                   f"is {st})")
                 if "not found" in why:
                     return False, (f"waiting on {newest['id']} (after: campaign {newest['id']} "
                                    f"is {newest.get('state')})")
@@ -1731,11 +1721,16 @@ def worktree_resume_state(state: dict, worktree: Path) -> tuple[str | None, str 
     """Target state for resuming into an existing checkout (SPEC-0458): `(state, error)`."""
     spec = state.get("spec") or {}
     rel = spec.get("rel_path")
-    spec_path = (worktree / rel) if rel else None
     admission = state.get("admission")
     file_id = spec.get("id")
     campaign_spec_id = file_id or state.get("spec_id")
     pending = state.get("pending_brief")
+    wt_resolved = worktree.resolve()
+    spec_path = None
+    if rel:
+        spec_path = (worktree / rel).resolve()
+        if not spec_path.is_relative_to(wt_resolved):
+            return None, f"spec path escapes worktree: {rel}"
     if not rel or spec_path is None or not spec_path.is_file():
         if has_no_spec(state) or admission == "revise_pending":
             return "SPEC_WRITING", None
@@ -1750,6 +1745,8 @@ def worktree_resume_state(state: dict, worktree: Path) -> tuple[str | None, str 
         return None, f"spec file unreadable at {spec_path}: front matter is not a mapping"
     status = str(fm.get("status") or "").strip()
     if status in ("accepted", "in-progress"):
+        if admission == "revise_pending":
+            return "SPEC_WRITING", None
         return "IMPLEMENTING", None
     if status == "proposed" and file_id and not pending:
         return "SPEC_REVIEW", None
@@ -1771,7 +1768,7 @@ def _worktree_conflict_mail_status(err: str) -> str | None:
             return "empty"
         if st.split()[0] in _WORKTREE_CONFLICT_MAIL_STATUSES:
             return st.split()[0]
-    if "unreadable" in err:
+    if err.startswith("spec file unreadable"):
         return "unreadable"
     return None
 
@@ -1821,22 +1818,27 @@ def _do_open_unwrapped(ctx: _Ctx, state: dict) -> StepResult:
                         return res
                     repo["base_sha_at_open"] = base_sha
                 repo["head"] = git.rev_parse(worktree)
+                if kind not in RM.RED_KINDS and not has_no_spec(state):
+                    spec = state.setdefault("spec", {})
+                    rel_p = spec.get("rel_path")
+                    if rel_p:
+                        spec_file = (worktree / rel_p).resolve()
+                        if not spec_file.is_relative_to(worktree.resolve()):
+                            res.error = f"spec path escapes worktree: {rel_p}"
+                            return res
                 target, err = worktree_resume_state(state, worktree)
                 if err:
                     res.error = err
                     mail_st = _worktree_conflict_mail_status(err)
                     if mail_st:
                         _worktree_conflict_mail(ctx.cfg, state, worktree, mail_st)
-                else:
+                elif target is not None:
                     res.resumed_to = target
                     if kind not in RM.RED_KINDS and not has_no_spec(state):
                         spec = state.setdefault("spec", {})
                         rel_p = spec.get("rel_path")
                         if rel_p:
                             spec_file = (worktree / rel_p).resolve()
-                            if not spec_file.is_relative_to(worktree.resolve()):
-                                res.error = f"spec path escapes worktree: {rel_p}"
-                                return res
                             if spec_file.is_file():
                                 cdir = store.campaign_dir(ctx.cfg, state["id"])
                                 snap = cdir / CL.SPEC_AT_OPEN
@@ -1847,7 +1849,8 @@ def _do_open_unwrapped(ctx: _Ctx, state: dict) -> StepResult:
                                                         encoding="utf-8")
                                         spec["sha256_at_open"] = _spec_sha(spec_file)
                                     except OSError:
-                                        pass
+                                        res.error = f"could not write spec snapshot at {snap}"
+                                        res.resumed_to = None
                 return res
         base_sha = git.rev_parse(root, _open_start(root, pcfg, base))
         # the sha, not `<remote>/<base>`: no upstream is set on the campaign branch
