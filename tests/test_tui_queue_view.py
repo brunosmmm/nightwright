@@ -270,9 +270,12 @@ def test_enter_key_on_a_header_row_posts_nothing(tmp_path, monkeypatch):
         async with app.run_test(size=SIZE) as pilot:
             await settle(app, pilot)
             v, t = view(app), view(app).table
+            from nightwright.tui.campaign_detail import OpenCampaign
+
             real = v.post_message
-            sel = type(v).CampaignSelected
-            v.post_message = lambda m: (posted.append(m) if isinstance(m, sel) else None) or real(m)
+            v.post_message = (
+                lambda m: (posted.append(m) if isinstance(m, OpenCampaign) else None) or real(m)
+            )
             header = next(i for i, r in enumerate(v.rows) if r.kind == "header")
             t.move_cursor(row=header)
             await settle(app, pilot)

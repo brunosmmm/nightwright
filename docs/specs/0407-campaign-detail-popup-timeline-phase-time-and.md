@@ -467,6 +467,12 @@ delivered rows are on screen, and they read campaign ids from the mounted queue 
 - `uv run pytest -q tests/test_tui_fixture_harness.py::test_double_click_dispatches_to_the_queue_table tests/test_tui_campaign_detail.py tests/test_tui_campaign_detail_model.py` — 22 passed.
 - Full suite left to gating.
 
+### Test record (2026-11-07, loop 2 gate fix)
+
+- `uv run pytest -q tests/test_tui_queue_view.py::test_enter_key_on_a_header_row_posts_nothing tests/test_tui_queue_view.py tests/test_tui_campaign_detail.py tests/test_tui_campaign_detail_model.py` — 33 passed.
+- Queue Enter spy records `OpenCampaign` instead of `CampaignSelected` (SPEC-0407 enter path).
+- Full suite left to gating.
+
 ### As shipped (2026-11-07)
 
 - `QueueActions` lives in `queue_actions.py` (split from `queue_tab.py` to avoid an import cycle with `campaign_detail.py`).
