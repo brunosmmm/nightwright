@@ -1,7 +1,7 @@
 ---
 id: SPEC-0446
 title: "Real-fixture IdeaDesk Pilot harness and queue-window preparation"
-status: accepted
+status: done
 owner: user
 created: 2026-11-07
 updated: 2026-11-07
@@ -242,36 +242,36 @@ the first hash. The session only looks. `cache_dir` is outside that tree.
 
 ## Acceptance criteria
 
-- [ ] **AC1.** `fixture_cfg(tmp_path)` returns a data dir whose campaign-file sha256 values
+- [x] **AC1.** `fixture_cfg(tmp_path)` returns a data dir whose campaign-file sha256 values
   equal `MANIFEST.json`, with no inode shared with `FIXTURE_DIR`. `org_files`,
   `data_dir`, `config_dir`, `cache_dir`, `specs_dir`, `org_ideas_file`, and
   `org_capture_file` are under `tmp_path`. With `NW_DATA_DIR`, `NW_CONFIG_DIR`, and
   `HOME` pointed at empty sentinel directories, those sentinels gain no files and the
   returned paths stay under `tmp_path`.
-- [ ] **AC2.** Before `prepare_queue_window`, `IdeaDesk` on that cfg, queue tab, 160×48,
+- [x] **AC2.** Before `prepare_queue_window`, `IdeaDesk` on that cfg, queue tab, 160×48,
   has `visible_text` that contains none of the manifest cids and no `delivered (` header.
   The test fails, and does not skip, when wall-clock now is not more than 24 h after
   `2026-11-03T21:14:52-05:00`.
-- [ ] **AC3.** For N manifest cids sorted lexicographically, after
+- [x] **AC3.** For N manifest cids sorted lexicographically, after
   `prepare_queue_window(cfg, now=now)`, campaign `i`'s anchor timestamp equals
   `now - (N - i) hours` within 1 second. `dashboard_payload(..., recent=20, now=now)`
   lists `delivered` youngest-first, and the first id in that list is the
   lexicographically last manifest cid. `rows_from_payload` of that payload has that same
   cid as its first `delivered` data row, and the delivered header count is 8.
-- [ ] **AC4.** For one shifted campaign, the first-to-last ledger `ts` gap is unchanged
+- [x] **AC4.** For one shifted campaign, the first-to-last ledger `ts` gap is unchanged
   within 1 second, and `runner.jsonl` is byte-identical across the shift. Global-log
   lines whose `campaign` and `source.campaign` are not that cid are byte-identical.
   `prepare_queue_window` raises `ValueError` when `data_dir` is inside `FIXTURE_DIR` and
   when `agentic/campaigns/` is missing. The committed fixture's manifest `--check` still
   exits 0.
-- [ ] **AC5.** After `prepare_queue_window`, the Pilot screen's `visible_text` contains
+- [x] **AC5.** After `prepare_queue_window`, the Pilot screen's `visible_text` contains
   `delivered (8)` and the clipped ident of the first mounted `delivered` data row. That
   row's campaign id is the lexicographically last manifest cid, and the mounted
   `delivered` campaign ids are exactly the manifest cids.
-- [ ] **AC6.** `double_click("#queue", offset=(2, 2))` returns `True`, the `Click`
+- [x] **AC6.** `double_click("#queue", offset=(2, 2))` returns `True`, the `Click`
   observed on `#queue` has `chain == 2`, and `len(app.screen_stack)` is unchanged. The
   app is still on the `IdeaDesk` screen.
-- [ ] **AC7.** Campaign files and global logs under the copy are byte-identical after the
+- [x] **AC7.** Campaign files and global logs under the copy are byte-identical after the
   Pilot session (same paths, same sha256). `tests/test_tui_fixture_harness.py` imports
   `textual` unconditionally. `tests/test_no_textual_skips.py` passes.
 
@@ -319,6 +319,17 @@ not run the full suite manually. No Textual skip.
 - `tests/test_tui_real_terminal.py` is not edited.
 - `python3 tools/spec_lint.py` exits 0 after `--write-ledger`.
 
+### Test record (2026-11-07)
+
+- `uv run pytest -q tests/test_tui_fixture_harness.py`: 8 passed in 2.91s. None skipped for a missing Textual. TUI budget ok (file 2.6s, limit 300s). Re-run after the final harness edit, together with the lint tests below: 24 passed in 21.23s (budget file 3.9s).
+- `python3 tools/capture_history_fixture.py --check`: exit 0 (`check: ok (441 files)`).
+- `git status -- tests/fixtures/agentic_history`: no changes.
+- `python3 tools/affected_tests.py --run uv run pytest -q tests/test_history_fixture.py`: 3359 passed, 5 skipped, 12 failed in 1243s. Two failures were `LEDGER.md` stale after the status edit (`test_specs.py::test_all_specs_pass_lint`, `test_export.py::test_internal_spec_lint_unaffected_by_outbox`); both pass after `python3 tools/spec_lint.py --write-ledger` (`spec_lint` exits 0). The other ten are CLI table-width assertions in untouched files (`test_agentic_campaign_runs.py`, `test_agentic_cost_estimate.py`, `test_agentic_dashboard.py`, `test_agentic_queue_visibility.py`, `test_herdr.py`, `test_spec_review_show.py`). The full suite was left to gating.
+
+### As shipped (2026-11-07)
+
+`visible_text` joins `Strip.text.rstrip()` over `app.screen._compositor.render_strips(app.screen.size)`. On Textual 8, `Screen.render_line` is the screen widget's own background and does not include the queue table, so it never contains `delivered (8)`. The compositor strips are the in-process screen the pilot is looking at, and they expose the same `Strip.text`.
+
 ## Rollout / migration
 
 1. Add `tests/tui_harness.py` (`fixture_cfg`, `prepare_queue_window`, `visible_text`).
@@ -329,11 +340,11 @@ not run the full suite manually. No Textual skip.
 
 ## Definition of done
 
-- [ ] Acceptance criteria all met.
-- [ ] Test plan executed; automated tests pass (`python3 tools/affected_tests.py --run uv run pytest -q`, plus the files touched). Manual steps performed and noted.
-- [ ] No regressions.
-- [ ] Spec body updated to match what shipped.
-- [ ] `docs/LEDGER.md` regenerated (`python3 tools/spec_lint.py --write-ledger`) and `python3 tools/spec_lint.py` exits 0.
+- [x] Acceptance criteria all met.
+- [x] Test plan executed; automated tests pass (`python3 tools/affected_tests.py --run uv run pytest -q`, plus the files touched). Manual steps performed and noted.
+- [x] No regressions.
+- [x] Spec body updated to match what shipped.
+- [x] `docs/LEDGER.md` regenerated (`python3 tools/spec_lint.py --write-ledger`) and `python3 tools/spec_lint.py` exits 0.
 
 ## Open questions
 
