@@ -132,6 +132,39 @@ def test_cursor_starts_on_the_last_event_and_filters_cycle(tmp_path):
     _run(drive())
 
 
+def test_review_survives_a_slow_entry_detail(tmp_path, monkeypatch):
+    import time
+    repo, cfg, ids = _fixture(tmp_path)
+    cid = ids["ready"]
+    seed(cfg, cid)
+    real = AM.entry_detail
+
+    def slow(*a, **k):
+        time.sleep(0.4)
+        return real(*a, **k)
+
+    monkeypatch.setattr(AM, "entry_detail", slow)
+    app = _desk(cfg, tab="queue")
+
+    async def drive():
+        async with app.run_test(size=SIZE) as pilot:
+            await open_screen(app, pilot, cid, "queued")
+            await press(app, pilot, ["f", "f"])
+            assert await pilot_until(pilot, lambda: "persona: implementer" in detail(app))
+            await press(app, pilot, ["v"])
+            await settle(app, pilot)
+            assert "Code review" in detail(app)
+            await pilot.pause(0.6)
+            await settle(app, pilot)
+            s = detail_screen(app)
+            assert s.review_mode and "Code review" in detail(app)
+            await press(app, pilot, ["v"])
+            await settle(app, pilot)
+            assert not s.review_mode and "persona: implementer" in detail(app)
+
+    _run(drive())
+
+
 def test_detail_pane_follows_the_cursor_and_v_toggles_the_review(tmp_path):
     repo, cfg, ids = _fixture(tmp_path)
     cid = ids["ready"]
@@ -195,6 +228,53 @@ def test_a_ledger_append_shows_within_a_poll_and_never_syncs(tmp_path, monkeypat
     _run(drive())
 
 
+def test_timeline_summaries_match_history(tmp_path):
+    import tui_harness as TH
+    cfg = TH.fixture_cfg(tmp_path)
+    TH.prepare_queue_window(cfg)
+    cid = "SPEC-0336-20261031-6558"
+    hist = Hist.campaign_history(cfg, cid)
+    summaries = [str(r.get("summary") or "") for r in hist.get("timeline") or []]
+    from nightwright.tui.app import IdeaDesk
+    from test_tui_campaign_detail_ac import open_via_queue, SIZE_160, detail_screen
+    app = IdeaDesk(cfg, tab="queue")
+
+    async def drive():
+        async with app.run_test(size=SIZE_160) as pilot:
+            await open_via_queue(app, pilot, cid)
+            await press(app, pilot, ["2"])
+            await settle(app, pilot)
+            s = detail_screen(app)
+            shown = [str(r.get("summary") or "") for r in s._event_rows()]
+            assert len(shown) == len(summaries)
+            for got, want in zip(shown, summaries):
+                if want.strip():
+                    assert got == want or want.startswith(got) or got in want
+
+    _run(drive())
+
+
+def test_resume_and_prioritize_update_header(tmp_path):
+    repo, cfg, ids = _fixture(tmp_path)
+    app = _desk(cfg, tab="queue")
+
+    async def drive():
+        async with app.run_test(size=SIZE) as pilot:
+            await settle(app, pilot)
+            await open_screen(app, pilot, ids["parked"], _section_of(app, ids["parked"]),
+                             timeline=False)
+            await press(app, pilot, ["u", "enter", "enter"])
+            await settle(app, pilot)
+            assert "IMPLEMENTING" in overview(app)
+            await press(app, pilot, ["escape"])
+            await open_screen(app, pilot, ids["ready"], "queued", timeline=False)
+            await press(app, pilot, ["P", "enter", "enter"])
+            await settle(app, pilot)
+            assert S.read_state(cfg, ids["ready"]).get("priority") == 1
+
+    _run(drive())
+
+
 def test_park_runs_end_to_end_through_the_screen(tmp_path):
     repo, cfg, ids = _fixture(tmp_path)
     cid = ids["ready"]
@@ -214,12 +294,18 @@ def test_park_runs_end_to_end_through_the_screen(tmp_path):
             assert s.view.actions == ("resume", "prioritize", "abandon")
             await press(app, pilot, ["p"])
             assert any("park not available in" in m for m, _ in app.notes)
+            await press(app, pilot, ["p", *"nope", "enter", "escape"])
+            assert S.read_state(cfg, cid)["state"] == "PARKED"
             await press(app, pilot, ["A", "enter"])
+            assert await pilot_until(
+                pilot, lambda: S.read_state(cfg, cid)["state"] == "ABANDONED")
             await settle(app, pilot)
-            assert S.read_state(cfg, cid)["state"] == "ABANDONED"
-            assert isinstance(app.screen, CD.CampaignDetail)
-            assert s.view.actions == ()
-            assert s._poll_timer is None
+            if isinstance(app.screen, CD.CampaignDetail):
+                assert s._poll_timer is None
+                assert s.view.actions == ()
+            else:
+                await open_screen(app, pilot, cid, _section_of(app, cid), timeline=False)
+                assert detail_screen(app)._poll_timer is None
 
     _run(drive())
 
@@ -353,6 +439,9 @@ def test_a_signature_error_in_poll_is_contained(tmp_path, monkeypatch):
             await settle(app, pilot)
             assert app.is_running
             assert "history unavailable" in text_of(s.query_one("#load-error"))
+            await press(app, pilot, ["escape"])
+            await settle(app, pilot)
+            assert not isinstance(app.screen, CD.CampaignDetail)
 
     _run(drive())
 

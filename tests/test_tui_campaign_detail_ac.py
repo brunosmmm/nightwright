@@ -133,11 +133,21 @@ def test_cli_merged_campaign_opens(tmp_path, monkeypatch):
 
 
 def test_focus_run_record_and_unknown(tmp_path):
-    _, cfg, ids = _fixture(tmp_path)
-    cid = ids["impl"]
-    hist = Hist.campaign_history(cfg, cid)
+    cfg = TH.fixture_cfg(tmp_path)
+    TH.prepare_queue_window(cfg)
+    cid = None
+    hist = None
+    for c in _manifest_cids():
+        h = Hist.campaign_history(cfg, c)
+        if h.get("records") and h.get("runs"):
+            cid, hist = c, h
+            break
+    assert cid and hist
     run_id = hist["runs"][0]["run_id"]
-    app = _desk(cfg, tab="queue")
+    record_id = hist["records"][0]["id"]
+    app = IdeaDesk(cfg, tab="queue")
+    app.notes = []
+    app.notify = lambda msg, **k: app.notes.append((msg, k))
 
     async def drive():
         async with app.run_test(size=SIZE) as pilot:
@@ -145,12 +155,19 @@ def test_focus_run_record_and_unknown(tmp_path):
             app.open_campaign_detail(cid, focus={"tab": "runs", "run": run_id})
             await settle(app, pilot)
             s = detail_screen(app)
+            assert s.query_one("#detail-body", TabbedContent).active == "tab-runs"
             assert f"placeholder: runs ({run_id})" in str(
                 s.query_one("#placeholder-text").content)
             await press(app, pilot, ["escape"])
+            app.open_campaign_detail(cid, focus={"tab": "records", "record": record_id})
+            await settle(app, pilot)
+            assert f"placeholder: records ({record_id})" in str(
+                detail_screen(app).query_one("#placeholder-records").content)
+            await press(app, pilot, ["escape"])
             app.open_campaign_detail(cid, focus={"tab": "records", "record": "nope-id"})
             await settle(app, pilot)
-            assert isinstance(app.screen, CampaignDetail)
+            d = detail_screen(app)
+            assert d.query_one("#detail-body", TabbedContent).active == "tab-overview"
             notes = [m for m, _ in app.notes]
             assert any("not found: nope-id" in m for m in notes)
 
@@ -170,17 +187,19 @@ def test_popup_frame_and_pane_keys(tmp_path):
             s = detail_screen(app)
             frame = s.query_one("#detail-frame")
             w, h = app.size.width, app.size.height
-            assert abs(frame.size.width - round(0.96 * w)) <= 3
-            assert abs(frame.size.height - round(0.94 * h)) <= 3
+            region = frame.region
+            assert abs(region.width - round(0.96 * w)) <= 1
+            assert abs(region.height - round(0.94 * h)) <= 1
             tabs = app.query_one("#tabs")
             assert tabs.active == "tab-queue"
-            panes = []
-            for key in ("1", "2"):
+            for want in ("tab-overview", "tab-timeline"):
+                detail_screen(app).action_tab(want)
+                await settle(app, pilot)
+                assert s.query_one("#detail-body", TabbedContent).active == want
+            for key in "12345":
                 await press(app, pilot, [key])
                 await settle(app, pilot)
-                panes.append(s.query_one("#detail-body", TabbedContent).active)
-            assert panes == ["tab-overview", "tab-timeline"]
-            assert tabs.active == "tab-queue"
+                assert tabs.active == "tab-queue"
             assert "placeholder: runs" in str(s.query_one("#placeholder-text").content)
             assert "placeholder: records" in str(s.query_one("#placeholder-records").content)
             assert "placeholder: mail" in str(s.query_one("#placeholder-mail").content)
@@ -242,6 +261,14 @@ def test_multi_loop_brackets_and_separators(tmp_path):
     TH.prepare_queue_window(cfg)
     app = IdeaDesk(cfg, tab="queue")
 
+    def _group_starts(s):
+        return s._loop_starts()
+
+    def _at_group_start(s):
+        i = s.table.cursor_row
+        assert not s.shown[i].get("separator")
+        return i in _group_starts(s)
+
     async def drive():
         async with app.run_test(size=SIZE_160) as pilot:
             assert await pilot_until(
@@ -258,24 +285,39 @@ def test_multi_loop_brackets_and_separators(tmp_path):
             assert any("── loop" in (lb or "") for lb in seps)
             for idx in s._data_indexes():
                 assert not s.shown[idx].get("separator")
-            await press(app, pilot, ["g"])
-            await settle(app, pilot)
-            loop0 = s.shown[s.table.cursor_row].get("loop", 0)
+            starts = _group_starts(s)
+            assert len(starts) >= 2
+            last_idx = s._data_indexes()[-1]
+            assert s.table.cursor_row == last_idx
             await press(app, pilot, ["right_bracket"])
             await settle(app, pilot)
-            assert s.shown[s.table.cursor_row].get("loop", 0) > loop0
-            loop1 = s.shown[s.table.cursor_row].get("loop", 0)
+            assert s.table.cursor_row == last_idx
+            s.table.move_cursor(row=starts[0])
+            await settle(app, pilot)
+            await press(app, pilot, ["right_bracket"])
+            await settle(app, pilot)
+            assert _at_group_start(s)
+            assert s.table.cursor_row == starts[1]
+            mid = starts[1] + 2
+            s.table.move_cursor(row=mid)
+            await settle(app, pilot)
             await press(app, pilot, ["left_bracket"])
             await settle(app, pilot)
-            assert s.shown[s.table.cursor_row].get("loop", 0) < loop1
+            assert _at_group_start(s)
+            assert s.table.cursor_row == starts[0]
 
     _run(drive())
 
 
 def test_terminal_idle_no_extra_model_calls(tmp_path, monkeypatch):
+    import builtins
+    import os
+    from nightwright.agentic import store as St
+
     _, cfg, ids = _fixture(tmp_path)
     cid = ids["merged"]
-    counts = {"sig": 0, "load": 0}
+    counts = {"sig": 0, "load": 0, "tail": 0, "stat": 0, "open": 0}
+    camp_root = str(St.campaign_dir(cfg, cid).resolve())
 
     def sig(*a, **k):
         counts["sig"] += 1
@@ -285,8 +327,28 @@ def test_terminal_idle_no_extra_model_calls(tmp_path, monkeypatch):
         counts["load"] += 1
         return AM.load_detail(*a, **k)
 
+    def tail(*a, **k):
+        counts["tail"] += 1
+        return AM.stream_tail(*a, **k)
+
+    real_stat = os.stat
+    real_open = builtins.open
+
+    def stat(path, *a, **k):
+        if camp_root in str(Path(path).resolve()):
+            counts["stat"] += 1
+        return real_stat(path, *a, **k)
+
+    def tracked_open(path, *a, **k):
+        if camp_root in str(Path(path).resolve()):
+            counts["open"] += 1
+        return real_open(path, *a, **k)
+
     monkeypatch.setattr(AM, "detail_signature", sig)
     monkeypatch.setattr(AM, "load_detail", load)
+    monkeypatch.setattr(AM, "stream_tail", tail)
+    monkeypatch.setattr(os, "stat", stat)
+    monkeypatch.setattr(builtins, "open", tracked_open)
     app = _desk(cfg, tab="queue")
 
     async def drive():
@@ -295,11 +357,14 @@ def test_terminal_idle_no_extra_model_calls(tmp_path, monkeypatch):
             select(app, "delivered", cid)
             await press(app, pilot, ["enter"])
             await settle(app, pilot)
-            sig0, load0 = counts["sig"], counts["load"]
+            sig0, load0, tail0 = counts["sig"], counts["load"], counts["tail"]
             qv = app.query_one("#queue-view", QueueView)
             qv.deactivate()
+            counts["stat"] = counts["open"] = 0
             await pilot.pause(2.6)
             assert counts["sig"] == sig0 and counts["load"] == load0
+            assert counts["tail"] == tail0
+            assert counts["stat"] == 0 and counts["open"] == 0
             assert detail_screen(app)._poll_timer is None
 
     _run(drive())
@@ -336,3 +401,155 @@ def test_popup_tour_no_writes(tmp_path):
 
     _run(drive())
     assert _hashes(data) == before
+
+
+def _manifest_cids() -> list[str]:
+    import json
+    import history_scale as HS
+    manifest = json.loads((HS.FIXTURE_DIR / "MANIFEST.json").read_text(encoding="utf-8"))
+    return sorted(entry["cid"] for entry in manifest["campaigns"])
+
+
+def _queue_row_index(rows, group, campaign=None, *, kind="campaign"):
+    if kind == "header":
+        return next(i for i, r in enumerate(rows) if r.kind == "header" and r.group == group)
+    return next(i for i, r in enumerate(rows) if r.kind == "campaign"
+                and r.group == group and r.campaign == campaign)
+
+
+async def _double_click_row(pilot, row: int) -> None:
+    await pilot.double_click("#queue", offset=(2, row + 1))
+
+
+def test_queue_enter_double_click_reload_dismiss(tmp_path, monkeypatch):
+    cfg = TH.fixture_cfg(tmp_path)
+    TH.prepare_queue_window(cfg)
+    cids = _manifest_cids()
+    cid_a, cid_b = cids[-2], cids[-1]
+    app = IdeaDesk(cfg, tab="queue")
+
+    async def drive():
+        async with app.run_test(size=SIZE_160) as pilot:
+            assert await pilot_until(pilot, lambda: "delivered" in TH.visible_text(app))
+            qv = app.query_one("#queue-view", QueueView)
+            rows = qv.rows
+            ia = _queue_row_index(rows, "delivered", cid_a)
+            ib = _queue_row_index(rows, "delivered", cid_b)
+            ih = _queue_row_index(rows, "delivered", kind="header")
+            before_stack = len(app.screen_stack)
+            qv.table.move_cursor(row=ia)
+            await press(app, pilot, ["enter"])
+            await settle(app, pilot)
+            assert detail_screen(app).campaign_id == cid_a
+            await press(app, pilot, ["escape"])
+            await settle(app, pilot)
+            qv.table.move_cursor(row=ib)
+            await _double_click_row(pilot, ib)
+            await settle(app, pilot)
+            assert detail_screen(app).campaign_id == cid_b
+            await press(app, pilot, ["escape"])
+            await settle(app, pilot)
+            qv.table.move_cursor(row=ih)
+            await _double_click_row(pilot, ih)
+            await settle(app, pilot)
+            assert len(app.screen_stack) == before_stack
+            qv.table.move_cursor(row=ia)
+            await press(app, pilot, ["enter"])
+            await settle(app, pilot)
+            opened = detail_screen(app).campaign_id
+            qv.reload()
+            await settle(app, pilot)
+            await press(app, pilot, ["escape"])
+            await settle(app, pilot)
+            assert view(app).current_row().campaign == opened
+            qv.table.move_cursor(row=ia)
+            await press(app, pilot, ["enter"])
+            await settle(app, pilot)
+            opened = detail_screen(app).campaign_id
+            qv.reload()
+            await settle(app, pilot)
+            await press(app, pilot, ["q"])
+            await settle(app, pilot)
+            assert view(app).current_row().campaign == opened
+            idx_before = qv.table.cursor_row
+            qv.table.move_cursor(row=ia)
+            await press(app, pilot, ["enter"])
+            await settle(app, pilot)
+            gone = detail_screen(app).campaign_id
+            real_load = AM.load_queue
+
+            def drop_opened(cfg):
+                rows, hdr = real_load(cfg)
+                rows = [r for r in rows
+                        if not (r.kind == "campaign" and r.campaign == gone)]
+                return rows, hdr
+
+            monkeypatch.setattr(AM, "load_queue", drop_opened)
+            qv.reload()
+            await settle(app, pilot)
+            await press(app, pilot, ["escape"])
+            await settle(app, pilot)
+            assert qv.table.cursor_row == idx_before
+
+    _run(drive())
+
+
+def _fixture_timeline_record(cfg) -> tuple[str, dict]:
+    for cid in _manifest_cids():
+        hist = Hist.campaign_history(cfg, cid)
+        for row in hist.get("timeline") or []:
+            if row.get("seq") is None and row.get("ref"):
+                return cid, row
+    pytest.skip("no seq-null timeline row in fixture")
+
+
+def test_seq_null_record_detail(tmp_path):
+    cfg = TH.fixture_cfg(tmp_path)
+    TH.prepare_queue_window(cfg)
+    cid, row = _fixture_timeline_record(cfg)
+    hist = Hist.campaign_history(cfg, cid)
+    record_id = row["ref"]
+    records = {r["id"]: r for r in hist.get("records") or []}
+    app = IdeaDesk(cfg, tab="queue")
+
+    async def drive():
+        async with app.run_test(size=SIZE) as pilot:
+            await open_via_queue(app, pilot, cid)
+            s = detail_screen(app)
+            ref = row.get("ref")
+            for i, shown in enumerate(s.shown):
+                if not shown.get("separator") and shown.get("ref") == ref:
+                    s.table.move_cursor(row=i)
+                    break
+            await settle(app, pilot)
+            text = detail(app)
+            if record_id in records:
+                rec = records[record_id]
+                assert record_id in text
+                for key in ("kind", "severity", "title"):
+                    if rec.get(key):
+                        assert str(rec[key]) in text
+            else:
+                assert f"record {record_id} not in history" in text
+
+    _run(drive())
+
+
+def test_history_with_gaps_opens(tmp_path):
+    cfg = TH.fixture_cfg(tmp_path)
+    TH.prepare_queue_window(cfg)
+    cid = None
+    for c in _manifest_cids():
+        if Hist.campaign_history(cfg, c).get("gaps"):
+            cid = c
+            break
+    if cid is None:
+        pytest.skip("no fixture campaign with history gaps")
+    app = IdeaDesk(cfg, tab="queue")
+
+    async def drive():
+        async with app.run_test(size=SIZE) as pilot:
+            await open_via_queue(app, pilot, cid)
+            assert isinstance(app.screen, CampaignDetail)
+
+    _run(drive())

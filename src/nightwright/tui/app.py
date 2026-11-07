@@ -1036,6 +1036,9 @@ class IdeaDesk(App):
 
     def action_tab(self, name: str) -> None:
         """Select a tab by id (`1`..`5`); loading and focus hang off `TabActivated`."""
+        if isinstance(self.screen, CampaignDetail) and name in self._DESK_TAB_KEYS:
+            self.screen.action_tab(self._DESK_TAB_KEYS[name])
+            return
         self.query_one("#tabs", TabbedContent).active = name
 
     # Idea-scoped actions act on the selected idea of the ideas list, which is hidden on any
@@ -1045,12 +1048,16 @@ class IdeaDesk(App):
         "toggle_tree", "refresh_desk", "log", "summary", "questions", "capture", "retitle",
         "explored", "metadata", "clock_toggle", "close_idea"})
 
+    _DESK_TAB_KEYS = {
+        "tab-ideas": "tab-overview",
+        "tab-hub": "tab-timeline",
+        "tab-queue": "tab-runs",
+        "tab-mailbox": "tab-records",
+        "tab-events": "tab-mail",
+    }
+
     def check_action(self, action: str, parameters: tuple) -> bool | None:
-        on_detail = any(isinstance(s, CampaignDetail) for s in self.screen_stack)
-        if (on_detail and action == "tab" and parameters
-                and parameters[0] in {"tab-ideas", "tab-hub", "tab-queue",
-                                      "tab-mailbox", "tab-events"}):
-            return False
+        on_detail = isinstance(self.screen, CampaignDetail)
         if action in self._IDEA_ACTIONS and (
                 self._active_tab != "tab-ideas" or on_detail):
             return False

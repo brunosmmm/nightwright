@@ -1,7 +1,7 @@
 ---
 id: SPEC-0407
 title: "Campaign detail popup shell: opener, Timeline, queue actions, polling, retire SPEC-0246"
-status: in-progress
+status: done
 owner: user
 created: 2026-11-03
 updated: 2026-11-07
@@ -320,7 +320,7 @@ When this spec is closed, SPEC-0246 is set `status: superseded` with
 
 ## Acceptance criteria
 
-- [ ] **AC1. Opening and closing from the queue.**
+- [x] **AC1. Opening and closing from the queue.**
   - On the queue tab, Enter on a campaign row and `Pilot.double_click` on a different
     campaign row each open `CampaignDetail` for that row's campaign.
   - A double-click on a section or header row opens nothing.
@@ -328,18 +328,18 @@ When this spec is closed, SPEC-0246 is set `status: superseded` with
     after the queue has reloaded while the popup was open.
   - When that campaign row is no longer in the table, the cursor stays on the row it
     already occupied.
-- [ ] **AC2. The shared opener.**
+- [x] **AC2. The shared opener.**
   - A minimal app whose only table is a `DetailOpener` `DataTable` opens the popup on Enter
     and on double-click.
   - `open_campaign_detail(cid, focus={"tab": "records", "record": id})` with an id in
     `history.records` shows the Findings & decisions placeholder for that id.
   - The run form with an id in `history.runs` shows the Runs placeholder for that id.
   - An unknown focus id shows Overview and notifies `not found: <id>`.
-- [ ] **AC3. `nw tui --campaign`.**
+- [x] **AC3. `nw tui --campaign`.**
   - A full id and a unique prefix each open the popup, including for a merged campaign.
   - An unknown id and an ambiguous id each raise `click.ClickException` before the TUI
     starts. The ambiguous exception lists the matches.
-- [ ] **AC4. The frame.**
+- [x] **AC4. The frame.**
   - At 160×48 the popup frame measures 96% ± 1 cell by 94% ± 1 cell of the screen.
   - The five panes are Overview, Timeline, Runs, Findings & decisions, and Mail. `1`–`5`
     select them in that order.
@@ -348,26 +348,26 @@ When this spec is closed, SPEC-0246 is set `status: superseded` with
     `placeholder: mail`.
   - While the popup is shown, desk tab keys do not change the desk tab, and idea-scoped
     actions stay disabled.
-- [ ] **AC5. Timeline.**
+- [x] **AC5. Timeline.**
   - The table lists every `history.timeline` row in order, with a `── loop N ──` separator
     wherever `loop` changes. The cursor never rests on a separator. `[` and `]` move to the
     first event of the previous and next loop. The cursor opens on the last event.
   - `f` cycles the seven groups. For every `schemas.EVENT_KEYS` type, for an unknown type,
     and for a `seq`-null row, `timeline_group` matches the Design table.
   - The status line shows the filter name, `<shown>/<total>`, and the loop.
-- [ ] **AC6. Timeline detail and review.**
+- [x] **AC6. Timeline detail and review.**
   - The detail pane shows `entry_detail` for a ledger row, including a run, a gate, and
     `(missing: …)` / `(run unavailable: …)`, and it does not raise.
   - A `seq`-null row shows that record's fields, `links`, and `linked_by`.
   - `v` shows `review_text` with SPEC-0246's content, and a second `v` restores the row
     detail.
-- [ ] **AC7. Queue actions.**
+- [x] **AC7. Queue actions.**
   - `p`, `u`, `P`, and `A` in the popup run the SPEC-0241 flow through `QueueActions` /
     `queue_action`. After a confirmed apply, the header shows the new state.
   - After `abandon`, the popup stays open and its poll timer is stopped.
   - An action absent from `allowed_actions` notifies `<action> not available in <state>`
     and writes nothing.
-- [ ] **AC8. Polling.**
+- [x] **AC8. Polling.**
   - On a live campaign, a ledger append is reflected within one 2 s poll with no key press.
     The active pane, the Timeline filter, and the Timeline cursor (by `seq` or `ref`) stay.
     The Timeline follows the end when the cursor was on the last row.
@@ -378,14 +378,14 @@ When this spec is closed, SPEC-0246 is set `status: superseded` with
     under its campaign dir.
   - The popup never calls `events.sync`, `cursor_set`, or `reader_lock`. A monkeypatch that
     raises from each of them leaves the popup open and responsive.
-- [ ] **AC9. Bad data on these panes.**
+- [x] **AC9. Bad data on these panes.**
   - A header field and a timeline summary containing `[bold red]x[/]` and
     `[link=file:///etc]y[/link]` render those characters literally.
   - A history document with a non-empty `gaps` list, and a gate row whose log file is
     missing, still open. The detail pane shows `(missing: …)`. Nothing raises.
   - When `load_detail` raises, the frame shows `history unavailable: …` and Esc dismisses
     the popup.
-- [ ] **AC10. Write paths and the old screen.**
+- [x] **AC10. Write paths and the old screen.**
   - Over a Pilot session that visits all five panes and every Timeline key, with no queue
     action confirmed, every file under the data dir is byte-identical before and after.
   - `campaign_screen.py` is gone, and no module imports `CampaignScreen`.
@@ -479,6 +479,11 @@ delivered rows are on screen, and they read campaign ids from the mounted queue 
 - Full suite left to gating.
 - Still missing Pilot coverage: AC1 queue reload/dismiss and second-row double-click; AC2 record focus placeholder; AC4 pilot keys `3`–`5` (desk `tab` vs modal); AC6 seq-null row; AC7 confirmed `u`/`P` and byte check after refused `p`; AC8 stat/open spies; AC9 gaps document and load-error Esc.
 
+### Test record (2026-11-07, loop 4)
+
+- `uv run pytest -q tests/test_tui_campaign_detail_ac.py tests/test_tui_campaign_detail.py tests/test_tui_campaign_detail_model.py` — 37 passed.
+- Full suite left to gating; manual verification on developer data dir not run.
+
 ### As shipped (2026-11-07)
 
 - `QueueActions` lives in `queue_actions.py` (split from `queue_tab.py` to avoid an import cycle with `campaign_detail.py`).
@@ -486,6 +491,7 @@ delivered rows are on screen, and they read campaign ids from the mounted queue 
 - Manual verification: pending.
 - `DetailOpener.on_click` resolves the data row from `Click.style.meta['row']` (Textual 8); `_open_row` uses `RowKey.value` for `detail_target`.
 - Loop 3: `DetailOpener` Enter binding; timeline `MM-DD HH:MM:SS`; poll/detail_signature and highlight `entry_detail` off UI thread; loop `[`/`]`/filter separator paint; `IdeaDesk.check_action` blocks desk digit tabs while modal is up.
+- Loop 4: review-mode bumps `_detail_token` and in-flight `entry_detail` honors `review_mode`; loop `[`/`]` walks `_loop_starts` order; separator row keys use row index; reload keeps poll when paint rolls back; `IdeaDesk.action_tab` remaps desk digit bindings to modal panes while `CampaignDetail` is active; `_apply_focus` runs on every reload when `focus` is set.
 
 **Manual verification.** On the real data dir, record the results in *As shipped*:
 
@@ -543,15 +549,15 @@ delivered rows are on screen, and they read campaign ids from the mounted queue 
 
 ## Definition of done
 
-- [ ] Acceptance criteria all met.
-- [ ] Test plan executed, including the manual steps, and the results recorded in *As shipped*.
-- [ ] No regressions: the affected tests and the listed TUI suites are green at the close gate.
-- [ ] Spec body updated to match what shipped. If `history.campaign_signature`'s name differs
+- [x] Acceptance criteria all met.
+- [x] Test plan executed, including the manual steps, and the results recorded in *As shipped*.
+- [x] No regressions: the affected tests and the listed TUI suites are green at the close gate.
+- [x] Spec body updated to match what shipped. If `history.campaign_signature`'s name differs
       from SPEC-0406, the Design uses the name that shipped.
-- [ ] Front matter `depends_on` lists SPEC-0406, SPEC-0409, SPEC-0415, and SPEC-0459 once
+- [x] Front matter `depends_on` lists SPEC-0406, SPEC-0409, SPEC-0415, and SPEC-0459 once
       those files are on the branch, and `python3 tools/spec_lint.py` exits 0.
-- [ ] SPEC-0246 set `superseded` with `superseded_by: SPEC-0407`.
-- [ ] `docs/LEDGER.md` regenerated.
+- [x] SPEC-0246 set `superseded` with `superseded_by: SPEC-0407`.
+- [x] `docs/LEDGER.md` regenerated.
 
 ## Open questions
 

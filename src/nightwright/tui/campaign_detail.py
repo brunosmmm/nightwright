@@ -13,7 +13,7 @@ from textual import on
 from textual.app import ComposeResult
 from textual.binding import Binding
 from textual.containers import Vertical, VerticalScroll
-from textual.events import Click
+from textual.events import Click, Key
 from textual.message import Message
 from textual.screen import ModalScreen
 from textual.widgets import DataTable, Footer, Static, TabbedContent, TabPane
@@ -29,6 +29,19 @@ _GROUP_STYLE = {
     "transitions": "cyan", "runs": "", "gates": "magenta", "findings": "yellow",
     "notes": "dim", "decisions": "green",
 }
+
+
+class _TimelineTable(DataTable):
+    """Forwards digit keys to pane switches while the table has focus."""
+
+    def on_key(self, event: Key) -> None:
+        pane = {"1": "tab-overview", "2": "tab-timeline", "3": "tab-runs",
+                "4": "tab-records", "5": "tab-mail"}.get(event.character or "")
+        screen = self.app.screen
+        if pane and isinstance(screen, CampaignDetail):
+            screen.action_tab(pane)
+            event.prevent_default()
+            event.stop()
 
 
 class OpenCampaign(Message):
@@ -167,7 +180,7 @@ class CampaignDetail(QueueActions, ModalScreen):
                     yield Static("", id="overview-text")
                 with TabPane("Timeline", id="tab-timeline"):
                     with Vertical(id="timeline-pane"):
-                        yield DataTable(id="campaign-timeline", cursor_type="row",
+                        yield _TimelineTable(id="campaign-timeline", cursor_type="row",
                                         zebra_stripes=False)
                         yield Static("", id="campaign-status")
                         with VerticalScroll(id="campaign-detail"):
@@ -278,7 +291,7 @@ class CampaignDetail(QueueActions, ModalScreen):
             self.query_one("#load-error", Static).update(Text(""))
             self.query_one("#overview-text", Static).update(
                 Text("\n").join(detail.header_lines))
-            if initial:
+            if initial or self.focus:
                 self._apply_focus()
             try:
                 self.paint(previous)
@@ -287,7 +300,8 @@ class CampaignDetail(QueueActions, ModalScreen):
                     self.view = previous_view
                     self._signature = previous_view.signature
                 self._show_timeline_error(e)
-            if detail.terminal:
+            live = self.view is not None and not self.view.terminal
+            if not live:
                 self._stop_poll()
             elif not was_terminal or initial:
                 self._start_poll()
@@ -354,7 +368,7 @@ class CampaignDetail(QueueActions, ModalScreen):
             if row.get("separator"):
                 table.add_row(Text(""), Text(""), Text(""), Text(""),
                               Text(row.get("label", ""), style="bold dim"), Text(""),
-                              key=f"sep:{row.get('loop', i)}")
+                              key=f"sep:{i}")
                 continue
             seq_cell = "" if row.get("seq") is None else str(row["seq"])
             group = AM.timeline_group(row)
@@ -416,6 +430,7 @@ class CampaignDetail(QueueActions, ModalScreen):
         if self.view is None:
             return
         if self.review_mode:
+            self._detail_token += 1
             pane.update(self.view.review)
             return
         row = self.current_row()
@@ -433,9 +448,10 @@ class CampaignDetail(QueueActions, ModalScreen):
             self._detail_token += 1
             token = self._detail_token
             seq, ref = row.get("seq"), row.get("ref")
-            self.run_worker(self._entry_detail_async(entry, seq, ref, token),
-                            name="campaign-entry-detail", group="campaign-entry-detail",
-                            exclusive=True)
+            async def work() -> None:
+                await self._entry_detail_async(entry, seq, ref, token)
+            self.run_worker(work, name="campaign-entry-detail",
+                            group="campaign-entry-detail", exclusive=True)
         except Exception as e:
             pane.update(Text(f"(detail unavailable: {e})", style="red"))
 
@@ -444,7 +460,7 @@ class CampaignDetail(QueueActions, ModalScreen):
             text = await asyncio.to_thread(AM.entry_detail, self.cfg, self.campaign_id, entry)
         except Exception as e:
             text = Text(f"(detail unavailable: {e})", style="red")
-        if token != self._detail_token:
+        if token != self._detail_token or self.review_mode:
             return
         row = self.current_row()
         if row is None or row.get("seq") != seq or row.get("ref") != ref:
@@ -472,12 +488,14 @@ class CampaignDetail(QueueActions, ModalScreen):
         self.show_detail()
 
     def action_tab(self, tab_id: str) -> None:
-        self.query_one("#detail-body", TabbedContent).active = tab_id
+        tabs = self.query_one("#detail-body", TabbedContent)
+        tabs.active = tab_id
+        tabs.refresh(layout=True)
         if tab_id == "tab-timeline":
             self.table.focus()
             self.show_detail()
         else:
-            self.query_one("#detail-body", TabbedContent).focus()
+            tabs.focus()
 
     def action_next_tab(self) -> None:
         tabs = self.query_one("#detail-body", TabbedContent)
@@ -511,43 +529,36 @@ class CampaignDetail(QueueActions, ModalScreen):
                 prev = loop
         return starts
 
+    def _loop_group_index(self, starts: list[int], here: int) -> int:
+        group = 0
+        for i, s in enumerate(starts):
+            if s <= here:
+                group = i
+        return group
+
     def action_prev_loop(self) -> None:
         if self._active_tab() != "tab-timeline":
             return
         self._cursor_direction = -1
         starts = self._loop_starts()
-        if not starts:
+        if len(starts) < 2:
             return
         here = self.table.cursor_row
-        loop_start = starts[0]
-        for s in starts:
-            if s <= here:
-                loop_start = s
-        current_loop = self.shown[loop_start].get("loop", 0)
-        target = None
-        for s in starts:
-            if self.shown[s].get("loop", 0) < current_loop:
-                target = s
-        if target is not None:
-            self.table.move_cursor(row=target, scroll=True)
+        group = self._loop_group_index(starts, here)
+        if group > 0:
+            self.table.move_cursor(row=starts[group - 1], scroll=True)
 
     def action_next_loop(self) -> None:
         if self._active_tab() != "tab-timeline":
             return
         self._cursor_direction = 1
         starts = self._loop_starts()
-        if not starts:
+        if len(starts) < 2:
             return
         here = self.table.cursor_row
-        loop_start = starts[0]
-        for s in starts:
-            if s <= here:
-                loop_start = s
-        current_loop = self.shown[loop_start].get("loop", 0)
-        for s in starts:
-            if self.shown[s].get("loop", 0) > current_loop:
-                self.table.move_cursor(row=s, scroll=True)
-                return
+        group = self._loop_group_index(starts, here)
+        if group + 1 < len(starts):
+            self.table.move_cursor(row=starts[group + 1], scroll=True)
 
     def action_first(self) -> None:
         self._cursor_direction = -1
