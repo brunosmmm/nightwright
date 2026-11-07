@@ -713,6 +713,7 @@ progress. This is the single place to see *what has been decided* and *what is i
 | [SPEC-0451](./specs/0451-tail-marks-spoken-lines.md) | The run tail marks the agent's spoken lines | feature | done | — | 2026-11-07 |
 | [SPEC-0452](./specs/0452-tail-renders-spoken-verdicts.md) | The run tail renders a spoken verdict as a review | feature | done | — | 2026-11-07 |
 | [SPEC-0453](./specs/0453-queue-watch-title-inside-the-card.md) | Queue watch shows the campaign title inside the card | feature | done | — | 2026-11-07 |
+| [SPEC-0454](./specs/0454-live-idea-after-does-not-reread-ideas.md) | A live idea after-wait does not reread the idea corpus | feature | done | — | 2026-11-07 |
 
 ## Superseded / rejected
 

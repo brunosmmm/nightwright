@@ -953,16 +953,28 @@ def after_met(cfg, state: dict, ref) -> tuple[bool, str]:
             return False, f"after {rid}: campaign {rid} abandoned"
         return False, f"waiting on {rid} (after: campaign {rid} is {st})"
     if kind == "idea":
-        task = _idea_task(cfg, rid)
-        if task is None:
-            return False, f"after {rid}: idea not found"
-        spec = (task.properties.get("SPEC") or "").strip()
+        # A live or merged campaign answers the wait by itself. Reading the idea file
+        # here reparsed the whole corpus once per queued item on every watch refresh
+        # (SPEC-0454). The file is only needed when no campaign can answer.
         hits = [st for st in store.list_campaigns(cfg, include_terminal=True,
                                                   project=state.get("project"))
                 if st.get("kind") == "idea" and _canon_id(_idea_id_of(st) or "") == _canon_id(rid)]
         newest = hits[0] if hits else None
         if (newest or {}).get("state") == "MERGED":
             return True, ""
+        if newest is not None and newest.get("state") != "ABANDONED":
+            spec = str(newest.get("spec_id") or "").strip()
+            if spec:
+                met, why, _live = _spec_after_met(cfg, state, spec)
+                if met:
+                    return True, ""
+                return False, f"waiting on {spec} (after: {rid} -> {why})"
+            return False, (f"waiting on {rid} (after: campaign {newest['id']} "
+                           f"is {newest.get('state')})")
+        task = _idea_task(cfg, rid)
+        if task is None:
+            return False, f"after {rid}: idea not found"
+        spec = (task.properties.get("SPEC") or "").strip()
         if spec:
             met, why, _live = _spec_after_met(cfg, state, spec)
             if met:
@@ -971,9 +983,7 @@ def after_met(cfg, state: dict, ref) -> tuple[bool, str]:
                 return False, f"waiting on {spec} (after: {rid} -> {why})"
         if newest is None:
             return False, f"waiting on {rid} (after: no campaign queued for {rid})"
-        if newest.get("state") == "ABANDONED":
-            return False, f"after {rid}: campaign {newest['id']} abandoned"
-        return False, f"waiting on {rid} (after: campaign {newest['id']} is {newest.get('state')})"
+        return False, f"after {rid}: campaign {newest['id']} abandoned"
     met, why, _live = _spec_after_met(cfg, state, rid)
     if met:
         return True, ""

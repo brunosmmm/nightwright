@@ -43,6 +43,25 @@ def test_after_idea_waits_then_is_ready_when_prerequisite_merges(env, monkeypatc
     assert Q.backlog_readiness(cfg, _state(cfg, cb)) == (True, [])
 
 
+def test_live_idea_after_does_not_reread_the_idea_file(env, monkeypatch):
+    """SPEC-0454: a prerequisite that already has a campaign is answered from that
+    campaign. The idea corpus is not loaded."""
+    cfg, _repo = env
+    a, b = capture(cfg, "First"), capture(cfg, "Second")
+    add_idea_campaign(cfg, monkeypatch, a)
+    cb = add_idea_campaign(cfg, monkeypatch, b, "--after", a)
+    calls = []
+    real = Q._idea_task
+
+    def wrapped(cfg, idea_id):
+        calls.append(idea_id)
+        return real(cfg, idea_id)
+
+    monkeypatch.setattr(Q, "_idea_task", wrapped)
+    ready, blocked = Q.backlog_readiness(cfg, _state(cfg, cb))
+    assert not ready and calls == [] and "campaign" in blocked[0]
+
+
 def test_after_spec_and_campaign_refs(env, monkeypatch):
     cfg, repo = env
     a, b, c = capture(cfg, "A"), capture(cfg, "B"), capture(cfg, "C")
