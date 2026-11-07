@@ -82,6 +82,26 @@ def test_sdk_selection_splits_effort_into_the_model_parameter(tmp_path):
     assert CM.sdk_selection("grok-4.7-high")["id"] == "grok-4.7"
 
 
+def test_sdk_selection_uses_each_model_familys_parameter():
+    assert CM.sdk_selection("claude-sonnet-5-5-high") == {
+        "id": "claude-sonnet-5-5",
+        "params": [{"id": "reasoning_effort", "value": "high"}]}
+    assert CM.sdk_selection("claude-opus-5-5-max") == {
+        "id": "claude-opus-5-5", "params": [{"id": "effort", "value": "max"}]}
+    assert CM.sdk_selection("grok-4.6-low") == {
+        "id": "grok-4.6", "params": [{"id": "effort", "value": "low"}]}
+    assert CM.sdk_selection("gpt-5.4-xhigh") == {
+        "id": "gpt-5.4", "params": [{"id": "reasoning", "value": "extra-high"}]}
+    assert CM.sdk_selection("claude-sonnet-4-6-xhigh") == {
+        "id": "claude-sonnet-4-6", "params": [{"id": "effort", "value": "max"}]}
+    assert CM.sdk_selection("kimi-k3-medium") == {
+        "id": "kimi-k3", "params": [{"id": "reasoning", "value": "high"}]}
+    assert CM.sdk_selection("composer-2.5-high") == {"id": "composer-2.5", "params": []}
+    assert CM.sdk_selection("gpt-5.4-mini-high")["id"] == "gpt-5.4-mini"
+    assert CM.sdk_selection("not-a-catalog-model-high") == {
+        "id": "not-a-catalog-model-high", "params": []}
+
+
 def test_mapped_model_only_translates_when_runner_is_cursor(tmp_path, monkeypatch):
     monkeypatch.delenv("NW_AGENTIC_RUNNER", raising=False)
     cfg = {"config_dir": str(tmp_path), "agentic": {"runner": "claude"}}

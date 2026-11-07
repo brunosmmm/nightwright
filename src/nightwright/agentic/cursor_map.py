@@ -20,15 +20,25 @@ from .profiles import EFFORTS, MODEL_ALIASES, MODEL_RE, deep_merge
 SCHEMA_ID = "nw.cursor_map.v1"
 MAP_FILENAME = "cursor_map.yaml"
 _BUILTIN = Path(__file__).resolve().parent / MAP_FILENAME
-# cursor-agent takes one id with the effort baked in (`grok-4.7-high`). The SDK
-# takes the base id plus a parameter, and the parameter name is not the same on
-# every model (the account's model list: grok-4.7 uses reasoning_effort,
-# gpt-5.6-sol uses reasoning). `xhigh` is first so it is not parsed as `high`.
-_SDK_EFFORT_PARAM = {
-    "grok-4.7": "reasoning_effort",
-    "gpt-5.6-sol": "reasoning",
+SDK_MODELS_FILENAME = "sdk_models.yaml"
+_SDK_MODELS = Path(__file__).resolve().parent / SDK_MODELS_FILENAME
+# Rank used when a requested effort is not in that model's allowed values.
+# `xhigh` and `extra-high` are the same step; some models spell it one way.
+_EFFORT_RANK = {
+    "none": 0, "minimal": 1, "low": 2, "medium": 3, "high": 4,
+    "xhigh": 5, "extra-high": 5, "max": 6,
 }
-_SDK_EFFORT_SUFFIXES = ("xhigh", "medium", "high", "low", "max")
+_EFFORT_PREFER = {
+    "none": ("none", "minimal", "low"),
+    "minimal": ("minimal", "none", "low"),
+    "low": ("low", "minimal", "medium", "none"),
+    "medium": ("medium", "high", "low"),
+    "high": ("high", "medium", "max", "xhigh", "extra-high"),
+    "xhigh": ("xhigh", "extra-high", "max", "high"),
+    "extra-high": ("extra-high", "xhigh", "max", "high"),
+    "max": ("max", "xhigh", "extra-high", "high"),
+}
+_sdk_models_cache = None
 _FILE_KEYS = frozenset({"schema", "defaults", "aliases", "alias_map"})
 _CLAUDE_MODEL_RE = MODEL_RE
 
@@ -201,23 +211,65 @@ def map_launch_model(model, effort=None, cfg=None, *, project_root=None) -> str:
     return map_model(model, effort, cfg, project_root=project_root)
 
 
-def sdk_selection(model_id) -> dict:
+def load_sdk_models():
+    """Model id → ``{effort_param, efforts}`` from the checked-in account catalog.
+
+    ``effort_param`` is absent when the model has no effort knob. ``efforts``
+    are the values that parameter accepts.
+    """
+    global _sdk_models_cache
+    if _sdk_models_cache is None:
+        doc = yaml.safe_load(_SDK_MODELS.read_text(encoding="utf-8")) or {}
+        models = doc.get("models") or {}
+        if not isinstance(models, dict):
+            raise ValueError(f"{SDK_MODELS_FILENAME}: models must be a mapping")
+        _sdk_models_cache = models
+    return _sdk_models_cache
+
+
+def _legal_effort(requested, allowed):
+    """An effort value this model accepts. Nearest rank when the word itself is not."""
+    allowed = [v for v in (allowed or []) if v in _EFFORT_RANK]
+    if not allowed:
+        return None
+    for candidate in _EFFORT_PREFER.get(requested, (requested,)):
+        if candidate in allowed:
+            return candidate
+    rank = _EFFORT_RANK.get(requested, 4)
+    return min(allowed, key=lambda v: (abs(_EFFORT_RANK[v] - rank), -_EFFORT_RANK[v]))
+
+
+def sdk_selection(model_id, catalog=None) -> dict:
     """The SDK model selection for a mapped Cursor id.
 
-    ``grok-4.7-high`` becomes ``{id: grok-4.7, params: [{id: reasoning_effort,
-    value: high}]}``. ``gpt-5.6-sol-xhigh`` becomes ``{id: gpt-5.6-sol, params:
-    [{id: reasoning, value: xhigh}]}``. An id that is not one of those bases
-    plus an effort suffix is passed through with no parameters.
+    The catalog is the account's ``Cursor.models.list()`` snapshot. A trailing
+    effort word is that model's effort parameter, and the parameter name is
+    whatever the model declares (``reasoning_effort``, ``reasoning``, or
+    ``effort``). ``gpt-5.4-xhigh`` becomes ``reasoning=extra-high`` because
+    that model spells the step ``extra-high``. A model with no effort parameter
+    drops the suffix and is sent as the bare id. Context, fast, and thinking
+    are left to the model's default. An id that matches no catalog entry is
+    passed through unchanged.
     """
     raw = str(model_id or "").strip()
-    for effort in _SDK_EFFORT_SUFFIXES:
-        suffix = f"-{effort}"
-        if not raw.endswith(suffix):
+    catalog = load_sdk_models() if catalog is None else catalog
+    if raw in catalog:
+        return {"id": raw, "params": []}
+    for mid in sorted(catalog, key=len, reverse=True):
+        prefix = f"{mid}-"
+        if not raw.startswith(prefix):
             continue
-        base = raw[: -len(suffix)]
-        param = _SDK_EFFORT_PARAM.get(base)
-        if param:
-            return {"id": base, "params": [{"id": param, "value": effort}]}
+        suffix = raw[len(prefix):]
+        if suffix not in _EFFORT_RANK:
+            return {"id": raw, "params": []}
+        spec = catalog.get(mid) or {}
+        param = spec.get("effort_param")
+        if not param:
+            return {"id": mid, "params": []}
+        value = _legal_effort(suffix, spec.get("efforts"))
+        if value is None:
+            return {"id": mid, "params": []}
+        return {"id": mid, "params": [{"id": param, "value": value}]}
     return {"id": raw, "params": []}
 
 
