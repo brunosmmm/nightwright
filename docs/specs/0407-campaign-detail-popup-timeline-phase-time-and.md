@@ -489,6 +489,12 @@ delivered rows are on screen, and they read campaign ids from the mounted queue 
 - `uv run pytest -q tests/test_tui_campaign_detail_ac.py tests/test_tui_campaign_detail.py tests/test_tui_campaign_detail_model.py tests/test_tui_queue_view.py::test_enter_key_on_a_header_row_posts_nothing` — 39 passed.
 - Full suite left to gating; manual verification on developer data dir not run.
 
+### Test record (2026-11-07, implementer loop 1)
+
+- `uv run pytest -q tests/test_tui_queue_tab.py::test_enter_posts_campaign_selected_and_opens_the_campaign_screen tests/test_tui_queue_view.py::test_enter_key_on_a_header_row_posts_nothing` — 2 passed.
+- `test_enter_posts_campaign_selected_and_opens_the_campaign_screen` asserts one `OpenCampaign` (not `QueueView.open_selected` / `CampaignSelected`) per SPEC-0407 enter path.
+- Full suite left to gating.
+
 ### As shipped (2026-11-07, loop 0)
 
 - `_apply_focus` runs only on the initial load; poll reloads keep pane and Timeline filter.

@@ -690,33 +690,31 @@ def test_an_action_not_allowed_notifies_and_opens_no_prompt(tmp_path):
 
 
 def test_enter_posts_campaign_selected_and_opens_the_campaign_screen(tmp_path):
-    from nightwright.tui.campaign_detail import CampaignDetail
+    from nightwright.tui.campaign_detail import CampaignDetail, OpenCampaign
 
     repo, cfg, ids = _fixture(tmp_path)
     app = _desk(cfg, tab="queue")
-    seen = []
-    from nightwright.tui.queue_tab import QueueView
-    real = QueueView.open_selected
-
-    def spy(self):
-        seen.append(self.current_row().campaign)
-        real(self)
-    QueueView.open_selected = spy
+    posted = []
 
     async def drive():
         async with app.run_test(size=SIZE) as pilot:
             await settle(app, pilot)
+            v = view(app)
+            real = v.post_message
+            v.post_message = lambda m: posted.append(m) or real(m)
             select(app, "queued", ids["ready"])
             await press(app, pilot, ["enter"])
             await settle(app, pilot)
             assert isinstance(app.screen, CampaignDetail)
             assert app.screen.campaign_id == ids["ready"]
+            opens = [m for m in posted if isinstance(m, OpenCampaign)]
+            assert len(opens) == 1
+            assert opens[0].campaign_id == ids["ready"]
+            assert opens[0].focus is None
+            assert opens[0].origin is v
+            assert not [m for m in posted if type(m).__name__ == "CampaignSelected"]
 
-    try:
-        _run(drive())
-    finally:
-        QueueView.open_selected = real
-    assert seen == [ids["ready"]]
+    _run(drive())
 
 
 def test_an_empty_queue_shows_the_placeholder(tmp_path):
