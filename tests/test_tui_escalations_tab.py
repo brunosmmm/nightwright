@@ -396,8 +396,8 @@ def test_enter_opens_the_campaign_screen(tmp_path):
     async def body(app, pilot):
         await press(app, pilot, ["enter"])
         await settle(app, pilot)
-        from nightwright.tui.campaign_screen import CampaignScreen
-        assert isinstance(app.screen, CampaignScreen)
+        from nightwright.tui.campaign_detail import CampaignDetail
+        assert isinstance(app.screen, CampaignDetail)
         assert app.screen.campaign_id == "SPEC-0001-hd"
     drive_with(cfg, body)
 

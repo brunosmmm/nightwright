@@ -539,7 +539,7 @@ def test_timer_pauses_when_the_tab_is_left(tmp_path, monkeypatch):
 # --- enter (AC7) ----------------------------------------------------------------------------
 
 def test_enter_opens_the_campaign_screen_or_focuses_the_pane(tmp_path):
-    from nightwright.tui.campaign_screen import CampaignScreen
+    from nightwright.tui.campaign_detail import CampaignDetail
     repo, cfg, ids = _fixture(tmp_path)
     ask(cfg, frm="conductor", to="human", kind="info", text="no campaign here")
     ask(cfg, frm="conductor", to="human", kind="info", text="with campaign",
@@ -558,7 +558,7 @@ def test_enter_opens_the_campaign_screen_or_focuses_the_pane(tmp_path):
             await settle(app, pilot)
             await pilot.press("enter")
             await settle(app, pilot)
-            assert app.focused is v.pane and not isinstance(app.screen, CampaignScreen)
+            assert app.focused is v.pane and not isinstance(app.screen, CampaignDetail)
             assert not [m for m in posted if type(m).__name__ == "CampaignSelected"]
             await pilot.press("escape")
             await settle(app, pilot)
@@ -569,7 +569,7 @@ def test_enter_opens_the_campaign_screen_or_focuses_the_pane(tmp_path):
             await settle(app, pilot)
             sel = [m for m in posted if type(m).__name__ == "CampaignSelected"]
             assert [m.campaign_id for m in sel] == [ids["ready"]]
-            assert isinstance(app.screen, CampaignScreen)
+            assert isinstance(app.screen, CampaignDetail)
 
     _run(drive())
 

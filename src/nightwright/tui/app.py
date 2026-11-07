@@ -20,7 +20,7 @@ from textual.widgets import (DataTable, Footer, Header, Input, Label, Static, Ta
 
 from .. import report as R
 from . import model as M
-from .campaign_screen import CampaignScreen
+from .campaign_detail import CampaignDetail, OpenCampaign
 from .events_tab import EventsView
 from .mailbox_tab import MailboxView
 from .queue_tab import QueueView
@@ -502,7 +502,7 @@ class IdeaDesk(App):
         self.call_after_refresh(self.reload)
         self.set_interval(1.5, self._check_external_changes)   # SPEC-0128
         if self.campaign:
-            self.push_screen(CampaignScreen(self.cfg, self.campaign))
+            self.open_campaign_detail(self.campaign)
 
     def on_resize(self, event) -> None:
         """Re-clip to the new width without re-reading org."""
@@ -1048,7 +1048,7 @@ class IdeaDesk(App):
     def check_action(self, action: str, parameters: tuple) -> bool | None:
         if action in self._IDEA_ACTIONS and (
                 self._active_tab != "tab-ideas"
-                or any(isinstance(s, CampaignScreen) for s in self.screen_stack)):
+                or any(isinstance(s, CampaignDetail) for s in self.screen_stack)):
             return False
         return True
 
@@ -1084,10 +1084,24 @@ class IdeaDesk(App):
         else:
             self.query_one("#list", DataTable).focus()
 
+    @on(OpenCampaign)
+    def _open_campaign(self, event: OpenCampaign) -> None:
+        self.open_campaign_detail(event.campaign_id, focus=event.focus, origin=event.origin)
+
     @on(QueueView.CampaignSelected)
     def _campaign_selected(self, event: QueueView.CampaignSelected) -> None:
-        """`enter` on a queue row: the campaign detail screen (SPEC-0246)."""
-        self.push_screen(CampaignScreen(self.cfg, event.campaign_id))
+        """Legacy queue message: same modal as `OpenCampaign` (SPEC-0407)."""
+        queue = self.query_one("#queue-view", QueueView)
+        self.open_campaign_detail(event.campaign_id, origin=queue)
+
+    def open_campaign_detail(self, cid, focus=None, origin=None) -> None:
+        """Push `CampaignDetail` and restore the opener's queue cursor on dismiss."""
+
+        def done(_result) -> None:
+            if origin is not None and hasattr(origin, "select_campaign"):
+                origin.select_campaign(cid)
+
+        self.push_screen(CampaignDetail(self.cfg, cid, focus=focus), done)
 
     def load_hub(self) -> None:
         """Fill the hub tab from `hub_payload`. Read-only: no writer is reachable from here."""

@@ -16,7 +16,6 @@ from textual.message import Message
 from textual.widgets import DataTable, Static
 
 from .. import report as R
-from ..agentic import store
 from . import agentic_model as AM
 
 POLL_S = 2.0
@@ -33,89 +32,11 @@ _GROUP_STYLE = {"needs you": "bold red", "conductor": "bold yellow", "closing": 
                 "waiting": "bold", "queued": "bold", "delivered": "bold dim"}
 
 
-class QueueActions:
-    """The prompt → plan → confirm → apply flow of the four queue actions (SPEC-0241), shared by
-    the queue table's view and the campaign screen (SPEC-0246). The host provides `cfg`,
-    `run_worker`, `app` and `reload()`."""
-
-    _busy = False                           # an action flow is open
-
-    def run_queue_action(self, action: str, campaign_id: str, state: str, actions) -> None:
-        if action not in actions:
-            self.app.notify(f"{action} not available for {state}")
-            return
-        if self._busy:
-            return
-        self._busy = True
-        self.run_worker(self._action_flow(action, campaign_id), name="queue-action")
-
-    async def _action_flow(self, action: str, cid: str) -> None:
-        try:
-            await self._flow(action, cid)
-        except (ValueError, OSError) as e:
-            self.app.notify(escape(str(e)), severity="error")
-        except Exception as e:      # an unexpected error must not end the app
-            self.app.notify(f"queue action failed: {escape(repr(e))}", severity="error")
-        finally:
-            self._busy = False
-
-    async def _flow(self, action: str, cid: str) -> None:
-        from .app import ChoiceScreen, TextPrompt
-        cfg = self.cfg
-        kw: dict = {}
-        if action == "park":
-            reason = await self.app.push_screen_wait(TextPrompt("park reason"))
-            if reason is None:
-                return
-            if not reason.strip():
-                self.app.notify("park needs a reason", severity="error")
-                return
-            kw["reason"] = reason.strip()
-        elif action == "resume":
-            note = await self.app.push_screen_wait(TextPrompt("resume note (optional)"))
-            if note is None:
-                return
-            kw["note"] = note.strip() or None
-        elif action == "prioritize":
-            current = store.read_state(cfg, cid).get("priority")
-            pick = await self.app.push_screen_wait(ChoiceScreen(
-                "priority", [str(n) for n in range(1, 6)], str(current) if current else ""))
-            if pick is None:
-                return
-            kw["priority"] = int(pick)
-        plan = await asyncio.to_thread(AM.plan_queue_action, cfg, action, cid, **kw)
-        choices = ["yes", "cancel"]
-        if action == "abandon" and plan.get("worktree_present"):
-            choices = ["abandon", "abandon, keep worktree", "cancel"]
-        elif action == "abandon":
-            choices = ["abandon", "cancel"]
-        pick = await self.app.push_screen_wait(
-            ChoiceScreen(self._summary(action, cid, plan), choices))
-        if pick is None or pick == "cancel":
-            return
-        if pick == "abandon, keep worktree":
-            kw["keep"] = True               # queue_action re-plans with keep_worktree=True
-        result = await asyncio.to_thread(AM.queue_action, cfg, action, cid, **kw)
-        if action == "park" and result.get("state") != "PARKED":
-            self.app.notify(f"park requested for {cid} (applies after the running step)")
-        else:
-            self.app.notify(f"{action} {cid} done")
-        self.reload()
-
-    @staticmethod
-    def _summary(action: str, cid: str, plan: dict) -> str:
-        if action == "park":
-            return f"park {cid} ({plan['mode']}): {plan['note']}"
-        if action == "resume":
-            return (f"resume {cid} → {plan['to']}"
-                    + (" (waits for a slot)" if plan.get("waits_for_slot") else ""))
-        if action == "prioritize":
-            return f"priority {plan['from']} → {plan['to']}"
-        return (f"abandon {cid}"
-                + (f", removes worktree {plan['worktree']}" if plan.get("remove_worktree") else ""))
+from .campaign_detail import DetailOpener, OpenCampaign
+from .queue_actions import QueueActions
 
 
-class QueueTable(DataTable):
+class QueueTable(DetailOpener, DataTable):
     """The focused widget of the tab: its bindings shadow the desk's (`p`, `r`, `j`/`k`, …)."""
 
     BINDINGS = [
@@ -126,7 +47,7 @@ class QueueTable(DataTable):
         Binding("P", "act('prioritize')", "priority"),
         Binding("A", "act('abandon')", "abandon"),
         Binding("r", "refresh_queue", "refresh"),
-        Binding("enter", "open", "open", show=False),
+        Binding("enter", "open_selected", "open", show=False),
     ]
 
     def __init__(self, view, **kw):
@@ -139,8 +60,17 @@ class QueueTable(DataTable):
     def action_refresh_queue(self) -> None:
         self.view.reload()
 
-    def action_open(self) -> None:
+    def action_open_selected(self) -> None:
         self.view.open_selected()
+
+    def detail_target(self, row_key):
+        key = str(row_key or "")
+        if not key or key.startswith("#"):
+            return None
+        for r in self.view.rows:
+            if r.kind == "campaign" and f"{r.group}|{r.campaign}" == key:
+                return (r.campaign, None)
+        return None
 
     # --- header rows are never the cursor row (SPEC-0410) ----------------------------------
 
@@ -354,10 +284,16 @@ class QueueView(QueueActions, Vertical):
 
     # --- enter ---------------------------------------------------------------------------
 
+    def select_campaign(self, cid: str) -> None:
+        for i, r in enumerate(self.rows):
+            if r.kind == "campaign" and r.campaign == cid:
+                self.table.move_cursor(row=i)
+                return
+
     def open_selected(self) -> None:
         row = self.current_row()
         if row:
-            self.post_message(self.CampaignSelected(row.campaign, row.title))
+            self.post_message(OpenCampaign(row.campaign, None, self))
 
     # --- actions -------------------------------------------------------------------------
 

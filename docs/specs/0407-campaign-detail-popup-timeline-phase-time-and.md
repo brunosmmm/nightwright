@@ -10,6 +10,7 @@ parent: SPEC-0405
 source_idea: IDEA-887
 tags: [tui, agentic, observability]
 supersedes: [SPEC-0246]
+depends_on: [SPEC-0406, SPEC-0409, SPEC-0415, SPEC-0459]
 ---
 
 ## Context
@@ -454,6 +455,18 @@ delivered rows are on screen, and they read campaign ids from the mounted queue 
   - **No writes (AC10).** sha256 of every file under the harness data dir before and after
     a session that visits all five panes and the Timeline keys with no confirm, plus an
     import check that `nightwright.tui.campaign_screen` and `CampaignScreen` are gone.
+
+### Test record (2026-11-07)
+
+- `uv run pytest -q tests/test_tui_campaign_detail_model.py tests/test_tui_campaign_detail.py tests/test_tui_queue_tab.py tests/test_tui_escalations_tab.py tests/test_tui_events_tab.py tests/test_tui_mailbox_tab.py tests/test_tui_fixture_harness.py tests/test_tui_campaign_model.py` — 163 passed.
+- Full suite left to gating; manual verification steps not run on the developer data dir.
+- Not yet automated: harness double-click opener (AC1), minimal `DetailOpener` app (AC2), frame sizing (AC4), `[`/`]` loop jumps, idle stat/open spies (AC8), `load_detail` load-error Pilot, no-write sha256 tour (AC10).
+
+### As shipped (2026-11-07)
+
+- `QueueActions` lives in `queue_actions.py` (split from `queue_tab.py` to avoid an import cycle with `campaign_detail.py`).
+- Queue unavailable-action notify text uses `not available in <state>` (SPEC-0407 AC7).
+- Manual verification: pending.
 
 **Manual verification.** On the real data dir, record the results in *As shipped*:
 

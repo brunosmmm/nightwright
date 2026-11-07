@@ -1,7 +1,8 @@
 ---
 id: SPEC-0246
 title: "TUI campaign detail screen: header, filterable ledger timeline, runs, gates and reviews"
-status: done
+status: superseded
+superseded_by: SPEC-0407
 owner: user
 created: 2026-10-25
 updated: 2026-10-25

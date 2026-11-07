@@ -598,12 +598,11 @@ def test_enter_posts_campaign_selected_only_with_a_campaign(tmp_path):
             await press(app, pilot, ["enter"])
             await settle(app, pilot)
             assert app.notes == []
-            assert app.screen.__class__.__name__ != "CampaignScreen"
+            assert app.screen.__class__.__name__ != "CampaignDetail"
             v.table.move_cursor(row=0)
             await press(app, pilot, ["enter"])
             await settle(app, pilot)
-            # SPEC-0246 replaced the CLI hint with the campaign screen
-            assert app.screen.__class__.__name__ == "CampaignScreen"
+            assert app.screen.__class__.__name__ == "CampaignDetail"
             assert app.screen.campaign_id == "SPEC-0001-a"
 
     _run(drive())

@@ -679,17 +679,19 @@ def test_an_action_not_allowed_notifies_and_opens_no_prompt(tmp_path):
                               ("A", "abandon")):
                 app.notes.clear()
                 await act(app, pilot, "delivered", ids["merged"], [key])
-                assert app.notes[0][0] == f"{name} not available for MERGED"
+                assert app.notes[0][0] == f"{name} not available in MERGED"
                 assert len(app.screen_stack) == 1
             app.notes.clear()
             await act(app, pilot, "queued", ids["ready"], ["u"])
-            assert app.notes[0][0] == "resume not available for QUEUED"
+            assert app.notes[0][0] == "resume not available in QUEUED"
             assert snapshot(cfg, ids["merged"]) == before
 
     _run(drive())
 
 
 def test_enter_posts_campaign_selected_and_opens_the_campaign_screen(tmp_path):
+    from nightwright.tui.campaign_detail import CampaignDetail
+
     repo, cfg, ids = _fixture(tmp_path)
     app = _desk(cfg, tab="queue")
     seen = []
@@ -707,8 +709,7 @@ def test_enter_posts_campaign_selected_and_opens_the_campaign_screen(tmp_path):
             select(app, "queued", ids["ready"])
             await press(app, pilot, ["enter"])
             await settle(app, pilot)
-            # SPEC-0246 replaced the CLI hint with the campaign screen
-            assert app.screen.__class__.__name__ == "CampaignScreen"
+            assert isinstance(app.screen, CampaignDetail)
             assert app.screen.campaign_id == ids["ready"]
 
     try:

@@ -162,7 +162,7 @@ progress. This is the single place to see *what has been decided* and *what is i
   - [x] [SPEC-0242](./specs/0242-wt-spec-review-show-and-wt-spec-reviews.md) wt spec review --show and wt spec reviews: read stored reviews without re-running — done
   - [x] [SPEC-0243](./specs/0243-outbound-spec-reviews-use-the-target-project-checkout.md) Outbound spec reviews use the target project's checkout; admission recorded on the campaign — done
   - [x] [SPEC-0244](./specs/0244-adoption-clears-a-stale-index-lock-before-collecting.md) Adoption clears a stale .git/index.lock left by a killed implementer before collecting — done
-  - [x] [SPEC-0246](./specs/0246-tui-campaign-detail-screen.md) TUI campaign detail screen: header, filterable ledger timeline, runs, gates and reviews — done
+  - [x] [SPEC-0246](./specs/0246-tui-campaign-detail-screen.md) TUI campaign detail screen: header, filterable ledger timeline, runs, gates and reviews — superseded
   - [x] [SPEC-0247](./specs/0247-divergence-detection-in-the-implementation-loop.md) Divergence detection in the implementation loop: park diverging, conductor triages, rework as an outcome — done
   - [x] [SPEC-0248](./specs/0248-reliability-follow-ups-flaky-timing-tests-and-error-handling.md) Reliability follow-ups from review: flaky timing tests and error-handling gaps — done
   - [x] [SPEC-0249](./specs/0249-tui-mailbox-tab.md) TUI mailbox tab: inboxes, threads unanswered-first, reply and send as human — done
@@ -531,7 +531,6 @@ progress. This is the single place to see *what has been decided* and *what is i
 | [SPEC-0242](./specs/0242-wt-spec-review-show-and-wt-spec-reviews.md) | wt spec review --show and wt spec reviews: read stored reviews without re-running | feature | done | M9: agentic workflow | 2026-10-25 |
 | [SPEC-0243](./specs/0243-outbound-spec-reviews-use-the-target-project-checkout.md) | Outbound spec reviews use the target project's checkout; admission recorded on the campaign | feature | done | M9: agentic workflow | 2026-10-25 |
 | [SPEC-0244](./specs/0244-adoption-clears-a-stale-index-lock-before-collecting.md) | Adoption clears a stale .git/index.lock left by a killed implementer before collecting | feature | done | M9: agentic workflow | 2026-10-26 |
-| [SPEC-0246](./specs/0246-tui-campaign-detail-screen.md) | TUI campaign detail screen: header, filterable ledger timeline, runs, gates and reviews | feature | done | M9: agentic workflow | 2026-10-25 |
 | [SPEC-0247](./specs/0247-divergence-detection-in-the-implementation-loop.md) | Divergence detection in the implementation loop: park diverging, conductor triages, rework as an outcome | feature | done | M9: agentic workflow | 2026-10-26 |
 | [SPEC-0248](./specs/0248-reliability-follow-ups-flaky-timing-tests-and-error-handling.md) | Reliability follow-ups from review: flaky timing tests and error-handling gaps | feature | done | M9: agentic workflow | 2026-10-26 |
 | [SPEC-0249](./specs/0249-tui-mailbox-tab.md) | TUI mailbox tab: inboxes, threads unanswered-first, reply and send as human | feature | done | M9: agentic workflow | 2026-10-26 |
@@ -742,6 +741,7 @@ progress. This is the single place to see *what has been decided* and *what is i
 | [SPEC-0177](./specs/0177-wt-conduct-skill-docs-and-dogfood-bootstrap-for.md) | wt-conduct skill, docs and dogfood bootstrap for wt itself | feature | superseded | M9: agentic workflow | 2026-10-25 |
 | [SPEC-0218](./specs/0218-agentic-workflow-docs-refresh.md) | Agentic workflow docs refresh: a guide, a coherent reference, concepts and front door | feature | superseded | M8: product documentation | 2026-10-25 |
 | [SPEC-0241](./specs/0241-tui-queue-tab-over-the-queue-dashboard.md) | TUI queue tab: live view of the agentic queue with park, resume, prioritize and abandon | feature | superseded | M9: agentic workflow | 2026-11-03 |
+| [SPEC-0246](./specs/0246-tui-campaign-detail-screen.md) | TUI campaign detail screen: header, filterable ledger timeline, runs, gates and reviews | feature | superseded | M9: agentic workflow | 2026-10-25 |
 | [SPEC-0296](./specs/0296-pluggable-reviewer-personas-fully-defined-project.md) | Pluggable reviewer personas, defined in the project repo: declarations and registry | feature | superseded | M9: agentic workflow | 2026-11-02 |
 | [SPEC-0331](./specs/0331-remote-gates-over-ssh-on-one-worker-host.md) | Remote gates over SSH on one worker host | feature | superseded | — | 2026-10-31 |
 | [SPEC-0332](./specs/0332-worker-owned-async-jobs.md) | Worker-owned async jobs | feature | superseded | — | 2026-11-01 |

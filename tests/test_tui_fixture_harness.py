@@ -369,7 +369,7 @@ def test_double_click_dispatches_to_the_queue_table(tmp_path):
             assert list(app.screen_stack) == before
             assert isinstance(app, IdeaDesk)
             assert app.screen is before[-1]
-            assert not any(screen.__class__.__name__ == "CampaignScreen"
+            assert not any(screen.__class__.__name__ == "CampaignDetail"
                            for screen in app.screen_stack)
 
     try:

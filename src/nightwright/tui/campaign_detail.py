@@ -1,0 +1,528 @@
+"""Campaign detail popup (SPEC-0407): modal shell, history timeline, queue actions, polling.
+
+Replaces SPEC-0246's pushed `CampaignScreen` with a near-full modal and five tabs. Overview and
+Timeline are live; Runs, Findings & decisions, and Mail are placeholders until follow-on specs.
+"""
+import asyncio
+
+from rich.markup import escape
+from rich.text import Text
+
+from textual import on
+from textual.app import ComposeResult
+from textual.binding import Binding
+from textual.containers import Vertical, VerticalScroll
+from textual.events import Click
+from textual.message import Message
+from textual.screen import ModalScreen
+from textual.widgets import DataTable, Footer, Static, TabbedContent, TabPane
+
+from .. import report as R
+from . import agentic_model as AM
+from .queue_actions import QueueActions
+
+POLL_S = 2.0
+_FIXED_COST = 52          # seq + time + phase + by + kind + padding
+_TAB_IDS = ("tab-overview", "tab-timeline", "tab-runs", "tab-records", "tab-mail")
+_GROUP_STYLE = {
+    "transitions": "cyan", "runs": "", "gates": "magenta", "findings": "yellow",
+    "notes": "dim", "decisions": "green",
+}
+
+
+class OpenCampaign(Message):
+    """Queue table (or tests) request opening the campaign detail popup."""
+
+    def __init__(self, campaign_id: str, focus=None, origin=None) -> None:
+        super().__init__()
+        self.campaign_id = campaign_id
+        self.focus = focus
+        self.origin = origin
+
+
+class DetailOpener:
+    """Mixin for a `DataTable`: Enter and double-click on a data row post `OpenCampaign`."""
+
+    def detail_target(self, row_key):
+        """`(cid, focus) | None` for `row_key` (subclass implements)."""
+        raise NotImplementedError
+
+    def _open_row(self, row_key) -> None:
+        target = self.detail_target(row_key)
+        if target is None:
+            return
+        cid, focus = target
+        origin = getattr(self, "view", None) or getattr(self, "_detail_origin", None)
+        self.post_message(OpenCampaign(cid, focus, origin))
+
+    def on_click(self, event: Click) -> None:
+        if event.widget is not self:
+            return
+        if event.chain != 2:
+            return
+        row, _ = event.mouse_offset
+        if row is None or row < 0:
+            row, _ = self.cursor_coordinate
+        if row < 0 or row >= self.row_count:
+            return
+        self.move_cursor(row=row)
+        key = self.get_row_at(row).key
+        self._open_row(key)
+
+
+class CampaignDetail(QueueActions, ModalScreen):
+    """96% × 94% modal over the desk: overview, timeline, and three placeholder panes."""
+
+    DEFAULT_CSS = """
+    CampaignDetail {
+        align: center middle;
+        background: $background 60%;
+    }
+    CampaignDetail > #detail-frame {
+        width: 96%;
+        height: 94%;
+        border: solid $primary;
+        background: $surface;
+        layout: vertical;
+    }
+    #detail-body { height: 1fr; }
+    #overview-text { padding: 0 1; }
+    #timeline-pane { height: 1fr; layout: vertical; }
+    #campaign-timeline { height: 1fr; }
+    #campaign-status { height: 1; color: $text-muted; padding: 0 1; }
+    #campaign-detail { height: 40%; border-top: solid $primary; padding: 0 1; }
+    #placeholder-text { padding: 1 2; color: $text-muted; }
+    #load-error { padding: 1 2; }
+    """
+
+    BINDINGS = [
+        Binding("1", "tab('tab-overview')", "overview", show=False),
+        Binding("2", "tab('tab-timeline')", "timeline", show=False),
+        Binding("3", "tab('tab-runs')", "runs", show=False),
+        Binding("4", "tab('tab-records')", "records", show=False),
+        Binding("5", "tab('tab-mail')", "mail", show=False),
+        Binding("tab", "next_tab", "tab", show=False),
+        Binding("shift+tab", "prev_tab", "tab", show=False),
+        Binding("f", "cycle_filter", "filter"),
+        Binding("v", "toggle_review", "review"),
+        Binding("left_bracket", "prev_loop", "loop", show=False),
+        Binding("right_bracket", "next_loop", "loop", show=False),
+        Binding("g", "first", "first", show=False),
+        Binding("G", "last", "last", show=False),
+        Binding("j", "down", "down", show=False),
+        Binding("k", "up", "up", show=False),
+        Binding("escape", "close", "back"),
+        Binding("q", "close", "back", show=False),
+        Binding("p", "act('park')", "park"),
+        Binding("u", "act('resume')", "resume"),
+        Binding("P", "act('prioritize')", "priority"),
+        Binding("A", "act('abandon')", "abandon"),
+    ]
+
+    def __init__(self, cfg, campaign_id: str, *, focus=None, **kw):
+        super().__init__(**kw)
+        self.cfg = cfg
+        self.campaign_id = campaign_id
+        self.focus = focus
+        self.view: AM.DetailView | None = None
+        self._load_error: Text | None = None
+        self.filter = "all"
+        self.review_mode = False
+        self.shown: list = []
+        self._signature = None
+        self._loading = False
+        self._first_paint = True
+        self._poll_timer = None
+        self._focus_tab = "tab-overview"
+        self._focus_extra: str | None = None
+        self._placeholder_runs = "placeholder: runs"
+        self._placeholder_records = "placeholder: records"
+        self._placeholder_mail = "placeholder: mail"
+
+    def compose(self) -> ComposeResult:
+        with Vertical(id="detail-frame"):
+            yield Static("", id="load-error")
+            with TabbedContent(id="detail-body", initial="tab-overview"):
+                with TabPane("Overview", id="tab-overview"):
+                    yield Static("", id="overview-text")
+                with TabPane("Timeline", id="tab-timeline"):
+                    with Vertical(id="timeline-pane"):
+                        yield DataTable(id="campaign-timeline", cursor_type="row",
+                                        zebra_stripes=False)
+                        yield Static("", id="campaign-status")
+                        with VerticalScroll(id="campaign-detail"):
+                            yield Static("", id="campaign-detail-text")
+                with TabPane("Runs", id="tab-runs"):
+                    yield Static(self._placeholder_runs, id="placeholder-text")
+                with TabPane("Findings & decisions", id="tab-records"):
+                    yield Static(self._placeholder_records, id="placeholder-records")
+                with TabPane("Mail", id="tab-mail"):
+                    yield Static(self._placeholder_mail, id="placeholder-mail")
+            yield Footer()
+
+    @property
+    def table(self) -> DataTable:
+        return self.query_one("#campaign-timeline", DataTable)
+
+    def on_mount(self) -> None:
+        self.query_one("#load-error", Static).update(
+            Text(f"loading {self.campaign_id}…", style="dim"))
+        self.table.add_columns("seq", "time", "phase", "by", "kind", "summary")
+        self.reload(initial=True)
+
+    def on_resize(self, event) -> None:
+        if self.view and self._active_tab() == "tab-timeline":
+            self._safe_paint()
+
+    def _active_tab(self) -> str:
+        try:
+            return self.query_one("#detail-body", TabbedContent).active
+        except Exception:
+            return self._focus_tab
+
+    def _safe_paint(self) -> None:
+        try:
+            self.paint()
+        except Exception as e:
+            self._show_timeline_error(e)
+
+    def _show_timeline_error(self, e: Exception) -> None:
+        self.query_one("#campaign-status", Static).update(
+            Text(f"campaign failed: {escape(str(e) or repr(e))}", style="red"))
+
+    def _apply_focus(self) -> None:
+        if self.view is None:
+            return
+        tab, extra = AM.resolve_focus(self.view.history, self.focus)
+        self._focus_tab = {
+            "overview": "tab-overview", "timeline": "tab-timeline", "runs": "tab-runs",
+            "records": "tab-records", "mail": "tab-mail",
+        }.get(tab, "tab-overview")
+        self._focus_extra = extra
+        tabs = self.query_one("#detail-body", TabbedContent)
+        tabs.active = self._focus_tab
+        if extra == "not found":
+            missing = self.focus.get("run") or self.focus.get("record") or "?"
+            self.notify(f"not found: {missing}")
+        elif self._focus_tab == "tab-runs" and extra:
+            self._placeholder_runs = f"placeholder: runs ({extra})"
+            self.query_one("#placeholder-text", Static).update(Text(self._placeholder_runs))
+        elif self._focus_tab == "tab-records" and extra:
+            self._placeholder_records = f"placeholder: records ({extra})"
+            self.query_one("#placeholder-records", Static).update(Text(self._placeholder_records))
+
+    def _start_poll(self) -> None:
+        self._stop_poll()
+        if self.view is not None and not self.view.terminal:
+            self._poll_timer = self.set_interval(POLL_S, self._poll)
+
+    def _stop_poll(self) -> None:
+        if self._poll_timer is not None:
+            self._poll_timer.stop()
+            self._poll_timer = None
+
+    def _poll(self) -> None:
+        if self.view is None or self.view.terminal:
+            self._stop_poll()
+            return
+        try:
+            changed = AM.detail_signature(self.cfg, self.campaign_id) != self._signature
+        except Exception:
+            changed = True
+        if changed:
+            self.reload()
+
+    def reload(self, *, initial=False) -> None:
+        if self._loading:
+            return
+        self._loading = True
+        self.run_worker(self._reload_async(initial=initial), name="campaign-detail-reload",
+                        group="campaign-detail-reload")
+
+    async def _reload_async(self, *, initial=False) -> None:
+        try:
+            detail = await asyncio.to_thread(AM.load_detail, self.cfg, self.campaign_id)
+            self._signature = detail.signature
+            was_terminal = self.view.terminal if self.view else False
+            previous = self._cursor_target()
+            self.view = detail
+            self._load_error = None
+            self.query_one("#load-error", Static).update(Text(""))
+            self.query_one("#overview-text", Static).update(
+                Text("\n").join(detail.header_lines))
+            if initial:
+                self._apply_focus()
+            self.paint(previous)
+            if detail.terminal:
+                self._stop_poll()
+            elif not was_terminal or initial:
+                self._start_poll()
+        except Exception as e:
+            self._signature = None
+            self.view = None
+            self._load_error = Text(f"history unavailable: {e}", style="red")
+            self.query_one("#load-error", Static).update(self._load_error)
+            self._stop_poll()
+        finally:
+            self._loading = False
+
+    def _event_rows(self) -> list:
+        """Timeline rows that are not separators."""
+        return [r for r in self.shown if not r.get("separator")]
+
+    def _data_indexes(self) -> list[int]:
+        return [i for i, r in enumerate(self.shown) if not r.get("separator")]
+
+    def _cursor_target(self):
+        data = self._data_indexes()
+        i = self.table.cursor_row
+        if not data or i not in range(len(self.shown)):
+            return (None, None, True)
+        row = self.shown[i]
+        if row.get("separator"):
+            return (None, None, True)
+        on_last = data and i == data[-1]
+        return (row.get("seq"), row.get("ref"), on_last)
+
+    def _filter_row(self, row: dict) -> bool:
+        if row.get("separator"):
+            return True
+        if self.filter == "all":
+            return True
+        return AM.timeline_group(row) == self.filter
+
+    def paint(self, previous=None) -> None:
+        detail = self.view
+        if detail is None:
+            return
+        seq, ref, on_last = previous or self._cursor_target()
+        grouped = detail.timeline
+        # Drop separators that sit between filtered-out rows (keep when both sides visible).
+        visible: list = []
+        for row in grouped:
+            if row.get("separator"):
+                if visible and not visible[-1].get("separator"):
+                    visible.append(row)
+                continue
+            if self.filter == "all" or AM.timeline_group(row) == self.filter:
+                if visible and visible[-1].get("separator"):
+                    pass
+                elif visible and not visible[-1].get("separator"):
+                    prev_loop = visible[-1].get("loop", 0)
+                    loop = row.get("loop", 0)
+                    if loop != prev_loop:
+                        visible.append({"separator": True, "loop": loop,
+                                        "label": f"── loop {loop} ──"})
+                visible.append(row)
+        self.shown = visible
+        table = self.table
+        text_w = max(20, (table.size.width or 100) - _FIXED_COST)
+        table.clear()
+        for i, row in enumerate(self.shown):
+            if row.get("separator"):
+                table.add_row(Text(""), Text(""), Text(""), Text(""),
+                              Text(row.get("label", ""), style="bold dim"), Text(""),
+                              key=f"sep:{row.get('loop', i)}")
+                continue
+            seq_cell = "" if row.get("seq") is None else str(row["seq"])
+            group = AM.timeline_group(row)
+            table.add_row(
+                Text(seq_cell),
+                Text(AM.event_time(row.get("ts") or "")),
+                Text(str(row.get("phase") or "")),
+                Text(str(row.get("by") or "")),
+                Text(str(row.get("kind") or ""), style=_GROUP_STYLE.get(group, "")),
+                Text(R._clip(str(row.get("summary") or "").replace("\n", " "), text_w)),
+                key=f"e:{row.get('seq')}:{row.get('ref')}:{i}")
+        data = self._data_indexes()
+        if data:
+            table.move_cursor(row=self._restore_index(seq, ref, on_last), scroll=True)
+        self._paint_status()
+        self._first_paint = False
+        self.show_detail()
+
+    def _paint_status(self) -> None:
+        detail = self.view
+        if detail is None:
+            return
+        total = len(detail.history.get("timeline") or [])
+        shown_n = len(self._event_rows())
+        loop_n = 0
+        i = self.table.cursor_row
+        if 0 <= i < len(self.shown) and not self.shown[i].get("separator"):
+            loop_n = self.shown[i].get("loop", 0)
+        loops = (detail.history.get("header") or {}).get("loops", 0)
+        text = (f"filter {self.filter} · {shown_n}/{total} events · loop {loop_n}/{loops}")
+        self.query_one("#campaign-status", Static).update(Text(text, style="dim"))
+
+    def _restore_index(self, seq, ref, on_last) -> int:
+        data = self._data_indexes()
+        if not data:
+            return 0
+        if self._first_paint or on_last:
+            return data[-1]
+        if seq is not None:
+            for i in data:
+                if self.shown[i].get("seq") == seq:
+                    return i
+        if ref is not None:
+            for i in data:
+                if self.shown[i].get("ref") == ref:
+                    return i
+        return data[-1]
+
+    def current_row(self) -> dict | None:
+        i = self.table.cursor_row
+        if self.shown and 0 <= i < len(self.shown) and not self.shown[i].get("separator"):
+            return self.shown[i]
+        return None
+
+    def show_detail(self) -> None:
+        pane = self.query_one("#campaign-detail-text", Static)
+        if self.view is None:
+            return
+        if self.review_mode:
+            pane.update(self.view.review)
+            return
+        row = self.current_row()
+        if row is None:
+            pane.update(Text("no events", style="dim"))
+            return
+        try:
+            if row.get("seq") is None:
+                pane.update(AM.record_detail(self.view.history, row.get("ref")))
+            else:
+                entry = AM.entry_from_timeline_row(row, self.view.events_by_seq)
+                pane.update(AM.entry_detail(self.cfg, self.campaign_id, entry)
+                            if entry else Text("(event missing)", style="yellow"))
+        except Exception as e:
+            pane.update(Text(f"(detail unavailable: {e})", style="red"))
+
+    def record_detail(self, history, record_id) -> Text:
+        return AM.record_detail(history, record_id)
+
+    @on(DataTable.RowHighlighted, "#campaign-timeline")
+    def _row_highlighted(self, event: DataTable.RowHighlighted) -> None:
+        rows = self.shown
+        i = event.cursor_row
+        if rows and 0 <= i < len(rows) and rows[i].get("separator"):
+            data = self._data_indexes()
+            after = [d for d in data if d > i]
+            pick = min(after) if after else (max(data) if data else i)
+            if pick != i:
+                self.table.move_cursor(row=pick)
+            return
+        self.show_detail()
+
+    def action_tab(self, tab_id: str) -> None:
+        self.query_one("#detail-body", TabbedContent).active = tab_id
+        if tab_id == "tab-timeline":
+            self.table.focus()
+
+    def action_next_tab(self) -> None:
+        tabs = self.query_one("#detail-body", TabbedContent)
+        i = _TAB_IDS.index(tabs.active) if tabs.active in _TAB_IDS else 0
+        self.action_tab(_TAB_IDS[(i + 1) % len(_TAB_IDS)])
+
+    def action_prev_tab(self) -> None:
+        tabs = self.query_one("#detail-body", TabbedContent)
+        i = _TAB_IDS.index(tabs.active) if tabs.active in _TAB_IDS else 0
+        self.action_tab(_TAB_IDS[(i - 1) % len(_TAB_IDS)])
+
+    def action_cycle_filter(self) -> None:
+        filters = AM.DETAIL_FILTERS
+        self.filter = filters[(filters.index(self.filter) + 1) % len(filters)]
+        self._safe_paint()
+
+    def action_toggle_review(self) -> None:
+        self.review_mode = not self.review_mode
+        self.show_detail()
+
+    def _loop_starts(self) -> list[int]:
+        """Table indexes of the first event row in each loop (among `shown`)."""
+        starts = []
+        prev = None
+        for i, row in enumerate(self.shown):
+            if row.get("separator"):
+                continue
+            loop = row.get("loop", 0)
+            if loop != prev:
+                starts.append(i)
+                prev = loop
+        return starts
+
+    def action_prev_loop(self) -> None:
+        if self._active_tab() != "tab-timeline":
+            return
+        starts = self._loop_starts()
+        if not starts:
+            return
+        here = self.table.cursor_row
+        prev = starts[0]
+        for s in starts:
+            if s < here:
+                prev = s
+            else:
+                break
+        self.table.move_cursor(row=prev, scroll=True)
+
+    def action_next_loop(self) -> None:
+        if self._active_tab() != "tab-timeline":
+            return
+        starts = self._loop_starts()
+        if not starts:
+            return
+        here = self.table.cursor_row
+        nxt = starts[-1]
+        for s in starts:
+            if s > here:
+                nxt = s
+                break
+        self.table.move_cursor(row=nxt, scroll=True)
+
+    def action_first(self) -> None:
+        data = self._data_indexes()
+        if data:
+            self.table.move_cursor(row=data[0], scroll=True)
+
+    def action_last(self) -> None:
+        data = self._data_indexes()
+        if data:
+            self.table.move_cursor(row=data[-1], scroll=True)
+
+    def action_down(self) -> None:
+        if self._active_tab() == "tab-timeline":
+            data = self._data_indexes()
+            here = self.table.cursor_row
+            after = [i for i in data if i > here]
+            if after:
+                self.table.move_cursor(row=after[0])
+            return
+        self.table.action_cursor_down()
+
+    def action_up(self) -> None:
+        if self._active_tab() == "tab-timeline":
+            data = self._data_indexes()
+            here = self.table.cursor_row
+            before = [i for i in data if i < here]
+            if before:
+                self.table.move_cursor(row=before[-1])
+            return
+        self.table.action_cursor_up()
+
+    def action_close(self) -> None:
+        self.dismiss(True)
+
+    def action_act(self, action: str) -> None:
+        if self.view is None:
+            return
+        self.run_queue_action(action, self.campaign_id, self.view.state.get("state"),
+                              self.view.actions)
+
+    def reload_after_action(self) -> None:
+        """Called from `QueueActions` after an apply."""
+        self.reload()
+
+
+def record_detail(history, record_id) -> Text:
+    return AM.record_detail(history, record_id)

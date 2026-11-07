@@ -20,6 +20,7 @@ from rich.text import Text
 from .. import render as RD
 from ..agentic import escalations as ESC
 from ..agentic import events as EV
+from ..agentic import history as H
 from ..agentic import lease as L
 from ..agentic import mailbox as MB
 from ..agentic import profiles as PR
@@ -1245,3 +1246,164 @@ def escalation_text(cfg, rec) -> Text:
     elif status == "open" and rec.get("campaign"):
         _override_block(cfg, t, rec)
     return t
+
+
+# --- campaign detail popup (SPEC-0407) ----------------------------------------------------
+
+DETAIL_GROUPS = ("transitions", "runs", "gates", "findings", "notes", "decisions")
+DETAIL_FILTERS = ("all",) + DETAIL_GROUPS
+_TRANSITION_KINDS = frozenset({
+    "open", "transition", "park", "resume", "priority", "close",
+    "admitted_after_revision", "admitted_revise_pending"})
+_DECISION_KINDS = frozenset({"human_decision", "triage"})
+_TERMINAL_OUTCOMES = frozenset({"merged", "handed_off", "abandoned"})
+
+
+def stream_tail(*_a, **_kw) -> None:
+    """Runs-pane live follow (SPEC-0405 follow-on). No-op until that spec defines behaviour."""
+
+
+def timeline_group(row: dict) -> str:
+    """Map one `history.timeline` row to a SPEC-0407 filter group."""
+    if row.get("seq") is None:
+        return "decisions"
+    kind = str(row.get("kind") or "")
+    if kind in _TRANSITION_KINDS:
+        return "transitions"
+    if kind in ("run", "cost"):
+        return "runs"
+    if kind == "gate":
+        return "gates"
+    if kind in ("finding", "followup"):
+        return "findings"
+    if kind in _DECISION_KINDS:
+        return "decisions"
+    return "notes"
+
+
+def group_timeline(rows: list) -> list:
+    """Insert `── loop N ──` separators wherever `loop` changes."""
+    out = []
+    prev_loop = None
+    for row in rows:
+        loop = row.get("loop", 0)
+        if prev_loop is not None and loop != prev_loop:
+            out.append({"separator": True, "loop": loop, "label": f"── loop {loop} ──"})
+        out.append(row)
+        prev_loop = loop
+    return out
+
+
+def resolve_focus(history: dict, focus) -> tuple[str, str | None]:
+    """`(tab_id, extra)` where `extra` is a run/record id or `'not found'`."""
+    if not focus:
+        return ("overview", None)
+    tab = focus.get("tab")
+    if tab == "runs":
+        run_id = focus.get("run")
+        runs = history.get("runs") or []
+        if run_id and any(r.get("run_id") == run_id for r in runs):
+            return ("runs", run_id)
+        return ("overview", "not found")
+    if tab in ("records", "findings"):
+        record_id = focus.get("record")
+        records = history.get("records") or []
+        if record_id and any(r.get("id") == record_id for r in records):
+            return ("records", record_id)
+        return ("overview", "not found")
+    if tab in ("overview", "timeline", "mail"):
+        return (tab, None)
+    return ("overview", "not found")
+
+
+def _decisions_stat(cfg) -> tuple | None:
+    path = store.agentic_dir(cfg) / "conductor" / "decisions.jsonl"
+    try:
+        st = path.stat()
+    except OSError:
+        return None
+    return (st.st_size, st.st_mtime_ns)
+
+
+def detail_signature(cfg, cid) -> tuple:
+    """Live-change detector for the campaign detail popup: history hash plus global logs."""
+    return (H.campaign_signature(cfg, cid), _decisions_stat(cfg), mailbox_signature(cfg))
+
+
+@dataclass
+class DetailView:
+    campaign: str
+    history: dict
+    terminal: bool
+    header_lines: list
+    timeline: list
+    actions: tuple
+    signature: tuple
+    state: dict
+    review: Text
+    events_by_seq: dict = field(default_factory=dict)
+    records_by_id: dict = field(default_factory=dict)
+
+
+def entry_from_timeline_row(row: dict, events_by_seq: dict) -> TimelineEntry | None:
+    """Build a `TimelineEntry` for `entry_detail`, using `run.start` when kind is `run`."""
+    seq = row.get("seq")
+    if seq is None:
+        return None
+    ev = events_by_seq.get(seq)
+    if ev is None:
+        return None
+    if row.get("kind") == "run":
+        rid = row.get("ref")
+        if rid:
+            for candidate in events_by_seq.values():
+                if candidate.get("type") == "run.start" and candidate.get("run_id") == rid:
+                    ev = candidate
+                    break
+    return _entry(ev)
+
+
+def record_detail(history: dict, record_id) -> Text:
+    """Detail pane for a `seq`-null timeline row (`history.records` entry)."""
+    t = Text()
+    rec = (history.get("records") or [])
+    found = next((r for r in rec if r.get("id") == record_id), None)
+    if not found:
+        t.append(f"record {record_id} not in history\n")
+        t.rstrip()
+        return t
+    for key in sorted(found):
+        if key in ("links", "linked_by"):
+            continue
+        _field(t, key, found[key])
+    links = found.get("links")
+    if isinstance(links, dict) and links:
+        t.append("links:\n", style="bold")
+        for k, v in links.items():
+            _field(t, f"  {k}", v)
+    if found.get("linked_by") is not None:
+        _field(t, "linked_by", found["linked_by"])
+    t.rstrip()
+    return t
+
+
+def load_detail(cfg, cid) -> DetailView:
+    """`nw.campaign.history.v1` plus SPEC-0246 header, review, and grouped timeline."""
+    signature = detail_signature(cfg, cid)
+    history = H.campaign_history(cfg, cid)
+    state = store.read_state(cfg, cid)
+    events = store.read_ledger(cfg, cid)
+    events_by_seq = {ev.get("seq"): ev for ev in events
+                     if isinstance(ev, dict) and ev.get("seq") is not None}
+    records_by_id = {r["id"]: r for r in (history.get("records") or []) if r.get("id")}
+    header = header_lines(cfg, state)
+    outcome = (history.get("header") or {}).get("outcome")
+    terminal = (outcome in _TERMINAL_OUTCOMES
+                or state.get("state") in store.TERMINAL_STATES)
+    timeline = group_timeline(history.get("timeline") or [])
+    return DetailView(
+        campaign=cid, history=history, terminal=terminal, header_lines=header,
+        timeline=timeline,
+        actions=allowed_actions(state.get("state"), bool(state.get("park_requested"))),
+        signature=signature, state=state, review=review_text(cfg, state),
+        events_by_seq=events_by_seq, records_by_id=records_by_id)
