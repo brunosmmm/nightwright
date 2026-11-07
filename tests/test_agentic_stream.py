@@ -312,6 +312,44 @@ def test_assistant_newline_prints_the_finished_line_and_holds_the_rest():
     assert held[0].spans[-1].style == TL.SPEECH or str(held[0].spans[-1].style) == TL.SPEECH
 
 
+def test_a_spoken_verdict_renders_as_a_review_not_json():
+    blob = json.dumps({
+        "verdict": "split", "size": "xl", "tone": "critical",
+        "rationale": "The spec is too big.",
+        "findings": [{
+            "severity": "must_fix", "section": "Acceptance criteria",
+            "title": "The feature exceeds one campaign",
+            "detail": "Thirteen criteria.", "suggested_fix": "Make it an epic.",
+            "acceptance": "SPEC-0450 is an epic.",
+        }],
+        "suggested_splits": [{"title": "Create the link", "scope": "publish and adopt"}],
+    }, indent=2)
+    r = TL.Renderer()
+    lines = []
+    for i in range(0, len(blob), 5):
+        lines.extend(r.feed(_assistant_text(blob[i:i + 5])))
+    assert r.flush_prose() == []
+    plain = [t.plain for t in lines]
+    assert plain[0] == "  ▸ split · xl · critical"
+    assert "    The spec is too big." in plain
+    assert "    must_fix · The feature exceeds one campaign  (Acceptance criteria)" in plain
+    assert "      fix: Make it an epic." in plain
+    assert "      · Create the link — publish and adopt" in plain
+    assert not any('"verdict"' in p or "findings" in p for p in plain)
+    held = TL.Renderer()
+    assert held.feed(_assistant_text('{\n  "verdict": "spl')) == []
+    assert held.flush_prose() == []
+    assert [t.plain for t in held.feed(_assistant_text('it"}'))] == ["  ▸ split"]
+
+
+def test_prose_before_a_verdict_stays_a_sentence():
+    r = TL.Renderer()
+    said = [t.plain for t in r.feed(_assistant_text("Checking the spec.\n"))]
+    verdict = r.feed(_assistant_text('{"verdict": "approve", "rationale": "Fine."}'))
+    assert said == ["  ▸ Checking the spec."]
+    assert [t.plain for t in verdict] == ["  ▸ approve", "    Fine."]
+
+
 def test_held_tokens_print_when_the_viewer_finishes_the_file(tmp_path):
     body = "\n".join(json.dumps(_assistant_text(part)) for part in ("I'll", " implement")) + "\n"
     out = _rendered({}, _stream_run_dir(tmp_path, body))
