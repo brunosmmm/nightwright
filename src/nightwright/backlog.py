@@ -28,6 +28,15 @@ _FRONT = re.compile(r"\A---\n(.*?)\n---\n(.*)\Z", re.DOTALL)
 _REQUIRED = ("id", "title", "status", "created", "updated", "created_by", "updated_by")
 _ZERO = "0" * 40
 _ATTEMPTS = 3
+_GIT_UNSET = (
+    "GIT_INDEX_FILE",
+    "GIT_DIR",
+    "GIT_WORK_TREE",
+    "GIT_OBJECT_DIRECTORY",
+    "GIT_NAMESPACE",
+    "GIT_COMMON_DIR",
+    "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+)
 
 _README_LINES = (
     "# nw-backlog",
@@ -252,10 +261,27 @@ def mint_id(existing, draw=None) -> str:
     raise MintError("could not mint an id")
 
 
+def _safe_path(path: str) -> str:
+    """Path text for stderr. ``backslashreplace`` never raises on encode."""
+    return path.encode("utf-8", "backslashreplace").decode("utf-8")
+
+
+def _yaml_unsafe_char(value: str) -> str | None:
+    """First C0 control other than tab, or DEL, that PyYAML's reader rejects."""
+    for ch in value:
+        o = ord(ch)
+        if o < 32 and ch != "\t":
+            return ch
+        if o == 127:
+            return ch
+    return None
+
+
 def _git(repo, args, *, env_extra=None, index=None, input=None, check=True):
     """Run one allowlisted git subcommand. ``GIT_INDEX_FILE`` is set only when ``index`` is."""
     env = os.environ.copy()
-    env.pop("GIT_INDEX_FILE", None)
+    for key in _GIT_UNSET:
+        env.pop(key, None)
     if index is not None:
         env["GIT_INDEX_FILE"] = str(index)
     if env_extra:
@@ -300,6 +326,14 @@ def _identity_error(key: str, value: str, kind: str) -> str | None:
         return f"{key} contains a line break"
     if value.strip() == "":
         return f"{key} is unset"
+    try:
+        value.encode("utf-8")
+    except UnicodeEncodeError:
+        return f"{key} is not valid utf-8"
+    bad = _yaml_unsafe_char(value)
+    if bad is not None:
+        esc = _safe_path(repr(bad)[1:-1])
+        return f"{key} contains control character {esc}"
     if kind == "name":
         if "<" in value:
             return "user.name contains '<'"
@@ -362,7 +396,8 @@ def _checked_out(repo) -> list[str]:
 def _refuse_checked_out(repo) -> None:
     paths = _checked_out(repo)
     if paths:
-        raise BacklogError("\n".join(f"nw-backlog is checked out at {path}" for path in paths))
+        raise BacklogError("\n".join(
+            f"nw-backlog is checked out at {_safe_path(path)}" for path in paths))
 
 
 def _ref_sha(repo) -> str | None:
@@ -392,7 +427,7 @@ def _problem_lines(entries) -> list[str]:
         if _PATH_OK.fullmatch(path) is None:
             found.append((path, "stray"))
     found.sort(key=lambda item: (item[0], 0 if item[1] == "mode" else 1))
-    return [f"{kind}: {path}" for path, kind in found]
+    return [f"{kind}: {_safe_path(path)}" for path, kind in found]
 
 
 def _orphan_error(repo, tip: str, tip_entries) -> str | None:
@@ -467,6 +502,10 @@ def _check_title(title: str) -> None:
         raise BacklogError("title is empty")
     if "\r" in title or "\n" in title:
         raise BacklogError("title must be one line")
+    bad = _yaml_unsafe_char(title)
+    if bad is not None:
+        esc = _safe_path(repr(bad)[1:-1])
+        raise BacklogError(f"title contains control character {esc}")
 
 
 def _check_spec(spec: str) -> None:

@@ -383,6 +383,10 @@ def test_add_summary_contract(tmp_path, monkeypatch, git_log):
     text = cat(repo, f"{quoted}.md").decode()
     assert 'title: "a\\"b\\\\c"' in text
     assert B.parse_item(f"{quoted}.md", text)["title"] == 'a"b\\c'
+    padded = added(nw(repo, ["add", "--title", "  padded  ", "--summary", "S"]))
+    assert B.parse_item(f"{padded}.md", cat(repo, f"{padded}.md"))["title"] == "  padded  "
+    leading = added(nw(repo, ["add", "--title", "Lead", "--summary", "\nAfter newline"]))
+    assert tail_of(leading) == "\n\nAfter newline\n"
     linked = added(nw(repo, ["add", "--title", "Spec", "--summary", "S", "--spec", "SPEC-0449"]))
     linked_text = cat(repo, f"{linked}.md").decode()
     keys = [line.split(":", 1)[0] for line in linked_text.split("\n---\n", 1)[0].splitlines()
@@ -459,6 +463,24 @@ def test_edit_equal_values_do_not_write(tmp_path, monkeypatch, git_log):
     assert cat(repo, "REQ-NF6H4D2P.md") == without_spec
     assert rev(repo, "nw-backlog") == sha
     assert not any(args[0] == "hash-object" for args in git_log)
+
+
+def test_edit_spec_write_keep_and_clear(tmp_path, monkeypatch):
+    freeze(monkeypatch)
+    repo = init_repo(tmp_path / "repo")
+    ident = added(nw(repo, ["add", "--title", "One", "--summary", "S"]))
+    assert "spec:" not in cat(repo, f"{ident}.md").decode()
+    assert nw(repo, ["edit", ident, "--spec", "SPEC-0449"]).exit_code == 0
+    with_spec = cat(repo, f"{ident}.md").decode()
+    assert "spec: SPEC-0449" in with_spec
+    assert nw(repo, ["edit", ident, "--title", "Two"]).exit_code == 0
+    kept = cat(repo, f"{ident}.md").decode()
+    assert 'title: "Two"' in kept and "spec: SPEC-0449" in kept
+    assert nw(repo, ["edit", ident, "--spec", "SPEC-0001"]).exit_code == 0
+    assert "spec: SPEC-0001" in cat(repo, f"{ident}.md").decode()
+    assert nw(repo, ["edit", ident, "--clear-spec"]).exit_code == 0
+    cleared = cat(repo, f"{ident}.md").decode()
+    assert "spec:" not in cleared
 
 
 def test_edit_drops_unknown_keys_when_a_field_changes(tmp_path, monkeypatch):
@@ -658,6 +680,8 @@ def test_author_follows_local_config_not_environment_or_global(tmp_path, monkeyp
     assert log_format(repo, "%ce") == "ada@example.com"
     assert log_format(repo, "%at") == str(int(moment.timestamp()))
     assert log_format(repo, "%at") != "1000000000"
+    assert log_format(repo, "%ct") == str(int(moment.timestamp()))
+    assert log_format(repo, "%ct") != "1000000000"
     assert cat(repo, f"{ident}.md").decode().count(
         'created_by: "Ada \\"Lovelace\\" X <ada@example.com>"') == 1
 
@@ -701,6 +725,50 @@ def test_mutations_reject_stray_and_bad_mode(tmp_path, git_log):
         assert proc.stderr == expected
         assert rev(repo, "nw-backlog") == sha
         assert not any(call[0] == "hash-object" for call in git_log)
+
+
+def test_stray_on_middle_commit_with_clean_tip_and_root(tmp_path, monkeypatch, git_log):
+    """Only the tip tree and parentless roots are checked, not every ancestor."""
+    freeze(monkeypatch)
+    repo = init_repo(tmp_path / "repo")
+    root = commit_tree(repo, {"README.md": B.README_TEXT, "REQ-K7H3MQ2P.md": VALID},
+                        message="clean root")
+    middle = commit_tree(repo, {"README.md": B.README_TEXT, "REQ-K7H3MQ2P.md": VALID,
+                                "notes.txt": b"stray\n"},
+                         parent=root, message="stray middle")
+    tip = commit_tree(repo, {"README.md": B.README_TEXT, "REQ-K7H3MQ2P.md": VALID},
+                      parent=middle, message="clean tip")
+    point(repo, tip)
+    ident = added(nw(repo, ["add", "--title", "T", "--summary", "S"]))
+    assert f"{ident}.md" in names(repo)
+    roots = git(repo, "rev-list", "--max-parents=0", "nw-backlog").stdout.decode().split()
+    assert roots == [root]
+
+
+def test_bad_mode_on_legal_readme_and_req(tmp_path, git_log):
+    repo = init_repo(tmp_path / "repo")
+    sha = commit_tree(repo, {
+        "README.md": ("100755", B.README_TEXT),
+        "REQ-K7H3MQ2P.md": VALID,
+    })
+    point(repo, sha)
+    expected = (
+        "refs/heads/nw-backlog is not an orphan backlog\n"
+        "mode: README.md\n"
+        f"root {sha} mode: README.md\n"
+    )
+    proc = nw(repo, ["add", "--title", "T", "--summary", "S"])
+    assert proc.exit_code == 1 and proc.stderr == expected
+    assert not any(args[0] == "hash-object" for args in git_log)
+
+
+def test_empty_tree_is_valid_empty_backlog(tmp_path, monkeypatch, git_log):
+    freeze(monkeypatch)
+    repo = init_repo(tmp_path / "repo")
+    empty = commit_tree(repo, {})
+    point(repo, empty)
+    ident = added(nw(repo, ["add", "--title", "T", "--summary", "S"]))
+    assert f"{ident}.md" in names(repo)
 
 
 def test_refuses_a_root_that_contains_product_history(tmp_path, git_log):
@@ -986,6 +1054,35 @@ def test_repo_flag_and_command_surface(tmp_path, monkeypatch):
         assert flag in add_help
     assert "--push" not in add_help
     assert "--clear-spec" not in add_help
+
+
+def test_refuses_non_utf8_git_identity(tmp_path, monkeypatch, git_log):
+    freeze(monkeypatch)
+    repo = init_repo(tmp_path / "repo", name=None)
+    git(repo, "config", "--unset-all", "user.name", check=False)
+    git(repo, "config", "--unset-all", "user.email", check=False)
+    cfg = git_dir(repo) / "config"
+    cfg.write_bytes(
+        cfg.read_bytes()
+        + b'\n[user]\n\tname = Jos\xe9\n\temail = ada@example.com\n')
+    git_log.clear()
+    proc = nw(repo, ["add", "--title", "T", "--summary", "S"])
+    assert proc.exit_code == 1
+    assert proc.stderr == "user.name is not valid utf-8\n"
+    assert rev(repo, "nw-backlog") is None
+    assert not any(args[0] == "hash-object" for args in git_log)
+
+
+def test_inherited_git_dir_does_not_redirect_writes(tmp_path, monkeypatch):
+    freeze(monkeypatch)
+    target = init_repo(tmp_path / "target")
+    other = init_repo(tmp_path / "other")
+    other_git = git_dir(other)
+    monkeypatch.setenv("GIT_DIR", str(other_git))
+    ident = added(nw(target, ["add", "--title", "T", "--summary", "S"]))
+    monkeypatch.delenv("GIT_DIR", raising=False)
+    assert f"{ident}.md" in names(target)
+    assert rev(other, "nw-backlog") is None
 
 
 def test_aware_clock_is_stored_as_utc(tmp_path, monkeypatch):

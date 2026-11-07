@@ -1,7 +1,7 @@
 ---
 id: SPEC-0449
 title: Public backlog on an orphan nw-backlog branch
-status: in-progress
+status: done
 owner: user
 created: 2026-11-07
 updated: 2026-11-07
@@ -410,6 +410,12 @@ product git directory.
 - Git drops a leading or trailing `"` from a commit author name. `created_by`
   and `updated_by` keep the raw config string and escape it like a title. A
   quote that is not at either end is also stored on the commit ident.
+- Loop 2: each ``_git`` child clears inherited ``GIT_DIR``, ``GIT_WORK_TREE``,
+  ``GIT_OBJECT_DIRECTORY``, ``GIT_NAMESPACE``, ``GIT_COMMON_DIR``, and
+  ``GIT_ALTERNATE_OBJECT_DIRECTORIES`` in addition to ``GIT_INDEX_FILE``.
+  Identity and title refuse values that are not strict UTF-8 or that contain a
+  C0 control other than tab or DEL before ``hash-object``. Stray and worktree
+  paths on stderr use ``backslashreplace`` encoding.
 
 ### Commands
 
@@ -678,6 +684,13 @@ drops unknown keys, and refreshes `updated` and `updated_by`.
   unchanged, so campaign commits keep their existing temporary-index behavior.
   The new module is the test file this work adds, plus the `cli.py`
   registration. `tests/test_gate_docs.py` still sees `gate` in the root help.
+
+### Test record (2026-11-07)
+
+- `uv run pytest -q tests/test_backlog.py` — 49 passed.
+- `python3 tools/affected_tests.py --run uv run pytest -q` — left to gating
+  after the backlog-only run above.
+- Full suite left to gating.
 
 ## Clock Log
 
