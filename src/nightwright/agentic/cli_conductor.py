@@ -217,8 +217,9 @@ def attach(queue_group):
         the one campaign the text names (SPEC-0431), else a queue-level decision."""
         if not 1 <= len(words) <= 2:
             raise click.UsageError("expected [CAMPAIGN] RATIONALE")
+        # two words: the first is an explicit campaign, even when it is empty
         campaign, rationale = (words[0] if len(words) == 2 else None), words[-1]
-        if campaign and no_campaign:
+        if campaign is not None and no_campaign:
             raise click.UsageError("--no-campaign conflicts with an explicit CAMPAIGN")
         if campaign is None:
             try:
@@ -229,14 +230,15 @@ def attach(queue_group):
                 raise click.ClickException(
                     f"{rationale!r} is a campaign id, not a rationale; "
                     f"pass the rationale after it: nw queue decision {rationale} … RATIONALE")
+        # one exact lookup, shared with record's event_id check (no second suffix scan)
+        event = E.read_id(cfg, event_id) if event_id is not None else None
         campaign_from = None
         if campaign is None and not no_campaign:
-            ev = (E.read_since(cfg, event_id - 1)[:1] if event_id is not None and event_id >= 1
-                  else [])
-            ev_campaign = ev[0].get("campaign") if ev and ev[0].get("id") == event_id else None
+            ev_campaign = (event.get("campaign") if isinstance(event, dict)
+                           and event.get("id") == event_id else None)
             # a mirrored mail event may carry a bogus campaign, or one whose state is not
-            # an object; only a real campaign state is inherited
-            if ev_campaign and S.campaign_state(cfg, ev_campaign) is None:
+            # an object or sits outside the campaigns root; only a real campaign is inherited
+            if S.campaign_state(cfg, ev_campaign) is None:
                 ev_campaign = None
             if ev_campaign:
                 campaign, campaign_from = ev_campaign, "event"
@@ -245,7 +247,8 @@ def attach(queue_group):
                 campaign_from = "text" if campaign else None
         try:
             rec = D.record(cfg, kind=kind, rule=rule, rationale=rationale, campaign=campaign,
-                           event_id=event_id, action=action, by=by, campaign_from=campaign_from)
+                           event_id=event_id, action=action, by=by, campaign_from=campaign_from,
+                           **({} if event_id is None else {"event": event}))
         except ValueError as e:
             raise click.ClickException(str(e))
         console.print(f"decision #{rec['seq']} {kind} ({rule})"

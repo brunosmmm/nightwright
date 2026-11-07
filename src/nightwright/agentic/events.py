@@ -303,6 +303,32 @@ def append(cfg, type_, *, campaign=None, spec_id=None, project=None, by="nw", da
                               by=by, data=data or {}, source=source)
 
 
+def read_id(cfg, event_id) -> dict | None:
+    """The event with this exact id, or None. Ids are append-only, so the scan stops at the
+    first id greater than `event_id` and does not build the rest of the suffix."""
+    if type(event_id) is not int or event_id < 1:
+        return None
+    path = events_path(cfg)
+    if not path.is_file():
+        return None
+    with open(path, encoding="utf-8") as f:
+        for raw in f:
+            raw = raw.strip()
+            if not raw:
+                continue
+            try:
+                rec = json.loads(raw)
+            except ValueError:
+                continue
+            if not isinstance(rec, dict) or type(rec.get("id")) is not int:
+                continue
+            if rec["id"] == event_id:
+                return rec
+            if rec["id"] > event_id:
+                return None
+    return None
+
+
 def read_since(cfg, after_id=0, *, types=None) -> list[dict]:
     path = events_path(cfg)
     if not path.is_file():

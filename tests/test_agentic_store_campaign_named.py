@@ -1,4 +1,7 @@
 """SPEC-0431: `store.sole_campaign_named` — the one existing campaign a text names, or None."""
+import os
+from pathlib import Path
+
 import pytest
 
 from nightwright.agentic import store as S
@@ -42,6 +45,55 @@ def test_glued_to_other_characters(cfg):
     assert S.sole_campaign_named(cfg, f"x-{A}y") is None
     assert S.sole_campaign_named(cfg, f"{A}y") is None
     assert S.sole_campaign_named(cfg, f"{A}-x") is None
+    assert S.sole_campaign_named(cfg, f"x{A}") is None
+    assert S.sole_campaign_named(cfg, f"_{A}") is None
+
+
+def test_period_punctuation_before_an_id_still_matches(cfg):
+    """A leading period, or `sentence.<cid>` with no space, is punctuation, not glue."""
+    mk(cfg, A)
+    assert S.sole_campaign_named(cfg, f".{A}") == A
+    assert S.sole_campaign_named(cfg, f"sentence.{A}") == A
+    assert S.sole_campaign_named(cfg, f"see.{A}.") == A
+    assert S.sole_campaign_named(cfg, f"({A}).") == A
+    assert S.sole_campaign_named(cfg, f"x-{A}") is None
+    assert S.sole_campaign_named(cfg, f"{A}-x") is None
+    assert S.sole_campaign_named(cfg, f"9{A}") is None
+
+
+def test_oserror_reading_state_drops_that_candidate_only(cfg, monkeypatch):
+    """A state read that raises OSError drops that id; another real id in the text still wins."""
+    mk(cfg, A)
+    mk(cfg, B)
+    real = S.read_state
+
+    def flaky(cfg, cid):
+        if cid == B:
+            raise OSError("unreadable")
+        return real(cfg, cid)
+
+    monkeypatch.setattr(S, "read_state", flaky)
+    assert S.campaign_state(cfg, B) is None
+    assert S.sole_campaign_named(cfg, B) is None
+    assert S.sole_campaign_named(cfg, f"{A} vs {B}") == A
+
+
+def test_campaign_state_rejects_paths_outside_the_store(cfg, tmp_path):
+    """An inherited stamp must be one directory name under the campaigns root."""
+    mk(cfg, A)
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "state.json").write_text('{"id": "evil", "spec_id": "S"}\n')
+    root = S.campaigns_dir(cfg)
+    root.mkdir(parents=True, exist_ok=True)
+    (root / "LINKED").symlink_to(outside, target_is_directory=True)
+    escaped = Path(os.path.relpath(outside, root)).as_posix()
+    assert escaped.startswith("..")
+    for bad in (str(outside), escaped, "LINKED", "..", ".", "a/b", "a\\b", "", None, 123):
+        assert S.campaign_state(cfg, bad) is None, bad
+    assert not (outside / "ledger.jsonl").exists() and not (outside / ".lock").exists()
+    assert S.campaign_state(cfg, A)["id"] == A
+    assert S.sole_campaign_named(cfg, f"see {A}") == A
 
 
 def test_unreadable_state_drops_the_candidate(cfg):
@@ -88,9 +140,17 @@ def test_redmain_ids_minted_for_dotted_and_unicode_projects(cfg):
         minted.append(cid)
         assert S.sole_campaign_named(cfg, f"waiting on {cid} today") == cid
         assert S.sole_campaign_named(cfg, f"see {cid}.") == cid          # sentence period
+        assert S.sole_campaign_named(cfg, f".{cid}") == cid              # leading period
+        assert S.sole_campaign_named(cfg, f"sentence.{cid}") == cid
         assert S.sole_campaign_named(cfg, f"x-{cid}y") is None
         assert S.sole_campaign_named(cfg, f"{cid}-x") is None
     assert S.sole_campaign_named(cfg, f"{minted[0]} and {minted[1]}") is None
+    # the part after the dot is its own well-formed id; it must not split the real one
+    suffix = minted[0].split(".", 1)[1]
+    assert suffix != minted[0] and S.sole_campaign_named(cfg, suffix) is None
+    mk(cfg, suffix)
+    assert S.sole_campaign_named(cfg, minted[0]) == minted[0]
+    assert S.sole_campaign_named(cfg, f"sentence.{minted[0]}") == minted[0]
     ghost = minted[0].replace(E._safe("acme.io"), "no.such", 1)
     assert ghost != minted[0]
     assert S.sole_campaign_named(cfg, f"{ghost} vs {minted[2]}") == minted[2]
@@ -112,6 +172,8 @@ def test_digit_leading_outbound_id_from_project_3m(cfg):
     mk(cfg, other)
     assert S.sole_campaign_named(cfg, f"waiting on {cid} today") == cid
     assert S.sole_campaign_named(cfg, f"see {cid}.") == cid
+    assert S.sole_campaign_named(cfg, f".{cid}") == cid
+    assert S.sole_campaign_named(cfg, f"sentence.{cid}") == cid
     assert S.sole_campaign_named(cfg, f"({cid}), then {cid}") == cid
     assert S.sole_campaign_named(cfg, f"x-{cid}y") is None
     assert S.sole_campaign_named(cfg, f"{cid}-x") is None

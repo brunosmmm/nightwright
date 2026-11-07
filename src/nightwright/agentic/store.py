@@ -166,15 +166,76 @@ def new_campaign_id(cfg, spec_id, now=None) -> str:
 # `new_campaign_id` shape: `<prefix>-<YYYYMMDD>-<4 hex>`. The prefix is whatever was minted —
 # a SPEC/IDEA id, a red-main `events._safe` name (dots and Unicode alphanumerics stay inside
 # the id), or an outbound `PROJ-NNNN` whose project code may start with a digit (`3M-0001`).
-# A trailing `.` still ends the match; a word character or hyphen glued to either side does not.
-_CID_RE = re.compile(
-    r"(?<![\w.\-])[^\W_][\w.\-]*-\d{8}-[0-9a-f]{4}(?![\w-])")
+# The date-hex suffix is the anchor. A trailing `.` still ends it (`(?![\w-])`); a word
+# character or hyphen glued to either side stays inside the token and does not match.
+_CID_SUFFIX_RE = re.compile(r"-\d{8}-[0-9a-f]{4}(?![\w-])")
+
+
+def _id_char(ch: str) -> bool:
+    """A character `new_campaign_id` / `events._safe` can put inside an id."""
+    return ch.isalnum() or ch in "._-"
+
+
+def _campaign_id_spans(text: str) -> list[list[str]]:
+    """Each date-hex hit, longest token first, then each suffix that starts after a `.`.
+
+    A `.` inside a minted id (`FIX-acme.io-…`) is part of the token. A `.` before an id
+    (`.CID`, `sentence.CID`) is punctuation: the whole span is not a campaign, and the suffix
+    after the dot is. Callers keep the longest suffix that exists, so a dotted id stays one
+    mention. A word character or hyphen glued on the left is not stripped — that span is one
+    token and does not resolve."""
+    spans = []
+    for match in _CID_SUFFIX_RE.finditer(text):
+        i = match.start()
+        while i > 0 and _id_char(text[i - 1]):
+            i -= 1
+        raw = text[i:match.end()]
+        if raw[:1] == ".":
+            raw = raw.lstrip(".")
+        if not raw or not raw[0].isalnum():
+            continue
+        alts = [raw]
+        start = 0
+        while True:
+            dot = raw.find(".", start)
+            if dot < 0:
+                break
+            suffix = raw[dot + 1:]
+            if suffix[:1].isalnum():
+                alts.append(suffix)
+            start = dot + 1
+        spans.append(alts)
+    return spans
+
+
+def _contained_campaign_dir(cfg, campaign_id) -> Path | None:
+    """The campaign directory when `campaign_id` is a single name under the campaigns root.
+
+    Absolute paths, separators, `.` / `..`, and a symlink that resolves outside the root are
+    not campaigns. Inherited event and message stamps pass through here so they cannot read
+    or write outside the store (SPEC-0431)."""
+    if not isinstance(campaign_id, str) or not campaign_id or campaign_id in (".", ".."):
+        return None
+    if "/" in campaign_id or "\\" in campaign_id or "\0" in campaign_id:
+        return None
+    if Path(campaign_id).is_absolute():
+        return None
+    root = campaigns_dir(cfg).resolve()
+    try:
+        target = (root / campaign_id).resolve()
+    except (OSError, RuntimeError):
+        return None
+    if target == root or root not in target.parents:
+        return None
+    return target
 
 
 def campaign_state(cfg, campaign_id) -> dict | None:
-    """The campaign's state object, or None when it is missing, unreadable, or not a JSON
-    object. Inference accepts only this (SPEC-0431): a list, string, or other JSON value is
-    not a campaign, and a non-string id is not an error."""
+    """The campaign's state object, or None when it is missing, unreadable, outside the
+    campaigns root, or not a JSON object. Inference accepts only this (SPEC-0431): a list,
+    string, or other JSON value is not a campaign, and a non-string id is not an error."""
+    if _contained_campaign_dir(cfg, campaign_id) is None:
+        return None
     try:
         st = read_state(cfg, campaign_id)
     except (ValueError, OSError, TypeError):
@@ -185,14 +246,18 @@ def campaign_state(cfg, campaign_id) -> dict | None:
 def sole_campaign_named(cfg, text) -> str | None:
     """The campaign id `text` names, iff it names exactly one distinct id that resolves to a
     readable campaign (SPEC-0431). Matches every id `new_campaign_id` mints, including red-main
-    ids and outbound ids whose project code starts with a digit. Unknown, unreadable, or
-    non-object candidates are dropped before counting; zero or two-or-more survivors give
-    None. Pure read; never raises."""
+    ids and outbound ids whose project code starts with a digit. A period before an id is
+    punctuation (`.CID`, `sentence.CID`); a period inside a dotted id stays part of that id.
+    Unknown, unreadable, or non-object candidates are dropped before counting; zero or
+    two-or-more survivors give None. Pure read; never raises."""
     try:
         found = []
-        for cid in dict.fromkeys(_CID_RE.findall(text or "")):
-            if campaign_state(cfg, cid) is not None:
-                found.append(cid)
+        seen = set()
+        for alts in _campaign_id_spans(text or ""):
+            chosen = next((cid for cid in alts if campaign_state(cfg, cid) is not None), None)
+            if chosen is not None and chosen not in seen:
+                seen.add(chosen)
+                found.append(chosen)
         return found[0] if len(found) == 1 else None
     except Exception:
         return None

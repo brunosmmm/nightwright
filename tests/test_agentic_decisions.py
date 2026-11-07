@@ -1,6 +1,7 @@
 """SPEC-0301: the conductor decision log, `nw queue decision` / `decisions`, park coverage."""
 import datetime as dt
 import json
+import os
 
 import pytest
 from click.testing import CliRunner
@@ -323,7 +324,11 @@ def test_cli_text_inference_from_action_only(cfg, run):
     mk(cfg, CA)
     r = _dec(run, "no campaign in the rationale", extra=("--action", f"nudged {CA}"))
     assert r.exit_code == 0, r.output
-    assert D.read(cfg)[0]["campaign"] == CA
+    rec = D.read(cfg)[0]
+    assert rec["campaign"] == CA and rec["campaign_from"] == "text"
+    assert rec["spec_id"] == f"SPEC-{CA}"
+    notes = [e for e in S.read_ledger(cfg, CA) if e["type"] == "note"]
+    assert notes[0]["decision"]["seq"] == rec["seq"]
 
 
 def test_cli_explicit_campaign_wins_and_has_no_campaign_from(cfg, run):
@@ -371,6 +376,18 @@ def test_cli_ambiguous_or_none_is_queue_level(cfg, run):
         assert rec["campaign"] is None and "campaign_from" not in rec
     for c in (CA, CB):
         assert not [e for e in S.read_ledger(cfg, c) if e["type"] == "note"]
+
+
+def test_cli_empty_explicit_campaign_conflicts_with_no_campaign(cfg, run):
+    """An explicit empty CAMPAIGN is still explicit: `--no-campaign` is a usage error."""
+    mk(cfg, CA)
+    assert _dec(run, "seed, no campaign").exit_code == 0
+    before = D.log_path(cfg).read_bytes()
+    ledger = (S.campaign_dir(cfg, CA) / "ledger.jsonl").read_bytes()
+    r = _dec(run, "", f"about {CA}", extra=("--no-campaign",))
+    assert r.exit_code == 2 and "conflicts" in r.output
+    assert D.log_path(cfg).read_bytes() == before
+    assert (S.campaign_dir(cfg, CA) / "ledger.jsonl").read_bytes() == ledger
 
 
 def test_cli_no_campaign_flag(cfg, run):
@@ -477,6 +494,73 @@ def test_cli_event_campaign_with_non_object_state_falls_through(cfg, run):
     rec = D.read(cfg)[0]
     assert rec["campaign"] == CB and rec["campaign_from"] == "text"
     assert not [e for e in S.read_ledger(cfg, CA) if e["type"] == "note"]
+
+
+def test_cli_event_oserror_falls_through_to_text(cfg, run, monkeypatch):
+    mk(cfg, CA)
+    mk(cfg, CB)
+    real = S.read_state
+
+    def flaky(cfg, cid):
+        if cid == CA:
+            raise OSError("unreadable")
+        return real(cfg, cid)
+
+    monkeypatch.setattr(S, "read_state", flaky)
+    _msg_event(cfg, 1, CA)
+    r = _dec(run, f"about {CB}", extra=("--event", "1"))
+    assert r.exit_code == 0, r.output
+    rec = D.read(cfg)[0]
+    assert rec["campaign"] == CB and rec["campaign_from"] == "text"
+    assert rec["spec_id"] == f"SPEC-{CB}"
+
+
+def test_cli_event_campaign_outside_the_store_is_not_inherited(cfg, run, tmp_path):
+    """Absolute, traversal, and symlink campaign values do not resolve or get a note."""
+    mk(cfg, CB)
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "state.json").write_text(
+        json.dumps({"id": "evil", "spec_id": "SPEC-9", "project": "P"}) + "\n")
+    root = S.campaigns_dir(cfg)
+    root.mkdir(parents=True, exist_ok=True)
+    (root / "LINKED").symlink_to(outside, target_is_directory=True)
+    escaped = os.path.relpath(outside, root)
+    assert escaped.startswith("..")
+    for n, bad in enumerate((str(outside), escaped, "LINKED"), start=1):
+        _msg_event(cfg, n, bad)
+        before = sorted(p.name for p in outside.iterdir())
+        r = _dec(run, f"about {CB}", extra=("--event", str(n)))
+        assert r.exit_code == 0, r.output
+        rec = D.read(cfg)[-1]
+        assert rec["campaign"] == CB and rec["campaign_from"] == "text"
+        assert sorted(p.name for p in outside.iterdir()) == before
+    r = _dec(run, "nothing named here", extra=("--event", "1"))
+    assert r.exit_code == 0, r.output
+    rec = D.read(cfg)[-1]
+    assert rec["campaign"] is None and "campaign_from" not in rec
+    assert sorted(p.name for p in outside.iterdir()) == ["state.json"]
+
+
+def test_event_lookup_is_once_and_not_the_whole_suffix(cfg, run, monkeypatch):
+    mk(cfg, CA)
+    mk(cfg, CB)
+    _msg_event(cfg, 1, CA)
+    _msg_event(cfg, 2, CB)
+    calls = []
+    real = E.read_id
+
+    def spy(cfg, event_id):
+        calls.append(event_id)
+        return real(cfg, event_id)
+
+    monkeypatch.setattr(E, "read_id", spy)
+    monkeypatch.setattr(E, "read_since", lambda *a, **k: (_ for _ in ()).throw(
+        AssertionError("read_since materializes the suffix")))
+    r = _dec(run, f"about {CB}", extra=("--event", "1"))
+    assert r.exit_code == 0, r.output
+    assert calls == [1]
+    assert D.read(cfg)[0]["campaign"] == CA and D.read(cfg)[0]["campaign_from"] == "event"
 
 
 def test_cli_event_with_unknown_campaign_falls_through(cfg, run):

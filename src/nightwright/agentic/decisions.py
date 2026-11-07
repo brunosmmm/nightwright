@@ -17,6 +17,7 @@ from . import events as E
 from . import store
 
 SCHEMA = "nw.conductor.decision.v1"
+_UNSET = object()
 KINDS = ("resume", "abandon", "escalate", "ask_steward", "dispatch", "restart_runner", "wait",
          "reconcile", "apply_answer", "merge", "no_action", "other")
 # up to two qualifier segments: the landed nw-conduct row `message.request.human_order` (SPEC-0382)
@@ -113,12 +114,14 @@ def covering(cfg, campaign, park_ts) -> dict | None:
 
 
 def record(cfg, *, kind, rule, rationale, campaign=None, event_id=None, action=None,
-           by="conductor", campaign_from=None) -> dict:
+           by="conductor", campaign_from=None, event=_UNSET) -> dict:
     """Validate, then append one decision. With a campaign the ledger note is appended first;
     the `decisions.jsonl` line follows only if that succeeded, so a failure leaves at most a plain
     note. The next `seq` is reserved under the log's flock before the note is written (the note
     carries it). ValueError on any bad argument, with nothing written. `campaign_from`
-    (SPEC-0431) marks an inferred stamp: `"text"` or `"event"`, only with a campaign."""
+    (SPEC-0431) marks an inferred stamp: `"text"` or `"event"`, only with a campaign.
+    `event`, when passed, is the queue event already loaded for `event_id` (inference and
+    validation share that one lookup)."""
     validate_request(kind, rule, rationale, by)
     if campaign_from is not None and (campaign is None or campaign_from not in ("text", "event")):
         raise ValueError(f"campaign_from {campaign_from!r} needs a campaign and must be "
@@ -129,8 +132,8 @@ def record(cfg, *, kind, rule, rationale, campaign=None, event_id=None, action=N
         state = store.read_state(cfg, campaign)          # ValueError: no such campaign
         spec_id = state.get("spec_id")
     if event_id is not None:
-        nxt = E.read_since(cfg, event_id - 1)[:1] if event_id >= 1 else []
-        if not nxt or nxt[0].get("id") != event_id:
+        loaded = E.read_id(cfg, event_id) if event is _UNSET else event
+        if not isinstance(loaded, dict) or loaded.get("id") != event_id:
             raise ValueError(f"no queue event {event_id}")
     path = log_path(cfg)
     path.parent.mkdir(parents=True, exist_ok=True)

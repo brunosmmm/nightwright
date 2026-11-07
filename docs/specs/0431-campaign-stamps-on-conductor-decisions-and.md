@@ -326,6 +326,40 @@ except that they now gain a stamp when the text names exactly one existing campa
   tests/test_remote_gates.py::test_queue_gates_worker_and_local`: 1 passed.
   `python3 tools/spec_lint.py` OK, ledger regenerated. The full suite is left to gating.
 
+### As shipped (2026-11-06, review round 6)
+
+- A period before a campaign id is punctuation. `.CID` and `sentence.CID` resolve when that id
+  exists. A period inside a minted id (`FIX-acme.io-…`) stays part of that id: the longest
+  existing suffix of the same token wins, so a dotted id is not split and is not ambiguous with
+  its own tail. A word character or hyphen glued to either side still rejects the token.
+- `campaign_state` accepts an id only when it is a single directory name whose resolved path
+  stays inside the configured campaigns root. Absolute paths, separators, `.` / `..`, and a
+  symlink that escapes the root are not campaigns, so `--event` and `--re` fall through instead
+  of writing a note outside the data directory. An `OSError` from the state read still drops
+  only that candidate.
+- `nw queue decision` treats two words as an explicit campaign even when the first is empty, and
+  `--no-campaign` with that form is a usage error before validation or inference. Inference and
+  `decisions.record` share one `events.read_id` lookup; the scan stops at that id.
+- The `tests/test_remote_gates.py` assertion changed in round 5 is restored: `nw campaign show
+  --raw` again expects `worker=box`. That edit belonged to SPEC-0433, not this campaign.
+
+### Test record (2026-11-06, review round 6)
+
+- Leading-period and `sentence.<cid>` cases, including dotted minted ids whose tail is also a
+  campaign. Empty positional `CAMPAIGN` plus `--no-campaign` exits 2 and writes nothing.
+  `OSError` on a state read drops that candidate for the helper, `--event`, and `--re`, and the
+  other existing id still wins. Action-only inference asserts `campaign_from`, `spec_id`, and
+  the ledger note's decision seq. Absolute, `../`, and symlink campaign values are not
+  inherited and leave the outside directory untouched. `--event` loads the event once via
+  `read_id` and does not call `read_since`.
+- `env -u FORCE_COLOR uv run pytest -q tests/test_agentic_store_campaign_named.py
+  tests/test_agentic_decisions.py tests/test_agentic_mailbox.py tests/test_docs_captures.py`:
+  89 passed. `env -u FORCE_COLOR uv run pytest -q
+  tests/test_remote_gates.py::test_queue_gates_worker_and_local`: 1 passed.
+  Related `tests/test_agentic_store.py`, `tests/test_agentic_events.py`, and
+  `tests/test_agentic_queue_park_decision.py` passed. `python3 tools/spec_lint.py` OK, ledger
+  regenerated. The full suite is left to gating.
+
 ## Rollout / migration
 
 1. Land `store.sole_campaign_named`, the `campaign_from` keywords and the two CLI changes with

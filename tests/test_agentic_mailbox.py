@@ -1,6 +1,7 @@
 """SPEC-0183: file-based mailbox between conductor and stewards."""
 import io
 import json
+import os
 import threading
 from pathlib import Path
 
@@ -371,6 +372,52 @@ def test_cli_send_re_campaign_with_non_object_state_falls_through(tmp_path):
     assert r.exit_code == 0, r.output
     rec = json.loads(r.output)
     assert rec["campaign"] == CB and rec["campaign_from"] == "text"
+
+
+def test_cli_send_re_oserror_falls_through_to_text(tmp_path, monkeypatch):
+    from nightwright.agentic import store as S
+    cfg = _cfg(tmp_path)
+    _mk(cfg, CA)
+    _mk(cfg, CB)
+    q = M.send(cfg, to="conductor", frm="steward:Demo", text="question", kind="question",
+               campaign=CA)
+    real = S.read_state
+
+    def flaky(cfg, cid):
+        if cid == CA:
+            raise OSError("unreadable")
+        return real(cfg, cid)
+
+    monkeypatch.setattr(S, "read_state", flaky)
+    r = _send(cfg, "--to", "conductor", "--re", q["id"], f"about {CB}")
+    assert r.exit_code == 0, r.output
+    rec = json.loads(r.output)
+    assert rec["campaign"] == CB and rec["campaign_from"] == "text"
+
+
+def test_cli_send_re_campaign_outside_the_store_is_not_inherited(tmp_path):
+    from nightwright.agentic import store as S
+    cfg = _cfg(tmp_path)
+    _mk(cfg, CB)
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "state.json").write_text(
+        json.dumps({"id": "evil", "spec_id": "SPEC-9", "project": "P"}) + "\n")
+    root = S.campaigns_dir(cfg)
+    root.mkdir(parents=True, exist_ok=True)
+    (root / "LINKED").symlink_to(outside, target_is_directory=True)
+    escaped = os.path.relpath(outside, root)
+    assert escaped.startswith("..")
+    for bad in (str(outside), escaped, "LINKED"):
+        q = M.send(cfg, to="steward:Demo", frm="conductor", text="question", kind="question",
+                   campaign=bad)
+        before = sorted(p.name for p in outside.iterdir())
+        r = _send(cfg, "--to", "conductor", "--re", q["id"], f"about {CB}")
+        assert r.exit_code == 0, r.output
+        rec = json.loads(r.output)
+        assert rec["campaign"] == CB and rec["campaign_from"] == "text"
+        assert sorted(p.name for p in outside.iterdir()) == before
+    assert sorted(p.name for p in outside.iterdir()) == ["state.json"]
 
 
 def test_cli_send_unknown_re_falls_through_to_text(tmp_path):
