@@ -1,10 +1,10 @@
 ---
 id: SPEC-0406
 title: "Shared campaign history data layer: history.py derivation, read-side schemas, campaign_export reuse and the history/records CLIs"
-status: in-progress
+status: done
 owner: user
 created: 2026-11-03
-updated: 2026-11-03
+updated: 2026-11-06
 source_idea: IDEA-884
 kind: feature
 parent: SPEC-0405
@@ -428,17 +428,17 @@ parsed as markup (SPEC-0265).
 
 ## Acceptance criteria
 
-- [ ] **AC1. Purity.** `import nightwright.agentic.history` loads neither `textual`,
+- [x] **AC1. Purity.** `import nightwright.agentic.history` loads neither `textual`,
   `nightwright.tui` nor any dashboard module (checked in a subprocess via `sys.modules`).
   Calling every public function of `history` and both CLIs over a copy of the fixture leaves
   every file under the data dir byte-identical (hash before and after), and creates no file
   anywhere else under `tmp_path`.
-- [ ] **AC2. Schemas.** For every fixture campaign, `nw campaign history <cid> --json` exits
+- [x] **AC2. Schemas.** For every fixture campaign, `nw campaign history <cid> --json` exits
   0 and `schemas.history_problems(doc) == []`; every record passes `record_problems_v1` and
   every `--list --json` row passes `index_problems`. Each index row's header fields and
   `dominant` equal that campaign's history document. On the real data dir, the same command
   exits 0 with a valid document for every campaign (manual step 1).
-- [ ] **AC3. Phases and dominant.** For every fixture campaign:
+- [x] **AC3. Phases and dominant.** For every fixture campaign:
   - the sum of `phases[].wall_s` is within 1 s of the wall time covered by the visits, and,
     for terminal campaigns, within 1 s of `header.wall_s`;
   - in each phase, `run_s + gate_s + gate_wait_s + runner_down_s + other_s == wall_s`, and
@@ -447,15 +447,15 @@ parsed as markup (SPEC-0265).
   `dominant.wall`, `dominant.cost` and `dominant.working` follow the stated argmax, tie and
   working rules; unit cases cover a tie, an all-zero campaign, a parked-dominant campaign
   and a run spilling over a transition.
-- [ ] **AC4. Export agreement.** For every fixture campaign, `campaign_export`'s
+- [x] **AC4. Export agreement.** For every fixture campaign, `campaign_export`'s
   `time_in_state_s` equals `history.time_in_state`, and `export_tables` `loops` equals
   `header.loops`. The existing `campaign_export` tests pass unchanged.
-- [ ] **AC5. Record coverage and text links.** On the fixture, `history_records` returns
+- [x] **AC5. Record coverage and text links.** On the fixture, `history_records` returns
   records of every source in `RECORD_SOURCES`, and every kind in `RECORD_KINDS` except
   ledger-`triage` while child 1 has produced no fixture data. A campaign-less decision whose
   text names exactly one campaign links to it with `linked_by: "text"`; one naming two
   campaigns links to none.
-- [ ] **AC6. Finding links and status.**
+- [x] **AC6. Finding links and status.**
   - On ledger events that carry `run_id` and `key`, the finding gets them with
     `linked_by: "field"`.
   - On old events, the run comes from ledger order and the key from `finding_key`, with
@@ -465,12 +465,12 @@ parsed as markup (SPEC-0265).
   - A `followup` key marks a finding `filed` with `followup_idea`.
   - `review_carry` marks a finding `carried`.
   - `fixed` appears only on merged campaigns.
-- [ ] **AC7. Gaps, never crashes.** Each of these inputs gives a `gaps` entry and a document
+- [x] **AC7. Gaps, never crashes.** Each of these inputs gives a `gaps` entry and a document
   that passes `history_problems`, never an exception: a truncated ledger line, a missing
   `run.json`, a run with neither `run.json` nor `result.json`, an unknown state, an
   unparsable decision line, a missing `runner.jsonl`, and `wt.`-prefixed schemas (the last
   parses with no gap).
-- [ ] **AC8. CLI.**
+- [x] **AC8. CLI.**
   - `nw campaign history` enforces exactly one of `CID` and `--list` (exit 2 otherwise), and
     exits 1 with `campaign <cid> not found` on an unknown campaign.
   - Each `--list` filter (project, state, spec, since, until, min-cost) and each `records`
@@ -531,6 +531,27 @@ parsed as markup (SPEC-0265).
 - Iterate with `python3 tools/affected_tests.py --run uv run pytest -q`.
 - `python3 tools/spec_lint.py` exits 0.
 
+### Test record (2026-11-06)
+
+- `uv run pytest -q tests/test_history.py::test_field_inferred_gate_and_triage_links`:
+  1 passed.
+- `uv run pytest -q tests/test_history.py tests/test_history_fixture.py
+  tests/test_cli_campaign_history.py tests/test_agentic_campaign_export.py`: 147 passed,
+  3 skipped.
+- Manual verification covered all 241 real campaign directories with
+  `nw campaign history <cid> --json`; all exited 0. A schema spot-check returned `[]`.
+- The must-fix finding query returned its known finding with run `027-adversarial_reviewer`.
+  For merged campaign `SPEC-0179-20261025-158c`, the history timeline matched the ledger,
+  history and export both reported zero loops, and parked was the intuitive dominant phase.
+- The full affected suite is left to the queue close gate.
+
+### As shipped (2026-11-06)
+
+Shipped the pure history derivation, read-side schemas, export reuse, and uncached history
+and records CLIs as designed. Legacy triager `persona#index` waivers resolve within the
+latest preceding review round while preserving field provenance on findings that carry
+explicit `run_id` and `key`.
+
 ## Rollout / migration
 
 1. Start only once the fixture spec is `done` and `tests/fixtures/agentic_history/MANIFEST.json`
@@ -550,11 +571,11 @@ parsed as markup (SPEC-0265).
 
 ## Definition of done
 
-- [ ] Acceptance criteria all met.
-- [ ] Test plan executed; automated tests pass; manual steps performed and noted.
-- [ ] No regressions (affected tests green; `campaign_export` output unchanged).
-- [ ] Spec body updated to match what shipped (*As shipped* section added).
-- [ ] `docs/LEDGER.md` regenerated.
+- [x] Acceptance criteria all met.
+- [x] Test plan executed; automated tests pass; manual steps performed and noted.
+- [x] No regressions (affected tests green; `campaign_export` output unchanged).
+- [x] Spec body updated to match what shipped (*As shipped* section added).
+- [x] `docs/LEDGER.md` regenerated.
 
 ## Open questions
 

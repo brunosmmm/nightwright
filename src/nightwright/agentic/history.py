@@ -538,8 +538,6 @@ def _ledger_records(cfg, cid, state, events, runs):
         key = rec.pop("_key", None)
         if key in waived:
             rec["status"], rec["links"]["resolved_by"] = "waived", waived[key]
-            if waived[key].startswith("run:"):
-                rec["linked_by"] = "inferred"
         elif key in followups:
             rec["status"] = "filed"
             rec["links"]["followup_idea"] = followups[key].get("idea_id")
