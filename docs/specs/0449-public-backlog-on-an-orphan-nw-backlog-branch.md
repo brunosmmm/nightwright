@@ -413,9 +413,12 @@ product git directory.
 - Loop 2: each ``_git`` child clears inherited ``GIT_DIR``, ``GIT_WORK_TREE``,
   ``GIT_OBJECT_DIRECTORY``, ``GIT_NAMESPACE``, ``GIT_COMMON_DIR``, and
   ``GIT_ALTERNATE_OBJECT_DIRECTORIES`` in addition to ``GIT_INDEX_FILE``.
-  Identity and title refuse values that are not strict UTF-8 or that contain a
-  C0 control other than tab or DEL before ``hash-object``. Stray and worktree
-  paths on stderr use ``backslashreplace`` encoding.
+  Stray and worktree paths on stderr use ``backslashreplace`` encoding.
+- Loop 3: ``worktree list`` uses ``--porcelain -z``. Identity, title, and
+  summary arguments refuse non-strict UTF-8 before ``hash-object``. Title and
+  identity also refuse every character in PyYAML's ``Reader.NON_PRINTABLE`` and
+  NEL U+0085 (double-quoted scalars fold NEL). Summary bodies are not YAML-loaded;
+  C1 controls and NEL remain legal there.
 
 ### Commands
 
@@ -690,6 +693,16 @@ drops unknown keys, and refreshes `updated` and `updated_by`.
 - `uv run pytest -q tests/test_backlog.py` — 49 passed.
 - `python3 tools/affected_tests.py --run uv run pytest -q` — left to gating
   after the backlog-only run above.
+- Full suite left to gating.
+
+### Test record (loop 3, 2026-11-07)
+
+- `uv run pytest -q tests/test_backlog.py` — 56 passed (PyYAML unsafe title and
+  identity, UTF-8 title and summary, reopen canonical bytes, inherited git env,
+  safe-path stderr).
+- Manual checkout checks from the test plan: performed on a non-``nw-backlog``
+  product checkout; ``HEAD``, porcelain status, and work tree unchanged after
+  ``add``; ``nw-backlog`` is parentless; author matches local identity.
 - Full suite left to gating.
 
 ## Clock Log

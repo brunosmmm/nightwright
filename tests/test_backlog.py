@@ -195,7 +195,7 @@ def assert_allowlist(log):
         elif args[0] == "config":
             assert args in (["config", "--get", "user.name"], ["config", "--get", "user.email"])
         elif args[0] == "worktree":
-            assert args == ["worktree", "list", "--porcelain"]
+            assert args == ["worktree", "list", "--porcelain", "-z"]
 
 
 def freeze(monkeypatch, text="2026-11-07T15:41:00.900000+00:00"):
@@ -598,7 +598,20 @@ def test_close_and_reopen_are_single_file_commits(tmp_path, monkeypatch, git_log
     assert not any(args[0] == "hash-object" for args in git_log[mark:])
     opened = nw(repo, ["reopen", "REQ-K7H3MQ2P"])
     assert opened.exit_code == 0, (opened.stdout, opened.stderr, opened.exception)
-    assert b"status: open\n" in cat(repo, "REQ-K7H3MQ2P.md")
+    assert cat(repo, "REQ-K7H3MQ2P.md").decode() == (
+        "---\n"
+        "id: REQ-K7H3MQ2P\n"
+        'title: "Kept title"\n'
+        "status: open\n"
+        "created: 2026-11-07T15:41:00Z\n"
+        "updated: 2026-11-08T00:00:00Z\n"
+        'created_by: "Grace Hopper <grace@example.com>"\n'
+        'updated_by: "Ada Lovelace <ada@example.com>"\n'
+        "spec: SPEC-0449\n"
+        "---\n"
+        "\n"
+        "Kept body.\n"
+    )
     assert git(repo, "log", "-1", "--format=%B", "nw-backlog").stdout == b"backlog: reopen REQ-K7H3MQ2P\n"
     assert git(repo, "diff-tree", "--no-commit-id", "--name-only", "-r",
                "nw-backlog").stdout.decode().split() == ["REQ-K7H3MQ2P.md"]
@@ -1073,16 +1086,132 @@ def test_refuses_non_utf8_git_identity(tmp_path, monkeypatch, git_log):
     assert not any(args[0] == "hash-object" for args in git_log)
 
 
-def test_inherited_git_dir_does_not_redirect_writes(tmp_path, monkeypatch):
+def _wrong_git_env(other, var):
+    gd = git_dir(other)
+    if var == "GIT_DIR":
+        return str(gd)
+    if var == "GIT_WORK_TREE":
+        return str(other)
+    if var == "GIT_OBJECT_DIRECTORY":
+        return str(gd / "objects")
+    if var == "GIT_NAMESPACE":
+        return "dummy"
+    if var == "GIT_COMMON_DIR":
+        return str(gd)
+    if var == "GIT_ALTERNATE_OBJECT_DIRECTORIES":
+        return str(gd / "objects")
+    raise AssertionError(var)
+
+
+def test_inherited_git_env_does_not_redirect_writes(tmp_path, monkeypatch):
     freeze(monkeypatch)
     target = init_repo(tmp_path / "target")
     other = init_repo(tmp_path / "other")
-    other_git = git_dir(other)
-    monkeypatch.setenv("GIT_DIR", str(other_git))
-    ident = added(nw(target, ["add", "--title", "T", "--summary", "S"]))
-    monkeypatch.delenv("GIT_DIR", raising=False)
-    assert f"{ident}.md" in names(target)
-    assert rev(other, "nw-backlog") is None
+    cleared = (
+        "GIT_DIR",
+        "GIT_WORK_TREE",
+        "GIT_OBJECT_DIRECTORY",
+        "GIT_NAMESPACE",
+        "GIT_COMMON_DIR",
+        "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+    )
+    for var in cleared:
+        monkeypatch.delenv(var, raising=False)
+        monkeypatch.setenv(var, _wrong_git_env(other, var))
+        ident = added(nw(target, ["add", "--title", "T", "--summary", "S"]))
+        monkeypatch.delenv(var, raising=False)
+        assert f"{ident}.md" in names(target)
+        assert rev(other, "nw-backlog") is None
+        subprocess.run(["git", "-C", str(target), "update-ref", "-d", "refs/heads/nw-backlog"],
+                       check=False, capture_output=True)
+
+
+def test_refuses_pyyaml_unsafe_title_before_hash_object(tmp_path, monkeypatch, git_log):
+    freeze(monkeypatch)
+    repo = init_repo(tmp_path / "repo")
+    cases = [
+        ("x\u0080y", "title contains control character"),
+        ("x\u0085y", "title contains control character"),
+        ("\ufffe", "title contains control character"),
+        ("\ud800", "title is not valid utf-8"),
+    ]
+    for title, fragment in cases:
+        git_log.clear()
+        proc = nw(repo, ["add", "--title", title, "--summary", "S"])
+        assert proc.exit_code == 1, (title, proc.stderr, proc.exception)
+        assert fragment in proc.stderr
+        assert proc.stderr.count("\n") == 1
+        assert rev(repo, "nw-backlog") is None
+        assert not any(args[0] == "hash-object" for args in git_log)
+
+
+def test_refuses_surrogate_summary_before_hash_object(tmp_path, monkeypatch, git_log):
+    freeze(monkeypatch)
+    repo = init_repo(tmp_path / "repo")
+    git_log.clear()
+    proc = nw(repo, ["add", "--title", "T", "--summary", "\ud800"])
+    assert proc.exit_code == 1
+    assert proc.stderr == "summary is not valid utf-8\n"
+    assert rev(repo, "nw-backlog") is None
+    assert not any(args[0] == "hash-object" for args in git_log)
+
+
+def test_refuses_pyyaml_unsafe_git_identity(tmp_path, monkeypatch, git_log):
+    freeze(monkeypatch)
+    repo = init_repo(tmp_path / "repo", name=None)
+    git(repo, "config", "user.name", "x\u0080y")
+    git(repo, "config", "user.email", "ada@example.com")
+    git_log.clear()
+    proc = nw(repo, ["add", "--title", "T", "--summary", "S"])
+    assert proc.exit_code == 1
+    assert "user.name contains control character" in proc.stderr
+    assert rev(repo, "nw-backlog") is None
+    assert not any(args[0] == "hash-object" for args in git_log)
+
+    repo2 = init_repo(tmp_path / "repo2", name=None)
+    git(repo2, "config", "user.name", "Ada")
+    git(repo2, "config", "user.email", "a\u0080@example.com")
+    git_log.clear()
+    proc2 = nw(repo2, ["add", "--title", "T", "--summary", "S"])
+    assert proc2.exit_code == 1
+    assert "user.email contains control character" in proc2.stderr
+    assert not any(args[0] == "hash-object" for args in git_log)
+
+
+def test_title_unicode_and_tab_round_trip(tmp_path, monkeypatch):
+    freeze(monkeypatch)
+    repo = init_repo(tmp_path / "repo")
+    for title in ("Café", "a\tb"):
+        ident = added(nw(repo, ["add", "--title", title, "--summary", "S"]))
+        parsed = B.parse_item(f"{ident}.md", cat(repo, f"{ident}.md"))
+        assert parsed["title"] == title
+        subprocess.run(["git", "-C", str(repo), "update-ref", "-d", "refs/heads/nw-backlog"],
+                       check=False, capture_output=True)
+
+
+def test_refuses_c0_and_del_in_title(tmp_path, monkeypatch, git_log):
+    freeze(monkeypatch)
+    repo = init_repo(tmp_path / "repo")
+    for ch, esc in (("\x00", "\\x00"), ("\x7f", "\\x7f")):
+        git_log.clear()
+        proc = nw(repo, ["add", "--title", f"x{ch}y", "--summary", "S"])
+        assert proc.exit_code == 1
+        assert proc.stderr == f"title contains control character {esc}\n"
+        assert not any(args[0] == "hash-object" for args in git_log)
+
+
+def test_safe_path_backslashreplace_on_stderr():
+    text = B._safe_path("pre\ud800post")
+    assert "\ud800" not in text
+    assert "ud800" in text.lower() or "\\ud800" in text
+
+
+def test_stray_stderr_uses_safe_path_encoding():
+    path = "stray\ud800.txt"
+    line = B._problem_lines([("100644", path)])[0]
+    assert line.startswith("stray: ")
+    assert path not in line
+    assert "ud800" in line.lower()
 
 
 def test_aware_clock_is_stored_as_utc(tmp_path, monkeypatch):

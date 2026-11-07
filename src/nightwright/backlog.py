@@ -266,15 +266,24 @@ def _safe_path(path: str) -> str:
     return path.encode("utf-8", "backslashreplace").decode("utf-8")
 
 
+_NON_PRINTABLE = yaml.reader.Reader.NON_PRINTABLE
+
+
 def _yaml_unsafe_char(value: str) -> str | None:
-    """First C0 control other than tab, or DEL, that PyYAML's reader rejects."""
+    """First char PyYAML's reader rejects, or NEL (folded by the double-quoted scanner)."""
     for ch in value:
-        o = ord(ch)
-        if o < 32 and ch != "\t":
+        if ord(ch) == 0x85:
             return ch
-        if o == 127:
+        if _NON_PRINTABLE.match(ch):
             return ch
     return None
+
+
+def _strict_utf8(field: str, value: str) -> None:
+    try:
+        value.encode("utf-8")
+    except UnicodeEncodeError:
+        raise BacklogError(f"{field} is not valid utf-8") from None
 
 
 def _git(repo, args, *, env_extra=None, index=None, input=None, check=True):
@@ -369,27 +378,21 @@ def _read_identity(repo) -> tuple[str, str]:
 
 
 def _checked_out(repo) -> list[str]:
-    proc = _git(repo, ["worktree", "list", "--porcelain"])
+    proc = _git(repo, ["worktree", "list", "--porcelain", "-z"])
     found = []
     path = None
     branch = None
-
-    def end():
-        nonlocal path, branch
-        if path is not None and branch == REF:
-            found.append(path)
-        path = None
-        branch = None
-
-    for line in proc.stdout.decode("utf-8", "surrogateescape").splitlines():
+    for part in proc.stdout.split(b"\0"):
+        if not part:
+            continue
+        line = part.decode("utf-8", "surrogateescape")
         if line.startswith("worktree "):
-            end()
             path = line[len("worktree "):]
+            branch = None
         elif line.startswith("branch "):
             branch = line[len("branch "):]
-        elif line == "":
-            end()
-    end()
+            if path is not None and branch == REF:
+                found.append(path)
     return found
 
 
@@ -502,10 +505,15 @@ def _check_title(title: str) -> None:
         raise BacklogError("title is empty")
     if "\r" in title or "\n" in title:
         raise BacklogError("title must be one line")
+    _strict_utf8("title", title)
     bad = _yaml_unsafe_char(title)
     if bad is not None:
         esc = _safe_path(repr(bad)[1:-1])
         raise BacklogError(f"title contains control character {esc}")
+
+
+def _check_summary(summary: str) -> None:
+    _strict_utf8("summary", summary)
 
 
 def _check_spec(spec: str) -> None:
@@ -526,6 +534,7 @@ def _check_add_args(title, summary, spec) -> None:
     if summary is None:
         raise BacklogError("summary is required")
     _check_title(title)
+    _check_summary(summary)
     if spec is not None:
         _check_spec(spec)
 
@@ -538,6 +547,8 @@ def _check_edit_args(item_id, title, summary, spec, clear_spec) -> str:
         raise BacklogError("nothing to change")
     if title is not None:
         _check_title(title)
+    if summary is not None:
+        _check_summary(summary)
     if spec is not None:
         _check_spec(spec)
     return ident
