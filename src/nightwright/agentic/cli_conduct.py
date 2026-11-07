@@ -116,25 +116,31 @@ def attach(queue_group):
                        "`code_changed` and exits 0 so the Monitor owner re-arms)")
     @click.option("--all", "show_all", is_flag=True,
                   help="--follow delivers every event: no quiet mode, no digest (SPEC-0300)")
+    @click.option("--ack", type=int, default=None,
+                  help="--follow --for conductor: commit the cursor through this event id "
+                       "(SPEC-0444)")
     @click.pass_obj
     def queue_events(cfg, do_follow, reader, since, types, campaign, tail, as_text, from_start,
-                     poll_s, no_code_watch, show_all):
+                     poll_s, no_code_watch, show_all, ack):
         """The queue's alert stream: parks, merges, failed runs, watchdog signals, mail.
 
         \b
         nw queue events --tail 20                       recent history
         nw queue events --follow --for conductor        what the conductor's Monitor runs
+        nw queue events --follow --for conductor --ack ID
         """
         if do_follow:
             if not reader:
                 raise click.UsageError("--follow needs --for READER (e.g. conductor)")
             sup = _herdr_supervisor(cfg) if reader == "conductor" else None
+            conductor = reader == "conductor"
             try:
                 E.follow(cfg, reader, as_json=not as_text, poll_s=poll_s,
                          types=list(types) or None, from_start=from_start,
                          **({"code_root": None} if no_code_watch else {}),
                          **({"stop": sup.as_stop_hook()} if sup is not None else {}),
-                         quiet=QT.enabled_for(cfg, reader) and not show_all)
+                         quiet=QT.enabled_for(cfg, reader) and not show_all,
+                         ack=ack, uncommitted=conductor, replay_s=5 if conductor else 0)
             except ValueError as e:
                 raise click.ClickException(str(e))
             except (KeyboardInterrupt, BrokenPipeError):

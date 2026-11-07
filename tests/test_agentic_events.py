@@ -4,6 +4,7 @@
 import datetime as dt
 import io
 import json
+import os
 import threading
 
 import pytest
@@ -493,6 +494,55 @@ def test_cli_events_follow_no_code_watch(tmp_path, monkeypatch):
                                  "--no-code-watch"])
     assert r.exit_code == 0, r.output
     assert seen[-1]["code_root"] is None
+    assert seen[-1]["uncommitted"] is False and seen[-1]["ack"] is None
+    r = CliRunner().invoke(cli, ["queue", "events", "--follow", "--for", "conductor",
+                                 "--ack", "12"])
+    assert r.exit_code == 0, r.output
+    assert seen[-1]["uncommitted"] is True and seen[-1]["ack"] == 12
+    assert seen[-1]["replay_s"] == 5
+
+
+def test_uncommitted_follow_replays_until_ack(tmp_path):
+    cfg = _cfg(tmp_path)
+    E.cursor_set(cfg, "conductor", 0)
+    first = E.append(cfg, "admitted", campaign="a")
+    out = io.StringIO()
+    assert E.follow(cfg, "conductor", poll_s=0, code_root=None, out=out,
+                    uncommitted=True, replay_s=0) == 1
+    assert json.loads(out.getvalue())["id"] == first["id"]
+    assert E.cursor_get(cfg, "conductor") == 0
+    assert E.cursor_pending(cfg, "conductor") == first["id"]
+    out2 = io.StringIO()
+    assert E.follow(cfg, "conductor", poll_s=0, code_root=None, out=out2,
+                    uncommitted=True, replay_s=0) == 1
+    assert json.loads(out2.getvalue())["id"] == first["id"]
+    assert E.cursor_get(cfg, "conductor") == 0
+    out3 = io.StringIO()
+    assert E.follow(cfg, "conductor", poll_s=0, code_root=None, out=out3,
+                    uncommitted=True, ack=10**9, stop=lambda: True) == 0
+    assert E.cursor_get(cfg, "conductor") == first["id"]
+    assert E.cursor_pending(cfg, "conductor") is None
+    second = E.append(cfg, "abandoned", campaign="b")
+    out4 = io.StringIO()
+    assert E.follow(cfg, "conductor", poll_s=0, code_root=None, out=out4,
+                    uncommitted=True, replay_s=0) == 1
+    assert json.loads(out4.getvalue())["id"] == second["id"]
+    assert E.cursor_get(cfg, "conductor") == first["id"]
+
+
+def test_follow_returns_when_its_parent_dies(tmp_path, monkeypatch):
+    cfg = _cfg(tmp_path)
+    E.cursor_set(cfg, "conductor", 0)
+    calls = {"n": 0}
+
+    def ppid():
+        calls["n"] += 1
+        return 10 if calls["n"] == 1 else 11
+
+    monkeypatch.setattr(os, "getppid", ppid)
+    assert E.follow(cfg, "conductor", poll_s=30, code_root=None, out=io.StringIO()) == 0
+    assert E.reader_holder(cfg, "conductor") is None
+    assert E.cursor_get(cfg, "conductor") == 0
 
 
 def test_cli_events_history_and_conduct_status(tmp_path, monkeypatch):

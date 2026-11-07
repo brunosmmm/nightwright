@@ -81,12 +81,14 @@ run, handle it — that is the point.
    then `nw queue run --detach` (`stop` refuses inside the close guard: then wait for the next
    event).
 3. **Resolve what is already waiting** (parked items, unanswered mail) with the table below.
-4. **Arm the Monitor** on `nw queue events --follow --for conductor` with the longest timeout
-   and a description like "nw queue events (conductor)". Each stdout line is one
-   `nw.event.v1` JSON event and wakes you. The follower holds the `conductor` reader lock, so
-   a second conductor cannot arm. When the Monitor expires, **re-arm it** (the cursor resumes
-   after the last delivered event; nothing is lost or repeated). The follower also exits
-   after one `code_changed` line when nightwright's code changes; that is not an error (see the table).
+4. **Arm the Monitor** on `nw queue events --follow --for conductor` (add `--ack <id>` of the
+   last event id you have handled). Each stdout line is one `nw.event.v1` JSON event. The
+   follower prints the pending wake lines and **exits**. The shell finishing is what wakes
+   you: do not depend on an output watch. It does not move the cursor. Re-arm with
+   `--ack <last handled event id>`, or the same lines are printed again. Omit `--ack` only
+   when you have not handled an event yet. The follower holds the `conductor` reader lock
+   while it runs and drops it when its parent shell dies. A `code_changed` line still means
+   exit and re-arm (see the table).
 
    **Quiet stream (SPEC-0300).** The follower holds events that never need a decision and folds
    them into one `conductor_digest` line (every 30 min at most; `nw queue events --follow
@@ -169,7 +171,7 @@ campaign, as a ledger note, so a park counts as decided.
 | `close_held` | `close_held` (arrives only in `conductor_digest`) | none: a non-fix close waits in CLOSING while its project's base is red (no park, no close attempt counted); it merges by itself once the sentinel is green |
 | `parked.fixforward_weakens`, `parked.revert_conflict` | `parked` `fixforward_weakens` / `revert_conflict` (held: `red_main` in the park) | decided by the queue (SPEC-0420): the fix-forward deleted, skipped or weakened a test, or the revert conflicted; the episode counts it failed and abandons it. Nothing to do unless an escalation follows |
 | `escalation.red_main` | the human's answer to a `kind: red_main` escalation (it arrives as `escalation_answered`) | apply the human's choice. Choice 1 (another fix-forward attempt): `nw queue sentinel resume-fix --project <P> --yes`. Choice 2 (hand-resolved revert): dispatch a sub-agent to make the revert on a branch in its own worktree, then land it with `nw queue merge <branch> --by conductor --fixes-red` (dry run, then `--yes`). Choice 3: `nw queue sentinel clear --project <P>`. Record it with `nw queue decision --kind apply_answer --rule escalation.red_main` |
-| `code_changed` | `code_changed` | nightwright's code or skills changed under the follower (it printed this line and exited 0): **re-arm the Monitor now**, with the same command. If `skills_changed` has `nw-conduct`, re-invoke `/nw-conduct` (re-read it) before handling the next event; if it has `nw-orient`, re-read `/nw-orient` first. If the paths touch `src/nightwright/agentic/`, run the **runner re-exec check**: `nw queue runner-log --tail 3` within one poll interval; if the runner has not re-exec'd (drain waiting on an in-flight persona run), restart it right away: `nw queue stop --yes` then `nw queue run --detach` (`stop` refuses inside the close guard: then wait for the next event; see `runner_journal_silent` for the guard). Do not wait for the drain (an old runner; SPEC-0229 makes the drain admit and exec promptly). The `conductor_digest` row repeats this check when a merged campaign changed `.nw/project.yaml`. No report to the human |
+| `code_changed` | `code_changed` | nightwright's code or skills changed under the follower (it printed this line and exited 0): **re-arm the Monitor now** with `nw queue events --follow --for conductor --ack <last handled event id>` (omit `--ack` only when you have not handled an event yet). If `skills_changed` has `nw-conduct`, re-invoke `/nw-conduct` (re-read it) before re-arming; if it has `nw-orient`, re-read `/nw-orient` first. If the paths touch `src/nightwright/agentic/`, run the **runner re-exec check**: `nw queue runner-log --tail 3` within one poll interval; if the runner has not re-exec'd (drain waiting on an in-flight persona run), restart it right away: `nw queue stop --yes` then `nw queue run --detach` (`stop` refuses inside the close guard: then wait for the next event; see `runner_journal_silent` for the guard). Do not wait for the drain (an old runner; SPEC-0229 makes the drain admit and exec promptly). The `conductor_digest` row repeats this check when a merged campaign changed `.nw/project.yaml`. No report to the human |
 | `backlog.unknown_spec` | `backlog` with `blocked_by` an unknown spec | the spec is wrong: escalate |
 | `admitted`, `resumed`, `cost_warning`, `cap_raised`, `abandoned`, `rebase_resolved` | `admitted`, `resumed`, `cost_warning`, `cap_raised` (SPEC-0422: the queue raised a converging campaign's cap), `abandoned`, `rebase_resolved` (arrive only in `conductor_digest`) | informational; act only if it contradicts what you decided |
 
@@ -185,7 +187,8 @@ Your context is not the record; the files are. `nw queue conductor-brief` shows
   the event in hand. Record any in-flight dispatch with `nw queue decision --kind dispatch`,
   then compact.
 - After compacting, or on any fresh start, run `nw queue conductor-brief` and re-arm the
-  Monitor. Never re-read event history or old conversation to orient.
+  Monitor with `--ack` of the last event id you have handled. Never re-read event history or
+  old conversation to orient.
 - Check the brief once per `conductor_ping` digest and after each escalation.
 
 ## Conventions / guardrails

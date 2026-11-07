@@ -704,6 +704,7 @@ progress. This is the single place to see *what has been decided* and *what is i
 | [SPEC-0441](./specs/0441-adopted-spec-write-must-not-kill-the-runner.md) | An adopted spec write must not kill the runner | feature | done | — | 2026-11-06 |
 | [SPEC-0442](./specs/0442-cursor-sdk-persona-runs.md) | Cursor SDK persona runs | feature | done | — | 2026-11-07 |
 | [SPEC-0443](./specs/0443-piped-output-ignores-force-color.md) | Piped output ignores FORCE_COLOR when deciding to wrap | feature | done | — | 2026-11-07 |
+| [SPEC-0444](./specs/0444-conductor-follower-acks-before-advancing.md) | The conductor follower commits an event only after the session acks it | feature | done | — | 2026-11-07 |
 
 ## Superseded / rejected
 

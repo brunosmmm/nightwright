@@ -1019,6 +1019,36 @@ def cursor_set(cfg, reader, after: int) -> None:
                   json.dumps({"reader": reader, "after": after, "ts": store.now_iso()}) + "\n")
 
 
+def _cursor_doc(cfg, reader) -> dict:
+    p = cursors_dir(cfg) / f"{_safe(reader)}.json"
+    if not p.is_file():
+        return {}
+    try:
+        doc = json.loads(p.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    return doc if isinstance(doc, dict) else {}
+
+
+def cursor_pending(cfg, reader) -> int | None:
+    """Last wake id printed for this reader and not yet committed (SPEC-0444)."""
+    raw = _cursor_doc(cfg, reader).get("pending")
+    try:
+        return int(raw) if raw is not None else None
+    except (TypeError, ValueError):
+        return None
+
+
+def cursor_note_pending(cfg, reader, pending: int) -> None:
+    """Record a printed-but-uncommitted wake id. `after` stays where it is."""
+    doc = _cursor_doc(cfg, reader)
+    doc.update({"reader": reader, "after": cursor_get(cfg, reader),
+                "pending": int(pending), "ts": store.now_iso()})
+    d = cursors_dir(cfg)
+    d.mkdir(parents=True, exist_ok=True)
+    _atomic_write(d / f"{_safe(reader)}.json", json.dumps(doc) + "\n")
+
+
 # `reader_holder` probes take and drop the lock for microseconds (the TUI, `conduct-status`,
 # the dashboard snapshot): a starting follower retries briefly before calling it held.
 READER_LOCK_TRIES = 10
@@ -1170,9 +1200,23 @@ def code_changed_line(reader, change: dict, *, as_json=True) -> str:
     return (json.dumps(ev, ensure_ascii=False) if as_json else summary_line(ev)) + "\n"
 
 
+def _parent_gone(parent_pid) -> bool:
+    return os.getppid() != parent_pid
+
+
+def _sleep_while_parent(seconds, parent_pid) -> bool:
+    """Sleep up to `seconds`. Return True if the parent pid changed."""
+    end = time.monotonic() + seconds
+    while time.monotonic() < end:
+        if _parent_gone(parent_pid):
+            return True
+        time.sleep(min(0.2, end - time.monotonic()))
+    return _parent_gone(parent_pid)
+
+
 def follow(cfg, reader, *, as_json=True, poll_s=None, types=None, out=None, max_events=None,
            stop=None, from_start=False, code_root=CW.AUTO, code_check_s=None, quiet=False,
-           now=None) -> int:
+           now=None, ack=None, uncommitted=False, replay_s=0) -> int:
     """Stream events after the reader's cursor forever: sync, print, advance cursor, sleep.
     Holds the reader lock for its lifetime. Returns the number of lines printed. When nightwright's
     code changes (SPEC-0231) it prints one `code_changed` line and returns; `code_root=None`
@@ -1184,7 +1228,13 @@ def follow(cfg, reader, *, as_json=True, poll_s=None, types=None, out=None, max_
     older than `digest_interval_s`. A hold saves the digest *before* the cursor advances
     (`Digest.add` ignores a re-read); a due digest is cleared and saved before it is printed,
     or only cleared when it holds nothing but empty pings (`Digest.worth_printing`, SPEC-0317).
-    `printed` and `max_events` count delivered lines only. `now` is a clock callable."""
+    `printed` and `max_events` count delivered lines only. `now` is a clock callable.
+
+    SPEC-0444: `ack` commits the cursor forward (never past the last event, never backward)
+    before the loop. `uncommitted` prints wake lines without moving `after`, records `pending`,
+    and returns so the process exits. A later run reprints them until `ack` passes their id.
+    `replay_s` sleeps once before reprinting a line already in `pending`. The follower returns
+    when its parent pid changes, and the reader lock drops with it."""
     from . import quiet as QT
     out = out or sys.stdout
     poll = float(poll_s if poll_s is not None else settings(cfg)["poll_s"])
@@ -1222,12 +1272,21 @@ def follow(cfg, reader, *, as_json=True, poll_s=None, types=None, out=None, max_
                 digest.reset()
                 digest.save()
                 replay = True
+        if ack is not None:
+            target = min(int(ack), _last_id(events_path(cfg)))
+            if target > cursor_get(cfg, reader):
+                cursor_set(cfg, reader, target)
+        parent_pid = os.getppid()
+        slept_replay = False
         while True:
+            if _parent_gone(parent_pid):
+                return printed
             sync(cfg, ping=True)
             after = cursor_get(cfg, reader)
             ctx = QT.Ctx(cfg, reader, now=clock(), digest=digest) if quiet else None
             if quiet:
                 digest.retry_save()
+            last_wake = None
             for ev in read_since(cfg, after, types=types):
                 if quiet and QT.classify(cfg, ev, ctx) == "hold":
                     if ctx.digest.add(ev, ctx):
@@ -1241,6 +1300,12 @@ def follow(cfg, reader, *, as_json=True, poll_s=None, types=None, out=None, max_
                         ctx.digest.save()
                     cursor_set(cfg, reader, ev["id"])
                     continue
+                if uncommitted and not slept_replay:
+                    pend = cursor_pending(cfg, reader)
+                    if pend is not None and ev["id"] <= pend and replay_s:
+                        if _sleep_while_parent(replay_s, parent_pid):
+                            return printed
+                    slept_replay = True
                 out.write((json.dumps(ev, ensure_ascii=False) if as_json else summary_line(ev))
                           + "\n")
                 out.flush()
@@ -1249,10 +1314,20 @@ def follow(cfg, reader, *, as_json=True, poll_s=None, types=None, out=None, max_
                     if ev["type"] == "conductor_ping":
                         ctx.digest.note_ping_wake(ev, ctx)
                         ctx.digest.save()
+                if uncommitted:
+                    last_wake = ev["id"]
+                    printed += 1
+                    if max_events and printed >= max_events:
+                        cursor_note_pending(cfg, reader, last_wake)
+                        return printed
+                    continue
                 cursor_set(cfg, reader, ev["id"])
                 printed += 1
                 if max_events and printed >= max_events:
                     return printed
+            if last_wake is not None:
+                cursor_note_pending(cfg, reader, last_wake)
+                return printed
             replay = False
             for ev in (ctx.digest.drain_wakes(ctx) + ctx.digest.watch_wakes(ctx) if quiet
                        else ()):
@@ -1291,4 +1366,5 @@ def follow(cfg, reader, *, as_json=True, poll_s=None, types=None, out=None, max_
                 return printed
             if stop is not None and stop():
                 return printed
-            time.sleep(poll)
+            if _sleep_while_parent(poll, parent_pid):
+                return printed
