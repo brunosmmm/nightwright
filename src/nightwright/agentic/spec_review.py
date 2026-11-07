@@ -517,12 +517,19 @@ def run_spec_review(cfg, spec_path, spec_id, *, profile=None, idea_text=None,
     persona = PS.get_persona(PERSONA)
     prof, settings = resolved or reviewer_run_settings(cfg, path, profile)
     run_id = _RUN_ID_RE.sub("-", f"{spec_id}-{store.now_iso()}-{os.getpid()}-{secrets.token_hex(2)}")
+    from .model_sets import bind, resolve_model_set
     from .runner import mapped_model
     alias = str(settings.get("model") or "sonnet")
     effort = settings.get("effort")
-    model, model_alias = mapped_model(
-        cfg, alias, effort, project_root=str(root) if root else None,
-        cursor_model=settings.get("cursor_model"))
+    chosen = resolve_model_set(cfg, project_root=str(root) if root else None)
+    if chosen is not None:
+        bound = bind(chosen, PERSONA, alias, effort)
+        model, model_alias, spawn_runner = bound["model"], bound["model_alias"], bound["runner"]
+    else:
+        model, model_alias = mapped_model(
+            cfg, alias, effort, project_root=str(root) if root else None,
+            cursor_model=settings.get("cursor_model"))
+        spawn_runner = None
     req = PS.RunRequest(
         persona=PERSONA,
         prompt=PS.build_prompt(persona, ctx),
@@ -544,13 +551,15 @@ def run_spec_review(cfg, spec_path, spec_id, *, profile=None, idea_text=None,
         profile=prof.get("name"),
         profile_sources=tuple(prof.get("sources") or ()),
         model_alias=model_alias,
+        runner=spawn_runner,
     )
     journal_start(cfg, run_id, spec_id, req.timeout_s, req.run_dir,
                   reviewer_profile=prof.get("name"), model=req.model)
     t0 = time.monotonic()
     cost = None
     try:
-        result = select_runner(cfg).run(req)
+        runner = select_runner(cfg, runner=spawn_runner) if spawn_runner else select_runner(cfg)
+        result = runner.run(req)
         cost = result.cost_usd
         if result.timed_out or result.is_error or not result.verdict_ok:
             why = ("timed out" if result.timed_out else "failed" if result.is_error

@@ -1028,9 +1028,16 @@ def build_request(cfg, profile, project_cfg, state, persona, *, run_dir,
         env["NW_REBASE_TARGET"] = str(ctx.get("rebase_target") or "")
     alias = str(settings.get("model") or "sonnet")
     effort = settings.get("effort")
-    model, model_alias = mapped_model(
-        cfg, alias, effort, campaign=state, project=state.get("project"),
-        project_root=project_root, cursor_model=settings.get("cursor_model"))
+    from .model_sets import bind, resolve_model_set
+    chosen = resolve_model_set(cfg, project_root=project_root)
+    if chosen is not None:
+        bound = bind(chosen, persona, alias, effort)
+        model, model_alias, spawn_runner = bound["model"], bound["model_alias"], bound["runner"]
+    else:
+        model, model_alias = mapped_model(
+            cfg, alias, effort, campaign=state, project=state.get("project"),
+            project_root=project_root, cursor_model=settings.get("cursor_model"))
+        spawn_runner = None
     return RunRequest(
         persona=persona,
         prompt=build_prompt(p, ctx) if invariant is None else build_prompt(p, ctx, invariant),
@@ -1050,4 +1057,5 @@ def build_request(cfg, profile, project_cfg, state, persona, *, run_dir,
         profile=profile.get("name"),
         profile_sources=tuple(profile.get("sources") or ()),
         model_alias=model_alias,
+        runner=spawn_runner,
     )

@@ -1407,12 +1407,14 @@ class _Ctx:
     def runner(self):
         return self.runner_for(None)
 
-    def runner_for(self, state=None):
-        """The persona backend for this spawn (SPEC-0436). An injected test runner wins."""
+    def runner_for(self, state=None, *, kind=None):
+        """The persona backend for this spawn (SPEC-0436). An injected test runner wins.
+        `kind` is the model set's runner for this persona (SPEC-0455)."""
         if self._injected_runner is not None:
             return self._injected_runner
-        kind = resolve_runner(self.cfg, campaign=state,
-                              project=(state or {}).get("project") if state else None)
+        if not kind:
+            kind = resolve_runner(self.cfg, campaign=state,
+                                  project=(state or {}).get("project") if state else None)
         if kind not in self._runners:
             self._runners[kind] = select_runner(self.cfg, runner=kind)
         return self._runners[kind]
@@ -1996,7 +1998,7 @@ def _do_spec_review(ctx: _Ctx, state: dict, step: Step, run_id: str, req,
     try:
         head = git.rev_parse(worktree)
         try:
-            res.run_result = ctx.runner_for(state).run(req)
+            res.run_result = _local_runner(ctx, state, req).run(req)
         except Exception as e:                  # the reset below must still run
             res.error = getattr(e, "tail", None) or str(e)
             if not isinstance(e, (GitError, ValueError, OSError)):
@@ -2085,8 +2087,7 @@ def _do_persona(ctx: _Ctx, state: dict, step: Step, run_id: str, req, budget: fl
         # A tick context resolves the persona backend per campaign (SPEC-0436). A caller
         # that only carries `.runner` (the pre-0436 test doubles) is used as-is.
         cfg = getattr(ctx, "cfg", None)
-        resolve = getattr(ctx, "runner_for", None)
-        local = resolve(state) if callable(resolve) else ctx.runner
+        local = _local_runner(ctx, state, req)
         remote = RPS.dispatch(cfg, state, step.kind, req, adopted=adopted is not None,
                               local=local) if cfg is not None else None
         runner = remote or local
@@ -2108,7 +2109,7 @@ def _do_persona(ctx: _Ctx, state: dict, step: Step, run_id: str, req, budget: fl
             run_id, req, outcome = _rerun_locally(ctx, state, step, run_id, rerun_req, budget,
                                                   outcome, hooks)
             res.run_id = run_id
-            detachable = bool(getattr(ctx.runner_for(state), "detachable", False))
+            detachable = bool(getattr(_local_runner(ctx, state, req), "detachable", False))
             if outcome is DETACHED:
                 res.detached = True
                 return res
@@ -2147,6 +2148,21 @@ def _do_persona(ctx: _Ctx, state: dict, step: Step, run_id: str, req, budget: fl
     return res
 
 
+def _local_runner(ctx, state, req):
+    """The backend for this request. A model set's runner wins; a test double that
+    only accepts the campaign state is left alone."""
+    resolve = getattr(ctx, "runner_for", None)
+    if not callable(resolve):
+        return ctx.runner
+    kind = getattr(req, "runner", None)
+    if not kind:
+        return resolve(state)
+    try:
+        return resolve(state, kind=kind)
+    except TypeError:
+        return resolve(state)
+
+
 def _gated_runner(ctx: _Ctx, req, state=None):
     """SPEC-0345: the runner of a gated `write_spec` / `resolve` run. The tick's gate read the
     backoff before the run was admitted; one begun since (another run's 429) holds it at its
@@ -2159,7 +2175,7 @@ def _gated_runner(ctx: _Ctx, req, state=None):
                 return RPS.HeldRunner()
         except (OSError, ValueError):
             pass
-    return ctx.runner_for(state)
+    return _local_runner(ctx, state, req)
 
 
 def _run_persona(req, step: Step) -> str | None:
@@ -2238,7 +2254,7 @@ def _rerun_locally(ctx: _Ctx, state: dict, step: Step, run_id: str, req, budget:
         mark_held(new_req)
         return new_id, new_req, _synthetic(new_req, "the write-back re-run was not started "
                                                     "during the rate-limit backoff", cost_usd=0.0)
-    local = ctx.runner_for(state)
+    local = _local_runner(ctx, state, new_req)
     if hooks is not None and getattr(local, "detachable", False):
         if not hooks.restart(new_req.run_dir):
             return new_id, new_req, DETACHED

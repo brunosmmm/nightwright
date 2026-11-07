@@ -403,7 +403,8 @@ def _header(cfg, w: dict, state: dict, req, job_id: str, bundle: Path) -> dict:
     spec_id = state.get("spec_id")
     # SPEC-0436: only a real backend travels; a `fake` coordinator (offline stand-in) leaves
     # the choice to the worker's own config, which the header's validator would reject
-    kind = R.resolve_runner(cfg, campaign=state, project=state.get("project"))
+    kind = getattr(req, "runner", None) or R.resolve_runner(
+        cfg, campaign=state, project=state.get("project"))
     h = {"schema": W.JOB_SCHEMA, "kind": KIND, "job_id": job_id, "repo_key": key,
          "campaign": cid, "spec_id": spec_id if spec_id else "-", "commit": sha,
          "base": {"name": base_name, "sha": base_sha}, "have": have, "bundle_bytes": size,

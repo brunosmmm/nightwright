@@ -50,6 +50,7 @@ class RunRequest:
     profile: str | None = None                  # SPEC-0238: the resolved profile and its sources
     profile_sources: tuple = ()
     model_alias: str | None = None              # SPEC-0436: profile alias when `model` is mapped
+    runner: str | None = None                   # SPEC-0455: model-set backend; None keeps the host runner
 
 
 @dataclass(frozen=True)
@@ -259,8 +260,14 @@ def resolve_runner(cfg, *, campaign=None, project=None) -> str:
 
 
 def cursor_needed(cfg, campaigns=None) -> bool:
-    """True when the host default, a project overlay, or any given (else live) campaign
-    resolves to `cursor`."""
+    """True when the host default, a project overlay, the selected model set, or any
+    given (else live) campaign resolves to `cursor`."""
+    from .model_sets import resolve_model_set, uses_cursor
+    try:
+        if uses_cursor(resolve_model_set(cfg)):
+            return True
+    except ValueError:
+        return True
     if resolve_runner(cfg) == "cursor":
         return True
     mapping = ((cfg or {}).get("agentic") or {}).get("project_runners")
@@ -420,6 +427,8 @@ def _request_doc(req: RunRequest, started_at: str) -> dict:
            "started_at": started_at}
     if req.model_alias:
         doc["model_alias"] = req.model_alias
+    if req.runner:
+        doc["runner"] = req.runner
     return doc
 
 
@@ -440,7 +449,7 @@ def rebuild_request(run_dir, *, budget: float | None = None) -> RunRequest:
         timeout_s=int(doc.get("timeout_s") or 0),
         permission_mode=doc.get("permission_mode") or "", read_only=bool(doc.get("read_only")),
         allowed_tools=(), add_dirs=(), json_schema=doc.get("json_schema") or {}, env={},
-        run_dir=run_dir)
+        run_dir=run_dir, runner=doc.get("runner"))
 
 
 def _read_text(path) -> str:
