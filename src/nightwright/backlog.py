@@ -270,9 +270,10 @@ _NON_PRINTABLE = yaml.reader.Reader.NON_PRINTABLE
 
 
 def _yaml_unsafe_char(value: str) -> str | None:
-    """First char PyYAML's reader rejects, or NEL (folded by the double-quoted scanner)."""
+    """Chars that break double-quoted scalars or PyYAML's reader (NEL, LS, PS, C0/DEL)."""
     for ch in value:
-        if ord(ch) == 0x85:
+        o = ord(ch)
+        if o in (0x85, 0x2028, 0x2029):
             return ch
         if _NON_PRINTABLE.match(ch):
             return ch
@@ -312,7 +313,10 @@ def _resolve_repo(repo) -> Path:
     if inside.stdout.decode().strip() != "true" or bare.stdout.decode().strip() != "false":
         raise BacklogError("not a git work tree")
     top = _git(raw, ["rev-parse", "--show-toplevel"])
-    return Path(top.stdout.decode().strip())
+    raw_out = top.stdout
+    if raw_out.endswith(b"\n"):
+        raw_out = raw_out[:-1]
+    return Path(raw_out.decode("utf-8", "surrogateescape"))
 
 
 def _config_value(repo, key: str):
@@ -521,6 +525,17 @@ def _check_spec(spec: str) -> None:
         raise BacklogError("invalid spec id")
 
 
+def _ensure_renderable(ident: str, item: dict) -> None:
+    """Refuse parsed values that ``parse_item`` may accept but ``render_item`` cannot round-trip."""
+    for field in ("title", "created_by"):
+        value = item[field]
+        _strict_utf8(field, value)
+        if "\r" in value or "\n" in value:
+            raise BacklogError(f"invalid backlog item {ident}: {field}")
+        if _yaml_unsafe_char(value) is not None:
+            raise BacklogError(f"invalid backlog item {ident}: {field}")
+
+
 def _parse_id_arg(item_id: str) -> str:
     matched = _ID_ARG_RE.fullmatch(item_id)
     if matched is None:
@@ -650,6 +665,7 @@ def _commit(repo, *, op: str, title=None, summary=None, spec=None, clear_spec=Fa
                 item["status"] = "open"
             item["updated"] = stamp
             item["updated_by"] = identity
+            _ensure_renderable(ident, item)
             message = f"backlog: {op} {ident}"
             minted = ident
         new = _write_commit(

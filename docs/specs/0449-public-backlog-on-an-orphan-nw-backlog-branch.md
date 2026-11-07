@@ -419,6 +419,11 @@ product git directory.
   identity also refuse every character in PyYAML's ``Reader.NON_PRINTABLE`` and
   NEL U+0085 (double-quoted scalars fold NEL). Summary bodies are not YAML-loaded;
   C1 controls and NEL remain legal there.
+- Loop 0 (queue): title and identity checks also refuse U+2028 and U+2029.
+  ``edit`` / ``close`` / ``reopen`` run the same render-safety check on parsed
+  ``title`` and ``created_by`` before ``render_item``. ``rev-parse
+  --show-toplevel`` is decoded with ``surrogateescape`` and only a trailing
+  newline is stripped.
 
 ### Commands
 
@@ -703,6 +708,14 @@ drops unknown keys, and refreshes `updated` and `updated_by`.
 - Manual checkout checks from the test plan: performed on a non-``nw-backlog``
   product checkout; ``HEAD``, porcelain status, and work tree unchanged after
   ``add``; ``nw-backlog`` is parentless; author matches local identity.
+- Full suite left to gating.
+
+### Test record (loop 0, 2026-11-07)
+
+- `uv run pytest -q tests/test_backlog.py` — 65 passed (reviewer gaps: README
+  literal bytes, C1 summaries, edit refusals, parse variants, U+2028/2029, index
+  bytes, email punctuation, quoted ``created_by``).
+- `python3 tools/spec_lint.py --write-ledger` and `python3 tools/spec_lint.py` — exit 0.
 - Full suite left to gating.
 
 ## Clock Log

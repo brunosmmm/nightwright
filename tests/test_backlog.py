@@ -25,6 +25,14 @@ _BASE_LINES = [
     'created_by: "Ada Lovelace <ada@example.com>"',
     'updated_by: "Ada Lovelace <ada@example.com>"',
 ]
+_README_LITERAL = (
+    "# nw-backlog\n"
+    "\n"
+    "This branch is the public backlog for this repository. It is not a product checkout.\n"
+    "Do not build or run anything from it.\n"
+    "\n"
+    "Each `REQ-*.md` file at the root is one backlog item. There is no index file.\n"
+)
 
 
 def git(repo, *args, input=None, check=True, env=None):
@@ -279,7 +287,8 @@ def test_add_writes_orphan_readme_and_req_file(tmp_path, monkeypatch):
     assert log_format(repo, "%ct") == unix
     assert git(repo, "log", "-1", "--format=%B", "nw-backlog").stdout == f"backlog: add {ident}\n".encode()
     assert set(names(repo)) == {"README.md", f"{ident}.md"}
-    assert cat(repo, "README.md") == B.README_TEXT.encode()
+    assert cat(repo, "README.md") == _README_LITERAL.encode()
+    assert B.README_TEXT == _README_LITERAL
     blob = cat(repo, f"{ident}.md")
     assert blob.decode() == (
         f"---\n"
@@ -336,7 +345,8 @@ def test_edit_restores_missing_readme_only(tmp_path, monkeypatch):
     assert proc.exit_code == 0, (proc.stdout, proc.stderr, proc.exception)
     diff = git(repo, "diff-tree", "--no-commit-id", "--name-only", "-r", "nw-backlog")
     assert set(diff.stdout.decode().split()) == {"README.md", f"{first}.md"}
-    assert cat(repo, "README.md") == B.README_TEXT.encode()
+    assert cat(repo, "README.md") == _README_LITERAL.encode()
+    assert B.README_TEXT == _README_LITERAL
     assert rev(repo, f"nw-backlog:{second}.md") == kept
     assert f"{first}.md" in names(repo)
 
@@ -656,6 +666,12 @@ def test_refuses_unset_or_illegal_identity(tmp_path, monkeypatch, git_log):
          "user.name contains '<'\nuser.email contains whitespace\n"),
         ({"user.name": "Ada Lovelace", "user.email": 'a"b@example.com'},
          "user.email contains '\"'\n"),
+        ({"user.name": "Ada Lovelace", "user.email": "a<b@example.com"},
+         "user.email contains '<'\n"),
+        ({"user.name": "Ada Lovelace", "user.email": "a>b@example.com"},
+         "user.email contains '>'\n"),
+        ({"user.name": "Ada Lovelace", "user.email": r"a\b@example.com"},
+         "user.email contains '\\'\n"),
     ]
     for number, (values, message) in enumerate(cases):
         repo = init_repo(tmp_path / f"repo-{number}")
@@ -1224,3 +1240,161 @@ def test_aware_clock_is_stored_as_utc(tmp_path, monkeypatch):
     naive, unix = B._freeze(datetime(2026, 11, 7, 15, 41, 0))
     assert naive == "2026-11-07T15:41:00Z"
     assert unix == int(datetime(2026, 11, 7, 15, 41, tzinfo=timezone.utc).timestamp())
+
+
+_SPEC_README_BYTES = (
+    "# nw-backlog\n"
+    "\n"
+    "This branch is the public backlog for this repository. It is not a product checkout.\n"
+    "Do not build or run anything from it.\n"
+    "\n"
+    "Each `REQ-*.md` file at the root is one backlog item. There is no index file.\n"
+).encode()
+
+
+def test_readme_blob_matches_spec_literal_lines(tmp_path, monkeypatch):
+    freeze(monkeypatch)
+    repo = init_repo(tmp_path / "repo")
+    ident = added(nw(repo, ["add", "--title", "T", "--summary", "S"]))
+    assert cat(repo, "README.md") == _SPEC_README_BYTES
+    assert cat(repo, f"{ident}.md").decode().startswith("---\n")
+
+
+def test_summary_stores_c1_controls_raw(tmp_path, monkeypatch):
+    freeze(monkeypatch)
+    repo = init_repo(tmp_path / "repo")
+    for summary in ("a\u0080b", "c\u0085d"):
+        ident = added(nw(repo, ["add", "--title", "T", "--summary", summary]))
+        blob = cat(repo, f"{ident}.md")
+        parsed = B.parse_item(f"{ident}.md", blob)
+        assert parsed["summary"] == summary + "\n"
+        assert summary in blob.decode()
+        subprocess.run(["git", "-C", str(repo), "update-ref", "-d", "refs/heads/nw-backlog"],
+                       check=False, capture_output=True)
+
+
+def test_edit_applies_same_title_and_summary_refusals(tmp_path, monkeypatch, git_log):
+    freeze(monkeypatch)
+    repo = init_repo(tmp_path / "repo")
+    ident = added(nw(repo, ["add", "--title", "Seed", "--summary", "S"]))
+    tip = rev(repo, "nw-backlog")
+    pairs = [
+        (["edit", ident, "--title", "x\u2028y"], "title contains control character"),
+        (["edit", ident, "--title", "\ufffe"], "title contains control character"),
+        (["edit", ident, "--title", "\ud800"], "title is not valid utf-8"),
+        (["edit", ident, "--summary", "\ud800"], "summary is not valid utf-8"),
+        (["edit", ident, "--title", "a\nb"], "title must be one line"),
+        (["edit", ident, "--title", "   "], "title is empty"),
+    ]
+    for args, fragment in pairs:
+        git_log.clear()
+        proc = nw(repo, args)
+        assert proc.exit_code == 1, (args, proc.stderr)
+        assert fragment in proc.stderr
+        assert rev(repo, "nw-backlog") == tip
+        assert not any(call[0] == "hash-object" for call in git_log)
+
+
+def test_parse_variants_close_canonicalizes(tmp_path, monkeypatch):
+    freeze(monkeypatch)
+    repo = init_repo(tmp_path / "repo")
+    bare_lines = [line if not line.startswith("title: ") else "title: bare title"
+                  for line in _BASE_LINES]
+    variants = [
+        (
+            "---\n" + "\n".join(bare_lines) + "\n---\n\nThe summary.\n"
+        ).encode(),
+        doc(_BASE_LINES, "The summary.\n"),
+        doc(_BASE_LINES, "\nThe summary.\n\n\n"),
+    ]
+    for blob in variants:
+        assert isinstance(B.parse_item("REQ-K7H3MQ2P.md", blob), dict)
+        sha = commit_tree(repo, {"README.md": _SPEC_README_BYTES, "REQ-K7H3MQ2P.md": blob})
+        point(repo, sha)
+        assert nw(repo, ["close", "REQ-K7H3MQ2P"]).exit_code == 0
+        text = cat(repo, "REQ-K7H3MQ2P.md").decode()
+        assert 'title: "Public backlog"\n' in text or 'title: "bare title"\n' in text
+        assert text.endswith("---\n\nThe summary.\n")
+
+
+def test_close_refuses_unrenderable_parsed_title(tmp_path, monkeypatch, git_log):
+    freeze(monkeypatch)
+    repo = init_repo(tmp_path / "repo")
+    blob = b"""---
+id: REQ-K7H3MQ2P
+title: "Hello\xe2\x80\xa8World"
+status: open
+created: 2026-11-07T15:41:00Z
+updated: 2026-11-07T15:41:00Z
+created_by: "Ada <ada@example.com>"
+updated_by: "Ada Lovelace <ada@example.com>"
+---
+
+Body.
+"""
+    sha = commit_tree(repo, {"README.md": _SPEC_README_BYTES, "REQ-K7H3MQ2P.md": blob})
+    point(repo, sha)
+    git_log.clear()
+    proc = nw(repo, ["close", "REQ-K7H3MQ2P"])
+    assert proc.exit_code == 1
+    assert proc.stderr == "invalid backlog item REQ-K7H3MQ2P: title\n"
+    assert rev(repo, "nw-backlog") == sha
+    assert not any(call[0] == "hash-object" for call in git_log)
+
+
+def test_refuses_line_separator_in_title_and_git_name(tmp_path, monkeypatch, git_log):
+    freeze(monkeypatch)
+    repo = init_repo(tmp_path / "repo")
+    for ch in ("\u2028", "\u2029"):
+        git_log.clear()
+        proc = nw(repo, ["add", "--title", f"x{ch}y", "--summary", "S"])
+        assert proc.exit_code == 1
+        assert "title contains control character" in proc.stderr
+        assert not any(call[0] == "hash-object" for call in git_log)
+    repo2 = init_repo(tmp_path / "repo2", name=None)
+    git(repo2, "config", "user.name", "x\u2028y")
+    git(repo2, "config", "user.email", "ada@example.com")
+    git_log.clear()
+    proc = nw(repo2, ["add", "--title", "T", "--summary", "S"])
+    assert proc.exit_code == 1
+    assert "user.name contains control character" in proc.stderr
+    assert not any(call[0] == "hash-object" for call in git_log)
+
+
+def test_product_index_unchanged_when_git_index_file_set(tmp_path, monkeypatch):
+    freeze(monkeypatch)
+    repo = init_repo(tmp_path / "repo")
+    index_path = git(repo, "rev-parse", "--git-path", "index").stdout.decode().strip()
+    if not Path(index_path).is_absolute():
+        index_path = str(repo / index_path)
+    before = Path(index_path).read_bytes()
+    monkeypatch.setenv("GIT_INDEX_FILE", index_path)
+    added(nw(repo, ["add", "--title", "T", "--summary", "S"]))
+    assert Path(index_path).read_bytes() == before
+
+
+def test_email_brackets_and_backslash_refused(tmp_path, monkeypatch, git_log):
+    _isolate(monkeypatch, tmp_path)
+    cases = [
+        ({"user.email": "a<b@example.com"}, "user.email contains '<'\n"),
+        ({"user.email": "a>b@example.com"}, "user.email contains '>'\n"),
+        ({"user.email": "a\\b@example.com"}, "user.email contains '\\'\n"),
+    ]
+    for number, (values, message) in enumerate(cases):
+        repo = init_repo(tmp_path / f"email-{number}")
+        for key, value in values.items():
+            git(repo, "config", key, value)
+        git_log.clear()
+        proc = nw(repo, ["add", "--title", "T", "--summary", "S"])
+        assert proc.exit_code == 1
+        assert proc.stderr == message
+        assert not any(call[0] == "hash-object" for call in git_log)
+
+
+def test_created_by_escapes_leading_trailing_quotes_in_name(tmp_path, monkeypatch):
+    freeze(monkeypatch)
+    repo = init_repo(tmp_path / "repo", name='"Ada"', email="ada@example.com")
+    ident = added(nw(repo, ["add", "--title", "T", "--summary", "S"]))
+    text = cat(repo, f"{ident}.md").decode()
+    assert 'created_by: "\\"Ada\\" <ada@example.com>"' in text
+    assert B.parse_item(f"{ident}.md", text)["created_by"] == '"Ada" <ada@example.com>'
