@@ -389,6 +389,8 @@ def test_add_summary_contract(tmp_path, monkeypatch, git_log):
     assert tail_of(spaces) == "\n  \n"
     hello = added(nw(repo, ["add", "--title", "Hello", "--summary", "Hello\r\n"]))
     assert tail_of(hello) == "\nHello\n"
+    hello_cr = added(nw(repo, ["add", "--title", "Hicr", "--summary", "Hello\rworld"]))
+    assert tail_of(hello_cr) == "\nHello\nworld\n"
     quoted = added(nw(repo, ["add", "--title", 'a"b\\c', "--summary", "S"]))
     text = cat(repo, f"{quoted}.md").decode()
     assert 'title: "a\\"b\\\\c"' in text
@@ -1340,6 +1342,103 @@ Body.
     assert proc.stderr == "invalid backlog item REQ-K7H3MQ2P: title\n"
     assert rev(repo, "nw-backlog") == sha
     assert not any(call[0] == "hash-object" for call in git_log)
+
+
+def _plant_backlog_item(repo, *, ident="REQ-K7H3MQ2P", title_line='title: "Public backlog"',
+                        created_by_line='created_by: "Ada Lovelace <ada@example.com>"'):
+    blob = (
+        "---\n"
+        f"id: {ident}\n"
+        f"{title_line}\n"
+        "status: open\n"
+        "created: 2026-11-07T15:41:00Z\n"
+        "updated: 2026-11-07T15:41:00Z\n"
+        f"{created_by_line}\n"
+        'updated_by: "Ada Lovelace <ada@example.com>"\n'
+        "---\n\nBody.\n"
+    ).encode()
+    sha = commit_tree(repo, {"README.md": _SPEC_README_BYTES, f"{ident}.md": blob})
+    point(repo, sha)
+    parsed = B.parse_item(f"{ident}.md", blob)
+    assert isinstance(parsed, dict)
+    return ident, sha, parsed
+
+
+def test_mutations_refuse_unrenderable_parsed_created_by_and_title_escapes(
+        tmp_path, monkeypatch, git_log):
+    freeze(monkeypatch)
+    repo = init_repo(tmp_path / "repo")
+    created_cases = [
+        ('created_by: "Ada\u2028Lovelace <ada@example.com>"', "created_by"),
+        ('created_by: "Ada\u2029Lovelace <ada@example.com>"', "created_by"),
+    ]
+    for created_by_line, field in created_cases:
+        ident, sha, _ = _plant_backlog_item(repo, created_by_line=created_by_line)
+        for cmd in (["close", ident], ["edit", ident, "--title", "Next"]):
+            git_log.clear()
+            proc = nw(repo, cmd)
+            assert proc.exit_code == 1, (cmd, proc.stderr)
+            assert proc.stderr == f"invalid backlog item {ident}: {field}\n"
+            assert rev(repo, "nw-backlog") == sha
+            assert not any(call[0] == "hash-object" for call in git_log)
+
+    title_cases = [
+        ('title: "Hello\\rworld"', "title"),
+        ('title: "Hello\\u0001world"', "title"),
+    ]
+    for title_line, field in title_cases:
+        ident, sha, _ = _plant_backlog_item(repo, title_line=title_line)
+        assert b"\r" not in cat(repo, f"{ident}.md")
+        git_log.clear()
+        proc = nw(repo, ["close", ident])
+        assert proc.exit_code == 1
+        assert proc.stderr == f"invalid backlog item {ident}: {field}\n"
+        assert rev(repo, "nw-backlog") == sha
+        assert not any(call[0] == "hash-object" for call in git_log)
+        git_log.clear()
+        proc = nw(repo, ["edit", ident, "--summary", "New body"])
+        assert proc.exit_code == 1
+        assert proc.stderr == f"invalid backlog item {ident}: {field}\n"
+        assert rev(repo, "nw-backlog") == sha
+        assert not any(call[0] == "hash-object" for call in git_log)
+
+
+def test_edit_commit_message_is_single_line(tmp_path, monkeypatch):
+    freeze(monkeypatch)
+    repo = init_repo(tmp_path / "repo")
+    ident = added(nw(repo, ["add", "--title", "Seed", "--summary", "S"]))
+    assert nw(repo, ["edit", ident, "--title", "Next"]).exit_code == 0
+    assert git(repo, "log", "-1", "--format=%B", "nw-backlog").stdout == (
+        f"backlog: edit {ident}\n".encode())
+
+
+def test_edit_same_title_only_is_noop(tmp_path, monkeypatch, git_log):
+    freeze(monkeypatch)
+    repo = init_repo(tmp_path / "repo")
+    ident = added(nw(repo, ["add", "--title", "Public backlog", "--summary", "The summary."]))
+    tip = rev(repo, "nw-backlog")
+    git_log.clear()
+    proc = nw(repo, ["edit", ident, "--title", "Public backlog"])
+    assert proc.exit_code == 0
+    assert proc.stdout == "" and proc.stderr == ""
+    assert rev(repo, "nw-backlog") == tip
+    assert not any(call[0] == "hash-object" for call in git_log)
+
+
+def test_add_updates_repo_when_toplevel_path_is_not_strict_utf8(tmp_path, monkeypatch):
+    freeze(monkeypatch)
+    bad = b"repo\xff\xfe"
+    repo = tmp_path / bad.decode("utf-8", "surrogateescape")
+    init_repo(repo)
+    top = git(repo, "rev-parse", "--show-toplevel").stdout
+    try:
+        top.decode("utf-8")
+        pytest.skip("show-toplevel decodes as strict UTF-8 on this platform")
+    except UnicodeDecodeError:
+        pass
+    ident = added(nw(repo, ["add", "--title", "T", "--summary", "S"]))
+    assert ident.startswith("REQ-")
+    assert rev(repo, "nw-backlog") is not None
 
 
 def test_refuses_line_separator_in_title_and_git_name(tmp_path, monkeypatch, git_log):

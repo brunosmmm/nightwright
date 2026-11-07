@@ -718,6 +718,15 @@ drops unknown keys, and refreshes `updated` and `updated_by`.
 - `python3 tools/spec_lint.py --write-ledger` and `python3 tools/spec_lint.py` — exit 0.
 - Full suite left to gating.
 
+### Test record (loop 1, 2026-11-07)
+
+- `uv run pytest -q tests/test_backlog.py` — 69 passed (render-safety on parsed
+  ``created_by`` and YAML-surviving ``title`` escapes, edit ``%B`` message,
+  title-only no-op, ``Hello\\rworld`` summary normalization, non-strict-UTF-8
+  toplevel ``--repo``).
+- `python3 tools/spec_lint.py --write-ledger` and `python3 tools/spec_lint.py` — exit 0.
+- Full suite left to gating.
+
 ## Clock Log
 
 No session is recorded in this file. Implementation clocks IDEA-1019 with
