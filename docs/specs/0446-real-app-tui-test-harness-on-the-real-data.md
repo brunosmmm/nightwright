@@ -1,7 +1,7 @@
 ---
 id: SPEC-0446
 title: "Real-fixture IdeaDesk Pilot harness and queue-window preparation"
-status: proposed
+status: accepted
 owner: user
 created: 2026-11-07
 updated: 2026-11-07
