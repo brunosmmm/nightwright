@@ -47,7 +47,6 @@ class QueueTable(DetailOpener, DataTable):
         Binding("P", "act('prioritize')", "priority"),
         Binding("A", "act('abandon')", "abandon"),
         Binding("r", "refresh_queue", "refresh"),
-        Binding("enter", "open_selected", "open", show=False),
     ]
 
     def __init__(self, view, **kw):

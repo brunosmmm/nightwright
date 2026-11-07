@@ -53,11 +53,6 @@ async def wait_detail(app, pilot, substring: str) -> None:
 
 
 class _OpenerTable(DetailOpener, DataTable):
-    BINDINGS = [
-        *getattr(DetailOpener, "BINDINGS", ()),
-        *getattr(DataTable, "BINDINGS", ()),
-    ]
-
     def detail_target(self, row_key):
         key = str(row_key or "")
         if not key or key.startswith("hdr"):
@@ -170,6 +165,45 @@ def test_focus_run_record_and_unknown(tmp_path):
             assert d.query_one("#detail-body", TabbedContent).active == "tab-overview"
             notes = [m for m, _ in app.notes]
             assert any("not found: nope-id" in m for m in notes)
+
+    _run(drive())
+
+
+def test_runs_focus_timeline_kept_across_poll(tmp_path, monkeypatch):
+    """Open on Runs focus, move to Timeline; a poll reload must not snap back to Runs."""
+    from test_tui_campaign_detail import seed
+
+    monkeypatch.setattr(CD, "POLL_S", 0.1)
+    _, cfg, ids = _fixture(tmp_path)
+    cid = ids["ready"]
+    run_id = "001-implementer"
+    seed(cfg, cid)
+    app = _desk(cfg, tab="queue")
+
+    async def drive():
+        async with app.run_test(size=SIZE) as pilot:
+            await settle(app, pilot)
+            app.open_campaign_detail(cid, focus={"tab": "runs", "run": run_id})
+            await settle(app, pilot)
+            await pilot_until(
+                pilot,
+                lambda: "placeholder: runs"
+                in str(detail_screen(app).query_one("#placeholder-text").content),
+            )
+            s = detail_screen(app)
+            assert s.query_one("#detail-body", TabbedContent).active == "tab-runs"
+            await press(app, pilot, ["2", "f", "f", "f"])
+            await settle(app, pilot)
+            filt = s.filter
+            assert s._active_tab() == "tab-timeline"
+            n = len(s._event_rows())
+            _ev(cfg, cid, "gate", {"gate_seq": n + 1, "ok": True, "results": []})
+            assert await pilot_until(
+                pilot, lambda: len(s._event_rows()) > n)
+            await settle(app, pilot)
+            assert s._active_tab() == "tab-timeline"
+            assert s.filter == filt
+            assert s.query_one("#detail-body", TabbedContent).active == "tab-timeline"
 
     _run(drive())
 

@@ -64,8 +64,6 @@ def _timeline_time(ts: str) -> str:
 class DetailOpener:
     """Mixin for a `DataTable`: Enter and double-click on a data row post `OpenCampaign`."""
 
-    BINDINGS = [Binding("enter", "open_detail", "open", show=False, priority=True)]
-
     def detail_target(self, row_key):
         """`(cid, focus) | None` for `row_key` (subclass implements)."""
         raise NotImplementedError
@@ -85,6 +83,12 @@ class DetailOpener:
         if row is None or row < 0 or row >= self.row_count:
             return
         self._open_row(self.ordered_rows[row].key)
+
+    def on_key(self, event: Key) -> None:
+        if event.key == "enter":
+            self.action_open_detail()
+            event.prevent_default()
+            event.stop()
 
     def on_click(self, event: Click) -> None:
         if event.widget is not self:
@@ -162,7 +166,9 @@ class CampaignDetail(QueueActions, ModalScreen):
         self.shown: list = []
         self._signature = None
         self._loading = False
+        self._reload_pending = False
         self._first_paint = True
+        self._last_highlight_row = None
         self._poll_timer = None
         self._focus_tab = "tab-overview"
         self._focus_extra: str | None = None
@@ -236,7 +242,7 @@ class CampaignDetail(QueueActions, ModalScreen):
         tabs.active = self._focus_tab
         if extra == "not found":
             missing = self.focus.get("run") or self.focus.get("record") or "?"
-            self.notify(f"not found: {missing}")
+            self.notify(f"not found: {escape(str(missing))}", markup=False)
         elif self._focus_tab == "tab-runs" and extra:
             self._placeholder_runs = f"placeholder: runs ({extra})"
             self.query_one("#placeholder-text", Static).update(Text(self._placeholder_runs))
@@ -274,12 +280,14 @@ class CampaignDetail(QueueActions, ModalScreen):
 
     def reload(self, *, initial=False) -> None:
         if self._loading:
+            self._reload_pending = True
             return
         self._loading = True
         self.run_worker(self._reload_async(initial=initial), name="campaign-detail-reload",
                         group="campaign-detail-reload")
 
     async def _reload_async(self, *, initial=False) -> None:
+        previous_view = self.view
         try:
             detail = await asyncio.to_thread(AM.load_detail, self.cfg, self.campaign_id)
             self._signature = detail.signature
@@ -291,7 +299,7 @@ class CampaignDetail(QueueActions, ModalScreen):
             self.query_one("#load-error", Static).update(Text(""))
             self.query_one("#overview-text", Static).update(
                 Text("\n").join(detail.header_lines))
-            if initial or self.focus:
+            if initial:
                 self._apply_focus()
             try:
                 self.paint(previous)
@@ -306,13 +314,23 @@ class CampaignDetail(QueueActions, ModalScreen):
             elif not was_terminal or initial:
                 self._start_poll()
         except Exception as e:
-            self._signature = None
-            self.view = None
-            self._load_error = Text(f"history unavailable: {e}", style="red")
-            self.query_one("#load-error", Static).update(self._load_error)
-            self._stop_poll()
+            if previous_view is not None and not initial:
+                self.view = previous_view
+                self._signature = previous_view.signature
+                self._show_timeline_error(e)
+                if not previous_view.terminal:
+                    self._start_poll()
+            else:
+                self._signature = None
+                self.view = None
+                self._load_error = Text(f"history unavailable: {e}", style="red")
+                self.query_one("#load-error", Static).update(self._load_error)
+                self._stop_poll()
         finally:
             self._loading = False
+            if self._reload_pending:
+                self._reload_pending = False
+                self.reload()
 
     def _event_rows(self) -> list:
         """Timeline rows that are not separators."""
@@ -476,7 +494,12 @@ class CampaignDetail(QueueActions, ModalScreen):
         i = event.cursor_row
         if rows and 0 <= i < len(rows) and rows[i].get("separator"):
             data = self._data_indexes()
-            if self._cursor_direction < 0:
+            prev = self._last_highlight_row
+            if prev is not None and prev != i:
+                direction = 1 if i > prev else -1
+            else:
+                direction = self._cursor_direction
+            if direction < 0:
                 before = [d for d in data if d < i]
                 pick = before[-1] if before else (data[0] if data else i)
             else:
@@ -484,7 +507,9 @@ class CampaignDetail(QueueActions, ModalScreen):
                 pick = min(after) if after else (data[-1] if data else i)
             if pick != i:
                 self.table.move_cursor(row=pick)
+                self._last_highlight_row = pick
             return
+        self._last_highlight_row = i
         self.show_detail()
 
     def action_tab(self, tab_id: str) -> None:

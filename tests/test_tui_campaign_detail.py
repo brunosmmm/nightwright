@@ -434,11 +434,10 @@ def test_a_signature_error_in_poll_is_contained(tmp_path, monkeypatch):
             assert app.is_running
             monkeypatch.setattr(AM, "load_detail", lambda cfg, cid: {}["missing"])
             s._poll()
-            assert await pilot_until(pilot, lambda: "history unavailable" in text_of(
-                s.query_one("#load-error")))
+            assert await pilot_until(pilot, lambda: "campaign failed" in status(app))
             await settle(app, pilot)
-            assert app.is_running
-            assert "history unavailable" in text_of(s.query_one("#load-error"))
+            assert app.is_running and s.view is not None
+            assert "campaign failed" in status(app)
             await press(app, pilot, ["escape"])
             await settle(app, pilot)
             assert not isinstance(app.screen, CD.CampaignDetail)

@@ -14,7 +14,7 @@ class QueueActions:
 
     def run_queue_action(self, action: str, campaign_id: str, state: str, actions) -> None:
         if action not in actions:
-            self.app.notify(f"{action} not available in {state}")
+            self.app.notify(f"{action} not available in {state}", markup=False)
             return
         if self._busy:
             return
