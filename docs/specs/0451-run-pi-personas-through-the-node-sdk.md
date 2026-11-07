@@ -450,6 +450,12 @@ fails the check with that fact.
 - Full `uv run pytest` left to queue gating
 - `python3 tools/spec_lint.py --write-ledger` && `python3 tools/spec_lint.py` — pass
 
+### Test record (loop 2, 2026-11-07)
+
+- `uv run pytest tests/test_guard_registry.py::test_every_tree_scanner_is_marked_or_exempt tests/test_guard_registry.py::test_every_marked_module_is_a_detected_scanner -q` — pass (tree_guard on tests/test_pi_runner.py)
+- Full `uv run pytest` left to queue gating
+- `python3 tools/spec_lint.py --write-ledger` && `python3 tools/spec_lint.py` — pass
+
 ## Rollout / migration
 
 Hosts and workers that run Pi personas need `node` on `PATH` and

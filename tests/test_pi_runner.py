@@ -13,6 +13,8 @@ from nightwright.agentic import worker as W
 from nightwright.agentic import pi_map as PM
 from nightwright.agentic.personas import IMPLEMENTER_SCHEMA
 
+pytestmark = pytest.mark.tree_guard  # SPEC-0421: scans the tree; always run by --guards
+
 
 def _req(tmp_path, **over):
     base = dict(
