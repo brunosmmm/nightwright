@@ -1,7 +1,7 @@
 ---
 id: SPEC-0449
 title: Public backlog on an orphan nw-backlog branch
-status: accepted
+status: in-progress
 owner: user
 created: 2026-11-07
 updated: 2026-11-07
@@ -397,6 +397,20 @@ Each attempt:
 No attempt uses `update-ref -d`. No command creates `MERGE_HEAD` in the
 product git directory.
 
+### As shipped (2026-11-07)
+
+- `commit-tree` is given the one-line message with no trailing newline.
+  `git log -1 --format=%B` is tformat and appends one newline, so that log
+  text is exactly `backlog: add <id>\n` and there is no blank body line.
+- Item YAML uses PyYAML's safe loader with the timestamp implicit resolver
+  removed on that loader subclass only. An unquoted instant stays a string,
+  `strptime` checks it, and `2026-02-31T00:00:00Z` is the `created` token.
+  `yes`, `no`, `on`, and `off` stay booleans. The process-wide safe loader
+  is unchanged.
+- Git drops a leading or trailing `"` from a commit author name. `created_by`
+  and `updated_by` keep the raw config string and escape it like a title. A
+  quote that is not at either end is also stored on the commit ident.
+
 ### Commands
 
 The Click group `backlog` lives in `src/nightwright/backlog.py` and is
@@ -486,7 +500,7 @@ drops unknown keys, and refreshes `updated` and `updated_by`.
 
 ## Acceptance criteria
 
-- [ ] `nw backlog add --title "Public backlog" --summary "The summary."` with
+- [x] `nw backlog add --title "Public backlog" --summary "The summary."` with
       `current_time` fixed at `2026-11-07T15:41:00.900000Z` and identity
       `Ada Lovelace` / `ada@example.com` creates a parentless
       `refs/heads/nw-backlog`. The tree is the fixed README bytes plus one
@@ -499,14 +513,14 @@ drops unknown keys, and refreshes `updated` and `updated_by`.
       and stderr is empty. The work tree does not gain those files.
       `git log -1 --format=%B` is `backlog: add <id>\n`. Author and committer
       names, emails, and unix times equal that identity and that second.
-- [ ] A second `add` leaves the first filename in place and adds no path other
+- [x] A second `add` leaves the first filename in place and adds no path other
       than the new item. If `README.md` already differs from the fixed text,
       its blob sha is unchanged. If a plumbing commit removes `README.md`,
       the next `edit` commit names `README.md` and that one item, the README
       bytes are the fixed text, and every other `REQ-*.md` blob is unchanged.
       `git log --diff-filter=R --name-only` for the branch is empty. No `add`,
       `edit`, `close`, or `reopen` commit deletes a path.
-- [ ] `--title` is required on add. A whitespace-only title and a title that
+- [x] `--title` is required on add. A whitespace-only title and a title that
       contains a newline each exit 1 with `title is empty` or
       `title must be one line` and do not call `hash-object`. `--summary` is
       required on add; omitting it exits 1 with `summary is required` and
@@ -518,7 +532,7 @@ drops unknown keys, and refreshes `updated` and `updated_by`.
       `title: "a\"b\\c"`. An edit `--summary ""`
       clears an existing body. `--spec SPEC-0449` adds that key last, and
       `--spec SPEC-449` exits 1 with `invalid spec id` and no commit.
-- [ ] `--spec` together with `--clear-spec` exits 1 with
+- [x] `--spec` together with `--clear-spec` exits 1 with
       `spec and clear-spec are mutually exclusive` and no commit, including
       when `--repo` is not a git directory. `edit` with no field flag exits 1
       with `nothing to change`. An id that is not `REQ-` plus eight alphabet
@@ -528,7 +542,7 @@ drops unknown keys, and refreshes `updated` and `updated_by`.
       `idea` key in the blob. An edit that changes the title of a file that
       also contains `idea` and `IDEA-1019` writes a blob with no key outside
       the format, the new title, and the previous `created` and `created_by`.
-- [ ] `parse_item` returns the reason token of the first matching validation
+- [x] `parse_item` returns the reason token of the first matching validation
       row for a fixture of each row, including YAML 1.1 `status: yes`, a
       duplicate key, a filename/id mismatch, `SPEC-12`, an offset timestamp,
       and `2026-02-31T00:00:00Z`. `edit`, `close`, and `reopen` of that blob
@@ -538,14 +552,14 @@ drops unknown keys, and refreshes `updated` and `updated_by`.
       unchanged. A valid file whose `updated` is earlier than `created`, or
       whose keys are permuted, can be closed; the new blob is canonical and
       keeps those instants' `created` value and the parsed `created_by`.
-- [ ] `close` sets `status: closed`, refreshes `updated` and `updated_by`,
+- [x] `close` sets `status: closed`, refreshes `updated` and `updated_by`,
       drops unknown keys, and leaves title, summary, spec, `created`, and
       `created_by` as parsed. A second `close` exits 1 with
       `<id> is already closed` and does not call `hash-object`. `reopen`
       returns `status` to `open`, and a second `reopen` exits 1 with
       `<id> is already open` and no commit. Unknown id exits 1 with
       `<id> is not on nw-backlog`.
-- [ ] With `user.name` or `user.email` missing or whitespace-only, `add` exits
+- [x] With `user.name` or `user.email` missing or whitespace-only, `add` exits
       1, prints `<key> is unset` for each such key with the name line first,
       and does not call `hash-object`. A value that contains a line break
       prints `<key> contains a line break`. A name containing `<` or `>`, and
@@ -556,7 +570,7 @@ drops unknown keys, and refreshes `updated` and `updated_by`.
       values, the commit's author and committer are the local pair and the
       injected instant. A name that contains a double quote is stored in
       `created_by` with the same backslash and quote escaping as a title.
-- [ ] A tip whose tree or whose root commit contains `notes.txt`,
+- [x] A tip whose tree or whose root commit contains `notes.txt`,
       `REQ-IIIIIIII.md`, a slash path, or mode `100755` makes `add`, `edit`,
       `close`, and `reopen` exit 1 with the header
       `refs/heads/nw-backlog is not an orphan backlog` and the matching
@@ -564,7 +578,7 @@ drops unknown keys, and refreshes `updated` and `updated_by`.
       legal backlog files, reached by a root commit that contains `src/main.c`,
       is refused with a `root <sha> stray: src/main.c` line and the same
       unchanged ref.
-- [ ] After `add`, `edit`, `close`, `reopen`, a no-op edit, a stray refusal,
+- [x] After `add`, `edit`, `close`, `reopen`, a no-op edit, a stray refusal,
       and an invalid-item refusal, the starting work tree's `HEAD`, index
       bytes or index absence, and `git status --porcelain` are unchanged,
       including a dirty index, a detached `HEAD`, and an unborn `HEAD`. No
@@ -576,7 +590,7 @@ drops unknown keys, and refreshes `updated` and `updated_by`.
       `hash-object` is not called. `edit` reads `git show <sha>:<path>`: a
       dirty work-tree file of the same relative path is unchanged and is not
       the source of the new blob.
-- [ ] `mint_id` maps `99e23a5c56` to `REQ-K7H3MQ2P` and `abcd123456` to
+- [x] `mint_id` maps `99e23a5c56` to `REQ-K7H3MQ2P` and `abcd123456` to
       `REQ-NF6H4D2P`. Eight colliding draws exit 1 with `could not mint an id`
       and do not draw a ninth time. When `update-ref` compare-and-swap fails
       three times and each failure leaves a different valid backlog tip that
@@ -588,7 +602,7 @@ drops unknown keys, and refreshes `updated` and `updated_by`.
       If the second tip already contains the minted id, `add` exits 1 with
       `<id> is already on nw-backlog`, does not call `update-ref` again, and
       does not mint a different id.
-- [ ] `--repo` selects the repository that receives the branch. The current
+- [x] `--repo` selects the repository that receives the branch. The current
       directory is the default. A `--repo` that is not a non-bare work tree
       exits 1 with `not a git work tree` after argument validation.
       `nw backlog --help` lists `add`, `edit`, `close`, and `reopen` and does
@@ -670,6 +684,10 @@ drops unknown keys, and refreshes `updated` and `updated_by`.
 No session is recorded in this file. Implementation clocks IDEA-1019 with
 `nw idea clock-in` and `nw idea clock-out`.
 
+- 2026-11-07: implementation session. `nw idea clock-in IDEA-1019` was refused
+  (`NW_PERSONA_RUN=1` blocks org writes from a campaign agent). Wall time stays
+  on the queue transcript.
+
 ## Rollout / migration
 
 There is no `docs/backlog` tree to import. The first `nw backlog add` creates
@@ -679,13 +697,13 @@ fast-forwards `nw-backlog`. The product checkout does not move.
 
 ## Definition of done
 
-- [ ] Acceptance criteria all met.
-- [ ] Test plan executed; automated tests pass; manual steps performed and
+- [x] Acceptance criteria all met.
+- [x] Test plan executed; automated tests pass; manual steps performed and
       noted in the spec.
-- [ ] No regressions.
-- [ ] Spec body updated to match what shipped.
-- [ ] `docs/LEDGER.md` regenerated (`python3 tools/spec_lint.py --write-ledger`).
-- [ ] `python3 tools/spec_lint.py` exits 0.
+- [x] No regressions.
+- [x] Spec body updated to match what shipped.
+- [x] `docs/LEDGER.md` regenerated (`python3 tools/spec_lint.py --write-ledger`).
+- [x] `python3 tools/spec_lint.py` exits 0.
 
 ## Open questions
 
