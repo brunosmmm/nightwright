@@ -334,6 +334,7 @@ progress. This is the single place to see *what has been decided* and *what is i
 | [SPEC-0400](./specs/0400-remote-web-dashboard-live-view-of-active-queue.md) | Remote web dashboard and decisions inbox over Tailscale (nw serve --dashboard) | epic | accepted | M9: agentic workflow | 2026-11-03 |
 | [SPEC-0405](./specs/0405-rich-queue-tui-prioritized-live-queue-campaign.md) | Rich queue TUI: prioritized live queue, campaign detail popup, closed-campaign history and a cross-campaign findings and decisions browser over one shared history layer | epic | accepted | — | 2026-11-03 |
 | [SPEC-0411](./specs/0411-closed-campaign-history-browser-tab.md) | Closed-campaign history browser tab | feature | accepted | — | 2026-11-03 |
+| [SPEC-0449](./specs/0449-public-backlog-on-an-orphan-nw-backlog-branch.md) | Public backlog on an orphan nw-backlog branch | feature | proposed | — | 2026-11-07 |
 | [SPEC-0465](./specs/0465-run-pi-personas-through-the-node-sdk.md) | Run Pi personas through the Node SDK | feature | in-progress | — | 2026-11-08 |
 | [SPEC-0466](./specs/0466-gpt-only-pi-sdk-model-set-for-all-nightwright.md) | GPT-only Pi SDK model set for all nightwright personas | feature | in-progress | — | 2026-11-08 |
 | [SPEC-0468](./specs/0468-stop-queue-thrash.md) | Stop the queue from thrashing a finished campaign | feature | accepted | — | 2026-11-08 |
