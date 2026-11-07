@@ -1,9 +1,10 @@
 ---
 id: SPEC-0451
 title: Run Pi personas through the Node SDK
-status: proposed
+status: accepted
 owner: user
 created: 2026-11-07
+updated: 2026-11-07
 kind: feature
 tags: [agentic, runner, pi]
 depends_on: [SPEC-0442, SPEC-0436]
