@@ -1,7 +1,7 @@
 ---
 id: SPEC-0406
 title: "Shared campaign history data layer: history.py derivation, read-side schemas, campaign_export reuse and the history/records CLIs"
-status: accepted
+status: in-progress
 owner: user
 created: 2026-11-03
 updated: 2026-11-03

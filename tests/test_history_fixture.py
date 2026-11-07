@@ -20,7 +20,9 @@ from pathlib import Path
 import pytest
 
 from nightwright.agentic import campaign_export as CE
+from nightwright.agentic import history as H
 from nightwright.agentic import queue as Q
+from nightwright.agentic import schemas as SC
 from nightwright.agentic import store as S
 import history_scale as HS
 from fixtures import dashboard_data as DD
@@ -828,3 +830,106 @@ def test_mail_about_a_chosen_cid_for_another_campaign_is_dropped(tmp_path):
     mail = [o for p in (out / "agentic/mailbox").glob("*.jsonl") for o in read_jsonl(p)]
     assert mail and all(not o.get("campaign") or o["campaign"] in cids for o in mail)
     assert not any(LIVE in json.dumps(o) for o in mail)
+
+
+# ---- SPEC-0406: derivation over the committed fixture -------------------------------------
+
+HISTORY_NOW = dt.datetime(2026, 11, 4, tzinfo=dt.timezone.utc)
+
+
+def history_cfg(tmp_path):
+    data = HS.copy_fixture(tmp_path / "history-data")
+    return DD.make_cfg(data, tmp_path / "history-cfg")
+
+
+def test_history_fixture_documents_index_phases_and_records_validate(tmp_path):
+    cfg = history_cfg(tmp_path)
+    rows = H.history_index(cfg, now=HISTORY_NOW)
+    assert len(rows) == 8
+    records = H.history_records(cfg)
+    assert all(not SC.record_problems_v1(rec) for rec in records)
+    assert {rec["source"] for rec in records} == SC.RECORD_SOURCES
+    assert SC.RECORD_KINDS == {rec["kind"] for rec in records}
+    for row in rows:
+        assert SC.index_problems(row) == []
+        doc = H.campaign_history(cfg, row["campaign"], now=HISTORY_NOW)
+        assert SC.history_problems(doc) == []
+        assert {key: row[key] for key in SC.HISTORY_HEADER_KEYS} == doc["header"]
+        assert row["dominant"] == doc["dominant"]
+        assert sum(phase["wall_s"] for phase in doc["phases"]) == pytest.approx(
+            doc["header"]["wall_s"], abs=1)
+        for phase in doc["phases"]:
+            assert sum(phase[key] for key in (
+                "run_s", "gate_s", "gate_wait_s", "runner_down_s", "other_s"
+            )) == phase["wall_s"]
+
+
+def test_history_fixture_export_agreement(tmp_path):
+    cfg = history_cfg(tmp_path)
+    tables = CE.export_tables(cfg, now=HISTORY_NOW)
+    for row in tables["campaigns"]:
+        state = S.read_state(cfg, row["campaign"])
+        events = S.read_ledger(cfg, row["campaign"])
+        opened = next((H._parse_ts(event.get("ts")) for event in events
+                       if event.get("type") == "open"), H._parse_ts(state.get("created_at")))
+        ended = next((H._parse_ts(event.get("ts")) for event in reversed(events)
+                      if event.get("type") == "transition"
+                      and event.get("to") in S.TERMINAL_STATES), None)
+        end = ended if state.get("state") in S.TERMINAL_STATES else HISTORY_NOW
+        assert row["time_in_state_s"] == H.time_in_state(state, events, opened, end)
+        assert row["loops"] == H.campaign_history(
+            cfg, row["campaign"], now=HISTORY_NOW)["header"]["loops"]
+
+
+def test_history_fixture_reads_are_pure_and_import_is_ui_independent(tmp_path):
+    cfg = history_cfg(tmp_path)
+    root = Path(cfg["data_dir"])
+    before = tree_hashes(root)
+    cids = [row["campaign"] for row in H.history_index(cfg, now=HISTORY_NOW)]
+    for cid in cids:
+        H.campaign_history(cfg, cid, now=HISTORY_NOW)
+        H.campaign_signature(cfg, cid)
+    state = S.read_state(cfg, cids[0])
+    events = S.read_ledger(cfg, cids[0])
+    start = H._parse_ts(state.get("created_at"))
+    H.is_fix_loop(events[0])
+    H.count_loops(events)
+    H.loop_max(cfg, state)
+    H.time_in_state(state, events, start, HISTORY_NOW)
+    H.phase_visits(state, events, start, HISTORY_NOW)
+    assert H.history_records(cfg)
+    H.filter_index(H.history_index(cfg, now=HISTORY_NOW), project=None, state="all", spec=None,
+                   since=None, until=None, min_cost=None)
+    assert tree_hashes(root) == before
+    assert {path.name for path in tmp_path.iterdir()} == {"history-data"}
+    code = (
+        "import sys; import nightwright.agentic.history; "
+        "assert 'textual' not in sys.modules; "
+        "assert not any(x == 'nightwright.tui' or x.startswith('nightwright.tui.') "
+        "for x in sys.modules); "
+        "assert not any('dashboard' in x for x in sys.modules)"
+    )
+    subprocess.run([sys.executable, "-c", code], check=True, env=os.environ.copy())
+
+
+def test_history_bad_inputs_become_gaps(tmp_path):
+    cfg = history_cfg(tmp_path)
+    cid = "SPEC-0179-20261025-158c"
+    root = Path(cfg["data_dir"]) / "agentic"
+    campaign = root / "campaigns" / cid
+    with (campaign / "ledger.jsonl").open("a") as stream:
+        stream.write("{")
+    (campaign / "runs" / "missing").mkdir()
+    (root / "conductor" / "decisions.jsonl").write_text("{\n")
+    (root / "runner.jsonl").unlink()
+    state = json.loads((campaign / "state.json").read_text())
+    state["state"] = "UNKNOWN_X"
+    (campaign / "state.json").write_text(json.dumps(state))
+    doc = H.campaign_history(cfg, cid, now=HISTORY_NOW)
+    assert SC.history_problems(doc) == []
+    assert any("ledger: line" in gap for gap in doc["gaps"])
+    assert "run missing: no run.json" in doc["gaps"]
+    assert "run missing: no run record" in doc["gaps"]
+    assert "state UNKNOWN_X: no phase" in doc["gaps"]
+    assert "decisions.jsonl: line 1 unparsable" in doc["gaps"]
+    assert "runner.jsonl: missing" in doc["gaps"]

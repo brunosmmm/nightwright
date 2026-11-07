@@ -261,7 +261,7 @@ progress. This is the single place to see *what has been decided* and *what is i
   - [x] [SPEC-0432](./specs/0432-dashboard-default-bind-loopback-always-plus-the.md) Dashboard default bind: loopback always plus the tailnet address whenever one exists — done
   - [x] [SPEC-0434](./specs/0434-dashboard-page-survives-restarts-answers-land.md) Dashboard page: answers land at once, the page survives server restarts, the data stamp is truthful — done
 - **[SPEC-0405](./specs/0405-rich-queue-tui-prioritized-live-queue-campaign.md) — Rich queue TUI: prioritized live queue, campaign detail popup, closed-campaign history and a cross-campaign findings and decisions browser over one shared history layer** · accepted · (5/6 done)
-  - [ ] [SPEC-0406](./specs/0406-shared-campaign-history-data-layer-nw-campaign.md) Shared campaign history data layer: history.py derivation, read-side schemas, campaign_export reuse and the history/records CLIs — accepted
+  - [ ] [SPEC-0406](./specs/0406-shared-campaign-history-data-layer-nw-campaign.md) Shared campaign history data layer: history.py derivation, read-side schemas, campaign_export reuse and the history/records CLIs — in-progress
   - [x] [SPEC-0408](./specs/0408-ledger-provenance-finding-run-id-and-key-triage.md) Ledger provenance: finding run_id and key, triage events — done
   - [x] [SPEC-0409](./specs/0409-tui-test-harness-real-app-pilots-on-real-fixture.md) Remove Textual/pyte test skips, add the AST guard and a TUI test runtime budget — done
   - [x] [SPEC-0410](./specs/0410-live-queue-view-state-grouped-sections-with.md) Live queue view: state-grouped sections with priority, admission order and why-waiting — done
@@ -296,7 +296,7 @@ progress. This is the single place to see *what has been decided* and *what is i
 | [SPEC-0391](./specs/0391-worker-host-slots-from-registry.md) | A gate job carries the worker's registry slots as the worker host's slot limit | feature | in-progress | — | 2026-11-02 |
 | [SPEC-0400](./specs/0400-remote-web-dashboard-live-view-of-active-queue.md) | Remote web dashboard and decisions inbox over Tailscale (nw serve --dashboard) | epic | accepted | M9: agentic workflow | 2026-11-03 |
 | [SPEC-0405](./specs/0405-rich-queue-tui-prioritized-live-queue-campaign.md) | Rich queue TUI: prioritized live queue, campaign detail popup, closed-campaign history and a cross-campaign findings and decisions browser over one shared history layer | epic | accepted | — | 2026-11-03 |
-| [SPEC-0406](./specs/0406-shared-campaign-history-data-layer-nw-campaign.md) | Shared campaign history data layer: history.py derivation, read-side schemas, campaign_export reuse and the history/records CLIs | feature | accepted | — | 2026-11-03 |
+| [SPEC-0406](./specs/0406-shared-campaign-history-data-layer-nw-campaign.md) | Shared campaign history data layer: history.py derivation, read-side schemas, campaign_export reuse and the history/records CLIs | feature | in-progress | — | 2026-11-03 |
 
 ## Done
 

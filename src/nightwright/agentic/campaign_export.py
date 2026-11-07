@@ -22,7 +22,7 @@ from . import personas as PS
 from . import persona_gate as PG
 from . import runs as RN
 from . import store
-from .profiles import resolve_profile
+from . import history as H
 
 EXPORT_SCHEMA = "nw.campaign.export.v1"
 FORMATS = ("jsonl", "csv", "parquet")
@@ -80,7 +80,7 @@ SIGNAL_ORDER = ("loops_exhausted", "cap_parked", "cost_near_cap", "many_fix_loop
                 "gate_churn", "long_for_size", "abandoned")
 ESCALATION_REASONS = frozenset({"triage_escalated", "review_escalated", "implementer_blocked"})
 FINDING_DETAIL_MAX = 500
-FIX_REASONS = frozenset({"triage_fix", "review_fix"})
+FIX_REASONS = H.FIX_REASONS
 _REVIEWERS = frozenset(PS.REVIEWER_PERSONAS)
 BLOCKING = ("must_fix", "major")         # as divergence.BLOCKING
 _AC_LINE = re.compile(r"^\s*[-*] \[[ xX]\]")
@@ -164,24 +164,7 @@ def _frac(num, den):
     return round(num / den, 3)
 
 
-def _time_in_state(state, events, start, end):
-    """State → seconds, from the transitions. The campaign starts in QUEUED at `start`; each
-    transition credits the interval it closes to its `from`; the open interval runs to `end`."""
-    out: dict[str, int] = {}
-    cur, cursor = "QUEUED", start
-    for ev in events:
-        if ev.get("type") != "transition":
-            continue
-        ts = _parse_ts(ev.get("ts"))
-        frm = ev.get("from") or cur
-        if cursor and ts:
-            out[frm] = out.get(frm, 0) + _secs(cursor, ts)
-        cur = ev.get("to") or cur
-        cursor = ts or cursor
-    final = state.get("state")
-    if final not in store.TERMINAL_STATES and cursor and end:
-        out[final] = out.get(final, 0) + _secs(cursor, end)
-    return out
+_time_in_state = H.time_in_state
 
 
 def _spec_shape(cfg, cid):
@@ -195,11 +178,7 @@ def _spec_shape(cfg, cid):
     return sum(1 for line in section.splitlines() if _AC_LINE.match(line)), len(text.splitlines())
 
 
-def _loop_max(cfg, state):
-    try:
-        return resolve_profile(cfg, state.get("profile")).get("loop_max")
-    except ValueError:
-        return None
+_loop_max = H.loop_max
 
 
 def signals(row: dict) -> list[str]:
@@ -326,8 +305,7 @@ def campaign_row(cfg, state: dict, events: list[dict], now) -> dict:
         "loop_max": _loop_max(cfg, state), "cap_usd": cap,
         "cap_raises": len(of("resume", lambda e: e.get("cap_usd") is not None)),
         "models": models, "ac_count": ac_count, "spec_lines": spec_lines,
-        "loops": len(of("transition", lambda e: e.get("to") == "IMPLEMENTING"
-                        and e.get("reason") in FIX_REASONS)),
+        "loops": H.count_loops(events),
         "loop_resets": len(of("resume", lambda e: e.get("loops_reset") is True)),
         "runs": counters.get("runs"), "runs_by_persona": by_persona,
         "gate_runs": counters.get("gate_runs"),
@@ -413,9 +391,8 @@ def export_tables(cfg, *, project=None, since=None, terminal_only=False, now=Non
         states = [s for s in states if (d := _created_date(cfg, s)) is not None and d >= since]
     states.sort(key=lambda s: (s.get("created_at") or "", s.get("id") or ""))
     tables: dict[str, list] = {"campaigns": [], "runs": [], "findings": []}
-    from . import conductor_cost        # SPEC-0299: campaign id -> conductor USD, or None
     try:
-        shares = conductor_cost.attribute(cfg, now)
+        shares = H._conductor_attribution(cfg, now)  # SPEC-0299: campaign id -> conductor USD
     except Exception as e:      # measurement is an extra column set; it must not fail an export
         shares = None
         print(f"conductor columns skipped: {type(e).__name__}", file=sys.stderr)

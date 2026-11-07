@@ -15,6 +15,9 @@ command output) is kept beside a nightwright-written JSON record, never mixed wi
   interrupted, duration_s, log, failing}]`) and, when the gate ended ok after a targeted pass,
   `flaky` (the ids). SPEC-0358: a `failed_first` prelude is attempt -1 (`NNN-<name>.ff.json`).
 - `nw.runner.record.v1` — one line of `<agentic>/runner.jsonl`, written by `nw queue run`.
+- `nw.campaign.history.v1` — one derived campaign history document.
+- `nw.history.index.v1` — one derived campaign summary row.
+- `nw.history.record.v1` — one derived cross-campaign finding or decision record.
 """
 from __future__ import annotations
 from ..legacy import schema_ok
@@ -23,6 +26,59 @@ LEDGER_SCHEMA = "nw.ledger.event.v1"
 RUN_SCHEMA = "nw.run.v1"
 GATE_SCHEMA = "nw.gate.v1"
 RUNNER_SCHEMA = "nw.runner.record.v1"
+HISTORY_SCHEMA = "nw.campaign.history.v1"
+HISTORY_INDEX_SCHEMA = "nw.history.index.v1"
+HISTORY_RECORD_SCHEMA = "nw.history.record.v1"
+
+HISTORY_KEYS = (
+    "schema", "campaign", "generated_at", "signature", "header", "phases", "dominant",
+    "timeline", "runs", "gates", "records", "gaps",
+)
+HISTORY_HEADER_KEYS = (
+    "campaign", "kind", "spec_id", "idea_id", "title", "project", "profile", "size", "tone",
+    "state", "outcome", "priority", "created_at", "closed_at", "wall_s", "active_s", "loops",
+    "loop_max", "runs", "cost_usd", "cap_usd", "conductor_usd", "merged_sha", "pr_url",
+    "followup_idea", "park",
+)
+HISTORY_PHASE_KEYS = (
+    "phase", "visits", "wall_s", "run_s", "gate_s", "gate_wait_s", "runner_down_s",
+    "other_s", "cost_usd", "runs",
+)
+HISTORY_TIMELINE_KEYS = ("seq", "ts", "kind", "phase", "loop", "by", "summary", "ref")
+HISTORY_RUN_KEYS = (
+    "run_id", "persona", "phase", "loop", "model", "effort", "started_at", "duration_s",
+    "cost_usd", "budget_frac", "exit_code", "status", "verdict_status", "summary", "has_stream",
+)
+HISTORY_GATE_KEYS = ("gate_seq", "started_at", "duration_s", "ok", "results")
+HISTORY_GATE_RESULT_KEYS = ("name", "required", "ok", "exit_code", "retries", "log")
+RECORD_KEYS = (
+    "schema", "id", "ts", "source", "kind", "agent", "campaign", "spec_id", "project",
+    "severity", "title", "text", "status", "links", "linked_by",
+)
+RECORD_LINK_KEYS = (
+    "run_id", "resolved_by", "followup_idea", "escalation", "thread", "campaign", "gate_seq",
+)
+INDEX_KEYS = (
+    "schema", *HISTORY_HEADER_KEYS, "dominant", "phase_wall_s", "phase_cost_usd",
+    "findings_by_severity", "records", "signature",
+)
+
+RECORD_SOURCES = frozenset(
+    {"ledger", "run", "decisions", "escalation", "mailbox", "spec_review", "flaky", "sentinel"}
+)
+RECORD_KINDS = frozenset(
+    {"finding", "verdict", "triage", "decision", "escalation", "answer", "human_decision",
+     "mail", "followup", "spec_review", "close_check", "note", "flaky", "sentinel"}
+)
+RECORD_STATUSES = frozenset(
+    {"open", "fixed", "waived", "filed", "carried", "answered", "withdrawn"}
+)
+LINKED_BY = frozenset({"field", "inferred", "text"})
+OUTCOMES = frozenset({"merged", "handed_off", "abandoned"})
+_HISTORY_PHASES = frozenset(
+    {"queue", "spec", "implement", "gate", "review", "close", "parked", "waiting", "other"}
+)
+_RUN_STATUSES = frozenset({"ok", "error", "timeout", "interrupted", "running"})
 
 ENVELOPE = ("ts", "seq", "campaign", "type", "by")
 
@@ -167,3 +223,126 @@ def runner_problems(rec) -> list[str]:
     if keys is None:
         return out + [f"unknown kind {rec.get('kind')!r}"]
     return out + [f"{rec['kind']}: missing {k!r}" for k in keys if k not in rec]
+
+
+def _required(obj, keys, where) -> list[str]:
+    if not isinstance(obj, dict):
+        return [f"{where} is not an object"]
+    return [f"{where}: missing {k!r}" for k in keys if k not in obj]
+
+
+def _nonnegative(obj, keys, where) -> list[str]:
+    out = []
+    for key in keys:
+        value = obj.get(key) if isinstance(obj, dict) else None
+        if isinstance(value, (int, float)) and not isinstance(value, bool) and value < 0:
+            out.append(f"{where}.{key} is negative")
+    return out
+
+
+def record_problems_v1(rec) -> list[str]:
+    """Problems with one additive `nw.history.record.v1` record."""
+    out = _required(rec, RECORD_KEYS, "record")
+    if not isinstance(rec, dict):
+        return out
+    if not schema_ok(rec.get("schema"), HISTORY_RECORD_SCHEMA):
+        out.append(f"schema is {rec.get('schema')!r}")
+    for key, allowed in (
+        ("source", RECORD_SOURCES), ("kind", RECORD_KINDS), ("status", RECORD_STATUSES),
+        ("linked_by", LINKED_BY),
+    ):
+        if rec.get(key) is not None and rec.get(key) not in allowed:
+            out.append(f"unknown {key} {rec.get(key)!r}")
+    out += _required(rec.get("links"), RECORD_LINK_KEYS, "links")
+    out += _nonnegative(rec.get("links"), ("gate_seq",), "links")
+    return out
+
+
+def history_problems(doc) -> list[str]:
+    """Problems with one additive `nw.campaign.history.v1` document."""
+    out = _required(doc, HISTORY_KEYS, "history")
+    if not isinstance(doc, dict):
+        return out
+    if not schema_ok(doc.get("schema"), HISTORY_SCHEMA):
+        out.append(f"schema is {doc.get('schema')!r}")
+    header = doc.get("header")
+    out += _required(header, HISTORY_HEADER_KEYS, "header")
+    out += _nonnegative(
+        header, ("wall_s", "active_s", "loops", "loop_max", "runs", "cost_usd", "cap_usd",
+                 "conductor_usd"), "header",
+    )
+    if isinstance(header, dict) and header.get("outcome") is not None \
+            and header.get("outcome") not in OUTCOMES:
+        out.append(f"unknown outcome {header.get('outcome')!r}")
+    dominant = doc.get("dominant")
+    out += _required(dominant, ("wall", "cost", "working"), "dominant")
+    if isinstance(dominant, dict):
+        for key in ("wall", "cost", "working"):
+            if dominant.get(key) is not None and dominant[key] not in _HISTORY_PHASES:
+                out.append(f"dominant.{key}: unknown phase {dominant[key]!r}")
+    for i, phase in enumerate(doc.get("phases") or []):
+        where = f"phases[{i}]"
+        out += _required(phase, HISTORY_PHASE_KEYS, where)
+        out += _nonnegative(
+            phase, ("visits", "wall_s", "run_s", "gate_s", "gate_wait_s", "runner_down_s",
+                    "other_s", "cost_usd", "runs"), where,
+        )
+        if isinstance(phase, dict) and phase.get("phase") not in _HISTORY_PHASES:
+            out.append(f"{where}: unknown phase {phase.get('phase')!r}")
+    for i, row in enumerate(doc.get("timeline") or []):
+        where = f"timeline[{i}]"
+        out += _required(row, HISTORY_TIMELINE_KEYS, where)
+        out += _nonnegative(row, ("seq", "loop"), where)
+        if isinstance(row, dict) and row.get("phase") is not None \
+                and row.get("phase") not in _HISTORY_PHASES:
+            out.append(f"{where}: unknown phase {row.get('phase')!r}")
+    for i, run in enumerate(doc.get("runs") or []):
+        where = f"runs[{i}]"
+        out += _required(run, HISTORY_RUN_KEYS, where)
+        out += _nonnegative(run, ("loop", "duration_s", "cost_usd", "budget_frac"), where)
+        if isinstance(run, dict) and run.get("status") not in _RUN_STATUSES:
+            out.append(f"{where}: unknown status {run.get('status')!r}")
+        if isinstance(run, dict) and run.get("phase") is not None \
+                and run.get("phase") not in _HISTORY_PHASES:
+            out.append(f"{where}: unknown phase {run.get('phase')!r}")
+    for i, gate in enumerate(doc.get("gates") or []):
+        where = f"gates[{i}]"
+        out += _required(gate, HISTORY_GATE_KEYS, where)
+        out += _nonnegative(gate, ("gate_seq", "duration_s"), where)
+        results = gate.get("results") if isinstance(gate, dict) else []
+        for j, result in enumerate(results or []):
+            rwhere = f"{where}.results[{j}]"
+            out += _required(result, HISTORY_GATE_RESULT_KEYS, rwhere)
+            out += _nonnegative(result, ("retries",), rwhere)
+    for rec in doc.get("records") or []:
+        out += record_problems_v1(rec)
+    return out
+
+
+def index_problems(row) -> list[str]:
+    """Problems with one additive `nw.history.index.v1` row."""
+    out = _required(row, INDEX_KEYS, "index")
+    if not isinstance(row, dict):
+        return out
+    if not schema_ok(row.get("schema"), HISTORY_INDEX_SCHEMA):
+        out.append(f"schema is {row.get('schema')!r}")
+    out += _nonnegative(
+        row, ("wall_s", "active_s", "loops", "loop_max", "runs", "cost_usd", "cap_usd",
+              "conductor_usd", "records"), "index",
+    )
+    if row.get("outcome") is not None and row.get("outcome") not in OUTCOMES:
+        out.append(f"unknown outcome {row.get('outcome')!r}")
+    out += _required(row.get("dominant"), ("wall", "cost", "working"), "dominant")
+    if isinstance(row.get("dominant"), dict):
+        for key in ("wall", "cost", "working"):
+            value = row["dominant"].get(key)
+            if value is not None and value not in _HISTORY_PHASES:
+                out.append(f"dominant.{key}: unknown phase {value!r}")
+    for key in ("phase_wall_s", "phase_cost_usd", "findings_by_severity"):
+        value = row.get(key)
+        if not isinstance(value, dict):
+            out.append(f"{key} is not an object")
+        elif any(isinstance(v, (int, float)) and not isinstance(v, bool) and v < 0
+                 for v in value.values()):
+            out.append(f"{key} has a negative value")
+    return out

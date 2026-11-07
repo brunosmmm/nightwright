@@ -18,6 +18,8 @@ from ..console import console
 from ..report import _dump_json
 from . import queue as Q
 from . import campaign_export as CE
+from . import history as H
+from . import schemas as SC
 from . import persona_gate as PG
 from . import runs as RN
 from . import store
@@ -410,6 +412,123 @@ def attach(campaign_group):
             console.print(R.campaign_event(ev), highlight=False)
         if not events:
             console.print("[dim]no events[/]")
+
+    @campaign_group.command("history")
+    @click.argument("campaign", required=False, shell_complete=C.complete_campaign_id)
+    @click.option("--list", "as_list", is_flag=True, help="list all campaign histories")
+    @click.option("--project", help="filter the list by project")
+    @click.option("--state", type=click.Choice(["merged", "handed_off", "abandoned", "live", "all"]),
+                  default="all", show_default=True)
+    @click.option("--spec", "spec_id", help="filter the list by spec id")
+    @click.option("--since", help="closed/created at or after YYYY-MM-DD or ISO-8601")
+    @click.option("--until", help="closed/created at or before YYYY-MM-DD or ISO-8601")
+    @click.option("--min-cost", type=float, help="minimum campaign cost in USD")
+    @click.option("--json", "as_json", is_flag=True)
+    @click.pass_obj
+    def campaign_history(cfg, campaign, as_list, project, state, spec_id, since, until,
+                         min_cost, as_json):
+        """Derived history for exactly one CAMPAIGN, or --list."""
+        if bool(campaign) == bool(as_list):
+            raise click.UsageError("exactly one of CAMPAIGN and --list is required")
+        try:
+            if as_list:
+                def progress(done, total):
+                    if done % 50 == 0 and sys.stderr.isatty():
+                        R.err_console.print(Text(f"history: {done}/{total}"))
+                rows = H.filter_index(
+                    H.history_index(cfg, progress=progress), project=project, state=state,
+                    spec=spec_id, since=since, until=until, min_cost=min_cost,
+                )
+                if as_json:
+                    _dump_json({"schema": SC.HISTORY_INDEX_SCHEMA, "rows": rows})
+                    return
+                table = Table("campaign", "state", "project", "spec", "cost", "dominant",
+                              title=f"Campaign history ({len(rows)})")
+                for row in rows:
+                    table.add_row(
+                        Text(str(row["campaign"])), Text(str(row.get("state") or "")),
+                        Text(str(row.get("project") or "")), Text(str(row.get("spec_id") or "")),
+                        Text(f"${float(row.get('cost_usd') or 0):.2f}"),
+                        Text(str((row.get("dominant") or {}).get("wall") or "")),
+                    )
+                console.print(table)
+                return
+            doc = H.campaign_history(cfg, campaign)
+        except ValueError as exc:
+            if campaign and not store.campaign_dir(cfg, campaign).is_dir():
+                raise click.ClickException(f"campaign {campaign} not found")
+            raise click.UsageError(str(exc))
+        if as_json:
+            _dump_json(doc)
+            return
+        header = doc["header"]
+        console.print(Text(
+            f"{header['campaign']}  {header.get('state') or '-'}  "
+            f"{header.get('project') or '-'}  loops {header.get('loops')}/{header.get('loop_max')}"
+        ))
+        phases = Table("phase", "wall", "share", "bar", "run", "gate", "gate-wait",
+                       "runner-down", "other", "cost", "runs")
+        wall = max(1, header.get("wall_s") or 0)
+        for row in doc["phases"]:
+            share = row["wall_s"] / wall
+            phases.add_row(
+                Text(row["phase"]), Text(str(row["wall_s"])), Text(f"{share:.0%}"),
+                Text("█" * round(share * 12)), Text(str(row["run_s"])), Text(str(row["gate_s"])),
+                Text(str(row["gate_wait_s"])), Text(str(row["runner_down_s"])),
+                Text(str(row["other_s"])), Text(f"${row['cost_usd']:.2f}"),
+                Text(str(row["runs"])),
+            )
+        console.print(phases)
+        dominant = doc["dominant"]
+        console.print(Text(f"dominant: wall={dominant['wall'] or '-'} "
+                           f"cost={dominant['cost'] or '-'} working={dominant['working'] or '-'}"))
+        for row in doc["timeline"][-30:]:
+            console.print(Text(f"{row.get('ts') or '-'}  {row.get('kind') or '-'}  "
+                               f"{row.get('summary') or ''}"))
+        if doc["runs"]:
+            table = Table("run", "persona", "phase", "status", "cost", title="Runs")
+            for row in doc["runs"]:
+                table.add_row(*(Text(str(value or "")) for value in (
+                    row["run_id"], row["persona"], row["phase"], row["status"],
+                    f"${float(row.get('cost_usd') or 0):.2f}",
+                )))
+            console.print(table)
+        if doc["gaps"]:
+            console.print(Text("gaps:"))
+            for gap in doc["gaps"]:
+                console.print(Text(f"  {gap}"))
+
+    @campaign_group.command("records")
+    @click.option("--campaign")
+    @click.option("--agent", multiple=True)
+    @click.option("--kind", multiple=True)
+    @click.option("--project")
+    @click.option("--severity", multiple=True)
+    @click.option("--status", multiple=True)
+    @click.option("--since")
+    @click.option("--until")
+    @click.option("--query")
+    @click.option("--limit", type=click.IntRange(min=0), default=None)
+    @click.option("--json", "as_json", is_flag=True)
+    @click.pass_obj
+    def campaign_records(cfg, campaign, agent, kind, project, severity, status, since, until,
+                         query, limit, as_json):
+        """Search derived findings and decisions across campaigns."""
+        try:
+            rows = H.history_records(
+                cfg, campaign=campaign, agent=agent or None, kind=kind or None, project=project,
+                severity=severity or None, status=status or None, since=since, until=until,
+                query=query, limit=limit if limit is not None else (None if as_json else 200),
+            )
+        except ValueError as exc:
+            raise click.UsageError(str(exc))
+        if as_json:
+            _dump_json({"schema": SC.HISTORY_RECORD_SCHEMA, "records": rows})
+            return
+        for row in rows:
+            console.print(Text("  ".join(str(row.get(key) or "-") for key in (
+                "ts", "source", "kind", "agent", "campaign", "severity", "status", "title"
+            ))))
 
     @campaign_group.command("runs")
     @click.argument("campaign", shell_complete=C.complete_campaign_id)
