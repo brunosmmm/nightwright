@@ -8,6 +8,7 @@ updated: 2026-11-07
 kind: feature
 tags: [agentic, cursor]
 depends_on: [SPEC-0442]
+source_idea: IDEA-1025
 ---
 
 ## Context
