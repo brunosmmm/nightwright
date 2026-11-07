@@ -1738,9 +1738,11 @@ def worktree_resume_state(state: dict, worktree: Path) -> tuple[str | None, str 
         return "SPEC_WRITING", None
     try:
         fm, _ = split_frontmatter(spec_path.read_text(encoding="utf-8"))
-    except (OSError, ValueError) as e:
+    except (OSError, ValueError, yaml.YAMLError) as e:
         return None, f"spec file unreadable at {spec_path}: {e}"
-    status = str((fm or {}).get("status") or "")
+    if not isinstance(fm, dict):
+        return None, f"spec file unreadable at {spec_path}: front matter is not a mapping"
+    status = str(fm.get("status") or "")
     if status in ("accepted", "in-progress"):
         return "IMPLEMENTING", None
     if status == "proposed" and sid and not pending:
@@ -1748,8 +1750,22 @@ def worktree_resume_state(state: dict, worktree: Path) -> tuple[str | None, str 
     if status in ("draft", "proposed") and (not sid or pending):
         return "SPEC_WRITING", None
     if status == "draft" and sid and not pending:
-        return None, "spec status is draft"
+        return None, "draft spec has an id and an empty pending_brief"
     return None, f"spec status is {status or 'empty'}"
+
+
+_WORKTREE_CONFLICT_MAIL_STATUSES = frozenset(
+    {"done", "rejected", "superseded", "empty", "unreadable"})
+
+
+def _worktree_conflict_mail_status(err: str) -> str | None:
+    if err.startswith("spec status is "):
+        st = err.removeprefix("spec status is ").strip()
+        if st.split()[0] in _WORKTREE_CONFLICT_MAIL_STATUSES:
+            return st.split()[0]
+    if "unreadable" in err:
+        return "unreadable"
+    return None
 
 
 def _worktree_conflict_mail(cfg, state: dict, worktree: Path, status: str) -> None:
@@ -1789,26 +1805,31 @@ def _do_open_unwrapped(ctx: _Ctx, state: dict) -> StepResult:
             if elsewhere is not None and elsewhere == worktree.resolve():
                 if not repo.get("base_sha_at_open"):
                     base_sha = git.rev_parse(root, _open_start(root, pcfg, base))
+                    try:
+                        _run_worktree_setup(pcfg, worktree)
+                    except (GitError, ValueError, OSError) as e:
+                        res.error = getattr(e, "tail", None) or str(e)
+                        res.config_error = isinstance(e, ProjectConfigError)
+                        return res
                     repo["base_sha_at_open"] = base_sha
-                    _run_worktree_setup(pcfg, worktree)
                 repo["head"] = git.rev_parse(worktree)
-                if kind not in RM.RED_KINDS and not has_no_spec(state):
-                    spec = state.setdefault("spec", {})
-                    spec_file = worktree / spec.get("rel_path", "")
-                    if (spec.get("sha256_at_open") is None and spec.get("rel_path")
-                            and spec_file.is_file()):
-                        spec["sha256_at_open"] = _spec_sha(spec_file)
-                        store.campaign_dir(ctx.cfg, state["id"]).mkdir(parents=True, exist_ok=True)
-                        (store.campaign_dir(ctx.cfg, state["id"]) / CL.SPEC_AT_OPEN).write_text(
-                            spec_file.read_text(encoding="utf-8"), encoding="utf-8")
                 target, err = worktree_resume_state(state, worktree)
                 if err:
                     res.error = err
-                    if err.startswith("spec status is "):
-                        _worktree_conflict_mail(ctx.cfg, state, worktree,
-                                                err.removeprefix("spec status is "))
+                    mail_st = _worktree_conflict_mail_status(err)
+                    if mail_st:
+                        _worktree_conflict_mail(ctx.cfg, state, worktree, mail_st)
                 else:
                     res.resumed_to = target
+                    if kind not in RM.RED_KINDS and not has_no_spec(state):
+                        spec = state.setdefault("spec", {})
+                        spec_file = worktree / spec.get("rel_path", "")
+                        if (spec.get("sha256_at_open") is None and spec.get("rel_path")
+                                and spec_file.is_file()):
+                            spec["sha256_at_open"] = _spec_sha(spec_file)
+                            store.campaign_dir(ctx.cfg, state["id"]).mkdir(parents=True, exist_ok=True)
+                            (store.campaign_dir(ctx.cfg, state["id"]) / CL.SPEC_AT_OPEN).write_text(
+                                spec_file.read_text(encoding="utf-8"), encoding="utf-8")
                 return res
         base_sha = git.rev_parse(root, _open_start(root, pcfg, base))
         # the sha, not `<remote>/<base>`: no upstream is set on the campaign branch

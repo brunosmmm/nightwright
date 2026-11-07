@@ -187,6 +187,45 @@ def test_idea_after_holds_on_main_done_file_until_merged(env, monkeypatch):
     assert Q.backlog_readiness(cfg, _state(cfg, cb)) == (True, [])
 
 
+def test_abandoned_idea_ref_stays_abandoned_when_main_spec_is_done(env, monkeypatch):
+    cfg, repo = env
+    a = capture(cfg, "Abandoned prereq")
+    ca = add_idea_campaign(cfg, monkeypatch, a)
+    st = _state(cfg, ca)
+    st["spec_id"] = "SPEC-0001"
+    S.write_state(cfg, ca, st)
+    spec = repo / "docs/specs/0001-trivial.md"
+    spec.write_text(spec.read_text().replace("status: accepted", "status: done"))
+    Q._transition(cfg, _state(cfg, ca), "ABANDONED", "test")
+    cd = add_idea_campaign(cfg, monkeypatch, capture(cfg, "Waiter"), "--after", a)
+    blocked = Q.backlog_readiness(cfg, _state(cfg, cd))[1]
+    assert blocked == [f"after {a}: campaign {ca} abandoned"]
+    assert not QT.dependency_wait(blocked, QT.Ctx(cfg, "conductor").live_specs,
+                                  _state(cfg, cd)["project"])
+
+
+def test_spec_ref_not_found_when_newest_carrier_is_abandoned(env, monkeypatch):
+    cfg, _repo = env
+    dep = "SPEC-0407"
+    older = add_idea_campaign(cfg, monkeypatch, capture(cfg, "older carrier"))
+    st_old = _state(cfg, older)
+    st_old["spec_id"] = dep
+    st_old["state"] = "QUEUED"
+    S.write_state(cfg, older, st_old)
+    newer = add_idea_campaign(cfg, monkeypatch, capture(cfg, "merged carrier"))
+    st_new = _state(cfg, newer)
+    st_new["spec_id"] = dep
+    st_new["state"] = "ABANDONED"
+    S.write_state(cfg, newer, st_new)
+    waiter = add_idea_campaign(cfg, monkeypatch, capture(cfg, "spec waiter"))
+    st_w = _state(cfg, waiter)
+    st_w["after"] = [{"ref": dep, "kind": "spec"}]
+    S.write_state(cfg, waiter, st_w)
+    blocked = Q.backlog_readiness(cfg, _state(cfg, waiter))[1]
+    assert blocked == [f"after {dep} not found"]
+    assert "waiting on" not in blocked[0]
+
+
 def test_after_missing_spec_waits_on_carrying_campaign(env, monkeypatch):
     cfg, _repo = env
     dep = "SPEC-0407"
