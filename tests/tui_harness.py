@@ -1,4 +1,4 @@
-"""SPEC-0446: boot the real IdeaDesk on a copy of the campaign-history fixture.
+"""SPEC-0459: boot the real IdeaDesk on a copy of the campaign-history fixture.
 
 `fixture_cfg` isolates that copy from the developer's data. `prepare_queue_window` moves
 the copy's timestamps so the queue's 24 h delivered window shows every fixture campaign

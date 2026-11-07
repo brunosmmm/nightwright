@@ -1,4 +1,4 @@
-"""SPEC-0446: IdeaDesk on the real history fixture, and the queue's 24 h window."""
+"""SPEC-0459: IdeaDesk on the real history fixture, and the queue's 24 h window."""
 from __future__ import annotations
 
 import asyncio

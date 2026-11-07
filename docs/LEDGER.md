@@ -267,7 +267,7 @@ progress. This is the single place to see *what has been decided* and *what is i
   - [x] [SPEC-0410](./specs/0410-live-queue-view-state-grouped-sections-with.md) Live queue view: state-grouped sections with priority, admission order and why-waiting — done
   - [x] [SPEC-0431](./specs/0431-campaign-stamps-on-conductor-decisions-and.md) Campaign stamps on conductor decisions and mailbox messages — done
   - [x] [SPEC-0433](./specs/0433-human-readable-campaign-story-one-shared-timeline.md) Human-readable campaign story: one shared timeline formatter for the TUI, the dashboard drilldown and nw campaign show — done
-  - [x] [SPEC-0446](./specs/0446-real-app-tui-test-harness-on-the-real-data.md) Real-fixture IdeaDesk Pilot harness and queue-window preparation — done
+  - [x] [SPEC-0459](./specs/0459-real-app-tui-test-harness-on-the-real-data.md) Real-fixture IdeaDesk Pilot harness and queue-window preparation — done
 - **[SPEC-0419](./specs/0419-self-healing-queue.md) — Self-healing queue** · done · (6/6 done)
   - [x] [SPEC-0420](./specs/0420-red-main-fix-forward-and-revert.md) Red-main fix-forward and revert — done
   - [x] [SPEC-0421](./specs/0421-always-run-guard-tests-at-close-and-loop-gates.md) Always-run guard tests at close and loop gates — done
@@ -707,7 +707,6 @@ progress. This is the single place to see *what has been decided* and *what is i
 | [SPEC-0443](./specs/0443-piped-output-ignores-force-color.md) | Piped output ignores FORCE_COLOR when deciding to wrap | feature | done | — | 2026-11-07 |
 | [SPEC-0444](./specs/0444-conductor-follower-acks-before-advancing.md) | The conductor follower commits an event only after the session acks it | feature | done | — | 2026-11-07 |
 | [SPEC-0445](./specs/0445-sdk-persona-model-selection.md) | Persona SDK runs pass a model id and an effort parameter | feature | done | — | 2026-11-07 |
-| [SPEC-0446](./specs/0446-real-app-tui-test-harness-on-the-real-data.md) | Real-fixture IdeaDesk Pilot harness and queue-window preparation | feature | done | M9: agentic workflow | 2026-11-07 |
 | [SPEC-0446](./specs/0446-sdk-model-effort-catalog.md) | Persona SDK effort follows each model's own parameter | feature | done | — | 2026-11-07 |
 | [SPEC-0447](./specs/0447-tail-joins-sdk-text-tokens.md) | The run tail joins SDK text tokens into a sentence | feature | done | — | 2026-11-07 |
 | [SPEC-0448](./specs/0448-tail-renders-sdk-tool-results.md) | The run tail renders SDK tool results instead of their JSON | feature | done | — | 2026-11-07 |
@@ -720,6 +719,7 @@ progress. This is the single place to see *what has been decided* and *what is i
 | [SPEC-0456](./specs/0456-readonly-cursor-personas-keep-read-tools.md) | Read-only Cursor personas keep the file-inspection tools | feature | done | — | 2026-11-07 |
 | [SPEC-0457](./specs/0457-readonly-cursor-tools-are-lowercase.md) | Read-only Cursor tool names are lowercase | feature | done | — | 2026-11-07 |
 | [SPEC-0458](./specs/0458-tail-renders-triage-and-implementer-cards.md) | The run tail renders a triage and an implementer result as cards | feature | done | — | 2026-11-07 |
+| [SPEC-0459](./specs/0459-real-app-tui-test-harness-on-the-real-data.md) | Real-fixture IdeaDesk Pilot harness and queue-window preparation | feature | done | M9: agentic workflow | 2026-11-07 |
 
 ## Superseded / rejected
 

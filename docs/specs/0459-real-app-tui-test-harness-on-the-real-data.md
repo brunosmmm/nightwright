@@ -1,5 +1,5 @@
 ---
-id: SPEC-0446
+id: SPEC-0459
 title: "Real-fixture IdeaDesk Pilot harness and queue-window preparation"
 status: done
 owner: user
@@ -352,6 +352,6 @@ None. Decided while revising:
 
 | Question | Decision | Why |
 |---|---|---|
-| Which slice does SPEC-0446 keep? | The real-fixture Pilot harness and the queue window | The PTY golden and the scale-clone corpus are separate subsystems |
+| Which slice does SPEC-0459 keep? | The real-fixture Pilot harness and the queue window | The PTY golden and the scale-clone corpus are separate subsystems |
 | Which campaign is the first delivered row? | The lexicographically last manifest cid | `now - (N - i) hours` makes that cid the youngest, and both the payload and `rows_from_payload` list youngest / newest first |
 | How does the queue show closed campaigns from 2026-11-03? | By shifting the copy | A production clock override is a product seam for a test problem |
