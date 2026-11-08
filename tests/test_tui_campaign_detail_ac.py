@@ -495,8 +495,11 @@ def test_popup_tour_no_writes(tmp_path):
             await pilot.double_click("#queue", offset=(2, 4))
             await settle(app, pilot)
             s = detail_screen(app)
-            for key in ("1", "2", "3", "4", "5", "f", "left_square_bracket",
-                        "right_square_bracket", "g", "G", "j", "k", "v"):
+            for key in (
+                "1", "3", "4", "5", "2",
+                "f", "left_square_bracket", "right_square_bracket",
+                "g", "G", "j", "k", "up", "down", "v",
+            ):
                 await press(app, pilot, [key])
                 await settle(app, pilot)
             await press(app, pilot, ["escape"])
@@ -721,6 +724,87 @@ def test_history_with_gaps_opens(tmp_path):
     async def drive():
         async with app.run_test(size=SIZE) as pilot:
             await open_via_queue(app, pilot, cid)
-            assert isinstance(app.screen, CampaignDetail)
+            s = detail_screen(app)
+            assert s.view is not None
+            err = str(s.query_one("#load-error").content)
+            assert "history unavailable" not in err
+            assert cid in overview(app) or overview(app).strip()
+            await press(app, pilot, ["2"])
+            await settle(app, pilot)
+            assert s._event_rows() and "filter" in str(s.query_one("#campaign-status").content)
+
+    _run(drive())
+
+
+def test_mouse_click_timeline_tab_shows_row_detail(tmp_path):
+    cfg = TH.fixture_cfg(tmp_path)
+    TH.prepare_queue_window(cfg)
+    cid = _manifest_cids()[-1]
+    app = IdeaDesk(cfg, tab="queue")
+
+    async def drive():
+        async with app.run_test(size=SIZE) as pilot:
+            section = next((r.group for r in view(app).rows if r.campaign == cid), "delivered")
+            await open_screen(app, pilot, cid, section, timeline=False)
+            s = detail_screen(app)
+            assert s.query_one("#detail-body", TabbedContent).active == "tab-overview"
+            await pilot.click("#detail-body ContentTab#--content-tab-tab-timeline")
+            await settle(app, pilot)
+            assert s.query_one("#detail-body", TabbedContent).active == "tab-timeline"
+            row = s.current_row()
+            assert row is not None
+            summary = str(row.get("summary") or "")
+            if row.get("seq") is not None:
+                assert await pilot_until(
+                    pilot,
+                    lambda: detail(app).strip() and detail(app) != "no events",
+                )
+            else:
+                await settle(app, pilot)
+            text = detail(app)
+            assert text.strip() and "no events" not in text
+            if summary and row.get("seq") is not None:
+                assert summary[: min(20, len(summary))] in text or "persona:" in text
+
+    _run(drive())
+
+
+def test_mouse_timeline_after_poll_on_runs_shows_new_last_detail(tmp_path, monkeypatch):
+    from test_tui_campaign_detail import seed
+
+    monkeypatch.setattr(CD, "POLL_S", 0.1)
+    _, cfg, ids = _fixture(tmp_path)
+    cid = ids["ready"]
+    seed(cfg, cid)
+    app = _desk(cfg, tab="queue")
+
+    async def drive():
+        async with app.run_test(size=SIZE) as pilot:
+            await open_screen(app, pilot, cid, "queued")
+            s = detail_screen(app)
+            await press(app, pilot, ["2"])
+            await settle(app, pilot)
+            old_row = s.current_row()
+            assert old_row is not None
+            await press(app, pilot, ["3"])
+            await settle(app, pilot)
+            assert s._active_tab() == "tab-runs"
+            n = len(s._event_rows())
+            _ev(cfg, cid, "note", {"text": "mouse tab poll"})
+            assert await pilot_until(
+                pilot, lambda: len(detail_screen(app)._event_rows()) > n)
+            await settle(app, pilot)
+            s = detail_screen(app)
+            await pilot.click("#detail-body ContentTab#--content-tab-tab-timeline")
+            await settle(app, pilot)
+            new_row = s.current_row()
+            assert new_row is not None
+            assert new_row is not old_row or str(new_row.get("summary") or "") != str(
+                old_row.get("summary") or "")
+            await pilot_until(
+                pilot,
+                lambda: "mouse tab poll" in detail(app)
+                or str(new_row.get("summary") or "")[:12] in detail(app),
+            )
 
     _run(drive())

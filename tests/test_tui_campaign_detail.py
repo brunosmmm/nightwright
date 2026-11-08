@@ -134,14 +134,18 @@ def test_cursor_starts_on_the_last_event_and_filters_cycle(tmp_path):
 
 
 def test_review_survives_a_slow_entry_detail(tmp_path, monkeypatch):
-    import time
+    import threading
+
     repo, cfg, ids = _fixture(tmp_path)
     cid = ids["ready"]
     seed(cfg, cid)
+    in_detail = threading.Event()
+    release = threading.Event()
     real = AM.entry_detail
 
     def slow(*a, **k):
-        time.sleep(0.4)
+        in_detail.set()
+        release.wait(timeout=5)
         return real(*a, **k)
 
     monkeypatch.setattr(AM, "entry_detail", slow)
@@ -150,18 +154,17 @@ def test_review_survives_a_slow_entry_detail(tmp_path, monkeypatch):
     async def drive():
         async with app.run_test(size=SIZE) as pilot:
             await open_screen(app, pilot, cid, "queued")
-            await press(app, pilot, ["f", "f"])
-            assert await pilot_until(pilot, lambda: "persona: implementer" in detail(app))
+            assert await pilot_until(pilot, lambda: in_detail.is_set())
             await press(app, pilot, ["v"])
-            await settle(app, pilot)
             assert "Code review" in detail(app)
-            await pilot.pause(0.6)
+            release.set()
             await settle(app, pilot)
             s = detail_screen(app)
             assert s.review_mode and "Code review" in detail(app)
             await press(app, pilot, ["v"])
             await settle(app, pilot)
-            assert not s.review_mode and "persona: implementer" in detail(app)
+            assert not s.review_mode
+            assert await pilot_until(pilot, lambda: "hello there" in detail(app))
 
     _run(drive())
 
@@ -225,6 +228,39 @@ def test_a_ledger_append_shows_within_a_poll_and_never_syncs(tmp_path, monkeypat
             assert len(s._event_rows()) == gate_total + 2
             assert s.shown[s.table.cursor_row].get("seq") == first_seq
             assert f"/{n + 2} events" in status(app)
+
+    _run(drive())
+
+
+def test_decisions_append_triggers_poll_reload(tmp_path, monkeypatch):
+    import json
+    from nightwright.agentic import store as St
+
+    monkeypatch.setattr(CD, "POLL_S", 0.1)
+    repo, cfg, ids = _fixture(tmp_path)
+    cid = ids["ready"]
+    seed(cfg, cid)
+    loads = []
+    real = AM.load_detail
+
+    def track(*a, **k):
+        loads.append(1)
+        return real(*a, **k)
+
+    monkeypatch.setattr(AM, "load_detail", track)
+    app = _desk(cfg, tab="queue")
+
+    async def drive():
+        async with app.run_test(size=SIZE) as pilot:
+            await open_screen(app, pilot, cid, "queued")
+            await settle(app, pilot)
+            n = len(loads)
+            path = St.agentic_dir(cfg) / "conductor" / "decisions.jsonl"
+            path.parent.mkdir(parents=True, exist_ok=True)
+            row = {"event_id": f"poll-test-{n}", "text": "signature bump", "ts": "2026-11-07T00:00:00+00:00"}
+            with path.open("a", encoding="utf-8") as fh:
+                fh.write(json.dumps(row) + "\n")
+            assert await pilot_until(pilot, lambda: len(loads) > n)
 
     _run(drive())
 

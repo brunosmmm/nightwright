@@ -193,6 +193,7 @@ class CampaignDetail(QueueActions, ModalScreen):
         self._placeholder_mail = "placeholder: mail"
         self._cursor_direction = 0
         self._detail_token = 0
+        self._tab_from_action = False
 
     def compose(self) -> ComposeResult:
         with Vertical(id="detail-frame"):
@@ -561,7 +562,7 @@ class CampaignDetail(QueueActions, ModalScreen):
         self._last_highlight_row = i
         self.show_detail()
 
-    def action_tab(self, tab_id: str) -> None:
+    def _sync_tab_focus(self, tab_id: str) -> None:
         on_timeline = tab_id == "tab-timeline"
         self.table.can_focus = on_timeline
         if not on_timeline:
@@ -570,9 +571,6 @@ class CampaignDetail(QueueActions, ModalScreen):
                 self.query_one("#campaign-detail").blur()
             except Exception:
                 pass
-        tabs = self.query_one("#detail-body", TabbedContent)
-        tabs.active = tab_id
-        tabs.refresh(layout=True)
         if on_timeline:
             self.table.focus()
             self.show_detail()
@@ -585,7 +583,24 @@ class CampaignDetail(QueueActions, ModalScreen):
         elif tab_id == "tab-mail":
             self.query_one("#placeholder-mail", Static).focus()
         else:
-            tabs.focus()
+            self.query_one("#detail-body", TabbedContent).focus()
+
+    def action_tab(self, tab_id: str) -> None:
+        tabs = self.query_one("#detail-body", TabbedContent)
+        if tabs.active != tab_id:
+            self._tab_from_action = True
+            tabs.active = tab_id
+            tabs.refresh(layout=True)
+        self._sync_tab_focus(tab_id)
+
+    @on(TabbedContent.TabActivated, "#detail-body")
+    def _detail_tab_activated(self, event: TabbedContent.TabActivated) -> None:
+        if self._tab_from_action:
+            self._tab_from_action = False
+            return
+        pane = event.pane
+        if pane is not None and pane.id:
+            self._sync_tab_focus(pane.id)
 
     def action_next_tab(self) -> None:
         tabs = self.query_one("#detail-body", TabbedContent)
