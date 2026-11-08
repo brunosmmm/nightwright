@@ -513,10 +513,22 @@ delivered rows are on screen, and they read campaign ids from the mounted queue 
 - Loop review: desk `1`–`5` bindings non-priority; `check_action` scans stack for `CampaignDetail`; timeline `[`/`]` bind `left_square_bracket`/`right_square_bracket`; Pilot coverage for P+`1` tab guard, up/down across separators, poll ref restore, header/timeline AC9 markup on widgets.
 - Full suite left to gating.
 
+### Test record (2026-11-07, implementer campaign loop 3)
+
+- `uv run pytest -q tests/test_tui_campaign_detail_ac.py tests/test_tui_campaign_detail.py tests/test_tui_campaign_detail_model.py` — 50 passed.
+- Adversarial review fixes: preserve events/mailbox/queue cursor on dismiss when already on opened campaign; `pagedown`/`pageup` detail scroll; initial timeline paint failure clears `_signature`; Pilot double-click off-cursor row; ChoiceScreen confirm title markup; events/mailbox dismiss cursor tests.
+- Full suite left to gating.
+
 ### Test record (2026-11-07, implementer campaign loop 0)
 
 - `uv run pytest -q tests/test_tui_campaign_detail_ac.py tests/test_tui_campaign_detail.py tests/test_tui_campaign_detail_model.py tests/test_tui_queue_view.py::test_enter_key_on_a_header_row_posts_nothing` — 43 passed.
 - Full suite left to gating; manual verification on developer data dir not run.
+
+### As shipped (2026-11-07, implementer campaign loop 3)
+
+- `select_campaign` on queue, events, and mailbox leaves the cursor when the current row already matches the dismissed campaign id.
+- Timeline detail scroll binds `pagedown`/`pageup` (Textual key names).
+- Any failed timeline paint (including the first after load) clears `_signature` so the 2s poll retries.
 
 ### As shipped (2026-11-07, implementer campaign loop 2)
 

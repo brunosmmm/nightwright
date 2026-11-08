@@ -74,6 +74,7 @@ class _OpenerApp(App):
         t.add_columns("id")
         t.add_row("hdr", key="hdr")
         t.add_row("SPEC-test-open", key="SPEC-test-open")
+        t.add_row("SPEC-other", key="SPEC-other")
         t.move_cursor(row=1)
         t.focus()
 
@@ -96,9 +97,11 @@ def test_detail_opener_enter_and_double_click(tmp_path):
             assert isinstance(app.screen, CampaignDetail)
             await press(app, pilot, ["escape"])
             await settle(app, pilot)
-            await pilot.double_click("#tbl", offset=(1, 2))
+            t = app.query_one(_OpenerTable)
+            t.move_cursor(row=1)
+            await pilot.double_click("#tbl", offset=(1, 3))
             await settle(app, pilot)
-            assert app.posted[-1] == ("SPEC-test-open", None)
+            assert app.posted[-1] == ("SPEC-other", None)
             assert isinstance(app.screen, CampaignDetail)
 
     _run(drive())
@@ -549,7 +552,7 @@ def test_queue_enter_double_click_reload_dismiss(tmp_path, monkeypatch):
             assert detail_screen(app).campaign_id == cid_a
             await press(app, pilot, ["escape"])
             await settle(app, pilot)
-            qv.table.move_cursor(row=ib)
+            assert qv.table.cursor_row == ia
             await _double_click_row(pilot, ib)
             await settle(app, pilot)
             assert detail_screen(app).campaign_id == cid_b
@@ -765,6 +768,90 @@ def test_mouse_click_timeline_tab_shows_row_detail(tmp_path):
             assert text.strip() and "no events" not in text
             if summary and row.get("seq") is not None:
                 assert summary[: min(20, len(summary))] in text or "persona:" in text
+
+    _run(drive())
+
+
+def test_queue_action_confirm_survives_markup_in_title():
+    """ChoiceScreen titles from queue actions must not parse Rich markup (AC7 / SPEC-0265)."""
+    from textual.app import App
+    from textual.widgets import Label
+
+    from nightwright.tui import queue_actions as QA
+
+    markup = "[/]worktree [bold red]x[/]"
+    summary = QA.QueueActions._summary(
+        "abandon", "SPEC-test", {"remove_worktree": True, "worktree": markup})
+
+    class _ProbeApp(App):
+        def on_mount(self) -> None:
+            self.push_screen(ChoiceScreen(summary, ["abandon", "cancel"]))
+
+    app = _ProbeApp()
+
+    async def drive():
+        async with app.run_test(size=SIZE) as pilot:
+            await settle(app, pilot)
+            assert isinstance(app.screen, ChoiceScreen)
+            label = app.screen.query_one(Label)
+            assert markup in str(label.render())
+
+    _run(drive())
+
+
+def test_events_dismiss_keeps_non_first_row_for_campaign(tmp_path):
+    from test_tui_events_tab import _add, _cfg, view as ev_view
+
+    cfg = _cfg(tmp_path)
+    campaign = "SPEC-0001-a"
+    _add(cfg, "admitted", campaign)
+    _add(cfg, "parked", campaign, reason="r", detail="d", resume_to="X")
+    _add(cfg, "merged", campaign, merged_sha="abc")
+    app = IdeaDesk(cfg, tab="events")
+
+    async def drive():
+        async with app.run_test(size=SIZE_160) as pilot:
+            await settle(app, pilot)
+            v = ev_view(app)
+            want = len(v.shown) - 1
+            v.table.move_cursor(row=want)
+            event_id = v.shown[want].id
+            assert v.shown[want].campaign == campaign
+            await press(app, pilot, ["enter"])
+            await settle(app, pilot)
+            assert isinstance(app.screen, CampaignDetail)
+            await press(app, pilot, ["escape"])
+            await settle(app, pilot)
+            assert v.table.cursor_row == want
+            assert v.shown[v.table.cursor_row].id == event_id
+
+    _run(drive())
+
+
+def test_mailbox_dismiss_keeps_thread_for_campaign(tmp_path):
+    from test_tui_mailbox_tab import ask, mv
+
+    repo, cfg, ids = _fixture(tmp_path)
+    cid = ids["ready"]
+    ask(cfg, frm="conductor", to="human", kind="info", text="thread-one", campaign=cid)
+    ask(cfg, frm="conductor", to="human", kind="info", text="thread-two", campaign=cid)
+    app = _desk(cfg, tab="mailbox")
+
+    async def drive():
+        async with app.run_test(size=SIZE) as pilot:
+            await settle(app, pilot)
+            v = mv(app)
+            by_subject = {r.subject: i for i, r in enumerate(v.threads)}
+            want = by_subject["thread-two"]
+            assert want != by_subject["thread-one"]
+            v.threads_table.move_cursor(row=want)
+            await press(app, pilot, ["enter"])
+            await settle(app, pilot)
+            assert isinstance(app.screen, CampaignDetail)
+            await press(app, pilot, ["escape"])
+            await settle(app, pilot)
+            assert v.threads_table.cursor_row == want
+            assert v.current_thread().subject == "thread-two"
 
     _run(drive())
 

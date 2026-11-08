@@ -479,6 +479,39 @@ def test_reload_error_keeps_the_app_alive(tmp_path, monkeypatch):
     _run(drive())
 
 
+def test_initial_paint_failure_is_retried_by_the_next_poll(tmp_path, monkeypatch):
+    monkeypatch.setattr(CD, "POLL_S", 5.0)
+    repo, cfg, ids = _fixture(tmp_path)
+    cid = ids["ready"]
+    seed(cfg, cid)
+    n = {"calls": 0}
+    real_paint = CD.CampaignDetail.paint
+
+    def flaky_paint(self, previous=None):
+        n["calls"] += 1
+        if n["calls"] == 1:
+            raise TypeError("first paint")
+        return real_paint(self, previous)
+
+    monkeypatch.setattr(CD.CampaignDetail, "paint", flaky_paint)
+    app = _desk(cfg, tab="queue")
+
+    async def drive():
+        async with app.run_test(size=SIZE) as pilot:
+            await settle(app, pilot)
+            select(app, _section_of(app, cid), cid)
+            await press(app, pilot, ["enter"])
+            assert await pilot_until(pilot, lambda: isinstance(app.screen, CD.CampaignDetail))
+            s = detail_screen(app)
+            assert await pilot_until(pilot, lambda: "campaign failed" in status(app))
+            assert s._signature is None
+            s._poll()
+            assert await pilot_until(pilot, lambda: "campaign failed" not in status(app))
+            assert app.is_running
+
+    _run(drive())
+
+
 def test_a_failed_paint_is_retried_by_the_next_poll(tmp_path, monkeypatch):
     monkeypatch.setattr(CD, "POLL_S", 0.1)
     repo, cfg, ids = _fixture(tmp_path)

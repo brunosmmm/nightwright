@@ -162,8 +162,8 @@ class CampaignDetail(QueueActions, ModalScreen):
         Binding("k", "up", "up", show=False),
         Binding("up", "up", "up", show=False, priority=True),
         Binding("down", "down", "down", show=False, priority=True),
-        Binding("page_down,ctrl+j", "detail_scroll_down", "detail scroll", show=False),
-        Binding("page_up,ctrl+k", "detail_scroll_up", "detail scroll", show=False),
+        Binding("pagedown,ctrl+j", "detail_scroll_down", "detail scroll", show=False),
+        Binding("pageup,ctrl+k", "detail_scroll_up", "detail scroll", show=False),
         Binding("escape", "close", "back"),
         Binding("q", "close", "back", show=False),
         Binding("p", "act('park')", "park"),
@@ -350,7 +350,7 @@ class CampaignDetail(QueueActions, ModalScreen):
             except Exception as e:
                 if previous_view is not None and not initial:
                     self.view = previous_view
-                    self._signature = None
+                self._signature = None
                 if self._worker_alive():
                     self._show_timeline_error(e)
             live = self.view is not None and not self.view.terminal

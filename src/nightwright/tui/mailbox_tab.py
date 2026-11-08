@@ -357,6 +357,9 @@ class MailboxView(Horizontal):
 
     def select_campaign(self, cid: str) -> None:
         """Restore the threads cursor after the detail modal dismisses (SPEC-0407)."""
+        row = self.current_thread()
+        if row is not None and row.campaign == cid:
+            return
         for i, row in enumerate(self.threads):
             if row.campaign == cid:
                 self.threads_table.move_cursor(row=i)

@@ -320,6 +320,9 @@ class EventsView(Horizontal):
 
     def select_campaign(self, cid: str) -> None:
         """Restore the events cursor after the detail modal dismisses (SPEC-0407)."""
+        row = self.current_row()
+        if row is not None and row.campaign == cid:
+            return
         for i, row in enumerate(self.shown):
             if row.campaign == cid:
                 self.table.move_cursor(row=i)

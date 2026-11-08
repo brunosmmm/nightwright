@@ -284,6 +284,9 @@ class QueueView(QueueActions, Vertical):
     # --- enter ---------------------------------------------------------------------------
 
     def select_campaign(self, cid: str) -> None:
+        row = self.current_row()
+        if row is not None and row.campaign == cid:
+            return
         for i, r in enumerate(self.rows):
             if r.kind == "campaign" and r.campaign == cid:
                 self.table.move_cursor(row=i)
