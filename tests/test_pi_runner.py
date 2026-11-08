@@ -1,5 +1,6 @@
 """SPEC-0465: PiRunner argv, map, remote job, doctor, tail helpers."""
 import json
+import re
 from pathlib import Path
 
 import pytest
@@ -712,10 +713,31 @@ def test_queue_cli_runner_choices_include_pi_exclude_conductor():
     assert "pi" not in next(p for p in stew.params if p.name == "runner").type.choices
 
 
+def test_pi_tail_spec_0451_identity_and_0452_depends_on():
+    """SPEC-0471: lock 0451-tail-marks-spoken-lines.md; SPEC-0452 depends_on."""
+    repo = Path(__file__).resolve().parents[1]
+    tail_id = "SPEC-" + "0451"
+    tail = (repo / "docs/specs/0451-tail-marks-spoken-lines.md").read_text(encoding="utf-8")
+    fm, body = tail.split("---", 2)[1], tail.split("---", 2)[2]
+    assert re.search(r"^id:\s*(\S+)", fm, re.M).group(1) == tail_id
+    assert (
+        re.search(r"^title:\s*(.+)$", fm, re.M).group(1).strip()
+        == "The run tail marks the agent's spoken lines"
+    )
+    assert "Each spoken line starts with a marker" in body
+    assert "Spoken lines render as" in body
+
+    verdict = (repo / "docs/specs/0452-tail-renders-spoken-verdicts.md").read_text(encoding="utf-8")
+    vfm = verdict.split("---", 2)[1]
+    deps = re.search(r"^depends_on:\s*\[(.*?)\]", vfm, re.M).group(1)
+    assert tail_id in [x.strip() for x in deps.split(",")]
+
+
 def test_pi_sources_cite_spec_0465():
     """SPEC-0471: Pi runner sources must cite SPEC-0465, not the tail spec id."""
     repo = Path(__file__).resolve().parents[1]
     forbidden = "SPEC-" + "0451"
+    required = "SPEC-0465"
     paths = [
         repo / "src/nightwright/agentic/pi_exec.mjs",
         repo / "src/nightwright/agentic/pi_map.py",
@@ -730,9 +752,13 @@ def test_pi_sources_cite_spec_0465():
         repo / "tests/test_rich_output_guard.py",
         Path(__file__).resolve(),
     ]
-    hits = []
+    forbidden_hits = []
+    missing_required = []
     for p in paths:
         text = p.read_text(encoding="utf-8")
         if forbidden in text:
-            hits.append(str(p.relative_to(repo)))
-    assert hits == [], f"Pi sources must not cite {forbidden}: {hits}"
+            forbidden_hits.append(str(p.relative_to(repo)))
+        if required not in text:
+            missing_required.append(str(p.relative_to(repo)))
+    assert forbidden_hits == [], f"Pi sources must not cite {forbidden}: {forbidden_hits}"
+    assert missing_required == [], f"Pi sources must cite {required}: {missing_required}"

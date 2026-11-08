@@ -153,6 +153,9 @@ is not a hit.
 
 - `node --test tests/js/pi_exec.test.js`: 63 passed.
 - `uv run pytest -q tests/test_pi_runner.py tests/test_pi_exec_js.py tests/test_rich_output_guard.py tests/test_agentic_runner.py tests/test_cursor_runner.py`: 87 passed.
+- Loop 2: `test_pi_tail_spec_0451_identity_and_0452_depends_on` and extended
+  `test_pi_sources_cite_spec_0465` (SPEC-0465 required on Design paths);
+  `uv run pytest -q tests/test_pi_runner.py tests/test_pi_exec_js.py`: 50 passed.
 - Full suite left to gating.
 
 ## Rollout / migration
