@@ -714,25 +714,25 @@ def test_queue_cli_runner_choices_include_pi_exclude_conductor():
 
 def test_pi_sources_cite_spec_0465():
     """SPEC-0471: Pi runner sources must cite SPEC-0465, not the tail spec id."""
-    root = Path(__file__).resolve().parents[1]
+    repo = Path(__file__).resolve().parents[1]
     forbidden = "SPEC-" + "0451"
     paths = [
-        root / "src/nightwright/agentic/pi_exec.mjs",
-        root / "src/nightwright/agentic/pi_map.py",
-        root / "src/nightwright/agentic/pi_map.yaml",
-        root / "src/nightwright/agentic/runner.py",
-        root / "src/nightwright/agentic/runproc.py",
-        root / "src/nightwright/agentic/cli_worker.py",
-        root / "src/nightwright/agentic/worker.py",
-        root / "src/nightwright/agentic/remote_personas.py",
-        root / "src/nightwright/doctor.py",
-        root / "tests/test_pi_exec_js.py",
-        root / "tests/test_rich_output_guard.py",
+        repo / "src/nightwright/agentic/pi_exec.mjs",
+        repo / "src/nightwright/agentic/pi_map.py",
+        repo / "src/nightwright/agentic/pi_map.yaml",
+        repo / "src/nightwright/agentic/runner.py",
+        repo / "src/nightwright/agentic/runproc.py",
+        repo / "src/nightwright/agentic/cli_worker.py",
+        repo / "src/nightwright/agentic/worker.py",
+        repo / "src/nightwright/agentic/remote_personas.py",
+        repo / "src/nightwright/doctor.py",
+        repo / "tests/test_pi_exec_js.py",
+        repo / "tests/test_rich_output_guard.py",
         Path(__file__).resolve(),
     ]
     hits = []
     for p in paths:
         text = p.read_text(encoding="utf-8")
         if forbidden in text:
-            hits.append(str(p.relative_to(root)))
+            hits.append(str(p.relative_to(repo)))
     assert hits == [], f"Pi sources must not cite {forbidden}: {hits}"
