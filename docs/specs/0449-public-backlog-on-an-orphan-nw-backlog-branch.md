@@ -40,6 +40,10 @@ a conflicting contract for them.
 - One backlog item is one regular file at the root of an orphan
   `refs/heads/nw-backlog`, named only by its id, so a title change does not
   rename it.
+- The branch is as visible as the repository. Anyone who can fetch the
+  repository can fetch `refs/heads/nw-backlog`. On a private repository the
+  branch is as private as the code. These commands take no visibility flag
+  and write no visibility key.
 - `add`, `edit`, `close`, and `reopen` read blobs with `git show` of a captured
   sha and write them with a temporary index and `commit-tree`. The product
   checkout, its index, and its current branch stay as they were.
@@ -108,6 +112,9 @@ project's git repository. Each item is one markdown file at the branch root,
 `REQ-` plus eight Crockford characters, minted on the machine that creates the
 file. A fixed `README.md` is the only other file these commands add. There is
 no index file. The file format has no `IDEA-NNN` and no visibility field.
+Public means everyone who can fetch that repository. On a private repository
+the branch is as private as the code. `add`, `edit`, `close`, and `reopen`
+take no `--visibility`, `--public`, or `--private`.
 
 `nw backlog add`, `edit`, `close`, and `reopen` commit onto that branch through
 a temporary index. They leave the checkout where it was. The first `add`
@@ -692,6 +699,11 @@ drops unknown keys, and refreshes `updated` and `updated_by`.
       lists `--title`, `--summary`, `--spec`, and `--repo`, and does not list
       `--push` or `--clear-spec`. An aware `current_time` of
       `2026-11-07T10:41:00-05:00` is stored as `2026-11-07T15:41:00Z`.
+- [ ] `nw backlog add --help`, `edit --help`, `close --help`, and
+      `reopen --help` do not list `--visibility`, `--public`, or `--private`.
+      The item blob after `add`, and after `edit`, `close`, and `reopen`, has
+      no `visibility` key. `git rev-parse --symbolic-full-name nw-backlog` is
+      `refs/heads/nw-backlog`.
 
 ## Test plan
 
@@ -758,6 +770,10 @@ drops unknown keys, and refreshes `updated` and `updated_by`.
   - `test_repo_flag_and_command_surface` — `--repo`, default directory,
     non-work-tree, help text has the local commands and omits the later
     slices' commands and `--push`.
+  - `test_no_visibility_flag_and_ref_is_a_branch` — `add`, `edit`, `close`,
+    and `reopen` help omit `--visibility`, `--public`, and `--private`; the
+    blob after each of those writes has no `visibility` key;
+    `git rev-parse --symbolic-full-name nw-backlog` is `refs/heads/nw-backlog`.
   - `test_aware_clock_is_stored_as_utc`.
   Implementers run `uv run pytest -q tests/test_backlog.py` and
   `python3 tools/affected_tests.py --run uv run pytest -q`. They do not run
@@ -837,8 +853,11 @@ No session is recorded in this file. Implementation clocks IDEA-1019 with
 
 There is no `docs/backlog` tree to import. The first `nw backlog add` creates
 the orphan branch in the local repository. This spec does not push it and does
-not set a forge rule. Existing clones are unchanged until the publication spec
-fast-forwards `nw-backlog`. The product checkout does not move.
+not set a forge rule. Visibility is the repository's fetch permission: a
+private repository keeps `nw-backlog` as private as the code, and this slice
+does not add a visibility flag. Existing clones are unchanged until the
+publication spec fast-forwards `nw-backlog`. The product checkout does not
+move.
 
 ## Definition of done
 
