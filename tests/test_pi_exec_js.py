@@ -19,7 +19,11 @@ def test_pi_exec_under_node():
     assert r.returncode == 0, f"node --test pi_exec.test.js failed:\n{r.stdout}\n{r.stderr}"
 
 
-def test_pi_exec_js_edit_selects_this_module():
+def test_pi_exec_js_edit_selects_this_module(monkeypatch):
+    # A full gate sets NW_AFFECTED_FULL, and the selector then returns tests: [].
+    # This assertion is about the file, so it has to see a normal selector.
+    for key in ("NW_SENTINEL", "NW_CAMPAIGN", "NW_AFFECTED_FULL", "NW_AFFECTED_STRICT", "NW_BASE"):
+        monkeypatch.delenv(key, raising=False)
     r = subprocess.run(
         [sys.executable, "tools/affected_tests.py", "--changed", str(PI_EXEC), "--json"],
         cwd=ROOT,
