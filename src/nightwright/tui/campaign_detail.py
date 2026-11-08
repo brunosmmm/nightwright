@@ -199,6 +199,7 @@ class CampaignDetail(QueueActions, ModalScreen):
         self._detail_token = 0
         self._tab_from_action = False
         self._paint_retry_pending = False
+        self._pending_cursor = None
 
     def compose(self) -> ComposeResult:
         with Vertical(id="detail-frame"):
@@ -303,8 +304,11 @@ class CampaignDetail(QueueActions, ModalScreen):
             return
         if not self._timeline_ready_to_paint():
             return
+        target = self._pending_cursor
+        if target is None:
+            target = self._cursor_target()
         try:
-            self.paint(self._cursor_target())
+            self.paint(target)
         except Exception as e:
             self._handle_paint_failure(e)
 
@@ -490,6 +494,10 @@ class CampaignDetail(QueueActions, ModalScreen):
             visible.pop()
         self.shown = visible
         if not self._timeline_ready_to_paint():
+            # The table cursor still points at the pre-append row. Keep the
+            # follow-the-end flag so the next visible paint does not treat that
+            # row as a pinned older event.
+            self._pending_cursor = (seq, ref, on_last)
             self._paint_retry_pending = False
             if self._active_tab() == "tab-timeline":
                 self.call_after_refresh(self._paint_after_layout)
@@ -521,6 +529,7 @@ class CampaignDetail(QueueActions, ModalScreen):
         self._paint_status()
         self._first_paint = False
         self._paint_retry_pending = False
+        self._pending_cursor = None
         self.show_detail()
 
     def _paint_status(self) -> None:

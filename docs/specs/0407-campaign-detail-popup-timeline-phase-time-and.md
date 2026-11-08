@@ -536,6 +536,10 @@ delivered rows are on screen, and they read campaign ids from the mounted queue 
 - Terminal paint-failure one-shot reload, deferred timeline paint on non-zero width, pathlib idle spy.
 - Full suite left to gating.
 
+### As shipped (2026-11-08, follow-the-end across a hidden timeline)
+
+- A poll that arrives while Timeline is not the visible tab keeps the cursor target, including whether it was on the last row. The next paint after the tab is shown again uses that target, so the timeline still follows the end.
+
 ### As shipped (2026-11-08, implementer campaign loop 0)
 
 - Terminal timeline paint failures (including initial load) schedule one `reload()` while `_poll_timer` is absent; `_paint_retry_pending` stays set until `paint()` completes successfully.

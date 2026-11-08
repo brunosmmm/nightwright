@@ -971,7 +971,7 @@ def test_mouse_timeline_after_poll_on_runs_shows_new_last_detail(tmp_path, monke
             s = detail_screen(app)
             await pilot.click("#detail-body ContentTab#--content-tab-tab-timeline")
             await settle(app, pilot)
-            await pilot_until(pilot, lambda: "mouse tab poll" in detail(app))
+            assert await pilot_until(pilot, lambda: "mouse tab poll" in detail(app))
 
     _run(drive())
 
