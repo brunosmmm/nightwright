@@ -96,9 +96,11 @@ def _jsonl(
                 if not raw:
                     break
                 if not raw.endswith(b"\n"):
+                    if raw:
+                        line += 1
+                        gaps.append(f"{source}: line {line} unparsable")
                     break
-                if raw.endswith(b"\n"):
-                    committed = stream.tell()
+                committed = stream.tell()
                 line += 1
                 if not raw.strip():
                     continue

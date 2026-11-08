@@ -649,6 +649,14 @@ and `tests/test_history_fixture.py` (138 passed). Full suite left to queue gatin
 `tests/test_history_scale.py`, and `tests/test_cli_campaign_history.py` (81 passed).
 Queue `pytest-affected` rerun left in flight. Full suite left to queue gating.
 
+### Test record (2026-11-08, implementer loop 3)
+
+`uv run pytest -q` on `tests/test_history_fixture.py::test_history_bad_inputs_become_gaps`,
+`tests/test_history_cache.py::test_sessions_partial_tail_does_not_rewrite_records` (2 passed).
+`uv run pytest -q` on history/cache/cli/scale/fixture suite excluding perf (136 passed).
+`test_history_perf.py::test_record_count_and_budgets` warm index elapsed ~2.0 s (limit 0.9 s) on
+this host; left to queue gating. Full suite left to queue gating.
+
 ### As shipped (2026-11-08)
 
 `uv run nw campaign history --rebuild-cache` against the live data dir rebuilt 259 campaigns
