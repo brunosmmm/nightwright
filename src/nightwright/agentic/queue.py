@@ -97,6 +97,8 @@ PARK_REASONS = frozenset({
     "gate_timeout",                                    # SPEC-0311: gates keep timing out under load
     "restart",                                         # SPEC-0375: parked across `nw queue restart`
     "fixforward_weakens", "revert_conflict",           # SPEC-0420: red-base fix campaigns
+    "spec_status",                                     # SPEC-0468: only spec-dod failed at close
+    "round_budget",                                    # SPEC-0468: cursor review rounds are spent
 })
 # SPEC-0222: who a park waits for. The human only for their own checkout and explicit
 # escalations (`human_decision`, SPEC-0232); everything else is the conductor's.
@@ -540,6 +542,108 @@ def _exact(a, b) -> bool:
     return bool(na) and na == norm_finding_title(b)
 
 
+ADVERSARIAL_REVIEWER = "adversarial_reviewer"
+_NO_IMPLEMENT_RESUME = ("IMPLEMENTING", "GATING", "REVIEWING", "DIVERGENCE_TRIAGE")
+
+
+def must_fix_titles(items) -> list:
+    """Sorted unique normalized titles of a must-fix list (dicts or bare strings)."""
+    out = []
+    for item in items or []:
+        if isinstance(item, dict):
+            if item.get("severity") not in (None, "must_fix"):
+                continue
+            title = item.get("title") or ""
+        else:
+            title = str(item)
+        title = norm_finding_title(title)
+        if title:
+            out.append(title)
+    return sorted(set(out))
+
+
+def note_must_fix_baseline(counters: dict, titles: list) -> None:
+    """Record the must-fix set of the first fix round in this loop window (SPEC-0468)."""
+    if counters.get("must_fix_baseline_set"):
+        return
+    counters["must_fix_baseline"] = list(titles)
+    counters["must_fix_baseline_set"] = True
+
+
+def loop_can_auto_resume(counters: dict, titles: list) -> bool:
+    """True once per campaign, and only when the must-fix set is strictly smaller."""
+    if int(counters.get("loop_auto_resumes") or 0) >= 1:
+        return False
+    base = counters.get("must_fix_baseline")
+    if not isinstance(base, list):
+        return False
+    return len(titles) < len(base)
+
+
+def arm_loop_auto_resume(counters: dict) -> None:
+    """Clear the loop window and consume the one automatic resume."""
+    counters["loops"] = 0
+    counters["loop_auto_resumes"] = int(counters.get("loop_auto_resumes") or 0) + 1
+    counters.pop("must_fix_baseline", None)
+    counters.pop("must_fix_baseline_set", None)
+
+
+def cursor_review_cap(profile: dict) -> int:
+    """Review-driven implement rounds a cursor campaign may spend (SPEC-0468)."""
+    return 2 * int((profile or {}).get("loop_max") or 3)
+
+
+def review_rounds_spent(counters: dict, profile: dict) -> bool:
+    return int(counters.get("review_rounds") or 0) >= cursor_review_cap(profile)
+
+
+def _cursor_campaign(ctx, state: dict) -> bool:
+    try:
+        from .runner import resolve_runner
+        return resolve_runner(getattr(ctx, "cfg", None), campaign=state) == "cursor"
+    except Exception:
+        return False
+
+
+def _maybe_loop_auto_resume(state: dict, counters: dict, items) -> bool:
+    """Consume the one automatic resume when the must-fix set shrank. False leaves the park."""
+    titles = must_fix_titles(items)
+    if not loop_can_auto_resume(counters, titles):
+        return False
+    arm_loop_auto_resume(counters)
+    return True
+
+
+def _usage_holds_review(reviews, state: dict, profile: dict) -> bool:
+    """Every reviewer still missing a verdict failed because the account is out of usage."""
+    valid = _valid_verdicts(state, profile)
+    missing = [r for r in reviews if getattr(getattr(r, "step", None), "persona", None)
+               not in valid]
+    if not missing:
+        return False
+    return all(r.run_result is not None and PG.is_usage_exhausted(r.run_result)
+               for r in missing)
+
+
+def _round_budget_park(profile: dict, counters: dict) -> dict:
+    cap = cursor_review_cap(profile)
+    used = int(counters.get("review_rounds") or 0)
+    return {"reason": "round_budget", "resume_to": "SPEC_WRITING",
+            "detail": f"cursor review-round budget of {cap} is spent ({used} review fix rounds)"}
+
+
+def reject_resume_target(campaign: str, reason: str, target: str) -> None:
+    """SPEC-0468: some parks cannot go back to implementing."""
+    if reason == "diverging_rework" and target in _NO_IMPLEMENT_RESUME:
+        raise ValueError(f"{campaign} is parked diverging_rework; resume to SPEC_WRITING, "
+                         f"not {target}")
+    if reason == "round_budget" and target in _NO_IMPLEMENT_RESUME:
+        raise ValueError(f"{campaign} spent its review-round budget; resume to SPEC_WRITING "
+                         f"or abandon, not {target}")
+    if reason == "spec_status" and target != "CLOSING":
+        raise ValueError(f"{campaign} is parked spec_status; resume to CLOSING, not {target}")
+
+
 def human_overrides_of(state: dict) -> tuple:
     """`(human_waived, attested)` from `state["human_overrides"]` (SPEC-0235): the waive dicts
     and the attested AC texts; both empty when the campaign has none."""
@@ -648,9 +752,23 @@ def triage_reviews(verdicts: dict, profile: dict, waived=(), human_waived=(),
     human_ids = [m["id"] for m in merged if human_gone(m)]
     gone |= {id(m) for m in merged if human_gone(m)}
     surviving = [m for m in merged if id(m) not in gone]
+    # SPEC-0468: an adversarial major does not block once conformance passed with no
+    # must-fix and no unmet AC. It stays advisory so the close files it as a follow-up.
+    demoted = []
+    conf = verdicts.get("conformance_reviewer")
+    if isinstance(conf, dict) and conf.get("verdict") == "pass" and not unmet and not any(
+            m["severity"] == "must_fix" for m in surviving):
+        kept = []
+        for m in surviving:
+            if (m["personas"] == [ADVERSARIAL_REVIEWER] and m["severity"] == "major"
+                    and not m["synthetic"]):
+                demoted.append(m)
+            else:
+                kept.append(m)
+        surviving = kept
     # 3: a fix verdict survives iff backed by a surviving major/must_fix (synthetics are majors)
     fixing = [p for p in personas if wants_fix[p] and any(
-        id(m) not in gone and m["severity"] in ("major", "must_fix") for m in belongs[p])]
+        m["severity"] in ("major", "must_fix") for m in surviving if p in m["personas"])]
     # 4/5: score and outcome
     score = max(0, 100 - sum(weights[m["severity"]] for m in surviving))
     must = any(m["severity"] == "must_fix" for m in surviving)
@@ -664,7 +782,7 @@ def triage_reviews(verdicts: dict, profile: dict, waived=(), human_waived=(),
         blocking = sorted(surviving, key=lambda m: -weights[m["severity"]])
     else:
         blocking = [m for m in surviving if m["severity"] in ("must_fix", "major")]
-    advisory = [m for m in surviving if m not in blocking]
+    advisory = [m for m in surviving if m not in blocking] + demoted
     keys = ("id", "personas", "severity", "title", "detail", "files", "ac", "category")
     out = lambda ms: [{k: m[k] for k in keys} for m in ms]
     return {"outcome": outcome, "score": score, "score_only": score_only,
@@ -2234,7 +2352,7 @@ def _gated_runner(ctx: _Ctx, req, state=None):
     cfg = getattr(ctx, "cfg", None)
     if cfg is not None and getattr(req, "persona", None) not in PG.UNGATED_PERSONAS:
         try:
-            if PG.backoff_until(cfg) is not None:
+            if PG.usage_until(cfg) is not None or PG.backoff_until(cfg) is not None:
                 return RPS.HeldRunner()
         except (OSError, ValueError):
             pass
@@ -2255,6 +2373,8 @@ def _note_rate_limit(ctx: _Ctx, state: dict, outcome, started, persona=None) -> 
     if cfg is None or outcome is None or outcome is DETACHED or persona in PG.UNGATED_PERSONAS:
         return
     try:
+        if PG.is_usage_exhausted(outcome):
+            PG.note_usage(cfg)
         PG.note_run(cfg, outcome, started, campaign=state.get("id"))
     except (OSError, ValueError) as e:
         journal(cfg, "rate_limit_note_failed", campaign=state.get("id"),
@@ -2791,12 +2911,28 @@ def _apply(ctx: _Ctx, state: dict, res: StepResult) -> dict:
         # triage
         decision = decide_triage(state, profile, rr.verdict, rr.verdict_ok)
         if decision.kind == "none":                      # malformed verdict, retry allowed
+            if rr is not None and PG.is_usage_exhausted(rr):
+                try:
+                    PG.note_usage(cfg)
+                except (OSError, ValueError):
+                    pass
+                return finish("TRIAGING", "usage_paused")
             counters["triage_retries"] += 1
             return finish("TRIAGING", "triage_retry")
         if rr.verdict_ok:                                # SPEC-0408
             events.append(("triage", _gate_triage_event(cfg, cid, state, res.run_id,
                                                         rr.verdict, decision)))
         if decision.kind == "park":
+            if decision.reason == "loop_exhausted" and _maybe_loop_auto_resume(
+                    state, counters, list((rr.verdict or {}).get("must_fix") or [])):
+                v = rr.verdict or {}
+                notes = ((state.get("pending_brief") or {}).get("human_notes") or [])
+                state["pending_brief"] = {
+                    "source": "gate_triager", "fix_brief": v.get("fix_brief"),
+                    "must_fix": list(v.get("must_fix") or []), "human_notes": list(notes)}
+                events.append(("note", {"text": "loop_exhausted auto-resume: the must-fix "
+                                                "set shrank", "author": "queue"}))
+                return _finish_fix(ctx, state, events, finish, "gate", "loop_auto_resume")
             return finish("PARKED", decision.reason, park={
                 "reason": decision.reason, "detail": decision.detail,
                 "resume_to": decision.resume_to})
@@ -2807,6 +2943,9 @@ def _apply(ctx: _Ctx, state: dict, res: StepResult) -> dict:
         if decision.kind == "close":
             return finish("CLOSING", "waived")
         # fix
+        titles = must_fix_titles(list((rr.verdict or {}).get("must_fix") or []))
+        if int(counters.get("loops") or 0) == 0:
+            note_must_fix_baseline(counters, titles)
         counters["loops"] += 1
         counters["gate_retries"] = 0
         counters["timeout_regates"] = 0
@@ -2960,6 +3099,13 @@ def _apply(ctx: _Ctx, state: dict, res: StepResult) -> dict:
                 "resume_to": "CLOSING"})
         if oc.next_state == "TRIAGING":
             if oc.synthetic_gate is not None:
+                if oc.synthetic_gate.get("name") == "spec-dod":
+                    # SPEC-0468: a spec that is not `done` is not an implement loop.
+                    tail = str(oc.synthetic_gate.get("tail") or "spec is not done").strip()
+                    return finish("PARKED", "spec_status", park={
+                        "reason": "spec_status", "resume_to": "CLOSING",
+                        "detail": "only the spec status gate failed; mark the spec done "
+                                  "or waive it, then resume close: " + tail[:500]})
                 state["last_gate"] = {"gate_seq": None, "ok": False, "started_at": store.now_iso(),
                                       "duration_s": 0.0, "results": [oc.synthetic_gate]}
                 return finish("TRIAGING", "spec_dod")
@@ -4007,7 +4153,7 @@ def _apply_divergence(ctx, state, counters, res, rr, events, finish):
         return finish("IMPLEMENTING", "divergence_extra")
     if action == "rework":
         return finish("PARKED", "diverging_rework", park={
-            "reason": "diverging_rework", "detail": detail, "resume_to": "IMPLEMENTING"})
+            "reason": "diverging_rework", "detail": detail, "resume_to": "SPEC_WRITING"})
     row = finish("PARKED", "human_decision", park={
         "reason": "human_decision", "detail": detail, "resume_to": "IMPLEMENTING",
         "escalated_from": "diverging"})
@@ -4122,6 +4268,12 @@ def _apply_reviews(ctx, state, profile, counters, res, row, events, finish):
         events.append(("note", {"text": f"persona cap: {', '.join(res.step.held)} "
                                         "wait for a free persona slot", "author": "queue"}))
         return finish("REVIEWING", "persona_cap")
+    if _usage_holds_review(res.reviews, state, profile):
+        try:
+            PG.note_usage(cfg)
+        except (OSError, ValueError):
+            pass
+        return finish("REVIEWING", "usage_paused")
     return _route_reviews(ctx, state, profile, counters, row, events, finish)
 
 
@@ -4176,6 +4328,24 @@ def _route_reviews(ctx, state, profile, counters, row, events, finish):
     if decision.kind == "park":
         if decision.reason == "loop_exhausted" and decision.combined is not None:
             _merge_carry(state, _carry_source(state, decision.combined["triage"]))
+            titles = (decision.combined.get("brief") or {}).get("must_fix") or []
+            if _cursor_campaign(ctx, state) and review_rounds_spent(counters, profile):
+                return finish("PARKED", "round_budget",
+                              park=_round_budget_park(profile, counters))
+            if _maybe_loop_auto_resume(state, counters, titles):
+                brief = decision.combined["brief"]
+                notes = ((state.get("pending_brief") or {}).get("human_notes") or [])
+                state["pending_brief"] = {
+                    "source": "review" if multi else reviewers[0],
+                    "fix_brief": brief["fix_brief"], "must_fix": brief["must_fix"],
+                    "human_notes": list(notes)}
+                if multi:
+                    state["pending_brief"]["personas"] = brief["personas"]
+                if _cursor_campaign(ctx, state):
+                    counters["review_rounds"] = int(counters.get("review_rounds") or 0) + 1
+                events.append(("note", {"text": "loop_exhausted auto-resume: the must-fix "
+                                                "set shrank", "author": "queue"}))
+                return _finish_fix(ctx, state, events, finish, "review", "loop_auto_resume")
         return finish("PARKED", decision.reason, park={
             "reason": decision.reason, "detail": decision.detail,
             "resume_to": decision.resume_to})
@@ -4184,6 +4354,13 @@ def _route_reviews(ctx, state, profile, counters, row, events, finish):
     if decision.kind == "close":
         return finish("CLOSING", "review_pass")
     # fix
+    if _cursor_campaign(ctx, state) and review_rounds_spent(counters, profile):
+        return finish("PARKED", "round_budget", park=_round_budget_park(profile, counters))
+    brief_titles = must_fix_titles((decision.combined["brief"] or {}).get("must_fix"))
+    if int(counters.get("loops") or 0) == 0:
+        note_must_fix_baseline(counters, brief_titles)
+    if _cursor_campaign(ctx, state):
+        counters["review_rounds"] = int(counters.get("review_rounds") or 0) + 1
     counters["loops"] += 1
     counters["gate_retries"] = 0
     counters["timeout_regates"] = 0
@@ -9086,6 +9263,7 @@ def plan_resume(cfg, campaign, *, to=None, note=None, raise_cap=None, reset_loop
     decision = _require_decision(cfg, st, by, decision)
     park = st.get("park") or {}
     target = to or park.get("resume_to") or "IMPLEMENTING"
+    reject_resume_target(campaign, park.get("reason"), target)
     if not to and park.get("reason") == "spec_review_unavailable":
         target = "SPEC_WRITING" if note else "SPEC_REVIEW"     # SPEC-0214: the note is addressed first
     if st.get("kind") == "merge" and target not in ("CLOSING", "QUEUED"):
@@ -9125,6 +9303,10 @@ def apply_resume(cfg, plan: dict, *, busy=None, slots=None) -> dict:
             c["blocked_streak"] = 0
             c["triage_retries"] = 0
             c["gate_retries"] = 0
+            # SPEC-0468: a fresh loop window. The one auto-resume and the cursor
+            # review-round budget are not part of the window.
+            c.pop("must_fix_baseline", None)
+            c.pop("must_fix_baseline_set", None)
         _counters(st)["timeout_regates"] = 0                 # SPEC-0311: a fresh re-gate budget
         if (st.get("park") or {}).get("reason") == "gate_timeout" and plan["to"] == "GATING":
             st["gate_exclusive"] = {"entered_at": store.now_iso()}   # re-gate alone, first

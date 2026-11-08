@@ -101,9 +101,9 @@ it would do.
 | Reason | What happened | Usual next step |
 |---|---|---|
 | `cost_cap` | The next run would pass the campaign's dollar cap | Resume once with `--raise-cap` (up to 2× the profile cap) and a note. A second cost park → look at why it's expensive |
-| `loop_exhausted` | The fix loop hit `loop_max` without passing | Read the last triage brief and review. Transient failures → `--reset-loops`; a wrong spec → rework the spec |
+| `loop_exhausted` | The fix loop hit `loop_max` without passing. The queue already resumed once, by itself, when the must-fix set was smaller than at the start of the window | This park is the second exhaustion, or the set did not shrink. Do not `--reset-loops` to buy another budget. Rework the spec, or abandon |
 | `diverging` | A campaign parked this way before the divergence triager. New trips go to `DIVERGENCE_TRIAGE` instead | A leftover park: the conductor reads the `loop_divergence` evidence and picks continue (`nw queue resume`), rework (`nw queue abandon`, then `/nw-rework`) or escalate |
-| `diverging_rework` | The divergence triager compared the blockers with the spec and the spec is the problem | Abandon the campaign, then `/nw-rework` the spec with the triager's items as constraints. The queue does not edit the spec |
+| `diverging_rework` | The divergence triager compared the blockers with the spec and the spec is the problem | Abandon, then `/nw-rework`. A resume goes to `SPEC_WRITING`. The queue rejects a resume to implementing |
 | `triage_escalated` | The gate triager couldn't decide twice, or chose escalate | Read the gate log tail. Resume to GATING if it was flaky, with a note if it's a real decision |
 | `implementer_blocked` | The implementer reported the spec can't be built as written | Read its blockers. Usually the spec needs a fix: rework it |
 | `review_escalated` | The conformance reviewer produced no usable verdict twice | Re-run the review (resume to REVIEWING), or read the diff yourself |
@@ -124,6 +124,8 @@ it would do.
 | `restart` | `nw queue restart` parked an in-process step (open / gate / close) across the runner restart and did not get to resume it: the restart crashed or was interrupted | `nw queue restart --continue --yes` resumes it in priority order and starts the runner; `nw queue resume <id>` also works |
 | `fixforward_weakens` | A red-base fix-forward campaign deleted, skipped, xfailed or importorskipped a test, or removed test functions; its close refused the diff before any gate ran | Nothing: the queue counts it a failed attempt, abandons it and opens the next fix or the revert |
 | `revert_conflict` | The queue's revert of the culprit merge of a red episode conflicted outside the generated files | Nothing: the queue escalates the episode once; answer that escalation |
+| `spec_status` | Close failed only because the spec is not `done` (`spec-dod`). No other gate ran | Mark the spec done, or record the waiver, then resume. It returns to `CLOSING`, not to implementing |
+| `round_budget` | A cursor campaign used its review-round budget (`2 × loop_max` review-driven implement rounds). A resume does not zero the count | Resume to `SPEC_WRITING` or abandon. Another implement round is rejected |
 | `open_failed` | Creating the worktree or a step failed unexpectedly | Read the detail and retry once; if it fails again, investigate |
 | `gh_failed` | Opening the PR (`pr` / `draft-pr` policy) failed | Check `gh auth`, then resume |
 | `config_invalid` | `.nw/project.yaml` didn't load | Fix the config. The campaign resumes **by itself** once it loads |

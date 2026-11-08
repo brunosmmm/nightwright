@@ -504,6 +504,9 @@ def step(cfg, project, *, now=None, active=(), red=None, project_cfg=None) -> tu
             return "escalate", (f"red for {int(age)} s with no fix in flight ({pending} "
                                 "awaits the sentinel)")
         return "none", f"{pending} awaits the next sentinel"
+    from . import persona_gate as PG
+    if PG.usage_until(cfg) is not None:                 # SPEC-0468: don't burn a fix on a quota wall
+        return "none", "usage exhausted; fix-forward waits"
     failed = failed_fixforwards(rec)
     if failed < sett["fixforward_attempts"]:
         return "open_fixforward", f"attempt {failed + 1} of {sett['fixforward_attempts']}"

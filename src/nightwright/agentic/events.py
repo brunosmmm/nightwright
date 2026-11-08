@@ -109,9 +109,11 @@ EVENT_OPTIONAL = {
     "code_changed": {"diff_failed": bool},       # SPEC-0262: HEAD moved, `git diff` failed
 }
 
-# transient run failures: account limits, overload, network-ish API errors
-_TRANSIENT_MARKERS = ("usage_limit", "session limit", "rate limit", "429", "overloaded",
-                      "529", "api_error", "timed out connecting",
+# transient run failures: account limits, overload, network-ish API errors.
+# SPEC-0468: Cursor says "out of usage" / "usage limit", not the claude "usage_limit" token.
+_TRANSIENT_MARKERS = ("usage_limit", "out of usage", "usage limit", "hit your usage limit",
+                      "feature_unavailable", "session limit", "rate limit", "429",
+                      "overloaded", "529", "api_error", "timed out connecting",
                       "write-back:")        # SPEC-0344: a remote run's failed write-back
 # SPEC-0345: the subset that is an account rate limit (`persona_gate.is_rate_limit` matches them
 # as whole tokens, in the API error message only)

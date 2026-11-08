@@ -358,14 +358,16 @@ def test_apply_close_outcomes(opened):
                       events=[("finding", {"persona": "close", "severity": "must_fix", "title": "dod",
                                                "gate": "spec-dod", "detail": "", "files": []})])
     row, st = _apply(ctx, cfg, cid, "close", close_outcome=oc)
-    assert row["to"] == "TRIAGING" and row["reason"] == "spec_dod"
-    assert st["last_gate"]["results"] == [synthetic] and st["counters"]["close_attempts"] == 1
+    assert row["to"] == "PARKED" and row["reason"] == "spec_status"
+    assert st["park"]["resume_to"] == "CLOSING" and st["counters"]["close_attempts"] == 1
     S.write_state(cfg, cid, dict(st, state="CLOSING"))
     oc = CloseOutcome("PARKED", park={"reason": "rebase_conflict", "detail": "a.txt", "resume_to": "CLOSING"},
                       events=[("park", {"reason": "rebase_conflict"})])
     row, st = _apply(ctx, cfg, cid, "close", close_outcome=oc)
     assert row["to"] == "PARKED" and st["park"]["reason"] == "rebase_conflict"
-    assert sum(1 for e in S.read_ledger(cfg, cid, types=["park"])) == 1       # not duplicated
+    rebase_parks = [e for e in S.read_ledger(cfg, cid, types=["park"])
+                    if e.get("reason") == "rebase_conflict"]
+    assert len(rebase_parks) == 1                                              # not duplicated
     S.write_state(cfg, cid, dict(st, state="CLOSING", park=None))
     oc = CloseOutcome("MERGED", close={"mode": "merge", "merged_sha": "abc", "pr_url": None,
                                         "gates_seq": 3, "target_sha": "def"},

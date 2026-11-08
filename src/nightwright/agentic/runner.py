@@ -409,6 +409,13 @@ def parse_result(stdout: str, schema: dict, *, exit_code: int) -> dict:
     except (TypeError, ValueError):
         cost = None
     result_text = obj.get("result") if isinstance(obj.get("result"), str) else ""
+    # SPEC-0468: a Cursor usage failure leaves `result` empty and the reason on
+    # `error_message`. Without this the ledger records `error=error` and a quota
+    # wall spends a review retry.
+    if obj.get("is_error") and not result_text.strip():
+        err = obj.get("error_message")
+        if isinstance(err, str) and err.strip():
+            result_text = err
     return {
         "verdict": verdict,
         "verdict_ok": verdict is not None and _conforms(verdict, schema),

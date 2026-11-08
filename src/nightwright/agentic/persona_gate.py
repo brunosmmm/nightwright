@@ -56,6 +56,10 @@ _ACCOUNT_LIMIT_RE = re.compile(r"usage[_ ]limit|session limit|weekly limit|\b\d+
                                r"|\bhit your (?:(?:usage|session|weekly|daily|monthly|opus"
                                r"|sonnet|\d+[- ]hour) )?limit\b"
                                r"|\bresets (?:at )?\d{1,2}(?::\d\d)?\s*[ap]\.?m\b")
+# SPEC-0468: a Cursor account wall ("You're out of usage", "You've hit your usage limit")
+# or an error result whose only signal is `feature_unavailable`. Not a rate-limit episode.
+_USAGE_RE = re.compile(r"out of usage|usage[_ ]limit|hit your usage limit|feature_unavailable")
+USAGE_PAUSE_S = 900
 
 
 # ---- config -----------------------------------------------------------------------------------
@@ -150,6 +154,47 @@ def backoff_until(cfg, now=None) -> float | None:
     """The backoff's end (epoch) while it runs, else None."""
     until = _epoch(read_rate_limit(cfg).get("until"))
     return until if until is not None and _now_epoch(now) < until else None
+
+
+def usage_path(cfg) -> Path:
+    """SPEC-0468: host-wide pause while the Cursor account is out of usage."""
+    return store.agentic_dir(cfg) / "usage-pause.json"
+
+
+def usage_until(cfg, now=None) -> float | None:
+    """The usage pause's end (epoch) while it holds, else None."""
+    until = _epoch(_read_json(usage_path(cfg)).get("until"))
+    return until if until is not None and _now_epoch(now) < until else None
+
+
+def note_usage(cfg, now=None) -> None:
+    """Start or refresh a `USAGE_PAUSE_S` pause. A later end is left alone."""
+    now_e = _now_epoch(now)
+    until = now_e + USAGE_PAUSE_S
+    with _rate_lock(cfg):
+        current = _epoch(_read_json(usage_path(cfg)).get("until"))
+        if current is not None and current >= until:
+            return
+        _write_json(usage_path(cfg), {"until": _iso(until), "reason": "usage_exhausted"})
+
+
+def is_usage_exhausted(result) -> bool:
+    """An error result that is an account usage wall, not a bad verdict (SPEC-0468).
+
+    Reads `result_text` and, when present, the raw result's `error_message` / empty
+    `result` plus `cost_error: feature_unavailable`. A successful run is never one,
+    even when its cost fetch reports `feature_unavailable`."""
+    if result is None or not getattr(result, "is_error", False) \
+            or getattr(result, "interrupted", False):
+        return False
+    parts = [str(getattr(result, "result_text", "") or "")]
+    obj = _raw_result(getattr(result, "raw_path", None)) or {}
+    parts.append(str(obj.get("error_message") or ""))
+    parts.append(str(obj.get("result") or "") if isinstance(obj.get("result"), str) else "")
+    blob = "\n".join(parts).lower()
+    if obj.get("cost_error") == "feature_unavailable" and not str(obj.get("result") or "").strip():
+        return True
+    return bool(_USAGE_RE.search(blob))
 
 
 def _raw_result(raw_path) -> dict | None:
@@ -296,6 +341,7 @@ class Gate:
         self.cfg, self.ids = cfg, list(campaign_ids)
         self.now = _now_epoch(now)
         self.until = backoff_until(cfg, self.now)
+        self.usage_until = usage_until(cfg, self.now)
         self.cap = max_personas(cfg)
         self._live = None
         self.taken = 0
@@ -312,6 +358,9 @@ class Gate:
     def admit(self, state: dict, step):
         from dataclasses import replace
         cid = state["id"]
+        if self.usage_until is not None:
+            self._hold(cid, "usage_pause")
+            return None
         if self.until is not None:
             self._hold(cid, "rate_limit")
             return None
@@ -366,6 +415,8 @@ def held_by(cfg, state: dict, now=None, holds=None, *, cap_mute_max_s=None) -> s
     campaigns with a run in flight. With `cap_mute_max_s` (the detectors), a `persona_cap` hold
     held since longer than that is None, so the detectors report it again."""
     entry = (read_holds(cfg, now) if holds is None else holds).get(state.get("id")) or {}
+    if entry.get("held_by") == "usage_pause" and usage_until(cfg, now) is not None:
+        return "usage_pause"
     if entry.get("held_by") == "rate_limit" and backoff_until(cfg, now) is not None:
         return "rate_limit"
     if entry.get("held_by") == "persona_cap":

@@ -482,7 +482,7 @@ def test_e2e_gate_repeat_rework_parks(tmp_path, monkeypatch):
     assert st["park"]["reason"] == "diverging_rework" and st["counters"]["loops"] == 3, st
     [div] = S.read_ledger(cfg, cid, types=["loop_divergence"])
     assert names(div) == ["trend", "gate_repeat"]
-    assert st["park"]["resume_to"] == "IMPLEMENTING"
+    assert st["park"]["resume_to"] == "SPEC_WRITING"
     assert st["pending_brief"] and st["pending_brief"]["source"] == "gate_triager"
     assert Q.park_owner("diverging") == "conductor"
     assert Q.park_owner("diverging_rework") == "conductor"
