@@ -16,7 +16,7 @@ from .profiles import resolve_profile
 __all__ = (
     "PHASES", "PHASE_OF", "FIX_REASONS", "Visit", "is_fix_loop", "count_loops", "loop_max",
     "time_in_state", "phase_visits", "campaign_history", "history_index", "history_records",
-    "filter_index", "campaign_signature",
+    "filter_index", "campaign_signature", "rebuild_cache",
 )
 
 PHASES = {
@@ -77,8 +77,16 @@ def _json(path: Path):
         return None
 
 
-def _jsonl(path: Path, source: str, gaps: list[str]) -> list[tuple[int, dict]]:
+def _jsonl(
+    path: Path,
+    source: str,
+    gaps: list[str],
+    *,
+    log_key: str | None = None,
+    log_offsets: dict[str, int] | None = None,
+) -> list[tuple[int, dict]]:
     out = []
+    committed = 0
     try:
         with path.open("rb") as stream:
             line = 0
@@ -87,6 +95,10 @@ def _jsonl(path: Path, source: str, gaps: list[str]) -> list[tuple[int, dict]]:
                 raw = stream.readline()
                 if not raw:
                     break
+                if not raw.endswith(b"\n") and log_offsets is not None:
+                    break
+                if raw.endswith(b"\n"):
+                    committed = stream.tell()
                 line += 1
                 if not raw.strip():
                     continue
@@ -101,6 +113,9 @@ def _jsonl(path: Path, source: str, gaps: list[str]) -> list[tuple[int, dict]]:
                     gaps.append(f"{source}: line {line} unparsable")
     except OSError:
         gaps.append(f"{source}: missing")
+        committed = 0
+    if log_offsets is not None:
+        log_offsets[log_key or source] = committed
     return out
 
 
@@ -282,12 +297,12 @@ def _covers(intervals, start, end):
     return any(a < end and b > start for a, b in intervals)
 
 
-def _phase_rows(cfg, events, visits, run_rows, gaps):
+def _phase_rows(cfg, events, visits, run_rows, gaps, *, runner_down=None):
     intervals = {
         "run": _run_intervals(events),
         "gate": _gate_intervals(events),
         "gate_wait": _gate_wait_intervals(events, visits),
-        "runner_down": _runner_intervals(cfg, gaps),
+        "runner_down": runner_down if runner_down is not None else _runner_intervals(cfg, gaps),
     }
     raw = {phase: {key: 0.0 for key in ("wall", "run", "gate", "gate_wait", "runner_down")}
            for phase in (*PHASES, "other")}
@@ -759,10 +774,16 @@ def _ledger_records(cfg, cid, state, events, runs, gaps):
     return out
 
 
-def _global_records(cfg, campaigns, gaps):
+def _global_records(cfg, campaigns, gaps, *, log_offsets: dict[str, int] | None = None):
     root = store.agentic_dir(cfg)
     out = []
-    decisions = _jsonl(root / "conductor" / "decisions.jsonl", "decisions.jsonl", gaps)
+    decisions = _jsonl(
+        root / "conductor" / "decisions.jsonl",
+        "decisions.jsonl",
+        gaps,
+        log_key="conductor/decisions.jsonl",
+        log_offsets=log_offsets,
+    )
     for offset, row in decisions:
         rec = _base_record("decisions", row.get("event_id") or offset, "decision", row)
         escalation, linked_by = _single_escalation(row)
@@ -798,7 +819,13 @@ def _global_records(cfg, campaigns, gaps):
     messages = []
     if mailbox.is_dir():
         for path in sorted(mailbox.glob("*.jsonl")):
-            for offset, row in _jsonl(path, f"mailbox/{path.name}", gaps):
+            for offset, row in _jsonl(
+                path,
+                f"mailbox/{path.name}",
+                gaps,
+                log_key=f"mailbox/{path.name}",
+                log_offsets=log_offsets,
+            ):
                 messages.append({"inbox": path.stem, "offset": offset, "row": row,
                                  "source_order": len(messages)})
         ordered = sorted(messages, key=lambda item: (
@@ -862,7 +889,13 @@ def _global_records(cfg, campaigns, gaps):
             out.append(_base_record("spec_review", locator, "spec_review", row))
     else:
         gaps.append("reviews/: missing")
-    for _, row in _jsonl(root / "spec-reviews.jsonl", "spec-reviews.jsonl", gaps):
+    for _, row in _jsonl(
+        root / "spec-reviews.jsonl",
+        "spec-reviews.jsonl",
+        gaps,
+        log_key="spec-reviews.jsonl",
+        log_offsets=log_offsets,
+    ):
         if row.get("kind") != "end":
             continue
         if not row.get("spec_id") or not (row.get("spec_sha256") or row.get("run_id")):
@@ -1085,7 +1118,7 @@ def _timeline(events, visits, records):
     return rows
 
 
-def _campaign_history(cfg, cid, now, conductor_shares):
+def _campaign_history(cfg, cid, now, conductor_shares, *, shared_global=None, runner_down=None):
     root = store.campaign_dir(cfg, cid)
     if not root.is_dir():
         raise ValueError(f"campaign {cid} not found")
@@ -1107,7 +1140,7 @@ def _campaign_history(cfg, cid, now, conductor_shares):
         if visit.phase == "other":
             gaps.append(f"state {visit.state}: no phase")
     runs = _run_rows(cfg, cid, events, visits, gaps)
-    phases = _phase_rows(cfg, events, visits, runs, gaps)
+    phases = _phase_rows(cfg, events, visits, runs, gaps, runner_down=runner_down)
     for key in ("cost", "sizing", "close", "idea", "spec"):
         if state.get(key) is not None and not isinstance(state.get(key), dict):
             gaps.append(f"state.json: {key} malformed")
@@ -1121,10 +1154,13 @@ def _campaign_history(cfg, cid, now, conductor_shares):
                    "text": value["verdict"].get("summary"), "persona": run.get("persona")}
             records.append(_base_record("run", f"{cid}:{run['run_id']}", "verdict", row,
                                         campaign=cid))
-    campaigns_root = store.campaigns_dir(cfg)
-    cids = sorted(p.name for p in campaigns_root.iterdir() if p.is_dir()) \
-        if campaigns_root.is_dir() else [cid]
-    records.extend(_global_records(cfg, cids, gaps))
+    if shared_global is not None:
+        records.extend(shared_global)
+    else:
+        campaigns_root = store.campaigns_dir(cfg)
+        cids = sorted(p.name for p in campaigns_root.iterdir() if p.is_dir()) \
+            if campaigns_root.is_dir() else [cid]
+        records.extend(_global_records(cfg, cids, gaps))
     records = [r for r in _enrich_records(records, headers) if r.get("campaign") == cid]
     return {
         "schema": SC.HISTORY_SCHEMA, "campaign": cid, "generated_at": store.now_iso(now),
@@ -1135,11 +1171,26 @@ def _campaign_history(cfg, cid, now, conductor_shares):
     }
 
 
-def campaign_history(cfg, cid, *, now=None) -> dict:
-    return _campaign_history(cfg, cid, now, _COMPUTE)
+def _index_row_from_doc(doc, *, start=None, live_end=None) -> dict:
+    counts = {}
+    for rec in doc["records"]:
+        if rec["kind"] == "finding" and rec.get("severity"):
+            counts[rec["severity"]] = counts.get(rec["severity"], 0) + 1
+    row = {
+        "schema": SC.HISTORY_INDEX_SCHEMA, **doc["header"], "dominant": doc["dominant"],
+        "phase_wall_s": {p["phase"]: p["wall_s"] for p in doc["phases"]},
+        "phase_cost_usd": {p["phase"]: p["cost_usd"] for p in doc["phases"]},
+        "findings_by_severity": counts, "records": len(doc["records"]),
+        "signature": doc["signature"],
+    }
+    if start is not None:
+        row["start"] = start
+    if live_end is not None:
+        row["live_end"] = live_end
+    return row
 
 
-def history_index(cfg, *, now=None, progress=None) -> list[dict]:
+def _uncached_history_index(cfg, *, now=None, progress=None) -> list[dict]:
     now = _aware(now or dt.datetime.now().astimezone())
     try:
         conductor_shares = _conductor_attribution(cfg, now)
@@ -1150,22 +1201,31 @@ def history_index(cfg, *, now=None, progress=None) -> list[dict]:
     rows = []
     for done, cid in enumerate(cids, 1):
         doc = _campaign_history(cfg, cid, now, conductor_shares)
-        counts = {}
-        for rec in doc["records"]:
-            if rec["kind"] == "finding" and rec.get("severity"):
-                counts[rec["severity"]] = counts.get(rec["severity"], 0) + 1
-        rows.append({
-            "schema": SC.HISTORY_INDEX_SCHEMA, **doc["header"], "dominant": doc["dominant"],
-            "phase_wall_s": {p["phase"]: p["wall_s"] for p in doc["phases"]},
-            "phase_cost_usd": {p["phase"]: p["cost_usd"] for p in doc["phases"]},
-            "findings_by_severity": counts, "records": len(doc["records"]),
-            "signature": doc["signature"],
-        })
+        rows.append(_index_row_from_doc(doc))
         if progress:
             progress(done, len(cids))
     return sorted(rows, key=lambda row: (
         _time_key(row.get("closed_at") or row.get("created_at")), row.get("campaign") or ""
     ), reverse=True)
+
+
+def campaign_history(cfg, cid, *, now=None, cache=None) -> dict:
+    if cache is False or (cache is None and "cache_dir" not in cfg):
+        return _campaign_history(cfg, cid, now, _COMPUTE)
+    from . import history_cache
+    return history_cache.campaign_history(cfg, cid, now=now, cache=cache)
+
+
+def history_index(cfg, *, now=None, progress=None, cache=None) -> list[dict]:
+    if cache is False or (cache is None and "cache_dir" not in cfg):
+        return _uncached_history_index(cfg, now=now, progress=progress)
+    from . import history_cache
+    return history_cache.history_index(cfg, now=now, progress=progress, cache=cache)
+
+
+def rebuild_cache(cfg, *, now=None, progress=None) -> dict:
+    from . import history_cache
+    return history_cache.rebuild_cache(cfg, now=now, progress=progress)
 
 
 def _set(value):
@@ -1234,8 +1294,9 @@ def filter_index(rows, *, project=None, state=None, spec=None, since=None, until
     return out
 
 
-def history_records(cfg, *, campaign=None, agent=None, kind=None, project=None, severity=None,
-                    status=None, since=None, until=None, query=None, limit=None) -> list[dict]:
+def _uncached_history_records(cfg, *, campaign=None, agent=None, kind=None, project=None,
+                              severity=None, status=None, since=None, until=None, query=None,
+                              limit=None) -> list[dict]:
     records = _records_all(cfg)
     values = {name: _set(value) for name, value in (
         ("campaign", campaign), ("agent", agent), ("kind", kind), ("project", project),
@@ -1254,3 +1315,20 @@ def history_records(cfg, *, campaign=None, agent=None, kind=None, project=None, 
         out.append(rec)
     out.sort(key=lambda rec: (_time_key(rec.get("ts")), rec.get("id") or ""), reverse=True)
     return out[:limit] if limit is not None else out
+
+
+def history_records(cfg, *, campaign=None, agent=None, kind=None, project=None, severity=None,
+                    status=None, since=None, until=None, query=None, limit=None,
+                    cache=None) -> list[dict]:
+    if cache is False or (cache is None and "cache_dir" not in cfg):
+        return _uncached_history_records(
+            cfg, campaign=campaign, agent=agent, kind=kind, project=project,
+            severity=severity, status=status, since=since, until=until, query=query,
+            limit=limit,
+        )
+    from . import history_cache
+    return history_cache.history_records(
+        cfg, campaign=campaign, agent=agent, kind=kind, project=project,
+        severity=severity, status=status, since=since, until=until, query=query,
+        limit=limit, cache=cache,
+    )

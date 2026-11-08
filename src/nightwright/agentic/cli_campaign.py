@@ -419,6 +419,7 @@ def attach(campaign_group):
     @campaign_group.command("history")
     @click.argument("campaign", required=False, shell_complete=C.complete_campaign_id)
     @click.option("--list", "as_list", is_flag=True, help="list all campaign histories")
+    @click.option("--rebuild-cache", "rebuild_cache", is_flag=True, help="rebuild the history cache")
     @click.option("--project", help="filter the list by project")
     @click.option("--state", type=click.Choice(["merged", "handed_off", "abandoned", "live", "all"]),
                   default="all", show_default=True)
@@ -427,12 +428,44 @@ def attach(campaign_group):
     @click.option("--until", help="closed/created at or before YYYY-MM-DD or ISO-8601")
     @click.option("--min-cost", type=float, help="minimum campaign cost in USD")
     @click.option("--json", "as_json", is_flag=True)
-    @click.pass_obj
-    def campaign_history(cfg, campaign, as_list, project, state, spec_id, since, until,
-                         min_cost, as_json):
-        """Derived history for exactly one CAMPAIGN, or --list."""
-        if bool(campaign) == bool(as_list):
-            raise click.UsageError("exactly one of CAMPAIGN and --list is required")
+    @click.pass_context
+    def campaign_history(ctx, campaign, as_list, rebuild_cache, project, state, spec_id, since,
+                         until, min_cost, as_json):
+        cfg = ctx.obj
+        """Derived history for exactly one CAMPAIGN, --list, or --rebuild-cache."""
+        modes = sum(bool(x) for x in (campaign, as_list, rebuild_cache))
+        if modes != 1:
+            raise click.UsageError(
+                "exactly one of CAMPAIGN, --list, and --rebuild-cache is required")
+        if rebuild_cache:
+            cmdline = click.core.ParameterSource.COMMANDLINE
+            extra = {p for p in (
+                "as_list", "rebuild_cache", "project", "state", "spec_id", "since", "until",
+                "min_cost", "campaign", "as_json",
+            ) if ctx.get_parameter_source(p) == cmdline}
+            if "state" in extra and state == "all":
+                extra.discard("state")
+            if extra - {"as_json", "rebuild_cache"}:
+                raise click.UsageError("--rebuild-cache accepts --json only")
+            from . import history_cache as HC
+            if HC._writable_root(cfg, True) is None:
+                raise click.ClickException("cache: not writable")
+            def progress(done, total):
+                if done % 50 == 0 and sys.stderr.isatty():
+                    R.err_console.print(Text(f"history: {done}/{total}"))
+            try:
+                result = H.rebuild_cache(cfg, progress=progress)
+            except OSError:
+                raise click.ClickException("cache: not writable")
+            if as_json:
+                _dump_json(result)
+                return
+            console.print(
+                Text(f"history cache rebuilt: {result['campaigns']} campaigns, "
+                     f"{result['records']} records"),
+                highlight=False,
+            )
+            return
         try:
             if as_list:
                 def progress(done, total):

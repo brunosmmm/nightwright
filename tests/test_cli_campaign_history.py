@@ -32,6 +32,7 @@ def invoke(tmp_path, monkeypatch):
 def test_history_argument_rules_unknown_and_json(invoke):
     assert invoke("history").exit_code == 2
     assert invoke("history", "x", "--list").exit_code == 2
+    assert invoke("history", "--list", "--rebuild-cache").exit_code == 2
     missing = invoke("history", "NOPE")
     assert missing.exit_code == 1
     assert "campaign NOPE not found" in missing.stderr
@@ -136,6 +137,38 @@ def test_each_records_filter_and_or_group_is_non_vacuous(invoke):
     assert json.loads(invoke("records", "--limit", "0", "--json").output)["records"] == []
     assert invoke("records", "--since", "not-a-date").exit_code == 2
     assert invoke("history", "--list", "--until", "not-a-date").exit_code == 2
+
+
+def test_rebuild_cache_cli(tmp_path, monkeypatch):
+    root = tmp_path / "fixture"
+    shutil.copytree(FIXTURE, root)
+    cache = tmp_path / "cache"
+    cache.mkdir()
+    cfg = {"data_dir": str(root), "cache_dir": str(cache),
+           "agentic": {"default_profile": "balanced"}}
+    monkeypatch.setattr("nightwright.cli.load_config", lambda: cfg)
+    runner = CliRunner()
+
+    assert runner.invoke(cli, ["campaign", "history", "--rebuild-cache", "--list"]).exit_code == 2
+    assert runner.invoke(cli, ["campaign", "history", "--rebuild-cache", "--state", "merged"]).exit_code == 2
+    assert runner.invoke(cli, ["campaign", "history", "--rebuild-cache", "--spec", "SPEC-0394"]).exit_code == 2
+    assert runner.invoke(cli, ["campaign", "history", "--rebuild-cache", "--since", "2026-11-01"]).exit_code == 2
+    assert runner.invoke(cli, ["campaign", "history", "--rebuild-cache", "--until", "2026-11-08"]).exit_code == 2
+    assert runner.invoke(cli, ["campaign", "history", "--rebuild-cache", "--min-cost", "1"]).exit_code == 2
+    cfg_no_cache = {"data_dir": str(root), "agentic": {"default_profile": "balanced"}}
+    monkeypatch.setattr("nightwright.cli.load_config", lambda: cfg_no_cache)
+    bad = runner.invoke(cli, ["campaign", "history", "--rebuild-cache"])
+    assert bad.exit_code == 1
+    assert "cache: not writable" in bad.stderr
+
+    monkeypatch.setattr("nightwright.cli.load_config", lambda: cfg)
+    good = runner.invoke(cli, ["campaign", "history", "--rebuild-cache"])
+    assert good.exit_code == 0, good.output
+    assert good.output.strip().startswith("history cache rebuilt:")
+    doc = json.loads(runner.invoke(cli, ["campaign", "history", "--rebuild-cache", "--json"]).output)
+    assert "campaigns" in doc and "records" in doc
+    ok_state = runner.invoke(cli, ["campaign", "history", "--rebuild-cache", "--state", "all"])
+    assert ok_state.exit_code == 0, ok_state.output
 
 
 def test_records_text_default_limit_and_json_is_unlimited(invoke):
