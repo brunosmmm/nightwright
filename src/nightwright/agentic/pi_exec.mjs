@@ -14,6 +14,7 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 const SCHEMA_FOOTER =
   "Reply with a single JSON object matching this schema and nothing else.\n\n{schema}";
+const SCHEMA_PLACEHOLDER = "{schema}";
 
 const MIN_SECRET_LEN = 8;
 const CONTEXT_FILE_NAMES = ["AGENTS.md", "CLAUDE.md"];
@@ -103,8 +104,9 @@ function agentsUnderCwdOnly(cwd) {
 }
 
 function removePiBashOverflowLogs() {
+  if (!process.env.TMPDIR) return;
   try {
-    const dir = os.tmpdir();
+    const dir = process.env.TMPDIR;
     for (const name of fs.readdirSync(dir)) {
       if (!name.startsWith("pi-bash")) continue;
       try {
@@ -197,25 +199,38 @@ function mapUserContent(content = []) {
 }
 
 function emitToolResultLine(out, message, secrets = []) {
-  const text = (message.content ?? [])
-    .filter((b) => b?.type === "text")
-    .map((b) => b.text ?? "")
-    .join("");
+  let blocks;
+  if (typeof message.content === "string") {
+    blocks = mapUserContent([
+      {
+        type: "toolResult",
+        toolCallId: message.toolCallId,
+        content: message.content,
+        isError: message.isError,
+      },
+    ]);
+  } else if (
+    Array.isArray(message.content) &&
+    message.content.length &&
+    message.content.every((b) => b?.type === "text")
+  ) {
+    blocks = [
+      {
+        type: "tool_result",
+        tool_use_id: message.toolCallId ?? "",
+        content: message.content.map((b) => b.text ?? "").join(""),
+        is_error: Boolean(message.isError),
+      },
+    ];
+  } else {
+    blocks = mapUserContent(message.content);
+  }
+  if (!blocks.length) return;
   writeLine(
     out,
     {
-    type: "user",
-    message: {
-      role: "user",
-      content: [
-        {
-          type: "tool_result",
-          tool_use_id: message.toolCallId ?? "",
-          content: text,
-          is_error: Boolean(message.isError),
-        },
-      ],
-    },
+      type: "user",
+      message: { role: "user", content: blocks },
     },
     secrets,
   );
@@ -266,12 +281,31 @@ const PROVIDER_ENV_KEYS = {
   bedrock: ["AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "AWS_SESSION_TOKEN"],
 };
 
-function readTrimmedFile(filePath, add) {
+const MAX_CREDENTIAL_FILE_BYTES = 64 * 1024;
+const GAC_PROVIDERS = new Set(["google", "google-vertex", "gemini"]);
+
+function readTrimmedFile(filePath, add, maxBytes = MAX_CREDENTIAL_FILE_BYTES) {
   try {
+    const st = fs.statSync(filePath);
+    if (!st.isFile() || st.size > maxBytes) return;
     const text = fs.readFileSync(filePath, "utf8").trim();
     if (text) add(text);
   } catch {
     /* optional */
+  }
+}
+
+function addGoogleApplicationCredentialSecrets(add) {
+  const gac = process.env.GOOGLE_APPLICATION_CREDENTIALS;
+  if (!gac) return;
+  try {
+    const st = fs.statSync(gac);
+    if (!st.isFile() || st.size > MAX_CREDENTIAL_FILE_BYTES) return;
+    const cred = JSON.parse(fs.readFileSync(gac, "utf8"));
+    add(cred.private_key);
+    add(cred.client_secret);
+  } catch {
+    /* not JSON */
   }
 }
 
@@ -289,17 +323,8 @@ function addProviderCredentialEnv(provider, authCheck, add) {
   }
   const wit = process.env.AWS_WEB_IDENTITY_TOKEN_FILE;
   if (wit) readTrimmedFile(wit, add);
-  const gac = process.env.GOOGLE_APPLICATION_CREDENTIALS;
-  if (gac) {
-    readTrimmedFile(gac, add);
-    try {
-      const cred = JSON.parse(fs.readFileSync(gac, "utf8"));
-      add(cred.private_key);
-      add(cred.client_secret);
-      add(cred.client_email);
-    } catch {
-      /* not JSON */
-    }
+  if (GAC_PROVIDERS.has(provider)) {
+    addGoogleApplicationCredentialSecrets(add);
   }
 }
 
@@ -462,7 +487,8 @@ export async function execute(runDir, deps = {}) {
   }
 
   const schema = JSON.stringify(req.json_schema ?? {}, null, 2);
-  const userMessage = `${promptText}\n\n${SCHEMA_FOOTER.replace("{schema}", schema)}`;
+  const footer = SCHEMA_FOOTER.split(SCHEMA_PLACEHOLDER).join(schema);
+  const userMessage = `${promptText}\n\n${footer}`;
 
   let pi;
   try {
@@ -556,16 +582,27 @@ export async function execute(runDir, deps = {}) {
     if (!proceed) {
       /* fall through to finally cleanup */
     } else {
-    const created = await pi.createAgentSession({
-      cwd,
-      model,
-      thinkingLevel: thinking,
-      modelRuntime,
-      tools,
-      resourceLoader,
-      sessionManager,
-      settingsManager,
-    });
+    let created;
+    try {
+      created = await pi.createAgentSession({
+        cwd,
+        model,
+        thinkingLevel: thinking,
+        modelRuntime,
+        tools,
+        resourceLoader,
+        sessionManager,
+        settingsManager,
+      });
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      failResult(out, err, `session failed (${msg})`, { secrets });
+      exitCode = 1;
+      created = null;
+    }
+    if (!created) {
+      /* session construction failed */
+    } else {
     session = created.session;
 
     const emitted = new Set();
@@ -651,6 +688,7 @@ export async function execute(runDir, deps = {}) {
     );
     exitCode = failed ? 1 : 0;
     }
+    }
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);
     let catchSecrets = secrets;
@@ -666,7 +704,10 @@ export async function execute(runDir, deps = {}) {
   } finally {
     await killDetachedChildren(pi, deps);
     try {
-      session?.dispose?.();
+      const dispose = session?.dispose;
+      if (typeof dispose === "function") {
+        await dispose.call(session);
+      }
     } catch {
       /* ignore */
     }

@@ -24,6 +24,7 @@ from ..specmeta import split_frontmatter
 from . import personas as PS
 from . import project as P
 from . import store
+from .gates import tmp_env
 from .profiles import SIZING_VERDICTS, resolve_profile, select_profile
 from .runner import select_runner
 
@@ -517,6 +518,9 @@ def run_spec_review(cfg, spec_path, spec_id, *, profile=None, idea_text=None,
     persona = PS.get_persona(PERSONA)
     prof, settings = resolved or reviewer_run_settings(cfg, path, profile)
     run_id = _RUN_ID_RE.sub("-", f"{spec_id}-{store.now_iso()}-{os.getpid()}-{secrets.token_hex(2)}")
+    run_dir = store.agentic_dir(cfg) / "spec-reviews" / run_id
+    run_tmp = run_dir / "tmp"
+    run_tmp.mkdir(parents=True, exist_ok=True)
     from .runner import mapped_model
     alias = str(settings.get("model") or "sonnet")
     effort = settings.get("effort")
@@ -544,8 +548,8 @@ def run_spec_review(cfg, spec_path, spec_id, *, profile=None, idea_text=None,
         json_schema=persona.schema,
         env={"NW_DATA_DIR": str(cfg.get("data_dir") or ""),
              "NW_CONFIG_DIR": str(cfg.get("config_dir") or ""), "NW_SPEC_ID": spec_id,
-             "NW_PERSONA_RUN": "1"},
-        run_dir=store.agentic_dir(cfg) / "spec-reviews" / run_id,
+             "NW_PERSONA_RUN": "1", **tmp_env(run_tmp)},
+        run_dir=run_dir,
         profile=prof.get("name"),
         profile_sources=tuple(prof.get("sources") or ()),
         model_alias=model_alias,

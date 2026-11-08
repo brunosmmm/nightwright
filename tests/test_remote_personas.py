@@ -681,6 +681,18 @@ def test_worker_pi_check_stdout_single_json_object(tmp_path, monkeypatch):
     assert "[redacted]" in run.output
 
 
+def test_worker_pi_check_invalid_stdin_fails(tmp_path, monkeypatch):
+    from nightwright.cli import cli
+
+    cfg = {"data_dir": str(tmp_path / "d"), "agentic": {"runner": "claude"}}
+    (tmp_path / "d").mkdir(parents=True)
+    monkeypatch.setattr("nightwright.cli.load_config", lambda: cfg)
+    run = CliRunner().invoke(cli, ["worker", "pi-check"], input="not-json\n")
+    assert run.exit_code == 1, run.output
+    body = json.loads(run.output.strip().split("\n")[0])
+    assert body.get("ok") is False and "invalid stdin JSON" in (body.get("error") or "")
+
+
 def test_worker_pi_check_uses_stdin_providers_not_local_map(tmp_path, monkeypatch):
     from nightwright.agentic import pi_map as PM
     from nightwright.agentic import runproc as RP

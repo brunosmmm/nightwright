@@ -4,7 +4,7 @@ title: Run Pi personas through the Node SDK
 status: done
 owner: user
 created: 2026-11-07
-updated: 2026-11-08
+updated: 2026-11-09
 kind: feature
 tags: [agentic, runner, pi]
 depends_on: [SPEC-0442, SPEC-0436]
@@ -505,6 +505,13 @@ fails the check with that fact.
 - Full `uv run pytest` left to queue gating
 - `python3 tools/spec_lint.py --write-ledger` && `python3 tools/spec_lint.py` — pass
 
+### Test record (campaign loop 3 implementer, 2026-11-07)
+
+- `node --test tests/js/pi_exec.test.js` — pass (private TMPDIR pi-bash sweep, GAC email, schema $, session throw, string toolResult)
+- `uv run pytest tests/test_pi_runner.py tests/test_agentic_cost_estimate.py::test_reported_zero_cost_is_charged_not_budget tests/test_remote_personas.py::test_worker_pi_check_invalid_stdin_fails -q` — pass
+- Full `uv run pytest` left to queue gating
+- `python3 tools/spec_lint.py --write-ledger` && `python3 tools/spec_lint.py` — pass
+
 ### As shipped (loop 0 implementer, 2026-11-07)
 
 - `writeLine` runs `redactDeep` before `JSON.stringify` (longest secret first); result line reuses secrets from a second `collectSecretsAsync` after `prompt`.
@@ -529,6 +536,12 @@ fails the check with that fact.
 
 - `noContextFiles: true` with `agentsFilesOverride` loads only `AGENTS.md`/`CLAUDE.md` under cwd (no ancestor walk); secrets shorter than 8 bytes are not collected; `finally` removes `pi-bash*` spill files under `os.tmpdir()`.
 - `validate_runner_cfg` calls `load_pi_map` when `agentic.runner` is `pi`; `validate_pi_map_doc` rejects any whitespace in `id`.
+
+### As shipped (campaign loop 3 implementer, 2026-11-07)
+
+- `removePiBashOverflowLogs` sweeps only when `TMPDIR` is set; `run_spec_review` adds `tmp_env(run_dir/tmp)`.
+- GAC JSON secrets load only for Google providers (no `client_email` / whole-file redaction on anthropic); credential files are size-capped.
+- Schema footer uses split/join; `emitToolResultLine` accepts string tool content; `createAgentSession` failures write `is_error`; `dispose` is awaited; invalid `pi-check` stdin fails without falling back to the worker map.
 
 ## Rollout / migration
 

@@ -652,6 +652,10 @@ def test_spec_review_run_request_pi_fields(tmp_path, monkeypatch):
     assert req.pi_provider == "anthropic"
     assert req.pi_id == "claude-sonnet-4-6"
     assert req.pi_thinking == "high"
+    env = req.env
+    assert env.get("TMPDIR") == env.get("TEMP") == env.get("TMP")
+    assert Path(env["TMPDIR"]).is_dir()
+    assert Path(env["TMPDIR"]).parent == req.run_dir
 
 
 def test_validate_runner_cfg_accepts_pi():

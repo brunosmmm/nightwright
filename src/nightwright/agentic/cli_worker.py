@@ -80,12 +80,17 @@ def worker_pi_check(cfg):
 
     providers = None
     if not sys.stdin.isatty():
-        try:
-            payload = json.loads(sys.stdin.read() or "{}")
+        raw = sys.stdin.read()
+        if raw.strip():
+            try:
+                payload = json.loads(raw)
+            except json.JSONDecodeError:
+                rec = {"schema": W.PI_CHECK_SCHEMA, "ok": False, "missing": [],
+                       "error": "invalid stdin JSON"}
+                click.echo(json.dumps(rec))
+                raise SystemExit(1)
             if isinstance(payload.get("providers"), list):
                 providers = [str(p) for p in payload["providers"] if p]
-        except (json.JSONDecodeError, TypeError, ValueError):
-            providers = None
     rec = W.pi_check(cfg, providers=providers)
     click.echo(json.dumps(rec))
     if not rec["ok"]:

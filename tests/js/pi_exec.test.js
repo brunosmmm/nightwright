@@ -285,6 +285,129 @@ test("execute: toolResult message_end emits user tool_result line", async () => 
   assert.equal(last.total_cost_usd, 0.01);
 });
 
+test("execute: toolResult with string content", async () => {
+  const execute = await loadExecute();
+  const runDir = layout();
+  const out = { chunks: [], write(s) { this.chunks.push(s); } };
+  const toolEv = {
+    type: "message_end",
+    message: {
+      role: "toolResult",
+      toolCallId: "call-str",
+      isError: false,
+      content: "plain string body",
+    },
+  };
+  const { pi } = stubPi({ events: [toolEv] });
+  await execute(runDir, {
+    out,
+    err: { write() {} },
+    importPi: async () => pi,
+    modelRuntime: { getModel: () => ({ cost: { input: 1 } }), checkAuth: async () => ({}), getAuth: async () => ({}) },
+  });
+  const tr = chunksToLines(out.chunks).find((l) => l.type === "user");
+  assert.equal(tr.message.content[0].content, "plain string body");
+});
+
+test("execute: schema footer preserves dollar signs", async () => {
+  const execute = await loadExecute();
+  const runDir = layout({
+    json_schema: {
+      type: "object",
+      properties: { note: { type: "string", description: "use $9.99 style" } },
+    },
+  });
+  const { pi, over } = stubPi();
+  await execute(runDir, {
+    out: { write() {} },
+    err: { write() {} },
+    importPi: async () => pi,
+    modelRuntime: await pi.ModelRuntime.create(),
+  });
+  assert.match(over.promptText, /\$9\.99/);
+});
+
+test("execute: createAgentSession throw writes is_error", async () => {
+  const execute = await loadExecute();
+  const runDir = layout();
+  const out = { chunks: [], write(s) { this.chunks.push(s); } };
+  const session = stubSession();
+  const pi = {
+    ModelRuntime: {
+      create: async () => ({
+        getModel: () => ({ cost: { input: 1 } }),
+        checkAuth: async () => ({}),
+        getAuth: async () => ({}),
+      }),
+    },
+    SettingsManager: { inMemory: () => ({}) },
+    SessionManager: { inMemory: () => ({ getHeader: () => ({ id: "s" }) }) },
+    DefaultResourceLoader: class {
+      async reload() {}
+    },
+    createAgentSession: async () => {
+      throw new Error("boom");
+    },
+  };
+  const code = await execute(runDir, {
+    out,
+    err: { write() {} },
+    importPi: async () => pi,
+    modelRuntime: await pi.ModelRuntime.create(),
+  });
+  assert.equal(code, 1);
+  const last = chunksToLines(out.chunks).at(-1);
+  assert.equal(last.type, "result");
+  assert.equal(last.is_error, true);
+  assert.match(last.result, /session failed/);
+});
+
+test("execute: GAC client_email not scrubbed on anthropic", async () => {
+  const execute = await loadExecute();
+  const runDir = layout();
+  const email = "svc-acct-test@example.invalid";
+  const gacPath = path.join(os.tmpdir(), `pi-gac-${process.pid}.json`);
+  fs.writeFileSync(
+    gacPath,
+    JSON.stringify({
+      client_email: email,
+      private_key: "secret-private-key-material-xyz",
+    }),
+  );
+  const prev = process.env.GOOGLE_APPLICATION_CREDENTIALS;
+  process.env.GOOGLE_APPLICATION_CREDENTIALS = gacPath;
+  const out = { chunks: [], write(s) { this.chunks.push(s); } };
+  const verdict = JSON.stringify({ status: "done", summary: `from ${email}` });
+  const { pi } = stubPi({
+    messages: [
+      {
+        role: "assistant",
+        stopReason: "stop",
+        content: [{ type: "text", text: verdict }],
+        usage: { cost: { total: 0.01 } },
+      },
+    ],
+  });
+  try {
+    await execute(runDir, {
+      out,
+      err: { write() {} },
+      importPi: async () => pi,
+      modelRuntime: { getModel: () => ({ cost: { input: 1 } }), checkAuth: async () => ({}), getAuth: async () => ({}) },
+    });
+    const blob = out.chunks.join("");
+    assert.ok(blob.includes(email));
+  } finally {
+    if (prev === undefined) delete process.env.GOOGLE_APPLICATION_CREDENTIALS;
+    else process.env.GOOGLE_APPLICATION_CREDENTIALS = prev;
+    try {
+      fs.rmSync(gacPath, { force: true });
+    } catch {
+      /* ignore */
+    }
+  }
+});
+
 test("execute: assistant tool_use in stream", async () => {
   const execute = await loadExecute();
   const runDir = layout();
@@ -1289,19 +1412,36 @@ test("execute: stream write uses post-refresh OAuth token from getAuth", async (
   assert.ok(blob.includes("[redacted]"));
 });
 
-test("execute: finally removes pi-bash overflow logs from tmpdir", async () => {
+test("execute: finally removes pi-bash overflow logs from private TMPDIR", async () => {
   const execute = await loadExecute();
   const runDir = layout();
-  const spill = path.join(os.tmpdir(), `pi-bash-test-${process.pid}.log`);
+  const hostTmp = fs.mkdtempSync(path.join("/tmp", "nw-pi-host-"));
+  const outside = path.join(hostTmp, `pi-bash-outside-${process.pid}.log`);
+  fs.writeFileSync(outside, "leave me\n");
+  const privateTmp = fs.mkdtempSync(path.join(hostTmp, "child-"));
+  const prevTmp = process.env.TMPDIR;
+  process.env.TMPDIR = privateTmp;
+  const spill = path.join(privateTmp, `pi-bash-test-${process.pid}.log`);
   fs.writeFileSync(spill, "overflow output\n");
   assert.ok(fs.existsSync(spill));
-  await execute(runDir, {
-    out: { write() {} },
-    err: { write() {} },
-    importPi: async () => stubPi().pi,
-    modelRuntime: await stubPi().pi.ModelRuntime.create(),
-  });
-  assert.equal(fs.existsSync(spill), false);
+  try {
+    await execute(runDir, {
+      out: { write() {} },
+      err: { write() {} },
+      importPi: async () => stubPi().pi,
+      modelRuntime: await stubPi().pi.ModelRuntime.create(),
+    });
+    assert.equal(fs.existsSync(spill), false);
+    assert.equal(fs.existsSync(outside), true);
+  } finally {
+    if (prevTmp === undefined) delete process.env.TMPDIR;
+    else process.env.TMPDIR = prevTmp;
+    try {
+      fs.rmSync(hostTmp, { recursive: true, force: true });
+    } catch {
+      /* ignore */
+    }
+  }
 });
 
 test("execute: SIGTERM handler kills detached children and aborts", async () => {

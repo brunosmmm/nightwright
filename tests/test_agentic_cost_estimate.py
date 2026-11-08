@@ -71,6 +71,17 @@ def test_reported_cost_is_charged_exactly(kw):
     assert state["cost"]["total_usd"] == 1.23 and "estimated_usd" not in state["cost"]
 
 
+def test_reported_zero_cost_is_charged_not_budget():
+    state = {}
+    events = Q._record_run(state, "implementer", "001-implementer", _res(0.0), 4.0)
+    ev = _by_type(events)
+    assert ev["run.end"]["cost_usd"] == 0.0
+    assert ev["run.end"]["charged_usd"] == 0.0
+    assert ev["run.end"]["cost_estimated"] is False
+    assert state["cost"]["total_usd"] == 0.0
+    assert "estimated_usd" not in state["cost"]
+
+
 def test_partial_stdout_cost_is_used_on_timeout(tmp_path, monkeypatch):
     out = json.dumps({"type": "result", "is_error": False, "total_cost_usd": 1.23,
                       "result": "", "usage": {}, "session_id": "s"})
