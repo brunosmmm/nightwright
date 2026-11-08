@@ -194,6 +194,16 @@ def test_holding_per_kind():
     assert RM.holding({}, PROJECT, {"kind": "implement"}, {**red, "open": False}) is None
 
 
+def test_holding_releases_once_the_base_moves_past_the_red_sha(w):
+    cfg, root = w["cfg"], w["root"]
+    red_sha = git.rev_parse(root)
+    RM.on_red(cfg, PROJECT, red_sha, ["t::x"], root=str(root), now=NOW)
+    pcfg = {**_pcfg(w), "_root": str(root)}
+    assert "red" in RM.holding(cfg, PROJECT, {"kind": "implement"}, project_cfg=pcfg)
+    _commit(root, "later.txt", "x", "a fix landed")
+    assert RM.holding(cfg, PROJECT, {"kind": "implement"}, project_cfg=pcfg) is None
+
+
 def test_prepare_close_holds_a_spec_campaign_without_touching_anything(w):
     cfg, root = w["cfg"], w["root"]
     RM.on_red(cfg, PROJECT, git.rev_parse(root), ["t::x"], root=str(root), now=NOW)

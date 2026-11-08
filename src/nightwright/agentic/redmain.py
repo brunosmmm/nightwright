@@ -375,13 +375,29 @@ def _mail_reverted(cfg, project, rec, fx) -> None:
         pass
 
 
+def _base_ahead_of_red(project_cfg, red) -> bool:
+    """The base tip is no longer the sha the sentinel marked red. A fix has landed.
+    Finished campaigns may close; the next sentinel re-holds if that new tip is red too."""
+    marked = (red or {}).get("last_red_sha")
+    root = (project_cfg or {}).get("_root")
+    if not marked or not root:
+        return False
+    base = ((project_cfg or {}).get("merge") or {}).get("base") or "main"
+    try:
+        head = git.rev_parse(root, base)
+    except (git.GitError, ValueError, OSError):
+        return False
+    return bool(head) and head != marked
+
+
 # ---- hold (close.prepare_close) -------------------------------------------------------------
 
 def holding(cfg, project, state: dict, red: dict | None = None,
             project_cfg: dict | None = None) -> str | None:
     """Why the close of `state` is held, or None: no open episode, the hold is off, the campaign
-    fixes the red base (`fixforward`, `revert`, a `--fixes-red` merge), a `--docs-only` merge, or a
-    project that does not merge locally (its PRs never land on the base here)."""
+    fixes the red base (`fixforward`, `revert`, a `--fixes-red` merge), a `--docs-only` merge, a
+    project that does not merge locally, or a base tip that has moved past `last_red_sha`
+    (the fix already landed; the next sentinel re-holds if that new tip is red)."""
     sett = settings(cfg)
     if not sett["enabled"] or not sett["hold_merges"] or not project:
         return None
@@ -394,6 +410,8 @@ def holding(cfg, project, state: dict, red: dict | None = None,
         return None
     red = red if red is not None else read(cfg, project)
     if not red or not red.get("open"):
+        return None
+    if _base_ahead_of_red(project_cfg, red):
         return None
     return (f"base of {project} is red (episode {red.get('episode')}, since "
             f"{red.get('opened_at')}): non-fix merges are held until a green sentinel")
