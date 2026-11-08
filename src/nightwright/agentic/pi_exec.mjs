@@ -300,7 +300,32 @@ const PROVIDER_ENV_KEYS = {
 const MAX_CREDENTIAL_FILE_BYTES = 64 * 1024;
 const GAC_PROVIDERS = new Set(["google", "google-vertex", "gemini"]);
 const CREDENTIAL_ENV_KEY =
-  /(?:api[_-]?key|secret|token|password|credential|auth|private[_-]?key|refresh|access)/i;
+  /(?:^|_)(?:api[_-]?key|secret|token|password|private[_-]?key|refresh(?:_token)?|access(?:_token|-?_key)?)(?:$|_)/i;
+
+const CREDENTIAL_ENV_PATH_KEYS = new Set([
+  "GOOGLE_APPLICATION_CREDENTIALS",
+  "ANTHROPIC_IDENTITY_TOKEN_FILE",
+  "AWS_WEB_IDENTITY_TOKEN_FILE",
+]);
+
+function defaultAdcPath() {
+  return path.join(os.homedir(), ".config", "gcloud", "application_default_credentials.json");
+}
+
+function envKeyHoldsSecretValue(key) {
+  const k = String(key);
+  if (CREDENTIAL_ENV_PATH_KEYS.has(k)) return false;
+  if (k === "GOOGLE_CLOUD_PROJECT" || k === "GOOGLE_CLOUD_LOCATION") return false;
+  if (/_FILE$/i.test(k)) return false;
+  return CREDENTIAL_ENV_KEY.test(k);
+}
+
+function isLikelyPathValue(val) {
+  if (typeof val !== "string" || val.length < 2) return false;
+  if (val.startsWith("/") || val.startsWith("~/") || val.startsWith("~\\")) return true;
+  if (/^[A-Za-z]:[\\/]/.test(val)) return true;
+  return false;
+}
 
 function readTrimmedFile(filePath, add, maxBytes = MAX_CREDENTIAL_FILE_BYTES) {
   try {
@@ -321,36 +346,55 @@ function addPrivateKeySecrets(privateKey, add) {
   }
 }
 
-function addGoogleApplicationCredentialSecrets(add) {
-  const gac = process.env.GOOGLE_APPLICATION_CREDENTIALS;
-  if (!gac) return;
+function parseGoogleCredentialFile(filePath, add) {
+  if (!filePath || typeof filePath !== "string") return;
+  const expanded = filePath.startsWith("~")
+    ? path.join(os.homedir(), filePath.slice(1))
+    : filePath;
   try {
-    const st = fs.statSync(gac);
+    const st = fs.statSync(expanded);
     if (!st.isFile() || st.size > MAX_CREDENTIAL_FILE_BYTES) return;
-    const raw = fs.readFileSync(gac, "utf8");
+    const raw = fs.readFileSync(expanded, "utf8");
     const cred = JSON.parse(raw);
     addPrivateKeySecrets(cred.private_key, add);
     add(cred.client_secret);
-    const escaped = raw.match(/"private_key"\s*:\s*"((?:[^"\\]|\\.)*)"/);
-    if (escaped?.[1]) {
-      const fromFile = escaped[1]
+    add(cred.refresh_token);
+    const escapedPk = raw.match(/"private_key"\s*:\s*"((?:[^"\\]|\\.)*)"/);
+    if (escapedPk?.[1]) {
+      const fromFile = escapedPk[1]
         .replace(/\\n/g, "\n")
         .replace(/\\r/g, "\r")
         .replace(/\\t/g, "\t")
         .replace(/\\\\/g, "\\")
         .replace(/\\"/g, '"');
       addPrivateKeySecrets(fromFile, add);
-      add(escaped[1]);
+      add(escapedPk[1]);
     }
+    const escapedRt = raw.match(/"refresh_token"\s*:\s*"((?:[^"\\]|\\.)*)"/);
+    if (escapedRt?.[1]) add(escapedRt[1]);
   } catch {
-    /* not JSON */
+    /* not JSON or missing */
   }
+}
+
+function addGoogleApplicationCredentialSecrets(provider, add, authEnv) {
+  if (!GAC_PROVIDERS.has(provider)) return;
+  const gac =
+    process.env.GOOGLE_APPLICATION_CREDENTIALS ||
+    authEnv?.GOOGLE_APPLICATION_CREDENTIALS;
+  if (gac) {
+    parseGoogleCredentialFile(gac, add);
+    return;
+  }
+  parseGoogleCredentialFile(defaultAdcPath(), add);
 }
 
 function addEnvMapCredentialValues(envMap, add) {
   if (!envMap || typeof envMap !== "object") return;
   for (const [key, val] of Object.entries(envMap)) {
-    if (CREDENTIAL_ENV_KEY.test(String(key))) add(val);
+    if (!envKeyHoldsSecretValue(key)) continue;
+    if (isLikelyPathValue(val)) continue;
+    add(val);
   }
 }
 
@@ -370,7 +414,7 @@ function addAuthObjectSecrets(obj, add) {
   }
 }
 
-function addProviderCredentialEnv(provider, authCheck, add) {
+function addProviderCredentialEnv(provider, authCheck, add, authEnv) {
   if (authCheck && typeof authCheck === "object") {
     addAuthObjectSecrets(authCheck, add);
     if (authCheck.source) add(process.env[authCheck.source]);
@@ -386,17 +430,23 @@ function addProviderCredentialEnv(provider, authCheck, add) {
     readTrimmedFile(wit, add);
   }
   if (GAC_PROVIDERS.has(provider)) {
-    addGoogleApplicationCredentialSecrets(add);
+    addGoogleApplicationCredentialSecrets(provider, add, authEnv);
   }
 }
 
 function addStoredAuthSecrets(store, add) {
   if (!store || typeof store !== "object") return;
-  for (const entry of Object.values(store)) {
+  for (const [name, entry] of Object.entries(store)) {
     if (!entry || typeof entry !== "object") continue;
     addAuthObjectSecrets(entry, add);
     if (entry.auth && typeof entry.auth === "object") {
       addAuthObjectSecrets(entry.auth, add);
+    }
+    if (GAC_PROVIDERS.has(name)) {
+      const gacPath = entry?.env?.GOOGLE_APPLICATION_CREDENTIALS;
+      if (typeof gacPath === "string" && gacPath) {
+        parseGoogleCredentialFile(gacPath, add);
+      }
     }
   }
 }
@@ -404,8 +454,10 @@ function addStoredAuthSecrets(store, add) {
 async function collectSecretsAsync(modelRuntime, provider, authCheck) {
   const secrets = [];
   const add = (s) => pushSecret(secrets, s);
+  let authEnv;
   try {
     const detail = await modelRuntime.getAuth(provider);
+    authEnv = detail?.env;
     add(detail?.apiKey);
     add(detail?.token);
     add(detail?.auth?.apiKey);
@@ -420,7 +472,7 @@ async function collectSecretsAsync(modelRuntime, provider, authCheck) {
   } catch {
     /* keep auth.json backup */
   }
-  addProviderCredentialEnv(provider, authCheck, add);
+  addProviderCredentialEnv(provider, authCheck, add, authEnv);
   try {
     const raw = fs.readFileSync(agentAuthJsonPath(), "utf8");
     addStoredAuthSecrets(JSON.parse(raw), add);

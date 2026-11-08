@@ -180,11 +180,14 @@ test("execute: in-memory session, settings, loader flags, appendSystemPrompt", a
   fs.writeFileSync(inside, "# in-worktree agents\n");
   const outside = path.join(path.dirname(wt), "parent-AGENTS.md");
   fs.writeFileSync(outside, "# outside\n");
+  const parentAgents = path.join(path.dirname(wt), "AGENTS.md");
+  fs.writeFileSync(parentAgents, "# parent agents\n");
   const filtered = over.loaderOpts.agentsFilesOverride({ agentsFiles: [] });
   assert.equal(filtered.agentsFiles.length, 1);
   assert.equal(filtered.agentsFiles[0].path, inside);
   assert.equal(filtered.agentsFiles[0].content.trim(), "# in-worktree agents");
   assert.ok(!filtered.agentsFiles.some((f) => f.path === outside));
+  assert.ok(!filtered.agentsFiles.some((f) => f.path === parentAgents));
   const secretOutside = fs.mkdtempSync(path.join(os.tmpdir(), "pi-secret-"));
   const secretFile = path.join(secretOutside, "secret-AGENTS.md");
   fs.writeFileSync(secretFile, "outside secret");
@@ -363,22 +366,20 @@ test("execute: createAgentSession throw writes is_error", async () => {
   assert.match(last.result, /session failed/);
 });
 
-test("execute: GAC escaped PEM scrubbed on gemini, client_email kept", async () => {
+async function runGacPemScrubTest(piProvider) {
   const execute = await loadExecute();
-  const runDir = layout({ pi_provider: "gemini", pi_id: "gemini-2.0" });
-  const email = "gemini-svc@test.invalid";
+  const runDir = layout({ pi_provider: piProvider, pi_id: "test-model" });
+  const email = `${piProvider}-svc@test.invalid`;
   const pemSecret = "super-secret-pem-line-abcdefghij";
-  const privateKey =
-    `-----BEGIN PRIVATE KEY-----\\n${pemSecret}\\n-----END PRIVATE KEY-----\\n`;
-  const gacPath = path.join(os.tmpdir(), `pi-gac-esc-${process.pid}.json`);
-  fs.writeFileSync(
-    gacPath,
-    JSON.stringify({ client_email: email, private_key: privateKey }),
-  );
+  const gacPath = path.join(os.tmpdir(), `pi-gac-esc-${piProvider}-${process.pid}.json`);
+  const onDisk =
+    `{"client_email":"${email}","private_key":"-----BEGIN PRIVATE KEY-----\\n${pemSecret}\\n-----END PRIVATE KEY-----\\n"}`;
+  fs.writeFileSync(gacPath, onDisk);
+  const parsedPem = JSON.parse(onDisk).private_key;
+  const escapedSlice = onDisk.match(/"private_key"\s*:\s*"((?:[^"\\]|\\.)*)"/)[1];
   const prev = process.env.GOOGLE_APPLICATION_CREDENTIALS;
   process.env.GOOGLE_APPLICATION_CREDENTIALS = gacPath;
   const out = { chunks: [], write(s) { this.chunks.push(s); } };
-  const escapedNeedle = privateKey;
   const { pi } = stubPi({
     messages: [
       {
@@ -387,7 +388,7 @@ test("execute: GAC escaped PEM scrubbed on gemini, client_email kept", async () 
         content: [
           {
             type: "text",
-            text: `svc ${email} cat shows ${escapedNeedle}`,
+            text: `parsed ${parsedPem} raw ${escapedSlice} ${email}`,
           },
         ],
         usage: { cost: { total: 0.01 } },
@@ -408,7 +409,8 @@ test("execute: GAC escaped PEM scrubbed on gemini, client_email kept", async () 
     const blob = out.chunks.join("");
     assert.ok(blob.includes(email));
     assert.ok(!blob.includes(pemSecret));
-    assert.ok(!blob.includes(escapedNeedle));
+    assert.ok(!blob.includes(parsedPem));
+    assert.ok(!blob.includes(escapedSlice));
     assert.ok(blob.includes("[redacted]"));
   } finally {
     if (prev === undefined) delete process.env.GOOGLE_APPLICATION_CREDENTIALS;
@@ -418,6 +420,123 @@ test("execute: GAC escaped PEM scrubbed on gemini, client_email kept", async () 
     } catch {
       /* ignore */
     }
+  }
+}
+
+test("execute: GAC escaped PEM scrubbed on gemini, client_email kept", async () => {
+  await runGacPemScrubTest("gemini");
+});
+
+test("execute: GAC escaped PEM scrubbed on google and google-vertex", async () => {
+  await runGacPemScrubTest("google");
+  await runGacPemScrubTest("google-vertex");
+});
+
+test("execute: anthropic run keeps google-vertex env path project location", async () => {
+  const saPath = "/home/user/sa.json";
+  const project = "my-gcp-project-id";
+  const location = "us-central1";
+  const authDir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-auth-vertex-"));
+  fs.writeFileSync(
+    path.join(authDir, "auth.json"),
+    JSON.stringify({
+      "google-vertex": {
+        type: "api_key",
+        env: {
+          GOOGLE_APPLICATION_CREDENTIALS: saPath,
+          GOOGLE_CLOUD_PROJECT: project,
+          GOOGLE_CLOUD_LOCATION: location,
+        },
+      },
+    }),
+  );
+  const prevAgentDir = process.env.PI_CODING_AGENT_DIR;
+  process.env.PI_CODING_AGENT_DIR = authDir;
+  const execute = await loadExecute();
+  const runDir = layout();
+  const out = { chunks: [], write(s) { this.chunks.push(s); } };
+  const verdict = JSON.stringify({
+    status: "done",
+    summary: `${saPath} ${project} ${location}`,
+  });
+  const { pi } = stubPi({
+    messages: [
+      {
+        role: "assistant",
+        stopReason: "stop",
+        content: [{ type: "text", text: verdict }],
+        usage: { cost: { total: 0.01 } },
+      },
+    ],
+  });
+  try {
+    await execute(runDir, {
+      out,
+      err: { write() {} },
+      importPi: async () => pi,
+      modelRuntime: {
+        getModel: () => ({ cost: { input: 1 } }),
+        checkAuth: async () => ({}),
+        getAuth: async () => ({}),
+      },
+    });
+    const blob = out.chunks.join("");
+    assert.ok(blob.includes(saPath));
+    assert.ok(blob.includes(project));
+    assert.ok(blob.includes(location));
+  } finally {
+    if (prevAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
+    else process.env.PI_CODING_AGENT_DIR = prevAgentDir;
+  }
+});
+
+test("execute: google-vertex ADC authorized_user refresh scrubbed, client_email kept", async () => {
+  const execute = await loadExecute();
+  const runDir = layout({ pi_provider: "google-vertex", pi_id: "gemini-2.5" });
+  const email = "adc-user@test.invalid";
+  const refresh = "adc-refresh-token-value-xx";
+  const fakeHome = fs.mkdtempSync(path.join(os.tmpdir(), "pi-home-"));
+  const gcloudDir = path.join(fakeHome, ".config", "gcloud");
+  fs.mkdirSync(gcloudDir, { recursive: true });
+  fs.writeFileSync(
+    path.join(gcloudDir, "application_default_credentials.json"),
+    JSON.stringify({ type: "authorized_user", client_email: email, refresh_token: refresh }),
+  );
+  const prevHome = process.env.HOME;
+  const prevGac = process.env.GOOGLE_APPLICATION_CREDENTIALS;
+  process.env.HOME = fakeHome;
+  delete process.env.GOOGLE_APPLICATION_CREDENTIALS;
+  const out = { chunks: [], write(s) { this.chunks.push(s); } };
+  const { pi } = stubPi({
+    messages: [
+      {
+        role: "assistant",
+        stopReason: "stop",
+        content: [{ type: "text", text: `adc ${email} tok ${refresh}` }],
+        usage: { cost: { total: 0.01 } },
+      },
+    ],
+  });
+  try {
+    await execute(runDir, {
+      out,
+      err: { write() {} },
+      importPi: async () => pi,
+      modelRuntime: {
+        getModel: () => ({ cost: { input: 1 } }),
+        checkAuth: async () => ({}),
+        getAuth: async () => ({ env: {} }),
+      },
+    });
+    const blob = out.chunks.join("");
+    assert.ok(blob.includes(email));
+    assert.ok(!blob.includes(refresh));
+    assert.ok(blob.includes("[redacted]"));
+  } finally {
+    if (prevHome === undefined) delete process.env.HOME;
+    else process.env.HOME = prevHome;
+    if (prevGac === undefined) delete process.env.GOOGLE_APPLICATION_CREDENTIALS;
+    else process.env.GOOGLE_APPLICATION_CREDENTIALS = prevGac;
   }
 });
 
@@ -1351,6 +1470,63 @@ test("execute: scrubs auth.json key access refresh env when getAuth throws", asy
     assert.ok(!blob.includes(KEY));
     assert.ok(!blob.includes(ACCESS));
     assert.ok(blob.includes("[redacted]"));
+  } finally {
+    if (prevAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
+    else process.env.PI_CODING_AGENT_DIR = prevAgentDir;
+  }
+});
+
+test("execute: auth.json env scrubs credential keys only, not project id", async () => {
+  const SECRET = "pi-env-api-token-secret";
+  const PROJECT = "surviving-project-id-12";
+  const authDir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-auth-mix-"));
+  fs.writeFileSync(
+    path.join(authDir, "auth.json"),
+    JSON.stringify({
+      anthropic: { type: "oauth", access: "oauth-access-xy", refresh: "oauth-ref-zz", expires: 1 },
+      "google-vertex": {
+        type: "api_key",
+        env: { CF_API_TOKEN: SECRET, GOOGLE_CLOUD_PROJECT: PROJECT },
+      },
+    }),
+  );
+  const prevAgentDir = process.env.PI_CODING_AGENT_DIR;
+  process.env.PI_CODING_AGENT_DIR = authDir;
+  try {
+    const execute = await loadExecute();
+    const runDir = layout();
+    const out = { chunks: [], write(s) { this.chunks.push(s); } };
+    const runtime = {
+      getModel: () => ({ cost: { input: 1 } }),
+      checkAuth: async () => ({ type: "oauth" }),
+      getAuth: async () => {
+        throw new Error("getAuth failed");
+      },
+    };
+    const { pi } = stubPi({
+      messages: [
+        {
+          role: "assistant",
+          stopReason: "stop",
+          content: [
+            {
+              type: "text",
+              text: `mix ${SECRET} proj ${PROJECT}`,
+            },
+          ],
+          usage: { cost: { total: 0.01 } },
+        },
+      ],
+    });
+    await execute(runDir, {
+      out,
+      err: { write() {} },
+      importPi: async () => pi,
+      modelRuntime: runtime,
+    });
+    const blob = out.chunks.join("");
+    assert.ok(!blob.includes(SECRET));
+    assert.ok(blob.includes(PROJECT));
   } finally {
     if (prevAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
     else process.env.PI_CODING_AGENT_DIR = prevAgentDir;
