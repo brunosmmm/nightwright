@@ -200,24 +200,25 @@ def test_clock_toggle_binding_is_bidirectional(tmp_path, monkeypatch):
 
 
 def test_metadata_screen_sets_a_value(tmp_path, monkeypatch):
-    from nightwright.tui.app import IdeaDesk
+    from nightwright.tui.app import ChoiceScreen, IdeaDesk
 
     cfg = _seed(tmp_path, monkeypatch)
 
     async def drive():
         app = IdeaDesk(cfg)
         async with app.run_test(size=(100, 30)) as pilot:
-            await pilot.pause()
+            assert await pilot_until(pilot, lambda: app.selected_id)
             await pilot.press("m")            # state / kind / priority / …
-            await pilot.pause()
+            assert await pilot_until(pilot, lambda: isinstance(app.screen, ChoiceScreen))
             await pilot.press("j")
             await pilot.press("j")            # state → kind → priority
             await pilot.press("enter")
-            await pilot.pause()
+            assert await pilot_until(
+                pilot, lambda: isinstance(app.screen, ChoiceScreen)
+                and str(app.screen.title_text).startswith("priority"))
             await pilot.press("j")            # A → B
             await pilot.press("enter")
-            await pilot.pause()
-            assert _idea(cfg).priority == "B"
+            assert await pilot_until(pilot, lambda: _idea(cfg).priority == "B")
 
     asyncio.run(drive())
 

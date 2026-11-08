@@ -84,16 +84,6 @@ nw escalations list                     # `answer ID` wakes the conductor; also 
 nw tui                                  # ideas desk; --tab queue|events|mailbox, --campaign ID
 ```
 
-## GPT personas through Pi
-
-Set `agentic.model_set: gpt` in the nightwright configuration to select the built-in GPT model
-set for personas. It uses the Pi SDK: `openai/gpt-6.1-terra` for writers,
-`openai/gpt-5.6-sol` for design/security review, and `openai/gpt-5.6-luna` for tests and
-triage. Workflow profiles still control budgets and effort. A user `model_sets/gpt.yaml` under the nightwright config directory can
-replace the model set if a different GPT model is available. The Pi installation and a working
-OpenAI credential must be available on every host running personas. Conductor and steward use
-their own interactive backends, not this model set.
-
 ## Agent skills
 
 `nw skills install` links the playbooks in [`skills/`](skills/) into Claude Code / Cursor.

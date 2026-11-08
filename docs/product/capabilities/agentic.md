@@ -282,8 +282,12 @@ the worktree, do not commit, finish with the JSON verdict). Default is `claude -
 (`cursor-sdk`, the optional `cursor` extra) with `CURSOR_API_KEY`, inside the same detached
 wrapper. Cursor has no schema flag, so the same JSON object is asked for in a prompt footer.
 Pi is a third persona runner (`--runner pi`): a Node child around the Pi SDK.
-The Pi runner and the GPT model set are still in progress, so Pi is a queue runner choice,
-not a finished integration. Conductor and steward launch do not accept `pi`.
+Set `agentic.model_set: gpt` to run personas on the built-in GPT set through Pi:
+`openai/gpt-6.1-terra` for writers, `openai/gpt-5.6-sol` for design and security review,
+and `openai/gpt-5.6-luna` for tests and triage. A `model_sets/gpt.yaml` in the config
+directory replaces that set. Pi and an OpenAI credential have to be on every host that
+runs those personas. Conductor and steward keep their own interactive backends, and
+their launch does not accept `pi`.
 Each run gets a budget and a wall-clock timeout. When the account returns SDK usage cost, the
 result carries that dollar amount; otherwise the queue estimates from the cap. Read-only
 personas keep the file-inspection tools (read, grep, glob, ls) and do not get Shell or the
