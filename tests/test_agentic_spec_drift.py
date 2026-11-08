@@ -2,6 +2,7 @@
 supposed to make (ticks, status/updated, Test record / As shipped subsections, Clock Log) and
 reports everything else; the close step routes drift to TRIAGING; end to end a campaign whose
 implementer deletes an AC never merges."""
+import errno
 import hashlib
 import os
 from pathlib import Path
@@ -181,6 +182,62 @@ def test_guard_fails_when_snapshot_present_without_hash(tmp_path):
     ok, gate, events = CL.spec_guard(cfg, st)
     assert not ok and gate["name"] == "spec-changed"
     assert events[0][1]["severity"] == "must_fix"
+
+
+def test_guard_skips_when_snapshot_absent_without_hash(tmp_path):
+    cfg = {"data_dir": str(tmp_path / "data")}
+    st = _state(tmp_path, cfg, BASE)
+    ok, gate, events = CL.spec_guard(cfg, st)
+    assert ok and gate is None
+    assert events[0][1]["severity"] == "info"
+
+
+def test_guard_fails_when_snapshot_unreadable_without_hash(tmp_path, monkeypatch):
+    cfg = {"data_dir": str(tmp_path / "data")}
+    st = _state(tmp_path, cfg, BASE)
+    copy = S.campaign_dir(cfg, st["id"]) / CL.SPEC_AT_OPEN
+    copy.write_text(BASE)
+    real_lstat = os.lstat
+
+    def lstat(path, *a, **k):
+        if Path(path) == copy:
+            raise OSError(errno.EACCES, "permission denied")
+        return real_lstat(path, *a, **k)
+
+    monkeypatch.setattr(os, "lstat", lstat)
+    ok, gate, events = CL.spec_guard(cfg, st)
+    assert not ok and gate["name"] == "spec-changed"
+    assert events[0][1]["severity"] == "must_fix"
+
+
+def test_guard_fails_when_snapshot_unreadable_with_hash(tmp_path, monkeypatch):
+    cfg = {"data_dir": str(tmp_path / "data")}
+    st = _state(tmp_path, cfg, BASE)
+    copy = S.campaign_dir(cfg, st["id"]) / CL.SPEC_AT_OPEN
+    copy.write_text(BASE)
+    st["spec"]["sha256_at_open"] = hashlib.sha256(BASE.encode("utf-8")).hexdigest()
+    real_lstat = os.lstat
+
+    def lstat(path, *a, **k):
+        if Path(path) == copy:
+            raise OSError(errno.EACCES, "permission denied")
+        return real_lstat(path, *a, **k)
+
+    monkeypatch.setattr(os, "lstat", lstat)
+    ok, gate, events = CL.spec_guard(cfg, st)
+    assert not ok and gate["name"] == "spec-changed"
+    assert events[0][1]["severity"] == "must_fix"
+
+
+def test_guard_trusts_legacy_lf_snapshot_for_crlf_hash(tmp_path):
+    cfg = {"data_dir": str(tmp_path / "data")}
+    crlf = BASE.replace("\n", "\r\n")
+    st = _state(tmp_path, cfg, crlf)
+    copy = S.campaign_dir(cfg, st["id"]) / CL.SPEC_AT_OPEN
+    copy.write_text(BASE, encoding="utf-8")
+    st["spec"]["sha256_at_open"] = hashlib.sha256(crlf.encode("utf-8")).hexdigest()
+    ok, gate, events = CL.spec_guard(cfg, st)
+    assert ok and gate is None and events == []
 
 
 def test_guard_reports_drift_as_synthetic_gate(tmp_path):

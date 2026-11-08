@@ -13,6 +13,7 @@ import datetime as dt
 import difflib
 import errno
 import hashlib
+import stat
 import json
 import os
 import posixpath
@@ -251,16 +252,21 @@ def spec_drift(old: str, new: str, *, drop: tuple[str, ...] = ()) -> list[str]:
 def _spec_at_open_trusted(cfg, state: dict, copy: Path) -> bool:
     """True when the campaign-dir snapshot is a regular file matching ``sha256_at_open``."""
     want = (state.get("spec") or {}).get("sha256_at_open")
-    if not want or copy.is_symlink():
+    if not want:
         return False
     try:
         cdir = store.campaign_dir(cfg, state["id"]).resolve()
-        if not copy.is_file() or not copy.resolve().is_relative_to(cdir):
+        st = os.lstat(copy)
+        if stat.S_ISLNK(st.st_mode) or not stat.S_ISREG(st.st_mode):
+            return False
+        if not copy.resolve().is_relative_to(cdir):
             return False
         data = copy.read_bytes()
     except OSError:
         return False
-    return bool(data) and hashlib.sha256(data).hexdigest() == want
+    from . import queue as Q
+
+    return Q._spec_snapshot_bytes_match_hash(data, want)
 
 
 def _spec_at_open_entry_absent(copy: Path) -> bool:

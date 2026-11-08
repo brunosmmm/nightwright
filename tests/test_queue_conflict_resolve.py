@@ -1,4 +1,5 @@
 """SPEC-0463: resolve_dependency_conflicts, worktree resume, conflict mail."""
+import errno
 import hashlib
 import os
 from pathlib import Path
@@ -196,6 +197,42 @@ def test_resume_missing_spec_with_id_parks(env, monkeypatch):
     assert "missing" in after["park"]["detail"]
     assert "docs/specs/missing.md" in after["park"]["detail"]
     assert wt.is_dir()
+
+
+def test_resume_unreadable_worktree_spec_parks_not_missing(env, monkeypatch):
+    cfg, repo = env
+    cid = add_idea_campaign(cfg, monkeypatch, capture(cfg, "unreadable spec"))
+    st = _prep_worktree(cfg, repo, cid, ACCEPTED)
+    wt = Path(st["repo"]["worktree"])
+    rel = st["spec"]["rel_path"]
+    spec_path = wt / rel
+    real_open = os.open
+
+    def deny_open(path, flags, *a, **k):
+        if Path(path) == spec_path:
+            raise OSError(errno.EACCES, "permission denied")
+        return real_open(path, flags, *a, **k)
+
+    monkeypatch.setattr(os, "open", deny_open)
+    row, after = _open_resume(cfg, monkeypatch, _state(cfg, cid))
+    assert after["state"] == "PARKED" and after["park"]["reason"] == "open_failed"
+    assert "unreadable" in after["park"]["detail"]
+    assert row.get("reason") != "resumed_worktree"
+
+
+def test_resume_worktree_spec_directory_parks_unreadable(env, monkeypatch):
+    cfg, repo = env
+    cid = add_idea_campaign(cfg, monkeypatch, capture(cfg, "spec dir"))
+    st = _prep_worktree(cfg, repo, cid, ACCEPTED)
+    wt = Path(st["repo"]["worktree"])
+    rel = st["spec"]["rel_path"]
+    spec_path = wt / rel
+    spec_path.unlink()
+    spec_path.mkdir()
+    row, after = _open_resume(cfg, monkeypatch, _state(cfg, cid))
+    assert after["state"] == "PARKED" and after["park"]["reason"] == "open_failed"
+    assert "not a regular file" in after["park"]["detail"]
+    assert row.get("reason") != "resumed_worktree"
 
 
 def test_fresh_open_keeps_trusted_spec_snapshot(env, monkeypatch):
@@ -900,6 +937,26 @@ def test_adopt_snapshot_hash_unchanged_when_copy_matches(env, monkeypatch):
     after = _state(cfg, cid)
     assert after["spec"]["sha256_at_open"] == digest
     assert (cdir / CL.SPEC_AT_OPEN).read_text(encoding="utf-8") == snap_text
+
+
+def test_adopt_keeps_legacy_lf_snapshot_when_hash_is_crlf(env, monkeypatch):
+    cfg, repo = env
+    cid = add_idea_campaign(cfg, monkeypatch, capture(cfg, "legacy lf snap"))
+    crlf_body = ACCEPTED.format(sid="SPEC-0999").replace("\n", "\r\n")
+    st = _prep_worktree(cfg, repo, cid, crlf_body)
+    cdir = S.campaign_dir(cfg, cid)
+    cdir.mkdir(parents=True, exist_ok=True)
+    digest = hashlib.sha256(crlf_body.encode("utf-8")).hexdigest()
+    lf_copy = ACCEPTED.format(sid="SPEC-0999")
+    (cdir / CL.SPEC_AT_OPEN).write_text(lf_copy, encoding="utf-8")
+    st["spec"]["sha256_at_open"] = digest
+    S.write_state(cfg, cid, st)
+    _open_resume(cfg, monkeypatch, _state(cfg, cid))
+    after = _state(cfg, cid)
+    assert after["spec"]["sha256_at_open"] == digest
+    assert (cdir / CL.SPEC_AT_OPEN).read_text(encoding="utf-8") == lf_copy
+    ok, gate, _ = CL.spec_guard(cfg, after)
+    assert ok and gate is None
 
 
 def test_adopt_rewrites_untrusted_snapshot_when_hash_null(env, monkeypatch):

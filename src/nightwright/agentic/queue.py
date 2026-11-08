@@ -1733,17 +1733,21 @@ def worktree_resume_state(state: dict, worktree: Path) -> tuple[str | None, str 
         spec_path = (worktree / rel).resolve()
         if not spec_path.is_relative_to(wt_resolved):
             return None, f"spec path escapes worktree: {rel}"
-    if not rel or spec_path is None or not spec_path.is_file():
+    if not rel or spec_path is None:
         if has_no_spec(state) or admission == "revise_pending":
             return "SPEC_WRITING", None
         if campaign_spec_id:
             return None, f"spec file missing at {spec_path or rel}"
         return "SPEC_WRITING", None
     data, read_err = _read_worktree_spec_bytes(worktree, rel)
-    if read_err:
+    if read_err is not None:
         return None, f"spec file unreadable at {spec_path}: {read_err}"
     if data is None:
-        return None, f"spec file missing at {spec_path}"
+        if has_no_spec(state) or admission == "revise_pending":
+            return "SPEC_WRITING", None
+        if campaign_spec_id:
+            return None, f"spec file missing at {spec_path}"
+        return "SPEC_WRITING", None
     try:
         fm, _ = split_frontmatter(_spec_bytes_as_text(data))
     except (ValueError, UnicodeDecodeError, yaml.YAMLError) as e:
@@ -1780,18 +1784,31 @@ def _worktree_conflict_mail_status(err: str) -> str | None:
     return None
 
 
+def _spec_snapshot_bytes_match_hash(data: bytes, want_hash: str) -> bool:
+    """True when ``data`` hashes to ``want_hash``, including legacy LF copies of CRLF opens."""
+    if not data:
+        return False
+    if hashlib.sha256(data).hexdigest() == want_hash:
+        return True
+    try:
+        text = data.decode("utf-8").replace("\r\n", "\n")
+    except UnicodeDecodeError:
+        return False
+    crlf = text.replace("\n", "\r\n").encode("utf-8")
+    return hashlib.sha256(crlf).hexdigest() == want_hash
+
+
 def _spec_at_open_snapshot_ok(cdir: Path, snap: Path, want_hash: str) -> bool:
-    """True when ``snap`` is a non-empty regular file in ``cdir`` whose bytes match ``want_hash``."""
+    """True when ``snap`` is a non-empty regular file in ``cdir`` matching ``want_hash``."""
     try:
         cdir_res = cdir.resolve()
-        if not snap.is_file() or snap.is_symlink():
+        st = os.lstat(snap)
+        if stat.S_ISLNK(st.st_mode) or not stat.S_ISREG(st.st_mode):
             return False
         if not snap.resolve().is_relative_to(cdir_res):
             return False
         data = snap.read_bytes()
-        if not data:
-            return False
-        return hashlib.sha256(data).hexdigest() == want_hash
+        return _spec_snapshot_bytes_match_hash(data, want_hash)
     except OSError:
         return False
 

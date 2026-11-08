@@ -172,6 +172,12 @@ Merge, split, revert, and red-main opens do not use this adopt path. A revert op
 - `python3 tools/spec_lint.py --write-ledger` && `python3 tools/spec_lint.py` — passed.
 - Full suite left to gating.
 
+### Test record (2026-11-08, loop 2 implementer review fixes)
+
+- `uv run pytest -q tests/test_agentic_spec_drift.py tests/test_queue_conflict_resolve.py` — 102 passed.
+- `python3 tools/spec_lint.py --write-ledger` && `python3 tools/spec_lint.py` — passed.
+- Full suite left to gating.
+
 ### Test record (2026-11-08, loop 1 implementer review fixes)
 
 - `uv run pytest -q tests/test_queue_conflict_resolve.py tests/test_idea_ordering.py tests/test_agentic_quiet.py tests/test_agentic_spec_drift.py` — 257 passed.
@@ -214,6 +220,8 @@ Merge, split, revert, and red-main opens do not use this adopt path. A revert op
   replace I/O errors keep `sha256_at_open` when the existing `spec_at_open.md` still matches it.
 - Fresh open keeps a trusted `spec_at_open.md`; validation failures clear the hash only when the
   on-disk copy no longer matches. CRLF worktree specs normalize newlines before front-matter checks.
+- Legacy open snapshots: LF `spec_at_open.md` copies trust when they universal-newline-match a
+  CRLF `sha256_at_open`; snapshot trust uses `lstat` so permission errors are unreadable, not absent.
 - Idea adopt into IMPLEMENTING/SPEC_REVIEW with `spec.id` unset stores the open snapshot instead of
   clearing an untrusted copy.
 
