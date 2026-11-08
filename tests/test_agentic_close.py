@@ -674,6 +674,21 @@ def test_split_skips_spec_guard(world):
     assert CL._is_spec_less(st) and not CL._is_spec_less(st2)
 
 
+def test_renamed_spec_is_what_close_checks(world):
+    wt = world["nw"]
+    src = "docs/specs/0001-t.md"
+    dest = "docs/specs/0002-t.md"
+    st = world["state"]
+    assert CL.follow_renamed_spec(wt, src) is None          # the file is still there
+    _git(wt, "mv", src, dest)
+    _git(wt, "commit", "-q", "-m", "renumber the spec")
+    assert CL.spec_guard(world["cfg"], st)[0] is False      # the old path is gone
+    assert CL.adopt_renamed_spec(st, wt) == dest
+    assert st["spec"]["rel_path"] == dest and st["spec_id"] == "SPEC-0001"
+    ok, gate, _ev = CL.spec_guard(world["cfg"], st)
+    assert ok and gate is None
+
+
 # ---- SPEC-0316: the branch's gate timeouts reach the close-time re-gate -------------------
 
 def _slow_yaml(timeout_s):

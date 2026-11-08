@@ -256,6 +256,51 @@ def spec_guard(cfg, state: dict) -> tuple[bool, dict | None, list]:
         "detail": tail, "files": [rel]})]
 
 
+def follow_renamed_spec(worktree, rel: str) -> str | None:
+    """The path this branch renamed a missing `rel` to, or None.
+
+    A renumbered spec leaves the campaign pointing at a file that is gone. Reading that
+    path fails, and the spec-change guard then diffs the open copy against an empty
+    document. The rename is on the branch; the newest `docs/specs/` rename of `rel` to a
+    file that is still in the worktree is the spec to close."""
+    if not worktree or not rel or (Path(worktree) / rel).is_file():
+        return None
+    try:
+        proc = git.git(worktree, "log", "-M", "--diff-filter=R", "--name-status",
+                       "--pretty=format:", "--", "docs/specs/", check=False)
+    except (GitError, OSError, ValueError):
+        return None
+    if proc.returncode != 0:
+        return None
+    for line in proc.stdout.splitlines():
+        parts = line.split("\t")
+        if len(parts) != 3 or not parts[0].startswith("R") or parts[1] != rel:
+            continue
+        if (Path(worktree) / parts[2]).is_file():
+            return parts[2]
+    return None
+
+
+def adopt_renamed_spec(state: dict, worktree) -> str | None:
+    """Point `state` at a renamed spec file. Returns the new path, or None when `rel_path`
+    is still present. Updates `spec.rel_path`, and `spec.id` / `spec_id` when the new file
+    carries an id."""
+    spec = dict(state.get("spec") or {})
+    dest = follow_renamed_spec(worktree, spec.get("rel_path") or "")
+    if not dest:
+        return None
+    spec["rel_path"] = dest
+    try:
+        fm, _body = split_frontmatter((Path(worktree) / dest).read_text(encoding="utf-8"))
+    except OSError:
+        fm = None
+    if isinstance(fm, dict) and fm.get("id"):
+        spec["id"] = fm["id"]
+        state["spec_id"] = fm["id"]
+    state["spec"] = spec
+    return dest
+
+
 def pr_body(state: dict, spec_fm: dict, spec_sections: dict, gate_run: G.GateRun | None) -> str:
     """Pure function of its inputs: the PR description for policy pr / draft-pr."""
     spec_id = state.get("spec_id") or spec_fm.get("id") or "?"
@@ -827,6 +872,11 @@ def prepare_close(cfg, state: dict, project_cfg: dict, *, gate_seq=None,
             return decided(_park("spec_write_failed", "split check failed: " + "; ".join(problems),
                                  "SPEC_WRITING", events))
     if not _is_spec_less(state):
+        renamed = adopt_renamed_spec(state, worktree)
+        if renamed:
+            rel = renamed
+            events.append(("note", {"text": f"spec file was renamed to {renamed}; "
+                                            "closing against it", "author": "queue"}))
         # 0. spec-change guard (SPEC-0186): the governing text must be what was accepted
         ok, synthetic, guard_events = spec_guard(cfg, state)
         events.extend(guard_events)

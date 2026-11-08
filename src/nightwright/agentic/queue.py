@@ -2909,6 +2909,12 @@ def _apply(ctx: _Ctx, state: dict, res: StepResult) -> dict:
                 counters["blocked_streak"] = 0
             return finish("GATING", "implemented")
         # triage
+        renamed = CL.adopt_renamed_spec(state, (state.get("repo") or {}).get("worktree"))
+        if renamed:
+            # The spec-changed failure was the old path. The branch renamed the file.
+            events.append(("note", {"text": f"spec file was renamed to {renamed}; "
+                                            "closing against it", "author": "queue"}))
+            return finish("CLOSING", "spec_renamed")
         decision = decide_triage(state, profile, rr.verdict, rr.verdict_ok)
         if decision.kind == "none":                      # malformed verdict, retry allowed
             if rr is not None and PG.is_usage_exhausted(rr):
