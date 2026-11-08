@@ -1133,7 +1133,7 @@ def after_met(cfg, state: dict, ref) -> tuple[bool, str]:
                         return True, ""
                     return False, (f"waiting on {newest['id']} (after: campaign {newest['id']} "
                                    f"is {st})")
-                if "not found" in why:
+                if why == f"{spec} not found":
                     return False, (f"waiting on {newest['id']} (after: campaign {newest['id']} "
                                    f"is {newest.get('state')})")
                 return False, f"waiting on {spec} (after: {rid} -> {why})"
@@ -1157,7 +1157,7 @@ def after_met(cfg, state: dict, ref) -> tuple[bool, str]:
         return True, ""
     hits = store.list_campaigns(cfg, include_terminal=True, project=state.get("project"),
                                 spec_id=rid)
-    if hits and hits[0].get("state") == "ABANDONED" and "not found" not in why:
+    if hits and hits[0].get("state") == "ABANDONED" and why != f"{rid} not found":
         return False, f"after {rid}: campaign {hits[0]['id']} abandoned"
     if why.endswith("not found"):
         if hits and hits[0].get("state") not in TERMINAL_STATES:
@@ -1798,19 +1798,57 @@ def _spec_snapshot_bytes_match_hash(data: bytes, want_hash: str) -> bool:
     return hashlib.sha256(crlf).hexdigest() == want_hash
 
 
-def _spec_at_open_snapshot_ok(cdir: Path, snap: Path, want_hash: str) -> bool:
-    """True when ``snap`` is a non-empty regular file in ``cdir`` matching ``want_hash``."""
+def _read_bounded_regular_file(path: Path, *, max_bytes: int) -> tuple[bytes | None, str | None]:
+    """Read a local path with ``O_NOFOLLOW`` and a byte cap."""
+    try:
+        st = os.lstat(path)
+    except OSError as e:
+        if e.errno == errno.ENOENT:
+            return None, None
+        return None, str(e)
+    if stat.S_ISLNK(st.st_mode) or not stat.S_ISREG(st.st_mode):
+        return None, "not a regular file"
+    flags = os.O_RDONLY
+    if hasattr(os, "O_NOFOLLOW"):
+        flags |= os.O_NOFOLLOW
+    try:
+        fd = os.open(path, flags)
+    except OSError as e:
+        return None, str(e)
+    chunks: list[bytes] = []
+    total = 0
+    try:
+        while True:
+            buf = os.read(fd, 1 << 20)
+            if not buf:
+                break
+            total += len(buf)
+            if total > max_bytes:
+                return None, f"spec file exceeds {max_bytes} bytes"
+            chunks.append(buf)
+    except OSError as e:
+        return None, str(e)
+    finally:
+        os.close(fd)
+    return b"".join(chunks), None
+
+
+def _read_spec_at_open_snapshot_bytes(cdir: Path, snap: Path) -> tuple[bytes | None, str | None]:
+    """Read ``spec_at_open.md`` when it is a regular file under ``cdir``."""
     try:
         cdir_res = cdir.resolve()
-        st = os.lstat(snap)
-        if stat.S_ISLNK(st.st_mode) or not stat.S_ISREG(st.st_mode):
-            return False
-        if not snap.resolve().is_relative_to(cdir_res):
-            return False
-        data = snap.read_bytes()
-        return _spec_snapshot_bytes_match_hash(data, want_hash)
-    except OSError:
-        return False
+        resolved = snap.resolve()
+    except OSError as e:
+        return None, str(e)
+    if not resolved.is_relative_to(cdir_res):
+        return None, "path escapes campaign dir"
+    return _read_bounded_regular_file(snap, max_bytes=MAX_WORKTREE_SPEC_BYTES)
+
+
+def _spec_at_open_snapshot_ok(cdir: Path, snap: Path, want_hash: str) -> bool:
+    """True when ``snap`` is a non-empty regular file in ``cdir`` matching ``want_hash``."""
+    data, err = _read_spec_at_open_snapshot_bytes(cdir, snap)
+    return err is None and data is not None and _spec_snapshot_bytes_match_hash(data, want_hash)
 
 
 MAX_WORKTREE_SPEC_BYTES = 4 * 1024 * 1024
@@ -1843,39 +1881,12 @@ def _read_worktree_spec_bytes(worktree: Path, rel: str) -> tuple[bytes | None, s
     wt_resolved = worktree.resolve()
     raw = worktree / rel
     try:
-        st = os.lstat(raw)
+        resolved = raw.resolve()
     except OSError as e:
-        if e.errno == errno.ENOENT:
-            return None, None
         return None, str(e)
-    if not stat.S_ISREG(st.st_mode):
-        return None, "not a regular file"
-    resolved = raw.resolve()
     if not resolved.is_relative_to(wt_resolved):
         return None, "path escapes worktree"
-    flags = os.O_RDONLY
-    if hasattr(os, "O_NOFOLLOW"):
-        flags |= os.O_NOFOLLOW
-    try:
-        fd = os.open(raw, flags)
-    except OSError as e:
-        return None, str(e)
-    chunks: list[bytes] = []
-    total = 0
-    try:
-        while True:
-            buf = os.read(fd, 1 << 20)
-            if not buf:
-                break
-            total += len(buf)
-            if total > MAX_WORKTREE_SPEC_BYTES:
-                return None, f"spec file exceeds {MAX_WORKTREE_SPEC_BYTES} bytes"
-            chunks.append(buf)
-    except OSError as e:
-        return None, str(e)
-    finally:
-        os.close(fd)
-    return b"".join(chunks), None
+    return _read_bounded_regular_file(raw, max_bytes=MAX_WORKTREE_SPEC_BYTES)
 
 
 def _unlink_spec_at_open_entry(snap: Path) -> None:

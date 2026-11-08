@@ -10,6 +10,7 @@ from pathlib import Path
 import pytest
 
 from nightwright.agentic import close as CL
+from nightwright.agentic import queue as Q
 from nightwright.agentic import store as S
 
 from test_agentic_e2e import (SPEC_ACCEPTED, _git, added, make_cfg, make_repo, run_cli,
@@ -137,6 +138,8 @@ def test_guard_fails_when_hash_set_but_snapshot_untrusted(tmp_path, snapshot):
     ok, gate, events = CL.spec_guard(cfg, st)
     assert not ok and gate["name"] == "spec-changed"
     assert events[0][1]["severity"] == "must_fix"
+    if snapshot == "empty":
+        assert events[0][1]["title"] == "spec-changed guard: no trusted open-time copy"
 
 
 def test_guard_fails_when_snapshot_not_decodable(tmp_path):
@@ -238,6 +241,21 @@ def test_guard_trusts_legacy_lf_snapshot_for_crlf_hash(tmp_path):
     st["spec"]["sha256_at_open"] = hashlib.sha256(crlf.encode("utf-8")).hexdigest()
     ok, gate, events = CL.spec_guard(cfg, st)
     assert ok and gate is None and events == []
+    wt = Path(st["repo"]["worktree"])
+    target, err = Q.worktree_resume_state(st, wt)
+    assert err is None and target == "IMPLEMENTING"
+
+
+def test_guard_oversized_open_snapshot_is_untrusted(tmp_path):
+    cfg = {"data_dir": str(tmp_path / "data")}
+    st = _state(tmp_path, cfg, BASE)
+    copy = S.campaign_dir(cfg, st["id"]) / CL.SPEC_AT_OPEN
+    huge = BASE + ("x" * (Q.MAX_WORKTREE_SPEC_BYTES + 1))
+    copy.write_bytes(huge.encode("utf-8"))
+    st["spec"]["sha256_at_open"] = hashlib.sha256(huge.encode("utf-8")).hexdigest()
+    ok, gate, events = CL.spec_guard(cfg, st)
+    assert not ok and gate["name"] == "spec-changed"
+    assert events[0][1]["title"] == "spec-changed guard: no trusted open-time copy"
 
 
 def test_guard_reports_drift_as_synthetic_gate(tmp_path):

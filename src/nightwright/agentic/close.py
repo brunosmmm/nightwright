@@ -254,19 +254,11 @@ def _spec_at_open_trusted(cfg, state: dict, copy: Path) -> bool:
     want = (state.get("spec") or {}).get("sha256_at_open")
     if not want:
         return False
-    try:
-        cdir = store.campaign_dir(cfg, state["id"]).resolve()
-        st = os.lstat(copy)
-        if stat.S_ISLNK(st.st_mode) or not stat.S_ISREG(st.st_mode):
-            return False
-        if not copy.resolve().is_relative_to(cdir):
-            return False
-        data = copy.read_bytes()
-    except OSError:
-        return False
     from . import queue as Q
 
-    return Q._spec_snapshot_bytes_match_hash(data, want)
+    cdir = store.campaign_dir(cfg, state["id"])
+    data, err = Q._read_spec_at_open_snapshot_bytes(cdir, copy)
+    return err is None and data is not None and Q._spec_snapshot_bytes_match_hash(data, want)
 
 
 def _spec_at_open_entry_absent(copy: Path) -> bool:
@@ -322,10 +314,14 @@ def spec_guard(cfg, state: dict) -> tuple[bool, dict | None, list]:
         return _spec_snapshot_read_gate(rel, f"worktree spec unreadable: {read_err}")
     if new_data is None:
         return _spec_snapshot_read_gate(rel, f"worktree spec missing at {worktree}/{rel}")
-    try:
-        snap_bytes = copy.read_bytes()
-    except OSError as e:
-        return _spec_snapshot_read_gate(rel, f"open-time snapshot unreadable: {e}")
+    snap_bytes, snap_err = Q._read_spec_at_open_snapshot_bytes(
+        store.campaign_dir(cfg, state["id"]), copy)
+    if snap_err:
+        return _spec_snapshot_read_gate(rel, f"open-time snapshot unreadable: {snap_err}")
+    if snap_bytes is None:
+        return _spec_snapshot_untrusted_gate(
+            rel, copy, f"open-time spec snapshot at {copy} is missing, untrusted, "
+            f"or does not match sha256_at_open")
     try:
         old = snap_bytes.decode("utf-8").replace("\r\n", "\n")
     except UnicodeDecodeError as e:

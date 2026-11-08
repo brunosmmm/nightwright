@@ -172,6 +172,12 @@ Merge, split, revert, and red-main opens do not use this adopt path. A revert op
 - `python3 tools/spec_lint.py --write-ledger` && `python3 tools/spec_lint.py` — passed.
 - Full suite left to gating.
 
+### Test record (2026-11-08, loop 3 implementer review fixes)
+
+- `uv run pytest -q tests/test_idea_ordering.py tests/test_queue_conflict_resolve.py tests/test_agentic_quiet.py tests/test_agentic_spec_drift.py` — passed.
+- `python3 tools/spec_lint.py --write-ledger` && `python3 tools/spec_lint.py` — passed.
+- Full suite left to gating.
+
 ### Test record (2026-11-08, loop 2 implementer review fixes)
 
 - `uv run pytest -q tests/test_agentic_spec_drift.py tests/test_queue_conflict_resolve.py` — 102 passed.

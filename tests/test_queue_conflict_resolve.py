@@ -353,6 +353,9 @@ def test_fresh_open_stores_crlf_worktree_spec_snapshot(env, monkeypatch):
     snap = S.campaign_dir(cfg, cid) / CL.SPEC_AT_OPEN
     assert snap.is_file()
     assert after["spec"]["sha256_at_open"] == hashlib.sha256(crlf.encode()).hexdigest()
+    wt = Path(after["repo"]["worktree"])
+    target, err = Q.worktree_resume_state(after, wt)
+    assert err is None and target == "IMPLEMENTING"
 
 
 def test_fresh_open_still_calls_worktree_add(env, monkeypatch):
@@ -571,6 +574,42 @@ def test_mismatched_worktree_path_still_calls_worktree_add(env, monkeypatch):
     S.write_state(cfg, cid, st)
     Q._do_open(Q._Ctx(cfg), _state(cfg, cid))
     assert calls == [1]
+
+
+def test_planned_worktree_path_exists_but_branch_elsewhere_calls_worktree_add(
+        env, monkeypatch):
+    cfg, repo = env
+    cid = add_idea_campaign(cfg, monkeypatch, capture(cfg, "path exists"))
+    st = _state(cfg, cid)
+    root = Path(repo)
+    planned = Path(st["repo"]["worktree"])
+    elsewhere = planned.parent / "elsewhere-wt"
+    git.worktree_add(root, elsewhere, st["repo"]["branch"], git.rev_parse(root, "main"))
+    planned.mkdir(parents=True, exist_ok=True)
+    calls = []
+    monkeypatch.setattr(git, "worktree_add", lambda *a, **k: calls.append(1))
+    monkeypatch.setattr(Q, "_run_worktree_setup", lambda *a, **k: None)
+    st["state"] = "OPENING"
+    S.write_state(cfg, cid, st)
+    res = Q._do_open(Q._Ctx(cfg), _state(cfg, cid))
+    assert calls == [1]
+    assert res.resumed_to is None
+
+
+def test_fresh_open_parks_on_missing_spec_path_outside_worktree(env, monkeypatch):
+    cfg, repo = env
+    cid = add_idea_campaign(cfg, monkeypatch, capture(cfg, "escape fresh"))
+    st = _state(cfg, cid)
+    rel = "../docs/specs/escape-missing.md"
+    st["spec"] = {"rel_path": rel, "id": "SPEC-0999", "internal": True}
+    st["spec_id"] = "SPEC-0999"
+    st["state"] = "OPENING"
+    S.write_state(cfg, cid, st)
+    monkeypatch.setattr(Q, "_run_worktree_setup", lambda *a, **k: None)
+    res = Q._do_open(Q._Ctx(cfg), _state(cfg, cid))
+    assert res.error and "escapes worktree" in res.error
+    snap = S.campaign_dir(cfg, cid) / CL.SPEC_AT_OPEN
+    assert not snap.exists()
 
 
 def test_resolve_dependency_conflicts_send_failure_retries(env, monkeypatch):
@@ -951,12 +990,46 @@ def test_adopt_keeps_legacy_lf_snapshot_when_hash_is_crlf(env, monkeypatch):
     (cdir / CL.SPEC_AT_OPEN).write_text(lf_copy, encoding="utf-8")
     st["spec"]["sha256_at_open"] = digest
     S.write_state(cfg, cid, st)
-    _open_resume(cfg, monkeypatch, _state(cfg, cid))
-    after = _state(cfg, cid)
+    row, after = _open_resume(cfg, monkeypatch, _state(cfg, cid))
+    assert after["state"] == "IMPLEMENTING" and row["reason"] == "resumed_worktree"
     assert after["spec"]["sha256_at_open"] == digest
     assert (cdir / CL.SPEC_AT_OPEN).read_text(encoding="utf-8") == lf_copy
     ok, gate, _ = CL.spec_guard(cfg, after)
     assert ok and gate is None
+
+
+def test_resume_crlf_accepted_without_trusted_snapshot_to_implementing(env, monkeypatch):
+    cfg, repo = env
+    cid = add_idea_campaign(cfg, monkeypatch, capture(cfg, "crlf no snap"))
+    crlf_body = ACCEPTED.format(sid="SPEC-0999").replace("\n", "\r\n")
+    st = _prep_worktree(cfg, repo, cid, crlf_body)
+    cdir = S.campaign_dir(cfg, cid)
+    snap = cdir / CL.SPEC_AT_OPEN
+    if snap.exists():
+        snap.unlink()
+    st = _state(cfg, cid)
+    st["spec"].pop("sha256_at_open", None)
+    S.write_state(cfg, cid, st)
+    row, after = _open_resume(cfg, monkeypatch, _state(cfg, cid))
+    assert after["state"] == "IMPLEMENTING" and row["reason"] == "resumed_worktree"
+    assert after.get("park") is None
+
+
+def test_adopt_rewrites_empty_snapshot_when_hash_is_empty_digest(env, monkeypatch):
+    cfg, repo = env
+    cid = add_idea_campaign(cfg, monkeypatch, capture(cfg, "empty hash snap"))
+    st = _prep_worktree(cfg, repo, cid, ACCEPTED)
+    cdir = S.campaign_dir(cfg, cid)
+    cdir.mkdir(parents=True, exist_ok=True)
+    empty_digest = hashlib.sha256(b"").hexdigest()
+    st["spec"]["sha256_at_open"] = empty_digest
+    (cdir / CL.SPEC_AT_OPEN).write_bytes(b"")
+    S.write_state(cfg, cid, st)
+    _open_resume(cfg, monkeypatch, _state(cfg, cid))
+    after = _state(cfg, cid)
+    wt_spec = Path(after["repo"]["worktree"]) / after["spec"]["rel_path"]
+    assert after["spec"]["sha256_at_open"] == SR.spec_sha256(wt_spec)
+    assert (cdir / CL.SPEC_AT_OPEN).read_bytes() == wt_spec.read_bytes()
 
 
 def test_adopt_rewrites_untrusted_snapshot_when_hash_null(env, monkeypatch):
@@ -1284,3 +1357,22 @@ def test_resume_rejected_or_superseded_spec_mails_once(env, monkeypatch, status,
     S.write_state(cfg, cid, after)
     _open_resume(cfg, monkeypatch, _state(cfg, cid))
     assert len([m for m in M.read_inbox(cfg, "conductor") if m.get("kind") == "request"]) == 1
+
+
+def test_oversized_spec_at_open_snapshot_is_rewritten_on_adopt(env, monkeypatch):
+    cfg, repo = env
+    cid = add_idea_campaign(cfg, monkeypatch, capture(cfg, "huge snap"))
+    st = _prep_worktree(cfg, repo, cid, ACCEPTED)
+    cdir = S.campaign_dir(cfg, cid)
+    cdir.mkdir(parents=True, exist_ok=True)
+    snap = cdir / CL.SPEC_AT_OPEN
+    body = ACCEPTED.format(sid="SPEC-0999")
+    huge = body + ("x" * (Q.MAX_WORKTREE_SPEC_BYTES + 1))
+    snap.write_bytes(huge.encode("utf-8"))
+    st["spec"]["sha256_at_open"] = hashlib.sha256(huge.encode("utf-8")).hexdigest()
+    S.write_state(cfg, cid, st)
+    row, after = _open_resume(cfg, monkeypatch, _state(cfg, cid))
+    assert after["state"] == "IMPLEMENTING" and row["reason"] == "resumed_worktree"
+    wt_spec = Path(after["repo"]["worktree"]) / after["spec"]["rel_path"]
+    assert after["spec"]["sha256_at_open"] == SR.spec_sha256(wt_spec)
+    assert snap.stat().st_size <= Q.MAX_WORKTREE_SPEC_BYTES

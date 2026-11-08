@@ -177,6 +177,27 @@ def test_idea_ref_waits_on_spec_arrow_when_prereq_file_not_done(env, monkeypatch
     assert blocked[0] == f"waiting on {dep} (after: {a} -> in-progress; campaign {ca} is REVIEWING)"
 
 
+def test_idea_after_holds_when_prereq_spec_file_is_not_valid_utf8(env, monkeypatch):
+    cfg, repo = env
+    dep = "SPEC-0407"
+    path = repo / "docs/specs/0407-on-main.md"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(b"\xff\xfe---\nid: SPEC-0407\nstatus: done\n---\n\nx\n")
+    a = capture(cfg, "Prereq corrupt")
+    ca = add_idea_campaign(cfg, monkeypatch, a)
+    st = _state(cfg, ca)
+    st["spec_id"] = dep
+    st["state"] = "HANDED_OFF"
+    S.write_state(cfg, ca, st)
+    waiter = add_idea_campaign(cfg, monkeypatch, capture(cfg, "waiter"), "--after", a)
+    want = f"waiting on {ca} (after: campaign {ca} is HANDED_OFF)"
+    blocked = Q.backlog_readiness(cfg, _state(cfg, waiter))[1]
+    assert blocked == [want]
+    assert "not found" not in blocked[0]
+    ctx = QT.Ctx(cfg, "conductor")
+    assert QT.dependency_wait(blocked, ctx.live_specs, _state(cfg, waiter)["project"])
+
+
 def test_idea_after_holds_on_main_done_file_until_merged(env, monkeypatch):
     cfg, repo = env
     a = capture(cfg, "First")
