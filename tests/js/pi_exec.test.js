@@ -8,6 +8,8 @@ const { pathToFileURL } = require("node:url");
 
 const PI_EXEC = path.join(__dirname, "..", "..", "src", "nightwright", "agentic", "pi_exec.mjs");
 
+const TASK_BODY = "task text";
+
 function layout(over = {}) {
   const runDir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-run-"));
   const worktree = fs.mkdtempSync(path.join(os.tmpdir(), "pi-wt-"));
@@ -23,7 +25,7 @@ function layout(over = {}) {
     ...over,
   };
   fs.writeFileSync(path.join(runDir, "request.json"), JSON.stringify(doc));
-  fs.writeFileSync(path.join(runDir, "prompt.md"), `task text\n\nINVARIANT`);
+  fs.writeFileSync(path.join(runDir, "prompt.md"), `${TASK_BODY}\n\nINVARIANT`);
   return runDir;
 }
 
@@ -204,6 +206,10 @@ test("execute: in-memory session, settings, loader flags, appendSystemPrompt", a
   assert.equal(resultLine.subtype, "success");
   assert.equal(resultLine.session_id, "sess-1");
   const prompt = over.promptText;
+  assert.ok(prompt.includes(TASK_BODY));
+  const taskIdx = prompt.indexOf(TASK_BODY);
+  const footerIdx = prompt.indexOf("Reply with a single JSON object");
+  assert.ok(taskIdx >= 0 && footerIdx > taskIdx);
   assert.equal((prompt.match(/INVARIANT/g) || []).length, 1);
   assert.ok(prompt.includes("Reply with a single JSON object"));
   const schemaBody = JSON.stringify(doc.json_schema, null, 2);

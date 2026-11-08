@@ -46,7 +46,7 @@ ALLOWED = {
     ("agentic/cli_worker.py", "worker_jobs"): "worker jobs: plain/JSON listing for ssh callers (SPEC-0340)",
     ("agentic/cli_worker.py", "worker_claude_check"): "worker claude-check: one JSON line for ssh callers (SPEC-0344)",
     ("agentic/cli_worker.py", "worker_cursor_check"): "worker cursor-check: one JSON line for ssh callers (SPEC-0436)",
-    ("agentic/cli_worker.py", "worker_pi_check"): "worker pi-check: one JSON line for ssh callers (SPEC-0451)",
+    ("agentic/cli_worker.py", "worker_pi_check"): "worker pi-check: one JSON line for ssh callers (SPEC-0465)",
     ("agentic/worker_job.py", "reap"): "stderr diagnostic outside the frame protocol (SPEC-0340)",
     ("agentic/worker_job.py", "_unclaim"): "stderr diagnostic outside the frame protocol (SPEC-0340)",
     ("agentic/worker_job.py", "submit"): "stderr diagnostic outside the frame protocol (SPEC-0340)",

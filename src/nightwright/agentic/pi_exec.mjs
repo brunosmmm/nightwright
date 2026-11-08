@@ -1,5 +1,5 @@
 /**
- * Local Pi SDK persona child (SPEC-0451).
+ * Local Pi SDK persona child (SPEC-0465).
  *
  * `node pi_exec.mjs <run_dir>` is supervised by runproc when resolution is `pi`.
  * Exports `execute(runDir, deps)` for tests with a stub SDK.

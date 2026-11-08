@@ -1,4 +1,4 @@
-"""SPEC-0451: pytest gate for `tests/js/pi_exec.test.js` (node --test)."""
+"""SPEC-0465: pytest gate for `tests/js/pi_exec.test.js` (node --test)."""
 import shutil
 import subprocess
 import sys

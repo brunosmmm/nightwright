@@ -1,7 +1,7 @@
 ---
 id: SPEC-0471
 title: Pi test requires the task text in the user message
-status: accepted
+status: done
 owner: user
 created: 2026-11-08
 updated: 2026-11-08
@@ -120,18 +120,18 @@ is not a hit.
 
 ## Acceptance criteria
 
-- [ ] `node --test tests/js/pi_exec.test.js` asserts that `over.promptText`
+- [x] `node --test tests/js/pi_exec.test.js` asserts that `over.promptText`
       contains the `prompt.md` task body `task text`, and that this substring
       occurs before `Reply with a single JSON object`. Removing the task body
       from the `session.prompt` argument fails that test.
-- [ ] That same test still requires the invariant once in `over.promptText`,
+- [x] That same test still requires the invariant once in `over.promptText`,
       the schema body once, and `appendSystemPrompt` equal to `["INVARIANT"]`.
-- [ ] The Pi files listed in Design contain no contiguous `SPEC-0451`. Each
+- [x] The Pi files listed in Design contain no contiguous `SPEC-0451`. Each
       former citation is `SPEC-0465`. `test_remote_header_runner_pi` uses
       campaign id `c1`.
-- [ ] SPEC-0451's title and body stay the spoken-line tail spec. SPEC-0452
+- [x] SPEC-0451's title and body stay the spoken-line tail spec. SPEC-0452
       still `depends_on` SPEC-0451.
-- [ ] `execute`'s user message stays `prompt.md` plus one schema footer.
+- [x] `execute`'s user message stays `prompt.md` plus one schema footer.
       Claude and Cursor launch argv stay as they are.
 
 ## Test plan
@@ -149,6 +149,12 @@ is not a hit.
   the Claude argv tests in `tests/test_agentic_runner.py` stay green.
   `docs/specs/0451-tail-marks-spoken-lines.md` is not edited.
 
+### Test record (2026-11-08)
+
+- `node --test tests/js/pi_exec.test.js`: 63 passed.
+- `uv run pytest -q tests/test_pi_runner.py tests/test_pi_exec_js.py tests/test_rich_output_guard.py tests/test_agentic_runner.py tests/test_cursor_runner.py`: 87 passed.
+- Full suite left to gating.
+
 ## Rollout / migration
 
 No config, map, or process change. The next `node --test` of
@@ -158,12 +164,12 @@ SPEC-0465 do not change runtime behavior.
 
 ## Definition of done
 
-- [ ] Acceptance criteria all met.
-- [ ] Test plan executed; automated tests pass (`uv run pytest` on the
+- [x] Acceptance criteria all met.
+- [x] Test plan executed; automated tests pass (`uv run pytest` on the
       affected set, plus `node --test tests/js/pi_exec.test.js`).
-- [ ] No regressions.
-- [ ] Spec body updated to match what shipped.
-- [ ] `docs/LEDGER.md` updated (status + date).
+- [x] No regressions.
+- [x] Spec body updated to match what shipped.
+- [x] `docs/LEDGER.md` updated (status + date).
 
 ## Open questions
 

@@ -1,4 +1,4 @@
-"""Pi model map (SPEC-0451): YAML that translates profile aliases to provider/id/thinking.
+"""Pi model map (SPEC-0465): YAML that translates profile aliases to provider/id/thinking.
 
 Same overlay order as cursor_map, lowest first:
 

@@ -99,7 +99,7 @@ def with_cursor_agent(argv, env) -> tuple[list, dict]:
 
 def with_agent(argv, env) -> tuple[list, dict]:
     """Resolve a leading `claude` or `cursor-agent` the way the job's exec does.
-    A leading `node` (Pi child) is left unchanged (SPEC-0451)."""
+    A leading `node` (Pi child) is left unchanged (SPEC-0465)."""
     if argv and argv[0] == "node":
         return list(argv), env
     if argv and argv[0] == "cursor-agent":
@@ -138,7 +138,7 @@ def _redact_secrets(text: str, secrets: list[str]) -> str:
 
 
 def probe_pi(providers, environ=None, *, run=None) -> dict:
-    """SPEC-0451: `{ok, error, missing}` from `pi_exec.mjs --probe` (no key text)."""
+    """SPEC-0465: `{ok, error, missing}` from `pi_exec.mjs --probe` (no key text)."""
     run = subprocess.run if run is None else run
     env = os.environ if environ is None else environ
     providers = [str(p).strip() for p in (providers or []) if str(p).strip()]

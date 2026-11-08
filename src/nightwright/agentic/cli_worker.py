@@ -74,7 +74,7 @@ def worker_cursor_check(cfg):
 @worker_group.command("pi-check")
 @click.pass_obj
 def worker_pi_check(cfg):
-    """SPEC-0451: Pi package import and map provider credentials: one JSON line.
+    """SPEC-0465: Pi package import and map provider credentials: one JSON line.
     Optional stdin JSON `{"providers":["anthropic",...]}` from the coordinator."""
     import sys
 

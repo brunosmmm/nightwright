@@ -1410,7 +1410,7 @@ PI_CHECK_SCHEMA = "nw.worker.pi_check.v1"
 
 
 def pi_check(cfg, *, providers=None) -> dict:
-    """SPEC-0451: probe provider credentials. Optional `providers` (e.g. from coordinator stdin)
+    """SPEC-0465: probe provider credentials. Optional `providers` (e.g. from coordinator stdin)
     override this host's merged map."""
     from . import pi_map as PM
     from . import runproc as RP
@@ -1448,7 +1448,7 @@ def check_ssh_command(original: str | None) -> list[str]:
     `have --repo <key> <sha>...`; `gate-job`; `gc [--keep-days <n>]`; and SPEC-0340's
     `submit`; `attach <job> [--from <n>]`; `poll <job> [--from <n>] [--renew]`;
     `cancel <job>`; `jobs [--json]`; SPEC-0344's `claude-check [--auth]`; SPEC-0436's
-    `cursor-check`; SPEC-0451's `pi-check`; SPEC-0369's `update [--force]`."""
+    `cursor-check`; SPEC-0465's `pi-check`; SPEC-0369's `update [--force]`."""
     if not original or not original.strip():
         raise ValueError("empty command")
     try:
@@ -1478,7 +1478,7 @@ def check_ssh_command(original: str | None) -> list[str]:
         ok = args in ([], ["--auth"])
     elif sub == "cursor-check":                 # SPEC-0436
         ok = args == []
-    elif sub == "pi-check":                      # SPEC-0451
+    elif sub == "pi-check":                      # SPEC-0465
         ok = args == []
     elif sub == "update":                       # SPEC-0369
         ok = args in ([], ["--force"])

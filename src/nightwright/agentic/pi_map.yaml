@@ -1,4 +1,4 @@
-# SPEC-0451: alias + effort → Pi provider / id / thinking. Overlay with
+# SPEC-0465: alias + effort → Pi provider / id / thinking. Overlay with
 # <config_dir>/pi_map.yaml, agentic.pi in config.yaml, or <project>/.nw/pi_map.yaml.
 schema: nw.pi_map.v1
 defaults:

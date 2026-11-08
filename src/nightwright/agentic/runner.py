@@ -225,7 +225,7 @@ def map_cursor_model(model, effort=None, cfg=None, *, project_root=None, cursor_
 
 
 def map_pi_model(model, effort=None, cfg=None, *, project_root=None) -> dict:
-    """Pi `{provider, id, thinking, model}` for a profile alias (SPEC-0451)."""
+    """Pi `{provider, id, thinking, model}` for a profile alias (SPEC-0465)."""
     from . import pi_map as PM
     return PM.map_pi_model(model, effort, cfg, project_root=project_root)
 
@@ -353,7 +353,7 @@ def build_cursor_argv(req: RunRequest) -> list[str]:
 
 
 def build_pi_argv(req: RunRequest) -> list[str]:
-    """Local Pi SDK child (SPEC-0451). Credentials stay in the environment."""
+    """Local Pi SDK child (SPEC-0465). Credentials stay in the environment."""
     script = Path(__file__).resolve().parent / "pi_exec.mjs"
     node = RP._resolve_binary("node", os.environ) or "node"
     return [node, str(script), str(req.run_dir)]
@@ -804,7 +804,7 @@ class CursorRunner(ClaudeRunner):
 
 
 class PiRunner(ClaudeRunner):
-    """Spawn the local Pi SDK child per `build_pi_argv` (SPEC-0451)."""
+    """Spawn the local Pi SDK child per `build_pi_argv` (SPEC-0465)."""
 
     def _launch_argv(self, req: RunRequest) -> list[str]:
         return build_pi_argv(req)

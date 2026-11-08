@@ -1,4 +1,4 @@
-"""SPEC-0451: PiRunner argv, map, remote job, doctor, tail helpers."""
+"""SPEC-0465: PiRunner argv, map, remote job, doctor, tail helpers."""
 import json
 from pathlib import Path
 
@@ -384,7 +384,7 @@ def test_remote_header_runner_pi(tmp_path, monkeypatch):
     req = _req(tmp_path)
     w = {"name": "box", "ssh": "nw@box", "kinds": ["persona"], "slots": 1}
     state = {
-        "id": "SPEC-0451", "spec_id": "SPEC-0451",
+        "id": "c1", "spec_id": "c1",
         "repo": {"worktree": str(tmp_path), "base": "main"},
     }
     cfg = {"agentic": {"runner": "pi"}, "data_dir": str(tmp_path / "d")}
@@ -710,3 +710,29 @@ def test_queue_cli_runner_choices_include_pi_exclude_conductor():
     stew = cli.commands["queue"].commands["steward-launch"]
     assert "pi" not in next(p for p in cond.params if p.name == "runner").type.choices
     assert "pi" not in next(p for p in stew.params if p.name == "runner").type.choices
+
+
+def test_pi_sources_cite_spec_0465():
+    """SPEC-0471: Pi runner sources must cite SPEC-0465, not the tail spec id."""
+    root = Path(__file__).resolve().parents[1]
+    forbidden = "SPEC-" + "0451"
+    paths = [
+        root / "src/nightwright/agentic/pi_exec.mjs",
+        root / "src/nightwright/agentic/pi_map.py",
+        root / "src/nightwright/agentic/pi_map.yaml",
+        root / "src/nightwright/agentic/runner.py",
+        root / "src/nightwright/agentic/runproc.py",
+        root / "src/nightwright/agentic/cli_worker.py",
+        root / "src/nightwright/agentic/worker.py",
+        root / "src/nightwright/agentic/remote_personas.py",
+        root / "src/nightwright/doctor.py",
+        root / "tests/test_pi_exec_js.py",
+        root / "tests/test_rich_output_guard.py",
+        Path(__file__).resolve(),
+    ]
+    hits = []
+    for p in paths:
+        text = p.read_text(encoding="utf-8")
+        if forbidden in text:
+            hits.append(str(p.relative_to(root)))
+    assert hits == [], f"Pi sources must not cite {forbidden}: {hits}"

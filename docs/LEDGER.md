@@ -303,7 +303,6 @@ progress. This is the single place to see *what has been decided* and *what is i
 | [SPEC-0466](./specs/0466-gpt-only-pi-sdk-model-set-for-all-nightwright.md) | GPT-only Pi SDK model set for all nightwright personas | feature | in-progress | — | 2026-11-08 |
 | [SPEC-0468](./specs/0468-stop-queue-thrash.md) | Stop the queue from thrashing a finished campaign | feature | accepted | — | 2026-11-08 |
 | [SPEC-0470](./specs/0470-close-follows-a-renamed-spec.md) | Close follows a spec file the branch renamed | feature | accepted | — | 2026-11-08 |
-| [SPEC-0471](./specs/0471-run-pi-personas-through-the-node-sdk.md) | Pi test requires the task text in the user message | feature | accepted | — | 2026-11-08 |
 
 ## Done
 
@@ -733,6 +732,7 @@ progress. This is the single place to see *what has been decided* and *what is i
 | [SPEC-0462](./specs/0462-triage-a-diverging-campaign.md) | Triage a diverging campaign before another implement round | feature | done | — | 2026-11-07 |
 | [SPEC-0463](./specs/0463-periodic-deterministic-resolution-of-queue.md) | Periodic deterministic resolution of queue dependency conflicts | feature | done | M9: agentic workflow | 2026-11-08 |
 | [SPEC-0469](./specs/0469-release-red-hold-when-base-moves.md) | Release the red-base hold once the base moves past the red sha | feature | done | — | 2026-11-08 |
+| [SPEC-0471](./specs/0471-run-pi-personas-through-the-node-sdk.md) | Pi test requires the task text in the user message | feature | done | — | 2026-11-08 |
 | [SPEC-0479](./specs/0479-herdr-notifications-are-silent.md) | Herdr notifications are silent | feature | done | — | 2026-11-08 |
 
 ## Superseded / rejected

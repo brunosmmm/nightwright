@@ -945,7 +945,7 @@ def claude_check(cfg, w: dict, auth: bool) -> list[str]:
 
 
 def pi_check(cfg, w: dict) -> list[str]:
-    """SPEC-0451: `nw worker pi-check` on the worker; the errors (empty: ok)."""
+    """SPEC-0465: `nw worker pi-check` on the worker; the errors (empty: ok)."""
     from . import pi_map as PM
     from . import remote_gates as RG
 

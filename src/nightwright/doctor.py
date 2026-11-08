@@ -387,7 +387,7 @@ def check_runner(cfg, *, now=None) -> dict:
 
 
 def check_pi_agent(cfg, *, run_cmd=None) -> dict:
-    """`agentic.pi`: Pi package + map provider credentials when resolution is pi (SPEC-0451)."""
+    """`agentic.pi`: Pi package + map provider credentials when resolution is pi (SPEC-0465)."""
     id = "agentic.pi"
     if cfg is None:
         return _skip_no_config(id)
