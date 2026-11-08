@@ -295,6 +295,41 @@ test("execute: toolResult message_end emits user tool_result line", async () => 
   assert.equal(last.total_cost_usd, 0.01);
 });
 
+test("execute: toolResult with text and image blocks emits placeholder not bytes", async () => {
+  const execute = await loadExecute();
+  const runDir = layout();
+  const out = { chunks: [], write(s) { this.chunks.push(s); } };
+  const imageBytes = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJ";
+  const note = "Read image file: photo.png";
+  const toolEv = {
+    type: "message_end",
+    message: {
+      role: "toolResult",
+      toolCallId: "call-img",
+      isError: false,
+      content: [
+        { type: "text", text: note },
+        { type: "image", mimeType: "image/png", data: imageBytes },
+      ],
+    },
+  };
+  const { pi } = stubPi({ events: [toolEv] });
+  await execute(runDir, {
+    out,
+    err: { write() {} },
+    importPi: async () => pi,
+    modelRuntime: { getModel: () => ({ cost: { input: 1 } }), checkAuth: async () => ({}), getAuth: async () => ({}) },
+  });
+  const tr = chunksToLines(out.chunks).find((l) => l.type === "user");
+  assert.ok(tr, "expected tool_result user line");
+  assert.equal(tr.message.content[0].tool_use_id, "call-img");
+  assert.equal(
+    tr.message.content[0].content,
+    `${note}[image omitted]`,
+  );
+  assert.ok(!out.chunks.join("").includes(imageBytes));
+});
+
 test("execute: toolResult with string content", async () => {
   const execute = await loadExecute();
   const runDir = layout();
@@ -763,6 +798,79 @@ test("execute: auth.json GAC path loads PEM for scrubbing", async () => {
     else process.env.GOOGLE_APPLICATION_CREDENTIALS = prevGac;
     try {
       fs.rmSync(saPath, { force: true });
+    } catch {
+      /* ignore */
+    }
+  }
+});
+
+test("execute: ANTHROPIC_API_KEY env only scrubbed from stdout and stderr", async () => {
+  const execute = await loadExecute();
+  const runDir = layout();
+  const envKey = "sk-ant-api03-env-only-scrub-needle";
+  const prev = process.env.ANTHROPIC_API_KEY;
+  process.env.ANTHROPIC_API_KEY = envKey;
+  const out = { chunks: [], write(s) { this.chunks.push(s); } };
+  const err = { chunks: [], write(s) { this.chunks.push(s); } };
+  const { pi } = stubPi({
+    getAuth: async () => ({}),
+    checkAuth: async () => ({ type: "api_key", source: "ANTHROPIC_API_KEY" }),
+    promptReject: new Error(`auth failed: ${envKey}`),
+  });
+  try {
+    const code = await execute(runDir, {
+      out,
+      err,
+      importPi: async () => pi,
+      modelRuntime: await pi.ModelRuntime.create(),
+    });
+    assert.equal(code, 1);
+    const blob = out.chunks.join("") + err.chunks.join("");
+    assert.ok(!blob.includes(envKey));
+    assert.ok(blob.includes("[redacted]"));
+  } finally {
+    if (prev === undefined) delete process.env.ANTHROPIC_API_KEY;
+    else process.env.ANTHROPIC_API_KEY = prev;
+  }
+});
+
+test("execute: bedrock AWS_WEB_IDENTITY_TOKEN_FILE contents scrubbed", async () => {
+  const execute = await loadExecute();
+  const runDir = layout({ pi_provider: "amazon-bedrock", pi_id: "anthropic.claude-3-5-sonnet" });
+  const witSecret = "eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9-bedrock-web-id";
+  const witPath = path.join(os.tmpdir(), `pi-wit-${process.pid}.jwt`);
+  fs.writeFileSync(witPath, witSecret);
+  const prevWit = process.env.AWS_WEB_IDENTITY_TOKEN_FILE;
+  process.env.AWS_WEB_IDENTITY_TOKEN_FILE = witPath;
+  const out = { chunks: [], write(s) { this.chunks.push(s); } };
+  const { pi } = stubPi({
+    getAuth: async () => ({}),
+    checkAuth: async () => ({ type: "web_identity" }),
+    messages: [
+      {
+        role: "assistant",
+        stopReason: "stop",
+        content: [{ type: "text", text: `leak ${witSecret}` }],
+        usage: { cost: { total: 0.01 } },
+      },
+    ],
+    modelCost: { input: 1 },
+  });
+  try {
+    await execute(runDir, {
+      out,
+      err: { write() {} },
+      importPi: async () => pi,
+      modelRuntime: await pi.ModelRuntime.create(),
+    });
+    const blob = out.chunks.join("");
+    assert.ok(!blob.includes(witSecret));
+    assert.ok(blob.includes("[redacted]"));
+  } finally {
+    if (prevWit === undefined) delete process.env.AWS_WEB_IDENTITY_TOKEN_FILE;
+    else process.env.AWS_WEB_IDENTITY_TOKEN_FILE = prevWit;
+    try {
+      fs.rmSync(witPath, { force: true });
     } catch {
       /* ignore */
     }

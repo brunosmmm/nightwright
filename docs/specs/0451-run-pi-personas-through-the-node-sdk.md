@@ -526,6 +526,13 @@ fails the check with that fact.
 - Full `uv run pytest` left to queue gating
 - `python3 tools/spec_lint.py --write-ledger` && `python3 tools/spec_lint.py` — pass
 
+### Test record (IDEA-1023 campaign loop 3 implementer, 2026-11-08)
+
+- `node --test tests/js/pi_exec.test.js` — pass (mixed text/image toolResult line, ANTHROPIC_API_KEY env scrub, bedrock web-identity file scrub)
+- `uv run pytest tests/test_pi_runner.py tests/test_pi_exec_js.py -q` — pass
+- Full `uv run pytest` left to queue gating
+- `python3 tools/spec_lint.py --write-ledger` && `python3 tools/spec_lint.py` — pass
+
 ### Test record (campaign loop 0 implementer, 2026-11-07)
 
 - `node --test tests/js/pi_exec.test.js` — pass (GAC escaped PEM on gemini, pi-bash only-new cleanup, selective env secrets)
@@ -571,6 +578,11 @@ fails the check with that fact.
 ### As shipped (IDEA-1023 campaign loop 2 implementer, 2026-11-08)
 
 - `expandHomePath` uses `homedir() + slice(1)` for leading `~` (Pi `fileExists` semantics) in `readTrimmedFile` and `parseGoogleCredentialFile`; `collectSecretsAsync` reads `ANTHROPIC_IDENTITY_TOKEN_FILE` for anthropic like Bedrock web-identity.
+
+### As shipped (IDEA-1023 campaign loop 3 implementer, 2026-11-08)
+
+- `emitToolResultLine` maps Pi `text` + `image` tool-result blocks to one `tool_result` line (text joined, `[image omitted]` placeholder, no image bytes).
+- Env scrub coverage: `PROVIDER_ENV_KEYS` values (e.g. `ANTHROPIC_API_KEY`) and `AWS_WEB_IDENTITY_TOKEN_FILE` contents are collected and redacted on stdout/stderr.
 
 ### As shipped (campaign loop 0 implementer, 2026-11-07)
 

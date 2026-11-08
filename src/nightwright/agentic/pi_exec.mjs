@@ -214,6 +214,25 @@ function mapUserContent(content = []) {
   return blocks;
 }
 
+const IMAGE_TOOL_RESULT_PLACEHOLDER = "[image omitted]";
+
+function toolResultTextFromPiContent(content) {
+  if (!Array.isArray(content) || !content.length) return null;
+  if (content.every((b) => b?.type === "text")) {
+    return content.map((b) => b.text ?? "").join("");
+  }
+  if (content.some((b) => b?.type === "text" || b?.type === "image")) {
+    const parts = [];
+    for (const block of content) {
+      if (!block || typeof block !== "object") continue;
+      if (block.type === "text") parts.push(block.text ?? "");
+      else if (block.type === "image") parts.push(IMAGE_TOOL_RESULT_PLACEHOLDER);
+    }
+    return parts.length ? parts.join("") : null;
+  }
+  return null;
+}
+
 function emitToolResultLine(out, message, secrets = []) {
   let blocks;
   if (typeof message.content === "string") {
@@ -225,19 +244,20 @@ function emitToolResultLine(out, message, secrets = []) {
         isError: message.isError,
       },
     ]);
-  } else if (
-    Array.isArray(message.content) &&
-    message.content.length &&
-    message.content.every((b) => b?.type === "text")
-  ) {
-    blocks = [
-      {
-        type: "tool_result",
-        tool_use_id: message.toolCallId ?? "",
-        content: message.content.map((b) => b.text ?? "").join(""),
-        is_error: Boolean(message.isError),
-      },
-    ];
+  } else if (Array.isArray(message.content) && message.content.length) {
+    const text = toolResultTextFromPiContent(message.content);
+    if (text != null) {
+      blocks = [
+        {
+          type: "tool_result",
+          tool_use_id: message.toolCallId ?? "",
+          content: text,
+          is_error: Boolean(message.isError),
+        },
+      ];
+    } else {
+      blocks = mapUserContent(message.content);
+    }
   } else {
     blocks = mapUserContent(message.content);
   }
