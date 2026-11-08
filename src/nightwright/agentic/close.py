@@ -267,7 +267,18 @@ def spec_guard(cfg, state: dict) -> tuple[bool, dict | None, list]:
     rel = (state.get("spec") or {}).get("rel_path") or ""
     worktree = (state.get("repo") or {}).get("worktree") or ""
     copy = store.campaign_dir(cfg, state["id"]) / SPEC_AT_OPEN
-    if not _spec_at_open_trusted(cfg, state, copy):
+    want = (state.get("spec") or {}).get("sha256_at_open")
+    trusted = _spec_at_open_trusted(cfg, state, copy)
+    if want and not trusted:
+        detail = (f"open-time spec snapshot at {copy} is missing, untrusted, "
+                  f"or does not match sha256_at_open")
+        gate = {"name": "spec-changed", "required": True, "ok": False, "exit_code": None,
+                "timed_out": False, "duration_s": 0.0, "log": "", "tail": detail}
+        return False, gate, [("finding", {
+            "persona": "close", "severity": "must_fix", "gate": "spec-changed",
+            "title": "spec-changed guard: no trusted open-time copy",
+            "detail": detail, "files": [rel]})]
+    if not trusted:
         return True, None, [("finding", {
             "persona": "close", "severity": "info", "gate": "spec-changed",
             "title": "spec-changed guard skipped: no open-time copy of the spec",

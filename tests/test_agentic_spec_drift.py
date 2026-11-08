@@ -2,6 +2,7 @@
 supposed to make (ticks, status/updated, Test record / As shipped subsections, Clock Log) and
 reports everything else; the close step routes drift to TRIAGING; end to end a campaign whose
 implementer deletes an AC never merges."""
+import hashlib
 from pathlib import Path
 
 import pytest
@@ -107,6 +108,15 @@ def test_guard_without_copy_is_skipped_with_info(tmp_path):
     ok, gate, events = CL.spec_guard(cfg, st)
     assert ok and gate is None
     assert events[0][1]["severity"] == "info" and events[0][1]["gate"] == "spec-changed"
+
+
+def test_guard_fails_when_hash_set_but_snapshot_missing(tmp_path):
+    cfg = {"data_dir": str(tmp_path / "data")}
+    st = _state(tmp_path, cfg, BASE)
+    st["spec"]["sha256_at_open"] = hashlib.sha256(BASE.encode("utf-8")).hexdigest()
+    ok, gate, events = CL.spec_guard(cfg, st)
+    assert not ok and gate["name"] == "spec-changed"
+    assert events[0][1]["severity"] == "must_fix"
 
 
 def test_guard_reports_drift_as_synthetic_gate(tmp_path):

@@ -1738,9 +1738,14 @@ def worktree_resume_state(state: dict, worktree: Path) -> tuple[str | None, str 
         if campaign_spec_id:
             return None, f"spec file missing at {spec_path or rel}"
         return "SPEC_WRITING", None
+    data, read_err = _read_worktree_spec_bytes(worktree, rel)
+    if read_err:
+        return None, f"spec file unreadable at {spec_path}: {read_err}"
+    if data is None:
+        return None, f"spec file missing at {spec_path}"
     try:
-        fm, _ = split_frontmatter(spec_path.read_text(encoding="utf-8"))
-    except (OSError, ValueError, yaml.YAMLError) as e:
+        fm, _ = split_frontmatter(data.decode("utf-8"))
+    except (ValueError, UnicodeDecodeError, yaml.YAMLError) as e:
         return None, f"spec file unreadable at {spec_path}: {e}"
     if not isinstance(fm, dict):
         return None, f"spec file unreadable at {spec_path}: front matter is not a mapping"
@@ -1790,6 +1795,9 @@ def _spec_at_open_snapshot_ok(cdir: Path, snap: Path, want_hash: str) -> bool:
         return False
 
 
+MAX_WORKTREE_SPEC_BYTES = 4 * 1024 * 1024
+
+
 def _read_worktree_spec_bytes(worktree: Path, rel: str) -> tuple[bytes | None, str | None]:
     """Read a worktree spec path when it is a regular file inside the worktree (``O_NOFOLLOW``).
 
@@ -1813,11 +1821,15 @@ def _read_worktree_spec_bytes(worktree: Path, rel: str) -> tuple[bytes | None, s
     except OSError as e:
         return None, str(e)
     chunks: list[bytes] = []
+    total = 0
     try:
         while True:
             buf = os.read(fd, 1 << 20)
             if not buf:
                 break
+            total += len(buf)
+            if total > MAX_WORKTREE_SPEC_BYTES:
+                return None, f"spec file exceeds {MAX_WORKTREE_SPEC_BYTES} bytes"
             chunks.append(buf)
     except OSError as e:
         return None, str(e)
@@ -1914,7 +1926,8 @@ def _worktree_conflict_mail(cfg, state: dict, worktree: Path, status: str) -> No
     """One conductor mail when an adopted worktree's spec cannot be resumed (SPEC-0463)."""
     from . import mailbox as M
     marker = f"worktree:{status}"
-    mailed = list(state.setdefault("conflict_mail", []))
+    raw = state.get("conflict_mail")
+    mailed = list(raw if isinstance(raw, list) else [])
     if marker in mailed:
         return
     repo = state.get("repo") or {}
@@ -4250,11 +4263,17 @@ def _finish_amend(cfg, state: dict, sw: dict, finish):
     IMPLEMENTING with the review findings as the implementer's brief."""
     worktree = Path(state["repo"]["worktree"])
     spec = state["spec"]
-    spec_file = worktree / sw["path"]
-    spec["sha256_at_open"] = _spec_sha(spec_file)
+    rel = sw["path"]
+    data, read_err = _read_worktree_spec_bytes(worktree, rel)
+    if read_err or data is None:
+        detail = read_err or f"spec file missing at {worktree / rel}"
+        return finish("PARKED", "spec_write_failed", park={
+            "reason": "spec_write_failed", "detail": detail, "resume_to": "SPEC_WRITING"})
     cdir = store.campaign_dir(cfg, state["id"])
-    cdir.mkdir(parents=True, exist_ok=True)
-    (cdir / CL.SPEC_AT_OPEN).write_text(spec_file.read_text(encoding="utf-8"), encoding="utf-8")
+    snap_err = _replace_spec_at_open_snapshot(cdir, cdir / CL.SPEC_AT_OPEN, data, spec)
+    if snap_err:
+        return finish("PARKED", "spec_write_failed", park={
+            "reason": "spec_write_failed", "detail": snap_err, "resume_to": "SPEC_WRITING"})
     state["admission"] = "after_revision"       # a resume to SPEC_WRITING never amends twice
     rev = state.get("revision") or {}
     state["pending_brief"] = SR.revision_brief({"spec_sha256": rev.get("review_sha"),

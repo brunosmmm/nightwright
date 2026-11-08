@@ -876,7 +876,7 @@ def test_resume_draft_with_pending_brief_to_spec_writing(env, monkeypatch):
     assert Q.plan_step(after, Q._Ctx(cfg).profile(after)).kind == "write_spec"
 
 
-def test_guard_ignores_untrusted_spec_at_open_copy(env, monkeypatch):
+def test_guard_fails_when_sha256_set_but_snapshot_untrusted(env, monkeypatch):
     cfg, _repo = env
     cid = add_idea_campaign(cfg, monkeypatch, capture(cfg, "guard trust"))
     st = _state(cfg, cid)
@@ -892,8 +892,35 @@ def test_guard_ignores_untrusted_spec_at_open_copy(env, monkeypatch):
     cdir = S.campaign_dir(cfg, cid)
     cdir.mkdir(parents=True, exist_ok=True)
     (cdir / CL.SPEC_AT_OPEN).write_text("stale drift baseline", encoding="utf-8")
-    ok, gate, _events = CL.spec_guard(cfg, _state(cfg, cid))
-    assert ok and gate is None
+    ok, gate, events = CL.spec_guard(cfg, _state(cfg, cid))
+    assert not ok and gate is not None and gate["name"] == "spec-changed"
+    assert events[0][1]["severity"] == "must_fix"
+
+
+def test_worktree_conflict_mail_tolerates_null_conflict_mail(env, monkeypatch):
+    cfg, repo = env
+    cid = add_idea_campaign(cfg, monkeypatch, capture(cfg, "null mail"))
+    st = _prep_worktree(cfg, repo, cid, DONE)
+    st = _state(cfg, cid)
+    st["conflict_mail"] = None
+    S.write_state(cfg, cid, st)
+    wt = Path(st["repo"]["worktree"])
+    Q._worktree_conflict_mail(cfg, st, wt, "done")
+    assert st["conflict_mail"] == ["worktree:done"]
+
+
+def test_resume_oversized_worktree_spec_parks(env, monkeypatch):
+    cfg, repo = env
+    cid = add_idea_campaign(cfg, monkeypatch, capture(cfg, "huge spec"))
+    st = _prep_worktree(cfg, repo, cid, ACCEPTED)
+    wt = Path(st["repo"]["worktree"])
+    rel = st["spec"]["rel_path"]
+    huge = ACCEPTED.format(sid=st["spec_id"]) + ("x" * (Q.MAX_WORKTREE_SPEC_BYTES + 1))
+    (wt / rel).write_bytes(huge.encode("utf-8"))
+    row, after = _open_resume(cfg, monkeypatch, _state(cfg, cid))
+    assert after["state"] == "PARKED" and after["park"]["reason"] == "open_failed"
+    assert "exceeds" in after["park"]["detail"]
+    assert row.get("reason") != "resumed_worktree"
 
 
 def test_dependency_wait_wakes_on_non_live_non_handed_off_campaign(env, monkeypatch):
