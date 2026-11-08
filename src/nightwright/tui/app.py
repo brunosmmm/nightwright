@@ -422,11 +422,11 @@ class IdeaDesk(App):
         Binding("m", "metadata", "meta"),
         Binding("h", "toggle_hub", "hub"),
         # SPEC-0241: number keys select tabs; later agentic tabs extend the digits.
-        Binding("1", "tab('tab-ideas')", "ideas", show=False),
-        Binding("2", "tab('tab-hub')", "hub", show=False),
-        Binding("3", "tab('tab-queue')", "queue", show=False),
-        Binding("5", "tab('tab-events')", "events", show=False),      # SPEC-0251
-        Binding("4", "tab('tab-mailbox')", "mailbox", show=False),
+        Binding("1", "tab('tab-ideas')", "ideas", show=False, priority=True),
+        Binding("2", "tab('tab-hub')", "hub", show=False, priority=True),
+        Binding("3", "tab('tab-queue')", "queue", show=False, priority=True),
+        Binding("5", "tab('tab-events')", "events", show=False, priority=True),  # SPEC-0251
+        Binding("4", "tab('tab-mailbox')", "mailbox", show=False, priority=True),
         Binding("i", "clock_toggle", "clock"),
         Binding("X", "close_idea", "close", show=False),
         Binding("q", "quit", "quit"),

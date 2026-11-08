@@ -495,6 +495,12 @@ delivered rows are on screen, and they read campaign ids from the mounted queue 
 - `test_enter_posts_campaign_selected_and_opens_the_campaign_screen` asserts one `OpenCampaign` (not `QueueView.open_selected` / `CampaignSelected`) per SPEC-0407 enter path.
 - Full suite left to gating.
 
+### Test record (2026-11-07, implementer loop 2)
+
+- `uv run pytest -q tests/test_tui_campaign_detail_ac.py tests/test_tui_campaign_detail.py tests/test_tui_campaign_detail_model.py` — 39 passed.
+- Review fixes: initial `load_detail` failure Pilot, idle spies with saved originals, abandon same instance, pane keys 1–5, seq-null `links`/`linked_by`.
+- Full suite left to gating.
+
 ### As shipped (2026-11-07, loop 0)
 
 - `_apply_focus` runs only on the initial load; poll reloads keep pane and Timeline filter.
@@ -511,6 +517,7 @@ delivered rows are on screen, and they read campaign ids from the mounted queue 
 - `DetailOpener.on_click` resolves the data row from `Click.style.meta['row']` (Textual 8); `_open_row` uses `RowKey.value` for `detail_target`.
 - Loop 3: `DetailOpener` Enter binding; timeline `MM-DD HH:MM:SS`; poll/detail_signature and highlight `entry_detail` off UI thread; loop `[`/`]`/filter separator paint; `IdeaDesk.check_action` blocks desk digit tabs while modal is up.
 - Loop 4: review-mode bumps `_detail_token` and in-flight `entry_detail` honors `review_mode`; loop `[`/`]` walks `_loop_starts` order; separator row keys use row index; reload keeps poll when paint rolls back; `IdeaDesk.action_tab` remaps desk digit bindings to modal panes while `CampaignDetail` is active; `_apply_focus` runs on every reload when `focus` is set.
+- Loop 2 (implementer): `action_tab` moves focus onto the target placeholder (timeline table blurred when leaving); `#campaign-detail` scroll is not focusable so digit `3` does not steal pane switches while the timeline is focused.
 
 **Manual verification.** On the real data dir, record the results in *As shipped*:
 

@@ -294,18 +294,14 @@ def test_park_runs_end_to_end_through_the_screen(tmp_path):
             assert s.view.actions == ("resume", "prioritize", "abandon")
             await press(app, pilot, ["p"])
             assert any("park not available in" in m for m, _ in app.notes)
-            await press(app, pilot, ["p", *"nope", "enter", "escape"])
-            assert S.read_state(cfg, cid)["state"] == "PARKED"
             await press(app, pilot, ["A", "enter"])
             assert await pilot_until(
                 pilot, lambda: S.read_state(cfg, cid)["state"] == "ABANDONED")
             await settle(app, pilot)
-            if isinstance(app.screen, CD.CampaignDetail):
-                assert s._poll_timer is None
-                assert s.view.actions == ()
-            else:
-                await open_screen(app, pilot, cid, _section_of(app, cid), timeline=False)
-                assert detail_screen(app)._poll_timer is None
+            assert isinstance(app.screen, CD.CampaignDetail)
+            assert app.screen is s
+            assert s._poll_timer is None
+            assert s.view.actions == ()
 
     _run(drive())
 

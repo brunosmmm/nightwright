@@ -25,6 +25,10 @@ from .queue_actions import QueueActions
 POLL_S = 2.0
 _FIXED_COST = 52          # seq + time + phase + by + kind + padding
 _TAB_IDS = ("tab-overview", "tab-timeline", "tab-runs", "tab-records", "tab-mail")
+_PANE_BY_DIGIT = {
+    "1": "tab-overview", "2": "tab-timeline", "3": "tab-runs",
+    "4": "tab-records", "5": "tab-mail",
+}
 _GROUP_STYLE = {
     "transitions": "cyan", "runs": "", "gates": "magenta", "findings": "yellow",
     "notes": "dim", "decisions": "green",
@@ -34,9 +38,21 @@ _GROUP_STYLE = {
 class _TimelineTable(DataTable):
     """Forwards digit keys to pane switches while the table has focus."""
 
+    BINDINGS = [
+        Binding("1", "go_pane('tab-overview')", show=False, priority=True),
+        Binding("2", "go_pane('tab-timeline')", show=False, priority=True),
+        Binding("3", "go_pane('tab-runs')", show=False, priority=True),
+        Binding("4", "go_pane('tab-records')", show=False, priority=True),
+        Binding("5", "go_pane('tab-mail')", show=False, priority=True),
+    ]
+
+    def go_pane(self, tab_id: str) -> None:
+        screen = self.app.screen
+        if isinstance(screen, CampaignDetail):
+            screen.action_tab(tab_id)
+
     def on_key(self, event: Key) -> None:
-        pane = {"1": "tab-overview", "2": "tab-timeline", "3": "tab-runs",
-                "4": "tab-records", "5": "tab-mail"}.get(event.character or "")
+        pane = _PANE_BY_DIGIT.get(event.character or event.key or "")
         screen = self.app.screen
         if pane and isinstance(screen, CampaignDetail):
             screen.action_tab(pane)
@@ -207,7 +223,15 @@ class CampaignDetail(QueueActions, ModalScreen):
         self.query_one("#load-error", Static).update(
             Text(f"loading {self.campaign_id}…", style="dim"))
         self.table.add_columns("seq", "time", "phase", "by", "kind", "summary")
+        self.query_one("#campaign-detail", VerticalScroll).can_focus = False
         self.reload(initial=True)
+
+    def on_key(self, event: Key) -> None:
+        pane = _PANE_BY_DIGIT.get(event.character or event.key or "")
+        if pane:
+            self.action_tab(pane)
+            event.prevent_default()
+            event.stop()
 
     def on_resize(self, event) -> None:
         if self.view and self._active_tab() == "tab-timeline":
@@ -513,12 +537,28 @@ class CampaignDetail(QueueActions, ModalScreen):
         self.show_detail()
 
     def action_tab(self, tab_id: str) -> None:
+        on_timeline = tab_id == "tab-timeline"
+        self.table.can_focus = on_timeline
+        if not on_timeline:
+            self.table.blur()
+            try:
+                self.query_one("#campaign-detail").blur()
+            except Exception:
+                pass
         tabs = self.query_one("#detail-body", TabbedContent)
         tabs.active = tab_id
         tabs.refresh(layout=True)
-        if tab_id == "tab-timeline":
+        if on_timeline:
             self.table.focus()
             self.show_detail()
+        elif tab_id == "tab-overview":
+            self.query_one("#overview-text", Static).focus()
+        elif tab_id == "tab-runs":
+            self.query_one("#placeholder-text", Static).focus()
+        elif tab_id == "tab-records":
+            self.query_one("#placeholder-records", Static).focus()
+        elif tab_id == "tab-mail":
+            self.query_one("#placeholder-mail", Static).focus()
         else:
             tabs.focus()
 

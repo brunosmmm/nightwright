@@ -226,14 +226,18 @@ def test_popup_frame_and_pane_keys(tmp_path):
             assert abs(region.height - round(0.94 * h)) <= 1
             tabs = app.query_one("#tabs")
             assert tabs.active == "tab-queue"
-            for want in ("tab-overview", "tab-timeline"):
-                detail_screen(app).action_tab(want)
-                await settle(app, pilot)
-                assert s.query_one("#detail-body", TabbedContent).active == want
-            for key in "12345":
+            body = s.query_one("#detail-body", TabbedContent)
+            for key, want in (
+                ("1", "tab-overview"),
+                ("2", "tab-timeline"),
+                ("3", "tab-runs"),
+                ("4", "tab-records"),
+                ("5", "tab-mail"),
+            ):
                 await press(app, pilot, [key])
                 await settle(app, pilot)
                 assert tabs.active == "tab-queue"
+                assert body.active == want
             assert "placeholder: runs" in str(s.query_one("#placeholder-text").content)
             assert "placeholder: records" in str(s.query_one("#placeholder-records").content)
             assert "placeholder: mail" in str(s.query_one("#placeholder-mail").content)
@@ -274,10 +278,11 @@ def test_poll_signature_runs_off_ui_thread(tmp_path, monkeypatch):
     cid = ids["ready"]
     main = threading.current_thread()
     seen = []
+    real_sig = AM.detail_signature
 
     def sig(cfg, campaign_id):
         seen.append(threading.current_thread())
-        return AM.detail_signature(cfg, campaign_id)
+        return real_sig(cfg, campaign_id)
 
     monkeypatch.setattr(AM, "detail_signature", sig)
     app = _desk(cfg, tab="queue")
@@ -353,17 +358,21 @@ def test_terminal_idle_no_extra_model_calls(tmp_path, monkeypatch):
     counts = {"sig": 0, "load": 0, "tail": 0, "stat": 0, "open": 0}
     camp_root = str(St.campaign_dir(cfg, cid).resolve())
 
+    real_sig = AM.detail_signature
+    real_load = AM.load_detail
+    real_tail = AM.stream_tail
+
     def sig(*a, **k):
         counts["sig"] += 1
-        return AM.detail_signature(*a, **k)
+        return real_sig(*a, **k)
 
     def load(*a, **k):
         counts["load"] += 1
-        return AM.load_detail(*a, **k)
+        return real_load(*a, **k)
 
     def tail(*a, **k):
         counts["tail"] += 1
-        return AM.stream_tail(*a, **k)
+        return real_tail(*a, **k)
 
     real_stat = os.stat
     real_open = builtins.open
@@ -391,15 +400,21 @@ def test_terminal_idle_no_extra_model_calls(tmp_path, monkeypatch):
             select(app, "delivered", cid)
             await press(app, pilot, ["enter"])
             await settle(app, pilot)
+            s = detail_screen(app)
+            assert s.view is not None and s.view.terminal
+            assert cid in overview(app)
+            err = str(s.query_one("#load-error").content)
+            assert "history unavailable:" not in err
+            assert s._poll_timer is None
             sig0, load0, tail0 = counts["sig"], counts["load"], counts["tail"]
             qv = app.query_one("#queue-view", QueueView)
             qv.deactivate()
             counts["stat"] = counts["open"] = 0
-            await pilot.pause(2.6)
+            await pilot.pause(2.5)
             assert counts["sig"] == sig0 and counts["load"] == load0
             assert counts["tail"] == tail0
             assert counts["stat"] == 0 and counts["open"] == 0
-            assert detail_screen(app)._poll_timer is None
+            assert s._poll_timer is None
 
     _run(drive())
 
@@ -563,8 +578,45 @@ def test_seq_null_record_detail(tmp_path):
                 for key in ("kind", "severity", "title"):
                     if rec.get(key):
                         assert str(rec[key]) in text
+                assert "links:" in text
+                links = rec.get("links") or {}
+                for k, v in links.items():
+                    if v is not None:
+                        assert str(v) in text
+                if rec.get("linked_by") is not None:
+                    assert "linked_by" in text
+                    assert str(rec["linked_by"]) in text
             else:
                 assert f"record {record_id} not in history" in text
+
+    _run(drive())
+
+
+def test_load_detail_failure_on_open_shows_history_unavailable(tmp_path, monkeypatch):
+    _, cfg, ids = _fixture(tmp_path)
+    cid = ids["ready"]
+    app = _desk(cfg, tab="queue")
+
+    def boom(cfg_, campaign_id):
+        raise RuntimeError("no history disk")
+
+    monkeypatch.setattr(AM, "load_detail", boom)
+
+    async def drive():
+        async with app.run_test(size=SIZE) as pilot:
+            await settle(app, pilot)
+            select(app, "queued", cid)
+            await press(app, pilot, ["enter"])
+            assert await pilot_until(
+                pilot,
+                lambda: "history unavailable:"
+                in str(detail_screen(app).query_one("#load-error").content),
+            )
+            s = detail_screen(app)
+            assert s.view is None
+            await press(app, pilot, ["escape"])
+            await settle(app, pilot)
+            assert not isinstance(app.screen, CampaignDetail)
 
     _run(drive())
 
