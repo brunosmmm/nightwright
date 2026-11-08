@@ -1,6 +1,7 @@
 """SPEC-0175: close step — rebase, re-gate, ff-only merge or PR hand-off. Every repo lives in
 tmp_path: a bare origin, a "main" clone (the main checkout), and a campaign worktree. `gh` is
 a fake script on PATH; nothing calls the real gh or claude."""
+import hashlib
 import json
 import os
 import stat
@@ -115,8 +116,9 @@ def world(tmp_path):
     cdir = tmp_path / "data" / "agentic" / "campaigns" / state["id"]
     cdir.mkdir(parents=True)
     # SPEC-0186: the accepted text the queue saves at open (before the implementer's edits)
-    (cdir / "spec_at_open.md").write_text(
-        SPEC_DONE.replace("status: done", "status: accepted").replace("- [x]", "- [ ]"))
+    open_text = SPEC_DONE.replace("status: done", "status: accepted").replace("- [x]", "- [ ]")
+    (cdir / "spec_at_open.md").write_text(open_text)
+    state["spec"]["sha256_at_open"] = hashlib.sha256(open_text.encode("utf-8")).hexdigest()
     return {"origin": origin, "root": root, "nw": wt_path, "cfg": cfg, "state": state,
             "tmp": tmp_path}
 
