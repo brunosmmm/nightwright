@@ -887,3 +887,76 @@ def test_mouse_timeline_after_poll_on_runs_shows_new_last_detail(tmp_path, monke
             await pilot_until(pilot, lambda: "mouse tab poll" in detail(app))
 
     _run(drive())
+
+
+def test_timeline_detail_page_keys_scroll_detail(tmp_path, monkeypatch):
+    from rich.text import Text
+    from textual.containers import VerticalScroll
+    from test_tui_campaign_detail import seed
+
+    tall = Text("\n".join(f"scroll-line-{i}" for i in range(80)))
+    monkeypatch.setattr(AM, "entry_detail", lambda *a, **k: tall)
+    _, cfg, ids = _fixture(tmp_path)
+    cid = ids["ready"]
+    seed(cfg, cid)
+    app = _desk(cfg, tab="queue")
+
+    async def drive():
+        async with app.run_test(size=SIZE) as pilot:
+            await open_screen(app, pilot, cid, "queued")
+            s = detail_screen(app)
+            s.table.focus()
+            assert await pilot_until(pilot, lambda: "scroll-line-79" in detail(app))
+            scroller = s.query_one("#campaign-detail", VerticalScroll)
+            before_y = scroller.scroll_y
+            cursor = s.table.cursor_row
+            assert not s.shown[cursor].get("separator")
+            await press(app, pilot, ["pagedown", "pagedown"])
+            await settle(app, pilot)
+            assert scroller.scroll_y > before_y
+            assert s.table.cursor_row == cursor
+            assert not s.shown[s.table.cursor_row].get("separator")
+            mid_y = scroller.scroll_y
+            await press(app, pilot, ["pageup"])
+            await settle(app, pilot)
+            assert scroller.scroll_y < mid_y
+
+    _run(drive())
+
+
+def test_cursor_target_on_separator_restores_following_event(tmp_path, monkeypatch):
+    from unittest.mock import PropertyMock
+
+    cfg = TH.fixture_cfg(tmp_path)
+    TH.prepare_queue_window(cfg)
+    app = IdeaDesk(cfg, tab="queue")
+
+    async def drive():
+        async with app.run_test(size=SIZE_160) as pilot:
+            assert await pilot_until(
+                pilot,
+                lambda: any(r.campaign == MULTI
+                            for r in app.query_one("#queue-view", QueueView).rows))
+            rows = app.query_one("#queue-view", QueueView).rows
+            i = next(i for i, r in enumerate(rows) if r.campaign == MULTI)
+            app.query_one("#queue-view", QueueView).table.move_cursor(row=i)
+            await press(app, pilot, ["enter", "2"])
+            await settle(app, pilot)
+            s = detail_screen(app)
+            sep = next(i for i, r in enumerate(s.shown) if r.get("separator"))
+            after = sep + 1
+            want_seq = s.shown[after].get("seq")
+            mock_row = PropertyMock(return_value=sep)
+            monkeypatch.setattr(type(s.table), "cursor_row", mock_row)
+            s._cursor_direction = 1
+            seq, _ref, on_last = s._cursor_target()
+            assert seq == want_seq
+            assert not on_last
+            mock_row.configure_mock(return_value=sep)
+            s._cursor_direction = -1
+            want_before = s.shown[sep - 1].get("seq")
+            seq, _ref, on_last = s._cursor_target()
+            assert seq == want_before
+            assert not on_last
+
+    _run(drive())

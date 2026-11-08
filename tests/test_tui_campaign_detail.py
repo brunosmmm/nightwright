@@ -396,11 +396,17 @@ def test_idea_keys_are_inert_on_the_screen(tmp_path):
     from nightwright.tui.app import TextPrompt
     repo, cfg, ids = _fixture(tmp_path)
     cid = ids["ready"]
-    app = _desk(cfg, tab="queue")
+    seed(cfg, cid)
+    app = _desk(cfg, tab="ideas")
 
     async def drive():
         async with app.run_test(size=SIZE) as pilot:
-            await open_screen(app, pilot, cid, "queued")
+            await settle(app, pilot)
+            assert app.query_one("#tabs").active == "tab-ideas"
+            app.open_campaign_detail(cid)
+            assert await pilot_until(
+                pilot, lambda: isinstance(app.screen, CD.CampaignDetail))
+            await settle(app, pilot)
             for key in ("x", "i", "X", "l", "c", "t", "m", "s", "a"):
                 await press(app, pilot, [key])
                 assert isinstance(app.screen, CD.CampaignDetail)

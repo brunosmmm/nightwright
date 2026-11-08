@@ -162,8 +162,10 @@ class CampaignDetail(QueueActions, ModalScreen):
         Binding("k", "up", "up", show=False),
         Binding("up", "up", "up", show=False, priority=True),
         Binding("down", "down", "down", show=False, priority=True),
-        Binding("pagedown,ctrl+j", "detail_scroll_down", "detail scroll", show=False),
-        Binding("pageup,ctrl+k", "detail_scroll_up", "detail scroll", show=False),
+        Binding("pagedown,ctrl+j", "detail_scroll_down", "detail scroll", show=False,
+                priority=True),
+        Binding("pageup,ctrl+k", "detail_scroll_up", "detail scroll", show=False,
+                priority=True),
         Binding("escape", "close", "back"),
         Binding("q", "close", "back", show=False),
         Binding("p", "act('park')", "park"),
@@ -196,6 +198,7 @@ class CampaignDetail(QueueActions, ModalScreen):
         self._cursor_direction = 0
         self._detail_token = 0
         self._tab_from_action = False
+        self._paint_retry_pending = False
 
     def compose(self) -> ComposeResult:
         with Vertical(id="detail-frame"):
@@ -256,6 +259,11 @@ class CampaignDetail(QueueActions, ModalScreen):
     def _show_timeline_error(self, e: Exception) -> None:
         self.query_one("#campaign-status", Static).update(
             Text(f"campaign failed: {escape(str(e) or repr(e))}", style="red"))
+
+    def _retry_after_paint_failure(self) -> None:
+        self._paint_retry_pending = False
+        if self.view is not None and self.is_mounted:
+            self.reload()
 
     def _apply_focus(self) -> None:
         if self.view is None:
@@ -350,9 +358,15 @@ class CampaignDetail(QueueActions, ModalScreen):
             except Exception as e:
                 if previous_view is not None and not initial:
                     self.view = previous_view
+                    self.query_one("#overview-text", Static).update(
+                        Text("\n").join(previous_view.header_lines))
                 self._signature = None
                 if self._worker_alive():
                     self._show_timeline_error(e)
+                    if (previous_view is not None and previous_view.terminal
+                            and not self._paint_retry_pending):
+                        self._paint_retry_pending = True
+                        self.call_after_refresh(self._retry_after_paint_failure)
             live = self.view is not None and not self.view.terminal
             if not live:
                 self._stop_poll()
@@ -397,7 +411,14 @@ class CampaignDetail(QueueActions, ModalScreen):
             return (None, None, True)
         row = self.shown[i]
         if row.get("separator"):
-            return (None, None, True)
+            if self._cursor_direction < 0:
+                before = [d for d in data if d < i]
+                pick = before[-1] if before else data[0]
+            else:
+                after = [d for d in data if d > i]
+                pick = after[0] if after else data[-1]
+            row = self.shown[pick]
+            i = pick
         on_last = data and i == data[-1]
         return (row.get("seq"), row.get("ref"), on_last)
 

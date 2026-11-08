@@ -484,6 +484,12 @@ delivered rows are on screen, and they read campaign ids from the mounted queue 
 - `uv run pytest -q tests/test_tui_campaign_detail_ac.py tests/test_tui_campaign_detail.py tests/test_tui_campaign_detail_model.py` — 37 passed.
 - Full suite left to gating; manual verification on developer data dir not run.
 
+### Test record (2026-11-07, implementer campaign loop 4)
+
+- `uv run pytest -q tests/test_tui_campaign_detail_ac.py tests/test_tui_campaign_detail.py tests/test_tui_campaign_detail_model.py` — 52 passed.
+- Adversarial fixes: `pagedown`/`pageup` detail scroll `priority=True`; `_cursor_target` steps off separators; failed reload rolls back overview; terminal paint failure schedules one retry; idea keys Pilot from ideas tab; Page Up/Down Pilot scroll assertions.
+- Full suite left to gating; manual verification on developer data dir not run.
+
 ### Test record (2026-11-07, loop 0)
 
 - `uv run pytest -q tests/test_tui_campaign_detail_ac.py tests/test_tui_campaign_detail.py tests/test_tui_campaign_detail_model.py tests/test_tui_queue_view.py::test_enter_key_on_a_header_row_posts_nothing` — 39 passed.
@@ -523,6 +529,12 @@ delivered rows are on screen, and they read campaign ids from the mounted queue 
 
 - `uv run pytest -q tests/test_tui_campaign_detail_ac.py tests/test_tui_campaign_detail.py tests/test_tui_campaign_detail_model.py tests/test_tui_queue_view.py::test_enter_key_on_a_header_row_posts_nothing` — 43 passed.
 - Full suite left to gating; manual verification on developer data dir not run.
+
+### As shipped (2026-11-07, implementer campaign loop 4)
+
+- Timeline detail scroll: `pagedown`/`pageup` bindings use `priority=True` so they beat the table's page keys while the timeline is focused.
+- Reload cursor capture steps off `── loop N ──` separators using `_cursor_direction` instead of treating them as “follow last event”.
+- Failed poll reload restores the overview pane from the previous view and schedules one `reload()` on terminal campaigns when paint fails.
 
 ### As shipped (2026-11-07, implementer campaign loop 3)
 
