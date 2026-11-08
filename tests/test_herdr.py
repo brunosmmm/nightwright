@@ -384,15 +384,15 @@ def _drive(cfg):
     _ev(cfg, m, "transition", {"from": "CLOSING", "to": "MERGED", "reason": "closed"})
 
 
-def test_notifications_once_per_event_with_sounds(fake, tmp_path):
+def test_notifications_once_per_event_are_silent(fake, tmp_path):
     cfg = _cfg(tmp_path)
     w = HW.Watcher(cfg, H.Client(), interval_s=10)
     w.run(once=True)                                     # creates the cursor at the end
     _drive(cfg)
     w.run(once=True)
     notes = _notes(fake.calls())
-    assert sorted(notes) == sorted([("nw: run failed", "request"), ("nw: parked", "request"),
-                                    ("nw: needs you", "request"), ("nw: merged", "done")])
+    assert sorted(notes) == sorted([("nw: run failed", "none"), ("nw: parked", "none"),
+                                    ("nw: needs you", "none"), ("nw: merged", "none")])
     before = len(fake.calls())
     HW.Watcher(cfg, H.Client(), interval_s=10).run(once=True)        # a restart
     assert _notes(fake.calls()[before:]) == []
@@ -410,10 +410,10 @@ def test_notification_policy():
     n = HW.notification_for
     assert n({"type": "run_failed", "data": {"transient": True}}) is None
     assert n({"type": "parked", "data": {"reason": "human_decision"}}) is None
-    assert n({"type": "parked", "data": {"reason": "gate_failed"}})[2] == "request"
+    assert n({"type": "parked", "data": {"reason": "gate_failed"}})[2] == "none"
     assert n({"type": "admitted", "data": {}}) is None
     assert n({"type": "merged", "spec_id": "SPEC-1", "data": {"merged_sha": "abc"}}) == \
-        ("nw: merged", "SPEC-1 abc", "done")
+        ("nw: merged", "SPEC-1 abc", "none")
 
 
 # ---- watcher: lifecycle ---------------------------------------------------------------------

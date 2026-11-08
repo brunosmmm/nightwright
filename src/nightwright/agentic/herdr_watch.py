@@ -85,20 +85,22 @@ def _pane_workspace(pane_id) -> str | None:
 
 
 def notification_for(ev) -> tuple[str, str, str] | None:
-    """`(title, body, sound)` for an event that should notify (epic invariant 8), else None."""
+    """`(title, body, sound)` for an event that should notify, else None.
+
+    Sound is always ``none`` (SPEC-0479). Herdr still shows the toast."""
     from .queue import park_owner
     t, d = ev.get("type"), ev.get("data") or {}
     who = ev.get("spec_id") or ev.get("campaign") or ""
     if t == "escalation":
-        return "nw: needs you", f"{who} {d.get('question') or ''}".strip(), "request"
+        return "nw: needs you", f"{who} {d.get('question') or ''}".strip(), "none"
     if t == "run_failed" and d.get("transient") is False:
         return ("nw: run failed",
                 f"{who} {d.get('persona') or ''}: {str(d.get('error') or '')[:160]}".strip(),
-                "request")
+                "none")
     if t == "parked" and park_owner(d.get("reason")) == "conductor":
-        return "nw: parked", f"{who} {d.get('reason') or ''}".strip(), "request"
+        return "nw: parked", f"{who} {d.get('reason') or ''}".strip(), "none"
     if t == "merged":
-        return "nw: merged", f"{who} {str(d.get('merged_sha') or '')[:10]}".strip(), "done"
+        return "nw: merged", f"{who} {str(d.get('merged_sha') or '')[:10]}".strip(), "none"
     return None
 
 
