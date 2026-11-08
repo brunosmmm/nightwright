@@ -175,14 +175,16 @@ _TICK_RE = re.compile(r"^(\s*[-*]\s+)\[[xX]\]")
 _DRIFT_TAIL_LINES = 120
 
 
-def _normalize_spec(text: str) -> str:
+def _normalize_spec(text: str, *, drop: tuple[str, ...] = ()) -> str:
     """The spec with every change an implementer is allowed to make erased: frontmatter
     `status` / `updated`, checkbox ticks, `### Test record` / `### As shipped` subsections and
-    the `## Clock Log` section. Two specs normalize equal ⇔ no governing text changed."""
+    the `## Clock Log` section. Two specs normalize equal ⇔ no governing text changed.
+    `drop` names more frontmatter keys to ignore (a renumbered spec's `id`)."""
     fm, body = split_frontmatter(text)
     if fm is None:
         fm, body = {}, text
-    fm = {k: v for k, v in fm.items() if k not in ("status", "updated")}
+    skip = {"status", "updated", *drop}
+    fm = {k: v for k, v in fm.items() if k not in skip}
     out = ["---", yaml.safe_dump(fm, sort_keys=True, default_flow_style=False).strip(), "---"]
     skip_level = None          # heading level whose section we are skipping
     for line in body.splitlines():
@@ -205,11 +207,28 @@ def _normalize_spec(text: str) -> str:
     return re.sub(r"\n{3,}", "\n\n", text).strip() + "\n"
 
 
-def spec_drift(old: str, new: str) -> list[str]:
+def _is_rename_destination(worktree, rel: str) -> bool:
+    """True when this branch renamed some other `docs/specs/` file onto `rel`."""
+    if not worktree or not rel:
+        return False
+    try:
+        proc = git.git(worktree, "log", "-M", "--diff-filter=R", "--name-status",
+                       "--pretty=format:", "--", "docs/specs/", check=False)
+    except (GitError, OSError, ValueError):
+        return False
+    if proc.returncode != 0:
+        return False
+    return any(
+        len(p) == 3 and p[0].startswith("R") and p[2] == rel
+        for p in (line.split("\t") for line in proc.stdout.splitlines())
+    )
+
+
+def spec_drift(old: str, new: str, *, drop: tuple[str, ...] = ()) -> list[str]:
     """Unified-diff hunks of governing changes between the accepted spec (`old`) and the
     worktree spec (`new`); empty ⇔ only allowed edits."""
-    a = _normalize_spec(old).splitlines()
-    b = _normalize_spec(new).splitlines()
+    a = _normalize_spec(old, drop=drop).splitlines()
+    b = _normalize_spec(new, drop=drop).splitlines()
     if a == b:
         return []
     hunks, cur = [], []
@@ -241,7 +260,8 @@ def spec_guard(cfg, state: dict) -> tuple[bool, dict | None, list]:
         new = (Path(worktree) / rel).read_text(encoding="utf-8")
     except OSError as e:
         new = f"(spec unreadable: {e})"
-    hunks = spec_drift(copy.read_text(encoding="utf-8"), new)
+    drop = ("id",) if _is_rename_destination(worktree, rel) else ()
+    hunks = spec_drift(copy.read_text(encoding="utf-8"), new, drop=drop)
     if not hunks:
         return True, None, []
     diff = "\n".join(hunks).splitlines()

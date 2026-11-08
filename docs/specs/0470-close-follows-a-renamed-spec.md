@@ -23,8 +23,10 @@ reported `spec text changed outside allowed sections` with the new side reduced 
 When the recorded path is missing, close uses the newest `docs/specs/` rename of that
 path whose destination is still in the worktree. The campaign's `spec.rel_path` follows
 it, and so does `spec_id` when the new file has an id. A path that is still on disk is
-never retargeted. A gate triage that is in flight for that missing path goes back to
-CLOSING against the renamed file instead of opening another implement round.
+never retargeted. Once the file is a rename destination, the spec-change guard ignores
+the frontmatter `id` (the renumber) and still rejects every other governing edit. A gate
+triage that is in flight for that missing path goes back to CLOSING against the renamed
+file instead of opening another implement round.
 
 ## Design
 

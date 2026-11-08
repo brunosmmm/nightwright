@@ -685,6 +685,8 @@ def test_renamed_spec_is_what_close_checks(world):
     assert CL.spec_guard(world["cfg"], st)[0] is False      # the old path is gone
     assert CL.adopt_renamed_spec(st, wt) == dest
     assert st["spec"]["rel_path"] == dest and st["spec_id"] == "SPEC-0001"
+    text = (wt / dest).read_text()
+    (wt / dest).write_text(text.replace("id: SPEC-0001", "id: SPEC-0002", 1))
     ok, gate, _ev = CL.spec_guard(world["cfg"], st)
     assert ok and gate is None
 
