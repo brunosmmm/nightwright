@@ -184,6 +184,13 @@ Merge, split, revert, and red-main opens do not use this adopt path. A revert op
 - `python3 tools/spec_lint.py --write-ledger` && `python3 tools/spec_lint.py` — passed.
 - Full suite left to gating.
 
+### Test record (2026-11-07, loop 0 implementer adversarial)
+
+- `uv run pytest -q tests/test_queue_conflict_resolve.py tests/test_idea_ordering.py tests/test_agentic_quiet.py tests/test_agentic_spec_review_loop.py -k "amend or adopt or snapshot or finish"` — 23 passed.
+- `uv run pytest -q tests/test_agentic_spec_writer.py -k amend` — 6 passed.
+- `python3 tools/spec_lint.py` — passed.
+- Full suite left to gating.
+
 ### As shipped
 
 - Renumbered to **SPEC-0463** so **SPEC-0458** on `main` stays the tail-cards spec.
@@ -196,6 +203,8 @@ Merge, split, revert, and red-main opens do not use this adopt path. A revert op
 - Open/accept/adopt snapshots: validate UTF-8 + YAML mapping before persisting; `_accept_spec` uses capped
   byte read + `os.replace`; `spec_guard` reads the worktree the same way and fails the synthetic gate on
   decode/YAML errors instead of raising.
+- Committed amend: `pending_brief` is cleared only after `_finish_amend` stores the snapshot; snapshot
+  replace I/O errors keep `sha256_at_open` when the existing `spec_at_open.md` still matches it.
 
 ## Clock Log
 

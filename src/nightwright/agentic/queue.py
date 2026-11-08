@@ -1910,7 +1910,9 @@ def _replace_spec_at_open_snapshot(cdir: Path, snap: Path, data: bytes, spec: di
             _unlink_spec_at_open_entry(tmp)
         except OSError:
             pass
-        spec.pop("sha256_at_open", None)
+        want = spec.get("sha256_at_open")
+        if not (want and _spec_at_open_snapshot_ok(cdir, snap, want)):
+            spec.pop("sha256_at_open", None)
         return f"could not write spec snapshot at {snap}"
 
 
@@ -4074,7 +4076,8 @@ def _apply_spec_write(ctx, state, counters, res, row, events, finish):
     state["spec"] = {**(state.get("spec") or {}), **record}
     state["spec_id"] = spec_id
     counters["spec_write_retries"] = 0
-    state["pending_brief"] = None
+    if sw["mode"] != "amend":
+        state["pending_brief"] = None
     events.append(("spec_written", {"spec_id": spec_id, "rel_path": sw["path"],
                                     "title": w["title"], "mode": sw["mode"]}))
     if sw["mode"] == "amend":                                          # SPEC-0279
