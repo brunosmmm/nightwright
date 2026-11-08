@@ -13,6 +13,7 @@ from nightwright.agentic import history as Hist
 from nightwright.agentic import store as S
 from nightwright.tui import agentic_model as AM
 from nightwright.tui import campaign_detail as CD
+from nightwright.tui.app import IdeaDesk
 from waits import pilot_until
 
 
@@ -228,6 +229,40 @@ def test_a_ledger_append_shows_within_a_poll_and_never_syncs(tmp_path, monkeypat
     _run(drive())
 
 
+def test_poll_restore_cursor_by_ref_when_seq_is_null(tmp_path, monkeypatch):
+    import tui_harness as TH
+    from nightwright.agentic import store as St
+    from test_tui_campaign_detail_ac import _fixture_timeline_record, open_via_queue
+
+    monkeypatch.setattr(CD, "POLL_S", 0.1)
+    cfg = TH.fixture_cfg(tmp_path)
+    TH.prepare_queue_window(cfg)
+    cid, row = _fixture_timeline_record(cfg)
+    ref = row["ref"]
+    state = St.read_state(cfg, cid)
+    St.write_state(cfg, cid, {**state, "state": "IMPLEMENTING"})
+    app = IdeaDesk(cfg, tab="queue")
+
+    async def drive():
+        async with app.run_test(size=SIZE) as pilot:
+            await open_via_queue(app, pilot, cid)
+            s = detail_screen(app)
+            idx = next(
+                i for i, shown in enumerate(s.shown)
+                if not shown.get("separator") and shown.get("ref") == ref)
+            s.table.move_cursor(row=idx)
+            await settle(app, pilot)
+            assert s.shown[s.table.cursor_row].get("ref") == ref
+            before_events = len(s._event_rows())
+            _ev(cfg, cid, "note", {"text": "poll ref hold"})
+            assert await pilot_until(
+                pilot, lambda: len(s._event_rows()) > before_events)
+            await settle(app, pilot)
+            assert s.shown[s.table.cursor_row].get("ref") == ref
+
+    _run(drive())
+
+
 def test_timeline_summaries_match_history(tmp_path):
     import tui_harness as TH
     cfg = TH.fixture_cfg(tmp_path)
@@ -307,6 +342,7 @@ def test_park_runs_end_to_end_through_the_screen(tmp_path):
 
 
 def test_idea_keys_are_inert_on_the_screen(tmp_path):
+    from nightwright.tui.app import TextPrompt
     repo, cfg, ids = _fixture(tmp_path)
     cid = ids["ready"]
     app = _desk(cfg, tab="queue")
@@ -317,6 +353,15 @@ def test_idea_keys_are_inert_on_the_screen(tmp_path):
             for key in ("x", "i", "X", "l", "c", "t", "m", "s", "a"):
                 await press(app, pilot, [key])
                 assert isinstance(app.screen, CD.CampaignDetail)
+            await press(app, pilot, ["p"])
+            await pilot.pause(0.3)
+            assert isinstance(app.screen, TextPrompt)
+            await press(app, pilot, ["x"])
+            await pilot.pause(0.1)
+            assert isinstance(app.screen, TextPrompt)
+            await press(app, pilot, ["escape"])
+            await settle(app, pilot)
+            assert isinstance(app.screen, CD.CampaignDetail)
 
     _run(drive())
 
@@ -442,10 +487,24 @@ def test_a_signature_error_in_poll_is_contained(tmp_path, monkeypatch):
 
 
 def test_timeline_text_renders_verbatim(tmp_path):
+    from nightwright.agentic import store as St
+
+    markup = "[bold red]x[/] and [link=file:///etc]y[/link]"
     repo, cfg, ids = _fixture(tmp_path)
     cid = ids["ready"]
     seed(cfg, cid)
     _ev(cfg, cid, "note", {"text": "see [/oops] and [x]"})
+    _ev(cfg, cid, "note", {"text": markup})
+    state = St.read_state(cfg, cid)
+    state = {
+        **state,
+        "park": {
+            "reason": "hold",
+            "detail": markup,
+            "resume_to": "IMPLEMENTING",
+        },
+    }
+    St.write_state(cfg, cid, state)
     app = _desk(cfg, tab="queue")
 
     async def drive():
@@ -457,7 +516,10 @@ def test_timeline_text_renders_verbatim(tmp_path):
             last = s._data_indexes()[-1]
             cells = s.table.get_row_at(last)
             assert all(isinstance(c, Text) for c in cells)
-            assert cells[5].plain.endswith("see [/oops] and [x]")
+            assert cells[5].plain.endswith(markup)
+            ov = s.query_one("#overview-text").content
+            assert isinstance(ov, Text)
+            assert markup in ov.plain
 
     _run(drive())
 

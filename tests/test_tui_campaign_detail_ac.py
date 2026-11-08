@@ -22,7 +22,7 @@ from nightwright.agentic import store as S
 from nightwright.tui import agentic_model as AM
 from nightwright.tui import campaign_detail as CD
 from nightwright.tui.campaign_detail import CampaignDetail, DetailOpener, OpenCampaign
-from nightwright.tui.app import IdeaDesk
+from nightwright.tui.app import ChoiceScreen, IdeaDesk
 from nightwright.tui.queue_tab import QueueView
 from nightwright.agentic import history as Hist
 from textual.widgets import TabbedContent
@@ -249,6 +249,35 @@ def test_popup_frame_and_pane_keys(tmp_path):
     _run(drive())
 
 
+def test_desk_digit_one_under_priority_picker_does_not_switch_tab(tmp_path):
+    _, cfg, ids = _fixture(tmp_path)
+    cid = ids["ready"]
+    app = _desk(cfg, tab="queue")
+
+    async def drive():
+        async with app.run_test(size=SIZE) as pilot:
+            await settle(app, pilot)
+            select(app, "queued", cid)
+            await press(app, pilot, ["enter"])
+            await settle(app, pilot)
+            tabs = app.query_one("#tabs")
+            assert tabs.active == "tab-queue"
+            await press(app, pilot, ["P"])
+            await pilot.pause(0.3)
+            assert isinstance(app.screen, ChoiceScreen)
+            await pilot.press("1")
+            await pilot.pause(0.2)
+            assert tabs.active == "tab-queue"
+            assert isinstance(app.screen, ChoiceScreen)
+            await press(app, pilot, ["escape"])
+            await pilot.pause(0.3)
+            if not isinstance(app.screen, CD.CampaignDetail):
+                await press(app, pilot, ["escape"])
+            await pilot_until(pilot, lambda: isinstance(app.screen, CD.CampaignDetail))
+
+    _run(drive())
+
+
 def test_timeline_time_includes_month_day(tmp_path):
     _, cfg, ids = _fixture(tmp_path)
     cid = ids["ready"]
@@ -328,22 +357,37 @@ def test_multi_loop_brackets_and_separators(tmp_path):
             assert len(starts) >= 2
             last_idx = s._data_indexes()[-1]
             assert s.table.cursor_row == last_idx
-            await press(app, pilot, ["right_bracket"])
+            await press(app, pilot, ["right_square_bracket"])
             await settle(app, pilot)
             assert s.table.cursor_row == last_idx
             s.table.move_cursor(row=starts[0])
             await settle(app, pilot)
-            await press(app, pilot, ["right_bracket"])
+            await press(app, pilot, ["right_square_bracket"])
             await settle(app, pilot)
             assert _at_group_start(s)
             assert s.table.cursor_row == starts[1]
             mid = starts[1] + 2
             s.table.move_cursor(row=mid)
             await settle(app, pilot)
-            await press(app, pilot, ["left_bracket"])
+            await press(app, pilot, ["left_square_bracket"])
             await settle(app, pilot)
             assert _at_group_start(s)
             assert s.table.cursor_row == starts[0]
+            sep_rows = [i for i, r in enumerate(s.shown) if r.get("separator")]
+            assert sep_rows
+            before_sep = sep_rows[0] - 1
+            s.table.move_cursor(row=before_sep)
+            await settle(app, pilot)
+            for key in ("down", "j"):
+                await press(app, pilot, [key])
+                await settle(app, pilot)
+                assert not s.shown[s.table.cursor_row].get("separator")
+            s.table.move_cursor(row=starts[1] + 1)
+            await settle(app, pilot)
+            for key in ("up", "k"):
+                await press(app, pilot, [key])
+                await settle(app, pilot)
+                assert not s.shown[s.table.cursor_row].get("separator")
 
     _run(drive())
 

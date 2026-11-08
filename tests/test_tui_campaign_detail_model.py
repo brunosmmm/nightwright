@@ -90,14 +90,26 @@ def test_load_detail_header_lines_match_load_campaign(tmp_path):
 
 
 def test_markup_in_summary_and_header_stays_literal_in_text(tmp_path):
+    from nightwright.agentic import store as St
+
     markup = "[bold red]x[/] and [link=file:///etc]y[/link]"
     _, cfg, ids = _fixture(tmp_path)
     cid = ids["ready"]
     from test_agentic_dashboard import _ev
     _ev(cfg, cid, "note", {"text": markup})
+    state = St.read_state(cfg, cid)
+    state = {
+        **state,
+        "park": {
+            "reason": "hold",
+            "detail": markup,
+            "resume_to": "IMPLEMENTING",
+        },
+    }
+    St.write_state(cfg, cid, state)
     detail = AM.load_detail(cfg, cid)
     note = next(r for r in detail.history["timeline"] if markup in (r.get("summary") or ""))
     clipped = Text(R._clip(note["summary"], 200))
     assert clipped.plain == note["summary"] and "[bold red]" in clipped.plain
-    header_plain = "\n".join(t.plain for t in detail.header_lines)
-    assert markup not in header_plain
+    parked = next(t for t in detail.header_lines if markup in t.plain)
+    assert "[bold red]" in parked.plain and "[link=file:///etc]" in parked.plain
