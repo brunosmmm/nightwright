@@ -103,14 +103,30 @@ function agentsUnderCwdOnly(cwd) {
   return () => ({ agentsFiles: loadContextFilesUnderCwd(cwd) });
 }
 
-function removePiBashOverflowLogs() {
-  if (!process.env.TMPDIR) return;
+function listPiBashSpillPaths() {
+  const dir = process.env.TMPDIR;
+  if (!dir) return new Set();
   try {
-    const dir = process.env.TMPDIR;
+    const out = new Set();
+    for (const name of fs.readdirSync(dir)) {
+      if (name.startsWith("pi-bash")) out.add(path.join(dir, name));
+    }
+    return out;
+  } catch {
+    return new Set();
+  }
+}
+
+function removeNewPiBashOverflowLogs(before = new Set()) {
+  const dir = process.env.TMPDIR;
+  if (!dir) return;
+  try {
     for (const name of fs.readdirSync(dir)) {
       if (!name.startsWith("pi-bash")) continue;
+      const full = path.join(dir, name);
+      if (before.has(full)) continue;
       try {
-        fs.rmSync(path.join(dir, name), { force: true, recursive: true });
+        fs.rmSync(full, { force: true, recursive: true });
       } catch {
         /* ignore */
       }
@@ -283,6 +299,8 @@ const PROVIDER_ENV_KEYS = {
 
 const MAX_CREDENTIAL_FILE_BYTES = 64 * 1024;
 const GAC_PROVIDERS = new Set(["google", "google-vertex", "gemini"]);
+const CREDENTIAL_ENV_KEY =
+  /(?:api[_-]?key|secret|token|password|credential|auth|private[_-]?key|refresh|access)/i;
 
 function readTrimmedFile(filePath, add, maxBytes = MAX_CREDENTIAL_FILE_BYTES) {
   try {
@@ -295,34 +313,78 @@ function readTrimmedFile(filePath, add, maxBytes = MAX_CREDENTIAL_FILE_BYTES) {
   }
 }
 
+function addPrivateKeySecrets(privateKey, add) {
+  if (typeof privateKey !== "string" || !privateKey) return;
+  add(privateKey);
+  if (privateKey.includes("\n")) {
+    add(privateKey.replace(/\r\n/g, "\n").replace(/\n/g, "\\n"));
+  }
+}
+
 function addGoogleApplicationCredentialSecrets(add) {
   const gac = process.env.GOOGLE_APPLICATION_CREDENTIALS;
   if (!gac) return;
   try {
     const st = fs.statSync(gac);
     if (!st.isFile() || st.size > MAX_CREDENTIAL_FILE_BYTES) return;
-    const cred = JSON.parse(fs.readFileSync(gac, "utf8"));
-    add(cred.private_key);
+    const raw = fs.readFileSync(gac, "utf8");
+    const cred = JSON.parse(raw);
+    addPrivateKeySecrets(cred.private_key, add);
     add(cred.client_secret);
+    const escaped = raw.match(/"private_key"\s*:\s*"((?:[^"\\]|\\.)*)"/);
+    if (escaped?.[1]) {
+      const fromFile = escaped[1]
+        .replace(/\\n/g, "\n")
+        .replace(/\\r/g, "\r")
+        .replace(/\\t/g, "\t")
+        .replace(/\\\\/g, "\\")
+        .replace(/\\"/g, '"');
+      addPrivateKeySecrets(fromFile, add);
+      add(escaped[1]);
+    }
   } catch {
     /* not JSON */
   }
 }
 
+function addEnvMapCredentialValues(envMap, add) {
+  if (!envMap || typeof envMap !== "object") return;
+  for (const [key, val] of Object.entries(envMap)) {
+    if (CREDENTIAL_ENV_KEY.test(String(key))) add(val);
+  }
+}
+
+function addAuthObjectSecrets(obj, add) {
+  if (!obj || typeof obj !== "object") return;
+  add(obj.apiKey);
+  add(obj.key);
+  add(obj.token);
+  add(obj.refreshToken);
+  add(obj.refresh);
+  add(obj.accessToken);
+  add(obj.access);
+  addEnvMapCredentialValues(obj.env, add);
+  const headers = obj.headers ?? obj.auth?.headers;
+  if (headers && typeof headers === "object") {
+    for (const v of Object.values(headers)) add(v);
+  }
+}
+
 function addProviderCredentialEnv(provider, authCheck, add) {
   if (authCheck && typeof authCheck === "object") {
-    add(authCheck.apiKey);
-    add(authCheck.token);
-    if (authCheck.env && typeof authCheck.env === "object") {
-      for (const v of Object.values(authCheck.env)) add(v);
-    }
+    addAuthObjectSecrets(authCheck, add);
     if (authCheck.source) add(process.env[authCheck.source]);
   }
   for (const key of PROVIDER_ENV_KEYS[provider] ?? []) {
     add(process.env[key]);
   }
   const wit = process.env.AWS_WEB_IDENTITY_TOKEN_FILE;
-  if (wit) readTrimmedFile(wit, add);
+  if (
+    wit &&
+    (provider === "amazon-bedrock" || provider === "bedrock")
+  ) {
+    readTrimmedFile(wit, add);
+  }
   if (GAC_PROVIDERS.has(provider)) {
     addGoogleApplicationCredentialSecrets(add);
   }
@@ -332,25 +394,9 @@ function addStoredAuthSecrets(store, add) {
   if (!store || typeof store !== "object") return;
   for (const entry of Object.values(store)) {
     if (!entry || typeof entry !== "object") continue;
-    add(entry.apiKey);
-    add(entry.key);
-    add(entry.token);
-    add(entry.refreshToken);
-    add(entry.refresh);
-    add(entry.accessToken);
-    add(entry.access);
-    if (entry.env && typeof entry.env === "object") {
-      for (const v of Object.values(entry.env)) add(v);
-    }
+    addAuthObjectSecrets(entry, add);
     if (entry.auth && typeof entry.auth === "object") {
-      add(entry.auth.apiKey);
-      add(entry.auth.token);
-      add(entry.auth.refreshToken);
-      add(entry.auth.accessToken);
-      const headers = entry.auth.headers;
-      if (headers && typeof headers === "object") {
-        for (const v of Object.values(headers)) add(v);
-      }
+      addAuthObjectSecrets(entry.auth, add);
     }
   }
 }
@@ -370,9 +416,7 @@ async function collectSecretsAsync(modelRuntime, provider, authCheck) {
     if (headers && typeof headers === "object") {
       for (const v of Object.values(headers)) add(v);
     }
-    if (detail?.env && typeof detail.env === "object") {
-      for (const v of Object.values(detail.env)) add(v);
-    }
+    addEnvMapCredentialValues(detail?.env, add);
   } catch {
     /* keep auth.json backup */
   }
@@ -524,6 +568,7 @@ export async function execute(runDir, deps = {}) {
   }
 
   const secrets = await collectSecretsAsync(modelRuntime, provider, auth);
+  const piBashBefore = listPiBashSpillPaths();
 
   const cwd = req.cwd || ".";
   const readOnly = Boolean(req.read_only);
@@ -712,7 +757,7 @@ export async function execute(runDir, deps = {}) {
       /* ignore */
     }
     removeAgentDir();
-    removePiBashOverflowLogs();
+    removeNewPiBashOverflowLogs(piBashBefore);
   }
   return exitCode;
 }

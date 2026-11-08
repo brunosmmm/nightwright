@@ -89,8 +89,23 @@ def worker_pi_check(cfg):
                        "error": "invalid stdin JSON"}
                 click.echo(json.dumps(rec))
                 raise SystemExit(1)
-            if isinstance(payload.get("providers"), list):
-                providers = [str(p) for p in payload["providers"] if p]
+            if not isinstance(payload, dict):
+                rec = {"schema": W.PI_CHECK_SCHEMA, "ok": False, "missing": [],
+                       "error": "stdin JSON must be an object with a non-empty providers array"}
+                click.echo(json.dumps(rec))
+                raise SystemExit(1)
+            raw_providers = payload.get("providers")
+            if not isinstance(raw_providers, list) or not raw_providers:
+                rec = {"schema": W.PI_CHECK_SCHEMA, "ok": False, "missing": [],
+                       "error": "stdin JSON must be an object with a non-empty providers array"}
+                click.echo(json.dumps(rec))
+                raise SystemExit(1)
+            providers = [str(p) for p in raw_providers if p]
+            if not providers:
+                rec = {"schema": W.PI_CHECK_SCHEMA, "ok": False, "missing": [],
+                       "error": "stdin JSON must be an object with a non-empty providers array"}
+                click.echo(json.dumps(rec))
+                raise SystemExit(1)
     rec = W.pi_check(cfg, providers=providers)
     click.echo(json.dumps(rec))
     if not rec["ok"]:

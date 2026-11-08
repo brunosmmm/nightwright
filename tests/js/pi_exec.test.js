@@ -61,6 +61,7 @@ function stubSession(over = {}) {
       over.promptCalls = (over.promptCalls ?? 0) + 1;
       over.promptText = msg;
       over.promptExtra = extra;
+      if (over.promptHook) over.promptHook();
       if (over.promptReject) throw over.promptReject;
       return undefined;
     },
@@ -360,6 +361,64 @@ test("execute: createAgentSession throw writes is_error", async () => {
   assert.equal(last.type, "result");
   assert.equal(last.is_error, true);
   assert.match(last.result, /session failed/);
+});
+
+test("execute: GAC escaped PEM scrubbed on gemini, client_email kept", async () => {
+  const execute = await loadExecute();
+  const runDir = layout({ pi_provider: "gemini", pi_id: "gemini-2.0" });
+  const email = "gemini-svc@test.invalid";
+  const pemSecret = "super-secret-pem-line-abcdefghij";
+  const privateKey =
+    `-----BEGIN PRIVATE KEY-----\\n${pemSecret}\\n-----END PRIVATE KEY-----\\n`;
+  const gacPath = path.join(os.tmpdir(), `pi-gac-esc-${process.pid}.json`);
+  fs.writeFileSync(
+    gacPath,
+    JSON.stringify({ client_email: email, private_key: privateKey }),
+  );
+  const prev = process.env.GOOGLE_APPLICATION_CREDENTIALS;
+  process.env.GOOGLE_APPLICATION_CREDENTIALS = gacPath;
+  const out = { chunks: [], write(s) { this.chunks.push(s); } };
+  const escapedNeedle = privateKey;
+  const { pi } = stubPi({
+    messages: [
+      {
+        role: "assistant",
+        stopReason: "stop",
+        content: [
+          {
+            type: "text",
+            text: `svc ${email} cat shows ${escapedNeedle}`,
+          },
+        ],
+        usage: { cost: { total: 0.01 } },
+      },
+    ],
+  });
+  try {
+    await execute(runDir, {
+      out,
+      err: { write() {} },
+      importPi: async () => pi,
+      modelRuntime: {
+        getModel: () => ({ cost: { input: 1 } }),
+        checkAuth: async () => ({}),
+        getAuth: async () => ({}),
+      },
+    });
+    const blob = out.chunks.join("");
+    assert.ok(blob.includes(email));
+    assert.ok(!blob.includes(pemSecret));
+    assert.ok(!blob.includes(escapedNeedle));
+    assert.ok(blob.includes("[redacted]"));
+  } finally {
+    if (prev === undefined) delete process.env.GOOGLE_APPLICATION_CREDENTIALS;
+    else process.env.GOOGLE_APPLICATION_CREDENTIALS = prev;
+    try {
+      fs.rmSync(gacPath, { force: true });
+    } catch {
+      /* ignore */
+    }
+  }
 });
 
 test("execute: GAC client_email not scrubbed on anthropic", async () => {
@@ -1412,7 +1471,7 @@ test("execute: stream write uses post-refresh OAuth token from getAuth", async (
   assert.ok(blob.includes("[redacted]"));
 });
 
-test("execute: finally removes pi-bash overflow logs from private TMPDIR", async () => {
+test("execute: finally removes only new pi-bash overflow logs from private TMPDIR", async () => {
   const execute = await loadExecute();
   const runDir = layout();
   const hostTmp = fs.mkdtempSync(path.join("/tmp", "nw-pi-host-"));
@@ -1421,17 +1480,22 @@ test("execute: finally removes pi-bash overflow logs from private TMPDIR", async
   const privateTmp = fs.mkdtempSync(path.join(hostTmp, "child-"));
   const prevTmp = process.env.TMPDIR;
   process.env.TMPDIR = privateTmp;
+  const preExisting = path.join(privateTmp, `pi-bash-pre-${process.pid}.log`);
+  fs.writeFileSync(preExisting, "keep me\n");
   const spill = path.join(privateTmp, `pi-bash-test-${process.pid}.log`);
-  fs.writeFileSync(spill, "overflow output\n");
-  assert.ok(fs.existsSync(spill));
+  assert.equal(fs.existsSync(spill), false);
   try {
+    const { pi } = stubPi({
+      promptHook: () => fs.writeFileSync(spill, "overflow output\n"),
+    });
     await execute(runDir, {
       out: { write() {} },
       err: { write() {} },
-      importPi: async () => stubPi().pi,
-      modelRuntime: await stubPi().pi.ModelRuntime.create(),
+      importPi: async () => pi,
+      modelRuntime: await pi.ModelRuntime.create(),
     });
     assert.equal(fs.existsSync(spill), false);
+    assert.equal(fs.existsSync(preExisting), true);
     assert.equal(fs.existsSync(outside), true);
   } finally {
     if (prevTmp === undefined) delete process.env.TMPDIR;

@@ -239,6 +239,20 @@ def test_load_pi_map_accepts_unquoted_thinking_off(tmp_path):
     assert row["thinking"] == "off"
 
 
+def test_map_pi_overlay_keeps_unmentioned_builtin_aliases(tmp_path):
+    cfg_dir = tmp_path / "cfg"
+    cfg_dir.mkdir()
+    (cfg_dir / "pi_map.yaml").write_text(
+        "schema: nw.pi_map.v1\naliases:\n  sonnet:\n    high:\n"
+        "      provider: openai\n      id: overlay-sonnet\n      thinking: high\n",
+        encoding="utf-8",
+    )
+    cfg = {"config_dir": str(cfg_dir)}
+    assert PM.map_pi_model("sonnet", "high", cfg)["id"] == "overlay-sonnet"
+    assert PM.map_pi_model("haiku", "medium", cfg)["id"] == "claude-haiku-4-5"
+    assert PM.map_pi_model("opus", "high", cfg)["id"] == "claude-opus-4-7"
+
+
 def test_map_pi_overlay_order(tmp_path):
     cfg_dir = tmp_path / "cfg"
     cfg_dir.mkdir()

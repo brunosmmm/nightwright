@@ -693,6 +693,23 @@ def test_worker_pi_check_invalid_stdin_fails(tmp_path, monkeypatch):
     assert body.get("ok") is False and "invalid stdin JSON" in (body.get("error") or "")
 
 
+def test_worker_pi_check_nonempty_stdin_requires_providers(tmp_path, monkeypatch):
+    from nightwright.agentic import runproc as RP
+    from nightwright.cli import cli
+
+    cfg = {"data_dir": str(tmp_path / "d"), "agentic": {"runner": "claude"}}
+    (tmp_path / "d").mkdir(parents=True)
+    monkeypatch.setattr("nightwright.cli.load_config", lambda: cfg)
+    monkeypatch.setattr(
+        RP, "probe_pi", lambda providers, **kw: pytest.fail("must not probe local map"))
+    for stdin in ('{"providers": []}', '{"nope": 1}', '"x"'):
+        run = CliRunner().invoke(cli, ["worker", "pi-check"], input=stdin + "\n")
+        assert run.exit_code == 1, stdin
+        body = json.loads(run.output.strip().split("\n")[0])
+        assert body.get("ok") is False
+        assert "providers" in (body.get("error") or "")
+
+
 def test_worker_pi_check_uses_stdin_providers_not_local_map(tmp_path, monkeypatch):
     from nightwright.agentic import pi_map as PM
     from nightwright.agentic import runproc as RP

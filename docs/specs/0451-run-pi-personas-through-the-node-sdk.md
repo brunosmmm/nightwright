@@ -4,7 +4,7 @@ title: Run Pi personas through the Node SDK
 status: done
 owner: user
 created: 2026-11-07
-updated: 2026-11-09
+updated: 2026-11-07
 kind: feature
 tags: [agentic, runner, pi]
 depends_on: [SPEC-0442, SPEC-0436]
@@ -512,6 +512,13 @@ fails the check with that fact.
 - Full `uv run pytest` left to queue gating
 - `python3 tools/spec_lint.py --write-ledger` && `python3 tools/spec_lint.py` — pass
 
+### Test record (campaign loop 0 implementer, 2026-11-07)
+
+- `node --test tests/js/pi_exec.test.js` — pass (GAC escaped PEM on gemini, pi-bash only-new cleanup, selective env secrets)
+- `uv run pytest tests/test_pi_runner.py::test_map_pi_overlay_keeps_unmentioned_builtin_aliases tests/test_remote_personas.py::test_worker_pi_check_nonempty_stdin_requires_providers tests/test_pi_runner.py tests/test_remote_personas.py::test_worker_pi_check_invalid_stdin_fails tests/test_pi_exec_js.py -q` — pass
+- Full `uv run pytest` left to queue gating
+- `python3 tools/spec_lint.py --write-ledger` && `python3 tools/spec_lint.py` — pass
+
 ### As shipped (loop 0 implementer, 2026-11-07)
 
 - `writeLine` runs `redactDeep` before `JSON.stringify` (longest secret first); result line reuses secrets from a second `collectSecretsAsync` after `prompt`.
@@ -542,6 +549,11 @@ fails the check with that fact.
 - `removePiBashOverflowLogs` sweeps only when `TMPDIR` is set; `run_spec_review` adds `tmp_env(run_dir/tmp)`.
 - GAC JSON secrets load only for Google providers (no `client_email` / whole-file redaction on anthropic); credential files are size-capped.
 - Schema footer uses split/join; `emitToolResultLine` accepts string tool content; `createAgentSession` failures write `is_error`; `dispose` is awaited; invalid `pi-check` stdin fails without falling back to the worker map.
+
+### As shipped (campaign loop 0 implementer, 2026-11-07)
+
+- GAC `private_key` registers parsed PEM, JSON-escaped file form, and `\\n` literal needle (google / google-vertex / gemini only); auth env maps redact credential-key names only.
+- `pi-check` rejects any non-empty stdin that is not a JSON object with a non-empty `providers` array; `removeNewPiBashOverflowLogs` deletes only `pi-bash*` files created after session start.
 
 ## Rollout / migration
 
