@@ -505,8 +505,12 @@ def step(cfg, project, *, now=None, active=(), red=None, project_cfg=None) -> tu
                                 "awaits the sentinel)")
         return "none", f"{pending} awaits the next sentinel"
     from . import persona_gate as PG
-    if (cfg or {}).get("data_dir") and PG.usage_until(cfg) is not None:
-        return "none", "usage exhausted; fix-forward waits"  # SPEC-0468
+    try:                                            # a cfg with no data dir has no pause file
+        usage_holds = PG.usage_until(cfg) is not None
+    except (KeyError, TypeError, OSError):
+        usage_holds = False
+    if usage_holds:                                 # SPEC-0468: don't burn a fix on a quota wall
+        return "none", "usage exhausted; fix-forward waits"
     failed = failed_fixforwards(rec)
     if failed < sett["fixforward_attempts"]:
         return "open_fixforward", f"attempt {failed + 1} of {sett['fixforward_attempts']}"
