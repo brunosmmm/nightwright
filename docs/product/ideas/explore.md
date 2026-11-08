@@ -64,7 +64,7 @@ stays findable:
 
 ```bash
 nw idea close IDEA-042 --as researched --reason "solved by existing --by-project flag"
-nw idea close IDEA-043 --as drop --reason "duplicate" --folded-into IDEA-012
+nw idea close IDEA-00N --as drop --reason "duplicate" --folded-into IDEA-00M
 ```
 
 **Next:** [Write a spec the loop can build](spec.md).

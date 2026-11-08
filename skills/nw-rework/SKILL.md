@@ -41,9 +41,9 @@ Do **not** use this to silently rewrite a past-`draft` spec. Do **not** use for 
 3. Update epic Breakdown checkboxes as children land / are accepted.
 4. When a child is `accepted`: `nw spec generate <child-id>` (idempotent; new tasks only) for
    **internal** children. Outbound: do not generate.
-5. Outbound: when children are accepted, prefer REMOVED **epic** export so `parent:`
-   children compose into one deliverable (SPEC-0047); per-child feature export remains valid
-   for standalone slices. Include outcome AC / `outcome:` (SPEC-0048).
+5. Outbound: when children are accepted, export each child with the project's scheme
+   (default `nw-native`). There is no `REMOVED` epic-compose scheme (SPEC-0047 is withdrawn).
+   Include outcome AC / `outcome:` (SPEC-0048).
 6. Do **not** mark the epic `done` until children are `done`/`superseded` (existing lint).
 
 Exact flags: `nw spec --help`, `nw idea --help`, `nw idea log --help`.

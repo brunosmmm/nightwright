@@ -1520,11 +1520,11 @@ def hub_cmd(cfg, as_json, tasks_slice, state, kind, tag, project, workstream, pr
 @click.pass_obj
 def tui_cmd(cfg, state, kind, tag, project, workstream, priority, sort, desc, all_done, query,
             tab, campaign):
-    """Interactive ideas desk (SPEC-0098/0099/0100). Needs the optional `tui` extra.
+    """Interactive ideas desk (SPEC-0098/0099/0100). Textual is a core dependency.
 
-    Read-only in v1: browse, search, expand Summary / questions / Log. Human-only surface —
-    agents keep the classic commands and `--json`. Install with `uv sync --extra tui` from a
-    checkout, or `uv tool install 'nightwright[tui]'`.
+    The `tui` extra is an empty compatibility alias. Read-only in v1: browse, search,
+    expand Summary / questions / Log. Human-only surface — agents keep the classic
+    commands and `--json`. A broken install that is missing Textual prints an install hint.
 
     \b
     nw tui                    active ideas, freshest first

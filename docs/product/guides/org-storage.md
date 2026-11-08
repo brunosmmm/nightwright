@@ -50,7 +50,7 @@ visible without changing config paths.
 Idea files declare their own TODO vocabularies:
 
 ```org
-#+TODO: IDEA INCUBATE SPECCED | PROMOTED EXPORTED SHIPPED DROPPED
+#+TODO: IDEA INCUBATE SPECCED | PROMOTED EXPORTED SHIPPED DROPPED RESEARCHED
 #+TODO: OPEN | RESOLVED
 ```
 
@@ -63,11 +63,11 @@ Each idea is a **level-1** headline with a stable `:ID:`:
 
 ```org
 * INCUBATE Ship SVG captures for product docs
-  :PROPERTIES:
-  :ID: IDEA-001
-  :CREATED: [2026-09-09 Wed 18:30]
-  :UPDATED: [2026-09-09 Wed 18:30]
-  :END:
+:PROPERTIES:
+:ID: IDEA-001
+:CREATED: [2026-09-09 Wed 18:30]
+:UPDATED: [2026-09-09 Wed 18:30]
+:END:
 ```
 
 Optional properties include `:PROJECT:`, `:KIND:`, `:SPEC:`, `:EXPLORED:`, …
@@ -89,15 +89,15 @@ The capture script seeds this committed fixture (open it in an editor):
 [`ideas-demo.org`](../assets/examples/ideas-demo.org).
 
 ```org
-#+TODO: IDEA INCUBATE SPECCED | PROMOTED EXPORTED SHIPPED DROPPED
+#+TODO: IDEA INCUBATE SPECCED | PROMOTED EXPORTED SHIPPED DROPPED RESEARCHED
 #+TODO: OPEN | RESOLVED
 
 * INCUBATE Ship SVG captures for product docs
-  :PROPERTIES:
-  :ID: IDEA-001
-  :CREATED: [2026-09-09 Wed 18:30]
-  :UPDATED: [2026-09-09 Wed 18:30]
-  :END:
+:PROPERTIES:
+:ID: IDEA-001
+:CREATED: [2026-09-09 Wed 18:30]
+:UPDATED: [2026-09-09 Wed 18:30]
+:END:
 ** Summary
 Docs should show real CLI/TUI output and explain how org files hold the durable idea record.
 ** Open questions
@@ -109,17 +109,17 @@ Seeded demo enrichment for product-doc captures.
 *** [2026-09-09 Wed 18:30]
 Summary gates promote; Log holds the explore trail.
 * IDEA Passive hours from transcripts
-  :PROPERTIES:
-  :ID: IDEA-002
-  :CREATED: [2026-09-09 Wed 18:30]
-  :UPDATED: [2026-09-09 Wed 18:30]
-  :END:
+:PROPERTIES:
+:ID: IDEA-002
+:CREATED: [2026-09-09 Wed 18:30]
+:UPDATED: [2026-09-09 Wed 18:30]
+:END:
 * SPECCED Outbound export to partner repo
-  :PROPERTIES:
-  :ID: IDEA-003
-  :CREATED: [2026-09-09 Wed 18:30]
-  :UPDATED: [2026-09-09 Wed 18:30]
-  :END:
+:PROPERTIES:
+:ID: IDEA-003
+:CREATED: [2026-09-09 Wed 18:30]
+:UPDATED: [2026-09-09 Wed 18:30]
+:END:
 ```
 
 ## What the CLI writes
@@ -170,7 +170,7 @@ flowchart LR
 
 ## Archive
 
-Moving to a **terminal** idea state (for example DROPPED, PROMOTED, SHIPPED) cuts the
+Moving to a **terminal** idea state (for example DROPPED, PROMOTED, SHIPPED, RESEARCHED) cuts the
 whole level-1 subtree into `org_ideas_archive_file`. When that key is unset, the archive is
 `ideas-archive.org` in the same directory as `org_ideas_file`, so moving the ideas file moves
 the archive with it. There is no separate `nw idea archive` verb — state transitions drive it.

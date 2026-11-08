@@ -14,8 +14,8 @@ flowchart LR
 
 ```bash
 git clone https://github.com/brunosmmm/nightwright.git && cd nightwright   # or git@github.com:brunosmmm/nightwright.git
-uv sync                                 # creates .venv
-uv tool install --editable .            # puts `nw` on your PATH, editable
+uv sync                                 # creates.venv
+uv tool install --editable.            # puts `nw` on your PATH, editable
 nw skills install                       # installs /nw-* skills for Claude Code / Cursor
 ```
 
@@ -81,26 +81,26 @@ nw projects init Acme --yes      # writes <repo>/.nw/project.yaml
 ```
 
 ```yaml
-# <repo>/.nw/project.yaml
+# <repo>/.nw/project.yaml — what `nw projects init Acme --yes` writes, trimmed
 schema: nw.project.v1
 project: Acme
 base: main
-gates:                     # run in the campaign's worktree; required ones must pass
+gates:
   - name: tests
-    cmd: uv run pytest -q
+    cmd: echo "replace with your test command"
     timeout_s: 1200
     required: true
-  - name: lint
-    cmd: ruff check .
-    required: false
+    when: always               # loop | close | always
 merge:
-  policy: merge            # merge | pr | draft-pr
+  policy: pr                   # merge | pr | draft-pr
 worktrees:
-  setup: [uv sync]         # run once in each new worktree
+  setup: []                    # e.g. [uv sync], run once in each new worktree
 ```
 
-Commit this file. It's part of the project, and campaigns read it from main. (a campaign
-branch may only raise a gate's `timeout_s`, up to `gate_budget_s`).
+Replace the echo command with the project's real test. `policy: pr` (the starter) opens a
+pull request and the campaign ends `HANDED_OFF`. Set `policy: merge` if you want a
+fast-forward onto main that ends `MERGED`. Commit the file. Campaigns read it from main.
+A campaign branch may only raise a gate's `timeout_s`, up to `gate_budget_s`.
 
 !!! check "Check"
     `nw projects config Acme` prints the resolved file with the defaults filled in, and no
@@ -126,7 +126,7 @@ nw idea summary IDEA-002 --set "Weekly report has no machine-readable export. Ad
   'nw report --week --csv': one row per project+topic, hours as decimals. Out of scope:
   XLSX, scheduling."
 nw idea questions IDEA-002 --add "Include zero-hour topics?"
-nw idea log IDEA-002 --note "report.py builds rows in week_rows(); reuse it"
+nw idea log IDEA-002 --note "report.py builds rows in week_rows; reuse it"
 nw idea questions IDEA-002 --resolve 1        # once decided (record the answer in Summary)
 ```
 
@@ -138,27 +138,35 @@ Or, in an agent session: `/nw-explore IDEA-002`.
 ## 7 · Write and review the spec
 
 ```bash
-nw spec new --from-idea IDEA-002      # scaffold docs/specs/NNNN-….md in the project repo
+nw spec new --from-idea IDEA-002      # Acme is outbound: writes the data-dir outbox
 ```
 
-Then fill in the Decision, Design, Acceptance criteria and Test plan, or let an agent do it
-with `/nw-new-work IDEA-002`, and set `status: accepted`. Commit it to main. Then:
+Acme was registered with a repo, so this does not write `docs/specs/` in the Acme checkout.
+It writes `ACME-0001-….md` under the nightwright data-dir outbox. The id is `ACME-0001`,
+not an internal `SPEC-` id. Fill in the Decision, Design, Acceptance criteria and Test plan, or let an
+agent do it with `/nw-new-work IDEA-002`, and set `status: accepted`. Then one review, and
+export the portable file into the Acme repo:
 
 ```bash
-nw spec review SPEC-0001              # approve | revise | split, with findings
+nw spec review ACME-0001              # one review: approve | revise | split
+nw spec review ACME-0001 --show       # print the stored verdict; runs nothing
+nw spec export ACME-0001              # drop the portable spec into the Acme repo
 ```
 
-Fix findings until it approves. See
-[Write a spec the loop can build](../ideas/spec.md).
+A second `nw spec review` without `--show` or `--force` errors "already reviewed".
+`--force` starts another review. It does not admit the spec. An `approve` of the current
+text admits it. A `revise` or `split` whose text you then edit is also admitted, without
+another review. See [Write a spec the loop can build](../ideas/spec.md) and
+[Outbound](outbound.md).
 
 !!! check "Check"
-    `nw spec review SPEC-0001` says `approve`.
+    `nw spec review ACME-0001 --show` says `approve`.
 
 ## 8 · Run the loop
 
 ```bash
-nw queue add SPEC-0001                # dry run: shows the plan
-nw queue add SPEC-0001 --yes          # queue it
+nw queue add ACME-0001                # dry run: shows the plan; export must exist
+nw queue add ACME-0001 --yes          # queue it
 ```
 
 Then start the conductor in Claude Code or Cursor: `/nw-conduct`. It starts the runner
@@ -179,15 +187,17 @@ tokens, keys are model-name prefixes). Cursor launches skip that table. See
 
 ```bash
 nw queue watch                        # live dashboard
-nw campaign log SPEC-0001-… --tail 20 # the story so far
+nw campaign log ACME-0001-… --tail 20 # the story so far
 ```
 
-You'll see it implement, run your gates, get reviewed, rebase onto main, re-run the gates
-and merge. If it parks, the reason tells you why. See
+You'll see it implement, run your gates, get reviewed, rebase onto main, and re-run the
+gates. If it parks, the reason tells you why. See
 [when something parks](../loop/operate.md#when-something-parks).
 
 !!! check "Check"
-    The campaign ends `MERGED`, and `git log` on main shows the implementer's commits.
+    With the starter's `policy: pr`, the campaign ends `HANDED_OFF` when the pull request
+    is open. With `policy: merge`, it ends `MERGED` and `git log` on main shows the
+    implementer's commits.
 
 ## Where next
 

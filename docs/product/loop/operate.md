@@ -28,7 +28,8 @@ flowchart LR
    `/nw-steward`, or start one with `nw queue steward-launch <Project>`. The conductor asks it
    project questions over the mailbox. Everything still works without one.
 5. **Queue work.** `nw queue add SPEC-0042 --yes` (a dry run without `--yes`). The spec must
-   be `accepted` and have an approving review (`nw spec review SPEC-0042`).
+   be `accepted`. An `approve` of the current text admits it, and so does a `revise` or
+   `split` whose text then changed (`nw spec review SPEC-0042`, once).
 
 ### Launching the conductor and stewards
 
@@ -39,7 +40,7 @@ push to `main` or merge a PR, and a session id registered before `claude` starts
 conductor's cost can be tracked. `--runner cursor` starts `cursor-agent` instead (logged in
 with `cursor-agent login`; no `CURSOR_API_KEY`). Cursor has no allow/deny CLI: the launch
 passes `--force --trust` and a policy footer. Conductor `--runner cursor|claude` also writes
-host `agentic.runner` so unpinned personas follow (SPEC-0439); steward-launch does not.
+host `agentic.runner` so unpinned personas follow; steward-launch does not.
 `--dry-run` prints the plan (add `--json`) without starting anything; `--resume` restarts the
 newest launched session (without `--runner`, it follows that session's stored backend).
 Defaults live under `agentic.conductor.launch` (a `steward:` sub-mapping overrides them for
@@ -101,13 +102,13 @@ it would do.
 |---|---|---|
 | `cost_cap` | The next run would pass the campaign's dollar cap | Resume once with `--raise-cap` (up to 2× the profile cap) and a note. A second cost park → look at why it's expensive |
 | `loop_exhausted` | The fix loop hit `loop_max` without passing | Read the last triage brief and review. Transient failures → `--reset-loops`; a wrong spec → rework the spec |
-| `diverging` | A campaign parked this way before the divergence triager (SPEC-0462). New trips go to `DIVERGENCE_TRIAGE` instead | A leftover park: the conductor reads the `loop_divergence` evidence and picks continue (`nw queue resume`), rework (`nw queue abandon`, then `/nw-rework`) or escalate |
+| `diverging` | A campaign parked this way before the divergence triager. New trips go to `DIVERGENCE_TRIAGE` instead | A leftover park: the conductor reads the `loop_divergence` evidence and picks continue (`nw queue resume`), rework (`nw queue abandon`, then `/nw-rework`) or escalate |
 | `diverging_rework` | The divergence triager compared the blockers with the spec and the spec is the problem | Abandon the campaign, then `/nw-rework` the spec with the triager's items as constraints. The queue does not edit the spec |
 | `triage_escalated` | The gate triager couldn't decide twice, or chose escalate | Read the gate log tail. Resume to GATING if it was flaky, with a note if it's a real decision |
 | `implementer_blocked` | The implementer reported the spec can't be built as written | Read its blockers. Usually the spec needs a fix: rework it |
 | `review_escalated` | The conformance reviewer produced no usable verdict twice | Re-run the review (resume to REVIEWING), or read the diff yourself |
 | `spec_write_failed` | The spec writer's output was rejected twice (wrong file, bad front matter, missing section, placeholder, failing generated-file command), it answered `blocked`, or its idea's `:EPIC:` names no epic spec | Read the detail; resume with a `--note` to steer the writer (the idea snapshot is refreshed and the retry count reset), or abandon |
-| `spec_review_exhausted` | The spec phase stopped (one review per campaign, SPEC-0230): the writer's revision did not change the spec (resumes to the writer), the reviewer failed twice or changed the worktree, the worktree had uncommitted tracked changes, or the accept commit failed (these resume to the review) | Read the detail. Resume (add a `--note` to steer the writer), or abandon |
+| `spec_review_exhausted` | The spec phase stopped (one review per campaign): the writer's revision did not change the spec (resumes to the writer), the reviewer failed twice or changed the worktree, the worktree had uncommitted tracked changes, or the accept commit failed (these resume to the review) | Read the detail. Resume (add a `--note` to steer the writer), or abandon |
 | `spec_review_unavailable` | Legacy park (the spec review is now part of the campaign) | Resume: it goes to the spec review, or to the writer when you give a `--note` |
 | `spec_writer_unavailable` | Legacy park of an idea campaign from before the spec writer shipped | Resume: it now runs the writer |
 | `rebase_conflict` | Main moved and the branch no longer rebases cleanly | Resolve on the branch, or resume to GATING after main settles. Generated-file conflicts are resolved automatically |
@@ -118,10 +119,10 @@ it would do.
 | `worktree_dirty` | A merge request's worktree has uncommitted or untracked changes (nothing is committed for the requester) | Commit or stash them, then resume |
 | `human_decision` | The conductor escalated a decision to you (`nw queue escalate`): the detail starts with the `ESC-NNNN` id and the question | `nw escalations show ESC-NNNN`. If it resolves without you, `nw escalations withdraw` it and resume the campaign |
 | `not_docs_only` | A `nw queue merge --docs-only` request changes a path outside `merge.docs_only_paths` (checked again after the rebase); no gate has covered it | A resume would park again: `nw queue abandon <id> --yes` (the worktree and branch are kept), then `nw queue merge <branch> --yes` without `--docs-only` |
-| `regenerate_failed` | After the rebase, a `merge.regenerate` command failed, or it left undeclared files changed (SPEC-0255); nothing was merged and the worktree is back at HEAD | Read the detail, fix the command or the source it reads, then `nw queue resume <id>` (back to `CLOSING`) |
-| `gate_timeout` | Gates timed out on three consecutive runs, two of them serialized re-gates (SPEC-0311); no fix loop was spent | Likely machine load or a `timeout_s` that is too low: raise it or wait for the load to drop, then `nw queue resume <id>` (re-gates alone, first) |
-| `restart` | `nw queue restart` parked an in-process step (open / gate / close) across the runner restart and did not get to resume it (SPEC-0375): the restart crashed or was interrupted | `nw queue restart --continue --yes` resumes it in priority order and starts the runner; `nw queue resume <id>` also works |
-| `fixforward_weakens` | A red-base fix-forward campaign (SPEC-0420) deleted, skipped, xfailed or importorskipped a test, or removed test functions; its close refused the diff before any gate ran | Nothing: the queue counts it a failed attempt, abandons it and opens the next fix or the revert |
+| `regenerate_failed` | After the rebase, a `merge.regenerate` command failed, or it left undeclared files changed; nothing was merged and the worktree is back at HEAD | Read the detail, fix the command or the source it reads, then `nw queue resume <id>` (back to `CLOSING`) |
+| `gate_timeout` | Gates timed out on three consecutive runs, two of them serialized re-gates; no fix loop was spent | Likely machine load or a `timeout_s` that is too low: raise it or wait for the load to drop, then `nw queue resume <id>` (re-gates alone, first) |
+| `restart` | `nw queue restart` parked an in-process step (open / gate / close) across the runner restart and did not get to resume it: the restart crashed or was interrupted | `nw queue restart --continue --yes` resumes it in priority order and starts the runner; `nw queue resume <id>` also works |
+| `fixforward_weakens` | A red-base fix-forward campaign deleted, skipped, xfailed or importorskipped a test, or removed test functions; its close refused the diff before any gate ran | Nothing: the queue counts it a failed attempt, abandons it and opens the next fix or the revert |
 | `revert_conflict` | The queue's revert of the culprit merge of a red episode conflicted outside the generated files | Nothing: the queue escalates the episode once; answer that escalation |
 | `open_failed` | Creating the worktree or a step failed unexpectedly | Read the detail and retry once; if it fails again, investigate |
 | `gh_failed` | Opening the PR (`pr` / `draft-pr` policy) failed | Check `gh auth`, then resume |
@@ -144,7 +145,7 @@ line) if not.
 ## When the base turns red
 
 The full-suite sentinel runs the project's close gates on the base branch. When it is red the
-queue owns the **red episode** (SPEC-0420): it opens a priority-1 `fixforward` campaign briefed
+queue owns the **red episode**: it opens a priority-1 `fixforward` campaign briefed
 with the failing tests and the merges since the last green, holds every other close of the
 project in CLOSING, reverts the culprit merge after two failed fixes, and asks you at most once.
 A green sentinel closes the episode and releases the held merges.
@@ -188,7 +189,7 @@ Every run's cost is charged to its campaign and shown in `nw queue watch` and
 ## Working outside the queue
 
 Not everything has to go through the queue. To build something by hand:
-1. Work on a **branch in its own worktree** (`git worktree add -b my-change ../nw-my-change
+1. Work on a **branch in its own worktree** (`git worktree add -b my-change../nw-my-change
    main`). Never edit the main checkout in place, because it is the runner's code and the
    merge target.
 2. Commit, run the tests, keep the spec truthful.

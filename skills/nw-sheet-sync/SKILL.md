@@ -25,8 +25,8 @@ write against the sheet, in between those two calls.
    `nw sheet plan --help` / `nw sheet record --help`.
 2. **Read the sheet.** Using your own Google Sheets tools, read the configured `tab` (see the
    project's `outbox_targets[<P>].sheet.spreadsheet_id`/`tab` in `~/.config/nightwright/config.yaml`).
-   Shape each data row into `{header: value}` using the manifest's exact column headers (`nightwright
-   sheet plan`'s error/`--help` names the manifest; read it under
+   Shape each data row into `{header: value}` using the manifest's exact column headers (`nw
+   sheet plan`'s error names the manifest; read it under
    `~/.config/nightwright/schemes/<manifest>.toml` if unsure of headers). Write the array of row dicts
    to a tmp JSON file.
 3. **Get the full plan:** `nw sheet plan --project <P> --sheet-rows <tmp-file>` — now returns

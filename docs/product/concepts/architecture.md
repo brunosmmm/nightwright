@@ -18,7 +18,7 @@ flowchart TB
   subgraph Org["Org corpus — configured paths"]
     IDEAS[ideas.org + rotations]
     ARCH[ideas-archive.org]
-    TASKS[task/capture .org files]
+    TASKS[task/capture.org files]
   end
   subgraph Repo["This checkout — when developing nightwright"]
     SPECS[docs/specs/SPEC-*.md]

@@ -18,5 +18,5 @@ nw idea clock-out IDEA-00N
 Desk: toggle with key `i` on the selected idea ([Desk](tui.md)). Open clocks show `◕`
 beside the id in CLI idea tables.
 
-Use during implementation sessions (AGENTS.md / SPEC-0060): every clock-in needs a
+Use during implementation sessions (AGENTS.md): every clock-in needs a
 matching clock-out before you stop.

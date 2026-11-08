@@ -29,7 +29,7 @@ Getting started Path C: [Getting started](getting-started.md).
 | `/nw-export` | `nw spec export` | Outbox portable → target repo |
 | `/nw-implement-spec` | (in **target** repo) portable AC + tests | Build exported work |
 | `/nw-verify` | `nw spec verify` (+ ledger / pull-status) | Post-hoc Definition of Done |
-| `/nw-sheet-sync` | `nw sheet plan\|record --json` | Optional sheet triage |
+| `/nw-sheet-sync` | `nw sheet plan\|record` (always JSON; `--project`) | Optional sheet triage |
 | `/nw-conduct` | Monitor on `nw queue events --follow --for conductor`; `nw queue conduct-status\|resume`, `nw mailbox send` | Long-lived conductor woken by queue events |
 | `/nw-steward` | Monitor on `nw mailbox follow --to steward:<P>`; `nw mailbox send` | Project steward answering the conductor |
 
@@ -51,23 +51,23 @@ scraping tables. Shapes below are illustrative — fields evolve; trust the live
 | `nw.projects.v1` | `nw projects --json` | `{schema, projects:[{name,outbound,research,…}]}` |
 | `nw.projects.add.v1` | `nw projects add … --json` | plan payload before mutating config |
 | `nw.spec.verify.v1` | `nw spec verify … --json` | verify report (AC / tests / ledger drift) |
-| `nw.spec.review.v1` | `nw spec review … --json` | `{schema, spec_id, verdict: approve\|revise\|split, spec_sha256, reviewed_at, model, cost_usd, findings[], suggested_splits[]}` (SPEC-0188) |
-| `nw.spec.review.show.v1` | `nw spec review SPEC-ID --show --json` | `{schema, spec_id, spec_path, current_sha, matches_current, review, admission:{ok,kind,message}, profile, stored}` (SPEC-0242) |
-| `nw.spec.reviews.v1` | `nw spec reviews --json` | `{schema, reviews:[{spec_id, verdict, size, tone, counts, reviewed_at, spec_sha256, matches_current, model, cost_usd}]}` (SPEC-0242) |
+| `nw.spec.review.v1` | `nw spec review … --json` | `{schema, spec_id, verdict: approve\|revise\|split, spec_sha256, reviewed_at, model, cost_usd, findings[], suggested_splits[]}` |
+| `nw.spec.review.show.v1` | `nw spec review SPEC-ID --show --json` | `{schema, spec_id, spec_path, current_sha, matches_current, review, admission:{ok,kind,message}, profile, stored}` |
+| `nw.spec.reviews.v1` | `nw spec reviews --json` | `{schema, reviews:[{spec_id, verdict, size, tone, counts, reviewed_at, spec_sha256, matches_current, model, cost_usd}]}` |
 | `nw.campaigns.v1` | `nw campaign list --json` | `{schema, campaigns:[{id,spec_id,state,loops,cost_usd,…}]}` |
-| `nw.campaign.v1` | `nw campaign show ID --json` | campaign state + `last_events` (SPEC-0171) |
+| `nw.campaign.v1` | `nw campaign show ID --json` | campaign state + `last_events` |
 | `nw.campaign.log.v1` | `nw campaign log ID --json` | `{schema, campaign, events:[{seq,ts,type,by,…}]}` |
-| `nw.campaign.gate.v1` | `nw queue gates ID --json` | `{schema, campaign, gate_seq, ok, results:[{name,required,ok,exit_code,timed_out,duration_s,log,tail}]}` (SPEC-0173) |
-| `nw.queue.v1` | `nw queue list --json` | `{schema, lease:{held,pid,heartbeat_age_s,ttl_s,stale}, slots:{total,busy}, items:[{campaign,spec_id,project,state,priority,loops,cost_usd,cap_usd,park,worktree,branch,backlog?}]}`; queued items carry `backlog:{position,priority,ready,blocked_by[]}` (SPEC-0176, SPEC-0180) |
-| `nw.queue.backlog.v1` | `nw queue backlog --json` | `{schema, items:[{campaign,spec_id,priority,position,ready,blocked_by[],age_s}]}` in admission order (SPEC-0180) |
+| `nw.campaign.gate.v1` | `nw queue gates ID --json` | `{schema, campaign, gate_seq, ok, results:[{name,required,ok,exit_code,timed_out,duration_s,log,tail}]}` |
+| `nw.queue.v1` | `nw queue list --json` | `{schema, lease:{held,pid,heartbeat_age_s,ttl_s,stale}, slots:{total,busy}, items:[{campaign,spec_id,project,state,priority,loops,cost_usd,cap_usd,park,worktree,branch,backlog?}]}`; queued items carry `backlog:{position,priority,ready,blocked_by[]}` |
+| `nw.queue.backlog.v1` | `nw queue backlog --json` | `{schema, items:[{campaign,spec_id,priority,position,ready,blocked_by[],age_s}]}` in admission order |
 | `nw.queue.prioritize.v1` | `nw queue prioritize ID N --json [--yes]` | `{schema, campaign, state, from, to, written}` (dry-run unless `--yes`) |
 | `nw.queue.add.v1` | `nw queue add SPEC --json [--yes]` | `{schema, campaign, spec_id, project, profile, base, worktree, branch, …, written}` (dry-run unless `--yes`) |
 | `nw.queue.tick.v1` | `nw queue tick --json` / `nw queue run --json-lines` | `{schema, steps:[{campaign,from,to,action,run_id,cost_usd,reason}], admitted, idle}` |
-| `nw.queue.park.v1` / `nw.queue.resume.v1` / `nw.queue.abandon.v1` | `nw queue park|resume|abandon ID --json [--yes]` | plan fields + `written` |
-| `nw.event.v1` | `nw queue events --follow --for READER` (one per line) | `{schema, id, ts, type, campaign, spec_id, project, by, data:{…}}` — parks, merges, failed runs, watchdog signals (`backlog_blocked_long`, `state_stuck`, `ready_not_admitted`), the periodic `conductor_ping` digest (SPEC-0212), mail (SPEC-0181) |
+| `nw.queue.park.v1` / `nw.queue.resume.v1` / `nw.queue.abandon.v1` | `nw queue park ID --reason … --json [--yes]`; `resume` and `abandon` take `--json [--yes]` | plan fields + `written` |
+| `nw.event.v1` | `nw queue events --follow --for READER` (one per line) | `{schema, id, ts, type, campaign, spec_id, project, by, data:{…}}` — parks, merges, failed runs, watchdog signals (`backlog_blocked_long`, `state_stuck`, `ready_not_admitted`), the periodic `conductor_ping` digest, mail |
 | `nw.events.v1` | `nw queue events [--since ID] [--tail N]` | `{schema, events:[nw.event.v1…]}` |
-| `nw.conduct.status.v1` | `nw queue conduct-status --json` | `{schema, lease, slots, conductor_pid, counts, parked[], active[], unanswered_mail[], recent_events[]}` (SPEC-0182) |
-| `nw.message.v1` | `nw mailbox follow --to ADDR` (one per line) / `nw mailbox send --json` | `{schema, id, seq, ts, from, to, kind, campaign, re, text, needs_reply}` (SPEC-0183); optional `campaign_from` (`"text"` or `"re"`) when `send` inferred the campaign (SPEC-0431). Precedence: an explicit `--campaign` wins, else the campaign of the `--re` message, else the one existing campaign the text names; `--no-campaign` skips inference and conflicts with `--campaign`. |
+| `nw.conduct.status.v1` | `nw queue conduct-status --json` | `{schema, lease, slots, conductor_pid, counts, parked[], active[], unanswered_mail[], recent_events[]}` |
+| `nw.message.v1` | `nw mailbox follow --to ADDR` (one per line) / `nw mailbox send --json` | `{schema, id, seq, ts, from, to, kind, campaign, re, text, needs_reply}`; optional `campaign_from` (`"text"` or `"re"`) when `send` inferred the campaign. Precedence: an explicit `--campaign` wins, else the campaign of the `--re` message, else the one existing campaign the text names; `--no-campaign` skips inference and conflicts with `--campaign`. |
 | `nw.mailbox.list.v1` | `nw mailbox list --to ADDR --json` | `{schema, to, messages:[nw.message.v1…]}` |
 
 Example (hub triage):
@@ -111,8 +111,8 @@ nw idea log IDEA-NNN --note "…"
 ### Promote → build (internal)
 
 ```bash
-nw spec new --from-idea IDEA-NNN          # then author + status: accepted
-nw spec generate SPEC-NNNN
+nw spec new --from-idea IDEA-NNN --internal   # outbox projects need --internal, or export
+nw spec generate SPEC-NNNN                    # refuses an outbound id; export those instead
 nw idea clock-in IDEA-NNN
 # …implement…
 nw idea clock-out IDEA-NNN

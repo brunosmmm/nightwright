@@ -13,7 +13,7 @@ flowchart LR
     A -- "nw idea …" --> I[("ideas.org<br/>IDEA-NNN")]
     B -- "/nw-seed" --> I
     C -- "nw idea capture --kind bug" --> I
-    I -. "check first" .- R["/nw-related<br/>nw ideas --query"]
+    I -. "check first".- R["/nw-related<br/>nw ideas --query"]
 ```
 
 ## The one-liner
@@ -33,7 +33,7 @@ routable:
 ```bash
 nw idea capture "Queue watch should show review rounds" \
     --project Meta-Tools \
-    --epic SPEC-0169 \
+    --epic SPEC-NNNN \
     --kind improvement
 ```
 

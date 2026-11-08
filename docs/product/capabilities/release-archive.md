@@ -1,7 +1,7 @@
 # Release archive
 
 Pack **git HEAD** plus a filtered ideas org slice into one `.tar.gz` for handoff
-installs (SPEC-0133).
+installs.
 
 ## Commands
 

@@ -28,7 +28,7 @@ flowchart LR
 ## 0 · Install
 
 Follow [Bootstrap from zero, steps 1 and 2](bootstrap.md#1-install): clone
-`https://github.com/brunosmmm/nightwright.git`, `uv sync`, `uv tool install --editable .`, `nw skills install`, and a `config.yaml` with `timezone:` and
+`https://github.com/brunosmmm/nightwright.git`, `uv sync`, `uv tool install --editable.`, `nw skills install`, and a `config.yaml` with `timezone:` and
 (for Claude launches) `agentic.conductor.prices`. `nw doctor --fix-hints` checks the install.
 
 ## 1 · Register the project
@@ -44,7 +44,7 @@ nightwright's own checkout is the built-in project `Meta-Tools` and needs no reg
 ## 2 · Describe it for the loop
 
 ```bash
-nw projects init Acme          # prints a starter .nw/project.yaml (dry run)
+nw projects init Acme          # prints a starter.nw/project.yaml (dry run)
 nw projects init Acme --yes    # writes <repo>/.nw/project.yaml
 nw projects config Acme        # the resolved file, defaults filled in
 ```
@@ -52,7 +52,10 @@ nw projects config Acme        # the resolved file, defaults filled in
 Edit the file and commit it to the project's main branch. The two parts that matter most:
 
 - `gates`: the commands that prove a change works (tests, lint), each with `required` and
-  `timeout_s`. They run in the campaign worktree, all of them, every time.
+  `timeout_s`. They run in the campaign worktree, in order, and a failure does not stop
+  the rest. A gate's `when` is `loop`, `close`, or `always`. At the close re-gate a gate
+  with `paths` is skipped when the branch changes none of those globs, and a close gate
+  can reuse a green loop result. `nw projects init` writes those knobs as comments.
 - `merge.policy`: `merge` (fast-forward into `merge.base`), `pr` or `draft-pr`.
 
 Optional: profiles for this project in `<repo>/.nw/profiles/*.yaml`. Check them with
@@ -69,9 +72,11 @@ Explore an idea until someone with no context could build it: `nw idea summary`,
 `nw idea questions`, `nw idea log`, or `/nw-explore IDEA-NNN` in an agent session. Then
 either:
 
-- **write the spec yourself or with an agent**: `nw spec new --from-idea IDEA-NNN`, fill it
-  in (or `/nw-new-work IDEA-NNN`), set `status: accepted`, commit, and run
-  `nw spec review <ID>` once; or
+- **write the spec yourself or with an agent**: `nw spec new --from-idea IDEA-NNN`. Acme
+  is an outbound project, so the file lands in the data-dir outbox as `ACME-NNNN`, not in
+  the Acme repo. Fill it in (or `/nw-new-work IDEA-NNN`), set `status: accepted`, run
+  `nw spec review <ID>` once, then `nw spec export <ID>` before `nw queue add`. An
+  internal project (or `--internal`) writes `docs/specs/NNNN-….md` instead; or
 - **queue the idea itself**: its campaign starts in `SPEC_WRITING`, where the `spec_writer`
   persona writes the spec and the `spec_reviewer` reviews it before implementation.
 
@@ -112,7 +117,8 @@ newest launched session (and follows its stored backend when `--runner` is omitt
 To flip personas already in the queue without killing a live run:
 
 ```bash
-nw queue backend --host --all cursor --yes    # next spawn uses Cursor
+nw queue backend --host --all cursor --yes    # next persona spawn uses Cursor
+nw queue backend --host pi --yes              # or Pi; launch --runner stays claude|cursor
 ```
 
 **What the conductor watches.** It arms a Monitor on `nw queue events --follow --for conductor`
@@ -126,17 +132,18 @@ campaigns, and relays your queue requests to the conductor.
 
 ## 6 · Queue work through the steward
 
-In the steward session, ask in plain words: "queue the CSV export spec", "bump SPEC-0007 to
+In the steward session, ask in plain words: "queue the CSV export spec", "bump SPEC-NNNN to
 priority 1", "merge branch my-fix". The steward does not run queue writes itself. It sends a
 request to the conductor over the mailbox, for example:
 
 ```bash
-nw mailbox send --to conductor --kind request "queue SPEC-0007 priority 2"
+nw mailbox send --from steward:Acme --to conductor --kind request "queue ACME-0007 priority 2"
 ```
 
 The conductor acts (`nw queue add … --yes`, `nw queue prioritize`, `nw queue merge`) and
-answers; the steward reports back. You can also run `nw queue add SPEC-0007 --yes` yourself
-(a dry run without `--yes`; the spec must be `accepted` and reviewed). Useful flags: `--priority 1..5`,
+answers; the steward reports back. You can also run `nw queue add SPEC-NNNN --yes` yourself
+(a dry run without `--yes`; the spec must be `accepted`, and an outbound id needs
+`nw spec export` first). Useful flags: `--priority 1..5`,
 `--profile thorough`, `--epic SPEC-NNNN` for an epic's children, and `IDEA-NNN` to let the loop write the spec.
 
 ## 7 · Watch
@@ -195,10 +202,12 @@ nw queue merge my-branch --yes     # hand-made branch: rebase + re-gate + ff-mer
 | Runner crashed | `nw queue runner-log` | `nw queue run --detach`; running persona runs are adopted |
 | Launch refuses to start | The error text | Add `agentic.conductor.prices` for the model |
 
-## Later: remote workers (optional)
+## Remote workers
 
-Gates and persona runs can be moved to other machines. `nw workers` is the registry on the
-coordinator; `nw worker` runs on the worker host itself.
+Gates and persona runs can run on other machines. `nw workers` is the registry on the
+coordinator; `nw worker` runs on the worker host itself. `add` and `bootstrap` register
+`kinds: ["gate"]` only. Persona dispatch also needs
+`nw workers set NAME --kinds gate,persona`.
 
 ```bash
 nw workers bootstrap box --ssh nw@box --install-key   # install nw on the worker and register it
@@ -208,5 +217,7 @@ nw workers check                                      # probe over SSH
 nw workers drain box                                  # no new gates; disabled once idle
 ```
 
-Queue dispatch to workers is still being built
-([SPEC-0310](https://github.com/brunosmmm/nightwright/blob/main/docs/specs/0310-remote-workers-run-gates-persona-runs-and.md)).
+Queue dispatch of gates and persona runs is implemented. What is not built is federation:
+a project host running its own queue, with one conductor talking to it over a networked
+mailbox. `nw gate` runs a project's gates on a worker with no campaign. Standalone jobs and
+the worker commands are in the [command reference](../reference/index.md).

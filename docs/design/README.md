@@ -9,5 +9,6 @@ Convention: name notes `NNNN-slug.md` matching the spec they support (e.g.
 
 The original prototype scripts (`prototype_report.py`, `analyze_probe.py`) are the
 historical evidence that the passive-tracking model works; their findings are summarized
-in the README's *How time is calculated* section. Future evidence-gathering scripts can
+in [Track time](../product/guides/track-time.md) (*What “hours” mean*) and
+[Time model & retention](../product/concepts/time-and-retention.md). Future evidence-gathering scripts can
 be parked here rather than at the repo root.

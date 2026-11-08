@@ -8,7 +8,7 @@ trigger: turning an accepted internal spec into actionable tasks
 
 ## When to use
 
-You have an **internal** spec (`docs/specs/SPEC-NNNN`) that's `accepted` (or further along)
+You have an **internal** spec (`docs/specs/NNNN-slug.md`, frontmatter id `SPEC-NNNN`) that's `accepted` (or further along)
 and you're ready to start doing the work — you need it broken into trackable org tasks, not
 just prose.
 

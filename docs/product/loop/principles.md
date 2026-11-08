@@ -57,7 +57,7 @@ journal (`runner.jsonl`). Gate logs keep the raw command output, with a JSON rec
 each one. This is what lets the loop run unattended. You can always answer "what happened,
 and why", with `nw campaign log`, `nw campaign runs` and `nw queue runner-log`.
 
-Events carry their provenance (SPEC-0408): a `finding` has `key` (the same `finding_key` its
+Events carry their provenance: a `finding` has `key` (the same `finding_key` its
 follow-up idea is filed under) and `run_id` (the persona run that produced it, `null` for
 gate, close and queue-internal findings). A `triage` event records each applied triager
 verdict: the review triager's waivers by finding `key`, and the gate triager's disposition,

@@ -53,7 +53,7 @@ Save deep mapping and review for [Weekly ops](weekly-ops.md).
 ## Optional desk
 
 ```bash
-nw tui                    # requires the tui extra
+nw tui                    # Textual is a core dependency
 ```
 
 ![desk](../assets/captures/tui-desk.svg?v=4)

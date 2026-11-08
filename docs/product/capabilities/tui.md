@@ -1,12 +1,12 @@
 # Desk (TUI)
 
-Textual **ideas desk** for humans (Textual is a core dependency, SPEC-0368). Agents stay on CLI + `--json`.
+Textual **ideas desk** for humans (Textual is a core dependency). Agents stay on CLI + `--json`.
 
 ## Install
 
 ```bash
 uv sync                             # checkout
-uv tool install --editable .        # PATH entry from this checkout
+uv tool install --editable.        # PATH entry from this checkout
 nw tui
 ```
 
@@ -19,11 +19,11 @@ The `tui` extra remains as an empty alias, so `--extra tui` / `'.[tui]'` still w
 
 | Tab | Shows |
 |-----|-------|
-| `ideas` | The ideas desk (default) |
-| `hub` | The triage union of ideas, specs and outbound ([Hub](hub.md)) |
-| `queue` | The live agentic queue |
-| `events` | The queue event stream and watchdog conditions |
-| `mailbox` | Conductor/steward/human inboxes and threads; reply as the human |
+| `ideas` | The ideas desk (default). Key `1` |
+| `hub` | The triage union of ideas, specs and outbound ([Hub](hub.md)). Key `2` |
+| `queue` | The live agentic queue. Key `3` |
+| `mailbox` | Conductor/steward/human inboxes and threads; reply as the human. Key `4` |
+| `events` | The queue event stream and watchdog conditions. Key `5` |
 
 `nw tui --campaign ID` opens one campaign's timeline, runs, gates and reviews.
 

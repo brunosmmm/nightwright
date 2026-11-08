@@ -44,7 +44,7 @@ Do not promote an empty idea. Put durable notes on it first:
 
 ```bash
 nw idea summary IDEA-00N --set "…"
-nw idea log IDEA-00N "what we learned"
+nw idea log IDEA-00N --note "what we learned"
 nw idea show IDEA-00N
 nw idea mark-explored IDEA-00N   # when Summary is ready
 ```

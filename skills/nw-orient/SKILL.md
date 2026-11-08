@@ -44,7 +44,7 @@ These apply to every session that touches nightwright — conductor, steward, bu
   `nw gate run --project <P> --worktree <path>` (HEAD, or a stash commit of a dirty tree),
   `nw gate run --branch B`, repeatable ad-hoc `--cmd '...'` (replaces the project gates),
   `--tier loop|close|all`, `--wait-s N` (wait for a slot), `--detach` (background), `--json`
-  (`nw.gatejob.v1`). Follow a job with `nw gate status|logs|cancel|list GATEJOB-NNNN`.
+  (`nw.gatejob.v1`). Follow a job with `nw gate status|logs|cancel GATEJOB-NNNN`. `nw gate list` takes no job id.
   Exit codes: 0 green, 1 red, 2 cannot start, 3 box unavailable, 4 transport failure,
   130 cancelled. Worker pools only: it never falls back to running locally, and campaigns get
   slots first. Needs gates in `.nw/project.yaml` or `--cmd`. Known limit: remote gates skip
@@ -54,9 +54,10 @@ These apply to every session that touches nightwright — conductor, steward, bu
 
 `nw` turns Claude / Cursor transcripts + meetings into per-topic hours, and separately runs an
 idea→explore→spec→task→export pipeline for turning a stray thought into shipped, tracked work.
-The agentic queue's personas and launches default to `claude`; opt in to `cursor-agent` with
-`agentic.runner: cursor`, `nw queue add --runner cursor`, or
-`nw queue backend --host|--all cursor --yes` (next spawn; no SIGTERM).
+The agentic queue's personas default to `claude`. Opt in to Cursor or Pi with
+`agentic.runner: cursor` or `pi`, `nw queue add --runner cursor|pi`, or
+`nw queue backend --host|--all cursor|pi --yes` (next spawn; no SIGTERM).
+`nw queue conductor-launch` and `steward-launch --runner` accept only `claude` or `cursor`.
 
 ```
 idea  →  explore  →  accepted spec  →  (internal: generate → PROMOTED)

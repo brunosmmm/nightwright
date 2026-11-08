@@ -8,7 +8,7 @@ A good spec is short, decided and checkable.
 
 ```mermaid
 flowchart LR
-    I["Explored idea<br/>IDEA-042"] -- "nw spec new --from-idea IDEA-042" --> D["Draft spec<br/>docs/specs/NNNN-….md<br/>prefilled from the idea"]
+    I["Explored idea<br/>IDEA-042"] -- "nw spec new --from-idea IDEA-042" --> D["Draft spec<br/>internal: docs/specs/NNNN-….md<br/>outbound: data-dir outbox/PROJ-NNNN<br/>prefilled from the idea"]
     D -- "/nw-new-work<br/>fill decision · design · ACs · test plan" --> A["Accepted spec<br/>lint-clean"]
     A -- "nw spec review" --> R{"Reviewer"}
     R -- "revise / split" --> A
@@ -17,7 +17,11 @@ flowchart LR
 
 `nw spec new --from-idea` scaffolds the spec from the template, prefills Context from the
 idea, links the two (the spec's `source_idea`, the idea's `:SPEC:`), and moves the idea to
-SPECCED. `/nw-new-work` guides an agent through finishing it and getting it to `accepted`.
+SPECCED. An idea with no project, the built-in project Meta-Tools, or `--internal` writes
+`docs/specs/NNNN-….md`. An idea whose `:PROJECT:` is an `outbox_targets` key writes
+`<data_dir>/outbox/<project>/PROJ-NNNN-….md` instead, and `nw queue add` of that id waits
+for `nw spec export`. `/nw-new-work` guides an agent through finishing it and getting it to
+`accepted`.
 
 ## Anatomy of a good spec
 
@@ -28,8 +32,8 @@ flowchart TB
     DE --> DS["<b>Design</b> — modules, data shapes, interfaces, failure paths"]
     DS --> AC["<b>Acceptance criteria</b> — objectively checkable statements"]
     AC --> TP["<b>Test plan</b> — how each AC is proven"]
-    AC -. "the reviewer and the<br/>implementer read these" .-> L(["the loop"])
-    TP -. "the gates prove these" .-> L
+    AC -. "the reviewer and the<br/>implementer read these".-> L(["the loop"])
+    TP -. "the gates prove these".-> L
 ```
 
 | Section | The loop uses it for | Make it good by |
@@ -69,9 +73,17 @@ an incomplete epic or supersedes a design that turned out wrong.
 ## Review, then queue
 
 ```bash
-nw spec review SPEC-0042        # read-only reviewer persona: approve | revise | split
-nw queue add SPEC-0042 --yes    # needs an approving review of the current text
+nw spec review SPEC-0042        # one review: approve | revise | split
+nw spec review SPEC-0042 --show # stored verdict; a bare second run errors
+nw queue add SPEC-0042 --yes    # admits approve, or a revise/split whose text changed
 ```
+
+An approving review of the current text admits the spec. A `revise` or `split` whose text
+you then edit is also admitted, with no second review. An unchanged `revise` is admitted
+only for an internal spec: the writer amends it. An unchanged outbound `revise` is refused
+until you edit. `--force` on `nw spec review` starts another review. `--force` on
+`nw queue add` skips the check. The verdict is stored under the data dir at
+`agentic/reviews/<SPEC-ID>/<sha256>.json`, not next to the spec file.
 
 The reviewer checks four things:
 - consistency: every AC follows from the design, and every design promise has an AC;
@@ -80,8 +92,9 @@ The reviewer checks four things:
 - size.
 
 It returns findings by severity: must_fix, major, minor and nit. Fix the must_fix and major
-ones and review again. If the same spec keeps coming back with new findings round after
-round, stop and narrow or rework it (see
+ones. Editing the text after a `revise` is enough to queue it. Another review is
+`--force`, not the default. If the same spec keeps coming back with new findings, stop and
+narrow or rework it (see
 [Convergence](../loop/convergence.md#persistent-divergence-means-rework)).
 
 ## Changing your mind

@@ -39,9 +39,9 @@ nw idea   nw spec new    nw queue add → one campaign per spec or idea
    questions. They talk over a file **mailbox** (`<data_dir>/agentic/mailbox/`); decisions
    that need a human become **escalations**.
 
-In progress: **remote workers** ([SPEC-0310](docs/specs/0310-remote-workers-run-gates-persona-runs-and.md)).
-`nw worker` (job runner) and `nw workers` (registry) have shipped; queue dispatch to them is
-accepted, not built. A declarative pipeline definition is planned.
+**Remote workers** ship gate dispatch, persona dispatch, pull workers, and `nw gate` for a campaign-less run.
+`nw worker` is the job runner and `nw workers` is the registry. Still open is federation: a project host
+running its own queue. A declarative pipeline definition is planned.
 
 ## Install and start working
 
@@ -51,7 +51,7 @@ Needs git, [uv](https://docs.astral.sh/uv/) and the `claude` CLI. Optional: `cur
 ```bash
 git clone https://github.com/brunosmmm/nightwright.git && cd nightwright   # or git@github.com:brunosmmm/nightwright.git
 uv sync && uv run nw --help           # lists idea / spec / queue / report …
-uv tool install --editable .          # `nw` on PATH (`uv tool update-shell` if it is not)
+uv tool install --editable.          # `nw` on PATH (`uv tool update-shell` if it is not)
 nw skills install && nw completion install --shell fish   # skills -> ~/.claude/skills; shell: fish/bash/zsh
 nw projects add Acme --repo ~/src/acme --yes && nw projects init Acme --yes
 nw doctor --fix-hints                 # read-only install check; prints the fix for each finding
@@ -70,9 +70,9 @@ from `wt`? Run `nw migrate-from-wt` once. Next: [Run the agentic loop](docs/prod
 ```bash
 nw idea "retry flaky gates once" --project Meta-Tools
 nw next                                 # next-step hints (`nw hub --json`: triage)
-nw spec new --from-idea IDEA-123        # promote an idea to a draft spec
-nw spec review SPEC-0123                # spec_reviewer verdict, size and tone
-nw queue add SPEC-0123 --yes            # also IDEA-NNN, or --epic SPEC-NNNN
+nw spec new --from-idea IDEA-00N        # promote an idea to a draft spec
+nw spec review SPEC-NNNN                # spec_reviewer verdict, size and tone
+nw queue add SPEC-NNNN --yes            # also IDEA-NNN, or --epic SPEC-NNNN
 nw queue run --detach                   # lease-guarded runner; `nw queue stop` ends it
 nw queue watch                          # live dashboard (`list`, `backlog`, `gate-slots`)
 nw campaign show CAMPAIGN               # state + recent ledger events

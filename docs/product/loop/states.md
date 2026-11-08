@@ -16,8 +16,7 @@ stateDiagram-v2
     OPENING --> IMPLEMENTING: worktree ready<br/>(spec queued)
     OPENING --> SPEC_WRITING: worktree ready<br/>(idea queued)
     SPEC_WRITING --> SPEC_REVIEW: spec written
-    SPEC_REVIEW --> SPEC_WRITING: review asks for a revision
-    SPEC_REVIEW --> IMPLEMENTING: spec accepted
+    SPEC_REVIEW --> IMPLEMENTING: approve, or a revise/split whose text changed
     IMPLEMENTING --> GATING: implementer done
     GATING --> REVIEWING: required gates pass
     GATING --> TRIAGING: a gate failed
@@ -61,9 +60,10 @@ stateDiagram-v2
 
 ## Slots: who is "active"
 
-A profile gives the queue a number of **slots** (`balanced`: 2). Only campaigns that are
-open and delivering hold a slot: OPENING, SPEC_WRITING, SPEC_REVIEW, IMPLEMENTING, GATING,
-TRIAGING, REVIEWING and CLOSING. That keeps three groups apart:
+A profile gives the queue a number of **slots** (`frugal` 1, `balanced` 2, `thorough` 3).
+Only campaigns that are open and delivering hold a slot: OPENING, SPEC_WRITING,
+SPEC_REVIEW, IMPLEMENTING, TRIAGING, REVIEWING, DIVERGENCE_TRIAGE and CLOSING. GATING does
+not hold a slot. That keeps three groups apart:
 
 ```mermaid
 flowchart LR
@@ -100,9 +100,9 @@ flowchart LR
 | `WAITING` | waiting | Started before, ready to continue, no slot free | A slot frees up; it resumes where it stopped |
 | `OPENING` | active | Branch and worktree are being created; setup commands run | The worktree is ready |
 | `SPEC_WRITING` | active | Idea campaigns only: the **spec writer** persona writes the spec from the idea, or revises it after a review | It reports the spec written |
-| `SPEC_REVIEW` | active | Idea campaigns only: the **spec reviewer** reviews the spec; an approving review accepts it inside the loop | Approved (to IMPLEMENTING) or a revision is asked (back to SPEC_WRITING) |
+| `SPEC_REVIEW` | active | Idea campaigns only: one **spec reviewer** pass. An approving review, or a revise/split whose text then changed, accepts it. An unchanged revision parks | Approved, or the changed revision is accepted (to IMPLEMENTING) |
 | `IMPLEMENTING` | active | The **implementer** persona writes code against the spec and the last findings | It reports done (or blocked) |
-| `GATING` | active | Your **gates** run in the worktree (tests, lint, …) | All required gates pass, or one fails |
+| `GATING` | active | Your **gates** run in the worktree (tests, lint, …). This state does not hold a profile slot | All required gates pass, or one fails |
 | `TRIAGING` | active | The **gate triager** reads the failure and decides: fix, retry, waive or escalate | It decides |
 | `REVIEWING` | active | The **conformance reviewer** checks the change against the spec's acceptance criteria | Pass, or a list of fixes |
 | `DIVERGENCE_TRIAGE` | active | The **divergence triager** reads the spec against the latest blockers and picks one extra implement round, a spec rework, or a human escalation | The pick is applied |
@@ -124,6 +124,7 @@ Each trip back to IMPLEMENTING (a triage `fix`, or a review asking for fixes) ad
 ## Campaigns that start from an idea
 
 `nw queue add IDEA-NNN` queues an idea instead of an accepted spec. After OPENING the
-campaign passes through **SPEC_WRITING** and **SPEC_REVIEW** (as many rounds as the profile
-allows) before it reaches IMPLEMENTING. Campaigns queued from an accepted spec skip both
-states. See the [ideas-to-specs](../ideas/index.md) workflow.
+campaign passes through **SPEC_WRITING** and one **SPEC_REVIEW**. A `revise` or `split`
+whose text then changed is accepted with no second review. An unchanged revision parks
+`spec_review_exhausted`. There is no profile cap on review rounds. Campaigns queued from an
+accepted spec skip both states. See the [ideas-to-specs](../ideas/index.md) workflow.

@@ -6,7 +6,7 @@ optional.
 
 ```mermaid
 flowchart LR
-  Idea[Idea :PROJECT:] --> Outbox[data-dir outbox]
+  Idea[Idea:PROJECT:] --> Outbox[data-dir outbox]
   Outbox -->|accepted| Export[nw spec export]
   Export --> Port[target docs/specs]
   Port --> Impl[implement + verify in target]

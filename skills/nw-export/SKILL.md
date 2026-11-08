@@ -38,10 +38,13 @@ and ready to become a real artifact in the target project's own repo.
   close-the-loop playbook. Optional later: `nw spec pull-status <ID>` to mirror that status
   back into the outbox.
 - **Outcome bar (SPEC-0048):** outbound specs need product-fit signal — `outcome:` frontmatter
-  or an AC starting with “I can” / “User can” / “Operator can”. REMOVED export hard-fails
-  without it (`--force` bypasses). Prefer `/nw-implement-spec` in the target after export.
-- **Epic compose (SPEC-0047):** REMOVED epic export uses `parent:` children when present;
-  otherwise Breakdown titles (legacy).
+  or an AC starting with “I can” / “User can” / “Operator can”. The default scheme
+  `nw-native` warns when that signal is missing. `--force` strips a `"product-fit outcome"`
+  validation problem. It does not apply to that warning. There is no `REMOVED` scheme.
+  Built-ins are `nw-native` and `plain-md`. Prefer `/nw-implement-spec` in the target after export.
+- **Epic children:** export each accepted child with the project's scheme. SPEC-0047's
+  compose adapter is withdrawn. Per-child export is the path. Include outcome AC / `outcome:`
+  (SPEC-0048).
 - **Fit log (SPEC-0049):** after real use (or before supersede), `nw spec fit-log <ID> --note
   "…"`.
 

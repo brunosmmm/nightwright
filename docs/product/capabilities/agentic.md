@@ -2,20 +2,20 @@
 
 A deterministic queue moves **accepted specs** through implementation, gates, triage and
 merge without a human at the keyboard. Judgment steps (implement, triage a gate failure)
-run as fresh headless Claude or Cursor personas with a budget and a timeout; every transition, run,
+run as fresh headless Claude, Cursor, or Pi personas with a budget and a timeout; every transition, run,
 gate result, finding and dollar lands in a per-campaign ledger. Humans see an item only
-when the loop has **parked** it. Governing epic: SPEC-0169; the sections below are filled
-in by its child specs as they land.
+when the loop has **parked** it.
 
-`nw doctor` (SPEC-0349) checks the agentic setup read-only: launch-model prices, the agentic
+`nw doctor` checks the agentic setup read-only: launch-model prices, the agentic
 and mailbox dirs, the runner lease, the conductor session, the worker registry and each
-project's `.nw/project.yaml` and profiles. When any live resolution is `cursor`, it also
-probes `cursor-agent --version` and login (`status` / `whoami`, not a paid `-p`).
+project's `.nw/project.yaml` and profiles. When any live resolution is `cursor`, it imports
+`cursor-sdk` and requires `CURSOR_API_KEY`. It does not run `cursor-agent --version`.
+When a resolution is `pi`, it runs the `agentic.pi` check.
 
 ## Project configuration
 
 `<repo>/.nw/project.yaml` is committed with the project and declares what the loop needs
-to know about it (SPEC-0170):
+to know about it:
 
 - `gates`: ordered shell commands (`name`, `cmd`, `cwd`, `timeout_s`, `required`) run
   inside the campaign worktree; `required` gates block, optional ones only report.
@@ -24,7 +24,7 @@ to know about it (SPEC-0170):
 - `worktrees`: `root` (default `<repo>/../.nw-worktrees/<project>`), `setup` commands,
   `cleanup` (`on_merge` | `on_close` | `never`).
 - `agents`: `context_files` read first by every persona, `permission_mode`,
-  `allowed_tools`, `commit_trailer`, optional `runner` (`claude` | `cursor`).
+  `allowed_tools`, `commit_trailer`, optional `runner` (`claude` | `cursor` | `pi`).
 
 Unknown keys fail; every problem is reported by key path. Gate commands may use the
 placeholders `{spec_id}`, `{campaign}`, `{worktree}`, `{base}`.
@@ -46,7 +46,7 @@ A campaign is one spec's trip through the loop. Each lives under
 `nw.campaign.v1`: state, counters, cost, last gate, park reason) plus an append-only
 `ledger.jsonl` with one event per line (`open`, `transition`, `run.start`/`run.end`,
 `commit`, `gate`, `finding`, `cost`, `note`, `park`, `resume`, `close`, plus the backlog
-`backlog` and `priority` events of SPEC-0180), each carrying a
+`backlog` and `priority` events), each carrying a
 monotonic `seq`. Writers hold the campaign's `flock`, so the loop and a human command can
 touch the same campaign safely. Campaign ids are `<SPEC-ID>-<YYYYMMDD>-<hex>`.
 
@@ -59,7 +59,7 @@ nw campaign note CAMPAIGN "text" # append a note; inside a persona run $NW_CAMPA
 
 A single `nw queue run` holds the runner lease (`queue.lock` + `queue.lease.json` with a
 heartbeat); a second runner is refused and names the holder. A heartbeat older than
-`agentic.lease_ttl_s` is reported as `stale`, never taken over (SPEC-0171).
+`agentic.lease_ttl_s` is reported as `stale`, never taken over.
 
 ### Outbound projects
 
@@ -74,12 +74,12 @@ pulled the merged file (otherwise a finding says to pull and rerun `nw spec pull
 
 ## Profiles
 
-Models, effort, budgets, loop limits and slots are workflow profiles (SPEC-0171, SPEC-0237).
+Models, effort, budgets, loop limits and slots are workflow profiles.
 Builtin profiles `balanced` (default: Sonnet implementer and triager, $10 cap, 3 loops,
 2 slots), `frugal` and `thorough` ship as YAML files in the package
 (`src/nightwright/agentic/profile_defs/<name>.yaml`).
 
-### Size x tone matrix (SPEC-0219)
+### Size x tone matrix
 
 When you do not pass `--profile`, `nw queue add` picks the campaign profile from the spec's
 approving (or revising) review, which records a **size** (`xs`, `s`, `m`, `l`; `xl` is too big
@@ -147,7 +147,7 @@ The `config.yaml` block holds the same deltas:
 ```yaml
 agentic:
   default_profile: balanced
-  runner: claude                 # or cursor (SPEC-0436); default stays claude
+  runner: claude                 # or cursor or pi; default stays claude
   lease_ttl_s: 120
   profiles:
     balanced:
@@ -158,15 +158,15 @@ agentic:
 ## Gates
 
 Gates are the project's own proof commands from `.nw/project.yaml` — tests, lint, anything
-with an exit code (SPEC-0173). The loop runs them in the campaign worktree, **in order and
-all of them every time**, so triage and humans see every failure at once rather than the
-first one. Each gate has a `timeout_s`; a timeout kills the gate's whole process group.
+with an exit code. The loop runs them in the campaign worktree, **in order, and a failure does not
+stop the rest**, so triage and humans see every failure at once rather than the
+first one. Close-tier skips and reuse are below. Each gate has a `timeout_s`; a timeout kills the gate's whole process group.
 A campaign branch may raise a gate's `timeout_s` in its own `.nw/project.yaml` (up to the
 nightwright-level `gate_budget_s`), never lower it, and the raise is recorded as a `gate-limits` finding;
-nothing else in a gate is read from the branch (SPEC-0316).
+nothing else in a gate is read from the branch.
 `required: true` gates block the campaign; optional gates are recorded but never block.
 
-A gate may add `paths:`, a list of globs (SPEC-0350). At the close re-gate the gate runs only
+A gate may add `paths:`, a list of globs. At the close re-gate the gate runs only
 when the branch changes a path that matches one; otherwise it is skipped, counts as satisfied
 and a `gate.skipped` event lands in the campaign ledger. A gate without `paths` always runs, and
 when the changed paths cannot be computed every gate runs. Globs are anchored at the repo root:
@@ -175,7 +175,7 @@ pattern with no `/` matches that name at any depth. When unsure whether a test r
 list it under the full-suite gate.
 
 A loop-tier pytest gate (`when: loop`, `results: {format: pytest}`) may set `failed_first: true`
-(SPEC-0358, default off). A round after a red round then starts by running the failing ids of the
+(default off). A round after a red round then starts by running the failing ids of the
 previous result *for that gate name* (pytest `--lf` semantics driven by the ledger), through the
 gate's `retry_cmd` (else the expanded `cmd` followed by the ids), in the log
 `gates/NNN-<name>.ff.log`. The prelude is attempt kind `failed-first` and runs only when the
@@ -187,7 +187,7 @@ or not runnable** (pytest exit 4 or 5) falls through to the normal run and ladde
 first in `attempts` and its time in `duration_s`. A gate named `<other>.ff` is rejected (it would
 share the prelude's log).
 
-### Close-tier reuse and the sentinel (SPEC-0359)
+### Close-tier reuse and the sentinel
 
 Every gate sees `NW_GATE_REPORT` (`gates/NNN-<name>.report.json`); a gate that writes a JSON
 selection report there (`tools/affected_tests.py` does) carries it as `report` on its result
@@ -241,8 +241,8 @@ base) stays too and is named as `orphans` on the event. A git error (an unresolv
 `worktrees.setup` is rerun until it has succeeded once (`<project>.setup.json`), and again when
 the setup commands change.
 
-**Affected-only close and the clock sentinel (SPEC-0378/0379).** nightwright's own close-tier
-`pytest` gate runs `tools/affected_tests.py ... --run uv run pytest`, the tests the branch affects
+**Affected-only close and the clock sentinel.** nightwright's own close-tier
+`pytest` gate runs `tools/affected_tests.py... --run uv run pytest`, the tests the branch affects
 against `merge-base($NW_BASE, HEAD)`, never the bare full suite; its fallbacks are narrowed
 (nested conftest, metadata-only `pyproject.toml`, own-version `uv.lock` bump, removed modules,
 hub-only modules, unmapped files and the old 40% cap no longer force it) and `close.force_full` /
@@ -252,7 +252,7 @@ worker run) or `NW_AFFECTED_FULL=1`. Besides the reuse triggers the runner start
 sentinel on the clock when it has close gates, its base moved since the last green sentinel and
 that run is older than `agentic.sentinel.interval_hours` (nw config, default 6; 0, `false` or
 null turns the clock off). The run takes a worker-box gate slot while a worker is placeable
-(SPEC-0374, never local overflow then) and runs there through `remote_gates.run_detached`; a
+(never a local overflow) and runs there through `remote_gates.run_detached`; a
 worker transport failure is a failed run (retried after the hour or when the base moves), not a
 local fallback.
 
@@ -273,7 +273,7 @@ on a parked item — and logs a `gate` event. It never changes the campaign's st
 
 ## Personas
 
-Each judgment step is one fresh headless run (SPEC-0174, SPEC-0436, SPEC-0442): a persona
+Each judgment step is one fresh headless run: a persona
 markdown template (`implementer`, `gate_triager`, `conformance_reviewer`) is filled with the
 campaign's context — the spec text as it is on the branch, the worktree path, the last gate
 logs, the brief from the previous loop — and ends with a fixed invariant block (work only in
@@ -281,22 +281,26 @@ the worktree, do not commit, finish with the JSON verdict). Default is `claude -
 `--json-schema`. Opt in to Cursor and the run goes through the local Cursor Python SDK
 (`cursor-sdk`, the optional `cursor` extra) with `CURSOR_API_KEY`, inside the same detached
 wrapper. Cursor has no schema flag, so the same JSON object is asked for in a prompt footer.
-Both get a budget and a wall-clock timeout. When the account returns SDK usage cost, the
+Pi is a third persona runner (`--runner pi`): a Node child around the Pi SDK.
+The Pi runner and the GPT model set are still in progress, so Pi is a queue runner choice,
+not a finished integration. Conductor and steward launch do not accept `pi`.
+Each run gets a budget and a wall-clock timeout. When the account returns SDK usage cost, the
 result carries that dollar amount; otherwise the queue estimates from the cap. Read-only
 personas keep the file-inspection tools (read, grep, glob, ls) and do not get Shell or the
-edit tools (SPEC-0456). Cost, usage and session id come back in the result and
+edit tools. Cost, usage and session id come back in the result and
 go to the ledger. Identical inputs give a byte-identical prompt; `nw campaign prompt
 CAMPAIGN PERSONA` prints it without running anything.
 
 For tests and dry runs, `agentic.runner: fake` (or `NW_AGENTIC_RUNNER=fake`) replays a JSON
-script of scripted edits and canned verdicts instead of calling `claude` or `cursor-agent`.
+script of scripted edits and canned verdicts instead of calling `claude`, the Cursor SDK, or Pi.
 
-### Backend (Claude or Cursor)
+### Backend (Claude, Cursor, or Pi)
 
-Default is `claude`. Cursor is opt-in. A queue process may mix backends. Resolution is per
-spawn (SPEC-0436), highest first:
+Default is `claude`. Cursor and Pi are opt-in persona runners. Conductor and steward
+launch stay `claude` or `cursor`. A queue process may mix backends. Resolution is per
+spawn, highest first:
 
-1. `NW_AGENTIC_RUNNER` (`claude` / `cursor` / `fake`; `fake` is valid only here)
+1. `NW_AGENTIC_RUNNER` (`claude` / `cursor` / `pi` / `fake`; `fake` is valid only here)
 2. campaign pin `state.runner`
 3. `agentic.project_runners[project]`
 4. `.nw/project.yaml` `agents.runner`
@@ -308,8 +312,8 @@ resolution. Nothing is SIGTERM'd. A cursor persona spawn runs the local SDK chil
 Conductor and steward `--runner cursor` still start the `cursor-agent` CLI.
 
 ```bash
-nw queue add SPEC-0170 --runner cursor --yes     # pin this campaign
-nw queue backend CAMPAIGN cursor --yes           # pin or clear (`default`) a live campaign
+nw queue add SPEC-NNNN --runner cursor --yes     # pin this campaign (claude|cursor|pi)
+nw queue backend CAMPAIGN cursor --yes           # pin or clear (`default`); pi is accepted too
 nw queue backend --host cursor --yes             # write user agentic.runner (loop reloads)
 nw queue backend --all cursor --yes              # pin every non-terminal campaign
 nw queue backend --host --all cursor --yes       # full in-flight switch
@@ -317,14 +321,14 @@ nw queue backend --host --all cursor --yes       # full in-flight switch
 
 `--host` and `--all` take the backend as the only argument (`nw queue backend --host cursor`).
 `conductor-launch --runner cursor` also writes the host default; `steward-launch --runner`
-does not (SPEC-0438, SPEC-0439).
+does not.
 
 Profile `model: opus|sonnet|haiku` is unchanged. On a Cursor spawn those aliases map through
 YAML (`src/nightwright/agentic/cursor_map.yaml`, overlay
 `<config_dir>/cursor_map.yaml`, `agentic.cursor` in config, `<project>/.nw/cursor_map.yaml`).
 A persona may set `cursor_model:` in a user/project profile to pin a Cursor id.
 
-### Declared personas (SPEC-0371, SPEC-0394)
+### Declared personas
 
 A project can declare its own personas in its repo (a crypto repo a security reviewer, a UI repo
 an accessibility reviewer) without patching nightwright: one `nw.persona.v1` YAML file per
@@ -353,7 +357,7 @@ The role, not the file, fixes the output schema and the permissions:
 | role | output schema | read-only | template placeholders |
 |---|---|---|---|
 | `implementer` | the implementer verdict | no (the project's `agents.permission_mode` / allowlist) | the implementer's |
-| `reviewer` | the shared findings schema, `category` = the file's `category` list plus `other` | yes (`dontAsk`) | the reviewers' (diff, test files, changed files, ...) |
+| `reviewer` | the shared findings schema, `category` = the file's `category` list plus `other` | yes (`dontAsk`) | the reviewers' (diff, test files, changed files,...) |
 | `triager` | the gate triager verdict | yes (`dontAsk`) | the gate triager's |
 
 Keys beyond the registry's common ones (`schema`, `name`, `role`, `template`, `description`,
@@ -384,7 +388,7 @@ ship.
 ## Reviews
 
 Green gates say the build works, not that the change does what the spec says. After every
-green gate run the campaign enters **REVIEWING** (SPEC-0187) and a fresh, read-only
+green gate run the campaign enters **REVIEWING** and a fresh, read-only
 `conformance_reviewer` (`--restricted`; Opus in `balanced` and `thorough`, Sonnet in
 `frugal`; about $1.50) gets the spec as it is on the branch, the diff against the base
 (at most 1500 lines), the test files touched under `tests/`, and the gate summary. For every
@@ -392,7 +396,7 @@ acceptance criterion it decides `met` with concrete evidence, flags criteria "me
 trivially passing test as `major` and scope creep as `minor`, and never edits anything. Its
 verdict is `{verdict: pass|fix, score, findings, ac_assessment, fix_brief}`:
 
-- the verdicts are triaged by a deterministic score (SPEC-0203, below): `pass` ⇒ CLOSING;
+- the verdicts are triaged by a deterministic score: `pass` ⇒ CLOSING;
 - `fix` ⇒ `loops += 1` and back to IMPLEMENTING with the `fix_brief` and the blocking
   findings as the next implementer's brief (`loop_max` reached ⇒ `loop_exhausted`);
 - a malformed verdict is retried once per loop, then the campaign parks as `review_escalated`.
@@ -402,7 +406,7 @@ the `run.end` verdict and in `last_review` of the campaign state. The cost cap a
 the spawn like for any persona. A close that bounces back to triage and ends in a new
 implementer run is reviewed again.
 
-### Test reviewer (SPEC-0205)
+### Test reviewer
 
 The second reviewer asks the question the conformance reviewer is not tasked with: **would the
 tests catch a regression?** The read-only `test_reviewer` (`--restricted`; Opus in `balanced` and
@@ -420,8 +424,8 @@ review pass; to get the old cost set `reviewers: [conformance_reviewer]` in the 
 
 ### Shipped reviewers
 
-- `conformance_reviewer` (SPEC-0187): judges the change against the spec's acceptance criteria.
-- `adversarial_reviewer` (SPEC-0202): attacks the code itself, by reading only. It assumes the
+- `conformance_reviewer`: judges the change against the spec's acceptance criteria.
+- `adversarial_reviewer`: attacks the code itself, by reading only. It assumes the
   change is wrong, asks per hunk what input, ordering, timing or environment breaks it, and
   checks shell strings built from input, `shell=True`, unvalidated paths, secrets in logs,
   unlocked read-modify-write, swallowed exceptions, non-atomic writes and unguarded
@@ -439,7 +443,7 @@ review pass; to get the old cost set `reviewers: [conformance_reviewer]` in the 
   Budget: Opus/high $1.50 in `balanced`, $2.50 in `thorough`; `frugal` has settings (Sonnet,
   $0.60) for opting in through `reviewers`.
 
-### Several reviewers (SPEC-0201)
+### Several reviewers
 
 A profile's `reviewers` key lists the reviewer personas of REVIEWING (`balanced` and `thorough`
 list `conformance_reviewer`, `test_reviewer` and `adversarial_reviewer`, `frugal` only the
@@ -456,7 +460,7 @@ valid siblings are kept and never re-run — and nothing is routed until every v
 reviewer still missing after its retry parks the campaign as `review_escalated`, naming it.
 Entering REVIEWING always starts a fresh review (verdicts are cleared).
 
-### Triage: score and routing (SPEC-0203)
+### Triage: score and routing
 
 Once every verdict is in, a pure function (`triage_reviews`, no LLM) decides. Findings get ids
 `<persona>#<index>`; identical findings (same files and normalized title) from several
@@ -490,8 +494,8 @@ agentic:
       review:
         pass_score: 80          # int 0..100; thorough 90, frugal 70
         weights: {must_fix: 100, major: 15, minor: 4, nit: 1}   # a partial delta merges
-        triager: true           # bool (SPEC-0206); true in balanced / thorough, false in frugal
-        followups: true         # file non-blocking findings as ideas at close (SPEC-0207)
+        triager: true           # bool; true in balanced / thorough, false in frugal
+        followups: true         # file non-blocking findings as ideas at close
         followups_nits: false   # also file `nit` findings
 ```
 
@@ -509,7 +513,7 @@ review: `{id, personas, severity, title, detail, files, ac, category}`).
 prints a `review:` line (score, verdict, advisory count and how many are `major`) and
 `nw queue list --json` rows carry `review_score`.
 
-### Review triager (SPEC-0206)
+### Review triager
 
 One case in the score is a judgment call: a `fix` caused **only** by the score (no `must_fix`, no
 surviving `fix` verdict, no synthetic `major`) because several `minor` / `nit` findings add up
@@ -534,7 +538,7 @@ never causes `review_escalated`) or `skipped` (the cost cap could not fit its bu
 `waived` clear on every entry into REVIEWING. The score note is written once, after the final
 `triage_reviews` run. Set `review.triager: false` to opt out.
 
-### Follow-up ideas (SPEC-0207, grouped by SPEC-0239)
+### Follow-up ideas
 
 What a change merges with is not forgotten. At the start of the close step a deterministic filer
 (`nightwright.agentic.followups`) lists the `major`/`minor` findings (`nit` too with
@@ -574,14 +578,14 @@ the findings are reported `unfiled`.
   carries a `followups` key (`filed`, `unfiled` and `capped` counts, `idea_id`, the distinct
   `ids`, plus the `items`, `unfiled_items` and `waived` lists).
 - **Migration.** `nw ideas group-followups [--yes] [--json]` folds the open single `nwfu:` ideas
-  that SPEC-0207 used to file into one `nwfug:legacy-<SPEC-NNNN>` idea per spec and closes each
+  that the old filer used to file into one `nwfug:legacy-<SPEC-NNNN>` idea per spec and closes each
   single as `DROPPED` with `FOLDED_INTO` the group. Without `--yes` it only prints the plan
   (`nw.ideas.group_followups.v1`, `written: false`); a re-run is a no-op.
 
 ## Closing
 
 Closing is the step that guards the base branch, and for nightwright itself the live editable install
-(SPEC-0175). It is plain Python over the git wrapper and the gate executor, and it never
+. It is plain Python over the git wrapper and the gate executor, and it never
 forces anything:
 
 1. The spec in the worktree must verify (`nw spec verify` checks) **and** be `status: done`;
@@ -589,9 +593,8 @@ forces anything:
    missing.
 2. Anything uncommitted in the worktree is snapshotted into a commit.
 3. The worktree is rebased onto the target (the local base for `merge`; the fetched remote
-   base for `pr` / `draft-pr`). Declared generated files are regenerated (SPEC-0191). Any
-   other conflict dispatches a `conflict_resolver` persona run inside the campaign (SPEC-0221,
-   up to 2 per entry into CLOSING, `merge.resolver: false` opts out): it performs the rebase,
+   base for `pr` / `draft-pr`). Declared generated files are regenerated. Any
+   other conflict dispatches a `conflict_resolver` persona run inside the campaign (up to 2 per entry into CLOSING, `merge.resolver: false` opts out): it performs the rebase,
    a runner-side check verifies the result (attached branch, no dropped or added commit,
    clean tree) and `rebase_resolved` lists every path and how it was resolved; the close then
    redoes its guard, rebase and re-gate. An unresolved conflict parks the campaign
@@ -611,25 +614,30 @@ Idea states are not touched here; `/nw-conduct` runs `nw spec reconcile --apply`
 
 ## Queue
 
-The queue is the engine (SPEC-0176). Python decides every transition; personas only produce
+The queue is the engine. Python decides every transition; personas only produce
 commits and one verdict. One process runs the loop at a time (the lease), two or three
 campaigns advance concurrently (the profile's `slots`).
 
-A spec is admitted only with an approving review for its current text (SPEC-0188):
-`nw spec review SPEC-0170` runs the read-only `spec_reviewer` persona and stores the verdict in
-`docs/specs/reviews/SPEC-0170.json`, keyed by the spec file's sha256 — editing the spec
-invalidates it. `nw queue add --force` skips the check and records `review: forced`.
+Admission does not require an approving review of the current text.
+`nw spec review SPEC-NNNN` runs the read-only `spec_reviewer` persona once and stores the
+verdict under the data dir at `agentic/reviews/SPEC-NNNN/<sha256>.json`. A second review
+without `--force` errors. `nw queue add` admits an `approve` of the current sha, a `revise`
+or `split` whose text then changed, and an unchanged internal `revise` (the writer amends
+it, no second review). An unchanged outbound `revise` is refused until the spec is edited.
+`docs/specs/reviews/SPEC-NNNN.json` is only a legacy sidecar, and only an `approve` whose
+sha still matches is consulted. `nw queue add --force` skips the check and records
+`review: forced`.
 
 ```bash
-nw spec review SPEC-0170          # approve | revise | split, with findings
-nw spec review SPEC-0170 --show   # read the stored review; runs nothing (SPEC-0242)
+nw spec review SPEC-NNNN          # approve | revise | split, with findings
+nw spec review SPEC-NNNN --show   # read the stored review; runs nothing
 nw spec reviews --verdict revise  # the latest review of every spec
-nw queue add SPEC-0170            # plan only (dry-run)
-nw queue add SPEC-0170 --yes      # create the campaign in QUEUED
-nw queue add SPEC-0170 --runner cursor --yes   # pin this campaign to Cursor
+nw queue add SPEC-NNNN            # plan only (dry-run)
+nw queue add SPEC-NNNN --yes      # create the campaign in QUEUED
+nw queue add SPEC-NNNN --runner cursor --yes   # pin this campaign to Cursor
 nw queue list                     # Active (slots) and Backlog (admission order) tables
 nw queue backlog                  # only the backlog: priority, what each item waits on
-nw queue add SPEC-0171 --priority 1 --yes   # 1 (first) .. 5; default 3
+nw queue add SPEC-NNNN --priority 1 --yes   # 1 (first).. 5; default 3
 nw queue prioritize CAMPAIGN 2 --yes        # re-prioritize a QUEUED / PARKED item
 nw queue watch                    # the same, live
 nw queue run                      # the loop; nw queue tick = one iteration
@@ -658,21 +666,23 @@ any state → PARKED (humans only) → resume | abandon
 
 ### Backlog and admission
 
-`QUEUED` is the inactive backlog (SPEC-0180): items claim a free slot on their own. Each
+`QUEUED` is the inactive backlog: items claim a free slot on their own. Each
 tick picks, among backlog items that are **ready**, the highest priority (`1` first, default
 `3`), oldest first among equals, up to the free slots. Ready means, re-read from the project's
 base checkout at admission time: the spec is still `accepted` (`in-progress` for a `--force`
 add) and every `depends_on` spec is `done` or `superseded`. Anything else keeps the item
-queued with a `blocked_by` reason (`spec status is draft`, `waiting on SPEC-0181 (accepted)`,
-`SPEC-0181 not found`, `spec file missing`) — so a chain can be queued in one go and opens
+queued with a `blocked_by` reason (`spec status is draft`, `waiting on SPEC-NNNN (accepted)`,
+`SPEC-NNNN not found`, `spec file missing`) — so a chain can be queued in one go and opens
 link by link as each spec lands on the base. Each admission records a transition with reason
 `admitted`; an item becoming blocked or unblocked records one `backlog` ledger event (none
 per unchanged tick), and `nw queue prioritize` records a `priority{from,to}` event.
 
-Park reasons: `cost_cap` (checked pessimistically before every spawn), `loop_exhausted`,
-`implementer_blocked` (blocked twice in a row), `triage_escalated`, `review_escalated`,
-`open_failed`,
-`rebase_conflict`, `main_dirty`, `main_not_on_base`, `base_moving`, `gh_failed`, `human`.
+Park reasons include `cost_cap` (checked pessimistically before every spawn),
+`loop_exhausted`, `implementer_blocked`, `triage_escalated`, `review_escalated`,
+`open_failed`, `rebase_conflict`, `main_dirty`, `main_not_on_base`, `base_moving`,
+`gh_failed`, and `human`. The full set, including `config_invalid`, `gates_failed`,
+`spec_review_exhausted`, `diverging`, and `gate_timeout`, is in
+[When something parks](../loop/operate.md#when-something-parks).
 A parked item keeps its worktree; `nw queue resume ID [--to STATE] [--note …]
 [--raise-cap USD] [--reset-loops] --yes` continues it, `nw queue abandon ID --yes` ends it.
 With a loop running, `nw queue park` applies after the current step is recorded.
@@ -685,25 +695,35 @@ ledger (`nw campaign log ID`). `--json` shapes: `nw.queue.v1`, `nw.queue.add.v1`
 ## Gate slots
 
 Gate runs share a host-wide pool of `agentic.gates.slots` slots (default 2, an integer from 1 to
-16; SPEC-0309). A gate run takes one slot for all its gates, so concurrent parallel-pytest gates
+16). A gate run takes one slot for all its gates, so concurrent parallel-pytest gates
 never oversubscribe the CPU. A campaign waiting for a slot is not reported `campaign_silent` or
 `state_stuck`, and the wait does not count against its gate budget. A wait over 30 s writes a
 `gate_waiting` event, and the gate result records `slot_wait_s`. `nw queue gate-slots [--json]`
 shows the holders and the waiters.
-The quiet conductor stream (SPEC-0398) also holds `campaign_silent` / `state_stuck` for a
+The quiet conductor stream also holds `campaign_silent` / `state_stuck` for a
 campaign waiting for or holding a gate slot, or whose gate is deferred behind a drain or another
 gate, until the hold, drain or deferral passes its bound.
 
-**Remote gate workers (in progress).** A second machine can run gates over SSH (SPEC-0310). The
-coordinator keeps a registry (`nw workers add NAME --ssh me@box [--slots N]`, `list`, `check`,
-`on`, `off`, `rm`; SPEC-0337) and the worker host answers `nw worker` (SPEC-0336). `nw workers
-bootstrap NAME --ssh nw@box --install-key` automates the setup (SPEC-0354): it installs a wheel
-of this checkout, the forced-command line for a dedicated worker key (`agentic.workers.key`)
-and the registration. Setup and the threat model are in `docs/WORKFLOW.md` (Remote gate worker).
+**Remote workers.** A second machine can run gates and persona jobs. Gate
+dispatch, persona dispatch, pull workers (`nw worker serve`, `nw serve --jobs`), drain,
+bootstrap, and self-update are implemented. The coordinator still owns the queue, ledger,
+rebase, and merge. A campaign gate falls back locally when its worker transport fails. A
+sentinel transport failure does not. What is not built is federation: a project
+host running its own queue and steward, with one conductor and a networked mailbox.
+The remote-workers epic stays accepted until that child lands.
+
+The coordinator registry is `nw workers` (`add` with `--ssh` or `--pull`, `bootstrap`,
+`list`, `check`, `set`, `on`, `off`, `drain`, `clear-cooldown`, `rm`, `token`, `update`).
+The worker host answers `nw worker` (`gate-job`, `have`, `info`, `ssh-command`, async
+`submit` / `attach` / `poll` / `cancel` / `jobs`, `gc`, `update`, `serve`, and
+`claude-check` / `cursor-check` / `pi-check`). `add` and `bootstrap` register gate jobs
+only; persona dispatch needs `nw workers set NAME --kinds gate,persona`. Setup and the
+threat model are in `docs/WORKFLOW.md` (Remote gate worker). `nw gate` runs the same gates
+with no campaign.
 
 ## Events and watchdog
 
-`nw queue events` is the queue's alert stream (SPEC-0181): `<data_dir>/agentic/events.jsonl`,
+`nw queue events` is the queue's alert stream: `<data_dir>/agentic/events.jsonl`,
 one `nw.event.v1` JSON record per line — `admitted`, `parked`, `resumed`, `merged`,
 `handed_off`, `abandoned`, `run_failed` (with `transient: true` for account limits and API
 overload), `cost_warning`, `backlog`, and mailbox `message`s to the conductor. Events are
@@ -719,27 +739,26 @@ or gate is in flight within budget), `ready_not_admitted` (a ready item not star
 free slot past `ready_grace_s`, default 60), `waiting_not_admitted` (a WAITING campaign not
 resumed although a slot has been free past `waiting_grace_s`, default 60) and
 `runner_journal_silent` (the loop has not ticked for 3 poll intervals while the lease is held
-and fresh, outside a declared long `open` / `close` / `drain` step; SPEC-0228). The loop counts
-as alive while it marks progress inside a tick (`progress_at`, SPEC-0313), so a long tick with
+and fresh, outside a declared long `open` / `close` / `drain` step). The loop counts
+as alive while it marks progress inside a tick (`progress_at`), so a long tick with
 several runs in flight is not a stall; the event carries `last_progress_at` and `last_tick_s`
 (duration of the last completed tick). The runner publishes its loop state in the lease
 (`tick_at`, `progress_at`, `last_tick_s`, `poll_interval_s`, `in_flight`, `slot_freed_at`,
 `busy`) for these. `campaign_silent` skips a `CLOSING` campaign waiting in the close train
-behind a live head (SPEC-0314), and the quiet stream holds one that still arrives while its
+behind a live head, and the quiet stream holds one that still arrives while its
 head is alive in the runner. Each watchdog condition fires once until it
-clears. The follower also appends a `conductor_ping` every `ping_interval_s` (default 600,
-SPEC-0212) with a digest of blocked, stuck, parked (and whether the conductor decided),
+clears. The follower also appends a `conductor_ping` every `ping_interval_s` (default 600) with a digest of blocked, stuck, parked (and whether the conductor decided),
 waiting and ready-not-admitted items, so slow problems reach the conductor even when no
 event fires.
 
 ## Mailbox
 
-`nw mailbox send|follow|list|thread` (SPEC-0183): per-recipient JSONL inboxes for
+`nw mailbox send|follow|list|thread`: per-recipient JSONL inboxes for
 `conductor`, `human` and `steward:<Project>`, `nw.message.v1` envelopes with `kind`
 (question / answer / request / info), `campaign` and `re` threading. Messages to the
 conductor also appear in its event stream, so one Monitor wakes it for both.
 
-Campaign stamps (SPEC-0431): without `--campaign`, `nw mailbox send` stamps the campaign of
+Campaign stamps: without `--campaign`, `nw mailbox send` stamps the campaign of
 the `--re` message (found in any inbox), else the one existing campaign id its text names;
 two or more, or none, leave `campaign` null. An inferred stamp adds `campaign_from`
 (`"re"` or `"text"`) to the envelope; explicit and absent stamps carry none.
@@ -751,7 +770,7 @@ note, park coverage); it takes `--no-campaign` too. Old records are never rewrit
 
 ## Conductor
 
-`/nw-conduct` (SPEC-0182) turns a session into the **conductor**: it arms a Monitor (Claude
+`/nw-conduct` turns a session into the **conductor**: it arms a Monitor (Claude
 Code or Cursor) on `nw queue events --follow --for conductor` and is woken by every event — a park,
 a merge, a dead or hung runner, an overdue run, a steward's message — and resolves it from a
 decision table (resume, raise the cap once, ask the project's steward, restart the loop,
@@ -759,7 +778,7 @@ reconcile ideas after a merge), escalating to the human only for design question
 human's own checkout. `nw queue conduct-status` is its one-call situation report. The
 follower's reader lock means only one conductor can be armed.
 
-`nw queue decision [CAMPAIGN] RATIONALE` (SPEC-0431) records the conductor's choice in
+`nw queue decision [CAMPAIGN] RATIONALE` records the conductor's choice in
 `decisions.jsonl`. Without CAMPAIGN it stamps the campaign of the `--event N` queue event, else
 the one existing campaign its rationale and `--action` name; the record then carries
 `campaign_from` (`"event"` or `"text"`), counts like an explicit campaign (ledger note, park
@@ -779,7 +798,7 @@ starts, so Claude cost is tracked (`nw queue conductor-session`, `nw queue condu
 (without `--runner`, it follows that session's stored backend). Settings live under
 `agentic.conductor.launch` (a `steward:` sub-mapping overrides them for stewards).
 
-Default permission rules (SPEC-0353; code-held in `launch.py`, a configured `allowed_tools` /
+Default permission rules (held in `launch.py`, a configured `allowed_tools` /
 `disallowed_tools` list replaces the default wholesale and gets none of the widening):
 
 - **Pushes.** `nw/*` and `wt/*` branches may be pushed as plain `git` or `git -C <dir>`, plain or
@@ -828,7 +847,7 @@ agentic:
 
 ## Escalations
 
-`nw escalations list|show|answer|withdraw` (SPEC-0232): when the conductor cannot decide, it
+`nw escalations list|show|answer|withdraw`: when the conductor cannot decide, it
 escalates (`nw queue escalate`) and the campaign parks as `human_decision`. `list` shows the
 open ones (`--all`, `--json`); `answer ESC-NNNN` takes exactly one of `--choose` (option number
 or label), `--text`, or `--waive` / `--attest` with `--reason` (override review findings), and
@@ -836,7 +855,7 @@ is a dry run without `--yes`. The answer wakes the conductor, which applies it.
 
 ## Stewards
 
-`/nw-steward` (SPEC-0184) turns a project session into `steward:<Project>`: a Monitor on
+`/nw-steward` turns a project session into `steward:<Project>`: a Monitor on
 `nw mailbox follow --to steward:<Project>` wakes it for the conductor's questions about that
 project's campaigns; it answers with a concrete action, and routes the human's queue requests
 for the project to the conductor. One steward per project (reader lock); stewards advise and

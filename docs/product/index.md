@@ -15,24 +15,24 @@ flowchart LR
     subgraph p2["② The agentic loop — unattended"]
         direction LR
         Q["Queue"] --> I["Implement"] --> G["Gates"] --> V["Review"] --> M["Merge"]
-        G -. fix .-> I
-        V -. fix .-> I
+        G -. fix.-> I
+        V -. fix.-> I
     end
     R --> Q
     M --> D(["Shipped, with the<br/>whole story in a ledger"])
-    p2 -. "parks with a reason<br/>when it needs you" .-> H(["You"])
+    p2 -. "parks with a reason<br/>when it needs you".-> H(["You"])
 ```
 
 <div class="grid cards" markdown>
 
-- :material-lightbulb-on-outline: **[Ideas to specs](ideas/index.md)**
+-:material-lightbulb-on-outline: **[Ideas to specs](ideas/index.md)**
 
     ---
 
     Capture a thought in seconds, explore it until it's fully fledged, and write a spec
     that says exactly what "done" means: decision, acceptance criteria, test plan.
 
-- :material-robot-outline: **[The agentic loop](loop/index.md)**
+-:material-robot-outline: **[The agentic loop](loop/index.md)**
 
     ---
 
@@ -40,21 +40,21 @@ flowchart LR
     tests, reviews against the spec and merges, with bounded loops, cost caps and a clear
     escalation ladder.
 
-- :material-rocket-launch-outline: **[Bootstrap from zero](guides/bootstrap.md)**
+-:material-rocket-launch-outline: **[Bootstrap from zero](guides/bootstrap.md)**
 
     ---
 
     Nine steps with a check after each: install, configure, register a project, and watch
     your first spec get built and merged.
 
-- :material-play-circle-outline: **[Run the agentic loop](guides/agentic-workflow.md)**
+-:material-play-circle-outline: **[Run the agentic loop](guides/agentic-workflow.md)**
 
     ---
 
     The everyday path: register projects, start the runner, launch the conductor and a
     steward per project, queue specs and watch them merge.
 
-- :material-clock-outline: **[Track time](guides/track-time.md)**
+-:material-clock-outline: **[Track time](guides/track-time.md)**
 
     ---
 

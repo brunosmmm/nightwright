@@ -5,9 +5,9 @@ Outlook (M365) meetings feed the same hours pipeline as transcripts.
 ## Commands
 
 ```bash
-nw refresh-meetings              # today
+nw refresh-meetings              # trailing 7 days (through tomorrow)
 nw refresh-meetings --week
-nw refresh-meetings --days N
+nw refresh-meetings --days N       # there is no --last
 nw ingest-meetings RAWFILE       # filter a raw calendar JSON dump
 ```
 

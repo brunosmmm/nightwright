@@ -33,9 +33,10 @@ still authxx the spec's substance** (Context/Decision/Design/Acceptance criteria
    Then fill Context (prefilled from idea notes), Decision, Design, Acceptance criteria,
    Test plan per `docs/specs/SCHEMA.md` and `AGENTS.md`.
 5. **Lint:** `python3 tools/spec_lint.py` and fix anything it flags.
-6. **Accept:** set frontmatter `status: accepted`; for **internal** specs run
-   `python3 tools/spec_lint.py --write-ledger`; for outbound, `validate_outbound` /
-   outbox INDEX as usual.
+6. **Accept:** set frontmatter `status: accepted`. For an **internal** spec run
+   `python3 tools/spec_lint.py --write-ledger`. An outbound spec lives in the data-dir
+   outbox (`nw spec new` writes the index then). `tools/spec_lint.py` does not scan the
+   outbox, and there is no `validate_outbound` command.
 7. **Close the source idea's questions (SPEC-0080):** the spec you just accepted decided some
    of the idea's Open questions — resolve those, and say in a `nw idea log` note which spec
    section decided each. Leave genuinely-unsettled ones OPEN.

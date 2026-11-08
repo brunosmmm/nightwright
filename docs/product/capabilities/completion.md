@@ -13,7 +13,7 @@ nw completion fish                  # print script only
 ```
 
 PATH `nw` must be **this** package. If TAB completion or `--help` looks like a static-site
-generator, reinstall from the nightwright checkout (`uv tool install --editable .`).
+generator, reinstall from the nightwright checkout (`uv tool install --editable.`).
 
 New closed-set CLI parameters need `shell_complete=` wiring in code; free-text args do
 not. See `nw completion --help`.

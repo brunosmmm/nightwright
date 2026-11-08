@@ -8,9 +8,9 @@ the wrong binary.
 
 ```bash
 git clone https://github.com/brunosmmm/nightwright.git && cd nightwright
-uv sync                       # .venv + base deps
+uv sync                       #.venv + base deps
 uv run nw --help              # verify: idea, report, projects, …
-uv tool install --editable .  # put nightwright on PATH
+uv tool install --editable.  # put nightwright on PATH
 ```
 
 Install **editable**: `nw skills install`, internal specs and the Meta-Tools research root

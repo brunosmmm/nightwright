@@ -1,7 +1,7 @@
 # Workflow architecture
 
 How nightwright pieces connect. These are **workflow** diagrams (not code design). Diagram DSL is
-Mermaid for now (SPEC-0148); D2 can replace the fences later without changing the story.
+Mermaid for now; D2 can replace the fences later without changing the story.
 
 ## Dual systems
 
@@ -47,7 +47,7 @@ sequenceDiagram
 
 ```mermaid
 flowchart TD
-  A[Idea with :PROJECT:] --> B[Outbox portable]
+  A[Idea with:PROJECT:] --> B[Outbox portable]
   B --> C[status accepted]
   C --> D[nw spec export]
   D --> E[Target repo docs/specs]
