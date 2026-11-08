@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import datetime as dt
 import difflib
+import hashlib
 import json
 import os
 import posixpath
@@ -246,12 +247,27 @@ def spec_drift(old: str, new: str, *, drop: tuple[str, ...] = ()) -> list[str]:
     return hunks
 
 
+def _spec_at_open_trusted(cfg, state: dict, copy: Path) -> bool:
+    """True when the campaign-dir snapshot is a regular file matching ``sha256_at_open``."""
+    want = (state.get("spec") or {}).get("sha256_at_open")
+    if not want or copy.is_symlink():
+        return False
+    try:
+        cdir = store.campaign_dir(cfg, state["id"]).resolve()
+        if not copy.is_file() or not copy.resolve().is_relative_to(cdir):
+            return False
+        data = copy.read_bytes()
+    except OSError:
+        return False
+    return bool(data) and hashlib.sha256(data).hexdigest() == want
+
+
 def spec_guard(cfg, state: dict) -> tuple[bool, dict | None, list]:
     """(ok, synthetic_gate, events). Compares the worktree spec with the open-time copy."""
     rel = (state.get("spec") or {}).get("rel_path") or ""
     worktree = (state.get("repo") or {}).get("worktree") or ""
     copy = store.campaign_dir(cfg, state["id"]) / SPEC_AT_OPEN
-    if not copy.is_file():
+    if not _spec_at_open_trusted(cfg, state, copy):
         return True, None, [("finding", {
             "persona": "close", "severity": "info", "gate": "spec-changed",
             "title": "spec-changed guard skipped: no open-time copy of the spec",

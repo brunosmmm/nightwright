@@ -112,7 +112,10 @@ def test_guard_without_copy_is_skipped_with_info(tmp_path):
 def test_guard_reports_drift_as_synthetic_gate(tmp_path):
     cfg = {"data_dir": str(tmp_path / "data")}
     st = _state(tmp_path, cfg, BASE.replace("- [ ] second criterion\n", ""))
-    (S.campaign_dir(cfg, st["id"]) / CL.SPEC_AT_OPEN).write_text(BASE)
+    copy = S.campaign_dir(cfg, st["id"]) / CL.SPEC_AT_OPEN
+    copy.write_text(BASE)
+    st.setdefault("spec", {})["sha256_at_open"] = __import__("hashlib").sha256(
+        BASE.encode("utf-8")).hexdigest()
     ok, gate, events = CL.spec_guard(cfg, st)
     assert not ok
     assert gate["name"] == "spec-changed" and gate["required"] and not gate["ok"]
@@ -120,6 +123,9 @@ def test_guard_reports_drift_as_synthetic_gate(tmp_path):
     assert events[0][1]["severity"] == "must_fix"
     # allowed edits only: passes with no events
     (Path(st["repo"]["worktree"]) / "docs/specs/0900-g.md").write_text(_allowed_edit(BASE))
+    st["spec"]["sha256_at_open"] = __import__("hashlib").sha256(
+        _allowed_edit(BASE).encode("utf-8")).hexdigest()
+    copy.write_text(_allowed_edit(BASE))
     assert CL.spec_guard(cfg, st) == (True, None, [])
 
 

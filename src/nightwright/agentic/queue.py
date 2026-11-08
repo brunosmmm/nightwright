@@ -21,6 +21,7 @@ import os
 import re
 import shutil
 import signal
+import stat
 import subprocess
 import sys
 import threading
@@ -1789,27 +1790,93 @@ def _spec_at_open_snapshot_ok(cdir: Path, snap: Path, want_hash: str) -> bool:
         return False
 
 
+def _read_worktree_spec_bytes(worktree: Path, rel: str) -> tuple[bytes | None, str | None]:
+    """Read a worktree spec path when it is a regular file inside the worktree (``O_NOFOLLOW``).
+
+    Returns ``(data, None)`` on success, ``(None, None)`` when absent, or ``(None, detail)`` on error."""
+    wt_resolved = worktree.resolve()
+    raw = worktree / rel
+    try:
+        st = os.lstat(raw)
+    except OSError:
+        return None, None
+    if not stat.S_ISREG(st.st_mode):
+        return None, "not a regular file"
+    resolved = raw.resolve()
+    if not resolved.is_relative_to(wt_resolved):
+        return None, "path escapes worktree"
+    flags = os.O_RDONLY
+    if hasattr(os, "O_NOFOLLOW"):
+        flags |= os.O_NOFOLLOW
+    try:
+        fd = os.open(raw, flags)
+    except OSError as e:
+        return None, str(e)
+    chunks: list[bytes] = []
+    try:
+        while True:
+            buf = os.read(fd, 1 << 20)
+            if not buf:
+                break
+            chunks.append(buf)
+    except OSError as e:
+        return None, str(e)
+    finally:
+        os.close(fd)
+    return b"".join(chunks), None
+
+
+def _unlink_spec_at_open_entry(snap: Path) -> None:
+    """Remove ``spec_at_open.md`` without following it as a symlink target."""
+    try:
+        os.lstat(snap)
+    except OSError:
+        return
+    try:
+        os.unlink(snap)
+    except OSError:
+        pass
+
+
+def _clear_untrusted_spec_at_open_snapshot(cdir: Path, snap: Path, spec: dict) -> None:
+    """Drop an untrusted open-time spec copy so close cannot treat it as a drift baseline."""
+    want = spec.get("sha256_at_open")
+    if want and _spec_at_open_snapshot_ok(cdir, snap, want):
+        return
+    spec.pop("sha256_at_open", None)
+    _unlink_spec_at_open_entry(snap)
+
+
 def _replace_spec_at_open_snapshot(cdir: Path, snap: Path, data: bytes, spec: dict) -> str | None:
     """Write ``spec_at_open.md`` from ``data`` via a private temp file and ``os.replace``."""
     tmp = cdir / f".{CL.SPEC_AT_OPEN}.{os.getpid()}.{threading.get_ident()}.tmp"
+    fd = None
     try:
         cdir.mkdir(parents=True, exist_ok=True)
         flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
         if hasattr(os, "O_NOFOLLOW"):
             flags |= os.O_NOFOLLOW
         fd = os.open(tmp, flags, 0o644)
-        try:
-            os.write(fd, data)
-            os.fsync(fd)
-        finally:
-            os.close(fd)
+        written = 0
+        while written < len(data):
+            n = os.write(fd, data[written:])
+            if n <= 0:
+                raise OSError("short write to spec snapshot temp")
+            written += n
+        os.fsync(fd)
+        os.close(fd)
+        fd = None
         os.replace(tmp, snap)
         spec["sha256_at_open"] = hashlib.sha256(data).hexdigest()
         return None
     except (OSError, ValueError):
+        if fd is not None:
+            try:
+                os.close(fd)
+            except OSError:
+                pass
         try:
-            if tmp.is_file():
-                tmp.unlink()
+            _unlink_spec_at_open_entry(tmp)
         except OSError:
             pass
         spec.pop("sha256_at_open", None)
@@ -1820,22 +1887,26 @@ def _adopt_spec_open_snapshot(cfg, state: dict, worktree: Path) -> str | None:
     """Create or restore ``spec_at_open.md`` on worktree adopt when missing or untrusted."""
     spec = state.setdefault("spec", {})
     rel_p = spec.get("rel_path")
-    if not rel_p:
-        return None
     cdir = store.campaign_dir(cfg, state["id"])
     snap = cdir / CL.SPEC_AT_OPEN
     want = spec.get("sha256_at_open")
     if want and _spec_at_open_snapshot_ok(cdir, snap, want):
         return None
-    wt_resolved = worktree.resolve()
-    spec_file = (worktree / rel_p).resolve()
-    if not spec_file.is_relative_to(wt_resolved) or not spec_file.is_file():
+    admission = state.get("admission")
+    if not rel_p:
+        if has_no_spec(state) or admission == "revise_pending":
+            _clear_untrusted_spec_at_open_snapshot(cdir, snap, spec)
         return None
-    try:
-        data = spec_file.read_bytes()
-    except OSError:
+    data, read_err = _read_worktree_spec_bytes(worktree, rel_p)
+    if data is None and read_err is None:
+        if has_no_spec(state) or admission == "revise_pending":
+            _clear_untrusted_spec_at_open_snapshot(cdir, snap, spec)
+            return None
         spec.pop("sha256_at_open", None)
-        return f"could not write spec snapshot at {snap}"
+        return f"spec file missing at {worktree / rel_p}"
+    if read_err is not None:
+        spec.pop("sha256_at_open", None)
+        return f"spec file unreadable at {worktree / rel_p}: {read_err}"
     return _replace_spec_at_open_snapshot(cdir, snap, data, spec)
 
 
@@ -1900,11 +1971,16 @@ def _do_open_unwrapped(ctx: _Ctx, state: dict) -> StepResult:
                         _worktree_conflict_mail(ctx.cfg, state, worktree, mail_st)
                 elif target is not None:
                     res.resumed_to = target
-                    if kind not in RM.RED_KINDS and not has_no_spec(state):
-                        snap_err = _adopt_spec_open_snapshot(ctx.cfg, state, worktree)
-                        if snap_err:
-                            res.error = snap_err
-                            res.resumed_to = None
+                    if kind not in RM.RED_KINDS:
+                        if has_no_spec(state):
+                            cdir = store.campaign_dir(ctx.cfg, state["id"])
+                            _clear_untrusted_spec_at_open_snapshot(
+                                cdir, cdir / CL.SPEC_AT_OPEN, state.setdefault("spec", {}))
+                        else:
+                            snap_err = _adopt_spec_open_snapshot(ctx.cfg, state, worktree)
+                            if snap_err:
+                                res.error = snap_err
+                                res.resumed_to = None
                 return res
         base_sha = git.rev_parse(root, _open_start(root, pcfg, base))
         # the sha, not `<remote>/<base>`: no upstream is set on the campaign branch
@@ -1920,14 +1996,13 @@ def _do_open_unwrapped(ctx: _Ctx, state: dict) -> StepResult:
         elif not has_no_spec(state):
             spec = state.setdefault("spec", {})
             # SPEC-0186: keep the accepted text so the close step can detect spec drift
-            spec_file = worktree / spec.get("rel_path", "")
-            if spec.get("rel_path") and spec_file.is_file():
-                cdir = store.campaign_dir(ctx.cfg, state["id"])
-                try:
-                    data = spec_file.read_bytes()
-                except OSError as e:
-                    res.error = str(e)
-                else:
+            rel_p = spec.get("rel_path") or ""
+            if rel_p:
+                data, read_err = _read_worktree_spec_bytes(worktree, rel_p)
+                if read_err is not None:
+                    res.error = f"spec file unreadable at {worktree / rel_p}: {read_err}"
+                elif data is not None:
+                    cdir = store.campaign_dir(ctx.cfg, state["id"])
                     snap_err = _replace_spec_at_open_snapshot(
                         cdir, cdir / CL.SPEC_AT_OPEN, data, spec)
                     if snap_err:

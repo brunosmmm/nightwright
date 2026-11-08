@@ -876,6 +876,158 @@ def test_resume_draft_with_pending_brief_to_spec_writing(env, monkeypatch):
     assert Q.plan_step(after, Q._Ctx(cfg).profile(after)).kind == "write_spec"
 
 
+def test_guard_ignores_untrusted_spec_at_open_copy(env, monkeypatch):
+    cfg, _repo = env
+    cid = add_idea_campaign(cfg, monkeypatch, capture(cfg, "guard trust"))
+    st = _state(cfg, cid)
+    rel = "docs/specs/0999-x.md"
+    wt = Path(st["repo"]["worktree"])
+    wt.mkdir(parents=True, exist_ok=True)
+    (wt / rel).parent.mkdir(parents=True, exist_ok=True)
+    body = ACCEPTED.format(sid="SPEC-0999")
+    (wt / rel).write_text(body, encoding="utf-8")
+    st["spec"] = {"rel_path": rel, "id": "SPEC-0999", "sha256_at_open": "wrong"}
+    st["repo"]["worktree"] = str(wt)
+    S.write_state(cfg, cid, st)
+    cdir = S.campaign_dir(cfg, cid)
+    cdir.mkdir(parents=True, exist_ok=True)
+    (cdir / CL.SPEC_AT_OPEN).write_text("stale drift baseline", encoding="utf-8")
+    ok, gate, _events = CL.spec_guard(cfg, _state(cfg, cid))
+    assert ok and gate is None
+
+
+def test_dependency_wait_wakes_on_non_live_non_handed_off_campaign(env, monkeypatch):
+    cfg, _repo = env
+    prereq_id = "MERGE-20261107-ffff"
+    blocked = [f"waiting on {prereq_id} (after: campaign {prereq_id} is QUEUED)"]
+    ctx = QT.Ctx(cfg, "conductor")
+    assert QT.dependency_wait(blocked, ctx.live_specs, "Proj") is False
+
+
+def test_resume_missing_spec_no_spec_id_clears_untrusted_snapshot(env, monkeypatch):
+    cfg, repo = env
+    cid = add_idea_campaign(cfg, monkeypatch, capture(cfg, "no id snap"))
+    st = _state(cfg, cid)
+    root = Path(repo)
+    wt = Path(st["repo"]["worktree"])
+    wt.parent.mkdir(parents=True, exist_ok=True)
+    git.worktree_add(root, wt, st["repo"]["branch"], git.rev_parse(root, "main"))
+    rel = "docs/specs/missing.md"
+    st["spec"] = {"rel_path": rel, "internal": True}
+    st["spec_id"] = "SPEC-0999"
+    st["spec"].pop("id", None)
+    st["repo"]["base_sha_at_open"] = git.rev_parse(root, "main")
+    S.write_state(cfg, cid, st)
+    cdir = S.campaign_dir(cfg, cid)
+    cdir.mkdir(parents=True, exist_ok=True)
+    (cdir / CL.SPEC_AT_OPEN).write_text("leftover", encoding="utf-8")
+    row, after = _open_resume(cfg, monkeypatch, _state(cfg, cid))
+    assert after["state"] == "SPEC_WRITING" and row["reason"] == "resumed_worktree"
+    snap = cdir / CL.SPEC_AT_OPEN
+    assert not snap.exists()
+    assert not after.get("spec", {}).get("sha256_at_open")
+
+
+@pytest.mark.parametrize("snapshot", ["mismatch", "null_hash", "symlink"])
+def test_resume_revise_pending_missing_clears_untrusted_snapshot(
+        env, monkeypatch, snapshot):
+    cfg, repo = env
+    cid = add_idea_campaign(cfg, monkeypatch, capture(cfg, f"rev snap {snapshot}"))
+    st = _state(cfg, cid)
+    root = Path(repo)
+    wt = Path(st["repo"]["worktree"])
+    wt.parent.mkdir(parents=True, exist_ok=True)
+    git.worktree_add(root, wt, st["repo"]["branch"], git.rev_parse(root, "main"))
+    rel = "docs/specs/missing.md"
+    st["spec"] = {"id": "SPEC-0999", "rel_path": rel, "internal": True}
+    st["spec_id"] = "SPEC-0999"
+    st["repo"]["base_sha_at_open"] = git.rev_parse(root, "main")
+    st["admission"] = "revise_pending"
+    cdir = S.campaign_dir(cfg, cid)
+    cdir.mkdir(parents=True, exist_ok=True)
+    snap = cdir / CL.SPEC_AT_OPEN
+    if snapshot == "mismatch":
+        st["spec"]["sha256_at_open"] = "deadbeef"
+        snap.write_text("stale", encoding="utf-8")
+    elif snapshot == "null_hash":
+        st["spec"].pop("sha256_at_open", None)
+        snap.write_text("stale", encoding="utf-8")
+    else:
+        target = cdir / "real-snap.md"
+        target.write_text("via symlink", encoding="utf-8")
+        os.symlink(target, snap)
+        st["spec"]["sha256_at_open"] = hashlib.sha256(
+            b"via symlink").hexdigest()
+    S.write_state(cfg, cid, st)
+    row, after = _open_resume(cfg, monkeypatch, _state(cfg, cid))
+    assert after["state"] == "SPEC_WRITING" and row["reason"] == "resumed_worktree"
+    assert not snap.exists()
+    assert not after.get("spec", {}).get("sha256_at_open")
+
+
+def test_adopt_worktree_spec_symlink_parks(env, monkeypatch):
+    cfg, repo = env
+    cid = add_idea_campaign(cfg, monkeypatch, capture(cfg, "spec symlink"))
+    st = _prep_worktree(cfg, repo, cid, ACCEPTED)
+    wt = Path(st["repo"]["worktree"])
+    rel = st["spec"]["rel_path"]
+    spec_path = wt / rel
+    real = spec_path.with_suffix(".real.md")
+    real.write_text(spec_path.read_text(encoding="utf-8"), encoding="utf-8")
+    spec_path.unlink()
+    os.symlink(real, spec_path)
+    row, after = _open_resume(cfg, monkeypatch, _state(cfg, cid))
+    assert after["state"] == "PARKED" and after["park"]["reason"] == "open_failed"
+    assert "not a regular file" in after["park"]["detail"]
+    assert row.get("reason") != "resumed_worktree"
+
+
+def test_adopt_snapshot_outside_campaign_dir_is_rewritten(env, monkeypatch):
+    cfg, repo = env
+    cid = add_idea_campaign(cfg, monkeypatch, capture(cfg, "snap outside"))
+    st = _prep_worktree(cfg, repo, cid, ACCEPTED)
+    cdir = S.campaign_dir(cfg, cid)
+    cdir.mkdir(parents=True, exist_ok=True)
+    outside = cdir.parent / "outside-snap.md"
+    outside.write_text("escape", encoding="utf-8")
+    digest = hashlib.sha256(b"escape").hexdigest()
+    st["spec"]["sha256_at_open"] = digest
+    snap = cdir / CL.SPEC_AT_OPEN
+    if snap.is_file() or snap.is_symlink():
+        snap.unlink()
+    os.symlink(outside, snap)
+    S.write_state(cfg, cid, st)
+    _open_resume(cfg, monkeypatch, _state(cfg, cid))
+    after = _state(cfg, cid)
+    wt_spec = Path(after["repo"]["worktree"]) / after["spec"]["rel_path"]
+    assert not snap.is_symlink()
+    assert after["spec"]["sha256_at_open"] == SR.spec_sha256(wt_spec)
+
+
+def test_short_spec_snapshot_write_leaves_no_truncated_baseline(env, monkeypatch):
+    cfg, repo = env
+    cid = add_idea_campaign(cfg, monkeypatch, capture(cfg, "short write"))
+    st = _prep_worktree(cfg, repo, cid, ACCEPTED)
+    real_write = os.write
+    calls = []
+
+    def short_write(fd, data):
+        if calls:
+            return 0
+        calls.append(1)
+        if len(data) > 1:
+            return 1
+        return real_write(fd, data)
+
+    monkeypatch.setattr(os, "write", short_write)
+    row, after = _open_resume(cfg, monkeypatch, _state(cfg, cid))
+    assert after["state"] == "PARKED" and after["park"]["reason"] == "open_failed"
+    snap = S.campaign_dir(cfg, cid) / CL.SPEC_AT_OPEN
+    assert not snap.exists()
+    assert not after.get("spec", {}).get("sha256_at_open")
+    assert row.get("reason") != "resumed_worktree"
+
+
 @pytest.mark.parametrize("status,marker", [
     ("rejected", "worktree:rejected"),
     ("superseded", "worktree:superseded"),
