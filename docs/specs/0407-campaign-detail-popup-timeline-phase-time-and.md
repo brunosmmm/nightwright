@@ -4,7 +4,7 @@ title: "Campaign detail popup shell: opener, Timeline, queue actions, polling, r
 status: done
 owner: user
 created: 2026-11-03
-updated: 2026-11-07
+updated: 2026-11-08
 kind: feature
 parent: SPEC-0405
 source_idea: IDEA-887
@@ -529,6 +529,18 @@ delivered rows are on screen, and they read campaign ids from the mounted queue 
 
 - `uv run pytest -q tests/test_tui_campaign_detail_ac.py tests/test_tui_campaign_detail.py tests/test_tui_campaign_detail_model.py tests/test_tui_queue_view.py::test_enter_key_on_a_header_row_posts_nothing` — 43 passed.
 - Full suite left to gating; manual verification on developer data dir not run.
+
+### Test record (2026-11-08, implementer campaign loop 0)
+
+- `uv run pytest -q tests/test_tui_campaign_detail_ac.py tests/test_tui_campaign_detail.py tests/test_tui_campaign_detail_model.py tests/test_tui_queue_view.py::test_enter_key_on_a_header_row_posts_nothing` — 48 passed.
+- Terminal paint-failure one-shot reload, deferred timeline paint on non-zero width, pathlib idle spy.
+- Full suite left to gating.
+
+### As shipped (2026-11-08, implementer campaign loop 0)
+
+- Terminal timeline paint failures (including initial load) schedule one `reload()` while `_poll_timer` is absent; `_paint_retry_pending` stays set until `paint()` completes successfully.
+- Timeline table paint runs only on the Timeline tab with non-zero `#campaign-timeline` width; tab activation and zero-width layout defer via `call_after_refresh`.
+- Summary clip width uses the table's measured width, not a zero-width fallback.
 
 ### As shipped (2026-11-07, implementer campaign loop 4)
 

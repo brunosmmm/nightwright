@@ -408,11 +408,12 @@ def test_multi_loop_brackets_and_separators(tmp_path):
 def test_terminal_idle_no_extra_model_calls(tmp_path, monkeypatch):
     import builtins
     import os
+    import pathlib
     from nightwright.agentic import store as St
 
     _, cfg, ids = _fixture(tmp_path)
     cid = ids["merged"]
-    counts = {"sig": 0, "load": 0, "tail": 0, "stat": 0, "open": 0}
+    counts = {"sig": 0, "load": 0, "tail": 0, "stat": 0, "open": 0, "pathlib": 0}
     camp_root = str(St.campaign_dir(cfg, cid).resolve())
 
     real_sig = AM.detail_signature
@@ -433,6 +434,7 @@ def test_terminal_idle_no_extra_model_calls(tmp_path, monkeypatch):
 
     real_stat = os.stat
     real_open = builtins.open
+    real_read_bytes = pathlib.Path.read_bytes
 
     def stat(path, *a, **k):
         if camp_root in str(Path(path).resolve()):
@@ -444,11 +446,17 @@ def test_terminal_idle_no_extra_model_calls(tmp_path, monkeypatch):
             counts["open"] += 1
         return real_open(path, *a, **k)
 
+    def tracked_read_bytes(self):
+        if camp_root in str(self.resolve()):
+            counts["pathlib"] += 1
+        return real_read_bytes(self)
+
     monkeypatch.setattr(AM, "detail_signature", sig)
     monkeypatch.setattr(AM, "load_detail", load)
     monkeypatch.setattr(AM, "stream_tail", tail)
     monkeypatch.setattr(os, "stat", stat)
     monkeypatch.setattr(builtins, "open", tracked_open)
+    monkeypatch.setattr(pathlib.Path, "read_bytes", tracked_read_bytes)
     app = _desk(cfg, tab="queue")
 
     async def drive():
@@ -471,7 +479,86 @@ def test_terminal_idle_no_extra_model_calls(tmp_path, monkeypatch):
             assert counts["sig"] == sig0 and counts["load"] == load0
             assert counts["tail"] == tail0
             assert counts["stat"] == 0 and counts["open"] == 0
+            assert counts["pathlib"] == 0
             assert s._poll_timer is None
+
+    _run(drive())
+
+
+def test_terminal_paint_failure_recovers_with_one_reload(tmp_path, monkeypatch):
+    from test_tui_campaign_detail import status
+
+    _, cfg, ids = _fixture(tmp_path)
+    cid = ids["merged"]
+    n = {"paint": 0, "load": 0, "poll": 0}
+    real_paint = CD.CampaignDetail.paint
+    real_load = AM.load_detail
+
+    def flaky_paint(self, previous=None):
+        n["paint"] += 1
+        if n["paint"] == 1:
+            raise TypeError("first paint")
+        return real_paint(self, previous)
+
+    def track_load(*a, **k):
+        n["load"] += 1
+        return real_load(*a, **k)
+
+    monkeypatch.setattr(CD.CampaignDetail, "paint", flaky_paint)
+    monkeypatch.setattr(AM, "load_detail", track_load)
+    monkeypatch.setattr(CD.CampaignDetail, "_poll", lambda self: n.__setitem__("poll", n["poll"] + 1))
+    app = _desk(cfg, tab="queue")
+
+    async def drive():
+        async with app.run_test(size=SIZE) as pilot:
+            await settle(app, pilot)
+            select(app, "delivered", cid)
+            await press(app, pilot, ["enter"])
+            assert await pilot_until(pilot, lambda: isinstance(app.screen, CampaignDetail))
+            s = detail_screen(app)
+            assert await pilot_until(pilot, lambda: "campaign failed" not in status(app))
+            assert s.view is not None and s.view.terminal
+            assert n["load"] == 2
+            assert n["poll"] == 0
+            assert s._poll_timer is None
+
+    _run(drive())
+
+
+def test_terminal_paint_always_fails_one_extra_load(tmp_path, monkeypatch):
+    from test_tui_campaign_detail import status
+
+    _, cfg, ids = _fixture(tmp_path)
+    cid = ids["merged"]
+    n = {"load": 0}
+    real_load = AM.load_detail
+
+    def track_load(*a, **k):
+        n["load"] += 1
+        return real_load(*a, **k)
+
+    monkeypatch.setattr(AM, "load_detail", track_load)
+    monkeypatch.setattr(
+        CD.CampaignDetail, "paint",
+        lambda self, previous=None: (_ for _ in ()).throw(TypeError("always")),
+    )
+    app = _desk(cfg, tab="queue")
+
+    async def drive():
+        async with app.run_test(size=SIZE) as pilot:
+            await settle(app, pilot)
+            select(app, "delivered", cid)
+            await press(app, pilot, ["enter"])
+            assert await pilot_until(
+                pilot, lambda: isinstance(app.screen, CampaignDetail) and n["load"] >= 2)
+            s = detail_screen(app)
+            qv = app.query_one("#queue-view", QueueView)
+            qv.deactivate()
+            assert "campaign failed" in status(app)
+            assert s._poll_timer is None
+            load_after = n["load"]
+            await pilot.pause(2.5)
+            assert n["load"] == load_after == 2
 
     _run(drive())
 

@@ -253,17 +253,60 @@ class CampaignDetail(QueueActions, ModalScreen):
         try:
             self.paint()
         except Exception as e:
-            self._signature = None
-            self._show_timeline_error(e)
+            self._handle_paint_failure(e)
 
     def _show_timeline_error(self, e: Exception) -> None:
         self.query_one("#campaign-status", Static).update(
             Text(f"campaign failed: {escape(str(e) or repr(e))}", style="red"))
 
+    def _clear_timeline_error(self) -> None:
+        if self.view is None:
+            return
+        if self._active_tab() == "tab-timeline" and self._timeline_ready_to_paint():
+            self._paint_status()
+        else:
+            try:
+                self.query_one("#campaign-status", Static).update(Text(""))
+            except Exception:
+                pass
+
+    def _should_retry_terminal_paint(self) -> bool:
+        if not self.is_mounted or self.view is None or not self.view.terminal:
+            return False
+        return self._poll_timer is None
+
+    def _schedule_terminal_paint_retry(self) -> None:
+        if self._paint_retry_pending or not self._should_retry_terminal_paint():
+            return
+        self._paint_retry_pending = True
+        self.call_after_refresh(self._retry_after_paint_failure)
+
+    def _handle_paint_failure(self, e: Exception) -> None:
+        self._signature = None
+        self._show_timeline_error(e)
+        self._schedule_terminal_paint_retry()
+
     def _retry_after_paint_failure(self) -> None:
-        self._paint_retry_pending = False
         if self.view is not None and self.is_mounted:
             self.reload()
+
+    def _timeline_ready_to_paint(self) -> bool:
+        if self._active_tab() != "tab-timeline":
+            return False
+        table = self.table
+        if not table.display:
+            return False
+        return (table.size.width or 0) > 0
+
+    def _paint_after_layout(self) -> None:
+        if not self.is_mounted or self.view is None:
+            return
+        if not self._timeline_ready_to_paint():
+            return
+        try:
+            self.paint(self._cursor_target())
+        except Exception as e:
+            self._handle_paint_failure(e)
 
     def _apply_focus(self) -> None:
         if self.view is None:
@@ -360,13 +403,8 @@ class CampaignDetail(QueueActions, ModalScreen):
                     self.view = previous_view
                     self.query_one("#overview-text", Static).update(
                         Text("\n").join(previous_view.header_lines))
-                self._signature = None
                 if self._worker_alive():
-                    self._show_timeline_error(e)
-                    if (previous_view is not None and previous_view.terminal
-                            and not self._paint_retry_pending):
-                        self._paint_retry_pending = True
-                        self.call_after_refresh(self._retry_after_paint_failure)
+                    self._handle_paint_failure(e)
             live = self.view is not None and not self.view.terminal
             if not live:
                 self._stop_poll()
@@ -451,8 +489,15 @@ class CampaignDetail(QueueActions, ModalScreen):
         while visible and visible[-1].get("separator"):
             visible.pop()
         self.shown = visible
+        if not self._timeline_ready_to_paint():
+            self._paint_retry_pending = False
+            if self._active_tab() == "tab-timeline":
+                self.call_after_refresh(self._paint_after_layout)
+            else:
+                self._clear_timeline_error()
+            return
         table = self.table
-        text_w = max(20, (table.size.width or 100) - _FIXED_COST)
+        text_w = max(20, table.size.width - _FIXED_COST)
         table.clear()
         for i, row in enumerate(self.shown):
             if row.get("separator"):
@@ -475,6 +520,7 @@ class CampaignDetail(QueueActions, ModalScreen):
             table.move_cursor(row=self._restore_index(seq, ref, on_last), scroll=True)
         self._paint_status()
         self._first_paint = False
+        self._paint_retry_pending = False
         self.show_detail()
 
     def _paint_status(self) -> None:
@@ -597,7 +643,7 @@ class CampaignDetail(QueueActions, ModalScreen):
                 pass
         if on_timeline:
             self.table.focus()
-            self.show_detail()
+            self.call_after_refresh(self._paint_after_layout)
         elif tab_id == "tab-overview":
             self.query_one("#overview-text", Static).focus()
         elif tab_id == "tab-runs":
