@@ -42,8 +42,10 @@ def test_build_pi_argv_no_credential(tmp_path, monkeypatch):
 
 
 def test_with_agent_leaves_node(tmp_path):
-    argv, env = RP.with_agent(["node", "/x/pi_exec.mjs", "run"], {"PATH": "/bin"})
-    assert argv[0] == "node"
+    script = "/x/pi_exec.mjs"
+    run = "run"
+    argv, env = RP.with_agent(["node", script, run], {"PATH": "/bin"})
+    assert argv == ["node", script, run]
 
 
 def test_select_runner_pi():
@@ -76,6 +78,37 @@ def test_map_pi_rejects_string_alias_value():
     assert problems
 
 
+@pytest.mark.parametrize("bad_id", ["a\tb", "a\nb"])
+def test_map_pi_rejects_id_whitespace(bad_id):
+    doc = {
+        "schema": PM.SCHEMA_ID,
+        "aliases": {
+            "sonnet": {
+                "high": {
+                    "provider": "anthropic",
+                    "id": bad_id,
+                    "thinking": "high",
+                },
+            },
+        },
+    }
+    problems = PM.validate_pi_map_doc(doc, origin="test", in_file=True)
+    assert any("whitespace" in p for p in problems)
+
+
+def test_map_pi_rejects_bad_provider_and_incomplete_effort():
+    bad_prov = {
+        "schema": PM.SCHEMA_ID,
+        "aliases": {"sonnet": {"high": {"provider": "Bad_Name", "id": "x", "thinking": "high"}}},
+    }
+    assert PM.validate_pi_map_doc(bad_prov, origin="t", in_file=True)
+    missing = {
+        "schema": PM.SCHEMA_ID,
+        "aliases": {"sonnet": {"high": {"provider": "anthropic", "id": "x"}}},
+    }
+    assert PM.validate_pi_map_doc(missing, origin="t", in_file=True)
+
+
 def test_mapped_model_pi():
     cfg = {"agentic": {"runner": "pi"}}
     model, alias = R.mapped_model(cfg, "sonnet", "high")
@@ -90,6 +123,24 @@ def test_request_round_trip_pi_fields(tmp_path):
     back = R.request_from_job(doc, tmp_path / "nw", req.run_dir)
     assert back.pi_provider == "anthropic" and back.pi_thinking == "high"
     assert back.pi_id == "claude-sonnet-4-6"
+
+
+def test_request_doc_omits_pi_for_cursor(tmp_path, monkeypatch):
+    from nightwright.agentic import personas as PS
+    from nightwright.agentic.profiles import resolve_profile
+
+    monkeypatch.delenv("NW_AGENTIC_RUNNER", raising=False)
+    cfg = {"data_dir": str(tmp_path / "d"), "agentic": {"runner": "cursor"}}
+    wt = tmp_path / "wt"
+    wt.mkdir()
+    st = {"id": "c1", "repo": {"worktree": str(wt)}}
+    req = PS.build_request(cfg, resolve_profile(cfg), {"_root": str(wt)}, st, "implementer",
+                           run_dir=tmp_path / "runs" / "001-implementer")
+    doc = R._request_doc(req, "t")
+    assert "pi_provider" not in doc
+    assert "pi_id" not in doc
+    assert "pi_thinking" not in doc
+    assert "system_append" not in doc or doc.get("system_append") in (None, "")
 
 
 def test_request_doc_omits_pi_for_claude(tmp_path, monkeypatch):
@@ -141,7 +192,9 @@ def test_doctor_pi_skip_and_probe(tmp_path, monkeypatch):
                         lambda providers, environ=None, run=None: (
                             calls.append(list(providers)),
                             {"ok": False, "error": "no node", "missing": providers})[1])
-    assert D.check_pi_agent(cfg)["status"] == "fail"
+    fail = D.check_pi_agent(cfg)
+    assert fail["status"] == "fail"
+    assert fail["summary"] == "no node"
     assert set(calls[0]) == {"anthropic"}
     monkeypatch.setattr(RP, "probe_pi",
                         lambda providers, environ=None, run=None: {"ok": True, "missing": []})
@@ -419,6 +472,20 @@ def test_renderer_feed_pi_read_tool():
     assert lines[0].plain.count("read")
 
 
+def test_parse_result_pi_zero_cost_is_real_zero(tmp_path):
+    raw = {
+        "type": "result",
+        "is_error": False,
+        "result": json.dumps({"status": "done", "summary": "ok"}),
+        "total_cost_usd": 0,
+        "session_id": "s0",
+        "usage": {"input_tokens": 1, "output_tokens": 1},
+    }
+    p = R.parse_result(json.dumps(raw), IMPLEMENTER_SCHEMA, exit_code=0)
+    assert p["cost_usd"] == 0.0
+    assert p["verdict"]["status"] == "done"
+
+
 def test_extract_result_pi_stream(tmp_path):
     d = tmp_path / "run"
     d.mkdir()
@@ -589,6 +656,18 @@ def test_spec_review_run_request_pi_fields(tmp_path, monkeypatch):
 
 def test_validate_runner_cfg_accepts_pi():
     Q.validate_runner_cfg({"agentic": {"poll_interval_s": 1, "lease_ttl_s": 5, "runner": "pi"}})
+
+
+def test_validate_runner_cfg_rejects_invalid_agentic_pi():
+    with pytest.raises(ValueError, match="invalid pi map"):
+        Q.validate_runner_cfg({
+            "agentic": {
+                "poll_interval_s": 1,
+                "lease_ttl_s": 5,
+                "runner": "pi",
+                "pi": {"aliases": {"sonnet": "claude-sonnet-4-6"}},
+            },
+        })
 
 
 def test_project_agents_runner_accepts_pi(tmp_path):

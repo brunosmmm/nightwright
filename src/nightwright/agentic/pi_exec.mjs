@@ -15,6 +15,10 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const SCHEMA_FOOTER =
   "Reply with a single JSON object matching this schema and nothing else.\n\n{schema}";
 
+const MIN_SECRET_LEN = 8;
+const CONTEXT_FILE_NAMES = ["AGENTS.md", "CLAUDE.md"];
+const MAX_CONTEXT_FILE_BYTES = 512 * 1024;
+
 function secretsLongestFirst(secrets = []) {
   const seen = new Set();
   const out = [];
@@ -60,25 +64,58 @@ function writeLine(out, obj, secrets = []) {
   }
 }
 
-function agentsUnderCwdOnly(cwd) {
+function pushSecret(secrets, s) {
+  if (typeof s === "string" && s.length >= MIN_SECRET_LEN) secrets.push(s);
+}
+
+function loadContextFilesUnderCwd(cwd) {
   let root;
   try {
     root = fs.realpathSync(cwd);
   } catch {
     root = path.resolve(cwd);
   }
-  return ({ agentsFiles }) => ({
-    agentsFiles: agentsFiles.filter((f) => {
-      let resolved;
+  const agentsFiles = [];
+  for (const name of CONTEXT_FILE_NAMES) {
+    const candidate = path.join(root, name);
+    let resolved;
+    try {
+      resolved = fs.realpathSync(candidate);
+    } catch {
+      continue;
+    }
+    const rel = path.relative(root, resolved);
+    if (rel.startsWith("..") || path.isAbsolute(rel)) continue;
+    try {
+      const st = fs.statSync(resolved);
+      if (!st.isFile() || st.size > MAX_CONTEXT_FILE_BYTES) continue;
+      const content = fs.readFileSync(resolved, "utf8");
+      agentsFiles.push({ path: candidate, content });
+    } catch {
+      /* skip unreadable */
+    }
+  }
+  return agentsFiles;
+}
+
+function agentsUnderCwdOnly(cwd) {
+  return () => ({ agentsFiles: loadContextFilesUnderCwd(cwd) });
+}
+
+function removePiBashOverflowLogs() {
+  try {
+    const dir = os.tmpdir();
+    for (const name of fs.readdirSync(dir)) {
+      if (!name.startsWith("pi-bash")) continue;
       try {
-        resolved = fs.realpathSync(f.path);
+        fs.rmSync(path.join(dir, name), { force: true, recursive: true });
       } catch {
-        return false;
+        /* ignore */
       }
-      const rel = path.relative(root, resolved);
-      return rel !== ".." && !rel.startsWith(`..${path.sep}`) && !path.isAbsolute(rel);
-    }),
-  });
+    }
+  } catch {
+    /* ignore */
+  }
 }
 
 async function killDetachedChildren(piMod, deps) {
@@ -295,9 +332,7 @@ function addStoredAuthSecrets(store, add) {
 
 async function collectSecretsAsync(modelRuntime, provider, authCheck) {
   const secrets = [];
-  const add = (s) => {
-    if (typeof s === "string" && s) secrets.push(s);
-  };
+  const add = (s) => pushSecret(secrets, s);
   try {
     const detail = await modelRuntime.getAuth(provider);
     add(detail?.apiKey);
@@ -497,7 +532,7 @@ export async function execute(runDir, deps = {}) {
       noSkills: true,
       noPromptTemplates: true,
       noThemes: true,
-      noContextFiles: false,
+      noContextFiles: true,
       agentsFilesOverride: agentsUnderCwdOnly(cwd),
       appendSystemPrompt: req.system_append ? [req.system_append] : [],
     });
@@ -636,6 +671,7 @@ export async function execute(runDir, deps = {}) {
       /* ignore */
     }
     removeAgentDir();
+    removePiBashOverflowLogs();
   }
   return exitCode;
 }

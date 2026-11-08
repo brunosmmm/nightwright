@@ -86,7 +86,8 @@ def validate_pi_map_doc(doc, *, origin, in_file) -> list:
                     prov = str(row.get("provider") or "")
                     if prov and not _PROVIDER_RE.match(prov):
                         bad(p, f"provider {prov!r} must match {_PROVIDER_RE.pattern}")
-                    if " " in str(row.get("id") or ""):
+                    id_str = str(row.get("id") or "")
+                    if any(ch.isspace() for ch in id_str):
                         bad(p, "id must not contain whitespace")
                     if row.get("thinking") not in _THINKING:
                         bad(p, f"thinking must be one of {', '.join(sorted(_THINKING))}")

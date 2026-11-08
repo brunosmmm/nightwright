@@ -165,7 +165,7 @@ test("execute: in-memory session, settings, loader flags, appendSystemPrompt", a
   assert.equal(over.loaderOpts.noSkills, true);
   assert.equal(over.loaderOpts.noPromptTemplates, true);
   assert.equal(over.loaderOpts.noThemes, true);
-  assert.equal(over.loaderOpts.noContextFiles, false);
+  assert.equal(over.loaderOpts.noContextFiles, true);
   assert.deepEqual(over.loaderOpts.appendSystemPrompt, ["INVARIANT"]);
   assert.equal(over.createOpts.thinkingLevel, "high");
   assert.deepEqual(over.createOpts.tools, ["read", "bash", "edit", "write"]);
@@ -179,20 +179,18 @@ test("execute: in-memory session, settings, loader flags, appendSystemPrompt", a
   fs.writeFileSync(inside, "# in-worktree agents\n");
   const outside = path.join(path.dirname(wt), "parent-AGENTS.md");
   fs.writeFileSync(outside, "# outside\n");
-  const filtered = over.loaderOpts.agentsFilesOverride({
-    agentsFiles: [{ path: inside }, { path: outside }],
-  });
+  const filtered = over.loaderOpts.agentsFilesOverride({ agentsFiles: [] });
   assert.equal(filtered.agentsFiles.length, 1);
   assert.equal(filtered.agentsFiles[0].path, inside);
+  assert.equal(filtered.agentsFiles[0].content.trim(), "# in-worktree agents");
+  assert.ok(!filtered.agentsFiles.some((f) => f.path === outside));
   const secretOutside = fs.mkdtempSync(path.join(os.tmpdir(), "pi-secret-"));
   const secretFile = path.join(secretOutside, "secret-AGENTS.md");
   fs.writeFileSync(secretFile, "outside secret");
   fs.unlinkSync(inside);
   const linkInside = path.join(wt, "AGENTS.md");
   fs.symlinkSync(secretFile, linkInside);
-  const symlinkFiltered = over.loaderOpts.agentsFilesOverride({
-    agentsFiles: [{ path: linkInside }],
-  });
+  const symlinkFiltered = over.loaderOpts.agentsFilesOverride({ agentsFiles: [] });
   assert.equal(symlinkFiltered.agentsFiles.length, 0);
   assert.ok(over.disposed);
   const resultLine = chunksToLines(out.chunks).at(-1);
@@ -416,6 +414,38 @@ test("execute: prompt failure scrubs sentinel from stdout and stderr", async () 
   assert.ok(blob.includes("[redacted]"));
 });
 
+test("execute: prompt failure scrubs secret learned during prompt", async () => {
+  const execute = await loadExecute();
+  const runDir = layout();
+  const out = { chunks: [], write(s) { this.chunks.push(s); } };
+  const err = { chunks: [], write(s) { this.chunks.push(s); } };
+  const LATE = "oauth-late-refresh-token-abcdef";
+  let getAuthCalls = 0;
+  const runtime = {
+    getModel: () => ({ cost: { input: 1 } }),
+    checkAuth: async () => ({ type: "oauth" }),
+    getAuth: async () => {
+      getAuthCalls += 1;
+      if (getAuthCalls === 1) return { auth: { apiKey: SENTINEL } };
+      return { auth: { accessToken: LATE } };
+    },
+  };
+  const { pi } = stubPi({
+    promptReject: new Error(`refresh failed: ${LATE}`),
+  });
+  const code = await execute(runDir, {
+    out,
+    err,
+    importPi: async () => pi,
+    modelRuntime: runtime,
+  });
+  assert.equal(code, 1);
+  assert.ok(getAuthCalls >= 2);
+  const blob = out.chunks.join("") + err.chunks.join("");
+  assert.ok(!blob.includes(LATE));
+  assert.ok(!blob.includes(SENTINEL));
+});
+
 test("execute: no credential does not call prompt", async () => {
   const execute = await loadExecute();
   const runDir = layout();
@@ -453,6 +483,33 @@ test("execute: unknown model does not call prompt", async () => {
   });
   assert.equal(code, 1);
   assert.equal(prompted, false);
+});
+
+test("execute: stopReason aborted is error exit 1", async () => {
+  const execute = await loadExecute();
+  const runDir = layout();
+  const out = { chunks: [], write(s) { this.chunks.push(s); } };
+  const err = { chunks: [], write(s) { this.chunks.push(s); } };
+  const { pi } = stubPi({
+    messages: [
+      {
+        role: "assistant",
+        stopReason: "aborted",
+        content: [{ type: "text", text: "stopped" }],
+        usage: { cost: { total: 0 } },
+      },
+    ],
+  });
+  const code = await execute(runDir, {
+    out,
+    err,
+    importPi: async () => pi,
+    modelRuntime: await pi.ModelRuntime.create(),
+  });
+  assert.equal(code, 1);
+  const last = JSON.parse(out.chunks.at(-1));
+  assert.equal(last.is_error, true);
+  assert.equal(last.subtype, "error");
 });
 
 test("execute: agent stopReason error writes stderr and exits 1", async () => {
@@ -743,12 +800,13 @@ test("execute: thinking block is not written to stdout", async () => {
   const execute = await loadExecute();
   const runDir = layout();
   const out = { chunks: [], write(s) { this.chunks.push(s); } };
+  const thinkingSentinel = "secret chain of thought";
   const asstEv = {
     type: "message_end",
     message: {
       role: "assistant",
       content: [
-        { type: "thinking", text: "secret chain of thought" },
+        { type: "thinking", thinking: thinkingSentinel },
         { type: "text", text: '{"status":"done"}' },
       ],
     },
@@ -761,10 +819,12 @@ test("execute: thinking block is not written to stdout", async () => {
     modelRuntime: await pi.ModelRuntime.create(),
   });
   const blob = out.chunks.join("");
-  assert.ok(!blob.includes("secret chain of thought"));
+  assert.ok(!blob.includes(thinkingSentinel));
   const lines = chunksToLines(out.chunks).filter((l) => l.type === "assistant");
   assert.equal(lines[0].message.content.length, 1);
   assert.equal(lines[0].message.content[0].type, "text");
+  const last = JSON.parse(out.chunks.at(-1));
+  assert.ok(!String(last.result).includes(thinkingSentinel));
 });
 
 test("execute: long verdict redacts without length cap", async () => {
@@ -1227,6 +1287,21 @@ test("execute: stream write uses post-refresh OAuth token from getAuth", async (
   assert.ok(!blob.includes(REFRESHED));
   assert.ok(!blob.includes(INITIAL));
   assert.ok(blob.includes("[redacted]"));
+});
+
+test("execute: finally removes pi-bash overflow logs from tmpdir", async () => {
+  const execute = await loadExecute();
+  const runDir = layout();
+  const spill = path.join(os.tmpdir(), `pi-bash-test-${process.pid}.log`);
+  fs.writeFileSync(spill, "overflow output\n");
+  assert.ok(fs.existsSync(spill));
+  await execute(runDir, {
+    out: { write() {} },
+    err: { write() {} },
+    importPi: async () => stubPi().pi,
+    modelRuntime: await stubPi().pi.ModelRuntime.create(),
+  });
+  assert.equal(fs.existsSync(spill), false);
 });
 
 test("execute: SIGTERM handler kills detached children and aborts", async () => {

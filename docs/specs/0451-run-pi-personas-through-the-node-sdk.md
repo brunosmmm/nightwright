@@ -4,7 +4,7 @@ title: Run Pi personas through the Node SDK
 status: done
 owner: user
 created: 2026-11-07
-updated: 2026-11-07
+updated: 2026-11-08
 kind: feature
 tags: [agentic, runner, pi]
 depends_on: [SPEC-0442, SPEC-0436]
@@ -498,6 +498,13 @@ fails the check with that fact.
 - Full `uv run pytest` left to queue gating
 - `python3 tools/spec_lint.py --write-ledger` && `python3 tools/spec_lint.py` — pass
 
+### Test record (campaign loop 2 implementer, 2026-11-07)
+
+- `node --test tests/js/pi_exec.test.js` — pass (aborted stopReason, prompt-catch late secret, thinking field, pi-bash cleanup, noContextFiles cwd-only)
+- `uv run pytest tests/test_pi_runner.py -q` — pass (cursor request doc, doctor summary, map validation, zero cost parse, validate_runner pi map)
+- Full `uv run pytest` left to queue gating
+- `python3 tools/spec_lint.py --write-ledger` && `python3 tools/spec_lint.py` — pass
+
 ### As shipped (loop 0 implementer, 2026-11-07)
 
 - `writeLine` runs `redactDeep` before `JSON.stringify` (longest secret first); result line reuses secrets from a second `collectSecretsAsync` after `prompt`.
@@ -517,6 +524,11 @@ fails the check with that fact.
 ### As shipped (campaign loop 1 implementer, 2026-11-07)
 
 - `agentsUnderCwdOnly` uses `realpathSync` on cwd and each context file path; stream `message_end` writes chain `collectSecretsAsync` before each stdout line and before `failResult` in the prompt catch; `_redact_secrets` sorts longest-first.
+
+### As shipped (campaign loop 2 implementer, 2026-11-07)
+
+- `noContextFiles: true` with `agentsFilesOverride` loads only `AGENTS.md`/`CLAUDE.md` under cwd (no ancestor walk); secrets shorter than 8 bytes are not collected; `finally` removes `pi-bash*` spill files under `os.tmpdir()`.
+- `validate_runner_cfg` calls `load_pi_map` when `agentic.runner` is `pi`; `validate_pi_map_doc` rejects any whitespace in `id`.
 
 ## Rollout / migration
 

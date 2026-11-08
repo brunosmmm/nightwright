@@ -5817,7 +5817,7 @@ def validate_runner_cfg(cfg: dict, campaigns=()) -> None:
     if agentic.get("cursor") is not None:
         from . import cursor_map as CM
         CM.load_cursor_map(cfg)   # validates agentic.cursor against the YAML schema
-    if agentic.get("pi") is not None:
+    if agentic.get("pi") is not None or agentic.get("runner") == "pi":
         from . import pi_map as PM
         PM.load_pi_map(cfg)
 
