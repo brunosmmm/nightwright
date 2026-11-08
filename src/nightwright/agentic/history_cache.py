@@ -236,6 +236,63 @@ def _campaign_files_match(cfg, cid: str, stored: dict | None) -> bool:
     return live == stored
 
 
+def _campaign_stored_files_match(cfg, cid: str, stored: dict | None) -> bool:
+    """Match runs/gates files using only paths stored at the last locked write."""
+    if not isinstance(stored, dict):
+        return False
+    agentic = store.agentic_dir(cfg)
+    for rel, cursor in stored.items():
+        if not isinstance(cursor, dict):
+            return False
+        try:
+            st = (agentic / rel).stat()
+        except OSError:
+            return False
+        if st.st_size != cursor.get("size") or st.st_mtime_ns != cursor.get("mtime_ns"):
+            return False
+    return True
+
+
+def _path_cursor(path: Path) -> dict | None:
+    try:
+        st = path.stat()
+    except OSError:
+        return None
+    return {"size": st.st_size, "mtime_ns": st.st_mtime_ns, "inode": st.st_ino}
+
+
+def _cursor_matches(path: Path, cursor: dict) -> bool:
+    live = _path_cursor(path)
+    if live is None or not isinstance(cursor, dict):
+        return False
+    return (live.get("size"), live.get("mtime_ns"), live.get("inode")) == (
+        cursor.get("size"), cursor.get("mtime_ns"), cursor.get("inode"),
+    )
+
+
+def _collect_v1_file_cursors(root: Path) -> dict:
+    out: dict = {}
+    for name in ("version", "index.jsonl", "records.jsonl"):
+        path = root / name
+        if path.is_file():
+            cur = _path_cursor(path)
+            if cur is not None:
+                out[name] = cur
+    camp = root / "campaigns"
+    if camp.is_dir():
+        for path in sorted(camp.glob("*.json")):
+            if _is_tmp(path.name):
+                continue
+            cur = _path_cursor(path)
+            if cur is not None:
+                out[f"campaigns/{path.name}"] = cur
+    return out
+
+
+def _stamp_v1_files(sources: dict, root: Path) -> None:
+    sources["v1_files"] = _collect_v1_file_cursors(root)
+
+
 def _prices_canonical(cfg) -> str:
     cond = (cfg.get("agentic") or {}).get("conductor") if isinstance(cfg.get("agentic"), dict) else {}
     if not isinstance(cond, dict):
@@ -291,7 +348,38 @@ def _clear_v1_except_lock(root: Path) -> None:
             child.unlink()
 
 
-def _cache_tree_corrupt(root: Path) -> bool:
+def _index_jsonl_parseable(path: Path) -> bool:
+    if not path.is_file():
+        return True
+    try:
+        for raw in path.read_text(encoding="utf-8").splitlines():
+            if not raw.strip():
+                continue
+            row = json.loads(raw)
+            if not isinstance(row, dict):
+                return False
+    except (OSError, ValueError):
+        return False
+    return True
+
+
+def _v1_cursors_match(root: Path, v1_files: dict) -> bool:
+    if not isinstance(v1_files, dict):
+        return False
+    for rel, cursor in v1_files.items():
+        if not isinstance(cursor, dict):
+            return False
+        if not _cursor_matches(root / rel, cursor):
+            return False
+    for name in ("version", "index.jsonl", "records.jsonl"):
+        if name not in v1_files:
+            return False
+        if not (root / name).is_file():
+            return False
+    return True
+
+
+def _cache_tree_corrupt(root: Path, sources: dict | None = None) -> bool:
     if not root.is_dir():
         return False
     has_logical = False
@@ -318,37 +406,45 @@ def _cache_tree_corrupt(root: Path) -> bool:
                 return True
         except OSError:
             return True
+    v1_files = (sources or {}).get("v1_files")
+    fast = _sources_ok(sources) and isinstance(v1_files, dict) and _v1_cursors_match(root, v1_files)
     idx = root / "index.jsonl"
     if idx.is_file():
-        for raw in idx.read_text(encoding="utf-8").splitlines():
-            if not raw.strip():
-                continue
-            try:
-                row = json.loads(raw)
-            except ValueError:
+        if fast and _cursor_matches(idx, v1_files.get("index.jsonl") or {}):
+            if not _index_jsonl_parseable(idx):
                 return True
-            if not isinstance(row, dict):
+        else:
+            if not _index_jsonl_parseable(idx):
                 return True
+    elif fast:
+        return True
     rec = root / "records.jsonl"
     if rec.is_file():
-        for raw in rec.read_text(encoding="utf-8").splitlines():
-            if not raw.strip():
-                continue
+        if not (fast and _cursor_matches(rec, v1_files.get("records.jsonl") or {})):
             try:
-                row = json.loads(raw)
-            except ValueError:
+                for raw in rec.read_text(encoding="utf-8").splitlines():
+                    if not raw.strip():
+                        continue
+                    row = json.loads(raw)
+                    if not isinstance(row, dict):
+                        return True
+            except (OSError, ValueError):
                 return True
-            if not isinstance(row, dict):
-                return True
+    elif fast:
+        return True
     camp = root / "campaigns"
     if camp.is_dir():
         for path in camp.glob("*.json"):
             if _is_tmp(path.name):
                 continue
+            key = f"campaigns/{path.name}"
+            if fast and key in v1_files and _cursor_matches(path, v1_files[key]):
+                continue
             doc = _read_json(path)
             if doc is None:
                 return True
-    sources = _read_json(root / "sources.json")
+    if sources is None:
+        sources = _read_json(root / "sources.json")
     if (root / "sources.json").is_file() and not _sources_ok(sources):
         return True
     for path in root.iterdir():
@@ -367,7 +463,7 @@ def _terminal_row_stale(cfg, cid: str, row: dict, sources: dict) -> bool:
     if row.get("signature") != H.campaign_signature(cfg, cid):
         return True
     stored_files = (sources.get("campaign_files") or {}).get(cid)
-    if isinstance(stored_files, dict) and not _campaign_files_match(cfg, cid, stored_files):
+    if isinstance(stored_files, dict) and not _campaign_stored_files_match(cfg, cid, stored_files):
         return True
     return False
 
@@ -1143,6 +1239,7 @@ def _persist_index_records(
             writes_path.unlink()
         if sources is not None:
             sources["complete"] = True
+            _stamp_v1_files(sources, root)
             _atomic_write_json(root / "sources.json", sources)
 
 
@@ -1324,6 +1421,7 @@ def _cold_fill(cfg, root: Path, *, now=None, progress=None, _hold_guard: bool = 
         sources["campaign_files"] = _scan_all_campaign_files(cfg, cids)
         sources["global_gaps"] = sorted(set(gaps))
         sources["complete"] = True
+        _stamp_v1_files(sources, root)
         _atomic_write_json(root / "sources.json", sources)
         return {"campaigns": len(cids), "records": len(all_records)}
 
@@ -1334,7 +1432,8 @@ def _cold_fill(cfg, root: Path, *, now=None, progress=None, _hold_guard: bool = 
 
 
 def _ensure_writable_cache(cfg, root: Path, *, now=None, progress=None) -> bool:
-    if _cache_tree_corrupt(root):
+    sources_peek = _read_json(root / "sources.json")
+    if _cache_tree_corrupt(root, sources_peek):
         with _cache_write_guard(root):
             _clear_v1_except_lock(root)
             _cold_fill(cfg, root, now=now, progress=progress, _hold_guard=True)
@@ -2000,6 +2099,7 @@ def _sync_globals(cfg, root: Path, now) -> set[str]:
         _load_turns(cfg, root, sources, snap=fresh, sources_out=fresh)
         fresh["global_gaps"] = sorted(set(gaps))
         fresh["complete"] = True
+        _stamp_v1_files(fresh, root)
         _atomic_write_json(root / "sources.json", fresh)
     return affected
 
@@ -2133,14 +2233,52 @@ def history_index(cfg, *, now=None, progress=None, cache=None) -> list[dict]:
 def _history_index_cached(cfg, now, progress, root: Path) -> list[dict]:
     H = _lazy_history()
     cold_filled = _ensure_writable_cache(cfg, root, now=now, progress=progress)
-    if not cold_filled:
-        _sync_globals(cfg, root, now)
+    if cold_filled:
+        index_rows = _read_index(root)
+        records = _read_records(root)
+        index_rows, records = _prune_gone_campaigns(cfg, root, index_rows, records, persist=True)
+        sources = _read_json(root / "sources.json") or {}
+        stale = _stale_terminal_ids(cfg, index_rows, sources)
+        if stale:
+            records_at_start = list(_read_records(root))
+            index_at_start = list(_read_index(root))
+            index_rows, records, sources = _recompute_terminal_documents(
+                cfg, root, now, index_rows, records, stale,
+            )
+            _persist_index_records(
+                cfg, root,
+                records_at_start=records_at_start,
+                records=records,
+                index_at_start=index_at_start,
+                index_rows=index_rows,
+                sources=sources,
+            )
+            index_rows = _read_index(root)
+        live_cids, missing = _live_refresh_targets(cfg, index_rows)
+        if live_cids or missing:
+            records = _read_records(root)
+            index_rows, _ = _refresh_live(cfg, root, now, index_rows, records)
+            index_rows = _read_index(root)
+        sources = _read_json(root / "sources.json") or {}
+        shares = _conductor_shares(cfg, root, index_rows, sources)
+        if shares is not None:
+            _apply_conductor(index_rows, shares)
+        return [_public_index_row(row) for row in _sort_index(index_rows)]
+
+    _sync_globals(cfg, root, now)
     index_rows = _read_index(root)
-    records = _read_records(root)
-    index_rows, records = _prune_gone_campaigns(cfg, root, index_rows, records, persist=True)
+    live = _live_campaign_ids(cfg)
+    index_ids = {r.get("campaign") for r in index_rows if r.get("campaign")}
+    need_prune = bool(index_ids - live)
     sources = _read_json(root / "sources.json") or {}
+    records = None
+    if need_prune:
+        records = _read_records(root)
+        index_rows, records = _prune_gone_campaigns(cfg, root, index_rows, records, persist=True)
     stale = _stale_terminal_ids(cfg, index_rows, sources)
     if stale:
+        if records is None:
+            records = _read_records(root)
         records_at_start = list(_read_records(root))
         index_at_start = list(_read_index(root))
         index_rows, records, sources = _recompute_terminal_documents(
@@ -2157,14 +2295,14 @@ def _history_index_cached(cfg, now, progress, root: Path) -> list[dict]:
         index_rows = _read_index(root)
     live_cids, missing = _live_refresh_targets(cfg, index_rows)
     if live_cids or missing:
-        records = _read_records(root)
+        if records is None:
+            records = _read_records(root)
         index_rows, _ = _refresh_live(cfg, root, now, index_rows, records)
         index_rows = _read_index(root)
-    sources = _read_json(root / "sources.json") or {}
     shares = _conductor_shares(cfg, root, index_rows, sources)
     if shares is not None:
         _apply_conductor(index_rows, shares)
-    if progress and not cold_filled:
+    if progress:
         cids = _campaign_ids(cfg)
         for done, cid in enumerate(cids, 1):
             progress(done, len(cids))
