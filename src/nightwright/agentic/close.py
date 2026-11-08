@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import datetime as dt
 import difflib
+import errno
 import hashlib
 import json
 import os
@@ -265,8 +266,8 @@ def _spec_at_open_trusted(cfg, state: dict, copy: Path) -> bool:
 def _spec_at_open_entry_absent(copy: Path) -> bool:
     try:
         os.lstat(copy)
-    except OSError:
-        return True
+    except OSError as e:
+        return e.errno == errno.ENOENT
     return False
 
 
@@ -320,11 +321,11 @@ def spec_guard(cfg, state: dict) -> tuple[bool, dict | None, list]:
     except OSError as e:
         return _spec_snapshot_read_gate(rel, f"open-time snapshot unreadable: {e}")
     try:
-        old = snap_bytes.decode("utf-8")
+        old = snap_bytes.decode("utf-8").replace("\r\n", "\n")
     except UnicodeDecodeError as e:
         return _spec_snapshot_read_gate(rel, f"open-time snapshot not valid UTF-8: {e}")
     try:
-        new = new_data.decode("utf-8")
+        new = new_data.decode("utf-8").replace("\r\n", "\n")
     except UnicodeDecodeError as e:
         return _spec_snapshot_read_gate(rel, f"worktree spec not valid UTF-8: {e}")
     for label, text in (("open-time snapshot", old), ("worktree spec", new)):

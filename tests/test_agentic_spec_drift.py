@@ -151,6 +151,38 @@ def test_guard_fails_when_snapshot_not_decodable(tmp_path):
     assert "UTF-8" in events[0][1]["detail"]
 
 
+@pytest.mark.parametrize("wt_text,detail", [
+    (b"\xff\xfe---\nid: X\n---\n\nbody\n", "UTF-8"),
+    ("---\n: [invalid\n---\n\nbody\n", "front matter"),
+    ("---\n\n---\n\nbody\n", "not a mapping"),
+])
+def test_guard_fails_on_unreadable_worktree_spec(tmp_path, wt_text, detail):
+    cfg = {"data_dir": str(tmp_path / "data")}
+    st = _state(tmp_path, cfg, BASE)
+    wt = Path(st["repo"]["worktree"])
+    spec_path = wt / "docs/specs/0900-g.md"
+    if isinstance(wt_text, bytes):
+        spec_path.write_bytes(wt_text)
+    else:
+        spec_path.write_text(wt_text, encoding="utf-8")
+    copy = S.campaign_dir(cfg, st["id"]) / CL.SPEC_AT_OPEN
+    copy.write_text(BASE)
+    st["spec"]["sha256_at_open"] = hashlib.sha256(BASE.encode("utf-8")).hexdigest()
+    ok, gate, events = CL.spec_guard(cfg, st)
+    assert not ok and gate["name"] == "spec-changed"
+    assert detail in events[0][1]["detail"]
+
+
+def test_guard_fails_when_snapshot_present_without_hash(tmp_path):
+    cfg = {"data_dir": str(tmp_path / "data")}
+    st = _state(tmp_path, cfg, BASE)
+    copy = S.campaign_dir(cfg, st["id"]) / CL.SPEC_AT_OPEN
+    copy.write_text(BASE)
+    ok, gate, events = CL.spec_guard(cfg, st)
+    assert not ok and gate["name"] == "spec-changed"
+    assert events[0][1]["severity"] == "must_fix"
+
+
 def test_guard_reports_drift_as_synthetic_gate(tmp_path):
     cfg = {"data_dir": str(tmp_path / "data")}
     st = _state(tmp_path, cfg, BASE.replace("- [ ] second criterion\n", ""))

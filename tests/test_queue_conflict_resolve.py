@@ -198,6 +198,126 @@ def test_resume_missing_spec_with_id_parks(env, monkeypatch):
     assert wt.is_dir()
 
 
+def test_fresh_open_keeps_trusted_spec_snapshot(env, monkeypatch):
+    cfg, repo = env
+    cid = add_idea_campaign(cfg, monkeypatch, capture(cfg, "trusted fresh"))
+    st = _state(cfg, cid)
+    rel = "docs/specs/0999-x.md"
+    st["spec"] = {"rel_path": rel, "id": "SPEC-0999", "internal": True}
+    st["spec_id"] = "SPEC-0999"
+    st["state"] = "OPENING"
+    snap_text = "old trusted open snapshot\n"
+    digest = hashlib.sha256(snap_text.encode()).hexdigest()
+    st["spec"]["sha256_at_open"] = digest
+    cdir = S.campaign_dir(cfg, cid)
+    cdir.mkdir(parents=True, exist_ok=True)
+    (cdir / CL.SPEC_AT_OPEN).write_text(snap_text, encoding="utf-8")
+    S.write_state(cfg, cid, st)
+    wt_text = ACCEPTED.format(sid="SPEC-0999")
+    real_add = git.worktree_add
+
+    def add_and_seed(root, path, branch, base):
+        real_add(root, path, branch, base)
+        (path / rel).parent.mkdir(parents=True, exist_ok=True)
+        (path / rel).write_text(wt_text, encoding="utf-8")
+
+    monkeypatch.setattr(git, "worktree_add", add_and_seed)
+    monkeypatch.setattr(Q, "_run_worktree_setup", lambda *a, **k: None)
+    ctx = Q._Ctx(cfg)
+    res = Q._do_open(ctx, _state(cfg, cid))
+    assert res.error is None
+    Q._apply(ctx, _state(cfg, cid), res)
+    after = _state(cfg, cid)
+    assert (cdir / CL.SPEC_AT_OPEN).read_text(encoding="utf-8") == snap_text
+    assert after["spec"]["sha256_at_open"] == digest
+    assert after["state"] == "IMPLEMENTING"
+
+
+def test_adopt_accepted_without_spec_id_stores_open_snapshot(env, monkeypatch):
+    cfg, repo = env
+    cid = add_idea_campaign(cfg, monkeypatch, capture(cfg, "idea no id"))
+    st = _prep_worktree(cfg, repo, cid, ACCEPTED, spec_id=None)
+    st["spec"].pop("id", None)
+    st["spec_id"] = "SPEC-0999"
+    S.write_state(cfg, cid, st)
+    row, after = _open_resume(cfg, monkeypatch, _state(cfg, cid))
+    assert after["state"] == "IMPLEMENTING" and row["reason"] == "resumed_worktree"
+    snap = S.campaign_dir(cfg, cid) / CL.SPEC_AT_OPEN
+    assert snap.is_file()
+    wt_spec = Path(after["repo"]["worktree"]) / after["spec"]["rel_path"]
+    assert after["spec"]["sha256_at_open"] == SR.spec_sha256(wt_spec)
+
+
+def test_replace_spec_snapshot_validation_failure_keeps_trusted_hash(env, monkeypatch):
+    cfg, repo = env
+    cid = add_idea_campaign(cfg, monkeypatch, capture(cfg, "val fail"))
+    cdir = S.campaign_dir(cfg, cid)
+    cdir.mkdir(parents=True, exist_ok=True)
+    snap = cdir / CL.SPEC_AT_OPEN
+    baseline = b"trusted baseline bytes"
+    snap.write_bytes(baseline)
+    spec = {"sha256_at_open": hashlib.sha256(baseline).hexdigest()}
+    err = Q._replace_spec_at_open_snapshot(cdir, snap, b"\xff\xfe", spec)
+    assert err and "not storable" in err
+    assert spec["sha256_at_open"] == hashlib.sha256(baseline).hexdigest()
+    assert snap.read_bytes() == baseline
+
+
+def test_replace_spec_snapshot_io_failure_keeps_trusted_hash(env, monkeypatch):
+    cfg, repo = env
+    cid = add_idea_campaign(cfg, monkeypatch, capture(cfg, "io fail"))
+    cdir = S.campaign_dir(cfg, cid)
+    cdir.mkdir(parents=True, exist_ok=True)
+    snap = cdir / CL.SPEC_AT_OPEN
+    baseline = ACCEPTED.format(sid="SPEC-0999").encode()
+    snap.write_bytes(baseline)
+    digest = hashlib.sha256(baseline).hexdigest()
+    spec = {"sha256_at_open": digest}
+    real_replace = os.replace
+
+    def boom(src, dst):
+        if Path(dst).name == CL.SPEC_AT_OPEN:
+            raise OSError("disk full")
+        return real_replace(src, dst)
+
+    monkeypatch.setattr(os, "replace", boom)
+    wt = ACCEPTED.format(sid="SPEC-0999") + "\nworktree drift\n"
+    err = Q._replace_spec_at_open_snapshot(cdir, snap, wt.encode(), spec)
+    assert err and "could not write" in err
+    assert spec["sha256_at_open"] == digest
+    assert snap.read_bytes() == baseline
+
+
+def test_fresh_open_stores_crlf_worktree_spec_snapshot(env, monkeypatch):
+    cfg, repo = env
+    cid = add_idea_campaign(cfg, monkeypatch, capture(cfg, "crlf snap"))
+    st = _state(cfg, cid)
+    rel = "docs/specs/0999-x.md"
+    st["spec"] = {"rel_path": rel, "id": "SPEC-0999", "internal": True}
+    st["spec_id"] = "SPEC-0999"
+    st["state"] = "OPENING"
+    S.write_state(cfg, cid, st)
+    crlf = ACCEPTED.format(sid="SPEC-0999").replace("\n", "\r\n")
+    real_add = git.worktree_add
+
+    def add_and_seed(root, path, branch, base):
+        real_add(root, path, branch, base)
+        (path / rel).parent.mkdir(parents=True, exist_ok=True)
+        (path / rel).write_bytes(crlf.encode("utf-8"))
+
+    monkeypatch.setattr(git, "worktree_add", add_and_seed)
+    monkeypatch.setattr(Q, "_run_worktree_setup", lambda *a, **k: None)
+    ctx = Q._Ctx(cfg)
+    st_open = _state(cfg, cid)
+    res = Q._do_open(ctx, st_open)
+    assert res.error is None
+    Q._apply(ctx, st_open, res)
+    after = _state(cfg, cid)
+    snap = S.campaign_dir(cfg, cid) / CL.SPEC_AT_OPEN
+    assert snap.is_file()
+    assert after["spec"]["sha256_at_open"] == hashlib.sha256(crlf.encode()).hexdigest()
+
+
 def test_fresh_open_still_calls_worktree_add(env, monkeypatch):
     cfg, repo = env
     cid = add_idea_campaign(cfg, monkeypatch, capture(cfg, "fresh"))
@@ -848,10 +968,15 @@ def test_adopt_rewrites_snapshot_when_hash_set_but_copy_missing(env, monkeypatch
         Path(after["repo"]["worktree"]) / after["spec"]["rel_path"])
 
 
-def test_resume_revise_pending_accepted_goes_spec_writing(env, monkeypatch):
+@pytest.mark.parametrize("text", [
+    ACCEPTED,
+    ACCEPTED.replace("status: accepted", "status: in-progress"),
+])
+def test_resume_revise_pending_accepted_or_in_progress_goes_spec_writing(
+        env, monkeypatch, text):
     cfg, repo = env
     cid = add_idea_campaign(cfg, monkeypatch, capture(cfg, "revise accepted"))
-    st = _prep_worktree(cfg, repo, cid, ACCEPTED, extra_state={
+    st = _prep_worktree(cfg, repo, cid, text, extra_state={
         "admission": "revise_pending", "pending_brief": "address review"})
     row, after = _open_resume(cfg, monkeypatch, st)
     assert after["state"] == "SPEC_WRITING" and row["reason"] == "resumed_worktree"

@@ -4,7 +4,7 @@ title: Periodic deterministic resolution of queue dependency conflicts
 status: done
 owner: user
 created: 2026-11-07
-updated: 2026-11-07
+updated: 2026-11-08
 milestone: "M9: agentic workflow"
 kind: feature
 tags: [agentic, queue]
@@ -172,6 +172,13 @@ Merge, split, revert, and red-main opens do not use this adopt path. A revert op
 - `python3 tools/spec_lint.py --write-ledger` && `python3 tools/spec_lint.py` — passed.
 - Full suite left to gating.
 
+### Test record (2026-11-08, loop 1 implementer review fixes)
+
+- `uv run pytest -q tests/test_queue_conflict_resolve.py tests/test_idea_ordering.py tests/test_agentic_quiet.py tests/test_agentic_spec_drift.py` — 257 passed.
+- `uv run pytest -q tests/test_agentic_spec_writer.py -k amend` — 7 passed.
+- `python3 tools/spec_lint.py --write-ledger` && `python3 tools/spec_lint.py` — passed.
+- Full suite left to gating.
+
 ### Test record (2026-11-07, loop 1 implementer)
 
 - `uv run pytest -q tests/test_idea_ordering.py tests/test_queue_conflict_resolve.py tests/test_agentic_quiet.py` — passed.
@@ -205,6 +212,10 @@ Merge, split, revert, and red-main opens do not use this adopt path. A revert op
   decode/YAML errors instead of raising.
 - Committed amend: `pending_brief` is cleared only after `_finish_amend` stores the snapshot; snapshot
   replace I/O errors keep `sha256_at_open` when the existing `spec_at_open.md` still matches it.
+- Fresh open keeps a trusted `spec_at_open.md`; validation failures clear the hash only when the
+  on-disk copy no longer matches. CRLF worktree specs normalize newlines before front-matter checks.
+- Idea adopt into IMPLEMENTING/SPEC_REVIEW with `spec.id` unset stores the open snapshot instead of
+  clearing an untrusted copy.
 
 ## Clock Log
 

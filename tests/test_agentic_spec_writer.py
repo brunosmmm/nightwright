@@ -1022,6 +1022,22 @@ def test_amend_body_and_updated_only_is_valid(tmp_path, monkeypatch):
     assert "updated: 2026-10-27" in (wtree(cfg, cid) / AMEND_PATH).read_text()
 
 
+def test_amend_snapshot_failure_keeps_writer_brief(tmp_path, monkeypatch):
+    cfg, repo, cid = amend_fx(tmp_path, monkeypatch, [amended()])
+    st = S.read_state(cfg, cid)
+    brief_before = st["pending_brief"]
+    real = Q._replace_spec_at_open_snapshot
+    monkeypatch.setattr(Q, "_replace_spec_at_open_snapshot", lambda *a, **k: "disk full")
+    Q.tick(cfg)
+    monkeypatch.setattr(Q, "_replace_spec_at_open_snapshot", real)
+    park = parked(cfg, cid)
+    assert park["reason"] == "spec_write_failed" and park["resume_to"] == "SPEC_WRITING"
+    st = S.read_state(cfg, cid)
+    assert st["admission"] == "revise_pending"
+    assert st["pending_brief"] == brief_before
+    assert "spec amend" in _git(wtree(cfg, cid), "show", "-s", "--format=%s", "HEAD")
+
+
 def test_amend_success_goes_to_implementing(tmp_path, monkeypatch):
     from nightwright.agentic import spec_review as SR
     cfg, repo, cid = amend_fx(tmp_path, monkeypatch, [amended()])

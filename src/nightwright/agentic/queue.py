@@ -14,6 +14,7 @@ checked pessimistically (`total + persona budget > cap` ⇒ PARKED). Humans act 
 from __future__ import annotations
 
 import copy
+import errno
 import hashlib
 import json
 import math
@@ -1744,7 +1745,7 @@ def worktree_resume_state(state: dict, worktree: Path) -> tuple[str | None, str 
     if data is None:
         return None, f"spec file missing at {spec_path}"
     try:
-        fm, _ = split_frontmatter(data.decode("utf-8"))
+        fm, _ = split_frontmatter(_spec_bytes_as_text(data))
     except (ValueError, UnicodeDecodeError, yaml.YAMLError) as e:
         return None, f"spec file unreadable at {spec_path}: {e}"
     if not isinstance(fm, dict):
@@ -1798,10 +1799,15 @@ def _spec_at_open_snapshot_ok(cdir: Path, snap: Path, want_hash: str) -> bool:
 MAX_WORKTREE_SPEC_BYTES = 4 * 1024 * 1024
 
 
+def _spec_bytes_as_text(data: bytes) -> str:
+    """Decode spec snapshot bytes, normalizing CRLF the way ``set_spec_status`` writes them."""
+    return data.decode("utf-8").replace("\r\n", "\n")
+
+
 def _validate_spec_snapshot_bytes(data: bytes) -> str | None:
     """Return an error when ``data`` is not a storable spec snapshot (UTF-8 + YAML front matter)."""
     try:
-        text = data.decode("utf-8")
+        text = _spec_bytes_as_text(data)
     except UnicodeDecodeError as e:
         return f"not valid UTF-8: {e}"
     try:
@@ -1821,8 +1827,10 @@ def _read_worktree_spec_bytes(worktree: Path, rel: str) -> tuple[bytes | None, s
     raw = worktree / rel
     try:
         st = os.lstat(raw)
-    except OSError:
-        return None, None
+    except OSError as e:
+        if e.errno == errno.ENOENT:
+            return None, None
+        return None, str(e)
     if not stat.S_ISREG(st.st_mode):
         return None, "not a regular file"
     resolved = raw.resolve()
@@ -1878,7 +1886,9 @@ def _replace_spec_at_open_snapshot(cdir: Path, snap: Path, data: bytes, spec: di
     """Write ``spec_at_open.md`` from ``data`` via a private temp file and ``os.replace``."""
     bad = _validate_spec_snapshot_bytes(data)
     if bad:
-        spec.pop("sha256_at_open", None)
+        want = spec.get("sha256_at_open")
+        if not (want and _spec_at_open_snapshot_ok(cdir, snap, want)):
+            spec.pop("sha256_at_open", None)
         return f"spec snapshot not storable: {bad}"
     tmp = cdir / f".{CL.SPEC_AT_OPEN}.{os.getpid()}.{threading.get_ident()}.tmp"
     fd = None
@@ -2007,9 +2017,17 @@ def _do_open_unwrapped(ctx: _Ctx, state: dict) -> StepResult:
                     res.resumed_to = target
                     if kind not in RM.RED_KINDS:
                         if has_no_spec(state):
-                            cdir = store.campaign_dir(ctx.cfg, state["id"])
-                            _clear_untrusted_spec_at_open_snapshot(
-                                cdir, cdir / CL.SPEC_AT_OPEN, state.setdefault("spec", {}))
+                            if target in ("IMPLEMENTING", "SPEC_REVIEW"):
+                                snap_err = _adopt_spec_open_snapshot(
+                                    ctx.cfg, state, worktree)
+                                if snap_err:
+                                    res.error = snap_err
+                                    res.resumed_to = None
+                            else:
+                                cdir = store.campaign_dir(ctx.cfg, state["id"])
+                                _clear_untrusted_spec_at_open_snapshot(
+                                    cdir, cdir / CL.SPEC_AT_OPEN,
+                                    state.setdefault("spec", {}))
                         else:
                             snap_err = _adopt_spec_open_snapshot(ctx.cfg, state, worktree)
                             if snap_err:
@@ -2032,15 +2050,19 @@ def _do_open_unwrapped(ctx: _Ctx, state: dict) -> StepResult:
             # SPEC-0186: keep the accepted text so the close step can detect spec drift
             rel_p = spec.get("rel_path") or ""
             if rel_p:
-                data, read_err = _read_worktree_spec_bytes(worktree, rel_p)
-                if read_err is not None:
-                    res.error = f"spec file unreadable at {worktree / rel_p}: {read_err}"
-                elif data is not None:
-                    cdir = store.campaign_dir(ctx.cfg, state["id"])
-                    snap_err = _replace_spec_at_open_snapshot(
-                        cdir, cdir / CL.SPEC_AT_OPEN, data, spec)
-                    if snap_err:
-                        res.error = snap_err
+                cdir = store.campaign_dir(ctx.cfg, state["id"])
+                snap = cdir / CL.SPEC_AT_OPEN
+                want = spec.get("sha256_at_open")
+                if want and _spec_at_open_snapshot_ok(cdir, snap, want):
+                    pass
+                else:
+                    data, read_err = _read_worktree_spec_bytes(worktree, rel_p)
+                    if read_err is not None:
+                        res.error = (f"spec file unreadable at {worktree / rel_p}: {read_err}")
+                    elif data is not None:
+                        snap_err = _replace_spec_at_open_snapshot(cdir, snap, data, spec)
+                        if snap_err:
+                            res.error = snap_err
     except (GitError, ValueError, OSError) as e:
         res.error = getattr(e, "tail", None) or str(e)
         res.config_error = isinstance(e, ProjectConfigError)
