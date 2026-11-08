@@ -95,7 +95,7 @@ def _jsonl(
                 raw = stream.readline()
                 if not raw:
                     break
-                if not raw.endswith(b"\n") and log_offsets is not None:
+                if not raw.endswith(b"\n"):
                     break
                 if raw.endswith(b"\n"):
                     committed = stream.tell()

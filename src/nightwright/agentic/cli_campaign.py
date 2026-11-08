@@ -27,6 +27,12 @@ from . import store
 from . import timeline as TL
 
 
+def _history_cache_unwritable_warn(cfg) -> None:
+    from . import history_cache as HC
+    if HC._not_writable(cfg, None):
+        R.err_console.print(Text("cache: not writable"))
+
+
 def _summary(st: dict, cfg=None, backlog=None) -> dict:
     """`nw.campaigns.v1` entry. With `cfg`, the SPEC-0356 row fields (title, priority,
     depends_on, blocked_by, waiting_on, park_reason) ride along; `backlog` is one
@@ -471,6 +477,7 @@ def attach(campaign_group):
                 def progress(done, total):
                     if done % 50 == 0 and sys.stderr.isatty():
                         R.err_console.print(Text(f"history: {done}/{total}"))
+                _history_cache_unwritable_warn(cfg)
                 rows = H.filter_index(
                     H.history_index(cfg, progress=progress), project=project, state=state,
                     spec=spec_id, since=since, until=until, min_cost=min_cost,
@@ -489,6 +496,7 @@ def attach(campaign_group):
                     )
                 console.print(table)
                 return
+            _history_cache_unwritable_warn(cfg)
             doc = H.campaign_history(cfg, campaign)
         except ValueError as exc:
             if campaign and not store.campaign_dir(cfg, campaign).is_dir():
@@ -551,6 +559,7 @@ def attach(campaign_group):
                          query, limit, as_json):
         """Search derived findings and decisions across campaigns."""
         try:
+            _history_cache_unwritable_warn(cfg)
             rows = H.history_records(
                 cfg, campaign=campaign, agent=agent or None, kind=kind or None, project=project,
                 severity=severity or None, status=status or None, since=since, until=until,

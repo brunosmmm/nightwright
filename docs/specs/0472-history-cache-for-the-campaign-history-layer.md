@@ -643,6 +643,12 @@ Full suite left to queue gating.
 and `tests/test_history_fixture.py` (138 passed). Full suite left to queue gating.
 `python3 tools/spec_lint.py --write-ledger` exit 0.
 
+### Test record (2026-11-08, implementer loop 2)
+
+`uv run pytest -q` on `tests/test_history_cache.py`, `tests/test_history.py`,
+`tests/test_history_scale.py`, and `tests/test_cli_campaign_history.py` (81 passed).
+Queue `pytest-affected` rerun left in flight. Full suite left to queue gating.
+
 ### As shipped (2026-11-08)
 
 `uv run nw campaign history --rebuild-cache` against the live data dir rebuilt 259 campaigns

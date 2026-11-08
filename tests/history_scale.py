@@ -409,7 +409,7 @@ def _append_escalation(agentic: Path, clone_id: str, source_id: str, index: int,
     path.write_text(json.dumps(doc, indent=2) + "\n", encoding="utf-8")
 
 
-def _count_units(agentic: Path) -> int:
+def _count_findings(agentic: Path) -> int:
     total = 0
     camps = agentic / "campaigns"
     if camps.is_dir():
@@ -419,15 +419,6 @@ def _count_units(agentic: Path) -> int:
             for row in _read_jsonl(camp / "ledger.jsonl"):
                 if row.get("type") == "finding":
                     total += 1
-    dec = agentic / "conductor" / "decisions.jsonl"
-    total += len(_read_jsonl(dec))
-    mail = agentic / "mailbox"
-    if mail.is_dir():
-        for path in mail.glob("*.jsonl"):
-            total += len(_read_jsonl(path))
-    esc = agentic / "escalations"
-    if esc.is_dir():
-        total += len(list(esc.glob("ESC-*.json")))
     return total
 
 
@@ -523,7 +514,7 @@ def clone_fixture(
         _clone_per_kind(agentic, fixture_agentic, sources, clone_id=clone_id,
                         source_id=source_id, index=index, delta=delta)
 
-    count = _count_units(agentic)
+    count = _count_findings(agentic)
     if count < records:
         if not extra:
             raise ValueError("cannot reach records count")

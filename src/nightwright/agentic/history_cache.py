@@ -198,6 +198,225 @@ def _tree_sig(root: Path) -> str:
     return hashlib.sha1("\n".join(lines).encode("utf-8")).hexdigest()
 
 
+_LOGICAL_CACHE_NAMES = frozenset({
+    "version", ".lock", "index.jsonl", "index.writes.jsonl", "records.jsonl", "sources.json",
+})
+
+
+def _campaign_file_cursors(cfg, cid: str) -> dict[str, dict]:
+    camp = store.campaign_dir(cfg, cid)
+    if camp is None:
+        return {}
+    agentic = store.agentic_dir(cfg)
+    out: dict[str, dict] = {}
+    for sub in ("runs", "gates"):
+        base = camp / sub
+        if not base.is_dir():
+            continue
+        for path in sorted(base.rglob("*")):
+            if not path.is_file():
+                continue
+            try:
+                st = path.stat()
+            except OSError:
+                continue
+            rel = path.relative_to(agentic).as_posix()
+            out[rel] = {"size": st.st_size, "mtime_ns": st.st_mtime_ns}
+    return out
+
+
+def _scan_all_campaign_files(cfg, cids: list[str]) -> dict[str, dict]:
+    return {cid: _campaign_file_cursors(cfg, cid) for cid in cids}
+
+
+def _campaign_files_match(cfg, cid: str, stored: dict | None) -> bool:
+    if not isinstance(stored, dict):
+        return False
+    live = _campaign_file_cursors(cfg, cid)
+    return live == stored
+
+
+def _prices_canonical(cfg) -> str:
+    cond = (cfg.get("agentic") or {}).get("conductor") if isinstance(cfg.get("agentic"), dict) else {}
+    if not isinstance(cond, dict):
+        cond = {}
+    prices = cond.get("prices")
+    if not isinstance(prices, dict):
+        prices = {}
+    return json.dumps(prices, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+
+
+def _profile_layer_cursors(cfg) -> dict[str, dict]:
+    out: dict[str, dict] = {}
+    cfg_dir = cfg.get("config_dir")
+    if cfg_dir:
+        prof = Path(cfg_dir) / "profiles"
+        if prof.is_dir():
+            for path in sorted(prof.iterdir()):
+                if not path.is_file():
+                    continue
+                try:
+                    st = path.stat()
+                except OSError:
+                    continue
+                out[str(path.resolve())] = {
+                    "size": st.st_size, "mtime_ns": st.st_mtime_ns, "inode": st.st_ino,
+                }
+    project_root = cfg.get("project_root")
+    if project_root:
+        proj_prof = Path(project_root) / ".nw" / "profiles"
+        if proj_prof.is_dir():
+            for path in sorted(proj_prof.iterdir()):
+                if not path.is_file():
+                    continue
+                try:
+                    st = path.stat()
+                except OSError:
+                    continue
+                out[str(path.resolve())] = {
+                    "size": st.st_size, "mtime_ns": st.st_mtime_ns, "inode": st.st_ino,
+                }
+    return out
+
+
+def _clear_v1_except_lock(root: Path) -> None:
+    if not root.is_dir():
+        return
+    for child in list(root.iterdir()):
+        if child.name == ".lock":
+            continue
+        if child.is_dir():
+            shutil.rmtree(child)
+        elif child.is_file():
+            child.unlink()
+
+
+def _cache_tree_corrupt(root: Path) -> bool:
+    if not root.is_dir():
+        return False
+    has_logical = False
+    for path in root.iterdir():
+        if not path.is_file() or _is_tmp(path.name):
+            continue
+        name = path.name
+        if name == "version":
+            has_logical = True
+            try:
+                if path.read_bytes() != b"1\n":
+                    return True
+            except OSError:
+                return True
+            continue
+        if name in _LOGICAL_CACHE_NAMES or name.endswith(".json"):
+            has_logical = True
+        elif (root / "campaigns").is_dir() and path.parent == root / "campaigns":
+            has_logical = True
+    ver = root / "version"
+    if has_logical:
+        try:
+            if not ver.is_file() or ver.read_bytes() != b"1\n":
+                return True
+        except OSError:
+            return True
+    idx = root / "index.jsonl"
+    if idx.is_file():
+        for raw in idx.read_text(encoding="utf-8").splitlines():
+            if not raw.strip():
+                continue
+            try:
+                row = json.loads(raw)
+            except ValueError:
+                return True
+            if not isinstance(row, dict):
+                return True
+    rec = root / "records.jsonl"
+    if rec.is_file():
+        for raw in rec.read_text(encoding="utf-8").splitlines():
+            if not raw.strip():
+                continue
+            try:
+                row = json.loads(raw)
+            except ValueError:
+                return True
+            if not isinstance(row, dict):
+                return True
+    camp = root / "campaigns"
+    if camp.is_dir():
+        for path in camp.glob("*.json"):
+            if _is_tmp(path.name):
+                continue
+            doc = _read_json(path)
+            if doc is None:
+                return True
+    sources = _read_json(root / "sources.json")
+    if (root / "sources.json").is_file() and not _sources_ok(sources):
+        return True
+    for path in root.iterdir():
+        if path.is_file() and _is_tmp(path.name):
+            try:
+                path.unlink()
+            except OSError:
+                pass
+    return False
+
+
+def _terminal_row_stale(cfg, cid: str, row: dict, sources: dict) -> bool:
+    if row.get("outcome") not in _TERMINAL_OUTCOMES:
+        return True
+    H = _lazy_history()
+    if row.get("signature") != H.campaign_signature(cfg, cid):
+        return True
+    stored_files = (sources.get("campaign_files") or {}).get(cid)
+    if isinstance(stored_files, dict) and not _campaign_files_match(cfg, cid, stored_files):
+        return True
+    return False
+
+
+def _stale_terminal_ids(cfg, index_rows: list[dict], sources: dict) -> set[str]:
+    live = _live_campaign_ids(cfg)
+    out: set[str] = set()
+    for row in index_rows:
+        cid = row.get("campaign")
+        if not isinstance(cid, str) or cid not in live:
+            continue
+        if _terminal_row_stale(cfg, cid, row, sources):
+            out.add(cid)
+    return out
+
+
+def _recompute_terminal_documents(
+    cfg, root: Path, now, index_rows: list[dict], records: list[dict], cids: set[str],
+) -> tuple[list[dict], list[dict], dict | None]:
+    if not cids:
+        return index_rows, records, None
+    H = _lazy_history()
+    gaps: list[str] = []
+    global_recs = H._global_records(cfg, _campaign_ids(cfg), gaps)
+    runner_down = H._runner_intervals(cfg, gaps)
+    sources = _read_json(root / "sources.json") or {}
+    index_by = {r["campaign"]: r for r in index_rows}
+    windows = {cid: _live_window_for_campaign(cfg, cid) for cid in cids}
+    split_rows = _patch_index_windows(index_rows, windows)
+    shares = _conductor_shares(cfg, root, split_rows, sources)
+    for cid in sorted(cids):
+        window = windows.get(cid) or index_by.get(cid, {})
+        doc, row = _recompute_campaign(
+            cfg, cid, now, global_recs=global_recs, runner_down=runner_down,
+            shares=shares, window=window, write_campaign=True, extra_gaps=gaps,
+        )
+        index_rows = [row if r.get("campaign") == cid else r for r in index_rows]
+        records = _merge_records(
+            records, drop_campaign_all=cid, add=_records_for_campaign(doc, cid),
+        )
+        _write_campaign_file(root, cid, doc)
+        _append_pending_index_write(root, row)
+    fresh_sources = _read_json(root / "sources.json") or sources
+    cfiles = fresh_sources.setdefault("campaign_files", {})
+    for cid in cids:
+        cfiles[cid] = _campaign_file_cursors(cfg, cid)
+    return index_rows, records, fresh_sources
+
+
 def _search_text(rec: dict) -> str:
     return f"{rec.get('title') or ''} {rec.get('text') or ''}".casefold()
 
@@ -437,15 +656,15 @@ def _scan_sources(
     if mailbox.is_dir():
         for path in sorted(mailbox.glob("*.jsonl")):
             key = f"mailbox/{path.name}"
+            prev_log = prev_logs.get(key)
             if fixed_offsets is not None and key in fixed_offsets:
                 entry = _file_entry(path)
                 if entry is not None:
                     entry["offset"] = min(fixed_offsets[key], int(entry["size"]))
                     logs[key] = entry
                 continue
-            entry = _file_entry(path)
+            entry = _log_entry(path, prev=prev_log)
             if entry is not None:
-                entry["offset"] = entry["size"]
                 logs[key] = entry
     files = {}
     flaky = agentic / "flaky-tests.json"
@@ -474,6 +693,8 @@ def _scan_sources(
         "files": files,
         "trees": trees,
         "transcripts": transcripts,
+        "prices": _prices_canonical(cfg),
+        "profile_layers": _profile_layer_cursors(cfg),
     }
 
 
@@ -524,8 +745,6 @@ def _log_cursor_entries(cfg, parsed_offsets: dict[str, int]) -> dict[str, dict]:
         if entry is None:
             continue
         entry["offset"] = off
-        if int(entry["size"]) > off:
-            entry["size"] = off
         logs[key] = entry
     return logs
 
@@ -611,6 +830,21 @@ def _fresh_conductor_turns(cfg, *, cursor_out: dict | None = None) -> list[dict]
     return sorted(out, key=lambda t: t["ts"])
 
 
+def _conductor_cursors_unchanged(cfg, sources: dict | None, snap: dict | None = None) -> bool:
+    if not sources:
+        return False
+    fresh = snap or _scan_sources(cfg, prev=sources)
+    if sources.get("prices") != fresh.get("prices"):
+        return False
+    if sources.get("profile_layers") != fresh.get("profile_layers"):
+        return False
+    if _transcripts_need_refresh(cfg, sources, fresh):
+        return False
+    old_sess = (sources.get("logs") or {}).get("conductor/sessions.jsonl")
+    new_sess = (fresh.get("logs") or {}).get("conductor/sessions.jsonl")
+    return _file_meta(old_sess or {}) == _file_meta(new_sess or {})
+
+
 def _load_turns(
     cfg,
     root: Path,
@@ -619,25 +853,22 @@ def _load_turns(
     snap: dict | None = None,
     sources_out: dict | None = None,
 ):
-    turns_path = root / "conductor_turns.json"
-    cached = _read_json(turns_path)
     snap = snap or _scan_sources(cfg, prev=sources)
-    if sources and cached and snap.get("logs", {}).get("conductor/sessions.jsonl") == (
-            sources.get("logs") or {}).get("conductor/sessions.jsonl") \
-            and not _transcripts_need_refresh(cfg, sources, snap):
-        if isinstance(cached, dict) and isinstance(cached.get("turns"), list):
-            return _deserialize_turns(cached["turns"])
     turn_cursor: dict = {}
     turns = _fresh_conductor_turns(cfg, cursor_out=turn_cursor)
     if sources_out is not None:
         _apply_turn_cursors(sources_out, turn_cursor)
+        sources_out["prices"] = snap.get("prices")
+        sources_out["profile_layers"] = snap.get("profile_layers")
     return turns
 
 
 def _conductor_shares(cfg, root: Path, index_rows, sources: dict | None) -> dict | None:
+    if _conductor_cursors_unchanged(cfg, sources):
+        return None
     CC = _lazy_conductor()
     turns = _load_turns(cfg, root, sources)
-    if not any(isinstance(t.get("usd"), (int, float)) for t in turns):
+    if not turns or not any(isinstance(t.get("usd"), (int, float)) for t in turns):
         return None
     windows = _window_rows(index_rows)
     shares, _ = CC._split(turns, windows)
@@ -1090,7 +1321,7 @@ def _cold_fill(cfg, root: Path, *, now=None, progress=None, _hold_guard: bool = 
         _write_version(root)
         _write_index(root, index_rows)
         _write_records(root, all_records)
-        _atomic_write_json(root / "conductor_turns.json", {"turns": _serialize_turns(turns)})
+        sources["campaign_files"] = _scan_all_campaign_files(cfg, cids)
         sources["global_gaps"] = sorted(set(gaps))
         sources["complete"] = True
         _atomic_write_json(root / "sources.json", sources)
@@ -1103,12 +1334,16 @@ def _cold_fill(cfg, root: Path, *, now=None, progress=None, _hold_guard: bool = 
 
 
 def _ensure_writable_cache(cfg, root: Path, *, now=None, progress=None) -> bool:
+    if _cache_tree_corrupt(root):
+        with _cache_write_guard(root):
+            _clear_v1_except_lock(root)
+            _cold_fill(cfg, root, now=now, progress=progress, _hold_guard=True)
+        return True
     sources = _read_json(root / "sources.json")
     if _sources_ok(sources) and (root / "index.jsonl").is_file() and (root / "records.jsonl").is_file():
         return False
     with _cache_write_guard(root):
-        if root.exists():
-            shutil.rmtree(root)
+        _clear_v1_except_lock(root)
         _cold_fill(cfg, root, now=now, progress=progress, _hold_guard=True)
     return True
 
@@ -1145,6 +1380,9 @@ def _doc_hit(cfg, root: Path, cid: str, now, sources: dict) -> dict | None:
     if not row or row.get("outcome") not in _TERMINAL_OUTCOMES:
         return None
     if "start" not in row:
+        return None
+    stored_files = (sources.get("campaign_files") or {}).get(cid)
+    if isinstance(stored_files, dict) and not _campaign_files_match(cfg, cid, stored_files):
         return None
     return doc
 
@@ -1306,6 +1544,28 @@ def _prune_gone_campaigns(cfg, root: Path, index_rows: list[dict], records: list
         )
         records.extend(H._enrich_records(global_recs, _headers_for_enrich(index_rows)))
         if persist:
+            now = H._aware(dt.datetime.now().astimezone())
+            survivors = {
+                r["campaign"] for r in index_rows
+                if r.get("outcome") in _TERMINAL_OUTCOMES and r.get("campaign") in live
+            }
+            sources_out = None
+            if survivors:
+                touch: set[str] = set()
+                for cid in survivors:
+                    doc = _read_json(root / "campaigns" / f"{cid}.json")
+                    if not isinstance(doc, dict):
+                        touch.add(cid)
+                        continue
+                    pure = H.campaign_history(cfg, cid, now=now, cache=False)
+                    a = {k: v for k, v in doc.items() if k != "generated_at"}
+                    b = {k: v for k, v in pure.items() if k != "generated_at"}
+                    if a != b:
+                        touch.add(cid)
+                if touch:
+                    index_rows, records, sources_out = _recompute_terminal_documents(
+                        cfg, root, now, index_rows, records, touch,
+                    )
             records_at_start = _read_records(root)
             index_at_start = _read_index(root)
             _persist_index_records(
@@ -1315,6 +1575,7 @@ def _prune_gone_campaigns(cfg, root: Path, index_rows: list[dict], records: list
                 records=records,
                 index_at_start=index_at_start,
                 index_rows=index_rows,
+                sources=sources_out,
             )
     return index_rows, records
 
@@ -1406,6 +1667,10 @@ def _strip_global_input_gaps(gaps: list[str]) -> list[str]:
 
 
 def _global_cursor_unchanged(stored: dict, fresh: dict) -> bool:
+    if stored.get("prices") != fresh.get("prices"):
+        return False
+    if stored.get("profile_layers") != fresh.get("profile_layers"):
+        return False
     if (stored.get("files") or {}) != (fresh.get("files") or {}):
         return False
     if (stored.get("trees") or {}) != (fresh.get("trees") or {}):
@@ -1621,6 +1886,12 @@ def _sync_globals(cfg, root: Path, now) -> set[str]:
         or sess_pending
         or _transcripts_need_refresh(cfg, sources, fresh)
     )
+    prices_changed = sources.get("prices") != fresh.get("prices")
+    profile_changed = sources.get("profile_layers") != fresh.get("profile_layers")
+    if prices_changed or profile_changed:
+        for row in index_rows:
+            if row.get("outcome") in _TERMINAL_OUTCOMES:
+                affected.add(row["campaign"])
 
     need_global = needs_spec_review or mailbox_changed or flaky_changed or esc_sent_tree_changed
     if need_global:
@@ -1670,7 +1941,7 @@ def _sync_globals(cfg, root: Path, now) -> set[str]:
         new_tree_c = {r["campaign"] for r in global_recs if r.get("campaign") and r.get("kind") in kinds}
         _terminal_affected(old_tree_c | new_tree_c)
 
-    sessions_turns_dirty = False
+    sessions_turns_dirty = prices_changed or profile_changed
     if sessions_changed:
         _load_turns(cfg, root, sources, snap=fresh, sources_out=fresh)
         sessions_turns_dirty = True
@@ -1710,8 +1981,11 @@ def _sync_globals(cfg, root: Path, now) -> set[str]:
             )
             _write_campaign_file(root, cid, doc)
         if sessions_turns_dirty:
-            turns = _load_turns(cfg, root, sources, snap=fresh, sources_out=fresh)
-            _atomic_write_json(root / "conductor_turns.json", {"turns": _serialize_turns(turns)})
+            _load_turns(cfg, root, sources, snap=fresh, sources_out=fresh)
+        cfiles = fresh.setdefault("campaign_files", {})
+        for cid in affected:
+            if cid in live_ids:
+                cfiles[cid] = _campaign_file_cursors(cfg, cid)
         fresh["global_gaps"] = sorted(set(gaps))
         _persist_index_records(
             cfg,
@@ -1723,8 +1997,7 @@ def _sync_globals(cfg, root: Path, now) -> set[str]:
             sources=fresh,
         )
     elif sessions_turns_dirty:
-        turns = _load_turns(cfg, root, sources, snap=fresh, sources_out=fresh)
-        _atomic_write_json(root / "conductor_turns.json", {"turns": _serialize_turns(turns)})
+        _load_turns(cfg, root, sources, snap=fresh, sources_out=fresh)
         fresh["global_gaps"] = sorted(set(gaps))
         fresh["complete"] = True
         _atomic_write_json(root / "sources.json", fresh)
@@ -1791,6 +2064,14 @@ def campaign_history(cfg, cid, *, now=None, cache=None) -> dict:
     root = _writable_root(cfg, cache)
     if root is None:
         return _uncached_campaign(cfg, cid, now, cache, gap=_not_writable(cfg, cache))
+    try:
+        return _campaign_history_cached(cfg, cid, now, root)
+    except OSError:
+        return _uncached_campaign(cfg, cid, now, cache, gap=True)
+
+
+def _campaign_history_cached(cfg, cid, now, root: Path) -> dict:
+    H = _lazy_history()
     _ensure_writable_cache(cfg, root, now=now)
     _sync_globals(cfg, root, now)
     sources = _read_json(root / "sources.json") or {}
@@ -1823,6 +2104,8 @@ def campaign_history(cfg, cid, *, now=None, cache=None) -> dict:
     if not any(r.get("campaign") == cid for r in index_rows):
         index_rows.append(new_row)
     _write_campaign_file(root, cid, doc)
+    sources_out = _read_json(root / "sources.json") or {}
+    sources_out.setdefault("campaign_files", {})[cid] = _campaign_file_cursors(cfg, cid)
     _persist_index_records(
         cfg,
         root,
@@ -1830,6 +2113,7 @@ def campaign_history(cfg, cid, *, now=None, cache=None) -> dict:
         records=records,
         index_at_start=index_at_start,
         index_rows=index_rows,
+        sources=sources_out,
     )
     return doc
 
@@ -1840,19 +2124,46 @@ def history_index(cfg, *, now=None, progress=None, cache=None) -> list[dict]:
     root = _writable_root(cfg, cache)
     if root is None:
         return _uncached_index(cfg, now, progress)
+    try:
+        return _history_index_cached(cfg, now, progress, root)
+    except OSError:
+        return _uncached_index(cfg, now, progress)
+
+
+def _history_index_cached(cfg, now, progress, root: Path) -> list[dict]:
+    H = _lazy_history()
     cold_filled = _ensure_writable_cache(cfg, root, now=now, progress=progress)
     if not cold_filled:
         _sync_globals(cfg, root, now)
     index_rows = _read_index(root)
     records = _read_records(root)
     index_rows, records = _prune_gone_campaigns(cfg, root, index_rows, records, persist=True)
+    sources = _read_json(root / "sources.json") or {}
+    stale = _stale_terminal_ids(cfg, index_rows, sources)
+    if stale:
+        records_at_start = list(_read_records(root))
+        index_at_start = list(_read_index(root))
+        index_rows, records, sources = _recompute_terminal_documents(
+            cfg, root, now, index_rows, records, stale,
+        )
+        _persist_index_records(
+            cfg, root,
+            records_at_start=records_at_start,
+            records=records,
+            index_at_start=index_at_start,
+            index_rows=index_rows,
+            sources=sources,
+        )
+        index_rows = _read_index(root)
     live_cids, missing = _live_refresh_targets(cfg, index_rows)
     if live_cids or missing:
         records = _read_records(root)
         index_rows, _ = _refresh_live(cfg, root, now, index_rows, records)
+        index_rows = _read_index(root)
     sources = _read_json(root / "sources.json") or {}
     shares = _conductor_shares(cfg, root, index_rows, sources)
-    _apply_conductor(index_rows, shares)
+    if shares is not None:
+        _apply_conductor(index_rows, shares)
     if progress and not cold_filled:
         cids = _campaign_ids(cfg)
         for done, cid in enumerate(cids, 1):
@@ -1871,11 +2182,44 @@ def history_records(cfg, *, campaign=None, agent=None, kind=None, project=None,
             cfg, campaign=campaign, agent=agent, kind=kind, project=project,
             severity=severity, status=status, since=since, until=until, query=query, limit=limit,
         )
+    try:
+        return _history_records_cached(
+            cfg, now=now, root=root, campaign=campaign, agent=agent, kind=kind,
+            project=project, severity=severity, status=status, since=since, until=until,
+            query=query, limit=limit,
+        )
+    except OSError:
+        return _uncached_records(
+            cfg, campaign=campaign, agent=agent, kind=kind, project=project,
+            severity=severity, status=status, since=since, until=until, query=query, limit=limit,
+        )
+
+
+def _history_records_cached(cfg, *, now, root: Path, campaign=None, agent=None, kind=None,
+                            project=None, severity=None, status=None, since=None, until=None,
+                            query=None, limit=None) -> list[dict]:
+    H = _lazy_history()
     _ensure_writable_cache(cfg, root, now=now)
     _sync_globals(cfg, root, now)
     index_rows = _read_index(root)
     records = _read_records(root)
     index_rows, records = _prune_gone_campaigns(cfg, root, index_rows, records, persist=True)
+    sources = _read_json(root / "sources.json") or {}
+    stale = _stale_terminal_ids(cfg, index_rows, sources)
+    if stale:
+        records_at_start = list(_read_records(root))
+        index_at_start = list(_read_index(root))
+        index_rows, records, sources = _recompute_terminal_documents(
+            cfg, root, now, index_rows, records, stale,
+        )
+        _persist_index_records(
+            cfg, root,
+            records_at_start=records_at_start,
+            records=records,
+            index_at_start=index_at_start,
+            index_rows=index_rows,
+            sources=sources,
+        )
     live_cids, missing = _live_refresh_targets(cfg, index_rows)
     kind_set = H._set(kind)
     needle = str(query or "").casefold()
@@ -1912,6 +2256,5 @@ def rebuild_cache(cfg, *, now=None, progress=None) -> dict:
     if root is None:
         raise OSError("cache: not writable")
     with _cache_write_guard(root):
-        if root.exists():
-            shutil.rmtree(root)
+        _clear_v1_except_lock(root)
         return _cold_fill(cfg, root, now=now, progress=progress, _hold_guard=True)

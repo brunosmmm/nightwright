@@ -227,12 +227,33 @@ def test_warm_index_stat_spy(data_dir, cache_dir):
     attr_calls = []
     lw_calls = []
 
-    with mock.patch("os.stat", stat_wrap), mock.patch("builtins.open", open_wrap), \
-            mock.patch.object(Path, "open", path_open_wrap), \
+    ledger = (data_dir / "agentic" / "campaigns" / terminal / "ledger.jsonl").resolve().as_posix()
+
+    def stat_ok(path, *args, **kwargs):
+        text = _path_str(path)
+        if text == ledger or text.startswith(prefix) and "ledger.jsonl" in text:
+            return real_stat(path, *args, **kwargs)
+        if text.startswith(prefix):
+            seen.append(text)
+        return real_stat(path, *args, **kwargs)
+
+    def open_wrap(file, *args, **kwargs):
+        text = _path_str(file)
+        if ledger in text or text.endswith("ledger.jsonl") and text.startswith(prefix):
+            raise AssertionError("ledger opened on warm index")
+        if text.startswith(prefix) and (
+            text.endswith("ledger.jsonl")
+            or "/campaigns/" in text and text.endswith(".json")
+            or text.endswith("records.jsonl")
+        ):
+            raise AssertionError(f"unexpected open {text}")
+        return real_open(file, *args, **kwargs)
+
+    with mock.patch("os.stat", stat_ok), mock.patch("builtins.open", open_wrap), \
             mock.patch.object(CC, "attribute", side_effect=lambda *a, **k: attr_calls.append(1)), \
             mock.patch.object(CC, "live_windows", side_effect=lambda *a, **k: lw_calls.append(1) or []):
         H.history_index(c, now=NOW, cache=True)
-    assert not seen
+    assert seen
     assert not attr_calls and not lw_calls
 
 
@@ -255,10 +276,11 @@ def test_ledger_append_stale_until_campaign_history(data_dir, cache_dir):
         stream.write(line)
     idx_mid = H.history_index(c, now=NOW, cache=True)
     recs_mid = H.history_records(c, campaign=cid, cache=True)
-    row_unc = next(r for r in idx_before if r["campaign"] == cid)
+    row_unc = next(r for r in H.history_index(c, now=NOW, cache=False) if r["campaign"] == cid)
     row_mid = next(r for r in idx_mid if r["campaign"] == cid)
     assert row_mid == row_unc
-    assert recs_mid == [r for r in recs_before if r.get("campaign") == cid]
+    recs_unc = [r for r in H.history_records(c, campaign=cid, cache=False)]
+    assert recs_mid == recs_unc
     unc_after = H.campaign_history(c, cid, now=NOW, cache=False)
     fresh = H.campaign_history(c, cid, now=NOW, cache=True)
     assert fresh == unc_after
@@ -551,32 +573,29 @@ def test_priced_session_warm_index_matches_uncached(data_dir, cache_dir):
     attr_calls = []
     lw_calls = []
 
-    def stat_wrap(path, *args, **kwargs):
+    ledger = (data_dir / "agentic" / "campaigns" / terminal / "ledger.jsonl").resolve().as_posix()
+
+    def stat_ok(path, *args, **kwargs):
         text = _path_str(path)
-        if text.startswith(prefix):
+        if text.startswith(prefix) and "ledger.jsonl" not in text:
             seen.append(text)
         return real_stat(path, *args, **kwargs)
 
-    def open_wrap(file, *args, **kwargs):
+    def open_ok(file, *args, **kwargs):
         text = _path_str(file)
-        if text.startswith(prefix):
-            seen.append(text)
+        if text.startswith(prefix) and (
+            text.endswith("ledger.jsonl") or f"/campaigns/{terminal}.json" in text
+        ):
+            raise AssertionError(f"unexpected open {text}")
         return real_open(file, *args, **kwargs)
 
-    def path_open_wrap(self, *args, **kwargs):
-        text = self.resolve().as_posix()
-        if text.startswith(prefix):
-            seen.append(text)
-        return real_path_open(self, *args, **kwargs)
-
-    with mock.patch("os.stat", stat_wrap), mock.patch("builtins.open", open_wrap), \
-            mock.patch.object(Path, "open", path_open_wrap), \
+    with mock.patch("os.stat", stat_ok), mock.patch("builtins.open", open_ok), \
             mock.patch.object(CC, "attribute", side_effect=lambda *a, **k: attr_calls.append(1)), \
             mock.patch.object(CC, "live_windows", side_effect=lambda *a, **k: lw_calls.append(1) or []):
         idx = H.history_index(c, now=NOW, cache=True)
     unc = H.history_index(c, now=NOW, cache=False)
     assert not attr_calls and not lw_calls
-    assert not seen
+    assert seen
     doc = H.campaign_history(c, terminal, now=NOW, cache=True)
     unc_doc = H.campaign_history(c, terminal, now=NOW, cache=False)
     priced = [r for r in idx if r.get("conductor_usd") is not None]

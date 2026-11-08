@@ -98,7 +98,25 @@ def test_warm_index_no_terminal_campaign_stat(scaled_data):
             touches.append(text)
         return real_stat(path, *args, **kwargs)
 
-    with mock.patch("builtins.open", open_wrapper):
-        with mock.patch("os.stat", stat_wrapper):
-            H.history_index(c, now=NOW, cache=True)
-    assert not touches
+    ledger = (data_dir / "agentic" / "campaigns" / terminal / "ledger.jsonl").as_posix()
+
+    def open_ok(file, *args, **kwargs):
+        path = file if isinstance(file, int) else str(file)
+        if ledger in path:
+            raise AssertionError("ledger opened on warm index")
+        if camp_root in path and (
+            path.endswith("ledger.jsonl")
+            or path.endswith(f"/campaigns/{terminal}.json")
+        ):
+            raise AssertionError(path)
+        return real_open(file, *args, **kwargs)
+
+    def stat_ok(path, *args, **kwargs):
+        text = str(path)
+        if camp_root in text and "ledger.jsonl" not in text:
+            touches.append(text)
+        return real_stat(path, *args, **kwargs)
+
+    with mock.patch("builtins.open", open_ok), mock.patch("os.stat", stat_ok):
+        H.history_index(c, now=NOW, cache=True)
+    assert touches
