@@ -1,9 +1,10 @@
 ---
 id: SPEC-0472
 title: "History cache for the campaign history layer"
-status: proposed
+status: accepted
 owner: user
 created: 2026-11-08
+updated: 2026-11-08
 source_idea: IDEA-1015
 kind: feature
 parent: SPEC-0405

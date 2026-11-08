@@ -277,7 +277,7 @@ progress. This is the single place to see *what has been decided* and *what is i
   - [x] [SPEC-0431](./specs/0431-campaign-stamps-on-conductor-decisions-and.md) Campaign stamps on conductor decisions and mailbox messages — done
   - [x] [SPEC-0433](./specs/0433-human-readable-campaign-story-one-shared-timeline.md) Human-readable campaign story: one shared timeline formatter for the TUI, the dashboard drilldown and nw campaign show — done
   - [x] [SPEC-0459](./specs/0459-real-app-tui-test-harness-on-the-real-data.md) Real-fixture IdeaDesk Pilot harness and queue-window preparation — done
-  - [ ] [SPEC-0472](./specs/0472-history-cache-for-the-campaign-history-layer.md) History cache for the campaign history layer — proposed
+  - [ ] [SPEC-0472](./specs/0472-history-cache-for-the-campaign-history-layer.md) History cache for the campaign history layer — accepted
   - [ ] [SPEC-0476](./specs/0476-campaign-detail-runs-pane.md) Campaign detail Runs pane: run table, verdict, and stream tail — accepted
   - [ ] [SPEC-0477](./specs/0477-campaign-detail-findings-and-mail.md) Campaign detail Findings & decisions pane and Mail pane — accepted
   - [x] [SPEC-0498](./specs/0498-campaign-detail-overview-cards.md) Campaign detail Overview pane: dashboard cards (outcome + why banner, time per phase, runs, gates, findings) — done
@@ -338,7 +338,7 @@ progress. This is the single place to see *what has been decided* and *what is i
 | [SPEC-0466](./specs/0466-gpt-only-pi-sdk-model-set-for-all-nightwright.md) | GPT-only Pi SDK model set for all nightwright personas | feature | in-progress | — | 2026-11-08 |
 | [SPEC-0468](./specs/0468-stop-queue-thrash.md) | Stop the queue from thrashing a finished campaign | feature | accepted | — | 2026-11-08 |
 | [SPEC-0470](./specs/0470-close-follows-a-renamed-spec.md) | Close follows a spec file the branch renamed | feature | accepted | — | 2026-11-08 |
-| [SPEC-0472](./specs/0472-history-cache-for-the-campaign-history-layer.md) | History cache for the campaign history layer | feature | proposed | — | 2026-11-08 |
+| [SPEC-0472](./specs/0472-history-cache-for-the-campaign-history-layer.md) | History cache for the campaign history layer | feature | accepted | — | 2026-11-08 |
 | [SPEC-0476](./specs/0476-campaign-detail-runs-pane.md) | Campaign detail Runs pane: run table, verdict, and stream tail | feature | accepted | — | 2026-11-08 |
 | [SPEC-0477](./specs/0477-campaign-detail-findings-and-mail.md) | Campaign detail Findings & decisions pane and Mail pane | feature | accepted | — | 2026-11-08 |
 | [SPEC-0489](./specs/0489-test-tiers-and-cadenced-heavy-runs.md) | Test tiers: campaign gates run the fast tier only; heavy tiers run on a per-project cadence | epic | accepted | M9: agentic workflow | 2026-11-09 |
