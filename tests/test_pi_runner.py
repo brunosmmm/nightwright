@@ -517,6 +517,7 @@ def test_extract_result_pi_stream(tmp_path):
                                 + json.dumps(result) + "\n", encoding="utf-8")
     assert RP.extract_result(d)
     raw = json.loads((d / "result.json").read_text())
+    assert raw["type"] == "result"
     p = R.parse_result(json.dumps(raw), IMPLEMENTER_SCHEMA, exit_code=0)
     assert p["verdict"]["status"] == "done" and p["cost_usd"] == 0.01
     assert raw.get("session_id") == "s1"

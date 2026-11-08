@@ -4,7 +4,7 @@ title: Run Pi personas through the Node SDK
 status: done
 owner: user
 created: 2026-11-07
-updated: 2026-11-07
+updated: 2026-11-08
 kind: feature
 tags: [agentic, runner, pi]
 depends_on: [SPEC-0442, SPEC-0436]
@@ -519,6 +519,13 @@ fails the check with that fact.
 - Full `uv run pytest` left to queue gating
 - `python3 tools/spec_lint.py --write-ledger` && `python3 tools/spec_lint.py` — pass
 
+### Test record (IDEA-1023 campaign loop 2 implementer, 2026-11-08)
+
+- `node --test tests/js/pi_exec.test.js` — pass (tilde GAC/identity paths, sessionManager wired, success type:result, catalog rate edges, getAuth/auth.json GAC PEM)
+- `uv run pytest tests/test_pi_runner.py tests/test_pi_exec_js.py -q` — pass
+- Full `uv run pytest` left to queue gating
+- `python3 tools/spec_lint.py --write-ledger` && `python3 tools/spec_lint.py` — pass
+
 ### Test record (campaign loop 0 implementer, 2026-11-07)
 
 - `node --test tests/js/pi_exec.test.js` — pass (GAC escaped PEM on gemini, pi-bash only-new cleanup, selective env secrets)
@@ -560,6 +567,10 @@ fails the check with that fact.
 ### As shipped (IDEA-1023 campaign loop 1 implementer, 2026-11-07)
 
 - Env credential keys exclude path-valued names (`GOOGLE_APPLICATION_CREDENTIALS`, `*_FILE`); `parseGoogleCredentialFile` loads GAC paths from env, getAuth env, auth.json, or default ADC, including `refresh_token`.
+
+### As shipped (IDEA-1023 campaign loop 2 implementer, 2026-11-08)
+
+- `expandHomePath` uses `homedir() + slice(1)` for leading `~` (Pi `fileExists` semantics) in `readTrimmedFile` and `parseGoogleCredentialFile`; `collectSecretsAsync` reads `ANTHROPIC_IDENTITY_TOKEN_FILE` for anthropic like Bedrock web-identity.
 
 ### As shipped (campaign loop 0 implementer, 2026-11-07)
 

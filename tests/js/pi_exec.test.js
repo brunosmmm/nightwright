@@ -111,7 +111,8 @@ function stubPi(over = {}) {
     SessionManager: {
       inMemory: (cwd) => {
         over.sessionCwd = cwd;
-        return { getHeader: () => ({ id: "sess-1" }) };
+        over.sessionManagerObj = { getHeader: () => ({ id: "sess-1" }), tag: "in-memory-session" };
+        return over.sessionManagerObj;
       },
     },
     DefaultResourceLoader: class {
@@ -197,7 +198,10 @@ test("execute: in-memory session, settings, loader flags, appendSystemPrompt", a
   const symlinkFiltered = over.loaderOpts.agentsFilesOverride({ agentsFiles: [] });
   assert.equal(symlinkFiltered.agentsFiles.length, 0);
   assert.ok(over.disposed);
+  assert.equal(over.createOpts.sessionManager, over.sessionManagerObj);
   const resultLine = chunksToLines(out.chunks).at(-1);
+  assert.equal(resultLine.type, "result");
+  assert.equal(resultLine.subtype, "success");
   assert.equal(resultLine.session_id, "sess-1");
   const prompt = over.promptText;
   assert.equal((prompt.match(/INVARIANT/g) || []).length, 1);
@@ -286,6 +290,8 @@ test("execute: toolResult message_end emits user tool_result line", async () => 
     },
   });
   const last = lines.at(-1);
+  assert.equal(last.type, "result");
+  assert.equal(last.subtype, "success");
   assert.equal(last.total_cost_usd, 0.01);
 });
 
@@ -586,6 +592,225 @@ test("execute: GAC client_email not scrubbed on anthropic", async () => {
   }
 });
 
+test("execute: tilde GAC path loads PEM for scrubbing", async () => {
+  const execute = await loadExecute();
+  const runDir = layout({ pi_provider: "gemini", pi_id: "gemini-2.5" });
+  const fakeHome = fs.mkdtempSync(path.join(os.tmpdir(), "pi-home-gac-"));
+  const keysDir = path.join(fakeHome, "keys");
+  fs.mkdirSync(keysDir, { recursive: true });
+  const pemSecret = "tilde-gac-pem-secret-abcdefghij";
+  const privateKey = `-----BEGIN PRIVATE KEY-----\n${pemSecret}\n-----END PRIVATE KEY-----\n`;
+  const saPath = path.join(keysDir, "sa.json");
+  fs.writeFileSync(
+    saPath,
+    JSON.stringify({
+      client_email: "tilde@test.invalid",
+      private_key: privateKey,
+    }),
+  );
+  const prevHome = process.env.HOME;
+  const prevGac = process.env.GOOGLE_APPLICATION_CREDENTIALS;
+  process.env.HOME = fakeHome;
+  process.env.GOOGLE_APPLICATION_CREDENTIALS = "~/keys/sa.json";
+  const out = { chunks: [], write(s) { this.chunks.push(s); } };
+  const { pi } = stubPi({
+    messages: [
+      {
+        role: "assistant",
+        stopReason: "stop",
+        content: [{ type: "text", text: `leak ${privateKey}` }],
+        usage: { cost: { total: 0.01 } },
+      },
+    ],
+  });
+  try {
+    await execute(runDir, {
+      out,
+      err: { write() {} },
+      importPi: async () => pi,
+      modelRuntime: {
+        getModel: () => ({ cost: { input: 1 } }),
+        checkAuth: async () => ({}),
+        getAuth: async () => ({ env: {} }),
+      },
+    });
+    const blob = out.chunks.join("");
+    assert.ok(!blob.includes(pemSecret));
+    assert.ok(!blob.includes(privateKey.trim()));
+    assert.ok(blob.includes("[redacted]"));
+  } finally {
+    if (prevHome === undefined) delete process.env.HOME;
+    else process.env.HOME = prevHome;
+    if (prevGac === undefined) delete process.env.GOOGLE_APPLICATION_CREDENTIALS;
+    else process.env.GOOGLE_APPLICATION_CREDENTIALS = prevGac;
+  }
+});
+
+test("execute: getAuth env GAC path loads PEM for scrubbing", async () => {
+  const execute = await loadExecute();
+  const runDir = layout({ pi_provider: "google", pi_id: "gemini-2.5" });
+  const saPath = path.join(os.tmpdir(), `pi-getauth-gac-${process.pid}.json`);
+  const pemSecret = "getauth-gac-pem-secret-abcdefghij";
+  const privateKey = `-----BEGIN PRIVATE KEY-----\n${pemSecret}\n-----END PRIVATE KEY-----\n`;
+  fs.writeFileSync(
+    saPath,
+    JSON.stringify({
+      client_email: "getauth@test.invalid",
+      private_key: privateKey,
+    }),
+  );
+  const prevGac = process.env.GOOGLE_APPLICATION_CREDENTIALS;
+  delete process.env.GOOGLE_APPLICATION_CREDENTIALS;
+  const out = { chunks: [], write(s) { this.chunks.push(s); } };
+  const { pi } = stubPi({
+    messages: [
+      {
+        role: "assistant",
+        stopReason: "stop",
+        content: [{ type: "text", text: `leak ${privateKey}` }],
+        usage: { cost: { total: 0.01 } },
+      },
+    ],
+  });
+  try {
+    await execute(runDir, {
+      out,
+      err: { write() {} },
+      importPi: async () => pi,
+      modelRuntime: {
+        getModel: () => ({ cost: { input: 1 } }),
+        checkAuth: async () => ({}),
+        getAuth: async () => ({ env: { GOOGLE_APPLICATION_CREDENTIALS: saPath } }),
+      },
+    });
+    const blob = out.chunks.join("");
+    assert.ok(!blob.includes(pemSecret));
+    assert.ok(!blob.includes(privateKey.trim()));
+    assert.ok(blob.includes("[redacted]"));
+  } finally {
+    if (prevGac === undefined) delete process.env.GOOGLE_APPLICATION_CREDENTIALS;
+    else process.env.GOOGLE_APPLICATION_CREDENTIALS = prevGac;
+    try {
+      fs.rmSync(saPath, { force: true });
+    } catch {
+      /* ignore */
+    }
+  }
+});
+
+test("execute: auth.json GAC path loads PEM for scrubbing", async () => {
+  const execute = await loadExecute();
+  const runDir = layout({ pi_provider: "gemini", pi_id: "gemini-2.5" });
+  const saPath = path.join(os.tmpdir(), `pi-authjson-gac-${process.pid}.json`);
+  const pemSecret = "authjson-gac-pem-secret-abcdefghij";
+  const privateKey = `-----BEGIN PRIVATE KEY-----\n${pemSecret}\n-----END PRIVATE KEY-----\n`;
+  const refresh = "authjson-refresh-token-value";
+  fs.writeFileSync(
+    saPath,
+    JSON.stringify({
+      client_email: "authjson@test.invalid",
+      private_key: privateKey,
+      refresh_token: refresh,
+    }),
+  );
+  const authDir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-auth-gac-"));
+  fs.writeFileSync(
+    path.join(authDir, "auth.json"),
+    JSON.stringify({
+      gemini: {
+        type: "api_key",
+        env: { GOOGLE_APPLICATION_CREDENTIALS: saPath },
+      },
+    }),
+  );
+  const prevAgentDir = process.env.PI_CODING_AGENT_DIR;
+  const prevGac = process.env.GOOGLE_APPLICATION_CREDENTIALS;
+  process.env.PI_CODING_AGENT_DIR = authDir;
+  delete process.env.GOOGLE_APPLICATION_CREDENTIALS;
+  const out = { chunks: [], write(s) { this.chunks.push(s); } };
+  const { pi } = stubPi({
+    messages: [
+      {
+        role: "assistant",
+        stopReason: "stop",
+        content: [{ type: "text", text: `leak ${privateKey} tok ${refresh}` }],
+        usage: { cost: { total: 0.01 } },
+      },
+    ],
+  });
+  try {
+    await execute(runDir, {
+      out,
+      err: { write() {} },
+      importPi: async () => pi,
+      modelRuntime: {
+        getModel: () => ({ cost: { input: 1 } }),
+        checkAuth: async () => ({}),
+        getAuth: async () => {
+          throw new Error("force auth.json");
+        },
+      },
+    });
+    const blob = out.chunks.join("");
+    assert.ok(!blob.includes(pemSecret));
+    assert.ok(!blob.includes(privateKey.trim()));
+    assert.ok(!blob.includes(refresh));
+    assert.ok(blob.includes("[redacted]"));
+  } finally {
+    if (prevAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
+    else process.env.PI_CODING_AGENT_DIR = prevAgentDir;
+    if (prevGac === undefined) delete process.env.GOOGLE_APPLICATION_CREDENTIALS;
+    else process.env.GOOGLE_APPLICATION_CREDENTIALS = prevGac;
+    try {
+      fs.rmSync(saPath, { force: true });
+    } catch {
+      /* ignore */
+    }
+  }
+});
+
+test("execute: anthropic identity token file scrubbed", async () => {
+  const execute = await loadExecute();
+  const runDir = layout();
+  const fakeHome = fs.mkdtempSync(path.join(os.tmpdir(), "pi-home-id-"));
+  const tokenDir = path.join(fakeHome, "fed");
+  fs.mkdirSync(tokenDir, { recursive: true });
+  const tokenSecret = "anthropic-workload-identity-token-xyzzy";
+  fs.writeFileSync(path.join(tokenDir, "token"), tokenSecret);
+  const prevHome = process.env.HOME;
+  const prevId = process.env.ANTHROPIC_IDENTITY_TOKEN_FILE;
+  process.env.HOME = fakeHome;
+  process.env.ANTHROPIC_IDENTITY_TOKEN_FILE = "~/fed/token";
+  const out = { chunks: [], write(s) { this.chunks.push(s); } };
+  const { pi } = stubPi({
+    getAuth: async () => ({ auth: {}, env: { ANTHROPIC_IDENTITY_TOKEN_FILE: "~/fed/token" } }),
+    messages: [
+      {
+        role: "assistant",
+        stopReason: "stop",
+        content: [{ type: "text", text: `leak ${tokenSecret}` }],
+        usage: { cost: { total: 0.01 } },
+      },
+    ],
+  });
+  try {
+    await execute(runDir, {
+      out,
+      err: { write() {} },
+      importPi: async () => pi,
+      modelRuntime: await pi.ModelRuntime.create(),
+    });
+    const blob = out.chunks.join("");
+    assert.ok(!blob.includes(tokenSecret));
+    assert.ok(blob.includes("[redacted]"));
+  } finally {
+    if (prevHome === undefined) delete process.env.HOME;
+    else process.env.HOME = prevHome;
+    if (prevId === undefined) delete process.env.ANTHROPIC_IDENTITY_TOKEN_FILE;
+    else process.env.ANTHROPIC_IDENTITY_TOKEN_FILE = prevId;
+  }
+});
+
 test("execute: assistant tool_use in stream", async () => {
   const execute = await loadExecute();
   const runDir = layout();
@@ -645,6 +870,8 @@ test("execute: stopReason length is success exit 0", async () => {
   });
   assert.equal(code, 0);
   const last = JSON.parse(out.chunks.at(-1));
+  assert.equal(last.type, "result");
+  assert.equal(last.subtype, "success");
   assert.equal(last.is_error, false);
   assert.equal(last.result, verdict);
 });
@@ -1059,6 +1286,57 @@ test("tier catalog rate yields numeric total_cost_usd", async () => {
   });
   const last = JSON.parse(out.chunks.at(-1));
   assert.equal(last.total_cost_usd, 0.05);
+});
+
+async function assertPricedCatalogCost(modelCost, expectedUsd) {
+  const execute = await loadExecute();
+  const runDir = layout();
+  const out = { chunks: [], write(s) { this.chunks.push(s); } };
+  const { pi } = stubPi({
+    messages: [
+      {
+        role: "assistant",
+        stopReason: "stop",
+        content: [{ type: "text", text: "x" }],
+        usage: { cost: { total: expectedUsd } },
+      },
+    ],
+    modelCost,
+  });
+  await execute(runDir, {
+    out,
+    err: { write() {} },
+    importPi: async () => pi,
+    modelRuntime: await pi.ModelRuntime.create(),
+  });
+  const last = JSON.parse(out.chunks.at(-1));
+  assert.equal(last.total_cost_usd, expectedUsd);
+}
+
+test("execute: output-only catalog rate yields total_cost_usd", async () => {
+  await assertPricedCatalogCost({ input: 0, output: 2, cacheRead: 0, cacheWrite: 0 }, 0.07);
+});
+
+test("execute: cacheRead-only catalog rate yields total_cost_usd", async () => {
+  await assertPricedCatalogCost({ input: 0, output: 0, cacheRead: 1.5, cacheWrite: 0 }, 0.08);
+});
+
+test("execute: cacheWrite-only catalog rate yields total_cost_usd", async () => {
+  await assertPricedCatalogCost({ input: 0, output: 0, cacheRead: 0, cacheWrite: 3 }, 0.09);
+});
+
+test("execute: tier output rate yields total_cost_usd", async () => {
+  await assertPricedCatalogCost(
+    { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, tiers: [{ inputTokensAbove: 0, output: 2 }] },
+    0.06,
+  );
+});
+
+test("execute: tier cacheRead rate yields total_cost_usd", async () => {
+  await assertPricedCatalogCost(
+    { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, tiers: [{ inputTokensAbove: 0, cacheRead: 2 }] },
+    0.04,
+  );
 });
 
 test("execute: parallel toolResult same ms both emit", async () => {

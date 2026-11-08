@@ -327,11 +327,17 @@ function isLikelyPathValue(val) {
   return false;
 }
 
+function expandHomePath(filePath) {
+  if (typeof filePath !== "string" || !filePath.startsWith("~")) return filePath;
+  return os.homedir() + filePath.slice(1);
+}
+
 function readTrimmedFile(filePath, add, maxBytes = MAX_CREDENTIAL_FILE_BYTES) {
+  const expanded = expandHomePath(filePath);
   try {
-    const st = fs.statSync(filePath);
+    const st = fs.statSync(expanded);
     if (!st.isFile() || st.size > maxBytes) return;
-    const text = fs.readFileSync(filePath, "utf8").trim();
+    const text = fs.readFileSync(expanded, "utf8").trim();
     if (text) add(text);
   } catch {
     /* optional */
@@ -348,9 +354,7 @@ function addPrivateKeySecrets(privateKey, add) {
 
 function parseGoogleCredentialFile(filePath, add) {
   if (!filePath || typeof filePath !== "string") return;
-  const expanded = filePath.startsWith("~")
-    ? path.join(os.homedir(), filePath.slice(1))
-    : filePath;
+  const expanded = expandHomePath(filePath);
   try {
     const st = fs.statSync(expanded);
     if (!st.isFile() || st.size > MAX_CREDENTIAL_FILE_BYTES) return;
@@ -428,6 +432,12 @@ function addProviderCredentialEnv(provider, authCheck, add, authEnv) {
     (provider === "amazon-bedrock" || provider === "bedrock")
   ) {
     readTrimmedFile(wit, add);
+  }
+  const identityFile =
+    process.env.ANTHROPIC_IDENTITY_TOKEN_FILE ||
+    authEnv?.ANTHROPIC_IDENTITY_TOKEN_FILE;
+  if (identityFile && provider === "anthropic") {
+    readTrimmedFile(identityFile, add);
   }
   if (GAC_PROVIDERS.has(provider)) {
     addGoogleApplicationCredentialSecrets(provider, add, authEnv);
