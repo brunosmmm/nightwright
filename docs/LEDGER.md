@@ -303,7 +303,7 @@ progress. This is the single place to see *what has been decided* and *what is i
 | [SPEC-0466](./specs/0466-gpt-only-pi-sdk-model-set-for-all-nightwright.md) | GPT-only Pi SDK model set for all nightwright personas | feature | in-progress | — | 2026-11-08 |
 | [SPEC-0468](./specs/0468-stop-queue-thrash.md) | Stop the queue from thrashing a finished campaign | feature | accepted | — | 2026-11-08 |
 | [SPEC-0470](./specs/0470-close-follows-a-renamed-spec.md) | Close follows a spec file the branch renamed | feature | accepted | — | 2026-11-08 |
-| [SPEC-0471](./specs/0471-run-pi-personas-through-the-node-sdk.md) | Pi test requires the task text in the user message | feature | proposed | — | 2026-11-08 |
+| [SPEC-0471](./specs/0471-run-pi-personas-through-the-node-sdk.md) | Pi test requires the task text in the user message | feature | accepted | — | 2026-11-08 |
 
 ## Done
 

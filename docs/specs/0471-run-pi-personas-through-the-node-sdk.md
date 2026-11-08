@@ -1,9 +1,10 @@
 ---
 id: SPEC-0471
 title: Pi test requires the task text in the user message
-status: proposed
+status: accepted
 owner: user
 created: 2026-11-08
+updated: 2026-11-08
 kind: feature
 tags: [agentic, runner, pi]
 source_idea: IDEA-1023
