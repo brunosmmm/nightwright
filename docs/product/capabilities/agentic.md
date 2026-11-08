@@ -283,7 +283,8 @@ the worktree, do not commit, finish with the JSON verdict). Default is `claude -
 wrapper. Cursor has no schema flag, so the same JSON object is asked for in a prompt footer.
 Both get a budget and a wall-clock timeout. When the account returns SDK usage cost, the
 result carries that dollar amount; otherwise the queue estimates from the cap. Read-only
-personas run with no built-in tools. Cost, usage and session id come back in the result and
+personas keep the file-inspection tools (read, grep, glob, ls) and do not get Shell or the
+edit tools (SPEC-0456). Cost, usage and session id come back in the result and
 go to the ledger. Identical inputs give a byte-identical prompt; `nw campaign prompt
 CAMPAIGN PERSONA` prints it without running anything.
 
@@ -650,6 +651,7 @@ any state → PARKED (humans only) → resume | abandon
 - **IMPLEMENTING** spawns a fresh implementer; the runner commits whatever changed.
 - **GATING** runs every gate; all required green ⇒ REVIEWING, else TRIAGING.
 - **TRIAGING** spawns the read-only gate triager only after a failure.
+- **DIVERGENCE_TRIAGE** runs when the fix rounds stop converging. One read-only persona picks one extra implement round (once per campaign), a spec rework, or a human escalation.
 - **REVIEWING** spawns the read-only reviewers in parallel (see Reviews); all pass ⇒ CLOSING.
 - **CLOSING** rebases, re-gates, audits the spec's Definition of Done, then fast-forwards
   the base or opens a PR.

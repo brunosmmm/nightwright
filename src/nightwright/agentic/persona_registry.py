@@ -19,7 +19,7 @@ SCHEMA = "nw.persona.v1"
 NAME_RE = re.compile(r"^[a-z][a-z0-9_]*$")
 ROLES = ("implementer", "reviewer", "triager", "system")
 CUSTOM_ROLES = ("implementer", "reviewer", "triager")
-ADOPT_STEPS = ("implement", "triage", "review")
+ADOPT_STEPS = ("implement", "triage", "review", "divergence")
 
 _DEFS_DIR = Path(__file__).resolve().parent / "persona_defs"
 _TEMPLATES_DIR = Path(__file__).resolve().parent / "personas"

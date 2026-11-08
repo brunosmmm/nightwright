@@ -117,16 +117,17 @@ def test_title_sources(env):
     assert Q._spec_title(st) == "Trivial feature"        # merged: the worktree is gone
     st["spec"]["rel_path"] = "docs/specs/nope.md"
     assert Q._spec_title(st) is None
-    assert str(CQ._idea_spec_cell({"spec_id": "SPEC-0001", "spec_title": None})) == "SPEC-0001"
+    assert str(CQ._human_title({"spec_id": "SPEC-0001", "spec_title": None})) == "SPEC-0001"
 
 
-def test_spec_cell_cut(env):
+def test_title_sits_inside_the_card(env):
+    """SPEC-0453: a long heading is a body row, not a 60-character border fragment."""
     repo, cfg = env
     cid = _idea(cfg, repo, "IDEA-078-long", "SPEC_WRITING", spec=False, heading=HEADING)
-    cell = str(CQ._idea_spec_cell(_item(cfg, cid)))
-    assert len(cell) == 60 and cell.endswith("…") and cell.startswith("writing… HHH")
-    long_spec = str(CQ._idea_spec_cell({"spec_id": "SPEC-0001", "spec_title": HEADING}))
-    assert len(long_spec) == 60 and long_spec.endswith("…")
+    out = _text(CQ._active_panel(_item(cfg, cid)), 160)
+    assert HEADING in out and "writing…" not in out
+    titled = str(CQ._human_title({"spec_id": "SPEC-0001", "spec_title": HEADING}))
+    assert titled.startswith("SPEC-0001  ") and HEADING in titled and "…" not in titled
 
 
 @pytest.mark.parametrize("width", [80, 160])
@@ -156,8 +157,9 @@ def test_list_state_cells(env):
 def test_active_panel_no_spec_writing(env):
     repo, cfg = env
     cid = _idea(cfg, repo, "IDEA-078-nospec", "SPEC_WRITING", spec=False)
-    out = _text(CQ._active_panel(_item(cfg, cid)), 160)
-    assert "writing…" in out and "spec review" in out
+    it = _item(cfg, cid)
+    out = _text(CQ._active_panel(it), 160)
+    assert it["spec_title"] in out and "writing…" not in out and "spec review" in out
     assert "spec ●" in out                                          # SPEC-0326 track
 
 
@@ -165,7 +167,8 @@ def test_spec_campaign_phases_unchanged(env):
     repo, cfg = env
     _campaign(cfg, repo, "SPEC-0001-impl", "IMPLEMENTING")
     it = _item(cfg, "SPEC-0001-impl")
-    assert it["phases"] == ["OPENING", "IMPLEMENTING", "GATING", "TRIAGING", "REVIEWING", "CLOSING"]
+    assert it["phases"] == ["OPENING", "IMPLEMENTING", "GATING", "TRIAGING", "REVIEWING",
+                            "DIVERGENCE_TRIAGE", "CLOSING"]
     assert it["phase_index"] == 1
     assert "spec_review" not in str(CQ._stepper("IMPLEMENTING", 1, it["phases"]))
     out = _text(CQ._active_panel(it), 160)

@@ -165,6 +165,37 @@ def test_render_leaves_unknown_braces_alone():
 
 # ---- build_request -----------------------------------------------------------------------
 
+def test_build_request_model_set_binds_the_runner(tmp_path):
+    cfg, st = _cfg(tmp_path), _state(tmp_path)
+    cfg["agentic"]["runner"] = "cursor"
+    cfg["agentic"]["model_set"] = "grok"
+    cfg["agentic"]["profiles"] = {"balanced": {"personas": {
+        "implementer": {"cursor_model": "gpt-5.6-sol-high"}}}}
+    profile = resolve_profile(cfg)
+    req = PS.build_request(cfg, profile, _project_cfg(), st, "implementer",
+                           run_dir=tmp_path / "runs" / "001-implementer")
+    assert req.runner == "cursor" and req.model == "composer-2.5"
+    assert req.model_alias == "sonnet"
+    review = PS.build_request(cfg, profile, _project_cfg(), st, "conformance_reviewer",
+                              run_dir=tmp_path / "runs" / "002-conformance_reviewer")
+    assert review.runner == "cursor" and review.model == "grok-4.7-high"
+    bare = _cfg(tmp_path)
+    bare["agentic"]["runner"] = "cursor"
+    kept = PS.build_request(bare, resolve_profile(bare), _project_cfg(), st, "implementer",
+                            run_dir=tmp_path / "runs" / "003-implementer")
+    assert kept.runner is None and kept.model == "grok-4.7-high"
+
+
+def test_build_request_gpt_pi_set_overrides_host_runner(tmp_path):
+    cfg, st = _cfg(tmp_path), _state(tmp_path)
+    cfg["agentic"].update({"runner": "cursor", "model_set": "gpt"})
+    req = PS.build_request(cfg, resolve_profile(cfg), _project_cfg(), st, "implementer",
+                           run_dir=tmp_path / "runs" / "001-implementer")
+    assert req.runner == "pi"
+    assert req.model == "openai/gpt-6.1-terra"
+    assert (req.pi_provider, req.pi_id, req.pi_thinking) == ("openai", "gpt-6.1-terra", "high")
+
+
 def test_build_request_implementer(tmp_path):
     cfg, st = _cfg(tmp_path), _state(tmp_path)
     req = PS.build_request(cfg, resolve_profile(cfg), _project_cfg(), st, "implementer",

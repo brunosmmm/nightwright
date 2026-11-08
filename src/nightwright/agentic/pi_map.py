@@ -174,7 +174,19 @@ def probe_providers(cfg, *, campaigns=None) -> list[str]:
     from . import runner as R
     from . import store
 
-    providers: set[str] = set(distinct_providers(cfg=cfg))
+    from .model_sets import resolve_model_set, uses_pi
+    selected = resolve_model_set(cfg)
+    providers: set[str] = set()
+    if uses_pi(selected):
+        if selected.get("runner") == "pi":
+            providers.add(selected["model"].split("/", 1)[0])
+        for row in (selected.get("personas") or {}).values():
+            if isinstance(row, dict) and row.get("runner", selected.get("runner")) == "pi":
+                model = row.get("model") or selected.get("model")
+                if model:
+                    providers.add(model.split("/", 1)[0])
+    if not uses_pi(selected) or R.resolve_runner(cfg) == "pi":
+        providers.update(distinct_providers(cfg=cfg))
     if campaigns is None:
         try:
             campaigns = [st for st in store.list_campaigns(cfg)

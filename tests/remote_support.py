@@ -157,32 +157,34 @@ class Remote:
     """A worker reached through a fake `ssh`: the destination is dropped and the command runs
     as the SSH forced command would, against its own data dir."""
 
-    def __init__(self, w: World):
+    def __init__(self, w: World, suffix: str = ""):
+        # SPEC-0346: `suffix` names a second worker (its own data/config dirs and scripts)
         self.w = w
         tmp = w.tmp
-        self.wdata = tmp / "wdata"
+        self.wdata = tmp / f"wdata{suffix}"
+        self.wcfgdir = tmp / f"wcfgdir{suffix}"
         self.wcfg = {"data_dir": str(self.wdata)}
-        no_disk_guard(tmp / "wcfgdir")
-        self.ssh = _script(tmp / "fake-ssh", (
+        no_disk_guard(self.wcfgdir)
+        self.ssh = _script(tmp / f"fake-ssh{suffix}", (
             f'shift\nexport SSH_ORIGINAL_COMMAND="$*" NW_DATA_DIR={self.wdata} '
-            f'NW_CONFIG_DIR={tmp / "wcfgdir"} NW_WORKER_FINISH_GC=0\n'
+            f'NW_CONFIG_DIR={self.wcfgdir} NW_WORKER_FINISH_GC=0\n'
             f'exec {sys.executable} -m nightwright worker ssh-command'))
-        (tmp / "drop.py").write_text(_DROP_AFTER_GATE.replace("DROP_DELAY_S", "0"))
-        (tmp / "drop-slow.py").write_text(_DROP_AFTER_GATE.replace("DROP_DELAY_S", str(SLOW_DROP_S)))
+        (tmp / f"drop{suffix}.py").write_text(_DROP_AFTER_GATE.replace("DROP_DELAY_S", "0"))
+        (tmp / f"drop-slow{suffix}.py").write_text(_DROP_AFTER_GATE.replace("DROP_DELAY_S", str(SLOW_DROP_S)))
         self.variants = {
-            "unreachable": _script(tmp / "ssh-255", "echo 'ssh: connect: refused' >&2\nexit 255"),
-            "job255": _script(tmp / "ssh-job255", f'case "$*" in *gate-job*) exit 255;; esac\n'
+            "unreachable": _script(tmp / f"ssh-255{suffix}", "echo 'ssh: connect: refused' >&2\nexit 255"),
+            "job255": _script(tmp / f"ssh-job255{suffix}", f'case "$*" in *gate-job*) exit 255;; esac\n'
                                                   f'exec {self.ssh} "$@"'),
-            "have": _script(tmp / "ssh-have", f'case "$*" in *" have "*) exit 255;; esac\n'
+            "have": _script(tmp / f"ssh-have{suffix}", f'case "$*" in *" have "*) exit 255;; esac\n'
                                              f'exec {self.ssh} "$@"'),
-            "garbage": _script(tmp / "ssh-garbage", f'case "$*" in *gate-job*) echo garbage; '
+            "garbage": _script(tmp / f"ssh-garbage{suffix}", f'case "$*" in *gate-job*) echo garbage; '
                                                     f'exec cat >/dev/null;; esac\n'
                                                     f'exec {self.ssh} "$@"'),
-            "drop": _script(tmp / "ssh-drop", f'case "$*" in *gate-job*) exec {sys.executable} '
-                                              f'{tmp / "drop.py"} {self.ssh} "$@";; esac\n'
+            "drop": _script(tmp / f"ssh-drop{suffix}", f'case "$*" in *gate-job*) exec {sys.executable} '
+                                              f'{tmp / f"drop{suffix}.py"} {self.ssh} "$@";; esac\n'
                                               f'exec {self.ssh} "$@"'),
-            "slowdrop": _script(tmp / "ssh-slowdrop", f'case "$*" in *gate-job*) exec {sys.executable} '
-                                                      f'{tmp / "drop-slow.py"} {self.ssh} "$@";; '
+            "slowdrop": _script(tmp / f"ssh-slowdrop{suffix}", f'case "$*" in *gate-job*) exec {sys.executable} '
+                                                      f'{tmp / f"drop-slow{suffix}.py"} {self.ssh} "$@";; '
                                                       f'esac\nexec {self.ssh} "$@"'),
         }
 

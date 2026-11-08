@@ -1180,6 +1180,22 @@ def test_frame_parsing_turns_deep_nesting_into_a_protocol_failure():
     assert e.value.stage == "protocol"
 
 
+def test_frame_job_id_is_required_except_on_error_frames():
+    from nightwright.agentic import remote_gates as RG
+    from nightwright.agentic import worker as W
+    jid = "SPEC-gate-001-a1"
+    gate = json.dumps({"schema": W.FRAME_SCHEMA, "type": "gate", "n": 2, "files": {},
+                       "result": {"name": "ok", "required": True, "ok": True, "exit_code": 0,
+                                  "timed_out": False, "cmd": "true", "cwd": "/", "duration_s": 0.0,
+                                  "tail": "x"}})
+    with pytest.raises(RG.RemoteFailure) as e:
+        RG._frame((gate + "\n").encode(), jid)
+    assert e.value.stage == "protocol"
+    err = json.dumps({"schema": W.FRAME_SCHEMA, "type": "error", "stage": "validate",
+                      "error": "bad header"})
+    assert RG._frame((err + "\n").encode(), jid)["stage"] == "validate"
+
+
 def test_a_stop_during_have_ends_it_at_once_and_sends_no_job(world, remote, tmp_path,
                                                             monkeypatch):
     """A stop while `nw worker have` hangs on a slow host ends that SSH call at once (not after

@@ -26,6 +26,9 @@ stateDiagram-v2
     TRIAGING --> CLOSING: waive (optional gates only)
     REVIEWING --> IMPLEMENTING: fixes needed (loop + 1)
     REVIEWING --> CLOSING: review passes
+    REVIEWING --> DIVERGENCE_TRIAGE: the fix rounds are not converging
+    TRIAGING --> DIVERGENCE_TRIAGE: the fix rounds are not converging
+    DIVERGENCE_TRIAGE --> IMPLEMENTING: one extra round, once
     CLOSING --> TRIAGING: re-gate or DoD check failed
     CLOSING --> MERGED: fast-forward into main
     CLOSING --> HANDED_OFF: PR opened (pr / draft-pr)
@@ -44,7 +47,7 @@ resumed campaign goes back to work if a slot is free, or waits first in line if 
 ```mermaid
 stateDiagram-v2
     direction TB
-    state "any active state<br/>OPENING · SPEC_WRITING · SPEC_REVIEW<br/>IMPLEMENTING · GATING · TRIAGING · REVIEWING · CLOSING" as ACTIVE
+    state "any active state<br/>OPENING · SPEC_WRITING · SPEC_REVIEW<br/>IMPLEMENTING · GATING · TRIAGING · REVIEWING · DIVERGENCE_TRIAGE · CLOSING" as ACTIVE
     ACTIVE --> PARKED: a bound is hit, a persona escalates,<br/>or a human parks it
     PARKED --> ACTIVE: nw queue resume<br/>(slot free)
     PARKED --> WAITING: nw queue resume<br/>(no slot free)
@@ -102,6 +105,7 @@ flowchart LR
 | `GATING` | active | Your **gates** run in the worktree (tests, lint, …) | All required gates pass, or one fails |
 | `TRIAGING` | active | The **gate triager** reads the failure and decides: fix, retry, waive or escalate | It decides |
 | `REVIEWING` | active | The **conformance reviewer** checks the change against the spec's acceptance criteria | Pass, or a list of fixes |
+| `DIVERGENCE_TRIAGE` | active | The **divergence triager** reads the spec against the latest blockers and picks one extra implement round, a spec rework, or a human escalation | The pick is applied |
 | `CLOSING` | active | Rebase on main, re-run gates, check the spec wasn't changed and its Definition of Done holds, then merge or open a PR | Merged, handed off, back to TRIAGING (a check failed), or parked |
 | `PARKED` | parked | Stopped with a **reason**, waiting for a decision | `nw queue resume` (to the right state) or `abandon` |
 | `MERGED` | done | Fast-forwarded into main. An outbound spec then has its status pulled back into the outbox, ledgered as an `outbound_pulled` event | — |

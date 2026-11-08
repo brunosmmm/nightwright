@@ -73,13 +73,20 @@ def test_map_launch_model_claude_sonnet_is_sonnet_default_effort(tmp_path):
 def test_sdk_selection_splits_effort_into_the_model_parameter(tmp_path):
     cfg = {"config_dir": str(tmp_path)}
     assert CM.sdk_selection(CM.map_model("sonnet", "high", cfg)) == {
-        "id": "grok-4.7", "params": [{"id": "reasoning_effort", "value": "high"}]}
+        "id": "grok-4.7", "params": [
+            {"id": "reasoning_effort", "value": "high"},
+            {"id": "fast", "value": "false"}]}
     assert CM.sdk_selection(CM.map_model("haiku", "medium", cfg)) == {
-        "id": "grok-4.7", "params": [{"id": "reasoning_effort", "value": "low"}]}
+        "id": "grok-4.7", "params": [
+            {"id": "reasoning_effort", "value": "low"},
+            {"id": "fast", "value": "false"}]}
     assert CM.sdk_selection(CM.map_model("opus", "xhigh", cfg)) == {
         "id": "gpt-5.6-sol", "params": [{"id": "reasoning", "value": "xhigh"}]}
-    assert CM.sdk_selection("composer-2.5") == {"id": "composer-2.5", "params": []}
+    assert CM.sdk_selection("composer-2.5") == {
+        "id": "composer-2.5", "params": [{"id": "fast", "value": "false"}]}
     assert CM.sdk_selection("grok-4.7-high")["id"] == "grok-4.7"
+    assert CM.launch_model_arg("grok-4.7-high") == (
+        "grok-4.7[reasoning_effort=high,fast=false]")
 
 
 def test_sdk_selection_uses_each_model_familys_parameter():
@@ -89,17 +96,27 @@ def test_sdk_selection_uses_each_model_familys_parameter():
     assert CM.sdk_selection("claude-opus-5-5-max") == {
         "id": "claude-opus-5-5", "params": [{"id": "effort", "value": "max"}]}
     assert CM.sdk_selection("grok-4.6-low") == {
-        "id": "grok-4.6", "params": [{"id": "effort", "value": "low"}]}
+        "id": "grok-4.6", "params": [
+            {"id": "effort", "value": "low"},
+            {"id": "fast", "value": "false"}]}
     assert CM.sdk_selection("gpt-5.4-xhigh") == {
         "id": "gpt-5.4", "params": [{"id": "reasoning", "value": "extra-high"}]}
     assert CM.sdk_selection("claude-sonnet-4-6-xhigh") == {
         "id": "claude-sonnet-4-6", "params": [{"id": "effort", "value": "max"}]}
     assert CM.sdk_selection("kimi-k3-medium") == {
         "id": "kimi-k3", "params": [{"id": "reasoning", "value": "high"}]}
-    assert CM.sdk_selection("composer-2.5-high") == {"id": "composer-2.5", "params": []}
+    assert CM.sdk_selection("composer-2.5-high") == {
+        "id": "composer-2.5", "params": [{"id": "fast", "value": "false"}]}
     assert CM.sdk_selection("gpt-5.4-mini-high")["id"] == "gpt-5.4-mini"
     assert CM.sdk_selection("not-a-catalog-model-high") == {
         "id": "not-a-catalog-model-high", "params": []}
+    for sel in (
+        CM.sdk_selection("grok-4.7-high"),
+        CM.sdk_selection("composer-2.5"),
+        CM.sdk_selection("gpt-5.6-sol-xhigh"),
+        CM.sdk_selection("claude-sonnet-5-5-high"),
+    ):
+        assert all(p["value"] != "true" for p in sel["params"] if p["id"] == "fast")
 
 
 def test_mapped_model_only_translates_when_runner_is_cursor(tmp_path, monkeypatch):

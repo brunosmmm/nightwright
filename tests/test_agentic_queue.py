@@ -66,6 +66,12 @@ def test_plan_step_cost_cap_is_pessimistic(state, persona, spent, parks):
         assert step.kind in ("implement", "triage", "review")
 
 
+def test_plan_step_unknown_cost_does_not_fill_the_cap():
+    st = _state("IMPLEMENTING", cost={"total_usd": 16.5, "estimated_usd": 16.5, "cap_usd": 15.0,
+                                      "by_persona": {}})
+    assert Q.plan_step(st, PROFILE).kind == "implement"
+
+
 def test_plan_step_no_cap_never_parks():
     st = _state(cost={"total_usd": 999.0, "cap_usd": None, "by_persona": {}})
     assert Q.plan_step(st, PROFILE).kind == "implement"
@@ -290,8 +296,10 @@ def test_apply_missing_cost_charges_budget_and_notes_it(opened):
     cfg, cid, ctx = opened
     row, st = _apply(ctx, cfg, cid, "implement", persona="implementer", run_id="001-implementer",
                      run_result=_rr({"status": "done", "summary": "ok"}, cost=None), budget=4.0)
-    assert row["cost_usd"] == 4.0 and st["cost"]["total_usd"] == 4.0
-    assert any("charged its budget" in f["title"] for f in S.read_ledger(cfg, cid, types=["finding"]))
+    assert row["cost_usd"] == 4.0 and st["cost"]["total_usd"] == 0.0
+    assert st["cost"]["estimated_usd"] == 4.0
+    assert any("not counted against the cap" in f["title"]
+               for f in S.read_ledger(cfg, cid, types=["finding"]))
 
 
 def test_apply_triage_fix_sets_brief_and_resets_retries(opened):
@@ -824,9 +832,14 @@ def test_bad_triager_run_leaves_the_deterministic_outcome(opened, rr_kw, why):
     assert st["counters"]["review_retries"] == 0 and "review_retries_by_persona" not in \
         st["counters"]
     assert any(why in n and "deterministic" in n for n in _notes(cfg, cid))
-    charged = 0.5 if rr_kw.get("cost", 0.25) is None else kw.get("cost", 0.25)
-    assert st["cost"]["by_persona"][TG] == charged
-    assert st["cost"]["total_usd"] == round(before + charged, 4)
+    if rr.cost_usd is None:
+        assert st["cost"]["by_persona"].get(TG, 0.0) == 0.0
+        assert st["cost"]["total_usd"] == before
+        assert st["cost"]["estimated_usd"] == 0.5
+    else:
+        charged = kw.get("cost", 0.25)
+        assert st["cost"]["by_persona"][TG] == charged
+        assert st["cost"]["total_usd"] == round(before + charged, 4)
 
 
 def test_triager_without_a_run_result_counts_as_done(opened):

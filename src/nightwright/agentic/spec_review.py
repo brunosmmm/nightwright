@@ -521,15 +521,25 @@ def run_spec_review(cfg, spec_path, spec_id, *, profile=None, idea_text=None,
     run_dir = store.agentic_dir(cfg) / "spec-reviews" / run_id
     run_tmp = run_dir / "tmp"
     run_tmp.mkdir(parents=True, exist_ok=True)
+    from .model_sets import bind, resolve_model_set
     from .runner import mapped_model
     alias = str(settings.get("model") or "sonnet")
     effort = settings.get("effort")
-    model, model_alias = mapped_model(
-        cfg, alias, effort, project_root=str(root) if root else None,
-        cursor_model=settings.get("cursor_model"))
+    chosen = resolve_model_set(cfg, project_root=str(root) if root else None)
+    if chosen is not None:
+        bound = bind(chosen, PERSONA, alias, effort)
+        model, model_alias, spawn_runner = bound["model"], bound["model_alias"], bound["runner"]
+    else:
+        model, model_alias = mapped_model(
+            cfg, alias, effort, project_root=str(root) if root else None,
+            cursor_model=settings.get("cursor_model"))
+        spawn_runner = None
     from .runner import map_pi_model, resolve_runner
     pi_provider = pi_id = pi_thinking = None
-    if resolve_runner(cfg) == "pi":
+    if spawn_runner == "pi":
+        pi_provider, pi_id = model.split("/", 1)
+        pi_thinking = effort or "high"
+    elif not spawn_runner and resolve_runner(cfg) == "pi":
         row = map_pi_model(alias, effort, cfg, project_root=str(root) if root else None)
         pi_provider, pi_id, pi_thinking = row["provider"], row["id"], row["thinking"]
     req = PS.RunRequest(
@@ -556,13 +566,15 @@ def run_spec_review(cfg, spec_path, spec_id, *, profile=None, idea_text=None,
         pi_provider=pi_provider,
         pi_id=pi_id,
         pi_thinking=pi_thinking,
+        runner=spawn_runner,
     )
     journal_start(cfg, run_id, spec_id, req.timeout_s, req.run_dir,
                   reviewer_profile=prof.get("name"), model=req.model)
     t0 = time.monotonic()
     cost = None
     try:
-        result = select_runner(cfg).run(req)
+        runner = select_runner(cfg, runner=spawn_runner) if spawn_runner else select_runner(cfg)
+        result = runner.run(req)
         cost = result.cost_usd
         if result.timed_out or result.is_error or not result.verdict_ok:
             why = ("timed out" if result.timed_out else "failed" if result.is_error

@@ -285,7 +285,7 @@ def complete_campaign_id(ctx, param, incomplete):
 def complete_campaign_state(ctx, param, incomplete):
     """Campaign state names (SPEC-0171/0176)."""
     states = ["QUEUED", "WAITING", "OPENING", "SPEC_WRITING", "SPEC_REVIEW", "IMPLEMENTING", "GATING", "TRIAGING",
-              "REVIEWING", "CLOSING", "PARKED", "MERGED", "HANDED_OFF", "ABANDONED"]
+              "REVIEWING", "DIVERGENCE_TRIAGE", "CLOSING", "PARKED", "MERGED", "HANDED_OFF", "ABANDONED"]
     return _items(states, incomplete)
 
 

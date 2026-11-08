@@ -1,0 +1,15 @@
+schema: nw.model_set.v1
+description: "Pi SDK: Terra implements, Sol reviews design and security, Luna tests and triages"
+runner: pi
+model: openai/gpt-5.6-luna
+personas:
+  implementer: {model: openai/gpt-6.1-terra}
+  conflict_resolver: {model: openai/gpt-6.1-terra}
+  spec_writer: {model: openai/gpt-6.1-terra}
+  spec_reviewer: {model: openai/gpt-5.6-sol}
+  conformance_reviewer: {model: openai/gpt-5.6-sol}
+  adversarial_reviewer: {model: openai/gpt-5.6-sol}
+  test_reviewer: {model: openai/gpt-5.6-luna}
+  gate_triager: {model: openai/gpt-5.6-luna}
+  review_triager: {model: openai/gpt-5.6-luna}
+  divergence_triager: {model: openai/gpt-5.6-luna}

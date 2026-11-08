@@ -258,7 +258,7 @@ def test_render_real_tool_sample(tmp_path):
 def test_render_unpriced_shows_tokens(tmp_path):
     d = _stream_run_dir(tmp_path, OK_SAMPLE.read_text())
     out = _rendered({}, d)
-    assert "  ok" in out
+    assert "  ▸ ok" in out
     assert "tokens in 2 · out 4 · cache 23.7k (turn 1; no price for claude-opus-5-5)" in out
 
 
@@ -300,20 +300,121 @@ def test_sdk_token_deltas_join_until_the_next_event():
     assert lines == []
     lines.extend(t.plain for t in r.feed(
         {"type": "tool_call", "name": "Read", "status": "running", "args": {"path": "a.md"}}))
-    assert lines[0] == "  I'll implement SPEC-0446"
+    assert lines[0] == "  ▸ I'll implement SPEC-0446"
     assert lines[1].startswith("→ Read")
 
 
 def test_assistant_newline_prints_the_finished_line_and_holds_the_rest():
     r = TL.Renderer()
-    assert [t.plain for t in r.feed(_assistant_text("hello\nworld"))] == ["  hello"]
-    assert [t.plain for t in r.flush_prose()] == ["  world"]
+    assert [t.plain for t in r.feed(_assistant_text("hello\nworld"))] == ["  ▸ hello"]
+    held = r.flush_prose()
+    assert [t.plain for t in held] == ["  ▸ world"]
+    assert held[0].spans[-1].style == TL.SPEECH or str(held[0].spans[-1].style) == TL.SPEECH
+
+
+def test_a_spoken_verdict_renders_as_a_review_not_json():
+    blob = json.dumps({
+        "verdict": "split", "size": "xl", "tone": "critical",
+        "rationale": "The spec is too big.",
+        "findings": [{
+            "severity": "must_fix", "section": "Acceptance criteria",
+            "title": "The feature exceeds one campaign",
+            "detail": "Thirteen criteria.", "suggested_fix": "Make it an epic.",
+            "acceptance": "SPEC-0450 is an epic.",
+        }],
+        "suggested_splits": [{"title": "Create the link", "scope": "publish and adopt"}],
+    }, indent=2)
+    r = TL.Renderer()
+    lines = []
+    for i in range(0, len(blob), 5):
+        lines.extend(r.feed(_assistant_text(blob[i:i + 5])))
+    assert r.flush_prose() == []
+    plain = [t.plain for t in lines]
+    assert plain[0] == "  ▸ split · xl · critical"
+    assert "    The spec is too big." in plain
+    assert "    must_fix · The feature exceeds one campaign  (Acceptance criteria)" in plain
+    assert "      fix: Make it an epic." in plain
+    assert "      · Create the link — publish and adopt" in plain
+    assert not any('"verdict"' in p or "findings" in p for p in plain)
+    held = TL.Renderer()
+    assert held.feed(_assistant_text('{\n  "verdict": "spl')) == []
+    assert held.flush_prose() == []
+    assert [t.plain for t in held.feed(_assistant_text('it"}'))] == ["  ▸ split"]
+
+
+def test_a_spoken_gate_triage_renders_as_a_card_not_json():
+    blob = json.dumps({
+        "disposition": "fix", "confidence": "high", "suspected_flaky": False,
+        "must_fix": [{
+            "gate": "pytest-affected", "title": "Allowlist the backlog machine writes",
+            "detail": "The guard fails deterministically.",
+            "files": ["tests/test_rich_output_guard.py", "src/nightwright/backlog.py"],
+        }],
+        "waived": [], "fix_brief": "Add the two ALLOWED entries and re-run the gate.",
+        "followup_ideas": [],
+    }, indent=2)
+    r = TL.Renderer()
+    lines = []
+    for i in range(0, len(blob), 7):
+        lines.extend(r.feed(_assistant_text(blob[i:i + 7])))
+    assert r.flush_prose() == []
+    plain = [t.plain for t in lines]
+    assert plain[0] == "  ▸ fix · high"
+    assert "    pytest-affected · Allowlist the backlog machine writes" in plain
+    assert "      The guard fails deterministically." in plain
+    assert "      files: tests/test_rich_output_guard.py, src/nightwright/backlog.py" in plain
+    assert "    brief: Add the two ALLOWED entries and re-run the gate." in plain
+    assert not any('"disposition"' in p or '"must_fix"' in p for p in plain)
+    flaky = TL.Renderer().feed(_assistant_text(
+        '{"disposition":"retry_gate","confidence":"low","suspected_flaky":true,'
+        '"fix_brief":"Run the gate again."}'))
+    assert flaky[0].plain == "  ▸ retry_gate · low · flaky"
+
+
+def test_a_spoken_implementer_result_renders_as_a_card_not_json():
+    blob = json.dumps({
+        "status": "done",
+        "summary": "Allowlist the two click.echo paths.",
+        "changed_files": ["tests/test_rich_output_guard.py"],
+        "tests_run": ["uv run pytest -q tests/test_rich_output_guard.py"],
+        "ac_status": [
+            {"ac": "add prints the id", "met": True},
+            {"ac": "errors print the exact line", "met": False},
+        ],
+        "blockers": [], "followup_ideas": [],
+    }, indent=2)
+    r = TL.Renderer()
+    lines = []
+    for i in range(0, len(blob), 9):
+        lines.extend(r.feed(_assistant_text(blob[i:i + 9])))
+    assert r.flush_prose() == []
+    plain = [t.plain for t in lines]
+    assert plain[0] == "  ▸ done"
+    assert "    Allowlist the two click.echo paths." in plain
+    assert "    files: tests/test_rich_output_guard.py" in plain
+    assert "    test: uv run pytest -q tests/test_rich_output_guard.py" in plain
+    assert "      met · add prints the id" in plain
+    assert "      unmet · errors print the exact line" in plain
+    assert "blocker" not in "\n".join(plain)
+    assert not any('"status"' in p or '"ac_status"' in p for p in plain)
+    blocked = TL.Renderer().feed(_assistant_text(
+        '{"status":"blocked","summary":"The gate is red.","blockers":["no network"]}'))
+    assert [t.plain for t in blocked] == [
+        "  ▸ blocked", "    The gate is red.", "    blocker · no network"]
+
+
+def test_prose_before_a_verdict_stays_a_sentence():
+    r = TL.Renderer()
+    said = [t.plain for t in r.feed(_assistant_text("Checking the spec.\n"))]
+    verdict = r.feed(_assistant_text('{"verdict": "approve", "rationale": "Fine."}'))
+    assert said == ["  ▸ Checking the spec."]
+    assert [t.plain for t in verdict] == ["  ▸ approve", "    Fine."]
 
 
 def test_held_tokens_print_when_the_viewer_finishes_the_file(tmp_path):
     body = "\n".join(json.dumps(_assistant_text(part)) for part in ("I'll", " implement")) + "\n"
     out = _rendered({}, _stream_run_dir(tmp_path, body))
-    assert "  I'll implement" in out
+    assert "  ▸ I'll implement" in out
     assert out.count("I'll") == 1
 
 

@@ -45,6 +45,13 @@
         "permission_mode": "dontAsk",
         "read_only": true
       },
+      "divergence_triager": {
+        "effort": "medium",
+        "max_budget_usd": 0.5,
+        "model": "sonnet",
+        "permission_mode": "dontAsk",
+        "read_only": true
+      },
       "spec_reviewer": {
         "effort": "high",
         "max_budget_usd": 0.8,
@@ -134,6 +141,13 @@
         "permission_mode": "dontAsk",
         "read_only": true
       },
+      "divergence_triager": {
+        "effort": "medium",
+        "max_budget_usd": 0.25,
+        "model": "haiku",
+        "permission_mode": "dontAsk",
+        "read_only": true
+      },
       "spec_reviewer": {
         "effort": "medium",
         "max_budget_usd": 0.4,
@@ -215,6 +229,13 @@
         "read_only": false
       },
       "review_triager": {
+        "effort": "medium",
+        "max_budget_usd": 0.5,
+        "model": "sonnet",
+        "permission_mode": "dontAsk",
+        "read_only": true
+      },
+      "divergence_triager": {
         "effort": "medium",
         "max_budget_usd": 0.5,
         "model": "sonnet",

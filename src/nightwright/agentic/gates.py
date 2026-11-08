@@ -8,6 +8,7 @@ bounded tail travels in the result for prompts and `nw campaign show`. `required
 whether a failure blocks; optional failures are recorded and never block."""
 from __future__ import annotations
 
+import contextvars
 import json
 import os
 import re
@@ -30,6 +31,11 @@ from . import runproc
 from .project import expand_cmd
 
 TAIL_LINES = 60
+# SPEC-0346: false means `run_gate` starts the child from the env dict it was given, not from
+# this process. The worker sets it around its own gates. The call keeps the signature it had
+# before that choice, so a stand-in for `run_gate_with_retries` still runs and an in-run disk
+# abort can finish the job.
+_GATE_INHERIT_ENV = contextvars.ContextVar("nw_gate_inherit_env", default=True)
 REPORT_MAX_BYTES = 64 * 1024    # SPEC-0359: a larger selection report is dropped
 _KILL_GRACE_S = 5
 # SPEC-0392: a gate's timeout is a hard bound. After TERM the tree gets `_KILL_GRACE_S`, after KILL
@@ -367,7 +373,7 @@ def _write_sidecar(log_path: Path, result: GateResult, *, timeout_s: int, starte
 
 def run_gate(gate: dict, worktree, env: dict, log_path, placeholders: dict, *,
              log_rel: str | None = None, cmd_override: str | None = None,
-             attempt: int | None = None) -> GateResult:
+             attempt: int | None = None, inherit_env: bool = True) -> GateResult:
     """Run one gate in `worktree / gate["cwd"]`, combined output to `log_path`, timeout
     `gate["timeout_s"]` (kills the whole process group). `ok` = exit code 0. The log is the
     command's output only; command, cwd, exit, timing and errors go to the JSON sidecar.
@@ -386,7 +392,11 @@ def run_gate(gate: dict, worktree, env: dict, log_path, placeholders: dict, *,
     except OSError as e:                            # SPEC-0387: a full disk is the host's, not a crash
         return _infra_result(gate, cmd, cwd, log_path, log_rel, e, timeout_s, started_at,
                              attempt)
-    child_env = {**os.environ, **env, "NW_GATE_REPORT": str(report_path)}
+    # SPEC-0346: a worker gate sets `_GATE_INHERIT_ENV` false (or passes `inherit_env=False`).
+    # The env dict is already the allowset (PATH, HOME, the header keys, the worker's own).
+    # Inheriting the process env would hand the gate sshd's and the job lock's keys.
+    base = os.environ if inherit_env and _GATE_INHERIT_ENV.get() else {}
+    child_env = {**base, **env, "NW_GATE_REPORT": str(report_path)}
     started = time.monotonic()
     started_ns = time.time_ns()     # SPEC-0284: a junit file older than this is a leftover
     timed_out = False
@@ -542,7 +552,8 @@ def _previous_ids(gate: dict, previous: dict | None, cmd: str) -> list[str]:
 def run_gate_with_retries(gate: dict, worktree, env: dict, log_path, placeholders: dict, *,
                           log_rel: str | None = None, stop: threading.Event | None = None,
                           deadline: float | None = None,
-                          previous: dict | None = None) -> GateResult:
+                          previous: dict | None = None,
+                          inherit_env: bool = True) -> GateResult:
     """`run_gate` with the SPEC-0358 `failed_first` prelude, then the SPEC-0289 ladder.
 
     With `gate["failed_first"]` and a qualifying `previous` result (see `_previous_ids`) the round
@@ -556,12 +567,12 @@ def run_gate_with_retries(gate: dict, worktree, env: dict, log_path, placeholder
     ids = _previous_ids(gate, previous, expand_cmd(gate["cmd"], **placeholders))
     if not ids or _stop_requested(stop):
         return _run_ladder(gate, worktree, env, log_path, placeholders, log_rel=log_rel,
-                           stop=stop, deadline=deadline)
+                           stop=stop, deadline=deadline, inherit_env=inherit_env)
     ppath = log_path.with_name(f"{log_path.stem}.ff.log")
     prel = f"{Path(log_rel).with_suffix('').as_posix()}.ff.log" if log_rel else str(ppath)
     cmd = targeted_cmd(gate, expand_cmd(gate["cmd"], **placeholders), ids, placeholders)
     pre = run_gate(gate, worktree, env, ppath, placeholders, log_rel=prel, cmd_override=cmd,
-                   attempt=-1)
+                   attempt=-1, inherit_env=inherit_env)
     rec = _attempt(-1, "failed-first", pre)
     if pre.interrupted or (not pre.ok and not pre.timed_out
                            and pre.exit_code not in TARGETED_UNRESOLVED_EXITS):
@@ -569,7 +580,7 @@ def run_gate_with_retries(gate: dict, worktree, env: dict, log_path, placeholder
     if _stop_requested(stop):                       # a stop between the prelude and the main run
         return replace(pre, ok=False, interrupted=True, attempts=(rec,))
     final = _run_ladder(gate, worktree, env, log_path, placeholders, log_rel=log_rel,
-                        stop=stop, deadline=deadline)
+                        stop=stop, deadline=deadline, inherit_env=inherit_env)
     attempts = (rec, *(final.attempts or (_attempt(0, "full", final),)))
     final = replace(final, attempts=attempts,
                     duration_s=round(final.duration_s + pre.duration_s, 3))
@@ -583,7 +594,7 @@ def run_gate_with_retries(gate: dict, worktree, env: dict, log_path, placeholder
 
 def _run_ladder(gate: dict, worktree, env: dict, log_path, placeholders: dict, *,
                 log_rel: str | None = None, stop: threading.Event | None = None,
-                deadline: float | None = None) -> GateResult:
+                deadline: float | None = None, inherit_env: bool = True) -> GateResult:
     """`run_gate` plus the SPEC-0289 retry ladder (`gate["retries"]`).
 
     A failing pytest gate with a complete failing-id list first re-runs only those ids: a
@@ -595,7 +606,8 @@ def _run_ladder(gate: dict, worktree, env: dict, log_path, placeholders: dict, *
     keeps the ladder inside the runner's busy budget: a full rerun does not start when it
     would, going by attempt 0's duration, end after it. A targeted rerun that exits with a
     pytest usage/no-tests code never ran the ids, so it is not "reproduced": the ladder goes on."""
-    first = run_gate(gate, worktree, env, log_path, placeholders, log_rel=log_rel)
+    first = run_gate(gate, worktree, env, log_path, placeholders, log_rel=log_rel,
+                     inherit_env=inherit_env)
     retries = int(gate.get("retries") or 0)
     if first.ok or first.interrupted or first.timed_out or retries <= 0:
         return first
@@ -616,7 +628,7 @@ def _run_ladder(gate: dict, worktree, env: dict, log_path, placeholders: dict, *
                 else str(rpath))
         cmd = targeted_cmd(gate, first.cmd, ids, placeholders) if kind == "targeted" else None
         r = run_gate(gate, worktree, env, rpath, placeholders, log_rel=rrel,
-                     cmd_override=cmd, attempt=n)
+                     cmd_override=cmd, attempt=n, inherit_env=inherit_env)
         attempts.append(_attempt(n, kind, r))
         last = r
         if r.interrupted or r.timed_out:

@@ -525,7 +525,7 @@ def blocked_items(cfg, now, sett, *, after=None) -> list[dict]:
     return sorted(out, key=lambda r: -r["blocked_for_s"])
 
 
-_PERSONA_STATES = ("SPEC_WRITING", "IMPLEMENTING", "REVIEWING", "TRIAGING")
+_PERSONA_STATES = ("SPEC_WRITING", "IMPLEMENTING", "REVIEWING", "TRIAGING", "DIVERGENCE_TRIAGE")
 
 
 def _latest_age(cfg, cid, types, now) -> float | None:

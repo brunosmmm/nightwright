@@ -319,7 +319,7 @@ def build_plan(cfg, role, project=None, *, resume=False, session_id=None, runner
     """The launch plan; touches nothing. With `resume`, the id is the newest launched session
     of the reader (a ClickException when there is none or its transcript is gone)."""
     from ..rules import INTERNAL_PROJECT
-    from .cursor_map import map_launch_model
+    from .cursor_map import launch_model_arg, map_launch_model
     if role not in ("conductor", "steward"):
         raise ValueError(role)
     sett = settings(cfg, role)
@@ -363,7 +363,7 @@ def build_plan(cfg, role, project=None, *, resume=False, session_id=None, runner
     perms = [x for key, flag in TOOL_FLAGS.items() if eff[key] for x in (flag, *eff[key])]
     mode = sett[f"{role}_permission_mode"]                 # SPEC-0424: both roles
     if kind == "cursor":
-        model = map_launch_model(sett["model"], sett["effort"], cfg)
+        model = launch_model_arg(map_launch_model(sett["model"], sett["effort"], cfg))
         policy = CONDUCTOR_CURSOR_POLICY if role == "conductor" else STEWARD_CURSOR_POLICY
         prompt = prompt + "\n\n" + policy
         force = [] if mode == "plan" else ["--force"]

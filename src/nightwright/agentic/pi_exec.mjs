@@ -12,6 +12,30 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
+// Pi's managed installation is not on Node's ESM package search path.
+function resolvePiEntry() {
+  try {
+    return import.meta.resolve("@earendil-works/pi-coding-agent");
+  } catch (original) {
+    const agentDir = process.env.PI_CODING_AGENT_DIR || path.join(os.homedir(), ".pi", "agent");
+    const install = path.join(agentDir, "install");
+    try {
+      const version = fs.readFileSync(path.join(install, "current-version"), "utf8").trim();
+      if (!/^[0-9A-Za-z][0-9A-Za-z.+-]*$/.test(version)) throw original;
+      const entry = path.join(install, "releases", version, "node_modules", "@earendil-works",
+        "pi-coding-agent", "dist", "index.js");
+      if (!fs.existsSync(entry)) throw original;
+      return pathToFileURL(entry).href;
+    } catch {
+      throw original;
+    }
+  }
+}
+
+function importPiSdk() {
+  return import(resolvePiEntry());
+}
+
 const SCHEMA_FOOTER =
   "Reply with a single JSON object matching this schema and nothing else.\n\n{schema}";
 const SCHEMA_PLACEHOLDER = "{schema}";
@@ -149,7 +173,7 @@ async function killDetachedChildren(piMod, deps) {
     const entry =
       typeof deps.resolvePiPackageEntry === "function"
         ? deps.resolvePiPackageEntry()
-        : import.meta.resolve("@earendil-works/pi-coding-agent");
+        : resolvePiEntry();
     const pkgDir = path.dirname(fileURLToPath(entry));
     const shellUrl = pathToFileURL(path.join(pkgDir, "utils", "shell.js")).href;
     const importShell = deps.importShellModule ?? ((u) => import(u));
@@ -582,7 +606,7 @@ export async function execute(runDir, deps = {}) {
   const out = deps.out ?? process.stdout;
   const err = deps.err ?? process.stderr;
   const readFile = deps.readFile ?? ((p) => fs.readFileSync(p, "utf8"));
-  const importPi = deps.importPi ?? (() => import("@earendil-works/pi-coding-agent"));
+  const importPi = deps.importPi ?? importPiSdk;
 
   let req;
   try {
@@ -845,7 +869,7 @@ export async function execute(runDir, deps = {}) {
 }
 
 export async function probeProviders(providers, deps = {}) {
-  const importPi = deps.importPi ?? (() => import("@earendil-works/pi-coding-agent"));
+  const importPi = deps.importPi ?? importPiSdk;
   try {
     const pi = await importPi();
     const runtime = deps.modelRuntime ?? (await pi.ModelRuntime.create({ modelsPath: null }));

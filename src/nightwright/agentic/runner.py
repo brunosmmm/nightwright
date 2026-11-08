@@ -12,6 +12,7 @@ Compared with the older `meetings.refresh_meetings` call: there is a timeout, th
 checked, and the cost is read."""
 from __future__ import annotations
 
+import contextvars
 import json
 import os
 import re
@@ -50,9 +51,10 @@ class RunRequest:
     profile: str | None = None                  # SPEC-0238: the resolved profile and its sources
     profile_sources: tuple = ()
     model_alias: str | None = None              # SPEC-0436: profile alias when `model` is mapped
-    pi_provider: str | None = None              # SPEC-0451: Pi provider when runner is pi
+    pi_provider: str | None = None              # Pi provider when runner is pi
     pi_id: str | None = None
     pi_thinking: str | None = None
+    runner: str | None = None                   # model-set backend; None keeps the host runner
 
 
 @dataclass(frozen=True)
@@ -270,8 +272,14 @@ def resolve_runner(cfg, *, campaign=None, project=None) -> str:
 
 
 def cursor_needed(cfg, campaigns=None) -> bool:
-    """True when the host default, a project overlay, or any given (else live) campaign
-    resolves to `cursor`."""
+    """True when the host default, a project overlay, the selected model set, or any
+    given (else live) campaign resolves to `cursor`."""
+    from .model_sets import resolve_model_set, uses_cursor
+    try:
+        if uses_cursor(resolve_model_set(cfg)):
+            return True
+    except ValueError:
+        return True
     if resolve_runner(cfg) == "cursor":
         return True
     mapping = ((cfg or {}).get("agentic") or {}).get("project_runners")
@@ -294,8 +302,13 @@ def cursor_needed(cfg, campaigns=None) -> bool:
 
 
 def pi_needed(cfg, campaigns=None) -> bool:
-    """True when the host default, a project overlay, or any given (else live) campaign
-    resolves to `pi`."""
+    """True when a selected model set, host or campaign needs Pi."""
+    from .model_sets import resolve_model_set, uses_pi
+    try:
+        if uses_pi(resolve_model_set(cfg)):
+            return True
+    except ValueError:
+        return True
     if resolve_runner(cfg) == "pi":
         return True
     mapping = ((cfg or {}).get("agentic") or {}).get("project_runners")
@@ -446,10 +459,44 @@ def write_run_record(req: RunRequest, result: RunResult, started_at: str) -> Run
     return result
 
 
+# Set by a worker persona job (SPEC-0346) so the shell sees PATH and HOME plus `req.env`,
+# not the worker process's own keys (the job lock, `SSH_ORIGINAL_COMMAND`).
+_CHILD_BASE: contextvars.ContextVar[dict | None] = contextvars.ContextVar(
+    "nw_child_base", default=None)
+
+
+def child_base_context(base: dict) -> contextvars.Context:
+    """A context in which a worker persona's shell sees `base` instead of the process env.
+    Python 3.14 threads do not inherit contextvars unless asked, so the caller runs the
+    job thread with `ctx.run`."""
+    ctx = contextvars.copy_context()
+
+    def arm():
+        _CHILD_BASE.set(base)
+    ctx.run(arm)
+    return ctx
+
+
 def _child_env(req: RunRequest) -> dict:
     """The ambient environment plus `req.env`, minus a launched session's limits (SPEC-0319;
-    the same filter the detached wrapper applies, `runproc.child_env`)."""
-    return RP.child_env(req.env)
+    the same filter the detached wrapper applies, `runproc.child_env`). A worker job sets
+    `_CHILD_BASE` to PATH and HOME; then that, not the process env, is the base."""
+    base = _CHILD_BASE.get()
+    if base is None:
+        return RP.child_env(req.env)
+    return {**base, **req.env}
+
+
+def wrapper_env(req: RunRequest) -> dict:
+    """The environment of the detached wrapper and of the `claude` it starts (SPEC-0346).
+
+    A worker persona sets `_CHILD_BASE` to PATH and HOME. That, plus `req.env`, is the whole
+    environment: `ClaudeRunner` starts the wrapper with it, and persists the same dict in
+    `launch.json` (`base_env`, mode 0600) so a re-exec still builds `claude` from it.
+    Without `_CHILD_BASE` the wrapper is started with `runproc.child_env` (the process
+    environment minus the launcher's keys); `launch.json` omits `base_env` and the wrapper
+    falls back to its inherited process environment on re-exec, as a local child used to."""
+    return _child_env(req)
 
 
 # ---- the real thing ---------------------------------------------------------------------------
@@ -468,6 +515,8 @@ def _request_doc(req: RunRequest, started_at: str) -> dict:
         doc["pi_thinking"] = req.pi_thinking
         if req.system_append:
             doc["system_append"] = req.system_append
+    if req.runner:
+        doc["runner"] = req.runner
     return doc
 
 
@@ -490,7 +539,7 @@ def rebuild_request(run_dir, *, budget: float | None = None) -> RunRequest:
         permission_mode=doc.get("permission_mode") or "", read_only=bool(doc.get("read_only")),
         allowed_tools=(), add_dirs=(), json_schema=doc.get("json_schema") or {}, env={},
         run_dir=run_dir, pi_provider=doc.get("pi_provider"), pi_id=doc.get("pi_id"),
-        pi_thinking=doc.get("pi_thinking"))
+        pi_thinking=doc.get("pi_thinking"), runner=doc.get("runner"))
 
 
 def _read_text(path) -> str:
@@ -594,15 +643,24 @@ class ClaudeRunner:
         try:
             if not attach and not (run_dir / "proc.json").exists():
                 RP.write_json_atomic(run_dir / "request.json", _request_doc(req, started_at))
+                # SPEC-0346: worker personas persist PATH/HOME+`req.env` as `base_env`; local
+                # runs omit it and rely on the wrapper's inherited process environment.
+                child = wrapper_env(req)
                 launch = {"argv": self._launch_argv(req), "cwd": str(req.cwd),
                           "env": dict(req.env)}
+                if _CHILD_BASE.get() is not None:
+                    launch["base_env"] = child
                 if self.stream:
                     launch["stream"] = True         # fixed at launch (SPEC-0360 invariant 9)
-                RP.write_json_atomic(run_dir / "launch.json", launch)
+                launch_path = run_dir / "launch.json"
+                RP.write_json_atomic(launch_path, launch)
+                if _CHILD_BASE.get() is not None:
+                    os.chmod(launch_path, 0o600)
                 with open(run_dir / "wrapper.log", "ab") as log:
                     wrapper = subprocess.Popen(
                         [sys.executable, "-m", "nightwright.agentic.runproc", str(run_dir)],
-                        stdin=subprocess.DEVNULL, stdout=log, stderr=log, start_new_session=True)
+                        stdin=subprocess.DEVNULL, stdout=log, stderr=log,
+                        start_new_session=True, env=child)
                 err = self._await_claim(req, wrapper, started)
                 if err:
                     return _error_result(req, err, started_at, time.monotonic() - started)

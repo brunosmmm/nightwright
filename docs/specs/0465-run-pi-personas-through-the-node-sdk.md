@@ -1,7 +1,7 @@
 ---
-id: SPEC-0451
+id: SPEC-0465
 title: Run Pi personas through the Node SDK
-status: done
+status: in-progress
 owner: user
 created: 2026-11-07
 updated: 2026-11-08
@@ -12,6 +12,14 @@ source_idea: IDEA-1023
 ---
 
 ## Context
+
+Originally numbered SPEC-0451 on the campaign branch; renumbered to SPEC-0465 during manual
+integration because main assigned SPEC-0451 to an unrelated change. Integration and live SDK
+verification remain in progress; the campaign's earlier done claim is not an attestation here.
+The managed Pi installation is now used as a fallback when the ordinary Node package resolution
+fails: `~/.pi/agent/install/current-version` selects the release's SDK entry. The probe and
+persona child share that resolution. The idea and parked campaign still refer to the old id and
+need reconciliation before closing.
 
 Persona runs that resolve to Cursor go through a supervised child,
 `python -m nightwright.agentic.cursor_exec`, as decided in
@@ -435,6 +443,15 @@ fails the check with that fact.
   required for the unit tests; they must not call the network.
 - **Regression guard:** affected tests via `tools/affected_tests.py`. Claude
   argv, Cursor argv, and conductor `--runner` choices stay.
+
+### Manual integration test record (2026-11-08)
+
+- Focused Pi runner, JS child, model-set, and persona tests: 120 passed after merge resolution.
+- The managed Pi SDK was initially not resolvable; after adding a managed-install fallback and
+  removing the temporary local symlink, `node src/nightwright/agentic/pi_exec.mjs --probe openai`
+  reported `ok: true`. A live one-shot persona using the current configured OpenAI model, with no
+  local SDK symlink, returned the JSON verdict and a priced usage result. Full reconciliation of
+  model-set selection remains to be verified.
 
 ### Test record (2026-11-07)
 

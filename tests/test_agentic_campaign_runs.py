@@ -23,7 +23,10 @@ LIST_KEYS = {"campaign", "run_id", "persona", "model", "effort", "max_budget_usd
 def merged(tmp_path, monkeypatch):
     """An e2e campaign (implementer + conformance reviewer) driven to MERGED."""
     monkeypatch.setenv("COLUMNS", "250")
-    monkeypatch.setattr("nightwright.console.console._width", 250)   # COLUMNS is read once, at import
+    # COLUMNS is read once, at import. Rich ignores a lone `_width` on a dumb terminal
+    # (both dimensions must be set), which is what pytest's capture is.
+    monkeypatch.setattr("nightwright.console.console._width", 250)
+    monkeypatch.setattr("nightwright.console.console._height", 50)
     repo = make_repo(tmp_path)
     cfg = make_cfg(tmp_path, repo, script(tmp_path, [impl_done(), review()]))
     cid = added(cfg, monkeypatch)

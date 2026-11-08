@@ -172,7 +172,8 @@ def test_columns_and_key_order(cfg):
         "campaign", "spec_id", "profile", "size", "tone", "run_id", "persona", "model", "effort",
         "max_budget_usd", "timeout_s", "started_at", "duration_s", "cost_usd", "charged_usd",
         "budget_frac", "exit_code", "is_error", "timed_out", "interrupted", "transient",
-        "verdict_status", "status", "input_tokens", "output_tokens", "cache_read_tokens"]
+        "verdict_status", "status", "input_tokens", "output_tokens", "cache_read_tokens",
+        "worker"]
     assert [n for n, _ in CE.FINDING_COLUMNS] == [
         "campaign", "spec_id", "seq", "ts", "state_at", "persona", "severity", "gate", "ac",
         "title", "detail", "files"]
@@ -222,7 +223,8 @@ def test_column_types_pinned():
         ("exit_code", "int"), ("is_error", "bool"), ("timed_out", "bool"),
         ("interrupted", "bool"), ("transient", "bool"), ("verdict_status", "str"),
         ("status", "str"),
-        ("input_tokens", "int"), ("output_tokens", "int"), ("cache_read_tokens", "int"))
+        ("input_tokens", "int"), ("output_tokens", "int"), ("cache_read_tokens", "int"),
+        ("worker", "str"))
     assert CE.FINDING_COLUMNS == (
         ("campaign", "str"), ("spec_id", "str"),
         ("seq", "int"), ("ts", "str"), ("state_at", "str"),
@@ -401,6 +403,39 @@ def test_run_rows(cfg):
     assert (b["input_tokens"], b["output_tokens"], b["cache_read_tokens"]) == (None,) * 3
     c = by["003-implementer"]
     assert c["status"] == "running" and c["budget_frac"] is None and c["charged_usd"] is None
+    assert (a["worker"], b["worker"], c["worker"]) == ("local", "local", None)     # SPEC-0346
+
+
+def test_run_rows_without_events_uses_one_ledger_read(cfg):
+    """`run_rows` with `events=None` still fills `worker` from the same ledger as `campaign_runs`."""
+    cid = "C-NOEV"
+    make(cfg, cid, [
+        (1, "run.start", run_start("implementer", "001-implementer")),
+        (2, "run.end", run_end("implementer", "001-implementer", cost_usd=1.0, worker="wb")),
+    ])
+    rows = CE.run_rows(cfg, {"campaign": cid, "spec_id": None, "profile": "balanced",
+                             "size": "m", "tone": "solid"})
+    assert [(r["run_id"], r["worker"]) for r in rows] == [("001-implementer", "wb")]
+
+
+def test_run_rows_join_the_worker_from_the_same_ledger_snapshot(cfg, monkeypatch):
+    """SPEC-0346: the run records and the worker column are one read. A later ledger must not
+    be consulted for either."""
+    cid = "C-SNAP"
+    make(cfg, cid, [
+        (1, "run.start", run_start("implementer", "001-implementer")),
+        (2, "run.end", run_end("implementer", "001-implementer", cost_usd=1.0, worker="wa")),
+    ])
+    events = S.read_ledger(cfg, cid)
+
+    def boom(*_a, **_k):
+        raise AssertionError("run records re-read the ledger")
+
+    monkeypatch.setattr(S, "read_ledger", boom)
+    rows = CE.run_rows(cfg, {"campaign": cid, "spec_id": None, "profile": "balanced",
+                             "size": "m", "tone": "solid"}, events)
+    assert [(r["run_id"], r["worker"], r["status"], r["cost_usd"]) for r in rows] == [
+        ("001-implementer", "wa", "done", 1.0)]
 
 
 def test_finding_rows_state_at(cfg):

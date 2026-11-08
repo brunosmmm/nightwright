@@ -221,7 +221,7 @@ progress. This is the single place to see *what has been decided* and *what is i
   - [x] [SPEC-0325](./specs/0325-steward-campaign-notices-project-idea-reconcile-remote-open.md) Stewards get campaign notices; a second-project merge reconciles its idea; pr campaigns branch from the remote — done
   - [x] [SPEC-0327](./specs/0327-cross-project-spec-id-collision-the-comfort.md) Spec ids are per project: a second project's SPEC-NNNN never resolves against wt's own specs — done
   - [x] [SPEC-0393](./specs/0393-wtfug-spec-0304-20261030-7a4f-spec-0304-review.md) SPEC-0304 review follow-ups: mvp-report edge cases in E4, E5 and E6, and the tests that pin them — done
-- **[SPEC-0310](./specs/0310-remote-workers-run-gates-persona-runs-and.md) — Remote workers: run gates, persona runs and campaigns on other machines** · accepted · (14/16 done)
+- **[SPEC-0310](./specs/0310-remote-workers-run-gates-persona-runs-and.md) — Remote workers: run gates, persona runs and campaigns on other machines** · accepted · (15/16 done)
   - [x] [SPEC-0331](./specs/0331-remote-gates-over-ssh-on-one-worker-host.md) Remote gates over SSH on one worker host — superseded
   - [x] [SPEC-0332](./specs/0332-worker-owned-async-jobs.md) Worker-owned async jobs — superseded
   - [x] [SPEC-0333](./specs/0333-remote-persona-runs-with-bundle-write-back.md) Remote persona runs with bundle write-back — superseded
@@ -236,7 +236,7 @@ progress. This is the single place to see *what has been decided* and *what is i
   - [x] [SPEC-0343](./specs/0343-worker-bootstrap-and-drain.md) Worker drain — done
   - [x] [SPEC-0344](./specs/0344-remote-persona-jobs-with-bundle-write-back.md) Remote persona jobs with bundle write-back — done
   - [x] [SPEC-0345](./specs/0345-persona-cap-rate-limit-backoff-affinity-and-cost-by-worker.md) Persona cap, rate-limit backoff, campaign affinity and cost by worker — done
-  - [ ] [SPEC-0346](./specs/0346-remote-workers-integration-suite.md) Remote workers integration suite for gate and persona workers — accepted
+  - [x] [SPEC-0346](./specs/0346-remote-workers-integration-suite.md) Remote workers integration suite for gate and persona workers — done
   - [x] [SPEC-0354](./specs/0354-nw-workers-bootstrap.md) nw workers bootstrap — done
 - **[SPEC-0348](./specs/0348-declarative-per-project-agentic-pipeline.md) — Declarative per-project agentic pipeline: steps, personas and routing as data, with a lean fast-track lane** · accepted · (3/3 done)
   - [x] [SPEC-0370](./specs/0370-pipeline-a1-persona-registry-as-data.md) Pipeline A1: persona registry as data (persona_defs/*.yaml, layered loader, nw personas list|show) — done
@@ -260,13 +260,14 @@ progress. This is the single place to see *what has been decided* and *what is i
   - [x] [SPEC-0430](./specs/0430-dashboard-campaign-drilldown-ledger-timeline.md) Dashboard campaign drilldown: ledger timeline, current run and live run tail from stream.jsonl — done
   - [x] [SPEC-0432](./specs/0432-dashboard-default-bind-loopback-always-plus-the.md) Dashboard default bind: loopback always plus the tailnet address whenever one exists — done
   - [x] [SPEC-0434](./specs/0434-dashboard-page-survives-restarts-answers-land.md) Dashboard page: answers land at once, the page survives server restarts, the data stamp is truthful — done
-- **[SPEC-0405](./specs/0405-rich-queue-tui-prioritized-live-queue-campaign.md) — Rich queue TUI: prioritized live queue, campaign detail popup, closed-campaign history and a cross-campaign findings and decisions browser over one shared history layer** · accepted · (6/6 done)
+- **[SPEC-0405](./specs/0405-rich-queue-tui-prioritized-live-queue-campaign.md) — Rich queue TUI: prioritized live queue, campaign detail popup, closed-campaign history and a cross-campaign findings and decisions browser over one shared history layer** · accepted · (7/7 done)
   - [x] [SPEC-0406](./specs/0406-shared-campaign-history-data-layer-nw-campaign.md) Shared campaign history data layer: history.py derivation, read-side schemas, campaign_export reuse and the history/records CLIs — done
   - [x] [SPEC-0408](./specs/0408-ledger-provenance-finding-run-id-and-key-triage.md) Ledger provenance: finding run_id and key, triage events — done
   - [x] [SPEC-0409](./specs/0409-tui-test-harness-real-app-pilots-on-real-fixture.md) Remove Textual/pyte test skips, add the AST guard and a TUI test runtime budget — done
   - [x] [SPEC-0410](./specs/0410-live-queue-view-state-grouped-sections-with.md) Live queue view: state-grouped sections with priority, admission order and why-waiting — done
   - [x] [SPEC-0431](./specs/0431-campaign-stamps-on-conductor-decisions-and.md) Campaign stamps on conductor decisions and mailbox messages — done
   - [x] [SPEC-0433](./specs/0433-human-readable-campaign-story-one-shared-timeline.md) Human-readable campaign story: one shared timeline formatter for the TUI, the dashboard drilldown and nw campaign show — done
+  - [x] [SPEC-0459](./specs/0459-real-app-tui-test-harness-on-the-real-data.md) Real-fixture IdeaDesk Pilot harness and queue-window preparation — done
 - **[SPEC-0419](./specs/0419-self-healing-queue.md) — Self-healing queue** · done · (6/6 done)
   - [x] [SPEC-0420](./specs/0420-red-main-fix-forward-and-revert.md) Red-main fix-forward and revert — done
   - [x] [SPEC-0421](./specs/0421-always-run-guard-tests-at-close-and-loop-gates.md) Always-run guard tests at close and loop gates — done
@@ -289,13 +290,14 @@ progress. This is the single place to see *what has been decided* and *what is i
 | [SPEC-0169](./specs/0169-mini-agentic-workflow-queue-campaigns-headless.md) | Mini agentic workflow: queue, campaigns, headless personas, conductor | epic | accepted | M9: agentic workflow | 2026-10-25 |
 | [SPEC-0310](./specs/0310-remote-workers-run-gates-persona-runs-and.md) | Remote workers: run gates, persona runs and campaigns on other machines | epic | accepted | — | 2026-10-31 |
 | [SPEC-0335](./specs/0335-federation-over-a-networked-mailbox.md) | Federation over a networked mailbox | feature | accepted | — | 2026-10-31 |
-| [SPEC-0346](./specs/0346-remote-workers-integration-suite.md) | Remote workers integration suite for gate and persona workers | feature | accepted | — | 2026-11-01 |
 | [SPEC-0348](./specs/0348-declarative-per-project-agentic-pipeline.md) | Declarative per-project agentic pipeline: steps, personas and routing as data, with a lean fast-track lane | epic | accepted | M9: agentic workflow | 2026-11-01 |
 | [SPEC-0367](./specs/0367-nw-workers-bootstrap-cannot-refresh-a-stale.md) | nw workers bootstrap refreshes a stale worker install (build id, --reinstall, stale warning, loud gate rejection) | feature | in-progress | — | 2026-11-02 |
 | [SPEC-0368](./specs/0368-remote-gating-red-on-current-trees-human-visible.md) | Remote gates gate a stat-dirty tree at HEAD instead of falling back, and expose done.changed on the run | feature | in-progress | — | 2026-11-02 |
 | [SPEC-0391](./specs/0391-worker-host-slots-from-registry.md) | A gate job carries the worker's registry slots as the worker host's slot limit | feature | in-progress | — | 2026-11-02 |
 | [SPEC-0400](./specs/0400-remote-web-dashboard-live-view-of-active-queue.md) | Remote web dashboard and decisions inbox over Tailscale (nw serve --dashboard) | epic | accepted | M9: agentic workflow | 2026-11-03 |
 | [SPEC-0405](./specs/0405-rich-queue-tui-prioritized-live-queue-campaign.md) | Rich queue TUI: prioritized live queue, campaign detail popup, closed-campaign history and a cross-campaign findings and decisions browser over one shared history layer | epic | accepted | — | 2026-11-03 |
+| [SPEC-0465](./specs/0465-run-pi-personas-through-the-node-sdk.md) | Run Pi personas through the Node SDK | feature | in-progress | — | 2026-11-08 |
+| [SPEC-0466](./specs/0466-gpt-only-pi-sdk-model-set-for-all-nightwright.md) | GPT-only Pi SDK model set for all nightwright personas | feature | in-progress | — | 2026-11-08 |
 
 ## Done
 
@@ -622,6 +624,7 @@ progress. This is the single place to see *what has been decided* and *what is i
 | [SPEC-0343](./specs/0343-worker-bootstrap-and-drain.md) | Worker drain | feature | done | — | 2026-11-02 |
 | [SPEC-0344](./specs/0344-remote-persona-jobs-with-bundle-write-back.md) | Remote persona jobs with bundle write-back | feature | done | — | 2026-11-02 |
 | [SPEC-0345](./specs/0345-persona-cap-rate-limit-backoff-affinity-and-cost-by-worker.md) | Persona cap, rate-limit backoff, campaign affinity and cost by worker | feature | done | — | 2026-11-04 |
+| [SPEC-0346](./specs/0346-remote-workers-integration-suite.md) | Remote workers integration suite for gate and persona workers | feature | done | — | 2026-11-07 |
 | [SPEC-0347](./specs/0347-queue-backlog-resolves-outbound-depends-on.md) | Queue backlog resolves outbound `depends_on` (PROJ-NNNN files, merged-campaign fallback) | feature | done | — | 2026-11-01 |
 | [SPEC-0349](./specs/0349-nw-doctor-install-health-check.md) | `nw doctor`: read-only install health check with `nw.doctor.v1` JSON | feature | done | — | 2026-11-01 |
 | [SPEC-0350](./specs/0350-per-gate-path-sensitivity.md) | Per-gate path sensitivity for the close re-gate | feature | done | M9: agentic workflow | 2026-11-01 |
@@ -710,7 +713,18 @@ progress. This is the single place to see *what has been decided* and *what is i
 | [SPEC-0447](./specs/0447-tail-joins-sdk-text-tokens.md) | The run tail joins SDK text tokens into a sentence | feature | done | — | 2026-11-07 |
 | [SPEC-0448](./specs/0448-tail-renders-sdk-tool-results.md) | The run tail renders SDK tool results instead of their JSON | feature | done | — | 2026-11-07 |
 | [SPEC-0449](./specs/0449-tail-shows-shell-output-deltas.md) | The run tail shows shell output while the command is running | feature | done | — | 2026-11-07 |
-| [SPEC-0451](./specs/0451-run-pi-personas-through-the-node-sdk.md) | Run Pi personas through the Node SDK | feature | done | — | 2026-11-08 |
+| [SPEC-0451](./specs/0451-tail-marks-spoken-lines.md) | The run tail marks the agent's spoken lines | feature | done | — | 2026-11-07 |
+| [SPEC-0452](./specs/0452-tail-renders-spoken-verdicts.md) | The run tail renders a spoken verdict as a review | feature | done | — | 2026-11-07 |
+| [SPEC-0453](./specs/0453-queue-watch-title-inside-the-card.md) | Queue watch shows the campaign title inside the card | feature | done | — | 2026-11-07 |
+| [SPEC-0454](./specs/0454-live-idea-after-does-not-reread-ideas.md) | A live idea after-wait does not reread the idea corpus | feature | done | — | 2026-11-07 |
+| [SPEC-0455](./specs/0455-selectable-model-sets.md) | A model set chooses the runner and the concrete model | feature | done | — | 2026-11-07 |
+| [SPEC-0456](./specs/0456-readonly-cursor-personas-keep-read-tools.md) | Read-only Cursor personas keep the file-inspection tools | feature | done | — | 2026-11-07 |
+| [SPEC-0457](./specs/0457-readonly-cursor-tools-are-lowercase.md) | Read-only Cursor tool names are lowercase | feature | done | — | 2026-11-07 |
+| [SPEC-0458](./specs/0458-tail-renders-triage-and-implementer-cards.md) | The run tail renders a triage and an implementer result as cards | feature | done | — | 2026-11-07 |
+| [SPEC-0459](./specs/0459-real-app-tui-test-harness-on-the-real-data.md) | Real-fixture IdeaDesk Pilot harness and queue-window preparation | feature | done | M9: agentic workflow | 2026-11-07 |
+| [SPEC-0460](./specs/0460-cursor-spawns-force-fast-off.md) | Cursor spawns keep the effort and force fast off | feature | done | — | 2026-11-07 |
+| [SPEC-0461](./specs/0461-cap-counts-only-known-cost.md) | A campaign cap counts only a cost the run reported | feature | done | — | 2026-11-07 |
+| [SPEC-0462](./specs/0462-triage-a-diverging-campaign.md) | Triage a diverging campaign before another implement round | feature | done | — | 2026-11-07 |
 
 ## Superseded / rejected
 

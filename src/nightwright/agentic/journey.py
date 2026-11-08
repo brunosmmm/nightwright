@@ -10,7 +10,8 @@ import re
 
 SHORT = {"QUEUED": "queued", "OPENING": "open", "SPEC_WRITING": "spec",
          "SPEC_REVIEW": "spec review", "IMPLEMENTING": "impl", "GATING": "gates",
-         "TRIAGING": "triage", "REVIEWING": "review", "CLOSING": "close", "PARKED": "parked",
+         "TRIAGING": "triage", "REVIEWING": "review", "DIVERGENCE_TRIAGE": "diverge",
+         "CLOSING": "close", "PARKED": "parked",
          "WAITING": "waiting", "MERGED": "merged", "HANDED_OFF": "handed off",
          "ABANDONED": "abandoned"}
 TRACK_CAP = 8
@@ -294,6 +295,7 @@ def why(state: dict, ledger: list, waiting=None, *, loops=None) -> str:
             "SPEC_REVIEW": "reviewing the spec", "IMPLEMENTING": "implementing the spec",
             "GATING": "running the gates", "TRIAGING": "triaging the gate failure",
             "REVIEWING": "reviewers are reading the change",
+            "DIVERGENCE_TRIAGE": "comparing the diverging loop with the spec",
             "CLOSING": "closing: rebase, re-gate, merge"}.get(
         st, f"{short(st)}" + (f": {reason.replace('_', ' ')}" if reason else ""))
 

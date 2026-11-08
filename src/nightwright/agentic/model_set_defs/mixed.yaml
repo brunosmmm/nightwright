@@ -1,0 +1,11 @@
+schema: nw.model_set.v1
+description: "Claude writes the code and the spec; Grok 4.7 reviews, at the profile's effort"
+runner: claude
+personas:
+  conformance_reviewer: {runner: cursor, model: grok-4.7}
+  test_reviewer: {runner: cursor, model: grok-4.7}
+  adversarial_reviewer: {runner: cursor, model: grok-4.7}
+  spec_reviewer: {runner: cursor, model: grok-4.7}
+  review_triager: {runner: cursor, model: grok-4.7}
+  gate_triager: {runner: cursor, model: grok-4.7}
+  divergence_triager: {runner: cursor, model: grok-4.7}

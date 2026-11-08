@@ -17,3 +17,5 @@ def test_wheel_contains_the_builtin_profile_files(tmp_path):
     names = set(zipfile.ZipFile(wheel).namelist())
     for profile in ("balanced", "frugal", "thorough"):
         assert f"nightwright/agentic/profile_defs/{profile}.yaml" in names
+    for name in ("claude", "grok", "mixed"):
+        assert f"nightwright/agentic/model_set_defs/{name}.yaml" in names

@@ -2,20 +2,27 @@
 # effort_param is the SDK parameter that carries the effort. efforts are the
 # values that parameter accepts. A model with neither has no effort knob;
 # a trailing -high on that id is dropped and the bare id is sent.
+# SPEC-0460. `fast: false` is set only on grok and composer. The spawn always
+# sends false for those; the key is presence, not a switch that can be turned on.
 schema: nw.sdk_models.v1
 models:
   default: {}
   grok-4.7:
     effort_param: reasoning_effort
     efforts: [low, medium, high, xhigh]
+    fast: false
   grok-4.6:
     effort_param: effort
     efforts: [low, medium, high, xhigh]
+    fast: false
   grok-4.5:
     effort_param: effort
     efforts: [low, medium, high]
-  composer-2.5: {}
-  composer-2: {}
+    fast: false
+  composer-2.5:
+    fast: false
+  composer-2:
+    fast: false
   claude-opus-5-5:
     effort_param: effort
     efforts: [low, medium, high, xhigh, max]

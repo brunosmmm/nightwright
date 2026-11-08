@@ -94,19 +94,13 @@ its idea or its spec, with a brief that carries what was learned:
 For an accepted spec that means superseding it with a new one (`/nw-rework`), never quietly
 editing the old one.
 
-!!! note "Planned: divergence detectors ([IDEA-089](../ideas/index.md))"
-    Today a human or the conductor notices divergence. Planned: nightwright computes signals per round
-    from the ledger and the review store:
-    - must_fix/major counts not falling;
-    - a high share of *new* findings each round;
-    - findings coming back after being fixed;
-    - flip-flopping verdicts;
-    - a growing spec or diff;
-    - the same test failing again and again.
-
-    When a threshold trips, it raises a `review_divergence` alert. A triager then picks
-    continue, narrow, split, rework or escalate, before the conductor and finally you are
-    asked.
+The implementation loop already does this. [SPEC-0247](https://github.com/brunosmmm/nightwright/blob/main/docs/specs/0247-divergence-detection-in-the-implementation-loop.md)
+computes trend, churn, recurrence and a repeated gate failure from the ledger. When one trips, the
+campaign enters `DIVERGENCE_TRIAGE` ([SPEC-0462](https://github.com/brunosmmm/nightwright/blob/main/docs/specs/0462-triage-a-diverging-campaign.md)).
+One read-only persona labels each latest blocker against the spec and picks one extra implement
+round (once per campaign), a spec rework, or a human escalation. A rework is carried out by the
+conductor and the project's steward. The human is asked only for the escalation, and that question
+does not time out.
 
 ## Keeping it simple
 

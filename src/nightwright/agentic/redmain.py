@@ -36,7 +36,7 @@ FAILING_MAX = 200
 BRIEF_IDS_MAX = 50
 MERGES_UNKNOWN_GREEN = 20       # merges considered when the last green sha is unknown
 MOOT_STATES = ("QUEUED", "WAITING", "OPENING", "IMPLEMENTING", "GATING", "TRIAGING", "REVIEWING",
-               "PARKED")
+               "DIVERGENCE_TRIAGE", "PARKED")
 DEFAULTS = {"enabled": True, "fixforward_attempts": 2, "revert": True, "hold_merges": True,
             "escalate_after_s": 14400, "brief_log_lines": 120,
             "probe_cmd": "uv run pytest -q -p no:cacheprovider", "probe_timeout_s": 900}

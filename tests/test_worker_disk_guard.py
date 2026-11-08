@@ -147,6 +147,39 @@ def test_aborted_job_ends_with_disk_error_frame(tmp_path, monkeypatch):
     assert "done" not in [f["type"] for f in frames]
 
 
+def test_aborted_job_reports_disk_when_the_gate_raises(tmp_path, monkeypatch):
+    """The guard has already aborted when the gate call raises. The error frame is still
+    `stage: disk`, not `gate:unit`."""
+    cfg = {"data_dir": str(tmp_path / "data")}
+    job = tmp_path / "job"
+    for d in ("tmp", "out", "tree"):
+        (job / d).mkdir(parents=True)
+    h = _header("j-1", "a" * 40, "b" * 40, [_gate("unit", "true")], bundle_bytes=0)
+    (job / "header.json").write_text(json.dumps(h))
+    (job / "job.json").write_text("{}")
+    monkeypatch.setattr(W, "_checkout", lambda *a, **k: None)
+    monkeypatch.setattr(W, "_start_gc", lambda cfg: None)
+    monkeypatch.setattr(W, "_cleanup", lambda *a, **k: None)
+    monkeypatch.setattr(W, "DISK_CHECK_S", 0.05)
+    monkeypatch.setattr(W, "_free_bytes", lambda cfg: 1 * 2**30)
+    monkeypatch.setattr(W, "_largest_live_job", lambda cfg: "job")
+
+    def raising_gate(gate, tree, env, log, ph, log_rel, stop, deadline):
+        assert stop.wait(10), "the guard never cancelled"
+        raise RuntimeError("gate blew up after the kill")
+    monkeypatch.setattr(G, "run_gate_with_retries", raising_gate)
+    try:
+        assert WJ.run_job(cfg, job, {}) != 0
+    finally:
+        G.reset()                          # the abort called terminate_all; later tests start clean
+    frames = [json.loads(ln) for ln in (job / "frames.jsonl").read_text().splitlines()]
+    err = frames[-1]
+    assert err["type"] == "error" and err["stage"] == "disk" and err["job_error"] is True
+    assert "abort_free_gb" in err["error"] and "DiskAbort" in err["error"]
+    assert "gate blew up" not in err["error"]
+    assert "done" not in [f["type"] for f in frames]
+
+
 def test_jobs_report_sizes(tmp_path, monkeypatch):
     cfg = _cfg(tmp_path)
     _job(cfg, "j", size=1000)

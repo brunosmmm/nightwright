@@ -69,11 +69,17 @@ def _record(cid, run_id, start, end, run_json) -> dict:
     return {k: rec[k] for k in RECORD_KEYS}
 
 
-def _gather(cfg, cid) -> dict[str, dict]:
+def _gather(cfg, cid, events=None) -> dict[str, dict]:
     store.read_state(cfg, cid)                      # unknown campaign → ValueError
     starts: dict[str, dict] = {}
     ends: dict[str, dict] = {}
-    for ev in store.read_ledger(cfg, cid, types=["run.start", "run.end"]):
+    # SPEC-0346: export passes the ledger it already read, so the run join and the worker
+    # map see one immutable set. None re-reads (the `nw campaign runs` path).
+    if events is None:
+        evs = store.read_ledger(cfg, cid, types=["run.start", "run.end"])
+    else:
+        evs = [e for e in events if e.get("type") in ("run.start", "run.end")]
+    for ev in evs:
         rid = ev.get("run_id")
         if rid:
             (starts if ev["type"] == "run.start" else ends)[rid] = ev
@@ -86,9 +92,10 @@ def _gather(cfg, cid) -> dict[str, dict]:
     return out
 
 
-def campaign_runs(cfg, cid) -> list[dict]:
-    """Every run of the campaign known to the ledger or the `runs/` directory, by run_id."""
-    return list(_gather(cfg, cid).values())
+def campaign_runs(cfg, cid, events=None) -> list[dict]:
+    """Every run of the campaign known to the ledger or the `runs/` directory, by run_id.
+    `events` is an already-read ledger (SPEC-0346); without it the ledger is read here."""
+    return list(_gather(cfg, cid, events).values())
 
 
 def _resolve(runs: dict[str, dict], cid, run) -> str:

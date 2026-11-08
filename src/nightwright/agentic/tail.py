@@ -28,6 +28,7 @@ STDERR_LINES = 10
 RESULT_TEXT_LINES = 15
 DIFF_LINES = 20                      # added and removed lines shown for one edit
 OUTPUT_LINES = 8                     # stdout or stderr lines shown for one shell
+SPEECH = "bold yellow"               # the agent's own words, against dim tool output
 END_STATES = ("finished", "vanished", "orphaned")
 RUNNING = ("running", "orphan_group")
 RUN_LOOKBACK = 8                     # newest run dirs looked at per campaign
@@ -117,6 +118,46 @@ def _usd(x) -> str:
 
 def _k(n: int) -> str:
     return f"{n / 1000:.1f}k" if n >= 1000 else str(n)
+
+
+def _opens_json(text: str) -> bool:
+    stripped = text.lstrip()
+    return bool(stripped) and stripped[0] in "{["
+
+
+def _json_value_end(text: str) -> int | None:
+    """Index just past a complete JSON value, when one starts at the first non-space."""
+    i = 0
+    while i < len(text) and text[i].isspace():
+        i += 1
+    if i >= len(text) or text[i] not in "{[":
+        return None
+    depth = 0
+    in_str = False
+    esc = False
+    for j in range(i, len(text)):
+        ch = text[j]
+        if in_str:
+            if esc:
+                esc = False
+            elif ch == "\\":
+                esc = True
+            elif ch == '"':
+                in_str = False
+            continue
+        if ch == '"':
+            in_str = True
+        elif ch in "{[":
+            depth += 1
+        elif ch in "}]":
+            depth -= 1
+            if depth == 0:
+                return j + 1
+    return None
+
+
+def _one_line(value) -> str:
+    return " ".join(str(value).split())
 
 
 def _duration(ms) -> str:
@@ -447,36 +488,250 @@ class Renderer:
     def _nest(self, key: str) -> str:
         return "  ┆ " if key else ""
 
+    def _speech_line(self, nest: str, ln: str) -> Text:
+        """One spoken line: a yellow marker, then the words."""
+        t = Text(f"{nest}  ")
+        t.append("▸ ", style=SPEECH)
+        t.append(ln, style=SPEECH)
+        return t
+
+    def _review_lines(self, obj: dict, nest: str) -> list[Text] | None:
+        """A spoken verdict object, as a review instead of the JSON it arrived as."""
+        verdict = obj.get("verdict")
+        if not isinstance(verdict, str) or not verdict.strip():
+            return None
+        bits = [verdict.strip()]
+        for key in ("size", "tone"):
+            if obj.get(key):
+                bits.append(str(obj[key]))
+        if obj.get("score") is not None:
+            bits.append(f"score {obj['score']}")
+        head = Text(f"{nest}  ")
+        head.append("▸ ", style=SPEECH)
+        head.append(" · ".join(bits), style="bold green" if verdict in ("approve", "pass")
+                    else "bold red" if verdict == "fix" else "bold yellow")
+        out = [head]
+        lead = obj.get("rationale") or obj.get("summary")
+        if lead:
+            out.append(Text(f"{nest}    {_one_line(lead)}"))
+        brief = obj.get("fix_brief")
+        if isinstance(brief, str) and brief.strip():
+            out.append(Text(f"{nest}    brief: {_one_line(brief)}"))
+        for finding in obj.get("findings") or []:
+            if not isinstance(finding, dict):
+                continue
+            sev = str(finding.get("severity") or "")
+            line = Text(f"{nest}    ")
+            if sev:
+                line.append(sev, style={"must_fix": "bold red", "major": "yellow",
+                                        "nit": "dim"}.get(sev, ""))
+                line.append(" · ")
+            line.append(str(finding.get("title") or "?"), style="bold")
+            where = finding.get("section") or finding.get("ac") or finding.get("category")
+            if where:
+                line.append(f"  ({_one_line(where)})", style="dim")
+            out.append(line)
+            detail = finding.get("detail")
+            if detail:
+                out.append(Text(f"{nest}      {_one_line(detail)}"))
+            for label, key in (("fix", "suggested_fix"), ("done when", "acceptance"),
+                               ("trigger", "trigger")):
+                val = finding.get(key)
+                if val:
+                    out.append(Text(f"{nest}      {label}: {_one_line(val)}", style="dim"))
+            files = finding.get("files")
+            if isinstance(files, list) and files:
+                out.append(Text(f"{nest}      files: {', '.join(map(str, files))}", style="dim"))
+        splits = [s for s in obj.get("suggested_splits") or [] if isinstance(s, dict)]
+        if splits:
+            out.append(Text(f"{nest}    splits", style="bold"))
+            for part in splits:
+                scope = _one_line(part.get("scope") or "")
+                title = part.get("title") or "?"
+                out.append(Text(f"{nest}      · {title}" + (f" — {scope}" if scope else "")))
+        acs = [a for a in obj.get("ac_assessment") or [] if isinstance(a, dict)]
+        if acs:
+            out.append(Text(f"{nest}    acceptance", style="bold"))
+            for ac in acs:
+                mark = "met" if ac.get("met") else "unmet"
+                out.append(Text(f"{nest}      {mark} · {_one_line(ac.get('ac') or '?')}",
+                                style="dim" if ac.get("met") else ""))
+        return out
+
+    def _card_head(self, nest: str, label: str, style: str) -> Text:
+        head = Text(f"{nest}  ")
+        head.append("▸ ", style=SPEECH)
+        head.append(label, style=style)
+        return head
+
+    def _triage_lines(self, obj: dict, nest: str) -> list[Text] | None:
+        """A spoken gate-triage object (`disposition`), as a card instead of JSON."""
+        disp = obj.get("disposition")
+        if disp not in ("fix", "retry_gate", "waive", "escalate"):
+            return None
+        if not any(obj.get(k) not in (None, "", []) for k in
+                   ("fix_brief", "must_fix", "waived", "confidence", "followup_ideas")) \
+                and obj.get("suspected_flaky") is not True:
+            return None
+        bits = [disp]
+        if obj.get("confidence"):
+            bits.append(str(obj["confidence"]))
+        if obj.get("suspected_flaky") is True:
+            bits.append("flaky")
+        style = {"fix": "bold red", "escalate": "bold red", "waive": "bold green"}.get(
+            disp, "bold yellow")
+        out = [self._card_head(nest, " · ".join(bits), style)]
+        for item in obj.get("must_fix") or []:
+            if not isinstance(item, dict):
+                continue
+            line = Text(f"{nest}    ")
+            if item.get("gate"):
+                line.append(str(item["gate"]), style="dim")
+                line.append(" · ")
+            line.append(str(item.get("title") or "?"), style="bold")
+            out.append(line)
+            if item.get("detail"):
+                out.append(Text(f"{nest}      {_one_line(item['detail'])}"))
+            files = item.get("files")
+            if isinstance(files, list) and files:
+                out.append(Text(f"{nest}      files: {', '.join(map(str, files))}", style="dim"))
+        for item in obj.get("waived") or []:
+            if not isinstance(item, dict):
+                continue
+            gate = item.get("gate") or "?"
+            reason = _one_line(item.get("reason") or "")
+            out.append(Text(f"{nest}    waived · {gate}" + (f" — {reason}" if reason else ""),
+                            style="dim"))
+        brief = obj.get("fix_brief")
+        if isinstance(brief, str) and brief.strip():
+            out.append(Text(f"{nest}    brief: {_one_line(brief)}"))
+        ideas = [str(i) for i in obj.get("followup_ideas") or [] if str(i).strip()]
+        if ideas:
+            out.append(Text(f"{nest}    followups", style="bold"))
+            for idea in ideas:
+                out.append(Text(f"{nest}      · {_one_line(idea)}", style="dim"))
+        return out
+
+    def _status_lines(self, obj: dict, nest: str) -> list[Text] | None:
+        """A spoken implementer object (`status`), as a card instead of JSON."""
+        status = obj.get("status")
+        if status not in ("done", "partial", "blocked"):
+            return None
+        if not any(obj.get(k) not in (None, "", []) for k in
+                   ("summary", "changed_files", "tests_run", "ac_status", "blockers",
+                    "followup_ideas")):
+            return None
+        style = {"done": "bold green", "blocked": "bold red"}.get(status, "bold yellow")
+        out = [self._card_head(nest, status, style)]
+        if obj.get("summary"):
+            out.append(Text(f"{nest}    {_one_line(obj['summary'])}"))
+        files = obj.get("changed_files")
+        if isinstance(files, list) and files:
+            out.append(Text(f"{nest}    files: {', '.join(map(str, files))}", style="dim"))
+        for cmd in obj.get("tests_run") or []:
+            if str(cmd).strip():
+                out.append(Text(f"{nest}    test: {_one_line(cmd)}", style="dim"))
+        acs = [a for a in obj.get("ac_status") or [] if isinstance(a, dict)]
+        if acs:
+            out.append(Text(f"{nest}    acceptance", style="bold"))
+            for ac in acs:
+                mark = "met" if ac.get("met") else "unmet"
+                out.append(Text(f"{nest}      {mark} · {_one_line(ac.get('ac') or '?')}",
+                                style="dim" if ac.get("met") else ""))
+        for blocker in obj.get("blockers") or []:
+            if str(blocker).strip():
+                line = Text(f"{nest}    ")
+                line.append("blocker", style="bold red")
+                line.append(f" · {_one_line(blocker)}")
+                out.append(line)
+        ideas = [str(i) for i in obj.get("followup_ideas") or [] if str(i).strip()]
+        if ideas:
+            out.append(Text(f"{nest}    followups", style="bold"))
+            for idea in ideas:
+                out.append(Text(f"{nest}      · {_one_line(idea)}", style="dim"))
+        return out
+
+    def _render_held(self, nest: str, buf: str) -> list[Text]:
+        if not buf.strip():
+            return []
+        end = _json_value_end(buf)
+        if end is not None and not buf[end:].strip():
+            try:
+                obj = json.loads(buf[:end])
+            except ValueError:
+                obj = None
+            if isinstance(obj, dict):
+                card = (self._review_lines(obj, nest) or self._triage_lines(obj, nest)
+                        or self._status_lines(obj, nest))
+                if card:
+                    return card
+        return [self._speech_line(nest, ln) for ln in buf.split("\n") if ln.strip()]
+
+    def _drain(self, nest: str, buf: str, *, hold_sentence: bool,
+               hold_json: bool) -> tuple[list[Text], str]:
+        """Emit finished sentences and a closed verdict.
+
+        `hold_sentence` keeps the tail of a line that has no newline yet.
+        `hold_json` keeps an `{` that has not closed. A flush holds the verdict
+        and still prints the sentence.
+        """
+        out: list[Text] = []
+        while buf.strip():
+            if _opens_json(buf):
+                end = _json_value_end(buf)
+                if end is None:
+                    if hold_json:
+                        return out, buf
+                    break
+                chunk, buf = buf[:end], buf[end:]
+                out.extend(self._render_held(nest, chunk))
+                continue
+            if "\n" not in buf:
+                break
+            head, buf = buf.split("\n", 1)
+            if head.strip():
+                out.append(self._speech_line(nest, head))
+        if hold_sentence:
+            return out, buf
+        if buf.strip():
+            out.extend(self._render_held(nest, buf))
+        return out, ""
+
     def _append_prose(self, key: str, text: str) -> list[Text]:
-        """Hold assistant text. A newline flushes the finished lines; a token fragment stays."""
+        """Hold assistant text. A newline flushes finished sentences; a verdict waits until it closes."""
         if not text:
             return []
-        buf = (self._prose.get(key) or "") + text
-        if "\n" not in buf:
-            self._prose[key] = buf
-            return []
-        parts = buf.split("\n")
-        self._prose[key] = parts[-1]
-        nest = self._nest(key)
-        return [Text(f"{nest}  {ln}") for ln in parts[:-1] if ln.strip()]
+        buf = (self._prose.pop(key, "") or "") + text
+        out, rest = self._drain(self._nest(key), buf, hold_sentence=True, hold_json=True)
+        if rest.strip():
+            self._prose[key] = rest
+        return out
 
-    def _flush_key(self, key: str) -> list[Text]:
-        """Emit held text for one stream as a single line, then a cost line that was waiting."""
-        buf = self._prose.pop(key, "") or ""
-        nest = self._nest(key)
-        out = [Text(f"{nest}  {ln}") for ln in buf.split("\n") if ln.strip()]
+    def _flush_key(self, key: str, *, hold_json: bool = False) -> list[Text]:
+        """Emit held text for one stream, then a cost line that was waiting.
+
+        A poll passes `hold_json` so an unfinished verdict is not printed as a fragment.
+        """
+        buf = self._prose.get(key) or ""
+        if not buf:
+            return []
+        out, rest = self._drain(self._nest(key), buf, hold_sentence=False, hold_json=hold_json)
+        if rest.strip():
+            self._prose[key] = rest
+        else:
+            self._prose.pop(key, None)
         if out and not key and self._pending_cost is not None:
             out.append(self._pending_cost)
             self._pending_cost = None
         return out
 
     def flush_prose(self) -> list[Text]:
-        """Emit every held fragment. The viewer calls this at the end of a poll."""
+        """Emit every finished fragment. The viewer calls this at the end of a poll."""
         keys = [k for k in self._prose if not k] + [k for k in self._prose if k]
         out: list[Text] = []
         for key in keys:
-            out.extend(self._flush_key(key))
-        if self._pending_cost is not None:
+            out.extend(self._flush_key(key, hold_json=True))
+        if self._pending_cost is not None and not any((v or "").strip() for v in self._prose.values()):
             out.append(self._pending_cost)
             self._pending_cost = None
         return out

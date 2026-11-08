@@ -82,6 +82,7 @@ DEFAULT_CONFIG = {
     # layers in code. Scalar keys replace outright.
     "agentic": {
         "runner": "claude",            # claude | cursor | fake (tests; SPEC-0174 / SPEC-0436)
+        "model_set": None,             # SPEC-0455: claude | grok | mixed; None keeps `runner`
         "fake_script": None,           # FakeRunner script path (SPEC-0174)
         "default_profile": "balanced",
         "spec_review_profile": None,   # `nw spec review` default profile; None = default_profile (SPEC-0278)

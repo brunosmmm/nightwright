@@ -1,0 +1,13 @@
+# builtin persona (SPEC-0462); the template is agentic/personas/divergence_triager.md
+schema: nw.persona.v1
+name: divergence_triager
+role: system
+template: divergence_triager.md
+description: "compares a diverging fix loop with the spec and picks one next step"
+order: 85
+output_schema: divergence_triager
+read_only: true
+invariant: default
+adopt:
+  step: divergence
+  personas: [divergence_triager]

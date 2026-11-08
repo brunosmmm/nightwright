@@ -1,0 +1,3 @@
+schema: nw.model_set.v1
+description: "Claude Code for every persona; opus, sonnet and haiku stay Claude models"
+runner: claude

@@ -239,6 +239,14 @@ def _legal_effort(requested, allowed):
     return min(allowed, key=lambda v: (abs(_EFFORT_RANK[v] - rank), -_EFFORT_RANK[v]))
 
 
+def _with_fast(spec, params):
+    """SPEC-0460. A catalog ``fast`` key means the model has the knob. The value
+    sent is always ``false``; the key is presence, not a switch."""
+    if isinstance(spec, dict) and "fast" in spec:
+        return [*params, {"id": "fast", "value": "false"}]
+    return list(params)
+
+
 def sdk_selection(model_id, catalog=None) -> dict:
     """The SDK model selection for a mapped Cursor id.
 
@@ -247,14 +255,15 @@ def sdk_selection(model_id, catalog=None) -> dict:
     whatever the model declares (``reasoning_effort``, ``reasoning``, or
     ``effort``). ``gpt-5.4-xhigh`` becomes ``reasoning=extra-high`` because
     that model spells the step ``extra-high``. A model with no effort parameter
-    drops the suffix and is sent as the bare id. Context, fast, and thinking
-    are left to the model's default. An id that matches no catalog entry is
-    passed through unchanged.
+    drops the suffix and is sent as the bare id. A model whose catalog entry
+    has a ``fast`` key is sent ``fast=false``. Context and thinking stay on the
+    model's default. An id that matches no catalog entry is passed through
+    unchanged.
     """
     raw = str(model_id or "").strip()
     catalog = load_sdk_models() if catalog is None else catalog
     if raw in catalog:
-        return {"id": raw, "params": []}
+        return {"id": raw, "params": _with_fast(catalog.get(raw) or {}, [])}
     for mid in sorted(catalog, key=len, reverse=True):
         prefix = f"{mid}-"
         if not raw.startswith(prefix):
@@ -265,12 +274,27 @@ def sdk_selection(model_id, catalog=None) -> dict:
         spec = catalog.get(mid) or {}
         param = spec.get("effort_param")
         if not param:
-            return {"id": mid, "params": []}
+            return {"id": mid, "params": _with_fast(spec, [])}
         value = _legal_effort(suffix, spec.get("efforts"))
         if value is None:
-            return {"id": mid, "params": []}
-        return {"id": mid, "params": [{"id": param, "value": value}]}
+            return {"id": mid, "params": _with_fast(spec, [])}
+        return {"id": mid, "params": _with_fast(spec, [{"id": param, "value": value}])}
     return {"id": raw, "params": []}
+
+
+def launch_model_arg(model_id, catalog=None) -> str:
+    """The ``cursor-agent --model`` value for this id (SPEC-0460).
+
+    Same selection as :func:`sdk_selection`, written as the CLI bracket form
+    ``grok-4.7[reasoning_effort=high,fast=false]``. A selection with no
+    parameters stays the bare id.
+    """
+    sel = sdk_selection(model_id, catalog)
+    params = sel["params"]
+    if not params:
+        return sel["id"]
+    body = ",".join(f"{p['id']}={p['value']}" for p in params)
+    return f"{sel['id']}[{body}]"
 
 
 def map_model(model, effort=None, cfg=None, *, project_root=None, cursor_model=None) -> str:

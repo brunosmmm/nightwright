@@ -29,7 +29,7 @@ from pathlib import Path
 
 from . import store
 
-GATED_KINDS = frozenset({"implement", "triage", "review", "write_spec", "resolve"})
+GATED_KINDS = frozenset({"implement", "triage", "review", "write_spec", "resolve", "divergence"})
 UNGATED_PERSONAS = frozenset({"spec_reviewer"})          # counted by neither cap nor backoff
 FIRST_BACKOFF_S = 60
 MAX_BACKOFF_S = 900

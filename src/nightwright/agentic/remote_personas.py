@@ -157,13 +157,17 @@ def run_job(cfg, h: dict, job: Path, frames, cancel: threading.Event) -> None:
     frames.emit("started", slot_wait_s=0.0)
     started_at, t0 = store.now_iso(), time.monotonic()
     box: dict = {}
+    # SPEC-0346: the persona's shell gets PATH and HOME plus the request env (the allowlist
+    # and the keys this job sets), not the worker process env.
+    child_base = {k: os.environ[k] for k in ("PATH", "HOME") if k in os.environ}
+    ctx = R.child_base_context(child_base)
 
     def target():
         try:
             box["result"] = runner.run(req)
         except BaseException as e:              # reported as the job's error frame
             box["error"] = e
-    th = threading.Thread(target=target, daemon=True)
+    th = threading.Thread(target=ctx.run, args=(target,), daemon=True)
     th.start()
     every = _progress_s()
     next_at = t0 + every
@@ -405,7 +409,8 @@ def _header(cfg, w: dict, state: dict, req, job_id: str, bundle: Path) -> dict:
     spec_id = state.get("spec_id")
     # SPEC-0436: only a real backend travels; a `fake` coordinator (offline stand-in) leaves
     # the choice to the worker's own config, which the header's validator would reject
-    kind = R.resolve_runner(cfg, campaign=state, project=state.get("project"))
+    kind = getattr(req, "runner", None) or R.resolve_runner(
+        cfg, campaign=state, project=state.get("project"))
     h = {"schema": W.JOB_SCHEMA, "kind": KIND, "job_id": job_id, "repo_key": key,
          "campaign": cid, "spec_id": spec_id if spec_id else "-", "commit": sha,
          "base": {"name": base_name, "sha": base_sha}, "have": have, "bundle_bytes": size,
@@ -527,6 +532,28 @@ def _failed(cfg, cid, w: dict, job_id: str, f) -> None:
         RG.set_cooldown(cfg, w["name"])
 
 
+# Kinds a persona attach applies. `gate` / `slot_wait` are allowlisted for gate jobs; on a
+# persona stream they are the wrong kind and are refused, as is any other frame whose
+# `job_id` is not this job's (`remote_gates._frame`).
+_PERSONA_FRAMES = frozenset({"accepted", "started", "progress", "done", "error", "status"})
+
+
+def _accepted_frame(line: bytes, job_id: str) -> dict:
+    """One persona-stream frame, or `RemoteFailure` before the caller touches `last_seen`
+    or the cursor. The gate path's checks (schema, allowlisted type, this job's id) plus a
+    frame number for every kind except `status`, and the persona kind set above."""
+    from . import remote_gates as RG
+    frame = RG._frame(line, job_id)
+    kind = frame["type"]
+    if kind not in _PERSONA_FRAMES:
+        raise RG.RemoteFailure("protocol", f"frame type {kind!r} is not a persona frame")
+    if kind != "status":
+        n = frame.get("n")
+        if not isinstance(n, int) or isinstance(n, bool) or n < 1:
+            raise RG.RemoteFailure("protocol", f"`{kind}` frame without a frame number")
+    return frame
+
+
 def _reader(stream, lines) -> None:
     try:
         for line in iter(stream.readline, b""):
@@ -562,25 +589,26 @@ def _attach(rr: R.RemoteRunner, req, hooks, job: dict):
                 continue
             if line is None or not line.endswith(b"\n"):
                 return "dropped", None
+            if not line.strip():
+                continue
             try:
-                frame = json.loads(line.decode("utf-8"))
-            except (UnicodeDecodeError, ValueError):
-                continue
-            if not isinstance(frame, dict):
-                continue
+                frame = _accepted_frame(line, job["id"])
+            except RG.RemoteFailure as f:
+                # SPEC-0346: schema, kind, job id or sequence failed. Nothing from the frame
+                # is applied, and neither `last_seen` nor the cursor moves for it.
+                return "lost", f"protocol: {f.error}"
             job["last_seen"] = time.time()
-            kind = frame.get("type")
+            kind = frame["type"]
             if kind == "status":
                 if frame.get("state") in ("lost", "unknown", "error"):
                     return "lost", str(frame.get("state"))
                 continue
             if kind == "error":
                 return "lost", f"error: {frame.get('stage')}: {frame.get('error')}"
-            n = frame.get("n")
-            if isinstance(n, int) and not isinstance(n, bool):
-                if n <= job["seen"]:
-                    continue
-                job["seen"] = n
+            n = frame["n"]
+            if n <= job["seen"]:
+                continue
+            job["seen"] = n
             if kind == "done":
                 return "done", frame
             fields = {"cursor": job["seen"], "state": "attached",

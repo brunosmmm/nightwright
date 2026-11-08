@@ -69,20 +69,21 @@ from .events import temp_pressure as events_temp_pressure
 from . import runproc as RP
 from .runner import DETACHED, RunHooks, RunResult, rebuild_request, resolve_runner, select_runner
 
-STATES = ("QUEUED", "WAITING", "OPENING", "SPEC_WRITING", "SPEC_REVIEW", "IMPLEMENTING", "GATING", "TRIAGING", "REVIEWING",
-          "CLOSING", "PARKED", "MERGED", "HANDED_OFF", "ABANDONED")
+STATES = ("QUEUED", "WAITING", "OPENING", "SPEC_WRITING", "SPEC_REVIEW", "IMPLEMENTING", "GATING", "TRIAGING",
+          "REVIEWING", "DIVERGENCE_TRIAGE", "CLOSING", "PARKED", "MERGED", "HANDED_OFF", "ABANDONED")
 # Slots are for campaigns that are open and delivering (ACTIVE_STATES). QUEUED = the backlog,
 # never started. WAITING (SPEC-0200) = started (worktree, commits, counters, brief) and ready to
 # continue, but no slot was free; it takes the next free slot ahead of the backlog and resumes
 # at `waiting.resume_to` without re-opening. PARKED = needs a decision; holds no slot.
 TERMINAL_STATES = store.TERMINAL_STATES
 ACTIVE_STATES = frozenset({"OPENING", "SPEC_WRITING", "SPEC_REVIEW", "IMPLEMENTING", "GATING", "TRIAGING", "REVIEWING",
-                           "CLOSING"})
+                           "DIVERGENCE_TRIAGE", "CLOSING"})
 # SPEC-0394: GATING costs no Claude spend (it waits on / runs box gates, whose concurrency is
 # bounded by the gate slot pools, gate_slots.py), so it does not count against the profile
 # `slots`. Every other active state does.
 SLOT_STATES = ACTIVE_STATES - {"GATING"}
-RESUMABLE_STATES = ("SPEC_WRITING", "SPEC_REVIEW", "IMPLEMENTING", "GATING", "REVIEWING", "CLOSING", "QUEUED")
+RESUMABLE_STATES = ("SPEC_WRITING", "SPEC_REVIEW", "IMPLEMENTING", "GATING", "REVIEWING",
+                    "DIVERGENCE_TRIAGE", "CLOSING", "QUEUED")
 PARK_REASONS = frozenset({
     "cost_cap", "loop_exhausted", "implementer_blocked", "triage_escalated", "open_failed",
     "rebase_conflict", "main_dirty", "main_not_on_base", "base_moving", "gh_failed", "human",
@@ -91,6 +92,7 @@ PARK_REASONS = frozenset({
     "gates_failed", "worktree_dirty",                  # SPEC-0233: merge campaigns
     "not_docs_only",                                   # SPEC-0234: --docs-only diff left the allowlist
     "diverging",                                       # SPEC-0247: the fix loop is not converging
+    "diverging_rework",                               # SPEC-0462: the triager says the spec is the problem
     "regenerate_failed",                               # SPEC-0255: close-time regenerate failed/dirtied
     "gate_timeout",                                    # SPEC-0311: gates keep timing out under load
     "restart",                                         # SPEC-0375: parked across `nw queue restart`
@@ -187,7 +189,7 @@ def _cap_blocks(state: dict, profile: dict, persona, allowance: float = 0.0, res
     names = [persona] if isinstance(persona, str) else list(persona)
     budgets = [float(persona_settings(profile, p).get("max_budget_usd") or 0.0) for p in names]
     budget = sum(budgets)
-    total = float(cost.get("total_usd") or 0.0)
+    total = _known_spend(cost)
     who = f"a {names[0]} run" if len(names) == 1 else f"{', '.join(names)} runs"
     close = f" (including a ${allowance:.2f} close allowance)" if allowance else ""
     if ceiling is None or float(cap) < float(ceiling):
@@ -304,6 +306,12 @@ def plan_step(state: dict, profile: dict, project_cfg: dict | None = None, *, re
             return Step("park", persona=pending[0], personas=tuple(pending), reason="cost_cap",
                         detail=blocked, resume_to=st, budget=budget)
         return Step("review", persona=pending[0], personas=tuple(pending))
+    if st == "DIVERGENCE_TRIAGE":                    # SPEC-0462
+        blocked, budget = _cap_blocks(state, profile, "divergence_triager", **cap_kw)
+        if blocked:
+            return Step("park", persona="divergence_triager", reason="cost_cap", detail=blocked,
+                        resume_to=st, budget=budget)
+        return Step("divergence", persona="divergence_triager")
     persona, kind = ("implementer", "implement") if st == "IMPLEMENTING" \
         else ("gate_triager", "triage")
     blocked, budget = _cap_blocks(state, profile, persona, **cap_kw)
@@ -357,6 +365,35 @@ def _resume_target(st: str) -> str:
     (OPENING restarts from QUEUED; TRIAGING re-runs its gates; REVIEWING re-runs the review)."""
     return {"OPENING": "QUEUED", "TRIAGING": "GATING"}.get(st, st if st in RESUMABLE_STATES
                                                             else "IMPLEMENTING")
+
+
+DIVERGENCE_EXTRA_MAX = 1          # SPEC-0462: one extra implement round per campaign
+DIVERGENCE_RETRY_MAX = 1
+_DIVERGENCE_PICKS = ("extra_round", "rework", "escalate")
+
+
+def decide_divergence(state: dict, verdict, verdict_ok: bool) -> tuple[str, str]:
+    """`(action, detail)` for one divergence-triager verdict (SPEC-0462).
+
+    `action` is `extra_round`, `rework`, `escalate`, or `retry`. A second extra round, and a
+    second unusable verdict, are both an escalation. The counter is the caller's."""
+    counters = state.get("counters") or {}
+    retries = int(counters.get("divergence_retries") or 0)
+    extras = int(counters.get("divergence_extras") or 0)
+    pick = verdict.get("pick") if isinstance(verdict, dict) else None
+    why = str(verdict.get("why") or "").strip() if isinstance(verdict, dict) else ""
+    if not verdict_ok or pick not in _DIVERGENCE_PICKS:
+        if retries < DIVERGENCE_RETRY_MAX:
+            return "retry", "the divergence triager returned no usable verdict"
+        return "escalate", "the divergence triager returned no usable verdict twice"
+    if pick == "extra_round":
+        if extras >= DIVERGENCE_EXTRA_MAX:
+            cap = "the one extra implement round was already used"
+            return "escalate", f"{why} — {cap}" if why else cap
+        return "extra_round", why or "one more implement round"
+    if pick == "rework":
+        return "rework", why or "the spec is the problem"
+    return "escalate", why or "the divergence triager escalated"
 
 
 def decide_triage(state: dict, profile: dict, verdict: dict | None, verdict_ok: bool) -> Step:
@@ -953,16 +990,28 @@ def after_met(cfg, state: dict, ref) -> tuple[bool, str]:
             return False, f"after {rid}: campaign {rid} abandoned"
         return False, f"waiting on {rid} (after: campaign {rid} is {st})"
     if kind == "idea":
-        task = _idea_task(cfg, rid)
-        if task is None:
-            return False, f"after {rid}: idea not found"
-        spec = (task.properties.get("SPEC") or "").strip()
+        # A live or merged campaign answers the wait by itself. Reading the idea file
+        # here reparsed the whole corpus once per queued item on every watch refresh
+        # (SPEC-0454). The file is only needed when no campaign can answer.
         hits = [st for st in store.list_campaigns(cfg, include_terminal=True,
                                                   project=state.get("project"))
                 if st.get("kind") == "idea" and _canon_id(_idea_id_of(st) or "") == _canon_id(rid)]
         newest = hits[0] if hits else None
         if (newest or {}).get("state") == "MERGED":
             return True, ""
+        if newest is not None and newest.get("state") != "ABANDONED":
+            spec = str(newest.get("spec_id") or "").strip()
+            if spec:
+                met, why, _live = _spec_after_met(cfg, state, spec)
+                if met:
+                    return True, ""
+                return False, f"waiting on {spec} (after: {rid} -> {why})"
+            return False, (f"waiting on {rid} (after: campaign {newest['id']} "
+                           f"is {newest.get('state')})")
+        task = _idea_task(cfg, rid)
+        if task is None:
+            return False, f"after {rid}: idea not found"
+        spec = (task.properties.get("SPEC") or "").strip()
         if spec:
             met, why, _live = _spec_after_met(cfg, state, spec)
             if met:
@@ -971,9 +1020,7 @@ def after_met(cfg, state: dict, ref) -> tuple[bool, str]:
                 return False, f"waiting on {spec} (after: {rid} -> {why})"
         if newest is None:
             return False, f"waiting on {rid} (after: no campaign queued for {rid})"
-        if newest.get("state") == "ABANDONED":
-            return False, f"after {rid}: campaign {newest['id']} abandoned"
-        return False, f"waiting on {rid} (after: campaign {newest['id']} is {newest.get('state')})"
+        return False, f"after {rid}: campaign {newest['id']} abandoned"
     met, why, _live = _spec_after_met(cfg, state, rid)
     if met:
         return True, ""
@@ -1243,20 +1290,46 @@ def _park(cfg, state: dict, reason: str, detail: str, resume_to: str, *, by="tic
     return _transition(cfg, state, "PARKED", reason, by=by, extra_events=events)
 
 
+def _known_spend(cost: dict) -> float:
+    """Dollars a run reported. An unknown cost lives on `estimated_usd` and is not spend
+    (SPEC-0461). A state written before that still has the estimate folded into `total_usd`."""
+    total = float(cost.get("total_usd") or 0.0)
+    if cost.get("estimate_separated"):
+        return total
+    estimated = float(cost.get("estimated_usd") or 0.0)
+    return round(max(0.0, total - estimated), 4)
+
+
+def _separate_estimate(cost: dict) -> None:
+    """Move a folded estimate out of `total_usd` once, so later known charges are not
+    reduced again."""
+    if cost.get("estimate_separated"):
+        return
+    estimated = float(cost.get("estimated_usd") or 0.0)
+    if estimated:
+        cost["total_usd"] = round(max(0.0, float(cost.get("total_usd") or 0.0) - estimated), 4)
+    cost["estimate_separated"] = True
+
+
 def _record_run(state: dict, persona: str, run_id: str, result, budget: float, *,
                 interrupted: bool = False) -> list:
     """Cost + run.end + findings for a finished persona run. Returns ledger events; mutates
     the counters and cost in `state`. `interrupted` is the step's view (the loop was told to
-    stop while the run was in flight), which the RunResult cannot know."""
+    stop while the run was in flight), which the RunResult cannot know.
+
+    A missing cost is not spend (SPEC-0461). The budget is recorded on `estimated_usd` and
+    is not added to the total the cap checks."""
     interrupted = bool(interrupted or result.interrupted)
     cost = _cost(state)
+    _separate_estimate(cost)
     estimated = result.cost_usd is None
-    charged = budget if estimated else result.cost_usd
-    cost["total_usd"] = round(float(cost["total_usd"]) + float(charged), 4)
+    charged = 0.0 if estimated else float(result.cost_usd)
+    cost["total_usd"] = round(float(cost["total_usd"]) + charged, 4)
     if estimated:
-        cost["estimated_usd"] = round(float(cost.get("estimated_usd") or 0.0) + float(charged), 4)
-    cost["by_persona"][persona] = round(float(cost["by_persona"].get(persona, 0.0))
-                                        + float(charged), 4)
+        cost["estimated_usd"] = round(float(cost.get("estimated_usd") or 0.0) + float(budget), 4)
+    else:
+        cost["by_persona"][persona] = round(float(cost["by_persona"].get(persona, 0.0))
+                                            + charged, 4)
     events = [("run.end", {
         "persona": persona, "run_id": run_id, "exit_code": result.exit_code,
         "is_error": result.is_error, "timed_out": result.timed_out,
@@ -1275,8 +1348,8 @@ def _record_run(state: dict, persona: str, run_id: str, result, budget: float, *
         reason = ("interrupted" if interrupted else "timed out" if result.timed_out
                   else "no cost reported")
         events.append(("finding", {"persona": persona, "severity": "info", "gate": None,
-                                   "title": "run cost unknown; charged its budget as an estimate",
-                                   "detail": f"${budget:.2f} charged as an upper bound ({reason})",
+                                   "title": "run cost unknown; not counted against the cap",
+                                   "detail": f"${budget:.2f} not counted ({reason})",
                                    "files": []}))
     verdict = result.verdict if isinstance(result.verdict, dict) else {}
     for item in verdict.get("must_fix") or []:
@@ -1397,12 +1470,14 @@ class _Ctx:
     def runner(self):
         return self.runner_for(None)
 
-    def runner_for(self, state=None):
-        """The persona backend for this spawn (SPEC-0436). An injected test runner wins."""
+    def runner_for(self, state=None, *, kind=None):
+        """The persona backend for this spawn (SPEC-0436). An injected test runner wins.
+        `kind` is the model set's runner for this persona (SPEC-0455)."""
         if self._injected_runner is not None:
             return self._injected_runner
-        kind = resolve_runner(self.cfg, campaign=state,
-                              project=(state or {}).get("project") if state else None)
+        if not kind:
+            kind = resolve_runner(self.cfg, campaign=state,
+                                  project=(state or {}).get("project") if state else None)
         if kind not in self._runners:
             self._runners[kind] = select_runner(self.cfg, runner=kind)
         return self._runners[kind]
@@ -1986,7 +2061,7 @@ def _do_spec_review(ctx: _Ctx, state: dict, step: Step, run_id: str, req,
     try:
         head = git.rev_parse(worktree)
         try:
-            res.run_result = ctx.runner_for(state).run(req)
+            res.run_result = _local_runner(ctx, state, req).run(req)
         except Exception as e:                  # the reset below must still run
             res.error = getattr(e, "tail", None) or str(e)
             if not isinstance(e, (GitError, ValueError, OSError)):
@@ -2075,8 +2150,7 @@ def _do_persona(ctx: _Ctx, state: dict, step: Step, run_id: str, req, budget: fl
         # A tick context resolves the persona backend per campaign (SPEC-0436). A caller
         # that only carries `.runner` (the pre-0436 test doubles) is used as-is.
         cfg = getattr(ctx, "cfg", None)
-        resolve = getattr(ctx, "runner_for", None)
-        local = resolve(state) if callable(resolve) else ctx.runner
+        local = _local_runner(ctx, state, req)
         remote = RPS.dispatch(cfg, state, step.kind, req, adopted=adopted is not None,
                               local=local) if cfg is not None else None
         runner = remote or local
@@ -2098,7 +2172,7 @@ def _do_persona(ctx: _Ctx, state: dict, step: Step, run_id: str, req, budget: fl
             run_id, req, outcome = _rerun_locally(ctx, state, step, run_id, rerun_req, budget,
                                                   outcome, hooks)
             res.run_id = run_id
-            detachable = bool(getattr(ctx.runner_for(state), "detachable", False))
+            detachable = bool(getattr(_local_runner(ctx, state, req), "detachable", False))
             if outcome is DETACHED:
                 res.detached = True
                 return res
@@ -2137,6 +2211,21 @@ def _do_persona(ctx: _Ctx, state: dict, step: Step, run_id: str, req, budget: fl
     return res
 
 
+def _local_runner(ctx, state, req):
+    """The backend for this request. A model set's runner wins; a test double that
+    only accepts the campaign state is left alone."""
+    resolve = getattr(ctx, "runner_for", None)
+    if not callable(resolve):
+        return ctx.runner
+    kind = getattr(req, "runner", None)
+    if not kind:
+        return resolve(state)
+    try:
+        return resolve(state, kind=kind)
+    except TypeError:
+        return resolve(state)
+
+
 def _gated_runner(ctx: _Ctx, req, state=None):
     """SPEC-0345: the runner of a gated `write_spec` / `resolve` run. The tick's gate read the
     backoff before the run was admitted; one begun since (another run's 429) holds it at its
@@ -2149,7 +2238,7 @@ def _gated_runner(ctx: _Ctx, req, state=None):
                 return RPS.HeldRunner()
         except (OSError, ValueError):
             pass
-    return ctx.runner_for(state)
+    return _local_runner(ctx, state, req)
 
 
 def _run_persona(req, step: Step) -> str | None:
@@ -2228,7 +2317,7 @@ def _rerun_locally(ctx: _Ctx, state: dict, step: Step, run_id: str, req, budget:
         mark_held(new_req)
         return new_id, new_req, _synthetic(new_req, "the write-back re-run was not started "
                                                     "during the rate-limit backoff", cost_usd=0.0)
-    local = ctx.runner_for(state)
+    local = _local_runner(ctx, state, new_req)
     if hooks is not None and getattr(local, "detachable", False):
         if not hooks.restart(new_req.run_dir):
             return new_id, new_req, DETACHED
@@ -2523,7 +2612,8 @@ def _apply(ctx: _Ctx, state: dict, res: StepResult) -> dict:
             for k in ("counters", "cost", "repo", "spec", "last_gate", "last_verdict", "last_review",
                       "pending_brief", "close", "review_carry", "closing", "spec_write", "spec_id",
                       "merge", "admission", "spec_review", "split",   # SPEC-0279: amend flips it
-                      "gate_exclusive", "last_green_loop", "close_red", "gate_retry_pending"):
+                      "gate_exclusive", "last_green_loop", "close_red", "gate_retry_pending",
+                      "divergence"):
                 if k in state:
                     current[k] = state[k]
             requested = current.get("park_requested")
@@ -2554,8 +2644,11 @@ def _apply(ctx: _Ctx, state: dict, res: StepResult) -> dict:
                 row["to"], row["reason"] = "PARKED", "human_decision"
                 return row
             if park:
+                extra = {}
+                if park.get("escalated_from"):
+                    extra["escalated_from"] = park["escalated_from"]
                 _park(cfg, current, park["reason"], park["detail"], park["resume_to"],
-                      extra_events=events, auto_ok=not park.get("no_auto"))
+                      extra_events=events, extra=extra or None, auto_ok=not park.get("no_auto"))
                 row["to"], row["reason"] = "PARKED", park["reason"]
                 return row
             _transition(cfg, current, to, reason, extra_events=events)
@@ -2598,6 +2691,7 @@ def _apply(ctx: _Ctx, state: dict, res: StepResult) -> dict:
                                   res.budget, interrupted=res.interrupted)
         resume = {"open": "QUEUED", "implement": "IMPLEMENTING", "gate": "GATING",
                   "triage": "GATING", "review": "REVIEWING",
+                  "divergence": "DIVERGENCE_TRIAGE",
                   "resolve": "CLOSING", "write_spec": "SPEC_WRITING",
                   "spec_review": "SPEC_REVIEW",
                   "finalize_split": "SPEC_WRITING"}.get(kind, "IMPLEMENTING")
@@ -2646,7 +2740,7 @@ def _apply(ctx: _Ctx, state: dict, res: StepResult) -> dict:
                                            "parts": [p["spec_id"] for p in sp["parts"]]}))
         return finish("CLOSING", "split_written")
 
-    if kind in ("implement", "triage", "resolve"):
+    if kind in ("implement", "triage", "resolve", "divergence"):
         persona = res.step.persona
         rr = res.run_result
         events += _record_run(state, persona, res.run_id, rr, res.budget,
@@ -2667,6 +2761,8 @@ def _apply(ctx: _Ctx, state: dict, res: StepResult) -> dict:
             return row
         if kind == "resolve":
             return _apply_resolve(state, counters, res, rr, row, events, finish)
+        if kind == "divergence":
+            return _apply_divergence(ctx, state, counters, res, rr, events, finish)
         if kind == "implement":
             if res.commit_sha is not None or res.commit_message:
                 events.append(("commit", {"sha": res.commit_sha, "message": res.commit_message}))
@@ -3879,14 +3975,64 @@ def _carry_source(state: dict, tri: dict) -> dict:
 
 def _finish_fix(ctx, state, events, finish, kind, reason):
     """The fix outcome of a review or a gate triage (`loops` already counted, `pending_brief`
-    set): back to IMPLEMENTING, or park `diverging` when the fix rounds show no convergence
-    (SPEC-0247). The park keeps the brief, so a resume continues with it."""
+    set): back to IMPLEMENTING, or into DIVERGENCE_TRIAGE when the fix rounds show no
+    convergence (SPEC-0247 detects, SPEC-0462 triages). The brief stays, so an extra round
+    continues with it. A campaign already parked `diverging` is left where it is."""
     div = DV.check(ctx.cfg, state, events, kind)
     if div is None:
         return finish("IMPLEMENTING", reason)
     events.append(("loop_divergence", div))
-    return finish("PARKED", "diverging", park={
-        "reason": "diverging", "detail": DV.summary(div), "resume_to": "IMPLEMENTING"})
+    state["divergence"] = div
+    counters = _counters(state)
+    counters["divergence_retries"] = 0
+    return finish("DIVERGENCE_TRIAGE", "diverging")
+
+
+def _apply_divergence(ctx, state, counters, res, rr, events, finish):
+    """One divergence-triager verdict (SPEC-0462)."""
+    action, detail = decide_divergence(state, rr.verdict, rr.verdict_ok)
+    if action == "retry":
+        counters["divergence_retries"] = int(counters.get("divergence_retries") or 0) + 1
+        return finish("DIVERGENCE_TRIAGE", "divergence_retry")
+    verdict = rr.verdict if isinstance(rr.verdict, dict) else {}
+    if rr.verdict_ok:
+        events.append(("triage", {"persona": res.step.persona, "run_id": res.run_id,
+                                  "kind": "divergence", "disposition": verdict.get("pick") or action,
+                                  "waive": []}))
+    events.append(("note", {"text": f"divergence triage {action}: {detail}"[:500],
+                            "author": "queue"}))
+    counters["divergence_retries"] = 0
+    if action == "extra_round":
+        counters["divergence_extras"] = int(counters.get("divergence_extras") or 0) + 1
+        return finish("IMPLEMENTING", "divergence_extra")
+    if action == "rework":
+        return finish("PARKED", "diverging_rework", park={
+            "reason": "diverging_rework", "detail": detail, "resume_to": "IMPLEMENTING"})
+    row = finish("PARKED", "human_decision", park={
+        "reason": "human_decision", "detail": detail, "resume_to": "IMPLEMENTING",
+        "escalated_from": "diverging"})
+    _file_divergence_escalation(ctx.cfg, state["id"], detail, verdict or None)
+    return row
+
+
+def _file_divergence_escalation(cfg, cid, detail, verdict) -> None:
+    """A human-only escalation. Topic `scope` does not time out. No recommendation."""
+    from . import escalations as ESC
+    items = []
+    if isinstance(verdict, dict):
+        for it in verdict.get("items") or []:
+            if isinstance(it, dict) and it.get("title"):
+                items.append(f"{it.get('title')}: {it.get('label')}")
+    question = (detail or "The fix loop diverged.").strip()[:500]
+    try:
+        plan = ESC.plan_escalate(
+            cfg, cid, frm="conductor", topic="scope", question=question,
+            options=("one more implement round", "rework the spec", "stop this campaign"),
+            facts=[question, *items][:12])
+        ESC.apply_escalate(cfg, plan)
+    except (ValueError, OSError) as e:
+        store.append_event(cfg, cid, "note", {
+            "text": f"divergence escalation was not filed: {e}", "author": "queue"})
 
 
 def _merge_carry(state: dict, review: dict) -> None:
@@ -5172,7 +5318,8 @@ def _tick(cfg, ctx: _Ctx, pool: StepPool, report: TickReport, *, admit: bool, ow
 _ADOPT_GRACE_S = 10.0              # a wrapper that was just started may still claim its run dir
 _LEGACY_EXTRA_S = 60.0             # slack after `timeout_s` before a pre-wrapper run is closed
 _HUMAN_EVENTS = frozenset({"transition", "park", "resume", "resumed", "abandon", "abandoned"})
-_STATE_OF_KIND = {"implement": "IMPLEMENTING", "triage": "TRIAGING", "review": "REVIEWING"}
+_STATE_OF_KIND = {"implement": "IMPLEMENTING", "triage": "TRIAGING", "review": "REVIEWING",
+                  "divergence": "DIVERGENCE_TRIAGE"}
 
 
 def _open_runs(cfg, cid) -> list:
@@ -6774,7 +6921,7 @@ def queue_payload(cfg, *, include_terminal=False, project=None, state=None, now=
 # ---- dashboard (nw queue watch, SPEC-0185) -------------------------------------------------------
 
 PHASES = ("OPENING", "SPEC_WRITING", "SPEC_REVIEW", "IMPLEMENTING", "GATING", "TRIAGING",
-          "REVIEWING", "CLOSING")
+          "REVIEWING", "DIVERGENCE_TRIAGE", "CLOSING")
 _SPEC_PHASES = ("SPEC_WRITING", "SPEC_REVIEW")
 _TITLE_CACHE: dict = {}
 

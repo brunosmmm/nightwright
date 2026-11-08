@@ -53,7 +53,14 @@ def _render(fn, cfg, width=200, **kw):
     import io
 
     buf = io.StringIO()
-    forced = Console(file=buf, width=width, height=80, force_terminal=True, color_system="standard")
+    forced = Console(
+        file=buf,
+        width=width,
+        height=80,
+        force_terminal=True,
+        color_system="standard",
+        no_color=False,
+    )
     real = R.console
     R.console = forced
     try:

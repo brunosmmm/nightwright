@@ -1,0 +1,7 @@
+schema: nw.model_set.v1
+description: "Cursor: Composer implements, Grok 4.7 does the rest at the profile's effort"
+runner: cursor
+model: grok-4.7
+personas:
+  implementer: {model: composer-2.5}
+  conflict_resolver: {model: composer-2.5}
