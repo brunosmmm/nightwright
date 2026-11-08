@@ -657,6 +657,15 @@ Queue `pytest-affected` rerun left in flight. Full suite left to queue gating.
 `test_history_perf.py::test_record_count_and_budgets` warm index elapsed ~2.0 s (limit 0.9 s) on
 this host; left to queue gating. Full suite left to queue gating.
 
+### Test record (2026-11-08, implementer loop 1)
+
+`uv run pytest -q tests/test_history_perf.py::test_record_count_and_budgets`
+`tests/test_history_cache.py::test_decision_append_updates_records`
+`tests/test_history_cache.py::test_ledger_append_stale_until_campaign_history`
+`tests/test_history_cache.py::test_removed_campaign_pruned`
+`tests/test_history_cache.py::test_live_ledger_finding_in_history_records_without_campaign_history` (5 passed).
+`python3 tools/spec_lint.py --write-ledger` exit 0. Full suite left to queue gating.
+
 ### Test record (2026-11-08, implementer loop 0)
 
 `uv run pytest -q tests/test_history_perf.py::test_record_count_and_budgets`,

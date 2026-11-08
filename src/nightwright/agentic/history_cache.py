@@ -2340,13 +2340,22 @@ def _history_records_cached(cfg, *, now, root: Path, campaign=None, agent=None, 
     _ensure_writable_cache(cfg, root, now=now)
     _sync_globals(cfg, root, now)
     index_rows = _read_index(root)
-    records = _read_records(root)
-    index_rows, records = _prune_gone_campaigns(cfg, root, index_rows, records, persist=True)
+    live = _live_campaign_ids(cfg)
+    index_ids = {r.get("campaign") for r in index_rows if r.get("campaign")}
+    need_prune = bool(index_ids - live)
     sources = _read_json(root / "sources.json") or {}
+    records: list[dict] | None = None
+    if need_prune:
+        records = _read_records(root)
+        index_rows, records = _prune_gone_campaigns(
+            cfg, root, index_rows, records, persist=True,
+        )
     stale = _stale_terminal_ids(cfg, index_rows, sources)
     if stale:
-        records_at_start = list(_read_records(root))
-        index_at_start = list(_read_index(root))
+        if records is None:
+            records = _read_records(root)
+        records_at_start = list(records)
+        index_at_start = list(index_rows)
         index_rows, records, sources = _recompute_terminal_documents(
             cfg, root, now, index_rows, records, stale,
         )
@@ -2359,30 +2368,43 @@ def _history_records_cached(cfg, *, now, root: Path, campaign=None, agent=None, 
             sources=sources,
         )
     live_cids, missing = _live_refresh_targets(cfg, index_rows)
+    if live_cids or missing:
+        if records is None:
+            records = _read_records(root)
+        index_rows, records = _refresh_live(cfg, root, now, index_rows, records)
     kind_set = H._set(kind)
     needle = str(query or "").casefold()
     extra = any(x is not None for x in (campaign, agent, project, severity, status, since, until))
     stream_kinds = kind_set if kind_set and not extra else None
     stream_needle = needle if needle and not extra else ""
-    if live_cids or missing:
-        records = _read_records(root)
-        index_rows, records = _refresh_live(cfg, root, now, index_rows, records)
+    if records is not None:
+        base = records
     elif stream_kinds is not None or stream_needle:
-        records = _read_records_filtered(root, kinds=stream_kinds, needle=stream_needle)
+        mem = _get_records_mem(root)
+        if mem is not None:
+            base = []
+            for rec, search in mem:
+                if stream_kinds is not None and rec.get("kind") not in stream_kinds:
+                    continue
+                if stream_needle and stream_needle not in search:
+                    continue
+                base.append(rec)
+        else:
+            base = _read_records_filtered(root, kinds=stream_kinds, needle=stream_needle)
     else:
-        records = _read_records(root)
+        base = _read_records(root)
     values = {name: H._set(value) for name, value in (
         ("campaign", campaign), ("agent", agent), ("kind", kind), ("project", project),
         ("severity", severity), ("status", status),
     )}
     since_b, until_b = H._date_bound(since), H._date_bound(until, until=True)
     out = []
-    for rec in records:
+    for rec in base:
         if any(wanted is not None and rec.get(name) not in wanted for name, wanted in values.items()):
             continue
         if not H._in_dates(rec.get("ts"), since_b, until_b):
             continue
-        if needle and needle not in _search_text(rec):
+        if needle and stream_needle != needle and needle not in _search_text(rec):
             continue
         out.append(rec)
     out.sort(key=lambda rec: (H._time_key(rec.get("ts")), rec.get("id") or ""), reverse=True)
