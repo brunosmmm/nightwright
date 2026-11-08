@@ -36,7 +36,13 @@ def _lazy_schemas():
 
 
 def _v1_root(cfg) -> Path:
-    return Path(cfg["cache_dir"]).resolve() / "history" / "v1"
+    cache = Path(cfg["cache_dir"]).resolve()
+    v1 = (cache / "history" / "v1").resolve()
+    try:
+        v1.relative_to(cache)
+    except ValueError:
+        raise OSError("cache: not writable")
+    return v1
 
 
 def _data_root(cfg) -> Path:
@@ -197,7 +203,7 @@ def _search_text(rec: dict) -> str:
 
 
 def _stored_line(rec: dict) -> str:
-    return json.dumps({"record": rec, "search": _search_text(rec)}, ensure_ascii=False)
+    return json.dumps({**rec, "search": _search_text(rec)}, ensure_ascii=False)
 
 
 _records_mem: dict[tuple, list[tuple[dict, str]]] = {}
@@ -208,13 +214,14 @@ _CACHE_WRITE_LOCK = threading.Lock()
 def _cache_write_guard(root: Path):
     with _CACHE_WRITE_LOCK:
         root.mkdir(parents=True, exist_ok=True)
-        lock_parent = root.parent
-        lock_parent.mkdir(parents=True, exist_ok=True)
-        lock_path = lock_parent / ".write.lock"
+        lock_path = root / ".lock"
         fd = os.open(lock_path, os.O_RDWR | os.O_CREAT, 0o644)
         try:
             fcntl.flock(fd, fcntl.LOCK_EX)
             yield
+            if not lock_path.is_file():
+                with lock_path.open("ab"):
+                    pass
         finally:
             fcntl.flock(fd, fcntl.LOCK_UN)
             os.close(fd)
@@ -265,12 +272,17 @@ def _load_records_mem(root: Path) -> list[tuple[dict, str]]:
                     row = json.loads(raw)
                 except ValueError:
                     continue
-                if isinstance(row, dict) and isinstance(row.get("record"), dict):
-                    rec = row["record"]
+                if not isinstance(row, dict):
+                    continue
+                if isinstance(row.get("record"), dict):
+                    rec = dict(row["record"])
                     search = row.get("search")
-                    if not isinstance(search, str):
-                        search = _search_text(rec)
-                    out.append((rec, search))
+                else:
+                    rec = {k: v for k, v in row.items() if k != "search"}
+                    search = row.get("search")
+                if not isinstance(search, str):
+                    search = _search_text(rec)
+                out.append((rec, search))
     except OSError:
         return []
     _set_records_mem(root, out)
@@ -355,16 +367,20 @@ def _read_records_filtered(
                     row = json.loads(raw)
                 except ValueError:
                     continue
-                if isinstance(row, dict) and isinstance(row.get("record"), dict):
-                    rec = row["record"]
-                    if kinds is not None and rec.get("kind") not in kinds:
-                        continue
-                    search = row.get("search")
-                    if not isinstance(search, str):
-                        search = _search_text(rec)
-                    if needle and needle not in search:
-                        continue
-                    out.append(rec)
+                if not isinstance(row, dict):
+                    continue
+                if isinstance(row.get("record"), dict):
+                    rec = dict(row["record"])
+                else:
+                    rec = {k: v for k, v in row.items() if k != "search"}
+                if kinds is not None and rec.get("kind") not in kinds:
+                    continue
+                search = row.get("search")
+                if not isinstance(search, str):
+                    search = _search_text(rec)
+                if needle and needle not in search:
+                    continue
+                out.append(rec)
     except OSError:
         return []
     return out
@@ -770,37 +786,103 @@ def _merge_resurrected_drops(start: list[dict], target: list[dict], merged: list
     return False
 
 
-def _merge_index_writes(start: list[dict], target: list[dict], disk: list[dict]) -> list[dict]:
-    """Merge concurrent index writes without clobbering another writer's campaigns."""
-    start_by = {r["campaign"]: r for r in start if r.get("campaign")}
-    disk_by = {r["campaign"]: r for r in disk if r.get("campaign")}
-    by = {}
-    for row in target:
+def _read_pending_index_writes(root: Path) -> list[dict]:
+    path = root / "index.writes.jsonl"
+    if not path.is_file():
+        return []
+    rows: list[dict] = []
+    try:
+        for raw in path.read_text(encoding="utf-8").splitlines():
+            if not raw.strip():
+                continue
+            try:
+                row = json.loads(raw)
+            except ValueError:
+                continue
+            if isinstance(row, dict):
+                rows.append(row)
+    except OSError:
+        return []
+    return rows
+
+
+def _append_pending_index_write(root: Path, row: dict) -> None:
+    path = root / "index.writes.jsonl"
+    line = json.dumps(row, ensure_ascii=False) + "\n"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("ab") as stream:
+        stream.write(line.encode("utf-8"))
+        stream.flush()
+        os.fsync(stream.fileno())
+
+
+def _known_campaign_ids(root: Path, committed: list[dict], pending: list[dict]) -> set[str]:
+    known: set[str] = set()
+    for row in committed + pending:
         cid = row.get("campaign")
-        if not cid:
+        if isinstance(cid, str) and cid:
+            known.add(cid)
+    camp_dir = root / "campaigns"
+    if camp_dir.is_dir():
+        for path in camp_dir.glob("*.json"):
+            if _is_tmp(path.name):
+                continue
+            known.add(path.stem)
+    return known
+
+
+def _safe_cache_campaign_id(cid: str) -> bool:
+    if not isinstance(cid, str) or not cid or cid in (".", ".."):
+        return False
+    if "/" in cid or "\\" in cid or "\0" in cid:
+        return False
+    return True
+
+
+def _safe_unlink_campaign_file(root: Path, cid: str) -> None:
+    if not _safe_cache_campaign_id(cid):
+        return
+    path = (root / "campaigns" / f"{cid}.json").resolve()
+    try:
+        path.relative_to(root.resolve())
+    except ValueError:
+        return
+    if path.is_file():
+        path.unlink()
+
+
+def _merge_index_writes(index_rows: list[dict], writes: list[dict], pruned) -> list[dict]:
+    by: dict[str, dict] = {}
+    for row in index_rows:
+        cid = row.get("campaign")
+        if not isinstance(cid, str) or not cid:
             continue
-        if cid in disk_by:
-            disk_row = disk_by[cid]
-            prev = start_by.get(cid)
-            if prev is not None and disk_row != prev:
-                row = disk_row
         by[cid] = row
-    target_c = set(by)
-    for cid, row in disk_by.items():
-        if cid not in target_c:
-            by[cid] = row
-    order: list[str] = []
-    for row in target:
+    for row in writes:
         cid = row.get("campaign")
-        if cid and cid in by and cid not in order:
-            order.append(cid)
-    for cid in by:
-        if cid not in order:
-            order.append(cid)
-    return [by[cid] for cid in order]
+        if not isinstance(cid, str) or not cid:
+            continue
+        by[cid] = row
+    for cid in pruned:
+        if isinstance(cid, str):
+            by.pop(cid, None)
+    return _sort_index(list(by.values()))
+
+
+def _pruned_campaign_ids(cfg, root: Path) -> set[str]:
+    live = _live_campaign_ids(cfg)
+    committed = _read_index(root)
+    pending = _read_pending_index_writes(root)
+    known = _known_campaign_ids(root, committed, pending)
+    return known - live
+
+
+def _write_version(root: Path) -> None:
+    _atomic_write_bytes(root / "version", b"1\n")
 
 
 def _persist_index_records(
+    cfg,
     root: Path,
     *,
     records_at_start: list[dict],
@@ -810,14 +892,25 @@ def _persist_index_records(
     sources: dict | None = None,
 ) -> None:
     with _cache_write_guard(root):
+        pruned = _pruned_campaign_ids(cfg, root)
+        for cid in pruned:
+            _safe_unlink_campaign_file(root, cid)
         disk_recs = _read_records(root)
         merged = _merge_record_writes(records_at_start, records, disk_recs)
-        disk_idx = _read_index(root)
-        merged_idx = _merge_index_writes(index_at_start, index_rows, disk_idx)
+        if _merge_resurrected_drops(records_at_start, records, merged):
+            merged = records
+        committed = _read_index(root)
+        pending = _read_pending_index_writes(root)
+        live = _live_campaign_ids(cfg)
+        refresh_by = {r["campaign"]: r for r in index_rows if isinstance(r.get("campaign"), str) and r["campaign"] in live}
+        merged_idx = _merge_index_writes(committed, pending + list(refresh_by.values()), pruned)
+        _write_version(root)
         _write_records(root, merged)
         _write_index(root, merged_idx)
-        if sources is not None and not _merge_resurrected_drops(
-                records_at_start, records, merged):
+        writes_path = root / "index.writes.jsonl"
+        if writes_path.is_file():
+            writes_path.unlink()
+        if sources is not None:
             sources["complete"] = True
             _atomic_write_json(root / "sources.json", sources)
 
@@ -994,6 +1087,7 @@ def _cold_fill(cfg, root: Path, *, now=None, progress=None, _hold_guard: bool = 
         all_records.extend(enriched_global)
         H2 = _lazy_history()
         all_records = H2._enrich_records(all_records, headers)
+        _write_version(root)
         _write_index(root, index_rows)
         _write_records(root, all_records)
         _atomic_write_json(root / "conductor_turns.json", {"turns": _serialize_turns(turns)})
@@ -1052,14 +1146,6 @@ def _doc_hit(cfg, root: Path, cid: str, now, sources: dict) -> dict | None:
         return None
     if "start" not in row:
         return None
-    index_rows = _read_index(root)
-    shares = _conductor_shares(cfg, root, index_rows, sources)
-    doc = json.loads(json.dumps(doc))
-    doc["generated_at"] = store.now_iso(now)
-    if shares is None:
-        doc["header"]["conductor_usd"] = None
-    else:
-        doc["header"]["conductor_usd"] = shares.get(cid, 0.0)
     return doc
 
 
@@ -1208,9 +1294,7 @@ def _prune_gone_campaigns(cfg, root: Path, index_rows: list[dict], records: list
         if cid and cid not in live:
             index_rows = [r for r in index_rows if r.get("campaign") != cid]
             records = _merge_records(records, drop_campaign_all=cid)
-            camp = root / "campaigns" / f"{cid}.json"
-            if camp.is_file():
-                camp.unlink()
+            _safe_unlink_campaign_file(root, cid)
             changed = True
     if changed:
         H = _lazy_history()
@@ -1222,13 +1306,16 @@ def _prune_gone_campaigns(cfg, root: Path, index_rows: list[dict], records: list
         )
         records.extend(H._enrich_records(global_recs, _headers_for_enrich(index_rows)))
         if persist:
-            with _cache_write_guard(root):
-                records_at_start = _read_records(root)
-                index_at_start = _read_index(root)
-                merged_recs = _merge_record_writes(records_at_start, records, _read_records(root))
-                merged_idx = _merge_index_writes(index_at_start, index_rows, _read_index(root))
-                _write_records(root, merged_recs)
-                _write_index(root, merged_idx)
+            records_at_start = _read_records(root)
+            index_at_start = _read_index(root)
+            _persist_index_records(
+                cfg,
+                root,
+                records_at_start=records_at_start,
+                records=records,
+                index_at_start=index_at_start,
+                index_rows=index_rows,
+            )
     return index_rows, records
 
 
@@ -1627,6 +1714,7 @@ def _sync_globals(cfg, root: Path, now) -> set[str]:
             _atomic_write_json(root / "conductor_turns.json", {"turns": _serialize_turns(turns)})
         fresh["global_gaps"] = sorted(set(gaps))
         _persist_index_records(
+            cfg,
             root,
             records_at_start=records_at_start,
             records=records,
@@ -1685,6 +1773,7 @@ def _refresh_live(cfg, root: Path, now, index_rows: list[dict], records: list[di
         changed = True
     if changed:
         _persist_index_records(
+            cfg,
             root,
             records_at_start=records_at_start,
             records=records,
@@ -1735,6 +1824,7 @@ def campaign_history(cfg, cid, *, now=None, cache=None) -> dict:
         index_rows.append(new_row)
     _write_campaign_file(root, cid, doc)
     _persist_index_records(
+        cfg,
         root,
         records_at_start=records_start,
         records=records,
@@ -1820,7 +1910,7 @@ def history_records(cfg, *, campaign=None, agent=None, kind=None, project=None,
 def rebuild_cache(cfg, *, now=None, progress=None) -> dict:
     root = _writable_root(cfg, True)
     if root is None:
-        raise ValueError("cache_dir is not writable")
+        raise OSError("cache: not writable")
     with _cache_write_guard(root):
         if root.exists():
             shutil.rmtree(root)

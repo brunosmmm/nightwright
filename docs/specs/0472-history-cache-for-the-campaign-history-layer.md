@@ -1,7 +1,7 @@
 ---
 id: SPEC-0472
 title: "History cache for the campaign history layer"
-status: done
+status: in-progress
 owner: user
 created: 2026-11-08
 updated: 2026-11-08
@@ -434,13 +434,13 @@ out of scope; the 500 ms row is this data load.
 
 ## Acceptance criteria
 
-- [x] **AC1. Cache location and purity.** With `cache_dir` set outside `data_dir`, a
+- [ ] **AC1. Cache location and purity.** With `cache_dir` set outside `data_dir`, a
   cached `history_index` writes only under `<cache_dir>/history/v1/` and only the files
   in Design. A hash of every file under `data_dir` is unchanged. Deleting `history/v1/`
   and calling `history_index` again rebuilds a tree whose `version` is `1\n` and whose
   index rows equal the pure index. `import nightwright.agentic.history` loads neither
   `textual`, `nightwright.tui`, nor a dashboard module.
-- [x] **AC2. Cache switch.** `cache=False` matches the pure results, including
+- [ ] **AC2. Cache switch.** `cache=False` matches the pure results, including
   `generated_at`, and creates no file. A cfg with no `cache_dir` does the same, and does
   not write the real XDG cache. `cache=True` on an unchanged terminal campaign returns a
   document equal to the pure document except `generated_at`, and the second call does not
@@ -456,7 +456,7 @@ out of scope; the 500 ms row is this data load.
   A hit `history_records` reads `records.jsonl`, drops `search`, and writes nothing. A
   live id whose state is not terminal is recomputed even when the signature matches, and
   only that index row is replaced.
-- [x] **AC3. A deleted campaign stays out of the index.** After a cached index exists,
+- [ ] **AC3. A deleted campaign stays out of the index.** After a cached index exists,
   removing one campaign directory, planting `index.writes.jsonl` with that campaign's
   index row, and planting `campaigns/<cid>.json`, the next `history_index` returns no row
   for that id, `index.jsonl` has no such line, and `campaigns/<cid>.json` is gone.
@@ -467,7 +467,7 @@ out of scope; the 500 ms row is this data load.
   gone. A decision whose `campaign` field is the deleted id is still returned, equal to
   the pure `history_records`. A mail whose only campaign link was that id in the text has
   the link the pure reader produces against the surviving directories.
-- [x] **AC4. Invalidation and cursors.** Changing any input of `campaign_signature` makes
+- [ ] **AC4. Invalidation and cursors.** Changing any input of `campaign_signature` makes
   the next terminal read recompute and store the new signature. Appending one complete
   line to `decisions.jsonl` advances `sources.json` `offset` to the new size, reads only
   the tail, and the cached records equal the pure records. Replacing that file so its
@@ -487,25 +487,25 @@ out of scope; the 500 ms row is this data load.
   profile layer `resolve_profile` reads makes `loop_max` equal the pure header. Each of
   these compares the cached terminal document, with `generated_at` removed, to
   `campaign_history(..., cache=False)`.
-- [x] **AC5. Corrupt and torn caches.** A `version` of `999`, a `campaigns/<cid>.json` of
+- [ ] **AC5. Corrupt and torn caches.** A `version` of `999`, a `campaigns/<cid>.json` of
   `{`, or an `index.jsonl` line that is not JSON causes the next cached call to delete
   the tree, write `version` `1\n`, and return the pure results. A temp file left beside
   the tree is removed and is not parsed. After a crash simulated by an `index.writes.jsonl`
   that exists while `index.jsonl` has the previous rows, the next refresh merges and then
   unlinks the writes file. The refresh calls `fcntl.flock` with `LOCK_EX` on `.lock`
   before it lists campaign directories.
-- [x] **AC6. Unwritable cache.** When `cache_dir` is a file, or the cache write raises
+- [ ] **AC6. Unwritable cache.** When `cache_dir` is a file, or the cache write raises
   `OSError`, `campaign_history(..., cache=True)` returns the pure document plus the gap
   `cache: not writable` and does not raise. `history_index` and `history_records` return
   the pure lists. `rebuild_cache` raises `OSError`. The data dir is unchanged.
-- [x] **AC7. CLI.** Exactly one of `CAMPAIGN`, `--list`, and `--rebuild-cache` is
+- [ ] **AC7. CLI.** Exactly one of `CAMPAIGN`, `--list`, and `--rebuild-cache` is
   required; other combinations exit 2, including `--rebuild-cache` with `--project` or
   `--state merged`. `--rebuild-cache` exits 0, prints the count line, and
   `--rebuild-cache --json` prints `{"campaigns": N, "records": M}`. A second
   `--list --json` matches the pure index. An unknown id exits 1 with
   `campaign <cid> not found`. An unwritable rebuild exits 1 with `cache: not writable`
   on stderr. The data dir hash is unchanged across all of these.
-- [x] **AC8. Budgets.** On a 500-campaign `clone_fixture` with at least 50 000 derived
+- [ ] **AC8. Budgets.** On a 500-campaign `clone_fixture` with at least 50 000 derived
   history records, the four operations in *Budgets* finish within the ×3 ceilings.
   `clone_fixture` is deterministic for a fixed seed, uses `place_bytes`, and keeps the
   SPEC-0459 locator, prefix, id, escalation-filename, and timestamp rules. It imports
@@ -514,7 +514,7 @@ out of scope; the 500 ms row is this data load.
   template campaign's ledger hash still equals the fixture. No inode under `dst` is an
   inode of the committed fixture. The warm `history_index` and the warm `history_records`
   query do not replace `records.jsonl` and do not parse `campaigns/*.json`.
-- [x] **AC9. Schema surface.** Returned campaign documents, index rows, and records pass
+- [ ] **AC9. Schema surface.** Returned campaign documents, index rows, and records pass
   `history_problems`, `index_problems`, and `record_problems_v1`. Returned records have
   no `search` key. `HISTORY_SCHEMA`, `HISTORY_INDEX_SCHEMA`, and `HISTORY_RECORD_SCHEMA`
   are unchanged.
@@ -630,6 +630,12 @@ temporary directory:
 test files. `python3 tools/spec_lint.py` exits 0 once the ledger is regenerated. The full
 suite stays on the queue's sentinel.
 
+### Test record (2026-11-08, implementer loop 1)
+
+`uv run pytest -q` on `tests/test_history_cache.py`, `tests/test_cli_campaign_history.py` (44 passed),
+`tests/test_history_perf.py`, `tests/test_history_scale.py`, `tests/test_history.py` (39 passed).
+Full suite left to queue gating.
+
 ### Test record (2026-11-08)
 
 `uv run pytest -q` on `tests/test_history_cache.py`, `tests/test_history_scale.py`,
@@ -666,12 +672,12 @@ and `nw idea clock-out IDEA-1015`.
 
 ## Definition of done
 
-- [x] Acceptance criteria all met.
-- [x] Test plan executed; automated tests pass; manual steps performed and noted in
+- [ ] Acceptance criteria all met.
+- [ ] Test plan executed; automated tests pass; manual steps performed and noted in
   *As shipped*.
-- [x] No regressions. The SPEC-0406 history tests pass with their cfgs unchanged.
-- [x] Spec body updated to match what shipped.
-- [x] `docs/LEDGER.md` regenerated (`python3 tools/spec_lint.py --write-ledger`).
+- [ ] No regressions. The SPEC-0406 history tests pass with their cfgs unchanged.
+- [ ] Spec body updated to match what shipped.
+- [ ] `docs/LEDGER.md` regenerated (`python3 tools/spec_lint.py --write-ledger`).
 
 ## Open questions
 

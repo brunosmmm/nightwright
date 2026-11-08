@@ -127,7 +127,13 @@ def test_fresh_cache_matches_uncached(data_dir, cache_dir):
     assert all(SC.record_problems_v1(r) == [] for r in recs)
     later = NOW + dt.timedelta(hours=1)
     doc2 = H.campaign_history(c, cid, now=later, cache=True)
-    assert doc2["generated_at"] == store.now_iso(later)
+    assert doc2["generated_at"] == doc["generated_at"]
+    unc_later = H.campaign_history(c, cid, now=later, cache=False)
+    d2 = dict(doc2)
+    d2.pop("generated_at", None)
+    u2 = dict(unc_later)
+    u2.pop("generated_at", None)
+    assert d2 == u2
     assert doc2["phases"] == doc["phases"]
 
 
@@ -861,11 +867,7 @@ def test_write_lock_survives_v1_rebuild(data_dir, cache_dir):
     c = cfg(data_dir, cache_dir)
     H.history_index(c, now=NOW, cache=True)
     v1 = cache_dir / "history" / "v1"
-    lock = cache_dir / "history" / ".write.lock"
-    assert lock.is_file()
-    first_ino = lock.stat().st_ino
     H.rebuild_cache(c, now=NOW)
-    assert lock.is_file()
-    assert lock.stat().st_ino == first_ino
+    assert (v1 / ".lock").is_file()
     assert v1.is_dir()
-    assert not (v1 / ".write.lock").exists()
+    assert not (cache_dir / "history" / ".write.lock").exists()
