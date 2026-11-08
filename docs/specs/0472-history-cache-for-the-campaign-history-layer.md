@@ -38,14 +38,18 @@ mtime_ns, gates/ mtime_ns)`. `history_index` lists immediate child directories o
 `store.campaigns_dir` and sorts rows by `(closed_at or created_at, campaign id)` descending.
 Global inputs the derivation actually reads are `conductor/decisions.jsonl`,
 `escalations/ESC-*.json`, `mailbox/*.jsonl`, `reviews/<SPEC>/<sha>.json`,
-`spec-reviews.jsonl`, `flaky-tests.json`, `sentinel/*.last.json`, and `runner.jsonl`
-(`_runner_intervals`). `events.jsonl` is not an input. CLI cfg from `load_config` always has
+`spec-reviews.jsonl`, `flaky-tests.json`, `sentinel/*.last.json`, `runner.jsonl`
+(`_runner_intervals`), `conductor/sessions.jsonl`, the transcript files
+`conductor_cost.attribute` opens, the profile layers `resolve_profile` reads, and
+every file under `runs/` and `gates/`, not only those directories' mtimes.
+`events.jsonl` is not an input. CLI cfg from `load_config` always has
 `cache_dir`. The existing history tests build a cfg with only `data_dir`.
 
 The epic's cache contract, which this spec follows, is a disposable tree under
 `cfg["cache_dir"]`, outside the data dir, so SPEC-0400's "every other data-dir file
 byte-identical" invariant holds. A terminal campaign is computed once. Append-only global
-logs advance by offset. A shrink or an inode change re-reads that log from the start. Writes
+logs advance by offset. A shrink, an inode change, or a same-size `mtime_ns` change
+re-reads that log from the start. Writes
 are atomic. A corrupt or wrong-version cache is rebuilt. The product budgets, measured on a
 500-campaign clone, are cold index ≤ 10 s, warm index ≤ 300 ms, warm campaign open ≤ 500 ms,
 and a records query over at least 50 000 records ≤ 200 ms. Tests allow ×3 slack. The
@@ -93,20 +97,24 @@ live-queue repaint budget stays with the queue view.
    `cache_dir`, including today's history tests, stay on the pure path.
 2. **A terminal campaign is stored once and reused.** A campaign whose `state` is in
    `store.TERMINAL_STATES` is served from `campaigns/<cid>.json` while `campaign_signature`
-   matches the stored signature and no global input that can change that document has moved.
-   A non-terminal campaign is recomputed on every `campaign_history` and every
-   `history_index`, because its open visit runs to `now`.
+   matches the stored signature, the size and mtime of every file under `runs/` and
+   `gates/` match what was stored, and no global input that can change that document has
+   moved. `history_index` returns that campaign's stored index row and does not open the
+   campaign file. A non-terminal campaign is recomputed on every `campaign_history` and
+   every `history_index`, because its open visit runs to `now`, and only that index row
+   is replaced.
 3. **`_merge_index_writes` drops pruned ids last.** The refresh keeps a pending write log so
    a cold build can resume. The merge copies the committed index, applies pending writes in
    order, and then deletes every id in `pruned`. The deletion is the last mutation of the
    row map. A write that names a pruned id does not appear in the result. The caller puts
    every known id whose campaign directory is gone into `pruned`, including ids that exist
    only in the pending log or only as a leftover `campaigns/<cid>.json`.
-4. **Global logs move by cursor; affected campaigns are recomputed with the pure function.**
-   Append-only files advance from the stored offset. A shrink or an inode change replaces
-   that source's cached records from a full re-read. The campaigns those records touch are
-   recomputed with `campaign_history(..., cache=False)` and stored again. Equivalence is
-   that recompute, not a second derivation.
+4. **Global logs move by cursor; a cursor change replaces the cached record set with the pure one.**
+   Append-only files advance from the stored offset. A shrink, an inode change, or a
+   same-size `mtime_ns` change re-reads that source from byte 0. Every stored terminal
+   campaign for which `campaign_history(..., cache=False)` would differ in any field other
+   than `generated_at` is recomputed and stored again. Equivalence is that recompute, not
+   a second derivation.
 5. **The perf corpus is test support in `tests/history_scale.py`.** `clone_fixture` grows
    the SPEC-0415 fixture to 500 campaigns and at least 50 000 finding lines. It does not
    import `nightwright`. `tests/test_history_perf.py` is the budget oracle.
@@ -142,9 +150,9 @@ In `src/nightwright/agentic/history.py`:
 
 | Name | Behavior |
 |---|---|
-| `campaign_history(cfg, cid, *, now=None, cache=None)` | Same return as today. A valid terminal file is returned without the lock and without a ledger read. A miss takes the lock, computes, writes `campaigns/<cid>.json`, and merges that index row. |
-| `history_index(cfg, *, now=None, progress=None, cache=None)` | Same row shape and sort as today. `progress(done, total)` still runs once per campaign directory. |
-| `history_records(cfg, *, campaign=None, agent=None, kind=None, project=None, severity=None, status=None, since=None, until=None, query=None, limit=None, cache=None)` | Same filter semantics as today. Returned dicts have the v1 keys only. |
+| `campaign_history(cfg, cid, *, now=None, cache=None)` | Same return as today. A valid terminal file is returned without the lock and without a ledger read. A miss takes the lock and runs all eight refresh steps, writing `version` `1\n` and `sources.json` before it returns. |
+| `history_index(cfg, *, now=None, progress=None, cache=None)` | Same row shape and sort as today. `progress(done, total)` still runs once per campaign directory. A hit does not run the eight steps, replaces no cache file, and does not open `campaigns/<cid>.json`, `ledger.jsonl`, or `records.jsonl`. |
+| `history_records(cfg, *, campaign=None, agent=None, kind=None, project=None, severity=None, status=None, since=None, until=None, query=None, limit=None, cache=None)` | Same filter semantics as today. Returned dicts have the v1 keys only. A hit reads `records.jsonl`, drops `search`, and writes nothing. |
 | `rebuild_cache(cfg, *, now=None, progress=None) -> dict` | Deletes `history/v1/` and builds it. Returns `{"campaigns": N, "records": M}`. Requires `cfg["cache_dir"]`. Raises `OSError` when the tree cannot be created or written. |
 
 `N` is the number of index rows. `M` is the number of record lines.
@@ -178,8 +186,11 @@ the next refresh.
 An exclusive `fcntl.flock` on `.lock` covers every full refresh and `rebuild_cache`. The
 lock is taken before the directory listing that computes `pruned` and released after the
 replaces. A hit on a complete `campaigns/<cid>.json` for a terminal campaign returns that
-document with no lock and no ledger read. A miss, a non-terminal campaign, an invalid
-signature, or a moved global cursor takes the lock, recomputes, and merges.
+document with no lock and no ledger read. A `campaign_history` miss takes the lock and
+runs all eight refresh steps, writing `version` `1\n` and `sources.json` before it
+returns. A hit `history_index` does not take that path and does not open
+`campaigns/<cid>.json`. A non-terminal campaign, an invalid signature, or a moved global
+cursor takes the lock and recomputes.
 
 The data dir is not written. Cache paths are only under `cfg["cache_dir"]`. When that key
 is missing, no path is written, including the process's real XDG cache.
@@ -208,8 +219,23 @@ Inside the lock:
 8. Replace `records.jsonl` and `sources.json` to match the records and cursors of this
    refresh.
 
-`history_index` returns `merged` (already in `history_index` order). `filter_index` stays
-the CLI's job and stays pure.
+Those eight steps are the miss path. A hit `history_index` does not run them and replaces
+no cache file. A hit tree has `version` exactly `1\n`, logical files that parse, no
+`index.writes.jsonl`, an empty pruned set, unchanged global cursors, and one `index.jsonl`
+row per live id. A row whose state is in `store.TERMINAL_STATES` and whose signature
+equals `campaign_signature(cfg, cid)` is returned as stored. The call stats the signature
+inputs and the global cursors, reads `index.jsonl`, and calls `progress` once per live
+directory. It does not open `campaigns/<cid>.json`, `ledger.jsonl`, or `records.jsonl`.
+A live id whose state is not terminal is recomputed even when the signature matches, and
+only that row is replaced. A hit `history_records` reads `records.jsonl`, drops `search`,
+and writes nothing. The budget clone is all terminal, so the warm index and the warm
+records query are hits. A `campaign_history` miss takes the lock and runs all eight steps,
+writing `version` `1\n` and `sources.json` before it returns, so the tree is not the
+corrupt case of a missing version beside another logical file. The following
+`history_index` is a hit for that id and does not open its ledger.
+
+On the miss path, `history_index` returns `merged` (already in `history_index` order).
+`filter_index` stays the CLI's job and stays pure.
 
 ### `_merge_index_writes`
 
@@ -247,45 +273,57 @@ write still returns no index row for that id.
 
 A stored terminal document is valid when all of the following hold:
 
-- `campaign_signature(cfg, cid)` equals the document's `signature`.
+- `campaign_signature(cfg, cid)` equals the document's `signature`. The `signature` field
+  remains the five-tuple from `campaign_signature`.
 - The document's `header.state` is in `store.TERMINAL_STATES`.
+- The size and mtime of every file under that campaign's `runs/` and `gates/` equal the
+  cursors stored for them.
 - Every global cursor that the document depends on is unchanged, by the rules below.
 
-A signature mismatch recomputes that campaign only. A non-terminal state recomputes on
-every call and is still written through so the index row exists; it is not served as a hit
-on the next call.
+A signature mismatch, or a `runs/` or `gates/` file cursor mismatch, recomputes that
+campaign only. A non-terminal state recomputes on every call and is still written through
+so the index row exists; it is not served as a hit on the next call. Only that index row
+is replaced.
 
-`sources.json` maps a path relative to `store.agentic_dir` to a cursor:
+`sources.json` maps a path relative to `store.agentic_dir` to a cursor. A file outside
+that directory is keyed by its absolute path. `agentic.conductor.prices` is keyed by that
+name and stores the canonical JSON of the price table.
 
 | Source | Cursor | On change |
 |---|---|---|
-| `conductor/decisions.jsonl`, `mailbox/<inbox>.jsonl`, `spec-reviews.jsonl`, `runner.jsonl` | `{size, mtime_ns, inode, offset}` | Append, shrink, or inode change, as below |
-| `escalations/ESC-*.json`, `reviews/<SPEC>/<sha>.json`, `flaky-tests.json`, `sentinel/*.last.json` | `{size, mtime_ns, inode}` and no offset | Any change replaces that file's records from a full re-read |
+| `conductor/decisions.jsonl`, `mailbox/<inbox>.jsonl`, `spec-reviews.jsonl`, `runner.jsonl`, `conductor/sessions.jsonl` | `{size, mtime_ns, inode, offset}` | Append, shrink, inode change, or same inode and size with a different `mtime_ns`, as below |
+| `escalations/ESC-*.json`, `reviews/<SPEC>/<sha>.json`, `flaky-tests.json`, `sentinel/*.last.json`, each transcript file `conductor_cost.attribute` opens, each profile-layer file `resolve_profile` reads | `{size, mtime_ns, inode}` and no offset | Any change replaces that file's contribution from a full re-read |
+| `agentic.conductor.prices` | canonical JSON of the table | A different table is a cursor change |
+| each file under `campaigns/<cid>/runs/` and `campaigns/<cid>/gates/` | `{size, mtime_ns}` | A mismatch recomputes that campaign only |
 
 Append-only rules, given a new `stat`:
 
 - Inode differs, or `size` is less than the stored `size`: drop that file's cached records
   and parse from byte 0. This is the shrink and replace case.
-- `size` equals the stored offset and the inode matches: read nothing.
+- `size` equals the stored offset, the inode matches, and `mtime_ns` matches: read nothing.
+- The inode and the size match but `mtime_ns` differs: re-read that source from byte 0.
 - `size` is greater than the offset: read from the offset, parse only complete lines that
-  end in `\n`, and set the offset to the byte after the last complete line. A trailing
-  partial line stays unparsed. The stored `size` becomes the stat size, so the next call
-  with the same size and a lagging offset finishes the partial line once it is complete.
+  end in `\n`, and set the offset to the byte after the last complete line. The stored
+  `size` becomes the stat size. A trailing partial line stays unparsed until a later stat
+  has size greater than the stored offset and the line ends in newline.
 
-New lines are parsed by the same helpers `_global_records` and `_runner_intervals` use.
-Campaigns named by the new records, after text-link against `live`, are recomputed.
-Campaign-less new records are inserted into `records.jsonl` only.
-
-`runner.jsonl` growth recomputes a terminal campaign only when a newly parsed down
-interval overlaps that campaign's `[created_at, closed_at]`. An append that lies entirely
-after `closed_at` leaves the stored document in place, so a live runner log does not
-rebuild every closed campaign. A shrink or inode change of `runner.jsonl` recomputes every
-campaign whose wall clock overlaps any down interval in the full file, and recomputes a
-campaign that previously had a non-zero `runner_down_s` so a removed interval disappears.
-
-A mailbox file, escalation, review, or sentinel file that disappears drops the records
-that came from it. A new file is parsed in full. `flaky-tests.json` is one file: any
-change replaces every `flaky` record.
+A cursor change replaces `records.jsonl` with the pure record set plus `search`. Inserting
+only the new lines is not equivalent: a mailbox reply sets the earlier question's status
+to answered, and spec-review lines are deduped against `reviews/`. Recompute every stored
+terminal campaign for which `campaign_history(..., cache=False)` would differ in any field
+other than `generated_at`. That includes a campaign that gained or lost a record, a
+campaign whose `gaps` gained or lost a string, and every campaign when `conductor_usd` or
+`loop_max` changes. `conductor_usd` changes when `conductor/sessions.jsonl`, a transcript
+file `conductor_cost.attribute` reads, `agentic.conductor.prices`, or any campaign
+signature changes. `loop_max` changes when a profile layer changes. Those inputs have
+cursors. The no-change hit path does not call `attribute`. A `runner.jsonl` append leaves
+a terminal document in place only when the new bytes add no gap and no down interval
+overlapping `[created_at, closed_at]`. If the inode and the size match but `mtime_ns`
+differs, re-read that source from byte 0. A trailing partial line stays unparsed until a
+later stat has size greater than the stored offset and the line ends in newline. A
+terminal hit also requires the size and mtime of every file under `runs/` and `gates/` to
+match what was stored. The `signature` field remains the five-tuple from
+`campaign_signature`.
 
 ### Records file
 
@@ -338,8 +376,11 @@ nw campaign history --rebuild-cache --json
 `nightwright`. `dst` follows `copy_fixture`: it must be missing or empty, the returned
 path is `dst`, and the data dir is `dst/agentic/`.
 
-`place_bytes` hardlinks `src` to `dst` when both are files. On `OSError` it copies the
-bytes. `clone_fixture` uses it for unchanged file bodies inside `dst`.
+`place_bytes` hardlinks `src` to `dst` only when `clone_fixture` will not modify `dst`. A
+file that is appended or whose campaign locator is rewritten is a byte copy, and its inode
+differs from the file it was copied from. After `clone_fixture` returns, every file that
+was not part of a clone append or locator rewrite still matches the fixture bytes, and no
+inode under `dst` is an inode of the committed fixture.
 
 `clone_fixture` copies the committed fixture, then adds clone campaign directories until
 `campaigns` directories exist. Clone ids are deterministic for `seed`, unique, and
@@ -407,8 +448,13 @@ out of scope; the 500 ms row is this data load.
   values matches the pure documents, including `generated_at` and a changed `wall_s`, and
   opens the ledger both times. `history_index(..., progress=)` calls `progress` once
   per live campaign directory, with `done` running from 1 through `total`. After a cold
-  `campaign_history` of one terminal id, the following `history_index` includes that row
-  and does not open that campaign's ledger.
+  `campaign_history` of one terminal id, that miss has written `version` `1\n` and
+  `sources.json`, and the following `history_index` is a hit for that id: it includes
+  that row, does not open that campaign's ledger, does not open `campaigns/<cid>.json` or
+  `records.jsonl`, replaces no cache file, and does not call `conductor_cost.attribute`.
+  A hit `history_records` reads `records.jsonl`, drops `search`, and writes nothing. A
+  live id whose state is not terminal is recomputed even when the signature matches, and
+  only that index row is replaced.
 - [ ] **AC3. A deleted campaign stays out of the index.** After a cached index exists,
   removing one campaign directory, planting `index.writes.jsonl` with that campaign's
   index row, and planting `campaigns/<cid>.json`, the next `history_index` returns no row
@@ -425,11 +471,21 @@ out of scope; the 500 ms row is this data load.
   line to `decisions.jsonl` advances `sources.json` `offset` to the new size, reads only
   the tail, and the cached records equal the pure records. Replacing that file so its
   inode changes, or truncating it so `size` shrinks, re-parses from byte 0 and drops the
-  appended decision. A `runner.jsonl` append dated after a terminal campaign's
-  `closed_at` does not open that campaign's ledger. A down interval that overlaps the
-  campaign's wall clock changes `runner_down_s` to the pure value. Deleting one
-  `mailbox/*.jsonl` drops only that file's mail records. Replacing `flaky-tests.json`
-  replaces every `flaky` record. Both results equal the pure reader.
+  appended decision. If the inode and the size match but `mtime_ns` differs, the next
+  read parses that source from byte 0. A trailing partial line stays out of the cached
+  records until a later stat has size greater than the stored offset and the line ends in
+  newline. A `runner.jsonl` append after a terminal campaign's `closed_at` that adds no
+  gap and no down interval overlapping `[created_at, closed_at]` does not open that
+  campaign's ledger. A down interval that overlaps the campaign's wall clock changes
+  `runner_down_s` to the pure value. Deleting one `mailbox/*.jsonl` drops only that
+  file's mail records. Replacing `flaky-tests.json` replaces every `flaky` record. An
+  unparsable line appended to `decisions.jsonl` changes that terminal document's `gaps`
+  to the pure list. A mailbox reply flips the earlier message's status to the pure
+  value. Rewriting `runs/<id>/run.json` in place recomputes the campaign. Appending to
+  `conductor/sessions.jsonl` makes `conductor_usd` equal the pure header. Changing a
+  profile layer `resolve_profile` reads makes `loop_max` equal the pure header. Each of
+  these compares the cached terminal document, with `generated_at` removed, to
+  `campaign_history(..., cache=False)`.
 - [ ] **AC5. Corrupt and torn caches.** A `version` of `999`, a `campaigns/<cid>.json` of
   `{`, or an `index.jsonl` line that is not JSON causes the next cached call to delete
   the tree, write `version` `1\n`, and return the pure results. A temp file left beside
@@ -452,7 +508,11 @@ out of scope; the 500 ms row is this data load.
   history records, the four operations in *Budgets* finish within the ×3 ceilings.
   `clone_fixture` is deterministic for a fixed seed, uses `place_bytes`, and keeps the
   SPEC-0459 locator, prefix, id, escalation-filename, and timestamp rules. It imports
-  nothing from `nightwright`.
+  nothing from `nightwright`. After a clone that appends, the template campaign's ledger
+  bytes are unchanged and the clone ledger's inode differs from that template. The
+  template campaign's ledger hash still equals the fixture. No inode under `dst` is an
+  inode of the committed fixture. The warm `history_index` and the warm `history_records`
+  query do not replace `records.jsonl` and do not parse `campaigns/*.json`.
 - [ ] **AC9. Schema surface.** Returned campaign documents, index rows, and records pass
   `history_problems`, `index_problems`, and `record_problems_v1`. Returned records have
   no `search` key. `HISTORY_SCHEMA`, `HISTORY_INDEX_SCHEMA`, and `HISTORY_RECORD_SCHEMA`
@@ -473,9 +533,13 @@ and a separate `cache_dir` under `tmp_path`.
   `generated_at` differs when the second call uses a later `now`. The following
   `history_index` does not open that ledger either, and its row is present. A
   `progress` callback records one call per live campaign with `done` from 1 through
-  `total`. Non-terminal fixture or a synthetic live campaign: two `now` values, both
-  ledger opens, full equality with `cache=False`. Index and records equality, including
-  a `query`.
+  `total`. After a cold `campaign_history` of one terminal id, assert `version` is `1\n`
+  and `sources.json` exists, then the following `history_index` does not open that
+  ledger, does not open `campaigns/<cid>.json` or `records.jsonl`, replaces no cache
+  file, and does not call `conductor_cost.attribute` (monkeypatch it). A hit
+  `history_records` writes nothing. Non-terminal fixture or a synthetic live campaign:
+  two `now` values, both ledger opens, full equality with `cache=False`, and only that
+  index row's cache file is replaced. Index and records equality, including a `query`.
 - AC3: two campaigns in the cache, delete one directory, write a pending index line and a
   campaign JSON for the deleted id, call `history_index` twice around a second plant, and
   assert the index, the file, and the campaign JSON. Call `_merge_index_writes` directly
@@ -487,9 +551,19 @@ and a separate `cache_dir` under `tmp_path`.
   `runs/`, and `gates/`) and assert a recompute. Append one decision, assert the offset
   and that a wrapped reader sees a read starting at the old offset (monkeypatch the
   tail read). Replace the file and truncate it, assert a zero offset and the decision
-  gone. Append a post-close runner line and assert no ledger open; insert an overlapping
-  down interval and assert `runner_down_s`. Delete one mailbox file and replace
-  `flaky-tests.json`, and compare both results to `cache=False`.
+  gone. Set `mtime_ns` with the same inode and size and assert a re-read from byte 0.
+  Leave a trailing partial line and assert it stays out until a later stat has size
+  greater than the stored offset and the line ends in newline. Append a post-close
+  runner line that adds no gap and no overlapping down interval, and assert the cached
+  call opens no ledger; insert an overlapping down interval and assert `runner_down_s`.
+  Delete one mailbox file and replace `flaky-tests.json`. Append an unparsable
+  `decisions.jsonl` line and assert `gaps` equals the pure list. Append a mailbox reply
+  and assert the earlier message's status equals the pure value. Rewrite
+  `runs/<id>/run.json` in place and assert that campaign is recomputed. Append to
+  `conductor/sessions.jsonl` and assert `header.conductor_usd` equals the pure header.
+  Change a profile layer `resolve_profile` reads and assert `loop_max` equals the pure
+  header. Each cached terminal document, with `generated_at` removed, equals
+  `campaign_history(..., cache=False)`.
 - AC5: write the three corrupt shapes, assert a rebuilt version and pure equality. Leave
   a `*.tmp` file and a pending writes file, assert the tmp is gone and the writes file
   is unlinked after a successful `index.jsonl` replace. Monkeypatch `fcntl.flock` and
@@ -515,18 +589,24 @@ and a separate `cache_dir` under `tmp_path`.
 **Automated: clone and budgets.** `tests/test_history_scale.py` for the helper,
 `tests/test_history_perf.py` for the ceilings.
 
-- AC8 helper: `place_bytes` matches bytes, and with `os.link` raising it copies and the
-  destination inode differs. `clone_fixture(dst, campaigns=<fixture campaigns>+1,
-  records=<fixture finding lines>+1, seed=1)` appends at least one finding, decision,
-  event, mail, and escalation; each appended file's original bytes are a prefix; new ids
-  are unique and max-plus-one; the escalation filename equals its `id`; timestamps differ
-  by that clone's delta; a second call with the same seed matches bytes. A source row
-  that has neither a top-level `campaign` nor `source.campaign` (other than a ledger
-  line) raises. `python3 -c` import of `tests.history_scale` does not put `nightwright`
-  in `sys.modules`.
+- AC8 helper: `place_bytes` matches bytes. It hardlinks only when `clone_fixture` will
+  not modify the destination; a file that is appended or whose campaign locator is
+  rewritten is a byte copy whose inode differs from the file it was copied from.
+  `clone_fixture(dst, campaigns=<fixture campaigns>+1, records=<fixture finding
+  lines>+1, seed=1)` appends at least one finding, decision, event, mail, and
+  escalation; each appended file's original bytes are a prefix; new ids are unique and
+  max-plus-one; the escalation filename equals its `id`; timestamps differ by that
+  clone's delta; a second call with the same seed matches bytes. After that clone, the
+  template campaign's ledger bytes are unchanged, its hash still equals the fixture, and
+  the clone ledger's inode differs from that template. No inode under `dst` is an inode
+  of the committed fixture. A source row that has neither a top-level `campaign` nor
+  `source.campaign` (other than a ledger line) raises. `python3 -c` import of
+  `tests.history_scale` does not put `nightwright` in `sys.modules`.
 - AC8 budgets: `clone_fixture(tmp, campaigns=500, records=50_000)` then the four timed
   calls. Assert `len(history_records(cfg)) >= 50_000` and 500 campaign directories
-  before timing. Assert each elapsed time is within the ×3 ceiling in *Budgets*.
+  before timing. Assert each elapsed time is within the ×3 ceiling in *Budgets*. Across
+  the warm `history_index` and the warm `history_records` query, `records.jsonl` is not
+  replaced and `campaigns/*.json` is not parsed.
 
 **Manual verification.** On a copy of the real data dir, with `cache_dir` pointed at a
 temporary directory:
