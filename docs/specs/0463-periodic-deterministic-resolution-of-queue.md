@@ -160,6 +160,12 @@ Merge, split, revert, and red-main opens do not use this adopt path. A revert op
 - `python3 tools/spec_lint.py --write-ledger` && `python3 tools/spec_lint.py` — passed.
 - Full suite left to gating.
 
+### Test record (2026-11-07, loop 2 implementer review fixes)
+
+- `uv run pytest -q tests/test_queue_conflict_resolve.py tests/test_idea_ordering.py tests/test_agentic_quiet.py tests/test_agentic_spec_drift.py tests/test_agentic_spec_review_loop.py` — passed.
+- `python3 tools/spec_lint.py --write-ledger` && `python3 tools/spec_lint.py` — passed.
+- Full suite left to gating.
+
 ### Test record (2026-11-07, loop 2 implementer)
 
 - `uv run pytest -q tests/test_idea_ordering.py tests/test_queue_conflict_resolve.py tests/test_agentic_quiet.py` — 214 passed.
@@ -187,6 +193,9 @@ Merge, split, revert, and red-main opens do not use this adopt path. A revert op
   `O_CREAT|O_EXCL` temp + `os.replace` (fresh open uses the same path). A failed write clears
   the hash and parks; partial or mismatched copies are not drift baselines.
 - `worktree_resume_state`: `admission == "revise_pending"` with `accepted`/`in-progress` resumes to `SPEC_WRITING`; `after_revision` with a pending brief still resumes to `IMPLEMENTING`.
+- Open/accept/adopt snapshots: validate UTF-8 + YAML mapping before persisting; `_accept_spec` uses capped
+  byte read + `os.replace`; `spec_guard` reads the worktree the same way and fails the synthetic gate on
+  decode/YAML errors instead of raising.
 
 ## Clock Log
 

@@ -3,6 +3,7 @@ supposed to make (ticks, status/updated, Test record / As shipped subsections, C
 reports everything else; the close step routes drift to TRIAGING; end to end a campaign whose
 implementer deletes an AC never merges."""
 import hashlib
+import os
 from pathlib import Path
 
 import pytest
@@ -117,6 +118,37 @@ def test_guard_fails_when_hash_set_but_snapshot_missing(tmp_path):
     ok, gate, events = CL.spec_guard(cfg, st)
     assert not ok and gate["name"] == "spec-changed"
     assert events[0][1]["severity"] == "must_fix"
+
+
+@pytest.mark.parametrize("snapshot", ["empty", "symlink"])
+def test_guard_fails_when_hash_set_but_snapshot_untrusted(tmp_path, snapshot):
+    cfg = {"data_dir": str(tmp_path / "data")}
+    st = _state(tmp_path, cfg, BASE)
+    copy = S.campaign_dir(cfg, st["id"]) / CL.SPEC_AT_OPEN
+    if snapshot == "empty":
+        copy.write_bytes(b"")
+        st["spec"]["sha256_at_open"] = hashlib.sha256(b"").hexdigest()
+    else:
+        target = copy.parent / "snap-target.md"
+        target.write_text(BASE, encoding="utf-8")
+        os.symlink(target, copy)
+        st["spec"]["sha256_at_open"] = hashlib.sha256(BASE.encode("utf-8")).hexdigest()
+    ok, gate, events = CL.spec_guard(cfg, st)
+    assert not ok and gate["name"] == "spec-changed"
+    assert events[0][1]["severity"] == "must_fix"
+
+
+def test_guard_fails_when_snapshot_not_decodable(tmp_path):
+    cfg = {"data_dir": str(tmp_path / "data")}
+    st = _state(tmp_path, cfg, BASE)
+    copy = S.campaign_dir(cfg, st["id"]) / CL.SPEC_AT_OPEN
+    bad = b"\xff\xfe---\nid: X\n---\n\nbody\n"
+    copy.write_bytes(bad)
+    st["spec"]["sha256_at_open"] = hashlib.sha256(bad).hexdigest()
+    ok, gate, events = CL.spec_guard(cfg, st)
+    assert not ok and gate["name"] == "spec-changed"
+    assert events[0][1]["severity"] == "must_fix"
+    assert "UTF-8" in events[0][1]["detail"]
 
 
 def test_guard_reports_drift_as_synthetic_gate(tmp_path):

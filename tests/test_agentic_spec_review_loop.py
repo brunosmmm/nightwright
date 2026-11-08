@@ -498,10 +498,11 @@ def test_regeneration_failure_restores_the_spec_and_the_ledger_file(tmp_path, mo
 def test_failure_after_the_accept_commit_resumes_without_a_review(tmp_path, monkeypatch):
     cfg, repo, iid, cid = begin(tmp_path, monkeypatch, [reviewed()])
     wt = wtree(cfg, cid)
-    real = Q.shutil.copyfile
-    monkeypatch.setattr(Q.shutil, "copyfile", lambda *a, **k: (_ for _ in ()).throw(OSError("disk")))
+    real = Q._replace_spec_at_open_snapshot
+    monkeypatch.setattr(Q, "_replace_spec_at_open_snapshot",
+                        lambda *a, **k: "disk")
     Q.tick(cfg)
-    monkeypatch.setattr(Q.shutil, "copyfile", real)
+    monkeypatch.setattr(Q, "_replace_spec_at_open_snapshot", real)
     park = parked(cfg, cid)
     assert park["reason"] == "spec_review_exhausted" and park["resume_to"] == "SPEC_REVIEW"
     assert park["detail"] == "accept failed after commit: disk"
@@ -563,10 +564,11 @@ def test_after_revision_failure_past_the_commit_finishes_with_the_revision_brief
         tmp_path, monkeypatch):
     cfg, repo, iid, cid = revised(tmp_path, monkeypatch)
     wt = wtree(cfg, cid)
-    real = Q.shutil.copyfile
-    monkeypatch.setattr(Q.shutil, "copyfile", lambda *a, **k: (_ for _ in ()).throw(OSError("disk")))
+    real = Q._replace_spec_at_open_snapshot
+    monkeypatch.setattr(Q, "_replace_spec_at_open_snapshot",
+                        lambda *a, **k: "disk")
     Q.tick(cfg)
-    monkeypatch.setattr(Q.shutil, "copyfile", real)
+    monkeypatch.setattr(Q, "_replace_spec_at_open_snapshot", real)
     park = parked(cfg, cid)
     assert park["detail"] == "accept failed after commit: disk" and park["resume_to"] == "SPEC_REVIEW"
     assert "accept SPEC-0002" in _git(wt, "log", "-1", "--format=%s")
@@ -602,10 +604,11 @@ def test_a_failed_accept_removes_files_a_regenerate_command_created(tmp_path, mo
 def test_a_dirty_worktree_wins_over_an_accepted_head(tmp_path, monkeypatch):
     cfg, repo, iid, cid = begin(tmp_path, monkeypatch, [reviewed()])
     wt = wtree(cfg, cid)
-    real = Q.shutil.copyfile
-    monkeypatch.setattr(Q.shutil, "copyfile", lambda *a, **k: (_ for _ in ()).throw(OSError("disk")))
+    real = Q._replace_spec_at_open_snapshot
+    monkeypatch.setattr(Q, "_replace_spec_at_open_snapshot",
+                        lambda *a, **k: "disk")
     Q.tick(cfg)
-    monkeypatch.setattr(Q.shutil, "copyfile", real)
+    monkeypatch.setattr(Q, "_replace_spec_at_open_snapshot", real)
     (wt / SPEC).write_text((wt / SPEC).read_text() + "\nhand edit\n")
     resume(cfg, cid)
     Q.tick(cfg)

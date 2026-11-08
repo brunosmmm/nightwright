@@ -262,8 +262,36 @@ def _spec_at_open_trusted(cfg, state: dict, copy: Path) -> bool:
     return bool(data) and hashlib.sha256(data).hexdigest() == want
 
 
+def _spec_at_open_entry_absent(copy: Path) -> bool:
+    try:
+        os.lstat(copy)
+    except OSError:
+        return True
+    return False
+
+
+def _spec_snapshot_untrusted_gate(rel: str, copy: Path, detail: str) -> tuple[bool, dict, list]:
+    gate = {"name": "spec-changed", "required": True, "ok": False, "exit_code": None,
+            "timed_out": False, "duration_s": 0.0, "log": "", "tail": detail}
+    return False, gate, [("finding", {
+        "persona": "close", "severity": "must_fix", "gate": "spec-changed",
+        "title": "spec-changed guard: no trusted open-time copy",
+        "detail": detail, "files": [rel]})]
+
+
+def _spec_snapshot_read_gate(rel: str, detail: str) -> tuple[bool, dict, list]:
+    gate = {"name": "spec-changed", "required": True, "ok": False, "exit_code": None,
+            "timed_out": False, "duration_s": 0.0, "log": "", "tail": detail}
+    return False, gate, [("finding", {
+        "persona": "close", "severity": "must_fix", "gate": "spec-changed",
+        "title": "spec-changed guard: spec unreadable",
+        "detail": detail, "files": [rel]})]
+
+
 def spec_guard(cfg, state: dict) -> tuple[bool, dict | None, list]:
     """(ok, synthetic_gate, events). Compares the worktree spec with the open-time copy."""
+    from . import queue as Q
+
     rel = (state.get("spec") or {}).get("rel_path") or ""
     worktree = (state.get("repo") or {}).get("worktree") or ""
     copy = store.campaign_dir(cfg, state["id"]) / SPEC_AT_OPEN
@@ -272,23 +300,43 @@ def spec_guard(cfg, state: dict) -> tuple[bool, dict | None, list]:
     if want and not trusted:
         detail = (f"open-time spec snapshot at {copy} is missing, untrusted, "
                   f"or does not match sha256_at_open")
-        gate = {"name": "spec-changed", "required": True, "ok": False, "exit_code": None,
-                "timed_out": False, "duration_s": 0.0, "log": "", "tail": detail}
-        return False, gate, [("finding", {
-            "persona": "close", "severity": "must_fix", "gate": "spec-changed",
-            "title": "spec-changed guard: no trusted open-time copy",
-            "detail": detail, "files": [rel]})]
+        return _spec_snapshot_untrusted_gate(rel, copy, detail)
     if not trusted:
-        return True, None, [("finding", {
-            "persona": "close", "severity": "info", "gate": "spec-changed",
-            "title": "spec-changed guard skipped: no open-time copy of the spec",
-            "detail": str(copy), "files": [rel]})]
+        if not want and _spec_at_open_entry_absent(copy):
+            return True, None, [("finding", {
+                "persona": "close", "severity": "info", "gate": "spec-changed",
+                "title": "spec-changed guard skipped: no open-time copy of the spec",
+                "detail": str(copy), "files": [rel]})]
+        detail = (f"open-time spec snapshot at {copy} is missing, untrusted, "
+                  f"or does not match sha256_at_open")
+        return _spec_snapshot_untrusted_gate(rel, copy, detail)
+    new_data, read_err = Q._read_worktree_spec_bytes(Path(worktree), rel)
+    if read_err:
+        return _spec_snapshot_read_gate(rel, f"worktree spec unreadable: {read_err}")
+    if new_data is None:
+        return _spec_snapshot_read_gate(rel, f"worktree spec missing at {worktree}/{rel}")
     try:
-        new = (Path(worktree) / rel).read_text(encoding="utf-8")
+        snap_bytes = copy.read_bytes()
     except OSError as e:
-        new = f"(spec unreadable: {e})"
+        return _spec_snapshot_read_gate(rel, f"open-time snapshot unreadable: {e}")
+    try:
+        old = snap_bytes.decode("utf-8")
+    except UnicodeDecodeError as e:
+        return _spec_snapshot_read_gate(rel, f"open-time snapshot not valid UTF-8: {e}")
+    try:
+        new = new_data.decode("utf-8")
+    except UnicodeDecodeError as e:
+        return _spec_snapshot_read_gate(rel, f"worktree spec not valid UTF-8: {e}")
+    for label, text in (("open-time snapshot", old), ("worktree spec", new)):
+        try:
+            fm, _ = split_frontmatter(text)
+        except (ValueError, yaml.YAMLError) as e:
+            return _spec_snapshot_read_gate(rel, f"{label} front matter: {e}")
+        if not isinstance(fm, dict):
+            return _spec_snapshot_read_gate(
+                rel, f"{label} front matter is not a mapping")
     drop = ("id",) if _is_rename_destination(worktree, rel) else ()
-    hunks = spec_drift(copy.read_text(encoding="utf-8"), new, drop=drop)
+    hunks = spec_drift(old, new, drop=drop)
     if not hunks:
         return True, None, []
     diff = "\n".join(hunks).splitlines()

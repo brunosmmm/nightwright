@@ -1798,6 +1798,21 @@ def _spec_at_open_snapshot_ok(cdir: Path, snap: Path, want_hash: str) -> bool:
 MAX_WORKTREE_SPEC_BYTES = 4 * 1024 * 1024
 
 
+def _validate_spec_snapshot_bytes(data: bytes) -> str | None:
+    """Return an error when ``data`` is not a storable spec snapshot (UTF-8 + YAML front matter)."""
+    try:
+        text = data.decode("utf-8")
+    except UnicodeDecodeError as e:
+        return f"not valid UTF-8: {e}"
+    try:
+        fm, _ = split_frontmatter(text)
+    except (ValueError, yaml.YAMLError) as e:
+        return f"front matter: {e}"
+    if not isinstance(fm, dict):
+        return "front matter is not a mapping"
+    return None
+
+
 def _read_worktree_spec_bytes(worktree: Path, rel: str) -> tuple[bytes | None, str | None]:
     """Read a worktree spec path when it is a regular file inside the worktree (``O_NOFOLLOW``).
 
@@ -1861,6 +1876,10 @@ def _clear_untrusted_spec_at_open_snapshot(cdir: Path, snap: Path, spec: dict) -
 
 def _replace_spec_at_open_snapshot(cdir: Path, snap: Path, data: bytes, spec: dict) -> str | None:
     """Write ``spec_at_open.md`` from ``data`` via a private temp file and ``os.replace``."""
+    bad = _validate_spec_snapshot_bytes(data)
+    if bad:
+        spec.pop("sha256_at_open", None)
+        return f"spec snapshot not storable: {bad}"
     tmp = cdir / f".{CL.SPEC_AT_OPEN}.{os.getpid()}.{threading.get_ident()}.tmp"
     fd = None
     try:
@@ -4243,17 +4262,19 @@ def _accept_spec(ctx, state, counters, events, finish, *, committed: bool, rnd, 
                 return exhausted(f"accept failed: {getattr(e, 'tail', None) or e}")
             events.append(("commit", {"sha": head, "message": f"accept {spec['id']}"}))
             state["repo"]["head"] = head
-        try:
-            spec_file = Path(state["repo"]["worktree"]) / spec["rel_path"]
-            dest = store.campaign_dir(cfg, cid) / CL.SPEC_AT_OPEN
-            dest.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copyfile(spec_file, dest)
-            spec["sha256_at_open"] = _spec_sha(spec_file)
-            events.append(("spec_accepted", {"spec_id": spec["id"], "round": rnd}))
-            state["pending_brief"] = (_revision_pending_brief(cfg, state, revision)
-                                      if revision is not None else None)
-        except Exception as e:      # the accept is committed; the resume finishes this part
-            return exhausted(f"accept failed after commit: {e}")
+        worktree = Path(state["repo"]["worktree"])
+        rel = spec["rel_path"]
+        data, read_err = _read_worktree_spec_bytes(worktree, rel)
+        if read_err or data is None:
+            detail = read_err or f"spec file missing at {worktree / rel}"
+            return exhausted(f"accept failed after commit: {detail}")
+        cdir = store.campaign_dir(cfg, cid)
+        snap_err = _replace_spec_at_open_snapshot(cdir, cdir / CL.SPEC_AT_OPEN, data, spec)
+        if snap_err:
+            return exhausted(f"accept failed after commit: {snap_err}")
+        events.append(("spec_accepted", {"spec_id": spec["id"], "round": rnd}))
+        state["pending_brief"] = (_revision_pending_brief(cfg, state, revision)
+                                  if revision is not None else None)
         return finish("IMPLEMENTING", "spec_accepted")
 
 

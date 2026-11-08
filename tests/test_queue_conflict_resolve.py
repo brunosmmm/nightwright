@@ -521,8 +521,9 @@ def test_adopt_records_head_and_spec_snapshot(env, monkeypatch):
     assert snap.is_file()
     assert after["spec"]["sha256_at_open"] == SR.spec_sha256(
         Path(after["repo"]["worktree"]) / after["spec"]["rel_path"])
-    assert snap.read_text(encoding="utf-8") == (
-        Path(after["repo"]["worktree"]) / after["spec"]["rel_path"]).read_text(encoding="utf-8")
+    wt_spec = Path(after["repo"]["worktree"]) / after["spec"]["rel_path"]
+    assert snap.read_bytes() == wt_spec.read_bytes()
+    assert snap.read_text(encoding="utf-8") == wt_spec.read_text(encoding="utf-8")
     notes = S.read_ledger(cfg, cid, types=["note"])
     assert any(n.get("author") == "queue" and "resumed into existing worktree" in n["text"]
                for n in notes)
@@ -825,8 +826,9 @@ def test_adopt_rewrites_empty_snapshot_when_hash_null(env, monkeypatch):
     _open_resume(cfg, monkeypatch, _state(cfg, cid))
     after = _state(cfg, cid)
     wt_spec = Path(after["repo"]["worktree"]) / after["spec"]["rel_path"]
-    assert after["spec"]["sha256_at_open"] == SR.spec_sha256(wt_spec)
-    assert (cdir / CL.SPEC_AT_OPEN).read_text(encoding="utf-8") == wt_spec.read_text(encoding="utf-8")
+    assert after["spec"]["sha256_at_open"] == hashlib.sha256(wt_spec.read_bytes()).hexdigest()
+    snap = cdir / CL.SPEC_AT_OPEN
+    assert snap.read_bytes() == wt_spec.read_bytes()
 
 
 def test_adopt_rewrites_snapshot_when_hash_set_but_copy_missing(env, monkeypatch):
@@ -1029,6 +1031,33 @@ def test_adopt_snapshot_outside_campaign_dir_is_rewritten(env, monkeypatch):
     wt_spec = Path(after["repo"]["worktree"]) / after["spec"]["rel_path"]
     assert not snap.is_symlink()
     assert after["spec"]["sha256_at_open"] == SR.spec_sha256(wt_spec)
+
+
+def test_fresh_open_does_not_store_non_utf8_snapshot(env, monkeypatch):
+    cfg, repo = env
+    cid = add_idea_campaign(cfg, monkeypatch, capture(cfg, "bad bytes"))
+    st = _state(cfg, cid)
+    rel = "docs/specs/0999-x.md"
+    st["spec"] = {"rel_path": rel, "id": "SPEC-0999", "internal": True}
+    st["spec_id"] = "SPEC-0999"
+    st["state"] = "OPENING"
+    S.write_state(cfg, cid, st)
+    real_add = git.worktree_add
+    bad = b"\xff\xfe---\nid: SPEC-0999\nstatus: accepted\n---\n\nbody\n"
+
+    def add_and_seed(root, path, branch, base):
+        real_add(root, path, branch, base)
+        (path / rel).parent.mkdir(parents=True, exist_ok=True)
+        (path / rel).write_bytes(bad)
+
+    monkeypatch.setattr(git, "worktree_add", add_and_seed)
+    monkeypatch.setattr(Q, "_run_worktree_setup", lambda *a, **k: None)
+    res = Q._do_open(Q._Ctx(cfg), _state(cfg, cid))
+    assert res.error and "not storable" in res.error
+    st_after = _state(cfg, cid)
+    snap = S.campaign_dir(cfg, cid) / CL.SPEC_AT_OPEN
+    assert not snap.exists()
+    assert not st_after.get("spec", {}).get("sha256_at_open")
 
 
 def test_short_spec_snapshot_write_leaves_no_truncated_baseline(env, monkeypatch):
