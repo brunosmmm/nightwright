@@ -75,6 +75,8 @@ def test_resolve_focus_maps_tabs_run_record_and_unknown():
         "runs", "001-implementer")
     assert AM.resolve_focus(history, {"tab": "records", "record": "rec-mail-1"}) == (
         "records", "rec-mail-1")
+    assert AM.resolve_focus(history, {"tab": "findings", "record": "rec-mail-1"}) == (
+        "overview", "not found")
     assert AM.resolve_focus(history, {"tab": "runs", "run": "missing"}) == ("overview", "not found")
     assert AM.resolve_focus(history, {"tab": "records", "record": "nope"}) == ("overview", "not found")
     assert AM.resolve_focus(history, {"tab": "timeline"}) == ("timeline", None)

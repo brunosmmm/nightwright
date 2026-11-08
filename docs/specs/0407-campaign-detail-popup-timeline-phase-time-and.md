@@ -507,6 +507,17 @@ delivered rows are on screen, and they read campaign ids from the mounted queue 
 - Loop review: desk `1`–`5` bindings non-priority; `check_action` scans stack for `CampaignDetail`; timeline `[`/`]` bind `left_square_bracket`/`right_square_bracket`; Pilot coverage for P+`1` tab guard, up/down across separators, poll ref restore, header/timeline AC9 markup on widgets.
 - Full suite left to gating.
 
+### Test record (2026-11-07, implementer campaign loop 0)
+
+- `uv run pytest -q tests/test_tui_campaign_detail_ac.py tests/test_tui_campaign_detail.py tests/test_tui_campaign_detail_model.py tests/test_tui_queue_view.py::test_enter_key_on_a_header_row_posts_nothing` — 43 passed.
+- Full suite left to gating; manual verification on developer data dir not run.
+
+### As shipped (2026-11-07, implementer campaign loop 0)
+
+- `resolve_focus` accepts only `tab records` for record ids; `tab findings` is Overview plus `not found`.
+- Reload and poll workers skip widget updates when the screen is unmounted or the worker was cancelled; coalesced `reload()` does not run from `finally` after dismiss.
+- Timeline navigation keys (`f`, `v`, `g`/`G`, `j`/`k`) no-op off the Timeline pane; poll cursor restore uses `ref` only for `seq`-null rows.
+
 ### As shipped (2026-11-07, loop 0)
 
 - `_apply_focus` runs only on the initial load; poll reloads keep pane and Timeline filter.
@@ -522,7 +533,7 @@ delivered rows are on screen, and they read campaign ids from the mounted queue 
 - Manual verification: pending.
 - `DetailOpener.on_click` resolves the data row from `Click.style.meta['row']` (Textual 8); `_open_row` uses `RowKey.value` for `detail_target`.
 - Loop 3: `DetailOpener` Enter binding; timeline `MM-DD HH:MM:SS`; poll/detail_signature and highlight `entry_detail` off UI thread; loop `[`/`]`/filter separator paint; `IdeaDesk.check_action` blocks desk digit tabs while modal is up.
-- Loop 4: review-mode bumps `_detail_token` and in-flight `entry_detail` honors `review_mode`; loop `[`/`]` walks `_loop_starts` order; separator row keys use row index; reload keeps poll when paint rolls back; `IdeaDesk.action_tab` remaps desk digit bindings to modal panes while `CampaignDetail` is active; `_apply_focus` runs on every reload when `focus` is set.
+- Loop 4: review-mode bumps `_detail_token` and in-flight `entry_detail` honors `review_mode`; loop `[`/`]` walks `_loop_starts` order; separator row keys use row index; reload keeps poll when paint rolls back; `IdeaDesk.action_tab` remaps desk digit bindings to modal panes while `CampaignDetail` is active.
 - Loop 2 (implementer): `action_tab` moves focus onto the target placeholder (timeline table blurred when leaving); `#campaign-detail` scroll is not focusable so digit `3` does not steal pane switches while the timeline is focused.
 - Loop 3 (implementer): IdeaDesk desk-tab digit bindings are not `priority`; `check_action` disables idea actions when `CampaignDetail` is anywhere on `screen_stack`; timeline loop jumps use square-bracket key names Textual emits.
 

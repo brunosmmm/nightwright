@@ -165,6 +165,16 @@ def test_focus_run_record_and_unknown(tmp_path):
             assert d.query_one("#detail-body", TabbedContent).active == "tab-overview"
             notes = [m for m, _ in app.notes]
             assert any("not found: nope-id" in m for m in notes)
+            await press(app, pilot, ["escape"])
+            app.open_campaign_detail(
+                cid, focus={"tab": "findings", "record": record_id})
+            await settle(app, pilot)
+            d = detail_screen(app)
+            assert d.query_one("#detail-body", TabbedContent).active == "tab-overview"
+            notes = [m for m, _ in app.notes]
+            assert any(f"not found: {record_id}" in m for m in notes)
+            assert f"placeholder: records ({record_id})" not in str(
+                d.query_one("#placeholder-records").content)
 
     _run(drive())
 
@@ -485,8 +495,8 @@ def test_popup_tour_no_writes(tmp_path):
             await pilot.double_click("#queue", offset=(2, 4))
             await settle(app, pilot)
             s = detail_screen(app)
-            for key in ("1", "2", "3", "4", "5", "f", "left_bracket", "right_bracket",
-                        "g", "G", "j", "k", "v"):
+            for key in ("1", "2", "3", "4", "5", "f", "left_square_bracket",
+                        "right_square_bracket", "g", "G", "j", "k", "v"):
                 await press(app, pilot, [key])
                 await settle(app, pilot)
             await press(app, pilot, ["escape"])
@@ -660,6 +670,37 @@ def test_load_detail_failure_on_open_shows_history_unavailable(tmp_path, monkeyp
             assert s.view is None
             await press(app, pilot, ["escape"])
             await settle(app, pilot)
+            assert not isinstance(app.screen, CampaignDetail)
+
+    _run(drive())
+
+
+def test_dismiss_during_initial_load_keeps_app_alive(tmp_path, monkeypatch):
+    _, cfg, ids = _fixture(tmp_path)
+    cid = ids["ready"]
+    app = _desk(cfg, tab="queue")
+    in_load = threading.Event()
+    release = threading.Event()
+    real = AM.load_detail
+
+    def slow(cfg_, campaign_id):
+        in_load.set()
+        release.wait(timeout=5)
+        return real(cfg_, campaign_id)
+
+    monkeypatch.setattr(AM, "load_detail", slow)
+
+    async def drive():
+        async with app.run_test(size=SIZE) as pilot:
+            await settle(app, pilot)
+            select(app, "queued", cid)
+            await press(app, pilot, ["enter"])
+            assert await pilot_until(pilot, lambda: in_load.is_set())
+            await press(app, pilot, ["escape"])
+            await settle(app, pilot)
+            release.set()
+            await settle(app, pilot)
+            assert app.is_running
             assert not isinstance(app.screen, CampaignDetail)
 
     _run(drive())

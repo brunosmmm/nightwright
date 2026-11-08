@@ -266,13 +266,23 @@ class CampaignDetail(QueueActions, ModalScreen):
         tabs.active = self._focus_tab
         if extra == "not found":
             missing = self.focus.get("run") or self.focus.get("record") or "?"
-            self.notify(f"not found: {escape(str(missing))}", markup=False)
+            self.notify(f"not found: {missing}", markup=False)
         elif self._focus_tab == "tab-runs" and extra:
             self._placeholder_runs = f"placeholder: runs ({extra})"
             self.query_one("#placeholder-text", Static).update(Text(self._placeholder_runs))
         elif self._focus_tab == "tab-records" and extra:
             self._placeholder_records = f"placeholder: records ({extra})"
             self.query_one("#placeholder-records", Static).update(Text(self._placeholder_records))
+
+    def _worker_alive(self) -> bool:
+        if not self.is_mounted:
+            return False
+        from textual.worker import get_current_worker
+        try:
+            worker = get_current_worker()
+        except Exception:
+            return True
+        return not worker.is_cancelled
 
     def _start_poll(self) -> None:
         self._stop_poll()
@@ -296,8 +306,12 @@ class CampaignDetail(QueueActions, ModalScreen):
             return
         try:
             sig = await asyncio.to_thread(AM.detail_signature, self.cfg, self.campaign_id)
+            if not self._worker_alive():
+                return
             changed = sig != self._signature
         except Exception:
+            if not self._worker_alive():
+                return
             changed = True
         if changed:
             self.reload()
@@ -314,6 +328,8 @@ class CampaignDetail(QueueActions, ModalScreen):
         previous_view = self.view
         try:
             detail = await asyncio.to_thread(AM.load_detail, self.cfg, self.campaign_id)
+            if not self._worker_alive():
+                return
             self._signature = detail.signature
             was_terminal = self.view.terminal if self.view else False
             previous = self._cursor_target()
@@ -331,13 +347,16 @@ class CampaignDetail(QueueActions, ModalScreen):
                 if previous_view is not None and not initial:
                     self.view = previous_view
                     self._signature = previous_view.signature
-                self._show_timeline_error(e)
+                if self._worker_alive():
+                    self._show_timeline_error(e)
             live = self.view is not None and not self.view.terminal
             if not live:
                 self._stop_poll()
             elif not was_terminal or initial:
                 self._start_poll()
         except Exception as e:
+            if not self._worker_alive():
+                return
             if previous_view is not None and not initial:
                 self.view = previous_view
                 self._signature = previous_view.signature
@@ -348,12 +367,16 @@ class CampaignDetail(QueueActions, ModalScreen):
                 self._signature = None
                 self.view = None
                 self._load_error = Text(f"history unavailable: {e}", style="red")
-                self.query_one("#load-error", Static).update(self._load_error)
+                try:
+                    self.query_one("#load-error", Static).update(self._load_error)
+                except Exception:
+                    pass
                 self._stop_poll()
         finally:
             self._loading = False
-            if self._reload_pending:
-                self._reload_pending = False
+            pending = self._reload_pending
+            self._reload_pending = False
+            if pending and self._worker_alive():
                 self.reload()
 
     def _event_rows(self) -> list:
@@ -453,9 +476,9 @@ class CampaignDetail(QueueActions, ModalScreen):
             for i in data:
                 if self.shown[i].get("seq") == seq:
                     return i
-        if ref is not None:
+        elif ref is not None:
             for i in data:
-                if self.shown[i].get("ref") == ref:
+                if self.shown[i].get("seq") is None and self.shown[i].get("ref") == ref:
                     return i
         return data[-1]
 
@@ -503,6 +526,8 @@ class CampaignDetail(QueueActions, ModalScreen):
         except Exception as e:
             text = Text(f"(detail unavailable: {e})", style="red")
         if token != self._detail_token or self.review_mode:
+            return
+        if not self._worker_alive():
             return
         row = self.current_row()
         if row is None or row.get("seq") != seq or row.get("ref") != ref:
@@ -573,11 +598,15 @@ class CampaignDetail(QueueActions, ModalScreen):
         self.action_tab(_TAB_IDS[(i - 1) % len(_TAB_IDS)])
 
     def action_cycle_filter(self) -> None:
+        if self._active_tab() != "tab-timeline":
+            return
         filters = AM.DETAIL_FILTERS
         self.filter = filters[(filters.index(self.filter) + 1) % len(filters)]
         self._safe_paint()
 
     def action_toggle_review(self) -> None:
+        if self._active_tab() != "tab-timeline":
+            return
         self.review_mode = not self.review_mode
         self.show_detail()
 
@@ -626,38 +655,40 @@ class CampaignDetail(QueueActions, ModalScreen):
             self.table.move_cursor(row=starts[group + 1], scroll=True)
 
     def action_first(self) -> None:
+        if self._active_tab() != "tab-timeline":
+            return
         self._cursor_direction = -1
         data = self._data_indexes()
         if data:
             self.table.move_cursor(row=data[0], scroll=True)
 
     def action_last(self) -> None:
+        if self._active_tab() != "tab-timeline":
+            return
         self._cursor_direction = 1
         data = self._data_indexes()
         if data:
             self.table.move_cursor(row=data[-1], scroll=True)
 
     def action_down(self) -> None:
-        self._cursor_direction = 1
-        if self._active_tab() == "tab-timeline":
-            data = self._data_indexes()
-            here = self.table.cursor_row
-            after = [i for i in data if i > here]
-            if after:
-                self.table.move_cursor(row=after[0])
+        if self._active_tab() != "tab-timeline":
             return
-        self.table.action_cursor_down()
+        self._cursor_direction = 1
+        data = self._data_indexes()
+        here = self.table.cursor_row
+        after = [i for i in data if i > here]
+        if after:
+            self.table.move_cursor(row=after[0])
 
     def action_up(self) -> None:
-        self._cursor_direction = -1
-        if self._active_tab() == "tab-timeline":
-            data = self._data_indexes()
-            here = self.table.cursor_row
-            before = [i for i in data if i < here]
-            if before:
-                self.table.move_cursor(row=before[-1])
+        if self._active_tab() != "tab-timeline":
             return
-        self.table.action_cursor_up()
+        self._cursor_direction = -1
+        data = self._data_indexes()
+        here = self.table.cursor_row
+        before = [i for i in data if i < here]
+        if before:
+            self.table.move_cursor(row=before[-1])
 
     def action_close(self) -> None:
         self.dismiss(True)

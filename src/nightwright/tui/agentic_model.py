@@ -1305,7 +1305,7 @@ def resolve_focus(history: dict, focus) -> tuple[str, str | None]:
         if run_id and any(r.get("run_id") == run_id for r in runs):
             return ("runs", run_id)
         return ("overview", "not found")
-    if tab in ("records", "findings"):
+    if tab == "records":
         record_id = focus.get("record")
         records = history.get("records") or []
         if record_id and any(r.get("id") == record_id for r in records):
