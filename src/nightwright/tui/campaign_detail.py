@@ -162,6 +162,8 @@ class CampaignDetail(QueueActions, ModalScreen):
         Binding("k", "up", "up", show=False),
         Binding("up", "up", "up", show=False, priority=True),
         Binding("down", "down", "down", show=False, priority=True),
+        Binding("page_down,ctrl+j", "detail_scroll_down", "detail scroll", show=False),
+        Binding("page_up,ctrl+k", "detail_scroll_up", "detail scroll", show=False),
         Binding("escape", "close", "back"),
         Binding("q", "close", "back", show=False),
         Binding("p", "act('park')", "park"),
@@ -248,6 +250,7 @@ class CampaignDetail(QueueActions, ModalScreen):
         try:
             self.paint()
         except Exception as e:
+            self._signature = None
             self._show_timeline_error(e)
 
     def _show_timeline_error(self, e: Exception) -> None:
@@ -347,7 +350,7 @@ class CampaignDetail(QueueActions, ModalScreen):
             except Exception as e:
                 if previous_view is not None and not initial:
                     self.view = previous_view
-                    self._signature = previous_view.signature
+                    self._signature = None
                 if self._worker_alive():
                     self._show_timeline_error(e)
             live = self.view is not None and not self.view.terminal
@@ -611,6 +614,21 @@ class CampaignDetail(QueueActions, ModalScreen):
         tabs = self.query_one("#detail-body", TabbedContent)
         i = _TAB_IDS.index(tabs.active) if tabs.active in _TAB_IDS else 0
         self.action_tab(_TAB_IDS[(i - 1) % len(_TAB_IDS)])
+
+    def _detail_scroll(self, delta: int) -> None:
+        if self._active_tab() != "tab-timeline":
+            return
+        try:
+            scroller = self.query_one("#campaign-detail", VerticalScroll)
+        except Exception:
+            return
+        scroller.scroll_relative(y=delta, animate=False)
+
+    def action_detail_scroll_down(self) -> None:
+        self._detail_scroll(3)
+
+    def action_detail_scroll_up(self) -> None:
+        self._detail_scroll(-3)
 
     def action_cycle_filter(self) -> None:
         if self._active_tab() != "tab-timeline":

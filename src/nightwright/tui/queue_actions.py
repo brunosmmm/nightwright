@@ -71,7 +71,7 @@ class QueueActions:
         if action == "park" and result.get("state") != "PARKED":
             self.app.notify(f"park requested for {cid} (applies after the running step)")
         else:
-            self.app.notify(f"{action} {cid} done")
+            self.app.notify(f"{action} {cid} done", markup=False)
         self.reload()
 
     @staticmethod

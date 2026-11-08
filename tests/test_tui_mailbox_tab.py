@@ -559,7 +559,8 @@ def test_enter_opens_the_campaign_screen_or_focuses_the_pane(tmp_path):
             await pilot.press("enter")
             await settle(app, pilot)
             assert app.focused is v.pane and not isinstance(app.screen, CampaignDetail)
-            assert not [m for m in posted if type(m).__name__ == "CampaignSelected"]
+            from nightwright.tui.campaign_detail import OpenCampaign
+            assert not [m for m in posted if isinstance(m, OpenCampaign)]
             await pilot.press("escape")
             await settle(app, pilot)
             assert app.focused is v.threads_table
@@ -567,8 +568,10 @@ def test_enter_opens_the_campaign_screen_or_focuses_the_pane(tmp_path):
             await settle(app, pilot)
             await pilot.press("enter")
             await settle(app, pilot)
-            sel = [m for m in posted if type(m).__name__ == "CampaignSelected"]
+            from nightwright.tui.campaign_detail import OpenCampaign
+            sel = [m for m in posted if isinstance(m, OpenCampaign)]
             assert [m.campaign_id for m in sel] == [ids["ready"]]
+            assert sel[0].origin is v
             assert isinstance(app.screen, CampaignDetail)
 
     _run(drive())

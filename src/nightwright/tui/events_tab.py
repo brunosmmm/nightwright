@@ -19,7 +19,7 @@ from textual.widgets import DataTable, Input, Static
 
 from .. import report as R
 from . import agentic_model as AM
-from .queue_tab import QueueView
+from .campaign_detail import OpenCampaign
 
 POLL_S = 2.0
 SIDE_S = 5.0
@@ -316,7 +316,14 @@ class EventsView(Horizontal):
     def open_selected(self) -> None:
         row = self.current_row()
         if row and row.campaign:
-            self.post_message(QueueView.CampaignSelected(row.campaign, ""))
+            self.post_message(OpenCampaign(row.campaign, None, self))
+
+    def select_campaign(self, cid: str) -> None:
+        """Restore the events cursor after the detail modal dismisses (SPEC-0407)."""
+        for i, row in enumerate(self.shown):
+            if row.campaign == cid:
+                self.table.move_cursor(row=i)
+                return
 
     # --- side panels ---------------------------------------------------------------------
 

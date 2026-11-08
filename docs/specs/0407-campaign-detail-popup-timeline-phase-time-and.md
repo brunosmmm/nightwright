@@ -501,6 +501,12 @@ delivered rows are on screen, and they read campaign ids from the mounted queue 
 - Review fixes: initial `load_detail` failure Pilot, idle spies with saved originals, abandon same instance, pane keys 1–5, seq-null `links`/`linked_by`.
 - Full suite left to gating.
 
+### Test record (2026-11-07, implementer campaign loop 2)
+
+- `uv run pytest -q tests/test_tui_campaign_detail_ac.py tests/test_tui_campaign_detail.py tests/test_tui_campaign_detail_model.py tests/test_tui_mailbox_tab.py::test_enter_opens_the_campaign_screen_or_focuses_the_pane` — 47 passed.
+- Review loop 2: paint failure clears `_signature` and `_poll()` retry; mailbox poll reload; refused `p` data-dir hash; mouse timeline detail text; `OpenCampaign` origin from mailbox/events; `markup=False` on confirm/success toasts; timeline detail `page_down`/`ctrl+j` scroll.
+- Full suite left to gating.
+
 ### Test record (2026-11-07, implementer loop 3)
 
 - `uv run pytest -q tests/test_tui_campaign_detail_ac.py tests/test_tui_campaign_detail.py tests/test_tui_campaign_detail_model.py` — 41 passed.
@@ -511,6 +517,12 @@ delivered rows are on screen, and they read campaign ids from the mounted queue 
 
 - `uv run pytest -q tests/test_tui_campaign_detail_ac.py tests/test_tui_campaign_detail.py tests/test_tui_campaign_detail_model.py tests/test_tui_queue_view.py::test_enter_key_on_a_header_row_posts_nothing` — 43 passed.
 - Full suite left to gating; manual verification on developer data dir not run.
+
+### As shipped (2026-11-07, implementer campaign loop 2)
+
+- Failed timeline paint clears `_signature` (SPEC-0265) so the next poll retries; mailbox and events post `OpenCampaign` with their view as `origin`.
+- `ChoiceScreen` title and queue-action success toasts use `markup=False`.
+- Timeline detail scroll: `page_down` / `page_up` and `ctrl+j` / `ctrl+k` on the modal (`#campaign-detail` stays non-focusable).
 
 ### As shipped (2026-11-07, implementer campaign loop 0)
 

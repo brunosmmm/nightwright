@@ -347,8 +347,20 @@ def test_resume_and_prioritize_update_header(tmp_path):
 
 
 def test_park_runs_end_to_end_through_the_screen(tmp_path):
+    import hashlib
+    from pathlib import Path
+
+    def _hashes(root):
+        root = Path(root)
+        out = {}
+        for p in sorted(root.rglob("*")):
+            if p.is_file():
+                out[str(p.relative_to(root))] = hashlib.sha256(p.read_bytes()).hexdigest()
+        return out
+
     repo, cfg, ids = _fixture(tmp_path)
     cid = ids["ready"]
+    data = Path(cfg["data_dir"])
     app = _desk(cfg, tab="queue")
 
     async def drive():
@@ -363,8 +375,11 @@ def test_park_runs_end_to_end_through_the_screen(tmp_path):
             assert "PARKED" in overview(app)
             assert "parked" in overview(app)
             assert s.view.actions == ("resume", "prioritize", "abandon")
+            before = _hashes(data)
             await press(app, pilot, ["p"])
+            await settle(app, pilot)
             assert any("park not available in" in m for m, _ in app.notes)
+            assert _hashes(data) == before
             await press(app, pilot, ["A", "enter"])
             assert await pilot_until(
                 pilot, lambda: S.read_state(cfg, cid)["state"] == "ABANDONED")
@@ -481,9 +496,42 @@ def test_a_failed_paint_is_retried_by_the_next_poll(tmp_path, monkeypatch):
             await settle(app, pilot)
             assert "campaign failed" in status(app)
             monkeypatch.undo()
-            detail_screen(app).reload()
+            detail_screen(app)._poll()
             await settle(app, pilot)
             assert app.is_running and "campaign failed" not in status(app)
+
+    _run(drive())
+
+
+def test_mailbox_append_triggers_poll_reload(tmp_path, monkeypatch):
+    import json
+    from nightwright.agentic import mailbox as MB
+
+    monkeypatch.setattr(CD, "POLL_S", 0.1)
+    repo, cfg, ids = _fixture(tmp_path)
+    cid = ids["ready"]
+    seed(cfg, cid)
+    loads = []
+    real = AM.load_detail
+
+    def track(*a, **k):
+        loads.append(1)
+        return real(*a, **k)
+
+    monkeypatch.setattr(AM, "load_detail", track)
+    app = _desk(cfg, tab="queue")
+
+    async def drive():
+        async with app.run_test(size=SIZE) as pilot:
+            await open_screen(app, pilot, cid, "queued")
+            await settle(app, pilot)
+            n = len(loads)
+            path = MB.mailbox_dir(cfg) / "poll-test.jsonl"
+            path.parent.mkdir(parents=True, exist_ok=True)
+            row = {"id": f"m-{n}", "text": "signature bump"}
+            with path.open("a", encoding="utf-8") as fh:
+                fh.write(json.dumps(row) + "\n")
+            assert await pilot_until(pilot, lambda: len(loads) > n)
 
     _run(drive())
 

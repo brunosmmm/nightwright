@@ -23,7 +23,7 @@ from ..agentic import mailbox as MB
 from ..agentic import store
 from ..agentic.cli_queue import _ago
 from . import agentic_model as AM
-from .queue_tab import QueueView
+from .campaign_detail import OpenCampaign
 
 POLL_S = 2.0
 NO_CAMPAIGN = "(none)"
@@ -351,9 +351,16 @@ class MailboxView(Horizontal):
         if row is None:
             return
         if row.campaign:
-            self.post_message(QueueView.CampaignSelected(row.campaign))
+            self.post_message(OpenCampaign(row.campaign, None, self))
         else:
             self.pane.focus()
+
+    def select_campaign(self, cid: str) -> None:
+        """Restore the threads cursor after the detail modal dismisses (SPEC-0407)."""
+        for i, row in enumerate(self.threads):
+            if row.campaign == cid:
+                self.threads_table.move_cursor(row=i)
+                return
 
     # --- escalations: choose, text answer, withdraw --------------------------------------
 
@@ -364,7 +371,7 @@ class MailboxView(Horizontal):
     def open_escalation(self) -> None:
         row = self.current_escalation()
         if row is not None and row.campaign:
-            self.post_message(QueueView.CampaignSelected(row.campaign))
+            self.post_message(OpenCampaign(row.campaign, None, self))
 
     def start_escalation(self, action) -> None:
         row = self.current_escalation()

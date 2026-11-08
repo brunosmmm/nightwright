@@ -323,7 +323,7 @@ class ChoiceScreen(ModalScreen[str | None]):
 
     def compose(self) -> ComposeResult:
         with Vertical(id="prompt-box"):
-            yield Label(f"{self.title_text}  (enter pick · esc cancel)")
+            yield Label(f"{self.title_text}  (enter pick · esc cancel)", markup=False)
             yield DataTable(id="choices", cursor_type="row", show_header=False)
 
     def on_mount(self) -> None:
