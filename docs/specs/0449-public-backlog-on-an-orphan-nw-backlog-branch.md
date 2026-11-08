@@ -1,10 +1,10 @@
 ---
 id: SPEC-0449
 title: Public backlog on an orphan nw-backlog branch
-status: done
+status: proposed
 owner: user
 created: 2026-11-07
-updated: 2026-11-07
+updated: 2026-11-08
 kind: feature
 tags: [public-backlog]
 source_idea: IDEA-1019
@@ -253,9 +253,22 @@ An edit, close, or reopen commit names that item and, when the tip lacked it,
 the DOTALL regex `\A---\n(.*?)\n---\n(.*)\Z`. Group 1 plus a newline is the
 YAML document. Group 2 is the raw body. The first `\n---\n` closes the
 frontmatter. The loader is PyYAML's safe loader (YAML 1.1, so `yes`, `no`,
-`on`, and `off` are booleans) with a mapping constructor that raises on a
-repeated key. That repeated-key failure is the `duplicate key <key>` token.
-Every other loader failure is `invalid yaml`.
+`on`, and `off` are booleans). Its mapping constructor handles one key at a
+time. If the constructed key is not a `str`, it raises an error that
+`parse_item` already maps to `invalid yaml` — a `yaml.YAMLError`, or a
+dedicated exception handled in that same `except` — before the
+`key in mapping` duplicate test. A repeated string key still raises the
+duplicate-key error, and that token stays `duplicate key <key>`. Every
+other loader failure is `invalid yaml`.
+
+YAML 1.1 collapses `yes` and `true` (and `on`) to boolean `True`. A
+document whose keys are `yes` and `true` therefore fails as a non-string
+key. `parse_item` returns `invalid yaml`, not `duplicate key True`. A
+repeated string key `id` still returns `duplicate key id`. A single
+non-string key such as `yes: 1` is also `invalid yaml`. `edit`, `close`,
+and `reopen` of the boolean-key blob exit 1 with
+`invalid backlog item <id>: invalid yaml`, do not call `hash-object`, and
+leave the tip sha unchanged.
 
 The logical summary of group 2: if it is empty or only `\n` characters, the
 summary is `""`. Otherwise drop one leading `\n` when present, and if what
@@ -272,8 +285,8 @@ a row passes every earlier check.
 | 2 | Not valid UTF-8 | `not utf-8` |
 | 3 | Contains a CR byte | `cr` |
 | 4 | Does not match the frontmatter regex | `no frontmatter` |
-| 5 | YAML error, or a non-string key | `invalid yaml` |
-| 6 | Duplicate key | `duplicate key <key>` |
+| 5 | YAML error, or a non-string key, including a repeated non-string key | `invalid yaml` |
+| 6 | Duplicate string key | `duplicate key <key>` |
 | 7 | Document is not a mapping | `not a mapping` |
 | 8 | First missing key among `id`, `title`, `status`, `created`, `updated`, `created_by`, `updated_by` | `missing <key>` |
 | 9 | `id` is not a string matching `^REQ-[0-9A-HJKMNP-TV-Z]{8}$` | `bad id` |
@@ -307,11 +320,37 @@ below is the error:
 1. `git config --get` fails: `<key> is unset`.
 2. The raw value contains CR or LF: `<key> contains a line break`.
 3. `strip` of the value is empty: `<key> is unset`.
-4. For the name, `<` is checked before `>`. The message is
+4. The raw value is not strict UTF-8: `<key> is not valid utf-8`.
+5. The raw value contains a character in PyYAML's `Reader.NON_PRINTABLE`,
+   NEL U+0085, U+2028, or U+2029. The message is
+   `<key> contains control character` followed by the `_safe_path` text of
+   that character.
+6. For the name, `<` is checked on the raw value before `>`, and both are
+   checked before the crud strip below. The message is
    `user.name contains '<'` or `user.name contains '>'`.
-5. For the email, whitespace is checked first and the message is
+   `Ada <Lovelace` is `user.name contains '<'`.
+7. For the name, strip leading and trailing characters in git's ident crud
+   set. A character is in that set when its code point is `<= 32` or it is
+   one of `.`, `,`, `:`, `;`, `<`, `>`, `"`, `'`, and `\`. The check uses
+   that set, not a smaller set of space, tab, CR, LF, and `<>()\"`. `(` and
+   `)` are not crud.
+   - If the remainder is empty, the error is
+     `user.name consists only of disallowed characters`. This covers `.` and
+     `'`. It also covers `"` and `\"`.
+   - If the remainder differs from the raw name and any removed character is
+     not `"`, the error is
+     `user.name contains a leading or trailing disallowed character`.
+     `Ada Jr.` is this case: the command exits 1 before `hash-object`, so
+     `%an` and `%cn` stay equal to the raw `user.name` and the name is not
+     stored as `Ada Jr`.
+   - If the remainder differs and every removed character is `"`, the name
+     is accepted. `"Ada"` still commits, and `created_by` keeps the quotes.
+8. For the email, whitespace is checked first and the message is
    `user.email contains whitespace`. Otherwise the first of `<`, `>`, a
    double quote, and a backslash produces `user.email contains '<char>'`.
+
+`()` is a legal `user.name`. A commit that uses it has `%an` and `%cn`
+equal to `()`.
 
 Both keys are checked. Name errors are printed before email errors. Exit 1.
 The check runs after the work tree is known to be non-bare and before the
@@ -406,10 +445,16 @@ product git directory.
   removed on that loader subclass only. An unquoted instant stays a string,
   `strptime` checks it, and `2026-02-31T00:00:00Z` is the `created` token.
   `yes`, `no`, `on`, and `off` stay booleans. The process-wide safe loader
-  is unchanged.
+  is unchanged. The mapping constructor raises the `invalid yaml` failure
+  when the constructed key is not a `str`, and it does that before the
+  `key in mapping` duplicate test. A repeated string key is still
+  `duplicate key <key>`. Keys `yes` and `true` together are `invalid yaml`.
 - Git drops a leading or trailing `"` from a commit author name. `created_by`
   and `updated_by` keep the raw config string and escape it like a title. A
   quote that is not at either end is also stored on the commit ident.
+  `"Ada"` is the quote exception and still commits. Any other leading or
+  trailing ident-crud character is refused by the Identity section before
+  `hash-object`.
 - Loop 2: each ``_git`` child clears inherited ``GIT_DIR``, ``GIT_WORK_TREE``,
   ``GIT_OBJECT_DIRECTORY``, ``GIT_NAMESPACE``, ``GIT_COMMON_DIR``, and
   ``GIT_ALTERNATE_OBJECT_DIRECTORIES`` in addition to ``GIT_INDEX_FILE``.
@@ -425,9 +470,12 @@ product git directory.
   --show-toplevel`` is decoded with ``surrogateescape`` and only a trailing
   newline is stripped.
 - Review loop 2: ``_safe_path`` escapes newline, CR, and ESC in stderr paths.
-  ``parse_item`` maps ``RecursionError`` to ``invalid yaml``. ``user.name`` that
-  consists only of git-disallowed characters is refused before ``hash-object``
-  with ``user.name consists only of disallowed characters``.
+  ``parse_item`` maps ``RecursionError`` to ``invalid yaml``. A ``user.name``
+  whose leading and trailing git ident crud strips to nothing is refused
+  before ``hash-object`` with
+  ``user.name consists only of disallowed characters``. The crud set, the
+  ``<`` then ``>`` order, the leading-or-trailing refusal, the ``"Ada"``
+  quote exception, and acceptance of ``()`` are the Identity section.
 
 ### Commands
 
@@ -570,6 +618,12 @@ drops unknown keys, and refreshes `updated` and `updated_by`.
       unchanged. A valid file whose `updated` is earlier than `created`, or
       whose keys are permuted, can be closed; the new blob is canonical and
       keeps those instants' `created` value and the parsed `created_by`.
+- [ ] `parse_item` on a blob whose frontmatter keys are `yes` and `true`
+      returns `invalid yaml`, not `duplicate key True`. A repeated string
+      key `id` returns `duplicate key id`. `edit`, `close`, and `reopen` of
+      the boolean-key blob exit 1 with
+      `invalid backlog item <id>: invalid yaml`, do not call `hash-object`,
+      and leave the tip sha unchanged.
 - [x] `close` sets `status: closed`, refreshes `updated` and `updated_by`,
       drops unknown keys, and leaves title, summary, spec, `created`, and
       `created_by` as parsed. A second `close` exits 1 with
@@ -588,6 +642,16 @@ drops unknown keys, and refreshes `updated` and `updated_by`.
       values, the commit's author and committer are the local pair and the
       injected instant. A name that contains a double quote is stored in
       `created_by` with the same backslash and quote escaping as a title.
+- [ ] `user.name` uses git's ident crud set: a code point `<= 32`, or one of
+      `.`, `,`, `:`, `;`, `<`, `>`, `"`, `'`, and `\`. `(` and `)` are not
+      in that set. `Ada <Lovelace` exits 1 with `user.name contains '<'`
+      and does not call `hash-object`. `.` and `'` exit 1 with
+      `user.name consists only of disallowed characters` and do not call
+      `hash-object`. `Ada Jr.` exits 1 with
+      `user.name contains a leading or trailing disallowed character`, does
+      not call `hash-object`, and leaves the ref unchanged, so the name is
+      not stored as `Ada Jr`. `"Ada"` commits and `created_by` keeps the
+      quotes. `()` commits, and `%an` and `%cn` equal `()`.
 - [x] A tip whose tree or whose root commit contains `notes.txt`,
       `REQ-IIIIIIII.md`, a slash path, or mode `100755` makes `add`, `edit`,
       `close`, and `reopen` exit 1 with the header
@@ -654,6 +718,12 @@ drops unknown keys, and refreshes `updated` and `updated_by`.
   - `test_parse_item_reason_tokens` and
     `test_mutation_refuses_each_invalid_form` — one fixture per validation
     row, first-match token, tip unchanged.
+  - `test_yes_and_true_are_invalid_yaml_before_duplicate_key` — frontmatter
+    keys `yes` and `true` return `invalid yaml`, not `duplicate key True`.
+    A repeated string key `id` returns `duplicate key id`. `edit`, `close`,
+    and `reopen` of the boolean-key blob exit 1 with
+    `invalid backlog item <id>: invalid yaml`, do not call `hash-object`,
+    and leave the tip sha unchanged.
   - `test_malformed_sibling_does_not_block_other_writes`.
   - `test_close_and_reopen_are_single_file_commits` — field preservation,
     copied `created_by`, repeated status, permuted keys, `updated` earlier
@@ -661,6 +731,19 @@ drops unknown keys, and refreshes `updated` and `updated_by`.
   - `test_refuses_unset_or_illegal_identity` and
     `test_author_follows_local_config_not_environment_or_global` — local
     identity wins, and a double quote in the name is escaped in `created_by`.
+  - `test_name_crud_matches_git_ident` — `Ada <Lovelace` is
+    `user.name contains '<'`; `.` and `'` are
+    `user.name consists only of disallowed characters`; `Ada Jr.` is
+    `user.name contains a leading or trailing disallowed character`. None of
+    those call `hash-object`, and `Ada Jr.` leaves the ref unchanged.
+    `"Ada"` commits and `created_by` keeps the quotes
+    (`test_created_by_escapes_leading_trailing_quotes_in_name`). `()` commits
+    and `%an` and `%cn` equal `()`.
+  - `test_refuses_non_utf8_git_identity`,
+    `test_refuses_pyyaml_unsafe_git_identity`, and
+    `test_refuses_line_separator_in_title_and_git_name` — strict UTF-8 and
+    control characters in `user.name` and `user.email` exit 1 before
+    `hash-object`.
   - `test_mutations_reject_stray_and_bad_mode` and
     `test_refuses_a_root_that_contains_product_history`.
   - `test_dirty_detached_and_unborn_checkout_stay_put` — index bytes, porcelain
@@ -759,13 +842,13 @@ fast-forwards `nw-backlog`. The product checkout does not move.
 
 ## Definition of done
 
-- [x] Acceptance criteria all met.
-- [x] Test plan executed; automated tests pass; manual steps performed and
+- [ ] Acceptance criteria all met.
+- [ ] Test plan executed; automated tests pass; manual steps performed and
       noted in the spec.
-- [x] No regressions.
-- [x] Spec body updated to match what shipped.
-- [x] `docs/LEDGER.md` regenerated (`python3 tools/spec_lint.py --write-ledger`).
-- [x] `python3 tools/spec_lint.py` exits 0.
+- [ ] No regressions.
+- [ ] Spec body updated to match what shipped.
+- [ ] `docs/LEDGER.md` regenerated (`python3 tools/spec_lint.py --write-ledger`).
+- [ ] `python3 tools/spec_lint.py` exits 0.
 
 ## Open questions
 
