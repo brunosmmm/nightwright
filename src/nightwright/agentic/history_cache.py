@@ -420,6 +420,60 @@ def _campaign_stored_files_match(cfg, cid: str, stored: dict | None, rg_dirs=Non
     return True
 
 
+def _is_records_run_gates_path(rel: str) -> bool:
+    if "/runs/" in rel:
+        return rel.endswith("/run.json") or rel.endswith("/result.json")
+    if "/gates/" in rel:
+        return rel.endswith(".json")
+    return False
+
+
+def _campaign_records_run_inputs_match(cfg, cid: str, stored: dict | None) -> bool:
+    """Stat only runs/<id>/run.json and result.json (records hit after a warm index)."""
+    if not isinstance(stored, dict):
+        return False
+    agentic = store.agentic_dir(cfg)
+    for rel, cursor in stored.items():
+        if not isinstance(cursor, dict) or "/runs/" not in rel:
+            continue
+        if not (rel.endswith("/run.json") or rel.endswith("/result.json")):
+            continue
+        try:
+            st = (agentic / rel).stat()
+        except OSError:
+            return False
+        if st.st_size != cursor.get("size") or st.st_mtime_ns != cursor.get("mtime_ns"):
+            return False
+    return True
+
+
+def _campaign_records_files_match(cfg, cid: str, stored: dict | None, rg_dirs=None) -> bool:
+    """Runs/gates validity for history_records hit (no stat on stream/logs/request bodies)."""
+    if not isinstance(stored, dict):
+        return False
+    base = store.campaign_dir(cfg, cid)
+    if base is None:
+        return not stored
+    stored_key = _rg_dirs_key(rg_dirs)
+    if stored_key is None:
+        live = _campaign_file_cursors(cfg, cid)
+        if live != stored:
+            return False
+    elif not _rg_dirs_live_matches(base, rg_dirs):
+        return _campaign_file_cursors(cfg, cid) == stored
+    agentic = store.agentic_dir(cfg)
+    for rel, cursor in stored.items():
+        if not isinstance(cursor, dict) or not _is_records_run_gates_path(rel):
+            continue
+        try:
+            st = (agentic / rel).stat()
+        except OSError:
+            return False
+        if st.st_size != cursor.get("size") or st.st_mtime_ns != cursor.get("mtime_ns"):
+            return False
+    return True
+
+
 def _path_cursor(path: Path) -> dict | None:
     try:
         st = path.stat()
@@ -526,6 +580,7 @@ def _profile_layer_cursors(cfg) -> dict[str, dict]:
 
 
 def _clear_v1_except_lock(root: Path) -> None:
+    _invalidate_index_quiet_key()
     if not root.is_dir():
         return
     for child in list(root.iterdir()):
@@ -601,10 +656,7 @@ def _cache_tree_corrupt(root: Path, sources: dict | None = None) -> bool:
     fast = _sources_ok(sources) and isinstance(v1_files, dict) and _v1_cursors_match(root, v1_files)
     idx = root / "index.jsonl"
     if idx.is_file():
-        if fast and _cursor_matches(idx, v1_files.get("index.jsonl") or {}):
-            if not _index_jsonl_parseable(idx):
-                return True
-        else:
+        if not (fast and _cursor_matches(idx, v1_files.get("index.jsonl") or {})):
             if not _index_jsonl_parseable(idx):
                 return True
     elif fast:
@@ -674,6 +726,57 @@ def _stale_terminal_ids(cfg, index_rows: list[dict], sources: dict) -> set[str]:
     return out
 
 
+def _terminal_row_stale_for_records(cfg, cid: str, row: dict, sources: dict) -> bool:
+    if row.get("outcome") not in _TERMINAL_OUTCOMES:
+        return True
+    H = _lazy_history()
+    if row.get("signature") != H.campaign_signature(cfg, cid):
+        return True
+    stored_files = (sources.get("campaign_files") or {}).get(cid)
+    if not isinstance(stored_files, dict):
+        return True
+    rg_dirs = (sources.get("campaign_rg_dirs") or {}).get(cid)
+    if not _campaign_records_files_match(cfg, cid, stored_files, rg_dirs):
+        return True
+    return False
+
+
+def _stale_terminal_ids_for_records(cfg, index_rows: list[dict], sources: dict) -> set[str]:
+    live = _live_campaign_ids(cfg)
+    out: set[str] = set()
+    for row in index_rows:
+        cid = row.get("campaign")
+        if not isinstance(cid, str) or cid not in live:
+            continue
+        if _terminal_row_stale_for_records(cfg, cid, row, sources):
+            out.add(cid)
+    return out
+
+
+def _terminal_row_stale_run_inputs_only(cfg, cid: str, row: dict, sources: dict) -> bool:
+    if row.get("outcome") not in _TERMINAL_OUTCOMES:
+        return True
+    H = _lazy_history()
+    if row.get("signature") != H.campaign_signature(cfg, cid):
+        return True
+    stored_files = (sources.get("campaign_files") or {}).get(cid)
+    if not _campaign_records_run_inputs_match(cfg, cid, stored_files):
+        return True
+    return False
+
+
+def _stale_terminal_ids_run_inputs_only(cfg, index_rows: list[dict], sources: dict) -> set[str]:
+    live = _live_campaign_ids(cfg)
+    out: set[str] = set()
+    for row in index_rows:
+        cid = row.get("campaign")
+        if not isinstance(cid, str) or cid not in live:
+            continue
+        if _terminal_row_stale_run_inputs_only(cfg, cid, row, sources):
+            out.add(cid)
+    return out
+
+
 def _recompute_terminal_documents(
     cfg, root: Path, now, index_rows: list[dict], records: list[dict], cids: set[str],
 ) -> tuple[list[dict], list[dict], dict | None]:
@@ -716,6 +819,26 @@ def _stored_line(rec: dict) -> str:
 
 _records_mem: dict[tuple, list[tuple[dict, str]]] = {}
 _CACHE_WRITE_LOCK = threading.Lock()
+_INDEX_QUIET_KEY: tuple | None = None
+
+
+def _invalidate_index_quiet_key() -> None:
+    global _INDEX_QUIET_KEY
+    _INDEX_QUIET_KEY = None
+
+
+def _index_quiet_fingerprint(
+    cfg, root: Path, sources: dict, index_rows: list[dict], live: set[str],
+) -> tuple:
+    v1 = sources.get("v1_files") or {}
+    v1_sig = tuple(
+        sorted(
+            (name, c.get("inode"), c.get("size"), c.get("mtime_ns"))
+            for name, c in v1.items()
+            if isinstance(c, dict)
+        )
+    )
+    return (str(root.resolve()), v1_sig, frozenset(live), len(index_rows))
 
 
 @contextmanager
@@ -1515,6 +1638,7 @@ def _persist_index_records(
     index_rows: list[dict],
     sources: dict | None = None,
 ) -> None:
+    _invalidate_index_quiet_key()
     _RUNS_GATES_COUNT.clear()
     with _cache_write_guard(root):
         pruned = _pruned_campaign_ids(cfg, root)
@@ -2141,11 +2265,36 @@ def _cache_refresh_quiet(cfg, root: Path, sources: dict) -> bool:
     if _stale_terminal_ids(cfg, index_rows, sources):
         return False
     live_cids, missing = _live_refresh_targets(cfg, index_rows)
-    return not live_cids and not missing
+    if live_cids or missing:
+        return False
+    global _INDEX_QUIET_KEY
+    _INDEX_QUIET_KEY = _index_quiet_fingerprint(cfg, root, sources, index_rows, live)
+    return True
 
 
 def _records_cache_quiet(cfg, root: Path, sources: dict) -> bool:
-    return _cache_refresh_quiet(cfg, root, sources)
+    if not _sources_ok(sources):
+        return False
+    if (root / "index.writes.jsonl").is_file():
+        return False
+    if not _sources_unchanged_light(cfg, sources):
+        return False
+    v1_files = sources.get("v1_files") or {}
+    if not isinstance(v1_files, dict) or not _v1_cursors_match(root, v1_files):
+        return False
+    index_rows = _read_index(root)
+    live = _live_campaign_ids(cfg)
+    if {r.get("campaign") for r in index_rows if r.get("campaign")} != live:
+        return False
+    fp = _index_quiet_fingerprint(cfg, root, sources, index_rows, live)
+    if fp == _INDEX_QUIET_KEY:
+        stale = _stale_terminal_ids_run_inputs_only(cfg, index_rows, sources)
+    else:
+        stale = _stale_terminal_ids_for_records(cfg, index_rows, sources)
+    if stale:
+        return False
+    live_cids, missing = _live_refresh_targets(cfg, index_rows)
+    return not live_cids and not missing
 
 
 def _global_cursor_unchanged(stored: dict, fresh: dict) -> bool:
@@ -2785,6 +2934,14 @@ def _history_records_cached(cfg, *, now, root: Path, campaign=None, agent=None, 
             base = _read_records_filtered(root, kinds=stream_kinds, needle=stream_needle)
         else:
             base = _read_records(root)
+        if (
+            not extra
+            and since is None
+            and until is None
+            and not (needle and stream_needle != needle)
+            and (stream_kinds is not None or stream_needle)
+        ):
+            return base[:limit] if limit is not None else base
         values = {name: H._set(value) for name, value in (
             ("campaign", campaign), ("agent", agent), ("kind", kind), ("project", project),
             ("severity", severity), ("status", status),
@@ -2813,7 +2970,7 @@ def _history_records_cached(cfg, *, now, root: Path, campaign=None, agent=None, 
         index_rows, records = _prune_gone_campaigns(
             cfg, root, index_rows, records, persist=True,
         )
-    stale = _stale_terminal_ids(cfg, index_rows, sources)
+    stale = _stale_terminal_ids_for_records(cfg, index_rows, sources)
     if stale:
         if records is None:
             records = _read_records(root)
