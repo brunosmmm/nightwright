@@ -97,8 +97,7 @@ def _jsonl(
                     break
                 if not raw.endswith(b"\n"):
                     if raw:
-                        line += 1
-                        gaps.append(f"{source}: line {line} unparsable")
+                        stream.seek(offset)
                     break
                 committed = stream.tell()
                 line += 1
@@ -1211,15 +1210,24 @@ def _uncached_history_index(cfg, *, now=None, progress=None) -> list[dict]:
     ), reverse=True)
 
 
+def _history_cache_active(cfg, cache) -> bool:
+    if cache is False:
+        return False
+    if cache is True:
+        return True
+    cd = cfg.get("cache_dir")
+    return isinstance(cd, str) and bool(cd.strip())
+
+
 def campaign_history(cfg, cid, *, now=None, cache=None) -> dict:
-    if cache is False or (cache is None and "cache_dir" not in cfg):
+    if not _history_cache_active(cfg, cache):
         return _campaign_history(cfg, cid, now, _COMPUTE)
     from . import history_cache
     return history_cache.campaign_history(cfg, cid, now=now, cache=cache)
 
 
 def history_index(cfg, *, now=None, progress=None, cache=None) -> list[dict]:
-    if cache is False or (cache is None and "cache_dir" not in cfg):
+    if not _history_cache_active(cfg, cache):
         return _uncached_history_index(cfg, now=now, progress=progress)
     from . import history_cache
     return history_cache.history_index(cfg, now=now, progress=progress, cache=cache)
@@ -1322,7 +1330,7 @@ def _uncached_history_records(cfg, *, campaign=None, agent=None, kind=None, proj
 def history_records(cfg, *, campaign=None, agent=None, kind=None, project=None, severity=None,
                     status=None, since=None, until=None, query=None, limit=None,
                     cache=None) -> list[dict]:
-    if cache is False or (cache is None and "cache_dir" not in cfg):
+    if not _history_cache_active(cfg, cache):
         return _uncached_history_records(
             cfg, campaign=campaign, agent=agent, kind=kind, project=project,
             severity=severity, status=status, since=since, until=until, query=query,

@@ -29,7 +29,7 @@ from . import timeline as TL
 
 def _history_cache_unwritable_warn(cfg) -> None:
     from . import history_cache as HC
-    if HC._not_writable(cfg, None):
+    if HC._not_writable(cfg, None) or HC.consume_cache_write_fallback():
         R.err_console.print(Text("cache: not writable"))
 
 
@@ -477,11 +477,11 @@ def attach(campaign_group):
                 def progress(done, total):
                     if done % 50 == 0 and sys.stderr.isatty():
                         R.err_console.print(Text(f"history: {done}/{total}"))
-                _history_cache_unwritable_warn(cfg)
                 rows = H.filter_index(
                     H.history_index(cfg, progress=progress), project=project, state=state,
                     spec=spec_id, since=since, until=until, min_cost=min_cost,
                 )
+                _history_cache_unwritable_warn(cfg)
                 if as_json:
                     _dump_json({"schema": SC.HISTORY_INDEX_SCHEMA, "rows": rows})
                     return
@@ -496,8 +496,8 @@ def attach(campaign_group):
                     )
                 console.print(table)
                 return
-            _history_cache_unwritable_warn(cfg)
             doc = H.campaign_history(cfg, campaign)
+            _history_cache_unwritable_warn(cfg)
         except ValueError as exc:
             if campaign and not store.campaign_dir(cfg, campaign).is_dir():
                 raise click.ClickException(f"campaign {campaign} not found")
@@ -559,12 +559,12 @@ def attach(campaign_group):
                          query, limit, as_json):
         """Search derived findings and decisions across campaigns."""
         try:
-            _history_cache_unwritable_warn(cfg)
             rows = H.history_records(
                 cfg, campaign=campaign, agent=agent or None, kind=kind or None, project=project,
                 severity=severity or None, status=status or None, since=since, until=until,
                 query=query, limit=limit if limit is not None else (None if as_json else 200),
             )
+            _history_cache_unwritable_warn(cfg)
         except ValueError as exc:
             raise click.UsageError(str(exc))
         if as_json:

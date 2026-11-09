@@ -4,7 +4,7 @@ title: "History cache for the campaign history layer"
 status: done
 owner: user
 created: 2026-11-08
-updated: 2026-11-08
+updated: 2026-11-09
 source_idea: IDEA-1015
 kind: feature
 parent: SPEC-0405
@@ -649,6 +649,13 @@ and `tests/test_history_fixture.py` (138 passed). Full suite left to queue gatin
 `tests/test_history_scale.py`, and `tests/test_cli_campaign_history.py` (81 passed).
 Queue `pytest-affected` rerun left in flight. Full suite left to queue gating.
 
+### Test record (2026-11-09, implementer loop 2)
+
+`uv run pytest -q tests/test_history_cache.py tests/test_history_perf.py::test_record_count_and_budgets`
+`tests/test_history.py tests/test_cli_campaign_history.py tests/test_history_scale.py`
+`tests/test_history_fixture.py` (140 passed). `python3 tools/spec_lint.py --write-ledger` exit 0.
+Full suite left to queue gating.
+
 ### Test record (2026-11-08, implementer loop 3)
 
 `uv run pytest -q` on `tests/test_history_fixture.py::test_history_bad_inputs_become_gaps`,
@@ -683,7 +690,11 @@ paths on `copy_fixture`.
 
 Warm `history_index` integrity checks use `sources.json` `v1_files` stat cursors so an
 unchanged hit does not json-parse `records.jsonl` or `campaigns/*.json`; terminal staleness
-uses the stored `campaign_files` path list (no rglob).
+uses the stored `campaign_files` path list with file-count guard before rglob. Warm
+`history_records` may skip global sync when cursors and `v1_files` are quiet. Pending
+`index.writes.jsonl` merges on every cached read entry; OSError fallbacks set a thread-local
+flag consumed by the CLI stderr line. Trailing partial JSONL lines do not commit gaps until
+newline-terminated. Profile cursors include builtin defs and in-memory `agentic.profiles`.
 
 ## Clock Log
 

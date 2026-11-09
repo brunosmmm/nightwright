@@ -790,7 +790,7 @@ progress. This is the single place to see *what has been decided* and *what is i
 | [SPEC-0463](./specs/0463-periodic-deterministic-resolution-of-queue.md) | Periodic deterministic resolution of queue dependency conflicts | feature | done | M9: agentic workflow | 2026-11-08 |
 | [SPEC-0469](./specs/0469-release-red-hold-when-base-moves.md) | Release the red-base hold once the base moves past the red sha | feature | done | — | 2026-11-08 |
 | [SPEC-0471](./specs/0471-run-pi-personas-through-the-node-sdk.md) | Pi test requires the task text in the user message | feature | done | — | 2026-11-08 |
-| [SPEC-0472](./specs/0472-history-cache-for-the-campaign-history-layer.md) | History cache for the campaign history layer | feature | done | — | 2026-11-08 |
+| [SPEC-0472](./specs/0472-history-cache-for-the-campaign-history-layer.md) | History cache for the campaign history layer | feature | done | — | 2026-11-09 |
 | [SPEC-0479](./specs/0479-herdr-notifications-are-silent.md) | Herdr notifications are silent | feature | done | — | 2026-11-08 |
 | [SPEC-0480](./specs/0480-link-a-private-idea-to-a-public-backlog-request.md) | Publish a backlog request and record the link | feature | done | — | 2026-11-11 |
 | [SPEC-0481](./specs/0481-conductor-follower-stays-up.md) | The conductor follower stays up across a wake | feature | done | — | 2026-11-08 |

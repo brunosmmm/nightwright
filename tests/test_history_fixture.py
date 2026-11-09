@@ -944,7 +944,7 @@ def test_history_bad_inputs_become_gaps(tmp_path):
     root = Path(cfg["data_dir"]) / "agentic"
     campaign = root / "campaigns" / cid
     with (campaign / "ledger.jsonl").open("a") as stream:
-        stream.write("{")
+        stream.write("{\n")
     (campaign / "runs" / "missing").mkdir()
     (root / "conductor" / "decisions.jsonl").write_text("{\n")
     (root / "runner.jsonl").unlink()
