@@ -859,16 +859,38 @@ def note_conductor_liveness(cfg, proj: dict, now=None) -> list[dict]:
             except (TypeError, ValueError):
                 pending = None
         if pending is None or pending <= after:
-            for k in ("conductor_unacked_since", "conductor_unresponsive_ping",
-                      "conductor_unresponsive_mailed"):
+            for k in ("conductor_unacked_since", "conductor_unacked_pending_id",
+                      "conductor_unresponsive_ping", "conductor_unresponsive_mailed"):
                 proj.pop(k, None)
             return out
         if limit <= 0:
             return out
+        timed = proj.get("conductor_unacked_pending_id")
+        try:
+            timed = int(timed) if timed is not None else None
+        except (TypeError, ValueError):
+            timed = None
+        if timed is not None and after >= timed and pending > after:
+            proj["conductor_unacked_since"] = store.now_iso(now)
+            proj["conductor_unacked_pending_id"] = pending
+            return out
+        if timed is not None and pending > timed and after < timed:
+            proj["conductor_unacked_pending_id"] = pending
         since = proj.get("conductor_unacked_since")
-        if not since:
-            proj["conductor_unacked_since"] = since = store.now_iso(now)
-        unacked_s = int(_age_s(since, now) or 0)
+        age_val = None
+        if since:
+            try:
+                age_val = _age_s(since, now)
+            except TypeError:
+                age_val = None
+        if not since or age_val is None:
+            proj["conductor_unacked_since"] = store.now_iso(now)
+            if timed is None:
+                proj["conductor_unacked_pending_id"] = pending
+            return out
+        if timed is None:
+            proj["conductor_unacked_pending_id"] = pending
+        unacked_s = int(age_val)
         pid_path = cursors_dir(cfg) / "conductor.pid"
         follower_pid = None
         try:

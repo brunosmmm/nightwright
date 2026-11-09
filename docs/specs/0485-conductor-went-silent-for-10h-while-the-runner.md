@@ -263,9 +263,21 @@ signals on the `nw.event.v1` row.
 - `uv run pytest -q tests/test_conductor_liveness.py tests/test_herdr.py::test_notification_policy tests/test_agentic_ping.py tests/test_agentic_events.py tests/test_agentic_quiet.py` — 204 passed
 - Full suite left to queue gating
 
+### Test record (2026-11-09 loop 1)
+
+- `uv run pytest -q tests/test_conductor_liveness.py tests/test_herdr.py::test_notification_policy tests/test_agentic_ping.py tests/test_agentic_events.py tests/test_agentic_quiet.py` — 207 passed
+- Full suite left to queue gating
+
+### As shipped (2026-11-09 loop 1)
+
+- Projector stores `conductor_unacked_pending_id` beside `conductor_unacked_since` so an
+  ack through the timed wake that leaves a newer `pending` restarts the unacked clock
+  instead of inheriting the previous episode age.
+
 ## Clock Log
 
 - 2026-11-09: `nw idea clock-in IDEA-1039` (implementer loop 0); `nw idea clock-out IDEA-1039` at close
+- 2026-11-09: implementer loop 1 reviewer fixes
 
 ## Rollout / migration
 

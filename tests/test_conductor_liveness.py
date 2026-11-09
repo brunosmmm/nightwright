@@ -61,6 +61,9 @@ def test_unacked_ping_escalates_once(tmp_path):
     for k in ("ping_id", "cursor_after", "unacked_s", "follower_pid", "relaunch"):
         assert k in d
     assert d["cursor_after"] == 0 and d["unacked_s"] >= 1800
+    proj = json.loads((store.agentic_dir(cfg) / "events.projector.json").read_text())
+    assert d["ping_id"] == proj["last_ping_id"]
+    assert d["follower_pid"] is None
     assert _cu_from_sync(E.sync(cfg, now=at(1900), ping=True)) == []
     mail = _human_mail(cfg)
     assert len(mail) == 1 and mail[0]["from"] == "conductor" and mail[0]["kind"] == "info"
@@ -146,18 +149,79 @@ def test_healthy_young_missing_disabled_and_non_ping_sync_stay_quiet(tmp_path):
     E.sync(cfg, now=at(600), ping=True)
     E.sync(cfg, now=at(2500), ping=True)
     assert _cu_events(cfg) == [] and _human_mail(cfg) == []
-    _conductor_cursor(cfg, 0, pending=wake["id"] + 1)
+    young = wake["id"] + 1
+    _conductor_cursor(cfg, 0, pending=young)
     E.sync(cfg, now=at(2600), ping=True)
     assert _cu_events(cfg) == []
     (E.cursors_dir(cfg) / "conductor.json").unlink()
     E.sync(cfg, now=at(5000), ping=True)
-    assert _cu_events(cfg) == []
+    assert _cu_events(cfg) == [] and _human_mail(cfg) == []
     cfg["agentic"]["events"] = {"conductor_unacked_after_s": 0}
+    proj_path = store.agentic_dir(cfg) / "events.projector.json"
+    proj = json.loads(proj_path.read_text())
+    proj["conductor_unacked_since"] = iso(0)
+    proj_path.write_text(json.dumps(proj) + "\n")
     _conductor_cursor(cfg, 0, pending=wake["id"])
-    E.sync(cfg, now=at(6000), ping=True)
-    assert _cu_events(cfg) == []
+    E.sync(cfg, now=at(5500), ping=True)
+    assert _cu_events(cfg) == [] and _human_mail(cfg) == []
+    # disabled threshold must not seed conductor_unacked_since on a fresh unacked wake
+    (E.cursors_dir(cfg) / "conductor.json").unlink(missing_ok=True)
+    for k in ("conductor_unacked_since", "conductor_unacked_pending_id"):
+        proj.pop(k, None)
+    proj_path.write_text(json.dumps(proj) + "\n")
+    _conductor_cursor(cfg, 0, pending=wake["id"])
+    E.sync(cfg, now=at(6100), ping=True)
+    proj = json.loads(proj_path.read_text())
+    assert "conductor_unacked_since" not in proj
+    cfg["agentic"]["events"] = {}
+    n_ev = len(_cu_events(cfg))
+    n_mail = len(_human_mail(cfg))
+    for k in ("conductor_unresponsive_ping", "conductor_unresponsive_mailed"):
+        proj.pop(k, None)
+    proj["conductor_unacked_since"] = iso(0)
+    proj_path.write_text(json.dumps(proj) + "\n")
     _conductor_cursor(cfg, 0, pending=wake["id"])
     assert _cu_from_sync(E.sync(cfg, now=at(8000), ping=False)) == []
+    assert len(_cu_events(cfg)) == n_ev and len(_human_mail(cfg)) == n_mail
+
+
+def test_unparseable_conductor_unacked_since_heals_then_fires(tmp_path):
+    cfg = _cfg(tmp_path)
+    wake = E.append(cfg, "runner_dead", data={"active": 0, "queued": 0})
+    _conductor_cursor(cfg, 0, pending=wake["id"])
+    E.sync(cfg, now=at(-60), ping=True)
+    proj_path = store.agentic_dir(cfg) / "events.projector.json"
+    proj = json.loads(proj_path.read_text())
+    proj["conductor_unacked_since"] = "not-a-timestamp"
+    proj_path.write_text(json.dumps(proj) + "\n")
+    assert _cu_from_sync(E.sync(cfg, now=at(0), ping=True)) == []
+    proj = json.loads(proj_path.read_text())
+    since = proj["conductor_unacked_since"]
+    assert since != "not-a-timestamp"
+    dt.datetime.fromisoformat(since)
+    assert _cu_from_sync(E.sync(cfg, now=at(1799), ping=True)) == []
+    out = _cu_from_sync(E.sync(cfg, now=at(1800), ping=True))
+    assert len(out) == 1
+    proj = json.loads(proj_path.read_text())
+    assert out[0]["data"]["ping_id"] == proj["last_ping_id"]
+
+
+def test_ack_of_timed_wake_resets_clock_for_new_pending(tmp_path):
+    cfg = _cfg(tmp_path)
+    wake = E.append(cfg, "runner_dead", data={"active": 0, "queued": 0})
+    _conductor_cursor(cfg, 0, pending=wake["id"])
+    E.sync(cfg, now=at(0), ping=True)
+    proj_path = store.agentic_dir(cfg) / "events.projector.json"
+    proj = json.loads(proj_path.read_text())
+    proj["conductor_unacked_since"] = iso(-1700)
+    proj["conductor_unacked_pending_id"] = wake["id"]
+    proj_path.write_text(json.dumps(proj) + "\n")
+    E.commit_ack(cfg, "conductor", wake["id"])
+    wake2 = E.append(cfg, "runner_dead", data={"active": 0, "queued": 0})
+    E.cursor_note_pending(cfg, "conductor", wake2["id"])
+    assert _cu_from_sync(E.sync(cfg, now=at(200), ping=True)) == []
+    assert _cu_from_sync(E.sync(cfg, now=at(1999), ping=True)) == []
+    assert len(_cu_from_sync(E.sync(cfg, now=at(2000), ping=True))) == 1
 
 
 def test_threshold_300_fires_at_300_not_299(tmp_path):
@@ -204,7 +268,8 @@ def test_summary_line_and_validate(tmp_path):
                   data={"ping_id": 5, "cursor_after": 3, "unacked_s": 1800,
                         "follower_pid": None, "relaunch": "nw queue conductor-launch"})
     line = E.summary_line(ev)
-    assert "\n" not in line and "unacked_s=1800" in line
+    assert line == (f"#{ev['id']} conductor_unresponsive unacked_s=1800 "
+                    "after=3 ping=5 follower=down")
     E.validate("conductor_ping", {"blocked": [], "parked": [], "stuck": [], "waiting": [],
                                   "ready_not_admitted": [], "counts": {}, "runner": None})
 
@@ -227,6 +292,7 @@ def test_conduct_skill_row():
     from test_skills import _conduct_row
     row = _conduct_row("conductor_unresponsive")
     assert "data.relaunch" in row and "--rule conductor_unresponsive" in row
+    assert "Do not spawn, stop or kill a session" in row
 
 
 def test_agent_surface_lists_conductor_unresponsive():
