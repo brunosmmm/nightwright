@@ -309,6 +309,7 @@ progress. This is the single place to see *what has been decided* and *what is i
 | [SPEC-0470](./specs/0470-close-follows-a-renamed-spec.md) | Close follows a spec file the branch renamed | feature | accepted | — | 2026-11-08 |
 | [SPEC-0476](./specs/0476-campaign-detail-runs-pane.md) | Campaign detail Runs pane: run table, verdict, and stream tail | feature | accepted | — | 2026-11-08 |
 | [SPEC-0477](./specs/0477-campaign-detail-findings-and-mail.md) | Campaign detail Findings & decisions pane and Mail pane | feature | accepted | — | 2026-11-08 |
+| [SPEC-0488](./specs/0488-nw-queue-conductor-launch-runner-cursor-fails.md) | Cursor launch passes a flat model id | feature | proposed | — | 2026-11-09 |
 
 ## Done
 
