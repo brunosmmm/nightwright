@@ -1,7 +1,7 @@
 ---
 id: SPEC-0485
 title: "Conductor liveness when pings stay unacked"
-status: accepted
+status: done
 owner: user
 created: 2026-11-09
 updated: 2026-11-09
@@ -179,37 +179,37 @@ signals on the `nw.event.v1` row.
 
 ## Acceptance criteria
 
-- [ ] A conductor cursor with `pending > after` and `conductor_unacked_since` at least
+- [x] A conductor cursor with `pending > after` and `conductor_unacked_since` at least
       1800s old causes one `conductor_unresponsive` event on `sync(ping=True)`, carrying
       `ping_id`, `cursor_after`, `unacked_s`, `follower_pid`, and `relaunch`. A second
       pinging sync in the same episode appends no further event.
-- [ ] That episode writes one human mail, `from` conductor, kind `info`, whose text
+- [x] That episode writes one human mail, `from` conductor, kind `info`, whose text
       contains the unacked seconds, the phrase "In the conductor's terminal", and
       "stop that session" before the relaunch command. A failed send is retried on a
       later pinging sync and still leaves a single event.
-- [ ] `relaunch` is `nw queue conductor-launch --resume` when a conductor session record
+- [x] `relaunch` is `nw queue conductor-launch --resume` when a conductor session record
       has `source: launch`, and `nw queue conductor-launch` when none does.
-- [ ] `follower_pid` is the pid in the conductor pid file when that pid is alive, and null
+- [x] `follower_pid` is the pid in the conductor pid file when that pid is alive, and null
       when the file is missing or the pid is dead. The check does not drop a reader lock
       the caller already holds.
-- [ ] No event and no human mail when `pending` is absent, even if `after` is behind
+- [x] No event and no human mail when `pending` is absent, even if `after` is behind
       `last_ping_id` and the cursor `ts` is at least 1800s old; when `pending > after` but
       `conductor_unacked_since` is younger than the limit; when no conductor cursor file
       exists; when `conductor_unacked_after_s` is 0; or when `sync` is called with
       `ping=False`.
-- [ ] A configured threshold of 300 fires at unacked age 300 and does not fire at 299;
+- [x] A configured threshold of 300 fires at unacked age 300 and does not fire at 299;
       `ping_interval_s` does not change it. A cursor `ts` rewritten by later wakes does
       not reset the age.
-- [ ] `commit_ack` through `pending` drops the episode keys and `conductor_unacked_since`
+- [x] `commit_ack` through `pending` drops the episode keys and `conductor_unacked_since`
       on the next pinging sync. Held pings after that ack do not open an episode. A new
       wake left unacked past the limit appends a new event and a new mail.
-- [ ] `summary_line` for the event is a single line of the form in Design.
+- [x] `summary_line` for the event is a single line of the form in Design.
       `validate("conductor_unresponsive", data)` requires the five keys. A `conductor_ping`
       whose `runner` is null still validates.
-- [ ] `quiet.RULES["conductor_unresponsive"]` is `wake`. `notification_for` returns the
+- [x] `quiet.RULES["conductor_unresponsive"]` is `wake`. `notification_for` returns the
       title `nw: conductor silent`, a body containing "Stop the conductor session" and the
       relaunch command, and sound `none`.
-- [ ] The conduct skill row contains `data.relaunch`, tells the session not to spawn or
+- [x] The conduct skill row contains `data.relaunch`, tells the session not to spawn or
       kill a session, and tells it to record `--rule conductor_unresponsive`. The
       `nw.event.v1` row in the agent-surface guide names `conductor_unresponsive`.
 
@@ -258,10 +258,14 @@ signals on the `nw.event.v1` row.
   holds later pings with an old cursor `ts` and `after` behind `last_ping_id`, must still
   produce no `conductor_unresponsive`.
 
+### Test record (2026-11-09)
+
+- `uv run pytest -q tests/test_conductor_liveness.py tests/test_herdr.py::test_notification_policy tests/test_agentic_ping.py tests/test_agentic_events.py tests/test_agentic_quiet.py` — 204 passed
+- Full suite left to queue gating
+
 ## Clock Log
 
-Implementation sessions clock in and out on IDEA-1039 with `nw idea clock-in IDEA-1039`
-and `nw idea clock-out IDEA-1039`. No implementation session has run.
+- 2026-11-09: `nw idea clock-in IDEA-1039` (implementer loop 0); `nw idea clock-out IDEA-1039` at close
 
 ## Rollout / migration
 
@@ -275,11 +279,11 @@ change and without a 1800 floor. No cursor or ledger rewrite.
 
 ## Definition of done
 
-- [ ] Acceptance criteria all met.
-- [ ] Test plan executed; the named tests pass. Manual steps: none.
-- [ ] No regressions in the named regression-guard files.
-- [ ] Spec body updated to match what shipped.
-- [ ] `docs/LEDGER.md` regenerated and `python3 tools/spec_lint.py` exits 0.
+- [x] Acceptance criteria all met.
+- [x] Test plan executed; the named tests pass. Manual steps: none.
+- [x] No regressions in the named regression-guard files.
+- [x] Spec body updated to match what shipped.
+- [x] `docs/LEDGER.md` regenerated and `python3 tools/spec_lint.py` exits 0.
 
 ## Open questions
 

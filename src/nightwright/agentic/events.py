@@ -59,6 +59,8 @@ EVENT_TYPES = {
     "message": ("msg_id", "from", "kind", "text"),
     # SPEC-0212
     "conductor_ping": ("blocked", "parked", "stuck", "waiting", "ready_not_admitted", "counts"),
+    # SPEC-0485: the conductor cursor left an unacked wake past conductor_unacked_after_s
+    "conductor_unresponsive": ("ping_id", "cursor_after", "unacked_s", "follower_pid", "relaunch"),
     "backlog_blocked_long": ("blocked_for_s", "blocked_by"),
     "state_stuck": ("state", "stuck_s"),
     "ready_not_admitted": ("ready_for_s", "active", "slots"),
@@ -144,6 +146,8 @@ DEFAULTS = {"poll_s": 2.0, "silent_after_s": 900, "overdue_grace_s": 60,
             # the loop is "silent" after this many poll intervals without a tick or a journal
             # record; an `open` (worktree setup) is a declared long step of this budget
             "waiting_grace_s": 60, "journal_silent_factor": 3, "open_budget_s": 600,
+            # SPEC-0485: unacked conductor wake before conductor_unresponsive (0 = off)
+            "conductor_unacked_after_s": 1800,
             # SPEC-0253: admission pauses (and `temp_pressure` fires) when the temp or agentic
             # filesystem has less free space / a smaller share of free inodes than this
             "tmp_min_free_mb": 512, "tmp_min_free_inodes_pct": 10}
@@ -828,7 +832,79 @@ def _ping(cfg, proj: dict, now) -> list[dict]:
     if last < interval:
         return []
     proj["last_ping"] = store.now_iso(now)
-    return [_append_locked(cfg, "conductor_ping", by="watchdog", data=ping_digest(cfg, now))]
+    ev = _append_locked(cfg, "conductor_ping", by="watchdog", data=ping_digest(cfg, now))
+    proj["last_ping_id"] = ev["id"]
+    return [ev]
+
+
+def _conductor_relaunch(cfg) -> str:
+    from . import conductor_cost as CC
+    launched = any(r.get("source") == "launch" for r in CC.sessions(cfg, "conductor"))
+    return ("nw queue conductor-launch --resume" if launched
+            else "nw queue conductor-launch")
+
+
+def note_conductor_liveness(cfg, proj: dict, now=None) -> list[dict]:
+    """SPEC-0485: one `conductor_unresponsive` per unacked-wake episode on pinging syncs."""
+    out = []
+    try:
+        now = now or dt.datetime.now().astimezone()
+        limit = int(settings(cfg)["conductor_unacked_after_s"])
+        with _cursor_lock(cfg, "conductor"):
+            doc = _cursor_doc(cfg, "conductor")
+            after = _cursor_after(doc)
+            raw_pend = doc.get("pending")
+            try:
+                pending = int(raw_pend) if raw_pend is not None else None
+            except (TypeError, ValueError):
+                pending = None
+        if pending is None or pending <= after:
+            for k in ("conductor_unacked_since", "conductor_unresponsive_ping",
+                      "conductor_unresponsive_mailed"):
+                proj.pop(k, None)
+            return out
+        if limit <= 0:
+            return out
+        since = proj.get("conductor_unacked_since")
+        if not since:
+            proj["conductor_unacked_since"] = since = store.now_iso(now)
+        unacked_s = int(_age_s(since, now) or 0)
+        pid_path = cursors_dir(cfg) / "conductor.pid"
+        follower_pid = None
+        try:
+            if pid_path.is_file():
+                pid = int(pid_path.read_text(encoding="utf-8").strip())
+                if gate_slots._pid_alive(pid):
+                    follower_pid = pid
+        except (OSError, ValueError, TypeError):
+            pass
+        relaunch = _conductor_relaunch(cfg)
+        if unacked_s >= limit:
+            episode_ping = proj.get("conductor_unresponsive_ping")
+            if episode_ping is None:
+                ping_id = proj.get("last_ping_id") or pending
+                data = {"ping_id": ping_id, "cursor_after": after, "unacked_s": unacked_s,
+                        "follower_pid": follower_pid, "relaunch": relaunch}
+                ev = _append_locked(cfg, "conductor_unresponsive", by="watchdog", data=data)
+                proj["conductor_unresponsive_ping"] = ping_id
+                out.append(ev)
+                episode_ping = ping_id
+            if not proj.get("conductor_unresponsive_mailed"):
+                from . import mailbox as M
+                pid_txt = str(follower_pid) if follower_pid is not None else "down"
+                try:
+                    M.send(cfg, to="human", frm="conductor", kind="info",
+                           text=(f"conductor has not acked past event {after} for {unacked_s}s "
+                                 f"(newest ping #{episode_ping}, follower {pid_txt}). "
+                                 f"In the conductor's terminal, stop that session so its "
+                                 f"follower drops the reader lock, then run: {relaunch}"))
+                except (OSError, ValueError):
+                    pass
+                else:
+                    proj["conductor_unresponsive_mailed"] = True
+    except Exception:
+        pass
+    return out
 
 
 def watchdog_checks(cfg, now=None) -> list[tuple]:
@@ -982,6 +1058,7 @@ def sync(cfg, now=None, ping=False) -> list[dict]:
         out += _watch(cfg, proj, now)
         if ping:                                  # SPEC-0212: only followers ping
             out += _ping(cfg, proj, now)
+            out += note_conductor_liveness(cfg, proj, now)     # SPEC-0485
         _atomic_write(_projector_path(cfg), json.dumps(proj, indent=2) + "\n")
     if ping:                                      # SPEC-0232: remind outside the events lock
         from . import escalations as ESC
@@ -1246,6 +1323,12 @@ def summary_line(ev: dict) -> str:
         return (f"digest #{d.get('first_id')}..#{d.get('last_id')} held={held or '-'} "
                 f"merged={merged or '-'}"
                 f"{' ping_items=' + str(len(d['ping_items'])) if d.get('ping_items') else ''}")
+    if ev.get("type") == "conductor_unresponsive":
+        d = ev.get("data") or {}
+        fp = d.get("follower_pid")
+        follower = fp if fp is not None else "down"
+        return (f"#{evid} conductor_unresponsive unacked_s={d.get('unacked_s')} "
+                f"after={d.get('cursor_after')} ping={d.get('ping_id')} follower={follower}")
     if ev.get("type") == "conductor_ping":
         d, c = ev.get("data") or {}, (ev.get("data") or {}).get("counts") or {}
         return (f"#{evid} conductor_ping blocked={len(d.get('blocked') or [])} "

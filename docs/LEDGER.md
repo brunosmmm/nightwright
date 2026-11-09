@@ -340,7 +340,6 @@ progress. This is the single place to see *what has been decided* and *what is i
 | [SPEC-0470](./specs/0470-close-follows-a-renamed-spec.md) | Close follows a spec file the branch renamed | feature | accepted | — | 2026-11-08 |
 | [SPEC-0476](./specs/0476-campaign-detail-runs-pane.md) | Campaign detail Runs pane: run table, verdict, and stream tail | feature | accepted | — | 2026-11-08 |
 | [SPEC-0477](./specs/0477-campaign-detail-findings-and-mail.md) | Campaign detail Findings & decisions pane and Mail pane | feature | accepted | — | 2026-11-08 |
-| [SPEC-0485](./specs/0485-conductor-went-silent-for-10h-while-the-runner.md) | Conductor liveness when pings stay unacked | feature | accepted | M9: agentic workflow | 2026-11-09 |
 | [SPEC-0489](./specs/0489-test-tiers-and-cadenced-heavy-runs.md) | Test tiers: campaign gates run the fast tier only; heavy tiers run on a per-project cadence | epic | accepted | M9: agentic workflow | 2026-11-09 |
 | [SPEC-0492](./specs/0492-tighter-affected-selection.md) | Tighter affected selection for specs, hot modules and fixtures | feature | in-progress | M9: agentic workflow | 2026-11-09 |
 | [SPEC-0496](./specs/0496-subagent-worktree-commit-allowlist.md) | Sub-agents in a worktree can commit; allowed command forms are documented | feature | accepted | — | 2026-11-09 |
@@ -798,6 +797,7 @@ progress. This is the single place to see *what has been decided* and *what is i
 | [SPEC-0482](./specs/0482-adopted-spec-review-no-start-snapshot.md) | An adopted spec review with no start snapshot retries instead of crashing the runner | feature | done | — | 2026-11-09 |
 | [SPEC-0483](./specs/0483-runner-under-a-systemd-user-unit.md) | The queue runner runs under a systemd user unit and resolves its own credentials | feature | done | M9: agentic workflow | 2026-11-09 |
 | [SPEC-0484](./specs/0484-runner-contains-apply-errors-and-holds-on-backend-faults.md) | The runner contains a campaign's apply error and holds steps on a backend fault | feature | done | M9: agentic workflow | 2026-11-09 |
+| [SPEC-0485](./specs/0485-conductor-went-silent-for-10h-while-the-runner.md) | Conductor liveness when pings stay unacked | feature | done | M9: agentic workflow | 2026-11-09 |
 | [SPEC-0487](./specs/0487-cli-persona-runs-execute-in-the-runner.md) | CLI persona runs execute in the runner, which holds the credentials | feature | done | M9: agentic workflow | 2026-11-09 |
 | [SPEC-0488](./specs/0488-nw-queue-conductor-launch-runner-cursor-fails.md) | Cursor launch passes a flat model id | feature | done | — | 2026-11-09 |
 | [SPEC-0490](./specs/0490-tier-markers-and-fast-only-gates.md) | Tier markers and fast-only campaign gates | feature | done | M9: agentic workflow | 2026-11-09 |

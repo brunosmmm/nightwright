@@ -101,6 +101,12 @@ def notification_for(ev) -> tuple[str, str, str] | None:
         return "nw: parked", f"{who} {d.get('reason') or ''}".strip(), "none"
     if t == "merged":
         return "nw: merged", f"{who} {str(d.get('merged_sha') or '')[:10]}".strip(), "none"
+    if t == "conductor_unresponsive":
+        relaunch = d.get("relaunch") or ""
+        unacked = d.get("unacked_s", "")
+        return ("nw: conductor silent",
+                f"unacked {unacked}s. Stop the conductor session, then {relaunch}",
+                "none")
     return None
 
 

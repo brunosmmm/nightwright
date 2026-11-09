@@ -66,6 +66,7 @@ RULES = {
     "runner_journal_silent": "wake", "temp_pressure": "wake", "runner_config_invalid": "wake",
     "code_changed": "wake", "auto_resume_failed": "wake",
     "launch_stale": "wake",                      # SPEC-0424: a relaunch request
+    "conductor_unresponsive": "wake",            # SPEC-0485: unacked conductor wake
 }
 
 DEFAULTS = {"enabled": True, "readers": ["conductor"], "digest_interval_s": 1800}

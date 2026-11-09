@@ -417,6 +417,10 @@ def test_notification_policy():
     assert n({"type": "admitted", "data": {}}) is None
     assert n({"type": "merged", "spec_id": "SPEC-1", "data": {"merged_sha": "abc"}}) == \
         ("nw: merged", "SPEC-1 abc", "none")
+    cu = n({"type": "conductor_unresponsive",
+            "data": {"unacked_s": 1800, "relaunch": "nw queue conductor-launch"}})
+    assert cu[0] == "nw: conductor silent" and "Stop the conductor session" in cu[1]
+    assert "nw queue conductor-launch" in cu[1] and cu[2] == "none"
 
 
 # ---- watcher: lifecycle ---------------------------------------------------------------------
