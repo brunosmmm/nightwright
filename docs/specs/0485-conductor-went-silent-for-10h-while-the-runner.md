@@ -279,6 +279,11 @@ signals on the `nw.event.v1` row.
 - `uv run pytest -q tests/test_conductor_liveness.py tests/test_herdr.py::test_notification_policy tests/test_agentic_ping.py tests/test_agentic_events.py tests/test_agentic_quiet.py` — 209 passed
 - Full suite left to queue gating
 
+### Test record (2026-11-09 loop 3)
+
+- `uv run pytest -q tests/test_conductor_liveness.py tests/test_herdr.py::test_notification_policy tests/test_agentic_ping.py tests/test_agentic_events.py tests/test_agentic_quiet.py` — 209 passed
+- Full suite left to queue gating
+
 ### As shipped (2026-11-09 loop 2)
 
 - `conductor_unacked_pending_id` stays on the wake that started `conductor_unacked_since`
@@ -292,6 +297,7 @@ signals on the `nw.event.v1` row.
 - 2026-11-09: `nw idea clock-in IDEA-1039` (implementer loop 0); `nw idea clock-out IDEA-1039` at close
 - 2026-11-09: implementer loop 1 reviewer fixes
 - 2026-11-09: implementer loop 2 unacked-clock retarget and episode restart fixes
+- 2026-11-09: implementer loop 3 adversarial review test hardening
 
 ## Rollout / migration
 

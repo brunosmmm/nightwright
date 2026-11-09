@@ -65,12 +65,18 @@ def test_unacked_ping_escalates_once(tmp_path):
     assert d["ping_id"] == proj["last_ping_id"]
     assert d["follower_pid"] is None
     assert _cu_from_sync(E.sync(cfg, now=at(1900), ping=True)) == []
+    proj_mid = json.loads((store.agentic_dir(cfg) / "events.projector.json").read_text())
+    ping_before = proj_mid["last_ping_id"]
+    assert _cu_from_sync(E.sync(cfg, now=at(2400), ping=True)) == []
+    proj_late = json.loads((store.agentic_dir(cfg) / "events.projector.json").read_text())
+    assert proj_late["last_ping_id"] > ping_before
     mail = _human_mail(cfg)
     assert len(mail) == 1 and mail[0]["from"] == "conductor" and mail[0]["kind"] == "info"
     text = mail[0]["text"]
     assert str(d["unacked_s"]) in text
     assert "In the conductor's terminal" in text and "stop that session" in text
     assert text.index("stop that session") < text.index(d["relaunch"])
+    assert len(_cu_events(cfg)) == 1
 
 
 def test_mail_failure_is_retried_without_a_second_event(tmp_path, monkeypatch):
@@ -94,23 +100,47 @@ def test_mail_failure_is_retried_without_a_second_event(tmp_path, monkeypatch):
     assert len(_cu_events(cfg)) == 1 and len(_human_mail(cfg)) == 1
 
 
-def test_relaunch_command_follows_the_launch_record(tmp_path):
-    cfg = _cfg(tmp_path)
+def _reset_cu_episode(cfg, *, since_s=0, now_s=0):
     wake = E.append(cfg, "runner_dead", data={"active": 0, "queued": 0})
     _conductor_cursor(cfg, 0, pending=wake["id"])
-    E.sync(cfg, now=at(0), ping=True)
-    d = _cu_from_sync(E.sync(cfg, now=at(1800), ping=True))[0]["data"]
-    assert d["relaunch"] == "nw queue conductor-launch"
-    CC.record_session(cfg, "conductor", {}, source="launch", session_id="s-1")
-    _conductor_cursor(cfg, 0, pending=wake["id"])
+    E.sync(cfg, now=at(now_s), ping=True)
     proj_path = store.agentic_dir(cfg) / "events.projector.json"
     proj = json.loads(proj_path.read_text())
-    for k in ("conductor_unresponsive_ping", "conductor_unresponsive_mailed"):
+    for k in ("conductor_unresponsive_ping", "conductor_unresponsive_mailed",
+              "conductor_unacked_pending_id"):
         proj.pop(k, None)
-    proj["conductor_unacked_since"] = iso(0)
+    proj["conductor_unacked_since"] = iso(since_s)
     proj_path.write_text(json.dumps(proj) + "\n")
-    d2 = _cu_from_sync(E.sync(cfg, now=at(3600), ping=True))[0]["data"]
+    return wake
+
+
+def _fire_cu(cfg, at_s):
+    E.sync(cfg, now=at(at_s - 1), ping=True)
+    out = _cu_from_sync(E.sync(cfg, now=at(at_s), ping=True))
+    assert len(out) == 1
+    return out[0]["data"]
+
+
+def test_relaunch_command_follows_the_launch_record(tmp_path):
+    cfg = _cfg(tmp_path)
+    _reset_cu_episode(cfg, since_s=0, now_s=-1)
+    d = _cu_from_sync(E.sync(cfg, now=at(1800), ping=True))[0]["data"]
+    assert d["relaunch"] == "nw queue conductor-launch"
+    for at_s, sid in ((3600, "f-1"), (5400, "m-1")):
+        src = "follower" if sid == "f-1" else "manual"
+        CC.record_session(cfg, "conductor", {}, source=src, session_id=sid)
+        _reset_cu_episode(cfg, since_s=at_s - 1800)
+        d_src = _fire_cu(cfg, at_s)
+        assert d_src["relaunch"] == "nw queue conductor-launch"
+    CC.record_session(cfg, "conductor", {}, source="launch", session_id="s-1")
+    at_s = 7200
+    _reset_cu_episode(cfg, since_s=at_s - 1800)
+    d2 = _fire_cu(cfg, at_s)
     assert d2["relaunch"] == "nw queue conductor-launch --resume"
+    mail = _human_mail(cfg)[-1]
+    text = mail["text"]
+    assert "nw queue conductor-launch --resume" in text
+    assert text.index("stop that session") < text.index("nw queue conductor-launch --resume")
 
 
 def test_follower_pid_and_the_reader_lock_stays_held(tmp_path, monkeypatch):
@@ -306,14 +336,23 @@ def test_ack_clears_the_episode(tmp_path):
 
 def test_summary_line_and_validate(tmp_path):
     cfg = _cfg(tmp_path)
+    full = {"ping_id": 5, "cursor_after": 3, "unacked_s": 1800,
+            "follower_pid": None, "relaunch": "nw queue conductor-launch"}
     with pytest.raises(ValueError, match="missing data keys"):
         E.append(cfg, "conductor_unresponsive", data={})
-    ev = E.append(cfg, "conductor_unresponsive", by="watchdog",
-                  data={"ping_id": 5, "cursor_after": 3, "unacked_s": 1800,
-                        "follower_pid": None, "relaunch": "nw queue conductor-launch"})
-    line = E.summary_line(ev)
-    assert line == (f"#{ev['id']} conductor_unresponsive unacked_s=1800 "
-                    "after=3 ping=5 follower=down")
+    for omit in full:
+        partial = {k: v for k, v in full.items() if k != omit}
+        with pytest.raises(ValueError, match="missing data keys"):
+            E.validate("conductor_unresponsive", partial)
+    ev_down = E.append(cfg, "conductor_unresponsive", by="watchdog", data=full)
+    assert E.summary_line(ev_down) == (
+        f"#{ev_down['id']} conductor_unresponsive unacked_s=1800 "
+        "after=3 ping=5 follower=down")
+    live = {**full, "follower_pid": 424242}
+    ev_live = E.append(cfg, "conductor_unresponsive", by="watchdog", data=live)
+    assert E.summary_line(ev_live) == (
+        f"#{ev_live['id']} conductor_unresponsive unacked_s=1800 "
+        "after=3 ping=5 follower=424242")
     E.validate("conductor_ping", {"blocked": [], "parked": [], "stuck": [], "waiting": [],
                                   "ready_not_admitted": [], "counts": {}, "runner": None})
 
