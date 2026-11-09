@@ -1,7 +1,7 @@
 ---
 id: SPEC-0499
 title: Tests must not fire real desktop notifications
-status: accepted
+status: done
 owner: user
 created: 2026-11-09
 updated: 2026-11-09
@@ -153,29 +153,29 @@ is the binary `which` would have executed.
 
 ## Acceptance criteria
 
-- [ ] With the suite's autouse fixture in place, `ESC.notify` under default
+- [x] With the suite's autouse fixture in place, `ESC.notify` under default
       `notify=auto`, when `PATH` starts with a fake `notify-send` that writes a
       marker file, returns `via == "notify-send"` and `ok is True`, and the
       marker file is absent.
-- [ ] Applying an escalation into a tmp store under that same default (the
+- [x] Applying an escalation into a tmp store under that same default (the
       `tests/test_runner_selfheal.py` shape, an open `ESC-0001`) leaves the
       fake `notify-send` marker absent.
-- [ ] `subprocess.run` and `subprocess.Popen` whose program basename is
+- [x] `subprocess.run` and `subprocess.Popen` whose program basename is
       `notify-send` (bare name or absolute path), and `subprocess.run` of a
       string whose first token is `notify-send`, raise `AssertionError`
       mentioning `notify-send` before the fake executable runs (marker absent).
-- [ ] `subprocess.run` of an argv whose basename is something else still runs
+- [x] `subprocess.run` of an argv whose basename is something else still runs
       that program and returns its result.
-- [ ] `subprocess.Popen([sys.executable, "-c", "print(1)"], stdout=subprocess.PIPE, text=True)`
+- [x] `subprocess.Popen([sys.executable, "-c", "print(1)"], stdout=subprocess.PIPE, text=True)`
       returns a process for which `isinstance(proc, subprocess.Popen)` is true
       and `communicate()` stdout is `1\n`.
-- [ ] A test that replaces `ESC._run_notify` with a recorder still receives the
+- [x] A test that replaces `ESC._run_notify` with a recorder still receives the
       argv `notify` would have run, and the fake `notify-send` marker stays
       absent.
-- [ ] `tests/test_agentic_escalations.py` still records the `notify-send` argv
+- [x] `tests/test_agentic_escalations.py` still records the `notify-send` argv
       and still covers a raising notifier and a non-zero return code, through
       its own `_run_notify` replacement.
-- [ ] No production module changes. `escalations._run_notify` outside pytest is
+- [x] No production module changes. `escalations._run_notify` outside pytest is
       still `subprocess.run` of the configured argv.
 
 ## Test plan
@@ -233,10 +233,16 @@ is the binary `which` would have executed.
   run `uv run pytest` on the whole tree
   ([SPEC-0379](./0379-time-based-sentinel-on-worker-slots.md)).
 
+### Test record (2026-11-09)
+
+Ran the regression command from this spec's Test plan (`489 passed` after adding
+`topic="scope"` to `test_apply_escalate_in_tmp_store_does_not_spawn_notify_send`
+so `plan_escalate` accepts `recommend=1`). Full suite left to the close gate
+(`conftest.py` changed).
+
 ## Clock Log
 
-No implementation session yet. Clock `IDEA-1070` with `nw idea clock-in` and
-`nw idea clock-out` when implementation starts and stops.
+IDEA-1070 clock-in / clock-out for implementer loop 0.
 
 ## Rollout / migration
 
@@ -247,12 +253,12 @@ desktop session does not pop `notify-send` for escalations the tests raise.
 
 ## Definition of done
 
-- [ ] Acceptance criteria all met.
-- [ ] Test plan executed; the new module and the regression modules above pass.
+- [x] Acceptance criteria all met.
+- [x] Test plan executed; the new module and the regression modules above pass.
       The close gate owns the full-suite selection caused by `tests/conftest.py`.
-- [ ] No regressions.
-- [ ] Spec body updated to match what shipped.
-- [ ] `docs/LEDGER.md` updated (status + date) via `python3 tools/spec_lint.py --write-ledger`.
+- [x] No regressions.
+- [x] Spec body updated to match what shipped.
+- [x] `docs/LEDGER.md` updated (status + date) via `python3 tools/spec_lint.py --write-ledger`.
 
 ## Open questions
 

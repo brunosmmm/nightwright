@@ -1,4 +1,5 @@
 """Shared fixtures."""
+import os
 import subprocess
 
 import pytest
@@ -92,6 +93,46 @@ def _no_ambient_herdr_env(monkeypatch):
     import os
     for k in [k for k in os.environ if k.startswith("HERDR_")]:
         monkeypatch.delenv(k)
+
+
+@pytest.fixture(autouse=True)
+def _no_desktop_notify(monkeypatch):
+    """SPEC-0499: default `notify=auto` must not spawn the session's `notify-send`; any test that
+    still reaches `notify-send` through subprocess fails before the process starts."""
+    from nightwright.agentic import escalations as ESC
+
+    class _Done:
+        returncode = 0
+        stdout = ""
+        stderr = ""
+
+    monkeypatch.setattr(ESC, "_run_notify", lambda argv: _Done())
+
+    _real_run = subprocess.run
+    _Popen = subprocess.Popen
+
+    def _is_notify_send(cmd):
+        if isinstance(cmd, (list, tuple)):
+            return bool(cmd) and os.path.basename(str(cmd[0])) == "notify-send"
+        if isinstance(cmd, str):
+            part = cmd.strip().split(None, 1)
+            return bool(part) and os.path.basename(part[0]) == "notify-send"
+        return False
+
+    def _guarded_run(*args, **kwargs):
+        cmd = args[0] if args else kwargs.get("args")
+        if cmd is not None and _is_notify_send(cmd):
+            raise AssertionError(f"notify-send blocked in tests: {cmd!r}")
+        return _real_run(*args, **kwargs)
+
+    class _GuardedPopen(_Popen):
+        def __init__(self, args, *a, **kw):
+            if _is_notify_send(args):
+                raise AssertionError(f"notify-send blocked in tests: {args!r}")
+            super().__init__(args, *a, **kw)
+
+    monkeypatch.setattr(subprocess, "run", _guarded_run)
+    monkeypatch.setattr(subprocess, "Popen", _GuardedPopen)
 
 
 @pytest.fixture(autouse=True)

@@ -342,7 +342,6 @@ progress. This is the single place to see *what has been decided* and *what is i
 | [SPEC-0489](./specs/0489-test-tiers-and-cadenced-heavy-runs.md) | Test tiers: campaign gates run the fast tier only; heavy tiers run on a per-project cadence | epic | accepted | M9: agentic workflow | 2026-11-09 |
 | [SPEC-0492](./specs/0492-tighter-affected-selection.md) | Tighter affected selection for specs, hot modules and fixtures | feature | in-progress | M9: agentic workflow | 2026-11-09 |
 | [SPEC-0496](./specs/0496-subagent-worktree-commit-allowlist.md) | Sub-agents in a worktree can commit; allowed command forms are documented | feature | accepted | — | 2026-11-09 |
-| [SPEC-0499](./specs/0499-tests-fire-real-desktop-notifications-only-tests.md) | Tests must not fire real desktop notifications | feature | accepted | — | 2026-11-09 |
 | [SPEC-0501](./specs/0501-worker-execution-on-slurm.md) | Worker execution on Slurm: Slurm owns admission, placement, priorities and queues for gate and persona jobs | epic | accepted | M9: agentic workflow | 2026-11-09 |
 | [SPEC-0506](./specs/0506-worker-ledger-regen-applied-not-rerun.md) | Files a remote gate is allowed to write (the regenerated ledger) come back to the worktree; the run is not repeated locally | feature | in-progress | M9: agentic workflow | 2026-11-09 |
 | [SPEC-0509](./specs/0509-gate-commands-size-from-their-allocation.md) | Gate commands size their parallelism from the job's allocation (NW_GATE_CPUS / NW_GATE_MEM_MB), with a config warning for nproc and -n auto | feature | in-progress | M9: agentic workflow | 2026-11-09 |
@@ -805,6 +804,7 @@ progress. This is the single place to see *what has been decided* and *what is i
 | [SPEC-0495](./specs/0495-tui-ideas-tab-redesign.md) | TUI ideas tab: project rail + Open / In flight / Built buckets with real spec status | feature | done | M5: interactive desk | 2026-11-09 |
 | [SPEC-0497](./specs/0497-conductor-ping-revise-pending-specs.md) | Conductor ping flags specs stalled on a revise verdict | feature | done | — | 2026-11-09 |
 | [SPEC-0498](./specs/0498-campaign-detail-overview-cards.md) | Campaign detail Overview pane: dashboard cards (outcome + why banner, time per phase, runs, gates, findings) | feature | done | — | 2026-11-09 |
+| [SPEC-0499](./specs/0499-tests-fire-real-desktop-notifications-only-tests.md) | Tests must not fire real desktop notifications | feature | done | — | 2026-11-09 |
 | [SPEC-0500](./specs/0500-gate-jobs-fifo-full-box-per-project-requester.md) | Gate jobs: first-come-first-served tokens, full box when no campaign, per-project requester, longer default wait | feature | done | M9: agentic workflow | 2026-11-09 |
 | [SPEC-0503](./specs/0503-worker-executor-seam.md) | Executor seam on the worker: job start, cancel and slot admission go through a pluggable executor (local = today) | feature | done | M9: agentic workflow | 2026-11-09 |
 | [SPEC-0504](./specs/0504-gate-resource-requests-and-measured-usage.md) | Per-gate resource requests in project config, and measured CPU time and peak memory in every gate record | feature | done | M9: agentic workflow | 2026-11-09 |
