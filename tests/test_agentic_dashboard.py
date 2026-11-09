@@ -3,6 +3,7 @@ totals, and the rendered frame (`--once`, `--json`, `--project`, widths)."""
 import datetime as dt
 import json
 
+import pytest
 from rich.console import Console
 
 from test_agentic_e2e import (SPEC_ACCEPTED, _git, _write, impl_done, make_cfg, make_repo, write_review,
@@ -304,8 +305,6 @@ def test_young_undecided_conductor_park_renders_pending(tmp_path):
 
 
 # ---- SPEC-0277: per-reviewer review chips ---------------------------------------------------
-
-import pytest
 
 _REVIEWERS = ("conformance_reviewer", "test_reviewer", "adversarial_reviewer")
 

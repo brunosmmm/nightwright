@@ -72,6 +72,32 @@ def test_apply_shapes(tmp_path):
                            "--repo", str(r)], cwd=ROOT).returncode == 2
 
 
+def test_apply_inserts_pytest_import_before_early_pytestmark(tmp_path):
+    """Apply must not treat a late `import pytest` as satisfying an earlier pytestmark."""
+    r = _mini_repo(tmp_path)
+    (r / "tests" / "test_late_imp.py").write_text(textwrap.dedent("""\
+        pytestmark = pytest.mark.fast
+
+        def foo():
+            pass
+
+        import pytest
+
+        def test_one():
+            pass
+        """))
+    log = tmp_path / "d.log"
+    log.write_text("0.01s call tests/test_late_imp.py::test_one\n")
+    assert subprocess.run([sys.executable, str(ROOT / "tools" / "test_tiers.py"), "apply", str(log),
+                           "--repo", str(r)], cwd=ROOT).returncode == 0
+    text = (r / "tests" / "test_late_imp.py").read_text()
+    assert text.index("import pytest") < text.index("pytestmark =")
+    coll = subprocess.run(
+        [sys.executable, "-m", "pytest", "--collect-only", "-q", str(r / "tests" / "test_late_imp.py")],
+        cwd=r, capture_output=True, text=True)
+    assert coll.returncode == 0, coll.stderr + coll.stdout
+
+
 def test_budget_rules(tmp_path):
     r = _mini_repo(tmp_path)
     (r / "tests" / "test_mod.py").write_text("import pytest\npytestmark = pytest.mark.fast\n")

@@ -157,6 +157,37 @@ def _pytestmark_assign(tree: ast.Module) -> ast.Assign | None:
     return None
 
 
+def _pytest_import_lineno(tree: ast.Module) -> int | None:
+    """Earliest module-level lineno of `import pytest` or `from pytest import …`."""
+    best: int | None = None
+    for node in tree.body:
+        if isinstance(node, ast.Import):
+            for a in node.names:
+                if a.name.split(".", 1)[0] == "pytest":
+                    ln = node.lineno
+                    best = ln if best is None else min(best, ln)
+        elif isinstance(node, ast.ImportFrom) and node.module and node.module.split(".", 1)[0] == "pytest":
+            ln = node.lineno
+            best = ln if best is None else min(best, ln)
+    return best
+
+
+def _ensure_pytest_import_before_mark(text: str, rel: str) -> str:
+    tree = ast.parse(text, filename=rel)
+    assign = _pytestmark_assign(tree)
+    if assign is None or "pytestmark" not in text:
+        return text
+    imp = _pytest_import_lineno(tree)
+    if imp is not None and imp < assign.lineno:
+        return text
+    bare = text.split("\n")
+    bare.insert(assign.lineno - 1, "import pytest")
+    new_text = "\n".join(bare)
+    if text.endswith("\n"):
+        new_text += "\n"
+    return new_text
+
+
 def _module_tiers(tree: ast.Module) -> list[str]:
     assign = _pytestmark_assign(tree)
     if assign is None:
@@ -260,13 +291,7 @@ def apply_file(repo: Path, rel: str, tier: str, overrides: dict[str, float]) -> 
         new_text = "\n".join(chunk)
         if text.endswith("\n"):
             new_text += "\n"
-    if "import pytest" not in new_text and "pytestmark" in new_text:
-        ins = _insert_line_after_prelude(ast.parse(new_text, filename=rel))
-        bare2 = new_text.split("\n")
-        bare2.insert(ins, "import pytest")
-        new_text = "\n".join(bare2)
-        if text.endswith("\n"):
-            new_text += "\n"
+    new_text = _ensure_pytest_import_before_mark(new_text, rel)
     slow_funcs = {_func_from_nodeid(n) for n in overrides} if tier == "fast" else set()
     new_text = _strip_slow_decorators(new_text, tier)
     new_text = _add_integration_decorators(new_text, slow_funcs)
