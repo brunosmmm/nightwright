@@ -23,6 +23,7 @@ _GIT_SCRUB = (
     "GIT_OBJECT_DIRECTORY",
     "GIT_ALTERNATE_OBJECT_DIRECTORIES",
     "GIT_COMMON_DIR",
+    "GIT_NAMESPACE",
 )
 
 
@@ -167,10 +168,25 @@ def _ref_tip(repo: Path, ref: str) -> str | None:
     return r.stdout.decode().strip()
 
 
+def _parse_ls_tree_entry(line: bytes) -> tuple[bytes, str, str, str]:
+    tab = line.find(b"\t")
+    if tab < 0:
+        raise ValueError("mktree failed")
+    mode_typ_sha = line[:tab].split()
+    if len(mode_typ_sha) != 3:
+        raise ValueError("mktree failed")
+    mode = mode_typ_sha[0].decode("ascii", "strict")
+    typ = mode_typ_sha[1].decode("ascii", "strict")
+    sha = mode_typ_sha[2].decode("ascii", "strict")
+    name = line[tab + 1:]
+    return name, mode, typ, sha
+
+
 def _mktree(repo: Path, parent_sha: str | None, path: str, blob_sha: str) -> str:
-    entries: list[tuple[str, str, str, str]] = []
+    path_b = path.encode("utf-8")
+    entries: list[tuple[bytes, str, str, str]] = []
     if parent_sha:
-        r = _git(repo, "ls-tree", "-z", parent_sha, check=False)
+        r = _git(repo, "ls-tree", "--full-tree", "-z", parent_sha, check=False)
         if r.returncode != 0:
             raise ValueError("mktree failed")
         raw = r.stdout
@@ -178,23 +194,20 @@ def _mktree(repo: Path, parent_sha: str | None, path: str, blob_sha: str) -> str
         while pos < len(raw):
             nul = raw.find(b"\0", pos)
             if nul < 0:
+                if pos < len(raw):
+                    raise ValueError("mktree failed")
                 break
             line = raw[pos:nul]
             pos = nul + 1
-            tab = line.find(b"\t")
-            if tab < 0:
+            if not line:
                 continue
-            mode_typ_sha = line[:tab].split()
-            if len(mode_typ_sha) != 3:
-                continue
-            mode, typ, sha = (p.decode() for p in mode_typ_sha)
-            name = line[tab + 1:].decode()
-            if name == path:
+            name, mode, typ, sha = _parse_ls_tree_entry(line)
+            if name == path_b:
                 continue
             entries.append((name, mode, typ, sha))
-    entries.append((path, "100644", "blob", blob_sha))
+    entries.append((path_b, "100644", "blob", blob_sha))
     tree_input = b"".join(
-        f"{mode} {typ} {sha}\t{name}\0".encode()
+        f"{mode} {typ} {sha}\t".encode("ascii") + name + b"\0"
         for name, mode, typ, sha in sorted(entries, key=lambda row: row[0])
     )
     r = _git(repo, "mktree", "-z", input=tree_input, check=False)

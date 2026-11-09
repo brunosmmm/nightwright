@@ -477,10 +477,17 @@ the guard.
 - `python3 tools/spec_lint.py --write-ledger && python3 tools/spec_lint.py` — exit 0.
 - Full suite left to queue gating.
 
+### Test record (2026-11-09, review loop 3)
+
+- `uv run pytest tests/test_idea_link.py -q` — 15 passed (`--full-tree` mktree fix + subdirectory `repo_path` regression).
+- `uv run pytest tests/test_idea_stamps.py::test_stamp_creates_missing_drawer_without_corrupting_sections tests/test_workflow.py -q` — 19 passed.
+- `python3 tools/spec_lint.py --write-ledger && python3 tools/spec_lint.py` — exit 0.
+- Full suite left to queue gating.
+
 ### As shipped (2026-11-09, review loop 2)
 
-- `nw-backlog` tree rebuild uses `git ls-tree -z` / `git mktree -z` and keeps each entry's mode and object type.
-- Git env scrub (`GIT_DIR`, `GIT_WORK_TREE`, …) on every linked-repo git call; commit identity from linked-repo config only.
+- `nw-backlog` tree rebuild uses `git ls-tree --full-tree -z` (one level) / `git mktree -z`, raw path bytes, and raises on unparsable entries; keeps each entry's mode and object type.
+- Git env scrub (`GIT_DIR`, `GIT_WORK_TREE`, `GIT_NAMESPACE`, …) on every linked-repo git call; commit identity from linked-repo config only.
 - `nw-backlog` checked out in any linked worktree refuses publish like a checked-out branch.
 - `created_by` / `updated_by` are double-quoted YAML scalars; publish uses `idea_summary_text(..., strict=True)` and refuses when Summary cannot be read.
 - Restore after org-write failure checks `update-ref` exit code before reporting restored.

@@ -415,6 +415,34 @@ def test_second_publish_preserves_existing_requests(tmp_path, monkeypatch):
     assert upd and upd[0][3] == tip1
 
 
+def test_second_publish_preserves_backlog_when_linked_path_is_subdir(tmp_path, monkeypatch):
+    """repo_path under the work tree must not drop existing root REQ files on mktree (loop-3)."""
+    repo = _init_repo(tmp_path / "proj")
+    sub = repo / "packages" / "app"
+    sub.mkdir(parents=True)
+    cfg = _cfg(tmp_path, repo=sub)
+    monkeypatch.chdir(sub)
+    a = _seed_idea(monkeypatch, cfg, text="First", summary="one")
+    b = _seed_idea(monkeypatch, cfg, text="Second", summary="two")
+    assert CliRunner().invoke(cli, ["idea", "publish", a.properties["ID"]]).exit_code == 0
+    first = W.resolve_selector(cfg, a.properties["ID"]).properties["REQ"]
+    first_sha = _git(repo, "rev-parse", f"refs/heads/nw-backlog:{first}.md").strip()
+    ls_calls = []
+    real_run = subprocess.run
+
+    def spy(cmd, **kw):
+        if len(cmd) > 5 and cmd[0] == "git" and str(repo) in cmd[2] and cmd[3] == "ls-tree":
+            ls_calls.append(list(cmd[3:]))
+        return real_run(cmd, **kw)
+
+    monkeypatch.setattr("subprocess.run", spy)
+    assert CliRunner().invoke(cli, ["idea", "publish", b.properties["ID"]]).exit_code == 0
+    assert any(c[:2] == ["ls-tree", "--full-tree"] for c in ls_calls)
+    assert _git(repo, "rev-parse", f"refs/heads/nw-backlog:{first}.md").strip() == first_sha
+    second = W.resolve_selector(cfg, b.properties["ID"]).properties["REQ"]
+    assert _show_backlog(repo, f"{second}.md").decode()
+
+
 def test_publish_refuses_empty_title_multiline_title_and_second_link(tmp_path, monkeypatch):
     repo = _init_repo(tmp_path / "proj")
     cfg = _cfg(tmp_path, repo=repo)
