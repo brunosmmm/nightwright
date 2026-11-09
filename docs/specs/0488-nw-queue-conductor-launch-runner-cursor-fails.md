@@ -1,7 +1,7 @@
 ---
 id: SPEC-0488
 title: Cursor launch passes a flat model id
-status: accepted
+status: done
 owner: user
 created: 2026-11-09
 updated: 2026-11-09
@@ -102,24 +102,24 @@ on Grok and Composer.
 
 ## Acceptance criteria
 
-- [ ] `launch_model_arg("grok-4.7-high")` is `grok-4.7-high`.
-- [ ] `launch_model_arg("grok-4.6-low")` is `grok-4.6-low`.
-- [ ] `launch_model_arg("composer-2.5")` is `composer-2.5`.
-- [ ] `launch_model_arg("gpt-5.6-sol-xhigh")` is `gpt-5.6-sol-xhigh`.
-- [ ] `launch_model_arg("gpt-5.4-xhigh")` is `gpt-5.4-extra-high`.
-- [ ] `launch_model_arg("claude-sonnet-4-6-xhigh")` is `claude-sonnet-4-6-max`.
-- [ ] `launch_model_arg("not-a-catalog-model-high")` is `not-a-catalog-model-high`.
-- [ ] None of those return values contain `[` or `]`, and none of the `fast=false`
+- [x] `launch_model_arg("grok-4.7-high")` is `grok-4.7-high`.
+- [x] `launch_model_arg("grok-4.6-low")` is `grok-4.6-low`.
+- [x] `launch_model_arg("composer-2.5")` is `composer-2.5`.
+- [x] `launch_model_arg("gpt-5.6-sol-xhigh")` is `gpt-5.6-sol-xhigh`.
+- [x] `launch_model_arg("gpt-5.4-xhigh")` is `gpt-5.4-extra-high`.
+- [x] `launch_model_arg("claude-sonnet-4-6-xhigh")` is `claude-sonnet-4-6-max`.
+- [x] `launch_model_arg("not-a-catalog-model-high")` is `not-a-catalog-model-high`.
+- [x] None of those return values contain `[` or `]`, and none of the `fast=false`
       results end with `-fast`.
-- [ ] When `sdk_selection` is stubbed to return `{id: grok-4.7, params: [{id: reasoning_effort, value: high}, {id: fast, value: true}]}`, `launch_model_arg` returns `grok-4.7-high-fast`.
-- [ ] A cursor `build_plan` for the conductor, with the builtin map and the default
+- [x] When `sdk_selection` is stubbed to return `{id: grok-4.7, params: [{id: reasoning_effort, value: high}, {id: fast, value: true}]}`, `launch_model_arg` returns `grok-4.7-high-fast`.
+- [x] A cursor `build_plan` for the conductor, with the builtin map and the default
       model, puts `--model` `grok-4.7-high` on the argv. Dry-run output contains
       that id and does not contain `grok-4.7[reasoning_effort`.
-- [ ] A cursor `build_plan` for a steward uses that same `--model` value.
-- [ ] `sdk_selection("grok-4.7-high")` is still `{id: grok-4.7}` with
+- [x] A cursor `build_plan` for a steward uses that same `--model` value.
+- [x] `sdk_selection("grok-4.7-high")` is still `{id: grok-4.7}` with
       `reasoning_effort=high` and `fast=false`. No selection this code builds
       contains `fast=true`.
-- [ ] A Claude conductor plan's argv still starts with `claude` and still passes
+- [x] A Claude conductor plan's argv still starts with `claude` and still passes
       `--effort`.
 
 ## Test plan
@@ -144,6 +144,12 @@ on Grok and Composer.
   and `test_runner_flag_claude_beats_env` still show a Claude argv with `--effort`.
   `sdk_selection` cases in `tests/test_cursor_map.py` keep today's parameter lists.
 
+### Test record (2026-11-09)
+
+- `uv run pytest -q tests/test_cursor_map.py tests/test_cursor_launch.py tests/test_cursor_sdk_exec.py` — 44 passed.
+- `uv run nw queue conductor-launch --runner cursor --dry-run` — exit 0; argv contains `--model grok-4.7-high`, no bracket form.
+- Full suite left to gating.
+
 ## Clock Log
 
 IDEA-1041 (`nw idea clock-in` / `clock-out` during implementation).
@@ -156,11 +162,11 @@ with. A launch that failed on the bracket id is started again after this lands.
 
 ## Definition of done
 
-- [ ] Acceptance criteria all met.
-- [ ] Test plan executed; automated tests pass; manual steps performed.
-- [ ] No regressions.
-- [ ] Spec body updated to match what shipped.
-- [ ] `docs/LEDGER.md` updated (status + date).
+- [x] Acceptance criteria all met.
+- [x] Test plan executed; automated tests pass; manual steps performed.
+- [x] No regressions.
+- [x] Spec body updated to match what shipped.
+- [x] `docs/LEDGER.md` updated (status + date).
 
 ## Open questions
 

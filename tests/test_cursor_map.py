@@ -85,8 +85,7 @@ def test_sdk_selection_splits_effort_into_the_model_parameter(tmp_path):
     assert CM.sdk_selection("composer-2.5") == {
         "id": "composer-2.5", "params": [{"id": "fast", "value": "false"}]}
     assert CM.sdk_selection("grok-4.7-high")["id"] == "grok-4.7"
-    assert CM.launch_model_arg("grok-4.7-high") == (
-        "grok-4.7[reasoning_effort=high,fast=false]")
+    assert CM.launch_model_arg("grok-4.7-high") == "grok-4.7-high"
 
 
 def test_sdk_selection_uses_each_model_familys_parameter():
@@ -117,6 +116,40 @@ def test_sdk_selection_uses_each_model_familys_parameter():
         CM.sdk_selection("claude-sonnet-5-5-high"),
     ):
         assert all(p["value"] != "true" for p in sel["params"] if p["id"] == "fast")
+
+
+def test_launch_model_arg_flat_ids():
+    table = [
+        ("grok-4.7-high", "grok-4.7-high"),
+        ("grok-4.6-low", "grok-4.6-low"),
+        ("composer-2.5", "composer-2.5"),
+        ("gpt-5.6-sol-xhigh", "gpt-5.6-sol-xhigh"),
+        ("gpt-5.4-xhigh", "gpt-5.4-extra-high"),
+        ("claude-sonnet-4-6-xhigh", "claude-sonnet-4-6-max"),
+        ("not-a-catalog-model-high", "not-a-catalog-model-high"),
+    ]
+    for model_id, want in table:
+        got = CM.launch_model_arg(model_id)
+        assert got == want
+        assert "[" not in got and "]" not in got
+        if model_id != "not-a-catalog-model-high":
+            assert not got.endswith("-fast")
+
+
+def test_launch_model_arg_honors_fast_true(monkeypatch):
+    import nightwright.agentic.cursor_map as mod
+
+    def fake(_model_id, catalog=None):
+        return {
+            "id": "grok-4.7",
+            "params": [
+                {"id": "reasoning_effort", "value": "high"},
+                {"id": "fast", "value": "true"},
+            ],
+        }
+
+    monkeypatch.setattr(mod, "sdk_selection", fake)
+    assert CM.launch_model_arg("grok-4.7-high") == "grok-4.7-high-fast"
 
 
 def test_mapped_model_only_translates_when_runner_is_cursor(tmp_path, monkeypatch):

@@ -282,19 +282,35 @@ def sdk_selection(model_id, catalog=None) -> dict:
     return {"id": raw, "params": []}
 
 
-def launch_model_arg(model_id, catalog=None) -> str:
-    """The ``cursor-agent --model`` value for this id (SPEC-0460).
+_EFFORT_PARAM_IDS = frozenset({"reasoning_effort", "reasoning", "effort"})
 
-    Same selection as :func:`sdk_selection`, written as the CLI bracket form
-    ``grok-4.7[reasoning_effort=high,fast=false]``. A selection with no
-    parameters stays the bare id.
+
+def launch_model_arg(model_id, catalog=None) -> str:
+    """The ``cursor-agent --model`` value for this id (SPEC-0488).
+
+    Same selection as :func:`sdk_selection`, formatted as a flat id
+    ``model[-effort][-fast]``. Effort comes from the effort parameter; ``-fast``
+    is appended only when ``fast`` is ``true``. A selection with no parameters
+    stays the bare id (or the original string when the id is not in the catalog).
     """
     sel = sdk_selection(model_id, catalog)
     params = sel["params"]
     if not params:
         return sel["id"]
-    body = ",".join(f"{p['id']}={p['value']}" for p in params)
-    return f"{sel['id']}[{body}]"
+    base = sel["id"]
+    effort_value = None
+    fast = False
+    for p in params:
+        pid = p["id"]
+        if pid in _EFFORT_PARAM_IDS:
+            effort_value = p["value"]
+        elif pid == "fast" and p["value"] == "true":
+            fast = True
+    if effort_value is not None:
+        base = f"{base}-{effort_value}"
+    if fast:
+        base = f"{base}-fast"
+    return base
 
 
 def map_model(model, effort=None, cfg=None, *, project_root=None, cursor_model=None) -> str:
