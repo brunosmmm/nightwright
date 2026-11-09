@@ -1,9 +1,10 @@
 ---
 id: SPEC-0485
 title: "Conductor liveness when pings stay unacked"
-status: proposed
+status: accepted
 owner: user
 created: 2026-11-09
+updated: 2026-11-09
 milestone: "M9: agentic workflow"
 kind: feature
 tags: [agentic, conductor, events, watchdog]
