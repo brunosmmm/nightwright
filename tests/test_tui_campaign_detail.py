@@ -77,7 +77,7 @@ def test_enter_opens_the_screen_and_escape_returns_with_the_cursor(tmp_path):
             await open_screen(app, pilot, cid, "queued", timeline=False)
             s = detail_screen(app)
             assert s.campaign_id == cid
-            assert overview(app).startswith(cid)
+            assert cid in overview(app)          # SPEC-0496: banner carries the id
             await press(app, pilot, ["escape"])
             await settle(app, pilot)
             assert not isinstance(app.screen, CD.CampaignDetail)
@@ -640,9 +640,8 @@ def test_timeline_text_renders_verbatim(tmp_path):
             cells = s.table.get_row_at(last)
             assert all(isinstance(c, Text) for c in cells)
             assert cells[5].plain.endswith(markup)
-            ov = s.query_one("#overview-text").content
-            assert isinstance(ov, Text)
-            assert markup in ov.plain
+            ov = s.query_one("#overview-text").content     # SPEC-0496 Overview cards
+            assert markup in " ".join(str(ov).replace("│", " ").split())
 
     _run(drive())
 

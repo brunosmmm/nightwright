@@ -255,8 +255,7 @@ def test_popup_frame_and_pane_keys(tmp_path):
             assert "placeholder: records" in str(s.query_one("#placeholder-records").content)
             assert "placeholder: mail" in str(s.query_one("#placeholder-mail").content)
             assert ids["ready"] in overview(app)
-            assert overview(app) == "\n".join(
-                t.plain for t in AM.load_detail(cfg, ids["ready"]).header_lines)
+            assert "● QUEUED" in overview(app)      # SPEC-0496: cards, not header_lines
             assert "dominant:" not in overview(app) and "gaps:" not in overview(app)
 
     _run(drive())

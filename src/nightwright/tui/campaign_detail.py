@@ -20,6 +20,7 @@ from textual.widgets import DataTable, Footer, Static, TabbedContent, TabPane
 
 from .. import report as R
 from . import agentic_model as AM
+from . import campaign_overview as CO
 from .queue_actions import QueueActions
 
 POLL_S = 2.0
@@ -135,6 +136,7 @@ class CampaignDetail(QueueActions, ModalScreen):
         layout: vertical;
     }
     #detail-body { height: 1fr; }
+    #tab-overview { height: 1fr; overflow-y: auto; }
     #overview-text { padding: 0 1; }
     #timeline-pane { height: 1fr; layout: vertical; }
     #campaign-timeline { height: 1fr; }
@@ -405,8 +407,7 @@ class CampaignDetail(QueueActions, ModalScreen):
             self.view = detail
             self._load_error = None
             self.query_one("#load-error", Static).update(Text(""))
-            self.query_one("#overview-text", Static).update(
-                Text("\n").join(detail.header_lines))
+            self.query_one("#overview-text", Static).update(CO.overview(detail))
             if initial:
                 self._apply_focus()
             try:
@@ -415,7 +416,7 @@ class CampaignDetail(QueueActions, ModalScreen):
                 if previous_view is not None and not initial:
                     self.view = previous_view
                     self.query_one("#overview-text", Static).update(
-                        Text("\n").join(previous_view.header_lines))
+                        CO.overview(previous_view))
                 if self._worker_alive():
                     self._handle_paint_failure(e)
             live = self.view is not None and not self.view.terminal

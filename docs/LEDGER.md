@@ -262,7 +262,7 @@ progress. This is the single place to see *what has been decided* and *what is i
   - [x] [SPEC-0430](./specs/0430-dashboard-campaign-drilldown-ledger-timeline.md) Dashboard campaign drilldown: ledger timeline, current run and live run tail from stream.jsonl — done
   - [x] [SPEC-0432](./specs/0432-dashboard-default-bind-loopback-always-plus-the.md) Dashboard default bind: loopback always plus the tailnet address whenever one exists — done
   - [x] [SPEC-0434](./specs/0434-dashboard-page-survives-restarts-answers-land.md) Dashboard page: answers land at once, the page survives server restarts, the data stamp is truthful — done
-- **[SPEC-0405](./specs/0405-rich-queue-tui-prioritized-live-queue-campaign.md) — Rich queue TUI: prioritized live queue, campaign detail popup, closed-campaign history and a cross-campaign findings and decisions browser over one shared history layer** · accepted · (8/11 done)
+- **[SPEC-0405](./specs/0405-rich-queue-tui-prioritized-live-queue-campaign.md) — Rich queue TUI: prioritized live queue, campaign detail popup, closed-campaign history and a cross-campaign findings and decisions browser over one shared history layer** · accepted · (9/12 done)
   - [x] [SPEC-0406](./specs/0406-shared-campaign-history-data-layer-nw-campaign.md) Shared campaign history data layer: history.py derivation, read-side schemas, campaign_export reuse and the history/records CLIs — done
   - [x] [SPEC-0407](./specs/0407-campaign-detail-popup-timeline-phase-time-and.md) Campaign detail popup shell: opener, Timeline, queue actions, polling, retire SPEC-0246 — done
   - [x] [SPEC-0408](./specs/0408-ledger-provenance-finding-run-id-and-key-triage.md) Ledger provenance: finding run_id and key, triage events — done
@@ -274,6 +274,7 @@ progress. This is the single place to see *what has been decided* and *what is i
   - [x] [SPEC-0459](./specs/0459-real-app-tui-test-harness-on-the-real-data.md) Real-fixture IdeaDesk Pilot harness and queue-window preparation — done
   - [ ] [SPEC-0476](./specs/0476-campaign-detail-runs-pane.md) Campaign detail Runs pane: run table, verdict, and stream tail — accepted
   - [ ] [SPEC-0477](./specs/0477-campaign-detail-findings-and-mail.md) Campaign detail Findings & decisions pane and Mail pane — accepted
+  - [x] [SPEC-0496](./specs/0496-campaign-detail-overview-cards.md) Campaign detail Overview pane: dashboard cards (outcome + why banner, time per phase, runs, gates, findings) — done
 - **[SPEC-0419](./specs/0419-self-healing-queue.md) — Self-healing queue** · done · (6/6 done)
   - [x] [SPEC-0420](./specs/0420-red-main-fix-forward-and-revert.md) Red-main fix-forward and revert — done
   - [x] [SPEC-0421](./specs/0421-always-run-guard-tests-at-close-and-loop-gates.md) Always-run guard tests at close and loop gates — done
@@ -755,6 +756,7 @@ progress. This is the single place to see *what has been decided* and *what is i
 | [SPEC-0488](./specs/0488-nw-queue-conductor-launch-runner-cursor-fails.md) | Cursor launch passes a flat model id | feature | done | — | 2026-11-09 |
 | [SPEC-0494](./specs/0494-tui-ideas-board-queue-link.md) | TUI ideas board: link an idea to its queue campaigns and open the campaign popup | feature | done | M5: interactive desk | 2026-11-09 |
 | [SPEC-0495](./specs/0495-tui-ideas-tab-redesign.md) | TUI ideas tab: project rail + Open / In flight / Built buckets with real spec status | feature | done | M5: interactive desk | 2026-11-09 |
+| [SPEC-0496](./specs/0496-campaign-detail-overview-cards.md) | Campaign detail Overview pane: dashboard cards (outcome + why banner, time per phase, runs, gates, findings) | feature | done | — | 2026-11-09 |
 
 ## Superseded / rejected
 
