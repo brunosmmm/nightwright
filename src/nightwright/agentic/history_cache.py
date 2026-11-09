@@ -174,6 +174,27 @@ def _complete_log_offset_from(path: Path, start: int) -> int:
         return start
 
 
+def _log_line_count(path: Path, *, up_to: int | None = None) -> int:
+    if not path.is_file():
+        return 0
+    try:
+        limit = up_to if up_to is not None else path.stat().st_size
+        with path.open("rb") as stream:
+            stream.seek(0)
+            line = 0
+            while stream.tell() < limit:
+                raw = stream.readline()
+                if not raw:
+                    break
+                if raw.endswith(b"\n"):
+                    line += 1
+                else:
+                    break
+            return line
+    except OSError:
+        return 0
+
+
 def _complete_log_offset(path: Path) -> int:
     """Byte position after the last complete newline (trailing partial line excluded)."""
     if not path.is_file():
@@ -248,20 +269,32 @@ def _campaign_files_match(cfg, cid: str, stored: dict | None) -> bool:
     return live == stored
 
 
-_RUNS_GATES_COUNT: dict[tuple[str, int, int], int] = {}
+_RUNS_GATES_COUNT: dict[tuple, int] = {}
+
+
+def _runs_gates_dir_mtime_key(base: Path) -> tuple:
+    parts: list[tuple[str, int]] = []
+    for sub in ("runs", "gates"):
+        root = base / sub
+        if not root.is_dir():
+            continue
+        for path in sorted(root.rglob("*")):
+            if path.is_dir():
+                try:
+                    parts.append((path.relative_to(base).as_posix(), path.stat().st_mtime_ns))
+                except OSError:
+                    pass
+    return tuple(parts)
 
 
 def _runs_gates_file_count(cfg, cid: str) -> int:
     base = store.campaign_dir(cfg, cid)
-    runs_m, gates_m = 0, 0
+    if base is None:
+        return 0
     try:
-        if (base / "runs").is_dir():
-            runs_m = (base / "runs").stat().st_mtime_ns
-        if (base / "gates").is_dir():
-            gates_m = (base / "gates").stat().st_mtime_ns
+        key = (str(base.resolve()), _runs_gates_dir_mtime_key(base))
     except OSError:
         return 0
-    key = (str(base.resolve()), runs_m, gates_m)
     hit = _RUNS_GATES_COUNT.get(key)
     if hit is not None:
         return hit
@@ -282,10 +315,9 @@ def _campaign_stored_files_match(cfg, cid: str, stored: dict | None) -> bool:
     """Match stored runs/gates cursors; rglob only when file counts disagree."""
     if not isinstance(stored, dict):
         return False
-    if len(stored) != _runs_gates_file_count(cfg, cid):
-        live = _campaign_file_cursors(cfg, cid)
-        if set(stored) != set(live):
-            return False
+    live = _campaign_file_cursors(cfg, cid)
+    if set(stored) != set(live):
+        return False
     agentic = store.agentic_dir(cfg)
     for rel, cursor in stored.items():
         if not isinstance(cursor, dict):
@@ -450,6 +482,8 @@ def _v1_cursors_match(root: Path, v1_files: dict) -> bool:
 def _cache_tree_corrupt(root: Path, sources: dict | None = None) -> bool:
     if not root.is_dir():
         return False
+    if _index_writes_corrupt(root):
+        return True
     has_logical = False
     for path in root.iterdir():
         if not path.is_file() or _is_tmp(path.name):
@@ -531,7 +565,9 @@ def _terminal_row_stale(cfg, cid: str, row: dict, sources: dict) -> bool:
     if row.get("signature") != H.campaign_signature(cfg, cid):
         return True
     stored_files = (sources.get("campaign_files") or {}).get(cid)
-    if isinstance(stored_files, dict) and not _campaign_stored_files_match(cfg, cid, stored_files):
+    if not isinstance(stored_files, dict):
+        return True
+    if not _campaign_stored_files_match(cfg, cid, stored_files):
         return True
     return False
 
@@ -850,7 +886,7 @@ def _scan_sources(
             entry = _file_entry(path)
             if entry is not None:
                 transcripts[resolved] = entry
-    return {
+    out = {
         "version": 1,
         "complete": False,
         "logs": logs,
@@ -860,6 +896,10 @@ def _scan_sources(
         "prices": _prices_canonical(cfg),
         "profile_layers": _profile_layer_cursors(cfg),
     }
+    prev_cfiles = (prev or {}).get("campaign_files")
+    if isinstance(prev_cfiles, dict):
+        out["campaign_files"] = dict(prev_cfiles)
+    return out
 
 
 def _iso_window(value) -> str | None:
@@ -897,10 +937,16 @@ def _apply_turn_cursors(sources: dict, turn_cursor: dict) -> None:
         sources["transcripts"] = dict(turn_cursor["transcripts"])
 
 
-def _log_cursor_entries(cfg, parsed_offsets: dict[str, int]) -> dict[str, dict]:
+def _log_cursor_entries(
+    cfg,
+    parsed_offsets: dict[str, int],
+    *,
+    line_counts: dict[str, int] | None = None,
+) -> dict[str, dict]:
     """Log cursors for a cold fill: never publish size past bytes parsed at fill time."""
     agentic = store.agentic_dir(cfg)
     logs: dict[str, dict] = {}
+    line_counts = line_counts or {}
     for key, off in parsed_offsets.items():
         path = agentic / key
         if not path.is_file():
@@ -909,6 +955,10 @@ def _log_cursor_entries(cfg, parsed_offsets: dict[str, int]) -> dict[str, dict]:
         if entry is None:
             continue
         entry["offset"] = off
+        if key in line_counts:
+            entry["lines"] = line_counts[key]
+        else:
+            entry["lines"] = _log_line_count(path, up_to=off)
         logs[key] = entry
     return logs
 
@@ -1192,23 +1242,54 @@ def _merge_resurrected_drops(start: list[dict], target: list[dict], merged: list
     return False
 
 
+def _index_writes_corrupt(root: Path) -> bool:
+    path = root / "index.writes.jsonl"
+    if not path.is_file():
+        return False
+    try:
+        data = path.read_bytes()
+    except OSError:
+        return True
+    if not data:
+        return False
+    parts = data.split(b"\n")
+    if not data.endswith(b"\n"):
+        parts = parts[:-1]
+    for raw in parts:
+        if not raw.strip():
+            continue
+        try:
+            row = json.loads(raw)
+        except ValueError:
+            return True
+        if not isinstance(row, dict):
+            return True
+    return False
+
+
 def _read_pending_index_writes(root: Path) -> list[dict]:
     path = root / "index.writes.jsonl"
     if not path.is_file():
         return []
     rows: list[dict] = []
     try:
-        for raw in path.read_text(encoding="utf-8").splitlines():
-            if not raw.strip():
-                continue
-            try:
-                row = json.loads(raw)
-            except ValueError:
-                continue
-            if isinstance(row, dict):
-                rows.append(row)
+        data = path.read_bytes()
     except OSError:
         return []
+    if not data:
+        return []
+    parts = data.split(b"\n")
+    if not data.endswith(b"\n"):
+        parts = parts[:-1]
+    for raw in parts:
+        if not raw.strip():
+            continue
+        try:
+            row = json.loads(raw.decode("utf-8"))
+        except (ValueError, UnicodeError):
+            continue
+        if isinstance(row, dict):
+            rows.append(row)
     return rows
 
 
@@ -1268,7 +1349,27 @@ def _apply_pending_index_writes(cfg, root: Path) -> None:
         committed = _read_index(root)
         pending = _read_pending_index_writes(root)
         merged_idx = _merge_index_writes(committed, pending, pruned)
+        records_changed = False
+        records = _read_records(root)
+        if pruned:
+            H = _lazy_history()
+            records = _merge_records(
+                records,
+                drop_predicate=lambda r, p=pruned: (
+                    r.get("campaign") in p and r.get("source") in _LOCAL_SOURCES
+                ),
+            )
+            live_list = sorted(_live_campaign_ids(cfg))
+            gaps: list[str] = []
+            global_recs = H._global_records(cfg, live_list, gaps)
+            records = _merge_records(
+                records, drop_predicate=lambda r: r.get("source") not in _LOCAL_SOURCES,
+            )
+            records.extend(H._enrich_records(global_recs, _headers_for_enrich(merged_idx)))
+            records_changed = True
         _write_index(root, merged_idx)
+        if records_changed:
+            _write_records(root, records)
         writes_path.unlink()
 
 
@@ -1375,7 +1476,7 @@ def _runner_log_snapshot(cfg, gaps: list[str]) -> tuple[list[tuple], int]:
     path = store.agentic_dir(cfg) / "runner.jsonl"
     if not path.is_file():
         gaps.append("runner.jsonl: missing")
-        return [], 0
+        return [], 0, 0
     out, down, last_stamp, saw_start = [], None, None, False
     committed = 0
     try:
@@ -1423,8 +1524,8 @@ def _runner_log_snapshot(cfg, gaps: list[str]) -> tuple[list[tuple], int]:
                 committed = stream.tell()
     except OSError:
         gaps.append("runner.jsonl: missing")
-        return [], 0
-    return out, committed
+        return [], 0, 0
+    return out, committed, line
 
 
 def _parsed_log_offsets(cfg, *, exclude: frozenset[str] = frozenset()) -> dict[str, int]:
@@ -1473,13 +1574,15 @@ def _cold_fill(cfg, root: Path, *, now=None, progress=None, _hold_guard: bool = 
     root.mkdir(parents=True, exist_ok=True)
     cids = _campaign_ids(cfg)
     gaps: list[str] = []
-    runner_down, runner_off = _runner_log_snapshot(cfg, gaps)
+    runner_down, runner_off, runner_lines = _runner_log_snapshot(cfg, gaps)
     log_offsets: dict[str, int] = {}
     global_recs = H._global_records(cfg, cids, gaps, log_offsets=log_offsets)
     parsed_offsets = {"runner.jsonl": runner_off}
     parsed_offsets.update(log_offsets)
     sources = _scan_sources(cfg, fixed_offsets=parsed_offsets)
-    sources["logs"] = _log_cursor_entries(cfg, parsed_offsets)
+    sources["logs"] = _log_cursor_entries(
+        cfg, parsed_offsets, line_counts={"runner.jsonl": runner_lines},
+    )
     windows = CC.live_windows(cfg, now=now)
     window_map = {w["campaign"]: w for w in windows}
     turn_cursor: dict = {}
@@ -1492,6 +1595,7 @@ def _cold_fill(cfg, root: Path, *, now=None, progress=None, _hold_guard: bool = 
         shares, _ = CC._split(turns, windows)
 
     def _persist() -> dict:
+        _write_version(root)
         index_rows = []
         all_records: list[dict] = []
         headers = {}
@@ -1504,14 +1608,19 @@ def _cold_fill(cfg, root: Path, *, now=None, progress=None, _hold_guard: bool = 
             index_rows.append(row)
             all_records.extend(_local_records(doc))
             _write_campaign_file(root, cid, doc)
+            _append_pending_index_write(root, row)
             if progress:
                 progress(done, len(cids))
         enriched_global = H._enrich_records(global_recs, headers)
         all_records.extend(enriched_global)
         H2 = _lazy_history()
         all_records = H2._enrich_records(all_records, headers)
-        _write_version(root)
-        _write_index(root, index_rows)
+        pending = _read_pending_index_writes(root)
+        merged_idx = _merge_index_writes([], pending, set())
+        _write_index(root, merged_idx)
+        writes_path = root / "index.writes.jsonl"
+        if writes_path.is_file():
+            writes_path.unlink()
         _write_records(root, all_records)
         sources["campaign_files"] = _scan_all_campaign_files(cfg, cids)
         sources["global_gaps"] = sorted(set(gaps))
@@ -1576,7 +1685,9 @@ def _doc_hit(cfg, root: Path, cid: str, now, sources: dict) -> dict | None:
     if "start" not in row:
         return None
     stored_files = (sources.get("campaign_files") or {}).get(cid)
-    if isinstance(stored_files, dict) and not _campaign_files_match(cfg, cid, stored_files):
+    if not isinstance(stored_files, dict):
+        return None
+    if not _campaign_files_match(cfg, cid, stored_files):
         return None
     return doc
 
@@ -1586,20 +1697,14 @@ def _headers_for_enrich(index_rows: list[dict]) -> dict:
 
 
 def _decision_records(H, cfg, cids: list[str], path: Path, gaps: list[str],
-                       *, start: int = 0) -> list[dict]:
-    out = []
+                       *, start: int = 0, line_start: int = 0) -> tuple[list[dict], int]:
+    out: list[dict] = []
+    line = line_start
     if not path.is_file():
-        return out
+        return out, line
     try:
         with path.open("rb") as stream:
-            line = 0
             if start:
-                while stream.tell() < start:
-                    raw = stream.readline()
-                    if not raw:
-                        break
-                    if raw.endswith(b"\n"):
-                        line += 1
                 stream.seek(start)
             while True:
                 offset = stream.tell()
@@ -1617,6 +1722,7 @@ def _decision_records(H, cfg, cids: list[str], path: Path, gaps: list[str],
                     gaps.append(f"decisions.jsonl: line {line} unparsable")
                     continue
                 if not isinstance(row, dict):
+                    gaps.append(f"decisions.jsonl: line {line} unparsable")
                     continue
                 rec = H._base_record("decisions", row.get("event_id") or offset, "decision", row)
                 escalation, linked_by = H._single_escalation(row)
@@ -1629,7 +1735,7 @@ def _decision_records(H, cfg, cids: list[str], path: Path, gaps: list[str],
                 out.append(rec)
     except OSError:
         gaps.append("decisions.jsonl: missing")
-    return out
+    return out, line
 
 
 def _runner_state_at_offset(path: Path, offset: int, gaps: list[str]) -> tuple:
@@ -1883,6 +1989,8 @@ def _records_cache_quiet(cfg, root: Path, sources: dict) -> bool:
     live = _live_campaign_ids(cfg)
     if {r.get("campaign") for r in index_rows if r.get("campaign")} != live:
         return False
+    if _stale_terminal_ids(cfg, index_rows, sources):
+        return False
     live_cids, missing = _live_refresh_targets(cfg, index_rows)
     return not live_cids and not missing
 
@@ -1971,8 +2079,12 @@ def _sync_globals(cfg, root: Path, now) -> set[str]:
     )
     if dec_tail:
         start = int(old_dec.get("offset", 0))
-        dec_gaps = []
-        new_decs = _decision_records(H, cfg, cids, dec_path, dec_gaps, start=start)
+        dec_gaps: list[str] = []
+        line_start = int(old_dec.get("lines", 0))
+        new_decs, end_line = _decision_records(
+            H, cfg, cids, dec_path, dec_gaps, start=start, line_start=line_start,
+        )
+        tail_moved = end_line > line_start or bool(dec_gaps)
         if new_decs:
             new_decs = H._enrich_records(new_decs, _headers_for_enrich(index_rows))
             new_ids = {r["id"] for r in new_decs}
@@ -1987,9 +2099,14 @@ def _sync_globals(cfg, root: Path, now) -> set[str]:
             for row in new_decs:
                 if row.get("campaign"):
                     affected.add(row["campaign"])
+        if tail_moved:
             entry = (fresh.get("logs") or {}).get("conductor/decisions.jsonl")
             if entry is not None and dec_path.is_file():
                 entry["offset"] = _complete_log_offset(dec_path)
+                entry["lines"] = end_line
+                records_dirty = True
+        if dec_gaps:
+            records_dirty = True
         gaps = [g for g in gaps if not g.startswith("decisions.jsonl")]
         gaps.extend(dec_gaps)
     elif _meta_changed(old_dec, new_dec) or dec_same_size_mtime:
@@ -1997,7 +2114,7 @@ def _sync_globals(cfg, root: Path, now) -> set[str]:
         old_ids = {r["id"] for r in old_dec_recs}
         old_by_id = {r["id"]: r for r in old_dec_recs}
         dec_gaps: list[str] = []
-        new_decs = _decision_records(H, cfg, cids, dec_path, dec_gaps)
+        new_decs, _end_line = _decision_records(H, cfg, cids, dec_path, dec_gaps)
         gaps = [g for g in gaps if not g.startswith("decisions.jsonl")]
         gaps.extend(dec_gaps)
         new_decs = H._enrich_records(new_decs, _headers_for_enrich(index_rows))
@@ -2027,6 +2144,10 @@ def _sync_globals(cfg, root: Path, now) -> set[str]:
             prev = old_by_id.get(oid)
             if prev and prev.get("campaign"):
                 affected.add(prev["campaign"])
+        dec_entry = (fresh.get("logs") or {}).get("conductor/decisions.jsonl")
+        if dec_entry is not None and dec_path.is_file():
+            dec_entry["offset"] = _complete_log_offset(dec_path)
+            dec_entry["lines"] = _log_line_count(dec_path, up_to=dec_entry["offset"])
 
     run_path = agentic / "runner.jsonl"
     old_run = old_logs.get("runner.jsonl")
@@ -2212,7 +2333,7 @@ def _sync_globals(cfg, root: Path, now) -> set[str]:
             _write_campaign_file(root, cid, doc)
         if sessions_turns_dirty:
             _load_turns(cfg, root, sources, snap=fresh, sources_out=fresh)
-        cfiles = fresh.setdefault("campaign_files", {})
+        cfiles = fresh.setdefault("campaign_files", dict(sources.get("campaign_files") or {}))
         for cid in affected:
             if cid in live_ids:
                 cfiles[cid] = _campaign_file_cursors(cfg, cid)
@@ -2228,6 +2349,7 @@ def _sync_globals(cfg, root: Path, now) -> set[str]:
         )
     elif sessions_turns_dirty:
         _load_turns(cfg, root, sources, snap=fresh, sources_out=fresh)
+        fresh.setdefault("campaign_files", dict(sources.get("campaign_files") or {}))
         fresh["global_gaps"] = sorted(set(gaps))
         fresh["complete"] = True
         _stamp_v1_files(fresh, root)

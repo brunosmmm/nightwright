@@ -39,16 +39,23 @@ def sessions(cfg, reader="conductor") -> list[dict]:
         return []
     out = []
     try:
-        text = path.read_text(encoding="utf-8", errors="replace")
+        with path.open("rb") as stream:
+            while True:
+                raw = stream.readline()
+                if not raw:
+                    break
+                if not raw.endswith(b"\n"):
+                    break
+                if not raw.strip():
+                    continue
+                try:
+                    rec = json.loads(raw.decode("utf-8"))
+                except (ValueError, UnicodeError):
+                    continue
+                if isinstance(rec, dict) and rec.get("session_id") and rec.get("reader") == reader:
+                    out.append(rec)
     except OSError:
         return []
-    for raw in text.splitlines():
-        try:
-            rec = json.loads(raw)
-        except ValueError:
-            continue
-        if isinstance(rec, dict) and rec.get("session_id") and rec.get("reader") == reader:
-            out.append(rec)
     return out
 
 

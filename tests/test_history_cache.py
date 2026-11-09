@@ -890,3 +890,135 @@ def test_write_lock_survives_v1_rebuild(data_dir, cache_dir):
     assert (v1 / ".lock").is_file()
     assert v1.is_dir()
     assert not (cache_dir / "history" / ".write.lock").exists()
+
+
+def test_terminal_ledger_append_updates_records_without_index(data_dir, cache_dir):
+    c = cfg(data_dir, cache_dir)
+    cid = "SPEC-0394-20261102-ae5b"
+    H.history_index(c, now=NOW, cache=True)
+    ledger = data_dir / "agentic" / "campaigns" / cid / "ledger.jsonl"
+    marker = "quiet-records-ledger-append"
+    line = json.dumps({
+        "schema": "nw.ledger.event.v1", "ts": store.now_iso(NOW), "seq": 7777,
+        "campaign": cid, "type": "finding", "by": "tick", "severity": "nit",
+        "title": marker, "detail": "d",
+    }) + "\n"
+    with ledger.open("a") as stream:
+        stream.write(line)
+    recs = H.history_records(c, campaign=cid, cache=True)
+    unc = H.history_records(c, campaign=cid, cache=False)
+    assert recs == unc
+    assert any(marker in (r.get("title") or "") for r in recs)
+
+
+def test_removed_campaign_pending_write_prunes_records(data_dir, cache_dir):
+    c = cfg(data_dir, cache_dir)
+    cid = "SPEC-0394-20261102-ae5b"
+    H.history_index(c, now=NOW, cache=True)
+    v1 = cache_dir / "history" / "v1"
+    idx_before = next(r for r in H.history_index(c, now=NOW, cache=False) if r["campaign"] == cid)
+    shutil.rmtree(data_dir / "agentic" / "campaigns" / cid)
+    (v1 / "campaigns" / f"{cid}.json").write_text(json.dumps({"stale": True}) + "\n")
+    with (v1 / "index.writes.jsonl").open("a") as stream:
+        stream.write(json.dumps(idx_before, ensure_ascii=False) + "\n")
+    H.history_index(c, now=NOW, cache=True)
+    assert not (v1 / "campaigns" / f"{cid}.json").exists()
+    idx = H.history_index(c, now=NOW, cache=True)
+    assert all(r["campaign"] != cid for r in idx)
+    recs = H.history_records(c, cache=True)
+    assert all(
+        not (r.get("campaign") == cid and r.get("source") in ("ledger", "run"))
+        for r in recs
+    )
+    with (v1 / "index.writes.jsonl").open("a") as stream:
+        stream.write(json.dumps(idx_before, ensure_ascii=False) + "\n")
+    H.history_index(c, now=NOW, cache=True)
+    assert all(r["campaign"] != cid for r in H.history_index(c, now=NOW, cache=True))
+    assert recs == H.history_records(c, cache=False)
+    dec = data_dir / "agentic" / "conductor" / "decisions.jsonl"
+    with dec.open("a") as stream:
+        stream.write(json.dumps({
+            "schema": "nw.conductor.decision.v1", "seq": 880880, "ts": store.now_iso(NOW),
+            "by": "conductor", "campaign": cid, "spec_id": "SPEC-x", "event_id": "gone-campaign",
+            "rule": "t", "kind": "resume", "action": None, "rationale": "r",
+        }) + "\n")
+    assert next(
+        r for r in H.history_records(c, cache=True) if r.get("id") == "decisions:gone-campaign"
+    ) == next(
+        r for r in H.history_records(c, cache=False) if r.get("id") == "decisions:gone-campaign"
+    )
+
+
+def test_decision_append_tail_seeks_prior_offset(data_dir, cache_dir):
+    c = cfg(data_dir, cache_dir)
+    H.history_index(c, now=NOW, cache=True)
+    v1 = cache_dir / "history" / "v1"
+    sources = json.loads((v1 / "sources.json").read_text())
+    old_off = sources["logs"]["conductor/decisions.jsonl"]["offset"]
+    dec = data_dir / "agentic" / "conductor" / "decisions.jsonl"
+    row = {
+        "schema": "nw.conductor.decision.v1", "seq": 881881, "ts": store.now_iso(NOW),
+        "by": "conductor", "campaign": "SPEC-0336-20261031-6558", "spec_id": "SPEC-0336",
+        "event_id": "tail-seek-test", "rule": "t", "kind": "resume", "action": None, "rationale": "r",
+    }
+    tail_starts = []
+    real_dec = HC._decision_records
+
+    def dec_spy(H, cfg, cids, path, gaps, **kwargs):
+        if kwargs.get("start"):
+            tail_starts.append(kwargs["start"])
+        return real_dec(H, cfg, cids, path, gaps, **kwargs)
+
+    with dec.open("a") as stream:
+        stream.write(json.dumps(row) + "\n")
+    with mock.patch.object(HC, "_decision_records", dec_spy):
+        HC._records_mem.clear()
+        H.history_records(c, cache=True)
+    assert tail_starts == [old_off]
+    sources2 = json.loads((v1 / "sources.json").read_text())
+    assert sources2["logs"]["conductor/decisions.jsonl"]["offset"] == dec.stat().st_size
+    assert H.history_records(c, cache=True) == H.history_records(c, cache=False)
+
+
+def test_sessions_partial_tail_conductor_usd(data_dir, cache_dir):
+    c = _install_priced_session(data_dir, cache_dir)
+    sess = data_dir / "agentic" / "conductor" / "sessions.jsonl"
+    terminal = "SPEC-0394-20261102-ae5b"
+    H.history_index(c, now=NOW, cache=True)
+    before = H.campaign_history(c, terminal, now=NOW, cache=False)["header"]["conductor_usd"]
+    extra = json.dumps({
+        "schema": "nw.conductor.session.v1", "reader": "conductor",
+        "session_id": "extra-priced", "ts": "2026-11-03T03:00:00+00:00",
+        "project": "Meta-Tools",
+    }).encode()
+    with sess.open("ab") as stream:
+        stream.write(extra)
+    doc = H.campaign_history(c, terminal, now=NOW, cache=True)
+    assert doc["header"]["conductor_usd"] == before
+    with sess.open("ab") as stream:
+        stream.write(b"\n")
+    doc2 = H.campaign_history(c, terminal, now=NOW, cache=True)
+    unc = H.campaign_history(c, terminal, now=NOW, cache=False)
+    assert doc2["header"]["conductor_usd"] == unc["header"]["conductor_usd"]
+
+
+def test_runner_append_then_run_json_edit_stays_fresh(data_dir, cache_dir):
+    c = cfg(data_dir, cache_dir)
+    other = "SPEC-0336-20261031-6558"
+    target = "SPEC-0394-20261102-ae5b"
+    H.history_index(c, now=NOW, cache=True)
+    runner = data_dir / "agentic" / "runner.jsonl"
+    with runner.open("a") as stream:
+        stream.write(json.dumps({"ts": store.now_iso(NOW + dt.timedelta(days=30)), "kind": "note"}) + "\n")
+    run_root = data_dir / "agentic" / "campaigns" / target / "runs"
+    run_dirs = [p for p in run_root.iterdir() if p.is_dir()]
+    assert run_dirs
+    run_json = run_dirs[0] / "run.json"
+    payload = json.loads(run_json.read_text())
+    payload["verdict"] = "stale-cache-check"
+    run_json.write_text(json.dumps(payload, indent=2) + "\n")
+    unc = H.campaign_history(c, other, now=NOW, cache=False)
+    cached = H.campaign_history(c, other, now=NOW, cache=True)
+    u = {k: v for k, v in unc.items() if k != "generated_at"}
+    d = {k: v for k, v in cached.items() if k != "generated_at"}
+    assert d == u

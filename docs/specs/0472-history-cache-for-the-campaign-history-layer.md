@@ -4,7 +4,7 @@ title: "History cache for the campaign history layer"
 status: done
 owner: user
 created: 2026-11-08
-updated: 2026-11-09
+updated: 2026-11-08
 source_idea: IDEA-1015
 kind: feature
 parent: SPEC-0405
@@ -658,11 +658,11 @@ Full suite left to queue gating.
 
 ### Test record (2026-11-08, implementer loop 3)
 
-`uv run pytest -q` on `tests/test_history_fixture.py::test_history_bad_inputs_become_gaps`,
-`tests/test_history_cache.py::test_sessions_partial_tail_does_not_rewrite_records` (2 passed).
-`uv run pytest -q` on history/cache/cli/scale/fixture suite excluding perf (136 passed).
-`test_history_perf.py::test_record_count_and_budgets` warm index elapsed ~2.0 s (limit 0.9 s) on
-this host; left to queue gating. Full suite left to queue gating.
+Adversarial fixes: pending-index record prune; quiet `history_records` terminal invalidation;
+nested `runs/` dir mtimes; decision tail offset/`lines`; preserved `campaign_files` on global
+sync; `conductor_cost.sessions` newline rule; cold fill `version` + `index.writes.jsonl` resume.
+`uv run pytest -q tests/test_history_cache.py` (42 passed). Full suite left to queue gating.
+`python3 tools/spec_lint.py --write-ledger` exit 0.
 
 ### Test record (2026-11-08, implementer loop 1)
 
