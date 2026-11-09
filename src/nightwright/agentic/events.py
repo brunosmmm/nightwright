@@ -746,6 +746,22 @@ def runner_silence(cfg, now, sett) -> dict | None:
             "draining": _drain_info(lease, now), "busy": busy}
 
 
+def revise_pending_items(cfg) -> list[dict]:
+    """SPEC-0496: specs whose latest review verdict is `revise` and that have no campaign
+    (ABANDONED ones do not count): nothing applies the findings and re-queues them, so the
+    conductor must. `stale` is true when the spec changed since that review."""
+    from . import spec_review as SR
+    held = {r.get("spec_id") for r in store.list_campaigns(cfg) if r.get("state") != "ABANDONED"}
+    try:
+        reviews = SR.all_latest_reviews(cfg)
+    except OSError:
+        return []
+    return [{"spec_id": r["spec_id"], "reviewed_at": r.get("reviewed_at"),
+             "stale": not r["matches_current"], "counts": r.get("counts")}
+            for r in reviews if r.get("verdict") == "revise"
+            and r.get("matches_current") is not None and r["spec_id"] not in held]
+
+
 def ping_digest(cfg, now=None) -> dict:
     """The `conductor_ping` payload: what needs the conductor's eyes right now."""
     from .queue import ACTIVE_STATES, park_view
@@ -788,6 +804,7 @@ def ping_digest(cfg, now=None) -> dict:
     counts["escalations_open"] = len(esc)
     return {"blocked": blocked, "parked": parked, "stuck": stuck, "waiting": waiting,
             "ready_not_admitted": rna, "waiting_not_admitted": wna, "escalations_open": esc,
+            "revise_pending": revise_pending_items(cfg),
             "runner": runner_silence(cfg, now, sett), "counts": counts}
 
 
@@ -1229,6 +1246,7 @@ def summary_line(ev: dict) -> str:
                 f"parked={c.get('parked', 0)}(undecided {c.get('undecided_parks', 0)}) "
                 f"stuck={len(d.get('stuck') or [])} waiting={c.get('waiting', 0)} "
                 f"ready_not_admitted={len(d.get('ready_not_admitted') or [])} "
+                f"revise_pending={len(d.get('revise_pending') or [])} "
                 f"active={c.get('active', 0)} queued={c.get('queued', 0)}")
     return f"#{evid} {ev['type']} {who} {bits}".strip()
 

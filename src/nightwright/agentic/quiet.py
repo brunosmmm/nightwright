@@ -143,6 +143,8 @@ def ping_fingerprint(data: dict, live_specs=frozenset()) -> list:
                                                     it.get("project")):
                 continue
             fp.add((cat, str(it.get("campaign"))))
+    for it in data.get("revise_pending") or []:                       # SPEC-0496
+        fp.add(("revise_pending", str(it.get("spec_id"))))
     for it in data.get("parked") or []:
         if it.get("owner") == "conductor" and not it.get("decided"):
             fp.add(("parked", str(it.get("campaign"))))
