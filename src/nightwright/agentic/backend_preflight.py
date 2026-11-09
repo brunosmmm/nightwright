@@ -1,4 +1,4 @@
-"""Persona backend preflight (SPEC-0482 part 3): a missing credential or SDK is an environment
+"""Persona backend preflight (SPEC-0484 part 3): a missing credential or SDK is an environment
 fault, not a verdict.
 
 - `check(kind)` is the cheap, in-process probe of a backend (no billed request, no

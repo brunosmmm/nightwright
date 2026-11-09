@@ -97,7 +97,7 @@ progress. This is the single place to see *what has been decided* and *what is i
   - [x] [SPEC-0156](./specs/0156-architecture-and-lifecycle-pages.md) Architecture and lifecycle pages — done
   - [x] [SPEC-0157](./specs/0157-agent-surface-guide-schemas-skills-map-json.md) Agent surface guide: schemas, skills map, JSON recipes — done
   - [x] [SPEC-0158](./specs/0158-outbound-multi-project-depth-and-wave-c-captures.md) Outbound/multi-project depth and Wave C captures — done
-- **[SPEC-0169](./specs/0169-mini-agentic-workflow-queue-campaigns-headless.md) — Mini agentic workflow: queue, campaigns, headless personas, conductor** · accepted · (105/107 done)
+- **[SPEC-0169](./specs/0169-mini-agentic-workflow-queue-campaigns-headless.md) — Mini agentic workflow: queue, campaigns, headless personas, conductor** · accepted · (106/107 done)
   - [x] [SPEC-0170](./specs/0170-per-project-config-wt-project-yaml-and-wt.md) Per-project config .wt/project.yaml and wt projects config|init — done
   - [x] [SPEC-0171](./specs/0171-workflow-profiles-campaign-store-ledger-locks-and.md) Workflow profiles, campaign store, ledger, locks and wt campaign commands — done
   - [x] [SPEC-0172](./specs/0172-git-worktree-and-branch-operations-for-campaigns.md) Git worktree and branch operations for campaigns (gitops) — done
@@ -204,7 +204,7 @@ progress. This is the single place to see *what has been decided* and *what is i
   - [ ] [SPEC-0310](./specs/0310-remote-workers-run-gates-persona-runs-and.md) Remote workers: run gates, persona runs and campaigns on other machines — accepted
   - [x] [SPEC-0350](./specs/0350-per-gate-path-sensitivity.md) Per-gate path sensitivity for the close re-gate — done
   - [x] [SPEC-0435](./specs/0435-cursor-agent-backend-for-the-agentic-queue.md) Cursor-agent backend for the agentic queue — done
-  - [ ] [SPEC-0483](./specs/0483-runner-under-a-systemd-user-unit.md) The queue runner runs under a systemd user unit and resolves its own credentials — accepted
+  - [x] [SPEC-0483](./specs/0483-runner-under-a-systemd-user-unit.md) The queue runner runs under a systemd user unit and resolves its own credentials — done
 - **[SPEC-0298](./specs/0298-agentic-mvp-cheap-durable-quiet-conductor.md) — Agentic MVP: a cheap, durable, quiet conductor on a second project** · done · (16/16 done)
   - [x] [SPEC-0299](./specs/0299-conductor-cost-measurement.md) Conductor cost measurement: session registry, `wt queue conductor-cost`, conductor share in the export — done
   - [x] [SPEC-0300](./specs/0300-quiet-conductor-follower-digest.md) Quiet conductor: the conductor follower holds informational events, prints a digest, and counts wakeups — done
@@ -308,8 +308,6 @@ progress. This is the single place to see *what has been decided* and *what is i
 | [SPEC-0470](./specs/0470-close-follows-a-renamed-spec.md) | Close follows a spec file the branch renamed | feature | accepted | — | 2026-11-08 |
 | [SPEC-0476](./specs/0476-campaign-detail-runs-pane.md) | Campaign detail Runs pane: run table, verdict, and stream tail | feature | accepted | — | 2026-11-08 |
 | [SPEC-0477](./specs/0477-campaign-detail-findings-and-mail.md) | Campaign detail Findings & decisions pane and Mail pane | feature | accepted | — | 2026-11-08 |
-| [SPEC-0482](./specs/0482-runner-contains-apply-errors-and-holds-on-backend-faults.md) | The runner contains a campaign's apply error and holds steps on a backend fault | feature | accepted | M9: agentic workflow | 2026-11-09 |
-| [SPEC-0483](./specs/0483-runner-under-a-systemd-user-unit.md) | The queue runner runs under a systemd user unit and resolves its own credentials | feature | accepted | M9: agentic workflow | 2026-11-09 |
 
 ## Done
 
@@ -741,6 +739,8 @@ progress. This is the single place to see *what has been decided* and *what is i
 | [SPEC-0479](./specs/0479-herdr-notifications-are-silent.md) | Herdr notifications are silent | feature | done | — | 2026-11-08 |
 | [SPEC-0481](./specs/0481-conductor-follower-stays-up.md) | The conductor follower stays up across a wake | feature | done | — | 2026-11-08 |
 | [SPEC-0482](./specs/0482-adopted-spec-review-no-start-snapshot.md) | An adopted spec review with no start snapshot retries instead of crashing the runner | feature | done | — | 2026-11-09 |
+| [SPEC-0483](./specs/0483-runner-under-a-systemd-user-unit.md) | The queue runner runs under a systemd user unit and resolves its own credentials | feature | done | M9: agentic workflow | 2026-11-09 |
+| [SPEC-0484](./specs/0484-runner-contains-apply-errors-and-holds-on-backend-faults.md) | The runner contains a campaign's apply error and holds steps on a backend fault | feature | done | M9: agentic workflow | 2026-11-09 |
 
 ## Superseded / rejected
 

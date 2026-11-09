@@ -12,7 +12,7 @@ process environment wins and is never re-read. A missing `pass:` var is resolved
 first line of its output goes into `os.environ`, so the persona children inherit it.
 
 A failed resolution (typically a locked gpg-agent after a reboot) never raises: the var stays
-unset, the cursor backend preflight then holds the steps that need it (SPEC-0482), one
+unset, the cursor backend preflight then holds the steps that need it (SPEC-0484), one
 escalation names the var and the fix, and the next tick tries again; a later success
 withdraws that escalation. No value is ever written, logged, journaled or emitted: records
 carry the var name, the entry name and a status."""

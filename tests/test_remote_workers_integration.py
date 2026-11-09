@@ -378,8 +378,8 @@ def test_a_duplicate_submit_starts_one_process_and_a_duplicate_event_appends_one
             raise RuntimeError("stop after the worker gate event, before the state is written")
         return rec
     monkeypatch.setattr(S, "append_event", crash_after_the_worker_gate)
-    # SPEC-0482 contains an apply error (the campaign parks `apply_error`); this test is about
-    # a runner that dies mid-apply, so it restores the pre-0482 harvest for the crash
+    # SPEC-0484 contains an apply error (the campaign parks `apply_error`); this test is about
+    # a runner that dies mid-apply, so it restores the pre-0484 harvest for the crash
     real_apply, real_guarded = Q._apply, Q._guarded
 
     def uncontained(guard, ctx, st, fn, report=None, res=None):

@@ -1,4 +1,4 @@
-"""SPEC-0482: one campaign's apply error parks only that campaign; a backend fault (a missing
+"""SPEC-0484: one campaign's apply error parks only that campaign; a backend fault (a missing
 credential or SDK) holds the step instead of being read as a verdict."""
 from __future__ import annotations
 

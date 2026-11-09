@@ -1,5 +1,5 @@
 ---
-id: SPEC-0482
+id: SPEC-0484
 title: The runner contains a campaign's apply error and holds steps on a backend fault
 status: done
 owner: user
@@ -160,7 +160,7 @@ dying of one campaign and keeps an environment fault from being read as a verdic
   cannot find is journaled `apply_error_uncontained`.
 - `tests/test_remote_workers_integration.py::test_a_duplicate_submit_…` simulated a runner that
   dies mid-apply through an apply exception; with containment that no longer kills the runner,
-  so the test restores the pre-0482 harvest for its crash (its subject, adoption dedupe, is
+  so the test restores the pre-0484 harvest for its crash (its subject, adoption dedupe, is
   unchanged).
 - Test record (2026-11-09): `tests/test_runner_selfheal.py` 7 passed locally; the affected
   set (minus the conftest trigger) on the box, GATEJOB-0994: 6119 passed, 3 failed; the three

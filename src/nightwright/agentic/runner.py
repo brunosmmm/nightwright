@@ -601,7 +601,7 @@ def _error_result(req: RunRequest, text: str, started_at: str, duration: float) 
 def mark_held(req: RunRequest, by: str = "rate_limit") -> None:
     """SPEC-0345: claim the run dir of a run the rate-limit backoff held (it never starts) as
     orphaned and `held`. A runner that adopts it later (this one detached before collecting
-    it) then closes it as orphaned, and `_synthetic` charges it nothing. SPEC-0482: `by` is
+    it) then closes it as orphaned, and `_synthetic` charges it nothing. SPEC-0484: `by` is
     `backend_preflight` for a run a failed backend preflight held."""
     try:
         RP.claim(req.run_dir, {"orphaned": True, "held": True, "by": by,
@@ -611,7 +611,7 @@ def mark_held(req: RunRequest, by: str = "rate_limit") -> None:
 
 
 class PreflightHeldRunner:
-    """SPEC-0482: a local run whose backend fails its preflight (a missing credential or SDK).
+    """SPEC-0484: a local run whose backend fails its preflight (a missing credential or SDK).
     It never starts: it ends interrupted and uncharged, so no retry is spent and the state stays;
     the dispatch gate holds the step (`backend_unavailable`) while the fault lasts."""
 

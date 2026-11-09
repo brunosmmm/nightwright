@@ -10,12 +10,12 @@ kind: feature
 parent: SPEC-0169
 tags: [agentic, queue, runner, systemd, credentials, resilience]
 supersedes: [SPEC-0291]
-depends_on: [SPEC-0482]
+depends_on: [SPEC-0484]
 ---
 
 ## Context
 
-After the 2026-11-08 21:19 crash (SPEC-0482) nothing restarted the runner for about 10 hours.
+After the 2026-11-08 21:19 crash (SPEC-0484) nothing restarted the runner for about 10 hours.
 The watchdog emitted `runner_dead` once and then `conductor_ping` events with `"runner": null`;
 the conductor never acted. SPEC-0291 made `nw queue run --detach` / `nw queue stop` the way to
 start and stop the runner and rejected a systemd user unit, following SPEC-0169's non-goal "a
@@ -87,7 +87,7 @@ var (`~/.config/projects/api-tokens.json`: `CURSOR_API_KEY -> cursor/sdk`).
    `--batch --pinentry-mode error` so gpg fails instead of asking for a passphrase, a 5 s
    timeout; the first stdout line goes into `os.environ`, so persona children inherit it.
    A failure (locked agent, missing entry, no `pass`, timeout) never raises: the var stays
-   unset, SPEC-0482's cursor preflight holds the steps that need it, one escalation
+   unset, SPEC-0484's cursor preflight holds the steps that need it, one escalation
    (`kind: credential_unresolved`) names the var, the source and the fix ("unlock gpg: run
    keys-setup or `pass show cursor/sdk` once"; the escalation's notifier covers notify-send),
    and the next tick tries again. A later success journals `credential_resolved` and withdraws

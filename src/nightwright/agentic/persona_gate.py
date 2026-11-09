@@ -346,10 +346,10 @@ class Gate:
         self._live = None
         self.taken = 0
         self.holds: dict = {}
-        self._backend: dict = {}               # SPEC-0482: kind -> preflight error | None
+        self._backend: dict = {}               # SPEC-0484: kind -> preflight error | None
 
     def backend_fault(self, state: dict) -> str | None:
-        """SPEC-0482: the preflight error of the backend this campaign's steps run on, when no
+        """SPEC-0484: the preflight error of the backend this campaign's steps run on, when no
         persona worker could take them instead; else None. Cached per tick and kind."""
         try:
             from .runner import resolve_runner
@@ -390,7 +390,7 @@ class Gate:
         if self.until is not None:
             self._hold(cid, "rate_limit")
             return None
-        if self.backend_fault(state) is not None:            # SPEC-0482
+        if self.backend_fault(state) is not None:            # SPEC-0484
             self._hold(cid, "backend_unavailable")
             return None
         if self.cap is None:
@@ -448,7 +448,7 @@ def held_by(cfg, state: dict, now=None, holds=None, *, cap_mute_max_s=None) -> s
         return "usage_pause"
     if entry.get("held_by") == "rate_limit" and backoff_until(cfg, now) is not None:
         return "rate_limit"
-    if entry.get("held_by") == "backend_unavailable":       # SPEC-0482: the escalation covers it
+    if entry.get("held_by") == "backend_unavailable":       # SPEC-0484: the escalation covers it
         return "backend_unavailable"
     if entry.get("held_by") == "persona_cap":
         since = _epoch(entry.get("since"))

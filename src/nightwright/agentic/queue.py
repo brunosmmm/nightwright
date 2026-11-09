@@ -103,7 +103,7 @@ PARK_REASONS = frozenset({
     "fixforward_weakens", "revert_conflict",           # SPEC-0420: red-base fix campaigns
     "spec_status",                                     # SPEC-0468: only spec-dod failed at close
     "round_budget",                                    # SPEC-0468: cursor review rounds are spent
-    "apply_error",                                     # SPEC-0482: applying a result raised
+    "apply_error",                                     # SPEC-0484: applying a result raised
 })
 # SPEC-0222: who a park waits for. The human only for their own checkout and explicit
 # escalations (`human_decision`, SPEC-0232); everything else is the conductor's.
@@ -2670,7 +2670,7 @@ def _do_persona(ctx: _Ctx, state: dict, step: Step, run_id: str, req, budget: fl
         # that only carries `.runner` (the pre-0436 test doubles) is used as-is.
         cfg = getattr(ctx, "cfg", None)
         local = _local_runner(ctx, state, req)
-        if adopted is None:                       # SPEC-0482: never in place of a live run
+        if adopted is None:                       # SPEC-0484: never in place of a live run
             local = _preflight_hold(ctx, state, req, local)
         remote = RPS.dispatch(cfg, state, step.kind, req, adopted=adopted is not None,
                               local=local) if cfg is not None else None
@@ -2702,7 +2702,7 @@ def _do_persona(ctx: _Ctx, state: dict, step: Step, run_id: str, req, budget: fl
         _note_rate_limit(ctx, state, outcome, started, _run_persona(req, step))     # SPEC-0345
         fault = BP.env_fault(outcome)
         if fault is not None:
-            # SPEC-0482: a child that could not start for a missing credential / SDK is an
+            # SPEC-0484: a child that could not start for a missing credential / SDK is an
             # environment fault, not a verdict: interrupted (no retry spent), uncharged
             outcome = replace(outcome, interrupted=True,
                               cost_usd=0.0 if outcome.cost_usd is None else outcome.cost_usd)
@@ -2772,7 +2772,7 @@ def _gated_runner(ctx: _Ctx, req, state=None):
 
 
 def _preflight_hold(ctx, state, req, runner):
-    """SPEC-0482: `runner`, or a `PreflightHeldRunner` when it is a fresh local Cursor run and
+    """SPEC-0484: `runner`, or a `PreflightHeldRunner` when it is a fresh local Cursor run and
     the cursor backend fails its preflight in this process (one escalation is filed). A run
     that already has a process record or a launch file is left alone (adoption attaches)."""
     from .runner import CursorRunner, PreflightHeldRunner
@@ -3119,7 +3119,7 @@ def _fresh(cfg, state: dict) -> dict | None:
 
 def _apply(ctx: _Ctx, state: dict, res: StepResult) -> dict:
     """Apply one StepResult: events, counters, cost, then the transition. Returns the report
-    row for `nw.queue.tick.v1`. SPEC-0482: an exception while applying parks only this
+    row for `nw.queue.tick.v1`. SPEC-0484: an exception while applying parks only this
     campaign (`apply_error`, its result's runs closed) and never reaches the loop."""
     try:
         return _apply_step(ctx, state, res)
@@ -3146,7 +3146,7 @@ def _result_runs(res) -> list:
 
 def _close_result_runs(cfg, current: dict, res, err: str) -> list:
     """`run.end` events for the runs of `res` still open on the ledger, so a re-adopting
-    runner finds nothing to re-apply (SPEC-0482). A result that cannot be recorded (it may be
+    runner finds nothing to re-apply (SPEC-0484). A result that cannot be recorded (it may be
     what broke the apply) is closed as a synthetic failure."""
     open_ids = {e.get("run_id") for e in _open_runs(cfg, current["id"])}
     events = []
@@ -3164,7 +3164,7 @@ def _close_result_runs(cfg, current: dict, res, err: str) -> list:
 
 
 def _contain_apply_error(ctx, state: dict, res, exc: BaseException) -> dict:
-    """SPEC-0482: park the campaign `apply_error` (detail = the exception), close the runs
+    """SPEC-0484: park the campaign `apply_error` (detail = the exception), close the runs
     its result carried, journal `apply_error`. Never raises: a park that fails too is
     journaled `apply_error_uncontained` and the loop goes on."""
     import traceback
@@ -3212,7 +3212,7 @@ def _contain_apply_error(ctx, state: dict, res, exc: BaseException) -> dict:
 
 
 def _apply_step(ctx: _Ctx, state: dict, res: StepResult) -> dict:
-    """`_apply`'s body (SPEC-0482 keeps the name `_apply` for the contained entry point)."""
+    """`_apply`'s body (SPEC-0484 keeps the name `_apply` for the contained entry point)."""
     cfg = ctx.cfg
     cid = state["id"]
     if res.step.kind == "review" and not res.reviews and not res.error:
@@ -5171,7 +5171,7 @@ def _left_detached(pool: StepPool, cid: str, fl: _Flight) -> bool:
 
 
 def _group_result(group) -> StepResult:
-    """A review fan-out as one StepResult carrying its members' runs (SPEC-0482: what a failed
+    """A review fan-out as one StepResult carrying its members' runs (SPEC-0484: what a failed
     `_finish_reviews` closes)."""
     st = group.state
     members = []
@@ -5184,7 +5184,7 @@ def _group_result(group) -> StepResult:
 
 
 def _guarded(guard: bool, ctx: _Ctx, st: dict, fn, report=None, res=None) -> None:
-    """Run one harvest apply. SPEC-0482: an exception parks only this campaign
+    """Run one harvest apply. SPEC-0484: an exception parks only this campaign
     (`apply_error`), in a normal tick and in the crash sweep (`guard`, SPEC-0229, which also
     journals `harvest_error`); it never propagates to the loop."""
     try:
@@ -7381,7 +7381,7 @@ def run(cfg, *, once=False, max_ticks=None, poll_interval_s=None, until_idle=Fal
         journal(cfg, "start", argv=list(argv or ["nw", "queue", "run"]), interval_s=interval,
                 code_sha=started_sha)
         CR.ensure(cfg, where="start")                     # SPEC-0483: agentic.credentials
-        BP.startup_check(cfg)                             # SPEC-0482: loud, never fatal
+        BP.startup_check(cfg)                             # SPEC-0484: loud, never fatal
         entered = True
     finally:
         if not entered:
