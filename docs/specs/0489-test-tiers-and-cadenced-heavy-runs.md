@@ -104,7 +104,8 @@ heavy groups should run on a schedule that each project chooses.
 
 ## Decision
 
-The work is three child specs that land in order. Each child is one campaign.
+The work is four child specs, each one campaign. Two chains can run in parallel:
+SPEC-0490 -> SPEC-0492, and SPEC-0491 -> SPEC-0493 (which also needs SPEC-0490 landed).
 
 1. **Tiers** (SPEC-0490).
    - There are five module-level tiers: `fast`, `integration`, `tui`, `remote`, `perf`.
@@ -112,16 +113,18 @@ The work is three child specs that land in order. Each child is one campaign.
    - A guard enforces exactly one tier per module.
    - The selector adds `--exclude-marks` and the gates exclude the heavy tiers.
    - Gate timeouts come from a measured fast-tier run.
-   - Until SPEC-0491 lands, a project without `cadence:` keeps full coverage. Its sentinel and
+   - Until SPEC-0493 lands, a project without `cadence:` keeps full coverage. Its sentinel and
      `full_suite` runs drop the exclusion through `NW_ALL_TIERS=1`.
-2. **Cadence** (SPEC-0491).
-   - A `cadence:` list goes in `.nw/project.yaml`.
+2. **Cadence config and state** (SPEC-0491).
+   - A `cadence:` list goes in `.nw/project.yaml`; opt-in is a non-empty list.
    - State is kept per project in `<agentic>/cadence/<project>.json`.
-   - The hook runs on every ff-merge.
+   - The hook runs on every ff-merge. `due`, consumption and `nw gate cadence status`.
+3. **Cadence runner, red-main source and nightwright's jobs** (SPEC-0493).
    - The runner reuses the sentinel's run lock, placement and detached dispatch.
-   - Red jobs go through the red-main episode, which now carries a source.
-   - CLI: `nw gate cadence status` and `nw gate cadence run`.
-3. **Tighter selection** (SPEC-0492).
+   - Red jobs go through the red-main episode, which now carries a source and is confirmed by
+     its own job.
+   - `nw gate cadence run`; the five nightwright jobs.
+4. **Tighter selection** (SPEC-0492).
    - Spec and ledger files select only the tests that name them exactly.
    - A hot module narrows to the tests that name a changed definition.
    - Fixture data selects the readers of its fixture root.
@@ -141,7 +144,7 @@ The work is three child specs that land in order. Each child is one campaign.
   It is on the worker env allowlist.
 - **Coverage invariant.** Every tier runs on main at least as often as the SPEC-0379 sentinel
   ran it before this epic:
-  - before SPEC-0491, through the sentinel with `NW_ALL_TIERS`;
+  - before SPEC-0493, through the sentinel with `NW_ALL_TIERS`;
   - after it, through cadence jobs.
 
   For each heavy tier, the project's cadence includes a job whose `every_hours` is at most 24.
@@ -152,12 +155,16 @@ The work is three child specs that land in order. Each child is one campaign.
 ## Breakdown / sub-specs
 
 - [ ] SPEC-0490: Tier markers and fast-only campaign gates.
-- [ ] SPEC-0491: Per-project cadence jobs, runner trigger and red-main source. Depends on
-  SPEC-0490.
+- [ ] SPEC-0491: Cadence config, merge accounting and due state. Depends on SPEC-0490 (the
+  shared opt-in predicate).
 - [ ] SPEC-0492: Tighter affected selection for specs, hot modules and fixtures. Depends on
-  SPEC-0491, because the `fast-full` cadence job is its safety net.
+  SPEC-0490 only: until the cadence jobs land, the sentinel with `NW_ALL_TIERS` is the stronger
+  net.
+- [ ] SPEC-0493: Cadence runner trigger, red-main source and nightwright's jobs. Depends on
+  SPEC-0491.
 
-Sequencing: in the order above. SPEC-0490 brings the largest gain on its own.
+Sequencing: two parallel chains, SPEC-0490 -> SPEC-0492 and SPEC-0491 -> SPEC-0493. SPEC-0490
+brings the largest gain on its own and goes first.
 
 ## Acceptance criteria
 
@@ -166,7 +173,7 @@ Sequencing: in the order above. SPEC-0490 brings the largest gain on its own.
   GATEJOB-1037 (6940 tests, 1316 s).
 - [ ] Every heavy tier runs on main on a cadence of at most 24 hours. A red tier opens a
   red-main episode whose fix campaign runs that tier.
-- [ ] A 200-commit replay after SPEC-0492 shows a lower median selection than today's
+- [ ] A 200-commit replay (checkout + `--base <commit>^`) after SPEC-0492 shows a lower median selection than today's
   44 %, recorded in SPEC-0492.
 - [ ] Projects without `cadence:` resolve byte-identical gate dicts and env (comfort-assistant,
   jerome).
@@ -176,7 +183,7 @@ Sequencing: in the order above. SPEC-0490 brings the largest gain on its own.
 - **Unit tests:** in each child.
 - **Integration:**
   - after SPEC-0490, one `nw gate run` of a typical branch on the box;
-  - after SPEC-0491, `nw gate cadence status` on the live runner and one forced job dispatched
+  - after SPEC-0493, `nw gate cadence status` on the live runner and one forced job dispatched
     to the real worker (repo memory: validate against the real binary);
   - after SPEC-0492, the commit replay.
 - **Manual verification:** recorded in the children's *As shipped* sections.
@@ -185,9 +192,9 @@ Sequencing: in the order above. SPEC-0490 brings the largest gain on its own.
 
 1. SPEC-0490 lands with the mechanical marker pass, which edits one `pytestmark` line per file.
    Its own close gate is one full fast-tier run, because `pyproject.toml` changes.
-2. SPEC-0491 lands with nightwright's `cadence:` jobs. `nw queue restart` picks them up and the
-   state seeds on the first tick.
-3. SPEC-0492 lands next.
+2. SPEC-0491 lands the config, state and counter; nothing runs yet.
+3. SPEC-0493 lands with nightwright's `cadence:` jobs; `nw queue restart` picks them up.
+   SPEC-0492 lands in parallel after SPEC-0490.
 4. Other projects opt in by adding `cadence:` and excluding their own heavy tests in their gate
    commands.
 
