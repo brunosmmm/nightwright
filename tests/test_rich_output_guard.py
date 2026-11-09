@@ -24,6 +24,7 @@ ALLOWED = {
     ("cli.py", "_show_review"): "JSON emitter (--json)",
     ("cli.py", "spec_reviews_cmd"): "JSON emitter (--json)",
     ("cli.py", "spec_reserve_cmd"): "prints the bare SPEC-NNNN / JSON for scripts (SPEC-0208)",
+    ("cli.py", "idea_publish_cmd"): "prints the bare IDEA-NNNN for scripts (SPEC-0480)",
     ("cli.py", "spec_reservations_cmd"): "JSON emitter (--json)",
     ("cli.py", "ideas_group_followups_cmd"): "JSON emitter (--json)",
     ("cli.py", "backups_prune_cmd"): "JSON emitter (--json)",
