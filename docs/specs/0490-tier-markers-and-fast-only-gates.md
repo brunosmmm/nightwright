@@ -4,7 +4,7 @@ title: "Tier markers and fast-only campaign gates"
 status: in-progress
 owner: user
 created: 2026-11-09
-updated: 2026-11-10
+updated: 2026-11-09
 milestone: "M9: agentic workflow"
 kind: feature
 parent: SPEC-0489
