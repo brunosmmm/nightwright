@@ -1,4 +1,4 @@
-"""SPEC-0496: the campaign detail Overview pane as dashboard cards.
+"""SPEC-0498: the campaign detail Overview pane as dashboard cards.
 
 Pure Rich: a `nw.campaign.history.v1` payload (plus the optional campaign `state` and spec
 title) becomes one `Overview` renderable. It picks its layout from the width Rich hands it

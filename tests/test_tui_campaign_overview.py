@@ -1,4 +1,4 @@
-"""SPEC-0496: the campaign detail Overview pane as dashboard cards."""
+"""SPEC-0498: the campaign detail Overview pane as dashboard cards."""
 import copy
 
 import pytest

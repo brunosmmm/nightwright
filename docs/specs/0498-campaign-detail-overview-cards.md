@@ -1,5 +1,5 @@
 ---
-id: SPEC-0496
+id: SPEC-0498
 title: "Campaign detail Overview pane: dashboard cards (outcome + why banner, time per phase, runs, gates, findings)"
 status: done
 owner: user

@@ -274,7 +274,7 @@ progress. This is the single place to see *what has been decided* and *what is i
   - [x] [SPEC-0459](./specs/0459-real-app-tui-test-harness-on-the-real-data.md) Real-fixture IdeaDesk Pilot harness and queue-window preparation — done
   - [ ] [SPEC-0476](./specs/0476-campaign-detail-runs-pane.md) Campaign detail Runs pane: run table, verdict, and stream tail — accepted
   - [ ] [SPEC-0477](./specs/0477-campaign-detail-findings-and-mail.md) Campaign detail Findings & decisions pane and Mail pane — accepted
-  - [x] [SPEC-0496](./specs/0496-campaign-detail-overview-cards.md) Campaign detail Overview pane: dashboard cards (outcome + why banner, time per phase, runs, gates, findings) — done
+  - [x] [SPEC-0498](./specs/0498-campaign-detail-overview-cards.md) Campaign detail Overview pane: dashboard cards (outcome + why banner, time per phase, runs, gates, findings) — done
 - **[SPEC-0419](./specs/0419-self-healing-queue.md) — Self-healing queue** · done · (6/6 done)
   - [x] [SPEC-0420](./specs/0420-red-main-fix-forward-and-revert.md) Red-main fix-forward and revert — done
   - [x] [SPEC-0421](./specs/0421-always-run-guard-tests-at-close-and-loop-gates.md) Always-run guard tests at close and loop gates — done
@@ -756,7 +756,7 @@ progress. This is the single place to see *what has been decided* and *what is i
 | [SPEC-0488](./specs/0488-nw-queue-conductor-launch-runner-cursor-fails.md) | Cursor launch passes a flat model id | feature | done | — | 2026-11-09 |
 | [SPEC-0494](./specs/0494-tui-ideas-board-queue-link.md) | TUI ideas board: link an idea to its queue campaigns and open the campaign popup | feature | done | M5: interactive desk | 2026-11-09 |
 | [SPEC-0495](./specs/0495-tui-ideas-tab-redesign.md) | TUI ideas tab: project rail + Open / In flight / Built buckets with real spec status | feature | done | M5: interactive desk | 2026-11-09 |
-| [SPEC-0496](./specs/0496-campaign-detail-overview-cards.md) | Campaign detail Overview pane: dashboard cards (outcome + why banner, time per phase, runs, gates, findings) | feature | done | — | 2026-11-09 |
+| [SPEC-0498](./specs/0498-campaign-detail-overview-cards.md) | Campaign detail Overview pane: dashboard cards (outcome + why banner, time per phase, runs, gates, findings) | feature | done | — | 2026-11-09 |
 
 ## Superseded / rejected
 
