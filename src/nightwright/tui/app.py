@@ -20,6 +20,7 @@ from textual.widgets.option_list import Option
 
 from .. import report as R
 from . import ideas_board as B
+from . import ideas_queue as IQ
 from . import model as M
 from .campaign_detail import CampaignDetail, OpenCampaign
 from .events_tab import EventsView
@@ -37,6 +38,9 @@ _BUCKET_STYLE = {B.OPEN: "yellow", B.IN_FLIGHT: "cyan", B.BUILT: "green", B.DROP
 _STATUS_STYLE = {"in-progress": "cyan", "accepted": "green", "done": "green dim",
                  "proposed": "yellow", "draft": "yellow", "superseded": "dim",
                  "missing": "red", "foreign": "red"}
+# SPEC-0494: campaign state colour in the detail pane's Queue section.
+_CAMPAIGN_STYLE = {"merged": "green", "handed-off": "green", "abandoned": "dim",
+                   "parked": "yellow", "queued": "yellow"}
 
 # `section` + `id` columns + four cells of DataTable padding on the hub tab.
 _HUB_META_COST = 34
@@ -392,6 +396,7 @@ class IdeaDesk(App):
         # SPEC-0103 metadata + clock
         Binding("m", "metadata", "meta"),
         Binding("h", "toggle_hub", "hub"),
+        Binding("w", "queue_campaign", "queue run"),        # SPEC-0494
         # SPEC-0241: number keys select tabs; later agentic tabs extend the digits.
         Binding("1", "tab('tab-ideas')", "ideas", show=False),
         Binding("2", "tab('tab-hub')", "hub", show=False),
@@ -824,7 +829,8 @@ class IdeaDesk(App):
         width = self.query_one("#detail-pane", VerticalScroll).size.width
         snippet = next((h.snippet for h in self._hits if h.id == item.id), "")
         body = _render_detail(detail, snippet=snippet, width=width, theme=self.syntax_theme,
-                              spec=_spec_lines(item))
+                              spec=_spec_lines(item),
+                              queue=_queue_lines(self._board.campaigns_for(item.id)))
         self._mark_into(body)
         self.query_one("#detail", Static).update(body)
         self.query_one("#detail-pane", VerticalScroll).scroll_home(animate=False)
@@ -1116,7 +1122,7 @@ class IdeaDesk(App):
     _IDEA_ACTIONS = frozenset({
         "search", "project_prev", "project_next", "bucket_prev", "bucket_next", "toggle_dropped", "refresh_desk", "log",
         "summary", "questions", "capture", "retitle", "explored", "metadata", "clock_toggle",
-        "close_idea"})
+        "close_idea", "queue_campaign"})
 
     _DESK_TAB_KEYS = {
         "tab-ideas": "tab-overview",
@@ -1182,10 +1188,33 @@ class IdeaDesk(App):
         """Push `CampaignDetail` and restore the opener's queue cursor on dismiss."""
 
         def done(_result) -> None:
-            if origin is not None and hasattr(origin, "select_campaign"):
+            if origin is self:                  # SPEC-0494: back on the board, same idea
+                self.query_one("#board", Tree).focus()
+            elif origin is not None and hasattr(origin, "select_campaign"):
                 origin.select_campaign(cid)
 
         self.push_screen(CampaignDetail(self.cfg, cid, focus=focus), done)
+
+    def action_queue_campaign(self) -> None:
+        """Open the selected idea's queue campaign in `CampaignDetail` (SPEC-0494): one opens
+        directly, several offer a newest-first chooser, none only says so."""
+        idea_id = self.selected_id
+        if not idea_id or len(self.screen_stack) > 1:     # a prompt / chooser is already up
+            return
+        refs = self._board.campaigns_for(idea_id)
+        if not refs:
+            self.notify(f"{idea_id} was not built through the queue", timeout=3)
+            return
+        if len(refs) == 1:
+            self.open_campaign_detail(refs[0].id, origin=self)
+            return
+        labels = [r.label for r in refs]
+
+        def picked(label: str | None) -> None:
+            if label in labels:
+                self.open_campaign_detail(refs[labels.index(label)].id, origin=self)
+
+        self.push_screen(ChoiceScreen(f"queue campaigns · {idea_id}", labels), picked)
 
     def load_hub(self) -> None:
         """Fill the hub tab from `hub_payload`. Read-only: no writer is reachable from here."""
@@ -1460,8 +1489,21 @@ def _spec_lines(item) -> list[str]:
     return lines
 
 
+def _queue_lines(refs) -> list[str]:
+    """Markup lines for the detail pane's Queue section (SPEC-0494), newest first; `[]` when
+    the idea never went through the queue."""
+    lines = []
+    for r in refs[:IQ.SHOWN]:
+        style = _CAMPAIGN_STYLE.get(r.status, "cyan")
+        lines.append(f"{escape(r.id)}  [{style}]{escape(r.status)}[/]  [dim]{escape(r.day)}[/]")
+    if len(refs) > IQ.SHOWN:
+        lines.append(f"[dim]+{len(refs) - IQ.SHOWN} more[/]")
+    return lines
+
+
 def _render_detail(d: M.DeskDetail, *, snippet: str = "", width: int = 60,
-                   theme: str = ANSI_DARK, spec: list[str] | None = None) -> Text:
+                   theme: str = ANSI_DARK, spec: list[str] | None = None,
+                   queue: list[str] | None = None) -> Text:
     """The detail pane as a `Text`.
 
     **Structure is hand-built; only prose is lexed** (SPEC-0107). Section rules, the ○/✓ question
@@ -1496,6 +1538,11 @@ def _render_detail(d: M.DeskDetail, *, snippet: str = "", width: int = 60,
         add_markup(f"{running} [dim]· {d.clocked_hours:.2f}h logged[/]")
     if snippet:
         add_markup(f"[dim]match:[/] {escape(snippet)}")
+    if queue is not None:                                             # SPEC-0494
+        add_markup("")
+        add_markup(_rule("Queue", inner, note="w opens" if queue else ""))
+        for line in queue or ["[dim]not built through the queue[/]"]:
+            add_markup(line)
 
     add_markup("")
     add_markup(_rule("Summary", inner))

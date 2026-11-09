@@ -753,6 +753,7 @@ progress. This is the single place to see *what has been decided* and *what is i
 | [SPEC-0487](./specs/0487-cli-persona-runs-execute-in-the-runner.md) | CLI persona runs execute in the runner, which holds the credentials | feature | done | M9: agentic workflow | 2026-11-09 |
 | [SPEC-0488](./specs/0488-nw-queue-conductor-launch-runner-cursor-fails.md) | Cursor launch passes a flat model id | feature | done | — | 2026-11-09 |
 | [SPEC-0490](./specs/0490-tui-ideas-tab-redesign.md) | TUI ideas tab: project rail + Open / In flight / Built buckets with real spec status | feature | done | M5: interactive desk | 2026-11-09 |
+| [SPEC-0494](./specs/0494-tui-ideas-board-queue-link.md) | TUI ideas board: link an idea to its queue campaigns and open the campaign popup | feature | done | M5: interactive desk | 2026-11-09 |
 
 ## Superseded / rejected
 

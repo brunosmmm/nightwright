@@ -39,9 +39,16 @@ def _run(coro):
 
 
 async def settle(app, pilot, n=3):
+    from textual.worker import WorkerCancelled
+
     for _ in range(n):
         await pilot.pause(0.05)
-        await asyncio.wait_for(app.workers.wait_for_complete(), 10)
+        try:
+            await asyncio.wait_for(app.workers.wait_for_complete(), 10)
+        except WorkerCancelled:
+            # An `exclusive=True` worker (e.g. campaign-entry-detail) superseded by a newer one
+            # is cancelled by design; settling means "nothing left running", not "none cancelled".
+            await asyncio.wait_for(app.workers.wait_for_complete(), 10)
     await pilot.pause(0.05)
 
 

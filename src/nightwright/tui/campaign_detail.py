@@ -334,7 +334,16 @@ class CampaignDetail(QueueActions, ModalScreen):
             self.query_one("#placeholder-records", Static).update(Text(self._placeholder_records))
 
     def _worker_alive(self) -> bool:
+        """May a worker's tail touch this screen's widgets? Not once the screen is unmounted,
+        nor while its widgets are not (or no longer) in the DOM — a dismiss tears the children
+        down before `is_mounted` drops, and a worker resuming in that window used to raise
+        `NoMatches('#campaign-timeline')` (SPEC-0494 resilience fix)."""
         if not self.is_mounted:
+            return False
+        from textual.css.query import NoMatches
+        try:
+            self.query_one("#campaign-timeline", DataTable)
+        except NoMatches:
             return False
         from textual.worker import get_current_worker
         try:
@@ -609,10 +618,14 @@ class CampaignDetail(QueueActions, ModalScreen):
             return
         if not self._worker_alive():
             return
-        row = self.current_row()
-        if row is None or row.get("seq") != seq or row.get("ref") != ref:
+        from textual.css.query import NoMatches
+        try:
+            row = self.current_row()
+            if row is None or row.get("seq") != seq or row.get("ref") != ref:
+                return
+            self.query_one("#campaign-detail-text", Static).update(text)
+        except NoMatches:                   # torn down between the check and the paint
             return
-        self.query_one("#campaign-detail-text", Static).update(text)
 
     def record_detail(self, history, record_id) -> Text:
         return AM.record_detail(history, record_id)

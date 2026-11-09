@@ -14,6 +14,8 @@ from __future__ import annotations
 import datetime as dt
 from dataclasses import dataclass, field
 
+from .ideas_queue import CampaignIndex, load_campaign_index
+
 ALL = "\x00all"
 NO_PROJECT = "\x00none"
 NO_PROJECT_LABEL = "(no project)"
@@ -267,6 +269,7 @@ class Board:
     scoreboard: list[ScoreRow] = field(default_factory=list)
     activity: list[Activity] = field(default_factory=list)
     _buckets: dict = field(default_factory=dict, repr=False)
+    campaigns: CampaignIndex = field(default_factory=CampaignIndex, repr=False)   # SPEC-0494
 
     def __post_init__(self):
         self.by_id = {i.id: i for i in self.items}
@@ -279,6 +282,11 @@ class Board:
 
     def entry(self, key: str) -> RailEntry | None:
         return next((e for e in self.rail if e.key == key), None)
+
+    def campaigns_for(self, idea_id: str) -> list:
+        """Queue campaigns (live and terminal) for one idea, newest first (SPEC-0494)."""
+        item = self.by_id.get(idea_id)
+        return self.campaigns.for_item(item) if item is not None else []
 
 
 def project_key(project: str | None) -> str:
@@ -437,7 +445,8 @@ def build_board(pairs, specs: dict[str, SpecInfo], *, now: dt.datetime) -> Board
 
 
 def load_board(cfg, *, filters: dict | None = None, now: dt.datetime | None = None) -> Board:
-    """Read every idea (open and closed) plus the spec index once, then `build_board`.
+    """Read every idea (open and closed) plus the spec index once, then `build_board`; attach
+    the queue's campaign index (SPEC-0494).
 
     `filters` are `collect_idea_tasks`' own vocabulary (the `nw tui --state/--kind/...` flags)
     minus `project`, which selects a rail entry instead of narrowing the load. One open-question
@@ -452,4 +461,6 @@ def load_board(cfg, *, filters: dict | None = None, now: dt.datetime | None = No
     tasks = M._dedupe_idea_tasks(cfg, R.collect_idea_tasks(cfg, all_done=True, **narrow))
     oq = open_question_counts(cfg, tasks)
     pairs = [(M._row_for(cfg, t, now=now, open_questions=oq.get(id(t), 0)), t) for t in tasks]
-    return build_board(pairs, load_spec_index(cfg), now=now)
+    board = build_board(pairs, load_spec_index(cfg), now=now)
+    board.campaigns = load_campaign_index(cfg)      # SPEC-0494: once per load, every campaign
+    return board
