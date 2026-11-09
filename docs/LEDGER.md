@@ -321,6 +321,7 @@ progress. This is the single place to see *what has been decided* and *what is i
 | [SPEC-0492](./specs/0492-tighter-affected-selection.md) | Tighter affected selection for specs, hot modules and fixtures | feature | accepted | M9: agentic workflow | 2026-11-09 |
 | [SPEC-0493](./specs/0493-cadence-runner-trigger-red-main-and-nightwright-jobs.md) | Cadence runner trigger, red-main source and nightwright's jobs | feature | accepted | M9: agentic workflow | 2026-11-09 |
 | [SPEC-0496](./specs/0496-subagent-worktree-commit-allowlist.md) | Sub-agents in a worktree can commit; allowed command forms are documented | feature | accepted | — | 2026-11-09 |
+| [SPEC-0497](./specs/0497-conductor-ping-revise-pending-specs.md) | Conductor ping flags specs stalled on a revise verdict | feature | accepted | — | 2026-11-09 |
 
 ## Done
 
