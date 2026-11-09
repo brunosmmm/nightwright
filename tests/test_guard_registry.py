@@ -75,7 +75,12 @@ def test_removing_the_mark_is_reported(tmp_path):
     scanners, marked = _scan(dest)
     assert scanners == marked == {"tests/test_test_waits.py"}
     f = dest / "tests" / "test_test_waits.py"
-    f.write_text(f.read_text().replace("pytestmark = pytest.mark.tree_guard", "pass"))
+    f.write_text(
+        f.read_text().replace(
+            "pytestmark = [pytest.mark.fast, pytest.mark.tree_guard]",
+            "pytestmark = pytest.mark.fast",
+        )
+    )
     scanners, marked = _scan(dest)
     assert scanners - marked == {"tests/test_test_waits.py"}     # test (a) would fail
 
