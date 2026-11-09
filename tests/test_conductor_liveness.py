@@ -234,7 +234,51 @@ def test_threshold_300_fires_at_300_not_299(tmp_path):
     _conductor_cursor(cfg, 0, pending=wake2["id"], ts=iso(150))
     E.sync(cfg, now=at(150), ping=True)
     assert _cu_from_sync(E.sync(cfg, now=at(299), ping=True)) == []
-    assert len(_cu_from_sync(E.sync(cfg, now=at(300), ping=True))) == 1
+    out = _cu_from_sync(E.sync(cfg, now=at(300), ping=True))
+    assert len(out) == 1
+    proj = json.loads((store.agentic_dir(cfg) / "events.projector.json").read_text())
+    assert proj.get("last_ping_id") is None
+    assert out[0]["data"]["ping_id"] == wake2["id"]
+
+
+def test_newer_pending_before_ack_does_not_retarget_clock(tmp_path):
+    cfg = _cfg(tmp_path)
+    wake_a = E.append(cfg, "runner_dead", data={"active": 0, "queued": 0})
+    _conductor_cursor(cfg, 0, pending=wake_a["id"])
+    E.sync(cfg, now=at(0), ping=True)
+    wake_b = E.append(cfg, "runner_dead", data={"active": 0, "queued": 0})
+    _conductor_cursor(cfg, 0, pending=wake_b["id"])
+    E.sync(cfg, now=at(1790), ping=True)
+    proj = json.loads((store.agentic_dir(cfg) / "events.projector.json").read_text())
+    assert proj.get("conductor_unacked_pending_id") == wake_a["id"]
+    E.commit_ack(cfg, "conductor", wake_a["id"])
+    assert _cu_from_sync(E.sync(cfg, now=at(1800), ping=True)) == []
+    assert len(_cu_from_sync(E.sync(cfg, now=at(3600), ping=True))) == 1
+
+
+def test_restart_after_mailed_episode_fires_again_for_new_pending(tmp_path):
+    cfg = _cfg(tmp_path)
+    wake_a = E.append(cfg, "runner_dead", data={"active": 0, "queued": 0})
+    _conductor_cursor(cfg, 0, pending=wake_a["id"])
+    E.sync(cfg, now=at(0), ping=True)
+    E.sync(cfg, now=at(1800), ping=True)
+    assert len(_cu_events(cfg)) == 1 and len(_human_mail(cfg)) == 1
+    proj_path = store.agentic_dir(cfg) / "events.projector.json"
+    proj = json.loads(proj_path.read_text())
+    assert proj.get("conductor_unacked_pending_id") == wake_a["id"]
+    wake_b = E.append(cfg, "runner_dead", data={"active": 0, "queued": 0})
+    E.commit_ack(cfg, "conductor", wake_a["id"])
+    E.cursor_note_pending(cfg, "conductor", wake_b["id"])
+    assert _cu_from_sync(E.sync(cfg, now=at(1900), ping=True)) == []
+    proj = json.loads(proj_path.read_text())
+    assert "conductor_unresponsive_ping" not in proj
+    assert "conductor_unresponsive_mailed" not in proj
+    assert proj.get("conductor_unacked_pending_id") == wake_b["id"]
+    assert _cu_from_sync(E.sync(cfg, now=at(2000), ping=True)) == []
+    assert len(_human_mail(cfg)) == 1
+    E.sync(cfg, now=at(3700), ping=True)
+    assert len(_cu_events(cfg)) == 2 and len(_human_mail(cfg)) == 2
+    assert _cu_events(cfg)[1]["data"]["unacked_s"] >= 1800
 
 
 def test_ack_clears_the_episode(tmp_path):

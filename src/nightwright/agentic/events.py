@@ -873,9 +873,9 @@ def note_conductor_liveness(cfg, proj: dict, now=None) -> list[dict]:
         if timed is not None and after >= timed and pending > after:
             proj["conductor_unacked_since"] = store.now_iso(now)
             proj["conductor_unacked_pending_id"] = pending
+            proj.pop("conductor_unresponsive_ping", None)
+            proj.pop("conductor_unresponsive_mailed", None)
             return out
-        if timed is not None and pending > timed and after < timed:
-            proj["conductor_unacked_pending_id"] = pending
         since = proj.get("conductor_unacked_since")
         age_val = None
         if since:

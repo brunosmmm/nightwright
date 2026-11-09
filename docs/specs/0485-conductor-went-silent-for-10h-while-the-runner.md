@@ -274,10 +274,24 @@ signals on the `nw.event.v1` row.
   ack through the timed wake that leaves a newer `pending` restarts the unacked clock
   instead of inheriting the previous episode age.
 
+### Test record (2026-11-09 loop 2)
+
+- `uv run pytest -q tests/test_conductor_liveness.py tests/test_herdr.py::test_notification_policy tests/test_agentic_ping.py tests/test_agentic_events.py tests/test_agentic_quiet.py` — 209 passed
+- Full suite left to queue gating
+
+### As shipped (2026-11-09 loop 2)
+
+- `conductor_unacked_pending_id` stays on the wake that started `conductor_unacked_since`
+  until `after` passes that id; a newer `pending` while `after` is still behind does not
+  retarget it. When `after` reaches the anchored id and a newer `pending` remains, the
+  restart branch clears `conductor_unresponsive_ping` and `conductor_unresponsive_mailed`,
+  sets a fresh `conductor_unacked_since`, and does not append or mail on that sync.
+
 ## Clock Log
 
 - 2026-11-09: `nw idea clock-in IDEA-1039` (implementer loop 0); `nw idea clock-out IDEA-1039` at close
 - 2026-11-09: implementer loop 1 reviewer fixes
+- 2026-11-09: implementer loop 2 unacked-clock retarget and episode restart fixes
 
 ## Rollout / migration
 
