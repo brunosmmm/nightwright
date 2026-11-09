@@ -37,7 +37,8 @@ gates:
     # SPEC-0358: a round after a red one reruns the previous failing ids first
     failed_first: true
     results: {format: pytest}
-    # the fallback is the full suite, so the full suite's limit
+    # the fallback is the full suite, so the full suite's limit. SPEC-0490: the fast tier needs
+    # 1386 (1.5 x GATEJOB-1342's 924 s), but a full_suite campaign runs every tier here.
     timeout_s: 2400
     required: true
     retries: 2
@@ -97,6 +98,8 @@ gates:
     results: {format: pytest}
     # the sentinel's full suite takes 13-19 min alone and timed out under concurrent gates at
     # 1200 (2026-10-30, SPEC-0302/0304, IDEA-412/415); a remaining full fallback needs it too.
+    # SPEC-0490: the fast tier needs 1671 (1.5 x GATEJOB-1341's 1113.8 s); the sentinel runs
+    # every tier through this gate (NW_ALL_TIERS), so the all-tier limit stays.
     timeout_s: 2400
     required: true
     # SPEC-0289: a failing run re-runs its failing ids, then the selection once more, before triage.

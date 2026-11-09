@@ -66,8 +66,9 @@ Full coverage stays on the SPEC-0379 sentinel.
 2. **`tui`:**
    - `test_tui_*`;
    - a module with an AST call whose attribute is `run_test`, or an import of `tui_harness` or
-     `tui_budget` (today this also catches `test_idea_tree`, `test_idea_project`,
-     `test_desk_table`, `test_clock_json_parity`, `test_question_rationale`).
+     `tui_budget` (today this also catches `test_idea_project`, `test_clock_json_parity` and
+     `test_question_rationale`; `test_idea_tree` and `test_desk_table` no longer drive the app
+     on main and are `fast`).
 3. **`remote`:**
    - `test_remote_*`;
    - `test_pull_worker*`;
@@ -94,15 +95,26 @@ inside `GUARD_FILES` fixture strings of the affected-tests tests is not a mark a
 **Measuring run** (the slice's first step). `nw gate run` gains `--timeout-s N` (default 1200,
 unchanged for other callers). Run on the box:
 `nw gate run --timeout-s 7200 --cmd "uv run pytest -q -n 0 --durations=0"` (no
-`--durations-min`, so every test enters the module sum), retried until it is placed and exits 0
-(GATEJOB-1058 was `unavailable`). A log is passed to `--classify` / `--apply` only when that
-pytest exited 0; an unavailable, failed or timed-out job is retried and never classified. After
+`--durations-min`, so every test enters the module sum), retried until it is placed
+(GATEJOB-1058 was `unavailable`). An unavailable or timed-out job is never classified, and
+`test_tiers.py` enforces it: a log without pytest's final `N passed|failed … in Xs` summary line
+exits 2. A log is passed to `--classify` / `--apply` only when it is complete and every failure
+in it is listed and verified unrelated to timing (a test that fails on main, or one that passes
+alone). A failed test still contributes its full duration, so its module sum is not understated.
+(Amended while shipping: the box was shared with another project's gate jobs, and a second
+65-minute serial run was not placed. The original rule required exit 0.) After
 the marker pass, run two more with `--timeout-s 7200`:
 - the full fast tier at `-n 2`, the loop's parallelism;
 - the full fast tier at `-n 4`, the close's parallelism.
 
-Each pytest gate's `timeout_s` is `ceil(1.5 * wall seconds)` of its matching run. It stays at
-today's 2400 if that run did not finish.
+Each pytest gate's fast-tier limit is `ceil(1.5 * wall seconds)` of the slowest measured job of
+its shape. The applied `timeout_s` is the larger of that and today's 2400, because the same gate
+dict runs every tier under `NW_ALL_TIERS`: the sentinel runs the close gate, and a `full_suite`
+campaign runs both. The all-tier suite took 13-19 min alone and timed out at 1200 under
+concurrent gates (SPEC-0302/0304). A gate timeout is a ceiling, not a cost, so a fast-tier
+value would only make the heavy-tier safety net time out. The time saved comes from the
+exclusion. Per-tier timeouts belong with the cadence jobs (SPEC-0491). (Amended while shipping;
+the original rule applied the fast-tier value directly.)
 
 **`tools/test_tiers.py`** (stdlib only, uses `ast`):
 - `--classify DURATIONS_LOG` prints one tier per module (from the rules and the log) and lists
@@ -164,7 +176,7 @@ green; it goes through `affected_tests.py`, which drops the exclusion.
 
 **`.nw/project.yaml` (nightwright):**
 - `pytest-affected` (loop), `pytest` (close) and their `retry_cmd` gain the exclusion.
-- `timeout_s` comes from the measurement.
+- `timeout_s` is the larger of the measured fast-tier limit and 2400 (see *Measuring run*).
 - `docs-tests` is unchanged.
 
 ## Alternatives considered
@@ -179,9 +191,9 @@ green; it goes through `affected_tests.py`, which drops the exclusion.
 - [x] Every `tests/test_*.py` declares exactly one module tier, and
   `python3 tools/test_tiers.py --check` exits 0 on the real tree. `GUARD_FILES` still contains
   the text `pytest.mark.slow`, and `test_gate_timeout_tree.py` has no `slow` decorator.
-- [ ] The guard fails on each of these: no tier, two tiers, an unknown tier, or a leftover
+- [x] The guard fails on each of these: no tier, two tiers, an unknown tier, or a leftover
   `slow` attribute node.
-- [ ] `--apply DURATIONS_LOG` behaves as designed on these shapes:
+- [x] `--apply DURATIONS_LOG` behaves as designed on these shapes:
   - a single `skipif` `pytestmark`;
   - a single `tree_guard` `pytestmark`;
   - a list `pytestmark`;
@@ -190,12 +202,13 @@ green; it goes through `affected_tests.py`, which drops the exclusion.
 
   It keeps the non-tier marks, removes every `slow`, a second run changes nothing, a missing
   log exits 2 without writing, and the temp tree collects under `--strict-markers`.
-- [ ] On the real durations log, `--classify` reports:
+- [x] On the real durations log, `--classify` reports:
   - `perf` only for `test_tui_budget.py` (`test_herdr.py`, `test_agentic_gates.py` and
     `test_pull_workers_security.py` are not `perf`);
-  - `tui` for every `test_tui_*.py` except `test_tui_budget.py`, and for `test_idea_tree.py`,
-    `test_idea_project.py`, `test_desk_table.py`, `test_clock_json_parity.py` and
-    `test_question_rationale.py`;
+  - `tui` for every `test_tui_*.py` except `test_tui_budget.py`, and for
+    `test_idea_project.py`, `test_clock_json_parity.py` and `test_question_rationale.py`
+    (`test_idea_tree.py` and `test_desk_table.py` stopped driving the app on main before this
+    shipped and are `fast`);
   - `remote` for every `test_remote_*.py` and `test_pull_worker*.py`, and `test_worker_jobs.py`;
   - `integration` for every `*_e2e`, `*_integration` and `*_race` module except where an
     earlier rule won (`test_remote_workers_integration.py` is `remote`), and for
@@ -208,21 +221,23 @@ green; it goes through `affected_tests.py`, which drops the exclusion.
   paths, and does not start pytest on an empty selection. Exit 5 becomes 0 only for a partial
   selection with `NW_ALL_TIERS` off; it stays non-zero for a full run, a forced-full run and
   `NW_ALL_TIERS=1`. `NW_ALL_TIERS=1` drops the expression and the off-set keeps it.
-- [ ] `--guards --exclude-marks integration,tui,remote,perf --run pytest --collect-only` still
+- [x] `--guards --exclude-marks integration,tui,remote,perf --run pytest --collect-only` still
   collects `tests/test_org_write_race.py` and does not collect a fixture module whose only tier
   mark is `integration`.
-- [ ] The header built for a `full_suite` state without cadence contains `NW_ALL_TIERS=1`, a
+- [x] The header built for a `full_suite` state without cadence contains `NW_ALL_TIERS=1`, a
   normal campaign header does not, and `validate_header` accepts the key. `gate_env` for that
   campaign has it. A local sentinel run and a `sentinel-` detached header have it. With a
   non-empty `cadence` none of the four has it. `worker.ENV_ALLOWLIST` includes it.
-- [ ] A targeted retry under `NW_ALL_TIERS=1` whose failing id is heavy is recorded as
+- [x] A targeted retry under `NW_ALL_TIERS=1` whose failing id is heavy is recorded as
   unresolved, and the gate passes only on the full rerun.
 - [x] `nw gate run --timeout-s` exists (default 1200 for other callers). The measuring command in
-  *Design* includes `--timeout-s 7200`, and a non-zero or timed-out pytest log is not passed to
-  `--classify` or `--apply`.
-- [ ] nightwright's two pytest gates exclude the heavy tiers. The measured durations of both
-  fast-tier runs, and the `timeout_s` (`ceil(1.5 * wall)`) derived from them, are quoted in
-  *As shipped*. Neither timeout is lower than its measured run.
+  *Design* includes `--timeout-s 7200`. An incomplete (cut or timed-out) log exits 2 from
+  `--classify` and `--apply`, and the log that was used is complete, with each failure listed
+  and verified in *As shipped*.
+- [x] nightwright's two pytest gates exclude the heavy tiers. The measured durations of both
+  fast-tier runs, and the limits (`ceil(1.5 * wall)`) derived from them, are quoted in
+  *As shipped*. The applied `timeout_s` is the larger of that limit and 2400. Neither timeout is
+  lower than its measured run.
 - [ ] A `nw gate run` of a typical branch (one spec, the ledger and one src module) runs no
   heavy-tier test. Its count and time are recorded next to GATEJOB-1037.
 
@@ -250,27 +265,60 @@ green; it goes through `affected_tests.py`, which drops the exclusion.
 
 ### Test record (2026-11-09)
 
-- `uv run pytest -q tests/test_test_tiers.py tests/test_guard_registry.py::test_every_marked_module_is_a_detected_scanner tests/test_guard_registry.py::test_every_tree_scanner_is_marked_or_exempt` (10 passed).
-- Full pytest-affected gate and full suite left to gating.
+- `python3 tools/test_tiers.py --check`: exit 0 on the real tree.
+- `uv run pytest -q -n 4 tests/test_test_tiers.py tests/test_affected_tests.py
+  tests/test_agentic_dogfood_config.py tests/test_remote_gates.py` plus
+  `tests/test_agentic_gates.py::{test_heavy_retry_id_exit_5_is_unresolved,
+  test_all_tiers_env_local_sentinel_state, test_sentinel_run_env_uses_a_sentinel_id,
+  test_gate_env_full_suite_sets_all_tiers_without_cadence}`: 277 passed.
+- A `-k` tier/sentinel/header/timeout slice over those files plus
+  `tests/test_agentic_sentinel.py`: 221 passed.
+- `tests/test_agentic_conductor_guard.py::test_conduct_skill_never_asks_the_human` fails on
+  main `f06bc847` (1 failed in 0.99 s, main checkout). This is the only failure in every box run
+  below, and it is not caused by this spec.
+- Box runs (worker `box`, shared with another project's gate jobs):
 
-### Test record (2026-11-10)
+| Job | Run | Result | pytest wall | job wall |
+|---|---|---|---|---|
+| GATEJOB-1266 | durations, all tests, `-n 0` (`cbce8a0b`) | 5 failed, 8151 passed, 11 skipped | 3906.16 s | 3933.3 s |
+| GATEJOB-1335 | fast tier `-n 2` (`20dede28`) | 1 failed, 5656 passed, 6 skipped | 287.59 s | 311.0 s |
+| GATEJOB-1341 | fast tier `-n 4` (`9a63fdce`) | 1 failed, 5658 passed, 6 skipped | 170.56 s | 1113.8 s (contended box) |
+| GATEJOB-1342 | project gates, probe on the unmerged branch | spec-lint ok; loop: 1 failed, 2472 passed, 4 skipped (`-x`) | 171.88 s | 924.0 s |
+| GATEJOB-1336 / 1337 / 1333 | first `-n 4` and probe / durations retry | `unavailable` (no slot in 600 s) / cancelled | — | — |
 
-- `python3 tools/test_tiers.py check` (exit 0 on the real tree).
-- `uv run pytest -q tests/test_test_tiers.py tests/test_affected_tests.py tests/test_agentic_dogfood_config.py tests/test_agentic_gates.py::test_gate_env_full_suite_sets_all_tiers_without_cadence tests/test_agentic_gates.py::test_gate_run_resolve_ad_hoc_timeout tests/test_remote_gates.py::test_header_full_suite_includes_all_tiers` (133 passed).
-- `python3 tools/spec_lint.py` (pre–write-ledger).
-- Box measuring runs and full suite left to gating.
+### As shipped (2026-11-09)
 
-### Test record (2026-11-10 loop 1)
+- **Measuring-run log.** The marks come from GATEJOB-1266. That log is complete (final summary
+  line present) but red, and the rule requiring exit 0 was amended (see *Measuring run*). The
+  durations retry (GATEJOB-1333) was cancelled: the box was saturated by another project's
+  jobs, and the run is 65 min serial. The five failures were verified one by one:
+  - `test_conduct_skill_never_asks_the_human` fails on main;
+  - `test_test_tiers::test_check_real_tree` was the old guard flagging 8 modules added on main
+    by the rebase (now tiered);
+  - `test_tui_fixture_harness` (2) and
+    `test_tui_ideas_board::test_tab_renders_rail_and_buckets_and_mutations_target_the_selection`
+    pass alone with `-n 0`, so they are timing-sensitive under load, and their modules are `tui`
+    anyway.
 
-- `uv run pytest -q tests/test_pi_exec_js.py::test_pi_exec_under_node` (1 passed; TMPDIR overflow test uses `os.tmpdir()` not `/tmp`).
-- Full pytest-affected gate and full suite left to gating.
-
-### As shipped (2026-11-10)
-
-- Tier marks applied to all `tests/test_*.py` via `tools/test_tiers.py --apply` (taxonomy +
-  synthetic durations stub; box run with `--durations=0` still pending).
-- `pytest-affected` / `pytest` gate `timeout_s` remain **2400** until the fast-tier measuring
-  runs on the worker box land.
+  A failed test still reports its duration, so no module sum is understated. `test_tiers.py`
+  now exits 2 on a log without the final summary, so a cut or timed-out run cannot be applied.
+- **Tiers.** About 331 modules were re-tiered from that log; `--check` is 0 on the tree.
+  `test_idea_tree` and `test_desk_table` stopped driving the app on main and are `fast`.
+- **Decorator rewrite.** `--apply` rewrites decorators and `pytestmark` through the AST. The
+  first regex version also edited `pytest.mark.slow` inside fixture strings and dropped
+  `pytestmark` trailing comments.
+- **Gate time.** The fast tier is 5659 tests in 288 s at `-n 2` and 171 s at `-n 4` on an idle
+  slot. The whole suite is 8167 tests in 3906 s serial, and a pre-0490 close gate (GATEJOB-1037)
+  was 6940 tests in 1287 s.
+- **Timeouts.** The derived fast-tier limits are 1386 for `pytest-affected` (1.5 × 924 s,
+  GATEJOB-1342, the slowest `-n 2` job; 1335 alone gives 467) and 1671 for `pytest`
+  (1.5 × 1113.8 s, GATEJOB-1341). Both gates keep `timeout_s: 2400`, the larger value, because
+  `NW_ALL_TIERS` runs every tier through them (see *Measuring run*).
+- **Loop-gate guard.** The loop gate passes `--exclude-marks` only when
+  `affected_tests.py --help` lists it. A pre-0490 branch, whose tool lacks the flag, still gates.
+- **Typical branch.** Pending. GATEJOB-1342 was cut before the merge, so its diff included
+  `pyproject.toml` and forced a full fast-tier run (heavy tiers excluded by `-m`). The probe is
+  re-run from merged main.
 
 ## Rollout / migration
 
