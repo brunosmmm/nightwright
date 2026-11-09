@@ -760,7 +760,10 @@ def _terminal_row_stale_run_inputs_only(cfg, cid: str, row: dict, sources: dict)
     if row.get("signature") != H.campaign_signature(cfg, cid):
         return True
     stored_files = (sources.get("campaign_files") or {}).get(cid)
-    if not _campaign_records_run_inputs_match(cfg, cid, stored_files):
+    if not isinstance(stored_files, dict):
+        return True
+    rg_dirs = (sources.get("campaign_rg_dirs") or {}).get(cid)
+    if not _campaign_records_files_match(cfg, cid, stored_files, rg_dirs):
         return True
     return False
 
@@ -1022,7 +1025,17 @@ def _write_index(root: Path, rows: list[dict]) -> None:
     _atomic_write_text(root / "index.jsonl", text)
 
 
+def _records_sort_key(rec: dict) -> tuple:
+    H = _lazy_history()
+    return (H._time_key(rec.get("ts")), rec.get("id") or "")
+
+
+def _sort_records_newest_first(records: list[dict]) -> list[dict]:
+    return sorted(records, key=_records_sort_key, reverse=True)
+
+
 def _write_records(root: Path, records: list[dict]) -> None:
+    records = _sort_records_newest_first(records)
     text = "".join(_stored_line(rec) + "\n" for rec in records)
     _atomic_write_text(root / "records.jsonl", text)
     _set_records_mem(root, [(rec, _search_text(rec)) for rec in records])
@@ -2934,14 +2947,6 @@ def _history_records_cached(cfg, *, now, root: Path, campaign=None, agent=None, 
             base = _read_records_filtered(root, kinds=stream_kinds, needle=stream_needle)
         else:
             base = _read_records(root)
-        if (
-            not extra
-            and since is None
-            and until is None
-            and not (needle and stream_needle != needle)
-            and (stream_kinds is not None or stream_needle)
-        ):
-            return base[:limit] if limit is not None else base
         values = {name: H._set(value) for name, value in (
             ("campaign", campaign), ("agent", agent), ("kind", kind), ("project", project),
             ("severity", severity), ("status", status),
@@ -2956,7 +2961,14 @@ def _history_records_cached(cfg, *, now, root: Path, campaign=None, agent=None, 
             if needle and stream_needle != needle and needle not in _search_text(rec):
                 continue
             out.append(rec)
-        out.sort(key=lambda rec: (H._time_key(rec.get("ts")), rec.get("id") or ""), reverse=True)
+        need_sort = (
+            extra
+            or since is not None
+            or until is not None
+            or (needle and stream_needle != needle)
+        )
+        if need_sort:
+            out.sort(key=_records_sort_key, reverse=True)
         return out[:limit] if limit is not None else out
     _sync_globals(cfg, root, now)
     index_rows = _read_index(root)
@@ -3027,7 +3039,7 @@ def _history_records_cached(cfg, *, now, root: Path, campaign=None, agent=None, 
         if needle and stream_needle != needle and needle not in _search_text(rec):
             continue
         out.append(rec)
-    out.sort(key=lambda rec: (H._time_key(rec.get("ts")), rec.get("id") or ""), reverse=True)
+    out.sort(key=_records_sort_key, reverse=True)
     return out[:limit] if limit is not None else out
 
 

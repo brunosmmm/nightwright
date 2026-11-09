@@ -656,6 +656,14 @@ Queue `pytest-affected` rerun left in flight. Full suite left to queue gating.
 `tests/test_history_fixture.py` (140 passed). `python3 tools/spec_lint.py --write-ledger` exit 0.
 Full suite left to queue gating.
 
+### Test record (2026-11-09, implementer loop 2 of 3)
+
+Fixed records quiet-path order and gates staleness. `uv run pytest -q`
+`tests/test_history_cache.py::test_query_matches_title_text_not_json`
+`tests/test_history_perf.py::test_record_count_and_budgets`
+`tests/test_history_perf.py::test_warm_index_no_terminal_campaign_stat` (3 passed);
+history bundle 141 passed. `python3 tools/spec_lint.py --write-ledger` exit 0. Full suite left to gating.
+
 ### Test record (2026-11-08, implementer loop 3)
 
 Adversarial fixes: pending-index record prune; quiet `history_records` terminal invalidation;
