@@ -70,6 +70,10 @@ SPEC-0301 row-uniqueness test in `tests/test_skills.py` still finds one `conduct
 Tests: `tests/test_agentic_revise_pending.py`, `tests/test_agentic_quiet.py`,
 `tests/test_agentic_ping.py`, `tests/test_skills.py` pass.
 
+The full affected-selection run was not completed (selection was the whole suite under load);
+verification was the targeted set (events, revise_pending, quiet, ping, skills, specs,
+spec_status, conduct_cli, conductor_brief, spec_review test files), 378 passed.
+
 ## Definition of done
 
 - [x] Acceptance criteria all met.
