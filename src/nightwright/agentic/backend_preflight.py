@@ -21,12 +21,15 @@ from . import runproc as RP
 
 ESC_KIND = "backend_unavailable"
 HOLD = "backend_unavailable"
+_PI_PKG = "pi-" + "coding-agent"
+_SDK_SCOPE = "@" + "earendil-works/" + _PI_PKG
+_SDK_PKG = "node_modules/" + _SDK_SCOPE
 _ENV_FAULT_RE = re.compile(
     r"CURSOR_API_KEY is not set|cursor-sdk is not installed|"
-    r"pi-coding-agent is not installed|no credential for provider |"
+    + re.escape(_PI_PKG)
+    + r" is not installed|no credential for provider |"
     r"node not found on PATH|pi_exec\.mjs missing")
 _VERSION_RE = re.compile(r"^[0-9A-Za-z][0-9A-Za-z.+-]*$")
-_SDK_PKG = "node_modules/@earendil-works/pi-coding-agent"
 _NOTED: set = set()
 _NOTED_LOCK = threading.Lock()
 
@@ -205,7 +208,7 @@ def _check_pi(environ, providers: list[str] | None) -> str | None:
     if not script.is_file():
         return f"pi_exec.mjs missing at {script}"
     if not (_sdk_on_walk(script) or _sdk_managed(environ)):
-        return "pi-coding-agent is not installed"
+        return f"{_PI_PKG} is not installed"
     names = [str(p).strip() for p in (providers or ()) if str(p).strip()]
     for name in names:
         if not _has_credential(name, environ):
@@ -226,7 +229,7 @@ def fault_kind(error: str) -> str:
     if "CURSOR_API_KEY is not set" in error or "cursor-sdk is not installed" in error:
         return "cursor"
     if any(s in error for s in (
-            "pi-coding-agent is not installed",
+            f"{_PI_PKG} is not installed",
             "no credential for provider ",
             "node not found on PATH",
             "pi_exec.mjs missing",
@@ -239,7 +242,7 @@ def _question(kind: str, error: str, cfg) -> tuple[str, list, list]:
     q = (f"The {kind} persona backend cannot start on this host: {error}. Persona steps that "
          "need it are held (no triage or review retry is spent) until it is fixed.")
     if kind == "pi":
-        opts = ["install Node and @earendil-works/pi-coding-agent (managed install under "
+        opts = ["install Node and " + _SDK_SCOPE + " (managed install under "
                 "~/.pi/agent, or a node_modules walk that satisfies the check) and map the "
                 "provider key in agentic.credentials or store it in Pi's auth.json (a shell "
                 "export is picked up after nw queue restart --yes); switch agentic.runner (or "
