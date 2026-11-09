@@ -3,6 +3,9 @@ from pathlib import Path
 
 from nightwright.rules import load_mappings, resolve_facets
 from nightwright.report import _regroup
+import pytest
+
+pytestmark = pytest.mark.fast
 
 
 def _cfg(tmp_path):
@@ -69,3 +72,5 @@ def test_regroup_inherits_into_bucket(tmp_path):
     assert out["Example"] == 3600.0 + 1800.0
     assert out["scratch"] == 900.0
     assert "example-ats:device-health" not in out
+
+

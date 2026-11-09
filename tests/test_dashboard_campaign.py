@@ -18,6 +18,8 @@ from nightwright.agentic.dashboard import campaign as CP
 from nightwright.agentic.dashboard import server as DS
 from nightwright.cli import cli
 
+pytestmark = pytest.mark.fast
+
 FIX = Path(__file__).parent / "fixtures" / "stream_json" / "ok_text.jsonl"
 
 
@@ -156,3 +158,4 @@ def test_serving_drilldowns_and_tails_writes_nothing(world):
         assert get(world["port"], f"/api/campaigns/{ACTIVE}")[0] == 200
         assert get(world["port"], f"/api/campaigns/{ACTIVE}/tail?run=001")[0] == 200
     assert tree() == before
+

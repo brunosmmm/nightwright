@@ -3,6 +3,9 @@ import shutil
 import subprocess
 import zipfile
 from pathlib import Path
+import pytest
+
+pytestmark = pytest.mark.fast
 
 ROOT = Path(__file__).resolve().parent.parent
 
@@ -19,3 +22,5 @@ def test_wheel_contains_the_builtin_profile_files(tmp_path):
         assert f"nightwright/agentic/profile_defs/{profile}.yaml" in names
     for name in ("claude", "grok", "mixed"):
         assert f"nightwright/agentic/model_set_defs/{name}.yaml" in names
+
+

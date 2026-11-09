@@ -10,6 +10,8 @@ from waits import join
 from nightwright.agentic import store as S
 from nightwright.agentic import schemas as SC
 
+pytestmark = pytest.mark.fast
+
 def _ev(cfg, cid, etype, payload=None, **kw):
     """append_event with the schema's required keys defaulted (SPEC-0192 fixtures)."""
     return S.append_event(cfg, cid, etype, SC.with_defaults(etype, payload), **kw)
@@ -253,3 +255,4 @@ def test_open_keys_nw_sha_and_profile_sha256_are_optional():
     rec = {"schema": SC.LEDGER_SCHEMA, "ts": "2026-10-25T10:00:00-04:00", "seq": 1,
            "campaign": "C", "type": "open", "by": "t", **old}
     assert "nw_sha" not in rec and SC.ledger_problems(rec) == []
+

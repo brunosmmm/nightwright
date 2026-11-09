@@ -15,6 +15,8 @@ from nightwright import org_write as W
 from nightwright import report as R
 from nightwright.console import console
 
+pytestmark = pytest.mark.fast
+
 TZ = ZoneInfo("America/New_York")
 NOW = dt.datetime(2026, 7, 27, 12, 0)
 
@@ -271,3 +273,4 @@ def test_newest_log_stamp_uses_shared_parser():
     """SPEC-0077 folded explore's own regex into `parse_inactive_stamp`."""
     log = "*** [2026-01-02 Fri 08:00]\nolder\n*** [2026-04-05 Sun 17:45]\nnewer\n"
     assert E.newest_log_stamp(log) == dt.datetime(2026, 4, 5, 17, 45)
+

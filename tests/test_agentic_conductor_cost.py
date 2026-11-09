@@ -13,6 +13,8 @@ from nightwright.agentic import schemas as SC
 from nightwright.agentic import store as S
 from nightwright.cli import cli
 
+pytestmark = pytest.mark.fast
+
 TZ = ZoneInfo("America/New_York")
 PRICE = {"input": 10.0, "output": 0.0, "cache_read": 1.0, "cache_write_5m": 0.0,
          "cache_write_1h": 0.0}
@@ -642,3 +644,4 @@ def test_conductor_cost_text_shows_partial_suffix(cfg, monkeypatch):
     r = CliRunner().invoke(cli, ["queue", "conductor-cost"])
     assert r.exit_code == 0, r.output
     assert "(partial: 1 unpriced turns)" in r.output and "no price for: other-y" in r.output
+

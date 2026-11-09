@@ -23,6 +23,8 @@ from test_worker import (Job, Src, _alive, _bundle_job, _gate, _header, _job_dir
                          _no_finish_gc, _sleep_pid, _sleeper, src, wenv)
 from waits import WAIT_S, until
 
+pytestmark = pytest.mark.remote
+
 
 @pytest.fixture(autouse=True)
 def _kill_leftover_jobs(tmp_path):
@@ -1416,3 +1418,4 @@ def test_a_claim_write_that_fails_is_a_claim_error(src, tmp_path, wenv, monkeypa
     r = _submit(wenv, h, data)
     assert r.returncode == 0 and _recs(r)[0]["state"] == "accepted"
     assert _result(wenv, h["job_id"])["state"] == "done"
+

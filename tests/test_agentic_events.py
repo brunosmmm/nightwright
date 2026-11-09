@@ -16,6 +16,8 @@ from nightwright.agentic import store
 from nightwright.cli import cli
 from nightwright.agentic import schemas as SC
 
+pytestmark = pytest.mark.fast
+
 def _ev(cfg, cid, etype, payload=None, **kw):
     """append_event with the schema's required keys defaulted (SPEC-0192 fixtures)."""
     return store.append_event(cfg, cid, etype, SC.with_defaults(etype, payload), **kw)
@@ -729,3 +731,4 @@ def test_rebase_resolved_is_projected(tmp_path):                                
     assert len(hit) == 1 and hit[0]["data"]["conflicts"] == ["src/app.py"]
     E.sync(cfg)
     assert len([e for e in E.read_since(cfg, 0) if e["type"] == "rebase_resolved"]) == 1
+

@@ -11,6 +11,8 @@ from nightwright import org_write as OW
 from nightwright.agentic import queue as Q
 from nightwright.agentic import store as S
 
+pytestmark = pytest.mark.fast
+
 
 def _cfg(tmp_path, **kw):
     repo = make_repo(tmp_path, **kw)
@@ -1104,3 +1106,4 @@ def test_queue_flaky_text_does_not_parse_ids_as_markup(tmp_path, monkeypatch):
     assert r.exit_code == 0, r.output
     flat = r.output.replace("\n", "").replace(" ", "").replace("│", "")
     assert "t::x[json]" in flat and "t::y[/tmp/a]" in flat
+

@@ -12,6 +12,8 @@ from nightwright.agentic import gitops as git
 from nightwright.agentic import schemas as SC
 from nightwright.agentic import sentinel as SN
 
+pytestmark = pytest.mark.fast
+
 PROJECT = "demo"
 _REAL_AFFECTED = CL._affected
 
@@ -438,3 +440,4 @@ def test_concurrent_increments_under_the_lock_all_land(rw):
     st = json.loads(_state_file(rw).read_text())
     assert st["reuses_since_green"] == 8
     assert sorted(s["merge_sha"] for s in st["suspects"]) == shas
+

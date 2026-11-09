@@ -13,6 +13,8 @@ from test_agentic_e2e import run_cli
 from test_agentic_queue import (RV, TG, _apply, _minors, _pending, _reviewing,  # noqa: F401
                                 _rr, _triager_in, _tv, _verdict, opened)
 
+pytestmark = pytest.mark.fast
+
 SPEC = "SPEC-0001"
 
 
@@ -285,3 +287,4 @@ def test_malformed_verdict_files_do_not_break_the_append(opened):
     found = _findings(cfg, cid)
     assert [f["title"] for f in found] == ["x", "y"]
     assert all(f["run_id"] == "008-implementer" and isinstance(f["key"], str) for f in found)
+

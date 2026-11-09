@@ -155,6 +155,7 @@ def gate_env(cfg, state: dict, seq: int | None = None) -> dict[str, str]:
         "NW_WORKTREE": str(repo.get("worktree") or ""),
         "NW_BASE": str(repo.get("base") or ""),
         **full_suite_env(state),
+        **all_tiers_env(cfg, state),
     }
 
 
@@ -162,6 +163,29 @@ def full_suite_env(state: dict) -> dict[str, str]:
     """SPEC-0420: `{"NW_AFFECTED_FULL": "1"}` for a `full_suite` campaign, else `{}`; the remote
     gate and persona job headers carry the same key."""
     return {"NW_AFFECTED_FULL": "1"} if (state or {}).get("full_suite") else {}
+
+
+def all_tiers_env(cfg, state: dict, *, header: bool = False) -> dict[str, str]:
+    """SPEC-0490: `NW_ALL_TIERS=1` for sentinel and full_suite when the project has no cadence."""
+    from . import project as P
+
+    state = state or {}
+    cid = str(state.get("id") or "")
+    if header:
+        if not (state.get("full_suite") or cid.startswith("sentinel-")):
+            return {}
+    elif not state.get("full_suite"):
+        return {}
+    repo = (state.get("repo") or {}).get("worktree") or ""
+    project = state.get("project")
+    if not repo and project:
+        try:
+            repo = str(P.project_root(cfg, project))
+        except (KeyError, ValueError, TypeError):
+            repo = ""
+    if repo and P.project_has_cadence(repo):
+        return {}
+    return {"NW_ALL_TIERS": "1"}
 
 
 def placeholders(state: dict) -> dict:

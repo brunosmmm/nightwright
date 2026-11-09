@@ -23,6 +23,8 @@ from nightwright.agentic import worker as W
 from test_remote_gates import no_disk_guard, DISK_GUARD_OFF
 from waits import WAIT_S, until
 
+pytestmark = pytest.mark.fast
+
 
 def _git(root, *args):
     return subprocess.run(["git", "-C", str(root), *args], check=True, capture_output=True,
@@ -1129,3 +1131,4 @@ def test_workflow_docs_make_the_dedicated_user_mandatory_and_show_the_key_line()
     assert "dedicated" in section and "unprivileged" in section
     assert "mandatory" in section.lower()
     assert 'command="/home/nw/.local/bin/nw worker ssh-command",restrict' in section
+

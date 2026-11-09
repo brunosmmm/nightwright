@@ -18,6 +18,9 @@ from nightwright import org_write as W
 from nightwright import specs as S
 from nightwright.cli import cli
 from nightwright.org import load_tasks
+import pytest
+
+pytestmark = pytest.mark.fast
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 REAL_SPECS = ROOT / "docs" / "specs"
@@ -767,3 +770,5 @@ def test_pull_status_raises_original_error_when_nowhere_to_be_found(tmp_path):
         assert False, "expected ValueError"
     except ValueError as e:
         assert "portable spec not found at" in str(e)
+
+

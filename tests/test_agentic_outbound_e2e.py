@@ -13,6 +13,9 @@ from nightwright.agentic import schemas as SC
 from nightwright.agentic import store as S
 from nightwright.org import load_tasks
 from nightwright.specmeta import split_frontmatter
+import pytest
+
+pytestmark = pytest.mark.integration
 
 REL = "docs/specs/ACME-0001-trivial.md"
 EXTRA = "target_project: acme\n"
@@ -192,3 +195,5 @@ def test_internal_campaign_unchanged(opened):                                   
     (ev,) = S.read_ledger(cfg, cid, types=["idea_reconciled"])
     assert ev["idea_id"] == iid
     assert not list(S.read_ledger(cfg, cid, types=["outbound_pulled"]))
+
+

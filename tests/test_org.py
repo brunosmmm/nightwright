@@ -5,6 +5,9 @@ import os
 
 from nightwright import config as C
 from nightwright.org import Task, _iter_org_paths, _split_keywords, filter_tasks, load_tasks
+import pytest
+
+pytestmark = pytest.mark.fast
 
 FIXTURES = os.path.join(os.path.dirname(__file__), "fixtures", "org")
 
@@ -274,3 +277,5 @@ def test_user_org_files_list_replaces_default(monkeypatch, tmp_path):
     monkeypatch.setattr(C.paths, "cache_dir", lambda: str(tmp_path))
     cfg = C.load_config()
     assert cfg["org_files"] == ["/custom/a.org"]
+
+

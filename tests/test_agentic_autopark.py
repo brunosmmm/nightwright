@@ -5,6 +5,8 @@ import pytest
 
 from nightwright.agentic import autopark as AP
 
+pytestmark = pytest.mark.fast
+
 NOW = dt.datetime(2026, 10, 30, 12, 0, 0, tzinfo=dt.timezone.utc)
 SETT = dict(AP.DEFAULTS)
 
@@ -141,3 +143,4 @@ def test_due_and_has_wait_note():
     assert AP.has_wait_note([{"type": "park", "seq": 2}, note], "parked.base_moving")
     assert not AP.has_wait_note([note, {"type": "park", "seq": 4}], "parked.base_moving")
     assert not AP.has_wait_note([{"type": "park", "seq": 2}, note], "parked.cost_cap")
+

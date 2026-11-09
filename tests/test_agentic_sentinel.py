@@ -23,6 +23,8 @@ from nightwright.agentic import sentinel as SN
 from nightwright.agentic import store
 from nightwright.cli import cli
 
+pytestmark = pytest.mark.fast
+
 PROJECT = "demo"
 SCFG = {"enabled": True, "after_reuses": 3, "max_age_s": 86400}
 NOW = dt.datetime(2026, 11, 1, 12, 0, tzinfo=dt.timezone.utc).timestamp()
@@ -716,3 +718,4 @@ def test_red_settle_opens_an_episode_and_never_escalates(world, monkeypatch):
     assert len(E.read_since(cfg, 0, types=["red_main"])) == 1
     SN.settle(cfg, PROJECT, sha, True, root=str(root))
     assert not RM.is_red(cfg, PROJECT)
+

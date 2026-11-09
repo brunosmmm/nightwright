@@ -9,6 +9,8 @@ import pytest
 
 import tui_budget as B
 
+pytestmark = pytest.mark.perf
+
 TESTS = Path(__file__).resolve().parent
 LIM = B.Limits(test=10.0, file=30.0, total=60.0)
 
@@ -174,3 +176,4 @@ def test_subprocess_malformed_env_fails_clearly(tmp_path):
     r = _run(tmp_path, SLEEPER, NW_TUI_TEST_BUDGET_S="soon")
     assert r.returncode != 0
     assert "NW_TUI_TEST_BUDGET_S" in r.stdout + r.stderr
+

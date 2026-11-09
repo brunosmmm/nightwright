@@ -14,6 +14,8 @@ from nightwright.agentic import queue as Q
 from nightwright.agentic import store as S
 from nightwright.agentic.runner import FakeRunner, RunResult
 
+pytestmark = pytest.mark.fast
+
 A, B = "conformance_reviewer", "second_reviewer"
 B_SETTINGS = {"model": "sonnet", "effort": "low", "max_budget_usd": 1.0,
               "permission_mode": "dontAsk", "read_only": True}
@@ -688,3 +690,4 @@ def test_no_score_note_for_a_retry_or_escalation(opened2):
     row, st = apply_reviews(ctx, cfg, cid, [(B, _rr(None, ok=False))])
     assert st["park"]["reason"] == "review_escalated"
     assert not any(n.startswith("review score") for n in _notes(cfg, cid))
+

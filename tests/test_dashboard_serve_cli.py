@@ -16,6 +16,8 @@ from fixtures.dashboard_data import seed
 from test_dashboard_cli import nw_argv, nw_env
 from waits import until
 
+pytestmark = pytest.mark.fast
+
 
 def dash(fx) -> Path:
     return fx["data"] / "agentic" / "dashboard"
@@ -285,3 +287,4 @@ def test_signal_handlers_are_installed_before_server_json_is_written(fx, monkeyp
     assert seen["term"] is not old[0] and callable(seen["term"])
     assert seen["int"] is not old[1] and callable(seen["int"])
     assert not (dash(fx) / "server.json").exists()
+

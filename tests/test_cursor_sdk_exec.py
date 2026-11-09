@@ -15,6 +15,8 @@ from nightwright.agentic import tail as TL
 from nightwright.agentic import worker as W
 from nightwright.agentic.personas import IMPLEMENTER_SCHEMA
 
+pytestmark = pytest.mark.fast
+
 VERDICT = {"status": "done", "summary": "implemented"}
 KEY = "crsr_test_key_do_not_leak"
 
@@ -394,3 +396,4 @@ def test_main_usage_without_a_run_dir():
         assert CE.main([]) == 2
     finally:
         signal.signal(signal.SIGTERM, prev)
+

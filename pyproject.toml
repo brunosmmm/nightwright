@@ -53,7 +53,12 @@ packages = ["src/nightwright"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+addopts = ["--strict-markers"]
 markers = [
-  "slow: runs a real nested pytest/xdist process (SPEC-0392)",
+  "fast: default unit tests (SPEC-0490)",
+  "integration: slow, e2e, or wide tests (SPEC-0490)",
+  "tui: Textual / pilot tests (SPEC-0490)",
+  "remote: worker-box or remote-loopback tests (SPEC-0490)",
+  "perf: timing-budget guards (SPEC-0490)",
   "tree_guard: scans the tests or src tree; always selected by tools/affected_tests.py --guards (SPEC-0421)",
 ]

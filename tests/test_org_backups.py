@@ -15,6 +15,8 @@ from nightwright.cli import cli
 from nightwright.config import load_config
 from nightwright.org import load_tasks
 
+pytestmark = pytest.mark.fast
+
 
 def _name(base, when):
     return f"{base}.{when.strftime('%Y%m%dT%H%M%S')}.bak"
@@ -460,3 +462,4 @@ def test_yes_prune_holds_org_write_lock(tmp_path, monkeypatch):
     assert run(["backups", "prune", "--yes"]).exit_code == 0
     assert run(["backups", "prune"]).exit_code == 0
     assert depths == [(False, 1), (True, 0)]
+

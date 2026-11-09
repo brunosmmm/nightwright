@@ -409,6 +409,21 @@ def _with_defaults(doc):
     return out
 
 
+def raw_project_doc(repo_root) -> dict:
+    """Parse a `.nw/project.yaml` without validation (SPEC-0490 cadence predicate)."""
+    path = config_path(repo_root)
+    try:
+        doc = yaml.safe_load(path.read_text(encoding="utf-8"))
+    except (OSError, yaml.YAMLError):
+        return {}
+    return doc if isinstance(doc, dict) else {}
+
+
+def project_has_cadence(repo_root) -> bool:
+    """True when the raw project mapping has a non-empty `cadence` list (SPEC-0490)."""
+    return bool(raw_project_doc(repo_root).get("cadence"))
+
+
 def load_project_config(path):
     """Parse, validate and default a `.nw/project.yaml`. Raises ValueError on any problem."""
     path = Path(path)

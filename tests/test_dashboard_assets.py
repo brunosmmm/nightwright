@@ -6,6 +6,8 @@ import pytest
 
 from nightwright.agentic.dashboard import assets
 
+pytestmark = pytest.mark.fast
+
 EXPECTED_CSP = ("default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; "
                 "img-src 'self' data:; base-uri 'none'; form-action 'none'; frame-ancestors 'none'")
 FILES = {"index.html": "text/html; charset=utf-8", "app.js": "application/javascript; charset=utf-8",
@@ -72,3 +74,4 @@ def test_css_layout_rules():
     assert re.search(r"min-height\s*:\s*44px", css)
     assert re.search(r"@media\s*\(\s*prefers-color-scheme\s*:\s*dark\s*\)", css)
     assert "url(" not in css
+

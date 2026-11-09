@@ -16,6 +16,8 @@ from nightwright import org_write as W
 from nightwright import report as R
 from nightwright.console import console
 
+pytestmark = pytest.mark.fast
+
 TZ = ZoneInfo("America/New_York")
 
 
@@ -267,3 +269,4 @@ def test_cli_explored_on_missing_idea_errors(tmp_path, monkeypatch):
     monkeypatch.setattr(cli_mod, "load_config", lambda: cfg)
     r = CliRunner().invoke(cli, ["idea", "mark-explored", "IDEA-404"])
     assert r.exit_code != 0
+

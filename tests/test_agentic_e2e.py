@@ -19,6 +19,8 @@ from nightwright.agentic import store as S
 from nightwright.agentic.runner import FakeRunner
 from nightwright.cli import cli
 
+pytestmark = pytest.mark.integration
+
 ENV = {
     "GIT_AUTHOR_NAME": "nightwright test", "GIT_AUTHOR_EMAIL": "nightwright@test",
     "GIT_COMMITTER_NAME": "nightwright test", "GIT_COMMITTER_EMAIL": "nightwright@test",
@@ -1049,3 +1051,4 @@ def test_e2e_cost_cap_counts_the_adversarial_reviewer(tmp_path, monkeypatch):
     assert st["state"] == "PARKED" and st["park"]["reason"] == "cost_cap"
     assert ADV in st["park"]["detail"]
     assert runner.calls == ["implementer"]
+

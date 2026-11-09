@@ -45,7 +45,7 @@ FRAME_TYPES = frozenset({
     "accepted", "slot_wait", "started", "gate", "done", "error", "status", "progress",
 })
 # SPEC-0420: NW_AFFECTED_FULL makes a red-base fix's gates run the full suite on the worker too
-ENV_ALLOWLIST = frozenset({"NW_CAMPAIGN", "NW_SPEC_ID", "NW_BASE", "NW_AFFECTED_FULL"})
+ENV_ALLOWLIST = frozenset({"NW_CAMPAIGN", "NW_SPEC_ID", "NW_BASE", "NW_AFFECTED_FULL", "NW_ALL_TIERS"})
 MAX_LOG_BYTES = 16 * 1024 * 1024
 MAX_HEADER_BYTES = 4 * 1024 * 1024
 DEFAULT_KEEP_DAYS = 2

@@ -23,6 +23,8 @@ from nightwright.agentic.dashboard import assets
 from nightwright.agentic.dashboard import snapshot as SN
 from waits import WAIT_S
 
+pytestmark = pytest.mark.fast
+
 ROOT = Path(__file__).resolve().parent.parent
 NODE_SCRIPT = "page_http.test.js"        # tests/js/page_http.test.js (named for affected_tests)
 APP_JS = "app.js"                        # src/nightwright/agentic/dashboard/static/app.js
@@ -205,3 +207,4 @@ def test_manual_serve(stub):
     print(f"\nnightwright dashboard stub: http://127.0.0.1:{stub.port}/  (Ctrl-C to stop; "
           "GET /__test/deny401|deny403|allow toggles auth)", flush=True)
     threading.Event().wait()
+

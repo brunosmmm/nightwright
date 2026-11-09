@@ -9,6 +9,8 @@ from nightwright import org_write as W
 from nightwright.org import load_tasks
 from nightwright.workflow import next_step_for_idea
 
+pytestmark = pytest.mark.fast
+
 IDEA_KW = ["IDEA", "INCUBATE", "SPECCED", "|", "PROMOTED", "EXPORTED", "SHIPPED",
            "DROPPED", "RESEARCHED"]
 
@@ -177,3 +179,4 @@ def test_cli_idea_state(tmp_path, monkeypatch):
     assert result.exit_code == 0, result.output
     assert "SHIPPED" in result.output
     assert _idea(cfg).state == "SHIPPED"
+

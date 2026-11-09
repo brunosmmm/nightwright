@@ -15,6 +15,8 @@ from nightwright.agentic import queue as Q
 from nightwright.agentic import restart as RS
 from nightwright.agentic import runner_unit as RU
 
+pytestmark = pytest.mark.fast
+
 
 def _cfg(tmp_path):
     return {"data_dir": str(tmp_path / "d"), "agentic": {"poll_interval_s": 0.01}}
@@ -194,3 +196,4 @@ def test_install_refuses_while_a_stray_runner_holds_the_lease(tmp_path, monkeypa
     if shutil.which("systemctl"):
         assert r.exit_code == 1 and "nw queue stop --yes" in r.output, r.output
     assert not RU.installed()
+

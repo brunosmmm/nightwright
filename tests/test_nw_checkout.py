@@ -12,6 +12,8 @@ from nightwright import skills as SK
 from nightwright import specs as S
 from nightwright.cli import cli
 
+pytestmark = pytest.mark.fast
+
 ROOT = Path(__file__).resolve().parent.parent
 
 
@@ -141,3 +143,4 @@ def test_cli_skills_invalid_override_errors(tmp_path, monkeypatch):
     r = CliRunner().invoke(cli, ["skills", "list", "--dest", str(tmp_path / "d")])
     assert r.exit_code != 0
     assert "not a nightwright checkout" in r.output
+

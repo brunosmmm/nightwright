@@ -14,6 +14,8 @@ from fixtures.dashboard_data import seed
 from nightwright.agentic.dashboard import auth as A
 from nightwright.agentic.dashboard import server as DS
 
+pytestmark = pytest.mark.fast
+
 PEER = "100.101.1.2"
 MAGIC = "box.tail1234.ts.net"
 
@@ -156,3 +158,4 @@ def test_no_cors_headers_on_any_response(ws):
         if method == "OPTIONS":
             assert r.status == 405
     c.close()
+

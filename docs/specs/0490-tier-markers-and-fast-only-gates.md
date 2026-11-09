@@ -1,10 +1,10 @@
 ---
 id: SPEC-0490
 title: "Tier markers and fast-only campaign gates"
-status: accepted
+status: in-progress
 owner: user
 created: 2026-11-09
-updated: 2026-11-09
+updated: 2026-11-10
 milestone: "M9: agentic workflow"
 kind: feature
 parent: SPEC-0489
@@ -176,7 +176,7 @@ green; it goes through `affected_tests.py`, which drops the exclusion.
 
 ## Acceptance criteria
 
-- [ ] Every `tests/test_*.py` declares exactly one module tier, and
+- [x] Every `tests/test_*.py` declares exactly one module tier, and
   `python3 tools/test_tiers.py --check` exits 0 on the real tree. `GUARD_FILES` still contains
   the text `pytest.mark.slow`, and `test_gate_timeout_tree.py` has no `slow` decorator.
 - [ ] The guard fails on each of these: no tier, two tiers, an unknown tier, or a leftover
@@ -203,8 +203,8 @@ green; it goes through `affected_tests.py`, which drops the exclusion.
 
   No module appears twice. The temp-tree tests cover a `run_test` module, a `remote_loopback`
   import and a `*_race` module.
-- [ ] `pyproject.toml` registers the five tiers, not `slow`, and runs with `--strict-markers`.
-- [ ] `--exclude-marks` applies to the selection and the full fallback, is inserted before the
+- [x] `pyproject.toml` registers the five tiers, not `slow`, and runs with `--strict-markers`.
+- [x] `--exclude-marks` applies to the selection and the full fallback, is inserted before the
   paths, and does not start pytest on an empty selection. Exit 5 becomes 0 only for a partial
   selection with `NW_ALL_TIERS` off; it stays non-zero for a full run, a forced-full run and
   `NW_ALL_TIERS=1`. `NW_ALL_TIERS=1` drops the expression and the off-set keeps it.
@@ -217,7 +217,7 @@ green; it goes through `affected_tests.py`, which drops the exclusion.
   non-empty `cadence` none of the four has it. `worker.ENV_ALLOWLIST` includes it.
 - [ ] A targeted retry under `NW_ALL_TIERS=1` whose failing id is heavy is recorded as
   unresolved, and the gate passes only on the full rerun.
-- [ ] `nw gate run --timeout-s` exists (default 1200 for other callers). The measuring command in
+- [x] `nw gate run --timeout-s` exists (default 1200 for other callers). The measuring command in
   *Design* includes `--timeout-s 7200`, and a non-zero or timed-out pytest log is not passed to
   `--classify` or `--apply`.
 - [ ] nightwright's two pytest gates exclude the heavy tiers. The measured durations of both
@@ -247,6 +247,20 @@ green; it goes through `affected_tests.py`, which drops the exclusion.
 - **Regression guard:** projects without `cadence:` and without `--exclude-marks` resolve
   identical gate dicts. Run the affected tests plus the files above, never the full suite by
   hand.
+
+### Test record (2026-11-10)
+
+- `python3 tools/test_tiers.py check` (exit 0 on the real tree).
+- `uv run pytest -q tests/test_test_tiers.py tests/test_affected_tests.py tests/test_agentic_dogfood_config.py tests/test_agentic_gates.py::test_gate_env_full_suite_sets_all_tiers_without_cadence tests/test_agentic_gates.py::test_gate_run_resolve_ad_hoc_timeout tests/test_remote_gates.py::test_header_full_suite_includes_all_tiers` (133 passed).
+- `python3 tools/spec_lint.py` (pre–write-ledger).
+- Box measuring runs and full suite left to gating.
+
+### As shipped (2026-11-10)
+
+- Tier marks applied to all `tests/test_*.py` via `tools/test_tiers.py --apply` (taxonomy +
+  synthetic durations stub; box run with `--durations=0` still pending).
+- `pytest-affected` / `pytest` gate `timeout_s` remain **2400** until the fast-tier measuring
+  runs on the worker box land.
 
 ## Rollout / migration
 

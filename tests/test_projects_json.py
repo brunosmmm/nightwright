@@ -6,6 +6,9 @@ from click.testing import CliRunner
 
 from nightwright.cli import cli
 from nightwright.rules import projects_payload
+import pytest
+
+pytestmark = pytest.mark.fast
 
 
 def _cfg(tmp_path, *, with_outbox=True):
@@ -64,3 +67,5 @@ def test_cli_projects_json(tmp_path, monkeypatch):
     assert data["schema"] == "nw.projects.v1"
     assert {p["name"] for p in data["projects"]} >= {"Example", "Logging", "Meta-Tools",
                                                        "PFW-Intelligence"}
+
+

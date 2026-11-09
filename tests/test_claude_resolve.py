@@ -13,6 +13,8 @@ from nightwright.agentic import runner as R
 from nightwright.agentic import runproc as RP
 from nightwright.agentic import worker as W
 
+pytestmark = pytest.mark.fast
+
 
 def _stub(home: Path) -> Path:
     d = home / ".local" / "bin"
@@ -86,3 +88,4 @@ def test_run_job_raises_job_level_error_without_claude(tmp_path, monkeypatch):
         RPS.run_job(cfg, h, job, Frames(), threading.Event())
     detail = W.error_detail(cfg, FileNotFoundError(2, "x", "claude"), job)
     assert detail["job_error"] is True and detail["filename"] == "claude"
+

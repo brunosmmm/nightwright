@@ -5,6 +5,9 @@ from click.testing import CliRunner
 
 from nightwright.cli import cli
 from nightwright.org import load_tasks
+import pytest
+
+pytestmark = pytest.mark.fast
 
 
 def _cfg(tmp_path):
@@ -69,3 +72,5 @@ def test_other_kinds_silent(tmp_path, monkeypatch):
         r = CliRunner().invoke(cli, ["idea", f"x-{kind}", "--kind", kind])
         assert r.exit_code == 0, r.output
         assert "prefer a task" not in r.output.lower()
+
+

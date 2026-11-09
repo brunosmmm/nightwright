@@ -12,6 +12,8 @@ from nightwright.agentic import events as E
 from nightwright.agentic import queue as Q
 from nightwright.agentic import store as S
 
+pytestmark = pytest.mark.fast
+
 
 @pytest.fixture
 def two(tmp_path, monkeypatch):
@@ -147,3 +149,4 @@ def test_events_listing_and_dashboard_show_waiting(two, monkeypatch):
     admitted = [ev for ev in E.read_since(cfg, 0) if ev["type"] == "admitted"
                 and ev["campaign"] == b]
     assert admitted and admitted[-1]["data"].get("from") == "WAITING"
+

@@ -12,6 +12,8 @@ from nightwright.agentic import persona_registry as R
 from nightwright.agentic import personas as PS
 from nightwright.agentic.profiles import resolve_profile
 
+pytestmark = pytest.mark.fast
+
 TEMPLATE = "Review {{spec_id}} in {{worktree}} for crypto misuse.\n{{diff}}\n{{test_files}}\n"
 ROOT = Path(__file__).resolve().parent.parent
 DEFS = ROOT / "src" / "nightwright" / "agentic" / "persona_defs"
@@ -416,3 +418,4 @@ def test_inert(env):
                                                          "security_reviewer"]}}
     with pytest.raises(ValueError, match="security_reviewer"):
         resolve_profile(cfg, "mine", project_root=root)
+

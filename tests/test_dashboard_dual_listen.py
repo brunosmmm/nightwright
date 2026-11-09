@@ -26,6 +26,8 @@ from nightwright.agentic.dashboard.snapshot import SnapshotCache
 from test_dashboard_cli import nw_env
 from test_dashboard_serve_cli import dash, nw_argv, start, stop, wait_server
 
+pytestmark = pytest.mark.fast
+
 PEER = "100.101.1.2"
 TAILNET = "127.0.0.2"           # stands in for this host's tailnet address
 
@@ -402,3 +404,4 @@ def test_a_changed_tailnet_address_rebinds(dual):
     e = dual["sup"].poll()
     assert e["state"] == "listening" and e["url"] == f"http://{other}:{dual['port']}"
     assert refused(TAILNET, dual["port"]) and dual["req"](other)[0] == 200
+

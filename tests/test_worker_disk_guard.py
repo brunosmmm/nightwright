@@ -16,6 +16,8 @@ from nightwright.agentic import workers_update as WU
 from nightwright.cli import cli
 from test_worker import _gate, _header
 
+pytestmark = pytest.mark.fast
+
 
 def _cfg(tmp_path, **workers):
     return {"data_dir": str(tmp_path / "data"), "agentic": {"workers": workers}}
@@ -204,3 +206,4 @@ def test_update_preflight_blocks_low_free_space(tmp_path, monkeypatch):
                 WU._preflight({}, {}, plan)
     monkeypatch.setattr(WK, "check", lambda cfg, rec: (_ for _ in ()).throw(OSError("x")))
     WU._preflight({}, {}, plan)
+

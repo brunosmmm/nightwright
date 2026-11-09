@@ -12,6 +12,8 @@ from nightwright.agentic import queue as Q
 from nightwright.agentic import store as S
 from nightwright.agentic import schemas as SC
 
+pytestmark = pytest.mark.fast
+
 def _ev(cfg, cid, etype, payload=None, **kw):
     """append_event with the schema's required keys defaulted (SPEC-0192 fixtures)."""
     return S.append_event(cfg, cid, etype, SC.with_defaults(etype, payload), **kw)
@@ -672,3 +674,4 @@ def test_backlog_json_has_no_tui_only_keys(tmp_path, monkeypatch):            # 
     assert r.exit_code == 0, r.output
     items = json.loads(r.output)["items"]
     assert items and not any("state_since" in i or "created_at" in i for i in items)
+

@@ -17,6 +17,8 @@ from nightwright.agentic import queue as Q
 from nightwright.agentic import restart as RS
 from nightwright.agentic import store as S
 
+pytestmark = pytest.mark.fast
+
 # A fake runner: takes the lease of the data dir in argv[1] (argv[2:] is its "command line",
 # containing `queue run`), releases it on SIGTERM.
 RUNNER = r"""
@@ -470,3 +472,4 @@ def test_journal_line_for_a_restart():
                            "id": "R-1", "phase": "done", "parked": ["a", "b"],
                            "resumed": ["a", "b"], "old_pid": 5, "new_pid": 9})
     assert "⟲ restart R-1  runner 5 → 9; parked 2, resumed 2" in g.renderables[0].plain
+

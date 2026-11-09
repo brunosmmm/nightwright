@@ -10,6 +10,8 @@ from nightwright.agentic import redmain as RM
 from nightwright.agentic import sentinel as SN
 from nightwright.agentic import store
 
+pytestmark = pytest.mark.fast
+
 PROJECT = "demo"
 GOOD = "def test_a():\n    assert True\n\n\ndef test_b():\n    from mod import f\n    assert f() == 1\n"
 
@@ -81,3 +83,4 @@ def test_a_running_sentinel_defers_localize(episode):
     with SN.run_lock(cfg, PROJECT):
         out = RM.localize(cfg, PROJECT, root=str(root), project_cfg={"_root": str(root)})
     assert out.get("retry") and out["culprit"] is None and probes == []
+

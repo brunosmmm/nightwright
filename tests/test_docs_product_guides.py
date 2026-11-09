@@ -1,5 +1,8 @@
 """SPEC-0144: product guides are non-stub and cover core workflows."""
 from pathlib import Path
+import pytest
+
+pytestmark = pytest.mark.fast
 
 ROOT = Path(__file__).resolve().parent.parent
 GUIDES = ROOT / "docs" / "product" / "guides"
@@ -38,3 +41,5 @@ def test_guides_index_lists_five():
         "multi-project.md",
     ):
         assert slug in index
+
+

@@ -10,6 +10,8 @@ from test_agentic_events import _campaign, _cfg
 from nightwright.agentic import events as E
 from nightwright.tui import agentic_model as AM
 
+pytestmark = pytest.mark.tui
+
 
 def _append(cfg, type_, campaign=None, **data):
     return E.append(cfg, type_, campaign=campaign, by="test", data=data)
@@ -215,3 +217,4 @@ def test_events_signature_tracks_the_file(tmp_path):
     assert first[0] > 0
     _append(cfg, "admitted", "SPEC-0002-a")
     assert AM.events_signature(cfg)[0] > first[0]
+

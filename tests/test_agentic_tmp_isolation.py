@@ -18,6 +18,8 @@ from nightwright.agentic import store as S
 from nightwright.agentic.profiles import resolve_profile
 from nightwright.agentic.runner import RunResult
 
+pytestmark = pytest.mark.fast
+
 CID = "SPEC-0900-20261026-aaaa"
 _GATE = {"ok": True, "started_at": "2026-10-26T10:00:00+00:00", "duration_s": 1.0, "results": []}
 
@@ -448,3 +450,4 @@ def test_pressure_pauses_admission_but_not_in_flight_campaigns(tmp_path, monkeyp
 def test_conduct_skill_has_temp_pressure_row():
     skill = Path(__file__).resolve().parents[1] / "skills" / "nw-conduct" / "SKILL.md"
     assert any(("|" + l.split("|", 2)[-1]).startswith("| `temp_pressure`") for l in skill.read_text().splitlines())
+

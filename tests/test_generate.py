@@ -13,6 +13,9 @@ from nightwright import org_write as W
 from nightwright import specs as S
 from nightwright.cli import cli
 from nightwright.org import join_time, load_tasks
+import pytest
+
+pytestmark = pytest.mark.fast
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 REAL_SPECS = ROOT / "docs" / "specs"
@@ -265,3 +268,5 @@ def test_cli_spec_generate_refuses_outbound(tmp_path, monkeypatch):
     r = CliRunner().invoke(cli, ["spec", "generate", "EXAMPLE-0001"])
     assert r.exit_code != 0
     assert "outbound" in r.output.lower()
+
+

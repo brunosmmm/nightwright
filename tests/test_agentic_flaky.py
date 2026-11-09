@@ -9,6 +9,8 @@ from waits import join
 
 from nightwright.agentic import flaky as FL
 
+pytestmark = pytest.mark.fast
+
 T0 = dt.datetime(2026, 10, 1, 12, 0).astimezone()
 
 
@@ -121,3 +123,4 @@ def test_lookup_and_list_sorted(cfg):
     assert FL.lookup({"data_dir": cfg["data_dir"] + "x"}, "P", ["t::a"]) == {}
     with pytest.raises(ValueError):
         FL.record(cfg, "P", ["t::a"], campaign="C", source="bogus")
+

@@ -18,6 +18,8 @@ from nightwright import org_write as W
 from nightwright import report as R
 from nightwright.org import load_tasks
 
+pytestmark = pytest.mark.fast
+
 OLD = "[2019-01-01 Tue 00:00]"
 
 
@@ -345,3 +347,4 @@ def test_idea_row_omits_absent_stamps(tmp_path):
     _rewrite_updated(cfg, None)
     row = R.idea_row(cfg, _idea(cfg))
     assert "updated" not in row and "created" in row
+

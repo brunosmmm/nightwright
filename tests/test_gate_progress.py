@@ -3,6 +3,9 @@ import os
 
 from nightwright.agentic import gate_progress as GP
 from nightwright.agentic import store
+import pytest
+
+pytestmark = pytest.mark.fast
 
 
 def test_parse_percent_takes_the_last_marker():
@@ -32,3 +35,5 @@ def test_live_percent_then_estimate_fallback(tmp_path):
     assert p == {"percent": 40, "estimated": True}
     assert GP.progress(cfg, cid, since=None, elapsed_s=40, events=[], remote=True) is None
     assert GP.estimate(500, 100) == 99
+
+

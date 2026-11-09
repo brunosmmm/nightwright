@@ -12,6 +12,8 @@ from nightwright.agentic import lease as L
 from nightwright.agentic import queue as Q
 from nightwright.agentic import store as S
 
+pytestmark = pytest.mark.integration
+
 PROFILE = {"slots": 2, "loop_max": 3, "campaign_cap_usd": 10.0, "run_timeout_s": 60,
            "personas": {"conformance_reviewer": {"max_budget_usd": 1.5}}}
 
@@ -97,3 +99,4 @@ def test_request_cleared_on_disk_before_the_read_is_not_resurrected(opened):    
     row = Q._apply(ctx, state, _step(cid, state))
     assert row["to"] == "REVIEWING" and row["reason"] == "review_retry"
     assert "park_requested" not in S.read_state(cfg, cid)
+

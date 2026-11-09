@@ -14,7 +14,7 @@ from nightwright import buildid
 from nightwright.agentic import worker_update as WU
 
 ROOT = Path(__file__).resolve().parents[1]
-pytestmark = pytest.mark.skipif(shutil.which("uv") is None, reason="uv is not installed")
+pytestmark = [pytest.mark.fast, pytest.mark.skipif(shutil.which('uv') is None, reason='uv is not installed')]
 
 
 def test_a_real_wheel_installs_and_reports_its_build_id(tmp_path, monkeypatch):
@@ -41,3 +41,4 @@ def test_a_real_wheel_installs_and_reports_its_build_id(tmp_path, monkeypatch):
     p = subprocess.run([str(tbin / "nw"), "worker", "info", "--json"], capture_output=True,
                        text=True, check=True)
     assert json.loads(p.stdout)["build_id"] == build
+

@@ -9,6 +9,8 @@ from nightwright.agentic import queue as Q
 from nightwright.agentic import store as S
 from nightwright.tui import agentic_model as AM
 
+pytestmark = pytest.mark.tui
+
 
 def _by(rows):
     return {(r.group, r.campaign): r for r in rows if r.kind == "campaign"}
@@ -236,3 +238,4 @@ def test_tui_activity_review_chips():                                      # SPE
                       {"persona": "extra_reviewer", "status": "not_run"}]}
     assert AM.activity_text(it) == "✓conf ✗adve ▶test ·extr"
     assert AM.activity_text({**it, "reviews": []}) == ""
+

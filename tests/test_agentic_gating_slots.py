@@ -3,6 +3,9 @@ from test_agentic_waiting import _set, _started_parked, two  # noqa: F401  (fixt
 from nightwright.agentic import events as E
 from nightwright.agentic import queue as Q
 from nightwright.agentic import store as S
+import pytest
+
+pytestmark = pytest.mark.fast
 
 
 def test_gating_is_active_but_not_a_slot_state():
@@ -30,3 +33,5 @@ def test_occupied_ignores_gating_rows_and_flights():
     rows = [{"id": "A", "state": "GATING"}, {"id": "B", "state": "IMPLEMENTING"}]
     assert E._occupied(rows, {"in_flight": ["A", "C"]}) == 2     # B and C
     assert Q.slot_ids(rows, ["A"]) == {"B"}
+
+

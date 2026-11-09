@@ -6,6 +6,9 @@ import zipfile
 from pathlib import Path
 
 from waits import WAIT_S
+import pytest
+
+pytestmark = pytest.mark.fast
 
 ROOT = Path(__file__).resolve().parent.parent
 PREFIX = "nightwright/agentic/dashboard/"
@@ -23,3 +26,5 @@ def test_wheel_contains_the_page_files(tmp_path):
     names = set(zipfile.ZipFile(wheels[0]).namelist())
     for f in ("assets.py", "static/index.html", "static/app.js", "static/app.css"):
         assert PREFIX + f in names, f
+
+

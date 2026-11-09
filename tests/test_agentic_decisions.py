@@ -13,6 +13,8 @@ from nightwright.agentic import schemas as SC
 from nightwright.agentic import store as S
 from nightwright.cli import cli
 
+pytestmark = pytest.mark.fast
+
 UTC = dt.timezone.utc
 
 
@@ -598,3 +600,4 @@ def test_inferred_write_is_append_only(cfg, run):
     before = D.log_path(cfg).read_bytes()
     assert _dec(run, f"second {CA}").exit_code == 0
     assert D.log_path(cfg).read_bytes().startswith(before)
+

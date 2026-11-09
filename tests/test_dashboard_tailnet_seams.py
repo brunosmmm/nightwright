@@ -5,6 +5,9 @@ from pathlib import Path
 
 from nightwright.agentic import cli_worker
 from nightwright.agentic.dashboard import server as DS
+import pytest
+
+pytestmark = pytest.mark.fast
 
 SRC = Path(DS.__file__).parent
 CLI = Path(cli_worker.__file__)
@@ -54,3 +57,5 @@ def test_reference_doc_lists_bind_tailscale_and_exit_3():
     row = next(ln for ln in doc.splitlines() if ln.startswith("| `serve` |"))
     assert "--bind tailscale" in row and "exits **3**" in row
     assert "naming `tailscale up`. Exactly one" in row
+
+

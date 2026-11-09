@@ -16,6 +16,8 @@ from nightwright.agentic import store as S
 from test_agentic_e2e import (SPEC_ACCEPTED, _git, added, make_cfg, make_repo, run_cli,
                               script, review, triage)
 
+pytestmark = pytest.mark.fast
+
 BASE = """---
 id: SPEC-0900
 title: "Guarded"
@@ -314,3 +316,4 @@ def test_e2e_implementer_deleting_an_ac_never_merges(tmp_path, monkeypatch):
         SPEC_ACCEPTED.format(id="SPEC-0001", extra="")
     # the triager saw the synthetic gate
     assert any(r_["name"] == "spec-changed" for r_ in (st.get("last_gate") or {}).get("results", []))
+

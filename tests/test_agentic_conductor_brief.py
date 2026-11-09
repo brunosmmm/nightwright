@@ -14,6 +14,8 @@ from nightwright.agentic import mailbox as M
 from nightwright.agentic import queue as Q
 from nightwright.agentic import store as S
 
+pytestmark = pytest.mark.fast
+
 
 def brief(cfg):
     return BR.conductor_brief(cfg, now=dt.datetime.now().astimezone())
@@ -285,3 +287,4 @@ def test_cli_conductor_brief_json_shows_auto(cfg, clock, run):
     b = json.loads(run("conductor-brief", "--json").output)
     assert b["parked"][0]["auto"] == {"rule": "parked.base_moving",
                                       "resume_at": "2026-10-30T10:01:00+00:00"}
+

@@ -14,6 +14,8 @@ from nightwright import doctor as D
 from nightwright.agentic import conductor_cost as CC
 from nightwright.cli import cli
 
+pytestmark = pytest.mark.fast
+
 ROOT = Path(__file__).resolve().parent.parent
 CONDUCTOR = "11111111-1111-1111-1111-111111111111"
 
@@ -189,3 +191,4 @@ def test_doctor_does_not_warn_for_hand_started_conductor(tmp_path):
     CC.record_session(cfg, "conductor", {}, source="follower", session_id="hand")
     CC.record_session(cfg, "conductor", {}, source="manual", session_id="hand2")
     assert D.check_conductor(cfg)["status"] == "ok"
+

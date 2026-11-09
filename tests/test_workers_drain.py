@@ -25,6 +25,8 @@ from test_remote_job_records import ASYNC_INFO, AW, JOB, _detached, _gate_and_ap
     _gate_names_frames
 from waits import join, until
 
+pytestmark = pytest.mark.fast
+
 
 @pytest.fixture
 def cfg(tmp_path):
@@ -740,3 +742,4 @@ def test_repeated_skip_is_journaled_once(cfg):
     p.write_text("[also not a registry")
     Q._finish_worker_drains(cfg)
     assert _journal_kinds(cfg).count("worker_drain_skipped") == 3
+

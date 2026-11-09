@@ -11,6 +11,8 @@ from nightwright.agentic import queue as Q
 from nightwright.agentic import store as S
 from nightwright.cli import cli
 
+pytestmark = pytest.mark.fast
+
 UTC = dt.timezone.utc
 T0 = dt.datetime(2026, 10, 30, 12, 0, 0, tzinfo=UTC)
 
@@ -268,3 +270,4 @@ def test_e4_over_conductor_parks(cfg, monkeypatch):
     crit, bad = MR.e4(cfg, [{"campaign": i} for i in ids], T0 - dt.timedelta(days=1),
                       now[0] + dt.timedelta(days=1), {"e4": 1.0})
     assert bad == [], bad
+

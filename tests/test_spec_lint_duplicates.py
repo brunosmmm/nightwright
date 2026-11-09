@@ -1,6 +1,9 @@
 """spec_lint reports duplicate spec ids and duplicate number prefixes (SPEC-0274)."""
 import importlib.util
 import pathlib
+import pytest
+
+pytestmark = pytest.mark.fast
 
 LINT = pathlib.Path(__file__).resolve().parent.parent / "tools" / "spec_lint.py"
 
@@ -46,3 +49,5 @@ def test_unique_ids_no_duplicate_problem(tmp_path, monkeypatch):
     _write(tmp_path / "0001-a.md", "SPEC-0001")
     _write(tmp_path / "0002-b.md", "SPEC-0002")
     assert not any("duplicate" in p for p in _problems(mod, tmp_path, monkeypatch))
+
+

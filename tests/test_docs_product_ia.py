@@ -1,5 +1,8 @@
 """SPEC-0142: docs/product IA tree + home narrative keywords."""
 from pathlib import Path
+import pytest
+
+pytestmark = pytest.mark.fast
 
 ROOT = Path(__file__).resolve().parent.parent
 PRODUCT = ROOT / "docs" / "product"
@@ -65,3 +68,5 @@ def test_glossary_has_core_terms():
     gloss = (PRODUCT / "concepts" / "index.md").read_text(encoding="utf-8").lower()
     for term in ("topic", "idea", "spec", "outbound", "hub", "desk", "clock-in", "facet"):
         assert term in gloss, f"glossary missing {term!r}"
+
+

@@ -11,6 +11,8 @@ from nightwright.agentic import events as E
 from nightwright.agentic import mailbox as M
 from nightwright.agentic import queue as Q
 
+pytestmark = pytest.mark.fast
+
 CAMPAIGN_EVENTS = [
     {"seq": 3, "ts": "2026-10-25T13:47:00-04:00", "campaign": "c", "type": "transition",
      "by": "tick", "from": "OPENING", "to": "IMPLEMENTING", "reason": "opened"},
@@ -130,3 +132,4 @@ def test_campaign_event_outbound_pulled():                                      
           "from": "EXPORTED", "to": "SHIPPED"}
     assert R.campaign_event(ev).plain.endswith(
         "outbox ACME-0001 → done; idea IDEA-038: EXPORTED -> SHIPPED")
+

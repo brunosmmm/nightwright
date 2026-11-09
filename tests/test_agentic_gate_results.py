@@ -3,6 +3,8 @@ import pytest
 
 from nightwright.agentic import gate_results as GR
 
+pytestmark = pytest.mark.fast
+
 
 def test_pytest_full_summary_line():
     log = ("FAILED tests/a.py::test_x - assert 0\nFAILED tests/a.py::test_y\n"
@@ -122,3 +124,4 @@ def test_junit_stale_file_is_refused(tmp_path):
         GR.parse_junit(f, mtime + 1)
     assert "stale" in GR.parse({"format": "junit", "path": "r.xml"}, tmp_path / "x.log",
                                tmp_path, mtime + 1)["error"]
+

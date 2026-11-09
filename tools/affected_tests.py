@@ -850,6 +850,33 @@ def _strict_env():
     return os.environ.get("NW_AFFECTED_STRICT", "").strip().lower() not in ("", "0", "false", "no")
 
 
+def _env_on(name: str) -> bool:
+    return os.environ.get(name, "").strip().lower() not in ("", "0", "false", "no")
+
+
+def _all_tiers() -> bool:
+    return _env_on("NW_ALL_TIERS")
+
+
+def _exclude_mark_expr(marks: list[str]) -> str | None:
+    if not marks or _all_tiers():
+        return None
+    return f"not ({' or '.join(marks)}) or tree_guard"
+
+
+def _insert_before_paths(cmd: list[str], expr: str | None) -> list[str]:
+    if not expr:
+        return cmd
+    out = list(cmd)
+    at = len(out)
+    for i, a in enumerate(out):
+        if a.startswith(f"{TESTS_DIR}/") or a == TESTS_DIR:
+            at = i
+            break
+    out[at:at] = ["-m", expr]
+    return out
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     ap.add_argument("--base", default=os.environ.get("NW_BASE") or "main",
@@ -872,6 +899,8 @@ def main(argv=None):
                     help="with --json: add the forward static closure of the selection")
     ap.add_argument("--changed", action="append", default=None, metavar="PATH",
                     help="repo-relative changed path replacing the git diff; repeatable")
+    ap.add_argument("--exclude-marks", default="", metavar="A,B,…",
+                    help="append -m 'not (A or B …) or tree_guard' before selected paths (SPEC-0490)")
     ap.add_argument("--run", nargs=argparse.REMAINDER,
                     help="command to run with the selection appended (must come last)")
     args = ap.parse_args(argv)
@@ -899,6 +928,11 @@ def main(argv=None):
         guards = _guards(Index(repo))
         sel.tests = sorted(set(sel.tests) | set(guards))
         sel.reason += f" +{len(guards)} guards"
+    exclude = [m.strip() for m in (args.exclude_marks or "").split(",") if m.strip()]
+    mark_expr = _exclude_mark_expr(exclude)
+    all_tiers = _all_tiers()
+    if exclude and all_tiers:
+        print("affected_tests: all tiers", file=sys.stderr, flush=True)
     label = "full suite" if sel.full else "affected"
     print(f"affected_tests: {label}: {sel.reason}", file=sys.stderr, flush=True)
     report_path = os.environ.get("NW_GATE_REPORT")
@@ -906,7 +940,8 @@ def main(argv=None):
         report = {"full": sel.full, "reason": sel.reason, "tests": [] if sel.full else sel.tests,
                   "include": list(args.include), "changed": changed, "base_sha": base_sha,
                   "head_sha": _git_out(repo, "rev-parse", "HEAD"),
-                  "head_tree": _git_out(repo, "rev-parse", "HEAD^{tree}")}
+                  "head_tree": _git_out(repo, "rev-parse", "HEAD^{tree}"),
+                  "exclude_marks": exclude, "all_tiers": all_tiers}
         if args.guards:
             report["guards"] = guards
         if report_path:
@@ -924,10 +959,14 @@ def main(argv=None):
     if not sel.full and not sel.tests:
         print("no affected tests", file=sys.stderr if args.json else sys.stdout, flush=True)
         return 0
-    cmd = list(args.run) + ([] if sel.full else sel.tests)
+    cmd = _insert_before_paths(list(args.run) + ([] if sel.full else sel.tests), mark_expr)
     print("affected_tests: running " + " ".join(cmd), file=sys.stderr, flush=True)
     os.chdir(repo)
-    os.execvp(cmd[0], cmd)
+    code = subprocess.run(cmd).returncode
+    if code == 5 and exclude and not all_tiers and not sel.full:
+        print("affected_tests: no fast tests in the selection", file=sys.stderr, flush=True)
+        return 0
+    return code
 
 
 if __name__ == "__main__":

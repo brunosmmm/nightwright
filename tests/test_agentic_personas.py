@@ -12,6 +12,8 @@ from nightwright.agentic.profiles import resolve_profile
 from nightwright.cli import cli
 from nightwright.agentic import schemas as SC
 
+pytestmark = pytest.mark.fast
+
 def _ev(cfg, cid, etype, payload=None, **kw):
     """append_event with the schema's required keys defaulted (SPEC-0192 fixtures)."""
     return S.append_event(cfg, cid, etype, SC.with_defaults(etype, payload), **kw)
@@ -1080,3 +1082,4 @@ def test_flaky_history_none_known(tmp_path):
     p = PS.build_prompt("gate_triager", PS.build_context(cfg, st, _project_cfg()))
     assert "## Known flaky tests" in p and "(none known)" in p
     assert PS.render_flaky_history(cfg, dict(st, last_gate=None)) == "(none known)"
+

@@ -8,6 +8,8 @@ from nightwright.agentic import queue as Q
 from nightwright.agentic import runner as R
 from nightwright.agentic.model_sets import bind, resolve_model_set
 
+pytestmark = pytest.mark.fast
+
 
 def _set(name):
     return resolve_model_set({"agentic": {"model_set": name}})
@@ -136,3 +138,4 @@ def test_local_runner_passes_the_request_runner():
             return "old"
 
     assert Q._local_runner(Old(), {}, SimpleNamespace(runner="cursor")) == "old"
+

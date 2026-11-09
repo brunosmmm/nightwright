@@ -9,6 +9,8 @@ from nightwright.agentic import gate_slots as GS
 from nightwright.agentic import workers as WK
 from waits import join, until
 
+pytestmark = pytest.mark.fast
+
 FUTURE = "2999-01-01T00:00:00+00:00"
 
 
@@ -117,3 +119,4 @@ def test_bad_repool_keeps_the_current_list(cfg):
         raise ValueError("registry unreadable")
     for repool in (boom, lambda: [], lambda: [("Bad Name", 1)]):
         assert GS._repooled(cfg, repool, [("box", 1)]) == [("box", 1)]
+

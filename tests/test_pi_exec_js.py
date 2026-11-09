@@ -5,6 +5,9 @@ import sys
 from pathlib import Path
 
 from waits import WAIT_S
+import pytest
+
+pytestmark = pytest.mark.fast
 
 ROOT = Path(__file__).resolve().parent.parent
 JS_TEST = ROOT / "tests" / "js" / "pi_exec.test.js"
@@ -36,3 +39,5 @@ def test_pi_exec_js_edit_selects_this_module(monkeypatch):
 
     sel = json.loads(r.stdout)
     assert "tests/test_pi_exec_js.py" in sel.get("tests", [])
+
+

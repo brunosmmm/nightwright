@@ -3,6 +3,9 @@ and declares the repo's two DoD gates with merge-to-main."""
 from pathlib import Path
 
 from nightwright.agentic import project as P
+import pytest
+
+pytestmark = pytest.mark.fast
 
 ROOT = Path(__file__).resolve().parent.parent
 
@@ -22,6 +25,9 @@ def test_dogfood_project_config_loads_and_names_the_gates():
     assert not doc.get("close", {}).get("force_full")              # SPEC-0359: no escape hatch
     # SPEC-0378: the close gate runs the affected selection, never the bare full suite
     assert gates["pytest"]["cmd"].startswith("python3 tools/affected_tests.py")
+    assert "--exclude-marks integration,tui,remote,perf" in gates["pytest-affected"]["cmd"]
+    assert "--exclude-marks integration,tui,remote,perf" in gates["pytest"]["cmd"]
+    assert '-m "not (integration or tui or remote or perf) or tree_guard"' in gates["pytest"]["retry_cmd"]
     assert "--run uv run pytest" in gates["pytest"]["cmd"]
     assert gates["pytest"]["retries"] == 2 and "{failing}" in gates["pytest"]["retry_cmd"]
     assert gates["pytest"]["required"] and gates["spec-lint"]["required"]
@@ -48,3 +54,5 @@ def test_agentic_capability_doc_names_the_reuse_knobs():
     for needle in ("reuse_from", "close.force_full", "NW_CLOSE_FULL",
                    "nw queue sentinel run", "nw queue sentinel clear"):
         assert needle in text, needle
+
+

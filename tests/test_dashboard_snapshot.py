@@ -22,6 +22,8 @@ from nightwright.agentic import store as S
 from nightwright.agentic.dashboard import settings
 from nightwright.agentic.dashboard import snapshot as SN
 
+pytestmark = pytest.mark.fast
+
 
 @pytest.fixture
 def fx(tmp_path):
@@ -475,3 +477,4 @@ def test_build_without_a_data_dir_raises(tmp_path):
     with pytest.raises(FileNotFoundError, match="does not exist"):
         SN.build({"data_dir": str(tmp_path / "missing"), "agentic": {}})
     assert not (tmp_path / "missing").exists()
+

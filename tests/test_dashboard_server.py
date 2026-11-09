@@ -13,6 +13,8 @@ from nightwright.agentic.dashboard import auth as A
 from nightwright.agentic.dashboard import server as DS
 from nightwright.agentic.dashboard import snapshot as SN
 
+pytestmark = pytest.mark.fast
+
 
 class Clock:
     def __init__(self):
@@ -367,3 +369,4 @@ def test_snapshot_serves_full_inbox(tmp_path):
         assert parks[I_DEC]["inbox_state"] == "awaiting_conductor"
     finally:
         srv.close()
+

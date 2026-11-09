@@ -13,6 +13,8 @@ from nightwright import org_write as W
 from nightwright.cli import cli, idea_epic_cmd
 from nightwright.org import load_tasks
 
+pytestmark = pytest.mark.fast
+
 ROOT = Path(__file__).resolve().parent.parent
 EPIC = "SPEC-0298"
 
@@ -228,3 +230,4 @@ def test_spec_new_from_idea_uses_the_set_epic_as_parent(tmp_path, monkeypatch):
     new = [p for p in Path(cfg["specs_dir"]).glob("[0-9]*.md") if "an-epic" not in p.name]
     assert len(new) == 1
     assert f"parent: {EPIC}" in new[0].read_text()
+

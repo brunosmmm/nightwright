@@ -5,6 +5,9 @@ import pathlib
 
 import nightwright.specs
 from nightwright.specmeta import sections, split_frontmatter
+import pytest
+
+pytestmark = pytest.mark.fast
 
 
 def test_split_frontmatter_and_sections():
@@ -26,3 +29,5 @@ def test_specs_module_has_no_runtime_dep_on_tools_or_jsonschema():
     assert "importlib" not in src, "no dynamic module loading of the repo linter"
     assert "exec_module" not in src
     assert "import jsonschema" not in src
+
+

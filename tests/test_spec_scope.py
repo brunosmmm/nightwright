@@ -21,6 +21,8 @@ from nightwright.agentic import store
 from nightwright.cli import cli
 from nightwright.org import load_tasks
 
+pytestmark = pytest.mark.fast
+
 PROJ = "comfort-assistant"
 TODAY = dt.datetime.now(TZ).strftime("%Y-%m-%d")
 
@@ -677,3 +679,4 @@ def test_spec_reconcile_cli_prints_foreign_rows(tmp_path, monkeypatch, capsys):
     assert r.exit_code == 0, out
     line = next(ln for ln in out.splitlines() if other in ln)
     assert "↗" in line and PROJ in line and "Meta-Tools" in line
+

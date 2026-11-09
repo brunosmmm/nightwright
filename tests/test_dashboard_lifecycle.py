@@ -21,6 +21,8 @@ from test_dashboard_serve_cli import dash, stop, wait_server
 from test_dashboard_serve_cli import start as _start
 from waits import join, until
 
+pytestmark = pytest.mark.fast
+
 
 @pytest.fixture
 def fx(tmp_path):
@@ -421,3 +423,4 @@ def test_server_run_writes_only_under_the_dashboard_dir(fx, repo):
     finally:
         stop(proc)
     assert snap() == before
+

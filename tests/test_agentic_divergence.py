@@ -15,6 +15,8 @@ from nightwright.agentic import store as S
 from test_agentic_e2e import (added, impl_done, make_cfg, make_repo, review, run_cli, script,
                               triage)
 
+pytestmark = pytest.mark.fast
+
 REV = "conformance_reviewer"
 F = DV.Finding
 
@@ -602,3 +604,4 @@ def test_environmental_rule_edges():
     assert not env(run_end(timed_out=True))
     assert not env(run_end(is_error=True))
     assert env(run_end(timed_out=True, result_tail="API Error: 529 overloaded"))
+

@@ -16,6 +16,8 @@ from nightwright import specs as S
 from nightwright.agentic import store
 from nightwright.cli import cli
 
+pytestmark = pytest.mark.fast
+
 
 def _git(cwd, *args):
     subprocess.run(["git", "-C", str(cwd), *args], check=True, capture_output=True,
@@ -428,3 +430,4 @@ def test_spec_new_release_failure_keeps_original_error(tmp_path, monkeypatch):
         S.scaffold_from_idea(cfg, "instant review agent")
     monkeypatch.undo()
     assert [r["number"] for r in SN.list_reservations(cfg, specs_dir=sd)] == [2]  # stale, kept
+

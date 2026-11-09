@@ -9,6 +9,9 @@ from nightwright import org_write as W
 from nightwright import report as R
 from nightwright.cli import cli
 from nightwright.org import load_tasks
+import pytest
+
+pytestmark = pytest.mark.fast
 
 
 def _cfg(tmp_path):
@@ -159,3 +162,5 @@ def test_resolve_selector_still_ambiguous(tmp_path, monkeypatch):
     r2 = CliRunner().invoke(cli, ["ideas", "--query", "related", "--json"])
     assert r2.exit_code == 0
     assert len(json.loads(r2.output)["ideas"]) == 2
+
+

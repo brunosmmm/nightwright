@@ -11,7 +11,7 @@ from pathlib import Path
 
 import pytest
 
-pytestmark = pytest.mark.tree_guard  # SPEC-0421: scans the tree; always run by --guards
+pytestmark = [pytest.mark.fast, pytest.mark.tree_guard]
 
 TESTS = Path(__file__).resolve().parent
 ROOT = TESTS.parent
@@ -142,3 +142,4 @@ def test_tui_files_collect_without_skips():
         if "::" in line and head in counts:
             counts[head] += 1
     assert [f for f, n in counts.items() if n == 0] == []
+

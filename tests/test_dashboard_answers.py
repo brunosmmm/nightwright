@@ -24,6 +24,8 @@ from nightwright.agentic.dashboard import server as DS
 from nightwright.agentic.dashboard import snapshot as SN
 from nightwright.cli import cli
 
+pytestmark = pytest.mark.fast
+
 CH, TX, OV, WD, AU, RS = (f"SPEC-09{n}-20261104-a00{n % 10}" for n in (61, 62, 63, 64, 65, 66))
 AGENTIC = {"lease_ttl_s": 120, "escalations": {"notify": "none", "auto_apply_after_s": 1}}
 TS = re.compile(r"\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(\.\d+)?[-+]\d\d:\d\d")
@@ -308,3 +310,4 @@ def test_the_inbox_lists_auto_applied_answers_for_reversal(world):
     assert s.answer("ESC-0005", {"form": "choose", "choose": 2})[0] == 200
     assert waits.until(lambda: json.loads(s.req("GET", "/api/snapshot")[2])["inbox"]
                        ["auto_applied"] == [])
+

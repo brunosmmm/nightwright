@@ -26,6 +26,8 @@ from test_remote_gates import _short_runtime_dir  # noqa: F401  (autouse fixture
 from test_remote_job_records import ASYNC_INFO, AW
 from waits import join, until
 
+pytestmark = pytest.mark.fast
+
 CID2 = "SPEC-0901-20261101-ef01"
 A1, A2, A3 = (RJ.gate_job_id(CID, 1, n) for n in (1, 2, 3))
 
@@ -810,3 +812,4 @@ def test_free_text_answer_is_skipped_with_a_note(two):
     _tick(aw)                                   # applied once: no second note
     assert len([n for n in EV.read_since(aw.cfg, types=["note"])
                 if esc["id"] in n["data"]["text"]]) == 1
+

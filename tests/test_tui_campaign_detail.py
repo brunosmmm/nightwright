@@ -16,6 +16,8 @@ from nightwright.tui import campaign_detail as CD
 from nightwright.tui.app import IdeaDesk
 from waits import pilot_until
 
+pytestmark = pytest.mark.tui
+
 
 def text_of(widget) -> str:
     return str(widget.content)
@@ -715,3 +717,4 @@ def test_campaign_screen_module_is_gone():
         importlib.import_module("nightwright.tui.campaign_screen")
     from nightwright.tui.campaign_detail import CampaignDetail
     assert CampaignDetail is not None
+

@@ -13,6 +13,8 @@ from nightwright.agentic import mailbox as M
 from nightwright.agentic import queue as Q
 from nightwright.agentic import store as S
 
+pytestmark = pytest.mark.fast
+
 T0 = dt.datetime(2026, 10, 25, 12, 0, 0).astimezone()
 CID = "SPEC-0900-20261025-aaaa"
 
@@ -1431,3 +1433,4 @@ def test_unmet_acs_ignores_the_escalations_own_half_written_overrides(tmp_path, 
     plan = ESC.plan_answer(cfg, "ESC-0001", attest=[AC4], reason="r")
     assert plan["answer"]["attest"] == [AC4]
     assert ESC.unmet_acs(cfg, {"profile": "balanced"}) == []
+

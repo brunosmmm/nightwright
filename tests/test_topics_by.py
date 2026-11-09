@@ -5,6 +5,9 @@ from zoneinfo import ZoneInfo
 from click.testing import CliRunner
 
 from nightwright.cli import cli
+import pytest
+
+pytestmark = pytest.mark.fast
 
 
 def _cfg(tmp_path):
@@ -89,3 +92,5 @@ def test_topics_help_documents_by():
     r = CliRunner().invoke(cli, ["topics", "--help"])
     assert r.exit_code == 0
     assert "--by" in r.output
+
+

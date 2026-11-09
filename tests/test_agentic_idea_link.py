@@ -13,6 +13,8 @@ from nightwright.agentic.close import CloseOutcome
 from test_agentic_e2e import (_git_env, added, impl_done, make_cfg, make_repo,  # noqa: F401
                               run_cli, script)
 
+pytestmark = pytest.mark.fast
+
 OLD = "[2026-10-20 Tue 10:00]"        # before the fixture spec's `created: 2026-10-25`
 
 
@@ -285,3 +287,4 @@ def test_release_clears_same_heading_twin(tmp_path, monkeypatch):
     assert st["state"] == "MERGED"
     assert prop(cfg, iid) is None and prop(cfg, other) is None
     assert len(types(cfg, cid, "idea_unlinked")) == 2
+

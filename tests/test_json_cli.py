@@ -7,6 +7,9 @@ from click.testing import CliRunner
 
 from nightwright import org_write as W
 from nightwright.cli import cli
+import pytest
+
+pytestmark = pytest.mark.fast
 
 ROOT = Path(__file__).resolve().parent.parent
 
@@ -121,3 +124,5 @@ def test_help_documents_json():
         r = CliRunner().invoke(cli, args)
         assert r.exit_code == 0
         assert "--json" in r.output
+
+

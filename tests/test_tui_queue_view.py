@@ -5,6 +5,9 @@ from test_agentic_dashboard import _campaign, _fixture, _iso, _park_fixture
 from test_tui_queue_tab import SIZE, _desk, _run, select, settle, view
 from nightwright.agentic import store as S
 from waits import pilot_until
+import pytest
+
+pytestmark = pytest.mark.tui
 
 
 def _data(app):
@@ -351,3 +354,5 @@ def test_layout_at_wide_and_narrow_sizes_clips_why_before_title(tmp_path):
             assert len(narrow[2]) + len(narrow[7]) < len(wide[2]) + len(wide[7])
 
     _run(drive())
+
+

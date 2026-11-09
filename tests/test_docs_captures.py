@@ -1,5 +1,8 @@
 """SPEC-0149/0152/0154: committed docs SVG captures + org example fixtures."""
 from pathlib import Path
+import pytest
+
+pytestmark = pytest.mark.fast
 
 ROOT = Path(__file__).resolve().parent.parent
 CAPTURES = ROOT / "docs" / "product" / "assets" / "captures"
@@ -189,3 +192,5 @@ def test_wave_c_captures_and_outbound_guide():
     assert "seed-children" in (GUIDES / "multi-project.md").read_text(encoding="utf-8")
     assert "cli-projects.svg" in outbound
     assert "required" in outbound.lower()
+
+

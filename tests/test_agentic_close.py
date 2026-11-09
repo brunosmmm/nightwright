@@ -16,6 +16,8 @@ from nightwright.agentic import gates as GT
 from nightwright.agentic import gitops as G
 from nightwright.agentic import project as P
 
+pytestmark = pytest.mark.fast
+
 ENV = {
     "GIT_AUTHOR_NAME": "nightwright test", "GIT_AUTHOR_EMAIL": "nightwright@test",
     "GIT_COMMITTER_NAME": "nightwright test", "GIT_COMMITTER_EMAIL": "nightwright@test",
@@ -726,3 +728,4 @@ def test_unraised_gate_timeout_still_times_out_with_no_finding(world):
     out = CL.close_campaign(world["cfg"], world["state"], pcfg)
     assert out.next_state == "TRIAGING" and out.gate_run.results[0].timed_out
     assert _gate_limit_findings(out) == []
+

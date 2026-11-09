@@ -10,6 +10,8 @@ from click.testing import CliRunner
 from nightwright.agentic import schemas as SC
 from nightwright.cli import cli
 
+pytestmark = pytest.mark.fast
+
 
 FIXTURE = Path(__file__).parent / "fixtures" / "agentic_history"
 
@@ -150,3 +152,4 @@ def test_records_text_default_limit_and_json_is_unlimited(invoke):
     rows = json.loads(invoke(
         "records", "--query", "bulk-default", "--json").output)["records"]
     assert len(rows) == 205
+

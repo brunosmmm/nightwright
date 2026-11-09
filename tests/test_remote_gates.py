@@ -23,6 +23,8 @@ from remote_support import (CID, DISK_GUARD_OFF, Remote, World, _DATES, _IDENTIT
 from remote_support import _short_runtime_dir  # noqa: F401  (autouse fixture)
 from waits import join, until
 
+pytestmark = pytest.mark.remote
+
 GOLDEN = Path(__file__).parent / "data" / "remote_gates_golden.json"
 _MASK = {"started_at", "duration_s", "slot_wait_s", "ts", "since", "waited_s", "nw_sha"}
 
@@ -1392,3 +1394,21 @@ def test_only_validate_and_protocol_failures_are_rejections():
         assert RG.RemoteFailure(stage, "x").rejected is False
     assert RG.RemoteFailure("validate", "x", rejected=True).rejected is True
     assert RG.RemoteFailure("protocol", "x").rejected is True
+
+
+def test_header_full_suite_includes_all_tiers(tmp_path):
+    from nightwright.agentic import worker as W
+
+    cfg = {"data_dir": str(tmp_path / "d"), "config_dir": str(tmp_path / "c")}
+    (tmp_path / "p" / ".nw").mkdir(parents=True)
+    (tmp_path / "p" / ".nw" / "project.yaml").write_text(
+        "schema: nw.project.v1\nproject: p\nbase: main\ngates: []\n")
+    st = {"id": "C-1", "project": "p", "full_suite": True,
+          "repo": {"worktree": str(tmp_path / "p"), "base": "main"}}
+    h = RG._header({"gates": []}, st, cfg, 1, "C-1-gate-001", "k", "0" * 40, "0" * 40, [], 0)
+    W.validate_header(h)
+    assert h["env"].get("NW_ALL_TIERS") == "1"
+    st2 = {"id": "C-2", "project": "p", "repo": {"worktree": str(tmp_path / "p"), "base": "main"}}
+    h2 = RG._header({"gates": []}, st2, cfg, 1, "C-2-gate-001", "k", "0" * 40, "0" * 40, [], 0)
+    assert "NW_ALL_TIERS" not in h2["env"]
+

@@ -12,6 +12,8 @@ import waits
 from fixtures import fake_tailscale as FT
 from nightwright.agentic.dashboard import auth as A
 
+pytestmark = pytest.mark.fast
+
 ME = "me@example.com"
 PEER = "100.64.0.20"
 
@@ -447,3 +449,4 @@ def test_the_server_wires_the_gate_and_the_cli_does_not():
 
 def test_resolve_bind_accepts_an_own_tailnet_address():
     assert A.resolve_bind("tailscale", own_fn=lambda: ["100.64.0.5"]) == ("100.64.0.5", 8791)
+

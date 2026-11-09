@@ -20,6 +20,8 @@ from nightwright.agentic import store as S
 from nightwright.agentic.runner import RunResult
 from nightwright.cli import cli
 
+pytestmark = pytest.mark.fast
+
 PROFILE = {"slots": 2, "loop_max": 3, "campaign_cap_usd": 10.0, "run_timeout_s": 60,
            "personas": {"implementer": {"max_budget_usd": 4.0},
                         "gate_triager": {"max_budget_usd": 0.5},
@@ -2642,3 +2644,4 @@ def test_apply_add_open_event_has_code_and_profile_hashes(tmp_path, monkeypatch)
     Q.apply_add(cfg, plan)
     ev = S.read_ledger(cfg, plan["campaign"], types=["open"])[0]
     assert ev["nw_sha"] == "c" * 40 and ev["profile_sha256"] == want and len(want) == 64
+

@@ -11,6 +11,8 @@ from test_spec_review_store import APPROVE, Spy, _entry
 from nightwright.agentic import spec_review as SR
 from nightwright.agentic.runner import FakeRunner
 
+pytestmark = pytest.mark.fast
+
 SPEC_REL = "docs/specs/0001-trivial.md"
 
 
@@ -164,3 +166,4 @@ def test_detached_head_origin(tmp_path, monkeypatch):
     r = _review(cfg, monkeypatch, "SPEC-0001", "--json")
     assert r.exit_code == 0, r.output
     assert json.loads(r.stdout)["origin"] == "worktree detached"
+

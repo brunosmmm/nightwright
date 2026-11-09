@@ -11,6 +11,9 @@ from test_agentic_e2e import (_git, _write, added, impl_done, make_cfg, make_rep
 from nightwright.agentic import lease as L
 from nightwright.agentic import queue as Q
 from nightwright.agentic import store as S
+import pytest
+
+pytestmark = pytest.mark.fast
 
 
 def _code_repo(tmp_path):
@@ -221,3 +224,5 @@ def test_recovery_waits_for_a_free_slot(tmp_path, monkeypatch):
     st = S.read_state(cfg, cid)                          # no slot: started work WAITs (SPEC-0200)
     assert st["state"] == "WAITING" and st["park"] is None
     assert st["waiting"]["resume_to"] == "IMPLEMENTING"
+
+

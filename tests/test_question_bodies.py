@@ -14,6 +14,8 @@ from nightwright import explore as EX
 from nightwright.cli import cli
 from nightwright.org import load_tasks
 
+pytestmark = pytest.mark.fast
+
 ROOT = Path(__file__).resolve().parent.parent
 
 
@@ -193,3 +195,4 @@ def test_open_question_count_ignores_bodies(tmp_path, monkeypatch):
         cli, ["idea", "show", "IDEA-001", "--json"]).output)
     assert payload["open_questions"] == 2
     assert len(payload["question_items"]) == 2
+

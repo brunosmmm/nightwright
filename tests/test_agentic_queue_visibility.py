@@ -20,6 +20,8 @@ from nightwright.agentic import listview as LV
 from nightwright.agentic import queue as Q
 from nightwright.agentic import store as S
 
+pytestmark = pytest.mark.fast
+
 DATA = Path(__file__).parent / "data" / "queue_visibility"
 WIDTHS = (60, 100, 160)
 IDS = {"impl": "SPEC-0338-20261031-23a7", "gate": "SPEC-0340-20261031-9b1c",
@@ -822,3 +824,4 @@ def test_narrow_title_chunks_by_cell_width():
     pieces = LV._cell_chunks(Text("ab队c"), 3)
     assert [p.plain for p in pieces] == ["ab", "队c"]
     assert [p.plain for p in LV._cell_chunks(Text(""), 4)] == [""]
+

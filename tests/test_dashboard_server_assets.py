@@ -17,6 +17,8 @@ from nightwright.agentic.dashboard import assets
 from nightwright.agentic.dashboard import auth as A
 from nightwright.agentic.dashboard import server as DS
 
+pytestmark = pytest.mark.fast
+
 ROOT = Path(__file__).resolve().parent.parent
 ALLOWED_DASH_FILES = {"audit.jsonl", "audit.jsonl.1", "server.json", "secret"}  # secret: SPEC-0434
 CSRF_META = re.compile(rb'<meta name="nw-csrf" content="([^"]*)">')
@@ -199,3 +201,4 @@ def test_spec_0413_depends_on_includes_0414():
     fm = text.split("---")[1]
     m = re.search(r"^depends_on:\s*\[(.*?)\]", fm, re.M)
     assert [x.strip() for x in m.group(1).split(",")] == ["SPEC-0401", "SPEC-0414"]
+

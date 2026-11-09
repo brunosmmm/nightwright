@@ -13,6 +13,8 @@ from click.testing import CliRunner
 from nightwright import tui as T
 from nightwright.cli import cli
 
+pytestmark = pytest.mark.tui
+
 ROOT = Path(__file__).resolve().parent.parent
 
 
@@ -132,3 +134,4 @@ def test_tui_tab_option_rejects_unknown_tab(tmp_path, monkeypatch):
     seen = _capture_run(monkeypatch, tmp_path)
     r = CliRunner().invoke(cli, ["tui", "--tab", "bogus"])
     assert r.exit_code != 0 and "tab" in r.output and not seen
+

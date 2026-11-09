@@ -10,6 +10,9 @@ from nightwright import org_write as W
 from nightwright import release_archive as RA
 from nightwright.cli import cli
 from nightwright.org import load_tasks
+import pytest
+
+pytestmark = pytest.mark.fast
 
 ROOT = Path(__file__).resolve().parent.parent
 
@@ -126,3 +129,5 @@ def test_release_archive_members(tmp_path, monkeypatch):
         body = tf.extractfile(member).read().decode()
     assert "in slice" in body
     assert "out of slice" not in body
+
+

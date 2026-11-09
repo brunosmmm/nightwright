@@ -10,6 +10,8 @@ from nightwright import report as R
 from nightwright.cli import cli
 from nightwright.org import filter_tasks, load_tasks
 
+pytestmark = pytest.mark.fast
+
 
 def _cfg(tmp_path, workstreams=("ops", "platform")):
     org = tmp_path / "org"
@@ -146,3 +148,4 @@ def test_cli_unknown_workstream_fails(tmp_path, monkeypatch):
     r = runner.invoke(cli, ["idea", "x", "--workstream", "nope"])
     assert r.exit_code != 0
     assert "invalid workstream" in r.output
+

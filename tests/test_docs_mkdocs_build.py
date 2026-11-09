@@ -8,6 +8,8 @@ from pathlib import Path
 
 import pytest
 
+pytestmark = pytest.mark.fast
+
 ROOT = Path(__file__).resolve().parent.parent
 
 
@@ -32,3 +34,4 @@ def test_mkdocs_build_strict():
         )
         assert proc.returncode == 0, proc.stdout + "\n" + proc.stderr
         assert (site / "index.html").is_file()
+

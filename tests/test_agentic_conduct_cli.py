@@ -6,6 +6,9 @@ from test_agentic_queue_merge import (branch_wt, queue_merge, run_cli, run_until
                                       _git_env)  # noqa: F401
 from nightwright.agentic import events as E
 from nightwright.agentic import store as S
+import pytest
+
+pytestmark = pytest.mark.fast
 
 
 def parked_merge(world, monkeypatch):
@@ -38,3 +41,5 @@ def test_events_and_digest_rows_carry_the_label(world, monkeypatch):
     assert parked and parked[0]["spec_id"] is None and parked[0]["label"] == "merge:fix/typo"
     d = E.ping_digest(cfg)
     assert d["parked"][0]["label"] == "merge:fix/typo"
+
+

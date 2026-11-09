@@ -18,6 +18,9 @@ from waits import pilot_until
 
 from nightwright import org as O
 from nightwright.cli import cli
+import pytest
+
+pytestmark = pytest.mark.tui
 
 
 def _grid(app) -> list[str]:
@@ -346,3 +349,5 @@ def test_overlapping_reload_async_coalesces(tmp_path, monkeypatch):
             assert len(calls) == 1
 
     asyncio.run(drive())
+
+

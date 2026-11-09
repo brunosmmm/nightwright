@@ -16,6 +16,8 @@ from nightwright.agentic import queue as Q
 from nightwright.agentic import store as S
 from nightwright.agentic.gitops import GitError
 
+pytestmark = pytest.mark.fast
+
 
 @pytest.fixture
 def spy(monkeypatch):
@@ -571,3 +573,4 @@ def test_run_stamps_last_tick_s(tmp_path, monkeypatch, fake_clock):
     Q.run(cfg, once=True, poll_interval_s=0.05, on_tick=lambda r: seen.append(L.read_lease(cfg)))
     (info,) = seen
     assert info["last_tick_s"] == 7.3 and info["tick_at"]
+

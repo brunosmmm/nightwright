@@ -24,6 +24,8 @@ from nightwright.tui.campaign_detail import CampaignDetail
 from nightwright.tui.queue_tab import QueueTable, QueueView, _ID_W
 from waits import pilot_until
 
+pytestmark = pytest.mark.tui
+
 ROOT = Path(__file__).resolve().parents[1]
 NEWEST = dt.datetime.fromisoformat("2026-11-03T21:14:52-05:00")
 
@@ -396,3 +398,4 @@ def test_pilot_session_does_not_write_the_copy(tmp_path):
         [sys.executable, str(ROOT / "tools" / "capture_history_fixture.py"), "--check"],
         cwd=ROOT, capture_output=True, text=True)
     assert proc.returncode == 0, proc.stdout + proc.stderr
+

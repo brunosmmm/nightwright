@@ -26,6 +26,8 @@ from nightwright.cli import cli
 import waits
 from test_agentic_events import _campaign, _cfg, _ev, _set_state
 
+pytestmark = pytest.mark.fast
+
 FAKE_SRC = Path(__file__).parent / "fixtures" / "fake_herdr.py"
 
 
@@ -1344,3 +1346,4 @@ def test_run_tab_shells_are_created_without_history(fake):
     for args in (H.tab_create_args("w1", "L", "/"), H.pane_split_args("w1:p1", "down", "/")):
         envs = [args[i + 1] for i, a in enumerate(args) if a == "--env"]
         assert envs == ["fish_history=", "HISTFILE=/dev/null"]
+

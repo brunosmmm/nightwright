@@ -3,6 +3,9 @@ from zoneinfo import ZoneInfo
 
 from nightwright import org_write as W
 from nightwright.org import load_tasks
+import pytest
+
+pytestmark = pytest.mark.fast
 
 AFTER_BODY = """\
 * TODO Misplaced drawer
@@ -73,3 +76,5 @@ def test_set_and_clear_property_on_misplaced_drawer(tmp_path):
     W.clear_property(cfg, task, "FOO")
     text = path.read_text()
     assert ":FOO:" not in text and text.count(":PROPERTIES:") == 1
+
+

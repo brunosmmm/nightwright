@@ -14,6 +14,8 @@ from nightwright.cli import cli
 from nightwright.org import load_tasks
 from nightwright.workflow import next_step_for_idea
 
+pytestmark = pytest.mark.fast
+
 ROOT = Path(__file__).resolve().parent.parent
 
 
@@ -245,3 +247,4 @@ def test_idea_help_lists_subcommands():
     assert "log" in r.output
     assert "show" in r.output
     assert "capture" in r.output or "Bare TEXT" in r.output
+

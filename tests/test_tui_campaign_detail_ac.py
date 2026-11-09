@@ -31,6 +31,8 @@ from waits import pilot_until
 
 from test_tui_campaign_detail import open_screen
 
+pytestmark = pytest.mark.tui
+
 MULTI = "SPEC-0336-20261031-6558"
 SIZE_160 = TH.SIZE
 
@@ -1046,3 +1048,4 @@ def test_cursor_target_on_separator_restores_following_event(tmp_path, monkeypat
             assert not on_last
 
     _run(drive())
+

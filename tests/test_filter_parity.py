@@ -8,6 +8,9 @@ from click.testing import CliRunner
 from nightwright import org_write as W
 from nightwright import report as R
 from nightwright.cli import cli
+import pytest
+
+pytestmark = pytest.mark.fast
 
 
 def _cfg(tmp_path):
@@ -87,3 +90,5 @@ def test_agenda_filters_project(tmp_path, monkeypatch):
     out = cap.get()
     assert "meta task" in out
     assert "other task" not in out
+
+

@@ -14,7 +14,7 @@ from nightwright.agentic import worker as W
 from nightwright.agentic import pi_map as PM
 from nightwright.agentic.personas import IMPLEMENTER_SCHEMA
 
-pytestmark = pytest.mark.tree_guard  # SPEC-0421: scans the tree; always run by --guards
+pytestmark = [pytest.mark.fast, pytest.mark.tree_guard]
 
 
 def _req(tmp_path, **over):
@@ -762,3 +762,4 @@ def test_pi_sources_cite_spec_0465():
             missing_required.append(str(p.relative_to(repo)))
     assert forbidden_hits == [], f"Pi sources must not cite {forbidden}: {forbidden_hits}"
     assert missing_required == [], f"Pi sources must cite {required}: {missing_required}"
+

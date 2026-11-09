@@ -20,6 +20,8 @@ from test_dashboard_cli import nw_argv, nw_env
 from test_dashboard_lifecycle import commit, git, repo, serve_once, tailscale_env  # noqa: F401
 from test_dashboard_serve_cli import dash
 
+pytestmark = pytest.mark.fast
+
 NW = "/opt/nw tools/bin/nw"
 
 
@@ -388,3 +390,4 @@ def test_tailnet_wait_ends_as_soon_as_the_tailnet_is_up(fx, tmp_path):
     # the wait ended on the first poll after the address appeared (not after 120 s, not exit
     # 3); what follows is the bind gate's own answer for that address
     assert rc != 3 and time.monotonic() - t0 < 30, p.stderr.read()
+

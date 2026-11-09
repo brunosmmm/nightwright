@@ -7,6 +7,8 @@ from fixtures.dashboard_data import seed
 from nightwright.agentic.dashboard import auth as A
 from nightwright.agentic.dashboard import server as DS
 
+pytestmark = pytest.mark.fast
+
 
 def own_ok():
     return ["100.64.0.5"]
@@ -78,3 +80,4 @@ def test_loopback_serves_with_no_login_and_never_asks_for_the_tailnet(tmp_path):
 def test_own_is_keyword_only():
     p = inspect.signature(DS.make_server).parameters["own"]
     assert p.kind is inspect.Parameter.KEYWORD_ONLY and p.default is None
+

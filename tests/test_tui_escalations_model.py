@@ -11,6 +11,8 @@ from nightwright.agentic import mailbox as MB
 from nightwright.agentic import store as S
 from nightwright.tui import agentic_model as AM
 
+pytestmark = pytest.mark.tui
+
 
 def cfg_(tmp_path):
     return _cfg(tmp_path, notify="none")
@@ -186,3 +188,4 @@ def test_the_signature_changes_on_a_write_and_the_snapshot_opens_on_escalations(
     assert ESC.signature(cfg) != s1
     assert AM.load_mailbox(cfg).inbox == "human"                  # none open any more
     assert AM.load_mailbox(cfg, "conductor").inbox == "conductor"
+

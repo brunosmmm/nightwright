@@ -19,6 +19,8 @@ from nightwright.agentic import quiet as QT
 from nightwright.agentic import store as S
 from nightwright.cli import cli
 
+pytestmark = pytest.mark.fast
+
 
 def _esc(cfg, cid=CID, **kw):
     kw.setdefault("question", "rebase onto the fixed base?")
@@ -373,3 +375,4 @@ def test_conductor_skill_has_the_timeout_row_reversal_and_human_only_topics():
         assert f"`{t}`" in text, t
     assert "reversed the same way" in (root / "nw-steward" / "SKILL.md").read_text(
         encoding="utf-8")
+

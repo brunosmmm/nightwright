@@ -11,6 +11,9 @@ from nightwright.idea_ext import read_idea_extensions
 from nightwright.org import filter_tasks, invalidate_tasks_cache, load_tasks
 from nightwright.outbox_migrate import apply_project_rename, plan_project_rename
 from nightwright.specmeta import split_frontmatter
+import pytest
+
+pytestmark = pytest.mark.fast
 
 
 def _cfg(tmp_path, *, outbox=None, idea_extensions=None):
@@ -207,3 +210,5 @@ def test_cli_conflict_nonzero(tmp_path, monkeypatch):
     r = CliRunner().invoke(cli, ["projects", "rename", "DemoCo", "DemoLabs", "--yes"])
     assert r.exit_code != 0
     assert "conflict" in r.output.lower()
+
+

@@ -14,6 +14,8 @@ from nightwright.agentic import launch as L
 from nightwright.agentic import runner as R
 from nightwright.cli import cli
 
+pytestmark = pytest.mark.fast
+
 PRICE = {"input": 3.0, "output": 15.0}
 KEYS = ("CLAUDE_CODE_IDLE_COMPACT_MIN_TOKENS,BASH_MAX_OUTPUT_LENGTH,"
         "CLAUDE_CODE_FILE_READ_MAX_OUTPUT_TOKENS")
@@ -1027,3 +1029,4 @@ def test_conduct_status_and_brief_show_stale_launch(cfg):
     assert [x["reader"] for x in b["launch"]] == ["steward:Foo"]
     text = B.render_text(b)
     assert "launch:\n- steward:Foo stale" in text and "nw queue steward-launch Foo --resume" in text
+

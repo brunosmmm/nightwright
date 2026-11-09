@@ -8,6 +8,9 @@ from pathlib import Path
 
 from fixtures.dashboard_data import seed
 from test_dashboard_snapshot import check_schema
+import pytest
+
+pytestmark = pytest.mark.fast
 
 
 def nw_argv():
@@ -186,3 +189,5 @@ def test_text_prints_every_failed_section():
                  "health.herdr_watch: error: OSError: gone", "needs_you: error: KeyError: x",
                  "conductor_handling: error: KeyError: y"):
         assert want in lines
+
+

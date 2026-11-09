@@ -11,6 +11,8 @@ from click.testing import CliRunner
 from nightwright.cli import cli
 from nightwright.rules import apply_project_add, plan_project_add, projects_payload
 
+pytestmark = pytest.mark.fast
+
 
 def _cfg(tmp_path, *, outbox=None):
     cfg_dir = tmp_path / "cfg"
@@ -181,3 +183,4 @@ def test_promote_error_mentions_projects_add():
     msg_src = Path(__file__).resolve().parents[1] / "src" / "nightwright" / "specs.py"
     text = msg_src.read_text(encoding="utf-8")
     assert "nw projects add" in text
+

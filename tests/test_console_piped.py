@@ -11,6 +11,9 @@ from nightwright import render as R
 from nightwright.agentic import mailbox as M
 from nightwright.agentic.cli_mailbox import mailbox_group
 from nightwright.console import NwConsole
+import pytest
+
+pytestmark = pytest.mark.fast
 
 
 def _words(n: int) -> str:
@@ -125,3 +128,5 @@ def test_cli_mailbox_thread_message_one_line(tmp_path):
     r = CliRunner().invoke(root, ["mailbox", "thread", msg["id"]], obj=cfg)
     assert r.exit_code == 0, r.output
     assert len(r.output.splitlines()) == 1 and text in r.output, r.output
+
+

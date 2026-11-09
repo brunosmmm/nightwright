@@ -16,6 +16,9 @@ from nightwright.agentic import events as E
 from nightwright.agentic import queue as Q
 from nightwright.agentic import spec_review as SR
 from nightwright.agentic import store as S
+import pytest
+
+pytestmark = pytest.mark.fast
 
 SIZED = {"size": "m", "tone": "high-end", "rationale": "small."}
 REVISE = {"verdict": "revise", **SIZED, "suggested_splits": [],
@@ -296,3 +299,5 @@ def test_conduct_skill_rows():
                    "spec_review_exhausted"):
         assert any(("|" + line.split("|", 2)[-1]).startswith("| `parked` `%s`" % reason) for line in text.splitlines()), \
             reason
+
+

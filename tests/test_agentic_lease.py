@@ -7,6 +7,8 @@ import pytest
 
 from nightwright.agentic import lease as L
 
+pytestmark = pytest.mark.fast
+
 
 def _cfg(tmp_path):
     return {"data_dir": str(tmp_path / "data"), "config_dir": str(tmp_path / "cfg"),
@@ -201,3 +203,4 @@ def test_in_flight_survives_handover(tmp_path, monkeypatch):
         assert st["in_flight"] == ["c1"] and st["busy"] is None
     finally:
         adopted.release()
+

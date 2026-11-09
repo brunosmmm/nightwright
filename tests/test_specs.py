@@ -3,6 +3,9 @@
 Loads the standalone dev linter (tools/spec_lint.py) and runs it over docs/specs/."""
 import importlib.util
 import pathlib
+import pytest
+
+pytestmark = pytest.mark.fast
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 LINT = ROOT / "tools" / "spec_lint.py"
@@ -19,3 +22,5 @@ def test_all_specs_pass_lint():
     mod = _linter()
     problems = mod.validate(mod.load_specs())
     assert problems == [], "spec lint problems:\n  " + "\n  ".join(problems)
+
+

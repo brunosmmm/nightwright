@@ -5,6 +5,8 @@ from nightwright.agentic import cursor_map as CM
 from nightwright.agentic import profiles as P
 from nightwright.agentic import runner as R
 
+pytestmark = pytest.mark.fast
+
 
 def test_builtin_map_covers_aliases_and_effort_fallback(tmp_path):
     cfg = {"config_dir": str(tmp_path)}
@@ -160,3 +162,4 @@ def test_mapped_model_only_translates_when_runner_is_cursor(tmp_path, monkeypatc
     cfg["agentic"]["runner"] = "cursor"
     model, alias = R.mapped_model(cfg, "sonnet", "high")
     assert model == "grok-4.7-high" and alias == "sonnet"
+

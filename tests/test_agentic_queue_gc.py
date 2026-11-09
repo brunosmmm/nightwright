@@ -13,6 +13,8 @@ from nightwright.agentic import queue as Q
 from nightwright.agentic import store as S
 from nightwright.agentic.gitops import GitError
 
+pytestmark = pytest.mark.fast
+
 
 @pytest.fixture(autouse=True)
 def _git_env(monkeypatch):
@@ -723,3 +725,4 @@ def test_gc_tmp_removal_failure_lands_on_row(world, monkeypatch):
     assert S.campaign_tmp(cfg, "h1").is_dir() and S.campaign_tmp(cfg, "h2").is_dir()
     assert rows[("worktree", "ok")]["done"] is True and not (wts / "ok").exists()
     assert rows[("branch", "nw/ok")]["done"] is True
+

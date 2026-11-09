@@ -9,6 +9,9 @@ from nightwright.agentic import spec_review as SR
 from nightwright import org_write as OW
 from nightwright import specs as SP
 from nightwright.agentic import store
+import pytest
+
+pytestmark = pytest.mark.fast
 
 SIZED = {"size": "m", "tone": "high-end", "rationale": "r"}
 APPROVE = {"verdict": "approve", **SIZED, "findings": [], "suggested_splits": []}
@@ -172,3 +175,5 @@ def test_idea_campaigns_and_older_states_have_no_admission(tmp_path):
     assert state.get("admission") is None and _open_event(cfg, state["id"])["admission"] is None
     store.create_campaign(cfg, {"id": "OLD-1", "spec_id": "ACME-0001", "project": "acme"})
     assert _open_event(cfg, "OLD-1")["admission"] is None
+
+

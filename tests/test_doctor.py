@@ -21,6 +21,8 @@ from nightwright.agentic import store
 from nightwright.cli import cli
 from nightwright.config import load_config
 
+pytestmark = pytest.mark.fast
+
 PRICE = {"input": 3.0, "output": 15.0}
 GATES = ("gates:\n  - {name: lint, cmd: 'true', when: loop}\n"
          "  - {name: test, cmd: 'true', when: close}\n")
@@ -733,3 +735,4 @@ def test_launch_fresh_warn_then_ok(tmp_path, monkeypatch):
     assert c["status"] == "ok" and c["fix"] is None
     assert any(x["id"] == "agentic.launch_fresh" for x in D.run(cfg, which=lambda n: None,
                                                                   run_cmd=lambda *a, **k: None))
+

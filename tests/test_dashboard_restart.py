@@ -21,6 +21,8 @@ from nightwright.agentic.dashboard import snapshot as SN
 from test_dashboard_answers import world  # noqa: F401 - the fixture
 from test_dashboard_cli import nw_argv
 
+pytestmark = pytest.mark.fast
+
 CSRF_RE = re.compile(r'name="nw-csrf" content="([^"]+)"')
 
 
@@ -174,3 +176,4 @@ def test_a_page_served_by_process_a_answers_through_process_b(world):  # noqa: F
              (S.agentic_dir(cfg) / "dashboard" / "audit.jsonl").read_text().splitlines()]
     answers = [e for e in audit if e.get("action") == "answer" and e.get("result") == "ok"]
     assert [e["esc_id"] for e in answers] == ["ESC-0001", "ESC-0002"]
+

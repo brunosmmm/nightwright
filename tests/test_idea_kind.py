@@ -11,6 +11,8 @@ from nightwright.cli import cli
 from nightwright.org import load_tasks
 from nightwright.workflow import next_step_for_idea
 
+pytestmark = pytest.mark.fast
+
 
 def _cfg(tmp_path):
     org = tmp_path / "org"
@@ -133,3 +135,4 @@ def test_cli_capture_kind_and_filter(tmp_path, monkeypatch):
     assert kind_set.exit_code == 0, kind_set.output
     show = runner.invoke(cli, ["idea", "show", "IDEA-001", "--json"])
     assert json.loads(show.output)["kind"] == "chore"
+

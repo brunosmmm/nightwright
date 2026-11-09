@@ -10,6 +10,8 @@ from nightwright import org_write as W
 from nightwright.cli import cli
 from nightwright.org import load_tasks
 
+pytestmark = pytest.mark.fast
+
 
 def _cfg(tmp_path):
     org = tmp_path / "org"
@@ -241,3 +243,4 @@ def test_add_clock_entry_is_idempotent(tmp_path):
     assert added1 is True and added2 is False
     t = _idea(cfg)
     assert len(t.clock) == 1
+

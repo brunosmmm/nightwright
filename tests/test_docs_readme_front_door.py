@@ -1,5 +1,8 @@
 """SPEC-0147: root README is a slim front door into docs/product."""
 from pathlib import Path
+import pytest
+
+pytestmark = pytest.mark.fast
 
 ROOT = Path(__file__).resolve().parent.parent
 README = ROOT / "README.md"
@@ -23,3 +26,5 @@ def test_time_and_retention_page_exists():
     assert "snapshot" in text
     assert "cleanupperioddays" in text or "cleanup" in text
     assert "gap_minutes" in text or "gap" in text
+
+

@@ -586,10 +586,11 @@ def _run_locked(cfg, project, *, project_cfg, stop, now, hooks, tested) -> dict:
     shutil.rmtree(tmp, ignore_errors=True)
     tmp.mkdir(parents=True, exist_ok=True)
     seq = G.next_gate_seq_in(logs)
+    sent_state = {"id": owner, "project": project, "repo": {"worktree": str(wt), "base": _base(pcfg)}}
     env = {**G.tmp_env(tmp), "NW_DATA_DIR": str(cfg["data_dir"]),
            "NW_CONFIG_DIR": str(cfg.get("config_dir") or ""), "NW_CAMPAIGN": "",
            "NW_SPEC_ID": "", "NW_WORKTREE": str(wt), "NW_BASE": _base(pcfg),
-           "NW_SENTINEL": str(project)}
+           "NW_SENTINEL": str(project), **G.all_tiers_env(cfg, sent_state, header=True)}
     ph = {"spec_id": None, "campaign": owner, "worktree": str(wt), "base": _base(pcfg)}
     results, interrupted = [], False
     pools, repool, state = _placement(cfg, project, pcfg, wt, seq)

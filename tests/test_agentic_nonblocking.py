@@ -21,6 +21,8 @@ from nightwright.agentic import queue as Q
 from nightwright.agentic import store as S
 from nightwright.agentic.runner import select_runner
 
+pytestmark = pytest.mark.fast
+
 
 class HeldRunner:
     """Delegates to the FakeRunner, but runs whose worktree belongs to a held spec block until
@@ -376,3 +378,4 @@ def test_sigterm_mid_flight_after_several_ticks(tmp_path, monkeypatch):
     assert drain["kind"] == "tick" and drain["drain"] is True
     assert drain["steps"][0]["reason"] == "interrupted"
     assert "started implement in IMPLEMENTING" in out
+

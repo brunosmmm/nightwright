@@ -7,6 +7,9 @@ from fixtures.dashboard_data import seed
 from test_dashboard_cli import run_nw
 from nightwright.agentic import store as S
 from nightwright.agentic.dashboard import snapshot as SN
+import pytest
+
+pytestmark = pytest.mark.fast
 
 
 def tree(root):
@@ -43,3 +46,5 @@ def test_snapshot_paths_write_nothing(tmp_path):
     assert after == before, {k for k in set(after) ^ set(before)} or \
         {k for k in after if after[k] != before.get(k)}
     assert not (S.agentic_dir(cfg) / "dashboard").exists()
+
+

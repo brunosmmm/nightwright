@@ -13,6 +13,8 @@ from nightwright import org_write as W
 from nightwright.config import load_config
 from nightwright.org import invalidate_tasks_cache, load_tasks
 
+pytestmark = pytest.mark.fast
+
 
 @pytest.fixture
 def env(tmp_path, monkeypatch):
@@ -60,3 +62,4 @@ def test_explicit_archive_key_wins(env, tmp_path):
     (cfg_dir / "config.yaml").write_text(
         f"org_ideas_file: {org}/ideas.org\norg_ideas_archive_file: {arch}\n")
     assert W.ideas_archive_path(load_config()) == str(arch)
+

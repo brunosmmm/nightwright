@@ -447,7 +447,7 @@ import os
 import re
 from pathlib import Path
 
-pytestmark = pytest.mark.tree_guard  # SPEC-0421: scans the tree; always run by --guards
+pytestmark = [pytest.mark.fast, pytest.mark.tree_guard]
 
 DEFS = Path(P.__file__).resolve().parent / "profile_defs"
 SCHEMA = "schema: nw.profile.v1\n"
@@ -845,3 +845,4 @@ def test_profile_sha256_stable_ignores_sources_and_tracks_fields():     # SPEC-0
     c["name"] = "renamed"
     assert P.profile_sha256(c) != h
     assert P.profile_sha256(P.resolve_profile(cfg, "frugal")) != h
+

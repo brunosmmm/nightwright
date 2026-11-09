@@ -16,6 +16,8 @@ from nightwright.cli import cli
 from nightwright.org import load_tasks
 from nightwright.tui import model as M
 
+pytestmark = pytest.mark.tui
+
 ROOT = Path(__file__).resolve().parent.parent
 
 
@@ -262,3 +264,4 @@ def test_escaping_the_rationale_prompt_writes_nothing(tmp_path, monkeypatch):
             assert Path(cfg["org_ideas_file"]).read_text() == before
 
     asyncio.run(drive())
+

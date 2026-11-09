@@ -11,6 +11,8 @@ from nightwright.agentic import queue as Q
 from nightwright.agentic import schemas as SC
 from nightwright.agentic import store as S
 
+pytestmark = pytest.mark.fast
+
 
 def _run_to_idle(tmp_path, monkeypatch, entries):
     repo = make_repo(tmp_path)
@@ -276,3 +278,4 @@ def test_outbound_pulled_event_is_registered_and_requires_its_keys():           
     assert SC.ledger_problems(rec) == []
     del rec["idea_id"]
     assert SC.ledger_problems(rec) == ["outbound_pulled: missing 'idea_id'"]
+

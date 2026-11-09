@@ -6,6 +6,9 @@ from click.testing import CliRunner
 
 from nightwright.agentic import gate_slots as GS
 from nightwright.cli import cli
+import pytest
+
+pytestmark = pytest.mark.fast
 
 
 def test_gate_slots_cli_text_and_json(tmp_path, monkeypatch):
@@ -28,3 +31,5 @@ def test_gate_slots_cli_text_and_json(tmp_path, monkeypatch):
         assert "1/1 held" in res.output
     res = runner.invoke(cli, ["queue", "gate-slots"])
     assert "0/1 held" in res.output
+
+

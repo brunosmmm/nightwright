@@ -15,6 +15,9 @@ from nightwright.agentic import cli_dashboard
 from nightwright.agentic.dashboard import assets
 from nightwright.agentic.dashboard import snapshot as SN
 from waits import WAIT_S
+import pytest
+
+pytestmark = pytest.mark.fast
 
 ROOT = Path(__file__).resolve().parent.parent
 NODE_TESTS = ("page_logic.test.js", "fakedom.js")          # tests/js/
@@ -44,3 +47,5 @@ def test_an_app_js_edit_selects_the_node_driving_tests():
     assert r.returncode == 0, r.stderr
     sel = json.loads(r.stdout)
     assert sel["full"] or set(NODE_DRIVERS) <= set(sel["tests"]), sel
+
+

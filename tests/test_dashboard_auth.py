@@ -4,6 +4,8 @@ import pytest
 
 from nightwright.agentic.dashboard import auth as A
 
+pytestmark = pytest.mark.fast
+
 
 @pytest.mark.parametrize("spec,want", [
     ("127.0.0.1:0", ("127.0.0.1", 0)),
@@ -96,3 +98,4 @@ def test_check_host_origin_bracketed_ipv6():
     assert A.check_host_origin({"Host": "[::1]:8791", "Origin": "http://[::1]:8791"},
                                allowed) is None
     assert A.check_host_origin({"Host": "::1:8791"}, allowed) == "bad_host"
+

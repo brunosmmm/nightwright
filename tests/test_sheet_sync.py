@@ -14,6 +14,8 @@ from nightwright import sheet_sync as SHS
 from nightwright.cli import cli
 from nightwright.org import load_tasks
 
+pytestmark = pytest.mark.fast
+
 MANIFEST_TOML = """
 kind = "sheet"
 name = "example-pretriage-sheet"
@@ -286,3 +288,4 @@ def test_render_row_no_value_map_is_unaffected(tmp_path):
     task = SimpleNamespace(heading="idea", state="SPECCED")
     row = SHS.render_row(manifest, task, {})
     assert row["Status"] == "SPECCED"
+

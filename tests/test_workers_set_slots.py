@@ -8,6 +8,8 @@ from nightwright.agentic import gate_slots as GS
 from nightwright.agentic import workers as WK
 from nightwright.cli import cli
 
+pytestmark = pytest.mark.fast
+
 
 @pytest.fixture
 def cfg(tmp_path):
@@ -61,3 +63,4 @@ def test_lowering_keeps_a_held_slot_and_grants_no_more(cfg, invoke):
     got = GS._try_take(cfg, [("box", 4)], "e", 0.0)
     assert got is not None
     GS._release(got[1])
+

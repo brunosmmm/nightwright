@@ -14,7 +14,7 @@ import pytest
 
 from nightwright import specs as S
 
-pytestmark = pytest.mark.tree_guard  # SPEC-0421: scans the tree; always run by --guards
+pytestmark = [pytest.mark.fast, pytest.mark.tree_guard]
 
 
 def test_explicit_specs_dir_wins(tmp_path):
@@ -75,3 +75,4 @@ def test_specs_dir_has_no_cwd_fallback_in_source():
     body = src[src.index("def _specs_dir("):]
     body = body[:body.index("\ndef ", 1)]
     assert "cwd()" not in body and "getcwd" not in body, body
+

@@ -1,5 +1,8 @@
 """SPEC-0145: capability showcase pages are non-stub."""
 from pathlib import Path
+import pytest
+
+pytestmark = pytest.mark.fast
 
 ROOT = Path(__file__).resolve().parent.parent
 CAPS = ROOT / "docs" / "product" / "capabilities"
@@ -40,3 +43,5 @@ def test_capabilities_index_not_stub_language():
     assert "short scope card" not in index
     for name in REQUIRED:
         assert name in index
+
+

@@ -11,6 +11,8 @@ from nightwright.agentic import lease as L
 from nightwright.agentic import queue as Q
 from nightwright.agentic import store as S
 
+pytestmark = pytest.mark.fast
+
 
 @pytest.fixture(autouse=True)
 def _no_addr(monkeypatch):
@@ -187,3 +189,4 @@ def test_queue_add_rejects_bad_by(tmp_path, monkeypatch):
     cfg = make_cfg(tmp_path, repo, script(tmp_path, [impl_done()]))
     r = run_cli(cfg, monkeypatch, ["queue", "add", "SPEC-0001", "--by", "no such", "--yes"])
     assert r.exit_code != 0
+

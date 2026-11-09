@@ -17,6 +17,8 @@ from nightwright.cli import cli
 
 from test_remote_gates import _short_runtime_dir  # noqa: F401  (autouse fixture)
 
+pytestmark = pytest.mark.fast
+
 FAKE_SSH = f"""#!{sys.executable}
 import hashlib, json, os, sys
 S = os.environ["FAKE_STATE"]
@@ -148,3 +150,4 @@ def test_check_mismatch_after_update_fails(world):
 def test_unknown_worker(world):
     r = CliRunner().invoke(cli, ["workers", "update", "nope"])
     assert r.exit_code != 0 and "no worker named" in r.output
+

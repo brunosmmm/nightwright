@@ -2,7 +2,7 @@
 from pathlib import Path
 import pytest
 
-pytestmark = pytest.mark.tree_guard  # SPEC-0421: scans the tree; always run by --guards
+pytestmark = [pytest.mark.fast, pytest.mark.tree_guard]
 
 ROOT = Path(__file__).resolve().parent.parent
 
@@ -12,3 +12,4 @@ def test_pyproject_has_no_mcp_extra():
     assert "mcp" not in text.lower()
     assert not (ROOT / "src" / "nightwright" / "mcp.py").exists()
     assert not list((ROOT / "src" / "nightwright").glob("mcp*"))
+

@@ -9,6 +9,8 @@ import yaml
 from nightwright.agentic import persona_registry as R
 from nightwright.agentic import personas as PS
 
+pytestmark = pytest.mark.fast
+
 AGENTIC = Path(PS.__file__).resolve().parent
 
 # Frozen copy of the pre-SPEC-0370 tables: (name, template, schema const, read_only, invariant const)
@@ -287,3 +289,4 @@ def test_derivations_from_defs():
     defs = R.load_builtin(PS.KNOWN)
     assert R.reviewer_personas(defs) == OLD_REVIEWERS
     assert list(R.adopt_registry(defs)) == list(OLD_ADOPT)
+

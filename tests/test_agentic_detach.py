@@ -17,6 +17,8 @@ from nightwright.agentic import lease as L
 from nightwright.agentic import queue as Q
 from nightwright.agentic import store as S
 
+pytestmark = pytest.mark.fast
+
 # A child that takes (or not) the lease of the data dir in argv[1]; argv[2] is the mode.
 CHILD = r"""
 import os, signal, sys, time
@@ -690,5 +692,6 @@ def test_stop_wait_guard_default_is_the_remaining_budget_plus_30s(tmp_path, budg
         assert limit in waited
         assert limit <= t["now"] - 1000.0 < limit + 0.5         # gave up at the limit, not later
         assert L.is_held(cfg)
+
 
 

@@ -11,6 +11,8 @@ from nightwright.agentic import runner as R
 from nightwright.agentic import store
 from nightwright.agentic.personas import IMPLEMENTER_SCHEMA
 
+pytestmark = pytest.mark.fast
+
 
 def _req(tmp_path, **over):
     base = dict(
@@ -209,3 +211,4 @@ def test_project_agents_runner_accepts_cursor(tmp_path):
     p = tmp_path / "project.yaml"
     p.write_text("schema: nw.project.v1\nagents:\n  runner: cursor\n")
     assert PJ.load_project_config(p)["agents"]["runner"] == "cursor"
+

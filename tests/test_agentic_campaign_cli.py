@@ -7,6 +7,9 @@ from click.testing import CliRunner
 from nightwright.agentic import store as S
 from nightwright.cli import cli
 from nightwright.agentic import schemas as SC
+import pytest
+
+pytestmark = pytest.mark.fast
 
 def _ev(cfg, cid, etype, payload=None, **kw):
     """append_event with the schema's required keys defaulted (SPEC-0192 fixtures)."""
@@ -271,3 +274,5 @@ def test_show_prints_the_story_by_default_raw_on_request_and_both_in_json(tmp_pa
     d = json.loads(_run(cfg, monkeypatch, ["campaign", "show", cid, "--json"]).output)
     assert d["schema"] == "nw.campaign.v1" and d["last_events"][-1]["type"] == "gate"
     assert d["story"]["schema"] == "nw.campaign.story.v1" and d["story"]["events"] == 4
+
+

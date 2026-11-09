@@ -14,6 +14,8 @@ from nightwright.agentic import store as S
 from test_agentic_e2e import run_cli
 from test_agentic_idea_campaign import add_idea_campaign, capture, env  # noqa: F401
 
+pytestmark = pytest.mark.fast
+
 
 def _state(cfg, cid):
     return S.read_state(cfg, cid)
@@ -510,3 +512,4 @@ def test_quiet_holds_live_after_wait_and_delivers_dead_one(env, monkeypatch):
     assert not QT.dependency_wait([f"waiting on {a} (after: no campaign queued for {a})"],
                                   frozenset(), proj)
     assert not QT.dependency_wait([f"after {a}: campaign {ca} abandoned"], ctx.live_specs, proj)
+

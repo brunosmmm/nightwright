@@ -10,6 +10,8 @@ from nightwright.agentic import close as CL
 from nightwright.agentic import gitops as G
 from nightwright.agentic import queue as Q
 
+pytestmark = pytest.mark.fast
+
 CMD = "cp src.txt gen.txt"
 
 
@@ -514,3 +516,4 @@ def test_real_spec_lint_passes_on_the_regenerated_ledger_of_a_rebased_conflict(w
     assert prep.outcome is None, prep.outcome
     assert "generated files regenerated during rebase" in _findings(prep)
     assert lint(nw).returncode == 0, lint(nw).stdout
+

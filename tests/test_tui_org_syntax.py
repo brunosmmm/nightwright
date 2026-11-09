@@ -15,6 +15,8 @@ from click.testing import CliRunner
 from nightwright.cli import cli
 from nightwright.tui import model as M
 
+pytestmark = pytest.mark.tui
+
 ROOT = Path(__file__).resolve().parent.parent
 
 
@@ -209,3 +211,4 @@ def test_nw_idea_show_is_unchanged(tmp_path, monkeypatch):
     from nightwright.org import load_tasks
     task = [t for t in load_tasks(cfg) if t.is_idea][0]
     assert isinstance(format_idea_show(cfg, task), str)   # still plain text, not a Text
+

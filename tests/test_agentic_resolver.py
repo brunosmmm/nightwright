@@ -20,6 +20,8 @@ from nightwright.agentic import queue as Q
 from nightwright.agentic import store as S
 from nightwright.agentic.runner import FakeRunner
 
+pytestmark = pytest.mark.fast
+
 
 def _no_entry(closing: dict) -> dict:
     """`closing` without its SPEC-0260 `entered_at` stamp, which must be present."""
@@ -1623,3 +1625,4 @@ def test_a_backoff_begun_after_the_gate_holds_the_resolver_at_its_start(tmp_path
     PG.rate_limit_path(w.cfg).unlink()
     w.drive(lambda s: s["state"] in ("MERGED", "PARKED", "TRIAGING"))
     assert w.st()["state"] == "MERGED"
+

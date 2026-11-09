@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-pytestmark = pytest.mark.tree_guard
+pytestmark = [pytest.mark.fast, pytest.mark.tree_guard]
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -24,3 +24,4 @@ def test_only_agent_permissions_writes_claude_settings():             # SPEC-042
     writers = {name for name, writes in builders.items() if writes}
     assert writers <= {"agent_permissions.py"}, writers
     assert builders.get("doctor.py") is not True
+

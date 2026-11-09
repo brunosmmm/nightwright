@@ -29,6 +29,8 @@ from test_remote_gates import _short_runtime_dir  # noqa: F401  (autouse fixture
 import waits
 from waits import until
 
+pytestmark = pytest.mark.remote
+
 
 @pytest.fixture
 def world(tmp_path):
@@ -1540,3 +1542,4 @@ def test_a_leased_job_given_up_or_stopped_drops_its_bundle(world, pull, how):
         PJ.request_cancel(world.cfg, JOB)
     assert not bundle.exists() and not (PJ.queue_dir(world.cfg) / f"{JOB}.json").exists()
     assert _call(pull, "GET", f"/v1/jobs/{JOB}/bundle", pull.tokens["box"])[0] == 410
+

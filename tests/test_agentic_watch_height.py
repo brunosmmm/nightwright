@@ -4,6 +4,9 @@ import io
 from rich.console import Console
 
 from nightwright.agentic import cli_queue as CQ
+import pytest
+
+pytestmark = pytest.mark.fast
 
 
 def test_allocate_minimums_and_round_robin():
@@ -53,3 +56,5 @@ def test_render_heights(tmp_path):
     assert len(tall.splitlines()) <= 120
     # too short for the minimums: filling adds nothing over the fixed frame
     assert small == _render(p, 100, 30, fill=False)
+
+

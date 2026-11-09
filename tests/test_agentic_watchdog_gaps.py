@@ -13,6 +13,8 @@ from nightwright.agentic import queue as Q
 from nightwright.agentic import store
 from test_agentic_events import _campaign, _cfg, _set_state
 
+pytestmark = pytest.mark.fast
+
 T0 = dt.datetime.now().astimezone().replace(microsecond=0)
 
 
@@ -410,3 +412,4 @@ def test_active_counts_in_flight_ids_that_are_not_active_campaigns(tmp_path, hel
     _set_state(cfg, B, backlog={"ready": True, "blocked_by": [], "since": iso(0)})
     (row,) = E.ready_not_admitted_items(cfg, at(300), E.settings(cfg))
     assert row["active"] == 2 and row["campaign"] == B
+

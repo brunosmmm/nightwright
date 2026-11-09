@@ -8,6 +8,8 @@ from nightwright.agentic import events as E
 from nightwright.agentic import store
 from test_agentic_events import _cfg, _campaign, _ev, _set_state
 
+pytestmark = pytest.mark.fast
+
 T0 = dt.datetime(2026, 10, 25, 12, 0, 0).astimezone()
 
 
@@ -310,3 +312,4 @@ def test_stuck_persona_state_without_runs_uses_state_age(tmp_path):
     _enter(cfg, cid, "REVIEWING", 0)
     rows = E.stuck_items(cfg, at(1000), E.settings(cfg))
     assert rows[0]["stuck_s"] == 1000 and rows[0]["in_state_s"] == 1000
+

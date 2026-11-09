@@ -21,6 +21,8 @@ from nightwright.agentic import schemas as SC
 from nightwright.agentic import store as S
 from nightwright.cli import cli
 
+pytestmark = pytest.mark.fast
+
 UTC = dt.timezone.utc
 PRICE = {"input": 10.0, "output": 0.0, "cache_read": 0.0, "cache_write_5m": 0.0,
          "cache_write_1h": 0.0}
@@ -791,3 +793,4 @@ def test_e6_compaction_outside_interval_and_inclusive_ends(cfg):
     ev = MVP.report(cfg, n=1)["e6_events"]
     assert [(e["session_id"], e["kind"], e["ts"]) for e in ev] == [
         ("s2", "compaction", T(10, 10)), ("s2", "compaction", T(10, 14))]
+

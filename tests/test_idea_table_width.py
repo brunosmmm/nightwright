@@ -14,6 +14,8 @@ from nightwright import org_write as W
 from nightwright import report as R
 from nightwright.console import console
 
+pytestmark = pytest.mark.fast
+
 LONG = ("Unified SpecRef resolver: stop outbound ids from being parsed as internal "
         "SPEC-NNNN everywhere in the codebase")
 
@@ -241,3 +243,4 @@ def test_ideas_and_next_tables_show_open_clock_glyph(tmp_path):
     by_id = {r["id"]: r for r in (idea_row(cfg, t) for t in collect_idea_tasks(cfg))}
     assert by_id["IDEA-001"]["clock_open"] is True
     assert by_id["IDEA-001"]["id"] == "IDEA-001"
+

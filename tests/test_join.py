@@ -9,6 +9,9 @@ from nightwright import report as R
 from nightwright.cli import cli
 from nightwright.console import console
 from nightwright.org import join_time, load_tasks
+import pytest
+
+pytestmark = pytest.mark.fast
 
 FIXTURES = os.path.join(os.path.dirname(__file__), "fixtures", "org")
 
@@ -128,3 +131,5 @@ def test_digest_shows_supplemental_clocked_hours(monkeypatch, tmp_path):
 def test_digest_omits_clock_panel_when_no_clock_data(monkeypatch):
     out = _render_digest(monkeypatch, {}, day="2026-07-15")
     assert "Clocked (supplemental)" not in out
+
+

@@ -18,6 +18,8 @@ from nightwright.cli import cli
 from nightwright.org import load_tasks
 from nightwright.tui import model as M
 
+pytestmark = pytest.mark.tui
+
 ROOT = Path(__file__).resolve().parent.parent
 
 
@@ -316,3 +318,4 @@ def test_desk_opened_with_a_project_preselects_it(tmp_path, monkeypatch):
             assert _project(cfg, newest) == "Example"
 
     asyncio.run(drive())
+

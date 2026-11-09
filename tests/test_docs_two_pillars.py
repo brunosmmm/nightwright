@@ -8,6 +8,8 @@ import pytest
 
 from nightwright.agentic import queue as Q
 
+pytestmark = pytest.mark.fast
+
 ROOT = Path(__file__).resolve().parent.parent
 PRODUCT = ROOT / "docs" / "product"
 PILLAR_PAGES = [
@@ -51,3 +53,4 @@ def test_home_links_both_pillars_and_bootstrap():
     home = _text("index.md")
     for link in ("ideas/index.md", "loop/index.md", "guides/bootstrap.md"):
         assert link in home, link
+

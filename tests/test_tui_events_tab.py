@@ -16,6 +16,8 @@ from nightwright.tui import agentic_model as AM
 from nightwright.tui import events_tab as ET
 from waits import pilot_until
 
+pytestmark = pytest.mark.tui
+
 
 @pytest.fixture(autouse=True)
 def fast_polls(monkeypatch):
@@ -886,3 +888,4 @@ def test_a_trailing_lower_duplicate_id_does_not_inflate_the_count(tmp_path):
             assert "1 duplicate ids skipped" in status(app)
 
     _run(drive())
+

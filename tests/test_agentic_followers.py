@@ -7,6 +7,9 @@ from click.testing import CliRunner
 from nightwright.agentic import events as E
 from nightwright.agentic import mailbox as M
 from nightwright.cli import cli
+import pytest
+
+pytestmark = pytest.mark.fast
 
 
 def _cfg(tmp_path):
@@ -136,3 +139,5 @@ def test_cli_followers_and_conduct_status(tmp_path, monkeypatch):
     assert json.loads(r.output)["stewards"] == []
     r = CliRunner().invoke(cli, ["queue", "conduct-status"])
     assert "none armed" in r.output
+
+

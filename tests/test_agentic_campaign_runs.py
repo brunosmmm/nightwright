@@ -12,6 +12,8 @@ from nightwright.agentic import runs as RN
 from nightwright.agentic import schemas as SC
 from nightwright.agentic import store as S
 
+pytestmark = pytest.mark.fast
+
 LIST_KEYS = {"campaign", "run_id", "persona", "model", "effort", "max_budget_usd", "timeout_s",
              "permission_mode", "started_at", "duration_s", "exit_code", "timed_out",
              "interrupted", "is_error", "cost_usd", "usage", "session_id", "verdict_ok",
@@ -254,3 +256,4 @@ def test_empty_campaign_prints_no_runs(tmp_path, monkeypatch):
 def test_conduct_skill_names_runs():
     skill = Path(__file__).resolve().parent.parent / "skills" / "nw-conduct" / "SKILL.md"
     assert "nw campaign runs" in skill.read_text(encoding="utf-8")
+

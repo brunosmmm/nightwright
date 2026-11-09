@@ -24,6 +24,8 @@ from nightwright.agentic import workers as WK
 from nightwright.agentic import workers_bootstrap as WB
 from nightwright.cli import cli
 
+pytestmark = pytest.mark.fast
+
 PY = sys.executable
 
 # Each fake reads its state dir from $FAKE_STATE and appends {"prog", "argv"} to log.jsonl.
@@ -904,3 +906,4 @@ def test_controlpath_none(world):
     own = [c for c in world.calls() if c["prog"] in ("ssh", "scp")
            and "IdentitiesOnly=yes" not in c["argv"]]     # the coordinator's own check excepted
     assert own and all("ControlPath=none" in c["argv"] for c in own)
+

@@ -16,6 +16,9 @@ from nightwright import tui as T
 from nightwright.cli import cli
 from nightwright.org import load_tasks
 from nightwright.tui import model as M
+import pytest
+
+pytestmark = pytest.mark.tui
 
 ROOT = Path(__file__).resolve().parent.parent
 
@@ -361,3 +364,5 @@ def test_cli_passes_filters_and_flags_through(tmp_path, monkeypatch):
     assert seen["filters"]["priority"] == "A"
     assert seen["filters"]["sort"] == "priority"
     assert seen["filters"]["desc"] is True
+
+

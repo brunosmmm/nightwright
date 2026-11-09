@@ -9,6 +9,8 @@ from click.testing import CliRunner
 from nightwright.agentic import profiles as P
 from nightwright.cli import cli
 
+pytestmark = pytest.mark.fast
+
 SCHEMA = "schema: nw.profile.v1\n"
 DEFS = Path(P.__file__).resolve().parent / "profile_defs"
 
@@ -158,3 +160,4 @@ def test_unknown_project_flag_is_an_error(env, monkeypatch):
     monkeypatch.setattr("nightwright.agentic.project.project_root", boom)
     r = _run("list", "--project", "Nope")
     assert r.exit_code == 1 and "cannot resolve a repo for project 'Nope'" in r.output
+

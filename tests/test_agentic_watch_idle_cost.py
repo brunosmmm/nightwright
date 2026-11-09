@@ -8,6 +8,9 @@ from nightwright.agentic import profiles as PR
 from nightwright.agentic import queue as Q
 from nightwright.agentic import store as S
 from nightwright.agentic import workers as WK
+import pytest
+
+pytestmark = pytest.mark.fast
 
 
 def _fixture(tmp_path):
@@ -106,3 +109,5 @@ def test_no_workers_no_strip(tmp_path, monkeypatch):
     camp(cfg, repo, "SPEC-0001-a", "IMPLEMENTING")
     p = Q.dashboard_payload(cfg)
     assert p["gate_pools"] is None and CQ._workers_line(p) is None
+
+

@@ -17,6 +17,9 @@ from nightwright import rules as RU
 from nightwright import specs as S
 from nightwright.cli import cli
 from nightwright.org import load_tasks
+import pytest
+
+pytestmark = pytest.mark.fast
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 REAL_SPECS = ROOT / "docs" / "specs"
@@ -249,3 +252,5 @@ def test_digest_by_project_groups_captured_project(tmp_path, monkeypatch):
     finally:
         console._width = prev
     assert "Demo-ATS" in cap.get()
+
+

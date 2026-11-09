@@ -6,6 +6,9 @@ from test_agentic_dashboard import _campaign, _fixture, _iso, _park_fixture
 from test_agentic_e2e import run_cli
 from nightwright.agentic import queue as Q
 from nightwright.tui import agentic_model as AM
+import pytest
+
+pytestmark = pytest.mark.tui
 
 
 def _seed(tmp_path):
@@ -74,3 +77,5 @@ def test_mounted_table_order_equals_rows_from_payload(tmp_path):
             assert [k.value for k in v.table.rows] == want
 
     _run(drive())
+
+

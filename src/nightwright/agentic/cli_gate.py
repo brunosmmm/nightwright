@@ -82,9 +82,12 @@ def _report(cfg, rec: dict, as_json: bool, reused: bool = False) -> int:
 @click.option("--wait/--detach", default=True, help="block for the result (default) or not")
 @click.option("--wait-s", type=float, default=J.DEFAULT_WAIT_S, show_default=True,
               help="seconds to wait for a worker slot before exit 3")
+@click.option("--timeout-s", "gate_timeout_s", type=int, default=1200, show_default=True,
+              help="per-gate timeout for ad-hoc --cmd gates (SPEC-0490)")
 @click.option("--json", "as_json", is_flag=True, help="emit nw.gatejob.v1 JSON")
 @click.pass_obj
-def gate_run(cfg, project, worktree, branch, base, tier, cmds, by, wait, wait_s, as_json):
+def gate_run(cfg, project, worktree, branch, base, tier, cmds, by, wait, wait_s, gate_timeout_s,
+             as_json):
     """Gate a worktree or a branch on a worker box, without a campaign (SPEC-0381).
 
     Exit 0 green, 1 red, 2 cannot start, 3 box unavailable (no placeable worker or no slot
@@ -100,7 +103,7 @@ def gate_run(cfg, project, worktree, branch, base, tier, cmds, by, wait, wait_s,
     J.gc(cfg)
     try:
         target = J.resolve(cfg, project=project, worktree=worktree, branch=branch, base=base,
-                           tier=tier, cmds=cmds)
+                           tier=tier, cmds=cmds, gate_timeout_s=gate_timeout_s)
     except J.JobError as e:
         console.print(f"nw gate run: {e.message}", highlight=False)
         sys.exit(e.code)

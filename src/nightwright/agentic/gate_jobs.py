@@ -187,7 +187,7 @@ def _git(cwd, *args) -> str | None:
 
 
 def resolve(cfg, *, project=None, worktree=None, branch=None, base=None, tier="loop",
-            cmds=()) -> dict:
+            cmds=(), gate_timeout_s: int = 1200) -> dict:
     """What a job gates: `{project, repo, worktree, branch, commit, tree, base, tier, gates,
     skipped, key}`. A precondition that fails raises JobError(2)."""
     if tier not in TIERS:
@@ -209,7 +209,8 @@ def resolve(cfg, *, project=None, worktree=None, branch=None, base=None, tier="l
         raise JobError(2, "no registered project with .nw/project.yaml gates here; pass "
                           "--project or --cmd")
     if cmds:
-        gates = [{"name": f"cmd-{i}", "cmd": c, "results": {"format": "pytest"}}
+        gates = [{"name": f"cmd-{i}", "cmd": c, "timeout_s": int(gate_timeout_s),
+                  "results": {"format": "pytest"}}
                  for i, c in enumerate(cmds, 1)]
         skipped = []
     else:

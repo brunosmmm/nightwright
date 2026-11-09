@@ -5,6 +5,9 @@ import subprocess
 from test_agentic_e2e import make_cfg, make_repo, run_cli, script, write_review
 from test_spec_review_store import _second_repo
 from nightwright.agentic import spec_review as SR
+import pytest
+
+pytestmark = pytest.mark.fast
 
 FINDINGS = [{"severity": "must_fix", "section": "Design", "title": "gap", "detail": "d"},
             {"severity": "major", "section": "Context", "title": "vague", "detail": "e"}]
@@ -266,3 +269,5 @@ def test_spec_reviews_reviewer_column(tmp_path, monkeypatch):                   
         run_cli(cfg, monkeypatch, ["spec", "reviews", "--json"]).stdout)["reviews"]}
     assert rows["SPEC-0001"]["reviewer_profile"] == "thorough"
     assert rows["SPEC-0002"]["reviewer_profile"] is None
+
+

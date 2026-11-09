@@ -9,6 +9,8 @@ from pathlib import Path
 
 import pytest
 
+pytestmark = pytest.mark.fast
+
 ROOT = Path(__file__).resolve().parents[1]
 _spec = importlib.util.spec_from_file_location("affected_tests_replay_tool",
                                                ROOT / "tools" / "affected_tests.py")
@@ -131,3 +133,4 @@ def test_a_guard_that_landed_on_main_after_the_branch_was_cut_still_runs(tmp_pat
     # the tree-reader rule alone also selects the guard, since it scans tests/ (no --guards)
     rule = subprocess.run(run + pytest_cmd, capture_output=True, text=True, env=env)
     assert rule.returncode != 0 and "test_guard_join.py" in rule.stdout
+

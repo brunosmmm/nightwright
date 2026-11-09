@@ -12,6 +12,8 @@ from nightwright.agentic.dashboard import assets as AS
 from nightwright.agentic.dashboard import auth as A
 from nightwright.agentic.dashboard import server as DS
 
+pytestmark = pytest.mark.fast
+
 
 def test_csrf_mint_and_check():
     c = A.Csrf(b"k" * 32)
@@ -119,3 +121,4 @@ def test_foreign_hosts_are_refused_and_no_response_has_cors_headers(srv):
         assert not [k for k in h if k.startswith("access-control-")], (method, path, h)
         if method == "OPTIONS":
             assert st == 405
+

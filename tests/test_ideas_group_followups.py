@@ -12,6 +12,8 @@ from nightwright import org_write as OW
 from nightwright.agentic import followups as FU
 from nightwright.cli import cli
 
+pytestmark = pytest.mark.fast
+
 K1, K2, K3, K4, K5 = ("1" * 12, "2" * 12, "3" * 12, "4" * 12, "5" * 12)
 S1, S2 = "SPEC-0207", "SPEC-0100"
 CLOSED_MSG = "merged into grouped review follow-ups"
@@ -196,3 +198,4 @@ def test_dry_run_names_an_existing_open_legacy_group_as_the_target(cfg):
     g = as_json(run("--json").output)["groups"][0]
     assert g["target"] == legacy and len(g["lines"]) == 1
     assert "group_id" not in g
+

@@ -14,6 +14,9 @@ from nightwright import org_write as W
 from nightwright import specs as S
 from nightwright.cli import cli
 from nightwright.org import load_tasks
+import pytest
+
+pytestmark = pytest.mark.fast
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 REAL_SPECS = ROOT / "docs" / "specs"
@@ -261,3 +264,5 @@ def test_scaffolded_spec_with_empty_clock_log_still_lints_clean(tmp_path):
     problems = [p for p in lint.validate(lint.load_specs())
                if not p.startswith("LEDGER.md")]
     assert problems == [], problems
+
+

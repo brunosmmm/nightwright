@@ -13,6 +13,9 @@ from test_agentic_spec_writer import _spec_md, make_project, spec_written
 from nightwright import org as ORG
 from nightwright.agentic import queue as Q
 from nightwright.agentic import store as S
+import pytest
+
+pytestmark = pytest.mark.integration
 
 EPIC_BREAKDOWN = ("## Breakdown / sub-specs\n\n"
                   "- First child — the base\n"
@@ -107,3 +110,5 @@ def test_epic_after_graph_gates_real_ticks_and_writer_validation(tmp_path, monke
     assert f"depends_on: [{spec1}]" in spec_text
     prompt = (S.runs_dir(cfg, camps[i2]["id"]) / "001-spec_writer" / "prompt.md").read_text()
     assert f"`depends_on` must include: {spec1} (prerequisite {i1})" in prompt
+
+

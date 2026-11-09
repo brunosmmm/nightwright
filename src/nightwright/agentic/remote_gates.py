@@ -403,7 +403,8 @@ def _header(project_cfg: dict, campaign_state: dict, cfg, seq: int, job_id: str,
             "campaign": cid, "spec_id": spec_id if spec_id else "-", "commit": sha,
             "base": {"name": base_name, "sha": base_sha}, "have": have, "bundle_bytes": size,
             "env": {"NW_CAMPAIGN": str(cid), "NW_SPEC_ID": str(spec_id or ""),
-                    "NW_BASE": base_name, **G.full_suite_env(campaign_state)},   # SPEC-0420
+                    "NW_BASE": base_name, **G.full_suite_env(campaign_state),
+                    **G.all_tiers_env(cfg, campaign_state, header=True)},   # SPEC-0420/0490
             "timeout_s": job_timeout_s(cfg, gl), "attempt": 0, "payload": payload}
 
 

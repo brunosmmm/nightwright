@@ -15,6 +15,8 @@ from nightwright import specs as S
 from nightwright.cli import cli
 from nightwright.org import invalidate_tasks_cache, load_tasks
 
+pytestmark = pytest.mark.fast
+
 ROOT = Path(__file__).resolve().parent.parent
 TERMINAL = ["PROMOTED", "EXPORTED", "SHIPPED", "DROPPED", "RESEARCHED"]
 
@@ -164,3 +166,4 @@ def test_cli_success_line_names_heading(tmp_path, monkeypatch):
     assert r.exit_code == 0, r.output
     flat = " ".join(r.output.split())
     assert "IDEA-001" in flat and "the right [bracketed] idea" in flat
+

@@ -12,6 +12,8 @@ from nightwright import rules as RU
 from nightwright import specs as S
 from nightwright.cli import cli
 
+pytestmark = pytest.mark.fast
+
 
 def _with_outbox(tmp_path, mappings=None):
     cfg = _cfg(tmp_path, mappings=mappings)
@@ -83,3 +85,4 @@ def test_cli_projects_table_lists_every_registered_project(tmp_path, monkeypatch
     row = next(line for line in r.output.splitlines() if "comfort-assistant" in line)
     flat = "".join(r.output.split())          # the root column folds long paths at 80 cols
     assert "✓" in row and str(tmp_path / "comfort") in flat
+

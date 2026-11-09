@@ -23,6 +23,8 @@ from nightwright.agentic import spec_review as SR
 from nightwright.agentic import store as S
 from nightwright.agentic.gitops import GitError
 
+pytestmark = pytest.mark.fast
+
 SPEC = "docs/specs/0002-add-a-thing.md"
 
 
@@ -859,3 +861,4 @@ def test_an_adopted_review_without_a_start_snapshot_retries(tmp_path, monkeypatc
     assert park["reason"] == "spec_review_exhausted" and park["resume_to"] == "SPEC_REVIEW"
     assert "no start snapshot" in park["detail"]
     assert not reviews(cfg, cid)
+

@@ -6,6 +6,8 @@ import pytest
 from nightwright import sheet_schemes as SS
 from nightwright.export_schemes import template_scheme as TS
 
+pytestmark = pytest.mark.fast
+
 VALID_MANIFEST = """
 kind = "sheet"
 name = "example-pretriage-sheet"
@@ -171,3 +173,4 @@ def test_sheet_target_for_and_resolve(tmp_path, monkeypatch):
     assert manifest.name == "example-pretriage-sheet"
 
     assert SS.sheet_target_for({}, "Unknown") is None
+

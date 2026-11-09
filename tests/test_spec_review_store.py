@@ -10,6 +10,8 @@ import pytest
 from test_agentic_e2e import SPEC_ACCEPTED, make_cfg, make_repo, run_cli, script, write_review
 from nightwright.agentic import spec_review as SR
 
+pytestmark = pytest.mark.fast
+
 SIZED = {"size": "m", "tone": "high-end", "rationale": "r"}            # SPEC-0219
 APPROVE = {"verdict": "approve", **SIZED, "findings": [{"severity": "nit", "section": "Context",
                                                "title": "wording", "suggested_fix": "reword it"}],
@@ -425,3 +427,4 @@ def test_check_admissible_revise_unapplied_outbound_still_refused(tmp_path):
     write_review(cfg, spec, "PROJ-0001", "revise")
     with pytest.raises(ValueError, match=r"PROJ-0001: .*not applied yet \(the text is unchanged"):
         SR.check_admissible(cfg, spec, "PROJ-0001")
+

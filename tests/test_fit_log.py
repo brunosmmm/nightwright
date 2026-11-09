@@ -11,6 +11,8 @@ from nightwright import specs as S
 from nightwright.cli import cli
 from nightwright.org import load_tasks
 
+pytestmark = pytest.mark.fast
+
 
 def _cfg(tmp_path):
     org = tmp_path / "org"
@@ -207,3 +209,4 @@ def test_postmortem_cli(tmp_path, monkeypatch):
     r = CliRunner().invoke(cli, ["spec", "postmortem", spec_id, "--note", "found a defect"])
     assert r.exit_code == 0, r.output
     assert "postmortem" in r.output
+

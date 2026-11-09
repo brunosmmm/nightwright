@@ -9,6 +9,8 @@ import pytest
 from nightwright import buildid
 from nightwright.agentic import worker as W
 
+pytestmark = pytest.mark.fast
+
 
 def _pkg(root: Path, files=None) -> Path:
     pkg = root / "nightwright"
@@ -117,3 +119,4 @@ def test_a_wheel_built_with_uv_matches_the_working_tree(tmp_path):
 def test_worker_info_reports_a_build_id(tmp_path):
     info = W.info({"data_dir": str(tmp_path)})
     assert info["build_id"].startswith("b1:") and info["build_id"] == buildid.local()
+

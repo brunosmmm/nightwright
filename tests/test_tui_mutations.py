@@ -15,6 +15,8 @@ from nightwright.cli import cli
 from nightwright.org import load_tasks
 from nightwright.tui import model as M
 
+pytestmark = pytest.mark.tui
+
 ROOT = Path(__file__).resolve().parent.parent
 
 
@@ -310,3 +312,4 @@ def test_drift_is_reported_and_non_fatal(tmp_path, monkeypatch):
             assert app._pairs                            # reloaded, not left empty
 
     asyncio.run(drive())
+

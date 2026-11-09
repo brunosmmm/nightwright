@@ -26,6 +26,8 @@ from test_remote_gates import CID, Remote, World, _commit, _decode, _gate, _scri
 from test_remote_gates import _short_runtime_dir  # noqa: F401  (autouse fixture)
 from waits import join, until
 
+pytestmark = pytest.mark.remote
+
 ASYNC_INFO = {"protocol": "nw.job.v1", "features": ["async"], "git": "git version 2"}
 JOB = RJ.gate_job_id(CID, 1)
 
@@ -1165,3 +1167,4 @@ def test_adoption_defers_on_a_git_failure(aw, remote, monkeypatch):
     res, row = _gate_and_apply(aw)
     assert res.gate_run.seq == 1 and res.gate_run.worker == "box" and row["to"] == "REVIEWING"
     assert _rec(aw)["state"] == "done" and len(aw.ledger(["gate"])) == 1
+

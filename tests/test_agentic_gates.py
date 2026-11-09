@@ -16,6 +16,8 @@ from nightwright.agentic import schemas as SC
 from nightwright.agentic import store as S
 from nightwright.cli import cli
 
+pytestmark = pytest.mark.fast
+
 CID = "SPEC-0170-20261025-c0de"
 
 
@@ -1097,3 +1099,36 @@ def test_red_close_gate_run_sets_close_red_and_a_green_one_clears_it(tmp_path, m
         "MERGED", gate_run=green, close={"mode": "merge", "merged_sha": "abc", "pr_url": None,
                                          "gates_seq": 8, "target_sha": "def"}))
     assert row["to"] == "MERGED" and st["close_red"] is None
+
+
+def test_gate_env_full_suite_sets_all_tiers_without_cadence(tmp_path):
+    cfg = _cfg(tmp_path)
+    wt = tmp_path / "wt"
+    (wt / ".nw").mkdir(parents=True)
+    (wt / ".nw" / "project.yaml").write_text(
+        "schema: nw.project.v1\nproject: demo\nbase: main\ngates: []\n")
+    st = {**_state(wt), "full_suite": True, "project": "demo",
+          "repo": {"base": "main", "worktree": str(wt), "branch": "b"}}
+    assert G.gate_env(cfg, st).get("NW_ALL_TIERS") == "1"
+    (wt / ".nw" / "project.yaml").write_text(
+        "schema: nw.project.v1\nproject: demo\nbase: main\ncadence: [nightly]\ngates: []\n")
+    assert "NW_ALL_TIERS" not in G.gate_env(cfg, st)
+
+
+def test_gate_run_resolve_ad_hoc_timeout(tmp_path):
+    import subprocess
+    from nightwright.agentic import gate_jobs as J
+    wt = tmp_path / "repo"
+    wt.mkdir()
+    subprocess.run(["git", "init", "-q", "-b", "main", str(wt)], check=True,
+                   env={**os.environ, "GIT_CONFIG_GLOBAL": "/dev/null", "GIT_CONFIG_SYSTEM": "/dev/null"})
+    (wt / "f").write_text("x\n")
+    subprocess.run(["git", "-C", str(wt), "add", "f"], check=True)
+    subprocess.run(["git", "-C", str(wt), "-c", "user.email=a@a", "-c", "user.name=a",
+                    "commit", "-qm", "init"], check=True)
+    root = Path(__file__).resolve().parents[1]
+    g = J.resolve({"data_dir": str(tmp_path), "config_dir": str(tmp_path),
+                   "nw_checkout": str(root), "outbox_targets": {}},
+                  worktree=wt, cmds=("true",), gate_timeout_s=7200)
+    assert g["gates"][0]["timeout_s"] == 7200
+

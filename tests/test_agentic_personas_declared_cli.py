@@ -9,6 +9,8 @@ from click.testing import CliRunner
 from nightwright import completion as C
 from nightwright.cli import cli
 
+pytestmark = pytest.mark.fast
+
 TEMPLATE = "Review {{spec_id}}:\n{{diff}}\n"
 
 
@@ -176,3 +178,4 @@ def test_validate_and_list_agree_on_new_key_problems(env):
     assert [p.split(": ", 1)[1] for p in shown["problems"]] == \
         [p.split(": ", 1)[1] for p in probs]
     assert "settings" not in shown                         # a broken entry carries no declaration
+

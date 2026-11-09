@@ -15,6 +15,8 @@ from nightwright.agentic import store as S
 from nightwright.agentic.gitops import GitError
 from nightwright.cli import cli
 
+pytestmark = pytest.mark.fast
+
 MERGED = {"state": "MERGED", "merged_at": "2026-10-27T10:00:00Z", "merge_sha": "abc123"}
 CLOSED = {"state": "CLOSED", "merged_at": None, "merge_sha": None}
 OPEN = {"state": "OPEN", "merged_at": None, "merge_sha": None}
@@ -219,3 +221,4 @@ def test_sync_ping_sweep_failure_does_not_break_sync(tmp_path, monkeypatch):
         raise RuntimeError("gh exploded")
     monkeypatch.setattr(Q, "sweep_handed_off", boom)
     assert isinstance(E.sync(cfg, now=T0, ping=True), list)
+

@@ -13,6 +13,8 @@ from nightwright import export as E
 from nightwright import export_schemes as ES
 from nightwright import specs as S
 
+pytestmark = pytest.mark.fast
+
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 REAL_SPECS = ROOT / "docs" / "specs"
 LINT = ROOT / "tools" / "spec_lint.py"
@@ -524,5 +526,6 @@ def test_canonical_bullets_blank_line_resets_continuation():
     goals, non_goals = _split_goals(text)
     assert goals == ["First goal."]
     assert non_goals == ["First non-goal."]
+
 
 

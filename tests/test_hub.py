@@ -8,6 +8,9 @@ from click.testing import CliRunner
 from nightwright import org_write as W
 from nightwright import specs as S
 from nightwright.cli import cli
+import pytest
+
+pytestmark = pytest.mark.fast
 
 ROOT = Path(__file__).resolve().parent.parent
 
@@ -228,3 +231,5 @@ def test_idea_row_campaign_field(tmp_path):
     tasks = {t.heading: t for t in load_tasks(cfg) if t.is_idea}
     assert RP.idea_row(cfg, tasks["running"])["campaign"] == "SPEC-0001-x"
     assert "campaign" not in RP.idea_row(cfg, tasks["plain"])
+
+

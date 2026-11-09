@@ -11,6 +11,8 @@ from nightwright.cli import cli
 from nightwright.org import load_tasks
 from nightwright.specmeta import split_frontmatter
 
+pytestmark = pytest.mark.fast
+
 ROOT = Path(__file__).resolve().parent.parent
 
 
@@ -205,3 +207,4 @@ def test_seed_bad_ordinal_is_a_hard_error_naming_the_bullet(tmp_path):
         with pytest.raises(ValueError, match=f"bullet 2.*{frag}"):
             S.seed_ideas_from_epic(cfg, "ACME-0001")
     assert [t for t in load_tasks(cfg) if t.is_idea] == []        # nothing seeded
+

@@ -15,6 +15,8 @@ from nightwright import org_write as W
 from nightwright.cli import cli
 from nightwright.specs import scaffold_outbound
 
+pytestmark = pytest.mark.fast
+
 ROOT = Path(__file__).resolve().parent.parent
 
 
@@ -248,3 +250,4 @@ def test_required_shell_complete_names_wired():
 def test_required_shell_complete_registry_nonempty():
     assert "selector" in C.REQUIRED_SHELL_COMPLETE_NAMES
     assert "outbound_id" in C.REQUIRED_SHELL_COMPLETE_NAMES
+

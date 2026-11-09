@@ -8,6 +8,8 @@ import pytest
 from nightwright.agentic import queue as Q
 from nightwright.agentic.profiles import builtin_profiles
 
+pytestmark = pytest.mark.fast
+
 A, B = "conformance_reviewer", "test_reviewer"
 BAL = {"review": {"pass_score": 80, "weights": {"must_fix": 100, "major": 15, "minor": 4,
                                                  "nit": 1}}}
@@ -1005,3 +1007,4 @@ def test_suggested_fix_reaches_the_brief_and_changes_nothing_else():          # 
     brief = Q.review_brief(fixed, t1, 80)
     assert brief["must_fix"][0]["detail"] == "why\nFix: rename x\nDone when: test_x passes"
     assert Q.review_brief(plain, t0, 80)["must_fix"][0]["detail"] == "why"
+

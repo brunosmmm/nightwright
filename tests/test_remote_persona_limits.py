@@ -27,6 +27,8 @@ from waits import join
 from fanout_support import (A, B, PersonaRunner, b_entry, drive, e2e,  # noqa: F401
                             impl_done, review as review_entry, second_reviewer, starts)
 
+pytestmark = pytest.mark.remote
+
 
 # ---- helpers -----------------------------------------------------------------------------------
 
@@ -1266,3 +1268,4 @@ def test_cap_of_two_across_two_workers_and_local_runs_two_at_once(e2e, tmp_path,
     assert st["remote_affinity"] in ("box", "box2") and workers[third] == st["remote_affinity"]
     notes = [e["text"] for e in S.read_ledger(cfg, cid, types=["note"])]
     assert any(t.startswith("persona cap:") for t in notes)       # the third one waited
+

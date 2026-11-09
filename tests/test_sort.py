@@ -7,6 +7,9 @@ from nightwright import explore as EX
 from nightwright import org_write as W
 from nightwright import report as R
 from nightwright.cli import cli
+import pytest
+
+pytestmark = pytest.mark.fast
 
 
 def _cfg(tmp_path):
@@ -99,3 +102,5 @@ def test_cli_ideas_sort(tmp_path, monkeypatch):
     import json
     heads = [i["heading"] for i in json.loads(r.output)["ideas"]]
     assert heads == ["a", "c"]
+
+

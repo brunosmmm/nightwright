@@ -10,6 +10,8 @@ from nightwright.agentic import spec_review as SR
 from nightwright.agentic import store as S
 from nightwright.tui import agentic_model as AM
 
+pytestmark = pytest.mark.tui
+
 
 @pytest.fixture
 def env(tmp_path):
@@ -271,3 +273,4 @@ def test_unknown_campaign_raises_value_error(env):
     repo, cfg = env
     with pytest.raises(ValueError):
         AM.load_campaign(cfg, "SPEC-9999-nope")
+

@@ -8,6 +8,8 @@ from nightwright.agentic import close as CL
 from nightwright.agentic import gitops as git
 from nightwright.agentic import project as P
 
+pytestmark = pytest.mark.fast
+
 ROOT = Path(__file__).resolve().parent.parent
 DOGFOOD = P.load_project_config(ROOT / ".nw" / "project.yaml")
 
@@ -122,3 +124,4 @@ def test_close_runs_every_gate_when_changed_paths_are_unknown(world, monkeypatch
     monkeypatch.setattr(git, "changed_files", boom)
     out = CL.prepare_close(world["cfg"], world["state"], pcfg)
     assert marker.exists() and _events(out, "gate.skipped") == []
+

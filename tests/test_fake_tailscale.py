@@ -6,6 +6,8 @@ import pytest
 
 from fixtures import fake_tailscale as FT
 
+pytestmark = pytest.mark.fast
+
 
 def run(env, *args, timeout=30):
     return subprocess.run(["tailscale", *args], env=env, capture_output=True, text=True,
@@ -124,3 +126,4 @@ def test_per_subcommand_modes_override_the_global_mode(tmp_path):
                      mode="fail")
     assert run(env, "status", "--json").returncode == 0
     assert run(env, "ip").returncode == 1
+

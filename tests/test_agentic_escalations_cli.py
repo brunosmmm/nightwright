@@ -10,6 +10,8 @@ from nightwright.agentic import mailbox as M
 from nightwright.agentic import store as S
 from nightwright.cli import cli
 
+pytestmark = pytest.mark.fast
+
 
 def run(cfg, monkeypatch, *args):
     monkeypatch.setattr("nightwright.cli.load_config", lambda: cfg)
@@ -199,3 +201,4 @@ def test_answer_reports_failed_wake_event(tmp_path, monkeypatch):
     assert d["written"] is True and d["event_error"] == "events log unwritable"
     rec = ESC.read(cfg, "ESC-0001")
     assert rec["status"] == "answered" and "event_error" not in rec
+

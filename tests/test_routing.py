@@ -16,6 +16,8 @@ from nightwright import specs as S
 from nightwright.cli import cli
 from nightwright.org import load_tasks
 
+pytestmark = pytest.mark.fast
+
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 REAL_SPECS = ROOT / "docs" / "specs"
 
@@ -190,3 +192,4 @@ def test_cli_spec_new_unconfigured_project_errors(tmp_path, monkeypatch):
     assert not list((tmp_path / "specs").glob("[0-9]*.md"))
     idea = _find(cfg, "adversarial reviewer")
     assert idea.state == "IDEA"
+

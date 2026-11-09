@@ -8,6 +8,8 @@ import pytest
 
 from nightwright.agentic import gitops as G
 
+pytestmark = pytest.mark.fast
+
 ENV = {
     "GIT_AUTHOR_NAME": "nightwright test", "GIT_AUTHOR_EMAIL": "nightwright@test",
     "GIT_COMMITTER_NAME": "nightwright test", "GIT_COMMITTER_EMAIL": "nightwright@test",
@@ -278,3 +280,4 @@ def test_docs_only_violations_exact_and_prefix_only():
              "docs/LEDGER.md", "README.md", "skills/x/SKILL.md", "src/nightwright/agentic/personas/x.md"]
     assert G.docs_only_violations(paths, allow) == paths
     assert G.docs_only_violations(["a"], []) == ["a"]
+

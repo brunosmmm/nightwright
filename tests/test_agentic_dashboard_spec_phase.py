@@ -10,6 +10,8 @@ from nightwright.agentic import cli_queue as CQ
 from nightwright.agentic import queue as Q
 from nightwright.agentic import store as S
 
+pytestmark = pytest.mark.fast
+
 HEADING = "H" * 100
 
 
@@ -174,3 +176,4 @@ def test_spec_campaign_phases_unchanged(env):
     out = _text(CQ._active_panel(it), 160)
     assert "spec_writing" not in out and "spec_review" not in out
     assert "impl ●" in out                                          # SPEC-0326 track
+

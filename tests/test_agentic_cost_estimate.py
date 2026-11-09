@@ -14,6 +14,8 @@ from nightwright.agentic import store as S
 from nightwright.agentic.runner import RunResult
 from nightwright import render
 
+pytestmark = pytest.mark.fast
+
 
 def _res(cost, *, timed_out=False, interrupted=False, is_error=False, exit_code=0):
     return RunResult(exit_code=exit_code, timed_out=timed_out, interrupted=interrupted,
@@ -214,3 +216,4 @@ def test_campaign_show_has_no_estimate_mark_without_estimate(tmp_path, monkeypat
     st["cost"].pop("estimated_usd", None)                         # legacy state
     S.write_state(cfg, cid, st)
     assert "est." not in run_cli(cfg, monkeypatch, ["campaign", "show", cid]).output
+

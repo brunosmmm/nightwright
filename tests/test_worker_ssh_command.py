@@ -9,6 +9,8 @@ import pytest
 
 from nightwright.agentic import worker as W
 
+pytestmark = pytest.mark.fast
+
 SHA = "a" * 40
 
 
@@ -135,3 +137,4 @@ def test_the_cli_command_execs_an_allowed_command(tmp_path):
                        capture_output=True, text=True, stdin=subprocess.DEVNULL)
     assert p.returncode == 0, p.stderr
     assert json.loads(p.stdout)["schema"] == "nw.worker.info.v1"
+

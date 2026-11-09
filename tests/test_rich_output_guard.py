@@ -4,7 +4,7 @@ import ast
 from pathlib import Path
 import pytest
 
-pytestmark = pytest.mark.tree_guard  # SPEC-0421: scans the tree; always run by --guards
+pytestmark = [pytest.mark.fast, pytest.mark.tree_guard]
 
 SRC = Path(__file__).resolve().parents[1] / "src" / "nightwright"
 
@@ -136,3 +136,4 @@ def test_guard_catches_a_bare_print(tmp_path):
     p = tmp_path / "m.py"
     p.write_text("import sys\ndef f():\n    print('hi')\n    sys.stderr.write('x')\n")
     assert [(f, line) for _, f, line in raw_writes(p, "m.py")] == [("f", 3), ("f", 4)]
+

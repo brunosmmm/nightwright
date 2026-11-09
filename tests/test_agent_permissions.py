@@ -9,6 +9,8 @@ from click.testing import CliRunner
 from nightwright import agent_permissions as AP
 from nightwright.cli import cli
 
+pytestmark = pytest.mark.fast
+
 
 def _read(p):
     return json.loads(p.read_text())
@@ -160,3 +162,4 @@ def test_non_dict_hooks_value_is_an_error_not_a_rewrite(tmp_path, bad):
     with pytest.raises(ValueError):
         AP.sync(p)
     assert _read(p) == {"hooks": bad}
+

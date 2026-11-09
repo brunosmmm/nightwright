@@ -8,6 +8,9 @@ from nightwright import report as R
 from nightwright.cli import cli
 from nightwright.console import console
 from nightwright.org import load_tasks
+import pytest
+
+pytestmark = pytest.mark.fast
 
 FIXTURES = os.path.join(os.path.dirname(__file__), "fixtures", "org")
 
@@ -95,3 +98,5 @@ def test_cli_tasks_json(monkeypatch):
     r2 = CliRunner().invoke(cli, ["tasks", "--json", "--state", "INPROGRESS"])
     data2 = json.loads(r2.output)
     assert all(t["state"] == "INPROGRESS" for t in data2["tasks"])
+
+

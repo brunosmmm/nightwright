@@ -8,6 +8,8 @@ from nightwright.agentic import persona_defs as PD
 from nightwright.agentic import personas as PS
 from nightwright.agentic import profiles as PR
 
+pytestmark = pytest.mark.fast
+
 TEMPLATE = "Review {{spec_id}} in {{worktree}}:\n{{diff}}\n"
 
 
@@ -302,3 +304,4 @@ def test_declaring_a_persona_changes_no_builtin_table_or_profile(dirs, monkeypat
     cfg["agentic"]["profiles"]["balanced"] = {"reviewers": ["security_reviewer"]}
     with pytest.raises(ValueError, match="security_reviewer"):
         PR.resolve_profile(cfg, "balanced", project_root=root)
+

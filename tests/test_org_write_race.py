@@ -12,7 +12,7 @@ from nightwright import explore as X
 from nightwright import org_write as W
 from nightwright.org import load_tasks
 
-pytestmark = pytest.mark.tree_guard  # SPEC-0421: scans the tree; always run by --guards
+pytestmark = [pytest.mark.integration, pytest.mark.tree_guard]
 
 SRC = pathlib.Path(__file__).resolve().parents[1] / "src" / "nightwright"
 
@@ -176,3 +176,4 @@ def test_every_org_writer_holds_the_lock():
             if writes and not _decorated(fn):
                 missing.append(f"{path.relative_to(SRC)}:{fn.lineno} {fn.name}")
     assert not missing, "decorate with @org_writer:\n  " + "\n  ".join(missing)
+

@@ -12,6 +12,8 @@ from nightwright.cli import cli
 from nightwright.extension_schema import extension_schema_for, normalize_extension_schema
 from nightwright.org import filter_tasks, load_tasks
 
+pytestmark = pytest.mark.fast
+
 ROOT = Path(__file__).resolve().parent.parent
 
 
@@ -192,3 +194,4 @@ def test_idea_help_lists_ext(tmp_path, monkeypatch):
     r = CliRunner().invoke(cli, ["idea", "--help"])
     assert r.exit_code == 0
     assert "ext" in r.output
+

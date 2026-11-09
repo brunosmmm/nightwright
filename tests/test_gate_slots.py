@@ -20,6 +20,8 @@ from nightwright.agentic import store as S
 from test_agentic_gates import CID, _cfg, _gate, _state
 from waits import join, until
 
+pytestmark = pytest.mark.fast
+
 # a child process that holds a slot until `release` exists
 HOLDER = textwrap.dedent("""
     import sys, time
@@ -483,3 +485,4 @@ def test_run_all_stopped_in_the_wait_starts_no_gate(world):
     run = box["run"]
     assert run.interrupted and run.results == () and not marker.exists()
     assert GS.waiting(cfg, CID) is None
+

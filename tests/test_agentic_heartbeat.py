@@ -6,6 +6,9 @@ import time
 from test_agentic_e2e import make_cfg, make_repo, script
 from nightwright.agentic import lease as L
 from nightwright.agentic import queue as Q
+import pytest
+
+pytestmark = pytest.mark.fast
 
 
 def test_long_tick_keeps_the_lease_fresh(tmp_path, monkeypatch):
@@ -52,3 +55,5 @@ def test_heartbeat_thread_stops_with_the_tick(tmp_path):
         assert not any(t.name == "nw-lease-heartbeat" for t in threading.enumerate())
     finally:
         lease.release()
+
+

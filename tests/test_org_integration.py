@@ -10,7 +10,7 @@ from nightwright.org import join_time, load_tasks
 from nightwright.topics import KEY_RE
 
 ORG = os.path.expanduser("~/work/org")
-pytestmark = pytest.mark.skipif(not os.path.isdir(ORG), reason="no ~/work/org on this machine")
+pytestmark = [pytest.mark.integration, pytest.mark.skipif(not os.path.isdir(ORG), reason='no ~/work/org on this machine')]
 
 
 def test_parses_real_tree_without_crashing():
@@ -50,3 +50,4 @@ def test_join_invariant_on_real_tracked_data():
              tags=frozenset(), priority=None, topic_key=key, project="p")
     hours, _, _ = join_time([t], topic_secs)
     assert hours[key] == topic_secs[key]
+

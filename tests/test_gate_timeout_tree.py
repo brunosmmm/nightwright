@@ -16,7 +16,7 @@ from nightwright.agentic import gates as G
 import waits
 
 LINUX = Path("/proc/self/stat").exists()
-pytestmark = pytest.mark.skipif(not LINUX, reason="process-tree kill needs /proc")
+pytestmark = [pytest.mark.integration, pytest.mark.skipif(not LINUX, reason='process-tree kill needs /proc')]
 
 
 def _gate(name, cmd, *, timeout_s=1):
@@ -150,7 +150,6 @@ def test_a_worker_job_style_call_goes_through_the_same_kill(tmp_path, fast, tree
     assert final.timed_out
 
 
-@pytest.mark.slow
 def test_real_pytest_xdist_under_a_timeout(tmp_path, fast):
     pytest.importorskip("xdist")
     (tmp_path / "test_sleep.py").write_text(
@@ -161,3 +160,4 @@ def test_real_pytest_xdist_under_a_timeout(tmp_path, fast):
     out = subprocess.run(["pgrep", "-f", str(tmp_path / "test_sleep.py")],
                          capture_output=True, text=True).stdout.split()
     assert waits.until(lambda: not any(_alive(int(p)) for p in out), 5), out
+

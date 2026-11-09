@@ -12,6 +12,8 @@ from nightwright.agentic import project as P
 from nightwright.agentic import queue as Q
 from nightwright.agentic import store as S
 
+pytestmark = pytest.mark.fast
+
 
 def _branch_yaml(wt, *gates, raw=None):
     (Path(wt) / ".nw").mkdir(exist_ok=True)
@@ -198,3 +200,4 @@ def test_cli_queue_gates_applies_the_overlay(tmp_path, monkeypatch):
     assert d["ok"] is True and d["results"][0]["timed_out"] is False
     side = S.campaign_dir(cfg, CID) / d["results"][0]["log"].replace(".log", ".json")
     assert json.loads(side.read_text())["timeout_s"] == 30
+

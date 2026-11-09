@@ -11,7 +11,7 @@ from pathlib import Path
 
 import pytest
 
-pytestmark = pytest.mark.skipif(shutil.which("fish") is None, reason="fish is not installed")
+pytestmark = [pytest.mark.fast, pytest.mark.skipif(shutil.which('fish') is None, reason='fish is not installed')]
 
 
 def test_update_through_a_fish_forced_command(tmp_path):
@@ -51,3 +51,4 @@ def test_update_through_a_fish_forced_command(tmp_path):
     assert res["schema"] == "nw.worker.update.result.v1"
     assert res["stage"] == "verify", (res, p.stderr)
     assert (fake / "uv.argv").read_text().splitlines()[0].split()[:3] == ["tool", "install", "--reinstall"]
+

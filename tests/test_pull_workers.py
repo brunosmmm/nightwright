@@ -24,6 +24,8 @@ from test_remote_gates import _short_runtime_dir  # noqa: F401  (autouse fixture
 import waits
 from waits import WAIT_S, until
 
+pytestmark = pytest.mark.remote
+
 ASYNC_INFO = {"protocol": "nw.job.v1", "features": ["async", "persona"], "git": "git version 2"}
 JOB = RJ.gate_job_id(CID, 1)
 
@@ -352,3 +354,4 @@ def test_a_stop_delivers_cancel_and_ends_the_job_within_5s(bw, pull):
     done = [f for f in pull.frames() if f["type"] == "done"][-1]
     assert done["interrupted"] is True
     assert "cancelling" in pull.log()
+

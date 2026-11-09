@@ -18,6 +18,8 @@ from nightwright.agentic import workers as WK
 from nightwright.cli import cli
 from waits import join
 
+pytestmark = pytest.mark.fast
+
 FUTURE = "2999-01-01T00:00:00+00:00"
 PAST = "2000-01-01T00:00:00+00:00"
 
@@ -500,3 +502,4 @@ def test_add_identity_is_stored_and_listed(cfg, invoke):
     assert res.exit_code == 0, res.output
     assert json.loads(WK.path(cfg).read_text())["workers"][0]["identity"] == "/k/id"
     assert json.loads(invoke("list", "--json").output)["workers"][0]["identity"] == "/k/id"
+

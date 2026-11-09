@@ -20,6 +20,8 @@ from nightwright.cli import cli
 from nightwright.org import load_tasks
 from nightwright.tui import model as M
 
+pytestmark = pytest.mark.tui
+
 
 def _cfg(tmp_path):
     org = tmp_path / "org"
@@ -245,3 +247,4 @@ def test_desk_shows_open_question_count_and_clock_marker(tmp_path, monkeypatch):
             assert "clocked in" in screen
 
     asyncio.run(drive())
+

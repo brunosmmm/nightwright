@@ -17,6 +17,9 @@ from nightwright.agentic import lease as L
 from nightwright.agentic import queue as Q
 from nightwright.agentic import store as S
 from nightwright.agentic.runner import select_runner
+import pytest
+
+pytestmark = pytest.mark.fast
 
 
 class GatedRunner:
@@ -295,3 +298,5 @@ def test_heartbeat_thread_survives_errors_and_journals_once(tmp_path):
         lease.release()
     errs = [r for r in Q.read_journal(cfg) if r["kind"] == "heartbeat_error"]
     assert len(errs) == 1 and "RuntimeError" in errs[0]["error"]    # at most once a minute
+
+

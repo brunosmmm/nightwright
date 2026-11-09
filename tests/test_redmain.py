@@ -19,6 +19,8 @@ from nightwright.agentic import remote_gates as RG
 from nightwright.agentic import sentinel as SN
 from nightwright.agentic import store
 
+pytestmark = pytest.mark.fast
+
 PROJECT = "demo"
 NOW = dt.datetime(2026, 11, 4, 12, 0, tzinfo=dt.timezone.utc).timestamp()
 
@@ -353,3 +355,4 @@ def test_status_resume_fix_and_clear(w):
     assert RM.clear(cfg, PROJECT, by="human")["open"] is False
     assert RM.clear(cfg, PROJECT) is None
     assert json.loads(RM.path(cfg, PROJECT).read_text())["history"][-1]["what"] == "cleared"
+

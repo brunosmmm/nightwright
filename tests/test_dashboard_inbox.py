@@ -13,6 +13,8 @@ from nightwright.agentic import store as S
 from nightwright.agentic.dashboard import inbox as IB
 from nightwright.agentic.dashboard import snapshot as SN
 
+pytestmark = pytest.mark.fast
+
 ENTRY_KEYS = {"id", "created", "by", "kind", "question", "question_text", "options",
               "recommendation", "facts", "campaign", "spec_id", "spec_title", "project", "park",
               "answerable", "pending", "why_not", "forms", "findings", "unmet_acs", "effects"}
@@ -220,3 +222,4 @@ def test_effects_match_nw_conduct_row():
     for word in ("--to REVIEWING", "`choose`", "`text`"):
         assert word in row, word
     assert re.search(r"SPEC-0342", IB.EFFECTS_WORKER_LOST)
+

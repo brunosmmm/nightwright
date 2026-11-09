@@ -4,6 +4,9 @@ from pathlib import Path
 from click.testing import CliRunner
 
 from nightwright.cli import cli
+import pytest
+
+pytestmark = pytest.mark.fast
 
 ROOT = Path(__file__).resolve().parent.parent
 
@@ -25,3 +28,5 @@ def test_cli_help_lists_gate_and_exit_codes():
     h = CliRunner().invoke(cli, ["gate", "run", "--help"]).output
     for needle in ("130 cancelled", "box unavailable", "Example:"):
         assert needle in h
+
+

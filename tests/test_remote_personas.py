@@ -25,6 +25,8 @@ from remote_support import (INFO, LOCAL_OK, VERDICT, WRITER, _remote, _req,  # n
                             _world, _write_script)
 from waits import join, until
 
+pytestmark = pytest.mark.remote
+
 
 def _start(w: World, req):
     """The `run.start` the queue's `_prepare_run` writes."""
@@ -1265,3 +1267,4 @@ def test_rerun_tmpdir_failure_leaves_no_open_run(tmp_path, monkeypatch):
     ends = {e["run_id"] for e in w.ledger(["run.end"])}
     assert starts == ends == {"001-implementer"}
     assert w.ledger(["run.end"])[0]["writeback_failed"]
+

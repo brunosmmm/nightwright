@@ -12,6 +12,8 @@ from nightwright.agentic import decisions as D
 from nightwright.agentic import escalations as ESC
 from nightwright.agentic import store as S
 
+pytestmark = pytest.mark.integration
+
 PROFILE = {"campaign_cap_usd": 2.0, "review": {"triager": False},
            "personas": {"implementer": {"max_budget_usd": 1.0},
                         "conformance_reviewer": {"max_budget_usd": 0.5}}}
@@ -236,3 +238,4 @@ def test_explain_reports_and_writes_nothing(tmp_path, monkeypatch):
     r = run_cli(cfg, monkeypatch, ["queue", "cost-policy", "explain"])         # default selection
     assert r.exit_code == 0 and cid in r.output and "spend_diverging" in r.output
     assert _tree_digest(data) == before
+

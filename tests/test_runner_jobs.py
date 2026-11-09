@@ -22,6 +22,8 @@ from nightwright.agentic import runner_jobs as RJ
 from nightwright.agentic import runproc as RP
 from nightwright.agentic import spec_review as SR
 
+pytestmark = pytest.mark.fast
+
 SECRET = "sk-cursor-SECRET-runner-jobs-42"
 APPROVE = {"verdict": "approve", "size": "m", "tone": "high-end", "rationale": "small.",
            "findings": [], "suggested_splits": []}
@@ -331,3 +333,4 @@ def test_tick_publishes_credentials_and_services_jobs(tmp_path, monkeypatch):
         st = LS.lease_status(cfg)
     assert st["credentials"] == {"NW_TEST_ONLY_TOKEN": "missing"}
     assert served
+

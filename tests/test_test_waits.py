@@ -10,7 +10,7 @@ import pytest
 
 import waits
 
-pytestmark = pytest.mark.tree_guard  # SPEC-0421: scans the tree; always run by --guards
+pytestmark = [pytest.mark.fast, pytest.mark.tree_guard]
 
 TESTS = Path(__file__).parent
 HELPER_NAMES = {"until", "_until", "wait_for", "_wait_for"}
@@ -95,3 +95,4 @@ def test_until_and_join_bounds():
     finally:
         stuck_ev.set()
         stuck.join()
+

@@ -28,10 +28,11 @@ gates:
       if [ -f tools/affected_tests.py ]; then
       python3 tools/affected_tests.py --help | grep -q -- --guards && G=--guards || G=;
       python3 tools/affected_tests.py $G
+      --exclude-marks integration,tui,remote,perf
       --include tests/test_agentic_dogfood_config.py --include tests/test_agentic_project.py
       --run uv run pytest -q -x -n 2;
       else uv run pytest -q -x -n 2; fi
-    retry_cmd: uv run pytest -q -n 0 {failing}
+    retry_cmd: uv run pytest -q -n 0 -m "not (integration or tui or remote or perf) or tree_guard" {failing}
     # SPEC-0358: a round after a red one reruns the previous failing ids first
     failed_first: true
     results: {format: pytest}
@@ -88,9 +89,10 @@ gates:
     # non-full selection, so a guard that landed on main after the branch was cut still runs.
     cmd: >-
       python3 tools/affected_tests.py --guards
+      --exclude-marks integration,tui,remote,perf
       --include tests/test_agentic_dogfood_config.py --include tests/test_agentic_project.py
       --run uv run pytest -q -x -n 4
-    retry_cmd: uv run pytest -q -n 0 {failing}
+    retry_cmd: uv run pytest -q -n 0 -m "not (integration or tui or remote or perf) or tree_guard" {failing}
     results: {format: pytest}
     # the sentinel's full suite takes 13-19 min alone and timed out under concurrent gates at
     # 1200 (2026-10-30, SPEC-0302/0304, IDEA-412/415); a remaining full fallback needs it too.

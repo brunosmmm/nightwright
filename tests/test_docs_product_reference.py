@@ -4,6 +4,9 @@ from __future__ import annotations
 import re
 import subprocess
 from pathlib import Path
+import pytest
+
+pytestmark = pytest.mark.fast
 
 ROOT = Path(__file__).resolve().parent.parent
 REF = ROOT / "docs" / "product" / "reference" / "index.md"
@@ -47,3 +50,5 @@ def test_readme_has_no_commands_encyclopedia_table():
     # Old encyclopedia used a markdown table under ## Commands with | Command | Purpose |
     assert "| Command | Purpose |" not in readme
     assert "docs/product/reference" in readme or "Command reference" in readme
+
+

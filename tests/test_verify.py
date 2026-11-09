@@ -8,6 +8,8 @@ from click.testing import CliRunner
 from nightwright.cli import cli
 from nightwright.verify import verify_spec
 
+pytestmark = pytest.mark.fast
+
 
 def _write_spec(specs_dir: Path, num: str, body: str, **fm):
     fm_lines = ["---", f"id: SPEC-{num}", f'title: "t{num}"',
@@ -123,3 +125,4 @@ t
 
     r2 = runner.invoke(cli, ["spec", "verify", "SPEC-9006", "--strict"])
     assert r2.exit_code == 1
+

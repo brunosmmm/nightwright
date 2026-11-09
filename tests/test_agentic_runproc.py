@@ -16,6 +16,8 @@ from nightwright.agentic import runproc as RP
 from nightwright.agentic.personas import IMPLEMENTER_SCHEMA
 from waits import join, until  # noqa: F401  (until is re-exported to the other agentic tests)
 
+pytestmark = pytest.mark.fast
+
 FAKE = Path(__file__).parent / "fixtures" / "fake_claude.py"
 
 
@@ -473,3 +475,4 @@ def test_wrapper_failure_after_popen_kills_child(tmp_path, monkeypatch):
         return False
 
     assert until(gone, timeout=10.0)
+

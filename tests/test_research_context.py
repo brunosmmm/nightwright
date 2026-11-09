@@ -9,6 +9,9 @@ from nightwright import explore as EX
 from nightwright import org_write as W
 from nightwright import rules as R
 from nightwright.cli import cli
+import pytest
+
+pytestmark = pytest.mark.fast
 
 ROOT = Path(__file__).resolve().parent.parent
 
@@ -111,3 +114,5 @@ def test_discover_nw_checkout_matches_repo():
     root = R.discover_nw_checkout()
     assert root is not None
     assert Path(root) == ROOT.resolve() or (Path(root) / "src" / "nightwright").is_dir()
+
+

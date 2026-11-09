@@ -17,6 +17,8 @@ from nightwright.agentic.dashboard import server as DS
 from nightwright.agentic.dashboard import snapshot as SN
 from nightwright.agentic.dashboard import stream as ST
 
+pytestmark = pytest.mark.fast
+
 SNAPSHOTTER = "nw-dashboard-snapshotter"
 
 
@@ -486,3 +488,4 @@ def test_streams_leave_the_data_dir_untouched_outside_the_dashboard_dir(mk):
     s.stream(host=False)                            # a refusal: audited inside the dashboard dir
     s.stream().close()
     assert outside() == before
+

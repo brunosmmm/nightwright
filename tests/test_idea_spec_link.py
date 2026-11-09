@@ -17,6 +17,8 @@ from nightwright.org import load_tasks
 from test_reconcile import (_bare_idea, _bytes, _cfg, _second_file_idea, _spec, _spec_prop,
                             _stamp_idea, _state_of)
 
+pytestmark = pytest.mark.fast
+
 # The helper idea is created "now"; specs below default to today too, so it is date-valid.
 
 
@@ -210,3 +212,4 @@ def test_json_output(tmp_path, run):
     assert data["applied"] is False and data["plan"]["action"] == "link"
     data = json.loads(run(cfg, idea, "SPEC-0001", "--yes", "--heading", "json", "--json").output)
     assert data["applied"] is True and data["reconcile"]
+

@@ -14,6 +14,8 @@ from nightwright.agentic import queue as Q
 from nightwright.agentic import quiet as QT
 from nightwright.agentic import store as S
 
+pytestmark = pytest.mark.fast
+
 BASE, CAP = "parked.base_moving", "parked.cost_cap"
 LONG_AGO = "2020-01-01T00:00:00+00:00"
 
@@ -583,3 +585,4 @@ def test_parked_cost_cap_untouched_with_the_policy_off(opened):
     Q._park(cfg, S.read_state(cfg, cid), "cost_cap", "d", "IMPLEMENTING", auto_ok=False)
     report, resumed = _step0a(cfg)
     assert S.read_state(cfg, cid)["state"] == "PARKED" and not report.steps and not resumed
+

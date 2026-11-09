@@ -23,6 +23,8 @@ from nightwright.agentic import runner as R
 from nightwright.agentic import runproc as RP
 from nightwright.agentic import store as S
 
+pytestmark = pytest.mark.fast
+
 FAKE = Path(__file__).parent / "fixtures" / "fake_claude.py"
 
 
@@ -1020,3 +1022,4 @@ def test_try_detach_all_never_drops_a_finished_implementer(world, monkeypatch):
     assert commit["sha"]
     assert len(run_ends(world)) == 1
     assert S.read_state(world.cfg, world.cid)["repo"]["head"] == commit["sha"]
+

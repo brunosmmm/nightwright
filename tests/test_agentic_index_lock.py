@@ -17,6 +17,8 @@ from nightwright.agentic import gitops as G
 from nightwright.agentic import queue as Q
 from nightwright.agentic import store as S
 
+pytestmark = pytest.mark.fast
+
 _KEYS = {"path", "removed", "reason", "holders"}
 
 
@@ -235,3 +237,4 @@ def test_fresh_flight_never_calls_the_helper(tmp_path, monkeypatch):
     res = Q._do_persona(ctx, state, Q.Step("implement", persona="implementer"), "abc123", None, 1.0)
     assert not calls and res.lock_cleanup is None
     assert res.commit_sha is None and "index.lock" in (res.error or "")
+

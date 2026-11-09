@@ -16,6 +16,8 @@ from nightwright.agentic import persona_gate as PG
 from nightwright.agentic import queue as Q
 from nightwright.agentic import runproc as RP
 
+pytestmark = pytest.mark.fast
+
 SECRET = "sk-cursor-SECRET-0123456789"
 
 FAKE_PASS = """#!/bin/sh
@@ -140,3 +142,4 @@ def test_doctor_reports_status_not_value(store, monkeypatch):
     mode.write_text("locked")
     c = doctor.check_cursor_agent(cfg)
     assert c["status"] == "fail" and "locked" in c["summary"] and "unlock gpg" in c["fix"]
+

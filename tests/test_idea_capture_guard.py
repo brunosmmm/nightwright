@@ -10,6 +10,8 @@ from nightwright import org_write as OW
 from nightwright.cli import cli
 from nightwright.org import load_tasks
 
+pytestmark = pytest.mark.fast
+
 
 def _cfg(tmp_path):
     org = tmp_path / "org"
@@ -136,3 +138,4 @@ def test_root_group_converts_refusal_without_command_catching_it(env, monkeypatc
 
 def test_autouse_fixture_leaves_persona_flag_unset():
     assert "NW_PERSONA_RUN" not in os.environ
+

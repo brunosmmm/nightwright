@@ -1,6 +1,9 @@
 """SPEC-0231: code-change detection shared by the runner and the followers."""
 from nightwright.agentic import codewatch as CW
 from nightwright.agentic import queue as Q
+import pytest
+
+pytestmark = pytest.mark.fast
 
 
 def test_queue_reexports_helpers():
@@ -112,3 +115,5 @@ def test_watcher_non_ascii_skill_path(code_repo):
     code_repo.commit({"skills/café/SKILL.md": "b\n"})
     got = w.poll(11.0)
     assert got["paths"] == ["skills/café/SKILL.md"] and got["skills_changed"] == ["café"]
+
+

@@ -9,6 +9,9 @@ from test_agentic_e2e import _git, run_cli
 from nightwright.agentic import events as E
 from nightwright.agentic import queue as Q
 from nightwright.agentic import store as S
+import pytest
+
+pytestmark = pytest.mark.fast
 
 
 def _c(cid, root, entered_at=None, state="CLOSING", **closing):
@@ -307,3 +310,5 @@ def test_single_shot_closes_in_train_order(mk):
     assert order == [second, first]
     assert env.st(first)["close"]["merged_sha"] == env.main_sha()
     assert _git(env.repo, "rev-list", "--merges", "main") == ""
+
+

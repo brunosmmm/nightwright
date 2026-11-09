@@ -16,6 +16,8 @@ from nightwright.agentic import redmain as RM
 from nightwright.agentic import sentinel as SN
 from nightwright.agentic import store as S
 
+pytestmark = pytest.mark.integration
+
 PROJ = "Meta-Tools"
 GOOD = "def f():\n    return 1\n"
 BAD = "def f():\n    return 2\n"
@@ -254,3 +256,4 @@ def test_fixes_red_merge_is_full_suite_unheld_and_refused_when_green(tmp_path, m
     assert not _types(cfg, cid, "close_held")
     assert [f["kind"] for f in RM.read(cfg, PROJ)["fixes"]] == ["merge"]
     assert _sentinel(cfg)["ok"] and not RM.is_red(cfg, PROJ)
+

@@ -13,6 +13,8 @@ from nightwright.agentic import mailbox as M
 from nightwright.agentic import queue as Q
 from nightwright.agentic import store as S
 
+pytestmark = pytest.mark.fast
+
 PR = "https://gh/p/1"
 READER = "mailbox:steward:Meta-Tools"
 
@@ -240,3 +242,4 @@ def test_pr_policy_fetch_failure_parks_open_failed(tmp_path, monkeypatch):
     assert st["state"] == "PARKED" and st["park"]["reason"] == "open_failed"
     assert "cannot fetch origin/main for a pr campaign" in st["park"]["detail"]
     assert not Path(st["repo"]["worktree"]).exists()
+

@@ -16,6 +16,9 @@ from nightwright.agentic import queue as Q
 from nightwright.agentic import runner as R
 from nightwright.agentic import runproc as RP
 from nightwright.agentic import store as S
+import pytest
+
+pytestmark = pytest.mark.fast
 
 
 def journal(cfg, kind):
@@ -193,3 +196,5 @@ def test_startup_check_warns_and_journals(tmp_path, monkeypatch):
     assert err.getvalue().startswith("WARNING:")
     assert journal(cfg, "backend_preflight_failed")[0]["where"] == "start"
     assert BP.startup_check({"data_dir": str(tmp_path / "e")}, err=err) is None   # claude host
+
+

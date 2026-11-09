@@ -15,6 +15,8 @@ from nightwright.agentic import quiet as QT
 from nightwright.agentic import store
 from nightwright.cli import cli
 
+pytestmark = pytest.mark.fast
+
 HOLD = ["admitted", "resumed", "waiting", "abandoned", "cost_warning", "escalation",
         "escalation_withdrawn", "rebase_resolved", "run_failed", "merged", "handed_off"]
 WAKE = ["parked", "park_undecided", "runner_dead", "lease_stale", "run_overdue", "message",
@@ -1789,3 +1791,4 @@ def test_watch_with_unusable_event_is_ignored(event):
     w = {"key": "k", "type": "campaign_silent", "bound_s": 1.0, "event": event}
     assert not QT._watch_ok(w)
     assert QT._watch_ok({**w, "event": {"type": "state_stuck"}})        # data absent is fine
+

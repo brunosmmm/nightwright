@@ -5,6 +5,9 @@ import urllib.request
 from fixtures.dashboard_data import ACTIVE, seed
 from test_dashboard_serve_cli import start, stop, wait_server
 from test_dashboard_snapshot import ledger_run_end
+import pytest
+
+pytestmark = pytest.mark.integration
 
 
 def events(resp):
@@ -37,3 +40,5 @@ def test_stream_delivers_a_snapshot_and_then_a_change(tmp_path):
             assert name2 == "snapshot" and rev2 == doc2["rev"] != rev
     finally:
         stop(proc)
+
+

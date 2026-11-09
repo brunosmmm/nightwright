@@ -12,6 +12,8 @@ from nightwright.agentic import store as S
 from nightwright.tui import agentic_model as AM
 from nightwright.tui import mailbox_tab as MT
 
+pytestmark = pytest.mark.tui
+
 PARK = {"reason": "human_decision", "detail": "d", "resume_to": "IMPLEMENTING",
         "escalated_from": "loop_exhausted"}
 
@@ -447,3 +449,4 @@ def test_the_tab_never_touches_followers(tmp_path, monkeypatch):
         await settle(app, pilot)
         assert not errors(app) and ESC.read(cfg, "ESC-0001")["status"] == "answered"
     drive_with(cfg, body)
+

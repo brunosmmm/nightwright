@@ -8,6 +8,9 @@ from test_dashboard_readonly import tree
 from test_dashboard_serve_cli import dash, get, start, stop, wait_server
 from test_dashboard_snapshot import ledger_run_end
 from waits import until
+import pytest
+
+pytestmark = pytest.mark.fast
 
 ALLOWED = {"audit.jsonl", "audit.jsonl.1", "server.json", "secret"}  # secret: SPEC-0434
 
@@ -69,3 +72,5 @@ def test_server_writes_nothing_outside_its_directory(tmp_path):
     finally:
         stop(proc)
     assert {p.name for p in dash(fx).iterdir()} <= ALLOWED - {"server.json"}
+
+

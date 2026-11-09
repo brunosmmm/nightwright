@@ -6,6 +6,8 @@ import pytest
 from nightwright.agentic import mailbox as MB
 from nightwright.tui import agentic_model as AM
 
+pytestmark = pytest.mark.tui
+
 
 def _cfg(tmp_path):
     (tmp_path / "cfg").mkdir()
@@ -242,3 +244,4 @@ def test_answers_notice(tmp_path):
     assert AM.answers_notice(msgs, "conductor:1") == ""     # already answered
     assert AM.answers_notice(msgs, "human:1") == ""         # the human's own inbox
     assert AM.answers_notice(msgs, None) == ""
+

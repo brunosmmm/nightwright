@@ -13,6 +13,8 @@ from nightwright.agentic import events as E
 from nightwright.agentic import mailbox as M
 from nightwright.agentic.cli_mailbox import mailbox_group
 
+pytestmark = pytest.mark.fast
+
 
 def _cfg(tmp_path):
     (tmp_path / "cfg").mkdir()
@@ -454,3 +456,4 @@ def test_cli_send_is_append_only(tmp_path):
     before = M._inbox_path(cfg, "conductor").read_bytes()
     _send(cfg, "--to", "conductor", f"second {CA}")
     assert M._inbox_path(cfg, "conductor").read_bytes().startswith(before)
+

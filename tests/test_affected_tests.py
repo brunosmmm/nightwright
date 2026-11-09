@@ -11,6 +11,8 @@ from pathlib import Path
 
 import pytest
 
+pytestmark = pytest.mark.fast
+
 ROOT = Path(__file__).resolve().parents[1]
 _spec = importlib.util.spec_from_file_location("affected_tests", ROOT / "tools" / "affected_tests.py")
 AT = importlib.util.module_from_spec(_spec)
@@ -403,7 +405,7 @@ def test_report_file_has_the_keys_and_does_not_change_output(repo2, tmp_path, mo
     assert r.returncode == 0 and r.stdout.split() == ["tests/test_base.py", "tests/test_cfg.py"]
     rep = json.loads(out.read_text())
     assert set(rep) == {"full", "reason", "tests", "include", "changed", "base_sha", "head_sha",
-                        "head_tree"}
+                        "head_tree", "exclude_marks", "all_tiers"}
     assert rep["full"] is False and rep["tests"] == ["tests/test_base.py", "tests/test_cfg.py"]
     assert rep["include"] == ["tests/test_base.py"] and rep["changed"] == [".nw/project.yaml"]
     assert rep["head_sha"] == _git(repo2, "rev-parse", "HEAD").strip()
@@ -606,7 +608,7 @@ def test_report_is_written_on_the_run_path(repo2, tmp_path, monkeypatch, change,
     assert r.returncode == 0 and r.stdout.strip() == stdout
     rep = json.loads(out.read_text())
     assert set(rep) == {"full", "reason", "tests", "include", "changed", "base_sha", "head_sha",
-                        "head_tree"}
+                        "head_tree", "exclude_marks", "all_tiers"}
     assert rep["full"] is full and rep["tests"] == tests and rep["include"] == include
     assert rep["changed"] == [change]
 
@@ -942,3 +944,31 @@ def test_tree_reader_rule_is_off_in_strict_mode(grepo):
     (grepo / "tests" / "test_new.py").write_text("def test_x():\n    pass\n")
     sel = _select(grepo, strict=True, max_fraction=1.0)
     assert sel.tests == ["tests/test_new.py"]
+
+
+def test_exit5_only_when_partial_with_exclusion(grepo, monkeypatch):
+    monkeypatch.delenv("NW_ALL_TIERS", raising=False)
+    _change(grepo, "tests/test_base.py")
+    r = _cli(grepo, "--exclude-marks", "integration", "--run", sys.executable, "-c",
+             "raise SystemExit(5)")
+    assert r.returncode == 0 and "no fast tests" in r.stderr
+    monkeypatch.setenv("NW_ALL_TIERS", "1")
+    r = _cli(grepo, "--exclude-marks", "integration", "--run", sys.executable, "-c",
+             "raise SystemExit(5)")
+    assert r.returncode == 5
+    _git(grepo, "reset", "-q", "--hard", "main")
+    _git(grepo, "checkout", "-qB", "feat")
+    _change(grepo, "tests/conftest.py")
+    r = _cli(grepo, "--exclude-marks", "integration", "--run", sys.executable, "-c",
+             "raise SystemExit(5)")
+    assert r.returncode == 5
+
+
+def test_exclude_marks_json_fields(grepo, monkeypatch):
+    monkeypatch.delenv("NW_ALL_TIERS", raising=False)
+    _change(grepo, "tests/test_base.py")
+    r = _cli(grepo, "--exclude-marks", "integration,tui", "--json")
+    rep = json.loads(r.stdout)
+    assert rep["exclude_marks"] == ["integration", "tui"]
+    assert rep["all_tiers"] is False
+

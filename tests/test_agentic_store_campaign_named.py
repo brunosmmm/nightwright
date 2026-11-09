@@ -6,6 +6,8 @@ import pytest
 
 from nightwright.agentic import store as S
 
+pytestmark = pytest.mark.fast
+
 A = "SPEC-0001-20261101-abcd"
 B = "SPEC-0002-20261102-0123"
 GHOST = "SPEC-0009-20261103-ffff"
@@ -179,3 +181,4 @@ def test_digit_leading_outbound_id_from_project_3m(cfg):
     assert S.sole_campaign_named(cfg, f"{cid}-x") is None
     assert S.sole_campaign_named(cfg, f"9{cid}") is None
     assert S.sole_campaign_named(cfg, f"{cid} and {other}") is None
+

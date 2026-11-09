@@ -15,6 +15,8 @@ from nightwright.agentic import schemas as SC
 from nightwright.agentic import spec_write as SW
 from nightwright.agentic import store as S
 
+pytestmark = pytest.mark.fast
+
 ORIG = "docs/specs/0005-big-thing.md"
 TITLES = ["Part 1", "Part 2", "Part 3"]
 
@@ -499,3 +501,4 @@ def test_split_with_an_empty_part_title_gets_a_default_title(tmp_path, monkeypat
         {"title": "  ", "scope": "sa"}, {"scope": "sb"}])
     cid = added(cfg, monkeypatch, "SPEC-0005")
     assert [p["title"] for p in S.read_state(cfg, cid)["split"]["parts"]] == ["Part 1", "Part 2"]
+

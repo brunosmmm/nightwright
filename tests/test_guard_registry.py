@@ -8,7 +8,7 @@ from pathlib import Path
 import pytest
 import yaml
 
-pytestmark = pytest.mark.tree_guard
+pytestmark = [pytest.mark.fast, pytest.mark.tree_guard]
 
 ROOT = Path(__file__).resolve().parents[1]
 _spec = importlib.util.spec_from_file_location("affected_tests_registry", ROOT / "tools" / "affected_tests.py")
@@ -105,3 +105,4 @@ def test_loop_gate_runs_on_a_tool_that_predates_the_flag(tmp_path):
         "sys.exit(0) if '--help' not in sys.argv else print('--guards')\n")
     r = subprocess.run(["sh", "-c", cmd], cwd=tmp_path, capture_output=True, text=True)
     assert r.returncode == 0 and "--guards" in r.stdout, r.stdout + r.stderr
+

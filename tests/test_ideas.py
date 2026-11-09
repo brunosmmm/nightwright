@@ -13,6 +13,8 @@ from nightwright.cli import cli
 from nightwright.console import console
 from nightwright.org import filter_tasks, load_tasks
 
+pytestmark = pytest.mark.fast
+
 
 def _cfg(tmp_path, ideas="ai/ideas.org"):
     org = tmp_path / "org"
@@ -622,3 +624,4 @@ def test_idea_row_and_next_show_handed_off(tmp_path):
     assert EX.idea_show_payload(cfg, task)["handed_off"] == "https://x/pull/3"
     out = _render(R.ideas, cfg)
     assert "SPECCED ⇢ PR" in out
+

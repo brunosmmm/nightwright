@@ -40,6 +40,8 @@ from test_agentic_e2e import (ENV, _git, _git_env, added, impl_done, make_cfg,  
                               make_repo, review, run_cli, script)
 from waits import join, until
 
+pytestmark = pytest.mark.remote
+
 GOLDEN = Path(__file__).parent / "data" / "remote_workers" / "no_workers_golden.json"
 GATES_GOLDEN = Path(__file__).parent / "data" / "remote_gates_golden.json"
 
@@ -912,4 +914,5 @@ def test_a_worker_gets_no_git_credentials_and_no_push_path(tmp_path, monkeypatch
         assert urls and all(u.startswith(wdata) for u in urls), urls
         assert str(c.repo) not in (jdir / f"{name}-config.txt").read_text()
     assert _git(c.repo, "rev-parse", "main") == S.read_state(c.cfg, c.cid)["close"]["merged_sha"]
+
 

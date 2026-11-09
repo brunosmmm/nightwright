@@ -10,6 +10,9 @@ from test_agentic_e2e import impl_done, make_cfg, make_repo, run_cli, script
 from nightwright.agentic import cli_queue as CQ
 from nightwright.agentic import journey as JY
 from nightwright.agentic import queue as Q
+import pytest
+
+pytestmark = pytest.mark.fast
 
 TS = "2026-10-31T10:00:00-04:00"
 
@@ -319,3 +322,5 @@ def test_header_says_when_campaigns_exceed_the_slots():
     out = _plain(CQ._dash_header(p, 160), 160)
     assert "campaigns" in out and "5/3 over by 2, no admissions until ≤3" in out
     assert "gates 2/2 +1 waiting" in out
+
+

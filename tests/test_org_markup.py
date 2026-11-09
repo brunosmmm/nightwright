@@ -3,6 +3,8 @@ import pytest
 
 from nightwright.org_markup import from_org_body, strip_drawers, to_org_body
 
+pytestmark = pytest.mark.fast
+
 
 def test_to_org_backticks_and_bold():
     assert to_org_body("use `nw-native` here") == "use ~nw-native~ here"
@@ -133,3 +135,4 @@ def test_strip_drawers_leaves_blocks_and_unterminated_drawers():
     open_drawer = "before\n:LOGBOOK:\nCLOCK: foo\nafter\n"
     assert strip_drawers(open_drawer) == open_drawer
     assert strip_drawers("") == ""
+

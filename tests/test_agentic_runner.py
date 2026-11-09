@@ -8,6 +8,8 @@ import pytest
 from nightwright.agentic import runner as R
 from nightwright.agentic.personas import GATE_TRIAGER_SCHEMA, IMPLEMENTER_SCHEMA
 
+pytestmark = pytest.mark.fast
+
 
 def _req(tmp_path, **over):
     base = dict(
@@ -283,3 +285,4 @@ def test_fake_runner_pre_shell_and_shell_run_in_cwd_with_env(tmp_path):      # S
     r = R.FakeRunner(script).run(_req(tmp_path))
     assert r.verdict_ok
     assert (tmp_path / "nw" / "order.txt").read_text().split() == ["pre-main", "post", "saw-edit"]
+

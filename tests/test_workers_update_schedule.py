@@ -18,6 +18,8 @@ from test_workers_update_cmd import world  # noqa: F401  (fixture: tmp registry 
 from test_remote_gates import _short_runtime_dir  # noqa: F401  (autouse fixture)
 from waits import until
 
+pytestmark = pytest.mark.fast
+
 
 @pytest.fixture(autouse=True)
 def _fresh_state():
@@ -171,3 +173,4 @@ def test_auto_update_schedules_a_stale_worker_on_check(world):
     r = CliRunner().invoke(cli, ["workers", "check", "box"])
     assert "stale" in r.output, r.output
     assert _raw(world)["update_pending"]["reason"] == "update"
+

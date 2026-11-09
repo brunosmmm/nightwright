@@ -18,6 +18,8 @@ from nightwright.agentic import conductor_cost as CC
 from nightwright.agentic import quiet
 from nightwright.agentic import store as S
 
+pytestmark = pytest.mark.integration
+
 
 def iso(t):
     return t.isoformat()
@@ -90,3 +92,4 @@ def test_cost_wakeups_brief_and_scorecard_agree(tmp_path, monkeypatch):
     assert rep["parks_undecided"] == [] and rep["ok"] is False
     assert run_cli(cfg, monkeypatch, ["queue", "mvp-report", "--window", "3",
                                       "--check"]).exit_code == 1
+

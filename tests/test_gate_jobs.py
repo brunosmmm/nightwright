@@ -21,6 +21,8 @@ from nightwright.agentic import workers as WK
 from nightwright.agentic.cli_queue import _gate_jobs_line, _workers_line
 from nightwright.cli import cli
 
+pytestmark = pytest.mark.fast
+
 
 def _git(cwd, *args):
     subprocess.run(["git", "-C", str(cwd), *args], check=True, capture_output=True,
@@ -486,3 +488,4 @@ def test_gate_jobs_line_survives_a_long_campaign_marker():
     assert "GATEJOB-0002 by bruno (jerome@main)" in out
     gp["gate_jobs"] = []
     assert CQ._gate_jobs_line(p) is None
+

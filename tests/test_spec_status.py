@@ -9,6 +9,8 @@ from click.testing import CliRunner
 from nightwright.cli import cli
 from nightwright.specs import SPEC_STATUSES, set_spec_status, spec_status
 
+pytestmark = pytest.mark.fast
+
 TEMPLATE = pathlib.Path(__file__).resolve().parent.parent / "docs/specs/TEMPLATE.md"
 
 
@@ -129,3 +131,4 @@ def test_set_option_is_choice_of_schema_enum():
     cmd = cli.commands["spec"].commands["status"]
     opt = next(p for p in cmd.params if p.name == "new_status")
     assert isinstance(opt.type, click.Choice) and tuple(opt.type.choices) == SPEC_STATUSES
+

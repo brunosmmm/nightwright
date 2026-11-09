@@ -10,6 +10,8 @@ from nightwright import report as R
 from nightwright.cli import cli
 from nightwright.org import load_tasks
 
+pytestmark = pytest.mark.fast
+
 
 def _cfg(tmp_path):
     org = tmp_path / "org"
@@ -95,3 +97,4 @@ def test_cli_priority_filter_and_mutate(tmp_path, monkeypatch):
     assert r.exit_code == 0, r.output
     r = runner.invoke(cli, ["ideas", "--priority", "A", "--json"])
     assert "one" in r.output and "two" in r.output
+
