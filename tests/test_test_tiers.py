@@ -98,6 +98,34 @@ def test_apply_inserts_pytest_import_before_early_pytestmark(tmp_path):
     assert coll.returncode == 0, coll.stderr + coll.stdout
 
 
+def test_apply_inserts_pytest_import_when_only_function_local(tmp_path):
+    """Apply must hoist pytest when the sole import is inside a test function."""
+    r = _mini_repo(tmp_path)
+    (r / "tests" / "test_fn_imp.py").write_text(textwrap.dedent("""\
+        from pathlib import Path
+
+        pytestmark = pytest.mark.fast
+
+        def test_uses_raises(tmp_path):
+            import pytest
+            with pytest.raises(ValueError):
+                raise ValueError("nope")
+
+        def test_plain():
+            pass
+        """))
+    log = tmp_path / "d.log"
+    log.write_text("0.01s call tests/test_fn_imp.py::test_plain\n")
+    assert subprocess.run([sys.executable, str(ROOT / "tools" / "test_tiers.py"), "apply", str(log),
+                           "--repo", str(r)], cwd=ROOT).returncode == 0
+    text = (r / "tests" / "test_fn_imp.py").read_text()
+    assert text.index("import pytest") < text.index("pytestmark =")
+    coll = subprocess.run(
+        [sys.executable, "-m", "pytest", "--collect-only", "-q", str(r / "tests" / "test_fn_imp.py")],
+        cwd=r, capture_output=True, text=True)
+    assert coll.returncode == 0, coll.stderr + coll.stdout
+
+
 def test_budget_rules(tmp_path):
     r = _mini_repo(tmp_path)
     (r / "tests" / "test_mod.py").write_text("import pytest\npytestmark = pytest.mark.fast\n")

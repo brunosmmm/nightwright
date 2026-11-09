@@ -6,6 +6,7 @@ import shutil
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
+import pytest
 from click.testing import CliRunner
 
 from nightwright import completion as C
@@ -111,8 +112,6 @@ def test_unknown_epic_warns_but_still_writes(tmp_path, monkeypatch, capsys):
 
 
 def test_set_idea_epic_rejects_a_non_idea(tmp_path, monkeypatch):
-    import pytest
-
     cfg = _seed(tmp_path, monkeypatch)
     assert CliRunner().invoke(cli, ["add", "a plain task"]).exit_code == 0
     task = [t for t in load_tasks(cfg) if not t.is_idea][0]
