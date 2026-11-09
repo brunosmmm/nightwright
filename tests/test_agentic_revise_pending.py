@@ -1,4 +1,4 @@
-"""SPEC-0496: the conductor ping lists specs stalled on a `revise` review."""
+"""SPEC-0497: the conductor ping lists specs stalled on a `revise` review."""
 from nightwright.agentic import events as E
 from nightwright.agentic import quiet as QT
 from nightwright.agentic import spec_review as SR

@@ -1,7 +1,7 @@
 ---
-id: SPEC-0496
+id: SPEC-0497
 title: Conductor ping flags specs stalled on a revise verdict
-status: done
+status: accepted
 owner: user
 created: 2026-11-09
 kind: feature

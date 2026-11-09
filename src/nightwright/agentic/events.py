@@ -747,7 +747,7 @@ def runner_silence(cfg, now, sett) -> dict | None:
 
 
 def revise_pending_items(cfg) -> list[dict]:
-    """SPEC-0496: specs whose latest review verdict is `revise` and that have no campaign
+    """SPEC-0497: specs whose latest review verdict is `revise` and that have no campaign
     (ABANDONED ones do not count): nothing applies the findings and re-queues them, so the
     conductor must. `stale` is true when the spec changed since that review."""
     from . import spec_review as SR
