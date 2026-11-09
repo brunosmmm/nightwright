@@ -1,7 +1,7 @@
 ---
 id: SPEC-0480
 title: Publish a backlog request and record the link
-status: proposed
+status: accepted
 owner: user
 created: 2026-11-08
 updated: 2026-11-09
