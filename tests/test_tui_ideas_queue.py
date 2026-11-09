@@ -126,8 +126,9 @@ def test_w_opens_campaign_detail_and_escape_returns_to_the_same_idea(tmp_path):
             assert await pilot_until(pilot, lambda: app._pairs)
             app.jump_to("IDEA-002")
             assert app.selected_id == "IDEA-002"
-            screen = "\n".join(_grid(app))
-            assert "Queue" in screen and "SPEC-0002-20261105-aaaa" in screen
+            # The detail pane repaints after the jump; wait for it rather than reading once.
+            assert await pilot_until(pilot, lambda: "Queue" in (s := "\n".join(_grid(app)))
+                                     and "SPEC-0002-20261105-aaaa" in s)
 
             await pilot.press("w")
             assert await pilot_until(pilot, lambda: isinstance(app.screen, CampaignDetail))
