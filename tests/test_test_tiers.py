@@ -11,6 +11,7 @@ import pytest
 
 pytestmark = [pytest.mark.fast, pytest.mark.tree_guard]
 
+TESTS = Path(__file__).parent
 ROOT = Path(__file__).resolve().parents[1]
 _spec = importlib.util.spec_from_file_location("test_tiers", ROOT / "tools" / "test_tiers.py")
 TT = importlib.util.module_from_spec(_spec)
@@ -18,6 +19,7 @@ _spec.loader.exec_module(TT)
 
 
 def test_check_real_tree():
+    assert sorted(TESTS.glob("test_*.py")), "expected test modules under tests/"
     r = subprocess.run([sys.executable, str(ROOT / "tools" / "test_tiers.py"), "check"],
                        cwd=ROOT, capture_output=True, text=True)
     assert r.returncode == 0, r.stderr

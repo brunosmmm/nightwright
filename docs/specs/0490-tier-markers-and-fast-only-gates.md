@@ -4,7 +4,7 @@ title: "Tier markers and fast-only campaign gates"
 status: in-progress
 owner: user
 created: 2026-11-09
-updated: 2026-11-10
+updated: 2026-11-09
 milestone: "M9: agentic workflow"
 kind: feature
 parent: SPEC-0489
@@ -247,6 +247,11 @@ green; it goes through `affected_tests.py`, which drops the exclusion.
 - **Regression guard:** projects without `cadence:` and without `--exclude-marks` resolve
   identical gate dicts. Run the affected tests plus the files above, never the full suite by
   hand.
+
+### Test record (2026-11-09)
+
+- `uv run pytest -q tests/test_test_tiers.py tests/test_guard_registry.py::test_every_marked_module_is_a_detected_scanner tests/test_guard_registry.py::test_every_tree_scanner_is_marked_or_exempt` (10 passed).
+- Full pytest-affected gate and full suite left to gating.
 
 ### Test record (2026-11-10)
 
