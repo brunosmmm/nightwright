@@ -168,7 +168,7 @@ def test_precedence_order(tmp_path):
 def test_classify_prints_one_line_per_module_and_the_overrides(tmp_path):
     r = _tree(tmp_path, {"test_a.py": "def test_x():\n    pass\n", "test_b_race.py": ""})
     log = tmp_path / "d.log"
-    log.write_text("2.50s call tests/test_a.py::test_x\n")
+    log.write_text("2.50s call tests/test_a.py::test_x\n1 passed in 2.60s\n")
     out = _tool("--classify", log, "--repo", r)
     assert out.returncode == 0
     assert out.stdout.splitlines() == ["fast\ttests/test_a.py",
@@ -283,7 +283,8 @@ def test_apply_rewrites_every_shape_and_is_idempotent(tmp_path):
     log = tmp_path / "d.log"
     log.write_text("1.00s call tests/test_over.py::test_big[1]\n"
                    "2.50s call tests/test_over.py::test_big[2]\n"
-                   "0.01s call tests/test_over.py::test_small\n")
+                   "0.01s call tests/test_over.py::test_small\n"
+                   "1 failed, 2 passed in 3.60s\n")
     assert _tool("--apply", log, "--repo", r).returncode == 0
     text = {n: (r / "tests" / n).read_text() for n in SHAPES}
     assert 'pytestmark = [pytest.mark.fast, pytest.mark.skipif(False, reason=\'x\')]' in text["test_skip.py"]
@@ -322,6 +323,10 @@ def test_apply_without_a_log_exits_2_and_writes_nothing(tmp_path):
     empty.write_text("  \n")
     assert _tool("--apply", tmp_path / "missing.log", "--repo", r).returncode == 2
     assert _tool("--apply", empty, "--repo", r).returncode == 2
+    cut = tmp_path / "cut.log"          # a timed-out run never prints pytest's final summary
+    cut.write_text("3.00s call tests/test_over.py::test_big[1]\n")
+    assert _tool("--apply", cut, "--repo", r).returncode == 2
+    assert _tool("--classify", cut, "--repo", r).returncode == 2
     assert {n: (r / "tests" / n).read_text() for n in SHAPES} == before
 
 
@@ -335,7 +340,7 @@ def test_apply_hoists_pytest_above_an_early_pytestmark(tmp_path):
             assert pytest
         """})
     log = tmp_path / "d.log"
-    log.write_text("0.01s call tests/test_late_imp.py::test_one\n")
+    log.write_text("0.01s call tests/test_late_imp.py::test_one\n=== 1 passed in 0.02s ===\n")
     assert _tool("--apply", log, "--repo", r).returncode == 0
     text = (r / "tests" / "test_late_imp.py").read_text()
     assert text.index("import pytest") < text.index("pytestmark =")

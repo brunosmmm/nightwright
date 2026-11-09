@@ -20,6 +20,9 @@ HEAVY = frozenset(TIERS) - {"fast"}
 FAST_MODULE_SUM_S = 20.0
 FAST_TEST_S = 2.0
 # `--durations=0` lines: "12.34s call     tests/test_x.py::test_y[param]"
+# pytest's closing summary ("5 failed, 8151 passed, 11 skipped in 3906.16s"): its absence means
+# the run was cut (timeout, kill), so the per-test durations are incomplete.
+FINAL_LINE = re.compile(r"\b\d+ (?:passed|failed)\b[^\n]* in [\d.]+s\b")
 DURATION_LINE = re.compile(r"^([\d.]+)s\s+(setup|call|teardown)\s+(\S.*)$")
 PYTEST_BUILTIN_MARKS = frozenset({"skip", "skipif", "xfail", "usefixtures", "parametrize",
                                   "filterwarnings"})
@@ -288,13 +291,15 @@ def _read_log(path: Path) -> str | None:
         raw = path.read_text(encoding="utf-8")
     except OSError:
         return None
-    return raw if raw.strip() else None
+    if not raw.strip() or not FINAL_LINE.search(raw[-4000:]):
+        return None             # empty, or the run never reached pytest's final summary
+    return raw
 
 
 def cmd_classify(repo: Path, log: Path) -> int:
     raw = _read_log(log)
     if raw is None:
-        print(f"test_tiers: missing or empty durations log {log}", file=sys.stderr)
+        print(f"test_tiers: missing, empty or incomplete durations log {log}", file=sys.stderr)
         return 2
     for rel, (tier, overrides) in classify_repo(repo, parse_durations_log(raw)).items():
         print(f"{tier}\t{rel}")
@@ -306,7 +311,7 @@ def cmd_classify(repo: Path, log: Path) -> int:
 def cmd_apply(repo: Path, log: Path) -> int:
     raw = _read_log(log)
     if raw is None:
-        print(f"test_tiers: missing or empty durations log {log}; nothing written",
+        print(f"test_tiers: missing, empty or incomplete durations log {log}; nothing written",
               file=sys.stderr)
         return 2
     changed = [rel for rel, (tier, ov) in classify_repo(repo, parse_durations_log(raw)).items()
