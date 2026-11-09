@@ -359,7 +359,7 @@ class Gate:
                 try:
                     kind, providers = BP.spawn_backend(self.cfg, state, persona)
                 except (ValueError, OSError):
-                    return None
+                    continue
                 if kind in ("cursor", "pi"):
                     checks.append((kind, list(providers or ())))
         else:

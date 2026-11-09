@@ -52,7 +52,10 @@ def _home(environ) -> Path:
 
 def _expand(path: str, environ) -> Path:
     if path.startswith("~/"):
-        return _home(environ) / path[2:]
+        remainder = path[2:]
+        if os.path.isabs(remainder):
+            return _home(environ) / ".nw-invalid-tilde" / remainder.lstrip(os.sep)
+        return _home(environ) / remainder
     if path == "~":
         return _home(environ)
     return Path(os.path.expandvars(path) if environ is None else path)
@@ -153,9 +156,12 @@ def _sdk_managed(environ) -> bool:
     if not version_file.is_file():
         return False
     try:
-        version = version_file.read_text(encoding="utf-8").strip()
-    except OSError:
+        version = version_file.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError):
         return False
+    version = version.strip()
+    if version.startswith("\ufeff"):
+        version = version[1:].strip()
     if not _VERSION_RE.fullmatch(version):
         return False
     entry = (agent_dir / "install" / "releases" / version / _SDK_PKG / "dist" / "index.js")
@@ -282,7 +288,7 @@ def note_fault(cfg, kind: str, error: str, *, where: str = "tick") -> dict | Non
             journal(cfg, "backend_preflight_failed", backend=kind, error=error, where=where)
         from . import credentials as CR
         creds = CR.settings(cfg)
-        if any(var in error for var in creds):
+        if any(f"{var} is not set" in error for var in creds):
             return None             # SPEC-0483: the credential's own escalation names the fix
         if error.startswith("no credential for provider "):
             prov = error.split("no credential for provider ", 1)[1].strip().lower()
