@@ -438,6 +438,10 @@ its own. The runner still starts.
 
 Split Pi SDK name literals in `backend_preflight.py` for SPEC-0465. `uv run pytest tests/test_pi_runner.py::test_no_python_imports_pi_package tests/test_backend_preflight_extend.py -q` — all passed. Full suite left to gating.
 
+### Test record (2026-11-09, loop 3)
+
+Removed stub Pi SDK package.json; NODE_PATH SDK walk, env_fault provider/path, Pi two-option escalation, passwd HOME fallback. `uv run pytest tests/test_backend_preflight_extend.py tests/test_pi_runner.py::test_no_python_imports_pi_package tests/test_runner_selfheal.py tests/test_remote_persona_limits.py::test_spec_review_is_neither_counted_nor_gated -q` — all passed. `python3 tools/spec_lint.py` — ok. Full suite left to gating.
+
 - **Regression guard:** `python3 tools/affected_tests.py --run uv run pytest -q` on the
   touched files. `tests/test_runner_selfheal.py` (the SPEC-0484 cursor hold, spawn, and
   startup tests) and `tests/test_remote_persona_limits.py::test_spec_review_is_neither_counted_nor_gated`

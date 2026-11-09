@@ -27,8 +27,8 @@ _SDK_PKG = "node_modules/" + _SDK_SCOPE
 _ENV_FAULT_RE = re.compile(
     r"CURSOR_API_KEY is not set|cursor-sdk is not installed|"
     + re.escape(_PI_PKG)
-    + r" is not installed|no credential for provider |"
-    r"node not found on PATH|pi_exec\.mjs missing")
+    + r" is not installed|no credential for provider \S+|"
+    r"node not found on PATH|pi_exec\.mjs missing(?: at \S+)?")
 _VERSION_RE = re.compile(r"^[0-9A-Za-z][0-9A-Za-z.+-]*$")
 _NOTED: set = set()
 _NOTED_LOCK = threading.Lock()
@@ -40,9 +40,14 @@ def _environ(environ):
 
 def _home(environ) -> Path:
     env = _environ(environ)
-    if environ is not None:
-        return Path(env.get("HOME") or "/")
-    return Path(env.get("HOME") or os.path.expanduser("~"))
+    home = env.get("HOME")
+    if home and str(home).strip():
+        return Path(str(home).strip())
+    try:
+        import pwd
+        return Path(pwd.getpwuid(os.getuid()).pw_dir)
+    except (ImportError, KeyError):
+        return Path(os.path.expanduser("~"))
 
 
 def _expand(path: str, environ) -> Path:
@@ -119,15 +124,21 @@ def _pi_script() -> Path:
     return Path(__file__).resolve().parent / "pi_exec.mjs"
 
 
-def _sdk_on_walk(script: Path) -> bool:
-    here = script.parent
-    while True:
-        if (here / _SDK_PKG / "package.json").is_file():
-            return True
-        parent = here.parent
-        if parent == here:
-            break
-        here = parent
+def _sdk_on_walk(script: Path, environ=None) -> bool:
+    env = _environ(environ)
+    starts: list[Path] = [script.parent]
+    for entry in (env.get("NODE_PATH") or "").split(os.pathsep):
+        if entry.strip():
+            starts.append(Path(entry.strip()))
+    for root in starts:
+        here = root
+        while True:
+            if (here / _SDK_PKG / "package.json").is_file():
+                return True
+            parent = here.parent
+            if parent == here:
+                break
+            here = parent
     return False
 
 
@@ -207,7 +218,7 @@ def _check_pi(environ, providers: list[str] | None) -> str | None:
     script = _pi_script()
     if not script.is_file():
         return f"pi_exec.mjs missing at {script}"
-    if not (_sdk_on_walk(script) or _sdk_managed(environ)):
+    if not (_sdk_on_walk(script, environ) or _sdk_managed(environ)):
         return f"{_PI_PKG} is not installed"
     names = [str(p).strip() for p in (providers or ()) if str(p).strip()]
     for name in names:
@@ -242,11 +253,12 @@ def _question(kind: str, error: str, cfg) -> tuple[str, list, list]:
     q = (f"The {kind} persona backend cannot start on this host: {error}. Persona steps that "
          "need it are held (no triage or review retry is spent) until it is fixed.")
     if kind == "pi":
-        opts = ["install Node and " + _SDK_SCOPE + " (managed install under "
-                "~/.pi/agent, or a node_modules walk that satisfies the check) and map the "
-                "provider key in agentic.credentials or store it in Pi's auth.json (a shell "
-                "export is picked up after nw queue restart --yes); switch agentic.runner (or "
-                "the project's runner) to claude"]
+        opts = [
+            "install Node and " + _SDK_SCOPE + " (managed install under ~/.pi/agent, or a "
+            "node_modules walk that satisfies the check) and export the provider key or store "
+            "it in Pi's auth.json",
+            "switch agentic.runner (or the project's runner) to claude",
+        ]
     else:
         opts = ["map the credential in agentic.credentials (e.g. CURSOR_API_KEY: "
                 "pass:cursor/sdk), or install the missing SDK, then restart the runner: "
@@ -273,7 +285,7 @@ def note_fault(cfg, kind: str, error: str, *, where: str = "tick") -> dict | Non
         if any(var in error for var in creds):
             return None             # SPEC-0483: the credential's own escalation names the fix
         if error.startswith("no credential for provider "):
-            prov = error.split("no credential for provider ", 1)[1].strip()
+            prov = error.split("no credential for provider ", 1)[1].strip().lower()
             env_keys = {
                 "anthropic": ("ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_IDENTITY_TOKEN_FILE"),
                 "openai": ("OPENAI_API_KEY",),
