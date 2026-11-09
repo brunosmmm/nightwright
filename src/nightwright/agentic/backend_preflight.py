@@ -46,7 +46,7 @@ def _home(environ) -> Path:
     try:
         import pwd
         return Path(pwd.getpwuid(os.getuid()).pw_dir)
-    except (ImportError, KeyError):
+    except (ImportError, KeyError, OSError):
         return Path(os.path.expanduser("~"))
 
 
@@ -120,7 +120,10 @@ def check(kind, environ=None, *, providers: list[str] | None = None) -> str | No
         return None if rec.get("ok") else (rec.get("error") or "cursor backend unavailable")
     if kind != "pi":
         return None
-    return _check_pi(environ, providers)
+    try:
+        return _check_pi(environ, providers)
+    except Exception:                        # noqa: BLE001 — a probe bug is not a fault
+        return None
 
 
 def _pi_script() -> Path:
@@ -159,9 +162,10 @@ def _sdk_managed(environ) -> bool:
         version = version_file.read_text(encoding="utf-8")
     except (OSError, UnicodeDecodeError):
         return False
-    version = version.strip()
-    if version.startswith("\ufeff"):
-        version = version[1:].strip()
+    version = version.strip().strip("\ufeff")
+    while version.startswith("\ufeff"):
+        version = version[1:].strip("\ufeff \t\n\r\v\f")
+    version = version.strip("\ufeff \t\n\r\v\f")
     if not _VERSION_RE.fullmatch(version):
         return False
     entry = (agent_dir / "install" / "releases" / version / _SDK_PKG / "dist" / "index.js")
@@ -179,7 +183,7 @@ def _auth_json(environ) -> dict | None:
         return None
     try:
         doc = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError, TypeError, ValueError):
+    except (OSError, json.JSONDecodeError, TypeError, ValueError, RecursionError):
         return None
     return doc if isinstance(doc, dict) else None
 

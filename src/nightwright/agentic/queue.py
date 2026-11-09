@@ -2833,7 +2833,8 @@ def _do_spec_review(ctx: _Ctx, state: dict, step: Step, run_id: str, req,
             git.git(worktree, "reset", "--hard", head)
             sr["modified"] = "reviewer modified the worktree"
     except (GitError, ValueError, OSError) as e:
-        res.error = getattr(e, "tail", None) or str(e)
+        if not res.interrupted:
+            res.error = getattr(e, "tail", None) or str(e)
     return res
 
 
@@ -3576,7 +3577,7 @@ def _apply_step(ctx: _Ctx, state: dict, res: StepResult) -> dict:
             "detail": res.error if res.error.startswith("profile: ")
             else f"project config: {res.error}",
             "resume_to": resume if resume in RESUMABLE_STATES else "IMPLEMENTING"})
-    if res.error and kind != "close":
+    if res.error and kind != "close" and not (kind == "spec_review" and res.interrupted):
         reason = {"open": "open_failed", "write_spec": "spec_write_failed",
                   "spec_review": "spec_review_exhausted",
                   "finalize_split": "spec_write_failed"}.get(kind, "open_failed")

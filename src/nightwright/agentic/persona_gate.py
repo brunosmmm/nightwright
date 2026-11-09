@@ -376,8 +376,11 @@ class Gate:
         for kind, providers in checks:
             key = (kind, tuple(providers or ()))
             if key not in self._backend:
-                self._backend[key] = BP.check(
-                    kind, providers=providers if kind == "pi" else None)
+                try:
+                    self._backend[key] = BP.check(
+                        kind, providers=providers if kind == "pi" else None)
+                except Exception:              # noqa: BLE001
+                    self._backend[key] = None
                 if self._backend[key] is not None:
                     BP.note_fault(self.cfg, kind, self._backend[key], where="gate")
             if self._backend[key] is not None:
