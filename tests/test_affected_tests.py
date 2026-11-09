@@ -946,29 +946,103 @@ def test_tree_reader_rule_is_off_in_strict_mode(grepo):
     assert sel.tests == ["tests/test_new.py"]
 
 
-def test_exit5_only_when_partial_with_exclusion(grepo, monkeypatch):
+# --- SPEC-0490: --exclude-marks and NW_ALL_TIERS -------------------------------------------------
+
+HEAVY = "integration,tui,remote,perf"
+EXPR = "not (integration or tui or remote or perf) or tree_guard"
+EXIT5 = (sys.executable, "-c", "raise SystemExit(5)")
+
+
+def test_exclude_marks_goes_before_the_selected_paths(repo, monkeypatch):
     monkeypatch.delenv("NW_ALL_TIERS", raising=False)
-    _change(grepo, "tests/test_base.py")
-    r = _cli(grepo, "--exclude-marks", "integration", "--run", sys.executable, "-c",
-             "raise SystemExit(5)")
-    assert r.returncode == 0 and "no fast tests" in r.stderr
+    _change(repo, "tests/test_mid.py")
+    r = _cli(repo, "--exclude-marks", HEAVY, "--include", "tests/test_base.py",
+             "--run", "echo", "RUN")
+    assert r.returncode == 0
+    assert r.stdout.strip() == f"RUN -m {EXPR} tests/test_base.py tests/test_mid.py"
+
+
+def test_exclude_marks_applies_to_the_full_fallback_and_not_to_an_empty_selection(repo,
+                                                                                  monkeypatch):
+    monkeypatch.delenv("NW_ALL_TIERS", raising=False)
+    _change(repo, "tests/conftest.py")
+    r = _cli(repo, "--exclude-marks", HEAVY, "--run", "echo", "RUN")
+    assert "full suite" in r.stderr and r.stdout.strip() == f"RUN -m {EXPR}"
+    _git(repo, "reset", "-q", "--hard", "main")
+    _git(repo, "checkout", "-qB", "feat")
+    _change(repo, "docs/note.md")
+    r = _cli(repo, "--exclude-marks", HEAVY, "--run", "false")
+    assert r.returncode == 0 and r.stdout.strip() == "no affected tests"
+
+
+@pytest.mark.parametrize("value, kept", [("", True), ("0", True), ("false", True), ("no", True),
+                                         ("1", False), ("yes", False)])
+def test_all_tiers_drops_the_expression_and_the_off_set_keeps_it(repo, monkeypatch, value, kept):
+    monkeypatch.setenv("NW_ALL_TIERS", value)
+    _change(repo, "tests/test_mid.py")
+    r = _cli(repo, "--exclude-marks", HEAVY, "--run", "echo", "RUN")
+    assert r.returncode == 0
+    if kept:
+        assert r.stdout.strip() == f"RUN -m {EXPR} tests/test_mid.py"
+        assert "all tiers" not in r.stderr
+    else:
+        assert r.stdout.strip() == "RUN tests/test_mid.py"
+        assert "affected_tests: all tiers" in r.stderr
+
+
+def test_exit_5_is_green_only_for_a_partial_fast_selection(repo, monkeypatch):
+    monkeypatch.delenv("NW_ALL_TIERS", raising=False)
+    _change(repo, "tests/test_mid.py")
+    r = _cli(repo, "--exclude-marks", HEAVY, "--run", *EXIT5)
+    assert r.returncode == 0 and "no fast tests in the selection" in r.stderr
+    assert _cli(repo, "--run", *EXIT5).returncode == 5                 # no --exclude-marks
     monkeypatch.setenv("NW_ALL_TIERS", "1")
-    r = _cli(grepo, "--exclude-marks", "integration", "--run", sys.executable, "-c",
-             "raise SystemExit(5)")
-    assert r.returncode == 5
-    _git(grepo, "reset", "-q", "--hard", "main")
-    _git(grepo, "checkout", "-qB", "feat")
-    _change(grepo, "tests/conftest.py")
-    r = _cli(grepo, "--exclude-marks", "integration", "--run", sys.executable, "-c",
-             "raise SystemExit(5)")
-    assert r.returncode == 5
+    assert _cli(repo, "--exclude-marks", HEAVY, "--run", *EXIT5).returncode == 5
+    monkeypatch.delenv("NW_ALL_TIERS")
+    monkeypatch.setenv("NW_AFFECTED_FULL", "1")                        # forced full
+    assert _cli(repo, "--exclude-marks", HEAVY, "--run", *EXIT5).returncode == 5
+    monkeypatch.delenv("NW_AFFECTED_FULL")
+    _change(repo, "tests/conftest.py")                                 # unsafe -> full fallback
+    r = _cli(repo, "--exclude-marks", HEAVY, "--run", *EXIT5)
+    assert "full suite" in r.stderr and r.returncode == 5
 
 
-def test_exclude_marks_json_fields(grepo, monkeypatch):
+def test_exclude_marks_json_fields(repo, monkeypatch):
     monkeypatch.delenv("NW_ALL_TIERS", raising=False)
-    _change(grepo, "tests/test_base.py")
-    r = _cli(grepo, "--exclude-marks", "integration,tui", "--json")
-    rep = json.loads(r.stdout)
-    assert rep["exclude_marks"] == ["integration", "tui"]
-    assert rep["all_tiers"] is False
+    _change(repo, "tests/test_mid.py")
+    rep = json.loads(_cli(repo, "--exclude-marks", "integration,tui", "--json").stdout)
+    assert rep["exclude_marks"] == ["integration", "tui"] and rep["all_tiers"] is False
+    monkeypatch.setenv("NW_ALL_TIERS", "1")
+    rep = json.loads(_cli(repo, "--json").stdout)
+    assert rep["exclude_marks"] == [] and rep["all_tiers"] is True
 
+
+TIER_FILES = {
+    "pyproject.toml": ("[project]\nname='nw'\n[tool.pytest.ini_options]\naddopts = ['--strict-markers']\n"
+                       "markers = ['fast: f', 'integration: i', 'tui: t', 'remote: r', 'perf: p',\n"
+                       "  'tree_guard: g']\n"),
+    "tests/test_org_write_race.py": ("import pytest\n\n"
+                                     "pytestmark = [pytest.mark.integration, pytest.mark.tree_guard]\n\n"
+                                     "def test_race():\n    pass\n"),
+    "tests/test_heavy.py": "import pytest\n\npytestmark = pytest.mark.integration\n\ndef test_heavy():\n    pass\n",
+    "tests/test_light.py": "import pytest\n\npytestmark = pytest.mark.fast\n\ndef test_light():\n    pass\n",
+}
+
+
+def test_guards_keep_a_heavy_tree_guard_and_drop_a_heavy_module(tmp_path, monkeypatch):
+    monkeypatch.delenv("NW_ALL_TIERS", raising=False)
+    r = tmp_path / "repo"
+    for rel, text in {**FILES, **TIER_FILES}.items():
+        (r / rel).parent.mkdir(parents=True, exist_ok=True)
+        (r / rel).write_text(text)
+    _git(r, "init", "-q", "-b", "main")
+    _git(r, "add", "-A")
+    _git(r, "commit", "-qm", "init")
+    _git(r, "checkout", "-qb", "feat")
+    _change(r, "tests/test_heavy.py", "tests/test_light.py")
+    out = _cli(r, "--guards", "--exclude-marks", HEAVY, "--run", sys.executable, "-m", "pytest",
+               "--collect-only", "-q", "-p", "no:cacheprovider", "-p", "no:xdist")
+    assert out.returncode == 0, out.stdout + out.stderr
+    assert "tests/test_org_write_race.py::test_race" in out.stdout
+    assert "tests/test_light.py::test_light" in out.stdout
+    assert "test_heavy" not in out.stdout

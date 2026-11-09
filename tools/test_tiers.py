@@ -1,52 +1,55 @@
 #!/usr/bin/env python3
-"""Per-module pytest tier marks from taxonomy and duration data (SPEC-0490).
+"""Per-module pytest tier marks from the taxonomy and a durations log (SPEC-0490).
 
-Stdlib only (`ast`). Classify modules, rewrite `pytestmark` in `tests/test_*.py`, or verify the tree."""
+Stdlib only (`ast`). `--classify LOG` prints one tier per `tests/test_*.py` module plus the
+function-level overrides; `--apply LOG` rewrites the modules in place with the same
+classification; `--check` verifies the tree (exit 1 and lists each bad module)."""
 from __future__ import annotations
 
 import argparse
 import ast
 import re
 import sys
+import tomllib
 from collections import defaultdict
 from pathlib import Path
 
 TESTS = "tests"
-TIERS = frozenset({"fast", "integration", "tui", "remote", "perf"})
+TIERS = ("fast", "integration", "tui", "remote", "perf")
+HEAVY = frozenset(TIERS) - {"fast"}
 FAST_MODULE_SUM_S = 20.0
 FAST_TEST_S = 2.0
-DURATION_LINE = re.compile(r"^([\d.]+)s\s+\w+\s+(\S.+)$")
-
+# `--durations=0` lines: "12.34s call     tests/test_x.py::test_y[param]"
+DURATION_LINE = re.compile(r"^([\d.]+)s\s+(setup|call|teardown)\s+(\S.*)$")
+PYTEST_BUILTIN_MARKS = frozenset({"skip", "skipif", "xfail", "usefixtures", "parametrize",
+                                  "filterwarnings"})
 REMOTE_IMPORTS = frozenset({"remote_loopback", "remote_support", "remote_workers_golden"})
 TUI_IMPORTS = frozenset({"tui_harness", "tui_budget"})
+EXPLICIT = {"test_tui_budget": "perf", "test_gate_timeout_tree": "integration"}
 
+
+# --- durations ---------------------------------------------------------------------------------
 
 class Durations:
+    """Per-test seconds (setup + call + teardown summed) and per-module sums."""
+
     def __init__(self, per_test: dict[str, float]):
         self.per_test = per_test
         self.module_sum: dict[str, float] = defaultdict(float)
         for nodeid, sec in per_test.items():
-            mod = nodeid.split("::", 1)[0]
-            self.module_sum[mod] += sec
+            self.module_sum[nodeid.split("::", 1)[0]] += sec
 
 
 def parse_durations_log(text: str) -> Durations:
-    per_test = {}
+    per_test: dict[str, float] = defaultdict(float)
     for line in text.splitlines():
-        line = line.strip()
-        m = DURATION_LINE.match(line)
-        if not m:
-            continue
-        nodeid = m.group(2).strip()
-        if "::" not in nodeid:
-            continue
-        per_test[nodeid] = float(m.group(1))
-    return Durations(per_test)
+        m = DURATION_LINE.match(line.strip())
+        if m and "::" in m.group(3):
+            per_test[m.group(3).strip()] += float(m.group(1))
+    return Durations(dict(per_test))
 
 
-def _stem(rel: str) -> str:
-    return Path(rel).stem
-
+# --- classification ----------------------------------------------------------------------------
 
 def _parse_file(repo: Path, rel: str) -> ast.Module | None:
     try:
@@ -55,98 +58,72 @@ def _parse_file(repo: Path, rel: str) -> ast.Module | None:
         return None
 
 
-def _call_attr(node: ast.Call) -> str | None:
-    if isinstance(node.func, ast.Attribute):
-        return node.func.attr
-    return None
-
-
-def _imports_mod(tree: ast.Module, names: frozenset[str]) -> bool:
+def _imports_any(tree: ast.Module, names: frozenset[str]) -> bool:
     for node in ast.walk(tree):
         if isinstance(node, ast.Import):
-            for a in node.names:
-                base = a.name.split(".", 1)[0]
-                if base in names or (a.asname and a.asname in names):
-                    return True
+            if any(a.name.split(".", 1)[0] in names for a in node.names):
+                return True
         elif isinstance(node, ast.ImportFrom):
             if node.module and node.module.split(".", 1)[0] in names:
                 return True
-            for a in node.names:
-                if a.name in names or (a.asname and a.asname in names):
-                    return True
+            if any(a.name in names for a in node.names):
+                return True
     return False
 
 
-def _has_run_test(tree: ast.Module) -> bool:
-    for node in ast.walk(tree):
-        if isinstance(node, ast.Call) and _call_attr(node) == "run_test":
-            return True
-    return False
+def _calls_run_test(tree: ast.Module) -> bool:
+    return any(isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute)
+               and n.func.attr == "run_test" for n in ast.walk(tree))
 
 
 def taxonomy_tier(rel: str, tree: ast.Module | None) -> str:
-    stem = _stem(rel)
-    if stem == "test_tui_budget":
-        return "perf"
-    if stem == "test_gate_timeout_tree":
-        return "integration"
-    if stem.startswith("test_tui_"):
+    """Rules 1-4 of the taxonomy plus `fast`; the first match wins (durations not consulted)."""
+    stem = Path(rel).stem
+    if stem in EXPLICIT:
+        return EXPLICIT[stem]
+    if stem.startswith("test_tui_") or (tree is not None and (
+            _calls_run_test(tree) or _imports_any(tree, TUI_IMPORTS))):
         return "tui"
-    if tree is not None and (_has_run_test(tree) or _imports_mod(tree, TUI_IMPORTS)):
-        return "tui"
-    if stem.startswith("test_remote_") or stem.startswith("test_pull_worker"):
+    if stem.startswith(("test_remote_", "test_pull_worker")) or (
+            tree is not None and _imports_any(tree, REMOTE_IMPORTS)):
         return "remote"
-    if tree is not None and _imports_mod(tree, REMOTE_IMPORTS):
-        return "remote"
-    if stem.endswith("_e2e") or stem.endswith("_integration") or stem.endswith("_race"):
+    if stem.endswith(("_e2e", "_integration", "_race")):
         return "integration"
     return "fast"
 
 
 def classify_module(rel: str, tree: ast.Module | None,
                     durations: Durations | None) -> tuple[str, dict[str, float]]:
+    """(tier, {nodeid: seconds} of fast-module tests over the 2 s budget)."""
     tier = taxonomy_tier(rel, tree)
-    overrides: dict[str, float] = {}
-    if durations and tier == "fast":
-        mod_sum = durations.module_sum.get(rel, 0.0)
-        for nodeid, sec in durations.per_test.items():
-            if nodeid.startswith(rel + "::") and sec > FAST_TEST_S:
-                overrides[nodeid] = sec
-        if mod_sum > FAST_MODULE_SUM_S:
-            return "integration", {}
-    return tier, overrides
+    if tier != "fast" or durations is None:
+        return tier, {}
+    if durations.module_sum.get(rel, 0.0) > FAST_MODULE_SUM_S:
+        return "integration", {}
+    return "fast", {n: s for n, s in durations.per_test.items()
+                    if n.startswith(rel + "::") and s > FAST_TEST_S}
 
 
-def _is_pytest_mark(node, name: str) -> bool:
-    if isinstance(node, ast.Attribute) and node.attr == name:
-        v = node.value
-        return isinstance(v, ast.Attribute) and v.attr == "mark" and isinstance(v.value, ast.Name) \
-            and v.value.id == "pytest"
+def module_paths(repo: Path) -> list[str]:
+    return [p.relative_to(repo).as_posix() for p in sorted((repo / TESTS).glob("test_*.py"))]
+
+
+def classify_repo(repo: Path, durations: Durations | None) -> dict[str, tuple[str, dict]]:
+    return {rel: classify_module(rel, _parse_file(repo, rel), durations)
+            for rel in module_paths(repo)}
+
+
+# --- mark inspection ---------------------------------------------------------------------------
+
+def _mark_name(node) -> str | None:
+    """`pytest.mark.NAME` or `pytest.mark.NAME(...)` -> NAME, else None."""
     if isinstance(node, ast.Call):
-        return _is_pytest_mark(node.func, name)
-    return False
-
-
-def _tier_from_mark_node(node) -> str | None:
-    for tier in TIERS:
-        if _is_pytest_mark(node, tier):
-            return tier
-    if isinstance(node, (ast.List, ast.Tuple)):
-        found = [_tier_from_mark_node(e) for e in node.elts]
-        return next((t for t in found if t), None)
+        node = node.func
+    if (isinstance(node, ast.Attribute) and isinstance(node.value, ast.Attribute)
+            and node.value.attr == "mark" and isinstance(node.value.value, ast.Name)
+            and node.value.value.id == "pytest"):
+        return node.attr
     return None
-
-
-def _is_slow_mark(node) -> bool:
-    return _is_pytest_mark(node, "slow")
-
-
-def _collect_non_tier_marks(node) -> list[ast.AST]:
-    if isinstance(node, (ast.List, ast.Tuple)):
-        return [e for e in node.elts if _tier_from_mark_node(e) is None and not _is_slow_mark(e)]
-    if _tier_from_mark_node(node) is None and not _is_slow_mark(node):
-        return [node]
-    return []
 
 
 def _pytestmark_assign(tree: ast.Module) -> ast.Assign | None:
@@ -157,201 +134,197 @@ def _pytestmark_assign(tree: ast.Module) -> ast.Assign | None:
     return None
 
 
-def _pytest_import_lineno(tree: ast.Module) -> int | None:
-    """Earliest module-level lineno of `import pytest` or `from pytest import …`."""
-    best: int | None = None
-    for node in tree.body:
-        if isinstance(node, ast.Import):
-            for a in node.names:
-                if a.name.split(".", 1)[0] == "pytest":
-                    ln = node.lineno
-                    best = ln if best is None else min(best, ln)
-        elif isinstance(node, ast.ImportFrom) and node.module and node.module.split(".", 1)[0] == "pytest":
-            ln = node.lineno
-            best = ln if best is None else min(best, ln)
-    return best
+def _elements(value) -> list:
+    return list(value.elts) if isinstance(value, (ast.List, ast.Tuple)) else [value]
 
 
-def _ensure_pytest_import_before_mark(text: str, rel: str) -> str:
-    tree = ast.parse(text, filename=rel)
-    assign = _pytestmark_assign(tree)
-    if assign is None or "pytestmark" not in text:
-        return text
-    imp = _pytest_import_lineno(tree)
-    if imp is not None and imp < assign.lineno:
-        return text
-    bare = text.split("\n")
-    bare.insert(assign.lineno - 1, "import pytest")
-    new_text = "\n".join(bare)
-    if text.endswith("\n"):
-        new_text += "\n"
-    return new_text
-
-
-def _module_tiers(tree: ast.Module) -> list[str]:
-    assign = _pytestmark_assign(tree)
-    if assign is None:
-        return []
-    if isinstance(assign.value, (ast.List, ast.Tuple)):
-        return [t for e in assign.value.elts if (t := _tier_from_mark_node(e))]
-    t = _tier_from_mark_node(assign.value)
-    return [t] if t else []
-
-
-def _has_slow_attr(tree: ast.Module) -> list[str]:
-    bad = []
-    for node in ast.walk(tree):
-        if _is_pytest_mark(node, "slow"):
-            bad.append(f"slow attribute at line {getattr(node, 'lineno', '?')}")
-    return bad
+def _registered_marks(repo: Path) -> set[str]:
+    try:
+        doc = tomllib.loads((repo / "pyproject.toml").read_text(encoding="utf-8"))
+    except (OSError, tomllib.TOMLDecodeError):
+        return set()
+    lines = doc.get("tool", {}).get("pytest", {}).get("ini_options", {}).get("markers", [])
+    return {str(m).split(":", 1)[0].split("(", 1)[0].strip() for m in lines}
 
 
 def check_repo(repo: Path) -> list[str]:
+    """One line per problem; `[]` means the tree is clean. Helper modules are exempt."""
+    known = PYTEST_BUILTIN_MARKS | _registered_marks(repo)
     errors = []
-    for path in sorted((repo / TESTS).glob("test_*.py")):
-        rel = path.relative_to(repo).as_posix()
+    for rel in module_paths(repo):
         tree = _parse_file(repo, rel)
         if tree is None:
             errors.append(f"{rel}: cannot parse")
             continue
-        tiers = _module_tiers(tree)
+        assign = _pytestmark_assign(tree)
+        names = [n for e in (_elements(assign.value) if assign else [])
+                 if (n := _mark_name(e))]
+        tiers = [n for n in names if n in TIERS]
+        unknown = [n for n in names if n not in TIERS and n not in known and n != "slow"]
+        if unknown:
+            errors.append(f"{rel}: unknown tier {', '.join(unknown)}")
         if not tiers:
-            errors.append(f"{rel}: no tier mark")
+            errors.append(f"{rel}: no tier")
         elif len(tiers) > 1:
-            errors.append(f"{rel}: multiple tier marks: {tiers}")
-        elif tiers[0] not in TIERS:
-            errors.append(f"{rel}: unknown tier {tiers[0]!r}")
-        errors.extend(f"{rel}: {m}" for m in _has_slow_attr(tree))
+            errors.append(f"{rel}: more than one tier: {', '.join(tiers)}")
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Attribute) and _mark_name(node) == "slow":
+                errors.append(f"{rel}:{node.lineno}: pytest.mark.slow")
     return errors
 
 
-def _build_pytestmark(tier: str, preserved: list[ast.AST]) -> str:
-    parts = [f"pytest.mark.{tier}"] + [ast.unparse(e) for e in preserved]
-    if len(parts) == 1:
-        return f"pytestmark = {parts[0]}"
-    return f"pytestmark = [{', '.join(parts)}]"
+# --- rewriting ---------------------------------------------------------------------------------
 
-
-def _insert_line_after_prelude(tree: ast.Module) -> int:
-    """Line index (0-based) after the module docstring and import block."""
+def _after_prelude(tree: ast.Module) -> int:
+    """1-based last line of the leading docstring / import block (0 when there is none)."""
     last = 0
     for node in tree.body:
-        if isinstance(node, (ast.Import, ast.ImportFrom)):
-            last = node.end_lineno or node.lineno
-        elif isinstance(node, ast.Expr) and isinstance(node.value, ast.Constant) \
-                and isinstance(node.value.value, str):
+        if isinstance(node, (ast.Import, ast.ImportFrom)) or (
+                isinstance(node, ast.Expr) and isinstance(node.value, ast.Constant)
+                and isinstance(node.value.value, str)):
             last = node.end_lineno or node.lineno
         else:
             break
     return last
 
 
-def _func_from_nodeid(nodeid: str) -> str:
-    return nodeid.split("::")[-1]
+def _has_module_pytest_import(tree: ast.Module, before: int) -> bool:
+    for node in tree.body:
+        if node.lineno >= before:
+            break
+        if isinstance(node, ast.Import) and any(a.name == "pytest" and not a.asname
+                                                for a in node.names):
+            return True
+    return False
 
 
-def _strip_slow_decorators(text: str, tier: str) -> str:
+def _rewrite_pytestmark(text: str, rel: str, tier: str) -> str:
+    tree = ast.parse(text, filename=rel)
+    lines = text.split("\n")
+    assign = _pytestmark_assign(tree)
+    kept = [ast.unparse(e) for e in (_elements(assign.value) if assign else [])
+            if _mark_name(e) not in (*TIERS, "slow")]
+    parts = [f"pytest.mark.{tier}", *kept]
+    stmt = f"pytestmark = {parts[0]}" if len(parts) == 1 else f"pytestmark = [{', '.join(parts)}]"
+    if assign is not None:
+        start, end = assign.lineno - 1, assign.end_lineno or assign.lineno
+        lines[start:end] = [stmt]
+        at = start + 1
+    else:
+        at = _after_prelude(tree)
+        block = ([""] if at else []) + [stmt]
+        if at < len(lines) and lines[at].strip():
+            block.append("")
+        lines[at:at] = block
+        at += len(block)
+    out = "\n".join(lines)
+    tree = ast.parse(out, filename=rel)
+    if not _has_module_pytest_import(tree, _pytestmark_assign(tree).lineno):
+        ln = _pytestmark_assign(tree).lineno - 1
+        lines = out.split("\n")
+        lines[ln:ln] = ["import pytest", ""]
+        out = "\n".join(lines)
+    return out
+
+
+_SLOW_DECO = re.compile(r"^([ \t]*)@pytest\.mark\.slow\b[^\n]*\n", re.MULTILINE)
+_DEF = re.compile(r"^([ \t]*)(?:async[ \t]+)?def[ \t]+(test_\w+)\s*\(")
+
+
+def _rewrite_function_marks(text: str, tier: str, slow_funcs: set[str]) -> str:
     if tier == "fast":
-        return re.sub(r"^[ \t]*@pytest\.mark\.slow[^\n]*\n", "@pytest.mark.integration\n",
-                      text, flags=re.MULTILINE)
-    return re.sub(r"^[ \t]*@pytest\.mark\.slow[^\n]*\n", "", text, flags=re.MULTILINE)
-
-
-def _add_integration_decorators(text: str, funcs: set[str]) -> str:
-    if not funcs:
+        text = _SLOW_DECO.sub(lambda m: f"{m.group(1)}@pytest.mark.integration\n", text)
+    else:
+        text = _SLOW_DECO.sub("", text)
+    if not slow_funcs:
         return text
     out: list[str] = []
     for ln in text.split("\n"):
-        m = re.match(r"^def (test_\w+)\(", ln) or re.match(r"^async def (test_\w+)\(", ln)
-        if m and m.group(1) in funcs:
-            prev = "\n".join(out[-5:])
-            if "@pytest.mark.integration" not in prev:
-                indent = re.match(r"^(\s*)", ln).group(1) or ""
-                out.append(f"{indent}@pytest.mark.integration")
+        m = _DEF.match(ln)
+        if m and m.group(2) in slow_funcs:
+            j = len(out) - 1
+            decos = []
+            while j >= 0 and out[j].lstrip().startswith("@"):
+                decos.append(out[j].strip())
+                j -= 1
+            if "@pytest.mark.integration" not in decos:
+                out.append(f"{m.group(1)}@pytest.mark.integration")
         out.append(ln)
     return "\n".join(out)
+
+
+def _func_name(nodeid: str) -> str:
+    return nodeid.split("::")[-1].split("[", 1)[0]
 
 
 def apply_file(repo: Path, rel: str, tier: str, overrides: dict[str, float]) -> bool:
     path = repo / rel
     text = path.read_text(encoding="utf-8")
-    tree = ast.parse(text, filename=rel)
-    assign = _pytestmark_assign(tree)
-    preserved = _collect_non_tier_marks(assign.value) if assign else []
-    mark_line = _build_pytestmark(tier, preserved)
-    bare = text.split("\n")
-    if assign is not None:
-        start, end = assign.lineno - 1, assign.end_lineno or assign.lineno
-        new_text = "\n".join(bare[:start] + [mark_line] + bare[end:])
-        if text.endswith("\n"):
-            new_text += "\n"
-    else:
-        ins = _insert_line_after_prelude(tree)
-        chunk = bare[:ins] + ([""] if ins and bare[ins - 1].strip() else []) + [mark_line] + bare[ins:]
-        new_text = "\n".join(chunk)
-        if text.endswith("\n"):
-            new_text += "\n"
-    new_text = _ensure_pytest_import_before_mark(new_text, rel)
-    slow_funcs = {_func_from_nodeid(n) for n in overrides} if tier == "fast" else set()
-    new_text = _strip_slow_decorators(new_text, tier)
-    new_text = _add_integration_decorators(new_text, slow_funcs)
-    if new_text != text:
-        path.write_text(new_text, encoding="utf-8")
+    new = _rewrite_pytestmark(text, rel, tier)
+    new = _rewrite_function_marks(new, tier, {_func_name(n) for n in overrides})
+    new = new.rstrip("\n") + "\n"
+    if new != text:
+        path.write_text(new, encoding="utf-8")
         return True
     return False
 
 
-def classify_repo(repo: Path, durations: Durations | None) -> dict[str, tuple[str, dict[str, float]]]:
-    return {p.relative_to(repo).as_posix(): classify_module(
-        p.relative_to(repo).as_posix(), _parse_file(repo, p.relative_to(repo).as_posix()), durations)
-        for p in sorted((repo / TESTS).glob("test_*.py"))}
+# --- commands ----------------------------------------------------------------------------------
+
+def _read_log(path: Path) -> str | None:
+    try:
+        raw = path.read_text(encoding="utf-8")
+    except OSError:
+        return None
+    return raw if raw.strip() else None
 
 
-def cmd_classify(repo: Path, log_path: Path) -> int:
-    if not log_path.is_file() or not log_path.read_text(encoding="utf-8").strip():
+def cmd_classify(repo: Path, log: Path) -> int:
+    raw = _read_log(log)
+    if raw is None:
+        print(f"test_tiers: missing or empty durations log {log}", file=sys.stderr)
         return 2
-    durations = parse_durations_log(log_path.read_text(encoding="utf-8"))
-    for rel, (tier, overrides) in sorted(classify_repo(repo, durations).items()):
+    for rel, (tier, overrides) in classify_repo(repo, parse_durations_log(raw)).items():
         print(f"{tier}\t{rel}")
         for nid, sec in sorted(overrides.items()):
-            print(f"  override integration\t{nid}\t{sec:.3f}s")
+            print(f"  integration\t{nid}\t{sec:.2f}s")
     return 0
 
 
-def cmd_apply(repo: Path, log_path: Path) -> int:
-    if not log_path.is_file():
+def cmd_apply(repo: Path, log: Path) -> int:
+    raw = _read_log(log)
+    if raw is None:
+        print(f"test_tiers: missing or empty durations log {log}; nothing written",
+              file=sys.stderr)
         return 2
-    raw = log_path.read_text(encoding="utf-8")
-    if not raw.strip():
-        return 2
-    durations = parse_durations_log(raw)
-    for rel, (tier, overrides) in classify_repo(repo, durations).items():
-        apply_file(repo, rel, tier, overrides)
+    changed = [rel for rel, (tier, ov) in classify_repo(repo, parse_durations_log(raw)).items()
+               if apply_file(repo, rel, tier, ov)]
+    print(f"test_tiers: rewrote {len(changed)} module(s)", file=sys.stderr)
     return 0
 
 
 def cmd_check(repo: Path) -> int:
     errors = check_repo(repo)
     for e in errors:
-        print(e, file=sys.stderr)
+        print(e)
     return 1 if errors else 0
 
 
 def main(argv=None) -> int:
-    ap = argparse.ArgumentParser(description=__doc__)
-    sub = ap.add_subparsers(dest="cmd", required=True)
-    ap_repo = argparse.ArgumentParser(add_help=False)
-    ap_repo.add_argument("--repo", default=".", type=Path)
-    p_check = sub.add_parser("check", parents=[ap_repo])
-    p_check.set_defaults(func=lambda a: cmd_check(a.repo.resolve()))
-    p_classify = sub.add_parser("classify", parents=[ap_repo])
-    p_classify.add_argument("durations_log", type=Path)
-    p_classify.set_defaults(func=lambda a: cmd_classify(a.repo.resolve(), a.durations_log))
-    p_apply = sub.add_parser("apply", parents=[ap_repo])
-    p_apply.add_argument("durations_log", type=Path)
-    p_apply.set_defaults(func=lambda a: cmd_apply(a.repo.resolve(), a.durations_log))
+    ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
+    ap.add_argument("--repo", type=Path, default=Path(__file__).resolve().parents[1],
+                    help="repository root (default: this checkout)")
+    mode = ap.add_mutually_exclusive_group(required=True)
+    mode.add_argument("--check", action="store_true", help="verify every module has one tier")
+    mode.add_argument("--classify", type=Path, metavar="DURATIONS_LOG")
+    mode.add_argument("--apply", type=Path, metavar="DURATIONS_LOG")
     args = ap.parse_args(argv)
-    return args.func(args)
+    repo = args.repo.resolve()
+    if args.check:
+        return cmd_check(repo)
+    if args.classify is not None:
+        return cmd_classify(repo, args.classify)
+    return cmd_apply(repo, args.apply)
 
 
 if __name__ == "__main__":

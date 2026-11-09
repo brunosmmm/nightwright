@@ -864,19 +864,6 @@ def _exclude_mark_expr(marks: list[str]) -> str | None:
     return f"not ({' or '.join(marks)}) or tree_guard"
 
 
-def _insert_before_paths(cmd: list[str], expr: str | None) -> list[str]:
-    if not expr:
-        return cmd
-    out = list(cmd)
-    at = len(out)
-    for i, a in enumerate(out):
-        if a.startswith(f"{TESTS_DIR}/") or a == TESTS_DIR:
-            at = i
-            break
-    out[at:at] = ["-m", expr]
-    return out
-
-
 def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     ap.add_argument("--base", default=os.environ.get("NW_BASE") or "main",
@@ -959,11 +946,15 @@ def main(argv=None):
     if not sel.full and not sel.tests:
         print("no affected tests", file=sys.stderr if args.json else sys.stdout, flush=True)
         return 0
-    cmd = _insert_before_paths(list(args.run) + ([] if sel.full else sel.tests), mark_expr)
+    # SPEC-0490: the -m expression goes after the command and before the selected paths
+    cmd = list(args.run) + (["-m", mark_expr] if mark_expr else []) \
+        + ([] if sel.full else sel.tests)
     print("affected_tests: running " + " ".join(cmd), file=sys.stderr, flush=True)
     os.chdir(repo)
+    if not (mark_expr and not sel.full):
+        os.execvp(cmd[0], cmd)            # unchanged path: pytest's exit code is the gate's
     code = subprocess.run(cmd).returncode
-    if code == 5 and exclude and not all_tiers and not sel.full:
+    if code == 5:                         # a partial fast-tier selection that collected nothing
         print("affected_tests: no fast tests in the selection", file=sys.stderr, flush=True)
         return 0
     return code

@@ -1115,6 +1115,49 @@ def test_gate_env_full_suite_sets_all_tiers_without_cadence(tmp_path):
     assert "NW_ALL_TIERS" not in G.gate_env(cfg, st)
 
 
+def test_all_tiers_env_local_sentinel_state(tmp_path):
+    """SPEC-0490: the local sentinel env (header=True on a `sentinel-` id) has NW_ALL_TIERS."""
+    y = tmp_path / "wt" / ".nw" / "project.yaml"
+    y.parent.mkdir(parents=True)
+    y.write_text("schema: nw.project.v1\nproject: demo\nbase: main\ngates: []\n")
+    st = {"id": "sentinel-demo", "project": "demo",
+          "repo": {"worktree": str(tmp_path / "wt"), "base": "main"}}
+    assert G.all_tiers_env({}, st, header=True) == {"NW_ALL_TIERS": "1"}
+    assert G.all_tiers_env({}, st) == {}                  # gate_env: full_suite only
+    assert G.all_tiers_env({}, {**st, "id": "C-1"}, header=True) == {}
+    y.write_text("schema: nw.project.v1\nproject: demo\nbase: main\ncadence: [x]\ngates: []\n")
+    assert G.all_tiers_env({}, st, header=True) == {}
+
+
+def test_sentinel_run_env_uses_a_sentinel_id():
+    """The local sentinel builds its state id as `sentinel-<project>` and merges all_tiers_env."""
+    import inspect
+    from nightwright.agentic import sentinel as SN
+    src = inspect.getsource(SN._run_locked)
+    assert 'owner = f"sentinel-' in src and '"id": owner' in src
+    assert "all_tiers_env(cfg, sent_state, header=True)" in src
+
+
+def test_heavy_retry_id_exit_5_is_unresolved(world, tmp_path, monkeypatch):
+    """SPEC-0490: under NW_ALL_TIERS=1 the static `-m` in retry_cmd deselects a heavy failing id;
+    pytest exits 5, the targeted attempt is unresolved, and only the full rerun turns it green."""
+    monkeypatch.setenv("NW_ALL_TIERS", "1")
+    script = tmp_path / "fake" / "run.sh"
+    expr = '"not (integration or tui or remote or perf) or tree_guard"'
+    g = _fake(tmp_path, [PY_FAIL, "echo 'no tests ran'; exit 5", PY_PASS],
+              retry_cmd=f"sh {script} -m {expr} {{failing}}")
+    r = _ladder(world, tmp_path, g)
+    assert r.ok and _kinds(r) == ["full", "targeted", "full"] and r.flaky == ()
+    assert r.attempts[1]["exit_code"] == 5 and not r.attempts[1]["ok"]
+    targeted = _args(tmp_path)[1]
+    assert targeted.startswith("-m not (integration") and targeted.endswith("tests/a.py::t1")
+    t2 = tmp_path / "t2"
+    t2.mkdir()
+    r = _ladder(world, t2, _fake(t2, [PY_FAIL, "exit 5", PY_FAIL],
+                                 retry_cmd=f"sh {t2 / 'fake' / 'run.sh'} -m {expr} {{failing}}"))
+    assert not r.ok and _kinds(r) == ["full", "targeted", "full"]
+
+
 def test_gate_run_resolve_ad_hoc_timeout(tmp_path):
     import subprocess
     from nightwright.agentic import gate_jobs as J

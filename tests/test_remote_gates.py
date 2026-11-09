@@ -1412,3 +1412,25 @@ def test_header_full_suite_includes_all_tiers(tmp_path):
     h2 = RG._header({"gates": []}, st2, cfg, 1, "C-2-gate-001", "k", "0" * 40, "0" * 40, [], 0)
     assert "NW_ALL_TIERS" not in h2["env"]
 
+
+def test_header_sentinel_and_cadence_and_allowlist_for_all_tiers(tmp_path):
+    """SPEC-0490: a `sentinel-` header has NW_ALL_TIERS; a non-empty cadence turns it off."""
+    from nightwright.agentic import worker as W
+
+    cfg = {"data_dir": str(tmp_path / "d"), "config_dir": str(tmp_path / "c")}
+    y = tmp_path / "p" / ".nw" / "project.yaml"
+    y.parent.mkdir(parents=True)
+    y.write_text("schema: nw.project.v1\nproject: p\nbase: main\ncadence: []\ngates: []\n")
+    repo = {"worktree": str(tmp_path / "p"), "base": "main"}
+    sid = "sentinel-p"
+    st = {"id": sid, "project": "p", "repo": repo}
+    h = RG._header({"gates": []}, st, cfg, 1, f"{sid}-gate-001", "k", "0" * 40, "0" * 40, [], 0)
+    W.validate_header(h)
+    assert h["env"].get("NW_ALL_TIERS") == "1"            # empty cadence counts as none
+    y.write_text("schema: nw.project.v1\nproject: p\nbase: main\ncadence: [nightly]\ngates: []\n")
+    for state in (st, {**st, "id": "C-9", "full_suite": True}):
+        h = RG._header({"gates": []}, state, cfg, 1, f"{state['id']}-gate-001", "k", "0" * 40,
+                       "0" * 40, [], 0)
+        assert "NW_ALL_TIERS" not in h["env"]
+    assert "NW_ALL_TIERS" in W.ENV_ALLOWLIST
+
