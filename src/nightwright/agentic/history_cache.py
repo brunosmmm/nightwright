@@ -215,6 +215,19 @@ def _complete_log_offset(path: Path) -> int:
         return 0
 
 
+def _tree_dirs_snapshot(root: Path) -> list:
+    if not root.is_dir():
+        return []
+    parts: list[list] = []
+    for path in sorted(root.rglob("*")):
+        if path.is_dir():
+            try:
+                parts.append([path.relative_to(root).as_posix(), path.stat().st_mtime_ns])
+            except OSError:
+                pass
+    return parts
+
+
 def _tree_sig(root: Path) -> str:
     if not root.is_dir():
         return hashlib.sha1(b"").hexdigest()
@@ -258,15 +271,83 @@ def _campaign_file_cursors(cfg, cid: str) -> dict[str, dict]:
     return out
 
 
+def _campaign_rg_dirs_snapshot(cfg, cid: str) -> list | None:
+    base = store.campaign_dir(cfg, cid)
+    if base is None:
+        return None
+    return [list(part) for part in _runs_gates_dir_mtime_key(base)]
+
+
 def _scan_all_campaign_files(cfg, cids: list[str]) -> dict[str, dict]:
     return {cid: _campaign_file_cursors(cfg, cid) for cid in cids}
 
 
-def _campaign_files_match(cfg, cid: str, stored: dict | None) -> bool:
-    if not isinstance(stored, dict):
+def _scan_all_campaign_rg_dirs(cfg, cids: list[str]) -> dict[str, list]:
+    out: dict[str, list] = {}
+    for cid in cids:
+        snap = _campaign_rg_dirs_snapshot(cfg, cid)
+        if snap is not None:
+            out[cid] = snap
+    return out
+
+
+def _set_campaign_cursors(sources: dict, cfg, cid: str) -> None:
+    sources.setdefault("campaign_files", {})[cid] = _campaign_file_cursors(cfg, cid)
+    snap = _campaign_rg_dirs_snapshot(cfg, cid)
+    if snap is not None:
+        sources.setdefault("campaign_rg_dirs", {})[cid] = snap
+
+
+def _rg_dirs_key(stored_dirs) -> tuple | None:
+    if not isinstance(stored_dirs, list):
+        return None
+    try:
+        return tuple(tuple(part) for part in stored_dirs)
+    except TypeError:
+        return None
+
+
+def _rg_dirs_live_matches(base: Path, stored_dirs) -> bool:
+    """True when runs/gates directory mtimes match the stored snapshot (no file rglob)."""
+    key = _rg_dirs_key(stored_dirs)
+    if key is None:
         return False
-    live = _campaign_file_cursors(cfg, cid)
-    return live == stored
+    known = {rel: mtime for rel, mtime in key}
+    found: set[str] = set()
+
+    def walk_dirs(root: Path, prefix: str) -> bool:
+        try:
+            entries = list(root.iterdir())
+        except OSError:
+            return prefix in known
+        for ent in entries:
+            if not ent.is_dir():
+                continue
+            rel = f"{prefix}/{ent.name}"
+            try:
+                live_m = ent.stat().st_mtime_ns
+            except OSError:
+                return False
+            if rel not in known or known[rel] != live_m:
+                return False
+            found.add(rel)
+            if not walk_dirs(ent, rel):
+                return False
+        return True
+
+    for sub in ("runs", "gates"):
+        root = base / sub
+        if not root.is_dir():
+            if any(k == sub or k.startswith(f"{sub}/") for k in known):
+                return False
+            continue
+        if not walk_dirs(root, sub):
+            return False
+    return found == set(known)
+
+
+def _campaign_files_match(cfg, cid: str, stored: dict | None, rg_dirs=None) -> bool:
+    return _campaign_stored_files_match(cfg, cid, stored, rg_dirs)
 
 
 _RUNS_GATES_COUNT: dict[tuple, int] = {}
@@ -311,13 +392,21 @@ def _runs_gates_file_count(cfg, cid: str) -> int:
     return n
 
 
-def _campaign_stored_files_match(cfg, cid: str, stored: dict | None) -> bool:
-    """Match stored runs/gates cursors; rglob only when file counts disagree."""
+def _campaign_stored_files_match(cfg, cid: str, stored: dict | None, rg_dirs=None) -> bool:
+    """Match stored runs/gates cursors; rglob only when directory mtimes disagree."""
     if not isinstance(stored, dict):
         return False
-    live = _campaign_file_cursors(cfg, cid)
-    if set(stored) != set(live):
-        return False
+    base = store.campaign_dir(cfg, cid)
+    if base is None:
+        return not stored
+    stored_key = _rg_dirs_key(rg_dirs)
+    if stored_key is None:
+        live = _campaign_file_cursors(cfg, cid)
+        if live != stored:
+            return False
+    else:
+        if not _rg_dirs_live_matches(base, rg_dirs):
+            return _campaign_file_cursors(cfg, cid) == stored
     agentic = store.agentic_dir(cfg)
     for rel, cursor in stored.items():
         if not isinstance(cursor, dict):
@@ -567,7 +656,8 @@ def _terminal_row_stale(cfg, cid: str, row: dict, sources: dict) -> bool:
     stored_files = (sources.get("campaign_files") or {}).get(cid)
     if not isinstance(stored_files, dict):
         return True
-    if not _campaign_stored_files_match(cfg, cid, stored_files):
+    rg_dirs = (sources.get("campaign_rg_dirs") or {}).get(cid)
+    if not _campaign_stored_files_match(cfg, cid, stored_files, rg_dirs):
         return True
     return False
 
@@ -611,9 +701,8 @@ def _recompute_terminal_documents(
         _write_campaign_file(root, cid, doc)
         _append_pending_index_write(root, row)
     fresh_sources = _read_json(root / "sources.json") or sources
-    cfiles = fresh_sources.setdefault("campaign_files", {})
     for cid in cids:
-        cfiles[cid] = _campaign_file_cursors(cfg, cid)
+        _set_campaign_cursors(fresh_sources, cfg, cid)
     return index_rows, records, fresh_sources
 
 
@@ -871,11 +960,20 @@ def _scan_sources(
     entry = _file_entry(flaky)
     if entry is not None:
         files["flaky-tests.json"] = entry
-    trees = {
-        "escalations": _tree_sig(agentic / "escalations"),
-        "reviews": _tree_sig(agentic / "reviews"),
-        "sentinel": _tree_sig(agentic / "sentinel"),
-    }
+    prev_trees = (prev or {}).get("trees") or {}
+    prev_tree_dirs = (prev or {}).get("tree_dirs") or {}
+    trees = {}
+    tree_dirs: dict[str, list] = {}
+    for name, sub in (
+        ("escalations", "escalations"), ("reviews", "reviews"), ("sentinel", "sentinel"),
+    ):
+        root_path = agentic / sub
+        snap = _tree_dirs_snapshot(root_path)
+        tree_dirs[name] = snap
+        if prev_tree_dirs.get(name) == snap and isinstance(prev_trees.get(name), str):
+            trees[name] = prev_trees[name]
+        else:
+            trees[name] = _tree_sig(root_path)
     CC = _lazy_conductor()
     prev_transcripts = (prev or {}).get("transcripts") or {}
     transcripts = {}
@@ -892,6 +990,7 @@ def _scan_sources(
         "logs": logs,
         "files": files,
         "trees": trees,
+        "tree_dirs": tree_dirs,
         "transcripts": transcripts,
         "prices": _prices_canonical(cfg),
         "profile_layers": _profile_layer_cursors(cfg),
@@ -899,6 +998,9 @@ def _scan_sources(
     prev_cfiles = (prev or {}).get("campaign_files")
     if isinstance(prev_cfiles, dict):
         out["campaign_files"] = dict(prev_cfiles)
+    prev_rg = (prev or {}).get("campaign_rg_dirs")
+    if isinstance(prev_rg, dict):
+        out["campaign_rg_dirs"] = dict(prev_rg)
     return out
 
 
@@ -1623,6 +1725,7 @@ def _cold_fill(cfg, root: Path, *, now=None, progress=None, _hold_guard: bool = 
             writes_path.unlink()
         _write_records(root, all_records)
         sources["campaign_files"] = _scan_all_campaign_files(cfg, cids)
+        sources["campaign_rg_dirs"] = _scan_all_campaign_rg_dirs(cfg, cids)
         sources["global_gaps"] = sorted(set(gaps))
         sources["complete"] = True
         _stamp_v1_files(sources, root)
@@ -1687,7 +1790,8 @@ def _doc_hit(cfg, root: Path, cid: str, now, sources: dict) -> dict | None:
     stored_files = (sources.get("campaign_files") or {}).get(cid)
     if not isinstance(stored_files, dict):
         return None
-    if not _campaign_files_match(cfg, cid, stored_files):
+    rg_dirs = (sources.get("campaign_rg_dirs") or {}).get(cid)
+    if not _campaign_files_match(cfg, cid, stored_files, rg_dirs):
         return None
     return doc
 
@@ -1972,15 +2076,60 @@ def _strip_global_input_gaps(gaps: list[str]) -> list[str]:
     return [g for g in gaps if not any(g.startswith(p) for p in prefixes)]
 
 
-def _records_cache_quiet(cfg, root: Path, sources: dict) -> bool:
+def _sources_unchanged_light(cfg, stored: dict) -> bool:
+    if stored.get("prices") != _prices_canonical(cfg):
+        return False
+    if stored.get("profile_layers") != _profile_layer_cursors(cfg):
+        return False
+    agentic = store.agentic_dir(cfg)
+    for key, old in (stored.get("logs") or {}).items():
+        path = agentic / key
+        entry = _log_entry(path, prev=old)
+        if entry is None:
+            if old:
+                return False
+            continue
+        if _log_tail_incomplete(old, entry):
+            continue
+        if (old.get("inode"), old.get("size"), old.get("mtime_ns")) != (
+                entry.get("inode"), entry.get("size"), entry.get("mtime_ns")):
+            return False
+        if (
+            old.get("inode") == entry.get("inode")
+            and int(entry.get("size", 0)) > int(old.get("size", 0))
+            and int(entry.get("offset", 0)) > int(old.get("offset", 0))
+        ):
+            return False
+    mailbox = agentic / "mailbox"
+    if mailbox.is_dir():
+        stored_logs = stored.get("logs") or {}
+        for path in sorted(mailbox.glob("*.jsonl")):
+            key = f"mailbox/{path.name}"
+            if key not in stored_logs:
+                return False
+    for key, old in (stored.get("files") or {}).items():
+        entry = _file_entry(agentic / key)
+        if _file_meta(old) != _file_meta(entry or {}):
+            return False
+    prev_tree_dirs = stored.get("tree_dirs") or {}
+    for name, sub in (
+        ("escalations", "escalations"), ("reviews", "reviews"), ("sentinel", "sentinel"),
+    ):
+        if _tree_dirs_snapshot(agentic / sub) != prev_tree_dirs.get(name):
+            return False
+    for resolved, old in (stored.get("transcripts") or {}).items():
+        entry = _file_entry(Path(resolved))
+        if _file_meta(old) != _file_meta(entry or {}):
+            return False
+    return True
+
+
+def _cache_refresh_quiet(cfg, root: Path, sources: dict) -> bool:
     if not _sources_ok(sources):
         return False
     if (root / "index.writes.jsonl").is_file():
         return False
-    fresh = _scan_sources(cfg, prev=sources)
-    if not _global_cursor_unchanged(sources, fresh):
-        return False
-    if _cursor_pending(sources, fresh):
+    if not _sources_unchanged_light(cfg, sources):
         return False
     v1_files = sources.get("v1_files") or {}
     if not isinstance(v1_files, dict) or not _v1_cursors_match(root, v1_files):
@@ -1993,6 +2142,10 @@ def _records_cache_quiet(cfg, root: Path, sources: dict) -> bool:
         return False
     live_cids, missing = _live_refresh_targets(cfg, index_rows)
     return not live_cids and not missing
+
+
+def _records_cache_quiet(cfg, root: Path, sources: dict) -> bool:
+    return _cache_refresh_quiet(cfg, root, sources)
 
 
 def _global_cursor_unchanged(stored: dict, fresh: dict) -> bool:
@@ -2031,6 +2184,8 @@ def _sync_globals(cfg, root: Path, now) -> set[str]:
     now = H._aware(now or dt.datetime.now().astimezone())
     sources = _read_json(root / "sources.json")
     if not _sources_ok(sources):
+        return set()
+    if _cache_refresh_quiet(cfg, root, sources):
         return set()
     fresh = _scan_sources(cfg, prev=sources)
     if _global_cursor_unchanged(sources, fresh) and not _cursor_pending(sources, fresh):
@@ -2333,10 +2488,9 @@ def _sync_globals(cfg, root: Path, now) -> set[str]:
             _write_campaign_file(root, cid, doc)
         if sessions_turns_dirty:
             _load_turns(cfg, root, sources, snap=fresh, sources_out=fresh)
-        cfiles = fresh.setdefault("campaign_files", dict(sources.get("campaign_files") or {}))
         for cid in affected:
             if cid in live_ids:
-                cfiles[cid] = _campaign_file_cursors(cfg, cid)
+                _set_campaign_cursors(fresh, cfg, cid)
         fresh["global_gaps"] = sorted(set(gaps))
         _persist_index_records(
             cfg,
@@ -2404,9 +2558,8 @@ def _refresh_live(cfg, root: Path, now, index_rows: list[dict], records: list[di
         changed = True
     if changed:
         sources_out = sources or {}
-        cfiles = sources_out.setdefault("campaign_files", {})
         for cid in touch:
-            cfiles[cid] = _campaign_file_cursors(cfg, cid)
+            _set_campaign_cursors(sources_out, cfg, cid)
         _persist_index_records(
             cfg,
             root,
@@ -2470,7 +2623,7 @@ def _campaign_history_cached(cfg, cid, now, root: Path) -> dict:
         index_rows.append(new_row)
     _write_campaign_file(root, cid, doc)
     sources_out = _read_json(root / "sources.json") or {}
-    sources_out.setdefault("campaign_files", {})[cid] = _campaign_file_cursors(cfg, cid)
+    _set_campaign_cursors(sources_out, cfg, cid)
     _persist_index_records(
         cfg,
         root,
@@ -2526,6 +2679,18 @@ def _history_index_cached(cfg, now, progress, root: Path) -> list[dict]:
             index_rows, _ = _refresh_live(cfg, root, now, index_rows, records)
             index_rows = _read_index(root)
         sources = _read_json(root / "sources.json") or {}
+        shares = _conductor_shares(cfg, root, index_rows, sources)
+        if shares is not None:
+            _apply_conductor(index_rows, shares)
+        return [_public_index_row(row) for row in _sort_index(index_rows)]
+
+    sources = _read_json(root / "sources.json") or {}
+    if _cache_refresh_quiet(cfg, root, sources):
+        index_rows = _read_index(root)
+        if progress:
+            cids = _campaign_ids(cfg)
+            for done, cid in enumerate(cids, 1):
+                progress(done, len(cids))
         shares = _conductor_shares(cfg, root, index_rows, sources)
         if shares is not None:
             _apply_conductor(index_rows, shares)
@@ -2606,8 +2771,10 @@ def _history_records_cached(cfg, *, now, root: Path, campaign=None, agent=None, 
                             query=None, limit=None) -> list[dict]:
     H = _lazy_history()
     _ensure_writable_cache(cfg, root, now=now)
-    _apply_pending_index_writes(cfg, root)
     sources = _read_json(root / "sources.json") or {}
+    if (root / "index.writes.jsonl").is_file():
+        _apply_pending_index_writes(cfg, root)
+        sources = _read_json(root / "sources.json") or {}
     kind_set = H._set(kind)
     needle = str(query or "").casefold()
     extra = any(x is not None for x in (campaign, agent, project, severity, status, since, until))
