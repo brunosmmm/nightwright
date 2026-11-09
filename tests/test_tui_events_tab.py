@@ -90,7 +90,7 @@ def test_key_five_opens_the_tab_and_other_keys_leave_it(tmp_path):
             await settle(app, pilot)
             await pilot.press("1")
             await settle(app, pilot)
-            assert tabs.active == "tab-ideas" and app.focused.id == "list"
+            assert tabs.active == "tab-ideas" and app.focused.id == "board"
 
     _run(drive())
 

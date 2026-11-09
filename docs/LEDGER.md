@@ -423,12 +423,10 @@ progress. This is the single place to see *what has been decided* and *what is i
 | [SPEC-0107](./specs/0107-org-syntax-highlighting-in-the-tui-detail-pane.md) | Org syntax highlighting in the TUI detail pane | feature | done | M5: interactive desk | 2026-07-30 |
 | [SPEC-0108](./specs/0108-found-a-bug-in-wt-tui-accessing-hub-via-h-works.md) | Hub tab must load on any activation route, not only the h binding | feature | done | M5: interactive desk | 2026-07-30 |
 | [SPEC-0109](./specs/0109-found-another-shortcoming-when-capturing-ideas.md) | Idea project association: set_idea_project library gap and desk wiring | feature | done | M5: interactive desk | 2026-07-30 |
-| [SPEC-0110](./specs/0110-overhaul-the-desk-idea-table-project-column-in.md) | Desk idea table: shared column planner, in-app filters, sorting, full-width mode | feature | done | M5: interactive desk | 2026-07-30 |
 | [SPEC-0111](./specs/0111-question-section-round-trip-destroys-body-prose.md) | Preserve question bodies: mode-aware parsing of the Open questions section | feature | done | M5: interactive desk | 2026-07-31 |
 | [SPEC-0112](./specs/0112-show-resolution-rationale-for-closed-questions-in.md) | Show and capture question rationale in the desk and wt idea show | feature | done | M5: interactive desk | 2026-07-31 |
 | [SPEC-0113](./specs/0113-more-sort-keys-for-ideas-and-tasks-driven-by-the.md) | Sort on every column, driven by the key registry | feature | done | M5: interactive desk | 2026-07-31 |
 | [SPEC-0114](./specs/0114-hierarchical-idea-view-tree-instead-of-flat-in.md) | Hierarchical idea view: project > epic > idea | feature | done | M5: interactive desk | 2026-07-31 |
-| [SPEC-0115](./specs/0115-desk-tree-mode-is-not-a-tree-needs-real-expand.md) | Desk tree mode: a real collapsible tree, not indented rows | feature | done | M5: interactive desk | 2026-07-31 |
 | [SPEC-0116](./specs/0116-epics-are-missing-no-epic-column-in-flat-view-and.md) | Epics: expose :EPIC: in rows, flat column, filter, and as the tree's epic level | feature | done | M5: interactive desk | 2026-08-01 |
 | [SPEC-0117](./specs/0117-wt-verify-skill-and-wt-spec-verify-for-post-hoc.md) | wt-verify skill and wt spec verify for post-hoc DoD | feature | done | M5: interactive desk | 2026-08-04 |
 | [SPEC-0118](./specs/0118-project-namespaced-idea-extensions-org-ext-schema.md) | Project-namespaced idea extensions (org Ext + schema + UI) | epic | done | M6: idea extensions | 2026-08-04 |
@@ -754,6 +752,7 @@ progress. This is the single place to see *what has been decided* and *what is i
 | [SPEC-0484](./specs/0484-runner-contains-apply-errors-and-holds-on-backend-faults.md) | The runner contains a campaign's apply error and holds steps on a backend fault | feature | done | M9: agentic workflow | 2026-11-09 |
 | [SPEC-0487](./specs/0487-cli-persona-runs-execute-in-the-runner.md) | CLI persona runs execute in the runner, which holds the credentials | feature | done | M9: agentic workflow | 2026-11-09 |
 | [SPEC-0488](./specs/0488-nw-queue-conductor-launch-runner-cursor-fails.md) | Cursor launch passes a flat model id | feature | done | — | 2026-11-09 |
+| [SPEC-0490](./specs/0490-tui-ideas-tab-redesign.md) | TUI ideas tab: project rail + Open / In flight / Built buckets with real spec status | feature | done | M5: interactive desk | 2026-11-09 |
 
 ## Superseded / rejected
 
@@ -767,6 +766,8 @@ progress. This is the single place to see *what has been decided* and *what is i
 | [SPEC-0072](./specs/0072-idea-archival-primitive.md) | Idea-archival primitive: atomic, drift-guarded subtree move | feature | superseded | M4: cli ergonomics | 2026-07-26 |
 | [SPEC-0083](./specs/0083-light-theme-substitution-for-dim-idea-state-styles.md) | Theme-adapt the idea state palette: substitute dim on light backgrounds | feature | rejected | M4: cli ergonomics | 2026-07-28 |
 | [SPEC-0084](./specs/0084-theme-the-recessive-styling-in-the-idea-views.md) | Theme every recessive style in the idea views, not just the state palette | feature | rejected | M4: cli ergonomics | 2026-07-28 |
+| [SPEC-0110](./specs/0110-overhaul-the-desk-idea-table-project-column-in.md) | Desk idea table: shared column planner, in-app filters, sorting, full-width mode | feature | superseded | M5: interactive desk | 2026-11-09 |
+| [SPEC-0115](./specs/0115-desk-tree-mode-is-not-a-tree-needs-real-expand.md) | Desk tree mode: a real collapsible tree, not indented rows | feature | superseded | M5: interactive desk | 2026-11-09 |
 | [SPEC-0177](./specs/0177-wt-conduct-skill-docs-and-dogfood-bootstrap-for.md) | wt-conduct skill, docs and dogfood bootstrap for wt itself | feature | superseded | M9: agentic workflow | 2026-10-25 |
 | [SPEC-0218](./specs/0218-agentic-workflow-docs-refresh.md) | Agentic workflow docs refresh: a guide, a coherent reference, concepts and front door | feature | superseded | M8: product documentation | 2026-10-25 |
 | [SPEC-0241](./specs/0241-tui-queue-tab-over-the-queue-dashboard.md) | TUI queue tab: live view of the agentic queue with park, resume, prioritize and abandon | feature | superseded | M9: agentic workflow | 2026-11-03 |

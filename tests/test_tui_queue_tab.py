@@ -108,7 +108,7 @@ def test_number_keys_h_and_click_switch_tabs(tmp_path):
             assert view(app).rows and view(app).header.startswith("runner ")
             await pilot.press("1")
             await settle(app, pilot)
-            assert tabs.active == "tab-ideas" and app.focused.id == "list"
+            assert tabs.active == "tab-ideas" and app.focused.id == "board"
             await pilot.press("2")
             await settle(app, pilot)
             assert tabs.active == "tab-hub"

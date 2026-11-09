@@ -1,11 +1,10 @@
-"""Textual ideas desk (SPEC-0099 entry, SPEC-0100 read-only panes).
+"""Textual ideas desk (SPEC-0099 entry; SPEC-0490 rail + bucket board replaced SPEC-0100's table).
 
 Imports Textual at module scope on purpose — only reachable through `nightwright.tui.run()`, which
 probes for the optional extra first. All data comes from `nightwright.tui.model`; this file is a
 renderer plus SPEC-0102 mutation wiring; every write goes through `model.apply_mutation`.
 """
 import asyncio
-import functools
 
 from rich.markup import escape
 from rich.text import Text
@@ -15,56 +14,29 @@ from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.screen import ModalScreen
-from textual.widgets import (DataTable, Footer, Header, Input, Label, Static, TabbedContent,
-                             TabPane, TextArea, Tree)
+from textual.widgets import (DataTable, Footer, Header, Input, Label, OptionList, Static,
+                             TabbedContent, TabPane, TextArea, Tree)
+from textual.widgets.option_list import Option
 
 from .. import report as R
+from . import ideas_board as B
 from . import model as M
 from .campaign_detail import CampaignDetail, OpenCampaign
 from .events_tab import EventsView
 from .mailbox_tab import MailboxView
 from .queue_tab import QueueView
 
-# Half the terminal, with a floor: proportional so a wide terminal spends the extra columns on
-# headings, floored so the metadata columns never get squeezed out (at 35% a 100-col terminal
-# silently dropped the last column). Detail takes the rest (`1fr`).
-LIST_WIDTH = "50%"
-LIST_MIN_WIDTH = 40
-# SPEC-0110: the desk plans columns with `report._idea_table_widths` — the same planner the CLI
-# uses — instead of the hardcoded budget that used to live here. That is what lets `project`
-# come back (SPEC-0100 dropped it; SPEC-0109 made project something you *set* from the desk, so
-# hiding it became wrong) without starving the heading: capped columns squeeze first.
-DESK_COLUMNS = ("id", "state", "pri", "q", "kind", "project", "epic", "updated")
-# SPEC-0110: when even a fully-squeezed plan cannot give the heading its floor, columns are
-# *dropped* in this order — least informative first. `kind` is a glyph the detail pane repeats,
-# `pri` is usually blank, `state` is partly implied by colour; `project` and `q` earn their keep
-# because they are the two things you cannot recover without opening the idea. `id` and
-# `updated` never drop: `id` is how you refer to a row and `updated` drives the default sort.
-# SPEC-0116: `epic` drops *after* `project` — an epic is more specific and less recoverable at a
-# glance than the project, which the detail pane repeats anyway.
-DROP_ORDER = ("kind", "pri", "state", "project", "epic", "q")
-HEADING_FLOOR = 12
-
-
-def plan_desk_columns(prows, width):
-    """`(keys, widths, heading_budget)` for a list pane of `width` (SPEC-0110).
-
-    Extends the shared planner's "squeeze capped columns" with "then drop", so one rule serves
-    every terminal size: a wide pane keeps all seven columns, a narrow one sheds the least
-    informative until the heading is readable again. Always keeps at least one metadata column
-    so a row is still identifiable.
-    """
-    keys = list(DESK_COLUMNS)
-    sample = prows or [{k: "" for k in DESK_COLUMNS}]
-    while True:
-        widths, budget = R._idea_table_widths(
-            sample, tuple(keys), floor=HEADING_FLOOR, width=width,
-            overhead=2 * (len(keys) + 1))       # DataTable pads 1 each side, draws no rules
-        droppable = [k for k in DROP_ORDER if k in keys]
-        if budget >= HEADING_FLOOR or not droppable or len(keys) <= 1:
-            return tuple(keys), widths, budget
-        keys.remove(droppable[0])
-
+# SPEC-0490: the ideas tab is rail | board | detail. The rail is fixed-width (project names are
+# short and the counts right-align in it); the detail pane keeps the old split's proportional
+# share so Summary prose still wraps readably, and the board takes what is left.
+RAIL_WIDTH = 26
+DETAIL_WIDTH = "36%"
+_BUCKET_STYLE = {B.OPEN: "yellow", B.IN_FLIGHT: "cyan", B.BUILT: "green", B.DROPPED: "dim"}
+# Spec status colour: live work cyan, approved green, still being written yellow; a link that
+# does not resolve (missing / foreign / no link) red, because it is an anomaly to fix.
+_STATUS_STYLE = {"in-progress": "cyan", "accepted": "green", "done": "green dim",
+                 "proposed": "yellow", "draft": "yellow", "superseded": "dim",
+                 "missing": "red", "foreign": "red"}
 
 # `section` + `id` columns + four cells of DataTable padding on the hub tab.
 _HUB_META_COST = 34
@@ -351,8 +323,8 @@ class ChoiceScreen(ModalScreen[str | None]):
 
 
 class IdeaDesk(App):
-    """Two-pane ideas desk: browse (SPEC-0100), explore mutations (SPEC-0102),
-    metadata + clock (SPEC-0103)."""
+    """Ideas board (SPEC-0490): project rail · Open / In flight / Built buckets · detail, plus
+    the explore mutations (SPEC-0102) and metadata + clock (SPEC-0103) on the selected idea."""
 
     TITLE = "nightwright — ideas desk"
     # Substitution, not %-formatting: CSS is full of literal `%` (and so are comments about
@@ -364,10 +336,11 @@ class IdeaDesk(App):
     #queue-view { height: 1fr; }
     #queue { height: 1fr; }
     #queue-status { color: $text-muted; padding: 0 1; }
-    #list-pane { width: LIST_W; min-width: LIST_MINW; }
-    #list { height: 1fr; }
-    #tree { height: 1fr; display: none; }
-    #tree.visible { display: block; }
+    #rail { width: RAIL_W; height: 1fr; border: none; border-right: solid $panel; }
+    #board-pane { width: 1fr; }
+    #scoreboard { height: auto; padding: 0 1; display: none; }
+    #scoreboard.visible { display: block; }
+    #board { height: 1fr; }
     #status { color: $text-muted; padding: 0 1; }
     /* The bottom strip is explicit. Left in flow, `#tabs` at 1fr ate every remaining row and
        the search box, hint and Footer all landed on the same line with Footer painted on top —
@@ -376,9 +349,7 @@ class IdeaDesk(App):
     #tabs { height: 1fr; }
     #search { display: none; height: 1; border: none; padding: 0 1; background: $panel; }
     #search.visible { display: block; }
-    #filter { display: none; height: 1; border: none; padding: 0 1; background: $panel; }
-    #filter.visible { display: block; }
-    #detail-pane { border-left: solid $panel; }
+    #detail-pane { width: DETAIL_W; border-left: solid $panel; }
     #detail { padding: 0 1; }
     #hint { color: $text-muted; padding: 0 1; height: 1; }
     TextPrompt, BodyPrompt { align: center middle; }
@@ -395,21 +366,21 @@ class IdeaDesk(App):
     }
     #questions { height: auto; max-height: 20; }
     #questions-status { color: $text-muted; }
-    """.replace("LIST_MINW", str(LIST_MIN_WIDTH)).replace("LIST_W", LIST_WIDTH)
+    """.replace("RAIL_W", str(RAIL_WIDTH)).replace("DETAIL_W", DETAIL_WIDTH)
 
     BINDINGS = [
         Binding("j,down", "cursor_down", "down", show=False),
         Binding("k,up", "cursor_up", "up", show=False),
         Binding("slash", "search", "search"),
-        Binding("a", "toggle_all", "non-active"),
-        # SPEC-0110 — in-app filters/sort/layout. SPEC-0100 kept these as flags, appealing to
-        # SPEC-0098's "minimal chrome"; that forced quit-and-relaunch to re-filter a triage
-        # desk. Restraint re-read as "no sprawl", not "no controls".
-        Binding("f", "filter", "filter"),
-        Binding("o", "cycle_sort", "sort"),
-        Binding("O", "toggle_desc", "reverse", show=False),
-        Binding("z", "toggle_wide", "wide"),
-        Binding("g", "toggle_tree", "tree"),      # SPEC-0114
+        # SPEC-0490: the rail replaces SPEC-0110's filter bar / sort keys / wide mode and
+        # SPEC-0115's tree mode; `[`/`]` walk it from the board without moving focus.
+        Binding("left_square_bracket", "project_prev", "prev project", show=False),
+        Binding("right_square_bracket", "project_next", "next project", show=False),
+        Binding("d", "toggle_dropped", "dropped"),
+        # A 250-idea OPEN bucket pushes IN FLIGHT off screen: `{`/`}` hop between bucket
+        # headers (space folds the one under the cursor).
+        Binding("left_curly_bracket", "bucket_prev", "prev bucket", show=False),
+        Binding("right_curly_bracket", "bucket_next", "next bucket", show=False),
         Binding("r", "refresh_desk", "refresh", show=False),
         # SPEC-0102 mutations
         Binding("l", "log", "log"),
@@ -440,23 +411,29 @@ class IdeaDesk(App):
         self.campaign = campaign           # SPEC-0246: open this campaign's screen on mount
         self.tab = "queue" if campaign else (tab or "ideas")
         self._active_tab = "tab-ideas"
-        self.all_done = all_done
         self.query = query or ""
-        self.filters = filters or {}
+        opening = dict(filters or {})
+        # SPEC-0490: bucket order is fixed by design, so `--sort/--desc` no longer apply;
+        # `--project` selects a rail entry; the rest narrow what the board loads.
+        opening.pop("sort", None)
+        opening.pop("desc", None)
+        self._hub_filters = {k: v for k, v in opening.items() if v}
+        project = (opening.pop("project", None) or "").strip()
+        self.filters = {k: v for k, v in opening.items() if v}
+        self.project = project or B.ALL
+        self.show_dropped = bool(all_done)      # `--all` opens with DROPPED revealed
+        self._board = B.Board()
         self._pairs: list[tuple[M.DeskRow, object]] = []
+        self._hits: list[M.DeskRow] = []
+        self._rail_keys: list[str] = []
+        # Fold state per bucket survives repaints: BUILT is folded until the user opens it.
+        self._expanded = {B.OPEN: True, B.IN_FLIGHT: True, B.BUILT: False, B.DROPPED: True}
         self._hub_lines: list[M.HubLine] = []
         self._search_timer = None
-        # SPEC-0110: sort/desc arrive as opening flags, then become in-app state. Popped out of
-        # `filters` so `filters` stays exactly `collect_idea_tasks`' filter vocabulary.
-        self.sort = self.filters.pop("sort", None)
-        self.desc = bool(self.filters.pop("desc", False))
-        self.wide = False
-        # `tree` is taken by Textual's DOMNode.tree (read-only), hence `tree_mode`.
-        self.tree_mode = False                     # SPEC-0114
-        self._depths: list[tuple] = []
-        self._columns: tuple = ()
+        self._shown_id: str | None = None
         self._org_signature = None          # SPEC-0128: external-change poll baseline
         self._reload_in_flight = False      # SPEC-0129: guards overlapping poll reloads
+        self._search_in_flight = False
 
     # --- layout ------------------------------------------------------------------------
 
@@ -465,12 +442,10 @@ class IdeaDesk(App):
         with TabbedContent(id="tabs", initial=f"tab-{self.tab}"):
             with TabPane("ideas", id="tab-ideas"):
                 with Horizontal(id="panes"):
-                    with Vertical(id="list-pane"):
-                        yield DataTable(id="list", cursor_type="row", zebra_stripes=False)
-                        # SPEC-0115: a real collapsible tree, shown instead of the table in tree
-                        # mode. A DataTable has no notion of a parent, which is why indented rows
-                        # could never expand or collapse.
-                        yield Tree("ideas", id="tree")
+                    yield OptionList(id="rail")
+                    with Vertical(id="board-pane"):
+                        yield Static("", id="scoreboard")
+                        yield Tree("ideas", id="board")
                         yield Static("", id="status")
                     with VerticalScroll(id="detail-pane"):
                         yield Static("", id="detail", markup=True)
@@ -487,39 +462,45 @@ class IdeaDesk(App):
             # SPEC-0249: inboxes, threads and the human's replies.
             with TabPane("mailbox", id="tab-mailbox"):
                 yield MailboxView(self.cfg, id="mailbox-view")
-        yield Input(placeholder="search ideas…", id="search")
-        yield Input(placeholder="filter: project=X kind=bug priority=A …", id="filter")
+        yield Input(placeholder="search all projects…  (enter: browse hits · esc: clear)",
+                    id="search")
         yield Static("", id="hint")
         yield Footer()
 
     def on_mount(self) -> None:
-        table = self.query_one("#list", DataTable)
-        # columns are planned per width in `paint`; nothing to add here
+        tree = self.query_one("#board", Tree)
+        tree.show_root = False
+        tree.guide_depth = 2
         if self.tab == "ideas":
-            table.focus()       # focusing a hidden pane's widget would switch back to its tab
-        # Paint *after* the first refresh: pane widths don't exist until layout has run, and the
-        # heading column is clipped to a measured budget.
+            tree.focus()        # focusing a hidden pane's widget would switch back to its tab
         self.call_after_refresh(self.reload)
         self.set_interval(1.5, self._check_external_changes)   # SPEC-0128
         if self.campaign:
             self.open_campaign_detail(self.campaign)
 
     def on_resize(self, event) -> None:
-        """Re-clip to the new width without re-reading org."""
-        if self._pairs:
-            self.paint()
         if self._hub_lines:
             self.load_hub()
 
     # --- data --------------------------------------------------------------------------
 
-    def reload(self, *, keep_id: str | None = None) -> None:
-        """Re-read org, then repaint (SPEC-0134: non-blocking when an event loop is running).
+    def _load(self):
+        """Board + (when a query is active) search hits. Runs off the event loop."""
+        board = B.load_board(self.cfg, filters=self.filters)
+        hits = self._load_hits(self.query) if self.query else []
+        return board, hits
 
-        Sync call sites (`r`, search, filter, mutate, mount) schedule `_reload_async` so
-        `load_rows` never freezes the Textual loop. Without a running loop (rare unit helpers),
-        fall back to the blocking path.
-        """
+    def _load_hits(self, query: str) -> list[M.DeskRow]:
+        """Ranked hits across every project (SPEC-0086 searcher; never the board's own)."""
+        return [row for row, _t in M.load_rows(self.cfg, query=query, **self.filters)]
+
+    def _adopt(self, board, hits) -> None:
+        self._board = board
+        self._pairs = [(i.row, i.task) for i in board.items]
+        self._hits = hits
+
+    def reload(self, *, keep_id: str | None = None) -> None:
+        """Re-read org + specs, then repaint (SPEC-0134: non-blocking when a loop is running)."""
         try:
             asyncio.get_running_loop()
         except RuntimeError:
@@ -528,24 +509,18 @@ class IdeaDesk(App):
         self.run_worker(self._reload_async(keep_id=keep_id), name="desk-reload")
 
     def _reload_blocking(self, *, keep_id: str | None = None) -> None:
-        """Synchronous load+paint — used only when no event loop is running."""
         keep_id = keep_id or self.selected_id
         try:
-            self._pairs = M.load_rows(self.cfg, query=self.query or None,
-                                      all_done=self.all_done, sort=self.sort,
-                                      desc=self.desc, **self.filters)
-            self._depths = []      # SPEC-0115: the Tree widget owns nesting now, not padding
+            self._adopt(*self._load())
         except (ValueError, OSError) as e:                 # unreadable org / bad filter
-            self._pairs = []
+            self._adopt(B.Board(), [])
             self.set_hint(f"load failed: {e}")
         self.paint(keep_id=keep_id)
-        # SPEC-0128: resync the external-change baseline on every reload (not just the poll's
-        # own), so the timer never re-fires on a change the desk already knows about.
         from ..org import org_files_mtime_signature
         self._org_signature = org_files_mtime_signature(self.cfg)
 
     async def _reload_async(self, *, keep_id: str | None = None) -> None:
-        """Load rows off-thread, then paint on the event-loop thread (SPEC-0129/0134)."""
+        """Load off-thread, then paint on the event-loop thread (SPEC-0129/0134)."""
         if self._reload_in_flight:
             return
         self._reload_in_flight = True
@@ -553,36 +528,55 @@ class IdeaDesk(App):
             keep_id = keep_id or self.selected_id
             loop = asyncio.get_running_loop()
             try:
-                pairs = await loop.run_in_executor(
-                    None, functools.partial(
-                        M.load_rows, self.cfg, query=self.query or None,
-                        all_done=self.all_done, sort=self.sort, desc=self.desc,
-                        **self.filters))
+                board, hits = await loop.run_in_executor(None, self._load)
             except (ValueError, OSError) as e:
-                self._pairs = []
+                self._adopt(B.Board(), [])
                 self.set_hint(f"load failed: {e}")
                 self.paint(keep_id=keep_id)
                 return
-            self._pairs = pairs
-            self._depths = []
+            self._adopt(board, hits)
             self.paint(keep_id=keep_id)
             from ..org import org_files_mtime_signature
             self._org_signature = org_files_mtime_signature(self.cfg)
         finally:
             self._reload_in_flight = False
 
+    def refresh_search(self) -> None:
+        """Re-run only the search (the board is already loaded), off the event loop."""
+        if not self.query:
+            self._hits = []
+            self.paint()
+            return
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:
+            self._hits = self._load_hits(self.query)
+            self.paint()
+            return
+        self.run_worker(self._search_async(self.query), name="desk-search")
+
+    async def _search_async(self, query: str) -> None:
+        loop = asyncio.get_running_loop()
+        try:
+            hits = await loop.run_in_executor(None, self._load_hits, query)
+        except (ValueError, OSError) as e:
+            hits = []
+            self.set_hint(f"search failed: {e}")
+        if query != self.query:             # a newer query (or Esc) overtook this one
+            return
+        self._hits = hits
+        self.paint()
+
     def _resolve_fresh(self, idea_id: str):
-        """Re-resolve a Task fresh from disk by id (SPEC-0128) — never reuse a Task cached in
-        `self._pairs`, since an external edit since the last `reload()` can shift its line
-        number or state out from under it, tripping `explore._idea_span`'s drift guard."""
+        """Re-resolve a Task fresh from disk by id (SPEC-0128) — never reuse a cached Task,
+        since an external edit since the last `reload()` can shift its line number or state
+        out from under it, tripping `explore._idea_span`'s drift guard."""
         from ..org_write import resolve_selector
         return resolve_selector(self.cfg, idea_id)
 
     async def _check_external_changes(self) -> None:
         """Poll (SPEC-0128): cheap `stat()`-only signature compare, no reparse unless
-        something actually changed. The reparse itself runs off the event-loop thread
-        (SPEC-0129/0134) via `_reload_async`. On a change, reload and — only if the idea
-        currently shown in the detail pane itself changed — leave a small non-blocking hint."""
+        something actually changed; the reparse runs off the loop (SPEC-0129/0134)."""
         from textual.css.query import NoMatches
 
         from ..org import org_files_mtime_signature
@@ -591,119 +585,246 @@ class IdeaDesk(App):
             return
         try:
             watched_id = self.selected_id
-            old = next((r for r, _ in self._pairs if r.id == watched_id), None)
+            old = self._board.by_id.get(watched_id) if watched_id else None
+            old = (old.row.heading, old.row.state) if old else None
             await self._reload_async(keep_id=watched_id)
         except NoMatches:       # the timer fired while the app tears its DOM down: nothing to do
             return
-        new = next((r for r, _ in self._pairs if r.id == watched_id), None)
-        if old and new and (old.heading != new.heading or old.state != new.state):
+        new = self._board.by_id.get(watched_id) if watched_id else None
+        if old and new and old != (new.row.heading, new.row.state):
             self.set_hint(f"↻ {new.id} changed externally")
 
-    def paint(self, *, keep_id: str | None = None) -> None:
-        """Render `self._pairs` into the panes at the current width. No org reads."""
-        if self.tree_mode:                                    # SPEC-0115
-            self.paint_tree()
-            self.query_one("#status", Static).update(M.status_line(
-                self._pairs, all_done=self.all_done, query=self.query, filters=self.filters,
-                sort=self.sort, desc=self.desc,
-                mode="tree wide" if self.wide else "tree"))
-            if self._pairs:
-                self.show_detail(0)
-            return
-        table = self.query_one("#list", DataTable)
-        keep_id = keep_id or self.selected_id
-        table.clear()
-        # SPEC-0110: plan with the CLI's own planner against the MEASURED pane width. Capped
-        # columns (kind/project/q) squeeze toward their minimum before the heading loses its
-        # floor, which is what makes a `project` column affordable at all.
-        prows = [{"id": "  " + r.id, "state": r.state, "pri": r.priority, "kind": r.kind_glyph,
-                  "project": r.project, "epic": r.epic, "updated": r.age,
-                  "q": str(r.open_questions) if r.open_questions else ""}
-                 for r, _ in self._pairs]
-        keys, widths, head_width = plan_desk_columns(
-            prows, table.size.width or LIST_MIN_WIDTH)
-        if keys != self._columns:                 # rebuild only when the plan actually changes
-            self._columns = keys
-            table.clear(columns=True)
-            table.add_columns(*[R._IDEA_META_COLS[k][0] for k in keys], "idea")
-        for idx, ((row, _task), prow) in enumerate(zip(self._pairs, prows)):
-            cells = []
-            for key in keys:
-                w = widths[key]
-                if key == "id":
-                    # SPEC-0103: a running clock is the one piece of state you can forget you
-                    # left on, so it marks the id itself rather than taking its own column.
-                    cells.append(Text(("◕ " if row.clock_open else "  ") + row.id,
-                                      style="cyan" if row.clock_open else ""))
-                elif key == "state":
-                    cells.append(Text(R._clip(row.state or "·", w), style=row.state_style or ""))
-                elif key == "q":
-                    cells.append(Text(prow["q"], style="yellow" if prow["q"] else ""))
-                elif key == "project":
-                    cells.append(Text(R._clip(row.project, w), style="green" if row.project else ""))
-                elif key == "epic":
-                    cells.append(Text(R._clip(row.epic, w), style="magenta" if row.epic else ""))
-                else:
-                    cells.append(R._clip(prow[key], w))
-            # SPEC-0114: indentation is charged against the heading budget, so a nested row
-            # clips with an ellipsis instead of being cropped by the widget.
-            depth, label = self._depth_of(idx)
-            pad = "  " * depth
-            avail = max(6, head_width - len(pad))
-            cells.append(self._marked(pad + R._clip(row.heading, avail),
-                                      style="dim" if row.is_done else ""))
-            # Row keys are idea ids; if a duplicate still slipped past load_rows dedupe,
-            # suffix so Textual DataTable never raises DuplicateKey and crashes the desk.
-            row_key = row.id
-            try:
-                table.add_row(*cells, key=row_key)
-            except Exception as e:  # textual.widgets.data_table.DuplicateKey
-                if type(e).__name__ != "DuplicateKey":
-                    raise
-                table.add_row(*cells, key=f"{row.id}#{idx}")
-        self.query_one("#status", Static).update(M.status_line(
-            self._pairs, all_done=self.all_done, query=self.query, filters=self.filters,
-            sort=self.sort, desc=self.desc,
-            mode=("tree " if self.tree_mode else "") + ("wide" if self.wide else "split")))
+    # --- painting ----------------------------------------------------------------------
 
-        if self._pairs:
-            index = 0
-            if keep_id:
-                index = next((i for i, (r, _) in enumerate(self._pairs) if r.id == keep_id), 0)
-            table.move_cursor(row=index)
-            self.show_detail(index)
+    def paint(self, *, keep_id: str | None = None, keep: bool = True) -> None:
+        """Render the loaded board into rail, main pane and detail. No org reads.
+
+        With `keep`, the cursor stays on `keep_id` (default: the selected idea) — following it
+        into its project when it moved (a capture into another project) — or, when that idea
+        left the view, near the line it was on. `keep=False` starts at the first idea."""
+        tree = self.query_one("#board", Tree)
+        if keep:
+            keep_id = keep_id or self.selected_id
+        prev_line = tree.cursor_line if keep else -1
+        item = self._board.by_id.get(keep_id) if keep_id else None
+        if item is not None and not self.query and self.project not in (B.ALL, item.project_key):
+            self.project = item.project_key          # e.g. capture into another project
+        if self._board.entry(self.project) is None and self._board.rail:
+            if self.project == B.NO_PROJECT:
+                self.project = B.ALL
+            else:
+                # `--project P` with no ideas yet (or one just emptied): keep it on the rail
+                # with zero counts, so capture still pre-selects it.
+                self._board.rail.append(B.RailEntry(self.project, B.project_label(self.project)))
+        if item is not None and item.project_key == self.project:
+            self._expanded[item.bucket] = True       # never strand the cursor in a fold
+        self.paint_rail()
+        scoreboard = self.query_one("#scoreboard", Static)
+        on_all = self.project == B.ALL and not self.query
+        scoreboard.set_class(on_all, "visible")
+        if on_all:
+            scoreboard.update(self._scoreboard_table())
+
+        tree.clear()
+        if self.query:
+            self._paint_hits(tree)
+        elif self.project == B.ALL:
+            self._paint_activity(tree)
         else:
-            self.query_one("#detail", Static).update("[dim]no ideas match[/]")
-            self.set_hint("")
+            self._paint_buckets(tree)
+        self.query_one("#status", Static).update(escape(self._status_text()))
+        _ = tree.last_line          # build the line cache so `node._line` is valid below
+
+        target = self._find_leaf(tree.root, keep_id) if keep_id else None
+        if target is None:
+            leaves = self._leaves(tree.root)
+            if not leaves:
+                tree.move_cursor(None)
+                self._shown_id = None
+                self.query_one("#detail", Static).update(
+                    "[dim]no ideas here[/]" if not self.query else "[dim]no hits[/]")
+                self.set_hint("")
+                return
+            # A fresh view, or a search (its hits are a new list), starts on the first idea.
+            fresh = prev_line is None or prev_line < 0 or bool(self.query)
+            target = leaves[0] if fresh else None
+        if target is not None:
+            tree.move_cursor(target)
+            self.show_detail(target.data)
+        else:
+            # The kept idea left this view (closed/dropped): stay near where the cursor was.
+            tree.cursor_line = max(0, min(prev_line, tree.last_line))
+            node = tree.cursor_node
+            if node is not None and isinstance(node.data, str):
+                self.show_detail(node.data)
+
+    def paint_rail(self) -> None:
+        rail = self.query_one("#rail", OptionList)
+        keys = [e.key for e in self._board.rail]
+        width = RAIL_WIDTH - 3
+        prompts = []
+        for e in self._board.rail:
+            counts = e.counts
+            label = R._clip(e.label, max(4, width - len(counts) - 1))
+            text = Text(label, style="bold" if e.key == B.ALL else "")
+            text.append(" " * max(1, width - len(label) - len(counts)))
+            text.append(f"{e.open}", style="yellow" if e.open else "dim")
+            text.append("·", style="dim")
+            text.append(f"{e.in_flight}", style="cyan" if e.in_flight else "dim")
+            prompts.append(text)
+        if keys != self._rail_keys or rail.option_count != len(keys):
+            rail.clear_options()
+            rail.add_options([Option(p, id=f"rail-{i}") for i, p in enumerate(prompts)])
+            self._rail_keys = keys
+        else:
+            for i, p in enumerate(prompts):
+                rail.replace_option_prompt_at_index(i, p)
+        if self.project in keys:
+            index = keys.index(self.project)
+            if rail.highlighted != index:
+                rail.highlighted = index
+
+    def _scoreboard_table(self):
+        from rich.table import Table
+
+        table = Table(box=None, padding=(0, 1), show_edge=False, header_style="bold dim",
+                      expand=False)
+        table.add_column("PROJECT")
+        for col in ("OPEN", "IN FLIGHT", "BUILT"):
+            table.add_column(col, justify="right")
+        table.add_column(f"LAST {B.MOVEMENT_DAYS}D")
+        rows = self._board.scoreboard
+        for row in rows:
+            total = row.key == B.ALL
+            style = "bold" if total else ""
+            table.add_row(Text(row.label, style=style or "green"),
+                          Text(str(row.open), style="yellow" if row.open else "dim"),
+                          Text(str(row.in_flight), style="cyan" if row.in_flight else "dim"),
+                          Text(str(row.built), style="dim"),
+                          Text(row.movement, style="dim" if row.movement == "—" else ""),
+                          end_section=(rows.index(row) == len(rows) - 2))
+        return table
+
+    def _paint_activity(self, tree) -> None:
+        feed = tree.root.add(Text(f"RECENT ACTIVITY  ({len(self._board.activity)} newest)",
+                                  style="bold"), data=("section", "activity"), expand=True)
+        style = {"captured": "", "specced": "cyan", "built": "green", "updated": "dim"}
+        for a in self._board.activity:
+            label = Text()
+            label.append(a.when.strftime("%Y-%m-%d") + "  ", style="dim")
+            label.append(f"{a.text:<20.20} ", style=style[a.kind])
+            label.append(f"{a.item.id:<10}", style="dim")
+            label.append(R._clip(a.item.row.heading, 60) + "  ")
+            label.append(B.project_label(a.item.project_key), style="green dim")
+            feed.add_leaf(label, data=a.item.id)
+
+    def _paint_buckets(self, tree) -> None:
+        for bucket, items in self._board.buckets(self.project, show_dropped=self.show_dropped):
+            head = Text(f"{B.BUCKET_LABELS[bucket]}  ({len(items)})",
+                        style="bold " + _BUCKET_STYLE[bucket])
+            node = tree.root.add(head, data=("bucket", bucket),
+                                 expand=self._expanded.get(bucket, True),
+                                 allow_expand=bool(items))
+            spec_w = min(34, max((len(i.spec_label) for i in items), default=0))
+            for item in items:
+                node.add_leaf(self._item_label(item, spec_w), data=item.id)
+
+    def _item_label(self, item, spec_w: int) -> Text:
+        """One idea line: id, state, [spec + status + roll-up], heading. The spec sits before
+        the heading so a narrow pane crops the prose, never the status."""
+        row = item.row
+        text = Text()
+        text.append("◕ " if row.clock_open else "  ", style="cyan")
+        text.append(f"{row.id:<10}", style="dim")
+        text.append(f"{(row.state or '·'):<10} ", style=row.state_style or "")
+        if item.bucket == B.OPEN:
+            text.append(f"[#{row.priority}] " if row.priority else "     ", style="bold")
+            text.append(f"{row.open_questions}q " if row.open_questions else "   ",
+                        style="yellow")
+        else:
+            status = item.link.status if item.link else ""
+            text.append(f"{item.spec_label:<{spec_w}.{spec_w}} ",
+                        style=_STATUS_STYLE.get(status, "red" if not item.link else ""))
+            if item.rollup_label:
+                text.append(f"{item.rollup_label} ", style="magenta")
+            if item.bucket == B.BUILT and item.built_at is not None:
+                text.append(item.built_at.strftime("%Y-%m-%d") + " ", style="dim")
+        text.append(row.heading or "", style="dim" if item.bucket == B.DROPPED else "")
+        return text
+
+    def _paint_hits(self, tree) -> None:
+        hits = [h for h in self._hits if h.id in self._board.by_id]
+        node = tree.root.add(Text(f"SEARCH {self.query!r}  ({len(hits)} hits, all projects)",
+                                  style="bold"), data=("section", "search"), expand=True)
+        for row in hits:
+            item = self._board.by_id[row.id]
+            label = Text()
+            label.append(f"{row.id:<10}", style="dim")
+            label.append(f"{B.BUCKET_LABELS[item.bucket]:<10}",
+                         style=_BUCKET_STYLE[item.bucket])
+            label.append(f"{B.project_label(item.project_key):<18.18}", style="green")
+            label.append_text(self._marked(row.heading or ""))
+            node.add_leaf(label, data=row.id)
+
+    def _status_text(self) -> str:
+        parts = []
+        if self.query:
+            parts.append(f"{len(self._hits)} hit(s) for {self.query!r} across all projects")
+            parts.append("enter on a hit jumps to it · esc clears")
+        else:
+            e = self._board.entry(self.project)
+            if e is not None:
+                parts.append("all projects" if self.project == B.ALL else e.label)
+                parts.append(f"{e.open} open · {e.in_flight} in flight · {e.built} built")
+                if self.project != B.ALL:
+                    parts.append(f"{e.dropped} dropped " +
+                                 ("shown (d hides)" if self.show_dropped else "hidden (d shows)"))
+        if self.filters:
+            parts.append(" ".join(f"{k}={v}" for k, v in self.filters.items()))
+        return " · ".join(parts)
+
+    @staticmethod
+    def _leaves(root) -> list:
+        out = []
+        for child in root.children:
+            if isinstance(child.data, str):
+                out.append(child)
+            elif child.is_expanded:
+                out.extend(c for c in child.children if isinstance(c.data, str))
+        return out
+
+    @staticmethod
+    def _find_leaf(root, idea_id):
+        for child in root.children:
+            if child.data == idea_id:
+                return child
+            for leaf in child.children:
+                if leaf.data == idea_id and child.is_expanded:
+                    return leaf
+        return None
 
     @property
     def selected_id(self) -> str | None:
-        if self.tree_mode:                                    # SPEC-0115
-            node = self.query_one("#tree", Tree).cursor_node
-            return getattr(node, "data", None) if node else None
-        table = self.query_one("#list", DataTable)
-        if not self._pairs or table.cursor_row is None or table.cursor_row < 0:
-            return None
-        if table.cursor_row >= len(self._pairs):
-            return None
-        return self._pairs[table.cursor_row][0].id
+        node = self.query_one("#board", Tree).cursor_node
+        data = getattr(node, "data", None) if node is not None else None
+        return data if isinstance(data, str) else None
 
-    def show_detail(self, index: int) -> None:
-        if not (0 <= index < len(self._pairs)):
+    def show_detail(self, idea_id: str | None) -> None:
+        item = self._board.by_id.get(idea_id) if idea_id else None
+        if item is None:
             return
-        row, _cached_task = self._pairs[index]
         try:
-            task = self._resolve_fresh(row.id)         # SPEC-0128: never read via a stale Task
+            task = self._resolve_fresh(item.id)        # SPEC-0128: never read via a stale Task
             detail = M.load_detail(self.cfg, task)
         except (ValueError, OSError) as e:
-            self.query_one("#detail", Static).update(f"[red]could not read idea:[/] {escape(str(e))}")
+            self.query_one("#detail", Static).update(
+                f"[red]could not read idea:[/] {escape(str(e))}")
             return
+        self._shown_id = item.id
         width = self.query_one("#detail-pane", VerticalScroll).size.width
-        # `_render_detail` returns a Text already (SPEC-0107), so search marks apply directly.
-        # Marking a markup *string* would corrupt it — `escape()` shifts indices and a span
-        # could land inside a `[dim]` tag (SPEC-0106).
-        body = _render_detail(detail, snippet=row.snippet, width=width,
-                              theme=self.syntax_theme)
+        snippet = next((h.snippet for h in self._hits if h.id == item.id), "")
+        body = _render_detail(detail, snippet=snippet, width=width, theme=self.syntax_theme,
+                              spec=_spec_lines(item))
         self._mark_into(body)
         self.query_one("#detail", Static).update(body)
         self.query_one("#detail-pane", VerticalScroll).scroll_home(animate=False)
@@ -724,19 +845,12 @@ class IdeaDesk(App):
         """Mark the active query's tokens in `text` in place; returns the number of hits.
 
         `Text.highlight_words` is case-insensitive substring matching — exactly SPEC-0086's
-        rule — so the marks show precisely what the search matched, including a token that
-        occurs inside a longer word. No query means no marks.
+        rule — so the marks show precisely what the search matched. No query means no marks.
         """
         tokens = M.search_tokens(self.query)
         if not tokens:
             return 0
         return text.highlight_words(tokens, MATCH_STYLE, case_sensitive=False)
-
-    def _depth_of(self, index: int) -> tuple:
-        """`(depth, label)` for a painted row — `(0, "")` outside tree mode (SPEC-0114)."""
-        if self.tree_mode and 0 <= index < len(self._depths):
-            return self._depths[index]
-        return (0, "")
 
     def _marked(self, plain: str, *, style: str = "") -> Text:
         """A `Text` for `plain` with the active query marked."""
@@ -749,25 +863,50 @@ class IdeaDesk(App):
 
     # --- events ------------------------------------------------------------------------
 
-    @on(DataTable.RowHighlighted, "#list")
-    def _row_highlighted(self, event: DataTable.RowHighlighted) -> None:
-        self.show_detail(event.cursor_row)
+    @on(Tree.NodeHighlighted, "#board")
+    def _board_highlighted(self, event) -> None:
+        data = getattr(event.node, "data", None)
+        if isinstance(data, str) and data != self._shown_id:
+            self.show_detail(data)
+
+    @on(Tree.NodeSelected, "#board")
+    def _board_selected(self, event) -> None:
+        """Enter on a search hit jumps to it in its project (SPEC-0490)."""
+        data = getattr(event.node, "data", None)
+        if self.query and isinstance(data, str):
+            self.jump_to(data)
+
+    @on(Tree.NodeExpanded, "#board")
+    @on(Tree.NodeCollapsed, "#board")
+    def _fold_changed(self, event) -> None:
+        data = getattr(event.node, "data", None)
+        if isinstance(data, tuple) and data[0] == "bucket":
+            self._expanded[data[1]] = event.node.is_expanded
+
+    @on(OptionList.OptionHighlighted, "#rail")
+    def _rail_highlighted(self, event) -> None:
+        # Only the user's own rail moves (keys or a click — both focus the rail) select a
+        # project. `paint_rail` sets `highlighted` itself, and that queued echo must not land
+        # after a newer `select_project` / `jump_to` and drag the view back.
+        if not self.query_one("#rail", OptionList).has_focus:
+            return
+        index = event.option_index
+        if 0 <= index < len(self._rail_keys):
+            self.select_project(self._rail_keys[index])
 
     @on(Input.Submitted, "#search")
     def _search_submitted(self, event: Input.Submitted) -> None:
+        """Enter closes the box and hands the hit list to the cursor; Enter on a hit jumps."""
         self._cancel_search_timer()
-        self.query = event.value.strip()
+        wanted = event.value.strip()
         self._hide_search()
-        self.reload()
+        if wanted != self.query:
+            self.query = wanted
+            self.refresh_search()
 
     @on(Input.Changed, "#search")
     def _search_changed(self, event: Input.Changed) -> None:
-        """Filter as you type, debounced (SPEC-0105). Enter still applies immediately.
-
-        Each keystroke restarts the timer, so a burst of typing costs one search rather than
-        one per character. Clearing the box live restores the unfiltered list — backspacing out
-        of a query must not strand you on an empty result.
-        """
+        """Search as you type, debounced (SPEC-0105). Clearing the box restores the board."""
         self._cancel_search_timer()
         wanted = event.value.strip()
 
@@ -775,7 +914,7 @@ class IdeaDesk(App):
             self._search_timer = None
             if wanted != self.query:
                 self.query = wanted
-                self.reload()
+                self.refresh_search()
 
         self._search_timer = self.set_timer(SEARCH_DEBOUNCE, apply)
 
@@ -787,20 +926,81 @@ class IdeaDesk(App):
     # --- actions -----------------------------------------------------------------------
 
     def _cursor_widget(self):
-        """The widget j/k should move (SPEC-0115).
-
-        Hardcoding the DataTable meant that in tree mode j/k moved the *hidden* table, so the
-        detail pane followed a row you could not see and the tree cursor never moved — which also
-        made Enter appear not to expand anything.
-        """
-        return self.query_one("#tree", Tree) if self.tree_mode \
-            else self.query_one("#list", DataTable)
+        """j/k move whichever of rail / board has focus (the board otherwise)."""
+        rail = self.query_one("#rail", OptionList)
+        return rail if rail.has_focus else self.query_one("#board", Tree)
 
     def action_cursor_down(self) -> None:
         self._cursor_widget().action_cursor_down()
 
     def action_cursor_up(self) -> None:
         self._cursor_widget().action_cursor_up()
+
+    def select_project(self, key: str) -> None:
+        """Show one rail entry. A pure repaint: the board already holds every project."""
+        if key == self.project:
+            return
+        if self.query:
+            self._clear_query()
+        self.project = key
+        self.paint(keep=False)
+
+    def _step_project(self, delta: int) -> None:
+        keys = self._rail_keys
+        if not keys:
+            return
+        index = keys.index(self.project) if self.project in keys else 0
+        self.select_project(keys[(index + delta) % len(keys)])
+
+    def action_project_prev(self) -> None:
+        self._step_project(-1)
+
+    def action_project_next(self) -> None:
+        self._step_project(1)
+
+    def _hop_bucket(self, delta: int) -> None:
+        tree = self.query_one("#board", Tree)
+        heads = list(tree.root.children)
+        if not heads:
+            return
+        node = tree.cursor_node
+        current = node if node in heads else (node.parent if node is not None else None)
+        index = heads.index(current) if current in heads else -1
+        target = heads[(index + delta) % len(heads)] if index >= 0 else heads[0]
+        tree.move_cursor(target)
+        tree.scroll_to_node(target, animate=False)
+
+    def action_bucket_prev(self) -> None:
+        self._hop_bucket(-1)
+
+    def action_bucket_next(self) -> None:
+        self._hop_bucket(1)
+
+    def action_toggle_dropped(self) -> None:
+        self.show_dropped = not self.show_dropped
+        self.paint()
+
+    def jump_to(self, idea_id: str) -> None:
+        """Select `idea_id` in its own project's bucket, unfolding (or revealing) it."""
+        item = self._board.by_id.get(idea_id)
+        if item is None:
+            self.notify(f"{idea_id} is not on the board", severity="warning")
+            return
+        self._clear_query()
+        self.project = item.project_key
+        if item.bucket == B.DROPPED:
+            self.show_dropped = True
+        self._expanded[item.bucket] = True
+        self.paint(keep_id=idea_id)
+        self.query_one("#board", Tree).focus()
+
+    def _clear_query(self) -> None:
+        self._cancel_search_timer()
+        self.query = ""
+        self._hits = []
+        box = self.query_one("#search", Input)
+        box.remove_class("visible")
+        box.value = ""
 
     def action_search(self) -> None:
         box = self.query_one("#search", Input)
@@ -809,153 +1009,19 @@ class IdeaDesk(App):
         box.focus()
 
     def action_clear_bars(self) -> None:
-        """Esc closes whichever bottom bar is open (SPEC-0110 added a second one)."""
-        if self.query_one("#filter", Input).has_class("visible"):
-            self._hide_filter()
-            return
         self.action_clear_search()
 
     def action_clear_search(self) -> None:
-        """Esc: close the box; if a query was applied, drop it and reload."""
+        """Esc: close the box; if a query was applied, drop it and show the board again."""
         self._cancel_search_timer()
         self._hide_search()
         if self.query:
             self.query = ""
-            self.reload()
-
-    def action_toggle_all(self) -> None:
-        self.all_done = not self.all_done
-        self.reload()
+            self._hits = []
+            self.paint()
 
     def action_refresh_desk(self) -> None:
         self.reload()
-
-    # --- filters, sort, layout (SPEC-0110) ----------------------------------------------
-
-    def action_filter(self) -> None:
-        box = self.query_one("#filter", Input)
-        box.add_class("visible")
-        box.value = M.format_filter_expr(self.filters)
-        box.focus()
-
-    @on(Input.Submitted, "#filter")
-    def _filter_submitted(self, event: Input.Submitted) -> None:
-        """Apply `key=value` tokens. Problems are reported, never silently dropped — a filter
-        that quietly does nothing looks exactly like one that matched nothing."""
-        filters, problems = M.parse_filter_expr(event.value)
-        if problems:
-            self.notify("; ".join(problems), severity="error", title="filter")
-            return
-        self.filters = filters
-        self._hide_filter()
-        self.reload()
-
-    def action_clear_filter(self) -> None:
-        self._hide_filter()
-
-    def _hide_filter(self) -> None:
-        self.query_one("#filter", Input).remove_class("visible")
-        self.query_one("#list", DataTable).focus()
-
-    def action_cycle_sort(self) -> None:
-        """Cycle the sort field; maps straight to `collect_idea_tasks(sort=…)` (`--sort`)."""
-        order = list(M.SORT_FIELDS)
-        current = self.sort or order[0]
-        self.sort = order[(order.index(current) + 1) % len(order)] if current in order \
-            else order[0]
-        self.reload()
-
-    def action_toggle_desc(self) -> None:
-        self.desc = not self.desc
-        self.reload()
-
-    def action_toggle_tree(self) -> None:
-        """Swap the flat table for a real collapsible tree (SPEC-0115).
-
-        Nesting needs non-active ideas visible, since children are PROMOTED as they ship — the
-        status line says so, and `a` reveals them.
-        """
-        self.tree_mode = not self.tree_mode
-        table, tree = self.query_one("#list", DataTable), self.query_one("#tree", Tree)
-        table.display = not self.tree_mode
-        tree.set_class(self.tree_mode, "visible")
-        # After refresh, not immediately: a widget that was hidden has no size yet, so painting
-        # now would plan columns against width 0 and auto-drop half of them (the same trap as
-        # SPEC-0100's pre-layout paint).
-        self.call_after_refresh(self.reload)
-        (tree if self.tree_mode else table).focus()
-
-    def paint_tree(self) -> None:
-        """Rebuild the tree from `build_idea_tree` (SPEC-0115). Ideas carry their id in
-        `node.data`, so `selected_id` — and therefore every mutation — works unchanged."""
-        tree = self.query_one("#tree", Tree)
-        tree.clear()
-        tree.show_root = False
-        matched = {r.id for r, _ in self._pairs}
-        groups = R.build_idea_tree(self.cfg, [t for _r, t in self._pairs],
-                                  sort=self.sort, desc=self.desc, matched=matched)
-
-        def label(node) -> Text:
-            """A node label styled like the flat table's row, not monochrome.
-
-            The first cut styled everything `dim` or not at all, throwing away every colour the
-            table carries: SPEC-0082's state hue (which encodes *which way* an idea closed),
-            SPEC-0085's kind glyph, and SPEC-0110's yellow open-question count. The same helpers
-            are reused here so there is one definition of how an idea looks.
-            """
-            row, task = node["row"], node["task"]
-            if node.get("synthetic"):          # SPEC-0116: an `:EPIC:` spec id, not an idea
-                return Text(f"{node['id']}  ({node['count']})", style="magenta")
-            context = not node["matched"]
-            text = Text()
-            if row.get("clock_open"):                       # SPEC-0103
-                text.append("◕ ", style="cyan")
-            text.append(f"{node['id']}  ", style="dim")
-            state = row.get("state") or "·"
-            text.append(state, style=R._idea_state_style(task) or "")   # SPEC-0082 hue
-            if row.get("priority"):                                     # SPEC-0093
-                text.append(f"  [#{row['priority']}]", style="bold")
-            if row.get("open_questions"):                               # SPEC-0110
-                text.append(f"  {row['open_questions']}q", style="yellow")
-            text.append("  " + R._kind_cell(row.get("kind") or "idea", False) + "  ")
-            text.append(row.get("heading") or "",
-                        style="dim" if (context or task.is_done) else "")
-            return text
-
-        def add(parent, node):
-            branch = parent.add(label(node), data=node["id"],
-                                expand=False, allow_expand=bool(node["children"]))
-            for child in node["children"]:
-                add(branch, child)
-
-        for group in groups:
-            # Projects open, epics closed: the mode exists to show structure without 151 rows,
-            # and an epic's children are the detail you drill into.
-            g = tree.root.add(Text(f"{group['project']}  ({group['count']})", style="bold"),
-                              data=None, expand=True)
-            for node in group["nodes"]:
-                add(g, node)
-        # A fresh Tree has cursor_line == -1, i.e. nothing highlighted, so the detail pane would
-        # show a stale idea until the first keypress. Land on the first real idea instead.
-        if groups:
-            tree.cursor_line = 1 if groups[0]["nodes"] else 0
-
-    @on(Tree.NodeHighlighted, "#tree")
-    def _tree_highlighted(self, event) -> None:
-        ident = getattr(event.node, "data", None)
-        if not ident:
-            return
-        index = next((i for i, (r, _) in enumerate(self._pairs) if r.id == ident), None)
-        if index is not None:
-            self.show_detail(index)
-
-    def action_toggle_wide(self) -> None:
-        """Full-width list vs split. The table is otherwise stuck fighting for half the
-        terminal, which is what makes every extra column feel expensive."""
-        self.wide = not self.wide
-        self.query_one("#detail-pane", VerticalScroll).display = not self.wide
-        self.query_one("#list-pane", Vertical).styles.width = "100%" if self.wide else LIST_WIDTH
-        self.call_after_refresh(self.paint)
 
     # --- mutations (SPEC-0102) ---------------------------------------------------------
 
@@ -997,12 +1063,16 @@ class IdeaDesk(App):
                 self.mutate("summary", text=text)
         self.push_screen(BodyPrompt(f"summary · {selector}", current), done)
 
+    def _selected_row(self):
+        item = self._board.by_id.get(self.selected_id or "")
+        return item.row if item is not None else None
+
     def action_retitle(self) -> None:
         selector = self.selected_id
         if not selector:
             return
-        index = next((i for i, (r, _) in enumerate(self._pairs) if r.id == selector), None)
-        current = self._pairs[index][0].heading if index is not None else ""
+        row = self._selected_row()
+        current = row.heading if row is not None else ""
 
         def done(title):
             if title and title.strip():
@@ -1044,9 +1114,9 @@ class IdeaDesk(App):
     # Idea-scoped actions act on the selected idea of the ideas list, which is hidden on any
     # other tab. Disabled there so e.g. `x` on the queue tab cannot change org state.
     _IDEA_ACTIONS = frozenset({
-        "search", "toggle_all", "filter", "cycle_sort", "toggle_desc", "toggle_wide",
-        "toggle_tree", "refresh_desk", "log", "summary", "questions", "capture", "retitle",
-        "explored", "metadata", "clock_toggle", "close_idea"})
+        "search", "project_prev", "project_next", "bucket_prev", "bucket_next", "toggle_dropped", "refresh_desk", "log",
+        "summary", "questions", "capture", "retitle", "explored", "metadata", "clock_toggle",
+        "close_idea"})
 
     _DESK_TAB_KEYS = {
         "tab-ideas": "tab-overview",
@@ -1096,7 +1166,7 @@ class IdeaDesk(App):
             self.load_hub()
             self.query_one("#hub", DataTable).focus()
         else:
-            self.query_one("#list", DataTable).focus()
+            self.query_one("#board", Tree).focus()
 
     @on(OpenCampaign)
     def _open_campaign(self, event: OpenCampaign) -> None:
@@ -1143,8 +1213,9 @@ class IdeaDesk(App):
         self.query_one("#hub-status", Static).update(f"[dim]{escape(summary)}[/]")
 
     def filters_for_hub(self) -> dict:
-        """Hub takes the same filters the desk was opened with, minus list-only sort keys."""
-        return {k: v for k, v in self.filters.items() if k not in ("sort", "desc")}
+        """Hub takes the same filters the desk was opened with (`--project` included), minus
+        the retired sort keys."""
+        return dict(self._hub_filters)
 
     @on(DataTable.RowSelected, "#hub")
     def _hub_row_selected(self, event: DataTable.RowSelected) -> None:
@@ -1155,10 +1226,11 @@ class IdeaDesk(App):
         line = self._hub_lines[row]
         if line.idea_id:
             self.query_one("#tabs", TabbedContent).active = "tab-ideas"
-            self.query_one("#list", DataTable).focus()
-            if line.idea_id not in [r.id for r, _ in self._pairs]:
-                self.all_done = True            # hub can list an idea the current view hides
-            self.reload(keep_id=line.idea_id)
+            self.query_one("#board", Tree).focus()
+            if line.idea_id in self._board.by_id:
+                self.jump_to(line.idea_id)      # reveals a fold / DROPPED when it has to
+            else:
+                self.reload(keep_id=line.idea_id)
         elif line.hint:
             self.notify(line.hint, title="run this in a shell")
 
@@ -1251,14 +1323,9 @@ class IdeaDesk(App):
                     return
 
             current = ""
-            if field == "project":
-                index = next((i for i, (r, _) in enumerate(self._pairs)
-                              if r.id == self.selected_id), None)
-                current = self._pairs[index][0].project if index is not None else ""
-            elif field == "state":
-                index = next((i for i, (r, _) in enumerate(self._pairs)
-                              if r.id == self.selected_id), None)
-                current = self._pairs[index][0].state if index is not None else ""
+            row = self._selected_row()
+            if row is not None and field in ("project", "state"):
+                current = getattr(row, field) or ""
 
             def value_picked(value):
                 if value is None:
@@ -1300,7 +1367,7 @@ class IdeaDesk(App):
             except (ValueError, OSError) as e:
                 self.notify(str(e), severity="error", title="capture failed")
                 return
-            self.query = ""                        # a new idea is active; clear any filter view
+            self._clear_query()                    # the new idea is what to look at next
             self.reload(keep_id=new_id or None)
 
         def got_text(text):
@@ -1321,7 +1388,8 @@ class IdeaDesk(App):
 
             self.push_screen(
                 ChoiceScreen("project for the new idea", choices,
-                             self.filters.get("project") or NONE_CHOICE),
+                             self.project if self.project not in (B.ALL, B.NO_PROJECT)
+                             else NONE_CHOICE),
                 got_project)
 
         self.push_screen(TextPrompt("new idea"), got_text)
@@ -1329,12 +1397,7 @@ class IdeaDesk(App):
     def _hide_search(self) -> None:
         box = self.query_one("#search", Input)
         box.remove_class("visible")
-        self.query_one("#list", DataTable).focus()
-
-
-def _short_state(state: str) -> str:
-    """Idea states clipped to 3 chars so the list pane keeps its width for the heading."""
-    return (state or "")[:3]
+        self.query_one("#board", Tree).focus()
 
 
 def _rule(label: str, width: int, *, note: str = "") -> str:
@@ -1369,8 +1432,36 @@ def lex_org(prose: str, theme: str = ANSI_DARK) -> Text:
     return lexed
 
 
+def _spec_lines(item) -> list[str]:
+    """Markup lines naming the idea's spec and its real status (SPEC-0490), always present:
+    an idea with no spec says so, so the pane never leaves "is there a spec?" to guesswork."""
+    bucket = B.BUCKET_LABELS[item.bucket]
+    style = _BUCKET_STYLE[item.bucket]
+    link = item.link
+    if link is None:
+        what = escape(item.spec_label or "no spec yet")
+        lines = [f"[bold dim]spec[/] [dim]{what}[/]  [{style}]{bucket}[/]"]
+    else:
+        status = escape(link.status or "?")
+        sstyle = _STATUS_STYLE.get(link.status, "")
+        via = f" [dim]→ superseded by[/] {escape(link.via)}" if link.via else ""
+        lines = [(f"[bold dim]spec[/] [bold]{escape(link.id)}[/]{via}  "
+                  f"[{sstyle or 'white'}]{status}[/]  [{style}]{bucket}[/]")]
+        info = link.info
+        extra = []
+        if info is not None and info.title:
+            extra.append(escape(info.title))
+        if info is not None and info.outbound:
+            extra.append("outbound · exported" if info.exported else "outbound · not exported")
+        if extra:
+            lines.append(f"[dim]{' · '.join(extra)}[/]")
+    if item.rollup_label:
+        lines.append(f"[magenta]epic roll-up {escape(item.rollup_label)}[/]")
+    return lines
+
+
 def _render_detail(d: M.DeskDetail, *, snippet: str = "", width: int = 60,
-                   theme: str = ANSI_DARK) -> Text:
+                   theme: str = ANSI_DARK, spec: list[str] | None = None) -> Text:
     """The detail pane as a `Text`.
 
     **Structure is hand-built; only prose is lexed** (SPEC-0107). Section rules, the ○/✓ question
@@ -1398,6 +1489,8 @@ def _render_detail(d: M.DeskDetail, *, snippet: str = "", width: int = 60,
     add_markup(f"[{style}]{state}[/]  [bold]{escape(d.heading)}[/]")
     if d.meta:
         add_markup(f"[dim]{escape(' · '.join(d.meta))}[/]")
+    for line in spec or ():                                           # SPEC-0490
+        add_markup(line)
     if d.clock_open or d.clocked_hours:                               # SPEC-0103
         running = "[cyan]◕ clocked in[/]" if d.clock_open else "[dim]clock idle[/]"
         add_markup(f"{running} [dim]· {d.clocked_hours:.2f}h logged[/]")

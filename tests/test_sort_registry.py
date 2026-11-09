@@ -12,7 +12,6 @@ from click.testing import CliRunner
 
 from nightwright import report as R
 from nightwright.cli import cli
-from nightwright.tui import model as M
 
 
 def _cfg(tmp_path):
@@ -78,10 +77,6 @@ def test_default_is_not_selectable_by_name():
     assert "default" not in R.sort_key_names(keys)
     with pytest.raises(ValueError):
         R._apply_sort([], sort="default", keys=keys)
-
-
-def test_cli_and_desk_offer_the_same_vocabulary():
-    assert tuple(M.SORT_FIELDS) == R.IDEA_SORT_NAMES
 
 
 def test_every_name_is_accepted_end_to_end(tmp_path, monkeypatch):

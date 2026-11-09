@@ -1501,16 +1501,16 @@ def hub_cmd(cfg, as_json, tasks_slice, state, kind, tag, project, workstream, pr
 @click.option("--kind", type=click.Choice(list(IDEA_KINDS), case_sensitive=False),
               help="open pre-filtered to this capture kind")
 @click.option("--tag", help="open pre-filtered to this tag")
-@click.option("--project", help="open pre-filtered to this project",
+@click.option("--project", help="open on this project's board (rail entry)",
               shell_complete=C.complete_project)
 @click.option("--workstream", help="open pre-filtered to this :WORKSTREAM:",
               shell_complete=C.complete_workstream)
 @click.option("--priority", type=click.Choice(["A", "B", "C"]),
               help="open pre-filtered to this priority")
 @click.option("--sort", type=click.Choice(list(R.IDEA_SORT_NAMES), case_sensitive=False),
-              help="list order (default freshness, same as `nw ideas`)")
-@click.option("--desc", is_flag=True, help="reverse --sort order")
-@click.option("--all", "all_done", is_flag=True, help="start with non-active ideas shown")
+              help="ignored since SPEC-0490 (board buckets have a fixed order)")
+@click.option("--desc", is_flag=True, help="ignored since SPEC-0490")
+@click.option("--all", "all_done", is_flag=True, help="start with the DROPPED bucket shown")
 @click.option("--query", default=None, help="open on a related-idea search (SPEC-0086)")
 @click.option("--tab", type=click.Choice(["ideas", "hub", "queue", "events", "mailbox"],
                                 case_sensitive=False),
@@ -1527,10 +1527,10 @@ def tui_cmd(cfg, state, kind, tag, project, workstream, priority, sort, desc, al
     commands and `--json`. A broken install that is missing Textual prints an install hint.
 
     \b
-    nw tui                    active ideas, freshest first
-    nw tui --all              start with non-active shown (`a` toggles in-app)
-    nw tui --project Example    open pre-filtered
-    nw tui --query textual    open on a search (`/` searches in-app)
+    nw tui                    ideas board: project rail, Open / In flight / Built
+    nw tui --all              start with DROPPED shown (`d` toggles in-app)
+    nw tui --project Example  open on that project's buckets
+    nw tui --query textual    open on a cross-project search (`/` searches in-app)
     nw tui --tab queue        open on the live agentic queue (`1`..`5` switch tabs)
     nw tui --tab events       open on the queue event stream and watchdog conditions
     nw tui --tab mailbox      open on the mailbox: inboxes, threads, reply as human

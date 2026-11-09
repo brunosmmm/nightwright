@@ -1,10 +1,11 @@
 ---
 id: SPEC-0115
 title: "Desk tree mode: a real collapsible tree, not indented rows"
-status: done
+status: superseded
+superseded_by: SPEC-0490
 owner: user
 created: 2026-07-31
-updated: 2026-07-31
+updated: 2026-11-09
 kind: feature
 depends_on: [SPEC-0114]
 milestone: "M5: interactive desk"

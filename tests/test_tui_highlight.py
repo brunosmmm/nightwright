@@ -165,7 +165,19 @@ def test_detail_body_is_marked_without_corrupting_markup(tmp_path, monkeypatch):
 
 # --- live behaviour ---------------------------------------------------------------------------
 
+def _leaf_labels(app):
+    """Every idea leaf's label on the board (SPEC-0490 replaced the DataTable)."""
+    root = app.query_one("#board").root
+    return [leaf.label for head in root.children for leaf in head.children]
+
+
+def _reversed(text):
+    return [s.lower() for s, style in _marks(text) if style == "reverse"]
+
+
 def test_list_cells_gain_and_lose_marks_with_the_query(tmp_path, monkeypatch):
+    from waits import pilot_until
+
     from nightwright.tui.app import IdeaDesk
 
     cfg = _seed(tmp_path, monkeypatch)
@@ -173,21 +185,21 @@ def test_list_cells_gain_and_lose_marks_with_the_query(tmp_path, monkeypatch):
     async def drive():
         app = IdeaDesk(cfg)
         async with app.run_test(size=(140, 20)) as pilot:
-            await pilot.pause()
-            assert app.query_one("#list").get_row_at(0)[-1].spans == []
+            assert await pilot_until(pilot, lambda: _leaf_labels(app))
+            assert all(_reversed(label) == [] for label in _leaf_labels(app))
 
             await pilot.press("slash")
             await pilot.pause()
             for ch in "textual":
                 await pilot.press(ch)
-            await pilot.pause(1.0)
+            assert await pilot_until(pilot, lambda: app._hits)
             await pilot.pause()
-            cell = app.query_one("#list").get_row_at(0)[-1]
-            assert [s.lower() for s, _ in _marks(cell)] == ["textual"]
+            labels = _leaf_labels(app)
+            assert [_reversed(label) for label in labels] == [["textual"]]
 
             await pilot.press("escape")          # clearing removes the marks
             await pilot.pause()
-            assert app.query_one("#list").get_row_at(0)[-1].spans == []
+            assert all(_reversed(label) == [] for label in _leaf_labels(app))
 
     asyncio.run(drive())
 

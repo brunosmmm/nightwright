@@ -1,10 +1,11 @@
 ---
 id: SPEC-0110
 title: "Desk idea table: shared column planner, in-app filters, sorting, full-width mode"
-status: done
+status: superseded
+superseded_by: SPEC-0490
 owner: user
 created: 2026-07-30
-updated: 2026-07-30
+updated: 2026-11-09
 kind: feature
 depends_on: [SPEC-0100, SPEC-0105, SPEC-0109]
 milestone: "M5: interactive desk"

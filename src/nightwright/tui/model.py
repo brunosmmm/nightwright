@@ -87,7 +87,7 @@ def split_log(body: str) -> list[str]:
     return [e for e in entries if e]
 
 
-def _row_for(cfg, task, *, now, score=None, snippet="") -> DeskRow:
+def _row_for(cfg, task, *, now, score=None, snippet="", open_questions=None) -> DeskRow:
     from .. import explore as EX
     from ..org_write import idea_kind
 
@@ -102,7 +102,8 @@ def _row_for(cfg, task, *, now, score=None, snippet="") -> DeskRow:
         heading=task.heading or "",
         is_done=task.is_done,
         state_style=R._idea_state_style(task),
-        open_questions=EX.open_question_count(cfg, task),
+        open_questions=(EX.open_question_count(cfg, task) if open_questions is None
+                        else open_questions),
         clock_open=EX.clock_fields(task)["clock_open"],
         score=score,
         snippet=snippet,
@@ -190,34 +191,6 @@ def _dedupe_scored_idea_tasks(cfg, scored) -> list:
             best[iid] = (t, s, snip)
     return [best[k] for k in order]
 
-
-
-def flatten_tree(cfg, tasks, *, sort=None, desc=False, now=None) -> list[tuple]:
-    """`[(DeskRow, Task, depth, project)]` for the desk's tree mode (SPEC-0114).
-
-    **Leaves only — no synthetic group-header rows.** The desk already has a `project` column
-    that labels each group, so a header row would duplicate it *and* force every mutation path
-    (`selected_id`, row keys, focus, refresh) to special-case a row with no idea behind it. Rows
-    are emitted grouped by project and indented by epic depth, which conveys the same structure
-    with one row type. The CLI renders explicit headers instead, because its tree view has no
-    project column.
-
-    `depth` drives indentation, charged against the heading budget by the SPEC-0110 planner.
-    Context ancestors (kept so a matched child is never orphaned) come back marked `is_done`, so
-    the existing recessive styling applies without a new flag.
-    """
-    now = now or dt.datetime.now(tz=cfg.get("_tz"))
-    matched = {(t.properties.get("ID") or t.id) for t in tasks}
-    out: list[tuple] = []
-    for group in R.build_idea_tree(cfg, tasks, sort=sort, desc=desc, matched=matched):
-        stack = [(n, 0) for n in reversed(group["nodes"])]
-        while stack:
-            node, depth = stack.pop()
-            row = _row_for(cfg, node["task"], now=now)
-            row.is_done = row.is_done or not node["matched"]
-            out.append((row, node["task"], depth, group["project"]))
-            stack.extend((c, depth + 1) for c in reversed(node["children"]))
-    return out
 
 
 def load_detail(cfg, task) -> DeskDetail:
@@ -435,41 +408,6 @@ def load_hub(cfg, *, tasks_slice="today", **filters) -> tuple[list[HubLine], str
     return lines, summary
 
 
-# SPEC-0110: the desk's in-app filter vocabulary is exactly `collect_idea_tasks`' arguments —
-# no filter the CLI cannot also express, and no matching logic in the UI.
-FILTER_KEYS = ("state", "kind", "tag", "project", "epic", "workstream", "priority")
-# SPEC-0113: the desk cycles exactly the CLI's vocabulary — one registry, one set of names.
-SORT_FIELDS = R.IDEA_SORT_NAMES
-
-
-def parse_filter_expr(text: str) -> tuple[dict, list[str]]:
-    """`"project=Example kind=bug"` -> ({project: Example, kind: bug}, []).
-
-    Returns `(filters, problems)`; an unknown or malformed token is reported rather than
-    silently dropped, because a filter that quietly does nothing looks identical to a filter
-    that matched nothing.
-    """
-    filters, problems = {}, []
-    for token in (text or "").split():
-        if "=" not in token:
-            problems.append(f"{token!r} is not key=value")
-            continue
-        key, _, value = token.partition("=")
-        key, value = key.strip().lower(), value.strip()
-        if key not in FILTER_KEYS:
-            problems.append(f"unknown filter {key!r} (try {', '.join(FILTER_KEYS)})")
-        elif not value:
-            problems.append(f"{key!r} has no value")
-        else:
-            filters[key] = value
-    return filters, problems
-
-
-def format_filter_expr(filters: dict) -> str:
-    """The inverse, for pre-filling the bar and for the status line."""
-    return " ".join(f"{k}={v}" for k in FILTER_KEYS if (v := (filters or {}).get(k)))
-
-
 def search_tokens(query: str | None) -> list[str]:
     """Tokens to highlight for `query` (SPEC-0106) — the **searcher's own** tokeniser.
 
@@ -478,30 +416,3 @@ def search_tokens(query: str | None) -> list[str]:
     defines no tokenising or matching of its own.
     """
     return R.tokenize_idea_query(query or "")
-
-
-def status_line(rows, *, all_done: bool, query: str | None, filters: dict | None = None,
-                sort: str | None = None, desc: bool = False, mode: str = "split") -> str:
-    """One-line footer summary (SPEC-0110).
-
-    Shows the *active filter set, sort and mode*, not just a count. Invisible filter state is
-    how a user ends up staring at a list wondering where a row went. When a query is active it
-    also says the visibility toggle is being overridden, because that is the one genuinely
-    surprising interaction — search always scans open+closed (SPEC-0086).
-    """
-    n = len(rows)
-    parts = []
-    if query and query.strip():
-        parts.append(f"{n} hit{'' if n == 1 else 's'}")
-        parts.append(f"query {query.strip()!r}")
-        parts.append("all states (search)")
-    else:
-        parts.append(f"{n} shown")
-        parts.append("all states" if all_done else "active only")
-    if (expr := format_filter_expr(filters)):
-        parts.append(expr)
-    if not (query and query.strip()):
-        parts.append(f"sort {sort or 'freshness'}{' desc' if desc else ''}")
-    if mode != "split":
-        parts.append(mode)
-    return " · ".join(parts)

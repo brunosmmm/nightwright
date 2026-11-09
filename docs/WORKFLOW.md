@@ -177,7 +177,10 @@ nw tui --tab queue           # tabs: ideas, hub, queue, events, mailbox (keys 1.
 nw tui --campaign ID         # one campaign's timeline, runs, gates and reviews
 ```
 
-Tabs: **ideas** (browse, search, capture), **hub** (the triage union), **queue** (live
+Tabs: **ideas** (SPEC-0490 board: a project rail with `open·in-flight` counts; `All` shows a
+per-project scoreboard over a recent-activity feed; a project shows OPEN / IN FLIGHT / BUILT
+buckets with each idea's spec and its real status, BUILT folded, `d` reveals DROPPED, `/`
+searches every project and Enter jumps to the hit), **hub** (the triage union), **queue** (live
 campaigns), **events** (queue event stream and watchdog conditions) and **mailbox** (inboxes,
 threads, reply as the human).
 

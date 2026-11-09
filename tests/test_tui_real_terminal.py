@@ -1,4 +1,4 @@
-"""What a REAL terminal renders (SPEC-0115).
+"""What a REAL terminal renders (SPEC-0115; SPEC-0490 re-pointed it at the bucket board).
 
 Every desk defect the human reported got past headless pilots. The reason is structural: Textual
 repaints *incrementally*, so raw pty bytes cannot be turned back into a screen by picking a frame
@@ -8,7 +8,6 @@ This is deliberately one slow test rather than a suite: it spawns `nw tui` under
 throwaway org, and asserts on the composited screen.
 """
 import os
-import re
 import shutil
 import sys
 import time
@@ -20,7 +19,7 @@ import pytest
 
 pytestmark = pytest.mark.skipif(not hasattr(os, "forkpty"), reason="needs a POSIX pty")
 
-COLS, ROWS = 110, 30
+COLS, ROWS = 160, 30   # SPEC-0490: three panes (rail | board | detail)
 
 
 def _throwaway_org(tmp_path):
@@ -36,7 +35,10 @@ def _throwaway_org(tmp_path):
     (conf / "mappings.yaml").write_text("a:\n  bucket: Alpha\n")
     specs = tmp_path / "specs"
     specs.mkdir()
-    for num, extra in ((1, "kind: epic\n"), (2, "kind: feature\nparent: SPEC-0001\n")):
+    # `source_idea` claims each spec for its Alpha idea: without it a bare SPEC-NNNN on a
+    # non-internal project's idea is foreign (SPEC-0327) and the board shows no status.
+    for num, extra in ((1, "kind: epic\nsource_idea: IDEA-001\n"),
+                       (2, "kind: feature\nparent: SPEC-0001\nsource_idea: IDEA-002\n")):
         (specs / f"{num:04d}-x.md").write_text(
             f"---\nid: SPEC-{num:04d}\ntitle: \"s{num}\"\nstatus: accepted\nowner: b\n"
             f"created: 2026-07-31\nupdated: 2026-07-31\n{extra}---\n\n## Context\n\nx\n")
@@ -58,14 +60,24 @@ def _throwaway_org(tmp_path):
 
 
 def left_pane(lines):
-    """The tree/list pane: each line cut at the pane divider (the detail pane is on the right)."""
-    col = next((line.index("│") for line in lines if "│" in line), None)
-    return [line[:col] if col is not None else line for line in lines]
+    """The board pane (SPEC-0490): each line cut between the rail divider and the detail
+    divider, so neither the rail's counts nor the detail pane's colours leak into a check."""
+    out = []
+    for line in lines:
+        first = line.find("│")
+        if first < 0:
+            out.append(line)
+            continue
+        second = line.find("│", first + 1)
+        out.append(line[first + 1:second] if second >= 0 else line[first + 1:])
+    return out
 
 
 def _loaded(lines):
-    """The desk has painted its ideas (keys typed before that may be lost)."""
-    return any("IDEA-001" in line for line in left_pane(lines))
+    """The desk has painted its board (keys typed before that may be lost): the rail lists
+    the project and the All view's activity feed shows an idea."""
+    return any("Alpha" in line for line in lines) and \
+        any("IDEA-00" in line for line in left_pane(lines))
 
 
 def _render(conf_dir, steps):
@@ -147,59 +159,41 @@ def _render(conf_dir, steps):
             pass
 
 
-def _tree(lines):
-    """Tree mode is up: the project group and a disclosure marker in the left pane."""
-    left = "\n".join(left_pane(lines))
-    return "Alpha" in left and ("▼" in left or "▶" in left) and "IDEA-001" in left
+def _alpha(lines):
+    """The Alpha project view is up: bucket headers in the board pane."""
+    board = "\n".join(left_pane(lines))
+    return "OPEN" in board and "IN FLIGHT" in board and "IDEA-001" in board
 
 
-def test_tree_mode_renders_real_nesting_in_a_real_terminal(tmp_path):
-    """The check that would have caught the shipped SPEC-0114 desk mode.
-
-    Asserts on the composited screen: a disclosure marker on the project, the epic present with
-    its own marker, and — once expanded — the child indented further than its parent.
-    """
+def test_board_renders_buckets_and_spec_status_in_a_real_terminal(tmp_path):
+    """The composited screen shows the rail, the buckets, and the spec status + epic roll-up on
+    the in-flight row — the three things the old flat table could not show (SPEC-0490)."""
     conf = _throwaway_org(tmp_path)
     if shutil.which("uv") is None and not Path(sys.executable).exists():
         pytest.skip("no interpreter to spawn")
 
-    flat = "\n".join(_render(conf, [])[0])
-    assert "IDEA-001" in flat, f"desk did not render any ideas:\n{flat}"
-    assert "▼" not in flat and "▶" not in flat, "flat view should have no disclosure markers"
-
-    lines, _cells = _render(conf, [("g", _tree)])
+    lines, _cells = _render(conf, [("]", _alpha)])
     screen = "\n".join(lines)
-    assert "Alpha" in screen, f"no project group:\n{screen}"
-    assert "▼" in screen or "▶" in screen, f"no disclosure markers — not a tree:\n{screen}"
-    assert "IDEA-001" in screen
+    board = left_pane(lines)
+    assert "All" in screen and "Alpha" in screen, f"no project rail:\n{screen}"
 
-    def column_of(needle):
-        """Column where `needle` starts. Textual draws nesting with guide glyphs (`├──`), not
-        leading whitespace, so `lstrip()` would report 0 for every depth."""
-        for line in left_pane(lines):
-            if needle in line:
-                return line.index(needle)
-        return None
+    def row_of(needle):
+        return next((i for i, line in enumerate(board) if needle in line), None)
 
-    project_indent = column_of("Alpha")
-    epic_indent = column_of("IDEA-001")
-    assert project_indent is not None and epic_indent is not None
-    assert epic_indent > project_indent, (
-        f"epic not indented under its project ({epic_indent} vs {project_indent}):\n{screen}")
-
-    # expand the epic: cursor starts on the first idea, so Enter toggles it
-    expanded = "\n".join(_render(conf, [("g", _tree), (
-        "ENTER", lambda ls: "IDEA-002" in "\n".join(left_pane(ls)))])[0])
-    assert "IDEA-002" in expanded, f"expanding the epic revealed no child:\n{expanded}"
+    open_at, flight_at, built_at = row_of("OPEN"), row_of("IN FLIGHT"), row_of("BUILT")
+    assert None not in (open_at, flight_at, built_at), f"missing a bucket:\n{screen}"
+    assert open_at < flight_at < built_at, f"buckets out of order:\n{screen}"
+    loose = row_of("IDEA-003")
+    epic = row_of("IDEA-001")
+    assert open_at < loose < flight_at, f"the loose idea is not OPEN:\n{screen}"
+    assert flight_at < epic < built_at, f"the specced epic is not IN FLIGHT:\n{screen}"
+    assert "SPEC-0001 accepted" in board[epic], f"no spec status on the row:\n{board[epic]}"
+    assert "0/1 built" in board[epic], f"no epic roll-up on the row:\n{board[epic]}"
 
 
-def test_tree_is_not_monochrome(tmp_path):
-    """Reported: "in tree view there is no color at all".
-
-    The first tree implementation styled node labels `dim` or not at all, discarding SPEC-0082's
-    state hue, SPEC-0085's kind glyph and SPEC-0110's yellow question count. Asserts on the
-    colours a real terminal actually paints, and that distinct states get distinct hues — a count
-    alone would pass on a tree that coloured everything the same.
+def test_board_is_not_monochrome(tmp_path):
+    """Reported against the old tree: "there is no color at all". The board reuses SPEC-0082's
+    state hue and the yellow open-question count; distinct states must get distinct hues.
     """
     conf = _throwaway_org(tmp_path)
     org = conf.parent / "org" / "ideas.org"
@@ -211,46 +205,37 @@ def test_tree_is_not_monochrome(tmp_path):
                    "  :PROJECT: Alpha\n  :UPDATED: [2026-07-31 Fri 09:00]\n  :END:\n")
 
     tree_lines, tree_cells = _render(conf, [
-        ("a", lambda ls: "IDEA-005" in "\n".join(left_pane(ls))),     # the dropped one shows
-        ("g", lambda ls: _tree(ls) and all(w in "\n".join(left_pane(ls))
-                                           for w in ("INCUBATE", "DROPPED", "1q")))])
+        ("]", _alpha),
+        ("d", lambda ls: all(w in "\n".join(left_pane(ls))
+                             for w in ("INCUBATE", "IDEA-005", "1q"))),
+        # move the cursor off IDEA-004 so its INCUBATE hue is not the cursor highlight
+        ("j", lambda ls: any("a loose alpha idea" in line[line.rfind("│"):] for line in ls))])
 
-    def pane_width(lines):
-        """Column of the pane divider. Everything right of it is the *detail* pane, which
-        SPEC-0107 lexes in colour — measuring the whole screen made this test vacuous: it passed
-        on a monochrome tree because the detail pane supplied the colours."""
-        for line in lines:
-            if "│" in line:
-                return line.index("│")
-        return len(max(lines, key=len))
-
-    def palette(cells, lines):
-        limit = pane_width(lines)
-        return {fg for row in cells for ch, fg in row[:limit] if ch.strip()}
-
-    def colour_of(cells, lines, word):
-        """The fg of `word`'s first character, searched in the **left pane only**."""
-        limit = pane_width(lines)
-        for y, line in enumerate(lines):
-            head = line[:limit]
-            if word in head:
-                return cells[y][head.index(word)][1]
+    def colour_in_row(row_id, word):
+        """The fg of `word`'s first character on `row_id`'s line, after the id, searched in
+        the **board pane only** (the detail pane is lexed in colour and would mask a bug)."""
+        for y, line in enumerate(tree_lines):
+            first = line.find("│")
+            second = line.find("│", first + 1)
+            if first < 0 or second < 0:
+                continue
+            start = line.find(row_id, first + 1, second)
+            if start < 0:
+                continue
+            at = line.find(word, start + len(row_id), second)
+            return tree_cells[y][at][1] if at >= 0 else None
         return None
 
-    # Assertions deliberately avoid counting colours: even a monochrome tree shows ~10 in this
-    # pane, from the tab bar, tree guides and footer keys. They also avoid the *cursor* row, whose
-    # highlight colour would make any state look distinct. Comparing two NON-cursor rows is what
-    # actually discriminates — an earlier version of this test passed on the monochrome build.
-    incubate = colour_of(tree_cells, tree_lines, "INCUBATE")
-    dropped = colour_of(tree_cells, tree_lines, "DROPPED")
-    heading = colour_of(tree_cells, tree_lines, "has questions")
-    assert incubate and dropped and heading
-
-    # SPEC-0082: the state hue encodes which way an idea closed, so two different states must not
-    # render identically, and a state must not render as plain body text.
+    # Compare NON-cursor rows only: the cursor highlight would make any state look distinct.
+    # IDEA-004 (INCUBATE, one open question, so it sorts first) and IDEA-005 (DROPPED) are not
+    # under the cursor once `j` moved it to IDEA-003.
+    incubate_row = next(line for line in tree_lines if "IDEA-004" in line)
+    assert "1q" in incubate_row
+    incubate = colour_in_row("IDEA-004", "INCUBATE")
+    dropped = colour_in_row("IDEA-005", "DROPPED")
+    heading = colour_in_row("IDEA-004", "has questions")
+    q_colour = colour_in_row("IDEA-004", "1q")
+    assert incubate and dropped and heading and q_colour
     assert incubate != dropped, f"states share one colour: {incubate}"
     assert incubate != heading, f"state is not coloured: {incubate} == body {heading}"
-
-    # SPEC-0110: the open-question count is its own colour, not the heading's.
-    q_colour = colour_of(tree_cells, tree_lines, "1q")
-    assert q_colour and q_colour != heading, f"question count not coloured: {q_colour}"
+    assert q_colour != heading, f"question count not coloured: {q_colour}"

@@ -14,7 +14,7 @@ from pathlib import Path
 from zoneinfo import ZoneInfo
 
 from click.testing import CliRunner
-from textual.widgets import DataTable
+from waits import pilot_until
 
 from nightwright import org as O
 from nightwright.cli import cli
@@ -125,14 +125,10 @@ def test_detail_pane_self_heals_after_external_line_shift(tmp_path, monkeypatch)
     async def drive():
         app = IdeaDesk(cfg)
         async with app.run_test(size=(100, 30)) as pilot:
-            await pilot.pause()
+            assert await pilot_until(pilot, lambda: app._pairs)
             # Select IDEA-002 explicitly so its cached Task's line is known.
-            table = app.query_one("#list", DataTable)
-            for i, (row, _task) in enumerate(app._pairs):
-                if row.id == "IDEA-002":
-                    table.move_cursor(row=i)
-                    app.show_detail(i)
-                    break
+            app.jump_to("IDEA-002")
+            assert app.selected_id == "IDEA-002"
 
             # External writer: insert a brand-new idea *above* IDEA-002 in the same file,
             # shifting every subsequent line number without going through the desk at all.
@@ -141,8 +137,8 @@ def test_detail_pane_self_heals_after_external_line_shift(tmp_path, monkeypatch)
             # Re-render the still-selected row without a reload() first -- this is exactly
             # the stale-Task path: before the fix, show_detail reused the cached Task whose
             # .line no longer points at IDEA-002's headline.
-            index = next(i for i, (r, _t) in enumerate(app._pairs) if r.id == "IDEA-002")
-            app.show_detail(index)
+            app._shown_id = None
+            app.show_detail("IDEA-002")
             await pilot.pause()
 
             screen = "\n".join(_grid(app))
@@ -203,9 +199,8 @@ def test_action_summary_prefill_reflects_external_change(tmp_path, monkeypatch):
     async def drive():
         app = IdeaDesk(cfg)
         async with app.run_test(size=(100, 30)) as pilot:
-            await pilot.pause()
-            index = next(i for i, (r, _t) in enumerate(app._pairs) if r.id == "IDEA-002")
-            app.query_one("#list", DataTable).move_cursor(row=index)
+            assert await pilot_until(pilot, lambda: app._pairs)
+            app.jump_to("IDEA-002")
 
             # External line-shift, same as the detail-pane test above.
             CliRunner().invoke(cli, ["idea", "inserted before, shifts lines again"])
@@ -226,11 +221,11 @@ def test_action_summary_prefill_reflects_external_change(tmp_path, monkeypatch):
 def test_poll_reload_does_not_block_the_event_loop(tmp_path, monkeypatch):
     """A slow load_rows (simulated) must not prevent other async work from running
     concurrently -- proving the reparse actually happens off the event-loop thread."""
-    from nightwright.tui import model as M
+    from nightwright.tui import ideas_board as M  # SPEC-0490: the board load is the reparse
     from nightwright.tui.app import IdeaDesk
 
     cfg = _seed(tmp_path, monkeypatch)
-    real_load_rows = M.load_rows
+    real_load_rows = M.load_board
 
     def slow_load_rows(*args, **kwargs):
         time.sleep(0.2)
@@ -241,7 +236,7 @@ def test_poll_reload_does_not_block_the_event_loop(tmp_path, monkeypatch):
         async with app.run_test(size=(100, 30)) as pilot:
             await pilot.pause()
             CliRunner().invoke(cli, ["idea", "added while a slow reload runs"])
-            monkeypatch.setattr(M, "load_rows", slow_load_rows)
+            monkeypatch.setattr(M, "load_board", slow_load_rows)
 
             task = asyncio.create_task(app._check_external_changes())
             await asyncio.sleep(0.02)          # give the executor call a chance to start
@@ -261,11 +256,11 @@ def test_poll_reload_does_not_block_the_event_loop(tmp_path, monkeypatch):
 def test_concurrent_poll_ticks_only_run_one_reload(tmp_path, monkeypatch):
     """The in-flight guard prevents a second poll tick from starting a second load_rows
     before the first one's result has been applied."""
-    from nightwright.tui import model as M
+    from nightwright.tui import ideas_board as M  # SPEC-0490: the board load is the reparse
     from nightwright.tui.app import IdeaDesk
 
     cfg = _seed(tmp_path, monkeypatch)
-    real_load_rows = M.load_rows
+    real_load_rows = M.load_board
     calls = []
 
     def counting_load_rows(*args, **kwargs):
@@ -278,7 +273,7 @@ def test_concurrent_poll_ticks_only_run_one_reload(tmp_path, monkeypatch):
         async with app.run_test(size=(100, 30)) as pilot:
             await pilot.pause()
             CliRunner().invoke(cli, ["idea", "second external change"])
-            monkeypatch.setattr(M, "load_rows", counting_load_rows)
+            monkeypatch.setattr(M, "load_board", counting_load_rows)
 
             t1 = asyncio.create_task(app._check_external_changes())
             await asyncio.sleep(0.01)
@@ -293,11 +288,11 @@ def test_concurrent_poll_ticks_only_run_one_reload(tmp_path, monkeypatch):
 
 def test_manual_reload_does_not_block_the_event_loop(tmp_path, monkeypatch):
     """SPEC-0134: r / mutate / search reload uses the same off-thread path as the poll."""
-    from nightwright.tui import model as M
+    from nightwright.tui import ideas_board as M  # SPEC-0490: the board load is the reparse
     from nightwright.tui.app import IdeaDesk
 
     cfg = _seed(tmp_path, monkeypatch)
-    real_load_rows = M.load_rows
+    real_load_rows = M.load_board
 
     def slow_load_rows(*args, **kwargs):
         time.sleep(0.2)
@@ -307,7 +302,7 @@ def test_manual_reload_does_not_block_the_event_loop(tmp_path, monkeypatch):
         app = IdeaDesk(cfg)
         async with app.run_test(size=(100, 30)) as pilot:
             await pilot.pause()
-            monkeypatch.setattr(M, "load_rows", slow_load_rows)
+            monkeypatch.setattr(M, "load_board", slow_load_rows)
 
             task = asyncio.create_task(app._reload_async())
             await asyncio.sleep(0.02)
@@ -325,11 +320,11 @@ def test_manual_reload_does_not_block_the_event_loop(tmp_path, monkeypatch):
 
 def test_overlapping_reload_async_coalesces(tmp_path, monkeypatch):
     """SPEC-0134: in-flight guard coalesces overlapping _reload_async calls."""
-    from nightwright.tui import model as M
+    from nightwright.tui import ideas_board as M  # SPEC-0490: the board load is the reparse
     from nightwright.tui.app import IdeaDesk
 
     cfg = _seed(tmp_path, monkeypatch)
-    real_load_rows = M.load_rows
+    real_load_rows = M.load_board
     calls = []
 
     def counting_load_rows(*args, **kwargs):
@@ -341,7 +336,7 @@ def test_overlapping_reload_async_coalesces(tmp_path, monkeypatch):
         app = IdeaDesk(cfg)
         async with app.run_test(size=(100, 30)) as pilot:
             await pilot.pause()
-            monkeypatch.setattr(M, "load_rows", counting_load_rows)
+            monkeypatch.setattr(M, "load_board", counting_load_rows)
 
             t1 = asyncio.create_task(app._reload_async())
             await asyncio.sleep(0.01)

@@ -9,6 +9,7 @@ from pathlib import Path
 from zoneinfo import ZoneInfo
 
 from click.testing import CliRunner
+from waits import pilot_until
 
 from nightwright.cli import cli
 
@@ -125,14 +126,15 @@ def test_typing_filters_without_pressing_enter(tmp_path, monkeypatch):
     async def drive():
         app = IdeaDesk(cfg)
         async with app.run_test(size=(100, 20)) as pilot:
-            await pilot.pause()
-            assert len(app._pairs) == 3
+            assert await pilot_until(pilot, lambda: len(app._pairs) == 3)
             await pilot.press("slash")
             await pilot.pause()
             await _type(pilot, "buffalo")
             await _settle(pilot)
             assert app.query == "buffalo"
-            assert [r.id for r, _ in app._pairs] == ["IDEA-002"]
+            # SPEC-0490: hits are a cross-project list over the board; the board keeps all.
+            assert await pilot_until(pilot, lambda: [r.id for r in app._hits] == ["IDEA-002"])
+            assert len(app._pairs) == 3
 
     asyncio.run(drive())
 
@@ -151,13 +153,14 @@ def test_clearing_the_query_live_restores_the_full_list(tmp_path, monkeypatch):
             await pilot.pause()
             await _type(pilot, "buffalo")
             await _settle(pilot)
-            assert len(app._pairs) == 1
+            assert await pilot_until(pilot, lambda: len(app._hits) == 1)
 
             for _ in range(len("buffalo")):
                 await pilot.press("backspace")
             await _settle(pilot)
             assert app.query == ""
-            assert len(app._pairs) == 3
+            assert app._hits == [] and len(app._pairs) == 3
+            assert "SEARCH" not in "".join(str(n.label) for n in app.query_one("#board").root.children)
 
     asyncio.run(drive())
 
@@ -208,7 +211,7 @@ def test_enter_still_applies_and_closes_the_box(tmp_path, monkeypatch):
             await pilot.press("enter")
             await pilot.pause()
             assert app.query == "cheetah"
-            assert [r.id for r, _ in app._pairs] == ["IDEA-003"]
+            assert await pilot_until(pilot, lambda: [r.id for r in app._hits] == ["IDEA-003"])
             assert not app.query_one("#search").has_class("visible")
 
     asyncio.run(drive())
@@ -227,11 +230,11 @@ def test_escape_cancels_a_live_filter(tmp_path, monkeypatch):
             await pilot.pause()
             await _type(pilot, "buffalo")
             await _settle(pilot)
-            assert len(app._pairs) == 1
+            assert await pilot_until(pilot, lambda: len(app._hits) == 1)
             await pilot.press("escape")
             await pilot.pause()
             assert app.query == ""
-            assert len(app._pairs) == 3
+            assert app._hits == [] and len(app._pairs) == 3
             assert not app.query_one("#search").has_class("visible")
 
     asyncio.run(drive())
@@ -253,7 +256,7 @@ def test_a_pending_debounce_does_not_fire_after_escape(tmp_path, monkeypatch):
             await pilot.press("escape")          # before the debounce elapses
             await _settle(pilot)
             assert app.query == ""
-            assert len(app._pairs) == 3
+            assert app._hits == []
 
     asyncio.run(drive())
 

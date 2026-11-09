@@ -253,9 +253,13 @@ def idea_summary_text(cfg, task) -> str:
         return ""
 
 
-def read_idea_enrichment(cfg, task) -> dict:
-    """{summary, questions, log} string bodies (may be empty)."""
-    lines = open(task.file).read().splitlines(keepends=True)
+def read_idea_enrichment(cfg, task, *, lines=None) -> dict:
+    """{summary, questions, log} string bodies (may be empty).
+
+    `lines` (SPEC-0490): the file's `splitlines(keepends=True)` already in hand, so a caller
+    walking many ideas of one file reads it once instead of once per idea."""
+    if lines is None:
+        lines = open(task.file).read().splitlines(keepends=True)
     _, body_start, body_end = _idea_span(lines, task)
     content_start = _skip_meta(lines, body_start, body_end)
     sections = _find_sections(lines, content_start, body_end)
@@ -308,9 +312,9 @@ def set_summary(cfg, selector, text):
     return _replace_section_body(cfg, task, SECTION_SUMMARY, text)
 
 
-def read_idea_questions(cfg, task) -> list[dict]:
+def read_idea_questions(cfg, task, *, lines=None) -> list[dict]:
     """Ordered `[{state, text}]` for the idea's Open questions (SPEC-0054)."""
-    return _classify_question_lines(read_idea_enrichment(cfg, task)["questions"])
+    return _classify_question_lines(read_idea_enrichment(cfg, task, lines=lines)["questions"])
 
 
 def _require_idea(cfg, selector):
@@ -495,13 +499,34 @@ def mark_explored(cfg, selector):
     return n
 
 
-def open_question_count(cfg, task) -> int:
+def open_question_count(cfg, task, *, lines=None) -> int:
     """How many of `task`'s questions are still open (SPEC-0080). Reuses the SPEC-0054 parser so
     there is one definition of "open"."""
     try:
-        return sum(1 for q in read_idea_questions(cfg, task) if q["state"] != "resolved")
+        return sum(1 for q in read_idea_questions(cfg, task, lines=lines)
+                   if q["state"] != "resolved")
     except Exception:
         return 0
+
+
+def open_question_counts(cfg, tasks) -> dict[int, int]:
+    """`{id(task): open question count}` for many ideas, reading each org file once (SPEC-0490).
+
+    Same parser and same failure rule as `open_question_count` (an unreadable idea counts 0);
+    only the file reads are shared. Keyed by `id(task)` because idea ids can repeat across
+    rotated files."""
+    cache: dict[str, list | None] = {}
+    out: dict[int, int] = {}
+    for task in tasks:
+        path = task.file
+        if path not in cache:
+            try:
+                cache[path] = open(path).read().splitlines(keepends=True)
+            except OSError:
+                cache[path] = None
+        lines = cache[path]
+        out[id(task)] = 0 if lines is None else open_question_count(cfg, task, lines=lines)
+    return out
 
 
 def normalize_idea_questions(cfg, selector=None) -> list[tuple[str, int]]:

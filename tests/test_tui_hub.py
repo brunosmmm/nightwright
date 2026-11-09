@@ -213,7 +213,7 @@ def test_returning_to_ideas_by_any_route_restores_focus(tmp_path, monkeypatch):
             app.query_one("#tabs").active = "tab-ideas"
             await pilot.pause()
             await pilot.pause()
-            assert app.query_one("#list").has_focus
+            assert app.query_one("#board").has_focus
 
     asyncio.run(drive())
 

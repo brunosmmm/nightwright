@@ -156,15 +156,6 @@ def test_query_mode_ranks_and_scans_closed_ideas(tmp_path, monkeypatch):
     assert [r.id for r, _ in M.load_rows(cfg, query="entirely")] == ["IDEA-002"]
 
 
-def test_status_line(tmp_path, monkeypatch):
-    cfg = _seed(tmp_path, monkeypatch)
-    rows = M.load_rows(cfg)
-    # SPEC-0110 added sort (and, when set, filters/mode) to the line.
-    assert M.status_line(rows, all_done=False, query=None) == "1 shown · active only · sort freshness"
-    assert M.status_line(rows, all_done=True, query=None) == "1 shown · all states · sort freshness"
-    assert "query 'panes'" in M.status_line(rows, all_done=False, query="panes")
-
-
 # --- detail ----------------------------------------------------------------------------
 
 def test_detail_splits_questions_by_lowercase_state(tmp_path, monkeypatch):
@@ -260,13 +251,17 @@ def _grid(app) -> list[str]:
 
 
 def test_desk_lists_ideas_selects_and_shows_detail(tmp_path, monkeypatch):
+    """SPEC-0490: the project view lists OPEN ideas and hides DROPPED until `d`."""
+    from nightwright.tui import ideas_board as B
     from nightwright.tui.app import IdeaDesk
 
     cfg = _seed(tmp_path, monkeypatch)
 
     async def drive():
         app = IdeaDesk(cfg)
-        async with app.run_test(size=(100, 30)) as pilot:
+        async with app.run_test(size=(180, 30)) as pilot:
+            assert await pilot_until(pilot, lambda: app._pairs)
+            app.select_project(B.NO_PROJECT)
             await pilot_until(pilot, lambda: "Two panes beat one table" in "\n".join(_grid(app)))
             screen = "\n".join(_grid(app))
             assert "IDEA-001" in screen
@@ -274,55 +269,22 @@ def test_desk_lists_ideas_selects_and_shows_detail(tmp_path, monkeypatch):
             assert "Two panes beat one table" in screen  # summary
             assert "which pane gets focus?" in screen    # open question
             assert "1 open" in screen and "1 resolved" in screen
-            assert "1 shown · active only" in screen
-            assert "IDEA-002" not in screen              # non-active hidden by default
+            assert "1 dropped hidden" in screen
+            assert "IDEA-002" not in screen              # DROPPED hidden by default
 
-            await pilot.press("a")                       # reveal non-active
+            await pilot.press("d")                       # reveal the DROPPED bucket
             await pilot_until(pilot, lambda: "IDEA-002" in "\n".join(_grid(app)))
-            screen = "\n".join(_grid(app))
-            assert "IDEA-002" in screen
-            assert "all states" in screen
+            assert "DROPPED" in "\n".join(_grid(app))
 
-            await pilot.press("a")
+            await pilot.press("d")
             await pilot.pause()
             assert "IDEA-002" not in "\n".join(_grid(app))
 
     asyncio.run(drive())
 
 
-def test_list_pane_carries_headings_and_grows_them_with_width(tmp_path, monkeypatch):
-    """Regression: the first cut listed id/state/project but no heading — an unscannable
-    column of bare ids — and clipped to a pre-layout width of 0, wasting ~30 columns.
-
-    SPEC-0110 changed *how* width is spent. Auto-drop keeps the heading at its floor and gives
-    surplus width to columns until all seven fit; only past that point does the heading grow.
-    So the comparison is between a narrow pane and a genuinely wide one, and the invariant that
-    matters at every width is that the heading is never squeezed below its floor.
-    """
-    from nightwright.tui.app import HEADING_FLOOR, IdeaDesk
-
-    cfg = _seed(tmp_path, monkeypatch)
-
-    async def widths():
-        seen = {}
-        for cols in (80, 240):
-            app = IdeaDesk(cfg)
-            async with app.run_test(size=(cols, 24)) as pilot:
-                await pilot.pause()
-                await pilot.pause()
-                table = app.query_one("#list")
-                row = table.get_row_at(0)
-                seen[cols] = len(str(row[-1]))
-                assert "desk needs panes"[:8] in "\n".join(_grid(app))
-                assert seen[cols] >= min(HEADING_FLOOR, len("desk needs panes")), \
-                    f"heading squeezed below its floor at {cols}: {seen}"
-        return seen
-
-    seen = asyncio.run(widths())
-    assert seen[240] > seen[80], f"heading budget did not grow with width: {seen}"
-
-
 def test_desk_search_filters_then_escape_clears(tmp_path, monkeypatch):
+    """`/` lists hits across projects (closed ideas too); Esc restores the board."""
     from nightwright.tui.app import IdeaDesk
 
     cfg = _seed(tmp_path, monkeypatch)
@@ -330,20 +292,18 @@ def test_desk_search_filters_then_escape_clears(tmp_path, monkeypatch):
     async def drive():
         app = IdeaDesk(cfg)
         async with app.run_test(size=(100, 30)) as pilot:
-            await pilot.pause()
+            assert await pilot_until(pilot, lambda: app._pairs)
             await pilot.press("slash")
             await pilot.pause()
             for ch in "entirely":
                 await pilot.press(ch)
             await pilot.press("enter")
-            await pilot.pause()
+            assert await pilot_until(pilot, lambda: [r.id for r in app._hits] == ["IDEA-002"])
             assert app.query == "entirely"
-            assert [r.id for r, _ in app._pairs] == ["IDEA-002"]
 
             await pilot.press("escape")
             await pilot.pause()
-            assert app.query == ""
-            assert [r.id for r, _ in app._pairs] == ["IDEA-001"]
+            assert app.query == "" and app._hits == []
 
     asyncio.run(drive())
 

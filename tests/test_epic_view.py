@@ -108,12 +108,11 @@ def test_epic_filter_matches_the_collector(tmp_path, monkeypatch):
     assert R.collect_idea_tasks(cfg, epic="NOPE") == []
 
 
-def test_desk_filter_vocabulary_includes_epic(tmp_path, monkeypatch):
+def test_desk_loader_accepts_the_epic_filter(tmp_path, monkeypatch):
+    """`nw tui --epic`-style narrowing still reaches `collect_idea_tasks` (SPEC-0490 retired the
+    in-app filter bar, not the collector vocabulary)."""
     cfg = _seed(tmp_path, monkeypatch)
-    assert "epic" in M.FILTER_KEYS
-    filters, problems = M.parse_filter_expr("epic=EXAMPLE-0007")
-    assert problems == [] and filters == {"epic": "EXAMPLE-0007"}
-    assert sorted(r.id for r, _ in M.load_rows(cfg, **filters)) == ["IDEA-001", "IDEA-002"]
+    assert sorted(r.id for r, _ in M.load_rows(cfg, epic="EXAMPLE-0007")) == ["IDEA-001", "IDEA-002"]
 
 
 def test_desk_row_carries_epic(tmp_path, monkeypatch):
