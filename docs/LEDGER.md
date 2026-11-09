@@ -97,7 +97,7 @@ progress. This is the single place to see *what has been decided* and *what is i
   - [x] [SPEC-0156](./specs/0156-architecture-and-lifecycle-pages.md) Architecture and lifecycle pages — done
   - [x] [SPEC-0157](./specs/0157-agent-surface-guide-schemas-skills-map-json.md) Agent surface guide: schemas, skills map, JSON recipes — done
   - [x] [SPEC-0158](./specs/0158-outbound-multi-project-depth-and-wave-c-captures.md) Outbound/multi-project depth and Wave C captures — done
-- **[SPEC-0169](./specs/0169-mini-agentic-workflow-queue-campaigns-headless.md) — Mini agentic workflow: queue, campaigns, headless personas, conductor** · accepted · (105/106 done)
+- **[SPEC-0169](./specs/0169-mini-agentic-workflow-queue-campaigns-headless.md) — Mini agentic workflow: queue, campaigns, headless personas, conductor** · accepted · (105/107 done)
   - [x] [SPEC-0170](./specs/0170-per-project-config-wt-project-yaml-and-wt.md) Per-project config .wt/project.yaml and wt projects config|init — done
   - [x] [SPEC-0171](./specs/0171-workflow-profiles-campaign-store-ledger-locks-and.md) Workflow profiles, campaign store, ledger, locks and wt campaign commands — done
   - [x] [SPEC-0172](./specs/0172-git-worktree-and-branch-operations-for-campaigns.md) Git worktree and branch operations for campaigns (gitops) — done
@@ -193,7 +193,7 @@ progress. This is the single place to see *what has been decided* and *what is i
   - [x] [SPEC-0287](./specs/0287-runner-safety-nets-train-watchdog-crash-sweep.md) Runner safety nets: train watchdog, crash-sweep harvest, terminal tmp, regenerate renames — done
   - [x] [SPEC-0289](./specs/0289-gate-ladder-v2.md) Gate ladder v2: per-gate retry policy and targeted reruns of failing pytest ids — done
   - [x] [SPEC-0290](./specs/0290-automatic-spec-splitting-from-a-split-review.md) Automatic spec splitting: a split review turns into child specs written by a split campaign — done
-  - [x] [SPEC-0291](./specs/0291-wt-queue-run-detach-and-supervision.md) `wt queue run --detach` and `wt queue stop`: start and stop the runner without a shell recipe — done
+  - [x] [SPEC-0291](./specs/0291-wt-queue-run-detach-and-supervision.md) `wt queue run --detach` and `wt queue stop`: start and stop the runner without a shell recipe — superseded
   - [x] [SPEC-0292](./specs/0292-idea-linkage-campaign-extension-and-a-hub-agentic.md) Idea linkage: `:CAMPAIGN:` for spec campaigns, cleared on terminal states, and a hub agentic slice — done
   - [x] [SPEC-0293](./specs/0293-gate-ladder-v2-cross-campaign-flaky-test-record.md) Gate ladder v2: a cross-campaign flaky-test record the triager sees — done
   - [x] [SPEC-0294](./specs/0294-queue-a-split-campaign-s-child-specs-on-merge.md) Queue a split campaign's child specs on merge, in dependency order — done
@@ -204,6 +204,7 @@ progress. This is the single place to see *what has been decided* and *what is i
   - [ ] [SPEC-0310](./specs/0310-remote-workers-run-gates-persona-runs-and.md) Remote workers: run gates, persona runs and campaigns on other machines — accepted
   - [x] [SPEC-0350](./specs/0350-per-gate-path-sensitivity.md) Per-gate path sensitivity for the close re-gate — done
   - [x] [SPEC-0435](./specs/0435-cursor-agent-backend-for-the-agentic-queue.md) Cursor-agent backend for the agentic queue — done
+  - [ ] [SPEC-0483](./specs/0483-runner-under-a-systemd-user-unit.md) The queue runner runs under a systemd user unit and resolves its own credentials — accepted
 - **[SPEC-0298](./specs/0298-agentic-mvp-cheap-durable-quiet-conductor.md) — Agentic MVP: a cheap, durable, quiet conductor on a second project** · done · (16/16 done)
   - [x] [SPEC-0299](./specs/0299-conductor-cost-measurement.md) Conductor cost measurement: session registry, `wt queue conductor-cost`, conductor share in the export — done
   - [x] [SPEC-0300](./specs/0300-quiet-conductor-follower-digest.md) Quiet conductor: the conductor follower holds informational events, prints a digest, and counts wakeups — done
@@ -307,6 +308,8 @@ progress. This is the single place to see *what has been decided* and *what is i
 | [SPEC-0470](./specs/0470-close-follows-a-renamed-spec.md) | Close follows a spec file the branch renamed | feature | accepted | — | 2026-11-08 |
 | [SPEC-0476](./specs/0476-campaign-detail-runs-pane.md) | Campaign detail Runs pane: run table, verdict, and stream tail | feature | accepted | — | 2026-11-08 |
 | [SPEC-0477](./specs/0477-campaign-detail-findings-and-mail.md) | Campaign detail Findings & decisions pane and Mail pane | feature | accepted | — | 2026-11-08 |
+| [SPEC-0482](./specs/0482-runner-contains-apply-errors-and-holds-on-backend-faults.md) | The runner contains a campaign's apply error and holds steps on a backend fault | feature | accepted | M9: agentic workflow | 2026-11-09 |
+| [SPEC-0483](./specs/0483-runner-under-a-systemd-user-unit.md) | The queue runner runs under a systemd user unit and resolves its own credentials | feature | accepted | M9: agentic workflow | 2026-11-09 |
 
 ## Done
 
@@ -583,7 +586,6 @@ progress. This is the single place to see *what has been decided* and *what is i
 | [SPEC-0288](./specs/0288-implementer-prompt-run-targeted-tests-while.md) | Implementer prompt: targeted tests while iterating, full suite left to gating | feature | done | — | 2026-10-27 |
 | [SPEC-0289](./specs/0289-gate-ladder-v2.md) | Gate ladder v2: per-gate retry policy and targeted reruns of failing pytest ids | feature | done | M9: agentic workflow | 2026-10-30 |
 | [SPEC-0290](./specs/0290-automatic-spec-splitting-from-a-split-review.md) | Automatic spec splitting: a split review turns into child specs written by a split campaign | feature | done | M9: agentic workflow | 2026-10-30 |
-| [SPEC-0291](./specs/0291-wt-queue-run-detach-and-supervision.md) | `wt queue run --detach` and `wt queue stop`: start and stop the runner without a shell recipe | feature | done | M9: agentic workflow | 2026-10-30 |
 | [SPEC-0292](./specs/0292-idea-linkage-campaign-extension-and-a-hub-agentic.md) | Idea linkage: `:CAMPAIGN:` for spec campaigns, cleared on terminal states, and a hub agentic slice | feature | done | M9: agentic workflow | 2026-10-30 |
 | [SPEC-0293](./specs/0293-gate-ladder-v2-cross-campaign-flaky-test-record.md) | Gate ladder v2: a cross-campaign flaky-test record the triager sees | feature | done | M9: agentic workflow | 2026-10-30 |
 | [SPEC-0294](./specs/0294-queue-a-split-campaign-s-child-specs-on-merge.md) | Queue a split campaign's child specs on merge, in dependency order | feature | done | M9: agentic workflow | 2026-10-30 |
@@ -756,6 +758,7 @@ progress. This is the single place to see *what has been decided* and *what is i
 | [SPEC-0218](./specs/0218-agentic-workflow-docs-refresh.md) | Agentic workflow docs refresh: a guide, a coherent reference, concepts and front door | feature | superseded | M8: product documentation | 2026-10-25 |
 | [SPEC-0241](./specs/0241-tui-queue-tab-over-the-queue-dashboard.md) | TUI queue tab: live view of the agentic queue with park, resume, prioritize and abandon | feature | superseded | M9: agentic workflow | 2026-11-03 |
 | [SPEC-0246](./specs/0246-tui-campaign-detail-screen.md) | TUI campaign detail screen: header, filterable ledger timeline, runs, gates and reviews | feature | superseded | M9: agentic workflow | 2026-10-25 |
+| [SPEC-0291](./specs/0291-wt-queue-run-detach-and-supervision.md) | `wt queue run --detach` and `wt queue stop`: start and stop the runner without a shell recipe | feature | superseded | M9: agentic workflow | 2026-11-09 |
 | [SPEC-0296](./specs/0296-pluggable-reviewer-personas-fully-defined-project.md) | Pluggable reviewer personas, defined in the project repo: declarations and registry | feature | superseded | M9: agentic workflow | 2026-11-02 |
 | [SPEC-0331](./specs/0331-remote-gates-over-ssh-on-one-worker-host.md) | Remote gates over SSH on one worker host | feature | superseded | — | 2026-10-31 |
 | [SPEC-0332](./specs/0332-worker-owned-async-jobs.md) | Worker-owned async jobs | feature | superseded | — | 2026-11-01 |

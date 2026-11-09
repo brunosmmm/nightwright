@@ -276,7 +276,10 @@ def _start(cfg, plan, *, env, popen, clock, timeout_s):
                          "reason": "lease already held; not starting another"}
         return
     cmd = plan["command"]
-    if env is None:
+    from . import runner_unit as RU
+    if RU.installed():                    # SPEC-0483: the unit's own environment
+        env, cmd["env_used"] = None, "unit"
+    elif env is None:
         env, cmd["env_used"] = clean_env(os.environ), "current"
     else:
         cmd["env_used"] = cmd.get("env_source")

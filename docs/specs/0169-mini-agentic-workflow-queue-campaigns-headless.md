@@ -76,6 +76,8 @@ process started by `/wt-conduct`; worktrees live beside the repo.
 - Locking or id reservation for concurrent writers of the ideas file.
 - An MCP server (SPEC-0053 stands).
 - A persistent supervisor (systemd); the service is a detached process plus a lease.
+  *Note (2026-11-09): the human reversed this non-goal; the runner is supervised by a
+  systemd user unit, [SPEC-0483](./0483-runner-under-a-systemd-user-unit.md).*
 
 ## Decision
 

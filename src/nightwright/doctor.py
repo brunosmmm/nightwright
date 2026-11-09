@@ -422,9 +422,24 @@ def check_cursor_agent(cfg, *, run_cmd=None) -> dict:
         needed = False
     if not needed:
         return check(id, "skip", "no campaign resolves to cursor")
+    from .agentic import credentials as CR
     rec = RP.probe_cursor_sdk()
     if rec["ok"]:
         return check(id, "ok", rec.get("login") or rec.get("version") or "CURSOR_API_KEY is set")
+    if rec.get("error") == "CURSOR_API_KEY is not set":
+        # SPEC-0483: the runner resolves it from agentic.credentials; say whether that works
+        # (resolved / locked / missing), never the value
+        st = CR.status(cfg, "CURSOR_API_KEY")
+        if st["status"] == "resolved":
+            return check(id, "ok", f"CURSOR_API_KEY resolves ({st['source']}); the runner "
+                                   "loads it at start and on every tick")
+        if st["status"] in ("locked", "missing") and st["source"]:
+            return check(id, "fail", f"CURSOR_API_KEY {st['status']} ({st['source']}): "
+                                     f"{st['why']}", fix=CR.fix_text("CURSOR_API_KEY",
+                                                                     st["source"]))
+        return check(id, "fail", "CURSOR_API_KEY is not set and agentic.credentials does not "
+                                 "map it", fix="add `agentic.credentials: {CURSOR_API_KEY: "
+                                               "pass:<entry>}` to config.yaml, or export it")
     return check(id, "fail", rec.get("error") or "cursor SDK check failed",
                  fix="install the nightwright cursor extra (`uv sync --extra cursor`) "
                      "and export CURSOR_API_KEY")

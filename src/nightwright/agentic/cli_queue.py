@@ -1965,6 +1965,11 @@ def attach(queue_group):
             console.print(f"runner started: pid {d['pid']}, log {d['log']}", highlight=False)
             return
 
+        from . import runner_unit as RU
+        refusal = RU.foreground_refusal()                    # SPEC-0483
+        if refusal:
+            raise click.ClickException(refusal)
+
         def on_tick(report):
             if json_lines:
                 sys.stdout.write(json.dumps(report.payload(), ensure_ascii=False) + "\n")
@@ -1996,6 +2001,88 @@ def attach(queue_group):
             _exit_leftover()
         if not json_lines:
             console.print(f"[dim]{ticks} tick(s); lease released[/]")
+
+    @queue_group.command("install")
+    @click.option("--dry-run", is_flag=True, help="print the units and the commands; change nothing")
+    @click.option("--nw-bin", default=None, metavar="PATH",
+                  help="the nw executable the unit runs (default: the uv tool install)")
+    def queue_install(dry_run, nw_bin):
+        """Run the queue runner as the systemd user unit nw-runner.service (SPEC-0483).
+
+        Writes ~/.config/systemd/user/nw-runner.service (`nw queue run` in the foreground,
+        Restart=always, a start limit, KillMode=process so persona runs survive a restart) and
+        nw-runner-failed.service (its OnFailure= hook: one escalation when systemd gives up),
+        then `daemon-reload` and `enable --now`. A runner already holding the lease outside
+        the unit is not touched: stop it first (`nw queue stop --yes`), or the unit's start
+        fails on the lease. Credentials come from agentic.credentials (pass), never from
+        the unit. From then on `nw queue run --detach`, `stop` and `restart` go through
+        systemctl --user. Logs: journalctl --user -u nw-runner.service -f."""
+        import shutil
+        from pathlib import Path
+        from . import runner_unit as RU
+        from .dashboard import lifecycle as LC
+        try:
+            nw = LC.resolve_nw_bin(nw_bin)
+        except ValueError as e:
+            raise click.UsageError(str(e))
+        env = RU.unit_env()
+        texts = {RU.unit_path(): RU.render_unit(nw_bin=nw, env=env),
+                 RU.unit_path(RU.FAILED_UNIT_NAME): RU.render_failed_unit(nw_bin=nw, env=env)}
+        show = RU.show() if not dry_run else None
+        cmds = RU.install_commands(restart=bool(show and show.get("ActiveState") == "active"))
+        if dry_run:
+            for path, text in texts.items():
+                click.echo(f"# {path}")
+                click.echo(text, nl=False)
+            click.echo("# then:")
+            for c in cmds:
+                click.echo(LC.shell_line(c))
+            return
+        if not shutil.which("systemctl"):
+            raise click.ClickException("systemctl not found: a systemd user session is required")
+        for path, text in texts.items():
+            path.parent.mkdir(parents=True, exist_ok=True)
+            tmp = Path(f"{path}.tmp")
+            tmp.write_text(text, encoding="utf-8")
+            os.replace(tmp, path)
+            click.echo(f"wrote {path}", err=True)
+        for c in cmds:
+            p = RU.systemctl(c[2:], timeout=60)
+            if p is None or p.returncode != 0:
+                raise click.ClickException(f"`{LC.shell_line(c)}` failed; see "
+                                           "`journalctl --user -u nw-runner.service -n 50`")
+        click.echo("nw-runner.service installed; logs: journalctl --user -u nw-runner.service -f")
+
+    @queue_group.command("uninstall")
+    @click.option("--dry-run", is_flag=True, help="print the commands; change nothing")
+    def queue_uninstall(dry_run):
+        """Stop, disable and remove nw-runner.service and its OnFailure hook (SPEC-0483)."""
+        import subprocess
+        from . import runner_unit as RU
+        from .dashboard import lifecycle as LC
+        cmds = RU.uninstall_commands()
+        if dry_run:
+            for c in cmds:
+                click.echo(LC.shell_line(c))
+            return
+        if not RU.installed():
+            click.echo(f"nw-runner.service is not installed ({RU.unit_path()} does not exist)")
+            return
+        for c in cmds:
+            try:
+                subprocess.run(c, capture_output=True, text=True, timeout=60)
+            except (OSError, subprocess.SubprocessError) as e:
+                click.echo(f"`{LC.shell_line(c)}` failed: {e}", err=True)
+        click.echo("nw-runner.service removed")
+
+    @queue_group.command("unit-failed", hidden=True)
+    @click.option("--unit", default=None, help="the failed unit (default nw-runner.service)")
+    @click.pass_obj
+    def queue_unit_failed(cfg, unit):
+        """nw-runner-failed.service (OnFailure=): file one escalation (SPEC-0483)."""
+        from . import runner_unit as RU
+        rec = RU.escalate_failed(cfg, unit=unit)
+        click.echo(f"escalated {rec['id']}" if rec else "an escalation is already open")
 
     @queue_group.command("stop")
     @click.option("--timeout", "timeout_s", type=float, default=60, show_default=True,

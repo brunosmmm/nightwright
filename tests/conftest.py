@@ -72,6 +72,18 @@ def _no_persona_run(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _no_runner_unit(monkeypatch, tmp_path_factory):
+    """SPEC-0483: a host with nw-runner.service installed must not make `nw queue run`,
+    `--detach`, `stop` or `restart` delegate to the human's systemd in tests: the unit dir is an
+    empty temp dir unless a test installs a unit there, and no test runs as the unit."""
+    monkeypatch.setenv("NW_SYSTEMD_USER_DIR", str(tmp_path_factory.mktemp("systemd-user")))
+    monkeypatch.delenv("NW_RUNNER_UNIT", raising=False)
+    from nightwright.agentic import backend_preflight as BP, credentials as CR
+    BP.reset_noted()
+    CR.reset()
+
+
+@pytest.fixture(autouse=True)
 def _no_ambient_herdr_env(monkeypatch):
     """SPEC-0365: pytest run from a herdr pane inherits HERDR_*; a conductor follower under test
     would then auto-start a real `nw herdr watch` against the human's herdr. Tests that want a

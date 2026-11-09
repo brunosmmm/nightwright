@@ -89,6 +89,11 @@ DEFAULT_CONFIG = {
         "poll_interval_s": 20,
         "lease_ttl_s": 120,
         "pr_sweep": {"interval_s": 900},   # follower's HANDED_OFF PR sweep; 0 disables (SPEC-0283)
+        # SPEC-0483: agent credentials the runner resolves itself, VAR -> `pass:<entry>` (first
+        # line of `pass show <entry>`, non-interactive) or `env` (inherit only). The process env
+        # wins; a failed resolution holds the steps that need it and is retried every tick.
+        # e.g. {"CURSOR_API_KEY": "pass:cursor/sdk"}. Values are never written or logged.
+        "credentials": {},
         "profiles": {},
     },
 }

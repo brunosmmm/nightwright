@@ -39,6 +39,8 @@ from ..rules import INTERNAL_PROJECT
 from ..spec_scope import idea_project
 from ..specmeta import split_frontmatter
 from . import autopark as AP
+from . import backend_preflight as BP
+from . import credentials as CR
 from . import close as CL
 from . import cost_policy as CP
 from . import decisions as DEC
@@ -101,6 +103,7 @@ PARK_REASONS = frozenset({
     "fixforward_weakens", "revert_conflict",           # SPEC-0420: red-base fix campaigns
     "spec_status",                                     # SPEC-0468: only spec-dod failed at close
     "round_budget",                                    # SPEC-0468: cursor review rounds are spent
+    "apply_error",                                     # SPEC-0482: applying a result raised
 })
 # SPEC-0222: who a park waits for. The human only for their own checkout and explicit
 # escalations (`human_decision`, SPEC-0232); everything else is the conductor's.
@@ -2667,6 +2670,8 @@ def _do_persona(ctx: _Ctx, state: dict, step: Step, run_id: str, req, budget: fl
         # that only carries `.runner` (the pre-0436 test doubles) is used as-is.
         cfg = getattr(ctx, "cfg", None)
         local = _local_runner(ctx, state, req)
+        if adopted is None:                       # SPEC-0482: never in place of a live run
+            local = _preflight_hold(ctx, state, req, local)
         remote = RPS.dispatch(cfg, state, step.kind, req, adopted=adopted is not None,
                               local=local) if cfg is not None else None
         runner = remote or local
@@ -2695,6 +2700,15 @@ def _do_persona(ctx: _Ctx, state: dict, step: Step, run_id: str, req, budget: fl
             # a re-run the backoff held never ran: interrupted, whatever the local runner
             detachable = detachable or bool(outcome.interrupted)
         _note_rate_limit(ctx, state, outcome, started, _run_persona(req, step))     # SPEC-0345
+        fault = BP.env_fault(outcome)
+        if fault is not None:
+            # SPEC-0482: a child that could not start for a missing credential / SDK is an
+            # environment fault, not a verdict: interrupted (no retry spent), uncharged
+            outcome = replace(outcome, interrupted=True,
+                              cost_usd=0.0 if outcome.cost_usd is None else outcome.cost_usd)
+            detachable = True
+            if cfg is not None:
+                BP.note_fault(cfg, BP.fault_kind(fault), fault, where="run")
         res.run_result = outcome
         res.interrupted = bool(outcome.interrupted) if detachable else ctx.stop.is_set()
         # an adopted run a human moved past (parked, abandoned) is recorded, never committed
@@ -2754,7 +2768,26 @@ def _gated_runner(ctx: _Ctx, req, state=None):
                 return RPS.HeldRunner()
         except (OSError, ValueError):
             pass
-    return _local_runner(ctx, state, req)
+    return _preflight_hold(ctx, state, req, _local_runner(ctx, state, req))
+
+
+def _preflight_hold(ctx, state, req, runner):
+    """SPEC-0482: `runner`, or a `PreflightHeldRunner` when it is a fresh local Cursor run and
+    the cursor backend fails its preflight in this process (one escalation is filed). A run
+    that already has a process record or a launch file is left alone (adoption attaches)."""
+    from .runner import CursorRunner, PreflightHeldRunner
+    if not isinstance(runner, CursorRunner):
+        return runner
+    rd = getattr(req, "run_dir", None)
+    if rd is not None and ((Path(rd) / "proc.json").exists() or (Path(rd) / "launch.json").exists()):
+        return runner
+    error = BP.check("cursor")
+    if error is None:
+        return runner
+    cfg = getattr(ctx, "cfg", None)
+    if cfg is not None:
+        BP.note_fault(cfg, "cursor", error, where="spawn")
+    return PreflightHeldRunner("cursor", error)
 
 
 def _run_persona(req, step: Step) -> str | None:
@@ -3086,7 +3119,100 @@ def _fresh(cfg, state: dict) -> dict | None:
 
 def _apply(ctx: _Ctx, state: dict, res: StepResult) -> dict:
     """Apply one StepResult: events, counters, cost, then the transition. Returns the report
-    row for `nw.queue.tick.v1`."""
+    row for `nw.queue.tick.v1`. SPEC-0482: an exception while applying parks only this
+    campaign (`apply_error`, its result's runs closed) and never reaches the loop."""
+    try:
+        return _apply_step(ctx, state, res)
+    except Exception as e:                 # noqa: BLE001 — one campaign's bug must not kill the runner
+        return _contain_apply_error(ctx, state, res, e)
+
+
+APPLY_ERROR_TEXT_MAX = 600
+
+
+def _result_runs(res) -> list:
+    """`(run_id, persona, run_result, budget, interrupted)` of every run a StepResult carries
+    (a review fan-out's members, else the step's own run)."""
+    out = []
+    for r in (getattr(res, "reviews", None) or [res]):
+        rid = getattr(r, "run_id", None)
+        if rid:
+            step = getattr(r, "step", None)
+            out.append((rid, getattr(step, "persona", None) or "unknown",
+                        getattr(r, "run_result", None), float(getattr(r, "budget", 0.0) or 0.0),
+                        bool(getattr(r, "interrupted", False))))
+    return out
+
+
+def _close_result_runs(cfg, current: dict, res, err: str) -> list:
+    """`run.end` events for the runs of `res` still open on the ledger, so a re-adopting
+    runner finds nothing to re-apply (SPEC-0482). A result that cannot be recorded (it may be
+    what broke the apply) is closed as a synthetic failure."""
+    open_ids = {e.get("run_id") for e in _open_runs(cfg, current["id"])}
+    events = []
+    for rid, persona, rr, budget, interrupted in _result_runs(res):
+        if rid not in open_ids:
+            continue
+        try:
+            if rr is None:
+                raise ValueError("no run result")
+            events += _record_run(current, persona, rid, rr, budget, interrupted=interrupted)
+        except Exception:                  # noqa: BLE001
+            events += _record_run(current, persona, rid,
+                                  _synthetic_failure(f"apply_error: {err}"), budget)
+    return events
+
+
+def _contain_apply_error(ctx, state: dict, res, exc: BaseException) -> dict:
+    """SPEC-0482: park the campaign `apply_error` (detail = the exception), close the runs
+    its result carried, journal `apply_error`. Never raises: a park that fails too is
+    journaled `apply_error_uncontained` and the loop goes on."""
+    import traceback
+    cfg = ctx.cfg
+    cid = (state or {}).get("id") or getattr(res, "campaign", None)
+    step = getattr(res, "step", None)
+    action = getattr(step, "kind", None)
+    err = f"{type(exc).__name__}: {exc}"[:APPLY_ERROR_TEXT_MAX]
+    run_ids = [r[0] for r in _result_runs(res)]
+    row = {"campaign": cid, "from": getattr(res, "from_state", None), "to": None,
+           "action": action, "run_id": getattr(res, "run_id", None), "cost_usd": None,
+           "reason": "apply_error"}
+    journal(cfg, "apply_error", campaign=cid, action=action, from_state=row["from"],
+            run_ids=run_ids, error=err, traceback=traceback.format_exc()[-3000:])
+    try:
+        with store.item_lock(cfg, cid):
+            current = store.read_state(cfg, cid)
+            events = _close_result_runs(cfg, current, res, err)
+            s = current.get("state")
+            text = (f"applying the {action} result failed ({err}); the result was not applied"
+                    + (f", runs {', '.join(run_ids)} closed" if run_ids else ""))
+            if s in TERMINAL_STATES or s == "PARKED":
+                events.append(("note", {"text": text + f"; the campaign stays {s}",
+                                        "author": "queue"}))
+                for etype, payload in events:
+                    store.append_event(cfg, cid, etype, payload)
+                store.write_state(cfg, cid, current)
+                row["to"] = s
+                return row
+            resume = ((current.get("waiting") or {}).get("resume_to") if s == "WAITING"
+                      else _resume_target(s))
+            if resume not in RESUMABLE_STATES:
+                resume = _resume_target(s)
+            events.append(("note", {"text": text, "author": "queue"}))
+            _park(cfg, current, "apply_error", f"{action} apply failed: {err}", resume,
+                  extra_events=events,
+                  extra={"apply_error": {"action": action, "error": err, "run_ids": run_ids,
+                                         "from_state": row["from"]}})
+            row["to"] = "PARKED"
+    except Exception as e2:                # noqa: BLE001
+        journal(cfg, "apply_error_uncontained", campaign=cid, action=action, error=err,
+                park_error=f"{type(e2).__name__}: {e2}"[:APPLY_ERROR_TEXT_MAX])
+        row["reason"] = "apply_error_uncontained"
+    return row
+
+
+def _apply_step(ctx: _Ctx, state: dict, res: StepResult) -> dict:
+    """`_apply`'s body (SPEC-0482 keeps the name `_apply` for the contained entry point)."""
     cfg = ctx.cfg
     cid = state["id"]
     if res.step.kind == "review" and not res.reviews and not res.error:
@@ -5011,7 +5137,7 @@ def _harvest(pool: StepPool, report: TickReport, *, guard: bool = False) -> None
                 except Exception as e:          # a bug in a step must park, not kill the loop
                     fl.group.results[step.persona] = e
             _guarded(guard, ctx, st, lambda: report.steps.append(
-                _finish_reviews(ctx, report, fl.group)))
+                _finish_reviews(ctx, report, fl.group)), report, _group_result(fl.group))
             continue
         (_step, fut, _h), = fl.tasks
         try:
@@ -5021,7 +5147,7 @@ def _harvest(pool: StepPool, report: TickReport, *, guard: bool = False) -> None
             report.errors.append(f"{st['id']}: {e!r}")
         if res.crashed:
             report.errors.append(f"{st['id']}: {res.crashed}")
-        _guarded(guard, ctx, st, lambda: report.steps.append(_apply(ctx, st, res)))
+        _guarded(guard, ctx, st, lambda: report.steps.append(_apply(ctx, st, res)), report, res)
 
 
 def _left_detached(pool: StepPool, cid: str, fl: _Flight) -> bool:
@@ -5044,14 +5170,38 @@ def _left_detached(pool: StepPool, cid: str, fl: _Flight) -> bool:
     return bool(hit)
 
 
-def _guarded(guard: bool, ctx: _Ctx, st: dict, fn) -> None:
-    if not guard:
-        fn()
-        return
+def _group_result(group) -> StepResult:
+    """A review fan-out as one StepResult carrying its members' runs (SPEC-0482: what a failed
+    `_finish_reviews` closes)."""
+    st = group.state
+    members = []
+    for persona, (rid, budget) in (group.meta or {}).items():
+        item = group.results.get(persona)
+        rr = item.run_result if isinstance(item, StepResult) else None
+        members.append(StepResult(st["id"], Step("review", persona=persona), st.get("state"),
+                                  run_id=rid, budget=budget, run_result=rr))
+    return StepResult(st["id"], group.step, st.get("state"), reviews=members)
+
+
+def _guarded(guard: bool, ctx: _Ctx, st: dict, fn, report=None, res=None) -> None:
+    """Run one harvest apply. SPEC-0482: an exception parks only this campaign
+    (`apply_error`), in a normal tick and in the crash sweep (`guard`, SPEC-0229, which also
+    journals `harvest_error`); it never propagates to the loop."""
     try:
         fn()
-    except Exception as e:           # the campaign is left to the next runner's planning
-        journal(ctx.cfg, "harvest_error", campaign=st.get("id"), error=f"{type(e).__name__}: {e}")
+    except Exception as e:           # noqa: BLE001
+        if guard:
+            journal(ctx.cfg, "harvest_error", campaign=st.get("id"),
+                    error=f"{type(e).__name__}: {e}")
+        if res is None:
+            res = StepResult(st.get("id"), Step("unknown"), st.get("state"))
+        try:
+            row = _contain_apply_error(ctx, st, res, e)
+        except Exception:            # noqa: BLE001 — containment never raises; belt and braces
+            return
+        if report is not None and not guard:      # the crash sweep's report keeps its shape
+            report.steps.append(row)
+            report.errors.append(f"{st.get('id')}: apply_error: {type(e).__name__}: {e}")
 
 
 def _submit(ctx: _Ctx, pool: StepPool, report: TickReport, pending_agent: list,
@@ -5224,6 +5374,7 @@ def tick(cfg, *, stop: threading.Event | None = None, runner=None, admit=True,
     (SPEC-0228, passed by `run()`), the long main-thread steps declare themselves `busy`."""
     own = pool is None
     pool = StepPool() if own else pool
+    CR.ensure(cfg)          # SPEC-0483: a credential missing so far is retried every tick
     ctx = _Ctx(cfg, stop=stop, runner=runner, lease=lease)
     report = TickReport()
     try:
@@ -6971,7 +7122,8 @@ def _log_tail(path, n=_LOG_TAIL) -> str:
 
 
 def detach_runner(cfg, argv, log_path, *, timeout_s=15, popen=subprocess.Popen,
-                  clock=time.monotonic, env=None, cwd=None) -> dict:
+                  clock=time.monotonic, env=None, cwd=None, systemctl_run=None,
+                  sleep=time.sleep) -> dict:
     """Start `argv` (minus `--detach`/`--log`) as a detached session leader, stdin closed and
     output appended to `log_path`, then wait until the child holds the lease. Returns
     `{pid, log}`. ValueError when the lease is already held, when the child exits first, or
@@ -6984,6 +7136,11 @@ def detach_runner(cfg, argv, log_path, *, timeout_s=15, popen=subprocess.Popen,
         age_txt = f"heartbeat {age:.0f}s ago" if age is not None else "no heartbeat"
         raise ValueError(f"queue held by pid {st.get('pid', '?')} ({age_txt}); "
                          "stop it with nw queue stop")
+    from . import runner_unit as RU
+    if RU.installed():
+        # SPEC-0483: the unit supervises the runner; `argv`, `env` and `cwd` are the unit's
+        return RU.start(cfg, run=systemctl_run, timeout_s=max(float(timeout_s), RU.START_WAIT_S),
+                        clock=clock, sleep=sleep)
     log_path = Path(log_path).expanduser().absolute()      # the child's cwd may differ
     child_argv = _strip_detach(argv)
     env = {**(os.environ if env is None else env), RUNNER_LOG_ENV: str(log_path)}
@@ -7086,7 +7243,7 @@ def stop_refusal(st: dict, argv=None, *, wait_guard=False) -> str | None:
 
 
 def stop_runner(cfg, *, timeout_s=60, wait_guard=False, guard_wait_s=None, kill=os.kill,
-                clock=time.monotonic, sleep=time.sleep) -> dict:
+                clock=time.monotonic, sleep=time.sleep, systemctl_run=None) -> dict:
     """SIGTERM the local lease holder and wait until the lease is released (SPEC-0291). Never
     SIGKILLs. Returns `{stopped: False, reason: "no runner"}` when nothing holds the lease,
     else `{stopped: True, pid, waited_s}`. ValueError on a `stop_refusal` (another host, a
@@ -7122,8 +7279,12 @@ def stop_runner(cfg, *, timeout_s=60, wait_guard=False, guard_wait_s=None, kill=
         sleep(0.2)
     pid = st["pid"]
     start = clock()
+    from . import runner_unit as RU
     try:
-        kill(pid, signal.SIGTERM)
+        if RU.installed() and RU.active(systemctl_run):
+            RU.stop(run=systemctl_run)      # SPEC-0483: a deliberate stop; systemd will not restart it
+        else:
+            kill(pid, signal.SIGTERM)
     except ProcessLookupError:              # it exited (and released) since the lease was read
         return {"stopped": False, "reason": "no runner"}
     except PermissionError:
@@ -7219,6 +7380,8 @@ def run(cfg, *, once=False, max_ticks=None, poll_interval_s=None, until_idle=Fal
 
         journal(cfg, "start", argv=list(argv or ["nw", "queue", "run"]), interval_s=interval,
                 code_sha=started_sha)
+        CR.ensure(cfg, where="start")                     # SPEC-0483: agentic.credentials
+        BP.startup_check(cfg)                             # SPEC-0482: loud, never fatal
         entered = True
     finally:
         if not entered:

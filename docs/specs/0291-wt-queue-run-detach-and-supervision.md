@@ -1,8 +1,9 @@
 ---
 id: SPEC-0291
 title: "`wt queue run --detach` and `wt queue stop`: start and stop the runner without a shell recipe"
-status: done
-updated: 2026-10-30
+status: superseded
+superseded_by: SPEC-0483
+updated: 2026-11-09
 owner: user
 created: 2026-10-30
 milestone: "M9: agentic workflow"

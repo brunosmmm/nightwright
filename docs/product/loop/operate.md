@@ -126,6 +126,7 @@ it would do.
 | `revert_conflict` | The queue's revert of the culprit merge of a red episode conflicted outside the generated files | Nothing: the queue escalates the episode once; answer that escalation |
 | `spec_status` | Close failed only because the spec is not `done` (`spec-dod`). No other gate ran | Mark the spec done, or record the waiver, then resume. It returns to `CLOSING`, not to implementing |
 | `round_budget` | A cursor campaign used its review-round budget (`2 × loop_max` review-driven implement rounds). A resume does not zero the count | Resume to `SPEC_WRITING` or abandon. Another implement round is rejected |
+| `apply_error` | Applying a finished step's result raised (a bug in nightwright, SPEC-0482). Only this campaign parked; its runs are closed so a restart does not re-apply them. The detail holds the exception | Read `nw queue runner-log --tail 30` (`apply_error` carries the traceback). Resume once after the fix lands; a second `apply_error` with the same detail is a bug report, not a retry |
 | `open_failed` | Creating the worktree or a step failed unexpectedly | Read the detail and retry once; if it fails again, investigate |
 | `gh_failed` | Opening the PR (`pr` / `draft-pr` policy) failed | Check `gh auth`, then resume |
 | `config_invalid` | `.nw/project.yaml` didn't load | Fix the config. The campaign resumes **by itself** once it loads |

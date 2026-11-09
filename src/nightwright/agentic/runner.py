@@ -598,15 +598,35 @@ def _error_result(req: RunRequest, text: str, started_at: str, duration: float) 
         started_at)
 
 
-def mark_held(req: RunRequest) -> None:
+def mark_held(req: RunRequest, by: str = "rate_limit") -> None:
     """SPEC-0345: claim the run dir of a run the rate-limit backoff held (it never starts) as
     orphaned and `held`. A runner that adopts it later (this one detached before collecting
-    it) then closes it as orphaned, and `_synthetic` charges it nothing."""
+    it) then closes it as orphaned, and `_synthetic` charges it nothing. SPEC-0482: `by` is
+    `backend_preflight` for a run a failed backend preflight held."""
     try:
-        RP.claim(req.run_dir, {"orphaned": True, "held": True, "by": "rate_limit",
+        RP.claim(req.run_dir, {"orphaned": True, "held": True, "by": by,
                                "ts": _now_iso()})
     except OSError:
         pass
+
+
+class PreflightHeldRunner:
+    """SPEC-0482: a local run whose backend fails its preflight (a missing credential or SDK).
+    It never starts: it ends interrupted and uncharged, so no retry is spent and the state stays;
+    the dispatch gate holds the step (`backend_unavailable`) while the fault lasts."""
+
+    detachable = True
+
+    def __init__(self, kind: str, error: str):
+        self.kind, self.error = kind, error
+
+    def run(self, req, *, hooks=None):
+        _save_inputs(req)
+        mark_held(req, by="backend_preflight")
+        if hooks is not None and not hooks.enter_collect():
+            return DETACHED
+        return _synthetic(req, f"the run was not started: the {self.kind} backend fails its "
+                               f"preflight ({self.error})", cost_usd=0.0)
 
 
 def _synthetic(req: RunRequest, text: str, *, cost_usd: float | None = None) -> RunResult:

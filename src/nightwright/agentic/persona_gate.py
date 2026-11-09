@@ -346,6 +346,32 @@ class Gate:
         self._live = None
         self.taken = 0
         self.holds: dict = {}
+        self._backend: dict = {}               # SPEC-0482: kind -> preflight error | None
+
+    def backend_fault(self, state: dict) -> str | None:
+        """SPEC-0482: the preflight error of the backend this campaign's steps run on, when no
+        persona worker could take them instead; else None. Cached per tick and kind."""
+        try:
+            from .runner import resolve_runner
+            kind = resolve_runner(self.cfg, campaign=state, project=state.get("project"))
+        except (ValueError, TypeError, KeyError, OSError):
+            return None
+        if kind != "cursor":
+            return None
+        if kind not in self._backend:
+            from . import backend_preflight as BP
+            self._backend[kind] = BP.check(kind)
+            if self._backend[kind] is not None:
+                BP.note_fault(self.cfg, kind, self._backend[kind], where="gate")
+        if self._backend[kind] is None:
+            return None
+        try:
+            from . import remote_personas as RPS
+            if RPS.persona_workers(self.cfg, state):
+                return None                    # a worker may run it with its own credential
+        except Exception:                      # noqa: BLE001
+            pass
+        return self._backend[kind]
 
     def live(self) -> int:
         if self._live is None:
@@ -363,6 +389,9 @@ class Gate:
             return None
         if self.until is not None:
             self._hold(cid, "rate_limit")
+            return None
+        if self.backend_fault(state) is not None:            # SPEC-0482
+            self._hold(cid, "backend_unavailable")
             return None
         if self.cap is None:
             return step
@@ -419,6 +448,8 @@ def held_by(cfg, state: dict, now=None, holds=None, *, cap_mute_max_s=None) -> s
         return "usage_pause"
     if entry.get("held_by") == "rate_limit" and backoff_until(cfg, now) is not None:
         return "rate_limit"
+    if entry.get("held_by") == "backend_unavailable":       # SPEC-0482: the escalation covers it
+        return "backend_unavailable"
     if entry.get("held_by") == "persona_cap":
         since = _epoch(entry.get("since"))
         if cap_mute_max_s is not None and since is not None \
