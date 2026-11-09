@@ -117,8 +117,9 @@ def attach(queue_group):
     @click.option("--all", "show_all", is_flag=True,
                   help="--follow delivers every event: no quiet mode, no digest (SPEC-0300)")
     @click.option("--ack", type=int, default=None,
-                  help="--follow --for conductor: commit the cursor through this event id "
-                       "(SPEC-0444)")
+                  help="commit the cursor through this event id. With --follow, commit then "
+                       "stream. Without --follow, commit and exit, including while a follower "
+                       "holds the reader lock (SPEC-0444, SPEC-0481)")
     @click.pass_obj
     def queue_events(cfg, do_follow, reader, since, types, campaign, tail, as_text, from_start,
                      poll_s, no_code_watch, show_all, ack):
@@ -126,9 +127,18 @@ def attach(queue_group):
 
         \b
         nw queue events --tail 20                       recent history
-        nw queue events --follow --for conductor        what the conductor's Monitor runs
-        nw queue events --follow --for conductor --ack ID
+        nw queue events --follow --for conductor        stays up across wakes (SPEC-0481)
+        nw queue events --ack ID --for conductor        commit while that follower is running
         """
+        if ack is not None and not do_follow:
+            if not reader:
+                raise click.UsageError("--ack needs --for READER")
+            try:
+                after = E.commit_ack(cfg, reader, ack)
+            except ValueError as e:
+                raise click.ClickException(str(e))
+            _dump_json({"schema": "nw.events.ack.v1", "reader": reader, "after": after})
+            return
         if do_follow:
             if not reader:
                 raise click.UsageError("--follow needs --for READER (e.g. conductor)")

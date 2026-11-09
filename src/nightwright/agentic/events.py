@@ -1041,14 +1041,55 @@ def cursor_pending(cfg, reader) -> int | None:
         return None
 
 
-def cursor_note_pending(cfg, reader, pending: int) -> None:
-    """Record a printed-but-uncommitted wake id. `after` stays where it is."""
-    doc = _cursor_doc(cfg, reader)
-    doc.update({"reader": reader, "after": cursor_get(cfg, reader),
-                "pending": int(pending), "ts": store.now_iso()})
+def _cursor_lock(cfg, reader):
     d = cursors_dir(cfg)
     d.mkdir(parents=True, exist_ok=True)
-    _atomic_write(d / f"{_safe(reader)}.json", json.dumps(doc) + "\n")
+    return _locked(d / f"{_safe(reader)}.cursor.lock")
+
+
+def _cursor_after(doc) -> int:
+    try:
+        return int(doc.get("after") or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
+def cursor_note_pending(cfg, reader, pending: int) -> None:
+    """Record a printed-but-uncommitted wake id. `after` stays where it is.
+
+    A commit that already moved `after` to this id or past it wins: this does not
+    put `pending` back, and it does not move `after` backward."""
+    with _cursor_lock(cfg, reader):
+        doc = _cursor_doc(cfg, reader)
+        after = _cursor_after(doc)
+        if int(pending) <= after:
+            return
+        doc.update({"reader": reader, "after": after, "pending": int(pending),
+                    "ts": store.now_iso()})
+        _atomic_write(cursors_dir(cfg) / f"{_safe(reader)}.json", json.dumps(doc) + "\n")
+
+
+def commit_ack(cfg, reader, ack: int) -> int:
+    """Move `after` forward to ``min(ack, last event id)``. Never backward.
+
+    Clears `pending` when that id is at or behind the committed cursor. Does not
+    take the reader lock, so a live follower can be acked without exiting
+    (SPEC-0481)."""
+    with _cursor_lock(cfg, reader):
+        target = min(int(ack), _last_id(events_path(cfg)))
+        doc = _cursor_doc(cfg, reader)
+        after = _cursor_after(doc)
+        if target > after:
+            after = target
+        pend = doc.get("pending")
+        try:
+            if pend is not None and int(pend) <= after:
+                doc.pop("pending", None)
+        except (TypeError, ValueError):
+            doc.pop("pending", None)
+        doc.update({"reader": reader, "after": after, "ts": store.now_iso()})
+        _atomic_write(cursors_dir(cfg) / f"{_safe(reader)}.json", json.dumps(doc) + "\n")
+        return after
 
 
 # `reader_holder` probes take and drop the lock for microseconds (the TUI, `conduct-status`,
@@ -1232,11 +1273,13 @@ def follow(cfg, reader, *, as_json=True, poll_s=None, types=None, out=None, max_
     or only cleared when it holds nothing but empty pings (`Digest.worth_printing`, SPEC-0317).
     `printed` and `max_events` count delivered lines only. `now` is a clock callable.
 
-    SPEC-0444: `ack` commits the cursor forward (never past the last event, never backward)
-    before the loop. `uncommitted` prints wake lines without moving `after`, records `pending`,
-    and returns so the process exits. A later run reprints them until `ack` passes their id.
-    `replay_s` sleeps once before reprinting a line already in `pending`. The follower returns
-    when its parent pid changes, and the reader lock drops with it."""
+    SPEC-0444 / SPEC-0481: `ack` commits the cursor forward (never past the last event,
+    never backward) before the loop. `uncommitted` prints each wake line once and does not
+    move `after`. It records `pending` and keeps looping, so a park does not end the process
+    or drop the reader lock. A later process reprints from `after` until `ack` passes those
+    ids. `replay_s` sleeps once before that reprint. This process does not print an id it
+    has already printed. The follower still returns on `code_changed`, when its parent pid
+    changes, when `stop` asks, and when `max_events` is reached. The reader lock drops then."""
     from . import quiet as QT
     out = out or sys.stdout
     poll = float(poll_s if poll_s is not None else settings(cfg)["poll_s"])
@@ -1275,11 +1318,10 @@ def follow(cfg, reader, *, as_json=True, poll_s=None, types=None, out=None, max_
                 digest.save()
                 replay = True
         if ack is not None:
-            target = min(int(ack), _last_id(events_path(cfg)))
-            if target > cursor_get(cfg, reader):
-                cursor_set(cfg, reader, target)
+            commit_ack(cfg, reader, ack)
         parent_pid = os.getppid()
         slept_replay = False
+        printed_through = 0          # ids this process has already printed (SPEC-0481)
         while True:
             if _parent_gone(parent_pid):
                 return printed
@@ -1300,7 +1342,12 @@ def follow(cfg, reader, *, as_json=True, poll_s=None, types=None, out=None, max_
                         elif ev["type"] in ("campaign_silent", "state_stuck"):
                             ctx.digest.track_watch(cfg, ev, ctx.now if replay else None)
                         ctx.digest.save()
-                    cursor_set(cfg, reader, ev["id"])
+                    # a hold after an unacked wake must not move `after` past that wake:
+                    # cursor_set replaces the cursor file and would drop it
+                    if not (uncommitted and printed_through and ev["id"] > printed_through):
+                        cursor_set(cfg, reader, ev["id"])
+                    continue
+                if uncommitted and printed_through and ev["id"] <= printed_through:
                     continue
                 if uncommitted and not slept_replay:
                     pend = cursor_pending(cfg, reader)
@@ -1318,6 +1365,7 @@ def follow(cfg, reader, *, as_json=True, poll_s=None, types=None, out=None, max_
                         ctx.digest.save()
                 if uncommitted:
                     last_wake = ev["id"]
+                    printed_through = ev["id"]
                     printed += 1
                     if max_events and printed >= max_events:
                         cursor_note_pending(cfg, reader, last_wake)
@@ -1329,7 +1377,6 @@ def follow(cfg, reader, *, as_json=True, poll_s=None, types=None, out=None, max_
                     return printed
             if last_wake is not None:
                 cursor_note_pending(cfg, reader, last_wake)
-                return printed
             replay = False
             for ev in (ctx.digest.drain_wakes(ctx) + ctx.digest.watch_wakes(ctx) if quiet
                        else ()):

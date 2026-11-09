@@ -716,7 +716,6 @@ progress. This is the single place to see *what has been decided* and *what is i
 | [SPEC-0441](./specs/0441-adopted-spec-write-must-not-kill-the-runner.md) | An adopted spec write must not kill the runner | feature | done | — | 2026-11-06 |
 | [SPEC-0442](./specs/0442-cursor-sdk-persona-runs.md) | Cursor SDK persona runs | feature | done | — | 2026-11-07 |
 | [SPEC-0443](./specs/0443-piped-output-ignores-force-color.md) | Piped output ignores FORCE_COLOR when deciding to wrap | feature | done | — | 2026-11-07 |
-| [SPEC-0444](./specs/0444-conductor-follower-acks-before-advancing.md) | The conductor follower commits an event only after the session acks it | feature | done | — | 2026-11-07 |
 | [SPEC-0445](./specs/0445-sdk-persona-model-selection.md) | Persona SDK runs pass a model id and an effort parameter | feature | done | — | 2026-11-07 |
 | [SPEC-0446](./specs/0446-sdk-model-effort-catalog.md) | Persona SDK effort follows each model's own parameter | feature | done | — | 2026-11-07 |
 | [SPEC-0447](./specs/0447-tail-joins-sdk-text-tokens.md) | The run tail joins SDK text tokens into a sentence | feature | done | — | 2026-11-07 |
@@ -738,6 +737,7 @@ progress. This is the single place to see *what has been decided* and *what is i
 | [SPEC-0469](./specs/0469-release-red-hold-when-base-moves.md) | Release the red-base hold once the base moves past the red sha | feature | done | — | 2026-11-08 |
 | [SPEC-0471](./specs/0471-run-pi-personas-through-the-node-sdk.md) | Pi test requires the task text in the user message | feature | done | — | 2026-11-08 |
 | [SPEC-0479](./specs/0479-herdr-notifications-are-silent.md) | Herdr notifications are silent | feature | done | — | 2026-11-08 |
+| [SPEC-0481](./specs/0481-conductor-follower-stays-up.md) | The conductor follower stays up across a wake | feature | done | — | 2026-11-08 |
 
 ## Superseded / rejected
 
@@ -763,6 +763,7 @@ progress. This is the single place to see *what has been decided* and *what is i
 | [SPEC-0361](./specs/0361-herdr-reporter-nw-herdr-watch-pushes-queue-tokens.md) | herdr reporter: nw herdr watch pushes queue tokens and notifications | feature | superseded | — | 2026-11-01 |
 | [SPEC-0364](./specs/0364-herdr-run-panes-one-pane-per-active-campaign-in.md) | herdr run panes: one pane per active campaign in an nw runs tab, running nw campaign tail, agent state + display agent | feature | superseded | — | 2026-11-01 |
 | [SPEC-0414](./specs/0414-dashboard-server-nw-serve-dashboard-spec-0400.md) | Dashboard server, loopback: nw serve --dashboard with token auth and GET /api/snapshot | feature | superseded | M9: agentic workflow | 2026-11-04 |
+| [SPEC-0444](./specs/0444-conductor-follower-acks-before-advancing.md) | The conductor follower commits an event only after the session acks it | feature | superseded | — | 2026-11-08 |
 
 <!-- specs:end -->
 

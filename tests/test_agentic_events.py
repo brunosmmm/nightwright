@@ -508,13 +508,13 @@ def test_uncommitted_follow_replays_until_ack(tmp_path):
     first = E.append(cfg, "admitted", campaign="a")
     out = io.StringIO()
     assert E.follow(cfg, "conductor", poll_s=0, code_root=None, out=out,
-                    uncommitted=True, replay_s=0) == 1
+                    uncommitted=True, replay_s=0, stop=lambda: True) == 1
     assert json.loads(out.getvalue())["id"] == first["id"]
     assert E.cursor_get(cfg, "conductor") == 0
     assert E.cursor_pending(cfg, "conductor") == first["id"]
     out2 = io.StringIO()
     assert E.follow(cfg, "conductor", poll_s=0, code_root=None, out=out2,
-                    uncommitted=True, replay_s=0) == 1
+                    uncommitted=True, replay_s=0, stop=lambda: True) == 1
     assert json.loads(out2.getvalue())["id"] == first["id"]
     assert E.cursor_get(cfg, "conductor") == 0
     out3 = io.StringIO()
@@ -525,9 +525,50 @@ def test_uncommitted_follow_replays_until_ack(tmp_path):
     second = E.append(cfg, "abandoned", campaign="b")
     out4 = io.StringIO()
     assert E.follow(cfg, "conductor", poll_s=0, code_root=None, out=out4,
-                    uncommitted=True, replay_s=0) == 1
+                    uncommitted=True, replay_s=0, stop=lambda: True) == 1
     assert json.loads(out4.getvalue())["id"] == second["id"]
     assert E.cursor_get(cfg, "conductor") == first["id"]
+
+
+def test_uncommitted_follow_stays_up_across_wakes(tmp_path):
+    cfg = _cfg(tmp_path)
+    E.cursor_set(cfg, "conductor", 0)
+    first = E.append(cfg, "admitted", campaign="a")
+    second = E.append(cfg, "abandoned", campaign="b")
+    calls = {"n": 0}
+
+    def stop():
+        calls["n"] += 1
+        return calls["n"] >= 2
+
+    out = io.StringIO()
+    assert E.follow(cfg, "conductor", poll_s=0, code_root=None, out=out,
+                    uncommitted=True, replay_s=0, stop=stop) == 2
+    assert calls["n"] == 2
+    ids = [json.loads(line)["id"] for line in out.getvalue().splitlines()]
+    assert ids == [first["id"], second["id"]]
+    assert E.cursor_get(cfg, "conductor") == 0
+    assert E.cursor_pending(cfg, "conductor") == second["id"]
+    with E.reader_lock(cfg, "conductor"):
+        assert E.commit_ack(cfg, "conductor", second["id"]) == second["id"]
+    assert E.cursor_pending(cfg, "conductor") is None
+    assert E.cursor_get(cfg, "conductor") == second["id"]
+
+
+def test_cli_ack_without_follow(tmp_path, monkeypatch):
+    cfg = _cfg(tmp_path)
+    monkeypatch.setattr("nightwright.cli.load_config", lambda: cfg)
+    ev = E.append(cfg, "admitted", campaign="a")
+    E.cursor_set(cfg, "conductor", 0)
+    E.cursor_note_pending(cfg, "conductor", ev["id"])
+    r = CliRunner().invoke(cli, ["queue", "events", "--for", "conductor",
+                                 "--ack", str(ev["id"])])
+    assert r.exit_code == 0, r.output
+    assert json.loads(r.output) == {"schema": "nw.events.ack.v1", "reader": "conductor",
+                                    "after": ev["id"]}
+    assert E.cursor_pending(cfg, "conductor") is None
+    r = CliRunner().invoke(cli, ["queue", "events", "--ack", "1"])
+    assert r.exit_code != 0
 
 
 def test_follow_returns_when_its_parent_dies(tmp_path, monkeypatch):

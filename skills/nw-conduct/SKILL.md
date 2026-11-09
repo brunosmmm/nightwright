@@ -82,13 +82,15 @@ run, handle it — that is the point.
    event).
 3. **Resolve what is already waiting** (parked items, unanswered mail) with the table below.
 4. **Arm the Monitor** on `nw queue events --follow --for conductor` (add `--ack <id>` of the
-   last event id you have handled). Each stdout line is one `nw.event.v1` JSON event. The
-   follower prints the pending wake lines and **exits**. The shell finishing is what wakes
-   you: do not depend on an output watch. It does not move the cursor. Re-arm with
-   `--ack <last handled event id>`, or the same lines are printed again. Omit `--ack` only
-   when you have not handled an event yet. The follower holds the `conductor` reader lock
-   while it runs and drops it when its parent shell dies. A `code_changed` line still means
-   exit and re-arm (see the table).
+   last event id you have handled, on the first arm and after a real exit). Each stdout line
+   is one `nw.event.v1` JSON event. The follower prints each new wake once and **stays
+   running**. A park does not end it and does not drop the reader lock. You are woken by the
+   new line on that stdout. Do not start a second follower while it is up: the second start
+   fails with "already followed". After you handle a line, commit it with
+   `nw queue events --ack <id> --for conductor` (no `--follow`). A later process reprints
+   from the cursor until that ack. Omit `--ack` only when you have not handled an event yet.
+   The follower still exits on `code_changed`, when its parent shell dies, and on Ctrl-C.
+   Re-arm only then, with `--follow` and `--ack` of the last event you handled.
 
    **Quiet stream (SPEC-0300).** The follower holds events that never need a decision and folds
    them into one `conductor_digest` line (every 30 min at most; `nw queue events --follow

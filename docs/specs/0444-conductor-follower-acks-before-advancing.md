@@ -1,14 +1,19 @@
 ---
 id: SPEC-0444
 title: The conductor follower commits an event only after the session acks it
-status: done
+status: superseded
+superseded_by: SPEC-0481
 owner: user
 created: 2026-11-07
+updated: 2026-11-08
 source_idea: IDEA-1016
 tags: [agentic, conductor]
 ---
 
 ## Context
+
+Superseded by [SPEC-0481](./0481-conductor-follower-stays-up.md). The ack-before-commit rule
+stands. The follower no longer exits on a wake.
 
 The Cursor conductor is woken by its harness when `nw queue events --follow --for conductor`
 exits, or when that command was started with an output watch. The watch is a harness
