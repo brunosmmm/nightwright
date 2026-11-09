@@ -1,7 +1,7 @@
 ---
 id: SPEC-0486
 title: Extend backend preflight to the spec reviewer and Pi personas
-status: accepted
+status: done
 owner: user
 created: 2026-11-09
 updated: 2026-11-09
@@ -278,63 +278,63 @@ its own. The runner still starts.
 
 ## Acceptance criteria
 
-- [ ] With the Cursor preflight failing, a campaign in `SPEC_REVIEW` is held
+- [x] With the Cursor preflight failing, a campaign in `SPEC_REVIEW` is held
       `backend_unavailable` (`held_by` reports it) and the tick writes no `run.start` for
       `spec_reviewer`. `counters.spec_review_retries` stays 0 and the campaign is not parked.
       A persona worker on the host does not lift that hold.
-- [ ] A campaign whose profile is resolved at `repo.root`, and whose project
+- [x] A campaign whose profile is resolved at `repo.root`, and whose project
       `.nw/pi_map.yaml` on `project.project_config(...)["_root"]` maps that profile's
       `spec_reviewer` alias and effort to a provider with no cheap credential, is held
       `backend_unavailable` and the tick writes no `run.start`. The host map's provider
       for that alias has a cheap credential, and `_root` is not the campaign worktree.
-- [ ] A model set that exists only under that same `_root` `.nw/model_sets` and binds
+- [x] A model set that exists only under that same `_root` `.nw/model_sets` and binds
       `spec_reviewer` to `pi` with a `provider/id` model holds the spec review
       `backend_unavailable` when that provider has no cheap credential, and the tick
       writes no `run.start`.
-- [ ] A spec review whose backend check passes is not held for `rate_limit`,
+- [x] A spec review whose backend check passes is not held for `rate_limit`,
       `usage_pause`, or `persona_cap`: a closed cap and an open backoff still let that
       review prepare a run.
-- [ ] `_do_spec_review` on a fresh local `CursorRunner` or `PiRunner` whose check fails
+- [x] `_do_spec_review` on a fresh local `CursorRunner` or `PiRunner` whose check fails
       returns an interrupted, uncharged result (`cost_usd == 0.0`) and `_apply_spec_review`
       leaves the state on `SPEC_REVIEW` without incrementing `spec_review_retries`. A run
       dir that already has `proc.json` or `launch.json` is not replaced.
-- [ ] A spec-review result whose text contains `CURSOR_API_KEY is not set`,
+- [x] A spec-review result whose text contains `CURSOR_API_KEY is not set`,
       `cursor-sdk is not installed`, `pi-coding-agent is not installed`, or
       `no credential for provider ` is stored interrupted and uncharged, and the retry
       counter is unchanged. `res.interrupted` is true when `ctx.stop` is clear.
-- [ ] `check("pi")` returns `node not found on PATH`, `pi_exec.mjs missing at <path>`,
+- [x] `check("pi")` returns `node not found on PATH`, `pi_exec.mjs missing at <path>`,
       `pi-coding-agent is not installed`, or `no credential for provider <name>` for the
       cases in Design, and returns None when node, the script, the SDK entry, and each
       named provider's cheap credential are present. `check("pi")` returns None for a
       managed install whose `current-version` file is `0.50.0\n` and whose `dist/index.js`
       exists, with node and `pi_exec.mjs` present and no providers requested. It does not
       spawn a process.
-- [ ] With that Pi check failing and no persona worker, `Gate.admit` holds a gated Pi step
+- [x] With that Pi check failing and no persona worker, `Gate.admit` holds a gated Pi step
       `backend_unavailable`. A persona worker lifts the hold for that gated step. When the
       Pi check passes, `backend_fault` is None. `admit` still holds the step for an open
       usage pause or rate-limit backoff, and for a closed persona cap, as it does today.
-- [ ] In one `Gate`, `backend_fault` for a failing Pi check with `remote_ok=True` and a
+- [x] In one `Gate`, `backend_fault` for a failing Pi check with `remote_ok=True` and a
       persona worker returns None, and a second call with the same providers and
       `remote_ok=False` still returns the Pi error. Neither call raises. A
       `persona_workers` that raises is ignored and that call returns the cached Pi error.
-- [ ] `_preflight_hold` replaces a fresh `PiRunner` with `PreflightHeldRunner` when the Pi
+- [x] `_preflight_hold` replaces a fresh `PiRunner` with `PreflightHeldRunner` when the Pi
       check fails, and leaves a `ClaudeRunner` and a `FakeRunner` unchanged. `_do_persona`
       turns a finished Pi startup fault into an interrupted, uncharged result and files one
       escalation.
-- [ ] One open `backend_unavailable` escalation per failing backend (`cursor` and `pi`
+- [x] One open `backend_unavailable` escalation per failing backend (`cursor` and `pi`
       separately). A Pi credential error whose provider env key is mapped in
       `agentic.credentials` files no second escalation. `startup_check` prints a `WARNING:`
       line and journals `backend_preflight_failed` with `where=start` for each needed
       backend that fails, and still returns without stopping the runner.
-- [ ] A `claude` campaign, and a spec review whose resolved backend is `claude`, are not
+- [x] A `claude` campaign, and a spec review whose resolved backend is `claude`, are not
       held `backend_unavailable`. An `unknown model` or `request.json` Pi failure still
       increments the step's retry.
-- [ ] A declared persona's provider is the one `map_pi_model` returns for the alias and
+- [x] A declared persona's provider is the one `map_pi_model` returns for the alias and
       effort from `declared_settings`, with the definition loaded through
       `persona_defs.user_personas_dir(cfg)` and the map read from `project_root`. When
       that provider has no cheap credential and the role builtin's provider does,
       `backend_fault` for that persona returns `no credential for provider <name>`.
-- [ ] An unknown `agentic.model_set` does not raise out of `tick`, and that campaign is
+- [x] An unknown `agentic.model_set` does not raise out of `tick`, and that campaign is
       not held `backend_unavailable`. The apply parks `spec_review_exhausted` with the
       `ValueError` text and writes no `run.start`. When `map_pi_model` raises
       `ValueError`, a tick does not raise and writes no `backend_unavailable` hold, even
@@ -429,6 +429,11 @@ its own. The runner still starts.
     `backend_unavailable` hold. A direct `backend_fault` call while `resolve_profile`
     raises `OSError` returns None and does not raise.
 - **Manual verification:** none. The live runner is not started.
+
+### Test record (2026-11-09)
+
+`uv run pytest tests/test_backend_preflight_extend.py tests/test_runner_selfheal.py tests/test_remote_persona_limits.py::test_spec_review_is_neither_counted_nor_gated -q` — all passed. Full suite left to gating.
+
 - **Regression guard:** `python3 tools/affected_tests.py --run uv run pytest -q` on the
   touched files. `tests/test_runner_selfheal.py` (the SPEC-0484 cursor hold, spawn, and
   startup tests) and `tests/test_remote_persona_limits.py::test_spec_review_is_neither_counted_nor_gated`
@@ -443,11 +448,11 @@ New spec-review and Pi steps hold while the check fails.
 
 ## Definition of done
 
-- [ ] Acceptance criteria all met.
-- [ ] Test plan executed; automated tests pass; manual steps performed.
-- [ ] No regressions.
-- [ ] Spec body updated to match what shipped.
-- [ ] `docs/LEDGER.md` updated (status + date).
+- [x] Acceptance criteria all met.
+- [x] Test plan executed; automated tests pass; manual steps performed.
+- [x] No regressions.
+- [x] Spec body updated to match what shipped.
+- [x] `docs/LEDGER.md` updated (status + date).
 
 ## Open questions
 

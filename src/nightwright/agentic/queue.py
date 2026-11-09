@@ -2805,12 +2805,26 @@ def _do_spec_review(ctx: _Ctx, state: dict, step: Step, run_id: str, req,
     try:
         head = git.rev_parse(worktree)
         try:
-            res.run_result = _local_runner(ctx, state, req).run(req)
+            local = _preflight_hold(ctx, state, req, _local_runner(ctx, state, req))
+            res.run_result = local.run(req)
         except Exception as e:                  # the reset below must still run
             res.error = getattr(e, "tail", None) or str(e)
             if not isinstance(e, (GitError, ValueError, OSError)):
                 res.error = repr(e)
-        res.interrupted = ctx.stop.is_set()
+        else:
+            fault = BP.env_fault(res.run_result)
+            if fault is not None:
+                rr = res.run_result
+                res.run_result = replace(
+                    rr, interrupted=True,
+                    cost_usd=0.0 if rr.cost_usd is None else rr.cost_usd)
+                res.interrupted = True
+                if getattr(ctx, "cfg", None) is not None:
+                    BP.note_fault(ctx.cfg, BP.fault_kind(fault), fault, where="run")
+            elif res.run_result is not None and res.run_result.interrupted:
+                res.interrupted = True
+        if not res.interrupted:
+            res.interrupted = ctx.stop.is_set()
         if git.rev_parse(worktree) != head or _spec_sha(spec_file) != sr["sha"] \
                 or not git.is_clean(worktree, untracked=False):
             sr["saved"] = _save_worktree_changes(worktree, state["id"], run_id, head)
@@ -2997,22 +3011,30 @@ def _gated_runner(ctx: _Ctx, req, state=None):
 
 
 def _preflight_hold(ctx, state, req, runner):
-    """SPEC-0484: `runner`, or a `PreflightHeldRunner` when it is a fresh local Cursor run and
-    the cursor backend fails its preflight in this process (one escalation is filed). A run
-    that already has a process record or a launch file is left alone (adoption attaches)."""
-    from .runner import CursorRunner, PreflightHeldRunner
-    if not isinstance(runner, CursorRunner):
-        return runner
+    """SPEC-0484/0486: `runner`, or a `PreflightHeldRunner` when it is a fresh local Cursor or
+    Pi run and that backend fails its preflight (one escalation is filed). A run that already
+    has `proc.json` or `launch.json` is left alone (adoption attaches)."""
+    from .runner import CursorRunner, PiRunner, PreflightHeldRunner
     rd = getattr(req, "run_dir", None)
     if rd is not None and ((Path(rd) / "proc.json").exists() or (Path(rd) / "launch.json").exists()):
         return runner
-    error = BP.check("cursor")
-    if error is None:
-        return runner
     cfg = getattr(ctx, "cfg", None)
-    if cfg is not None:
-        BP.note_fault(cfg, "cursor", error, where="spawn")
-    return PreflightHeldRunner("cursor", error)
+    if isinstance(runner, CursorRunner):
+        error = BP.check("cursor")
+        if error is None:
+            return runner
+        if cfg is not None:
+            BP.note_fault(cfg, "cursor", error, where="spawn")
+        return PreflightHeldRunner("cursor", error)
+    if isinstance(runner, PiRunner):
+        prov = [req.pi_provider] if getattr(req, "pi_provider", None) else []
+        error = BP.check("pi", providers=prov)
+        if error is None:
+            return runner
+        if cfg is not None:
+            BP.note_fault(cfg, "pi", error, where="spawn")
+        return PreflightHeldRunner("pi", error)
+    return runner
 
 
 def _run_persona(req, step: Step) -> str | None:
@@ -6566,6 +6588,10 @@ def _tick(cfg, ctx: _Ctx, pool: StepPool, report: TickReport, *, admit: bool, ow
             pre = _spec_review_precheck(ctx, st, step)
             if pre is not None:
                 report.steps.append(_apply(ctx, st, pre))
+                continue
+            fault = pgate.backend_fault(st, ("spec_reviewer",), remote_ok=False)
+            if fault is not None:
+                pgate._hold(st["id"], "backend_unavailable")
                 continue
         try:
             run_id, req, budget = _prepare_run(ctx, st, step.persona, step)

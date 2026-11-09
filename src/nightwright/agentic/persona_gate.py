@@ -346,32 +346,53 @@ class Gate:
         self._live = None
         self.taken = 0
         self.holds: dict = {}
-        self._backend: dict = {}               # SPEC-0484: kind -> preflight error | None
+        self._backend: dict = {}               # SPEC-0484/0486: (kind, providers) -> error | None
 
-    def backend_fault(self, state: dict) -> str | None:
-        """SPEC-0484: the preflight error of the backend this campaign's steps run on, when no
-        persona worker could take them instead; else None. Cached per tick and kind."""
-        try:
-            from .runner import resolve_runner
-            kind = resolve_runner(self.cfg, campaign=state, project=state.get("project"))
-        except (ValueError, TypeError, KeyError, OSError):
+    def backend_fault(self, state: dict, personas=(), *, remote_ok: bool = True) -> str | None:
+        """The preflight error of the backend these steps run on, when no persona worker could
+        take them instead; else None. Cached per tick under `(kind, tuple(providers))`."""
+        from . import backend_preflight as BP
+        from . import pi_map as PM
+        checks: list[tuple[str, list[str]]] = []
+        if personas:
+            for persona in personas:
+                try:
+                    kind, providers = BP.spawn_backend(self.cfg, state, persona)
+                except (ValueError, OSError):
+                    return None
+                if kind in ("cursor", "pi"):
+                    checks.append((kind, list(providers or ())))
+        else:
+            try:
+                from .runner import resolve_runner
+                kind = resolve_runner(self.cfg, campaign=state, project=state.get("project"))
+            except (ValueError, TypeError, KeyError, OSError):
+                return None
+            if kind == "cursor":
+                checks.append((kind, []))
+            elif kind == "pi":
+                checks.append((kind, PM.probe_providers(self.cfg, campaigns=[state])))
+        fault = None
+        for kind, providers in checks:
+            key = (kind, tuple(providers or ()))
+            if key not in self._backend:
+                self._backend[key] = BP.check(
+                    kind, providers=providers if kind == "pi" else None)
+                if self._backend[key] is not None:
+                    BP.note_fault(self.cfg, kind, self._backend[key], where="gate")
+            if self._backend[key] is not None:
+                fault = self._backend[key]
+                break
+        if fault is None:
             return None
-        if kind != "cursor":
-            return None
-        if kind not in self._backend:
-            from . import backend_preflight as BP
-            self._backend[kind] = BP.check(kind)
-            if self._backend[kind] is not None:
-                BP.note_fault(self.cfg, kind, self._backend[kind], where="gate")
-        if self._backend[kind] is None:
-            return None
-        try:
-            from . import remote_personas as RPS
-            if RPS.persona_workers(self.cfg, state):
-                return None                    # a worker may run it with its own credential
-        except Exception:                      # noqa: BLE001
-            pass
-        return self._backend[kind]
+        if remote_ok:
+            try:
+                from . import remote_personas as RPS
+                if RPS.persona_workers(self.cfg, state):
+                    return None
+            except Exception:                  # noqa: BLE001
+                pass
+        return fault
 
     def live(self) -> int:
         if self._live is None:
@@ -390,13 +411,15 @@ class Gate:
         if self.until is not None:
             self._hold(cid, "rate_limit")
             return None
-        if self.backend_fault(state) is not None:            # SPEC-0484
+        step_personas = tuple(step.personas or ()) if step.kind == "review" else (
+            (step.persona,) if step.persona else ())
+        if self.backend_fault(state, step_personas) is not None:     # SPEC-0484/0486
             self._hold(cid, "backend_unavailable")
             return None
         if self.cap is None:
             return step
         room = self.cap - self.live() - self.taken
-        personas = tuple(step.personas or ()) if step.kind == "review" else ()
+        personas = step_personas if step.kind == "review" else ()
         if room <= 0:
             self._hold(cid, "persona_cap", personas)
             return None
