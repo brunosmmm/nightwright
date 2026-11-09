@@ -69,7 +69,12 @@ def _is_file(env, name: str) -> bool:
     raw = env.get(name)
     if not raw or not str(raw).strip():
         return False
-    return _expand(str(raw).strip(), env).is_file()
+    p = str(raw).strip()
+    if p.startswith("~/"):
+        remainder = p[2:]
+        if os.path.isabs(remainder) or any(part == ".." for part in remainder.split("/")):
+            return False
+    return _expand(p, env).is_file()
 
 
 def spawn_backend(cfg, state: dict, persona: str) -> tuple[str, list[str]]:

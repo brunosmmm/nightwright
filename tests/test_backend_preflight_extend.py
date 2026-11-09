@@ -354,6 +354,12 @@ def test_pi_check_node_script_sdk_and_credential(tmp_path, monkeypatch):
     bad_tilde = {"PATH": env2["PATH"], "HOME": str(bare_home),
                  "GOOGLE_APPLICATION_CREDENTIALS": "~//etc/passwd"}
     assert BP.check("pi", environ=bad_tilde, providers=["google"]) == "no credential for provider google"
+    passwd = bare_home / "real_secret"
+    passwd.write_text("x")
+    escape = {"PATH": env2["PATH"], "HOME": str(bare_home),
+              "ANTHROPIC_IDENTITY_TOKEN_FILE": "~/../../real_secret"}
+    assert BP.check("pi", environ=escape, providers=["anthropic"]) == (
+        "no credential for provider anthropic")
     assert not calls
 
 
@@ -467,6 +473,14 @@ def test_gate_cache_keeps_pi_error_after_worker_escape(tmp_path, monkeypatch):
     assert g2.backend_fault(st, personas, remote_ok=True) == err
 
 
+def test_pi_check_each_provider_in_list(tmp_path, monkeypatch):
+    _pi_ok_env(monkeypatch)
+    env = {"HOME": str(tmp_path), "PATH": os.environ.get("PATH", "/usr/bin:/bin"),
+           "ANTHROPIC_API_KEY": "k"}
+    assert BP.check("pi", environ=env, providers=["anthropic", "openai"]) == (
+        "no credential for provider openai")
+
+
 def test_preflight_hold_wraps_pi_and_not_claude(tmp_path, monkeypatch):
     _pi_ok_env(monkeypatch)
     _pi_check_fail_openai(monkeypatch)
@@ -478,10 +492,14 @@ def test_preflight_hold_wraps_pi_and_not_claude(tmp_path, monkeypatch):
         model="openai/x", effort="high", max_budget_usd=1.0, timeout_s=10,
         permission_mode="default", read_only=False, allowed_tools=(), add_dirs=(),
         json_schema={}, env={}, run_dir=rd, pi_provider="openai")
+    BP.reset_noted()
     held = Q._preflight_hold(SimpleNamespace(cfg=cfg), {"id": "c1"}, req, PiRunner())
     assert isinstance(held, PreflightHeldRunner)
     rr = held.run(req)
     assert rr.interrupted and rr.cost_usd == 0.0
+    open_ = [r for r in ESC.list_all(cfg, "open") if r.get("kind") == "backend_unavailable"]
+    assert len(open_) == 1 and open_[0]["facts"][0] == "backend: pi"
+    assert [r for r in journal(cfg, "backend_preflight_failed") if r.get("where") == "spawn"]
     cl = Q._preflight_hold(SimpleNamespace(cfg=cfg), {"id": "c1"}, req, ClaudeRunner())
     assert isinstance(cl, ClaudeRunner)
     fake_path = tmp_path / "fake.json"
@@ -516,6 +534,22 @@ def test_pi_credential_mapped_skips_backend_escalation(tmp_path, monkeypatch):
            "agentic": {"credentials": {"OPENAI_API_KEY": "pass:openai/key"}}}
     BP.note_fault(cfg, "pi", "no credential for provider openai", where="spawn")
     assert not [r for r in ESC.list_all(cfg, "open") if r.get("kind") == "backend_unavailable"]
+
+
+def test_startup_check_pi_empty_providers_still_checks_node(tmp_path, monkeypatch):
+    import io
+    from nightwright.agentic import runner as RR
+    BP.reset_noted()
+    cfg = _cursor_cfg(tmp_path)
+    cfg["agentic"]["runner"] = "pi"
+    monkeypatch.setattr(RR, "pi_needed", lambda cfg, campaigns=None: True)
+    monkeypatch.setattr(RR, "cursor_needed", lambda cfg: False)
+    monkeypatch.setattr("nightwright.agentic.pi_map.probe_providers", lambda cfg, campaigns=None: [])
+    monkeypatch.setattr(RP, "_resolve_binary", lambda name, environ=None: None)
+    err = io.StringIO()
+    BP.startup_check(cfg, err=err)
+    assert "node not found on PATH" in err.getvalue()
+    assert [r for r in journal(cfg, "backend_preflight_failed") if r.get("backend") == "pi"]
 
 
 def test_startup_check_warns_for_pi(tmp_path, monkeypatch):
@@ -895,6 +929,58 @@ def test_note_fault_path_credential_does_not_suppress_pi_escalation(tmp_path):
     BP.note_fault(cfg, "pi", "node not found on PATH", where="spawn")
     open_ = [r for r in ESC.list_all(cfg, "open") if r.get("kind") == "backend_unavailable"]
     assert len(open_) == 1
+
+
+def test_note_fault_mapped_openai_does_not_suppress_node_escalation(tmp_path):
+    BP.reset_noted()
+    cfg = {"data_dir": str(tmp_path / "d"),
+           "agentic": {"credentials": {"OPENAI_API_KEY": "pass:openai/key"}}}
+    BP.note_fault(cfg, "pi", "node not found on PATH", where="spawn")
+    open_ = [r for r in ESC.list_all(cfg, "open") if r.get("kind") == "backend_unavailable"]
+    assert len(open_) == 1
+    BP.note_fault(cfg, "pi", "pi-coding-agent is not installed", where="start")
+    assert len([r for r in ESC.list_all(cfg, "open") if r.get("kind") == "backend_unavailable"]) == 1
+
+
+def test_spec_review_runner_raises_during_stop_parks_exhausted(tmp_path, monkeypatch):
+    monkeypatch.setenv("CURSOR_API_KEY", "k-test-value")
+    cfg = _cursor_cfg(tmp_path)
+    wt = make_repo(tmp_path)
+    rd = tmp_path / "c1" / "runs" / "001-spec_reviewer"
+    rd.mkdir(parents=True)
+    req = RunRequest(
+        persona="spec_reviewer", prompt="p", system_append="", cwd=tmp_path,
+        model="m", effort=None, max_budget_usd=1.0, timeout_s=10,
+        permission_mode="default", read_only=True, allowed_tools=(), add_dirs=(),
+        json_schema={}, env={}, run_dir=rd)
+    st = {"id": "c1", "state": "SPEC_REVIEW", "repo": {"worktree": str(wt), "branch": "main"},
+          "spec": {"rel_path": "docs/specs/x.md", "id": "SPEC-1"}, "counters": {},
+          "project": "Meta-Tools", "profile": "balanced"}
+    (wt / "docs/specs").mkdir(parents=True, exist_ok=True)
+    (wt / "docs/specs/x.md").write_text("---\nid: SPEC-1\n---\n")
+    S.write_state(cfg, "c1", dict(st))
+
+    class Runner:
+        detachable = False
+
+        def run(self, req, hooks=None):
+            raise RuntimeError("boom")
+
+    stop = threading.Event()
+    stop.set()
+    ctx = SimpleNamespace(cfg=cfg, runner=Runner(), stop=stop,
+                          runner_for=lambda s, kind=None: Runner(),
+                          profile=lambda s: {})
+    res = Q._do_spec_review(ctx, st, Q.Step("spec_review", persona="spec_reviewer"), "001-x", req, 1.0)
+    assert res.error and "boom" in res.error
+    assert res.interrupted and res.run_result is None
+    row = Q._apply(ctx, S.read_state(cfg, "c1"), res)
+    st2 = S.read_state(cfg, "c1")
+    assert st2.get("state") == "PARKED"
+    assert st2.get("park", {}).get("reason") == "spec_review_exhausted"
+    assert "boom" in st2.get("park", {}).get("detail", "")
+    assert st2.get("counters", {}).get("spec_review_retries", 0) == 0
+    assert row.get("reason") == "spec_review_exhausted"
 
 
 def test_pi_managed_version_bom_and_invalid_utf8(tmp_path, monkeypatch):

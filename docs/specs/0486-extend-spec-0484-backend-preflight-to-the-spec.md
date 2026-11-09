@@ -450,6 +450,10 @@ Adversarial-review fixes: `backend_fault` skips only broken personas; Pi `curren
 
 Review fixes: Pi preflight swallows probe exceptions; `current-version` trim matches pi_exec; spec-review apply keeps interrupted results on `SPEC_REVIEW` when git reset fails; hardened hold-priority and credential tests. `uv run pytest tests/test_backend_preflight_extend.py tests/test_runner_selfheal.py tests/test_remote_persona_limits.py::test_spec_review_is_neither_counted_nor_gated -q` — all passed. `python3 tools/spec_lint.py --write-ledger` — ok. Full suite left to gating.
 
+### Test record (2026-11-09, loop 1 implementer)
+
+Review triager fixes: `_apply_step` parks `spec_review_exhausted` when a raised spec-review run meets `ctx.stop` with no `run_result`; `~/…/..` credential paths do not count as present; tests for dual-provider `check`, Pi spawn escalation, empty-provider startup node/SDK, mapped-key node escalation. `uv run pytest tests/test_backend_preflight_extend.py tests/test_runner_selfheal.py tests/test_remote_persona_limits.py::test_spec_review_is_neither_counted_nor_gated -q` — 48 passed. `python3 tools/spec_lint.py --write-ledger` — ok. Full suite left to gating.
+
 - **Regression guard:** `python3 tools/affected_tests.py --run uv run pytest -q` on the
   touched files. `tests/test_runner_selfheal.py` (the SPEC-0484 cursor hold, spawn, and
   startup tests) and `tests/test_remote_persona_limits.py::test_spec_review_is_neither_counted_nor_gated`
