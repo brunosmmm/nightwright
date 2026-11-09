@@ -221,7 +221,7 @@ def test_action_summary_prefill_reflects_external_change(tmp_path, monkeypatch):
 def test_poll_reload_does_not_block_the_event_loop(tmp_path, monkeypatch):
     """A slow load_rows (simulated) must not prevent other async work from running
     concurrently -- proving the reparse actually happens off the event-loop thread."""
-    from nightwright.tui import ideas_board as M  # SPEC-0490: the board load is the reparse
+    from nightwright.tui import ideas_board as M  # SPEC-0495: the board load is the reparse
     from nightwright.tui.app import IdeaDesk
 
     cfg = _seed(tmp_path, monkeypatch)
@@ -256,7 +256,7 @@ def test_poll_reload_does_not_block_the_event_loop(tmp_path, monkeypatch):
 def test_concurrent_poll_ticks_only_run_one_reload(tmp_path, monkeypatch):
     """The in-flight guard prevents a second poll tick from starting a second load_rows
     before the first one's result has been applied."""
-    from nightwright.tui import ideas_board as M  # SPEC-0490: the board load is the reparse
+    from nightwright.tui import ideas_board as M  # SPEC-0495: the board load is the reparse
     from nightwright.tui.app import IdeaDesk
 
     cfg = _seed(tmp_path, monkeypatch)
@@ -288,7 +288,7 @@ def test_concurrent_poll_ticks_only_run_one_reload(tmp_path, monkeypatch):
 
 def test_manual_reload_does_not_block_the_event_loop(tmp_path, monkeypatch):
     """SPEC-0134: r / mutate / search reload uses the same off-thread path as the poll."""
-    from nightwright.tui import ideas_board as M  # SPEC-0490: the board load is the reparse
+    from nightwright.tui import ideas_board as M  # SPEC-0495: the board load is the reparse
     from nightwright.tui.app import IdeaDesk
 
     cfg = _seed(tmp_path, monkeypatch)
@@ -320,7 +320,7 @@ def test_manual_reload_does_not_block_the_event_loop(tmp_path, monkeypatch):
 
 def test_overlapping_reload_async_coalesces(tmp_path, monkeypatch):
     """SPEC-0134: in-flight guard coalesces overlapping _reload_async calls."""
-    from nightwright.tui import ideas_board as M  # SPEC-0490: the board load is the reparse
+    from nightwright.tui import ideas_board as M  # SPEC-0495: the board load is the reparse
     from nightwright.tui.app import IdeaDesk
 
     cfg = _seed(tmp_path, monkeypatch)

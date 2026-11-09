@@ -1,4 +1,4 @@
-"""Ideas board (SPEC-0490): bucketing, spec-status join, rail counts, scoreboard and activity.
+"""Ideas board (SPEC-0495): bucketing, spec-status join, rail counts, scoreboard and activity.
 
 The model half (`nightwright.tui.ideas_board`) imports no Textual, so the rules are tested as
 pure functions over hand-built rows. One pilot smoke test boots the real desk on a throwaway

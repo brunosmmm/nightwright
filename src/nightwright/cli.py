@@ -1508,8 +1508,8 @@ def hub_cmd(cfg, as_json, tasks_slice, state, kind, tag, project, workstream, pr
 @click.option("--priority", type=click.Choice(["A", "B", "C"]),
               help="open pre-filtered to this priority")
 @click.option("--sort", type=click.Choice(list(R.IDEA_SORT_NAMES), case_sensitive=False),
-              help="ignored since SPEC-0490 (board buckets have a fixed order)")
-@click.option("--desc", is_flag=True, help="ignored since SPEC-0490")
+              help="ignored since SPEC-0495 (board buckets have a fixed order)")
+@click.option("--desc", is_flag=True, help="ignored since SPEC-0495")
 @click.option("--all", "all_done", is_flag=True, help="start with the DROPPED bucket shown")
 @click.option("--query", default=None, help="open on a related-idea search (SPEC-0086)")
 @click.option("--tab", type=click.Choice(["ideas", "hub", "queue", "events", "mailbox"],

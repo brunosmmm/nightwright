@@ -251,7 +251,7 @@ def _grid(app) -> list[str]:
 
 
 def test_desk_lists_ideas_selects_and_shows_detail(tmp_path, monkeypatch):
-    """SPEC-0490: the project view lists OPEN ideas and hides DROPPED until `d`."""
+    """SPEC-0495: the project view lists OPEN ideas and hides DROPPED until `d`."""
     from nightwright.tui import ideas_board as B
     from nightwright.tui.app import IdeaDesk
 

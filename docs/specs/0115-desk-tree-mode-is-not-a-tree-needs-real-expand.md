@@ -2,7 +2,7 @@
 id: SPEC-0115
 title: "Desk tree mode: a real collapsible tree, not indented rows"
 status: superseded
-superseded_by: SPEC-0490
+superseded_by: SPEC-0495
 owner: user
 created: 2026-07-31
 updated: 2026-11-09

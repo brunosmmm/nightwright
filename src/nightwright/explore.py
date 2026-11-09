@@ -256,7 +256,7 @@ def idea_summary_text(cfg, task) -> str:
 def read_idea_enrichment(cfg, task, *, lines=None) -> dict:
     """{summary, questions, log} string bodies (may be empty).
 
-    `lines` (SPEC-0490): the file's `splitlines(keepends=True)` already in hand, so a caller
+    `lines` (SPEC-0495): the file's `splitlines(keepends=True)` already in hand, so a caller
     walking many ideas of one file reads it once instead of once per idea."""
     if lines is None:
         lines = open(task.file).read().splitlines(keepends=True)
@@ -510,7 +510,7 @@ def open_question_count(cfg, task, *, lines=None) -> int:
 
 
 def open_question_counts(cfg, tasks) -> dict[int, int]:
-    """`{id(task): open question count}` for many ideas, reading each org file once (SPEC-0490).
+    """`{id(task): open question count}` for many ideas, reading each org file once (SPEC-0495).
 
     Same parser and same failure rule as `open_question_count` (an unreadable idea counts 0);
     only the file reads are shared. Keyed by `id(task)` because idea ids can repeat across

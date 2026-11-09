@@ -2,7 +2,7 @@
 id: SPEC-0110
 title: "Desk idea table: shared column planner, in-app filters, sorting, full-width mode"
 status: superseded
-superseded_by: SPEC-0490
+superseded_by: SPEC-0495
 owner: user
 created: 2026-07-30
 updated: 2026-11-09

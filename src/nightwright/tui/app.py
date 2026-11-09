@@ -1,4 +1,4 @@
-"""Textual ideas desk (SPEC-0099 entry; SPEC-0490 rail + bucket board replaced SPEC-0100's table).
+"""Textual ideas desk (SPEC-0099 entry; SPEC-0495 rail + bucket board replaced SPEC-0100's table).
 
 Imports Textual at module scope on purpose — only reachable through `nightwright.tui.run()`, which
 probes for the optional extra first. All data comes from `nightwright.tui.model`; this file is a
@@ -27,7 +27,7 @@ from .events_tab import EventsView
 from .mailbox_tab import MailboxView
 from .queue_tab import QueueView
 
-# SPEC-0490: the ideas tab is rail | board | detail. The rail is fixed-width (project names are
+# SPEC-0495: the ideas tab is rail | board | detail. The rail is fixed-width (project names are
 # short and the counts right-align in it); the detail pane keeps the old split's proportional
 # share so Summary prose still wraps readably, and the board takes what is left.
 RAIL_WIDTH = 26
@@ -327,7 +327,7 @@ class ChoiceScreen(ModalScreen[str | None]):
 
 
 class IdeaDesk(App):
-    """Ideas board (SPEC-0490): project rail · Open / In flight / Built buckets · detail, plus
+    """Ideas board (SPEC-0495): project rail · Open / In flight / Built buckets · detail, plus
     the explore mutations (SPEC-0102) and metadata + clock (SPEC-0103) on the selected idea."""
 
     TITLE = "nightwright — ideas desk"
@@ -376,7 +376,7 @@ class IdeaDesk(App):
         Binding("j,down", "cursor_down", "down", show=False),
         Binding("k,up", "cursor_up", "up", show=False),
         Binding("slash", "search", "search"),
-        # SPEC-0490: the rail replaces SPEC-0110's filter bar / sort keys / wide mode and
+        # SPEC-0495: the rail replaces SPEC-0110's filter bar / sort keys / wide mode and
         # SPEC-0115's tree mode; `[`/`]` walk it from the board without moving focus.
         Binding("left_square_bracket", "project_prev", "prev project", show=False),
         Binding("right_square_bracket", "project_next", "next project", show=False),
@@ -418,7 +418,7 @@ class IdeaDesk(App):
         self._active_tab = "tab-ideas"
         self.query = query or ""
         opening = dict(filters or {})
-        # SPEC-0490: bucket order is fixed by design, so `--sort/--desc` no longer apply;
+        # SPEC-0495: bucket order is fixed by design, so `--sort/--desc` no longer apply;
         # `--project` selects a rail entry; the rest narrow what the board loads.
         opening.pop("sort", None)
         opening.pop("desc", None)
@@ -877,7 +877,7 @@ class IdeaDesk(App):
 
     @on(Tree.NodeSelected, "#board")
     def _board_selected(self, event) -> None:
-        """Enter on a search hit jumps to it in its project (SPEC-0490)."""
+        """Enter on a search hit jumps to it in its project (SPEC-0495)."""
         data = getattr(event.node, "data", None)
         if self.query and isinstance(data, str):
             self.jump_to(data)
@@ -1462,7 +1462,7 @@ def lex_org(prose: str, theme: str = ANSI_DARK) -> Text:
 
 
 def _spec_lines(item) -> list[str]:
-    """Markup lines naming the idea's spec and its real status (SPEC-0490), always present:
+    """Markup lines naming the idea's spec and its real status (SPEC-0495), always present:
     an idea with no spec says so, so the pane never leaves "is there a spec?" to guesswork."""
     bucket = B.BUCKET_LABELS[item.bucket]
     style = _BUCKET_STYLE[item.bucket]
@@ -1531,7 +1531,7 @@ def _render_detail(d: M.DeskDetail, *, snippet: str = "", width: int = 60,
     add_markup(f"[{style}]{state}[/]  [bold]{escape(d.heading)}[/]")
     if d.meta:
         add_markup(f"[dim]{escape(' · '.join(d.meta))}[/]")
-    for line in spec or ():                                           # SPEC-0490
+    for line in spec or ():                                           # SPEC-0495
         add_markup(line)
     if d.clock_open or d.clocked_hours:                               # SPEC-0103
         running = "[cyan]◕ clocked in[/]" if d.clock_open else "[dim]clock idle[/]"

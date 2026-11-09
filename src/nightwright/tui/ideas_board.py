@@ -1,4 +1,4 @@
-"""View model for the ideas board (SPEC-0490): project rail, Open / In flight / Built buckets.
+"""View model for the ideas board (SPEC-0495): project rail, Open / In flight / Built buckets.
 
 No Textual import, same rule as `model.py`: every bucketing, join and count decision lives here
 so it is testable on a base install, and `app.py` only renders it.
@@ -162,7 +162,7 @@ def resolve_link(spec_id: str, specs: dict[str, SpecInfo], *, idea_id: str = "",
 
 
 def classify(state: str, link: SpecLink | None) -> str:
-    """Which bucket an idea belongs in (SPEC-0490 bucketing rules, in order)."""
+    """Which bucket an idea belongs in (SPEC-0495 bucketing rules, in order)."""
     state = (state or "").upper()
     if state == "DROPPED":
         return DROPPED

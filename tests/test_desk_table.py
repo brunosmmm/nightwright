@@ -1,6 +1,6 @@
 """Shared idea-table planner and `load_rows` sort parity (SPEC-0110 leftovers).
 
-SPEC-0490 retired the desk's table (column auto-drop, filter bar, sort keys, wide mode); what
+SPEC-0495 retired the desk's table (column auto-drop, filter bar, sort keys, wide mode); what
 stays covered here is the CLI planner and that `load_rows` — still the desk's search loader —
 orders exactly like `nw ideas`.
 """

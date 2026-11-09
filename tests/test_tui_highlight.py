@@ -166,7 +166,7 @@ def test_detail_body_is_marked_without_corrupting_markup(tmp_path, monkeypatch):
 # --- live behaviour ---------------------------------------------------------------------------
 
 def _leaf_labels(app):
-    """Every idea leaf's label on the board (SPEC-0490 replaced the DataTable)."""
+    """Every idea leaf's label on the board (SPEC-0495 replaced the DataTable)."""
     root = app.query_one("#board").root
     return [leaf.label for head in root.children for leaf in head.children]
 

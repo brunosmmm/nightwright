@@ -1,4 +1,4 @@
-"""What a REAL terminal renders (SPEC-0115; SPEC-0490 re-pointed it at the bucket board).
+"""What a REAL terminal renders (SPEC-0115; SPEC-0495 re-pointed it at the bucket board).
 
 Every desk defect the human reported got past headless pilots. The reason is structural: Textual
 repaints *incrementally*, so raw pty bytes cannot be turned back into a screen by picking a frame
@@ -19,7 +19,7 @@ import pytest
 
 pytestmark = pytest.mark.skipif(not hasattr(os, "forkpty"), reason="needs a POSIX pty")
 
-COLS, ROWS = 160, 30   # SPEC-0490: three panes (rail | board | detail)
+COLS, ROWS = 160, 30   # SPEC-0495: three panes (rail | board | detail)
 
 
 def _throwaway_org(tmp_path):
@@ -60,7 +60,7 @@ def _throwaway_org(tmp_path):
 
 
 def left_pane(lines):
-    """The board pane (SPEC-0490): each line cut between the rail divider and the detail
+    """The board pane (SPEC-0495): each line cut between the rail divider and the detail
     divider, so neither the rail's counts nor the detail pane's colours leak into a check."""
     out = []
     for line in lines:
@@ -167,7 +167,7 @@ def _alpha(lines):
 
 def test_board_renders_buckets_and_spec_status_in_a_real_terminal(tmp_path):
     """The composited screen shows the rail, the buckets, and the spec status + epic roll-up on
-    the in-flight row — the three things the old flat table could not show (SPEC-0490)."""
+    the in-flight row — the three things the old flat table could not show (SPEC-0495)."""
     conf = _throwaway_org(tmp_path)
     if shutil.which("uv") is None and not Path(sys.executable).exists():
         pytest.skip("no interpreter to spawn")

@@ -132,7 +132,7 @@ def test_typing_filters_without_pressing_enter(tmp_path, monkeypatch):
             await _type(pilot, "buffalo")
             await _settle(pilot)
             assert app.query == "buffalo"
-            # SPEC-0490: hits are a cross-project list over the board; the board keeps all.
+            # SPEC-0495: hits are a cross-project list over the board; the board keeps all.
             assert await pilot_until(pilot, lambda: [r.id for r in app._hits] == ["IDEA-002"])
             assert len(app._pairs) == 3
 

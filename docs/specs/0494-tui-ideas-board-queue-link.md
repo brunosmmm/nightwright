@@ -8,13 +8,13 @@ updated: 2026-11-09
 kind: feature
 milestone: "M5: interactive desk"
 tags: [tui, ideas, queue, agentic]
-depends_on: [SPEC-0490, SPEC-0407]
+depends_on: [SPEC-0495, SPEC-0407]
 source_idea: IDEA-1067
 ---
 
 ## Context
 
-SPEC-0490 turned the `nw tui` ideas tab into a rail · Open / In flight / Built board with each
+SPEC-0495 turned the `nw tui` ideas tab into a rail · Open / In flight / Built board with each
 idea's real spec status. Most Meta-Tools ideas are now built through the agentic queue, and the
 queue keeps every campaign's whole history (state, ledger, runs, gates, findings, mail) — shown
 by the campaign detail popup (SPEC-0407, `CampaignDetail`). But nothing on the board says which
@@ -49,7 +49,7 @@ comfort-assistant has its own `SPEC-0003`).
      campaign id itself; compared by number (`IDEA-0587` ≡ `IDEA-587`), no project check (idea
      ids are global); or
    - its **spec**: the campaign's `spec_id` / `spec.id` equals the idea's `:SPEC:` or the live
-     successor it resolves to (SPEC-0490's supersede chain), keyed by `(project, spec id)` with
+     successor it resolves to (SPEC-0495's supersede chain), keyed by `(project, spec id)` with
      a missing project on either side meaning the internal project.
    Matches are de-duplicated by campaign id and ordered newest first by `created_at`.
 2. **Detail pane**: a `Queue` section under the spec block lists the matches as
@@ -82,7 +82,7 @@ comfort-assistant has its own `SPEC-0003`).
 - **Archived/closed campaigns**: `CampaignDetail` already renders terminal campaigns read-only
   (its `load_detail` marks them `terminal`; the events and mailbox tabs already open merged
   ones), so no rendering change was needed there.
-- **Resilience fix in `CampaignDetail`** (found on the box gate of SPEC-0490's head: GATEJOB-1087
+- **Resilience fix in `CampaignDetail`** (found on the box gate of SPEC-0495's head: GATEJOB-1087
   failed once in `test_tui_campaign_detail.py::test_decisions_append_triggers_poll_reload` with
   `WorkerFailed: NoMatches('#campaign-timeline')`, and the sibling
   `test_mailbox_append_triggers_poll_reload` flaked earlier): a dismiss tears the screen's

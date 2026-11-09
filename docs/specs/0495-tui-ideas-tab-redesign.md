@@ -1,5 +1,5 @@
 ---
-id: SPEC-0490
+id: SPEC-0495
 title: "TUI ideas tab: project rail + Open / In flight / Built buckets with real spec status"
 status: done
 owner: user
