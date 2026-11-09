@@ -234,6 +234,7 @@ class CampaignDetail(QueueActions, ModalScreen):
         self._run_has_stream = False
         self._run_follow_done = False
         self._run_tail_inflight = False
+        self._run_detail_loading_run_id: str | None = None
         self._run_detail_token = 0
         self._cursor_direction = 0
         self._detail_token = 0
@@ -414,6 +415,11 @@ class CampaignDetail(QueueActions, ModalScreen):
     def _poll(self) -> None:
         if self.view is None or self.view.terminal:
             self._stop_poll()
+            return
+        if self._run_tail_inflight:
+            return
+        if (self._run_detail_loading_run_id is not None
+                and self._run_detail_loading_run_id == self._selected_run_id):
             return
         self.run_worker(self._poll_async(), name="campaign-detail-poll",
                         group="campaign-detail-poll", exclusive=True)
@@ -755,34 +761,43 @@ class CampaignDetail(QueueActions, ModalScreen):
                         exclusive=True)
 
     async def _load_run_detail_async(self, run_id: str, token: int) -> None:
+        self._run_detail_loading_run_id = run_id
         try:
-            snap = await asyncio.to_thread(AM.load_run_pane_detail, self.cfg, self.campaign_id,
-                                           run_id)
-        except Exception as e:
-            snap = AM.RunPaneDetail(Text(f"(run detail unavailable: {e})\n", style="red"),
-                                    None, 0, False, run_id)
-        if token != self._run_detail_token or not self._worker_alive():
-            return
-        if self._selected_run_id != run_id:
-            return
-        ended = False
-        if snap.has_stream:
-            run_dir = store.runs_dir(self.cfg, self.campaign_id) / run_id
             try:
-                ended = TL._ended(run_dir)
-            except OSError:
-                ended = True
-        if self.view.terminal:
-            self._run_follow_done = True
-        elif snap.has_stream:
-            self._run_follow_done = ended
-        else:
-            self._run_follow_done = False
-        self._run_renderer = snap.renderer
-        self._run_offset = snap.offset
-        self._run_has_stream = snap.has_stream
-        self.query_one("#runs-detail-text", Static).update(snap.text)
-        self._scroll_runs_detail_end()
+                snap = await asyncio.to_thread(AM.load_run_pane_detail, self.cfg, self.campaign_id,
+                                               run_id)
+            except Exception as e:
+                snap = AM.RunPaneDetail(Text(f"(run detail unavailable: {e})\n", style="red"),
+                                        None, 0, False, run_id)
+            if token != self._run_detail_token or not self._worker_alive():
+                return
+            if self._selected_run_id != run_id:
+                return
+            if self.view.terminal:
+                self._run_follow_done = True
+            elif snap.has_stream:
+                run_dir = store.runs_dir(self.cfg, self.campaign_id) / run_id
+                stream_path = run_dir / "stream.jsonl"
+                try:
+                    ended = TL._ended(run_dir)
+                except OSError:
+                    ended = True
+                try:
+                    st_size = stream_path.stat().st_size
+                except OSError:
+                    st_size = snap.offset
+                self._run_follow_done = ended and snap.offset >= st_size
+            else:
+                self._run_follow_done = False
+            self._run_renderer = snap.renderer
+            self._run_offset = snap.offset
+            self._run_has_stream = snap.has_stream
+            self.query_one("#runs-detail-text", Static).update(snap.text)
+            self._scroll_runs_detail_end()
+        finally:
+            if (token == self._run_detail_token
+                    and self._run_detail_loading_run_id == run_id):
+                self._run_detail_loading_run_id = None
 
     def _scroll_runs_detail_end(self) -> None:
         if self._active_tab() != "tab-runs":
@@ -806,6 +821,8 @@ class CampaignDetail(QueueActions, ModalScreen):
         if not stream_path.is_file():
             return
         if not self._run_has_stream or self._run_renderer is None:
+            if self._run_detail_loading_run_id == self._selected_run_id:
+                return
             self._load_run_detail(self._selected_run_id)
             return
         try:
@@ -844,8 +861,12 @@ class CampaignDetail(QueueActions, ModalScreen):
                     drain, offset = [], self._run_offset
                 if self._selected_run_id != rid:
                     return
-                self._run_follow_done = True
                 self._run_offset = offset
+                try:
+                    st_size = stream_path.stat().st_size
+                except OSError:
+                    st_size = offset
+                self._run_follow_done = offset >= st_size
                 if drain:
                     pane = self.query_one("#runs-detail-text", Static)
                     cur = (pane.content if isinstance(pane.content, Text)

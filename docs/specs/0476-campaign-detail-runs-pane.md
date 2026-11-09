@@ -1,7 +1,7 @@
 ---
 id: SPEC-0476
 title: "Campaign detail Runs pane: run table, verdict, and stream tail"
-status: done
+status: in-progress
 owner: user
 created: 2026-11-08
 updated: 2026-11-09

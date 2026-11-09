@@ -6,6 +6,7 @@ import hashlib
 import json
 import shutil
 import threading
+import time
 from pathlib import Path
 
 import pytest
@@ -159,12 +160,14 @@ def test_gate_and_reviewer_blockers_in_pane(tmp_path):
             s = detail_screen(app)
             await press(app, pilot, ["3"])
             s.select_run("002-gate_triager")
-            assert await pilot_until(pilot, lambda: GATE_TITLE in runs_detail(app))
-            assert "docs/product/reference/index.md" in runs_detail(app)
+            assert await pilot_until(pilot, lambda: f"must_fix: {GATE_TITLE}" in runs_detail(app))
+            assert "  files: docs/product/reference/index.md" in runs_detail(app)
             assert mark in runs_detail(app)
-            assert "e0" not in runs_detail(app).splitlines()
+            detail_gt = runs_detail(app)
+            assert "e50" not in detail_gt.splitlines()
+            assert "e51" in detail_gt.splitlines()
             s.select_run("020-test_reviewer")
-            assert await pilot_until(pilot, lambda: MAJOR_TITLE in runs_detail(app))
+            assert await pilot_until(pilot, lambda: f"major: {MAJOR_TITLE}" in runs_detail(app))
             rev = json.loads(
                 (S.runs_dir(cfg, cid) / "020-test_reviewer" / "run.json").read_text(
                     encoding="utf-8"))
@@ -172,14 +175,15 @@ def test_gate_and_reviewer_blockers_in_pane(tmp_path):
                           if f.get("severity") == "minor"):
                 assert f"minor: {minor}" not in runs_detail(app)
             s.select_run("033-conformance_reviewer")
-            assert await pilot_until(pilot, lambda: runs_detail(app).strip())
             conf = json.loads(
                 (S.runs_dir(cfg, cid) / "033-conformance_reviewer" / "run.json").read_text(
                     encoding="utf-8"))
+            vline = AM._verdict_status_line(conf.get("verdict"))
+            assert await pilot_until(pilot, lambda: vline and vline in runs_detail(app))
             detail = runs_detail(app)
             for nit in (f["title"] for f in conf["verdict"]["findings"]
                         if f.get("severity") == "nit"):
-                assert nit not in detail
+                assert f"nit: {nit}" not in detail
 
     _run(drive())
 
@@ -207,7 +211,9 @@ def test_stream_result_and_stream_tail_unit(tmp_path):
     assert stream_path.is_file()
     snap = AM.load_run_pane_detail(cfg, cid_stream, stream_id)
     assert snap.offset == stream_path.stat().st_size
-    assert snap.text.plain.strip()
+    assert "■ result:" in snap.text.plain
+    raw = stream_path.read_text(encoding="utf-8")
+    assert raw.splitlines()[-1] not in snap.text.plain or "{" not in snap.text.plain.split("\n")[-3:]
 
     cid_pre = CID_MULTI
     hist_pre = Hist.campaign_history(cfg, cid_pre)
@@ -247,10 +253,20 @@ def test_stream_result_and_stream_tail_unit(tmp_path):
     run_dir = S.runs_dir(cfg, cid_stream) / stream_id
     renderer = AM._run_renderer(cfg, run_dir)
     lines1, off1 = AM.stream_tail(cfg, cid_stream, stream_id, 0, renderer)
-    assert lines1
-    lines2, off2 = AM.stream_tail(cfg, cid_stream, stream_id, off1, renderer)
-    assert off2 >= off1
-    assert isinstance(lines2, list)
+    assert lines1 and "■ result:" in "\n".join(lines1)
+    assert off1 == stream_path.stat().st_size
+    renderer2 = AM._run_renderer(cfg, run_dir)
+    lines2, off2 = AM.stream_tail(cfg, cid_stream, stream_id, off1, renderer2)
+    assert lines2 == []
+    assert off2 == off1
+    append = json.dumps({"type": "assistant", "message": {"content": [
+        {"type": "text", "text": "live-append-0476"}]}}) + "\n"
+    with open(stream_path, "a", encoding="utf-8") as f:
+        f.write(append)
+    lines3, off3 = AM.stream_tail(cfg, cid_stream, stream_id, off1, renderer)
+    assert any("live-append-0476" in ln for ln in lines3)
+    assert off3 == stream_path.stat().st_size
+    assert not any(ln.lstrip().startswith("{") and '"type":' in ln for ln in lines3)
 
 
 def test_ended_stream_trailing_fragment(tmp_path):
@@ -544,6 +560,210 @@ def test_select_run_replaces_renderer_and_offset(tmp_path):
             s.select_run(b)
             assert await pilot_until(
                 pilot, lambda: s._run_renderer is not None and s._run_renderer is not r0)
-            assert s._run_offset != off0 or b != a
+            b_path = S.runs_dir(cfg, cid) / b / "stream.jsonl"
+            assert s._run_offset == b_path.stat().st_size
+
+    _run(drive())
+
+
+def test_string_result_and_files_raw(tmp_path):
+    cfg = TH.fixture_cfg(tmp_path)
+    TH.prepare_queue_window(cfg)
+    cid = CID_MULTI
+    camp = S.campaign_dir(cfg, cid)
+    dst = camp.parent / f"{cid}-raw"
+    shutil.copytree(camp, dst)
+    cid2 = dst.name
+    run_id = "001-implementer"
+    run_dir = S.runs_dir(cfg, cid2) / run_id
+    (run_dir / "stream.jsonl").unlink(missing_ok=True)
+    body = "\n".join(f"line{i}" for i in range(250))
+    (run_dir / "result.json").write_text(
+        json.dumps({"result": body, "structured_output": "not-an-object"}), encoding="utf-8")
+    snap = AM.load_run_pane_detail(cfg, cid2, run_id)
+    assert "line49" not in snap.text.plain
+    assert "line50" in snap.text.plain
+    assert '"structured_output"' not in snap.text.plain
+    (run_dir / "alt.txt").write_text("alt-raw-file-0476\n", encoding="utf-8")
+    rj = json.loads((run_dir / "run.json").read_text(encoding="utf-8"))
+    rj.setdefault("files", {})["raw"] = "alt.txt"
+    (run_dir / "run.json").write_text(json.dumps(rj), encoding="utf-8")
+    assert "alt-raw-file-0476" in AM.load_run_pane_detail(cfg, cid2, run_id).text.plain
+    rj["files"]["raw"] = "../../../outside"
+    (run_dir / "run.json").write_text(json.dumps(rj), encoding="utf-8")
+    assert "alt-raw-file-0476" in AM.load_run_pane_detail(cfg, cid2, run_id).text.plain
+
+
+def test_runs_cursor_jk_and_arrows(tmp_path):
+    cfg = TH.fixture_cfg(tmp_path)
+    TH.prepare_queue_window(cfg)
+    cid = CID_MULTI
+    hist = Hist.campaign_history(cfg, cid)
+    app = _desk(cfg, tab="queue")
+
+    async def drive():
+        async with app.run_test(size=SIZE) as pilot:
+            await open_screen(app, pilot, cid, "delivered", timeline=False)
+            await press(app, pilot, ["3"])
+            tbl = runs_table(app)
+            assert await pilot_until(pilot, lambda: tbl.row_count > 1)
+            row0 = tbl.cursor_row
+            rid0 = str(tbl.ordered_rows[row0].key.value)
+            await press(app, pilot, ["down"])
+            assert await pilot_until(pilot, lambda: tbl.cursor_row == row0 + 1)
+            await press(app, pilot, ["up"])
+            assert await pilot_until(pilot, lambda: tbl.cursor_row == row0)
+            await press(app, pilot, ["j"])
+            assert await pilot_until(pilot, lambda: tbl.cursor_row == row0 + 1)
+            rid1 = str(tbl.ordered_rows[tbl.cursor_row].key.value)
+            assert rid1 == hist["runs"][row0 + 1]["run_id"]
+            await press(app, pilot, ["k"])
+            assert await pilot_until(pilot, lambda: tbl.cursor_row == row0)
+
+    _run(drive())
+
+
+def test_stream_appears_after_first_paint(tmp_path, monkeypatch):
+    monkeypatch.setattr(CD, "POLL_S", 0.08)
+    _, cfg, ids = _fixture(tmp_path)
+    cid = ids["impl"]
+    camp = S.campaign_dir(cfg, cid)
+    dst = camp.parent / f"{cid}-late-stream"
+    shutil.copytree(camp, dst)
+    cid2 = dst.name
+    run_id = "002-implementer"
+    run_dir = S.runs_dir(cfg, cid2) / run_id
+    run_dir.mkdir(parents=True, exist_ok=True)
+    (run_dir / "stream.jsonl").write_text("", encoding="utf-8")
+    (run_dir / "request.json").write_text(json.dumps({"persona": "implementer"}), encoding="utf-8")
+    st = json.loads((S.campaign_dir(cfg, cid2) / "state.json").read_text(encoding="utf-8"))
+    st["state"] = "IMPLEMENTING"
+    (S.campaign_dir(cfg, cid2) / "state.json").write_text(json.dumps(st), encoding="utf-8")
+    (run_dir / "exit.json").unlink(missing_ok=True)
+    (run_dir / "run.json").unlink(missing_ok=True)
+    ended = {"v": False}
+
+    def fake_ended(rd):
+        return ended["v"]
+
+    monkeypatch.setattr(TL, "_ended", fake_ended)
+    app = _desk(cfg, tab="queue")
+    late_line = json.dumps({"type": "assistant", "message": {"content": [
+        {"type": "text", "text": "late-stream-0476"}]}}) + "\n"
+
+    async def drive():
+        async with app.run_test(size=SIZE) as pilot:
+            await settle(app, pilot)
+            app.open_campaign_detail(cid2, focus={"tab": "runs", "run": run_id})
+            s = detail_screen(app)
+            assert await pilot_until(pilot, lambda: s._run_renderer is not None)
+            (run_dir / "stream.jsonl").unlink(missing_ok=True)
+            s._run_has_stream = False
+            s._run_renderer = None
+            s._run_follow_done = False
+            (run_dir / "stream.jsonl").write_text(late_line, encoding="utf-8")
+            assert await pilot_until(pilot, lambda: "late-stream-0476" in runs_detail(app))
+            assert not s._run_follow_done
+
+    _run(drive())
+
+
+def test_poll_does_not_cancel_slow_detail_load(tmp_path, monkeypatch):
+    monkeypatch.setattr(CD, "POLL_S", 0.05)
+    _, cfg, ids = _fixture(tmp_path)
+    cid = ids["impl"]
+    camp = S.campaign_dir(cfg, cid)
+    dst = camp.parent / f"{cid}-slow-detail"
+    shutil.copytree(camp, dst)
+    cid2 = dst.name
+    runs = S.runs_dir(cfg, cid2)
+    run_id = "002-implementer"
+    run_dir = runs / run_id
+    run_dir.mkdir(parents=True, exist_ok=True)
+    (run_dir / "stream.jsonl").write_text("", encoding="utf-8")
+    (run_dir / "request.json").write_text(json.dumps({"persona": "implementer"}), encoding="utf-8")
+    slow_line = json.dumps({"type": "assistant", "message": {"content": [
+        {"type": "text", "text": "slow-detail-0476"}]}}) + "\n"
+    st = json.loads((S.campaign_dir(cfg, cid2) / "state.json").read_text(encoding="utf-8"))
+    st["state"] = "IMPLEMENTING"
+    (S.campaign_dir(cfg, cid2) / "state.json").write_text(json.dumps(st), encoding="utf-8")
+    (run_dir / "exit.json").unlink(missing_ok=True)
+    (run_dir / "run.json").unlink(missing_ok=True)
+    ended = {"v": False}
+
+    def fake_ended(rd):
+        return ended["v"]
+
+    monkeypatch.setattr(TL, "_ended", fake_ended)
+    real = AM.load_run_pane_detail
+
+    def slow(cfg, campaign_id, rid):
+        rd = S.runs_dir(cfg, campaign_id) / rid
+        with open(rd / "stream.jsonl", "a", encoding="utf-8") as f:
+            f.write(slow_line)
+        time.sleep(max(CD.POLL_S * 3, 0.2))
+        return real(cfg, campaign_id, rid)
+
+    monkeypatch.setattr(AM, "load_run_pane_detail", slow)
+    app = _desk(cfg, tab="queue")
+
+    async def drive():
+        async with app.run_test(size=SIZE) as pilot:
+            await settle(app, pilot)
+            app.open_campaign_detail(cid2, focus={"tab": "runs", "run": run_id})
+            assert await pilot_until(pilot, lambda: "slow-detail-0476" in runs_detail(app))
+            extra = json.dumps({"type": "assistant", "message": {"content": [
+                {"type": "text", "text": "slow-append-once"}]}}) + "\n"
+            with open(run_dir / "stream.jsonl", "a", encoding="utf-8") as f:
+                f.write(extra)
+            assert await pilot_until(pilot, lambda: "slow-append-once" in runs_detail(app))
+            assert runs_detail(app).count("slow-append-once") == 1
+
+    _run(drive())
+
+
+def test_poll_does_not_cancel_slow_stream_tail(tmp_path, monkeypatch):
+    monkeypatch.setattr(CD, "POLL_S", 0.05)
+    _, cfg, ids = _fixture(tmp_path)
+    cid = ids["impl"]
+    camp = S.campaign_dir(cfg, cid)
+    dst = camp.parent / f"{cid}-slow-tail"
+    shutil.copytree(camp, dst)
+    cid2 = dst.name
+    run_id = "002-implementer"
+    run_dir = S.runs_dir(cfg, cid2) / run_id
+    run_dir.mkdir(parents=True, exist_ok=True)
+    (run_dir / "stream.jsonl").write_text("", encoding="utf-8")
+    st = json.loads((S.campaign_dir(cfg, cid2) / "state.json").read_text(encoding="utf-8"))
+    st["state"] = "IMPLEMENTING"
+    (S.campaign_dir(cfg, cid2) / "state.json").write_text(json.dumps(st), encoding="utf-8")
+    (run_dir / "exit.json").unlink(missing_ok=True)
+    (run_dir / "run.json").unlink(missing_ok=True)
+    ended = {"v": False}
+    monkeypatch.setattr(TL, "_ended", lambda rd: ended["v"])
+    real = AM.stream_tail
+
+    def slow_tail(*a, **k):
+        line = json.dumps({"type": "assistant", "message": {"content": [
+            {"type": "text", "text": "slow-tail-0476"}]}})
+        path = S.runs_dir(a[0], a[1]) / a[2] / "stream.jsonl"
+        with open(path, "a", encoding="utf-8") as f:
+            f.write(line + "\n")
+        time.sleep(max(CD.POLL_S * 3, 0.2))
+        return real(*a, **k)
+
+    monkeypatch.setattr(AM, "stream_tail", slow_tail)
+    app = _desk(cfg, tab="queue")
+
+    async def drive():
+        async with app.run_test(size=SIZE) as pilot:
+            await settle(app, pilot)
+            app.open_campaign_detail(cid2, focus={"tab": "runs", "run": run_id})
+            s = detail_screen(app)
+            assert await pilot_until(pilot, lambda: s._run_renderer is not None)
+            off0 = s._run_offset
+            assert await pilot_until(pilot, lambda: "slow-tail-0476" in runs_detail(app))
+            assert s._run_offset > off0
+            assert runs_detail(app).count("slow-tail-0476") == 1
 
     _run(drive())

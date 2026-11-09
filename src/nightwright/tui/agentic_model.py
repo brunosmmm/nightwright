@@ -1398,22 +1398,37 @@ def _result_fallback_text(run_dir: Path, run_json: dict | None) -> Text:
 def _stream_initial_tail(cfg, run_dir: Path) -> tuple[Text, object, int]:
     renderer = _run_renderer(cfg, run_dir)
     stream = run_dir / "stream.jsonl"
-    lines, offset = TL.read_lines(stream, 0)
+    offset = 0
     rendered: list[Text] = []
-    for line in lines:
-        rendered.extend(renderer.feed_line(line))
+    while True:
+        lines, offset = TL.read_lines(stream, offset)
+        for line in lines:
+            rendered.extend(renderer.feed_line(line))
+        try:
+            st_size = stream.stat().st_size
+        except OSError:
+            st_size = offset
+        try:
+            ended = TL._ended(run_dir)
+        except OSError:
+            ended = True
+        if not ended:
+            break
+        if offset >= st_size:
+            break
     if TL._ended(run_dir):
         frag = TL._fragment(stream, offset)
-        if frag:
+        if frag and "\n" not in frag:
             try:
                 if isinstance(json.loads(frag), dict):
                     rendered.extend(renderer.feed_line(frag))
+                    offset += len(frag.encode("utf-8"))
             except ValueError:
                 pass
-        try:
-            offset = stream.stat().st_size
-        except OSError:
-            offset = offset + len(frag.encode("utf-8")) if frag else offset
+        elif frag:
+            more, offset = TL.read_lines(stream, offset)
+            for line in more:
+                rendered.extend(renderer.feed_line(line))
     rendered.extend(renderer.flush_prose())
     plains = [t.plain for t in rendered][-RUNS_STREAM_LINES:]
     t = Text()
@@ -1473,17 +1488,27 @@ def stream_tail_drain(cfg, campaign_id, run_id, offset, renderer) -> tuple[list[
     """One drain when the run ends: trailing JSON fragment with no newline, if any."""
     run_dir = store.runs_dir(cfg, campaign_id) / run_id
     stream = run_dir / "stream.jsonl"
-    frag = TL._fragment(stream, offset)
     out: list[str] = []
-    if frag:
+    try:
+        st_size = stream.stat().st_size
+    except OSError:
+        st_size = offset
+    while offset < st_size:
+        lines, offset = TL.read_lines(stream, offset)
+        if not lines:
+            break
+        for line in lines:
+            out.extend(x.plain for x in renderer.feed_line(line))
+    frag = TL._fragment(stream, offset)
+    if frag and "\n" not in frag:
         try:
             if isinstance(json.loads(frag), dict):
                 out.extend(x.plain for x in renderer.feed_line(frag))
+                offset += len(frag.encode("utf-8"))
         except ValueError:
             pass
     out.extend(x.plain for x in renderer.flush_prose())
-    new_offset = offset + len(frag.encode("utf-8")) if frag else offset
-    return out, new_offset
+    return out, offset
 
 
 def timeline_group(row: dict) -> str:
