@@ -623,6 +623,165 @@ def _v1_cursors_match(root: Path, v1_files: dict) -> bool:
     return True
 
 
+def _v1_cursors_match_records_quiet(root: Path, v1_files: dict) -> bool:
+    """Fingerprint-match arm: stat only the three stamped cache files, not campaigns/*.json."""
+    if not isinstance(v1_files, dict):
+        return False
+    for name in ("version", "index.jsonl", "records.jsonl"):
+        cursor = v1_files.get(name)
+        if not isinstance(cursor, dict):
+            return False
+        if not (root / name).is_file():
+            return False
+        if not _cursor_matches(root / name, cursor):
+            return False
+    sources_path = root / "sources.json"
+    src_key = "sources.json"
+    if src_key in v1_files:
+        cursor = v1_files[src_key]
+        if not isinstance(cursor, dict) or not sources_path.is_file():
+            return False
+        if not _cursor_matches(sources_path, cursor):
+            return False
+    elif sources_path.is_file():
+        if not _sources_ok(_read_json(sources_path)):
+            return False
+    return True
+
+
+def _campaign_signature_from_root_scan(base: Path) -> str | None:
+    ledger_size = ledger_mtime = None
+    state_mtime = runs_mtime = gates_mtime = None
+    try:
+        with os.scandir(base) as it:
+            for ent in it:
+                if ent.is_file(follow_symlinks=False) and ent.name == "ledger.jsonl":
+                    st = ent.stat(follow_symlinks=False)
+                    ledger_size, ledger_mtime = st.st_size, st.st_mtime_ns
+                elif ent.is_file(follow_symlinks=False) and ent.name == "state.json":
+                    state_mtime = ent.stat(follow_symlinks=False).st_mtime_ns
+                elif ent.is_dir(follow_symlinks=False) and ent.name == "runs":
+                    runs_mtime = ent.stat(follow_symlinks=False).st_mtime_ns
+                elif ent.is_dir(follow_symlinks=False) and ent.name == "gates":
+                    gates_mtime = ent.stat(follow_symlinks=False).st_mtime_ns
+    except OSError:
+        return None
+    values = (ledger_size, ledger_mtime, state_mtime, runs_mtime, gates_mtime)
+    return hashlib.sha1(repr(values).encode("utf-8")).hexdigest()
+
+
+def _rg_dirs_snapshot_scandir(base: Path) -> list[list] | None:
+    parts: list[list] = []
+    for sub in ("runs", "gates"):
+        root = base / sub
+        if not root.is_dir():
+            continue
+        stack: list[tuple[Path, str]] = [(root, sub)]
+        while stack:
+            cur, prefix = stack.pop()
+            try:
+                parts.append([prefix, cur.stat().st_mtime_ns])
+            except OSError:
+                return None
+            try:
+                with os.scandir(cur) as it:
+                    for ent in it:
+                        if ent.is_dir(follow_symlinks=False):
+                            stack.append((Path(ent.path), f"{prefix}/{ent.name}"))
+            except OSError:
+                return None
+    return parts
+
+
+def _rg_dirs_norm_key(parts) -> tuple:
+    if not isinstance(parts, list):
+        return ()
+    try:
+        return tuple(tuple(p) for p in sorted(parts, key=lambda x: x[0]))
+    except (TypeError, IndexError):
+        return ()
+
+
+def _rg_dirs_stored_match(base: Path, stored_dirs) -> bool:
+    live = _rg_dirs_snapshot_scandir(base)
+    if live is None:
+        return False
+    return _rg_dirs_norm_key(live) == _rg_dirs_norm_key(stored_dirs)
+
+
+def _records_relevant_live_cursors(base: Path, agentic: Path) -> dict[str, dict] | None:
+    out: dict[str, dict] = {}
+    for sub in ("runs", "gates"):
+        root = base / sub
+        if not root.is_dir():
+            continue
+        stack: list[Path] = [root]
+        while stack:
+            cur = stack.pop()
+            try:
+                with os.scandir(cur) as it:
+                    for ent in it:
+                        if ent.is_dir(follow_symlinks=False):
+                            stack.append(Path(ent.path))
+                            continue
+                        if not ent.is_file(follow_symlinks=False):
+                            continue
+                        name = ent.name
+                        if sub == "runs":
+                            if name not in ("run.json", "result.json"):
+                                continue
+                        elif not name.endswith(".json"):
+                            continue
+                        try:
+                            st = ent.stat(follow_symlinks=False)
+                        except OSError:
+                            return None
+                        rel = Path(ent.path).relative_to(agentic).as_posix()
+                        out[rel] = {"size": st.st_size, "mtime_ns": st.st_mtime_ns}
+            except OSError:
+                return None
+    return out
+
+
+def _stored_records_inputs_match(stored: dict, live: dict) -> bool:
+    relevant = {k: v for k, v in stored.items() if _is_records_run_gates_path(k)}
+    for rel, cursor in relevant.items():
+        row = live.get(rel)
+        if not isinstance(row, dict) or not isinstance(cursor, dict):
+            return False
+        if row.get("size") != cursor.get("size") or row.get("mtime_ns") != cursor.get("mtime_ns"):
+            return False
+    for rel in live:
+        if rel not in relevant:
+            return False
+    return True
+
+
+def _terminal_row_stale_records_quiet(cfg, cid: str, row: dict, sources: dict) -> bool:
+    if row.get("outcome") not in _TERMINAL_OUTCOMES:
+        return True
+    stored_sig = row.get("signature")
+    if not isinstance(stored_sig, str):
+        return True
+    stored_files = (sources.get("campaign_files") or {}).get(cid)
+    if not isinstance(stored_files, dict):
+        return True
+    base = store.campaign_dir(cfg, cid)
+    if base is None:
+        return bool(stored_files)
+    live_sig = _campaign_signature_from_root_scan(base)
+    if live_sig is None or live_sig != stored_sig:
+        return True
+    rg_dirs = (sources.get("campaign_rg_dirs") or {}).get(cid)
+    agentic = store.agentic_dir(cfg)
+    if _rg_dirs_stored_match(base, rg_dirs):
+        live = _records_relevant_live_cursors(base, agentic)
+        if live is None:
+            return True
+        return not _stored_records_inputs_match(stored_files, live)
+    return _campaign_file_cursors(cfg, cid) != stored_files
+
+
 def _cache_tree_corrupt(root: Path, sources: dict | None = None) -> bool:
     if not root.is_dir():
         return False
@@ -653,7 +812,10 @@ def _cache_tree_corrupt(root: Path, sources: dict | None = None) -> bool:
         except OSError:
             return True
     v1_files = (sources or {}).get("v1_files")
-    fast = _sources_ok(sources) and isinstance(v1_files, dict) and _v1_cursors_match(root, v1_files)
+    fast = _sources_ok(sources) and isinstance(v1_files, dict) and (
+        _v1_cursors_match_records_quiet(root, v1_files)
+        or _v1_cursors_match(root, v1_files)
+    )
     idx = root / "index.jsonl"
     if idx.is_file():
         if not (fast and _cursor_matches(idx, v1_files.get("index.jsonl") or {})):
@@ -780,6 +942,18 @@ def _stale_terminal_ids_run_inputs_only(cfg, index_rows: list[dict], sources: di
     return out
 
 
+def _stale_terminal_ids_records_quiet(cfg, index_rows: list[dict], sources: dict) -> set[str]:
+    live = _live_campaign_ids(cfg)
+    out: set[str] = set()
+    for row in index_rows:
+        cid = row.get("campaign")
+        if not isinstance(cid, str) or cid not in live:
+            continue
+        if _terminal_row_stale_records_quiet(cfg, cid, row, sources):
+            out.add(cid)
+    return out
+
+
 def _recompute_terminal_documents(
     cfg, root: Path, now, index_rows: list[dict], records: list[dict], cids: set[str],
 ) -> tuple[list[dict], list[dict], dict | None]:
@@ -820,7 +994,7 @@ def _stored_line(rec: dict) -> str:
     return json.dumps({**rec, "search": _search_text(rec)}, ensure_ascii=False)
 
 
-_records_mem: dict[tuple, list[tuple[dict, str]]] = {}
+_records_mem: dict[tuple, dict] = {}
 _CACHE_WRITE_LOCK = threading.Lock()
 _INDEX_QUIET_KEY: tuple | None = None
 
@@ -882,10 +1056,15 @@ def _set_records_mem(root: Path, entries: list[tuple[dict, str]]) -> None:
     _drop_stale_records_cache(root)
     key = _records_cache_key(root)
     if key is not None:
-        _records_mem[key] = entries
+        by_kind: dict[str, list[int]] = {}
+        for idx, (rec, _) in enumerate(entries):
+            kind = rec.get("kind")
+            if isinstance(kind, str):
+                by_kind.setdefault(kind, []).append(idx)
+        _records_mem[key] = {"entries": entries, "by_kind": by_kind}
 
 
-def _get_records_mem(root: Path) -> list[tuple[dict, str]] | None:
+def _get_records_mem(root: Path) -> dict | None:
     key = _records_cache_key(root)
     if key is None:
         return None
@@ -955,7 +1134,7 @@ def _read_index(root: Path) -> list[dict]:
 def _read_records(root: Path) -> list[dict]:
     cached = _get_records_mem(root)
     if cached is not None:
-        return [rec for rec, _ in cached]
+        return [rec for rec, _ in cached["entries"]]
     return [rec for rec, _ in _load_records_mem(root)]
 
 
@@ -976,8 +1155,13 @@ def _read_records_filtered(
     """Load records from JSONL, skipping lines that cannot match kind/query filters."""
     cached = _get_records_mem(root)
     if cached is not None:
+        entries = cached["entries"]
+        if kinds is not None and not needle and len(kinds) == 1:
+            idxs = cached.get("by_kind", {}).get(next(iter(kinds)))
+            if idxs is not None:
+                return [entries[i][0] for i in idxs]
         out = []
-        for rec, search in cached:
+        for rec, search in entries:
             if kinds is not None and rec.get("kind") not in kinds:
                 continue
             if needle and needle not in search:
@@ -1877,6 +2061,15 @@ def _cold_fill(cfg, root: Path, *, now=None, progress=None, _hold_guard: bool = 
 
 def _ensure_writable_cache(cfg, root: Path, *, now=None, progress=None) -> bool:
     sources_peek = _read_json(root / "sources.json")
+    if (
+        _sources_ok(sources_peek)
+        and (root / "version").is_file()
+        and (root / "index.jsonl").is_file()
+        and (root / "records.jsonl").is_file()
+    ):
+        v1 = (sources_peek or {}).get("v1_files") or {}
+        if isinstance(v1, dict) and _v1_cursors_match_records_quiet(root, v1):
+            return False
     if _cache_tree_corrupt(root, sources_peek):
         with _cache_write_guard(root):
             _clear_v1_except_lock(root)
@@ -2269,7 +2462,7 @@ def _cache_refresh_quiet(cfg, root: Path, sources: dict) -> bool:
     if not _sources_unchanged_light(cfg, sources):
         return False
     v1_files = sources.get("v1_files") or {}
-    if not isinstance(v1_files, dict) or not _v1_cursors_match(root, v1_files):
+    if not isinstance(v1_files, dict) or not _v1_cursors_match_records_quiet(root, v1_files):
         return False
     index_rows = _read_index(root)
     live = _live_campaign_ids(cfg)
@@ -2293,7 +2486,7 @@ def _records_cache_quiet(cfg, root: Path, sources: dict) -> bool:
     if not _sources_unchanged_light(cfg, sources):
         return False
     v1_files = sources.get("v1_files") or {}
-    if not isinstance(v1_files, dict) or not _v1_cursors_match(root, v1_files):
+    if not isinstance(v1_files, dict):
         return False
     index_rows = _read_index(root)
     live = _live_campaign_ids(cfg)
@@ -2301,8 +2494,12 @@ def _records_cache_quiet(cfg, root: Path, sources: dict) -> bool:
         return False
     fp = _index_quiet_fingerprint(cfg, root, sources, index_rows, live)
     if fp == _INDEX_QUIET_KEY:
-        stale = _stale_terminal_ids_run_inputs_only(cfg, index_rows, sources)
+        if not _v1_cursors_match_records_quiet(root, v1_files):
+            return False
+        stale = set()
     else:
+        if not _v1_cursors_match_records_quiet(root, v1_files):
+            return False
         stale = _stale_terminal_ids_for_records(cfg, index_rows, sources)
     if stale:
         return False
@@ -3014,13 +3211,21 @@ def _history_records_cached(cfg, *, now, root: Path, campaign=None, agent=None, 
     elif stream_kinds is not None or stream_needle:
         mem = _get_records_mem(root)
         if mem is not None:
-            base = []
-            for rec, search in mem:
-                if stream_kinds is not None and rec.get("kind") not in stream_kinds:
-                    continue
-                if stream_needle and stream_needle not in search:
-                    continue
-                base.append(rec)
+            entries = mem["entries"]
+            if stream_kinds is not None and not stream_needle and len(stream_kinds) == 1:
+                idxs = mem.get("by_kind", {}).get(next(iter(stream_kinds)))
+                if idxs is not None:
+                    base = [entries[i][0] for i in idxs]
+                else:
+                    base = []
+            else:
+                base = []
+                for rec, search in entries:
+                    if stream_kinds is not None and rec.get("kind") not in stream_kinds:
+                        continue
+                    if stream_needle and stream_needle not in search:
+                        continue
+                    base.append(rec)
         else:
             base = _read_records_filtered(root, kinds=stream_kinds, needle=stream_needle)
     else:
