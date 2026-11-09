@@ -284,6 +284,10 @@ progress. This is the single place to see *what has been decided* and *what is i
 - **[SPEC-0435](./specs/0435-cursor-agent-backend-for-the-agentic-queue.md) — Cursor-agent backend for the agentic queue** · done · (2/2 done)
   - [x] [SPEC-0436](./specs/0436-persona-cursorrunner-and-cursor-model-maps.md) Persona CursorRunner and Cursor model maps — done
   - [x] [SPEC-0437](./specs/0437-conductor-and-steward-launch-via-cursor-agent.md) Conductor and steward launch via cursor-agent — done
+- **[SPEC-0489](./specs/0489-test-tiers-and-cadenced-heavy-runs.md) — Test tiers: campaign gates run the fast tier only; heavy tiers run on a per-project cadence** · accepted · (0/3 done)
+  - [ ] [SPEC-0490](./specs/0490-tier-markers-and-fast-only-gates.md) Tier markers and fast-only campaign gates — accepted
+  - [ ] [SPEC-0491](./specs/0491-per-project-cadence-jobs.md) Per-project cadence jobs, runner trigger and red-main source — accepted
+  - [ ] [SPEC-0492](./specs/0492-tighter-affected-selection.md) Tighter affected selection for specs, hot modules and fixtures — accepted
 
 ## Active & planned
 
@@ -309,7 +313,10 @@ progress. This is the single place to see *what has been decided* and *what is i
 | [SPEC-0470](./specs/0470-close-follows-a-renamed-spec.md) | Close follows a spec file the branch renamed | feature | accepted | — | 2026-11-08 |
 | [SPEC-0476](./specs/0476-campaign-detail-runs-pane.md) | Campaign detail Runs pane: run table, verdict, and stream tail | feature | accepted | — | 2026-11-08 |
 | [SPEC-0477](./specs/0477-campaign-detail-findings-and-mail.md) | Campaign detail Findings & decisions pane and Mail pane | feature | accepted | — | 2026-11-08 |
-| [SPEC-0489](./specs/0489-test-tiers-and-cadenced-heavy-runs.md) | Test tiers: campaign gates run the fast tier only; heavy tiers run on a per-project cadence | feature | accepted | M9: agentic workflow | 2026-11-09 |
+| [SPEC-0489](./specs/0489-test-tiers-and-cadenced-heavy-runs.md) | Test tiers: campaign gates run the fast tier only; heavy tiers run on a per-project cadence | epic | accepted | M9: agentic workflow | 2026-11-09 |
+| [SPEC-0490](./specs/0490-tier-markers-and-fast-only-gates.md) | Tier markers and fast-only campaign gates | feature | accepted | M9: agentic workflow | 2026-11-09 |
+| [SPEC-0491](./specs/0491-per-project-cadence-jobs.md) | Per-project cadence jobs, runner trigger and red-main source | feature | accepted | M9: agentic workflow | 2026-11-09 |
+| [SPEC-0492](./specs/0492-tighter-affected-selection.md) | Tighter affected selection for specs, hot modules and fixtures | feature | accepted | M9: agentic workflow | 2026-11-09 |
 
 ## Done
 
