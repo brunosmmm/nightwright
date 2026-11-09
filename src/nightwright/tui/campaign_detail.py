@@ -233,6 +233,7 @@ class CampaignDetail(QueueActions, ModalScreen):
         self._run_offset = 0
         self._run_has_stream = False
         self._run_follow_done = False
+        self._run_tail_inflight = False
         self._run_detail_token = 0
         self._cursor_direction = 0
         self._detail_token = 0
@@ -764,9 +765,6 @@ class CampaignDetail(QueueActions, ModalScreen):
             return
         if self._selected_run_id != run_id:
             return
-        self._run_renderer = snap.renderer
-        self._run_offset = snap.offset
-        self._run_has_stream = snap.has_stream
         ended = False
         if snap.has_stream:
             run_dir = store.runs_dir(self.cfg, self.campaign_id) / run_id
@@ -774,20 +772,41 @@ class CampaignDetail(QueueActions, ModalScreen):
                 ended = TL._ended(run_dir)
             except OSError:
                 ended = True
-        self._run_follow_done = not snap.has_stream or ended or self.view.terminal
+        if self.view.terminal:
+            self._run_follow_done = True
+        elif snap.has_stream:
+            self._run_follow_done = ended
+        else:
+            self._run_follow_done = False
+        self._run_renderer = snap.renderer
+        self._run_offset = snap.offset
+        self._run_has_stream = snap.has_stream
         self.query_one("#runs-detail-text", Static).update(snap.text)
+        self._scroll_runs_detail_end()
+
+    def _scroll_runs_detail_end(self) -> None:
+        if self._active_tab() != "tab-runs":
+            return
+        try:
+            self.query_one("#runs-detail", VerticalScroll).scroll_end(animate=False)
+        except Exception:
+            pass
 
     async def _runs_follow_poll(self) -> None:
         if self.view is None or self.view.terminal:
             return
         if self._active_tab() != "tab-runs":
             return
-        if not self._run_has_stream or self._run_renderer is None or self._run_follow_done:
+        if self._run_follow_done or self._run_tail_inflight:
             return
         if self._selected_run_id is None:
             return
         run_dir = store.runs_dir(self.cfg, self.campaign_id) / self._selected_run_id
-        if not (run_dir / "stream.jsonl").is_file():
+        stream_path = run_dir / "stream.jsonl"
+        if not stream_path.is_file():
+            return
+        if not self._run_has_stream or self._run_renderer is None:
+            self._load_run_detail(self._selected_run_id)
             return
         try:
             ended = TL._ended(run_dir)
@@ -796,44 +815,55 @@ class CampaignDetail(QueueActions, ModalScreen):
         rid = self._selected_run_id
         renderer = self._run_renderer
         offset = self._run_offset
+        self._run_tail_inflight = True
         try:
-            lines, offset = await asyncio.to_thread(
-                AM.stream_tail, self.cfg, self.campaign_id, rid, offset, renderer)
-        except Exception:
-            return
-        if not self._worker_alive() or self._selected_run_id != rid:
-            return
-        self._run_offset = offset
-        if lines:
-            pane = self.query_one("#runs-detail-text", Static)
-            cur = pane.content if isinstance(pane.content, Text) else Text(str(pane.content))
-            extra = Text()
-            for ln in lines:
-                extra.append(ln)
-                extra.append("\n")
-            cur.append_text(extra)
-            pane.update(cur)
-        if ended and not self._run_follow_done:
             try:
-                drain, offset = await asyncio.to_thread(
-                    AM.stream_tail_drain, self.cfg, self.campaign_id, rid, self._run_offset,
-                    renderer)
+                lines, offset = await asyncio.to_thread(
+                    AM.stream_tail, self.cfg, self.campaign_id, rid, offset, renderer)
             except Exception:
-                drain, offset = [], self._run_offset
-            self._run_follow_done = True
+                return
+            if not self._worker_alive() or self._selected_run_id != rid:
+                return
             self._run_offset = offset
-            if drain and self._selected_run_id == rid:
+            if lines and self._selected_run_id == rid:
                 pane = self.query_one("#runs-detail-text", Static)
                 cur = pane.content if isinstance(pane.content, Text) else Text(str(pane.content))
                 extra = Text()
-                for ln in drain:
+                for ln in lines:
                     extra.append(ln)
                     extra.append("\n")
                 cur.append_text(extra)
                 pane.update(cur)
+                self._scroll_runs_detail_end()
+            if ended and not self._run_follow_done and self._selected_run_id == rid:
+                try:
+                    drain, offset = await asyncio.to_thread(
+                        AM.stream_tail_drain, self.cfg, self.campaign_id, rid, self._run_offset,
+                        renderer)
+                except Exception:
+                    drain, offset = [], self._run_offset
+                if self._selected_run_id != rid:
+                    return
+                self._run_follow_done = True
+                self._run_offset = offset
+                if drain:
+                    pane = self.query_one("#runs-detail-text", Static)
+                    cur = (pane.content if isinstance(pane.content, Text)
+                           else Text(str(pane.content)))
+                    extra = Text()
+                    for ln in drain:
+                        extra.append(ln)
+                        extra.append("\n")
+                    cur.append_text(extra)
+                    pane.update(cur)
+                    self._scroll_runs_detail_end()
+        finally:
+            self._run_tail_inflight = False
 
     @on(DataTable.RowHighlighted, "#campaign-runs")
     def _runs_row_highlighted(self, event: DataTable.RowHighlighted) -> None:
+        if event.cursor_row != self.runs_table.cursor_row:
+            return
         i = event.cursor_row
         if not self._runs_rows or i < 0 or i >= len(self._runs_rows):
             return
@@ -921,10 +951,15 @@ class CampaignDetail(QueueActions, ModalScreen):
         self.action_tab(_TAB_IDS[(i - 1) % len(_TAB_IDS)])
 
     def _detail_scroll(self, delta: int) -> None:
-        if self._active_tab() != "tab-timeline":
+        tab = self._active_tab()
+        if tab == "tab-timeline":
+            scroller_id = "#campaign-detail"
+        elif tab == "tab-runs":
+            scroller_id = "#runs-detail"
+        else:
             return
         try:
-            scroller = self.query_one("#campaign-detail", VerticalScroll)
+            scroller = self.query_one(scroller_id, VerticalScroll)
         except Exception:
             return
         scroller.scroll_relative(y=delta, animate=False)

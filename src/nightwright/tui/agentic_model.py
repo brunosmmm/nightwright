@@ -1347,15 +1347,26 @@ def _stderr_tail_text(run_dir: Path) -> Text:
     return t
 
 
+def _result_file_path(run_dir: Path, run_json: dict | None) -> Path:
+    path = run_dir / "result.json"
+    if not isinstance(run_json, dict):
+        return path
+    raw = (run_json.get("files") or {}).get("raw")
+    if not isinstance(raw, str) or not raw.strip():
+        return path
+    try:
+        base = run_dir.resolve()
+        candidate = (run_dir / raw).resolve()
+        if candidate.is_relative_to(base):
+            return candidate
+    except (OSError, ValueError):
+        pass
+    return path
+
+
 def _result_fallback_text(run_dir: Path, run_json: dict | None) -> Text:
     t = Text()
-    rel = None
-    if isinstance(run_json, dict):
-        files = run_json.get("files") or {}
-        raw = files.get("raw")
-        if isinstance(raw, str) and raw and "/" not in raw and "\\" not in raw:
-            rel = raw
-    path = run_dir / rel if rel else run_dir / "result.json"
+    path = _result_file_path(run_dir, run_json)
     if not path.is_file():
         t.append("no result.json\n")
         return t
@@ -1391,6 +1402,18 @@ def _stream_initial_tail(cfg, run_dir: Path) -> tuple[Text, object, int]:
     rendered: list[Text] = []
     for line in lines:
         rendered.extend(renderer.feed_line(line))
+    if TL._ended(run_dir):
+        frag = TL._fragment(stream, offset)
+        if frag:
+            try:
+                if isinstance(json.loads(frag), dict):
+                    rendered.extend(renderer.feed_line(frag))
+            except ValueError:
+                pass
+        try:
+            offset = stream.stat().st_size
+        except OSError:
+            offset = offset + len(frag.encode("utf-8")) if frag else offset
     rendered.extend(renderer.flush_prose())
     plains = [t.plain for t in rendered][-RUNS_STREAM_LINES:]
     t = Text()
@@ -1432,7 +1455,6 @@ def load_run_pane_detail(cfg, cid, run_id: str) -> RunPaneDetail:
         t.append_text(stream_text)
     else:
         t.append_text(_result_fallback_text(run_dir, run_json if isinstance(run_json, dict) else None))
-    t.rstrip()
     return RunPaneDetail(t, renderer, offset, has_stream, run_id)
 
 

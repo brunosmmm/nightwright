@@ -34,6 +34,16 @@ from waits import pilot_until
 GATE_TITLE = "Command reference page does not list the new top-level `worker` command"
 MAJOR_TITLE = "`origin/<rest>` base name path (refs/remotes/origin/*) untested"
 CID_MULTI = MULTI
+CID_STREAM = "SPEC-0394-20261102-ae5b"
+
+
+def _cell_plain(row: dict, key: str) -> str:
+    val = row.get(key)
+    if val is None:
+        return ""
+    if key == "cost_usd" and isinstance(val, (int, float)):
+        return f"{val:.4f}"
+    return str(val)
 
 
 def runs_detail(app) -> str:
@@ -58,7 +68,7 @@ def _cid_with_runs(cfg):
 def test_runs_table_and_columns(tmp_path):
     cfg = TH.fixture_cfg(tmp_path)
     TH.prepare_queue_window(cfg)
-    cid = _cid_with_runs(cfg)
+    cid = CID_MULTI
     hist = Hist.campaign_history(cfg, cid)
     app = _desk(cfg, tab="queue")
 
@@ -70,11 +80,13 @@ def test_runs_table_and_columns(tmp_path):
             s = detail_screen(app)
             assert "placeholder: runs" not in runs_detail(app)
             tbl = runs_table(app)
-            assert len(tbl.columns) == len(AM.RUNS_TABLE_COLUMNS)
+            assert [c.label.plain for c in tbl.ordered_columns] == list(AM.RUNS_TABLE_COLUMNS)
             assert tbl.row_count == len(hist["runs"])
-            keys = run_row_keys(tbl)
-            for row in hist["runs"]:
-                assert row["run_id"] in keys
+            keys = [str(tbl.ordered_rows[i].key.value) for i in range(tbl.row_count)]
+            assert keys == [r["run_id"] for r in hist["runs"]]
+            for i, row in enumerate(hist["runs"]):
+                cells = [c.plain for c in tbl.get_row_at(i)]
+                assert cells == [_cell_plain(row, k) for k in AM.RUNS_TABLE_COLUMNS]
 
     _run(drive())
 
@@ -84,7 +96,7 @@ def test_focus_select_run_and_unknown(tmp_path):
     TH.prepare_queue_window(cfg)
     cid = CID_MULTI
     hist = Hist.campaign_history(cfg, cid)
-    run_id = "001-implementer"
+    run_id = "020-test_reviewer"
     assert any(r["run_id"] == run_id for r in hist["runs"])
     app = IdeaDesk(cfg, tab="queue")
     app.notes = []
@@ -99,11 +111,15 @@ def test_focus_select_run_and_unknown(tmp_path):
             await settle(app, pilot)
             app.open_campaign_detail(cid, focus={"tab": "runs", "run": run_id})
             await settle(app, pilot)
+            assert await pilot_until(
+                pilot, lambda: MAJOR_TITLE in runs_detail(app))
             s = detail_screen(app)
             assert s.query_one("#detail-body", TabbedContent).active == "tab-runs"
             assert runs_table(app).cursor_row == next(
                 i for i, r in enumerate(hist["runs"]) if r["run_id"] == run_id)
-            assert "done" in runs_detail(app) or "status" in runs_detail(app).lower()
+            assert str(AM._verdict_status_line(json.loads(
+                (S.runs_dir(cfg, cid) / run_id / "run.json").read_text(encoding="utf-8")
+            ).get("verdict"))) in runs_detail(app)
             await press(app, pilot, ["escape"])
             await settle(app, pilot)
             app.open_campaign_detail(cid, focus={"tab": "runs", "run": "nope-run"})
@@ -117,7 +133,8 @@ def test_focus_select_run_and_unknown(tmp_path):
             await press(app, pilot, ["1"])
             await settle(app, pilot)
             s.select_run(run_id)
-            await settle(app, pilot)
+            assert await pilot_until(
+                pilot, lambda: MAJOR_TITLE in runs_detail(app))
             assert s.query_one("#detail-body", TabbedContent).active == "tab-runs"
             tab_before = s.query_one("#detail-body", TabbedContent).active
             s.select_run("missing-id")
@@ -145,14 +162,24 @@ def test_gate_and_reviewer_blockers_in_pane(tmp_path):
             assert await pilot_until(pilot, lambda: GATE_TITLE in runs_detail(app))
             assert "docs/product/reference/index.md" in runs_detail(app)
             assert mark in runs_detail(app)
+            assert "e0" not in runs_detail(app).splitlines()
             s.select_run("020-test_reviewer")
             assert await pilot_until(pilot, lambda: MAJOR_TITLE in runs_detail(app))
+            rev = json.loads(
+                (S.runs_dir(cfg, cid) / "020-test_reviewer" / "run.json").read_text(
+                    encoding="utf-8"))
+            for minor in (f["title"] for f in rev["verdict"]["findings"]
+                          if f.get("severity") == "minor"):
+                assert f"minor: {minor}" not in runs_detail(app)
+            s.select_run("033-conformance_reviewer")
+            assert await pilot_until(pilot, lambda: runs_detail(app).strip())
             conf = json.loads(
                 (S.runs_dir(cfg, cid) / "033-conformance_reviewer" / "run.json").read_text(
                     encoding="utf-8"))
+            detail = runs_detail(app)
             for nit in (f["title"] for f in conf["verdict"]["findings"]
                         if f.get("severity") == "nit"):
-                assert nit not in runs_detail(app)
+                assert nit not in detail
 
     _run(drive())
 
@@ -172,42 +199,77 @@ def test_verdict_blockers_string_rendered(tmp_path):
 def test_stream_result_and_stream_tail_unit(tmp_path):
     cfg = TH.fixture_cfg(tmp_path)
     TH.prepare_queue_window(cfg)
-    cid = CID_MULTI
-    hist = Hist.campaign_history(cfg, cid)
-    stream_id = next((r["run_id"] for r in hist["runs"] if r.get("has_stream")), None)
-    no_stream = next((r["run_id"] for r in hist["runs"] if not r.get("has_stream")), None)
-    if stream_id is None or no_stream is None:
-        pytest.skip("fixture missing stream / pre-stream runs")
+    cid_stream = CID_STREAM
+    hist_stream = Hist.campaign_history(cfg, cid_stream)
+    stream_id = next((r["run_id"] for r in hist_stream["runs"] if r.get("has_stream")), None)
+    assert stream_id is not None
+    stream_path = S.runs_dir(cfg, cid_stream) / stream_id / "stream.jsonl"
+    assert stream_path.is_file()
+    snap = AM.load_run_pane_detail(cfg, cid_stream, stream_id)
+    assert snap.offset == stream_path.stat().st_size
+    assert snap.text.plain.strip()
+
+    cid_pre = CID_MULTI
+    hist_pre = Hist.campaign_history(cfg, cid_pre)
+    no_stream = next((r["run_id"] for r in hist_pre["runs"] if not r.get("has_stream")), None)
+    assert no_stream is not None
+    # 001-implementer: structured_output is an object → show file tail, not raw JSON keys only
+    impl_result = (S.runs_dir(cfg, cid_pre) / no_stream / "result.json").read_text(encoding="utf-8")
+    pre_snap = AM.load_run_pane_detail(cfg, cid_pre, no_stream)
+    tail_lines = impl_result.splitlines()[-200:]
+    for ln in tail_lines[-3:]:
+        assert ln in pre_snap.text.plain
+
     app = _desk(cfg, tab="queue")
 
     async def drive():
         async with app.run_test(size=SIZE) as pilot:
-            await open_screen(app, pilot, cid, "delivered", timeline=False)
+            await open_screen(app, pilot, cid_stream, "delivered", timeline=False)
             await press(app, pilot, ["3"])
             s = detail_screen(app)
             s.select_run(stream_id)
+            assert await pilot_until(pilot, lambda: runs_detail(app).strip())
+            await press(app, pilot, ["escape"])
             await settle(app, pilot)
-            text = runs_detail(app)
-            assert text.strip()
+            await open_screen(app, pilot, cid_pre, "delivered", timeline=False)
+            await press(app, pilot, ["3"])
+            s = detail_screen(app)
             s.select_run(no_stream)
             assert await pilot_until(pilot, lambda: runs_detail(app).strip())
-            detail = runs_detail(app)
-            assert detail.strip() and "total_cost_usd" not in detail[:200]
-            rd = S.runs_dir(cfg, cid) / no_stream
+            rd = S.runs_dir(cfg, cid_pre) / no_stream
             result = rd / "result.json"
             if result.is_file():
                 result.unlink()
-            s = detail_screen(app)
             s.select_run(no_stream)
             assert await pilot_until(pilot, lambda: "no result.json" in runs_detail(app))
 
     _run(drive())
-    run_dir = S.runs_dir(cfg, cid) / stream_id
+    run_dir = S.runs_dir(cfg, cid_stream) / stream_id
     renderer = AM._run_renderer(cfg, run_dir)
-    lines1, off1 = AM.stream_tail(cfg, cid, stream_id, 0, renderer)
-    lines2, off2 = AM.stream_tail(cfg, cid, stream_id, off1, renderer)
+    lines1, off1 = AM.stream_tail(cfg, cid_stream, stream_id, 0, renderer)
+    assert lines1
+    lines2, off2 = AM.stream_tail(cfg, cid_stream, stream_id, off1, renderer)
     assert off2 >= off1
-    assert isinstance(lines1, list) and isinstance(lines2, list)
+    assert isinstance(lines2, list)
+
+
+def test_ended_stream_trailing_fragment(tmp_path):
+    cfg = TH.fixture_cfg(tmp_path)
+    TH.prepare_queue_window(cfg)
+    cid = CID_STREAM
+    run_id = "001-implementer"
+    camp = S.campaign_dir(cfg, cid)
+    dst = camp.parent / f"{cid}-frag"
+    shutil.copytree(camp, dst)
+    cid2 = dst.name
+    run_dir = S.runs_dir(cfg, cid2) / run_id
+    stream = run_dir / "stream.jsonl"
+    frag = json.dumps({"type": "result", "subtype": "success", "result": "frag-0476"})
+    stream.write_bytes(frag.encode("utf-8"))
+    assert (run_dir / "run.json").is_file()
+    snap = AM.load_run_pane_detail(cfg, cid2, run_id)
+    assert "■ result:" in snap.text.plain
+    assert snap.offset == stream.stat().st_size
 
 
 def test_load_run_detail_off_main_thread(tmp_path, monkeypatch):
@@ -258,7 +320,9 @@ def test_runs_pane_no_writes(tmp_path):
     TH.prepare_queue_window(cfg)
     cid = _cid_with_runs(cfg)
     root = S.campaign_dir(cfg, cid)
+    cache = Path(cfg["cache_dir"])
     before = _hashes(root)
+    cache_before = _hashes(cache) if cache.is_dir() else {}
     app = _desk(cfg, tab="queue")
 
     async def drive():
@@ -269,9 +333,11 @@ def test_runs_pane_no_writes(tmp_path):
 
     _run(drive())
     assert _hashes(root) == before
+    assert _hashes(cache) == cache_before if cache.is_dir() else cache_before == {}
 
 
 def test_timeline_tab_does_not_tail(tmp_path, monkeypatch):
+    monkeypatch.setattr(CD, "POLL_S", 0.08)
     tail_calls = []
     real = AM.stream_tail
 
@@ -282,24 +348,42 @@ def test_timeline_tab_does_not_tail(tmp_path, monkeypatch):
     monkeypatch.setattr(AM, "stream_tail", spy)
     cfg = TH.fixture_cfg(tmp_path)
     TH.prepare_queue_window(cfg)
-    cid = _cid_with_runs(cfg)
-    hist = Hist.campaign_history(cfg, cid)
+    cid = CID_STREAM
+    camp = S.campaign_dir(cfg, cid)
+    dst = camp.parent / f"{cid}-tl"
+    shutil.copytree(camp, dst)
+    cid2 = dst.name
+    st = json.loads((S.campaign_dir(cfg, cid2) / "state.json").read_text(encoding="utf-8"))
+    st["state"] = "IMPLEMENTING"
+    (S.campaign_dir(cfg, cid2) / "state.json").write_text(json.dumps(st), encoding="utf-8")
+    hist = Hist.campaign_history(cfg, cid2)
     run_id = next((r["run_id"] for r in hist["runs"] if r.get("has_stream")), None)
-    if not run_id:
-        pytest.skip("no stream run")
+    assert run_id
+    run_dir = S.runs_dir(cfg, cid2) / run_id
+    (run_dir / "exit.json").unlink(missing_ok=True)
+    (run_dir / "run.json").unlink(missing_ok=True)
     app = _desk(cfg, tab="queue")
 
     async def drive():
         async with app.run_test(size=SIZE) as pilot:
-            await open_screen(app, pilot, cid, "delivered", timeline=False)
+            await settle(app, pilot)
+            app.open_campaign_detail(cid2)
             s = detail_screen(app)
+            await press(app, pilot, ["3"])
             s.select_run(run_id)
-            assert await pilot_until(pilot, lambda: runs_detail(app).strip())
-            n = len(tail_calls)
+            assert await pilot_until(pilot, lambda: s._run_renderer is not None)
             await press(app, pilot, ["2"])
             await settle(app, pilot)
-            await pilot.pause(0.3)
-            assert tail_calls == n
+            off0 = s._run_offset
+            n0 = len(tail_calls)
+            line = json.dumps({"type": "assistant", "message": {"content": [
+                {"type": "text", "text": "timeline-hidden-0476"}]}})
+            with open(run_dir / "stream.jsonl", "a", encoding="utf-8") as f:
+                f.write(line + "\n")
+            await pilot.pause(0.35)
+            assert len(tail_calls) == n0
+            assert s._run_offset == off0
+            assert "timeline-hidden-0476" not in runs_detail(app)
 
     _run(drive())
 
@@ -348,11 +432,118 @@ def test_live_follow_stream(tmp_path, monkeypatch):
             frag = json.dumps({"type": "result", "result": "done"})
             with open(run_dir / "stream.jsonl", "ab") as f:
                 f.write(frag.encode("utf-8"))
-            await pilot_until(pilot, lambda: s._run_follow_done)
+            assert await pilot_until(pilot, lambda: "■ result:" in runs_detail(app))
+            assert s._run_follow_done
             with open(run_dir / "stream.jsonl", "a", encoding="utf-8") as f:
                 f.write(json.dumps({"type": "assistant", "message": {"content": [
                     {"type": "text", "text": "after-end"}]}}) + "\n")
             await settle(app, pilot)
             assert "after-end" not in runs_detail(app)
+
+    _run(drive())
+
+
+def test_non_first_run_focus_survives_reload(tmp_path, monkeypatch):
+    monkeypatch.setattr(CD, "POLL_S", 0.08)
+    cfg = TH.fixture_cfg(tmp_path)
+    TH.prepare_queue_window(cfg)
+    cid = CID_MULTI
+    camp = S.campaign_dir(cfg, cid)
+    dst = camp.parent / f"{cid}-reload"
+    shutil.copytree(camp, dst)
+    cid2 = dst.name
+    st = json.loads((S.campaign_dir(cfg, cid2) / "state.json").read_text(encoding="utf-8"))
+    st["state"] = "REVIEWING"
+    (S.campaign_dir(cfg, cid2) / "state.json").write_text(json.dumps(st), encoding="utf-8")
+    hist = Hist.campaign_history(cfg, cid2)
+    run_id = "020-test_reviewer"
+    app = IdeaDesk(cfg, tab="queue")
+
+    async def drive():
+        async with app.run_test(size=SIZE) as pilot:
+            await settle(app, pilot)
+            app.open_campaign_detail(cid2, focus={"tab": "runs", "run": run_id})
+            await settle(app, pilot)
+            assert await pilot_until(pilot, lambda: MAJOR_TITLE in runs_detail(app))
+            s = detail_screen(app)
+            row = next(i for i, r in enumerate(hist["runs"]) if r["run_id"] == run_id)
+            assert runs_table(app).cursor_row == row
+            r0 = s._run_renderer
+            sig0 = s._signature
+            ledger = S.campaign_dir(cfg, cid2) / "ledger.jsonl"
+            with open(ledger, "a", encoding="utf-8") as f:
+                f.write(json.dumps({
+                    "schema": "nw.test.v1", "ts": "2026-11-09T12:00:00-05:00",
+                    "kind": "note", "text": "reload-0476"}) + "\n")
+            assert await pilot_until(pilot, lambda: detail_screen(app)._signature != sig0)
+            s = detail_screen(app)
+            assert runs_table(app).cursor_row == row
+            assert str(runs_table(app).ordered_rows[row].key.value) == run_id
+            assert s._run_renderer is r0
+
+    _run(drive())
+
+
+def test_follow_run_json_without_exit(tmp_path, monkeypatch):
+    monkeypatch.setattr(CD, "POLL_S", 0.08)
+    cfg = TH.fixture_cfg(tmp_path)
+    TH.prepare_queue_window(cfg)
+    cid = CID_STREAM
+    camp = S.campaign_dir(cfg, cid)
+    dst = camp.parent / f"{cid}-rj"
+    shutil.copytree(camp, dst)
+    cid2 = dst.name
+    st = json.loads((S.campaign_dir(cfg, cid2) / "state.json").read_text(encoding="utf-8"))
+    st["state"] = "IMPLEMENTING"
+    (S.campaign_dir(cfg, cid2) / "state.json").write_text(json.dumps(st), encoding="utf-8")
+    hist = Hist.campaign_history(cfg, cid2)
+    run_id = next((r["run_id"] for r in hist["runs"] if r.get("has_stream")), None)
+    run_dir = S.runs_dir(cfg, cid2) / run_id
+    (run_dir / "exit.json").unlink(missing_ok=True)
+    assert (run_dir / "run.json").is_file()
+    app = _desk(cfg, tab="queue")
+
+    async def drive():
+        async with app.run_test(size=SIZE) as pilot:
+            await settle(app, pilot)
+            app.open_campaign_detail(cid2)
+            s = detail_screen(app)
+            await press(app, pilot, ["3"])
+            s.select_run(run_id)
+            assert await pilot_until(pilot, lambda: s._run_follow_done)
+            before = runs_detail(app)
+            line = json.dumps({"type": "assistant", "message": {"content": [
+                {"type": "text", "text": "no-follow-rj-0476"}]}})
+            with open(run_dir / "stream.jsonl", "a", encoding="utf-8") as f:
+                f.write(line + "\n")
+            await pilot.pause(0.35)
+            assert runs_detail(app) == before
+
+    _run(drive())
+
+
+def test_select_run_replaces_renderer_and_offset(tmp_path):
+    cfg = TH.fixture_cfg(tmp_path)
+    TH.prepare_queue_window(cfg)
+    cid = CID_STREAM
+    hist = Hist.campaign_history(cfg, cid)
+    runs = [r["run_id"] for r in hist["runs"] if r.get("has_stream")]
+    assert len(runs) >= 2
+    a, b = runs[0], runs[1]
+    app = _desk(cfg, tab="queue")
+
+    async def drive():
+        async with app.run_test(size=SIZE) as pilot:
+            await open_screen(app, pilot, cid, "delivered", timeline=False)
+            s = detail_screen(app)
+            await press(app, pilot, ["3"])
+            s.select_run(a)
+            assert await pilot_until(pilot, lambda: s._run_renderer is not None)
+            r0 = s._run_renderer
+            off0 = s._run_offset
+            s.select_run(b)
+            assert await pilot_until(
+                pilot, lambda: s._run_renderer is not None and s._run_renderer is not r0)
+            assert s._run_offset != off0 or b != a
 
     _run(drive())

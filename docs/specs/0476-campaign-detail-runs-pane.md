@@ -274,9 +274,13 @@ the `r` jump into a selected run. No data migration.
 
 Ran `uv run pytest tests/test_tui_campaign_runs.py`, `tests/test_tui_campaign_detail_ac.py`, and `python3 tools/spec_lint.py`. Full suite left to gating. AC5 timeline hidden-tab and exit-only follow rely on `_runs_follow_poll` gating plus live-follow test; timeline spy test skips when no `has_stream` fixture row.
 
+### Test record (2026-11-09, loop 1)
+
+Ran `uv run pytest tests/test_tui_campaign_runs.py` (14 passed) and `tests/test_tui_campaign_detail_ac.py -k runs` (3 passed). Full suite left to gating.
+
 ### As shipped
 
-Runs tab is a `#campaign-runs` table plus `#runs-detail-text` detail. Verdict blockers come from `findings`, `must_fix`, and `blockers`. Live follow keeps one `tail.Renderer` on the popup poll when the campaign is not terminal and the Runs tab is active.
+Runs tab is a `#campaign-runs` table plus `#runs-detail-text` detail. Verdict blockers come from `findings`, `must_fix`, and `blockers`. Live follow keeps one `tail.Renderer` on the popup poll when the campaign is not terminal and the Runs tab is active. Review fixes: ignore stale `RowHighlighted` on refill; drain a no-newline JSON fragment on initial load when the run already ended; stop trailing `rstrip` on detail text; scroll `#runs-detail` on paint/append with page keys on Runs; resolve `files.raw` inside the run directory; do not latch follow done when stream is absent until ended or terminal; guard follow polls against overlap and stale selection.
 
 ## Open questions
 
