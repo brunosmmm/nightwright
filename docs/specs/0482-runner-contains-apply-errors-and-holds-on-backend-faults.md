@@ -165,7 +165,11 @@ dying of one campaign and keeps an environment fault from being read as a verdic
 - Test record (2026-11-09): `tests/test_runner_selfheal.py` 7 passed locally; the affected
   set (minus the conftest trigger) on the box, GATEJOB-0994: 6119 passed, 3 failed; the three
   (output-guard allowlist, `systemd-analyze` on a box without a user session, the remote
-  crash test above) were fixed and pass locally; re-gated on the box after the fix.
+  crash test above) were fixed and pass locally. Re-gate GATEJOB-0995: 6121 passed, 1
+  failed: `test_forged_worker_frames_are_refused_and_append_nothing[type-park]`, whose
+  frame forger left no marker (worker transport timing; the campaign still MERGED). It
+  passed in GATEJOB-0994 and passes locally (all 5 params, and `[type-park]` 3 of 3); it
+  touches no code this spec changed, so it is recorded as a box flake.
 
 ## Rollout / migration
 
