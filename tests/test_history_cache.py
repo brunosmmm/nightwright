@@ -1022,3 +1022,66 @@ def test_runner_append_then_run_json_edit_stays_fresh(data_dir, cache_dir):
     u = {k: v for k, v in unc.items() if k != "generated_at"}
     d = {k: v for k, v in cached.items() if k != "generated_at"}
     assert d == u
+
+
+def test_warm_index_ledger_and_run_json_records_match_pure(data_dir, cache_dir):
+    c = cfg(data_dir, cache_dir)
+    cid = "SPEC-0394-20261102-ae5b"
+    H.history_index(c, now=NOW, cache=True)
+    HC._records_mem.clear()
+    ledger = data_dir / "agentic" / "campaigns" / cid / "ledger.jsonl"
+    marker = "quiet-records-run-json"
+    with ledger.open("a") as stream:
+        stream.write(json.dumps({
+            "schema": "nw.ledger.event.v1", "ts": store.now_iso(NOW), "seq": 7788,
+            "campaign": cid, "type": "finding", "by": "tick", "severity": "nit",
+            "title": marker, "detail": "d",
+        }) + "\n")
+    run_root = data_dir / "agentic" / "campaigns" / cid / "runs"
+    run_dirs = [p for p in run_root.iterdir() if p.is_dir()]
+    assert run_dirs
+    run_json = run_dirs[0] / "run.json"
+    payload = json.loads(run_json.read_text())
+    payload["note"] = "in-place-run-json"
+    run_json.write_text(json.dumps(payload, indent=2) + "\n")
+    HC._records_mem.clear()
+    cached = H.history_records(c, campaign=cid, cache=True)
+    unc = H.history_records(c, campaign=cid, cache=False)
+    assert cached == unc
+    assert any(marker in (r.get("title") or "") for r in cached)
+
+
+def test_escalation_write_invalidates_records(data_dir, cache_dir):
+    c = cfg(data_dir, cache_dir)
+    H.history_index(c, now=NOW, cache=True)
+    HC._records_mem.clear()
+    esc_dir = data_dir / "agentic" / "escalations"
+    esc_path = esc_dir / "ESC-99001.json"
+    esc_path.write_text(json.dumps({
+        "schema": "nw.escalation.v1", "id": "ESC-99001", "ts": store.now_iso(NOW),
+        "status": "open", "title": "cache-invalidation", "text": "esc test",
+        "campaign": "SPEC-0394-20261102-ae5b",
+    }) + "\n")
+    HC._records_mem.clear()
+    cached = H.history_records(c, cache=True)
+    unc = H.history_records(c, cache=False)
+    assert cached == unc
+    assert any(r.get("id") == "escalation:ESC-99001" for r in cached)
+
+
+def test_corrupt_campaign_json_rebuilds_and_removes_tmp(data_dir, cache_dir):
+    c = cfg(data_dir, cache_dir)
+    cid = "SPEC-0394-20261102-ae5b"
+    H.history_index(c, now=NOW, cache=True)
+    v1 = cache_dir / "history" / "v1"
+    camp = v1 / "campaigns" / f"{cid}.json"
+    tmp = v1 / "campaigns" / "orphan.tmp"
+    tmp.write_text("leftover\n")
+    camp.write_text("{")
+    HC._records_mem.clear()
+    unc = H.history_records(c, cache=False)
+    cached = H.history_records(c, cache=True)
+    assert cached == unc
+    assert (v1 / "version").read_bytes() == b"1\n"
+    assert not tmp.exists()
+    assert json.loads(camp.read_text())["campaign"] == cid

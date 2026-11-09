@@ -124,7 +124,7 @@ def _atomic_write_json(path: Path, value) -> None:
 
 
 def _is_tmp(name: str) -> bool:
-    return ".tmp-" in name
+    return name.endswith(".tmp") or ".tmp-" in name
 
 
 def _file_entry(path: Path) -> dict | None:
@@ -228,6 +228,32 @@ def _tree_dirs_snapshot(root: Path) -> list:
     return parts
 
 
+def _flat_dir_sig(
+    root: Path, *, prefix: str | None = None, suffix: str | None = None,
+) -> str:
+    """One-level scandir hash for flat trees (escalations/, sentinel/)."""
+    if not root.is_dir():
+        return hashlib.sha1(b"").hexdigest()
+    lines: list[str] = []
+    try:
+        with os.scandir(root) as it:
+            for ent in sorted(it, key=lambda e: e.name):
+                if not ent.is_file(follow_symlinks=False) or _is_tmp(ent.name):
+                    continue
+                if prefix is not None and not ent.name.startswith(prefix):
+                    continue
+                if suffix is not None and not ent.name.endswith(suffix):
+                    continue
+                try:
+                    st = ent.stat(follow_symlinks=False)
+                except OSError:
+                    continue
+                lines.append(f"{ent.name} {st.st_size} {st.st_ino} {st.st_mtime_ns}")
+    except OSError:
+        return hashlib.sha1(b"").hexdigest()
+    return hashlib.sha1("\n".join(lines).encode("utf-8")).hexdigest()
+
+
 def _tree_sig(root: Path) -> str:
     if not root.is_dir():
         return hashlib.sha1(b"").hexdigest()
@@ -242,6 +268,15 @@ def _tree_sig(root: Path) -> str:
         rel = path.relative_to(root).as_posix()
         lines.append(f"{rel} {st.st_size} {st.st_ino} {st.st_mtime_ns}")
     return hashlib.sha1("\n".join(lines).encode("utf-8")).hexdigest()
+
+
+def _agentic_tree_sig(agentic: Path, name: str, sub: str) -> str:
+    root_path = agentic / sub
+    if name == "escalations":
+        return _flat_dir_sig(root_path, prefix="ESC-", suffix=".json")
+    if name == "sentinel":
+        return _flat_dir_sig(root_path, suffix=".last.json")
+    return _tree_sig(root_path)
 
 
 _LOGICAL_CACHE_NAMES = frozenset({
@@ -773,13 +808,7 @@ def _terminal_row_stale_records_quiet(cfg, cid: str, row: dict, sources: dict) -
     if live_sig is None or live_sig != stored_sig:
         return True
     rg_dirs = (sources.get("campaign_rg_dirs") or {}).get(cid)
-    agentic = store.agentic_dir(cfg)
-    if _rg_dirs_stored_match(base, rg_dirs):
-        live = _records_relevant_live_cursors(base, agentic)
-        if live is None:
-            return True
-        return not _stored_records_inputs_match(stored_files, live)
-    return _campaign_file_cursors(cfg, cid) != stored_files
+    return not _campaign_records_files_match(cfg, cid, stored_files, rg_dirs)
 
 
 def _cache_tree_corrupt(root: Path, sources: dict | None = None) -> bool:
@@ -858,6 +887,14 @@ def _cache_tree_corrupt(root: Path, sources: dict | None = None) -> bool:
                 path.unlink()
             except OSError:
                 pass
+    camp = root / "campaigns"
+    if camp.is_dir():
+        for path in camp.iterdir():
+            if path.is_file() and _is_tmp(path.name):
+                try:
+                    path.unlink()
+                except OSError:
+                    pass
     return False
 
 
@@ -1290,7 +1327,9 @@ def _scan_sources(
         root_path = agentic / sub
         snap = _tree_dirs_snapshot(root_path)
         tree_dirs[name] = snap
-        if prev_tree_dirs.get(name) == snap and isinstance(prev_trees.get(name), str):
+        if name in ("escalations", "sentinel"):
+            trees[name] = _agentic_tree_sig(agentic, name, sub)
+        elif prev_tree_dirs.get(name) == snap and isinstance(prev_trees.get(name), str):
             trees[name] = prev_trees[name]
         else:
             trees[name] = _tree_sig(root_path)
@@ -2061,6 +2100,11 @@ def _cold_fill(cfg, root: Path, *, now=None, progress=None, _hold_guard: bool = 
 
 def _ensure_writable_cache(cfg, root: Path, *, now=None, progress=None) -> bool:
     sources_peek = _read_json(root / "sources.json")
+    if _cache_tree_corrupt(root, sources_peek):
+        with _cache_write_guard(root):
+            _clear_v1_except_lock(root)
+            _cold_fill(cfg, root, now=now, progress=progress, _hold_guard=True)
+        return True
     if (
         _sources_ok(sources_peek)
         and (root / "version").is_file()
@@ -2070,11 +2114,6 @@ def _ensure_writable_cache(cfg, root: Path, *, now=None, progress=None) -> bool:
         v1 = (sources_peek or {}).get("v1_files") or {}
         if isinstance(v1, dict) and _v1_cursors_match_records_quiet(root, v1):
             return False
-    if _cache_tree_corrupt(root, sources_peek):
-        with _cache_write_guard(root):
-            _clear_v1_except_lock(root)
-            _cold_fill(cfg, root, now=now, progress=progress, _hold_guard=True)
-        return True
     sources = _read_json(root / "sources.json")
     if _sources_ok(sources) and (root / "index.jsonl").is_file() and (root / "records.jsonl").is_file():
         return False
@@ -2442,10 +2481,15 @@ def _sources_unchanged_light(cfg, stored: dict) -> bool:
         if _file_meta(old) != _file_meta(entry or {}):
             return False
     prev_tree_dirs = stored.get("tree_dirs") or {}
+    prev_trees = stored.get("trees") or {}
     for name, sub in (
         ("escalations", "escalations"), ("reviews", "reviews"), ("sentinel", "sentinel"),
     ):
-        if _tree_dirs_snapshot(agentic / sub) != prev_tree_dirs.get(name):
+        root_path = agentic / sub
+        if name in ("escalations", "sentinel"):
+            if prev_trees.get(name) != _agentic_tree_sig(agentic, name, sub):
+                return False
+        elif _tree_dirs_snapshot(root_path) != prev_tree_dirs.get(name):
             return False
     for resolved, old in (stored.get("transcripts") or {}).items():
         entry = _file_entry(Path(resolved))
@@ -2496,7 +2540,7 @@ def _records_cache_quiet(cfg, root: Path, sources: dict) -> bool:
     if fp == _INDEX_QUIET_KEY:
         if not _v1_cursors_match_records_quiet(root, v1_files):
             return False
-        stale = set()
+        stale = _stale_terminal_ids_records_quiet(cfg, index_rows, sources)
     else:
         if not _v1_cursors_match_records_quiet(root, v1_files):
             return False
