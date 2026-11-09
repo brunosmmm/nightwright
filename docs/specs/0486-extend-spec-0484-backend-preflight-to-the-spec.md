@@ -1,7 +1,7 @@
 ---
 id: SPEC-0486
 title: Extend backend preflight to the spec reviewer and Pi personas
-status: proposed
+status: accepted
 owner: user
 created: 2026-11-09
 updated: 2026-11-09
