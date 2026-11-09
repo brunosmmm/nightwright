@@ -238,7 +238,7 @@ def _ensure_skeleton(lines, content_start, body_end):
     return lines, body_end + len(block)
 
 
-def idea_summary_text(cfg, task) -> str:
+def idea_summary_text(cfg, task, *, strict: bool = False) -> str:
     """Return Summary body text (stripped), or '' if missing/empty."""
     try:
         lines = open(task.file).read().splitlines(keepends=True)
@@ -250,6 +250,8 @@ def idea_summary_text(cfg, task) -> str:
         _, b0, b1 = sections[SECTION_SUMMARY]
         return "".join(lines[b0:b1]).strip()
     except Exception:
+        if strict:
+            raise
         return ""
 
 

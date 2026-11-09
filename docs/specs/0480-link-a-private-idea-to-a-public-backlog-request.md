@@ -469,6 +469,22 @@ the guard.
 - `uv run pytest tests/test_workflow.py -q` — passed.
 - Full suite left to queue gating.
 
+### Test record (2026-11-09, review loop 2)
+
+- `uv run pytest tests/test_idea_link.py -q` — 14 passed (adversarial-review fixes + tightened assertions).
+- `uv run pytest tests/test_idea_stamps.py::test_stamp_creates_missing_drawer_without_corrupting_sections -q` — passed.
+- `uv run pytest tests/test_workflow.py -q` — passed.
+- `python3 tools/spec_lint.py --write-ledger && python3 tools/spec_lint.py` — exit 0.
+- Full suite left to queue gating.
+
+### As shipped (2026-11-09, review loop 2)
+
+- `nw-backlog` tree rebuild uses `git ls-tree -z` / `git mktree -z` and keeps each entry's mode and object type.
+- Git env scrub (`GIT_DIR`, `GIT_WORK_TREE`, …) on every linked-repo git call; commit identity from linked-repo config only.
+- `nw-backlog` checked out in any linked worktree refuses publish like a checked-out branch.
+- `created_by` / `updated_by` are double-quoted YAML scalars; publish uses `idea_summary_text(..., strict=True)` and refuses when Summary cannot be read.
+- Restore after org-write failure checks `update-ref` exit code before reporting restored.
+
 ## Rollout / migration
 
 No backfill. Ideas that already exist gain `:REQ:` only when someone runs

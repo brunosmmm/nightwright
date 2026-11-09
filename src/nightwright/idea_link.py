@@ -16,6 +16,14 @@ from .rules import INTERNAL_PROJECT, nw_checkout
 _CROCKFORD = "0123456789ABCDEFGHJKMNPQRSTVWXYZ"
 _BACKLOG_REF = "refs/heads/nw-backlog"
 _NULL_SHA = "0000000000000000000000000000000000000000"
+_GIT_SCRUB = (
+    "GIT_DIR",
+    "GIT_WORK_TREE",
+    "GIT_INDEX_FILE",
+    "GIT_OBJECT_DIRECTORY",
+    "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+    "GIT_COMMON_DIR",
+)
 
 
 def canonical_pair(title: str, summary: str) -> tuple[str, str]:
@@ -67,8 +75,8 @@ def render_request(
         f"status: {status}\n",
         f"created: {created}\n",
         f"updated: {updated}\n",
-        f"created_by: {created_by}\n",
-        f"updated_by: {updated_by}\n",
+        f"created_by: {_yaml_double_quoted(created_by)}\n",
+        f"updated_by: {_yaml_double_quoted(updated_by)}\n",
     ]
     if spec is not None:
         lines.append(f"spec: {spec}\n")
@@ -102,10 +110,20 @@ def _utc_now_z() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
+def _git_env(extra: dict | None = None) -> dict[str, str]:
+    env = {k: v for k, v in os.environ.items() if k not in _GIT_SCRUB}
+    env["GIT_TERMINAL_PROMPT"] = "0"
+    if extra:
+        env.update(extra)
+    return env
+
+
 def _git(repo: Path, *args: str, check: bool = True, input: bytes | None = None,
          env: dict | None = None) -> subprocess.CompletedProcess:
     cmd = ["git", "-C", str(repo), *args]
-    return subprocess.run(cmd, check=check, capture_output=True, input=input, env=env)
+    return subprocess.run(
+        cmd, check=check, capture_output=True, input=input, env=_git_env(env)
+    )
 
 
 def _git_config(repo: Path, key: str) -> str:
@@ -130,6 +148,18 @@ def _symbolic_head(repo: Path) -> str | None:
     return r.stdout.decode().strip()
 
 
+def _nw_backlog_checked_out(repo: Path) -> bool:
+    if _symbolic_head(repo) == _BACKLOG_REF:
+        return True
+    r = _git(repo, "worktree", "list", "--porcelain", check=False)
+    if r.returncode != 0:
+        return False
+    for line in r.stdout.decode().splitlines():
+        if line.startswith("branch ") and line.removeprefix("branch ").strip() == _BACKLOG_REF:
+            return True
+    return False
+
+
 def _ref_tip(repo: Path, ref: str) -> str | None:
     r = _git(repo, "rev-parse", "--verify", "-q", ref, check=False)
     if r.returncode != 0:
@@ -138,26 +168,38 @@ def _ref_tip(repo: Path, ref: str) -> str | None:
 
 
 def _mktree(repo: Path, parent_sha: str | None, path: str, blob_sha: str) -> str:
-    entries: dict[str, tuple[str, str]] = {}
+    entries: list[tuple[str, str, str, str]] = []
     if parent_sha:
-        r = _git(repo, "ls-tree", parent_sha)
-        for line in r.stdout.decode().splitlines():
-            parts = line.split("\t", 1)
-            if len(parts) != 2:
+        r = _git(repo, "ls-tree", "-z", parent_sha, check=False)
+        if r.returncode != 0:
+            raise ValueError("mktree failed")
+        raw = r.stdout
+        pos = 0
+        while pos < len(raw):
+            nul = raw.find(b"\0", pos)
+            if nul < 0:
+                break
+            line = raw[pos:nul]
+            pos = nul + 1
+            tab = line.find(b"\t")
+            if tab < 0:
                 continue
-            mode_typ_sha = parts[0].split()
+            mode_typ_sha = line[:tab].split()
             if len(mode_typ_sha) != 3:
                 continue
-            mode, _typ, sha = mode_typ_sha
-            name = parts[1]
+            mode, typ, sha = (p.decode() for p in mode_typ_sha)
+            name = line[tab + 1:].decode()
             if name == path:
                 continue
-            entries[name] = (mode, sha)
-    entries[path] = ("100644", blob_sha)
-    tree_lines = "".join(
-        f"{mode} blob {sha}\t{name}\n" for name, (mode, sha) in sorted(entries.items())
+            entries.append((name, mode, typ, sha))
+    entries.append((path, "100644", "blob", blob_sha))
+    tree_input = b"".join(
+        f"{mode} {typ} {sha}\t{name}\0".encode()
+        for name, mode, typ, sha in sorted(entries, key=lambda row: row[0])
     )
-    r = _git(repo, "mktree", input=tree_lines.encode())
+    r = _git(repo, "mktree", "-z", input=tree_input, check=False)
+    if r.returncode != 0:
+        raise ValueError("mktree failed")
     return r.stdout.decode().strip()
 
 
@@ -170,8 +212,8 @@ def _publish_commit(
     name: str,
     email: str,
 ) -> tuple[str, str | None, str]:
-    """Write blob, tree, commit; compare-and-swap nw-backlog. Returns (new_sha, old_tip, req_id)."""
-    if _symbolic_head(repo) == _BACKLOG_REF:
+    """Write blob, tree, commit; compare-and-swap nw-backlog. Returns (new_sha, old_tip, blob)."""
+    if _nw_backlog_checked_out(repo):
         raise ValueError("refusing to update nw-backlog while it is checked out")
 
     old_tip = _ref_tip(repo, _BACKLOG_REF)
@@ -182,18 +224,19 @@ def _publish_commit(
     parent_args = [tree]
     if old_tip:
         parent_args.extend(["-p", old_tip])
-    env = os.environ.copy()
-    env["GIT_AUTHOR_NAME"] = name
-    env["GIT_AUTHOR_EMAIL"] = email
-    env["GIT_COMMITTER_NAME"] = name
-    env["GIT_COMMITTER_EMAIL"] = email
+    commit_env = {
+        "GIT_AUTHOR_NAME": name,
+        "GIT_AUTHOR_EMAIL": email,
+        "GIT_COMMITTER_NAME": name,
+        "GIT_COMMITTER_EMAIL": email,
+    }
     commit = _git(
         repo,
         "commit-tree",
         *parent_args,
         "-m",
         message,
-        env=env,
+        env=commit_env,
     ).stdout.decode().strip()
 
     r = _git(repo, "update-ref", _BACKLOG_REF, commit, expected, check=False)
@@ -202,11 +245,12 @@ def _publish_commit(
     return commit, old_tip, blob
 
 
-def _restore_backlog_tip(repo: Path, *, new_sha: str, old_tip: str | None) -> None:
+def _restore_backlog_tip(
+    repo: Path, *, new_sha: str, old_tip: str | None
+) -> subprocess.CompletedProcess:
     if old_tip is None:
-        _git(repo, "update-ref", "-d", _BACKLOG_REF, new_sha, check=False)
-    else:
-        _git(repo, "update-ref", _BACKLOG_REF, old_tip, new_sha, check=False)
+        return _git(repo, "update-ref", "-d", _BACKLOG_REF, new_sha, check=False)
+    return _git(repo, "update-ref", _BACKLOG_REF, old_tip, new_sha, check=False)
 
 
 def _restore_backlog_tip_or_bail(
@@ -218,7 +262,11 @@ def _restore_backlog_tip_or_bail(
             f"{req_id} was not linked; refs/heads/nw-backlog no longer points at {new_sha}; "
             "left unchanged"
         )
-    _restore_backlog_tip(repo, new_sha=new_sha, old_tip=old_tip)
+    r = _restore_backlog_tip(repo, new_sha=new_sha, old_tip=old_tip)
+    if r.returncode != 0:
+        raise ValueError(
+            f"{req_id} was not linked; refs/heads/nw-backlog restore failed; left unchanged"
+        )
     raise ValueError(f"{req_id} was not linked; restored refs/heads/nw-backlog")
 
 
@@ -238,7 +286,10 @@ def publish_idea(cfg, task: Task, *, selector: str | None = None) -> str:
     if re.search(r"[\n\r]", task.heading or ""):
         raise ValueError("title must be one line")
 
-    summary = idea_summary_text(cfg, task)
+    try:
+        summary = idea_summary_text(cfg, task, strict=True)
+    except Exception as err:
+        raise ValueError(f"could not read Summary for publish: {err}") from err
     canon_title, canon_summary = canonical_pair(title, summary)
     if re.search(r"[\n\r]", canon_title):
         raise ValueError("title must be one line")
