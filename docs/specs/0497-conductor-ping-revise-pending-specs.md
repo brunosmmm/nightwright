@@ -1,7 +1,7 @@
 ---
 id: SPEC-0497
 title: Conductor ping flags specs stalled on a revise verdict
-status: accepted
+status: done
 owner: user
 created: 2026-11-09
 kind: feature
@@ -59,6 +59,16 @@ The conductor (never the CLI) dispatches a sub-agent to apply the findings and r
 - **Automated tests:** `tests/test_agentic_quiet.py` (fingerprint) and
   `tests/test_agentic_revise_pending.py` (digest listing and exclusion, with stored reviews).
 - **Regression guard:** affected tests via `tools/affected_tests.py`; `spec_lint`.
+
+## As shipped
+
+Shipped as designed. `events.revise_pending_items` and the `revise_pending` key in
+`ping_digest`; `quiet.ping_fingerprint` counts `("revise_pending", spec_id)`; the conduct
+skill has a `revise_pending` decision-table row. The row's event cell reads "a
+`conductor_ping` showing `revise_pending` items" (not starting with `conductor_ping`) so the
+SPEC-0301 row-uniqueness test in `tests/test_skills.py` still finds one `conductor_ping` row.
+Tests: `tests/test_agentic_revise_pending.py`, `tests/test_agentic_quiet.py`,
+`tests/test_agentic_ping.py`, `tests/test_skills.py` pass.
 
 ## Definition of done
 
