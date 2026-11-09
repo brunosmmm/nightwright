@@ -27,8 +27,9 @@ gates:
     cmd: >-
       if [ -f tools/affected_tests.py ]; then
       python3 tools/affected_tests.py --help | grep -q -- --guards && G=--guards || G=;
-      python3 tools/affected_tests.py $G
-      --exclude-marks integration,tui,remote,perf
+      python3 tools/affected_tests.py --help | grep -q -- --exclude-marks
+      && X=--exclude-marks=integration,tui,remote,perf || X=;
+      python3 tools/affected_tests.py $G $X
       --include tests/test_agentic_dogfood_config.py --include tests/test_agentic_project.py
       --run uv run pytest -q -x -n 2;
       else uv run pytest -q -x -n 2; fi

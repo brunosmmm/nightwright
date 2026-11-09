@@ -25,7 +25,7 @@ def test_dogfood_project_config_loads_and_names_the_gates():
     assert not doc.get("close", {}).get("force_full")              # SPEC-0359: no escape hatch
     # SPEC-0378: the close gate runs the affected selection, never the bare full suite
     assert gates["pytest"]["cmd"].startswith("python3 tools/affected_tests.py")
-    assert "--exclude-marks integration,tui,remote,perf" in gates["pytest-affected"]["cmd"]
+    assert "X=--exclude-marks=integration,tui,remote,perf" in gates["pytest-affected"]["cmd"]
     assert "--exclude-marks integration,tui,remote,perf" in gates["pytest"]["cmd"]
     assert '-m "not (integration or tui or remote or perf) or tree_guard"' in gates["pytest"]["retry_cmd"]
     assert "--run uv run pytest" in gates["pytest"]["cmd"]
@@ -54,3 +54,29 @@ def test_agentic_capability_doc_names_the_reuse_knobs():
     for needle in ("reuse_from", "close.force_full", "NW_CLOSE_FULL",
                    "nw queue sentinel run", "nw queue sentinel clear"):
         assert needle in text, needle
+
+
+@pytest.mark.parametrize("knows", [True, False])
+def test_loop_gate_passes_exclude_marks_only_to_a_tool_that_knows_it(tmp_path, knows):
+    """SPEC-0490: a worktree branched before the flag keeps its old tool; the loop cmd must not
+    hand it an argument it would reject (argparse exit 2)."""
+    import os
+    import subprocess
+    import sys
+    doc = P.load_project_config(ROOT / ".nw" / "project.yaml")
+    cmd = {g["name"]: g for g in doc["gates"]}["pytest-affected"]["cmd"]
+    (tmp_path / "tools").mkdir()
+    flags = "--guards --exclude-marks" if knows else "--guards"
+    (tmp_path / "tools" / "affected_tests.py").write_text(
+        "import sys\n"
+        f"if '--help' in sys.argv: print('usage: {flags}'); sys.exit(0)\n"
+        "open('argv.txt', 'w').write(' '.join(sys.argv[1:]))\n")
+    bindir = tmp_path / "bin"
+    bindir.mkdir()
+    (bindir / "python3").symlink_to(sys.executable)
+    r = subprocess.run(["sh", "-c", cmd], cwd=tmp_path, capture_output=True, text=True,
+                       env={**os.environ, "PATH": f"{bindir}{os.pathsep}{os.environ['PATH']}"})
+    assert r.returncode == 0, r.stderr
+    argv = (tmp_path / "argv.txt").read_text()
+    assert argv.startswith("--guards ")
+    assert ("--exclude-marks=integration,tui,remote,perf" in argv) is knows
