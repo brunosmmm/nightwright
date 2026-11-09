@@ -342,7 +342,7 @@ progress. This is the single place to see *what has been decided* and *what is i
 | [SPEC-0489](./specs/0489-test-tiers-and-cadenced-heavy-runs.md) | Test tiers: campaign gates run the fast tier only; heavy tiers run on a per-project cadence | epic | accepted | M9: agentic workflow | 2026-11-09 |
 | [SPEC-0492](./specs/0492-tighter-affected-selection.md) | Tighter affected selection for specs, hot modules and fixtures | feature | in-progress | M9: agentic workflow | 2026-11-09 |
 | [SPEC-0496](./specs/0496-subagent-worktree-commit-allowlist.md) | Sub-agents in a worktree can commit; allowed command forms are documented | feature | accepted | — | 2026-11-09 |
-| [SPEC-0499](./specs/0499-tests-fire-real-desktop-notifications-only-tests.md) | Tests must not fire real desktop notifications | feature | proposed | — | 2026-11-09 |
+| [SPEC-0499](./specs/0499-tests-fire-real-desktop-notifications-only-tests.md) | Tests must not fire real desktop notifications | feature | accepted | — | 2026-11-09 |
 | [SPEC-0501](./specs/0501-worker-execution-on-slurm.md) | Worker execution on Slurm: Slurm owns admission, placement, priorities and queues for gate and persona jobs | epic | accepted | M9: agentic workflow | 2026-11-09 |
 | [SPEC-0506](./specs/0506-worker-ledger-regen-applied-not-rerun.md) | Files a remote gate is allowed to write (the regenerated ledger) come back to the worktree; the run is not repeated locally | feature | in-progress | M9: agentic workflow | 2026-11-09 |
 | [SPEC-0509](./specs/0509-gate-commands-size-from-their-allocation.md) | Gate commands size their parallelism from the job's allocation (NW_GATE_CPUS / NW_GATE_MEM_MB), with a config warning for nproc and -n auto | feature | in-progress | M9: agentic workflow | 2026-11-09 |

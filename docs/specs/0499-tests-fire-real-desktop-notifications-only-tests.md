@@ -1,7 +1,7 @@
 ---
 id: SPEC-0499
 title: Tests must not fire real desktop notifications
-status: proposed
+status: accepted
 owner: user
 created: 2026-11-09
 updated: 2026-11-09
