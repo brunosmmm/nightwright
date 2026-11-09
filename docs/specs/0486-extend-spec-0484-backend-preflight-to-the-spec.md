@@ -4,6 +4,7 @@ title: Extend backend preflight to the spec reviewer and Pi personas
 status: proposed
 owner: user
 created: 2026-11-09
+updated: 2026-11-09
 milestone: "M9: agentic workflow"
 kind: feature
 tags: [agentic, queue, runner, resilience]
@@ -95,16 +96,37 @@ the tick: that probe is `node pi_exec.mjs --probe`, which imports the SDK and ca
 
 ### Spawn backend
 
-`backend_preflight.spawn_backend(cfg, state, persona) -> tuple[str, list[str]]` mirrors
-`personas.build_request`'s runner choice and returns `(kind, providers)`:
+`backend_preflight.spawn_backend(cfg, state, persona) -> tuple[str, list[str]]` uses the
+same inputs as `personas.build_request` and returns `(kind, providers)`.
 
-- When `model_sets.resolve_model_set` returns a set, `bind` for that persona supplies
-  `kind`. For `pi`, `providers` is the provider half of the bound `provider/id` model.
-- Otherwise `kind` is `runner.resolve_runner(cfg, campaign=state, project=…)`. For `pi`,
-  `providers` is the `provider` from `map_pi_model` of the persona's profile model alias
-  and effort. A `ValueError` from that map yields `providers == []` (the check then covers
-  node and the SDK only).
-- Any other kind returns `providers == []`.
+`project_root` is `project.project_config(cfg, state["project"])["_root"]`. The alias and
+effort come from the campaign profile:
+`profiles.resolve_profile(cfg, state.get("profile"), project_root=(state.get("repo") or {}).get("root"))`,
+then the settings `build_request` takes from that profile. A builtin
+(`persona in personas.PERSONAS`) uses `profiles.persona_settings(profile, persona)`. A
+declared persona uses `personas.declared_settings(profile, p)`, where `p` is
+`personas.get_persona(persona, project_root, user_dir=persona_defs.user_personas_dir(cfg))`.
+`alias` is `str(settings.get("model") or "sonnet")` and `effort` is `settings.get("effort")`.
+
+- When `model_sets.resolve_model_set(cfg, project_root=project_root)` returns a set,
+  `model_sets.bind` for that persona supplies `kind` (`bound["runner"]`). For `pi`,
+  `providers` is the provider half of the bound `provider/id` model, split on the first
+  `/`: `[bound["model"].split("/", 1)[0]]`.
+- Otherwise `kind` is
+  `runner.resolve_runner(cfg, campaign=state, project=state.get("project"))`, and for
+  `pi` `providers` is
+  `[runner.map_pi_model(alias, effort, cfg, project_root=project_root)["provider"]]`.
+- Any other resolved kind returns `providers == []`.
+
+`spawn_backend` lets those calls raise. When `resolve_model_set`, `bind`, profile load
+(`resolve_profile`), or `map_pi_model` raises `ValueError` or `OSError`, `backend_fault`
+returns None and does not raise, the same way today's `backend_fault` swallows
+`resolve_runner` errors. The catch is `except (ValueError, OSError)` around the
+`spawn_backend` call inside `backend_fault`. `_prepare_run` still reports the error: the
+tick's existing `except (ValueError, OSError)` around `_prepare_run` sets the step
+result's `error` to the exception text. `build_request` raises before the `run.start`
+append, so that step writes no `run.start`. For `spec_review`, today's `res.error` apply
+then parks `spec_review_exhausted`.
 
 `check` gains `providers: list[str] | None = None` (keyword). Callers that pass only
 `check("cursor")` stay valid.
@@ -121,13 +143,14 @@ wins:
 1. `runproc._resolve_binary("node", environ)` is missing → `node not found on PATH`.
 2. `src/nightwright/agentic/pi_exec.mjs` is not a file → `pi_exec.mjs missing at <path>`
    (the same text `probe_pi` uses).
-3. The SDK entry is absent. It is present when either walk hits a file:
+3. The SDK entry is absent. It is present when either of these holds:
    - starting at `pi_exec.mjs`'s directory, and at each `NODE_PATH` entry, a parent
      contains `node_modules/@earendil-works/pi-coding-agent/package.json`;
-   - or the managed install exists: directory `PI_CODING_AGENT_DIR` or `~/.pi/agent`,
-     `install/current-version` matches `^[0-9A-Za-z][0-9A-Za-z.+-]*$`, and
-     `install/releases/<version>/node_modules/@earendil-works/pi-coding-agent/dist/index.js`
-     is a file (the fallback `pi_exec.mjs` `resolvePiEntry` uses).
+   - or the managed install: the directory `PI_CODING_AGENT_DIR` or `~/.pi/agent` has
+     `install/current-version` whose trimmed text matches `^[0-9A-Za-z][0-9A-Za-z.+-]*$`
+     and
+     `install/releases/<that text>/node_modules/@earendil-works/pi-coding-agent/dist/index.js`
+     is a file. Trim the same way `pi_exec.mjs` `resolvePiEntry` does (read, then trim).
    Absent → `pi-coding-agent is not installed`.
 4. For each name in `providers` (none when the list is empty or None), a credential is
    present when any row below holds. The `auth.json` file is
@@ -167,11 +190,17 @@ matches one of the Pi texts above, otherwise `unknown`.
 - With no personas, the kind is `resolve_runner` for the campaign (today's cursor behavior)
   and Pi providers are `pi_map.probe_providers(cfg, campaigns=[state])`.
 - With personas, each persona is resolved through `spawn_backend`. The first failing
-  `cursor` or `pi` check is the fault. A `claude` or `fake` persona adds nothing.
-- Results are cached for the tick under `(kind, providers)`.
-- When `remote_ok` is true and `remote_personas.persona_workers` returns a worker, the
-  fault is None (the worker may hold the credential). `remote_ok` false skips that escape.
-- A failing check calls `note_fault(..., where="gate")` once, as today.
+  `cursor` or `pi` check is the fault. A `claude` or `fake` persona adds nothing. A
+  `ValueError` or `OSError` from `spawn_backend` makes `backend_fault` return None and
+  not raise, as Spawn backend specifies.
+- `check`'s result is cached for the tick under `(kind, tuple(providers or ()))`.
+  `note_fault(..., where="gate")` runs when that result is first stored and is a string.
+  The stored value is `check`'s string or None.
+- The `persona_workers` escape is applied after the lookup, only when `remote_ok` is
+  true, and the cached error stays in place. A worker makes this call return None. A
+  later `backend_fault(..., remote_ok=False)` in the same tick still returns the Pi
+  error. `remote_ok` false skips the escape. An exception from `persona_workers` is
+  ignored and the call returns the cached error, as today's `backend_fault` does.
 
 `Gate.admit` calls `backend_fault(state, personas)` with the step's persona list
 (`step.personas` for a review fan-out, else `(step.persona,)` when set) and
@@ -253,9 +282,18 @@ its own. The runner still starts.
       `backend_unavailable` (`held_by` reports it) and the tick writes no `run.start` for
       `spec_reviewer`. `counters.spec_review_retries` stays 0 and the campaign is not parked.
       A persona worker on the host does not lift that hold.
-- [ ] The same campaign is not held for `rate_limit`, `usage_pause`, or `persona_cap`: a
-      closed cap and an open backoff still let a spec review whose backend check passes
-      prepare a run.
+- [ ] A campaign whose profile is resolved at `repo.root`, and whose project
+      `.nw/pi_map.yaml` on `project.project_config(...)["_root"]` maps that profile's
+      `spec_reviewer` alias and effort to a provider with no cheap credential, is held
+      `backend_unavailable` and the tick writes no `run.start`. The host map's provider
+      for that alias has a cheap credential, and `_root` is not the campaign worktree.
+- [ ] A model set that exists only under that same `_root` `.nw/model_sets` and binds
+      `spec_reviewer` to `pi` with a `provider/id` model holds the spec review
+      `backend_unavailable` when that provider has no cheap credential, and the tick
+      writes no `run.start`.
+- [ ] A spec review whose backend check passes is not held for `rate_limit`,
+      `usage_pause`, or `persona_cap`: a closed cap and an open backoff still let that
+      review prepare a run.
 - [ ] `_do_spec_review` on a fresh local `CursorRunner` or `PiRunner` whose check fails
       returns an interrupted, uncharged result (`cost_usd == 0.0`) and `_apply_spec_review`
       leaves the state on `SPEC_REVIEW` without incrementing `spec_review_retries`. A run
@@ -267,10 +305,18 @@ its own. The runner still starts.
 - [ ] `check("pi")` returns `node not found on PATH`, `pi_exec.mjs missing at <path>`,
       `pi-coding-agent is not installed`, or `no credential for provider <name>` for the
       cases in Design, and returns None when node, the script, the SDK entry, and each
-      named provider's cheap credential are present. It does not spawn a process.
+      named provider's cheap credential are present. `check("pi")` returns None for a
+      managed install whose `current-version` file is `0.50.0\n` and whose `dist/index.js`
+      exists, with node and `pi_exec.mjs` present and no providers requested. It does not
+      spawn a process.
 - [ ] With that Pi check failing and no persona worker, `Gate.admit` holds a gated Pi step
-      `backend_unavailable`. A persona worker lifts the hold for that gated step. A passing
-      check admits the step.
+      `backend_unavailable`. A persona worker lifts the hold for that gated step. When the
+      Pi check passes, `backend_fault` is None. `admit` still holds the step for an open
+      usage pause or rate-limit backoff, and for a closed persona cap, as it does today.
+- [ ] In one `Gate`, `backend_fault` for a failing Pi check with `remote_ok=True` and a
+      persona worker returns None, and a second call with the same providers and
+      `remote_ok=False` still returns the Pi error. Neither call raises. A
+      `persona_workers` that raises is ignored and that call returns the cached Pi error.
 - [ ] `_preflight_hold` replaces a fresh `PiRunner` with `PreflightHeldRunner` when the Pi
       check fails, and leaves a `ClaudeRunner` and a `FakeRunner` unchanged. `_do_persona`
       turns a finished Pi startup fault into an interrupted, uncharged result and files one
@@ -283,6 +329,17 @@ its own. The runner still starts.
 - [ ] A `claude` campaign, and a spec review whose resolved backend is `claude`, are not
       held `backend_unavailable`. An `unknown model` or `request.json` Pi failure still
       increments the step's retry.
+- [ ] A declared persona's provider is the one `map_pi_model` returns for the alias and
+      effort from `declared_settings`, with the definition loaded through
+      `persona_defs.user_personas_dir(cfg)` and the map read from `project_root`. When
+      that provider has no cheap credential and the role builtin's provider does,
+      `backend_fault` for that persona returns `no credential for provider <name>`.
+- [ ] An unknown `agentic.model_set` does not raise out of `tick`, and that campaign is
+      not held `backend_unavailable`. The apply parks `spec_review_exhausted` with the
+      `ValueError` text and writes no `run.start`. When `map_pi_model` raises
+      `ValueError`, a tick does not raise and writes no `backend_unavailable` hold, even
+      when node is missing. When `resolve_profile` raises `OSError`, `backend_fault`
+      returns None and does not raise.
 
 ## Test plan
 
@@ -292,6 +349,24 @@ its own. The runner still starts.
     campaign through one `tick`; hold `backend_unavailable`, no `run.start` for
     `spec_reviewer`, `spec_review_retries == 0`, state stays `SPEC_REVIEW`. A second tick
     with a persona worker configured still holds.
+  - `test_spec_review_holds_on_project_pi_map`: `agentic.model_set` unset,
+    `agentic.runner: pi`, node and the SDK present. `repo.root` and
+    `project_config` `_root` are different directories, and `_root` is not the campaign
+    worktree. `state.profile` names a profile file that exists only under
+    `repo.root/.nw/profiles` (`schema: nw.profile.v1`, `extends: balanced`,
+    `personas.spec_reviewer` model `haiku` and effort `high`). The project
+    `.nw/pi_map.yaml` on `_root` is a valid `nw.pi_map.v1` whose `aliases.haiku.high`
+    is `{provider: openai, id: gpt-4.1, thinking: high}`. `OPENAI_API_KEY` is unset
+    and `auth.json` has no `openai` object. The builtin map's `haiku` provider is
+    `anthropic` and `ANTHROPIC_API_KEY` is set. One `tick` holds `backend_unavailable`
+    and writes no `run.start`.
+  - `test_project_model_set_binds_the_pi_provider`: the only copy of model set `projpi`
+    is `_root/.nw/model_sets/projpi.yaml` (`schema: nw.model_set.v1`, `runner: pi`,
+    `model: openai/gpt-4.1`). `_root` is not the campaign worktree, and the set is
+    absent from the host config dir. `agentic.model_set: projpi`, and `openai` has no
+    cheap credential. `ANTHROPIC_API_KEY` is set, so the builtin Pi map's `anthropic`
+    row would pass. One `tick` of a `SPEC_REVIEW` campaign holds `backend_unavailable`
+    and writes no `run.start`.
   - `test_spec_review_stays_ungated_for_backoff_and_cap`: backend check passes; an open
     rate-limit backoff and `max_personas: 0` still prepare the spec-review run.
   - `test_do_spec_review_preflight_hold_is_interrupted`: `_do_spec_review` with a
@@ -306,10 +381,23 @@ its own. The runner still starts.
     and for `auth.json`; missing node, missing script, missing SDK entry, missing
     `OPENAI_API_KEY` with no auth entry, then each of those repaired (env key, auth.json
     object, ADC file for `google`). Assert the error strings above, and that no subprocess
-    ran (stub `subprocess.run` to raise).
+    ran (stub `subprocess.run` to raise). Write `current-version` as a version line with
+    a trailing newline (`0.50.0\n`) and assert the SDK check passes (`check("pi")` is
+    None) once node, the script, and that release's `dist/index.js` exist, with no
+    providers requested.
   - `test_pi_gate_holds_unless_a_worker_can_take_it`: `agentic.runner: pi`, failing Pi
     check, `admit` of an implement step holds; with `persona_workers` returning one worker,
     `admit` returns the step. `remote_ok=False` still holds.
+  - `test_passing_pi_check_leaves_backend_fault_none`: Pi check returns None.
+    `backend_fault` is None. `admit` of a gated step holds `usage_pause` while a usage
+    pause is open, `rate_limit` while a rate-limit backoff is open, and `persona_cap`
+    when `max_personas` is 0. None of those holds is `backend_unavailable`.
+  - `test_gate_cache_keeps_pi_error_after_worker_escape`: one `Gate`, failing Pi check.
+    `backend_fault` with `remote_ok=True` and `persona_workers` returning one worker
+    returns None; a second call with the same providers and `remote_ok=False` returns
+    the Pi error. Neither call raises. `note_fault(..., where="gate")` runs when the
+    error is first stored. A `persona_workers` that raises is ignored and that call
+    returns the cached Pi error.
   - `test_preflight_hold_wraps_pi_and_not_claude`: `PiRunner` becomes
     `PreflightHeldRunner` and its `run` is interrupted and uncharged; `ClaudeRunner` is
     returned as itself.
@@ -326,6 +414,20 @@ its own. The runner still starts.
     spec-review branch does not write a `backend_unavailable` hold.
   - `test_unknown_model_still_retries`: result text `unknown model openai/nope` on a
     spec review; `spec_review_retries` becomes 1 and the state stays `SPEC_REVIEW`.
+  - `test_declared_persona_uses_declared_settings_alias`: a valid `nw.persona.v1`
+    implementer (the shape in `tests/test_agentic_persona_defs.py`) lives only in the
+    user personas dir, with `model: haiku` and `effort: high`. The profile's
+    `implementer` stays `sonnet`. The project `.nw/pi_map.yaml` on `_root` maps
+    `haiku`/`high` to `openai` (no cheap credential) and `sonnet`/`high` to `anthropic`
+    (`ANTHROPIC_API_KEY` set). No model set. Node and the SDK are present.
+    `backend_fault(state, (that persona,))` returns `no credential for provider openai`.
+  - `test_resolution_errors_do_not_abort_or_hold`: `agentic.model_set` names a set that
+    does not exist. `tick` does not raise, the campaign is not held
+    `backend_unavailable`, no `run.start` is written, and the apply parks
+    `spec_review_exhausted` with the unknown-model-set `ValueError` text. With node
+    missing and an alias `map_pi_model` rejects, `tick` does not raise and writes no
+    `backend_unavailable` hold. A direct `backend_fault` call while `resolve_profile`
+    raises `OSError` returns None and does not raise.
 - **Manual verification:** none. The live runner is not started.
 - **Regression guard:** `python3 tools/affected_tests.py --run uv run pytest -q` on the
   touched files. `tests/test_runner_selfheal.py` (the SPEC-0484 cursor hold, spawn, and
