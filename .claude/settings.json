@@ -1,0 +1,16 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(nw *)",
+      "Bash(uv run *)",
+      "Bash(python3 tools/*)",
+      "Bash(git worktree *)",
+      "Bash(git status *)",
+      "Bash(git diff *)",
+      "Bash(git log *)",
+      "Bash(git add *)",
+      "Bash(git commit *)",
+      "Bash(git merge --ff-only *)"
+    ]
+  }
+}
