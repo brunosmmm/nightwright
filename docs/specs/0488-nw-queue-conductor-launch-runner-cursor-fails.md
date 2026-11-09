@@ -1,7 +1,7 @@
 ---
 id: SPEC-0488
 title: Cursor launch passes a flat model id
-status: proposed
+status: accepted
 owner: user
 created: 2026-11-09
 updated: 2026-11-09
