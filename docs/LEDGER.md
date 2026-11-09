@@ -267,7 +267,7 @@ progress. This is the single place to see *what has been decided* and *what is i
   - [x] [SPEC-0430](./specs/0430-dashboard-campaign-drilldown-ledger-timeline.md) Dashboard campaign drilldown: ledger timeline, current run and live run tail from stream.jsonl — done
   - [x] [SPEC-0432](./specs/0432-dashboard-default-bind-loopback-always-plus-the.md) Dashboard default bind: loopback always plus the tailnet address whenever one exists — done
   - [x] [SPEC-0434](./specs/0434-dashboard-page-survives-restarts-answers-land.md) Dashboard page: answers land at once, the page survives server restarts, the data stamp is truthful — done
-- **[SPEC-0405](./specs/0405-rich-queue-tui-prioritized-live-queue-campaign.md) — Rich queue TUI: prioritized live queue, campaign detail popup, closed-campaign history and a cross-campaign findings and decisions browser over one shared history layer** · accepted · (10/13 done)
+- **[SPEC-0405](./specs/0405-rich-queue-tui-prioritized-live-queue-campaign.md) — Rich queue TUI: prioritized live queue, campaign detail popup, closed-campaign history and a cross-campaign findings and decisions browser over one shared history layer** · accepted · (11/13 done)
   - [x] [SPEC-0406](./specs/0406-shared-campaign-history-data-layer-nw-campaign.md) Shared campaign history data layer: history.py derivation, read-side schemas, campaign_export reuse and the history/records CLIs — done
   - [x] [SPEC-0407](./specs/0407-campaign-detail-popup-timeline-phase-time-and.md) Campaign detail popup shell: opener, Timeline, queue actions, polling, retire SPEC-0246 — done
   - [x] [SPEC-0408](./specs/0408-ledger-provenance-finding-run-id-and-key-triage.md) Ledger provenance: finding run_id and key, triage events — done
@@ -278,7 +278,7 @@ progress. This is the single place to see *what has been decided* and *what is i
   - [x] [SPEC-0433](./specs/0433-human-readable-campaign-story-one-shared-timeline.md) Human-readable campaign story: one shared timeline formatter for the TUI, the dashboard drilldown and nw campaign show — done
   - [x] [SPEC-0459](./specs/0459-real-app-tui-test-harness-on-the-real-data.md) Real-fixture IdeaDesk Pilot harness and queue-window preparation — done
   - [x] [SPEC-0472](./specs/0472-history-cache-for-the-campaign-history-layer.md) History cache for the campaign history layer — done
-  - [ ] [SPEC-0476](./specs/0476-campaign-detail-runs-pane.md) Campaign detail Runs pane: run table, verdict, and stream tail — accepted
+  - [x] [SPEC-0476](./specs/0476-campaign-detail-runs-pane.md) Campaign detail Runs pane: run table, verdict, and stream tail — done
   - [ ] [SPEC-0477](./specs/0477-campaign-detail-findings-and-mail.md) Campaign detail Findings & decisions pane and Mail pane — accepted
   - [x] [SPEC-0498](./specs/0498-campaign-detail-overview-cards.md) Campaign detail Overview pane: dashboard cards (outcome + why banner, time per phase, runs, gates, findings) — done
 - **[SPEC-0419](./specs/0419-self-healing-queue.md) — Self-healing queue** · done · (6/6 done)
@@ -338,7 +338,6 @@ progress. This is the single place to see *what has been decided* and *what is i
 | [SPEC-0466](./specs/0466-gpt-only-pi-sdk-model-set-for-all-nightwright.md) | GPT-only Pi SDK model set for all nightwright personas | feature | in-progress | — | 2026-11-08 |
 | [SPEC-0468](./specs/0468-stop-queue-thrash.md) | Stop the queue from thrashing a finished campaign | feature | accepted | — | 2026-11-08 |
 | [SPEC-0470](./specs/0470-close-follows-a-renamed-spec.md) | Close follows a spec file the branch renamed | feature | accepted | — | 2026-11-08 |
-| [SPEC-0476](./specs/0476-campaign-detail-runs-pane.md) | Campaign detail Runs pane: run table, verdict, and stream tail | feature | accepted | — | 2026-11-09 |
 | [SPEC-0477](./specs/0477-campaign-detail-findings-and-mail.md) | Campaign detail Findings & decisions pane and Mail pane | feature | accepted | — | 2026-11-08 |
 | [SPEC-0489](./specs/0489-test-tiers-and-cadenced-heavy-runs.md) | Test tiers: campaign gates run the fast tier only; heavy tiers run on a per-project cadence | epic | accepted | M9: agentic workflow | 2026-11-09 |
 | [SPEC-0492](./specs/0492-tighter-affected-selection.md) | Tighter affected selection for specs, hot modules and fixtures | feature | in-progress | M9: agentic workflow | 2026-11-10 |
@@ -789,6 +788,7 @@ progress. This is the single place to see *what has been decided* and *what is i
 | [SPEC-0471](./specs/0471-run-pi-personas-through-the-node-sdk.md) | Pi test requires the task text in the user message | feature | done | — | 2026-11-08 |
 | [SPEC-0472](./specs/0472-history-cache-for-the-campaign-history-layer.md) | History cache for the campaign history layer | feature | done | — | 2026-11-10 |
 | [SPEC-0473](./specs/0473-public-backlog-on-an-orphan-nw-backlog-branch.md) | Public backlog on an orphan nw-backlog branch | feature | done | — | 2026-11-10 |
+| [SPEC-0476](./specs/0476-campaign-detail-runs-pane.md) | Campaign detail Runs pane: run table, verdict, and stream tail | feature | done | — | 2026-11-09 |
 | [SPEC-0479](./specs/0479-herdr-notifications-are-silent.md) | Herdr notifications are silent | feature | done | — | 2026-11-08 |
 | [SPEC-0480](./specs/0480-link-a-private-idea-to-a-public-backlog-request.md) | Publish a backlog request and record the link | feature | done | — | 2026-11-11 |
 | [SPEC-0481](./specs/0481-conductor-follower-stays-up.md) | The conductor follower stays up across a wake | feature | done | — | 2026-11-08 |

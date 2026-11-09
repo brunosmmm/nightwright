@@ -1,7 +1,7 @@
 """Campaign detail popup (SPEC-0407): modal shell, history timeline, queue actions, polling.
 
 Replaces SPEC-0246's pushed `CampaignScreen` with a near-full modal and five tabs. Overview and
-Timeline are live; Runs, Findings & decisions, and Mail are placeholders until follow-on specs.
+Timeline and Runs are live; Findings & decisions and Mail are placeholders until follow-on specs.
 """
 import asyncio
 from datetime import datetime
@@ -19,6 +19,8 @@ from textual.screen import ModalScreen
 from textual.widgets import DataTable, Footer, Static, TabbedContent, TabPane
 
 from .. import report as R
+from ..agentic import store
+from ..agentic import tail as TL
 from . import agentic_model as AM
 from . import campaign_overview as CO
 from .queue_actions import QueueActions
@@ -34,6 +36,31 @@ _GROUP_STYLE = {
     "transitions": "cyan", "runs": "", "gates": "magenta", "findings": "yellow",
     "notes": "dim", "decisions": "green",
 }
+
+
+class _RunsTable(DataTable):
+    """Run list on the Runs tab; digit keys still switch popup panes."""
+
+    BINDINGS = [
+        Binding("1", "go_pane('tab-overview')", show=False, priority=True),
+        Binding("2", "go_pane('tab-timeline')", show=False, priority=True),
+        Binding("3", "go_pane('tab-runs')", show=False, priority=True),
+        Binding("4", "go_pane('tab-records')", show=False, priority=True),
+        Binding("5", "go_pane('tab-mail')", show=False, priority=True),
+    ]
+
+    def go_pane(self, tab_id: str) -> None:
+        screen = self.app.screen
+        if isinstance(screen, CampaignDetail):
+            screen.action_tab(tab_id)
+
+    def on_key(self, event: Key) -> None:
+        pane = _PANE_BY_DIGIT.get(event.character or event.key or "")
+        screen = self.app.screen
+        if pane and isinstance(screen, CampaignDetail):
+            screen.action_tab(pane)
+            event.prevent_default()
+            event.stop()
 
 
 class _TimelineTable(DataTable):
@@ -142,7 +169,10 @@ class CampaignDetail(QueueActions, ModalScreen):
     #campaign-timeline { height: 1fr; }
     #campaign-status { height: 1; color: $text-muted; padding: 0 1; }
     #campaign-detail { height: 40%; border-top: solid $primary; padding: 0 1; }
-    #placeholder-text { padding: 1 2; color: $text-muted; }
+    #runs-pane { height: 1fr; layout: vertical; }
+    #campaign-runs { height: 1fr; }
+    #runs-detail { height: 40%; border-top: solid $primary; padding: 0 1; }
+    #placeholder-records, #placeholder-mail { padding: 1 2; color: $text-muted; }
     #load-error { padding: 1 2; }
     """
 
@@ -194,9 +224,16 @@ class CampaignDetail(QueueActions, ModalScreen):
         self._poll_timer = None
         self._focus_tab = "tab-overview"
         self._focus_extra: str | None = None
-        self._placeholder_runs = "placeholder: runs"
         self._placeholder_records = "placeholder: records"
         self._placeholder_mail = "placeholder: mail"
+        self._runs_rows: list = []
+        self._selected_run_id: str | None = None
+        self._pending_run_select: str | None = None
+        self._run_renderer = None
+        self._run_offset = 0
+        self._run_has_stream = False
+        self._run_follow_done = False
+        self._run_detail_token = 0
         self._cursor_direction = 0
         self._detail_token = 0
         self._tab_from_action = False
@@ -217,7 +254,11 @@ class CampaignDetail(QueueActions, ModalScreen):
                         with VerticalScroll(id="campaign-detail"):
                             yield Static("", id="campaign-detail-text")
                 with TabPane("Runs", id="tab-runs"):
-                    yield Static(self._placeholder_runs, id="placeholder-text")
+                    with Vertical(id="runs-pane"):
+                        yield _RunsTable(id="campaign-runs", cursor_type="row",
+                                         zebra_stripes=False)
+                        with VerticalScroll(id="runs-detail"):
+                            yield Static("", id="runs-detail-text")
                 with TabPane("Findings & decisions", id="tab-records"):
                     yield Static(self._placeholder_records, id="placeholder-records")
                 with TabPane("Mail", id="tab-mail"):
@@ -228,11 +269,17 @@ class CampaignDetail(QueueActions, ModalScreen):
     def table(self) -> DataTable:
         return self.query_one("#campaign-timeline", DataTable)
 
+    @property
+    def runs_table(self) -> DataTable:
+        return self.query_one("#campaign-runs", DataTable)
+
     def on_mount(self) -> None:
         self.query_one("#load-error", Static).update(
             Text(f"loading {self.campaign_id}…", style="dim"))
         self.table.add_columns("seq", "time", "phase", "by", "kind", "summary")
+        self.runs_table.add_columns(*AM.RUNS_TABLE_COLUMNS)
         self.query_one("#campaign-detail", VerticalScroll).can_focus = False
+        self.query_one("#runs-detail", VerticalScroll).can_focus = False
         self.reload(initial=True)
 
     def on_key(self, event: Key) -> None:
@@ -329,8 +376,7 @@ class CampaignDetail(QueueActions, ModalScreen):
             missing = self.focus.get("run") or self.focus.get("record") or "?"
             self.notify(f"not found: {missing}", markup=False)
         elif self._focus_tab == "tab-runs" and extra:
-            self._placeholder_runs = f"placeholder: runs ({extra})"
-            self.query_one("#placeholder-text", Static).update(Text(self._placeholder_runs))
+            self._pending_run_select = extra
         elif self._focus_tab == "tab-records" and extra:
             self._placeholder_records = f"placeholder: records ({extra})"
             self.query_one("#placeholder-records", Static).update(Text(self._placeholder_records))
@@ -385,6 +431,8 @@ class CampaignDetail(QueueActions, ModalScreen):
             changed = True
         if changed:
             self.reload()
+        else:
+            await self._runs_follow_poll()
 
     def reload(self, *, initial=False) -> None:
         if self._loading:
@@ -419,6 +467,7 @@ class CampaignDetail(QueueActions, ModalScreen):
                         CO.overview(previous_view))
                 if self._worker_alive():
                     self._handle_paint_failure(e)
+            self._refresh_runs_pane()
             live = self.view is not None and not self.view.terminal
             if not live:
                 self._stop_poll()
@@ -631,6 +680,167 @@ class CampaignDetail(QueueActions, ModalScreen):
     def record_detail(self, history, record_id) -> Text:
         return AM.record_detail(history, record_id)
 
+    def select_run(self, run_id: str) -> None:
+        if self.view is None:
+            return
+        runs = self.view.history.get("runs") or []
+        if not any(r.get("run_id") == run_id for r in runs):
+            self.notify(f"not found: {run_id}", markup=False)
+            return
+        self.action_tab("tab-runs")
+        self._select_run_row(run_id)
+
+    def _runs_cell(self, row: dict, key: str) -> str:
+        val = row.get(key)
+        if val is None:
+            return ""
+        if key == "cost_usd" and isinstance(val, (int, float)):
+            return f"{val:.4f}"
+        return str(val)
+
+    def _refresh_runs_pane(self) -> None:
+        if self.view is None:
+            return
+        self._fill_runs_table()
+        if self._pending_run_select:
+            self._select_run_row(self._pending_run_select)
+            self._pending_run_select = None
+        elif self._selected_run_id:
+            self._select_run_row(self._selected_run_id, keep_detail=True)
+
+    def _fill_runs_table(self) -> None:
+        detail = self.view
+        if detail is None:
+            return
+        rows = list(detail.history.get("runs") or [])
+        self._runs_rows = rows
+        table = self.runs_table
+        table.clear()
+        for row in rows:
+            rid = row.get("run_id") or ""
+            table.add_row(
+                *(Text(self._runs_cell(row, k)) for k in AM.RUNS_TABLE_COLUMNS),
+                key=rid)
+        if rows and self._selected_run_id:
+            for i, row in enumerate(rows):
+                if row.get("run_id") == self._selected_run_id:
+                    table.move_cursor(row=i, scroll=True)
+                    break
+
+    def _select_run_row(self, run_id: str, *, keep_detail: bool = False) -> None:
+        self._selected_run_id = run_id
+        for i, row in enumerate(self._runs_rows):
+            if row.get("run_id") == run_id:
+                self.runs_table.move_cursor(row=i, scroll=True)
+                break
+        if not keep_detail:
+            self._reset_run_follow()
+            self._load_run_detail(run_id)
+
+    def _reset_run_follow(self) -> None:
+        self._run_renderer = None
+        self._run_offset = 0
+        self._run_has_stream = False
+        self._run_follow_done = False
+
+    def _load_run_detail(self, run_id: str) -> None:
+        self._run_detail_token += 1
+        token = self._run_detail_token
+
+        async def work() -> None:
+            await self._load_run_detail_async(run_id, token)
+
+        self.run_worker(work, name="campaign-run-detail", group="campaign-run-detail",
+                        exclusive=True)
+
+    async def _load_run_detail_async(self, run_id: str, token: int) -> None:
+        try:
+            snap = await asyncio.to_thread(AM.load_run_pane_detail, self.cfg, self.campaign_id,
+                                           run_id)
+        except Exception as e:
+            snap = AM.RunPaneDetail(Text(f"(run detail unavailable: {e})\n", style="red"),
+                                    None, 0, False, run_id)
+        if token != self._run_detail_token or not self._worker_alive():
+            return
+        if self._selected_run_id != run_id:
+            return
+        self._run_renderer = snap.renderer
+        self._run_offset = snap.offset
+        self._run_has_stream = snap.has_stream
+        ended = False
+        if snap.has_stream:
+            run_dir = store.runs_dir(self.cfg, self.campaign_id) / run_id
+            try:
+                ended = TL._ended(run_dir)
+            except OSError:
+                ended = True
+        self._run_follow_done = not snap.has_stream or ended or self.view.terminal
+        self.query_one("#runs-detail-text", Static).update(snap.text)
+
+    async def _runs_follow_poll(self) -> None:
+        if self.view is None or self.view.terminal:
+            return
+        if self._active_tab() != "tab-runs":
+            return
+        if not self._run_has_stream or self._run_renderer is None or self._run_follow_done:
+            return
+        if self._selected_run_id is None:
+            return
+        run_dir = store.runs_dir(self.cfg, self.campaign_id) / self._selected_run_id
+        if not (run_dir / "stream.jsonl").is_file():
+            return
+        try:
+            ended = TL._ended(run_dir)
+        except OSError:
+            ended = True
+        rid = self._selected_run_id
+        renderer = self._run_renderer
+        offset = self._run_offset
+        try:
+            lines, offset = await asyncio.to_thread(
+                AM.stream_tail, self.cfg, self.campaign_id, rid, offset, renderer)
+        except Exception:
+            return
+        if not self._worker_alive() or self._selected_run_id != rid:
+            return
+        self._run_offset = offset
+        if lines:
+            pane = self.query_one("#runs-detail-text", Static)
+            cur = pane.content if isinstance(pane.content, Text) else Text(str(pane.content))
+            extra = Text()
+            for ln in lines:
+                extra.append(ln)
+                extra.append("\n")
+            cur.append_text(extra)
+            pane.update(cur)
+        if ended and not self._run_follow_done:
+            try:
+                drain, offset = await asyncio.to_thread(
+                    AM.stream_tail_drain, self.cfg, self.campaign_id, rid, self._run_offset,
+                    renderer)
+            except Exception:
+                drain, offset = [], self._run_offset
+            self._run_follow_done = True
+            self._run_offset = offset
+            if drain and self._selected_run_id == rid:
+                pane = self.query_one("#runs-detail-text", Static)
+                cur = pane.content if isinstance(pane.content, Text) else Text(str(pane.content))
+                extra = Text()
+                for ln in drain:
+                    extra.append(ln)
+                    extra.append("\n")
+                cur.append_text(extra)
+                pane.update(cur)
+
+    @on(DataTable.RowHighlighted, "#campaign-runs")
+    def _runs_row_highlighted(self, event: DataTable.RowHighlighted) -> None:
+        i = event.cursor_row
+        if not self._runs_rows or i < 0 or i >= len(self._runs_rows):
+            return
+        rid = self._runs_rows[i].get("run_id")
+        if rid and rid != self._selected_run_id:
+            self._select_run_row(rid)
+
     @on(DataTable.RowHighlighted, "#campaign-timeline")
     def _row_highlighted(self, event: DataTable.RowHighlighted) -> None:
         rows = self.shown
@@ -657,9 +867,13 @@ class CampaignDetail(QueueActions, ModalScreen):
 
     def _sync_tab_focus(self, tab_id: str) -> None:
         on_timeline = tab_id == "tab-timeline"
+        on_runs = tab_id == "tab-runs"
         self.table.can_focus = on_timeline
+        self.runs_table.can_focus = on_runs
         if not on_timeline:
             self.table.blur()
+        if not on_runs:
+            self.runs_table.blur()
             try:
                 self.query_one("#campaign-detail").blur()
             except Exception:
@@ -670,7 +884,8 @@ class CampaignDetail(QueueActions, ModalScreen):
         elif tab_id == "tab-overview":
             self.query_one("#overview-text", Static).focus()
         elif tab_id == "tab-runs":
-            self.query_one("#placeholder-text", Static).focus()
+            self.runs_table.can_focus = True
+            self.runs_table.focus()
         elif tab_id == "tab-records":
             self.query_one("#placeholder-records", Static).focus()
         elif tab_id == "tab-mail":
@@ -778,40 +993,52 @@ class CampaignDetail(QueueActions, ModalScreen):
             self.table.move_cursor(row=starts[group + 1], scroll=True)
 
     def action_first(self) -> None:
-        if self._active_tab() != "tab-timeline":
-            return
-        self._cursor_direction = -1
-        data = self._data_indexes()
-        if data:
-            self.table.move_cursor(row=data[0], scroll=True)
+        tab = self._active_tab()
+        if tab == "tab-timeline":
+            self._cursor_direction = -1
+            data = self._data_indexes()
+            if data:
+                self.table.move_cursor(row=data[0], scroll=True)
+        elif tab == "tab-runs" and self._runs_rows:
+            self.runs_table.move_cursor(row=0, scroll=True)
 
     def action_last(self) -> None:
-        if self._active_tab() != "tab-timeline":
-            return
-        self._cursor_direction = 1
-        data = self._data_indexes()
-        if data:
-            self.table.move_cursor(row=data[-1], scroll=True)
+        tab = self._active_tab()
+        if tab == "tab-timeline":
+            self._cursor_direction = 1
+            data = self._data_indexes()
+            if data:
+                self.table.move_cursor(row=data[-1], scroll=True)
+        elif tab == "tab-runs" and self._runs_rows:
+            self.runs_table.move_cursor(row=len(self._runs_rows) - 1, scroll=True)
 
     def action_down(self) -> None:
-        if self._active_tab() != "tab-timeline":
-            return
-        self._cursor_direction = 1
-        data = self._data_indexes()
-        here = self.table.cursor_row
-        after = [i for i in data if i > here]
-        if after:
-            self.table.move_cursor(row=after[0])
+        tab = self._active_tab()
+        if tab == "tab-timeline":
+            self._cursor_direction = 1
+            data = self._data_indexes()
+            here = self.table.cursor_row
+            after = [i for i in data if i > here]
+            if after:
+                self.table.move_cursor(row=after[0])
+        elif tab == "tab-runs":
+            here = self.runs_table.cursor_row
+            if here < len(self._runs_rows) - 1:
+                self.runs_table.move_cursor(row=here + 1)
 
     def action_up(self) -> None:
-        if self._active_tab() != "tab-timeline":
-            return
-        self._cursor_direction = -1
-        data = self._data_indexes()
-        here = self.table.cursor_row
-        before = [i for i in data if i < here]
-        if before:
-            self.table.move_cursor(row=before[-1])
+        tab = self._active_tab()
+        if tab == "tab-timeline":
+            self._cursor_direction = -1
+            data = self._data_indexes()
+            here = self.table.cursor_row
+            before = [i for i in data if i < here]
+            if before:
+                self.table.move_cursor(row=before[-1])
+        elif tab == "tab-runs":
+            here = self.runs_table.cursor_row
+            if here > 0:
+                self.runs_table.move_cursor(row=here - 1)
 
     def action_close(self) -> None:
         self.dismiss(True)

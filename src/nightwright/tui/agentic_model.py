@@ -9,6 +9,7 @@ conditions, ping digest, followers) is read-only throughout: it never syncs the 
 a reader.
 """
 import datetime as dt
+import json
 import os
 import re
 import time
@@ -21,6 +22,8 @@ from .. import render as RD
 from ..agentic import escalations as ESC
 from ..agentic import events as EV
 from ..agentic import history as H
+from ..agentic import runproc as RP
+from ..agentic import tail as TL
 from ..agentic import lease as L
 from ..agentic import mailbox as MB
 from ..agentic import profiles as PR
@@ -1257,10 +1260,208 @@ _TRANSITION_KINDS = frozenset({
     "admitted_after_revision", "admitted_revise_pending"})
 _DECISION_KINDS = frozenset({"human_decision", "triage"})
 _TERMINAL_OUTCOMES = frozenset({"merged", "handed_off", "abandoned"})
+RUNS_STDERR_LINES = 200
+RUNS_RESULT_LINES = 200
+RUNS_STREAM_LINES = 200
+RUNS_TABLE_COLUMNS = ("run_id", "persona", "phase", "status", "verdict_status",
+                      "duration_s", "cost_usd")
 
 
-def stream_tail(*_a, **_kw) -> None:
-    """Runs-pane live follow (SPEC-0405 follow-on). No-op until that spec defines behaviour."""
+@dataclass
+class RunPaneDetail:
+    text: Text
+    renderer: object | None
+    offset: int
+    has_stream: bool
+    run_id: str
+
+
+def _verdict_status_line(verdict: dict | None) -> str:
+    if not isinstance(verdict, dict):
+        return ""
+    lead = next((verdict[k] for k in ("status", "disposition", "verdict")
+                 if verdict.get(k) is not None), None)
+    parts: list[str] = []
+    if lead is not None:
+        parts.append(str(lead))
+    if verdict.get("score") is not None:
+        parts.append(str(verdict["score"]))
+    if verdict.get("summary"):
+        parts.append(str(verdict["summary"]))
+    return " ".join(parts)
+
+
+def _blocking_rows(verdict: dict | None) -> list[tuple[str, str, list | None]]:
+    if not isinstance(verdict, dict):
+        return []
+    out: list[tuple[str, str, list | None]] = []
+    for f in verdict.get("findings") or []:
+        if not isinstance(f, dict):
+            continue
+        sev = f.get("severity")
+        if sev in ("must_fix", "major"):
+            files = f.get("files") if isinstance(f.get("files"), list) else []
+            out.append((str(sev), str(f.get("title") or ""), files))
+    for item in verdict.get("must_fix") or []:
+        if isinstance(item, dict):
+            files = item.get("files") if isinstance(item.get("files"), list) else []
+            out.append(("must_fix", str(item.get("title") or ""), files))
+        elif isinstance(item, str):
+            out.append(("must_fix", item, []))
+    for b in verdict.get("blockers") or []:
+        if isinstance(b, str):
+            out.append(("major", b, None))
+    return out
+
+
+def _run_renderer(cfg, run_dir: Path):
+    req = RP.read_json(run_dir / "request.json") or {}
+    rj = RP.read_json(run_dir / "run.json") or {}
+    budget = req.get("max_budget_usd") or rj.get("max_budget_usd")
+    return TL.Renderer(cwd=req.get("cwd"), budget_usd=budget, price_lookup=TL._price_lookup(cfg))
+
+
+def _append_blocking_rows(t: Text, verdict: dict | None) -> None:
+    for sev, title, files in _blocking_rows(verdict):
+        t.append(f"{sev}: ", style="bold")
+        t.append(title)
+        t.append("\n")
+        if files:
+            t.append("  files: " + ", ".join(str(f) for f in files) + "\n", style="dim")
+
+
+def _stderr_tail_text(run_dir: Path) -> Text:
+    t = Text()
+    path = run_dir / "stderr.log"
+    if not path.is_file():
+        t.append("no stderr\n")
+        return t
+    try:
+        lines = path.read_text(encoding="utf-8", errors="replace").splitlines()[-RUNS_STDERR_LINES:]
+    except OSError:
+        t.append("no stderr\n")
+        return t
+    for ln in lines:
+        t.append(ln)
+        t.append("\n")
+    return t
+
+
+def _result_fallback_text(run_dir: Path, run_json: dict | None) -> Text:
+    t = Text()
+    rel = None
+    if isinstance(run_json, dict):
+        files = run_json.get("files") or {}
+        raw = files.get("raw")
+        if isinstance(raw, str) and raw and "/" not in raw and "\\" not in raw:
+            rel = raw
+    path = run_dir / rel if rel else run_dir / "result.json"
+    if not path.is_file():
+        t.append("no result.json\n")
+        return t
+    text = RP._text(path)
+    obj = None
+    try:
+        obj = json.loads(text) if text.strip() else None
+    except ValueError:
+        obj = None
+    body_lines: list[str] = []
+    if isinstance(obj, dict):
+        body = obj.get("result")
+        if (isinstance(body, str) and body.strip()
+                and not isinstance(obj.get("structured_output"), dict)):
+            body_lines = body.splitlines()[-RUNS_RESULT_LINES:]
+        else:
+            body_lines = text.splitlines()[-RUNS_RESULT_LINES:]
+    elif text.strip():
+        body_lines = text.splitlines()[-RUNS_RESULT_LINES:]
+    else:
+        t.append("no result.json\n")
+        return t
+    for ln in body_lines:
+        t.append(ln)
+        t.append("\n")
+    return t
+
+
+def _stream_initial_tail(cfg, run_dir: Path) -> tuple[Text, object, int]:
+    renderer = _run_renderer(cfg, run_dir)
+    stream = run_dir / "stream.jsonl"
+    lines, offset = TL.read_lines(stream, 0)
+    rendered: list[Text] = []
+    for line in lines:
+        rendered.extend(renderer.feed_line(line))
+    rendered.extend(renderer.flush_prose())
+    plains = [t.plain for t in rendered][-RUNS_STREAM_LINES:]
+    t = Text()
+    for ln in plains:
+        t.append(ln)
+        t.append("\n")
+    return t, renderer, offset
+
+
+def load_run_pane_detail(cfg, cid, run_id: str) -> RunPaneDetail:
+    """Verdict, blockers, stderr, and stream or pre-stream result for one run. Never raises."""
+    run_dir = store.runs_dir(cfg, cid) / run_id
+    t = Text()
+    renderer = None
+    offset = 0
+    has_stream = False
+    if not run_dir.is_dir():
+        t.append("no run directory\n")
+        return RunPaneDetail(t, None, 0, False, run_id)
+    run_json = None
+    run_path = run_dir / "run.json"
+    if run_path.is_file():
+        try:
+            run_json = json.loads(run_path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            run_json = None
+            t.append("run.json malformed\n")
+    verdict = run_json.get("verdict") if isinstance(run_json, dict) else None
+    line = _verdict_status_line(verdict if isinstance(verdict, dict) else None)
+    if line:
+        t.append(line)
+        t.append("\n")
+    _append_blocking_rows(t, verdict if isinstance(verdict, dict) else None)
+    t.append_text(_stderr_tail_text(run_dir))
+    stream = run_dir / "stream.jsonl"
+    if stream.is_file():
+        has_stream = True
+        stream_text, renderer, offset = _stream_initial_tail(cfg, run_dir)
+        t.append_text(stream_text)
+    else:
+        t.append_text(_result_fallback_text(run_dir, run_json if isinstance(run_json, dict) else None))
+    t.rstrip()
+    return RunPaneDetail(t, renderer, offset, has_stream, run_id)
+
+
+def stream_tail(cfg, campaign_id, run_id, offset, renderer) -> tuple[list[str], int]:
+    """Append rendered stream lines from `offset`; returns plain lines and the next offset."""
+    run_dir = store.runs_dir(cfg, campaign_id) / run_id
+    lines, next_offset = TL.read_lines(run_dir / "stream.jsonl", offset)
+    out: list[str] = []
+    for line in lines:
+        out.extend(x.plain for x in renderer.feed_line(line))
+    out.extend(x.plain for x in renderer.flush_prose())
+    return out, next_offset
+
+
+def stream_tail_drain(cfg, campaign_id, run_id, offset, renderer) -> tuple[list[str], int]:
+    """One drain when the run ends: trailing JSON fragment with no newline, if any."""
+    run_dir = store.runs_dir(cfg, campaign_id) / run_id
+    stream = run_dir / "stream.jsonl"
+    frag = TL._fragment(stream, offset)
+    out: list[str] = []
+    if frag:
+        try:
+            if isinstance(json.loads(frag), dict):
+                out.extend(x.plain for x in renderer.feed_line(frag))
+        except ValueError:
+            pass
+    out.extend(x.plain for x in renderer.flush_prose())
+    new_offset = offset + len(frag.encode("utf-8")) if frag else offset
+    return out, new_offset
 
 
 def timeline_group(row: dict) -> str:

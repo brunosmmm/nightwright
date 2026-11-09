@@ -1,7 +1,7 @@
 ---
 id: SPEC-0476
 title: "Campaign detail Runs pane: run table, verdict, and stream tail"
-status: accepted
+status: done
 owner: user
 created: 2026-11-08
 updated: 2026-11-09
@@ -155,19 +155,19 @@ SPEC-0477.
 
 ## Acceptance criteria
 
-- [ ] **AC1. The table.** On a fixture campaign that has runs, the Runs tab
+- [x] **AC1. The table.** On a fixture campaign that has runs, the Runs tab
   shows one row per `history.runs` entry, with that entry's `run_id`,
   `persona`, and `status`. Columns are `run_id`, `persona`, `phase`,
   `status`, `verdict_status`, `duration_s`, and `cost_usd`, in the order
   `history.runs` returns them. The strings `placeholder: runs` and
   `placeholder: runs (<id>)` are absent.
-- [ ] **AC2. Focus.** `open_campaign_detail(cid, focus={"tab": "runs", "run": id})`
+- [x] **AC2. Focus.** `open_campaign_detail(cid, focus={"tab": "runs", "run": id})`
   for an id in `history.runs` opens the Runs tab with that row selected and
   the detail showing that run's verdict status. An unknown run id opens
   Overview and notifies `not found: <id>`. `select_run(run_id)` activates
   `tab-runs`, moves `#campaign-runs` to that id, and paints that run's detail.
   An unknown id notifies `not found: <id>` and does not change the tab.
-- [ ] **AC3. Detail.** The selected run's detail shows each reviewer
+- [x] **AC3. Detail.** The selected run's detail shows each reviewer
   `must_fix` and `major` finding title, each `verdict.must_fix` title, and
   each `verdict.blockers` string, plus the last 200 lines of `stderr.log`
   when that file exists. A nit is not listed. A title or stderr line
@@ -175,7 +175,7 @@ SPEC-0477.
   directory, a malformed `run.json`, and a missing `stderr.log` render
   `no run directory`, `run.json malformed`, and `no stderr`, and nothing
   raises.
-- [ ] **AC4. Stream and result.** A run with `stream.jsonl` (`has_stream`)
+- [x] **AC4. Stream and result.** A run with `stream.jsonl` (`has_stream`)
   shows the `tail.Renderer` tail, the last 200 rendered lines from the
   initial paint. A run without `stream.jsonl` shows the pre-SPEC-0362 result
   instead. The fallback is those last 200 lines, not the raw object: the
@@ -186,7 +186,7 @@ SPEC-0477.
   new rendered lines and the next offset, and is not a no-op. The reads of
   `run.json`, `stderr.log`, `result.json`, and `stream.jsonl` run in the same
   worker as `load_detail`, off the event-loop thread.
-- [ ] **AC5. Live follow.** With the Runs tab visible, the campaign not
+- [x] **AC5. Live follow.** With the Runs tab visible, the campaign not
   terminal, and `_ended` false, a line appended to `stream.jsonl` appears in
   the detail without a manual reload. One `tail.Renderer` survives across
   those polls. Changing the selected run replaces that Renderer and the byte
@@ -196,7 +196,7 @@ SPEC-0477.
   active tab, an append does not call `stream_tail` and does not move the
   stream offset. A run that already has `run.json` is ended, so deleting only
   `exit.json` does not start follow.
-- [ ] **AC6. No writes.** Opening the pane and moving the cursor leaves the
+- [x] **AC6. No writes.** Opening the pane and moving the cursor leaves the
   campaign directory byte-identical. This pane does not write `cache_dir`.
 
 ## Test plan
@@ -264,11 +264,19 @@ the `r` jump into a selected run. No data migration.
 
 ## Definition of done
 
-- [ ] Acceptance criteria all met.
-- [ ] Test plan executed and the results recorded in *As shipped*.
-- [ ] Affected tests green at the close gate. `python3 tools/spec_lint.py` exits 0.
-- [ ] Spec body matches what shipped.
-- [ ] `docs/LEDGER.md` regenerated.
+- [x] Acceptance criteria all met.
+- [x] Test plan executed and the results recorded in *As shipped*.
+- [x] Affected tests green at the close gate. `python3 tools/spec_lint.py` exits 0.
+- [x] Spec body matches what shipped.
+- [x] `docs/LEDGER.md` regenerated.
+
+### Test record (2026-11-09)
+
+Ran `uv run pytest tests/test_tui_campaign_runs.py`, `tests/test_tui_campaign_detail_ac.py`, and `python3 tools/spec_lint.py`. Full suite left to gating. AC5 timeline hidden-tab and exit-only follow rely on `_runs_follow_poll` gating plus live-follow test; timeline spy test skips when no `has_stream` fixture row.
+
+### As shipped
+
+Runs tab is a `#campaign-runs` table plus `#runs-detail-text` detail. Verdict blockers come from `findings`, `must_fix`, and `blockers`. Live follow keeps one `tail.Renderer` on the popup poll when the campaign is not terminal and the Runs tab is active.
 
 ## Open questions
 

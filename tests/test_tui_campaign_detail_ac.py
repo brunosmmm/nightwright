@@ -156,9 +156,13 @@ def test_focus_run_record_and_unknown(tmp_path):
             await settle(app, pilot)
             s = detail_screen(app)
             assert s.query_one("#detail-body", TabbedContent).active == "tab-runs"
-            assert f"placeholder: runs ({run_id})" in str(
-                s.query_one("#placeholder-text").content)
+            tbl = s.query_one("#campaign-runs", DataTable)
+            keys = [str(tbl.ordered_rows[i].key.value) for i in range(tbl.row_count)]
+            assert run_id in keys
+            assert await pilot_until(
+                pilot, lambda: str(s.query_one("#runs-detail-text").content).strip())
             await press(app, pilot, ["escape"])
+            await settle(app, pilot)
             app.open_campaign_detail(cid, focus={"tab": "records", "record": record_id})
             await settle(app, pilot)
             assert f"placeholder: records ({record_id})" in str(
@@ -202,8 +206,7 @@ def test_runs_focus_timeline_kept_across_poll(tmp_path, monkeypatch):
             await settle(app, pilot)
             await pilot_until(
                 pilot,
-                lambda: "placeholder: runs"
-                in str(detail_screen(app).query_one("#placeholder-text").content),
+                lambda: detail_screen(app).query_one("#campaign-runs", DataTable).row_count > 0,
             )
             s = detail_screen(app)
             assert s.query_one("#detail-body", TabbedContent).active == "tab-runs"
@@ -253,7 +256,7 @@ def test_popup_frame_and_pane_keys(tmp_path):
                 await settle(app, pilot)
                 assert tabs.active == "tab-queue"
                 assert body.active == want
-            assert "placeholder: runs" in str(s.query_one("#placeholder-text").content)
+            assert "placeholder: runs" not in str(s.query_one("#runs-detail-text").content)
             assert "placeholder: records" in str(s.query_one("#placeholder-records").content)
             assert "placeholder: mail" in str(s.query_one("#placeholder-mail").content)
             assert ids["ready"] in overview(app)
