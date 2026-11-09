@@ -25,7 +25,7 @@ These apply to every session that touches nightwright — conductor, steward, bu
 - **Do real work through background sub-agents** — specs, implementation, investigations,
   rebases, merges, conflict resolution. The main session stays responsive for events and
   decisions. Dispatch work to fresh sub-agents (general-purpose, or Explore for read-only search) with a self-contained brief and a model chosen per task (sonnet for routine work, opus only for hard design or review). Never use forks — they inherit the whole conversation and cost an order of magnitude more; write any needed context into the brief. The brief names the governing spec path, the worktree, the
-  files to read, the files the sub-agent owns, these rules, and what to report.
+  files to read, the files the sub-agent owns, these rules, and what to report. Spawn sub-agents that edit files with `isolation: worktree` (their cwd is then the worktree: tell them never to `cd` or use `git -C`, and to run every git command as a plain single command such as `git add <paths>` then `git commit -m …`, with no pipes or compounds: the committed `.claude/settings.json` allowlist matches only command prefixes, and a denied command in a background agent is never answered, SPEC-0496).
 - **Missing-CLI rule:** a one-off python / cat / jq peek into nightwright's data means a `nw` command is
   missing — file an idea (`nw idea capture --kind improvement --project Meta-Tools …`,
   heading-verified) and carry on.

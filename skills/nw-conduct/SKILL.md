@@ -42,7 +42,9 @@ human". Your chat lines are reports. A decision only the human can make goes thr
 
 **Everything else is dispatched, never run inline.** Dispatch work to fresh sub-agents (general-purpose, or Explore for read-only search) with a self-contained brief and a model chosen per task (sonnet for routine work, opus only for hard design or review). Never use forks — they inherit the whole conversation and cost an order of magnitude more; write any needed context into the brief. The brief names the
 campaign, the governing spec path, the worktree, the files to read, the files the sub-agent may
-change, these rules, and what to report.
+change, these rules, and what to report. Spawn sub-agents that edit files with `isolation: worktree` (their cwd is then the worktree: tell them never to `cd` or use `git -C`, and to run every git command as a plain single command such as `git add <paths>` then `git commit -m …`, with no pipes or compounds: the committed `.claude/settings.json` allowlist matches only command prefixes, and a denied command in a background agent is never answered, SPEC-0496).
+
+**A sub-agent reporting a permission denial (usually a commit) is yours to handle at once, never wait on it:** run the blocked plain command yourself in that worktree (`git add` / `git commit` are allowed as single commands), or re-dispatch with the brief fixed. Do not escalate to the human for it (SPEC-0496).
 
 - **Sub-agent** (preferred) for any work that needs judgment or more than a few seconds:
   resolving a rebase conflict in a campaign worktree,
