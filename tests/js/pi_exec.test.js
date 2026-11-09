@@ -2042,7 +2042,7 @@ test("execute: stream write uses post-refresh OAuth token from getAuth", async (
 test("execute: finally removes only new pi-bash overflow logs from private TMPDIR", async () => {
   const execute = await loadExecute();
   const runDir = layout();
-  const hostTmp = fs.mkdtempSync(path.join("/tmp", "nw-pi-host-"));
+  const hostTmp = fs.mkdtempSync(path.join(os.tmpdir(), "nw-pi-host-"));
   const outside = path.join(hostTmp, `pi-bash-outside-${process.pid}.log`);
   fs.writeFileSync(outside, "leave me\n");
   const privateTmp = fs.mkdtempSync(path.join(hostTmp, "child-"));

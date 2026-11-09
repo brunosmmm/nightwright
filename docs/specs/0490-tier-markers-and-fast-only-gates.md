@@ -4,7 +4,7 @@ title: "Tier markers and fast-only campaign gates"
 status: in-progress
 owner: user
 created: 2026-11-09
-updated: 2026-11-09
+updated: 2026-11-10
 milestone: "M9: agentic workflow"
 kind: feature
 parent: SPEC-0489
@@ -259,6 +259,11 @@ green; it goes through `affected_tests.py`, which drops the exclusion.
 - `uv run pytest -q tests/test_test_tiers.py tests/test_affected_tests.py tests/test_agentic_dogfood_config.py tests/test_agentic_gates.py::test_gate_env_full_suite_sets_all_tiers_without_cadence tests/test_agentic_gates.py::test_gate_run_resolve_ad_hoc_timeout tests/test_remote_gates.py::test_header_full_suite_includes_all_tiers` (133 passed).
 - `python3 tools/spec_lint.py` (pre–write-ledger).
 - Box measuring runs and full suite left to gating.
+
+### Test record (2026-11-10 loop 1)
+
+- `uv run pytest -q tests/test_pi_exec_js.py::test_pi_exec_under_node` (1 passed; TMPDIR overflow test uses `os.tmpdir()` not `/tmp`).
+- Full pytest-affected gate and full suite left to gating.
 
 ### As shipped (2026-11-10)
 
