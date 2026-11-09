@@ -73,8 +73,8 @@ def test_render_unit_has_supervision_and_no_credentials(monkeypatch):
 
 def test_systemd_analyze_verifies_the_rendered_units(tmp_path):
     exe = shutil.which("systemd-analyze")
-    if not exe:
-        pytest.skip("no systemd-analyze on this host")
+    if not exe or not os.environ.get("XDG_RUNTIME_DIR"):
+        pytest.skip("no systemd-analyze or no user session (XDG_RUNTIME_DIR) on this host")
     nw = tmp_path / "nw"
     nw.write_text("#!/bin/sh\n")
     nw.chmod(0o755)
@@ -176,3 +176,21 @@ def test_install_dry_run_prints_both_units(tmp_path, monkeypatch):
     assert f"ExecStart={nw} queue run" in r.output and "nw-runner-failed.service" in r.output
     assert "systemctl --user enable --now nw-runner.service" in r.output
     assert not RU.installed()                                  # dry run wrote nothing
+
+
+def test_install_refuses_while_a_stray_runner_holds_the_lease(tmp_path, monkeypatch):
+    cfg = _cfg(tmp_path)
+    nw = tmp_path / "nw"
+    nw.write_text("#!/bin/sh\n")
+    nw.chmod(0o755)
+    monkeypatch.setattr("nightwright.cli.load_config", lambda: cfg)
+    monkeypatch.setattr(RU, "show", lambda run=None: None)
+    monkeypatch.setattr(RU, "systemctl", _never)
+    lease = L.acquire(cfg, ["nw", "queue", "run"])
+    try:
+        r = CliRunner().invoke(cli, ["queue", "install", "--nw-bin", str(nw)])
+    finally:
+        lease.release()
+    if shutil.which("systemctl"):
+        assert r.exit_code == 1 and "nw queue stop --yes" in r.output, r.output
+    assert not RU.installed()

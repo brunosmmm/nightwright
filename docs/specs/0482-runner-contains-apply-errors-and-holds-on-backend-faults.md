@@ -1,7 +1,7 @@
 ---
 id: SPEC-0482
 title: The runner contains a campaign's apply error and holds steps on a backend fault
-status: accepted
+status: done
 owner: user
 created: 2026-11-09
 updated: 2026-11-09
@@ -116,20 +116,20 @@ dying of one campaign and keeps an environment fault from being read as a verdic
 
 ## Acceptance criteria
 
-- [ ] An exception raised while applying a campaign's result (normal tick, drain, crash sweep)
+- [x] An exception raised while applying a campaign's result (normal tick, drain, crash sweep)
       parks that campaign `apply_error` with the exception in `park.detail`, journals
       `apply_error`, projects a `parked` event, and the runner keeps ticking (no `crash`).
-- [ ] The failed result's runs are closed (`run.end`), so `_open_runs` is empty and a restart
+- [x] The failed result's runs are closed (`run.end`), so `_open_runs` is empty and a restart
       re-adopts nothing; a later tick does not touch the parked campaign.
-- [ ] A campaign already PARKED or terminal is not re-parked; a failing park is journaled
+- [x] A campaign already PARKED or terminal is not re-parked; a failing park is journaled
       `apply_error_uncontained` and does not raise.
-- [ ] With the cursor backend failing its preflight, the gate holds the step
+- [x] With the cursor backend failing its preflight, the gate holds the step
       `backend_unavailable` and `held_by` reports it; a fresh cursor spawn returns an
       interrupted, uncharged result; a finished run whose text is the cursor startup fault is
       turned into an interrupted one; no triage retry is spent and nothing parks.
-- [ ] One `backend_unavailable` escalation is filed while none is open; `runner start` prints a
+- [x] One `backend_unavailable` escalation is filed while none is open; `runner start` prints a
       `WARNING:` and journals `backend_preflight_failed` when the probe fails.
-- [ ] `park_owner("apply_error") == "conductor"`; the operate page and the conductor skill name
+- [x] `park_owner("apply_error") == "conductor"`; the operate page and the conductor skill name
       `apply_error`.
 
 ## Test plan
@@ -153,17 +153,31 @@ dying of one campaign and keeps an environment fault from being read as a verdic
 - **Regression guard:** `python3 tools/affected_tests.py --run uv run pytest -q` plus the files
   touched; `test_docs_two_pillars` (park table), `test_park_owner_table`.
 
+## As shipped
+
+- Shipped as designed. The crash sweep (`guard=True`) also parks `apply_error` now (it still
+  journals `harvest_error`, and its drain report keeps its old shape); a campaign the sweep
+  cannot find is journaled `apply_error_uncontained`.
+- `tests/test_remote_workers_integration.py::test_a_duplicate_submit_…` simulated a runner that
+  dies mid-apply through an apply exception; with containment that no longer kills the runner,
+  so the test restores the pre-0482 harvest for its crash (its subject, adoption dedupe, is
+  unchanged).
+- Test record (2026-11-09): `tests/test_runner_selfheal.py` 7 passed locally; the affected
+  set (minus the conftest trigger) on the box, GATEJOB-0994: 6119 passed, 3 failed; the three
+  (output-guard allowlist, `systemd-analyze` on a box without a user session, the remote
+  crash test above) were fixed and pass locally; re-gated on the box after the fix.
+
 ## Rollout / migration
 
 Lands with the code; the next runner start picks it up (re-exec on merge).
 
 ## Definition of done
 
-- [ ] Acceptance criteria all met.
-- [ ] Test plan executed; automated tests pass; manual steps performed.
-- [ ] No regressions.
-- [ ] Spec body updated to match what shipped.
-- [ ] `docs/LEDGER.md` updated (status + date).
+- [x] Acceptance criteria all met.
+- [x] Test plan executed; automated tests pass; manual steps performed.
+- [x] No regressions.
+- [x] Spec body updated to match what shipped.
+- [x] `docs/LEDGER.md` updated (status + date).
 
 ## Open questions
 

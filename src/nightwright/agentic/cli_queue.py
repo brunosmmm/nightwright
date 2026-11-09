@@ -2006,15 +2006,16 @@ def attach(queue_group):
     @click.option("--dry-run", is_flag=True, help="print the units and the commands; change nothing")
     @click.option("--nw-bin", default=None, metavar="PATH",
                   help="the nw executable the unit runs (default: the uv tool install)")
-    def queue_install(dry_run, nw_bin):
+    @click.pass_obj
+    def queue_install(cfg, dry_run, nw_bin):
         """Run the queue runner as the systemd user unit nw-runner.service (SPEC-0483).
 
         Writes ~/.config/systemd/user/nw-runner.service (`nw queue run` in the foreground,
         Restart=always, a start limit, KillMode=process so persona runs survive a restart) and
         nw-runner-failed.service (its OnFailure= hook: one escalation when systemd gives up),
         then `daemon-reload` and `enable --now`. A runner already holding the lease outside
-        the unit is not touched: stop it first (`nw queue stop --yes`), or the unit's start
-        fails on the lease. Credentials come from agentic.credentials (pass), never from
+        the unit is refused: stop it first (`nw queue stop --yes`), or the unit's start would
+        fail on the lease until systemd gives up. Credentials come from agentic.credentials (pass), never from
         the unit. From then on `nw queue run --detach`, `stop` and `restart` go through
         systemctl --user. Logs: journalctl --user -u nw-runner.service -f."""
         import shutil
@@ -2040,6 +2041,11 @@ def attach(queue_group):
             return
         if not shutil.which("systemctl"):
             raise click.ClickException("systemctl not found: a systemd user session is required")
+        if L.is_held(cfg) and not (show and show.get("ActiveState") in RU.ACTIVE_STATES):
+            st = L.lease_status(cfg)
+            raise click.ClickException(
+                f"a runner outside the unit holds the lease (pid {st.get('pid')}); stop it "
+                "first (`nw queue stop --yes`), then re-run `nw queue install`")
         for path, text in texts.items():
             path.parent.mkdir(parents=True, exist_ok=True)
             tmp = Path(f"{path}.tmp")

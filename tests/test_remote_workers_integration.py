@@ -378,9 +378,24 @@ def test_a_duplicate_submit_starts_one_process_and_a_duplicate_event_appends_one
             raise RuntimeError("stop after the worker gate event, before the state is written")
         return rec
     monkeypatch.setattr(S, "append_event", crash_after_the_worker_gate)
+    # SPEC-0482 contains an apply error (the campaign parks `apply_error`); this test is about
+    # a runner that dies mid-apply, so it restores the pre-0482 harvest for the crash
+    real_apply, real_guarded = Q._apply, Q._guarded
+
+    def uncontained(guard, ctx, st, fn, report=None, res=None):
+        if not guard:
+            return fn()
+        try:
+            fn()
+        except Exception as e:
+            Q.journal(ctx.cfg, "harvest_error", campaign=st.get("id"), error=repr(e))
+    monkeypatch.setattr(Q, "_apply", Q._apply_step)
+    monkeypatch.setattr(Q, "_guarded", uncontained)
     with pytest.raises(RuntimeError, match="before the state is written"):
         Q.run(c.cfg, until_idle=True, poll_interval_s=0.01)
     monkeypatch.setattr(S, "append_event", real_append)
+    monkeypatch.setattr(Q, "_apply", real_apply)
+    monkeypatch.setattr(Q, "_guarded", real_guarded)
     first = [g for g in ledger(c, ["gate"]) if g.get("event_uid")]
     assert len(first) == 1 and first[0].get("worker") in ("wa", "wb")
     uid = first[0]["event_uid"]

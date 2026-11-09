@@ -1,7 +1,7 @@
 ---
 id: SPEC-0483
 title: The queue runner runs under a systemd user unit and resolves its own credentials
-status: accepted
+status: done
 owner: user
 created: 2026-11-09
 updated: 2026-11-09
@@ -47,7 +47,9 @@ var (`~/.config/projects/api-tokens.json`: `CURSOR_API_KEY -> cursor/sdk`).
 
 1. **`nw queue install | uninstall`** (mirrors `nw dashboard install`, SPEC-0427) writes
    `~/.config/systemd/user/nw-runner.service` and `nw-runner-failed.service`, then
-   `daemon-reload` + `enable --now` (a running unit is restarted onto the new text).
+   `daemon-reload` + `enable --now` (a running unit is restarted onto the new text). It
+   refuses while a runner outside the unit holds the lease (stop it first), since the
+   unit's start would otherwise fail on the lease until the start limit.
    `nw-runner.service`:
    - `ExecStart=<uv tool nw> queue run` in the foreground; `Type=simple`; `Restart=always`,
      `RestartSec=10`; `StartLimitIntervalSec=900`, `StartLimitBurst=5` (5 starts in 15 min is a
@@ -124,22 +126,22 @@ var (`~/.config/projects/api-tokens.json`: `CURSOR_API_KEY -> cursor/sdk`).
 
 ## Acceptance criteria
 
-- [ ] The rendered unit has `ExecStart=<nw> queue run`, `Restart=always`, the start limit,
+- [x] The rendered unit has `ExecStart=<nw> queue run`, `Restart=always`, the start limit,
       `OnFailure=nw-runner-failed.service`, `KillMode=process`, a PATH with `/usr/bin`, and no
       `EnvironmentFile` or credential; `GNUPGHOME` / `PASSWORD_STORE_DIR` appear only when set.
-- [ ] `systemd-analyze --user verify` accepts both rendered units (real binary, temp dir).
-- [ ] With the unit file installed, `detach_runner`, `stop_runner` and restart's start phase go
+- [x] `systemd-analyze --user verify` accepts both rendered units (real binary, temp dir).
+- [x] With the unit file installed, `detach_runner`, `stop_runner` and restart's start phase go
       through `systemctl --user` and never spawn or signal a process themselves; a foreground
       `nw queue run` refuses with a message naming `nw-runner.service` while it is active, and
       runs when `NW_RUNNER_UNIT` is set.
-- [ ] `nw queue unit-failed` files one `runner_unit_failed` escalation and no second while it
+- [x] `nw queue unit-failed` files one `runner_unit_failed` escalation and no second while it
       is open.
-- [ ] `credentials.ensure` resolves a `pass:` var through a fake `pass` (no TTY, `GPG_TTY` unset,
+- [x] `credentials.ensure` resolves a `pass:` var through a fake `pass` (no TTY, `GPG_TTY` unset,
       `--pinentry-mode error`), reports `locked` on failure and timeout without raising, files one
       escalation, retries on the next call, and withdraws the escalation once it resolves; the
       cursor gate holds while unresolved and admits after; the process env wins.
-- [ ] No credential value appears in the runner journal, the event stream or an escalation.
-- [ ] `nw doctor`'s `agentic.cursor` reports a resolving / locked credential without its value.
+- [x] No credential value appears in the runner journal, the event stream or an escalation.
+- [x] `nw doctor`'s `agentic.cursor` reports a resolving / locked credential without its value.
 
 ## Test plan
 
@@ -156,6 +158,18 @@ var (`~/.config/projects/api-tokens.json`: `CURSOR_API_KEY -> cursor/sdk`).
 - **Regression guard:** affected tests plus the touched files; SPEC-0291's and SPEC-0375's
   tests keep passing with the unit absent (the conftest fixture).
 
+## As shipped
+
+- Shipped as designed. `nw queue install` also refuses while a runner outside the unit holds
+  the lease. A var mapped `env` that is not set is journaled only (no escalation: it is
+  inherit-only by definition).
+- Real-binary checks (2026-11-09): `systemd-analyze --user verify` on both rendered units
+  (ExecStart at the uv tool `nw`) exits 0 with no warnings; `pass --version` runs, and
+  `/usr/bin/pass` splices `$PASSWORD_STORE_GPG_OPTS` into its gpg call (gpg 2.4.9). `pass show`
+  was never run against the real store; the unit was not installed on this machine.
+- Test record: `tests/test_runner_unit.py` (10) and `tests/test_credentials.py` (7) pass; the
+  `systemd-analyze` test skips on a host without a user session (the box).
+
 ## Rollout / migration
 
 1. Land. 2. The human adds `agentic.credentials: {CURSOR_API_KEY: pass:cursor/sdk}` to
@@ -165,11 +179,11 @@ var (`~/.config/projects/api-tokens.json`: `CURSOR_API_KEY -> cursor/sdk`).
 
 ## Definition of done
 
-- [ ] Acceptance criteria all met.
-- [ ] Test plan executed; automated tests pass; manual steps performed.
-- [ ] No regressions.
-- [ ] Spec body updated to match what shipped.
-- [ ] `docs/LEDGER.md` updated (status + date).
+- [x] Acceptance criteria all met.
+- [x] Test plan executed; automated tests pass; manual steps performed.
+- [x] No regressions.
+- [x] Spec body updated to match what shipped.
+- [x] `docs/LEDGER.md` updated (status + date).
 
 ## Open questions
 
