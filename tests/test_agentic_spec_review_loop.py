@@ -838,3 +838,24 @@ def test_human_park_in_spec_review_resumes_to_it(tmp_path, monkeypatch):
     state = {"state": "SPEC_REVIEW", "park_requested": {"detail": "pause"}}
     step = Q.plan_step(state, PR.builtin_profiles()["balanced"])
     assert step.kind == "park" and step.resume_to == "SPEC_REVIEW"
+
+
+def test_an_adopted_review_without_a_start_snapshot_retries(tmp_path, monkeypatch):
+    """SPEC-0482: an adopted run has no `res.spec_review`; it retries, then parks, never raises."""
+    real = Q._do_spec_review
+
+    def adopted_like(*a, **kw):
+        res = real(*a, **kw)
+        res.spec_review = None          # what the generic persona path leaves
+        return res
+
+    monkeypatch.setattr(Q, "_do_spec_review", adopted_like)
+    cfg, repo, iid, cid = begin(tmp_path, monkeypatch, [reviewed("approve"), reviewed("approve")])
+    Q.tick(cfg)
+    st = S.read_state(cfg, cid)
+    assert st["state"] == "SPEC_REVIEW" and st["counters"]["spec_review_retries"] == 1
+    Q.tick(cfg)
+    park = parked(cfg, cid)
+    assert park["reason"] == "spec_review_exhausted" and park["resume_to"] == "SPEC_REVIEW"
+    assert "no start snapshot" in park["detail"]
+    assert not reviews(cfg, cid)

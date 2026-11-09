@@ -4199,6 +4199,8 @@ def _apply_spec_review(ctx, state, profile, counters, res, row, events, finish):
     payload = failure = None
     if sr.get("modified"):
         failure = sr["modified"]
+    elif "sha" not in sr:       # SPEC-0482: an adopted run never snapshotted the spec at its start
+        failure = "adopted review has no start snapshot of the spec"
     elif rr.timed_out:
         failure = "the run timed out"
     elif rr.is_error or rr.exit_code != 0:

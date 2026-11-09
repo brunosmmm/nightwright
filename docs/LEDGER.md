@@ -738,6 +738,7 @@ progress. This is the single place to see *what has been decided* and *what is i
 | [SPEC-0471](./specs/0471-run-pi-personas-through-the-node-sdk.md) | Pi test requires the task text in the user message | feature | done | — | 2026-11-08 |
 | [SPEC-0479](./specs/0479-herdr-notifications-are-silent.md) | Herdr notifications are silent | feature | done | — | 2026-11-08 |
 | [SPEC-0481](./specs/0481-conductor-follower-stays-up.md) | The conductor follower stays up across a wake | feature | done | — | 2026-11-08 |
+| [SPEC-0482](./specs/0482-adopted-spec-review-no-start-snapshot.md) | An adopted spec review with no start snapshot retries instead of crashing the runner | feature | done | — | 2026-11-09 |
 
 ## Superseded / rejected
 
