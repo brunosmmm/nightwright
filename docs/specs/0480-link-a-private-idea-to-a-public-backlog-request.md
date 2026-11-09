@@ -1,7 +1,7 @@
 ---
 id: SPEC-0480
 title: Publish a backlog request and record the link
-status: accepted
+status: done
 owner: user
 created: 2026-11-08
 updated: 2026-11-09
@@ -289,7 +289,7 @@ the guard.
 
 ## Acceptance criteria
 
-- [ ] `test_req_base_known_vectors` asserts the three digests in the Design
+- [x] `test_req_base_known_vectors` asserts the three digests in the Design
       table. The expected strings are written in the test, not produced by
       calling `req_base` to obtain the expected value. The private title
       publish hashes is `task.heading`: an idea whose headline is
@@ -297,7 +297,7 @@ the guard.
       `:REQ_BASE:` `9700eaa1f712c11423e0542ae8882ba96653f4575be89e3f481d05df79eff208`.
       A heading `Link  two` and a summary `say **bold**` are stored with the
       internal spaces and the `**` unchanged.
-- [ ] `resolve_linked_repo("")` and publish of an idea with no `:PROJECT:`
+- [x] `resolve_linked_repo("")` and publish of an idea with no `:PROJECT:`
       each exit 1 with stderr `project is required` and do not call
       `project_root`. Meta-Tools uses `nw_checkout` even when
       `outbox_targets` also has a Meta-Tools `repo_path` and the current
@@ -307,7 +307,7 @@ the guard.
       including an empty `repo_path`, exits 1 with a stderr line that starts
       `cannot resolve a repo for project ` and names the project, adds no
       commit, and sets neither property. The file is in the project's repo.
-- [ ] `test_request_file_layout_and_invalid_file` asserts the published file
+- [x] `test_request_file_layout_and_invalid_file` asserts the published file
       is UTF-8 and starts with `---`, then the keys `id`, `title`, `status`,
       `created`, `updated`, `created_by`, `updated_by`, and no `spec` key.
       `title` is a double-quoted YAML scalar. A backslash is written as two
@@ -322,7 +322,7 @@ the guard.
       `render_request` of that same text, and the renderer does not dump the
       datetime `split_frontmatter` returns. `created_by` and `updated_by`
       parse as `Name <email>`.
-- [ ] `nw idea publish` on an `INCUBATE` idea whose `:PROJECT:` resolves
+- [x] `nw idea publish` on an `INCUBATE` idea whose `:PROJECT:` resolves
       creates one commit on that repo's `refs/heads/nw-backlog` via
       `git hash-object`, `git mktree`, and `git commit-tree`, then
       compare-and-swaps `git update-ref`. When the ref was absent, the
@@ -338,7 +338,7 @@ the guard.
       repo's `user.name` and `user.email`. Stdout is the idea's `:ID:` and a
       newline. The command runs no `git checkout`, `git switch`, `git add`,
       `git fetch`, or `git push`.
-- [ ] Publish of an idea that already has `:REQ:`, an empty title, a title
+- [x] Publish of an idea that already has `:REQ:`, an empty title, a title
       that contains a line feed, or a selector that is not an idea exits 1
       with the Design's stderr (`<id> is already linked to <REQ-…>`,
       `title is empty`, `title must be one line`, `{selector!r} is not an idea`)
@@ -348,11 +348,11 @@ the guard.
       `refusing to update nw-backlog while it is checked out`, adds no commit,
       and runs no `hash-object`. A failed `update-ref` exits 1, sets neither
       property, and leaves the ref as it was.
-- [ ] A second publish of another idea leaves the first file's blob sha
+- [x] A second publish of another idea leaves the first file's blob sha
       unchanged. The new commit's parent is the previous tip, the
       `update-ref` expected value is that tip, and every other path stays
       byte-for-byte.
-- [ ] If the org write fails after publish's add, the org bytes are unchanged,
+- [x] If the org write fails after publish's add, the org bytes are unchanged,
       the command exits 1, and compare-and-swap restores the recorded tip, or
       deletes the ref when it was absent (`git update-ref -d
       refs/heads/nw-backlog <new>`). Stderr is
@@ -360,7 +360,7 @@ the guard.
       no longer points at that new commit, stderr is
       `REQ-<id> was not linked; refs/heads/nw-backlog no longer points at <new>; left unchanged`
       and the ref is left as it is.
-- [ ] When `task.level` is absent or None, `_is_same_headline` runs before the
+- [x] When `task.level` is absent or None, `_is_same_headline` runs before the
       `:ID:` short-circuit and returns true only for `idx == task.line - 1`
       when that line is a headline and `task.heading` is in `m.group(3)`. It
       returns false for every other index, including a headline whose drawer
@@ -462,6 +462,13 @@ the guard.
   file's blob sha is unchanged. `git rev-parse refs/heads/nw-backlog` is the
   new commit, and that commit's parent is the previous tip.
 
+### Test record (2026-11-09)
+
+- `uv run pytest tests/test_idea_link.py -q` — 12 passed.
+- `uv run pytest tests/test_idea_stamps.py::test_stamp_creates_missing_drawer_without_corrupting_sections -q` — passed.
+- `uv run pytest tests/test_workflow.py -q` — passed.
+- Full suite left to queue gating.
+
 ## Rollout / migration
 
 No backfill. Ideas that already exist gain `:REQ:` only when someone runs
@@ -472,12 +479,12 @@ on its current branch. Publish refuses when that branch is the checked-out
 
 ## Definition of done
 
-- [ ] Acceptance criteria all met.
-- [ ] Test plan executed; the tests named above pass. The full suite stays on
+- [x] Acceptance criteria all met.
+- [x] Test plan executed; the tests named above pass. The full suite stays on
       the queue's close gate.
-- [ ] No regressions in `tests/test_idea_stamps.py` and `tests/test_workflow.py`.
-- [ ] Spec body updated to match what shipped.
-- [ ] `docs/LEDGER.md` regenerated and `python3 tools/spec_lint.py` exits 0.
+- [x] No regressions in `tests/test_idea_stamps.py` and `tests/test_workflow.py`.
+- [x] Spec body updated to match what shipped.
+- [x] `docs/LEDGER.md` regenerated and `python3 tools/spec_lint.py` exits 0.
 
 ## Open questions
 

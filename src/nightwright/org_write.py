@@ -136,6 +136,13 @@ def _is_same_headline(task, lines, idx) -> bool:
     m = _HEADLINE_RE.match(lines[idx].rstrip("\n"))
     if not m:
         return False
+    if task.level is None or not isinstance(task.level, int):
+        if idx != task.line - 1:
+            return False
+        heading = task.heading
+        if not isinstance(heading, str) or not heading:
+            return False
+        return bool(task.heading in m.group(3))
     want_id = (task.properties or {}).get("ID")
     if want_id:
         return _drawer_id(lines, idx) == want_id
@@ -396,6 +403,23 @@ def _fresh_idea(cfg, task):
 
 
 _PLANNING_RE = re.compile(r"^\s*(SCHEDULED|DEADLINE|CLOSED):")
+
+
+@org_writer
+def link_idea_request(cfg, task, req_id: str, req_base: str):
+    """Set `:REQ:` and `:REQ_BASE:` together after a successful nw-backlog publish (SPEC-0480)."""
+    lines = open(task.file).read().splitlines(keepends=True)
+    idx = _locate_headline(task, lines)
+    m = _HEADLINE_RE.match(lines[idx].rstrip("\n"))
+    if not m:
+        raise ValueError(f"line {task.line} in {task.file} is not a headline: {lines[idx]!r}")
+    stars = m.group(1)
+    _inject_property(lines, idx, stars, "REQ", req_id)
+    _inject_property(lines, idx, stars, "REQ_BASE", req_base)
+    if task.is_idea:
+        stamp_updated(cfg, lines, idx, stars)
+    _atomic_backup_write(cfg, task.file, "".join(lines))
+    return task.file
 
 
 @org_writer

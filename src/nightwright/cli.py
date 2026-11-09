@@ -699,6 +699,26 @@ def idea_project_cmd(cfg, selector, project):
     console.print(f"[green]✓[/] project ← {selector}  [white]{shown}[/]  [dim]{path}[/]")
 
 
+@idea_group.command("publish")
+@click.argument("selector", shell_complete=C.complete_idea_id)
+@click.pass_obj
+def idea_publish_cmd(cfg, selector):
+    """Publish an idea to the project's public nw-backlog branch (SPEC-0480).
+
+    \b
+    nw idea publish IDEA-012
+    """
+    from .idea_link import publish_idea
+    from .org_write import resolve_selector
+
+    try:
+        task = resolve_selector(cfg, selector)
+        idea_id = publish_idea(cfg, task, selector=selector)
+    except ValueError as e:
+        raise click.ClickException(str(e)) from e
+    click.echo(idea_id)
+
+
 @idea_group.command("epic")
 @click.argument("selector", shell_complete=C.complete_idea_id)
 @click.option("--set", "epic", default=None, shell_complete=C.complete_epic,
