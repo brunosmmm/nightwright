@@ -1,7 +1,7 @@
 ---
 id: SPEC-0490
 title: "Tier markers and fast-only campaign gates"
-status: in-progress
+status: done
 owner: user
 created: 2026-11-09
 updated: 2026-11-09
@@ -238,7 +238,7 @@ green; it goes through `affected_tests.py`, which drops the exclusion.
   fast-tier runs, and the limits (`ceil(1.5 * wall)`) derived from them, are quoted in
   *As shipped*. The applied `timeout_s` is the larger of that limit and 2400. Neither timeout is
   lower than its measured run.
-- [ ] A `nw gate run` of a typical branch (one spec, the ledger and one src module) runs no
+- [x] A `nw gate run` of a typical branch (one spec, the ledger and one src module) runs no
   heavy-tier test. Its count and time are recorded next to GATEJOB-1037.
 
 ## Test plan
@@ -316,9 +316,16 @@ green; it goes through `affected_tests.py`, which drops the exclusion.
   `NW_ALL_TIERS` runs every tier through them (see *Measuring run*).
 - **Loop-gate guard.** The loop gate passes `--exclude-marks` only when
   `affected_tests.py --help` lists it. A pre-0490 branch, whose tool lacks the flag, still gates.
-- **Typical branch.** Pending. GATEJOB-1342 was cut before the merge, so its diff included
-  `pyproject.toml` and forced a full fast-tier run (heavy tiers excluded by `-m`). The probe is
-  re-run from merged main.
+- **Typical branch.** GATEJOB-1353 ran the probe branch (one spec, the ledger, one line in
+  `src/nightwright/agentic/gate_jobs.py`) rebased on merged main `a9fc9479`. It passed in 373.3 s
+  on the box, with spec-lint ok and `pytest-affected` at 2255 passed, 3 skipped in 145.32 s
+  (127/332 files + 11 guards, under `-m "not (integration or tui or remote or perf) or
+  tree_guard"`). GATEJOB-1037 had 6940 tests in 1287.41 s (job 1500.0 s). The only heavy-marked
+  module collected is the `tree_guard` exception `test_org_write_race`, by design. GATEJOB-1342,
+  cut before the merge, was a full fast-tier fallback because its diff still contained
+  `pyproject.toml`.
+- The probe worktree `SPEC-0490-typical` was not removed: `git worktree remove` was denied to
+  the implementing agent.
 
 ## Rollout / migration
 
@@ -330,8 +337,8 @@ green; it goes through `affected_tests.py`, which drops the exclusion.
 
 ## Definition of done
 
-- [ ] Acceptance criteria all met.
-- [ ] Test plan executed; affected tests pass at the close gate; manual steps performed.
-- [ ] No regressions.
-- [ ] Spec body updated to match what shipped.
-- [ ] `docs/LEDGER.md` updated.
+- [x] Acceptance criteria all met.
+- [x] Test plan executed; affected tests pass at the close gate; manual steps performed.
+- [x] No regressions.
+- [x] Spec body updated to match what shipped.
+- [x] `docs/LEDGER.md` updated.

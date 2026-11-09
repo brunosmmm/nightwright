@@ -285,8 +285,8 @@ progress. This is the single place to see *what has been decided* and *what is i
 - **[SPEC-0435](./specs/0435-cursor-agent-backend-for-the-agentic-queue.md) — Cursor-agent backend for the agentic queue** · done · (2/2 done)
   - [x] [SPEC-0436](./specs/0436-persona-cursorrunner-and-cursor-model-maps.md) Persona CursorRunner and Cursor model maps — done
   - [x] [SPEC-0437](./specs/0437-conductor-and-steward-launch-via-cursor-agent.md) Conductor and steward launch via cursor-agent — done
-- **[SPEC-0489](./specs/0489-test-tiers-and-cadenced-heavy-runs.md) — Test tiers: campaign gates run the fast tier only; heavy tiers run on a per-project cadence** · accepted · (0/4 done)
-  - [ ] [SPEC-0490](./specs/0490-tier-markers-and-fast-only-gates.md) Tier markers and fast-only campaign gates — in-progress
+- **[SPEC-0489](./specs/0489-test-tiers-and-cadenced-heavy-runs.md) — Test tiers: campaign gates run the fast tier only; heavy tiers run on a per-project cadence** · accepted · (1/4 done)
+  - [x] [SPEC-0490](./specs/0490-tier-markers-and-fast-only-gates.md) Tier markers and fast-only campaign gates — done
   - [ ] [SPEC-0491](./specs/0491-cadence-config-state-and-merge-counter.md) Cadence config, merge accounting and due state — accepted
   - [ ] [SPEC-0492](./specs/0492-tighter-affected-selection.md) Tighter affected selection for specs, hot modules and fixtures — accepted
   - [ ] [SPEC-0493](./specs/0493-cadence-runner-trigger-red-main-and-nightwright-jobs.md) Cadence runner trigger, red-main source and nightwright's jobs — accepted
@@ -316,7 +316,6 @@ progress. This is the single place to see *what has been decided* and *what is i
 | [SPEC-0476](./specs/0476-campaign-detail-runs-pane.md) | Campaign detail Runs pane: run table, verdict, and stream tail | feature | accepted | — | 2026-11-08 |
 | [SPEC-0477](./specs/0477-campaign-detail-findings-and-mail.md) | Campaign detail Findings & decisions pane and Mail pane | feature | accepted | — | 2026-11-08 |
 | [SPEC-0489](./specs/0489-test-tiers-and-cadenced-heavy-runs.md) | Test tiers: campaign gates run the fast tier only; heavy tiers run on a per-project cadence | epic | accepted | M9: agentic workflow | 2026-11-09 |
-| [SPEC-0490](./specs/0490-tier-markers-and-fast-only-gates.md) | Tier markers and fast-only campaign gates | feature | in-progress | M9: agentic workflow | 2026-11-09 |
 | [SPEC-0491](./specs/0491-cadence-config-state-and-merge-counter.md) | Cadence config, merge accounting and due state | feature | accepted | M9: agentic workflow | 2026-11-09 |
 | [SPEC-0492](./specs/0492-tighter-affected-selection.md) | Tighter affected selection for specs, hot modules and fixtures | feature | accepted | M9: agentic workflow | 2026-11-09 |
 | [SPEC-0493](./specs/0493-cadence-runner-trigger-red-main-and-nightwright-jobs.md) | Cadence runner trigger, red-main source and nightwright's jobs | feature | accepted | M9: agentic workflow | 2026-11-09 |
@@ -754,6 +753,7 @@ progress. This is the single place to see *what has been decided* and *what is i
 | [SPEC-0484](./specs/0484-runner-contains-apply-errors-and-holds-on-backend-faults.md) | The runner contains a campaign's apply error and holds steps on a backend fault | feature | done | M9: agentic workflow | 2026-11-09 |
 | [SPEC-0487](./specs/0487-cli-persona-runs-execute-in-the-runner.md) | CLI persona runs execute in the runner, which holds the credentials | feature | done | M9: agentic workflow | 2026-11-09 |
 | [SPEC-0488](./specs/0488-nw-queue-conductor-launch-runner-cursor-fails.md) | Cursor launch passes a flat model id | feature | done | — | 2026-11-09 |
+| [SPEC-0490](./specs/0490-tier-markers-and-fast-only-gates.md) | Tier markers and fast-only campaign gates | feature | done | M9: agentic workflow | 2026-11-09 |
 | [SPEC-0494](./specs/0494-tui-ideas-board-queue-link.md) | TUI ideas board: link an idea to its queue campaigns and open the campaign popup | feature | done | M5: interactive desk | 2026-11-09 |
 | [SPEC-0495](./specs/0495-tui-ideas-tab-redesign.md) | TUI ideas tab: project rail + Open / In flight / Built buckets with real spec status | feature | done | M5: interactive desk | 2026-11-09 |
 | [SPEC-0497](./specs/0497-conductor-ping-revise-pending-specs.md) | Conductor ping flags specs stalled on a revise verdict | feature | done | — | 2026-11-09 |
