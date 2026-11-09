@@ -78,6 +78,7 @@ def test_brief_last_decision_is_scoped_to_the_current_park(cfg, clock):
     assert item["last_decision"]["rationale"] == "new decision" and item["decided"] is True
 
 
+@pytest.mark.integration
 def test_brief_text_size_bound(cfg, clock):
     for i in range(60):
         cid = f"P{i:02d}-{'c' * 30}"
@@ -287,4 +288,3 @@ def test_cli_conductor_brief_json_shows_auto(cfg, clock, run):
     b = json.loads(run("conductor-brief", "--json").output)
     assert b["parked"][0]["auto"] == {"rule": "parked.base_moving",
                                       "resume_at": "2026-10-30T10:01:00+00:00"}
-

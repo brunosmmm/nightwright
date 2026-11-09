@@ -793,4 +793,3 @@ def test_e6_compaction_outside_interval_and_inclusive_ends(cfg):
     ev = MVP.report(cfg, n=1)["e6_events"]
     assert [(e["session_id"], e["kind"], e["ts"]) for e in ev] == [
         ("s2", "compaction", T(10, 10)), ("s2", "compaction", T(10, 14))]
-

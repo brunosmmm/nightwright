@@ -600,4 +600,3 @@ def test_inferred_write_is_append_only(cfg, run):
     before = D.log_path(cfg).read_bytes()
     assert _dec(run, f"second {CA}").exit_code == 0
     assert D.log_path(cfg).read_bytes().startswith(before)
-

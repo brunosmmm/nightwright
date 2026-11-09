@@ -245,4 +245,3 @@ def test_create_cursor_chat_parses_uuid():
         stderr = ""
     assert RP.create_cursor_chat(exe="/bin/cursor-agent", run=lambda *a, **k: Rec()) == (
         "02268e29-7401-4047-93ca-48efb917b3f2")
-

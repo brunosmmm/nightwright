@@ -274,5 +274,3 @@ def test_show_prints_the_story_by_default_raw_on_request_and_both_in_json(tmp_pa
     d = json.loads(_run(cfg, monkeypatch, ["campaign", "show", cid, "--json"]).output)
     assert d["schema"] == "nw.campaign.v1" and d["last_events"][-1]["type"] == "gate"
     assert d["story"]["schema"] == "nw.campaign.story.v1" and d["story"]["events"] == 4
-
-

@@ -152,4 +152,3 @@ def test_records_text_default_limit_and_json_is_unlimited(invoke):
     rows = json.loads(invoke(
         "records", "--query", "bulk-default", "--json").output)["records"]
     assert len(rows) == 205
-

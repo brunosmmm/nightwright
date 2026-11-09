@@ -224,5 +224,3 @@ def test_recovery_waits_for_a_free_slot(tmp_path, monkeypatch):
     st = S.read_state(cfg, cid)                          # no slot: started work WAITs (SPEC-0200)
     assert st["state"] == "WAITING" and st["park"] is None
     assert st["waiting"]["resume_to"] == "IMPLEMENTING"
-
-

@@ -210,5 +210,3 @@ def test_cli_conflict_nonzero(tmp_path, monkeypatch):
     r = CliRunner().invoke(cli, ["projects", "rename", "DemoCo", "DemoLabs", "--yes"])
     assert r.exit_code != 0
     assert "conflict" in r.output.lower()
-
-

@@ -218,4 +218,3 @@ def test_glyphs_survive_a_colourless_render(tmp_path):
     assert "\x1b[" not in out
     for glyph in R._KIND_GLYPHS.values():
         assert glyph in out
-

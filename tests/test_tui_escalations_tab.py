@@ -449,4 +449,3 @@ def test_the_tab_never_touches_followers(tmp_path, monkeypatch):
         await settle(app, pilot)
         assert not errors(app) and ESC.read(cfg, "ESC-0001")["status"] == "answered"
     drive_with(cfg, body)
-

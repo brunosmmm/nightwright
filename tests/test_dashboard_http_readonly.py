@@ -28,6 +28,7 @@ def raw(port, method, path, headers, body=None):
     return st
 
 
+@pytest.mark.integration
 def test_server_writes_nothing_outside_its_directory(tmp_path):
     fx = seed(tmp_path)
     data = fx["data"]
@@ -72,5 +73,3 @@ def test_server_writes_nothing_outside_its_directory(tmp_path):
     finally:
         stop(proc)
     assert {p.name for p in dash(fx).iterdir()} <= ALLOWED - {"server.json"}
-
-

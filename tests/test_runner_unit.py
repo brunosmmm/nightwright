@@ -196,4 +196,3 @@ def test_install_refuses_while_a_stray_runner_holds_the_lease(tmp_path, monkeypa
     if shutil.which("systemctl"):
         assert r.exit_code == 1 and "nw queue stop --yes" in r.output, r.output
     assert not RU.installed()
-

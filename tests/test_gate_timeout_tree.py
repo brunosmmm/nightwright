@@ -160,4 +160,3 @@ def test_real_pytest_xdist_under_a_timeout(tmp_path, fast):
     out = subprocess.run(["pgrep", "-f", str(tmp_path / "test_sleep.py")],
                          capture_output=True, text=True).stdout.split()
     assert waits.until(lambda: not any(_alive(int(p)) for p in out), 5), out
-

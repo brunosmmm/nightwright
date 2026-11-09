@@ -46,5 +46,3 @@ def test_snapshot_paths_write_nothing(tmp_path):
     assert after == before, {k for k in set(after) ^ set(before)} or \
         {k for k in after if after[k] != before.get(k)}
     assert not (S.agentic_dir(cfg) / "dashboard").exists()
-
-

@@ -28,7 +28,7 @@ from nightwright.agentic import store as S
 import history_scale as HS
 from fixtures import dashboard_data as DD
 
-pytestmark = pytest.mark.fast
+pytestmark = pytest.mark.integration
 
 ROOT = Path(__file__).resolve().parents[1]
 TOOL = ROOT / "tools" / "capture_history_fixture.py"
@@ -1012,4 +1012,3 @@ def test_history_schema_validators_reject_independent_contract_mutations(tmp_pat
     allowed_index["extra"] = True
     allowed_index["closed_at"] = None
     assert SC.index_problems(allowed_index) == []
-

@@ -845,4 +845,3 @@ def test_profile_sha256_stable_ignores_sources_and_tracks_fields():     # SPEC-0
     c["name"] = "renamed"
     assert P.profile_sha256(c) != h
     assert P.profile_sha256(P.resolve_profile(cfg, "frugal")) != h
-

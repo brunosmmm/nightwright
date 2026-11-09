@@ -43,5 +43,3 @@ def test_capabilities_index_not_stub_language():
     assert "short scope card" not in index
     for name in REQUIRED:
         assert name in index
-
-

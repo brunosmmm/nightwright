@@ -287,4 +287,3 @@ def test_malformed_verdict_files_do_not_break_the_append(opened):
     found = _findings(cfg, cid)
     assert [f["title"] for f in found] == ["x", "y"]
     assert all(f["run_id"] == "008-implementer" and isinstance(f["key"], str) for f in found)
-

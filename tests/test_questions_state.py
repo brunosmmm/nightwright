@@ -362,4 +362,3 @@ def test_cli_resolve_multiple(tmp_path, monkeypatch):
                                  "--resolve", "2"])
     assert r.exit_code == 0, r.output
     assert _states(cfg) == ["resolved", "resolved", "open"]
-

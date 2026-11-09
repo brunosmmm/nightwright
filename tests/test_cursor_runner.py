@@ -211,4 +211,3 @@ def test_project_agents_runner_accepts_cursor(tmp_path):
     p = tmp_path / "project.yaml"
     p.write_text("schema: nw.project.v1\nagents:\n  runner: cursor\n")
     assert PJ.load_project_config(p)["agents"]["runner"] == "cursor"
-

@@ -41,5 +41,3 @@ def test_guides_index_lists_five():
         "multi-project.md",
     ):
         assert slug in index
-
-

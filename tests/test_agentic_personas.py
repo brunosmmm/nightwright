@@ -1082,4 +1082,3 @@ def test_flaky_history_none_known(tmp_path):
     p = PS.build_prompt("gate_triager", PS.build_context(cfg, st, _project_cfg()))
     assert "## Known flaky tests" in p and "(none known)" in p
     assert PS.render_flaky_history(cfg, dict(st, last_gate=None)) == "(none known)"
-

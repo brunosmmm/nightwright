@@ -718,4 +718,3 @@ def test_red_settle_opens_an_episode_and_never_escalates(world, monkeypatch):
     assert len(E.read_since(cfg, 0, types=["red_main"])) == 1
     SN.settle(cfg, PROJECT, sha, True, root=str(root))
     assert not RM.is_red(cfg, PROJECT)
-

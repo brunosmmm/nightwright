@@ -176,4 +176,3 @@ def test_subprocess_malformed_env_fails_clearly(tmp_path):
     r = _run(tmp_path, SLEEPER, NW_TUI_TEST_BUDGET_S="soon")
     assert r.returncode != 0
     assert "NW_TUI_TEST_BUDGET_S" in r.stdout + r.stderr
-

@@ -95,4 +95,3 @@ def test_until_and_join_bounds():
     finally:
         stuck_ev.set()
         stuck.join()
-

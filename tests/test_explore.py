@@ -247,4 +247,3 @@ def test_idea_help_lists_subcommands():
     assert "log" in r.output
     assert "show" in r.output
     assert "capture" in r.output or "Bare TEXT" in r.output
-

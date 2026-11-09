@@ -20,6 +20,7 @@ def test_mkdocs_yml_and_serve_script_exist():
     assert "mkdocs serve" in serve.read_text(encoding="utf-8")
 
 
+@pytest.mark.integration
 def test_mkdocs_build_strict():
     if shutil.which("uv") is None:
         pytest.skip("uv not on PATH")
@@ -34,4 +35,3 @@ def test_mkdocs_build_strict():
         )
         assert proc.returncode == 0, proc.stdout + "\n" + proc.stderr
         assert (site / "index.html").is_file()
-

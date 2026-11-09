@@ -128,5 +128,3 @@ def test_cli_mailbox_thread_message_one_line(tmp_path):
     r = CliRunner().invoke(root, ["mailbox", "thread", msg["id"]], obj=cfg)
     assert r.exit_code == 0, r.output
     assert len(r.output.splitlines()) == 1 and text in r.output, r.output
-
-

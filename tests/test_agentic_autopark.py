@@ -143,4 +143,3 @@ def test_due_and_has_wait_note():
     assert AP.has_wait_note([{"type": "park", "seq": 2}, note], "parked.base_moving")
     assert not AP.has_wait_note([note, {"type": "park", "seq": 4}], "parked.base_moving")
     assert not AP.has_wait_note([{"type": "park", "seq": 2}, note], "parked.cost_cap")
-

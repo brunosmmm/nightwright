@@ -76,6 +76,7 @@ def _row_line(text, needle):
     return next(line for line in text.splitlines() if needle in line)
 
 
+@pytest.mark.integration
 def test_cli_review_running_then_ended(tmp_path, monkeypatch):
     repo = make_repo(tmp_path, review=False)
     cfg = make_cfg(tmp_path, repo, script(tmp_path, [
@@ -299,5 +300,3 @@ def test_conduct_skill_rows():
                    "spec_review_exhausted"):
         assert any(("|" + line.split("|", 2)[-1]).startswith("| `parked` `%s`" % reason) for line in text.splitlines()), \
             reason
-
-

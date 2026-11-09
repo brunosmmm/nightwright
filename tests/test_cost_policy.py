@@ -254,4 +254,3 @@ def test_refresh_backfills_skips_bad_runs_and_is_incremental(tmp_path):
     doc = CP.refresh(cfg)
     assert doc["runs"]["implementer|sonnet"] == [0.5, 0.7, 0.6] and "C-1" not in doc["pending"]
     assert CP.refresh(cfg)["runs"]["implementer|sonnet"] == [0.5, 0.7, 0.6]   # no double count
-

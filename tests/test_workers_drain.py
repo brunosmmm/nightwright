@@ -742,4 +742,3 @@ def test_repeated_skip_is_journaled_once(cfg):
     p.write_text("[also not a registry")
     Q._finish_worker_drains(cfg)
     assert _journal_kinds(cfg).count("worker_drain_skipped") == 3
-

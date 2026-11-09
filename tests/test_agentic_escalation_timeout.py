@@ -375,4 +375,3 @@ def test_conductor_skill_has_the_timeout_row_reversal_and_human_only_topics():
         assert f"`{t}`" in text, t
     assert "reversed the same way" in (root / "nw-steward" / "SKILL.md").read_text(
         encoding="utf-8")
-

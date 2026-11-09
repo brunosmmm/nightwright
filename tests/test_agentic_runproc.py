@@ -136,6 +136,7 @@ def test_spawn_writes_contract_files(tmp_path):
     assert child["pgid"] == child["pid"]
 
 
+@pytest.mark.integration
 def test_wrapper_timeout_without_runner(tmp_path):
     req = mkreq(tmp_path, timeout_s=1, FAKE_CLAUDE_SLEEP_S="60", FAKE_CLAUDE_STUBBORN="1")
     stop = threading.Event()
@@ -308,6 +309,7 @@ def test_killed_by_signal_is_interrupted(tmp_path):
     assert ex["killed_by"] == "external" and res.is_error and not res.interrupted
 
 
+@pytest.mark.integration
 def test_spawn_timeout_failed_launch(tmp_path, monkeypatch):
     req = mkreq(tmp_path)
     real_popen = subprocess.Popen
@@ -475,4 +477,3 @@ def test_wrapper_failure_after_popen_kills_child(tmp_path, monkeypatch):
         return False
 
     assert until(gone, timeout=10.0)
-

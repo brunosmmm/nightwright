@@ -108,6 +108,7 @@ def test_cli_ideas_list_still_works(tmp_path, monkeypatch):
     assert "still list" in r.output
 
 
+@pytest.mark.integration
 def test_release_archive_members(tmp_path, monkeypatch):
     cfg = _cfg(tmp_path)
     W.add_idea(cfg, "in slice", project="Meta-Tools")
@@ -129,5 +130,3 @@ def test_release_archive_members(tmp_path, monkeypatch):
         body = tf.extractfile(member).read().decode()
     assert "in slice" in body
     assert "out of slice" not in body
-
-

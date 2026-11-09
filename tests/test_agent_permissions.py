@@ -162,4 +162,3 @@ def test_non_dict_hooks_value_is_an_error_not_a_rewrite(tmp_path, bad):
     with pytest.raises(ValueError):
         AP.sync(p)
     assert _read(p) == {"hooks": bad}
-

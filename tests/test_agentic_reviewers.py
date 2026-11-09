@@ -690,4 +690,3 @@ def test_no_score_note_for_a_retry_or_escalation(opened2):
     row, st = apply_reviews(ctx, cfg, cid, [(B, _rr(None, ok=False))])
     assert st["park"]["reason"] == "review_escalated"
     assert not any(n.startswith("review score") for n in _notes(cfg, cid))
-

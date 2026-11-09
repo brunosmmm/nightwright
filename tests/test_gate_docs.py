@@ -28,5 +28,3 @@ def test_cli_help_lists_gate_and_exit_codes():
     h = CliRunner().invoke(cli, ["gate", "run", "--help"]).output
     for needle in ("130 cancelled", "box unavailable", "Example:"):
         assert needle in h
-
-

@@ -316,4 +316,3 @@ def test_e2e_implementer_deleting_an_ac_never_merges(tmp_path, monkeypatch):
         SPEC_ACCEPTED.format(id="SPEC-0001", extra="")
     # the triager saw the synthetic gate
     assert any(r_["name"] == "spec-changed" for r_ in (st.get("last_gate") or {}).get("results", []))
-

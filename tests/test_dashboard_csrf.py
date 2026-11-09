@@ -121,4 +121,3 @@ def test_foreign_hosts_are_refused_and_no_response_has_cors_headers(srv):
         assert not [k for k in h if k.startswith("access-control-")], (method, path, h)
         if method == "OPTIONS":
             assert st == 405
-

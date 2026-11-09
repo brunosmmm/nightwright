@@ -53,4 +53,3 @@ def test_home_links_both_pillars_and_bootstrap():
     home = _text("index.md")
     for link in ("ideas/index.md", "loop/index.md", "guides/bootstrap.md"):
         assert link in home, link
-

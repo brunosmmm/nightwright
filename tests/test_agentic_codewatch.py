@@ -115,5 +115,3 @@ def test_watcher_non_ascii_skill_path(code_repo):
     code_repo.commit({"skills/café/SKILL.md": "b\n"})
     got = w.poll(11.0)
     assert got["paths"] == ["skills/café/SKILL.md"] and got["skills_changed"] == ["café"]
-
-

@@ -201,4 +201,3 @@ def test_answer_reports_failed_wake_event(tmp_path, monkeypatch):
     assert d["written"] is True and d["event_error"] == "events log unwritable"
     rec = ESC.read(cfg, "ESC-0001")
     assert rec["status"] == "answered" and "event_error" not in rec
-

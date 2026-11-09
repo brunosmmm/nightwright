@@ -179,4 +179,3 @@ def test_cli_idea_state(tmp_path, monkeypatch):
     assert result.exit_code == 0, result.output
     assert "SHIPPED" in result.output
     assert _idea(cfg).state == "SHIPPED"
-

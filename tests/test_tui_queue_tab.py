@@ -909,4 +909,3 @@ def test_resize_and_paint_errors_are_contained(tmp_path, monkeypatch):
             assert app.is_running and "queue failed" in _status(app)
 
     _run(drive())
-

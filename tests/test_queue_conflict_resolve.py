@@ -1378,4 +1378,3 @@ def test_oversized_spec_at_open_snapshot_is_rewritten_on_adopt(env, monkeypatch)
     wt_spec = Path(after["repo"]["worktree"]) / after["spec"]["rel_path"]
     assert after["spec"]["sha256_at_open"] == SR.spec_sha256(wt_spec)
     assert snap.stat().st_size <= Q.MAX_WORKTREE_SPEC_BYTES
-

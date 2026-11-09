@@ -99,4 +99,3 @@ def test_request_cleared_on_disk_before_the_read_is_not_resurrected(opened):    
     row = Q._apply(ctx, state, _step(cid, state))
     assert row["to"] == "REVIEWING" and row["reason"] == "review_retry"
     assert "park_requested" not in S.read_state(cfg, cid)
-

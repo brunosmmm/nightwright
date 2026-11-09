@@ -288,4 +288,3 @@ def test_render_row_no_value_map_is_unaffected(tmp_path):
     task = SimpleNamespace(heading="idea", state="SPECCED")
     row = SHS.render_row(manifest, task, {})
     assert row["Status"] == "SPECCED"
-

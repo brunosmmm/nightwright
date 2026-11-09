@@ -2,6 +2,10 @@
 import json
 from pathlib import Path
 
+import pytest
+
+pytestmark = pytest.mark.fast
+
 ROOT = Path(__file__).resolve().parents[1]
 ALLOW = json.loads((ROOT / ".claude" / "settings.json").read_text())["permissions"]["allow"]
 

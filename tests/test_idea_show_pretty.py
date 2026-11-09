@@ -121,5 +121,3 @@ def test_cli_idea_show_help_mentions_plain():
     r = CliRunner().invoke(cli, ["idea", "show", "--help"])
     assert r.exit_code == 0
     assert "--plain" in r.output
-
-

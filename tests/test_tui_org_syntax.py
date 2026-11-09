@@ -211,4 +211,3 @@ def test_nw_idea_show_is_unchanged(tmp_path, monkeypatch):
     from nightwright.org import load_tasks
     task = [t for t in load_tasks(cfg) if t.is_idea][0]
     assert isinstance(format_idea_show(cfg, task), str)   # still plain text, not a Text
-

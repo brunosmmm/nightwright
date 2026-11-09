@@ -1207,4 +1207,3 @@ def test_source_idea_task_none(tmp_path):
     assert S.source_idea_task(cfg, {"created": "2026-10-20"}) == (None, "no source_idea")
     path = _spec(cfg, "SPEC-0001", "accepted", source_idea="IDEA-404")
     assert S.source_idea_task(cfg, _fm(path)) == (None, "idea not found")
-

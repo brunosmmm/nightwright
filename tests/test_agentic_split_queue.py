@@ -9,7 +9,7 @@ from nightwright.agentic import queue as Q
 from nightwright.agentic import schemas as SC
 from nightwright.agentic import store as S
 
-pytestmark = pytest.mark.fast
+pytestmark = pytest.mark.integration
 
 REAL_HOOK = Q._queue_split_children
 PARTS = ["SPEC-0101", "SPEC-0102", "SPEC-0103"]
@@ -376,4 +376,3 @@ def test_split_children_link_the_idea_the_split_released(tmp_path, monkeypatch, 
     for sid in PARTS:
         assert not [e for e in ledger(cfg, made[sid][0]["id"], "idea_link_skipped")
                     if f"held by {cid}" in e["reason"]]
-

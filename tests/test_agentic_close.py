@@ -707,6 +707,7 @@ def _gate_limit_findings(out):
     return [p for p in _events(out, "finding") if p["gate"] == "gate-limits"]
 
 
+@pytest.mark.integration
 def test_branch_raised_gate_timeout_passes_the_regate_after_a_rebase(world):
     (world["root"] / ".nw" / "project.yaml").write_text(_slow_yaml(1))
     _git(world["root"], "commit", "-q", "-am", "slow gate, tight limit")
@@ -728,4 +729,3 @@ def test_unraised_gate_timeout_still_times_out_with_no_finding(world):
     out = CL.close_campaign(world["cfg"], world["state"], pcfg)
     assert out.next_state == "TRIAGING" and out.gate_run.results[0].timed_out
     assert _gate_limit_findings(out) == []
-

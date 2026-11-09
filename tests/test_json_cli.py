@@ -124,5 +124,3 @@ def test_help_documents_json():
         r = CliRunner().invoke(cli, args)
         assert r.exit_code == 0
         assert "--json" in r.output
-
-

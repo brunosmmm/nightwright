@@ -24,7 +24,7 @@ from nightwright.agentic import queue as Q
 from nightwright.agentic import store as S
 from nightwright.agentic.runner import FakeRunner
 
-pytestmark = pytest.mark.fast
+pytestmark = pytest.mark.integration
 
 SPECS = {"SPEC-0001": ("docs/specs/0001-trivial.md", "feature-a.txt"),
          "SPEC-0002": ("docs/specs/0002-second.md", "feature-b.txt")}
@@ -689,4 +689,3 @@ def test_finish_rechecks_base_sha_itself(mk):
     assert env.main_sha() == before
     oc = CL.finish_close(env.cfg, st, pcfg, prep, attempts=1)
     assert oc.next_state == "MERGED" and env.main_sha() == oc.close["merged_sha"]
-

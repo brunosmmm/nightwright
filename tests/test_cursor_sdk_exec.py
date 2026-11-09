@@ -396,4 +396,3 @@ def test_main_usage_without_a_run_dir():
         assert CE.main([]) == 2
     finally:
         signal.signal(signal.SIGTERM, prev)
-

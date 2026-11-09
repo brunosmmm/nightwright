@@ -102,4 +102,3 @@ def test_cli_add(tmp_path, monkeypatch):
     assert _find(cfg, "DEMO-100").priority == "B"
     r2 = CliRunner().invoke(cli, ["add", "x", "--state", "NOPE"])
     assert r2.exit_code != 0 and "invalid state" in r2.output
-

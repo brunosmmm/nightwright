@@ -1048,4 +1048,3 @@ def test_cursor_target_on_separator_restores_following_event(tmp_path, monkeypat
             assert not on_last
 
     _run(drive())
-

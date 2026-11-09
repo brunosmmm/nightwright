@@ -289,4 +289,3 @@ def test_derivations_from_defs():
     defs = R.load_builtin(PS.KNOWN)
     assert R.reviewer_personas(defs) == OLD_REVIEWERS
     assert list(R.adopt_registry(defs)) == list(OLD_ADOPT)
-

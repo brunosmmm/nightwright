@@ -68,5 +68,3 @@ def test_glossary_has_core_terms():
     gloss = (PRODUCT / "concepts" / "index.md").read_text(encoding="utf-8").lower()
     for term in ("topic", "idea", "spec", "outbound", "hub", "desk", "clock-in", "facet"):
         assert term in gloss, f"glossary missing {term!r}"
-
-

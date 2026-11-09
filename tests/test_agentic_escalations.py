@@ -1433,4 +1433,3 @@ def test_unmet_acs_ignores_the_escalations_own_half_written_overrides(tmp_path, 
     plan = ESC.plan_answer(cfg, "ESC-0001", attest=[AC4], reason="r")
     assert plan["answer"]["attest"] == [AC4]
     assert ESC.unmet_acs(cfg, {"profile": "balanced"}) == []
-

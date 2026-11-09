@@ -1167,4 +1167,3 @@ def test_adoption_defers_on_a_git_failure(aw, remote, monkeypatch):
     res, row = _gate_and_apply(aw)
     assert res.gate_run.seq == 1 and res.gate_run.worker == "box" and row["to"] == "REVIEWING"
     assert _rec(aw)["state"] == "done" and len(aw.ledger(["gate"])) == 1
-

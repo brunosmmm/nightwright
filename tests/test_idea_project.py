@@ -318,4 +318,3 @@ def test_desk_opened_with_a_project_preselects_it(tmp_path, monkeypatch):
             assert _project(cfg, newest) == "Example"
 
     asyncio.run(drive())
-

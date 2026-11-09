@@ -229,4 +229,3 @@ def test_spec_new_from_idea_uses_the_set_epic_as_parent(tmp_path, monkeypatch):
     new = [p for p in Path(cfg["specs_dir"]).glob("[0-9]*.md") if "an-epic" not in p.name]
     assert len(new) == 1
     assert f"parent: {EPIC}" in new[0].read_text()
-

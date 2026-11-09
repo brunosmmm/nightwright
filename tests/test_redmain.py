@@ -355,4 +355,3 @@ def test_status_resume_fix_and_clear(w):
     assert RM.clear(cfg, PROJECT, by="human")["open"] is False
     assert RM.clear(cfg, PROJECT) is None
     assert json.loads(RM.path(cfg, PROJECT).read_text())["history"][-1]["what"] == "cleared"
-

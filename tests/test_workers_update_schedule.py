@@ -173,4 +173,3 @@ def test_auto_update_schedules_a_stale_worker_on_check(world):
     r = CliRunner().invoke(cli, ["workers", "check", "box"])
     assert "stale" in r.output, r.output
     assert _raw(world)["update_pending"]["reason"] == "update"
-

@@ -102,5 +102,3 @@ def test_cli_ideas_sort(tmp_path, monkeypatch):
     import json
     heads = [i["heading"] for i in json.loads(r.output)["ideas"]]
     assert heads == ["a", "c"]
-
-

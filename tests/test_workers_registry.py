@@ -502,4 +502,3 @@ def test_add_identity_is_stored_and_listed(cfg, invoke):
     assert res.exit_code == 0, res.output
     assert json.loads(WK.path(cfg).read_text())["workers"][0]["identity"] == "/k/id"
     assert json.loads(invoke("list", "--json").output)["workers"][0]["identity"] == "/k/id"
-

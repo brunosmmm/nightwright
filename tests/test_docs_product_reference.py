@@ -50,5 +50,3 @@ def test_readme_has_no_commands_encyclopedia_table():
     # Old encyclopedia used a markdown table under ## Commands with | Command | Purpose |
     assert "| Command | Purpose |" not in readme
     assert "docs/product/reference" in readme or "Command reference" in readme
-
-

@@ -44,5 +44,3 @@ def test_tilde_expansion(monkeypatch, tmp_path):
     monkeypatch.setenv("HOME", str(tmp_path))
     monkeypatch.setenv("NW_DATA_DIR", "~/somewhere")
     assert paths.data_dir() == str(tmp_path / "somewhere")
-
-

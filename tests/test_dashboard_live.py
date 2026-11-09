@@ -124,4 +124,3 @@ def test_page_falls_back_to_polling_when_the_stream_answers_503(live):
     ev = [json.loads(ln) for ln in out.splitlines()][-1]
     assert ev["indicator"] == "polling" and ev["mode"] == "polling"
     assert ev["spend"].startswith("spend today"), "the snapshot still rendered through polling"
-

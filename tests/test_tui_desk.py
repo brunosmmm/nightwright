@@ -364,5 +364,3 @@ def test_cli_passes_filters_and_flags_through(tmp_path, monkeypatch):
     assert seen["filters"]["priority"] == "A"
     assert seen["filters"]["sort"] == "priority"
     assert seen["filters"]["desc"] is True
-
-

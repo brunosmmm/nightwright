@@ -166,4 +166,3 @@ def test_detached_head_origin(tmp_path, monkeypatch):
     r = _review(cfg, monkeypatch, "SPEC-0001", "--json")
     assert r.exit_code == 0, r.output
     assert json.loads(r.stdout)["origin"] == "worktree detached"
-

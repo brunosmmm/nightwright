@@ -243,4 +243,3 @@ def test_add_clock_entry_is_idempotent(tmp_path):
     assert added1 is True and added2 is False
     t = _idea(cfg)
     assert len(t.clock) == 1
-

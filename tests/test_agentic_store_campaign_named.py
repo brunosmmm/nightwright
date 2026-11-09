@@ -181,4 +181,3 @@ def test_digit_leading_outbound_id_from_project_3m(cfg):
     assert S.sole_campaign_named(cfg, f"{cid}-x") is None
     assert S.sole_campaign_named(cfg, f"9{cid}") is None
     assert S.sole_campaign_named(cfg, f"{cid} and {other}") is None
-

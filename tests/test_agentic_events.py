@@ -731,4 +731,3 @@ def test_rebase_resolved_is_projected(tmp_path):                                
     assert len(hit) == 1 and hit[0]["data"]["conflicts"] == ["src/app.py"]
     E.sync(cfg)
     assert len([e for e in E.read_since(cfg, 0) if e["type"] == "rebase_resolved"]) == 1
-

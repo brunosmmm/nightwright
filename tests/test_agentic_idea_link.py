@@ -287,4 +287,3 @@ def test_release_clears_same_heading_twin(tmp_path, monkeypatch):
     assert st["state"] == "MERGED"
     assert prop(cfg, iid) is None and prop(cfg, other) is None
     assert len(types(cfg, cid, "idea_unlinked")) == 2
-

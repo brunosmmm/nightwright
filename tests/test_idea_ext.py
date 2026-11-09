@@ -194,4 +194,3 @@ def test_idea_help_lists_ext(tmp_path, monkeypatch):
     r = CliRunner().invoke(cli, ["idea", "--help"])
     assert r.exit_code == 0
     assert "ext" in r.output
-

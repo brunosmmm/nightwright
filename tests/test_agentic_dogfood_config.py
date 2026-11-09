@@ -54,5 +54,3 @@ def test_agentic_capability_doc_names_the_reuse_knobs():
     for needle in ("reuse_from", "close.force_full", "NW_CLOSE_FULL",
                    "nw queue sentinel run", "nw queue sentinel clear"):
         assert needle in text, needle
-
-

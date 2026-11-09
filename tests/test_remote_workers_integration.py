@@ -914,5 +914,3 @@ def test_a_worker_gets_no_git_credentials_and_no_push_path(tmp_path, monkeypatch
         assert urls and all(u.startswith(wdata) for u in urls), urls
         assert str(c.repo) not in (jdir / f"{name}-config.txt").read_text()
     assert _git(c.repo, "rev-parse", "main") == S.read_state(c.cfg, c.cid)["close"]["merged_sha"]
-
-

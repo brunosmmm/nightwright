@@ -255,4 +255,3 @@ def test_open_keys_nw_sha_and_profile_sha256_are_optional():
     rec = {"schema": SC.LEDGER_SCHEMA, "ts": "2026-10-25T10:00:00-04:00", "seq": 1,
            "campaign": "C", "type": "open", "by": "t", **old}
     assert "nw_sha" not in rec and SC.ledger_problems(rec) == []
-

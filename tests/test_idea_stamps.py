@@ -347,4 +347,3 @@ def test_idea_row_omits_absent_stamps(tmp_path):
     _rewrite_updated(cfg, None)
     row = R.idea_row(cfg, _idea(cfg))
     assert "updated" not in row and "created" in row
-

@@ -477,4 +477,3 @@ def test_build_without_a_data_dir_raises(tmp_path):
     with pytest.raises(FileNotFoundError, match="does not exist"):
         SN.build({"data_dir": str(tmp_path / "missing"), "agentic": {}})
     assert not (tmp_path / "missing").exists()
-

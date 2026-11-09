@@ -213,4 +213,3 @@ def test_spec_0075_width_invariants_hold(tmp_path, width):
         assert col in header, f"{col} missing at {width}"
     for ln in out.splitlines():
         assert len(ln) <= width, f"{len(ln)} > {width}: {ln!r}"
-

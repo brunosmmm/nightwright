@@ -269,5 +269,3 @@ def test_spec_reviews_reviewer_column(tmp_path, monkeypatch):                   
         run_cli(cfg, monkeypatch, ["spec", "reviews", "--json"]).stdout)["reviews"]}
     assert rows["SPEC-0001"]["reviewer_profile"] == "thorough"
     assert rows["SPEC-0002"]["reviewer_profile"] is None
-
-

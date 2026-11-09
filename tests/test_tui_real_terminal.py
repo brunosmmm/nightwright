@@ -17,7 +17,7 @@ import pyte
 import pytest
 
 
-pytestmark = pytest.mark.skipif(not hasattr(os, "forkpty"), reason="needs a POSIX pty")
+pytestmark = [pytest.mark.tui, pytest.mark.skipif(not hasattr(os, 'forkpty'), reason='needs a POSIX pty')]
 
 COLS, ROWS = 160, 30   # SPEC-0495: three panes (rail | board | detail)
 

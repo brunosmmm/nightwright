@@ -18,9 +18,8 @@ def _linter():
     return mod
 
 
+@pytest.mark.integration
 def test_all_specs_pass_lint():
     mod = _linter()
     problems = mod.validate(mod.load_specs())
     assert problems == [], "spec lint problems:\n  " + "\n  ".join(problems)
-
-

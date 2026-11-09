@@ -136,4 +136,3 @@ def test_clear_cooldown_only_clears_the_cooldown(tmp_path, monkeypatch):
     w = json.loads(p.read_text())["workers"][0]
     assert w["cooldown_until"] is None and w["enabled"] is False and w["draining"] is True
     assert CliRunner().invoke(cli, ["workers", "clear-cooldown", "nope"]).exit_code != 0
-

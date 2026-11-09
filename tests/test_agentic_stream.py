@@ -529,4 +529,3 @@ def test_cli_tail_default_newest_run_and_errors(tmp_path, monkeypatch):
     assert r.exit_code != 0 and "no run '009'" in r.output
     r = run_cli(cfg, monkeypatch, ["campaign", "tail", "NOPE"])
     assert r.exit_code != 0 and "no campaign" in r.output
-

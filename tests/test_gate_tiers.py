@@ -116,4 +116,3 @@ def test_untiered_config_runs_every_gate_in_both_states(tmp_path, monkeypatch):
     assert r.exit_code == 0, r.output
     assert S.read_state(cfg, cid)["state"] == "MERGED"
     assert _gate_events(cfg, cid) == [["test", "lint"], ["test", "lint"]]
-

@@ -238,4 +238,3 @@ def test_tui_activity_review_chips():                                      # SPE
                       {"persona": "extra_reviewer", "status": "not_run"}]}
     assert AM.activity_text(it) == "✓conf ✗adve ▶test ·extr"
     assert AM.activity_text({**it, "reviews": []}) == ""
-

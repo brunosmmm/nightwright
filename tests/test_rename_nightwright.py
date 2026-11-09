@@ -325,4 +325,3 @@ def test_migrate_json_plan(tmp_path, monkeypatch):
     doc = json.loads(r.output)
     assert doc["schema"] == "nw.migrate_from_wt.v1" and doc["applied"] is False
     assert len(doc["moves"]) == 2 and any(x["file"].endswith("state.json") for x in doc["rewrites"])
-

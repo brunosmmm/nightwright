@@ -21,5 +21,3 @@ def test_answer_flow_and_drilldown_under_node():
                        capture_output=True, text=True, timeout=WAIT_S)
     assert r.returncode == 0, f"node --test answer.test.js failed:\n{r.stdout}\n{r.stderr}"
     assert re.search(r"skipped\s+0\b", r.stdout) and re.search(r"pass\s+17\b", r.stdout)  # +4 SPEC-0433, +6 SPEC-0434
-
-

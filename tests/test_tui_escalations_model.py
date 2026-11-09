@@ -188,4 +188,3 @@ def test_the_signature_changes_on_a_write_and_the_snapshot_opens_on_escalations(
     assert ESC.signature(cfg) != s1
     assert AM.load_mailbox(cfg).inbox == "human"                  # none open any more
     assert AM.load_mailbox(cfg, "conductor").inbox == "conductor"
-

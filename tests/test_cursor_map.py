@@ -162,4 +162,3 @@ def test_mapped_model_only_translates_when_runner_is_cursor(tmp_path, monkeypatc
     cfg["agentic"]["runner"] = "cursor"
     model, alias = R.mapped_model(cfg, "sonnet", "high")
     assert model == "grok-4.7-high" and alias == "sonnet"
-

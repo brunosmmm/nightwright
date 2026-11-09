@@ -176,4 +176,3 @@ def test_every_org_writer_holds_the_lock():
             if writes and not _decorated(fn):
                 missing.append(f"{path.relative_to(SRC)}:{fn.lineno} {fn.name}")
     assert not missing, "decorate with @org_writer:\n  " + "\n  ".join(missing)
-

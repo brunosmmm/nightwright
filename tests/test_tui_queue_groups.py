@@ -204,4 +204,3 @@ def test_timestamp_keys_sort_by_time_not_string_format():
            "c": "2026-11-03T09:59:59+00:00", "d": "2026-11-03T07:00:00-03:30"}
     keys = {c: AM._sort_key("conductor", item(c, at)) for c, at in ats.items()}
     assert sorted(keys, key=keys.get) == ["c", "a", "b", "d"]
-

@@ -1106,4 +1106,3 @@ def test_queue_flaky_text_does_not_parse_ids_as_markup(tmp_path, monkeypatch):
     assert r.exit_code == 0, r.output
     flat = r.output.replace("\n", "").replace(" ", "").replace("│", "")
     assert "t::x[json]" in flat and "t::y[/tmp/a]" in flat
-

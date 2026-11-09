@@ -13,6 +13,10 @@ from waits import pilot_until
 from nightwright.tui import ideas_board as B
 from nightwright.tui import ideas_queue as IQ
 
+import pytest
+
+pytestmark = pytest.mark.tui
+
 
 def _st(cid, state="MERGED", *, spec=None, idea=None, project="Meta-Tools", created="",
         updated="", nested_spec=False):

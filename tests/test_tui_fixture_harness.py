@@ -398,4 +398,3 @@ def test_pilot_session_does_not_write_the_copy(tmp_path):
         [sys.executable, str(ROOT / "tools" / "capture_history_fixture.py"), "--check"],
         cwd=ROOT, capture_output=True, text=True)
     assert proc.returncode == 0, proc.stdout + proc.stderr
-

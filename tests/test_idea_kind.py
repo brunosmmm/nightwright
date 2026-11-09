@@ -135,4 +135,3 @@ def test_cli_capture_kind_and_filter(tmp_path, monkeypatch):
     assert kind_set.exit_code == 0, kind_set.output
     show = runner.invoke(cli, ["idea", "show", "IDEA-001", "--json"])
     assert json.loads(show.output)["kind"] == "chore"
-

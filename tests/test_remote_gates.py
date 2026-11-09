@@ -1433,4 +1433,3 @@ def test_header_sentinel_and_cadence_and_allowlist_for_all_tiers(tmp_path):
                        "0" * 40, [], 0)
         assert "NW_ALL_TIERS" not in h["env"]
     assert "NW_ALL_TIERS" in W.ENV_ALLOWLIST
-

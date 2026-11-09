@@ -243,4 +243,3 @@ def test_ideas_and_next_tables_show_open_clock_glyph(tmp_path):
     by_id = {r["id"]: r for r in (idea_row(cfg, t) for t in collect_idea_tasks(cfg))}
     assert by_id["IDEA-001"]["clock_open"] is True
     assert by_id["IDEA-001"]["id"] == "IDEA-001"
-

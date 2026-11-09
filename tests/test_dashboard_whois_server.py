@@ -158,4 +158,3 @@ def test_no_cors_headers_on_any_response(ws):
         if method == "OPTIONS":
             assert r.status == 405
     c.close()
-

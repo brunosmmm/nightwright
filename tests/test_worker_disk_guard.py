@@ -206,4 +206,3 @@ def test_update_preflight_blocks_low_free_space(tmp_path, monkeypatch):
                 WU._preflight({}, {}, plan)
     monkeypatch.setattr(WK, "check", lambda cfg, rec: (_ for _ in ()).throw(OSError("x")))
     WU._preflight({}, {}, plan)
-

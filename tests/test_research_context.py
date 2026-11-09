@@ -114,5 +114,3 @@ def test_discover_nw_checkout_matches_repo():
     root = R.discover_nw_checkout()
     assert root is not None
     assert Path(root) == ROOT.resolve() or (Path(root) / "src" / "nightwright").is_dir()
-
-

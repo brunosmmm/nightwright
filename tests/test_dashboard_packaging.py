@@ -26,5 +26,3 @@ def test_wheel_contains_the_page_files(tmp_path):
     names = set(zipfile.ZipFile(wheels[0]).namelist())
     for f in ("assets.py", "static/index.html", "static/app.js", "static/app.css"):
         assert PREFIX + f in names, f
-
-

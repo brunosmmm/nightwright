@@ -150,4 +150,3 @@ def test_check_mismatch_after_update_fails(world):
 def test_unknown_worker(world):
     r = CliRunner().invoke(cli, ["workers", "update", "nope"])
     assert r.exit_code != 0 and "no worker named" in r.output
-

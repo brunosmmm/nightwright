@@ -354,5 +354,3 @@ def test_layout_at_wide_and_narrow_sizes_clips_why_before_title(tmp_path):
             assert len(narrow[2]) + len(narrow[7]) < len(wide[2]) + len(wide[7])
 
     _run(drive())
-
-

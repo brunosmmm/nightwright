@@ -26,7 +26,7 @@ from nightwright.agentic import runner as R
 from nightwright.agentic import runproc as RP
 from nightwright.agentic import store as S
 
-pytestmark = pytest.mark.fast
+pytestmark = pytest.mark.integration
 
 
 def gate_script(tmp, name="g1"):
@@ -1389,4 +1389,3 @@ def test_close_step_is_not_started_while_draining(tmp_path, monkeypatch):
     assert not S.read_ledger(cfg, a, types=["close"])
     stop, = journal(cfg, "stop")
     assert stop["reason"] == "code_changed"
-

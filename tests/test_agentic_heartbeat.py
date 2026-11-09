@@ -11,6 +11,7 @@ import pytest
 pytestmark = pytest.mark.fast
 
 
+@pytest.mark.integration
 def test_long_tick_keeps_the_lease_fresh(tmp_path, monkeypatch):
     repo = make_repo(tmp_path)
     cfg = make_cfg(tmp_path, repo, script(tmp_path, []))
@@ -55,5 +56,3 @@ def test_heartbeat_thread_stops_with_the_tick(tmp_path):
         assert not any(t.name == "nw-lease-heartbeat" for t in threading.enumerate())
     finally:
         lease.release()
-
-

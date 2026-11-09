@@ -148,4 +148,3 @@ def test_cli_unknown_workstream_fails(tmp_path, monkeypatch):
     r = runner.invoke(cli, ["idea", "x", "--workstream", "nope"])
     assert r.exit_code != 0
     assert "invalid workstream" in r.output
-

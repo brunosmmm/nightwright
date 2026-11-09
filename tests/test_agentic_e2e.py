@@ -1051,4 +1051,3 @@ def test_e2e_cost_cap_counts_the_adversarial_reviewer(tmp_path, monkeypatch):
     assert st["state"] == "PARKED" and st["park"]["reason"] == "cost_cap"
     assert ADV in st["park"]["detail"]
     assert runner.calls == ["implementer"]
-

@@ -50,4 +50,3 @@ def test_join_invariant_on_real_tracked_data():
              tags=frozenset(), priority=None, topic_key=key, project="p")
     hours, _, _ = join_time([t], topic_secs)
     assert hours[key] == topic_secs[key]
-

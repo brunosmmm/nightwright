@@ -369,4 +369,3 @@ def test_snapshot_serves_full_inbox(tmp_path):
         assert parks[I_DEC]["inbox_state"] == "awaiting_conductor"
     finally:
         srv.close()
-

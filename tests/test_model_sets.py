@@ -138,4 +138,3 @@ def test_local_runner_passes_the_request_runner():
             return "old"
 
     assert Q._local_runner(Old(), {}, SimpleNamespace(runner="cursor")) == "old"
-

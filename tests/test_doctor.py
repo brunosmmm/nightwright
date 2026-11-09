@@ -735,4 +735,3 @@ def test_launch_fresh_warn_then_ok(tmp_path, monkeypatch):
     assert c["status"] == "ok" and c["fix"] is None
     assert any(x["id"] == "agentic.launch_fresh" for x in D.run(cfg, which=lambda n: None,
                                                                   run_cmd=lambda *a, **k: None))
-

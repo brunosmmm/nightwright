@@ -762,4 +762,3 @@ def test_pi_sources_cite_spec_0465():
             missing_required.append(str(p.relative_to(repo)))
     assert forbidden_hits == [], f"Pi sources must not cite {forbidden}: {forbidden_hits}"
     assert missing_required == [], f"Pi sources must cite {required}: {missing_required}"
-

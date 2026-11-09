@@ -526,6 +526,3 @@ def test_canonical_bullets_blank_line_resets_continuation():
     goals, non_goals = _split_goals(text)
     assert goals == ["First goal."]
     assert non_goals == ["First non-goal."]
-
-
-

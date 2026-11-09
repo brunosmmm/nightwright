@@ -298,5 +298,3 @@ def test_heartbeat_thread_survives_errors_and_journals_once(tmp_path):
         lease.release()
     errs = [r for r in Q.read_journal(cfg) if r["kind"] == "heartbeat_error"]
     assert len(errs) == 1 and "RuntimeError" in errs[0]["error"]    # at most once a minute
-
-

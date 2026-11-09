@@ -57,5 +57,3 @@ def test_reference_doc_lists_bind_tailscale_and_exit_3():
     row = next(ln for ln in doc.splitlines() if ln.startswith("| `serve` |"))
     assert "--bind tailscale" in row and "exits **3**" in row
     assert "naming `tailscale up`. Exactly one" in row
-
-

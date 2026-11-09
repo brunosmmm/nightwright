@@ -474,4 +474,3 @@ def test_new_events_in_schema_with_required_keys():
     E.validate("sentinel", {"project": "p", "ok": True, "sha": "s", "suspects": []})
     with pytest.raises(ValueError, match="failing"):
         E.validate("sentinel", {"project": "p", "ok": False, "sha": "s", "suspects": []})
-

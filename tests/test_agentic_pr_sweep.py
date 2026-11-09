@@ -221,4 +221,3 @@ def test_sync_ping_sweep_failure_does_not_break_sync(tmp_path, monkeypatch):
         raise RuntimeError("gh exploded")
     monkeypatch.setattr(Q, "sweep_handed_off", boom)
     assert isinstance(E.sync(cfg, now=T0, ping=True), list)
-

@@ -268,5 +268,3 @@ def test_cli_spec_generate_refuses_outbound(tmp_path, monkeypatch):
     r = CliRunner().invoke(cli, ["spec", "generate", "EXAMPLE-0001"])
     assert r.exit_code != 0
     assert "outbound" in r.output.lower()
-
-

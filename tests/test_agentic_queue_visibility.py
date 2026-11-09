@@ -824,4 +824,3 @@ def test_narrow_title_chunks_by_cell_width():
     pieces = LV._cell_chunks(Text("ab队c"), 3)
     assert [p.plain for p in pieces] == ["ab", "队c"]
     assert [p.plain for p in LV._cell_chunks(Text(""), 4)] == [""]
-

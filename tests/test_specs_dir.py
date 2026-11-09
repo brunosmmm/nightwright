@@ -75,4 +75,3 @@ def test_specs_dir_has_no_cwd_fallback_in_source():
     body = src[src.index("def _specs_dir("):]
     body = body[:body.index("\ndef ", 1)]
     assert "cwd()" not in body and "getcwd" not in body, body
-

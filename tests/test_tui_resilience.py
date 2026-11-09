@@ -349,5 +349,3 @@ def test_overlapping_reload_async_coalesces(tmp_path, monkeypatch):
             assert len(calls) == 1
 
     asyncio.run(drive())
-
-

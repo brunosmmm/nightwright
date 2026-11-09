@@ -10,6 +10,8 @@ from test_tui_queue_tab import _desk, _run, settle
 from nightwright.tui import campaign_overview as CO
 from waits import pilot_until
 
+pytestmark = pytest.mark.tui
+
 GEN = "2026-11-09T12:00:00-05:00"
 
 

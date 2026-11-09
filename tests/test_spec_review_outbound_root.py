@@ -175,5 +175,3 @@ def test_idea_campaigns_and_older_states_have_no_admission(tmp_path):
     assert state.get("admission") is None and _open_event(cfg, state["id"])["admission"] is None
     store.create_campaign(cfg, {"id": "OLD-1", "spec_id": "ACME-0001", "project": "acme"})
     assert _open_event(cfg, "OLD-1")["admission"] is None
-
-

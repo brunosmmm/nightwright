@@ -67,5 +67,3 @@ def test_parallel_streams_bill_independently(monkeypatch):
     billed = sum(day_topic["2026-06-01"].values())
     wall = aggregate.union_secs(day_intervals["2026-06-01"])
     assert round(billed) == 2 * round(wall)  # full credit per concurrent stream
-
-

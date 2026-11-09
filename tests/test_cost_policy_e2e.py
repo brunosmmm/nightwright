@@ -238,4 +238,3 @@ def test_explain_reports_and_writes_nothing(tmp_path, monkeypatch):
     r = run_cli(cfg, monkeypatch, ["queue", "cost-policy", "explain"])         # default selection
     assert r.exit_code == 0 and cid in r.output and "spend_diverging" in r.output
     assert _tree_digest(data) == before
-

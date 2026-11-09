@@ -22,6 +22,7 @@ def test_pi_exec_under_node():
     assert r.returncode == 0, f"node --test pi_exec.test.js failed:\n{r.stdout}\n{r.stderr}"
 
 
+@pytest.mark.integration
 def test_pi_exec_js_edit_selects_this_module(monkeypatch):
     # A full gate sets NW_AFFECTED_FULL, and the selector then returns tests: [].
     # This assertion is about the file, so it has to see a normal selector.
@@ -39,5 +40,3 @@ def test_pi_exec_js_edit_selects_this_module(monkeypatch):
 
     sel = json.loads(r.stdout)
     assert "tests/test_pi_exec_js.py" in sel.get("tests", [])
-
-

@@ -207,4 +207,3 @@ def test_manual_serve(stub):
     print(f"\nnightwright dashboard stub: http://127.0.0.1:{stub.port}/  (Ctrl-C to stop; "
           "GET /__test/deny401|deny403|allow toggles auth)", flush=True)
     threading.Event().wait()
-

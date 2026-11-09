@@ -256,4 +256,3 @@ def test_empty_campaign_prints_no_runs(tmp_path, monkeypatch):
 def test_conduct_skill_names_runs():
     skill = Path(__file__).resolve().parent.parent / "skills" / "nw-conduct" / "SKILL.md"
     assert "nw campaign runs" in skill.read_text(encoding="utf-8")
-

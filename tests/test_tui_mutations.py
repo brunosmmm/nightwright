@@ -312,4 +312,3 @@ def test_drift_is_reported_and_non_fatal(tmp_path, monkeypatch):
             assert app._pairs                            # reloaded, not left empty
 
     asyncio.run(drive())
-

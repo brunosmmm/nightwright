@@ -312,4 +312,3 @@ def test_stuck_persona_state_without_runs_uses_state_age(tmp_path):
     _enter(cfg, cid, "REVIEWING", 0)
     rows = E.stuck_items(cfg, at(1000), E.settings(cfg))
     assert rows[0]["stuck_s"] == 1000 and rows[0]["in_state_s"] == 1000
-

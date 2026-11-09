@@ -273,5 +273,3 @@ def test_the_desk_defines_no_search_of_its_own():
     assert "search_idea_tasks" in model_src
     for banned in ("score_idea_match", "tokenize_idea_query", "idea_match_snippet"):
         assert banned not in app_src, f"{banned} reimplemented in the desk UI"
-
-

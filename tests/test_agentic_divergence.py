@@ -431,6 +431,7 @@ def _divergence(pick="extra_round", why="the spec still holds", *, ok=True):
     return {"persona": "divergence_triager", "verdict": verdict, "cost_usd": 0.1}
 
 
+@pytest.mark.integration
 def test_e2e_recurrence_takes_one_extra_round_then_merges(tmp_path, monkeypatch):
     entries = [impl_done(), _fix_review(X), impl_done(), _fix_review(Y), impl_done(),
                _fix_review(X), _divergence("extra_round"),
@@ -604,4 +605,3 @@ def test_environmental_rule_edges():
     assert not env(run_end(timed_out=True))
     assert not env(run_end(is_error=True))
     assert env(run_end(timed_out=True, result_tail="API Error: 529 overloaded"))
-

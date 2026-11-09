@@ -209,4 +209,3 @@ def test_postmortem_cli(tmp_path, monkeypatch):
     r = CliRunner().invoke(cli, ["spec", "postmortem", spec_id, "--note", "found a defect"])
     assert r.exit_code == 0, r.output
     assert "postmortem" in r.output
-

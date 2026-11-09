@@ -201,4 +201,3 @@ def test_spec_0413_depends_on_includes_0414():
     fm = text.split("---")[1]
     m = re.search(r"^depends_on:\s*\[(.*?)\]", fm, re.M)
     assert [x.strip() for x in m.group(1).split(",")] == ["SPEC-0401", "SPEC-0414"]
-

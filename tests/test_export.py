@@ -411,6 +411,7 @@ def test_default_config_includes_exported_keyword():
 
 # ---- internal ledger/lint isolation -----------------------------------------------
 
+@pytest.mark.integration
 def test_internal_spec_lint_unaffected_by_outbox(tmp_path):
     """The real docs/outbox/ (if present) must never be scanned by tools/spec_lint.py; the
     real docs/specs/ scan must be identical regardless of anything scaffolded here."""
@@ -770,5 +771,3 @@ def test_pull_status_raises_original_error_when_nowhere_to_be_found(tmp_path):
         assert False, "expected ValueError"
     except ValueError as e:
         assert "portable spec not found at" in str(e)
-
-

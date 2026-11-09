@@ -540,5 +540,3 @@ def test_timeline_merges_run_events_and_caps_plain_summary():
     assert rows[0]["kind"] == "run" and rows[0]["ref"] == "r1"
     assert rows[0]["phase"] == "review" and rows[0]["loop"] == 2
     assert rows[0]["by"] == "reviewer" and len(rows[0]["summary"]) == 200
-
-

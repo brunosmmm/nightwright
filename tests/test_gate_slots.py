@@ -485,4 +485,3 @@ def test_run_all_stopped_in_the_wait_starts_no_gate(world):
     run = box["run"]
     assert run.interrupted and run.results == () and not marker.exists()
     assert GS.waiting(cfg, CID) is None
-

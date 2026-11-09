@@ -209,6 +209,7 @@ def test_zero_clients_no_work_no_thread(mk):
     assert not snapshotter_alive()
 
 
+@pytest.mark.integration
 def test_builds_do_not_grow_with_clients(mk, monkeypatch):
     calls = []
     real = Q.dashboard_payload
@@ -234,6 +235,7 @@ def test_builds_do_not_grow_with_clients(mk, monkeypatch):
     assert abs(out[1][1] - out[8][1]) <= 3, out
 
 
+@pytest.mark.integration
 def test_one_change_is_one_build_and_one_event_per_client(mk):
     s = mk()
     clients = [s.stream() for _ in range(8)]
@@ -488,4 +490,3 @@ def test_streams_leave_the_data_dir_untouched_outside_the_dashboard_dir(mk):
     s.stream(host=False)                            # a refusal: audited inside the dashboard dir
     s.stream().close()
     assert outside() == before
-

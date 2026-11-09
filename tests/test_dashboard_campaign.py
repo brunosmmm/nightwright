@@ -158,4 +158,3 @@ def test_serving_drilldowns_and_tails_writes_nothing(world):
         assert get(world["port"], f"/api/campaigns/{ACTIVE}")[0] == 200
         assert get(world["port"], f"/api/campaigns/{ACTIVE}/tail?run=001")[0] == 200
     assert tree() == before
-

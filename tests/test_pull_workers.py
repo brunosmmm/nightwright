@@ -354,4 +354,3 @@ def test_a_stop_delivers_cancel_and_ends_the_job_within_5s(bw, pull):
     done = [f for f in pull.frames() if f["type"] == "done"][-1]
     assert done["interrupted"] is True
     assert "cancelling" in pull.log()
-

@@ -418,4 +418,3 @@ def test_inert(env):
                                                          "security_reviewer"]}}
     with pytest.raises(ValueError, match="security_reviewer"):
         resolve_profile(cfg, "mine", project_root=root)
-

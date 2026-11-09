@@ -51,4 +51,3 @@ def test_update_through_a_fish_forced_command(tmp_path):
     assert res["schema"] == "nw.worker.update.result.v1"
     assert res["stage"] == "verify", (res, p.stderr)
     assert (fake / "uv.argv").read_text().splitlines()[0].split()[:3] == ["tool", "install", "--reinstall"]
-

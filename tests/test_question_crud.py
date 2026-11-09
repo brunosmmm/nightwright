@@ -280,4 +280,3 @@ def test_cli_tags_feed_the_existing_tag_filter(tmp_path, monkeypatch):
     assert r.exit_code == 0 and "IDEA-001" in r.output
     r = run(cli, ["ideas", "--tag", "nope", "--json"])
     assert r.exit_code == 0 and "IDEA-001" not in r.output
-

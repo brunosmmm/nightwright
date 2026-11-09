@@ -557,4 +557,3 @@ def test_a_dropped_connection_does_not_abort_the_install(env, new, tmp_path):
     assert int((env.dir / "uv.sid").read_text()) != updater_sid
     log = (WU.update_dir({"data_dir": env.cfg["data_dir"], "config_dir": ""}) / "uv.log")
     assert "still going after the close" in log.read_text()
-

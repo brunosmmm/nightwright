@@ -208,4 +208,3 @@ def test_stored_epic_wins_over_derived_parentage(tmp_path, monkeypatch):
     epic = [n for n in alpha["nodes"] if n["children"]][0]
     assert epic["id"] == "EXAMPLE-0007"
     assert "IDEA-001" in {c["id"] for c in epic["children"]}
-

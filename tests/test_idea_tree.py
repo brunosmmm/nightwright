@@ -13,6 +13,8 @@ from click.testing import CliRunner
 from nightwright import report as R
 from nightwright.cli import cli
 
+pytestmark = pytest.mark.fast
+
 
 def _cfg(tmp_path):
     org = tmp_path / "org"

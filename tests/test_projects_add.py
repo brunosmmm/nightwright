@@ -183,4 +183,3 @@ def test_promote_error_mentions_projects_add():
     msg_src = Path(__file__).resolve().parents[1] / "src" / "nightwright" / "specs.py"
     text = msg_src.read_text(encoding="utf-8")
     assert "nw projects add" in text
-

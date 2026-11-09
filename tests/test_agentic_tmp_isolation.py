@@ -450,4 +450,3 @@ def test_pressure_pauses_admission_but_not_in_flight_campaigns(tmp_path, monkeyp
 def test_conduct_skill_has_temp_pressure_row():
     skill = Path(__file__).resolve().parents[1] / "skills" / "nw-conduct" / "SKILL.md"
     assert any(("|" + l.split("|", 2)[-1]).startswith("| `temp_pressure`") for l in skill.read_text().splitlines())
-

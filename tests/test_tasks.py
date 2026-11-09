@@ -98,5 +98,3 @@ def test_cli_tasks_json(monkeypatch):
     r2 = CliRunner().invoke(cli, ["tasks", "--json", "--state", "INPROGRESS"])
     data2 = json.loads(r2.output)
     assert all(t["state"] == "INPROGRESS" for t in data2["tasks"])
-
-

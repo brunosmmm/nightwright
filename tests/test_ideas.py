@@ -624,4 +624,3 @@ def test_idea_row_and_next_show_handed_off(tmp_path):
     assert EX.idea_show_payload(cfg, task)["handed_off"] == "https://x/pull/3"
     out = _render(R.ideas, cfg)
     assert "SPECCED ⇢ PR" in out
-

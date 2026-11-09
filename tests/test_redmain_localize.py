@@ -83,4 +83,3 @@ def test_a_running_sentinel_defers_localize(episode):
     with SN.run_lock(cfg, PROJECT):
         out = RM.localize(cfg, PROJECT, root=str(root), project_cfg={"_root": str(root)})
     assert out.get("retry") and out["culprit"] is None and probes == []
-

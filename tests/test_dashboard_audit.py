@@ -73,5 +73,3 @@ def test_action_is_plan_answer_or_refused(tmp_path):
     assert [r["action"] for r in recs] == ["plan", "answer", "refused", "refused"]
     assert recs[0]["esc_id"] == "E1" and recs[0]["form"] == "choice"
     assert recs[0]["result"] == "ok" and len(recs[0]["summary"]) == 400
-
-

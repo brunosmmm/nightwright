@@ -679,4 +679,3 @@ def test_spec_reconcile_cli_prints_foreign_rows(tmp_path, monkeypatch, capsys):
     assert r.exit_code == 0, out
     line = next(ln for ln in out.splitlines() if other in ln)
     assert "↗" in line and PROJ in line and "Meta-Tools" in line
-

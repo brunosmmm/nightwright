@@ -310,4 +310,3 @@ def test_the_inbox_lists_auto_applied_answers_for_reversal(world):
     assert s.answer("ESC-0005", {"form": "choose", "choose": 2})[0] == 200
     assert waits.until(lambda: json.loads(s.req("GET", "/api/snapshot")[2])["inbox"]
                        ["auto_applied"] == [])
-

@@ -189,4 +189,3 @@ def test_check_bind_accepts_an_own_tailnet_address_in_any_spelling():
 def test_validate_bind_stays_loopback_only_with_a_loopback_message():
     with pytest.raises(A.BindRefused, match="loopback"):
         A.validate_bind("100.64.0.5:0")
-

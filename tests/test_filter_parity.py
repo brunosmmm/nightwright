@@ -90,5 +90,3 @@ def test_agenda_filters_project(tmp_path, monkeypatch):
     out = cap.get()
     assert "meta task" in out
     assert "other task" not in out
-
-

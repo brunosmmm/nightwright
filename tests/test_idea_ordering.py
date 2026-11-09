@@ -512,4 +512,3 @@ def test_quiet_holds_live_after_wait_and_delivers_dead_one(env, monkeypatch):
     assert not QT.dependency_wait([f"waiting on {a} (after: no campaign queued for {a})"],
                                   frozenset(), proj)
     assert not QT.dependency_wait([f"after {a}: campaign {ca} abandoned"], ctx.live_specs, proj)
-

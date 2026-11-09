@@ -119,4 +119,3 @@ def test_cli_state(tmp_path, monkeypatch):
     assert r.exit_code == 0, r.output
     r2 = CliRunner().invoke(cli, ["state", "DEMO-504", "BOGUS"])
     assert r2.exit_code != 0 and "invalid state" in r2.output
-

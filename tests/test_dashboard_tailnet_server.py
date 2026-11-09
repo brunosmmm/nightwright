@@ -80,4 +80,3 @@ def test_loopback_serves_with_no_login_and_never_asks_for_the_tailnet(tmp_path):
 def test_own_is_keyword_only():
     p = inspect.signature(DS.make_server).parameters["own"]
     assert p.kind is inspect.Parameter.KEYWORD_ONLY and p.default is None
-

@@ -472,4 +472,3 @@ def test_journal_line_for_a_restart():
                            "id": "R-1", "phase": "done", "parked": ["a", "b"],
                            "resumed": ["a", "b"], "old_pid": 5, "new_pid": 9})
     assert "⟲ restart R-1  runner 5 → 9; parked 2, resumed 2" in g.renderables[0].plain
-

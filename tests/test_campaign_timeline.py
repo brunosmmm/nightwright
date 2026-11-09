@@ -303,4 +303,3 @@ def test_a_copied_real_ledger_tells_the_story(tmp_path):
     assert "Gate triager (sonnet, 9s, $0.13): retry — suspected flaky (medium)" in got
     assert any(t.startswith("Review round — 3 reviewers (3m 10s, $3.18): ✓ conformance 90 ✓ "
                             "tests 90 ✓ adversarial 84 → pass 92/90") for t in got)
-

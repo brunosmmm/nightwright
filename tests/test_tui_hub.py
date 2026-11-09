@@ -308,5 +308,3 @@ def test_hub_tab_has_no_promote_or_export_call():
                    "seed_ideas_from_epic"):
         assert banned not in app_src, f"{banned} reachable from the desk"
         assert banned not in model_src, f"{banned} reachable from the desk model"
-
-

@@ -228,4 +228,3 @@ def test_ledger_only_change_yields_new_rev(fx):
     clock.t += c.refresh_s
     r1 = c.get()["rev"]
     assert r1 != r0 and c.builds == 2
-

@@ -88,4 +88,3 @@ def test_run_job_raises_job_level_error_without_claude(tmp_path, monkeypatch):
         RPS.run_job(cfg, h, job, Frames(), threading.Event())
     detail = W.error_detail(cfg, FileNotFoundError(2, "x", "claude"), job)
     assert detail["job_error"] is True and detail["filename"] == "claude"
-

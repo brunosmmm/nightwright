@@ -1007,4 +1007,3 @@ def test_suggested_fix_reaches_the_brief_and_changes_nothing_else():          # 
     brief = Q.review_brief(fixed, t1, 80)
     assert brief["must_fix"][0]["detail"] == "why\nFix: rename x\nDone when: test_x passes"
     assert Q.review_brief(plain, t0, 80)["must_fix"][0]["detail"] == "why"
-

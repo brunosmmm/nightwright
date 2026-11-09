@@ -166,4 +166,3 @@ def test_cli_success_line_names_heading(tmp_path, monkeypatch):
     assert r.exit_code == 0, r.output
     flat = " ".join(r.output.split())
     assert "IDEA-001" in flat and "the right [bracketed] idea" in flat
-

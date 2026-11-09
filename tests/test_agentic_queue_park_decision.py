@@ -270,4 +270,3 @@ def test_e4_over_conductor_parks(cfg, monkeypatch):
     crit, bad = MR.e4(cfg, [{"campaign": i} for i in ids], T0 - dt.timedelta(days=1),
                       now[0] + dt.timedelta(days=1), {"e4": 1.0})
     assert bad == [], bad
-

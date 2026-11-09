@@ -692,6 +692,3 @@ def test_stop_wait_guard_default_is_the_remaining_budget_plus_30s(tmp_path, budg
         assert limit in waited
         assert limit <= t["now"] - 1000.0 < limit + 0.5         # gave up at the limit, not later
         assert L.is_held(cfg)
-
-
-

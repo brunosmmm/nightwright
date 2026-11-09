@@ -264,5 +264,3 @@ def test_scaffolded_spec_with_empty_clock_log_still_lints_clean(tmp_path):
     problems = [p for p in lint.validate(lint.load_specs())
                if not p.startswith("LEDGER.md")]
     assert problems == [], problems
-
-

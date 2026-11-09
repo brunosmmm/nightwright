@@ -134,4 +134,3 @@ def test_markup_in_user_values_is_printed_literally(env):
     (pdir / "x[bold]y.yaml").write_text("x: 1\n")
     r = _run("list", "--project", "Proj")
     assert r.exit_code == 0, (r.output, r.exception)
-

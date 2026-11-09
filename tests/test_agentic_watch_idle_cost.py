@@ -109,5 +109,3 @@ def test_no_workers_no_strip(tmp_path, monkeypatch):
     camp(cfg, repo, "SPEC-0001-a", "IMPLEMENTING")
     p = Q.dashboard_payload(cfg)
     assert p["gate_pools"] is None and CQ._workers_line(p) is None
-
-

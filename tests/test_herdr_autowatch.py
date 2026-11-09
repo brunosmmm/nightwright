@@ -20,7 +20,7 @@ from nightwright.cli import cli
 import waits
 from test_agentic_events import _cfg
 
-pytestmark = pytest.mark.fast
+pytestmark = pytest.mark.integration
 
 FAKE_SRC = Path(__file__).parent / "fixtures" / "fake_herdr.py"
 
@@ -419,4 +419,3 @@ def test_no_watcher_when_gated_or_not_conductor(tmp_path, fake, case):
         assert out == b"" and f.returncode == 0
     finally:
         _kill(f)
-

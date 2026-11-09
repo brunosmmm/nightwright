@@ -41,5 +41,3 @@ def test_events_and_digest_rows_carry_the_label(world, monkeypatch):
     assert parked and parked[0]["spec_id"] is None and parked[0]["label"] == "merge:fix/typo"
     d = E.ping_digest(cfg)
     assert d["parked"][0]["label"] == "merge:fix/typo"
-
-

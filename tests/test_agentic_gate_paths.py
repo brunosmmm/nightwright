@@ -124,4 +124,3 @@ def test_close_runs_every_gate_when_changed_paths_are_unknown(world, monkeypatch
     monkeypatch.setattr(git, "changed_files", boom)
     out = CL.prepare_close(world["cfg"], world["state"], pcfg)
     assert marker.exists() and _events(out, "gate.skipped") == []
-

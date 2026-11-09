@@ -488,4 +488,3 @@ def test_gate_jobs_line_survives_a_long_campaign_marker():
     assert "GATEJOB-0002 by bruno (jerome@main)" in out
     gp["gate_jobs"] = []
     assert CQ._gate_jobs_line(p) is None
-

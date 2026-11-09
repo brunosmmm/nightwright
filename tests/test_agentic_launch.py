@@ -1029,4 +1029,3 @@ def test_conduct_status_and_brief_show_stale_launch(cfg):
     assert [x["reader"] for x in b["launch"]] == ["steward:Foo"]
     text = B.render_text(b)
     assert "launch:\n- steward:Foo stale" in text and "nw queue steward-launch Foo --resume" in text
-

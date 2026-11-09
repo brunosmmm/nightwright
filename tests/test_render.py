@@ -132,4 +132,3 @@ def test_campaign_event_outbound_pulled():                                      
           "from": "EXPORTED", "to": "SHIPPED"}
     assert R.campaign_event(ev).plain.endswith(
         "outbox ACME-0001 → done; idea IDEA-038: EXPORTED -> SHIPPED")
-

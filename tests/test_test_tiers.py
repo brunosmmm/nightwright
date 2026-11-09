@@ -248,6 +248,21 @@ SHAPES = {
         def test_one():
             assert Path(".")
         """,
+    "test_strfix.py": """\
+        import pytest
+
+        pytestmark = pytest.mark.tree_guard  # why: scans the tree
+
+        FIXTURE = \'\'\'
+        @pytest.mark.slow
+        def test_x():
+            pass
+        \'\'\'
+
+
+        def test_one():
+            pass
+        """,
     "test_over.py": """\
         import pytest
 
@@ -285,8 +300,11 @@ def test_apply_rewrites_every_shape_and_is_idempotent(tmp_path):
     assert ('@pytest.mark.parametrize("n", [1, 2])\n@pytest.mark.integration\ndef test_big'
             in text["test_over.py"])
     assert text["test_over.py"].count("pytest.mark.integration") == 1
+    assert ("pytestmark = [pytest.mark.fast, pytest.mark.tree_guard]  # why: scans the tree"
+            in text["test_strfix.py"])
+    assert "@pytest.mark.slow\ndef test_x" in text["test_strfix.py"]     # a string, not a mark
     for n, t in text.items():
-        assert "mark.slow" not in t, n
+        assert "mark.slow" not in t or n == "test_strfix.py", n
         assert t.endswith("\n") and not t.endswith("\n\n"), n
     assert _tool("--apply", log, "--repo", r).returncode == 0                  # idempotent
     assert {n: (r / "tests" / n).read_text() for n in SHAPES} == text

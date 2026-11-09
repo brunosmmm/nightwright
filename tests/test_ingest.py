@@ -22,5 +22,3 @@ def test_load_streams_reads_fixture_session():
     # kind classification: typed prompt vs assistant vs tool_result (mid-turn)
     kinds = [e["kind"] for e in evs]
     assert kinds == ["prompt", "assistant", "tool", "prompt"]
-
-

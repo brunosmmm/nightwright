@@ -888,4 +888,3 @@ def test_a_trailing_lower_duplicate_id_does_not_inflate_the_count(tmp_path):
             assert "1 duplicate ids skipped" in status(app)
 
     _run(drive())
-

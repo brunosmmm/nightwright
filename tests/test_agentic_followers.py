@@ -139,5 +139,3 @@ def test_cli_followers_and_conduct_status(tmp_path, monkeypatch):
     assert json.loads(r.output)["stewards"] == []
     r = CliRunner().invoke(cli, ["queue", "conduct-status"])
     assert "none armed" in r.output
-
-

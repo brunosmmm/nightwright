@@ -516,4 +516,3 @@ def test_real_spec_lint_passes_on_the_regenerated_ledger_of_a_rebased_conflict(w
     assert prep.outcome is None, prep.outcome
     assert "generated files regenerated during rebase" in _findings(prep)
     assert lint(nw).returncode == 0, lint(nw).stdout
-

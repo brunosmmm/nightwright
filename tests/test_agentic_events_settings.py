@@ -78,4 +78,3 @@ def test_numeric_string_park_decide_s_is_kept(tmp_path):
     assert E.settings(cfg)["park_decide_s"] == 600
     (item,) = [i for i in Q.queue_payload(cfg)["items"] if i["campaign"] == cid]
     assert item["park"]["overdue"] is False                  # 310 s < 600 s
-

@@ -462,4 +462,3 @@ def test_yes_prune_holds_org_write_lock(tmp_path, monkeypatch):
     assert run(["backups", "prune", "--yes"]).exit_code == 0
     assert run(["backups", "prune"]).exit_code == 0
     assert depths == [(False, 1), (True, 0)]
-

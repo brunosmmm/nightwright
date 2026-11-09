@@ -717,4 +717,3 @@ def test_campaign_screen_module_is_gone():
         importlib.import_module("nightwright.tui.campaign_screen")
     from nightwright.tui.campaign_detail import CampaignDetail
     assert CampaignDetail is not None
-

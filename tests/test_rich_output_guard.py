@@ -112,6 +112,7 @@ def raw_writes(path: Path, rel: str):
     yield from walk(tree, "<module>")
 
 
+@pytest.mark.integration
 def test_no_unlisted_raw_writes():
     bad = []
     for path in sorted(SRC.rglob("*.py")):
@@ -136,4 +137,3 @@ def test_guard_catches_a_bare_print(tmp_path):
     p = tmp_path / "m.py"
     p.write_text("import sys\ndef f():\n    print('hi')\n    sys.stderr.write('x')\n")
     assert [(f, line) for _, f, line in raw_writes(p, "m.py")] == [("f", 3), ("f", 4)]
-

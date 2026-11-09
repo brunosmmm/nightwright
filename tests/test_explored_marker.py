@@ -269,4 +269,3 @@ def test_cli_explored_on_missing_idea_errors(tmp_path, monkeypatch):
     monkeypatch.setattr(cli_mod, "load_config", lambda: cfg)
     r = CliRunner().invoke(cli, ["idea", "mark-explored", "IDEA-404"])
     assert r.exit_code != 0
-

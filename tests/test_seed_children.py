@@ -207,4 +207,3 @@ def test_seed_bad_ordinal_is_a_hard_error_naming_the_bullet(tmp_path):
         with pytest.raises(ValueError, match=f"bullet 2.*{frag}"):
             S.seed_ideas_from_epic(cfg, "ACME-0001")
     assert [t for t in load_tasks(cfg) if t.is_idea] == []        # nothing seeded
-

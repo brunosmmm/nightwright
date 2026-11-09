@@ -264,4 +264,3 @@ def test_escaping_the_rationale_prompt_writes_nothing(tmp_path, monkeypatch):
             assert Path(cfg["org_ideas_file"]).read_text() == before
 
     asyncio.run(drive())
-

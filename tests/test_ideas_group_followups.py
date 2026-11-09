@@ -198,4 +198,3 @@ def test_dry_run_names_an_existing_open_legacy_group_as_the_target(cfg):
     g = as_json(run("--json").output)["groups"][0]
     assert g["target"] == legacy and len(g["lines"]) == 1
     assert "group_id" not in g
-

@@ -216,4 +216,3 @@ def test_campaign_show_has_no_estimate_mark_without_estimate(tmp_path, monkeypat
     st["cost"].pop("estimated_usd", None)                         # legacy state
     S.write_state(cfg, cid, st)
     assert "est." not in run_cli(cfg, monkeypatch, ["campaign", "show", cid]).output
-

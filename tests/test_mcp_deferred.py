@@ -12,4 +12,3 @@ def test_pyproject_has_no_mcp_extra():
     assert "mcp" not in text.lower()
     assert not (ROOT / "src" / "nightwright" / "mcp.py").exists()
     assert not list((ROOT / "src" / "nightwright").glob("mcp*"))
-

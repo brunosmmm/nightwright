@@ -1791,4 +1791,3 @@ def test_watch_with_unusable_event_is_ignored(event):
     w = {"key": "k", "type": "campaign_silent", "bound_s": 1.0, "event": event}
     assert not QT._watch_ok(w)
     assert QT._watch_ok({**w, "event": {"type": "state_stuck"}})        # data absent is fine
-

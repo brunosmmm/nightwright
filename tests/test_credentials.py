@@ -142,4 +142,3 @@ def test_doctor_reports_status_not_value(store, monkeypatch):
     mode.write_text("locked")
     c = doctor.check_cursor_agent(cfg)
     assert c["status"] == "fail" and "locked" in c["summary"] and "unlock gpg" in c["fix"]
-

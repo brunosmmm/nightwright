@@ -427,4 +427,3 @@ def test_check_admissible_revise_unapplied_outbound_still_refused(tmp_path):
     write_review(cfg, spec, "PROJ-0001", "revise")
     with pytest.raises(ValueError, match=r"PROJ-0001: .*not applied yet \(the text is unchanged"):
         SR.check_admissible(cfg, spec, "PROJ-0001")
-

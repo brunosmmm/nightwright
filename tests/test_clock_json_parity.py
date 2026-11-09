@@ -247,4 +247,3 @@ def test_desk_shows_open_question_count_and_clock_marker(tmp_path, monkeypatch):
             assert "clocked in" in screen
 
     asyncio.run(drive())
-

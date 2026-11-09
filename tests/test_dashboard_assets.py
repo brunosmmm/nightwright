@@ -74,4 +74,3 @@ def test_css_layout_rules():
     assert re.search(r"min-height\s*:\s*44px", css)
     assert re.search(r"@media\s*\(\s*prefers-color-scheme\s*:\s*dark\s*\)", css)
     assert "url(" not in css
-

@@ -253,6 +253,7 @@ def test_open_event_profile_sources_is_optional(tmp_path):                      
     assert ev["profile_sources"] == ["builtin:balanced.yaml"] and SC.ledger_problems(ev) == []
 
 
+@pytest.mark.integration
 def test_runs_and_run_start_carry_the_profile(tmp_path, monkeypatch):           # SPEC-0238
     cfg, cid = _run_to_idle(tmp_path, monkeypatch, [impl_done(), review()])
     state = S.read_state(cfg, cid)
@@ -278,4 +279,3 @@ def test_outbound_pulled_event_is_registered_and_requires_its_keys():           
     assert SC.ledger_problems(rec) == []
     del rec["idea_id"]
     assert SC.ledger_problems(rec) == ["outbound_pulled: missing 'idea_id'"]
-

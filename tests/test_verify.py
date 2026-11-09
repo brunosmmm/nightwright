@@ -125,4 +125,3 @@ t
 
     r2 = runner.invoke(cli, ["spec", "verify", "SPEC-9006", "--strict"])
     assert r2.exit_code == 1
-

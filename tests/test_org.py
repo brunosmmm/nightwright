@@ -277,5 +277,3 @@ def test_user_org_files_list_replaces_default(monkeypatch, tmp_path):
     monkeypatch.setattr(C.paths, "cache_dir", lambda: str(tmp_path))
     cfg = C.load_config()
     assert cfg["org_files"] == ["/custom/a.org"]
-
-

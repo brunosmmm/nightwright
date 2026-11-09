@@ -33,5 +33,3 @@ def test_occupied_ignores_gating_rows_and_flights():
     rows = [{"id": "A", "state": "GATING"}, {"id": "B", "state": "IMPLEMENTING"}]
     assert E._occupied(rows, {"in_flight": ["A", "C"]}) == 2     # B and C
     assert Q.slot_ids(rows, ["A"]) == {"B"}
-
-

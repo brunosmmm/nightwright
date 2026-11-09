@@ -131,5 +131,3 @@ def test_digest_shows_supplemental_clocked_hours(monkeypatch, tmp_path):
 def test_digest_omits_clock_panel_when_no_clock_data(monkeypatch):
     out = _render_digest(monkeypatch, {}, day="2026-07-15")
     assert "Clocked (supplemental)" not in out
-
-

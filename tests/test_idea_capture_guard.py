@@ -138,4 +138,3 @@ def test_root_group_converts_refusal_without_command_catching_it(env, monkeypatc
 
 def test_autouse_fixture_leaves_persona_flag_unset():
     assert "NW_PERSONA_RUN" not in os.environ
-

@@ -57,6 +57,7 @@ def test_close_train_inflight_member_is_head():
 
 # ---- the pooled runner ----------------------------------------------------------------------
 
+@pytest.mark.integration
 def test_second_close_waits_while_first_regates(mk):
     env = mk(slots=2, specs=2)
     a = _held_closing(env, "SPEC-0001")
@@ -93,6 +94,7 @@ def test_second_close_waits_while_first_regates(mk):
     assert (env.repo / "feature-a.txt").exists() and (env.repo / "feature-b.txt").exists()
 
 
+@pytest.mark.integration
 def test_different_roots_close_concurrently(mk, tmp_path, monkeypatch):
     env = mk(slots=2, specs=2)
     a = _held_closing(env, "SPEC-0001")
@@ -123,6 +125,7 @@ def test_different_roots_close_concurrently(mk, tmp_path, monkeypatch):
     assert calls == [b]
 
 
+@pytest.mark.integration
 def test_config_recovered_close_joins_train(mk):
     """A campaign step 0 brings back to CLOSING (it was PARKED `config_invalid` when the tick
     read `items`) is a train member too: it waits behind the running close, never beside it."""
@@ -147,6 +150,7 @@ def test_config_recovered_close_joins_train(mk):
     assert len(env.started(b, "close")) == 1
 
 
+@pytest.mark.integration
 def test_entered_at_set_and_reset(mk):
     env = mk()
     a = _held_closing(env)
@@ -310,5 +314,3 @@ def test_single_shot_closes_in_train_order(mk):
     assert order == [second, first]
     assert env.st(first)["close"]["merged_sha"] == env.main_sha()
     assert _git(env.repo, "rev-list", "--merges", "main") == ""
-
-

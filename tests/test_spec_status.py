@@ -131,4 +131,3 @@ def test_set_option_is_choice_of_schema_enum():
     cmd = cli.commands["spec"].commands["status"]
     opt = next(p for p in cmd.params if p.name == "new_status")
     assert isinstance(opt.type, click.Choice) and tuple(opt.type.choices) == SPEC_STATUSES
-

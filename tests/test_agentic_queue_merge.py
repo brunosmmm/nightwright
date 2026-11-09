@@ -15,7 +15,7 @@ from nightwright.agentic import queue as Q
 from nightwright.agentic import schemas as SC
 from nightwright.agentic import store as S
 
-pytestmark = pytest.mark.fast
+pytestmark = pytest.mark.integration
 
 
 @pytest.fixture(autouse=True)
@@ -861,4 +861,3 @@ def test_apply_merge_open_event_has_code_and_profile_hashes(world, monkeypatch):
     st = Q.apply_merge(cfg, p)
     ev = S.read_ledger(cfg, st["id"], types=["open"])[0]
     assert ev["nw_sha"] == "d" * 40 and ev["profile_sha256"] == want and len(want) == 64
-

@@ -162,5 +162,3 @@ def test_resolve_selector_still_ambiguous(tmp_path, monkeypatch):
     r2 = CliRunner().invoke(cli, ["ideas", "--query", "related", "--json"])
     assert r2.exit_code == 0
     assert len(json.loads(r2.output)["ideas"]) == 2
-
-

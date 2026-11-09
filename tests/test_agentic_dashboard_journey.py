@@ -322,5 +322,3 @@ def test_header_says_when_campaigns_exceed_the_slots():
     out = _plain(CQ._dash_header(p, 160), 160)
     assert "campaigns" in out and "5/3 over by 2, no admissions until ≤3" in out
     assert "gates 2/2 +1 waiting" in out
-
-

@@ -92,5 +92,3 @@ def test_topics_help_documents_by():
     r = CliRunner().invoke(cli, ["topics", "--help"])
     assert r.exit_code == 0
     assert "--by" in r.output
-
-

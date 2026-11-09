@@ -252,5 +252,3 @@ def test_digest_by_project_groups_captured_project(tmp_path, monkeypatch):
     finally:
         console._width = prev
     assert "Demo-ATS" in cap.get()
-
-

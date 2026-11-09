@@ -40,6 +40,7 @@ def test_page_logic_under_node(tmp_path):
     assert re.search(r"skipped\s+0\b", r.stdout), "the real-snapshot test must run, not skip"
 
 
+@pytest.mark.integration
 def test_an_app_js_edit_selects_the_node_driving_tests():
     r = subprocess.run([sys.executable, "tools/affected_tests.py", "--changed",
                         f"src/nightwright/agentic/dashboard/static/{PAGE_SOURCE}", "--json"],
@@ -47,5 +48,3 @@ def test_an_app_js_edit_selects_the_node_driving_tests():
     assert r.returncode == 0, r.stderr
     sel = json.loads(r.stdout)
     assert sel["full"] or set(NODE_DRIVERS) <= set(sel["tests"]), sel
-
-

@@ -160,4 +160,3 @@ def test_unknown_project_flag_is_an_error(env, monkeypatch):
     monkeypatch.setattr("nightwright.agentic.project.project_root", boom)
     r = _run("list", "--project", "Nope")
     assert r.exit_code == 1 and "cannot resolve a repo for project 'Nope'" in r.output
-

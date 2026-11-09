@@ -21,5 +21,3 @@ def test_docs_pages_workflow_exists_and_deploys_via_actions():
 def test_mkdocs_site_url_points_at_github_pages():
     text = (ROOT / "mkdocs.yml").read_text(encoding="utf-8")
     assert "site_url: https://brunosmmm.github.io/nightwright/" in text
-
-

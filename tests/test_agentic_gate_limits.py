@@ -119,6 +119,7 @@ def _sidecar_timeout(cfg, run):
     return json.loads(side.read_text())["timeout_s"]
 
 
+@pytest.mark.integration
 def test_run_all_with_overlay_passes_where_main_alone_times_out(world):
     cfg, st, wt = world
     _branch_yaml(wt, {"name": "slow", "cmd": "sleep 2", "timeout_s": 30})
@@ -150,6 +151,7 @@ def test_run_all_main_above_cap_stays_at_main(world):
 
 # ---- _do_gate / _gate_timeouts ----------------------------------------------------------------
 
+@pytest.mark.integration
 def test_do_gate_runs_raised_limit_and_appends_finding(world):
     cfg, st, wt = world
     _branch_yaml(wt, {"name": "slow", "cmd": "sleep 2", "timeout_s": 30})
@@ -186,6 +188,7 @@ def test_gate_timeouts_names_the_effective_limit(world):
 
 # ---- nw queue gates ---------------------------------------------------------------------------
 
+@pytest.mark.integration
 def test_cli_queue_gates_applies_the_overlay(tmp_path, monkeypatch):
     cfg = _cfg(tmp_path)
     root = _repo_with_project_yaml(tmp_path, "  - {name: slow, cmd: 'sleep 2', timeout_s: 1}\n")
@@ -200,4 +203,3 @@ def test_cli_queue_gates_applies_the_overlay(tmp_path, monkeypatch):
     assert d["ok"] is True and d["results"][0]["timed_out"] is False
     side = S.campaign_dir(cfg, CID) / d["results"][0]["log"].replace(".log", ".json")
     assert json.loads(side.read_text())["timeout_s"] == 30
-

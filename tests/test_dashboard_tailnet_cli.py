@@ -13,7 +13,7 @@ from test_dashboard_cli import nw_env
 from test_dashboard_serve_cli import dash, listening, run_serve, start, stop, wait_server
 from waits import until
 
-pytestmark = pytest.mark.fast
+pytestmark = pytest.mark.integration
 
 
 @pytest.fixture
@@ -157,4 +157,3 @@ def test_only_tailscale_ip_is_ever_run(fx, tmp_path):
     for bind in ("tailscale", "100.64.0.5:0", "100.64.0.9:0"):
         run_serve(fx, "--dashboard", "--bind", bind, env=env)
     assert FT.calls(env) and all(c == ["ip"] for c in FT.calls(env))
-

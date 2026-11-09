@@ -203,4 +203,3 @@ def test_in_flight_survives_handover(tmp_path, monkeypatch):
         assert st["in_flight"] == ["c1"] and st["busy"] is None
     finally:
         adopted.release()
-

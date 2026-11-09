@@ -222,4 +222,3 @@ def test_effects_match_nw_conduct_row():
     for word in ("--to REVIEWING", "`choose`", "`text`"):
         assert word in row, word
     assert re.search(r"SPEC-0342", IB.EFFECTS_WORKER_LOST)
-

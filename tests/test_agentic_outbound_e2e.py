@@ -195,5 +195,3 @@ def test_internal_campaign_unchanged(opened):                                   
     (ev,) = S.read_ledger(cfg, cid, types=["idea_reconciled"])
     assert ev["idea_id"] == iid
     assert not list(S.read_ledger(cfg, cid, types=["outbound_pulled"]))
-
-

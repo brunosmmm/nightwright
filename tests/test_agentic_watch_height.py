@@ -56,5 +56,3 @@ def test_render_heights(tmp_path):
     assert len(tall.splitlines()) <= 120
     # too short for the minimums: filling adds nothing over the fixed frame
     assert small == _render(p, 100, 30, fill=False)
-
-

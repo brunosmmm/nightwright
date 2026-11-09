@@ -67,5 +67,3 @@ def test_cli_projects_json(tmp_path, monkeypatch):
     assert data["schema"] == "nw.projects.v1"
     assert {p["name"] for p in data["projects"]} >= {"Example", "Logging", "Meta-Tools",
                                                        "PFW-Intelligence"}
-
-

@@ -26,5 +26,3 @@ def test_time_and_retention_page_exists():
     assert "snapshot" in text
     assert "cleanupperioddays" in text or "cleanup" in text
     assert "gap_minutes" in text or "gap" in text
-
-

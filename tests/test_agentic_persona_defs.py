@@ -304,4 +304,3 @@ def test_declaring_a_persona_changes_no_builtin_table_or_profile(dirs, monkeypat
     cfg["agentic"]["profiles"]["balanced"] = {"reviewers": ["security_reviewer"]}
     with pytest.raises(ValueError, match="security_reviewer"):
         PR.resolve_profile(cfg, "balanced", project_root=root)
-

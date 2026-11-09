@@ -208,7 +208,9 @@ def _rewrite_pytestmark(text: str, rel: str, tier: str) -> str:
     stmt = f"pytestmark = {parts[0]}" if len(parts) == 1 else f"pytestmark = [{', '.join(parts)}]"
     if assign is not None:
         start, end = assign.lineno - 1, assign.end_lineno or assign.lineno
-        lines[start:end] = [stmt]
+        head = lines[start].encode()[:assign.col_offset].decode()
+        tail = lines[end - 1].encode()[assign.end_col_offset or 0:].decode()   # a comment
+        lines[start:end] = [head + stmt + tail]
         at = start + 1
     else:
         at = _after_prelude(tree)
@@ -227,30 +229,40 @@ def _rewrite_pytestmark(text: str, rel: str, tier: str) -> str:
     return out
 
 
-_SLOW_DECO = re.compile(r"^([ \t]*)@pytest\.mark\.slow\b[^\n]*\n", re.MULTILINE)
-_DEF = re.compile(r"^([ \t]*)(?:async[ \t]+)?def[ \t]+(test_\w+)\s*\(")
+def _is_slow_deco(d: ast.AST) -> bool:
+    d = d.func if isinstance(d, ast.Call) else d
+    return isinstance(d, ast.Attribute) and d.attr == "slow" and _dotted(d.value) == "pytest.mark"
+
+
+def _dotted(n: ast.AST) -> str:
+    if isinstance(n, ast.Name):
+        return n.id
+    if isinstance(n, ast.Attribute):
+        return f"{_dotted(n.value)}.{n.attr}"
+    return ""
 
 
 def _rewrite_function_marks(text: str, tier: str, slow_funcs: set[str]) -> str:
-    if tier == "fast":
-        text = _SLOW_DECO.sub(lambda m: f"{m.group(1)}@pytest.mark.integration\n", text)
-    else:
-        text = _SLOW_DECO.sub("", text)
-    if not slow_funcs:
-        return text
-    out: list[str] = []
-    for ln in text.split("\n"):
-        m = _DEF.match(ln)
-        if m and m.group(2) in slow_funcs:
-            j = len(out) - 1
-            decos = []
-            while j >= 0 and out[j].lstrip().startswith("@"):
-                decos.append(out[j].strip())
-                j -= 1
-            if "@pytest.mark.integration" not in decos:
-                out.append(f"{m.group(1)}@pytest.mark.integration")
-        out.append(ln)
-    return "\n".join(out)
+    """Rewrite real decorator nodes only (a `@pytest.mark.slow` inside a string is left alone)."""
+    lines = text.split("\n")
+    edits: list[tuple[int, int, list[str]]] = []          # (start, end) line slice, 0-based
+    for node in ast.walk(ast.parse(text)):
+        if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            continue
+        indent = " " * node.col_offset
+        has_integration = False
+        for d in node.decorator_list:
+            if _is_slow_deco(d):
+                repl = [f"{indent}@pytest.mark.integration"] if tier == "fast" else []
+                edits.append((d.lineno - 1, d.end_lineno or d.lineno, repl))
+                has_integration = has_integration or tier == "fast"
+            elif _dotted(d) == "pytest.mark.integration":
+                has_integration = True
+        if node.name in slow_funcs and node.name.startswith("test") and not has_integration:
+            edits.append((node.lineno - 1, node.lineno - 1, [f"{indent}@pytest.mark.integration"]))
+    for start, end, repl in sorted(edits, key=lambda e: (e[0], e[1]), reverse=True):
+        lines[start:end] = repl
+    return "\n".join(lines)
 
 
 def _func_name(nodeid: str) -> str:

@@ -404,4 +404,3 @@ def test_a_changed_tailnet_address_rebinds(dual):
     e = dual["sup"].poll()
     assert e["state"] == "listening" and e["url"] == f"http://{other}:{dual['port']}"
     assert refused(TAILNET, dual["port"]) and dual["req"](other)[0] == 200
-

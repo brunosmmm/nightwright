@@ -137,4 +137,3 @@ def test_the_cli_command_execs_an_allowed_command(tmp_path):
                        capture_output=True, text=True, stdin=subprocess.DEVNULL)
     assert p.returncode == 0, p.stderr
     assert json.loads(p.stdout)["schema"] == "nw.worker.info.v1"
-

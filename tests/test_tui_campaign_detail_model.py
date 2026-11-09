@@ -117,4 +117,3 @@ def test_markup_in_summary_and_header_stays_literal_in_text(tmp_path):
     assert clipped.plain == note["summary"] and "[bold red]" in clipped.plain
     parked = next(t for t in detail.header_lines if markup in t.plain)
     assert "[bold red]" in parked.plain and "[link=file:///etc]" in parked.plain
-

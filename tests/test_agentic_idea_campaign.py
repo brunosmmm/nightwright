@@ -400,4 +400,3 @@ def test_apply_add_idea_open_event_has_code_and_profile_hashes(env, monkeypatch)
     Q.apply_add_idea(cfg, plan)
     ev = S.read_ledger(cfg, plan["campaign"], types=["open"])[0]
     assert ev["nw_sha"] == "e" * 40 and ev["profile_sha256"] == want and len(want) == 64
-

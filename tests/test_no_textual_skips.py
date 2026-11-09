@@ -80,6 +80,7 @@ def scan_tree(root: Path) -> list[str]:
     return found
 
 
+@pytest.mark.integration
 def test_tree_has_no_textual_or_pyte_skips():
     assert scan_tree(TESTS) == []
 
@@ -142,4 +143,3 @@ def test_tui_files_collect_without_skips():
         if "::" in line and head in counts:
             counts[head] += 1
     assert [f for f, n in counts.items() if n == 0] == []
-

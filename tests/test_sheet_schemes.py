@@ -173,4 +173,3 @@ def test_sheet_target_for_and_resolve(tmp_path, monkeypatch):
     assert manifest.name == "example-pretriage-sheet"
 
     assert SS.sheet_target_for({}, "Unknown") is None
-

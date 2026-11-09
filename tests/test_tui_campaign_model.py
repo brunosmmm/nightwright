@@ -273,4 +273,3 @@ def test_unknown_campaign_raises_value_error(env):
     repo, cfg = env
     with pytest.raises(ValueError):
         AM.load_campaign(cfg, "SPEC-9999-nope")
-

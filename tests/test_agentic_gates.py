@@ -121,6 +121,7 @@ def test_live_deadlines_lists_a_running_gate_until_it_ends(world, tmp_path):
     assert box[0].ok and G.live_deadlines() == []
 
 
+@pytest.mark.integration
 def test_live_deadlines_empty_after_a_timeout_kill_and_after_reset(world, tmp_path):
     import waits
     cfg, st, wt = world
@@ -1174,4 +1175,3 @@ def test_gate_run_resolve_ad_hoc_timeout(tmp_path):
                    "nw_checkout": str(root), "outbox_targets": {}},
                   worktree=wt, cmds=("true",), gate_timeout_s=7200)
     assert g["gates"][0]["timeout_s"] == 7200
-

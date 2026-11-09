@@ -306,4 +306,3 @@ def test_cli_next_shows_hint_and_ideas_does_not(tmp_path, monkeypatch):
         assert "nw idea log" in r_json.output           # …but the hint stays in JSON
     finally:
         console._width, console._height = prev_w, prev_h
-

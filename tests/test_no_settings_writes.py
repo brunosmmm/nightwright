@@ -24,4 +24,3 @@ def test_only_agent_permissions_writes_claude_settings():             # SPEC-042
     writers = {name for name, writes in builders.items() if writes}
     assert writers <= {"agent_permissions.py"}, writers
     assert builders.get("doctor.py") is not True
-

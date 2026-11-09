@@ -667,4 +667,3 @@ def test_runner_log_renders_config_records(make_env, monkeypatch):
     assert "config reloaded (user): a.b, c" in text and "restart required" in text
     assert "config load failed (project:nightwright): boom" in text
     assert "re-exec deferred user_config_invalid (code at abcdef12)" in text
-

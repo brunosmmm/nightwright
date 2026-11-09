@@ -280,4 +280,3 @@ def test_docs_only_violations_exact_and_prefix_only():
              "docs/LEDGER.md", "README.md", "skills/x/SKILL.md", "src/nightwright/agentic/personas/x.md"]
     assert G.docs_only_violations(paths, allow) == paths
     assert G.docs_only_violations(["a"], []) == ["a"]
-

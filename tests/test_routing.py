@@ -192,4 +192,3 @@ def test_cli_spec_new_unconfigured_project_errors(tmp_path, monkeypatch):
     assert not list((tmp_path / "specs").glob("[0-9]*.md"))
     idea = _find(cfg, "adversarial reviewer")
     assert idea.state == "IDEA"
-

@@ -673,4 +673,3 @@ def test_backlog_json_has_no_tui_only_keys(tmp_path, monkeypatch):            # 
     assert r.exit_code == 0, r.output
     items = json.loads(r.output)["items"]
     assert items and not any("state_since" in i or "created_at" in i for i in items)
-

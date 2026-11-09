@@ -126,4 +126,3 @@ def test_per_subcommand_modes_override_the_global_mode(tmp_path):
                      mode="fail")
     assert run(env, "status", "--json").returncode == 0
     assert run(env, "ip").returncode == 1
-

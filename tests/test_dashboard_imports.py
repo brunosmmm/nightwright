@@ -97,5 +97,3 @@ def test_queue_side_modules_never_load_the_page_assets():
     out = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True,
                          check=True, timeout=120).stdout.strip()
     assert out == "False"
-
-

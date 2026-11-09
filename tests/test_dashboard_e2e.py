@@ -40,5 +40,3 @@ def test_stream_delivers_a_snapshot_and_then_a_change(tmp_path):
             assert name2 == "snapshot" and rev2 == doc2["rev"] != rev
     finally:
         stop(proc)
-
-

@@ -1285,4 +1285,3 @@ def test_new_columns_in_parquet(cfg, invoke, tmp_path):
     assert t.schema.field("profile_sha256").type == pa.string()
     row = t.to_pylist()[0]
     assert row["nw_sha"] == "f" * 40 and row["profile_sha256"] == "1" * 64
-

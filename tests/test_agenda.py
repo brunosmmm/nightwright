@@ -158,5 +158,3 @@ def test_cli_agenda_ideas_flag(tmp_path, monkeypatch):
     r2 = CliRunner().invoke(cli, ["agenda", "-w", "2026-07-15"])
     assert r2.exit_code == 0, r2.output
     assert "Dated idea in week" not in r2.output
-
-

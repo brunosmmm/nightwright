@@ -17,6 +17,8 @@ from waits import pilot_until
 from nightwright.tui import ideas_board as B
 from nightwright.tui import model as M
 
+pytestmark = pytest.mark.tui
+
 NOW = dt.datetime(2026, 11, 9, 12, 0)
 
 

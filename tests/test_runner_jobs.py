@@ -333,4 +333,3 @@ def test_tick_publishes_credentials_and_services_jobs(tmp_path, monkeypatch):
         st = LS.lease_status(cfg)
     assert st["credentials"] == {"NW_TEST_ONLY_TOKEN": "missing"}
     assert served
-

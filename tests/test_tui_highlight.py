@@ -240,5 +240,3 @@ def test_the_mark_is_visibly_different_on_screen(tmp_path, monkeypatch):
         (matched if re.search("textual", content, re.I) else plain).add(fills[key])
     assert matched, "no styled run contained the search term"
     assert matched - plain, f"match uses no fill distinct from ordinary text: {matched} vs {plain}"
-
-

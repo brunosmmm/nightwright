@@ -140,6 +140,7 @@ def write(port, csrf, path, body):
     return st, json.loads(raw) if raw else None
 
 
+@pytest.mark.integration
 def test_a_page_served_by_process_a_answers_through_process_b(world):  # noqa: F811
     cfg = world["cfg"]
     world["srv"].close()                                      # only the subprocesses serve
@@ -176,4 +177,3 @@ def test_a_page_served_by_process_a_answers_through_process_b(world):  # noqa: F
              (S.agentic_dir(cfg) / "dashboard" / "audit.jsonl").read_text().splitlines()]
     answers = [e for e in audit if e.get("action") == "answer" and e.get("result") == "ok"]
     assert [e["esc_id"] for e in answers] == ["ESC-0001", "ESC-0002"]
-

@@ -630,4 +630,3 @@ def test_launch_stale_skill_rows():                                  # SPEC-0424
     steward = (REPO_SKILLS_DIR / "nw-steward" / "SKILL.md").read_text(encoding="utf-8")
     assert "Stale launch notice" in steward and "dontAsk" in steward
     assert "../.nw-worktrees/<P>/<name>" in steward
-

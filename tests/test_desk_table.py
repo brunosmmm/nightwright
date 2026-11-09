@@ -14,6 +14,10 @@ from nightwright import report as R
 from nightwright.cli import cli
 from nightwright.tui import model as M
 
+import pytest
+
+pytestmark = pytest.mark.fast
+
 ROOT = Path(__file__).resolve().parent.parent
 
 

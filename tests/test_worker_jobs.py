@@ -1418,4 +1418,3 @@ def test_a_claim_write_that_fails_is_a_claim_error(src, tmp_path, wenv, monkeypa
     r = _submit(wenv, h, data)
     assert r.returncode == 0 and _recs(r)[0]["state"] == "accepted"
     assert _result(wenv, h["job_id"])["state"] == "done"
-

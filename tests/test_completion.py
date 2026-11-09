@@ -250,4 +250,3 @@ def test_required_shell_complete_names_wired():
 def test_required_shell_complete_registry_nonempty():
     assert "selector" in C.REQUIRED_SHELL_COMPLETE_NAMES
     assert "outbound_id" in C.REQUIRED_SHELL_COMPLETE_NAMES
-

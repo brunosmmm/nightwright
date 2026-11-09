@@ -28,7 +28,7 @@ from nightwright.agentic.gitops import GitError
 from nightwright.agentic.runner import FakeRunner
 from nightwright import specmeta
 
-pytestmark = pytest.mark.fast
+pytestmark = pytest.mark.integration
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "tools"))
@@ -1258,4 +1258,3 @@ def test_spec_write_without_a_write_result_parks_instead_of_raising(tmp_path, mo
     assert park["reason"] == "spec_write_failed" and park["resume_to"] == "SPEC_WRITING"
     assert park["detail"] == "spec writer returned no write result"
     assert len(ledger(cfg, cid, "run.end")) == 1
-

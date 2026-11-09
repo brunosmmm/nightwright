@@ -72,5 +72,3 @@ def test_other_kinds_silent(tmp_path, monkeypatch):
         r = CliRunner().invoke(cli, ["idea", f"x-{kind}", "--kind", kind])
         assert r.exit_code == 0, r.output
         assert "prefer a task" not in r.output.lower()
-
-

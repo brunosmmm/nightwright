@@ -13,7 +13,7 @@ from nightwright.agentic import profiles as PR
 from nightwright.agentic import spec_review as SR
 from nightwright.agentic.runner import build_argv
 
-pytestmark = pytest.mark.fast
+pytestmark = pytest.mark.integration
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "tools"))
@@ -597,4 +597,3 @@ def test_split_six_parts_refused(tmp_path):
     _split_review(cfg, repo, n=6)
     with pytest.raises(ValueError, match=r"suggests 6 parts; a split campaign needs 2-5"):
         SR.check_admissible(cfg, _spec(repo), "SPEC-0001")
-

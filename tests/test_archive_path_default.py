@@ -62,4 +62,3 @@ def test_explicit_archive_key_wins(env, tmp_path):
     (cfg_dir / "config.yaml").write_text(
         f"org_ideas_file: {org}/ideas.org\norg_ideas_archive_file: {arch}\n")
     assert W.ideas_archive_path(load_config()) == str(arch)
-

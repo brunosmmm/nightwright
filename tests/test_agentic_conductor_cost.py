@@ -644,4 +644,3 @@ def test_conductor_cost_text_shows_partial_suffix(cfg, monkeypatch):
     r = CliRunner().invoke(cli, ["queue", "conductor-cost"])
     assert r.exit_code == 0, r.output
     assert "(partial: 1 unpriced turns)" in r.output and "no price for: other-y" in r.output
-

@@ -124,4 +124,3 @@ def test_junit_stale_file_is_refused(tmp_path):
         GR.parse_junit(f, mtime + 1)
     assert "stale" in GR.parse({"format": "junit", "path": "r.xml"}, tmp_path / "x.log",
                                tmp_path, mtime + 1)["error"]
-

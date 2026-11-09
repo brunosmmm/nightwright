@@ -195,4 +195,3 @@ def test_open_question_count_ignores_bodies(tmp_path, monkeypatch):
         cli, ["idea", "show", "IDEA-001", "--json"]).output)
     assert payload["open_questions"] == 2
     assert len(payload["question_items"]) == 2
-

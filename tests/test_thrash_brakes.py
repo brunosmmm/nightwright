@@ -139,5 +139,3 @@ def test_cursor_review_round_budget_is_twice_the_loop_max():
     assert Q.review_rounds_spent(counters, PROFILE) is True
     assert Q.review_rounds_spent({"review_rounds": 5}, PROFILE) is False
     assert "round_budget" in Q.PARK_REASONS and "spec_status" in Q.PARK_REASONS
-
-

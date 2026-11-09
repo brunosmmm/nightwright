@@ -4,6 +4,10 @@ from nightwright.agentic import quiet as QT
 from nightwright.agentic import spec_review as SR
 from nightwright.agentic import store
 
+import pytest
+
+pytestmark = pytest.mark.fast
+
 
 def _row(spec_id, verdict, current=True):
     return {"spec_id": spec_id, "verdict": verdict, "reviewed_at": "t", "counts": {},

@@ -77,5 +77,3 @@ def test_mounted_table_order_equals_rows_from_payload(tmp_path):
             assert [k.value for k in v.table.rows] == want
 
     _run(drive())
-
-

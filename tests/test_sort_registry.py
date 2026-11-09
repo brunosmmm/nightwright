@@ -180,4 +180,3 @@ def test_default_order_is_unchanged(tmp_path, monkeypatch):
     """SPEC-0077's freshness default must survive the refactor."""
     cfg = _seed(tmp_path, monkeypatch)
     assert _ids(cfg) == _ids(cfg, sort="freshness")
-

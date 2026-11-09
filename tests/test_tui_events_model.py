@@ -217,4 +217,3 @@ def test_events_signature_tracks_the_file(tmp_path):
     assert first[0] > 0
     _append(cfg, "admitted", "SPEC-0002-a")
     assert AM.events_signature(cfg)[0] > first[0]
-

@@ -739,5 +739,3 @@ def test_the_same_paint_error_is_notified_once(tmp_path, monkeypatch):
             assert sum("mailbox failed" in msg for msg, _ in app.notes) == 1
 
     _run(drive())
-
-

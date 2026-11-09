@@ -456,4 +456,3 @@ def test_cli_send_is_append_only(tmp_path):
     before = M._inbox_path(cfg, "conductor").read_bytes()
     _send(cfg, "--to", "conductor", f"second {CA}")
     assert M._inbox_path(cfg, "conductor").read_bytes().startswith(before)
-

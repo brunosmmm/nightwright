@@ -123,4 +123,3 @@ def test_lookup_and_list_sorted(cfg):
     assert FL.lookup({"data_dir": cfg["data_dir"] + "x"}, "P", ["t::a"]) == {}
     with pytest.raises(ValueError):
         FL.record(cfg, "P", ["t::a"], campaign="C", source="bogus")
-

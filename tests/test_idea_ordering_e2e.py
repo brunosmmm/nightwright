@@ -110,5 +110,3 @@ def test_epic_after_graph_gates_real_ticks_and_writer_validation(tmp_path, monke
     assert f"depends_on: [{spec1}]" in spec_text
     prompt = (S.runs_dir(cfg, camps[i2]["id"]) / "001-spec_writer" / "prompt.md").read_text()
     assert f"`depends_on` must include: {spec1} (prerequisite {i1})" in prompt
-
-
