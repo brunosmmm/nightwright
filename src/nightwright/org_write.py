@@ -276,6 +276,8 @@ def _inject_property(lines, idx, stars, name, value):
                 return lines
         lines.insert(end, f"{indent}:{name}: {value}\n")
     else:
+        if not lines[idx].endswith("\n"):
+            lines[idx] = f"{lines[idx]}\n"
         nxt = idx + 1
         while nxt < len(lines) and _PLANNING_RE.match(lines[nxt]):
             nxt += 1
@@ -403,6 +405,20 @@ def _fresh_idea(cfg, task):
 
 
 _PLANNING_RE = re.compile(r"^\s*(SCHEDULED|DEADLINE|CLOSED):")
+_DRAWER_PROP_RE = re.compile(r"^\s*:(?P<name>[A-Z_]+):\s*(?P<value>.*)$")
+
+
+def _drawer_property(lines, idx, name: str) -> str | None:
+    drawer = _find_drawer(lines, idx)
+    if not drawer:
+        return None
+    start, end = drawer
+    want = name.upper()
+    for k in range(start + 1, end):
+        m = _DRAWER_PROP_RE.match(lines[k])
+        if m and m.group("name") == want:
+            return m.group("value").strip()
+    return None
 
 
 @org_writer
@@ -413,6 +429,10 @@ def link_idea_request(cfg, task, req_id: str, req_base: str):
     m = _HEADLINE_RE.match(lines[idx].rstrip("\n"))
     if not m:
         raise ValueError(f"line {task.line} in {task.file} is not a headline: {lines[idx]!r}")
+    existing_req = _drawer_property(lines, idx, "REQ")
+    if existing_req:
+        who = (task.properties or {}).get("ID") or task.id
+        raise ValueError(f"{who} is already linked to {existing_req}")
     stars = m.group(1)
     _inject_property(lines, idx, stars, "REQ", req_id)
     _inject_property(lines, idx, stars, "REQ_BASE", req_base)

@@ -484,6 +484,13 @@ the guard.
 - `python3 tools/spec_lint.py --write-ledger && python3 tools/spec_lint.py` — exit 0.
 - Full suite left to queue gating.
 
+### Test record (2026-11-09, adversarial review loop 4)
+
+- `uv run pytest tests/test_idea_link.py -q` — 22 passed (tightened adversarial-review coverage).
+- `uv run pytest tests/test_idea_stamps.py::test_stamp_creates_missing_drawer_without_corrupting_sections tests/test_workflow.py -q` — passed.
+- `python3 tools/spec_lint.py --write-ledger && python3 tools/spec_lint.py` — exit 0.
+- Full suite left to queue gating.
+
 ### As shipped (2026-11-09, review loop 2)
 
 - `nw-backlog` tree rebuild uses `git ls-tree --full-tree -z` (one level) / `git mktree -z`, raw path bytes, and raises on unparsable entries; keeps each entry's mode and object type.
@@ -491,6 +498,13 @@ the guard.
 - `nw-backlog` checked out in any linked worktree refuses publish like a checked-out branch.
 - `created_by` / `updated_by` are double-quoted YAML scalars; publish uses `idea_summary_text(..., strict=True)` and refuses when Summary cannot be read.
 - Restore after org-write failure checks `update-ref` exit code before reporting restored.
+
+### As shipped (2026-11-09, adversarial review loop 4)
+
+- `link_idea_request` re-reads the org file under the lock and refuses when `:REQ:` is already set.
+- `nw-backlog` checked-out detection fails closed when `git worktree list` fails.
+- `_yaml_double_quoted` refuses C0 controls and U+0085 (NEL).
+- Creating a properties drawer ensures the headline line ends with a newline before insert.
 
 ## Rollout / migration
 

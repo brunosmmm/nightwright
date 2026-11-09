@@ -49,6 +49,8 @@ def _yaml_double_quoted(title: str) -> str:
             out.append('\\"')
         elif ch in "\n\r":
             raise ValueError("title must be one line")
+        elif ord(ch) < 32 or ch == "\u0085":
+            raise ValueError("title contains unsupported control character")
         else:
             out.append(ch)
     out.append('"')
@@ -154,7 +156,7 @@ def _nw_backlog_checked_out(repo: Path) -> bool:
         return True
     r = _git(repo, "worktree", "list", "--porcelain", check=False)
     if r.returncode != 0:
-        return False
+        return True
     for line in r.stdout.decode().splitlines():
         if line.startswith("branch ") and line.removeprefix("branch ").strip() == _BACKLOG_REF:
             return True
