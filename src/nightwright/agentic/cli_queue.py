@@ -2090,6 +2090,14 @@ def attach(queue_group):
         rec = RU.escalate_failed(cfg, unit=unit)
         click.echo(f"escalated {rec['id']}" if rec else "an escalation is already open")
 
+    @queue_group.command("runner-job", hidden=True)
+    @click.argument("job_dir", type=click.Path(file_okay=False))
+    @click.pass_obj
+    def queue_runner_job(cfg, job_dir):
+        """The runner's child for one CLI persona run (SPEC-0487); writes result.json."""
+        from . import runner_jobs as RJ
+        raise SystemExit(RJ.run_job(cfg, job_dir))
+
     @queue_group.command("stop")
     @click.option("--timeout", "timeout_s", type=float, default=60, show_default=True,
                   help="seconds to wait for the lease to be released after SIGTERM")

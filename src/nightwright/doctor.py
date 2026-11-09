@@ -386,6 +386,48 @@ def check_runner(cfg, *, now=None) -> dict:
     return check(id, "skip", "no campaigns")
 
 
+def _runner_credentials(cfg) -> dict | None:
+    """SPEC-0487: the `{VAR: status}` a live runner on this host published, else None."""
+    from .agentic import runner_jobs as RJ
+    st = RJ.runner_here(cfg)
+    creds = st.get("credentials") if st else None
+    return creds if isinstance(creds, dict) else None
+
+
+def check_credentials(cfg) -> dict:
+    """`agentic.credentials` (SPEC-0487): the credential status the runner itself has. Names
+    and statuses only, never a value."""
+    from .agentic import credentials as CR
+    from .agentic import runner_jobs as RJ
+    id = "agentic.credentials"
+    if cfg is None:
+        return _skip_no_config(id)
+    conf = CR.settings(cfg)
+    if not conf:
+        return check(id, "skip", "no agentic.credentials configured")
+    st = RJ.runner_here(cfg)
+    if st is None:
+        return check(id, "warn", f"no runner is up to resolve {', '.join(sorted(conf))}",
+                     detail="the runner resolves them at start and on every tick; CLI persona "
+                            "runs go through it",
+                     fix="start it: `nw queue install` (or `systemctl --user start nw-runner`)")
+    creds = st.get("credentials")
+    if not isinstance(creds, dict):
+        return check(id, "warn", f"the runner (pid {st.get('pid')}) predates SPEC-0487 and "
+                                 "does not publish its credential status",
+                     fix="restart it: `nw queue restart` (or `systemctl --user restart "
+                         "nw-runner`)")
+    bad = [(v, conf[v], creds.get(v) or "missing") for v in sorted(conf)
+           if creds.get(v) not in ("set", "resolved")]
+    if bad:
+        var, src, status = bad[0]
+        return check(id, "fail",
+                     "; ".join(f"{v} {s} in the runner ({src_})" for v, src_, s in bad),
+                     detail=f"runner pid {st.get('pid')}", fix=CR.fix_text(var, src))
+    return check(id, "ok", f"the runner holds {', '.join(sorted(conf))}",
+                 detail=f"runner pid {st.get('pid')}")
+
+
 def check_pi_agent(cfg, *, run_cmd=None) -> dict:
     """`agentic.pi`: Pi package + map provider credentials when resolution is pi (SPEC-0465)."""
     id = "agentic.pi"
@@ -427,6 +469,11 @@ def check_cursor_agent(cfg, *, run_cmd=None) -> dict:
     if rec["ok"]:
         return check(id, "ok", rec.get("login") or rec.get("version") or "CURSOR_API_KEY is set")
     if rec.get("error") == "CURSOR_API_KEY is not set":
+        # SPEC-0487: the runner holds the key; CLI persona runs go through it
+        held = _runner_credentials(cfg)
+        if held is not None and held.get("CURSOR_API_KEY") in ("set", "resolved"):
+            return check(id, "ok", "the runner holds CURSOR_API_KEY; CLI persona runs go "
+                                   "through the runner")
         # SPEC-0483: the runner resolves it from agentic.credentials; say whether that works
         # (resolved / locked / missing), never the value
         st = CR.status(cfg, "CURSOR_API_KEY")
@@ -738,6 +785,7 @@ def run(cfg, *, project=None, config_error=None, which=None, run_cmd=None,
     out.append(_safe("agentic.prices", check_prices, cfg))
     out.append(_safe("agentic.dirs", check_agentic_dirs, cfg))
     out.append(_safe("agentic.runner", check_runner, cfg))
+    out.append(_safe("agentic.credentials", check_credentials, cfg))     # SPEC-0487
     out.append(_safe("agentic.cursor", check_cursor_agent, cfg, run_cmd=run_cmd))
     out.append(_safe("agentic.pi", check_pi_agent, cfg, run_cmd=run_cmd))
     out.append(_safe("agentic.conductor", check_conductor, cfg))

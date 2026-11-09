@@ -41,6 +41,7 @@ from ..specmeta import split_frontmatter
 from . import autopark as AP
 from . import backend_preflight as BP
 from . import credentials as CR
+from . import runner_jobs as RNJ
 from . import close as CL
 from . import cost_policy as CP
 from . import decisions as DEC
@@ -5363,6 +5364,15 @@ def _sentinel_step(ctx: _Ctx, pool: StepPool, busy: list) -> str | None:
     return None
 
 
+def _publish_credentials(lease, creds) -> None:
+    """SPEC-0487: `{VAR: status}` (never a value) in the lease info, for `nw doctor`."""
+    try:
+        if lease is not None and hasattr(lease, "update_info"):
+            lease.update_info(credentials=dict(creds or {}))
+    except Exception:                                   # noqa: BLE001
+        pass
+
+
 def tick(cfg, *, stop: threading.Event | None = None, runner=None, admit=True,
          pool: StepPool | None = None, lease=None, draining: bool = False) -> TickReport:
     """One bounded iteration: apply finished steps, admit, open, plan, submit agent steps,
@@ -5374,7 +5384,9 @@ def tick(cfg, *, stop: threading.Event | None = None, runner=None, admit=True,
     (SPEC-0228, passed by `run()`), the long main-thread steps declare themselves `busy`."""
     own = pool is None
     pool = StepPool() if own else pool
-    CR.ensure(cfg)          # SPEC-0483: a credential missing so far is retried every tick
+    creds = CR.ensure(cfg)  # SPEC-0483: a credential missing so far is retried every tick
+    _publish_credentials(lease, creds)
+    RNJ.service(cfg, stop=stop)          # SPEC-0487: CLI persona runs, with these credentials
     ctx = _Ctx(cfg, stop=stop, runner=runner, lease=lease)
     report = TickReport()
     try:
@@ -7380,7 +7392,7 @@ def run(cfg, *, once=False, max_ticks=None, poll_interval_s=None, until_idle=Fal
 
         journal(cfg, "start", argv=list(argv or ["nw", "queue", "run"]), interval_s=interval,
                 code_sha=started_sha)
-        CR.ensure(cfg, where="start")                     # SPEC-0483: agentic.credentials
+        _publish_credentials(lease, CR.ensure(cfg, where="start"))  # SPEC-0483 / SPEC-0487
         BP.startup_check(cfg)                             # SPEC-0484: loud, never fatal
         entered = True
     finally:
@@ -7480,6 +7492,7 @@ def run(cfg, *, once=False, max_ticks=None, poll_interval_s=None, until_idle=Fal
                         if got is not None:
                             detached, reason, exec_now = got, "code_changed", True
                             break
+                    RNJ.service(cfg, stop=stop)    # SPEC-0487: CLI jobs wait < 0.2 s, not a tick
                     if time.monotonic() >= deadline:
                         break
                     if draining:

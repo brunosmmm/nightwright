@@ -498,6 +498,26 @@ def _counts(findings) -> dict:
     return c
 
 
+def _no_key_text(cfg) -> str:
+    """SPEC-0487: why a cursor reviewer cannot start here, and what to do."""
+    from . import credentials as CR
+    from . import runner_jobs as RJ
+    if RJ.in_job():
+        src = CR.settings(cfg).get("CURSOR_API_KEY") or "not mapped"
+        return (f"the runner has no CURSOR_API_KEY (agentic.credentials: {src}); run "
+                "`nw doctor` for its credential status")
+    st = RJ.runner_here(cfg)
+    if st is not None and not RJ.serves_jobs(st):
+        return (f"CURSOR_API_KEY is not in this process's environment and the runner (pid "
+                f"{st.get('pid')}) predates runner jobs, so it cannot run the reviewer with "
+                "its credentials: restart it (`nw queue restart`, or `systemctl --user restart "
+                "nw-runner`) and re-run")
+    return ("CURSOR_API_KEY is not in this process's environment and no runner is up to run "
+            "the reviewer with its credentials: start it (`nw queue install`, or `systemctl "
+            "--user start nw-runner`) and re-run; `nw doctor` shows the runner's credential "
+            "status")
+
+
 def run_spec_review(cfg, spec_path, spec_id, *, profile=None, idea_text=None,
                     origin=None, resolved=None) -> dict:
     """Run the spec reviewer on the spec file, store the review and journal the run. A run
@@ -542,6 +562,9 @@ def run_spec_review(cfg, spec_path, spec_id, *, profile=None, idea_text=None,
     elif not spawn_runner and resolve_runner(cfg) == "pi":
         row = map_pi_model(alias, effort, cfg, project_root=str(root) if root else None)
         pi_provider, pi_id, pi_thinking = row["provider"], row["id"], row["thinking"]
+    kind = os.environ.get("NW_AGENTIC_RUNNER") or spawn_runner or resolve_runner(cfg)
+    if kind == "cursor" and not (os.environ.get("CURSOR_API_KEY") or "").strip():
+        raise ValueError(_no_key_text(cfg))             # SPEC-0487: before journal / spawn
     req = PS.RunRequest(
         persona=PERSONA,
         prompt=PS.build_prompt(persona, ctx),

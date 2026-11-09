@@ -2028,12 +2028,25 @@ def spec_review_cmd(cfg, spec_id, path, as_json, force, show, profile):
         prof, settings = reviewer_run_settings(cfg, spec_path, profile)   # SPEC-0278
         line = (f"{reviewing_line(cfg, spec_path, origin)}  "
                 f"· profile {prof['name']} ({settings.get('model') or 'sonnet'})")
+        from .agentic import runner_jobs as RJ
+        runner = RJ.delegate(cfg)                       # SPEC-0487: run it where the creds are
+        if runner:
+            line += f"  · via the runner (pid {runner.get('pid')})"
         if as_json:
             click.echo(line, err=True)
         else:
             console.print(line, highlight=False, markup=False, soft_wrap=True)
-        review = run_spec_review(cfg, spec_path, spec_id, origin=origin,
-                                 resolved=(prof, settings))
+        if runner:
+            job = RJ.submit(cfg, "spec_review", {
+                "spec_id": spec_id, "spec_path": str(Path(spec_path).resolve()),
+                "origin": origin, "profile": profile})
+            res = RJ.wait(cfg, job, note=lambda m: click.echo(m, err=True))
+            if not res.get("ok"):
+                raise ValueError(str(res.get("error") or "the runner's review failed"))
+            review = res["review"]
+        else:
+            review = run_spec_review(cfg, spec_path, spec_id, origin=origin,
+                                     resolved=(prof, settings))
         pick = would_pick(cfg, review, project_root=spec_root(cfg, spec_path))
     except ValueError as e:
         raise click.ClickException(str(e))
