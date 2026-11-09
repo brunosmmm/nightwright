@@ -1,7 +1,7 @@
 ---
 id: SPEC-0492
 title: "Tighter affected selection for specs, hot modules and fixtures"
-status: accepted
+status: in-progress
 owner: user
 created: 2026-11-09
 updated: 2026-11-09

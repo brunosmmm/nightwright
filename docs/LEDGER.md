@@ -288,7 +288,7 @@ progress. This is the single place to see *what has been decided* and *what is i
 - **[SPEC-0489](./specs/0489-test-tiers-and-cadenced-heavy-runs.md) — Test tiers: campaign gates run the fast tier only; heavy tiers run on a per-project cadence** · accepted · (3/4 done)
   - [x] [SPEC-0490](./specs/0490-tier-markers-and-fast-only-gates.md) Tier markers and fast-only campaign gates — done
   - [x] [SPEC-0491](./specs/0491-cadence-config-state-and-merge-counter.md) Cadence config, merge accounting and due state — done
-  - [ ] [SPEC-0492](./specs/0492-tighter-affected-selection.md) Tighter affected selection for specs, hot modules and fixtures — accepted
+  - [ ] [SPEC-0492](./specs/0492-tighter-affected-selection.md) Tighter affected selection for specs, hot modules and fixtures — in-progress
   - [x] [SPEC-0493](./specs/0493-cadence-runner-trigger-red-main-and-nightwright-jobs.md) Cadence runner trigger, red-main source and nightwright's jobs — done
 
 ## Active & planned
@@ -316,7 +316,7 @@ progress. This is the single place to see *what has been decided* and *what is i
 | [SPEC-0476](./specs/0476-campaign-detail-runs-pane.md) | Campaign detail Runs pane: run table, verdict, and stream tail | feature | accepted | — | 2026-11-08 |
 | [SPEC-0477](./specs/0477-campaign-detail-findings-and-mail.md) | Campaign detail Findings & decisions pane and Mail pane | feature | accepted | — | 2026-11-08 |
 | [SPEC-0489](./specs/0489-test-tiers-and-cadenced-heavy-runs.md) | Test tiers: campaign gates run the fast tier only; heavy tiers run on a per-project cadence | epic | accepted | M9: agentic workflow | 2026-11-09 |
-| [SPEC-0492](./specs/0492-tighter-affected-selection.md) | Tighter affected selection for specs, hot modules and fixtures | feature | accepted | M9: agentic workflow | 2026-11-09 |
+| [SPEC-0492](./specs/0492-tighter-affected-selection.md) | Tighter affected selection for specs, hot modules and fixtures | feature | in-progress | M9: agentic workflow | 2026-11-09 |
 | [SPEC-0496](./specs/0496-subagent-worktree-commit-allowlist.md) | Sub-agents in a worktree can commit; allowed command forms are documented | feature | accepted | — | 2026-11-09 |
 
 ## Done
