@@ -324,7 +324,10 @@ def worker_ssh_command():
     """The SSH forced command: exec `nw worker
     <info|have|gate-job|gc|submit|attach|poll|cancel|jobs|claude-check|cursor-check|update|
     slurm-check|slurm-jobs|slurm-ctl|config-set>` from SSH_ORIGINAL_COMMAND, refuse
-    anything else (exit 2)."""
+    anything else (exit 2).
+
+    Allowed `config-set` shapes: `config-set get`, `config-set get executor`,
+    `config-set set executor local`, `config-set set executor slurm`."""
     raise SystemExit(W.ssh_command())
 
 

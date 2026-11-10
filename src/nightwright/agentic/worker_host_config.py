@@ -176,7 +176,10 @@ def _load_mapping(path: Path) -> tuple[dict | None, str | None]:
         return None, "config.yaml is a symlink"
     if not stat.S_ISREG(st.st_mode):
         return None, "config.yaml is not a regular file"
-    raw = _read_config_bytes(path)
+    try:
+        raw = _read_config_bytes(path)
+    except OSError as e:
+        return None, f"config.yaml unreadable: {e}"
     if not raw.strip():
         return {}, None
     try:
@@ -215,6 +218,8 @@ def _stored_doc() -> tuple[dict, dict | None]:
         return {}, _result(ok=False, error=err)
     if doc is None:
         return {}, _result(ok=False, error="config.yaml is not a mapping")
+    if bad := _mapping_nodes_ok(doc):
+        return {}, _result(ok=False, error=bad)
     return doc, None
 
 
@@ -306,15 +311,19 @@ def set_key(cfg: dict, key: str, value: str) -> dict:
         new_doc = _set_nested(doc, key, value)
         text = yaml.safe_dump(new_doc, sort_keys=False, default_flow_style=False)
         bak: Path | None = None
+        bak_written = False
         tmp: Path | None = None
         tmp_fd: int | None = None
+        replaced = False
         try:
             if path_st is not None:
+                prev_bytes = _read_config_bytes(path)
                 bak = _backup_path(path)
                 bfd = os.open(bak, os.O_WRONLY | os.O_CREAT | os.O_EXCL | _O_NOFOLLOW, 0o600)
                 try:
-                    _write_fd(bfd, _read_config_bytes(path))
+                    _write_fd(bfd, prev_bytes)
                     os.fsync(bfd)
+                    bak_written = True
                 finally:
                     os.close(bfd)
             tmp_fd, tmp = _exclusive_temp(cdir)
@@ -325,13 +334,13 @@ def set_key(cfg: dict, key: str, value: str) -> dict:
             tmp_fd = None
             os.replace(tmp, path)
             tmp = None
-            os.chmod(path, 0o600)
+            replaced = True
         except OSError as e:
             if tmp_fd is not None:
                 os.close(tmp_fd)
-            if tmp is not None:
+            if tmp is not None and not replaced:
                 tmp.unlink(missing_ok=True)
-            if bak is not None:
+            if bak is not None and bak_written and not replaced:
                 bak.unlink(missing_ok=True)
             return _result(ok=False, error=str(e))
         eff = _effective(_merge_file(cfg, new_doc))
