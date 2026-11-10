@@ -1,7 +1,7 @@
 ---
 id: SPEC-0493
 title: "Cadence runner trigger, red-main source and nightwright's jobs"
-status: in-progress
+status: done
 owner: user
 created: 2026-11-09
 updated: 2026-11-09
@@ -306,7 +306,7 @@ stays undetected for at most 5 merges, on `tui` for at most 10, and on `remote` 
 ## Definition of done
 
 - [x] Acceptance criteria all met.
-- [x] Test plan executed; affected tests pass (AFFECTED_RESULT); manual steps not performed (see As shipped).
+- [x] Test plan executed; full affected run waived by the human on 2026-11-09; ran only tests/test_agentic_cadence_run.py, tests/test_agentic_cadence.py and tests/test_redmain.py, 90 passed (an earlier run of the nine touched files gave 443 passed); manual steps not performed (see As shipped).
 - [x] No regressions.
 - [x] Spec body updated to match what shipped.
 - [x] `docs/LEDGER.md` updated.
