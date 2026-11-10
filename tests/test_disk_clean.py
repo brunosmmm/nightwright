@@ -5,6 +5,8 @@ import time
 
 import pytest
 
+pytestmark = pytest.mark.fast
+
 from nightwright.agentic import disk_clean as DC
 from nightwright.agentic import store
 

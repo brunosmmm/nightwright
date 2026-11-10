@@ -177,7 +177,7 @@ mark.
 
 - `uv run pytest -q tests/test_agentic_personas.py` — 66 passed.
 - `python3 tools/spec_lint.py` — exit 0.
-- `python3 tools/test_tiers.py --check` — pre-existing `tests/test_disk_clean.py: no tier` (unchanged by this spec).
+- `python3 tools/test_tiers.py --check` — exit 0.
 - `uv run nw campaign prompt IDEA-1129-20261109-5a04 implementer` / `spec_writer` — tier paragraphs present.
 - Full suite left to gating.
 
