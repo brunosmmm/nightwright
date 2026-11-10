@@ -1,7 +1,7 @@
 ---
 id: SPEC-0538
 title: "Add nw workers config and the forced nw worker config-set verb"
-status: proposed
+status: accepted
 owner: user
 created: 2026-11-10
 updated: 2026-11-10
