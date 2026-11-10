@@ -8,6 +8,7 @@ updated: 2026-11-07
 kind: feature
 tags: [agentic, herdr]
 depends_on: [SPEC-0452]
+source_idea: IDEA-1024
 ---
 
 ## Context
