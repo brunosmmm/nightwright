@@ -42,6 +42,8 @@ gates:
     # the fallback is the full suite, so the full suite's limit. SPEC-0490: the fast tier needs
     # 1386 (1.5 x GATEJOB-1342's 924 s), but a full_suite campaign runs every tier here.
     timeout_s: 2400
+    # SPEC-0504: the job's request (SPEC-0501's low-load estimate, -n 2 + controller)
+    resources: {cpus: 3, mem: 3G}
     required: true
     retries: 2
   # SPEC-0350: per-gate path sensitivity. At the close re-gate a gate with `paths` runs only when
@@ -57,6 +59,7 @@ gates:
     retry_cmd: uv run pytest -q -n 0 {failing}
     results: {format: pytest}
     timeout_s: 900
+    resources: {cpus: 3, mem: 3G}   # SPEC-0504
     required: true
     retries: 1
     paths: ["README.md", "mkdocs.yml", "docs/**", "skills/**", "scripts/**", ".github/**"]
@@ -103,6 +106,7 @@ gates:
     # SPEC-0490: the fast tier needs 1671 (1.5 x GATEJOB-1341's 1113.8 s); the sentinel runs
     # every tier through this gate (NW_ALL_TIERS), so the all-tier limit stays.
     timeout_s: 2400
+    resources: {cpus: 5, mem: 5G}   # SPEC-0504
     required: true
     # SPEC-0289: a failing run re-runs its failing ids, then the selection once more, before triage.
     retries: 2

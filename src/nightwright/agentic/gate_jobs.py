@@ -449,7 +449,7 @@ def _deadline_watch(stop: threading.Event, wait_ev: threading.Event, deadline: f
 def _rows(run, jdir: Path) -> list[dict]:
     return [{"name": r.name, "ok": r.ok, "required": r.required, "exit_code": r.exit_code,
              "duration_s": r.duration_s, "log": str(jdir / r.log) if r.log else None,
-             "summary": r.summary} for r in run.results]
+             "summary": r.summary, "resources": r.resources} for r in run.results]   # SPEC-0504
 
 
 def _failing(results) -> list[str]:

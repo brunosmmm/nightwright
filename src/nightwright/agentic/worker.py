@@ -570,6 +570,11 @@ def validate_header(h) -> None:
     payload = h.get("payload")
     if not isinstance(payload, dict):
         bad("payload must be an object")
+    if payload.get("resources") is not None:        # SPEC-0504: absent from an older coordinator
+        from . import gate_resources as GR
+        why = GR.check_payload(payload["resources"])
+        if why:
+            bad(why)
     if h["kind"] == "persona":
         _validate_persona(payload, bad)
         return
@@ -1150,6 +1155,8 @@ def _run_gates(cfg, h: dict, job: Path, frames: _Frames, cancel: threading.Event
         ph = {"worktree": str(tree), "base": base["name"], "spec_id": h["spec_id"],
               "campaign": h["campaign"]}
         results, cut = [], False
+        from . import gate_resources as GR
+        per_gate = (payload.get("resources") or {}).get("gates") or {}
         # SPEC-0346: the child env is the dict above. Set on the gates module, not as a
         # keyword, so the call stays the signature an in-run abort's stand-in already has.
         token = G._GATE_INHERIT_ENV.set(False)
@@ -1161,6 +1168,8 @@ def _run_gates(cfg, h: dict, job: Path, frames: _Frames, cancel: threading.Event
                         break
                     stem = f"{seq:03d}-{gate['name']}"
                     frames.stage = f"gate:{gate['name']}"
+                    if gate["name"] in per_gate:    # SPEC-0504: the coordinator's request
+                        gate = {**gate, GR.REQUEST_KEY: per_gate[gate["name"]]}
                     try:
                         r = G.run_gate_with_retries(gate, tree, env, out / f"{stem}.log", ph,
                                                     log_rel=f"gates/{stem}.log", stop=cancel,

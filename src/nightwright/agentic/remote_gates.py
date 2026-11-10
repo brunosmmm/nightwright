@@ -50,7 +50,8 @@ _CHUNK = 1 << 16
 _GATE_FIELDS = tuple(f.name for f in fields(G.GateResult))
 # gate keys the worker never sees (SPEC-0376): a tier-filtered list keeps `reuse_from` on a close
 # gate but not the loop gate it names, which `validate_header` (here and on the worker) refuses
-_COORDINATOR_ONLY = frozenset({"remote", "reuse_from"})
+# SPEC-0504: `resources` travels resolved in `payload.resources` (an older worker refuses the key)
+_COORDINATOR_ONLY = frozenset({"remote", "reuse_from", "resources"})
 
 
 class RemoteFailure(Exception):
@@ -400,6 +401,8 @@ def _header(project_cfg: dict, campaign_state: dict, cfg, seq: int, job_id: str,
     spec_id = campaign_state.get("spec_id")
     payload = {"seq": seq, "gates": gl,
                "gate_budget_s": float(events_settings(cfg)["gate_budget_s"])}
+    from . import gate_resources as GR          # SPEC-0504: the job's request
+    payload["resources"] = GR.job_request(project_cfg.get("gates") or [], cfg)
     if host_slots is not None:
         payload["host_slots"] = host_slots
     if any(g.get("writes") for g in gl):        # SPEC-0506: this coordinator takes `written`
@@ -674,6 +677,8 @@ def _bad_result_field(result: dict) -> str | None:
             bad = v is not None and not isinstance(v, dict)
         elif key in ("attempts", "flaky"):
             bad = v is not None and not isinstance(v, list)
+        elif key == "resources":                # SPEC-0504
+            bad = v is not None and not isinstance(v, dict)
         else:
             continue
         if bad:

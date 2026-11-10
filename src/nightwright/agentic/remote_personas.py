@@ -421,6 +421,8 @@ def _header(cfg, w: dict, state: dict, req, job_id: str, bundle: Path) -> dict:
                      "json_schema": req.json_schema, "read_only": req.read_only,
                      "timeout_s": req.timeout_s, "max_budget_usd": req.max_budget_usd,
                      "runner": kind if kind in ("claude", "cursor", "pi") else None}}
+    from . import gate_resources as GR          # SPEC-0504: a persona job's request
+    h["payload"]["resources"] = {**GR.persona_request(cfg), "time_s": h["timeout_s"]}
     W.validate_header(h)
     return h
 

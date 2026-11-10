@@ -383,7 +383,7 @@ def validate(doc):
         if not _check_mapping(problems, gate, p, ("name", "cmd", "cwd", "timeout_s", "required",
                                                   "results", "retries", "on_fail", "retry_cmd",
                                                   "failed_first", "when", "paths", "remote",
-                                                  "reuse_from", "writes")):
+                                                  "reuse_from", "writes", "resources")):
             continue
         name = gate.get("name")
         if _is_str(name) and name.endswith(".ff") and name[:-3] in all_names:
@@ -419,6 +419,9 @@ def validate(doc):
                 problems.append(f"{p}.writes: must be a non-empty list of glob strings")
         _check_bool(problems, gate.get("remote"), f"{p}.remote")      # SPEC-0338
         _check_reuse_from(problems, gate, gates, p)                     # SPEC-0359
+        if "resources" in gate:                                         # SPEC-0504
+            from . import gate_resources as GR
+            GR.check(problems, gate["resources"], f"{p}.resources")
     _check_bool(problems, doc.get("remote_gates"), "remote_gates")      # SPEC-0338
     _check_close_sections(problems, doc)                                # SPEC-0359
     _check_cadence(problems, doc, all_names)                            # SPEC-0491

@@ -1,7 +1,7 @@
 ---
 id: SPEC-0504
 title: "Per-gate resource requests in project config, and measured CPU time and peak memory in every gate record"
-status: accepted
+status: in-progress
 owner: user
 created: 2026-11-09
 updated: 2026-11-09

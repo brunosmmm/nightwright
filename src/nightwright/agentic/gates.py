@@ -77,6 +77,7 @@ class GateResult:
     flaky: tuple = ()           # SPEC-0289: ids a targeted rerun passed, when the gate ended ok
     report: dict | None = None  # SPEC-0359: the parsed `NW_GATE_REPORT` (< REPORT_MAX_BYTES)
     infra_error: str | None = None  # SPEC-0387: the host could not write the gate's log/sidecar
+    resources: dict | None = None   # SPEC-0504: {"request": {...}, "used": {cpu_s, max_rss_mb, ...}}
 
 
 @dataclass(frozen=True)
@@ -368,6 +369,61 @@ def _kill_group(proc: subprocess.Popen) -> list[int]:
     return _kill_tree(proc)
 
 
+class _MeteredPopen(subprocess.Popen):
+    """SPEC-0504: a gate process reaped with `os.wait4`, so its rusage (the gate and every
+    descendant it waited for) is kept in `rusage`. Every `wait()` (the deadline wait and the
+    kill path's) goes through `_try_wait`: the pid is reaped once, by the same call as before."""
+
+    rusage = None
+
+    def _try_wait(self, wait_flags):
+        try:
+            pid, sts, ru = os.wait4(self.pid, wait_flags)
+        except ChildProcessError:
+            return self.pid, 0                  # as Popen's own: no status to be had
+        if pid == self.pid:
+            self.rusage = ru
+        return pid, sts
+
+    def poll(self):
+        """`Popen.poll` reaps with `os.waitpid` directly; this one goes through `_try_wait`
+        (one non-blocking `wait4`), so a gate reaped by the kill path keeps its rusage."""
+        if self.returncode is None:
+            try:
+                self.wait(timeout=0)
+            except subprocess.TimeoutExpired:
+                pass
+        return self.returncode
+
+
+def _used(proc, wall_s: float) -> dict:
+    """SPEC-0504: what a gate process used: CPU seconds (user + system, the gate and its
+    reaped descendants), the largest single process's peak RSS, and the wall time. Unknown
+    (`None`) when the process was never reaped through `wait4`."""
+    ru = getattr(proc, "rusage", None)
+    return {"cpu_s": round(ru.ru_utime + ru.ru_stime, 3) if ru else None,
+            "max_rss_mb": round(ru.ru_maxrss / 1024, 1) if ru else None,
+            "rss_scope": "max_process", "wall_s": wall_s}
+
+
+def merge_used(used: list) -> dict:
+    """The usage of several attempts of one gate: CPU and wall summed, peak RSS the max."""
+    cpu = [u.get("cpu_s") for u in used if u]
+    rss = [u.get("max_rss_mb") for u in used if u and u.get("max_rss_mb") is not None]
+    return {"cpu_s": round(sum(c for c in cpu if c is not None), 3)
+            if any(c is not None for c in cpu) else None,
+            "max_rss_mb": max(rss) if rss else None, "rss_scope": "max_process",
+            "wall_s": round(sum((u or {}).get("wall_s") or 0.0 for u in used), 3)}
+
+
+def _with_used(final: GateResult, runs: list) -> GateResult:
+    """`final` with `resources.used` over every run of the gate (prelude, attempts)."""
+    if final.resources is None:
+        return final
+    used = merge_used([(r.resources or {}).get("used") for r in runs])
+    return replace(final, resources={**final.resources, "used": used})
+
+
 def _wait_deadline(proc: subprocess.Popen, deadline: float) -> int | None:
     """Exit code, or None once the monotonic `deadline` passes. Short slices, so no single
     blocking call stands between the gate and its deadline."""
@@ -416,6 +472,8 @@ def _write_sidecar(log_path: Path, result: GateResult, *, timeout_s: int, starte
         rec["attempts"] = list(result.attempts)
     if result.flaky:
         rec["flaky"] = list(result.flaky)
+    if result.resources is not None:        # SPEC-0504
+        rec["resources"] = result.resources
     log_path.with_suffix(".json").write_text(json.dumps(rec, indent=2, ensure_ascii=False)
                                              + "\n", encoding="utf-8")
 
@@ -460,9 +518,9 @@ def run_gate(gate: dict, worktree, env: dict, log_path, placeholders: dict, *,
                     interrupted = True
                     error = "not started: the runner is stopping"
                 else:
-                    proc = subprocess.Popen(cmd, shell=True, cwd=str(cwd), env=child_env,
-                                            stdout=log, stderr=subprocess.STDOUT,
-                                            start_new_session=True)
+                    proc = _MeteredPopen(cmd, shell=True, cwd=str(cwd), env=child_env,
+                                         stdout=log, stderr=subprocess.STDOUT,
+                                         start_new_session=True)
                     t_wall = time.time()
                     _LIVE[proc] = {"name": gate["name"], "campaign": env.get("NW_CAMPAIGN") or None,
                                    "started_at": t_wall, "deadline_at": t_wall + timeout_s}
@@ -486,10 +544,12 @@ def run_gate(gate: dict, worktree, env: dict, log_path, placeholders: dict, *,
     summary = None
     if proc is not None and not interrupted:        # SPEC-0284: never decides `ok`
         summary = gate_results.parse(gate.get("results"), log_path, cwd, started_ns)
+    from . import gate_resources as GR          # SPEC-0504
+    resources = {"request": GR.gate_request(gate), "used": _used(proc, duration)}
     result = GateResult(gate["name"], bool(gate.get("required", True)), ok, exit_code,
                         timed_out, duration, log_rel or str(log_path), tail(log_path),
                         cmd=cmd, cwd=str(cwd), interrupted=interrupted, summary=summary,
-                        report=read_report(report_path))
+                        report=read_report(report_path), resources=resources)
     try:
         _write_sidecar(log_path, result, timeout_s=timeout_s, started_at=started_at, error=error,
                        attempt=attempt)
@@ -633,6 +693,7 @@ def run_gate_with_retries(gate: dict, worktree, env: dict, log_path, placeholder
     attempts = (rec, *(final.attempts or (_attempt(0, "full", final),)))
     final = replace(final, attempts=attempts,
                     duration_s=round(final.duration_s + pre.duration_s, 3))
+    final = _with_used(final, [pre, final])         # SPEC-0504: the prelude's usage too
     try:
         error = json.loads(log_path.with_suffix(".json").read_text(encoding="utf-8")).get("error")
     except (OSError, ValueError):
@@ -662,6 +723,7 @@ def _run_ladder(gate: dict, worktree, env: dict, log_path, placeholders: dict, *
         return first
     ids = _targeted_ids(gate, first.summary, first.cmd)
     attempts = [_attempt(0, "full", first)]
+    runs = [first]                      # SPEC-0504: every attempt's usage
     verdict = last = first
     targeted_passed = stopped = False
     for n in range(1, retries + 1):
@@ -679,6 +741,7 @@ def _run_ladder(gate: dict, worktree, env: dict, log_path, placeholders: dict, *
         r = run_gate(gate, worktree, env, rpath, placeholders, log_rel=rrel,
                      cmd_override=cmd, attempt=n, inherit_env=inherit_env)
         attempts.append(_attempt(n, kind, r))
+        runs.append(r)
         last = r
         if r.interrupted or r.timed_out:
             if kind == "full":
@@ -707,6 +770,7 @@ def _run_ladder(gate: dict, worktree, env: dict, log_path, placeholders: dict, *
                     timed_out=last.timed_out,
                     duration_s=round(sum(a["duration_s"] for a in attempts), 3),
                     attempts=tuple(attempts), flaky=flaky)
+    final = _with_used(final, runs)
     # the error of the verdict attempt, or of a later retry that was cut short
     err_attempt = last if (last.interrupted or last.timed_out) else verdict
     n_err = next(a["attempt"] for a in reversed(attempts) if a["log"] == err_attempt.log)
@@ -730,7 +794,7 @@ def _rewrite_sidecar(log_path: Path, final: GateResult, error: str | None) -> No
                    duration_s=final.duration_s, error=error)
         for key, val in (("interrupted", final.interrupted or None),
                          ("summary", final.summary), ("attempts", list(final.attempts) or None),
-                         ("flaky", list(final.flaky) or None)):
+                         ("flaky", list(final.flaky) or None), ("resources", final.resources)):
             if val is None:
                 rec.pop(key, None)
             else:
@@ -998,6 +1062,7 @@ def _run_all_held(project_cfg, campaign_state, cfg, cid, worktree, seq, stop, ti
     t0 = time.monotonic()
     results = []
     cut = False
+    from . import gate_resources as GR
     from .events import settings as events_settings     # lazy: events imports the queue lazily
     deadline = t0 + float(events_settings(cfg)["gate_budget_s"])   # SPEC-0289: retries stay in it
     # SPEC-0358: the loop tier hands each `failed_first` gate its previous same-name result
@@ -1012,6 +1077,7 @@ def _run_all_held(project_cfg, campaign_state, cfg, cid, worktree, seq, stop, ti
             cut = True
             break
         rel = f"gates/{seq:03d}-{gate['name']}.log"
+        gate = {**gate, GR.REQUEST_KEY: GR.gate_request(gate, cfg)}    # SPEC-0504
         results.append(run_gate_with_retries(gate, worktree, env, cdir / rel, ph,
                                              log_rel=rel, stop=stop, deadline=deadline,
                                              previous=(previous.get(gate["name"])
@@ -1037,6 +1103,8 @@ def as_payload(run: GateRun) -> dict:
             del r["infra_error"]
         if r["report"] is None:           # SPEC-0359: only recorded when the gate wrote one
             del r["report"]
+        if r.get("resources") is None:    # SPEC-0504: absent from an older worker's result
+            r.pop("resources", None)
         for key in ("attempts", "flaky"):     # SPEC-0289: only recorded when a retry ran
             if not r[key]:
                 del r[key]
