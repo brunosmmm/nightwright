@@ -374,10 +374,11 @@ def test_scaffold_cites_the_public_summary(tmp_path, monkeypatch):
     assert body == "Public words"
     assert _git(repo, "rev-parse", f"refs/heads/nw-backlog:{sib_id}.md").strip() == sib_sha
     _assert_cite_plumbing(git_calls, tip_before=tip_before)
-    log_row = _git(repo, "log", "-1", "--format=%s|%an|%ae", "refs/heads/nw-backlog").strip()
-    subj, an, ae = log_row.split("|")
+    log_row = _git(repo, "log", "-1", "--format=%s|%an|%ae|%cn|%ce", "refs/heads/nw-backlog").strip()
+    subj, an, ae, cn, ce = log_row.split("|")
     assert subj == f"cite {req} {spec_id}"
     assert an == "Test User" and ae == "test@example.com"
+    assert cn == "Test User" and ce == "test@example.com"
     assert _git(repo, "symbolic-ref", "HEAD").strip() == head_before
 
     empty = _seed_idea(monkeypatch, cfg, text="Empty pub", summary="")
@@ -389,8 +390,12 @@ def test_scaffold_cites_the_public_summary(tmp_path, monkeypatch):
     assert "Public words" not in ectx
 
     path_epic, _spec_epic = S.scaffold_from_idea(cfg, sibling.properties["ID"], epic=True)
-    epic_si = _fm_lines_after_source_idea(path_epic.read_text())
+    epic_text = path_epic.read_text()
+    epic_si = _fm_lines_after_source_idea(epic_text)
     assert epic_si[0] == f"source_request: {sib_id}"
+    epic_ctx = epic_text.split("## Context", 1)[1].split("## Goals", 1)[0]
+    assert epic_ctx.strip().startswith(f"Promoted from request `{sib_id}`")
+    assert "other" in epic_ctx
     agreed = L.load_agreed_request(cfg, W.resolve_selector(cfg, idea.properties["ID"]))
     assert agreed and agreed.spec == spec_id
     tip_before_redo = _backlog_tip(repo)
@@ -526,12 +531,25 @@ def test_scaffold_refuses_drift_and_bad_files(tmp_path, monkeypatch):
     idea = W.resolve_selector(cfg, idea.properties["ID"])
     W.set_property(cfg, idea, "REQ", req)
 
+    hash_calls: list = []
+
+    def spy_hash_identity(cmd, **kw):
+        if len(cmd) >= 4 and cmd[0] == "git" and Path(cmd[2]).resolve() == repo.resolve():
+            if cmd[3] == "hash-object":
+                hash_calls.append(cmd)
+        return _REAL_SUBPROCESS_RUN(cmd, **kw)
+
+    monkeypatch.setattr(subprocess, "run", spy_hash_identity)
     subprocess.run(["git", "-C", str(repo), "config", "--unset", "user.name"], check=True)
+    hash_calls.clear()
     refuse("user.name")
+    assert not hash_calls
 
     subprocess.run(["git", "-C", str(repo), "config", "user.name", "Test User"], check=True)
     subprocess.run(["git", "-C", str(repo), "config", "--unset", "user.email"], check=True)
+    hash_calls.clear()
     refuse("user.email")
+    assert not hash_calls
     subprocess.run(["git", "-C", str(repo), "config", "user.email", "test@example.com"], check=True)
 
     wt = tmp_path / "backlog-wt"
@@ -858,8 +876,6 @@ def test_cite_pins_backlog_tip_at_in_lock_load(tmp_path, monkeypatch):
     req = idea.properties["REQ"]
     org_before = Path(cfg["org_ideas_file"]).read_bytes()
     tip_at_publish = _backlog_tip(repo)
-    bumped = []
-    real_run = _REAL_SUBPROCESS_RUN
     bump_body = (
         b"---\n"
         b"id: REQ-11111111\n"
@@ -872,24 +888,16 @@ def test_cite_pins_backlog_tip_at_in_lock_load(tmp_path, monkeypatch):
         b"---\n"
         b"\n"
     )
+    real_cite = L.cite_spec
 
-    def spy(cmd, **kw):
-        if (
-            len(cmd) >= 6
-            and cmd[0] == "git"
-            and Path(cmd[2]).resolve() == repo.resolve()
-            and cmd[3] == "update-ref"
-            and cmd[4] == "refs/heads/nw-backlog"
-            and not bumped
-        ):
-            bumped.append(1)
-            L._publish_commit(
-                repo, rel_path="BUMP.md", body=bump_body, message="bump",
-                name="Test User", email="test@example.com",
-            )
-        return real_run(cmd, **kw)
+    def cite_with_race(cfg, agreed, spec_id, **kw):
+        L._publish_commit(
+            repo, rel_path="BUMP.md", body=bump_body, message="bump",
+            name="Test User", email="test@example.com",
+        )
+        return real_cite(cfg, agreed, spec_id, **kw)
 
-    monkeypatch.setattr(subprocess, "run", spy)
+    monkeypatch.setattr(L, "cite_spec", cite_with_race)
     with pytest.raises(ValueError, match="was not cited; refs/heads/nw-backlog unchanged"):
         S.scaffold_from_idea(cfg, idea.properties["ID"])
     cited = _show_backlog(repo, f"{req}.md").decode()
@@ -1024,6 +1032,35 @@ def test_cite_preserves_quoted_status(tmp_path, monkeypatch):
     fm, _ = split_frontmatter(blob)
     assert fm["status"] == "yes"
     assert fm["spec"] == spec_id
+
+
+def test_load_agreed_request_rejects_block_scalar_status(tmp_path, monkeypatch):
+    repo = _init_repo(tmp_path / "proj")
+    cfg = _cfg_citing_repo(tmp_path, repo)
+    idea = _seed_idea(monkeypatch, cfg)
+    idea = _publish(monkeypatch, cfg, idea)
+    req = idea.properties["REQ"]
+    task = W.resolve_selector(cfg, idea.properties["ID"])
+    pub = _show_backlog(repo, f"{req}.md").decode()
+    fm, body = split_frontmatter(pub)
+    block_status = (
+        f"---\n"
+        f"id: {req}\n"
+        f'title: "{fm["title"]}"\n'
+        f"status: >\n"
+        f"  open\n"
+        f"created: {fm['created']}\n"
+        f'created_by: "{fm["created_by"]}"\n'
+        f"updated: {fm['updated']}\n"
+        f'updated_by: "{fm["updated_by"]}"\n'
+        f"---\n{body}"
+    )
+    L._publish_commit(repo, rel_path=f"{req}.md", body=block_status.encode(),
+                      message="block status", name="Test User", email="test@example.com")
+    with pytest.raises(ValueError, match="is not a request"):
+        L.load_agreed_request(cfg, task)
+    with pytest.raises(ValueError, match="is not a request"):
+        S.scaffold_from_idea(cfg, idea.properties["ID"])
 
 
 def test_write_rules_and_front_matter_require_source_request():

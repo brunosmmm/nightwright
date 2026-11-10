@@ -386,6 +386,12 @@ def _raw_fm_line_suffix(yaml_block: str, key: str) -> str | None:
     return None
 
 
+def _yaml_block_scalar_indicator(suffix: str) -> bool:
+    """True when the YAML line suffix starts a block scalar (>, |, variants)."""
+    t = suffix.lstrip()
+    return bool(t) and t[0] in "|>"
+
+
 def _repo_worktree_roots(repo: Path) -> list[Path]:
     r = _git(repo, "worktree", "list", "--porcelain", check=False)
     if r.returncode != 0:
@@ -457,11 +463,16 @@ def load_agreed_request(cfg, task: Task) -> AgreedRequest | None:
         spec_out = None
 
     created_raw = _raw_fm_line(yaml_block, "created")
-    if not created_raw:
+    created_suffix = _raw_fm_line_suffix(yaml_block, "created")
+    if not created_raw or created_suffix is None:
+        raise ValueError(f"{req_id} file is not a request")
+    if _yaml_block_scalar_indicator(created_suffix):
         raise ValueError(f"{req_id} file is not a request")
     status_raw = _raw_fm_line(yaml_block, "status")
     status_suffix = _raw_fm_line_suffix(yaml_block, "status")
     if not status_raw or status_suffix is None:
+        raise ValueError(f"{req_id} file is not a request")
+    if _yaml_block_scalar_indicator(status_suffix):
         raise ValueError(f"{req_id} file is not a request")
 
     pub_title = str(fm["title"])

@@ -1383,8 +1383,10 @@ def test_drift_before_write_parks_without_a_cite(tmp_path, monkeypatch):
     cid = add_idea_campaign(cfg, monkeypatch, iid)
     Q.tick(cfg)
     script(tmp_path, [spec_with_req(2, iid, req)])
+    from nightwright import spec_numbers as SN
     from test_agentic_e2e import run_cli
     run_cli(cfg, monkeypatch, ["idea", "summary", iid, "--set", "Drifted private"])
+    res_n = len(SN.list_reservations(cfg))
     hash_calls = []
     real_run = subprocess.run
 
@@ -1401,6 +1403,7 @@ def test_drift_before_write_parks_without_a_cite(tmp_path, monkeypatch):
     assert "do not match :REQ_BASE:" in park["detail"]
     assert not (wtree(cfg, cid) / "docs/specs/0002-add-a-thing.md").exists()
     assert not hash_calls
+    assert len(SN.list_reservations(cfg)) == res_n
 
 
 def test_apply_add_idea_sets_public_summary_and_source_request(tmp_path, monkeypatch):
@@ -1450,6 +1453,39 @@ def test_link_idea_restores_backlog_when_org_write_fails(tmp_path, monkeypatch):
     assert "spec:" not in blob
     assert Path(cfg["org_ideas_file"]).read_bytes() == org_before
     assert idea(cfg, iid).properties.get("SPEC", "").strip() == ""
+
+
+def test_link_idea_restores_backlog_when_set_state_fails(tmp_path, monkeypatch):
+    repo = make_project(tmp_path)
+    cfg = make_cfg(tmp_path, repo, script(tmp_path, []))
+    monkeypatch.setattr("nightwright.cli.load_config", lambda: cfg)
+    iid = capture(cfg)
+    req = _publish_for_campaign(cfg, monkeypatch, repo, iid, "Public body")
+    cid = add_idea_campaign(cfg, monkeypatch, iid)
+    Q.tick(cfg)
+    st = S.read_state(cfg, cid)
+    st["spec_write"] = {"mode": "write"}
+    tip = _git(repo, "rev-parse", "refs/heads/nw-backlog").strip()
+    spec_id = SW.spec_id_of((st.get("spec_write") or {}).get("number") or 2)
+    org_before = Path(cfg["org_ideas_file"]).read_bytes()
+
+    from nightwright.org_write import set_state as real_ss
+
+    def boom_st(*_a, **_k):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(OW, "set_state", boom_st)
+    err = Q._link_idea(cfg, st, spec_id)
+    assert err and "restored refs/heads/nw-backlog" in err
+    assert _git(repo, "rev-parse", "refs/heads/nw-backlog").strip() == tip
+    blob = subprocess.run(
+        ["git", "-C", str(repo), "show", f"refs/heads/nw-backlog:{req}.md"],
+        check=True, capture_output=True, text=True,
+    ).stdout
+    assert "spec:" not in blob
+    assert Path(cfg["org_ideas_file"]).read_bytes() == org_before
+    assert idea(cfg, iid).properties.get("SPEC", "").strip() == ""
+    monkeypatch.setattr(OW, "set_state", real_ss)
 
 
 def test_queue_add_refuses_a_drifted_pair(tmp_path, monkeypatch):

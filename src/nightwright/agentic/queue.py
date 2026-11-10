@@ -4786,6 +4786,7 @@ def _link_idea(cfg, state: dict, spec_id: str) -> str | None:
                 return None
             if agreed.spec and agreed.spec != spec_id:
                 return f"{agreed.req_id} already cites {agreed.spec}"
+            org_snapshot = Path(task.file).read_bytes()
             worktree = Path((state.get("repo") or {}).get("worktree") or ".")
             citing = IL.will_cite(cfg, task, worktree / "docs" / "specs")
             cite_sha = cite_old = None
@@ -4802,6 +4803,8 @@ def _link_idea(cfg, state: dict, spec_id: str) -> str | None:
                             agreed.repo, spec_id=spec_id, req_id=agreed.req_id,
                             new_sha=cite_sha, old_tip=cite_old)
                     except ValueError as restore_err:
+                        if "restored refs/heads/nw-backlog" in str(restore_err):
+                            OW._atomic_replace_bytes(task.file, org_snapshot)
                         return str(restore_err)
                 return str(org_err) or type(org_err).__name__
     except (ValueError, OSError, subprocess.CalledProcessError) as e:

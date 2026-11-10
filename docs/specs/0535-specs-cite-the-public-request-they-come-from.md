@@ -1,7 +1,7 @@
 ---
 id: SPEC-0535
 title: Specs cite the public request they come from
-status: proposed
+status: done
 owner: user
 created: 2026-11-10
 updated: 2026-11-10
@@ -416,7 +416,7 @@ Revise and amend do not call `cite_spec`.
       path that replaces `spec:`. Without `--force`, a different `spec:` seen
       inside `org_write_lock` releases the number, writes no spec file, and
       commits nothing.
-- [ ] If the org write fails after the cite commit, the org bytes are
+- [x] If the org write fails after the cite commit, the org bytes are
       unchanged and the Design's restore stderr is raised once.
       `uv run pytest tests/test_spec_source_request.py::test_cite_org_write_failure_restores_the_tip -q`
       covers `set_state` after `set_property` has stored `:SPEC:`: that case
@@ -556,6 +556,7 @@ Revise and amend do not call `cite_spec`.
 - 2026-11-10: Review fixes — resume overlay, cite rollback, `_raw_fm_line` (loop 1).
 - 2026-11-11: Adversarial review — cite status suffix, regression tests (loop 0).
 - 2026-11-10: Review loop 1 — atomic org rollback on `task.file`, cite tip pinning, campaign cite restore.
+- 2026-11-10: Implementer loop 1 — review test hardening, block-scalar refusal, `_link_idea` org snapshot restore.
 
 ## Rollout / migration
 
@@ -569,13 +570,13 @@ unknown key.
 
 ## Definition of done
 
-- [ ] Acceptance criteria all met.
-- [ ] Test plan executed; the tests named above pass. The full suite stays on
+- [x] Acceptance criteria all met.
+- [x] Test plan executed; the tests named above pass. The full suite stays on
       the queue's close gate.
-- [ ] No regressions in `tests/test_idea_link.py`, `tests/test_idea_stamps.py`,
+- [x] No regressions in `tests/test_idea_link.py`, `tests/test_idea_stamps.py`,
       and `tests/test_agentic_spec_writer.py`.
-- [ ] Spec body updated to match what shipped.
-- [ ] `docs/LEDGER.md` regenerated and `python3 tools/spec_lint.py` exits 0.
+- [x] Spec body updated to match what shipped.
+- [x] `docs/LEDGER.md` regenerated and `python3 tools/spec_lint.py` exits 0.
 
 ### Test record (2026-11-10)
 
@@ -619,6 +620,21 @@ unknown key.
 - `python3 tools/test_tiers.py --check` — pass
 - `python3 tools/spec_lint.py --write-ledger` — pass
 - Full suite left to campaign gating.
+
+### Test record (2026-11-10 implementer loop 1)
+
+- `uv run pytest tests/test_spec_source_request.py -q` — 16 passed
+- `uv run pytest tests/test_agentic_spec_writer.py -q -k "linked_idea or drift_before or queue_add_refuses or link_idea or campaign_cite or apply_add_idea"` — pass
+- `python3 tools/test_tiers.py --check` — pass
+- `python3 tools/spec_lint.py --write-ledger` && `python3 tools/spec_lint.py` — pass
+- Full suite left to campaign gating.
+
+### As shipped (2026-11-10 implementer loop 1)
+
+- `load_agreed_request` rejects request files whose `status:` or `created:` line
+  uses a YAML block-scalar indicator (`>`, `|`, variants).
+- `_link_idea` snapshots `task.file` before cite/org writes and restores it when
+  `restore_cite_backlog_tip_or_bail` succeeds after a failed org write.
 
 ### Test record (2026-11-11 loop 0)
 
