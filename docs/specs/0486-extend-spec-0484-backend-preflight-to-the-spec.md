@@ -4,7 +4,7 @@ title: Extend backend preflight to the spec reviewer and Pi personas
 status: done
 owner: user
 created: 2026-11-09
-updated: 2026-11-09
+updated: 2026-11-10
 milestone: "M9: agentic workflow"
 kind: feature
 tags: [agentic, queue, runner, resilience]
@@ -457,6 +457,13 @@ Review triager fixes: `_apply_step` parks `spec_review_exhausted` when a raised 
 ### Test record (2026-11-09, loop 2 implementer)
 
 Gate triager: `pytestmark = pytest.mark.fast` on `tests/test_backend_preflight_extend.py`. `uv run pytest tests/test_test_tiers.py::test_every_real_test_module_has_exactly_one_tier -q` — passed. Full suite left to gating.
+
+### Test record (2026-11-10, loop 3 implementer)
+
+`backend_fault` returns None on spawn `ValueError`/`OSError`; gate worker escape uses
+`can_dispatch_step` (not bare `persona_workers`); Pi credential skip in `note_fault` only
+for `pass:` mappings. Added tests for persona-less Pi hold, passing `_preflight_hold`, and
+env-mapped credentials. `uv run pytest tests/test_backend_preflight_extend.py tests/test_runner_selfheal.py tests/test_remote_persona_limits.py::test_spec_review_is_neither_counted_nor_gated -q` — 51 passed. `python3 tools/spec_lint.py --write-ledger` — ok. Full suite left to gating.
 
 - **Regression guard:** `python3 tools/affected_tests.py --run uv run pytest -q` on the
   touched files. `tests/test_runner_selfheal.py` (the SPEC-0484 cursor hold, spawn, and

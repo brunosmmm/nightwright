@@ -312,6 +312,64 @@ def any_live(cfg) -> bool:
     return any(rec.get("kind") == KIND for rec in RJ.live(cfg))
 
 
+def _probe_request(state: dict, persona: str, step_kind: str | None):
+    """A minimal `RunRequest` for eligibility and slot probes at the gate."""
+    from pathlib import Path
+    from . import personas as PS
+    from .runner import RunRequest
+    wt = (state.get("repo") or {}).get("worktree")
+    if not wt:
+        return None
+    root = Path(wt)
+    p = PS.PERSONAS.get(persona)
+    read_only = p.read_only if p is not None else step_kind != "implement"
+    return RunRequest(
+        persona=persona, prompt="", system_append="", cwd=root, model="x", effort=None,
+        max_budget_usd=1.0, timeout_s=1, permission_mode="default", read_only=read_only,
+        allowed_tools=(), add_dirs=(), json_schema={}, env={},
+        run_dir=root / ".nw" / "dispatch-probe")
+
+
+def can_dispatch(cfg, state: dict, step_kind: str | None, req) -> bool:
+    """Whether a fresh run would get a persona worker (same checks as `dispatch`, no submit)."""
+    from . import persona_gate as PG
+    if step_kind in PG.GATED_KINDS and req.persona not in PG.UNGATED_PERSONAS \
+            and PG.backoff_until(cfg) is not None:
+        return False
+    workers = persona_workers(cfg, state)
+    if not workers or ineligible(state, step_kind, req) is not None:
+        return False
+    by_name = {w["name"]: w for w in workers}
+    for name in PG.order(cfg, state, list(by_name)):
+        w = by_name[name]
+        if PG.failing(cfg, state, w):
+            continue
+        got = acquire_slot(cfg, w)
+        if got is None:
+            continue
+        fd, n = got
+        try:
+            if busy(cfg, w, n) >= persona_slots(w):
+                continue
+            return True
+        finally:
+            os.close(fd)
+    return False
+
+
+def can_dispatch_step(cfg, state: dict, step) -> bool:
+    """Whether any persona on `step` could dispatch remotely for this campaign."""
+    personas = tuple(step.personas or ()) if step.kind == "review" else (
+        (step.persona,) if step.persona else ())
+    if not personas:
+        return False
+    for persona in personas:
+        req = _probe_request(state, persona, step.kind)
+        if req is not None and can_dispatch(cfg, state, step.kind, req):
+            return True
+    return False
+
+
 def dispatch(cfg, state: dict, step_kind: str | None, req, *, adopted: bool = False,
              local=None):
     """The `RemoteRunner` for this run, or None (it runs locally). An adopted run is remote

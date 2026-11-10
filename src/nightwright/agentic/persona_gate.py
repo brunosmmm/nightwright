@@ -348,7 +348,8 @@ class Gate:
         self.holds: dict = {}
         self._backend: dict = {}               # SPEC-0484/0486: (kind, providers) -> error | None
 
-    def backend_fault(self, state: dict, personas=(), *, remote_ok: bool = True) -> str | None:
+    def backend_fault(self, state: dict, personas=(), *, remote_ok: bool = True,
+                      step=None) -> str | None:
         """The preflight error of the backend these steps run on, when no persona worker could
         take them instead; else None. Cached per tick under `(kind, tuple(providers))`."""
         from . import backend_preflight as BP
@@ -359,7 +360,7 @@ class Gate:
                 try:
                     kind, providers = BP.spawn_backend(self.cfg, state, persona)
                 except (ValueError, OSError):
-                    continue
+                    return None
                 if kind in ("cursor", "pi"):
                     checks.append((kind, list(providers or ())))
         else:
@@ -391,7 +392,7 @@ class Gate:
         if remote_ok:
             try:
                 from . import remote_personas as RPS
-                if RPS.persona_workers(self.cfg, state):
+                if step is not None and RPS.can_dispatch_step(self.cfg, state, step):
                     return None
             except Exception:                  # noqa: BLE001
                 pass
@@ -416,7 +417,7 @@ class Gate:
             return None
         step_personas = tuple(step.personas or ()) if step.kind == "review" else (
             (step.persona,) if step.persona else ())
-        if self.backend_fault(state, step_personas) is not None:     # SPEC-0484/0486
+        if self.backend_fault(state, step_personas, step=step) is not None:  # SPEC-0484/0486
             self._hold(cid, "backend_unavailable")
             return None
         if self.cap is None:

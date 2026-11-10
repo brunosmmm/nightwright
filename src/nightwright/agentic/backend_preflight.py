@@ -309,7 +309,7 @@ def note_fault(cfg, kind: str, error: str, *, where: str = "tick") -> dict | Non
                 "amazon-bedrock": ("AWS_ACCESS_KEY_ID", "AWS_WEB_IDENTITY_TOKEN_FILE"),
                 "bedrock": ("AWS_ACCESS_KEY_ID", "AWS_WEB_IDENTITY_TOKEN_FILE"),
             }.get(prov, ())
-            if any(k in creds for k in env_keys):
+            if any((creds.get(k) or "").startswith("pass:") for k in env_keys if k in creds):
                 return None
         for rec in ESC.list_all(cfg, "open"):
             if rec.get("kind") == ESC_KIND and (rec.get("facts") or [""])[0] == f"backend: {kind}":

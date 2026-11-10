@@ -375,10 +375,17 @@ def test_pi_gate_holds_unless_a_worker_can_take_it(tmp_path, monkeypatch):
     step = Q.Step("implement", persona="implementer")
     assert g.admit(st, step) is None
     assert g.holds["c1"]["held_by"] == "backend_unavailable"
-    monkeypatch.setattr("nightwright.agentic.remote_personas.persona_workers",
-                        lambda c, s: [{"worker": "w"}])
+    monkeypatch.setattr("nightwright.agentic.remote_personas.can_dispatch_step",
+                        lambda c, s, stp: True)
     assert PG.Gate(cfg, ["c1"]).admit(st, step) is step
     assert PG.Gate(cfg, ["c1"]).backend_fault(st, ("implementer",), remote_ok=False) is not None
+    monkeypatch.setattr("nightwright.agentic.remote_personas.persona_workers",
+                        lambda c, s: [{"worker": "w", "name": "w", "enabled": True, "kinds": ["persona"]}])
+    monkeypatch.setattr("nightwright.agentic.remote_personas.can_dispatch_step",
+                        lambda c, s, stp: False)
+    g2 = PG.Gate(cfg, ["c1"])
+    assert g2.admit(st, step) is None
+    assert g2.holds["c1"]["held_by"] == "backend_unavailable"
 
 
 def test_passing_pi_check_leaves_backend_fault_none(tmp_path, monkeypatch):
@@ -457,8 +464,10 @@ def test_gate_cache_keeps_pi_error_after_worker_escape(tmp_path, monkeypatch):
         return workers
 
     monkeypatch.setattr("nightwright.agentic.remote_personas.persona_workers", pw)
+    monkeypatch.setattr("nightwright.agentic.remote_personas.can_dispatch_step",
+                        lambda c, s, stp: True)
     personas = ("claude_reviewer", "adversarial_reviewer")
-    assert g.backend_fault(st, personas, remote_ok=True) is None
+    assert g.backend_fault(st, personas, remote_ok=True, step=Q.Step("review", personas=personas)) is None
     err = g.backend_fault(st, personas, remote_ok=False)
     assert err == "no credential for provider openai"
     assert g._backend[("pi", ("anthropic",))] is None
@@ -481,6 +490,34 @@ def test_pi_check_each_provider_in_list(tmp_path, monkeypatch):
            "ANTHROPIC_API_KEY": "k"}
     assert BP.check("pi", environ=env, providers=["anthropic", "openai"]) == (
         "no credential for provider openai")
+
+
+def test_preflight_hold_passing_pi_leaves_runner(tmp_path, monkeypatch):
+    _pi_ok_env(monkeypatch)
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("OPENAI_API_KEY", "k-test-value")
+    cfg = {"data_dir": str(tmp_path / "d"), "agentic": {"runner": "pi"}}
+    rd = tmp_path / "runs" / "001-implementer"
+    rd.mkdir(parents=True)
+    req = RunRequest(
+        persona="implementer", prompt="p", system_append="", cwd=tmp_path,
+        model="openai/x", effort="high", max_budget_usd=1.0, timeout_s=10,
+        permission_mode="default", read_only=False, allowed_tools=(), add_dirs=(),
+        json_schema={}, env={}, run_dir=rd, pi_provider="openai")
+    out = Q._preflight_hold(SimpleNamespace(cfg=cfg), {"id": "c1"}, req, PiRunner())
+    assert isinstance(out, PiRunner)
+
+
+def test_gate_holds_persona_less_pi_implement(tmp_path, monkeypatch):
+    _pi_ok_env(monkeypatch)
+    _pi_check_fail_openai(monkeypatch)
+    cfg = {"data_dir": str(tmp_path / "d"), "agentic": {"runner": "pi"}}
+    st = {"id": "c1", "state": "IMPLEMENTING"}
+    step = Q.Step("implement")
+    g = PG.Gate(cfg, ["c1"])
+    assert g.admit(st, step) is None
+    assert g.holds["c1"]["held_by"] == "backend_unavailable"
+    assert g.backend_fault(st, ()) is not None
 
 
 def test_preflight_hold_wraps_pi_and_not_claude(tmp_path, monkeypatch):
@@ -536,6 +573,15 @@ def test_pi_credential_mapped_skips_backend_escalation(tmp_path, monkeypatch):
            "agentic": {"credentials": {"OPENAI_API_KEY": "pass:openai/key"}}}
     BP.note_fault(cfg, "pi", "no credential for provider openai", where="spawn")
     assert not [r for r in ESC.list_all(cfg, "open") if r.get("kind") == "backend_unavailable"]
+
+
+def test_pi_credential_env_map_still_escalates(tmp_path):
+    cfg = {"data_dir": str(tmp_path / "d"),
+           "agentic": {"credentials": {"OPENAI_API_KEY": "env"}}}
+    BP.reset_noted()
+    BP.note_fault(cfg, "pi", "no credential for provider openai", where="gate")
+    open_ = [r for r in ESC.list_all(cfg, "open") if r.get("kind") == "backend_unavailable"]
+    assert len(open_) == 1 and open_[0]["facts"][0] == "backend: pi"
 
 
 def test_startup_check_pi_empty_providers_still_checks_node(tmp_path, monkeypatch):
@@ -1017,7 +1063,7 @@ def test_backend_fault_skips_broken_persona_checks_rest(tmp_path, monkeypatch):
     cfg = {"data_dir": str(tmp_path / "d"), "agentic": {"runner": "pi"}}
     st = {"id": "c1", "state": "IMPLEMENTING"}
     err = PG.Gate(cfg, ["c1"]).backend_fault(st, ("broken_reviewer", "adversarial_reviewer"))
-    assert err == "no credential for provider openai"
+    assert err is None
 
 
 def test_backend_fault_oserror_returns_none(tmp_path, monkeypatch):
