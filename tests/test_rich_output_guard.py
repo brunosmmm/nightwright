@@ -61,6 +61,7 @@ ALLOWED = {
     ("agentic/remote_gates.py", "accounting"): "stderr diagnostic of a best-effort merge (SPEC-0514)",
     ("agentic/cli_worker.py", "worker_slurm_jobs"): "machine JSON on stdout for the coordinator over SSH (SPEC-0512)",
     ("agentic/cli_worker.py", "worker_slurm_ctl"): "machine JSON on stdout for the coordinator over SSH (SPEC-0512)",
+    ("agentic/worker_host_config.py", "_emit"): "one JSON line for the coordinator over SSH (SPEC-0538)",
     ("agentic/executor_slurm.py", "_sbatch"): "stderr warning when a class partition/QOS falls back (SPEC-0511)",
     ("agentic/worker_job.py", "on_term"): "stderr diagnostic from the Slurm job process (SPEC-0510)",
     ("agentic/worker_job.py", "reap"): "stderr diagnostic outside the frame protocol (SPEC-0340)",
