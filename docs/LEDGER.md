@@ -223,12 +223,12 @@ progress. This is the single place to see *what has been decided* and *what is i
   - [x] [SPEC-0325](./specs/0325-steward-campaign-notices-project-idea-reconcile-remote-open.md) Stewards get campaign notices; a second-project merge reconciles its idea; pr campaigns branch from the remote — done
   - [x] [SPEC-0327](./specs/0327-cross-project-spec-id-collision-the-comfort.md) Spec ids are per project: a second project's SPEC-NNNN never resolves against wt's own specs — done
   - [x] [SPEC-0393](./specs/0393-wtfug-spec-0304-20261030-7a4f-spec-0304-review.md) SPEC-0304 review follow-ups: mvp-report edge cases in E4, E5 and E6, and the tests that pin them — done
-- **[SPEC-0310](./specs/0310-remote-workers-run-gates-persona-runs-and.md) — Remote workers: run gates, persona runs and campaigns on other machines** · accepted · (15/16 done)
+- **[SPEC-0310](./specs/0310-remote-workers-run-gates-persona-runs-and.md) — Remote workers: run gates, persona runs and campaigns on other machines** · accepted · (16/17 done)
   - [x] [SPEC-0331](./specs/0331-remote-gates-over-ssh-on-one-worker-host.md) Remote gates over SSH on one worker host — superseded
   - [x] [SPEC-0332](./specs/0332-worker-owned-async-jobs.md) Worker-owned async jobs — superseded
   - [x] [SPEC-0333](./specs/0333-remote-persona-runs-with-bundle-write-back.md) Remote persona runs with bundle write-back — superseded
   - [x] [SPEC-0334](./specs/0334-pull-workers-against-a-coordinator-job-api.md) Pull workers against a coordinator job API — done
-  - [ ] [SPEC-0335](./specs/0335-federation-over-a-networked-mailbox.md) Federation over a networked mailbox — accepted
+  - [x] [SPEC-0335](./specs/0335-federation-over-a-networked-mailbox.md) Federation over a networked mailbox — superseded
   - [x] [SPEC-0336](./specs/0336-gate-worker-job-runner-and-forced-command.md) Gate worker job runner and forced-command dispatcher — done
   - [x] [SPEC-0337](./specs/0337-worker-registry-and-multi-pool-gate-slots.md) Worker registry and multi-pool gate slots — done
   - [x] [SPEC-0338](./specs/0338-remote-gate-dispatch-with-local-fallback.md) Remote gate dispatch with local fallback — done
@@ -240,6 +240,7 @@ progress. This is the single place to see *what has been decided* and *what is i
   - [x] [SPEC-0345](./specs/0345-persona-cap-rate-limit-backoff-affinity-and-cost-by-worker.md) Persona cap, rate-limit backoff, campaign affinity and cost by worker — done
   - [x] [SPEC-0346](./specs/0346-remote-workers-integration-suite.md) Remote workers integration suite for gate and persona workers — done
   - [x] [SPEC-0354](./specs/0354-nw-workers-bootstrap.md) nw workers bootstrap — done
+  - [ ] [SPEC-0527](./specs/0527-federation-bounded-relay-mail-and-two-remote-verbs.md) Federation, bounded: relay, mail and two remote verbs — accepted
 - **[SPEC-0348](./specs/0348-declarative-per-project-agentic-pipeline.md) — Declarative per-project agentic pipeline: steps, personas and routing as data, with a lean fast-track lane** · accepted · (3/3 done)
   - [x] [SPEC-0370](./specs/0370-pipeline-a1-persona-registry-as-data.md) Pipeline A1: persona registry as data (persona_defs/*.yaml, layered loader, nw personas list|show) — done
   - [x] [SPEC-0371](./specs/0371-pipeline-a2-role-limited-custom-personas.md) Pipeline A2a: role-limited custom personas (user/project definitions, role schemas, validator, nw personas validate) — done
@@ -321,7 +322,6 @@ progress. This is the single place to see *what has been decided* and *what is i
 | [SPEC-0148](./specs/0148-example-heavy-docs-svg-captures-and-workflow.md) | Example-heavy docs: SVG captures and workflow architecture | epic | accepted | M8: product documentation | 2026-09-09 |
 | [SPEC-0169](./specs/0169-mini-agentic-workflow-queue-campaigns-headless.md) | Mini agentic workflow: queue, campaigns, headless personas, conductor | epic | accepted | M9: agentic workflow | 2026-10-25 |
 | [SPEC-0310](./specs/0310-remote-workers-run-gates-persona-runs-and.md) | Remote workers: run gates, persona runs and campaigns on other machines | epic | accepted | — | 2026-10-31 |
-| [SPEC-0335](./specs/0335-federation-over-a-networked-mailbox.md) | Federation over a networked mailbox | feature | accepted | — | 2026-10-31 |
 | [SPEC-0348](./specs/0348-declarative-per-project-agentic-pipeline.md) | Declarative per-project agentic pipeline: steps, personas and routing as data, with a lean fast-track lane | epic | accepted | M9: agentic workflow | 2026-11-01 |
 | [SPEC-0367](./specs/0367-nw-workers-bootstrap-cannot-refresh-a-stale.md) | nw workers bootstrap refreshes a stale worker install (build id, --reinstall, stale warning, loud gate rejection) | feature | in-progress | — | 2026-11-02 |
 | [SPEC-0368](./specs/0368-remote-gating-red-on-current-trees-human-visible.md) | Remote gates gate a stat-dirty tree at HEAD instead of falling back, and expose done.changed on the run | feature | in-progress | — | 2026-11-02 |
@@ -355,6 +355,7 @@ progress. This is the single place to see *what has been decided* and *what is i
 | [SPEC-0521](./specs/0521-retire-pull-workers.md) | Retire pull workers: remove the coordinator job API, pull_jobs, pull_worker and nw serve --jobs | feature | draft | M9: agentic workflow | 2026-11-09 |
 | [SPEC-0523](./specs/0523-exclusive-regate-is-advisory-and-short.md) | An exclusive re-gate is advisory: it holds other campaigns' gates for at most 300 s | feature | accepted | M9: agentic workflow | 2026-11-09 |
 | [SPEC-0524](./specs/0524-disk-self-clean.md) | Finished work cleans up after itself: pytest tmp retention and an hourly disk sweep | feature | accepted | M9: agentic workflow | 2026-11-09 |
+| [SPEC-0527](./specs/0527-federation-bounded-relay-mail-and-two-remote-verbs.md) | Federation, bounded: relay, mail and two remote verbs | feature | accepted | — | 2026-11-09 |
 
 ## Done
 
@@ -826,6 +827,7 @@ progress. This is the single place to see *what has been decided* and *what is i
 | [SPEC-0331](./specs/0331-remote-gates-over-ssh-on-one-worker-host.md) | Remote gates over SSH on one worker host | feature | superseded | — | 2026-10-31 |
 | [SPEC-0332](./specs/0332-worker-owned-async-jobs.md) | Worker-owned async jobs | feature | superseded | — | 2026-11-01 |
 | [SPEC-0333](./specs/0333-remote-persona-runs-with-bundle-write-back.md) | Remote persona runs with bundle write-back | feature | superseded | — | 2026-11-01 |
+| [SPEC-0335](./specs/0335-federation-over-a-networked-mailbox.md) | Federation over a networked mailbox | feature | superseded | — | 2026-11-09 |
 | [SPEC-0355](./specs/0355-faster-code-gating.md) | Faster code gating: narrow affected-test fallbacks, close reuse of a green loop gate, failed-first reruns | feature | superseded | M9: agentic workflow | 2026-11-01 |
 | [SPEC-0361](./specs/0361-herdr-reporter-nw-herdr-watch-pushes-queue-tokens.md) | herdr reporter: nw herdr watch pushes queue tokens and notifications | feature | superseded | — | 2026-11-01 |
 | [SPEC-0364](./specs/0364-herdr-run-panes-one-pane-per-active-campaign-in.md) | herdr run panes: one pane per active campaign in an nw runs tab, running nw campaign tail, agent state + display agent | feature | superseded | — | 2026-11-01 |

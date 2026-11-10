@@ -257,7 +257,8 @@ Required in every child:
 - [ ] [SPEC-0345](./0345-persona-cap-rate-limit-backoff-affinity-and-cost-by-worker.md) Persona cap, rate-limit backoff, campaign affinity and cost by worker (project: Meta-Tools) — `max_personas`, `rate-limit.json`, `remote_affinity`, `cost_by_worker` (depends_on SPEC-0344)
 - [ ] [SPEC-0346](./0346-remote-workers-integration-suite.md) Remote workers integration suite (project: Meta-Tools) — `tests/test_remote_workers_integration.py` for gate and persona workers (depends_on SPEC-0345)
 - [ ] [SPEC-0334](./0334-pull-workers-against-a-coordinator-job-api.md) Pull workers against a coordinator job API (project: Meta-Tools) — `nw worker serve` dials out, signed jobs, per-worker credentials, Tailscale/mTLS (depends_on SPEC-0342, SPEC-0344)
-- [ ] [SPEC-0335](./0335-federation-over-a-networked-mailbox.md) Federation over a networked mailbox (project: Meta-Tools) — remote project runner and steward, one conductor, N project machines (depends_on SPEC-0334)
+- [x] [SPEC-0335](./0335-federation-over-a-networked-mailbox.md) Federation over a networked mailbox (project: Meta-Tools) — remote project runner and steward, one conductor, N project machines (depends_on SPEC-0334) — superseded by SPEC-0527 after two diverging campaigns
+- [ ] [SPEC-0527](./0527-federation-bounded-relay-mail-and-two-remote-verbs.md) Federation, bounded: relay, mail and two remote verbs (project: Meta-Tools) — replaces SPEC-0335 (depends_on SPEC-0334)
 
 Sequencing: the thin slice is SPEC-0336, then SPEC-0337, then SPEC-0338 (the spec review of
 SPEC-0331 asked for this three-way split: worker, registry and pools, dispatch).

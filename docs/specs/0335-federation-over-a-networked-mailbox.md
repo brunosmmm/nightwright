@@ -1,10 +1,11 @@
 ---
 id: SPEC-0335
 title: "Federation over a networked mailbox"
-status: accepted
+status: superseded
+superseded_by: SPEC-0527
 owner: user
 created: 2026-10-31
-updated: 2026-10-31
+updated: 2026-11-09
 source_idea: IDEA-562
 parent: SPEC-0310
 tags: [agentic, remote, federation, mailbox, conductor]
