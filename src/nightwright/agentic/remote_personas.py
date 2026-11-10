@@ -336,8 +336,15 @@ def _probe_request(cfg, state: dict, persona: str, step_kind: str | None):
         return None
 
 
-def can_dispatch(cfg, state: dict, step_kind: str | None, req) -> bool:
-    """Whether a fresh run would get a persona worker (same checks as `dispatch`, no submit)."""
+def _reserve_key(state: dict, persona: str) -> tuple[str, str]:
+    return state["id"], persona
+
+
+def can_dispatch(cfg, state: dict, step_kind: str | None, req,
+                 *, reservations: dict | None = None) -> bool:
+    """Whether a fresh run would get a persona worker (same checks as `dispatch`, no submit).
+    On success with `reservations`, the held slot fd is stored under
+    `(campaign_id, persona)` for `dispatch` to adopt instead of re-acquiring."""
     from . import persona_gate as PG
     if step_kind in PG.GATED_KINDS and req.persona not in PG.UNGATED_PERSONAS \
             and PG.backoff_until(cfg) is not None:
@@ -346,6 +353,7 @@ def can_dispatch(cfg, state: dict, step_kind: str | None, req) -> bool:
     if not workers or ineligible(state, step_kind, req) is not None:
         return False
     by_name = {w["name"]: w for w in workers}
+    key = _reserve_key(state, req.persona)
     for name in PG.order(cfg, state, list(by_name)):
         w = by_name[name]
         if PG.failing(cfg, state, w):
@@ -357,13 +365,17 @@ def can_dispatch(cfg, state: dict, step_kind: str | None, req) -> bool:
         try:
             if busy(cfg, w, n) >= persona_slots(w):
                 continue
+            if reservations is not None:
+                reservations[key] = (w, fd, n)
+                return True
             return True
         finally:
-            os.close(fd)
+            if reservations is None or reservations.get(key) != (w, fd, n):
+                os.close(fd)
     return False
 
 
-def can_dispatch_step(cfg, state: dict, step) -> bool:
+def can_dispatch_step(cfg, state: dict, step, *, reservations: dict | None = None) -> bool:
     """Whether any persona on `step` could dispatch remotely for this campaign."""
     personas = tuple(step.personas or ()) if step.kind == "review" else (
         (step.persona,) if step.persona else ())
@@ -371,13 +383,24 @@ def can_dispatch_step(cfg, state: dict, step) -> bool:
         return False
     for persona in personas:
         req = _probe_request(cfg, state, persona, step.kind)
-        if req is not None and can_dispatch(cfg, state, step.kind, req):
+        if req is not None and can_dispatch(cfg, state, step.kind, req,
+                                            reservations=reservations):
             return True
     return False
 
 
+def release_reservations(reservations: dict) -> None:
+    """Close every slot fd left in a tick's reservation map."""
+    for item in (reservations or {}).values():
+        try:
+            os.close(item[1])
+        except OSError:
+            pass
+    reservations.clear()
+
+
 def dispatch(cfg, state: dict, step_kind: str | None, req, *, adopted: bool = False,
-             local=None):
+             local=None, reservations: dict | None = None):
     """The `RemoteRunner` for this run, or None (it runs locally). An adopted run is remote
     exactly when it has a live persona job record; a fresh one when a persona worker has a
     free slot and the run is eligible. Without a persona-capable worker nothing else runs."""
@@ -404,6 +427,15 @@ def dispatch(cfg, state: dict, step_kind: str | None, req, *, adopted: bool = Fa
     # SPEC-0345: the campaign's affine worker first; a failing worker is skipped, a full one
     # falls through to the next without clearing the affinity
     by_name = {w["name"]: w for w in workers}
+    key = _reserve_key(state, req.persona)
+    reserved = (reservations or {}).pop(key, None) if reservations is not None else None
+    if reserved is not None:
+        w, fd, n = reserved
+        if busy(cfg, w, n) >= persona_slots(w):
+            os.close(fd)
+        else:
+            PG.set_affinity(cfg, state, w["name"])
+            return R.RemoteRunner(cfg, state, w, local=local, slot=fd)
     for name in PG.order(cfg, state, list(by_name)):
         w = by_name[name]
         if PG.failing(cfg, state, w):

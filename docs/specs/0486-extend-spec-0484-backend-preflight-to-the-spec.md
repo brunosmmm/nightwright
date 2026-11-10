@@ -465,6 +465,14 @@ are `NotRemotable` (e.g. `>/dev/null`) do not lift `backend_unavailable` when a 
 `uv run pytest tests/test_backend_preflight_extend.py tests/test_runner_selfheal.py tests/test_remote_persona_limits.py::test_spec_review_is_neither_counted_nor_gated -q` — 52 passed.
 Full suite left to gating.
 
+### Test record (2026-11-10, loop 1 implementer)
+
+Dispatch probe keeps persona slot reservations for `dispatch`; gated steps without a
+reservation hold locally before `run.start`. Write-back re-runs pass `_preflight_hold`.
+Spec-review git restore failures surface when the interrupt was not an environment fault.
+`uv run pytest tests/test_backend_preflight_extend.py tests/test_runner_selfheal.py tests/test_remote_persona_limits.py::test_spec_review_is_neither_counted_nor_gated -q` — 56 passed.
+`python3 tools/spec_lint.py --write-ledger` — ok. Full suite left to gating.
+
 ### Test record (2026-11-10, loop 3 implementer)
 
 `backend_fault` returns None on spawn `ValueError`/`OSError`; gate worker escape uses

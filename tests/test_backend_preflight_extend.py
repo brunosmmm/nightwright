@@ -54,10 +54,22 @@ def test_spec_review_hold_skips_prepare_and_spends_no_retry(tmp_path, monkeypatc
     assert PG.read_holds(cfg).get(cid, {}).get("held_by") == "backend_unavailable"
     starts = [e for e in S.read_ledger(cfg, cid, types=["run.start"]) if e.get("persona") == "spec_reviewer"]
     assert not starts
-    monkeypatch.setattr("nightwright.agentic.remote_personas.persona_workers",
-                        lambda c, s: [{"worker": "w"}])
+    tick_n = [0]
+
+    def cd(c, s, *a, **k):
+        tick_n[0] += 1
+        if tick_n[0] >= 2:
+            return True
+        return False
+
+    monkeypatch.setattr("nightwright.agentic.remote_personas.can_dispatch_step", cd)
     Q.tick(cfg)
+    st2 = S.read_state(cfg, cid)
+    assert st2["state"] == "SPEC_REVIEW"
+    assert st2["counters"].get("spec_review_retries", 0) == 0
     assert PG.read_holds(cfg).get(cid, {}).get("held_by") == "backend_unavailable"
+    starts = [e for e in S.read_ledger(cfg, cid, types=["run.start"]) if e.get("persona") == "spec_reviewer"]
+    assert not starts
 
 
 def test_do_spec_review_preflight_hold_is_interrupted(tmp_path, monkeypatch):
@@ -376,13 +388,13 @@ def test_pi_gate_holds_unless_a_worker_can_take_it(tmp_path, monkeypatch):
     assert g.admit(st, step) is None
     assert g.holds["c1"]["held_by"] == "backend_unavailable"
     monkeypatch.setattr("nightwright.agentic.remote_personas.can_dispatch_step",
-                        lambda c, s, stp: True)
+                        lambda c, s, stp, **k: True)
     assert PG.Gate(cfg, ["c1"]).admit(st, step) is step
     assert PG.Gate(cfg, ["c1"]).backend_fault(st, ("implementer",), remote_ok=False) is not None
     monkeypatch.setattr("nightwright.agentic.remote_personas.persona_workers",
                         lambda c, s: [{"worker": "w", "name": "w", "enabled": True, "kinds": ["persona"]}])
     monkeypatch.setattr("nightwright.agentic.remote_personas.can_dispatch_step",
-                        lambda c, s, stp: False)
+                        lambda c, s, stp, **k: False)
     g2 = PG.Gate(cfg, ["c1"])
     assert g2.admit(st, step) is None
     assert g2.holds["c1"]["held_by"] == "backend_unavailable"
@@ -473,6 +485,8 @@ def test_admit_pause_and_cap_beat_backend_when_pi_passes(tmp_path, monkeypatch):
 
 
 def test_gate_cache_keeps_pi_error_after_worker_escape(tmp_path, monkeypatch):
+    from nightwright.agentic import remote_personas as RPS
+
     _pi_ok_env(monkeypatch)
     real_check = BP.check
 
@@ -494,16 +508,19 @@ def test_gate_cache_keeps_pi_error_after_worker_escape(tmp_path, monkeypatch):
     st = {"id": "c1", "state": "IMPLEMENTING"}
     BP.reset_noted()
     g = PG.Gate(cfg, ["c1"])
-    workers = [{"w": 1}]
-
-    def pw(c, s):
-        return workers
-
-    monkeypatch.setattr("nightwright.agentic.remote_personas.persona_workers", pw)
-    monkeypatch.setattr("nightwright.agentic.remote_personas.can_dispatch_step",
-                        lambda c, s, stp: True)
+    worker = {"name": "w", "enabled": True, "kinds": ["persona"], "persona_slots": 1}
+    monkeypatch.setattr(RPS, "persona_workers", lambda c, s: [worker])
+    monkeypatch.setattr(RPS, "ineligible", lambda *a, **k: None)
+    monkeypatch.setattr(RPS, "acquire_slot", lambda c, w: (7, 0))
+    monkeypatch.setattr(RPS, "busy", lambda *a, **k: 0)
+    monkeypatch.setattr(PG, "order", lambda c, s, names: names)
+    monkeypatch.setattr(PG, "failing", lambda *a, **k: False)
+    from types import SimpleNamespace
+    monkeypatch.setattr(RPS, "_probe_request",
+                        lambda c, s, p, k: SimpleNamespace(persona=p))
     personas = ("claude_reviewer", "adversarial_reviewer")
-    assert g.backend_fault(st, personas, remote_ok=True, step=Q.Step("review", personas=personas)) is None
+    step = Q.Step("review", personas=personas)
+    assert g.backend_fault(st, personas, remote_ok=True, step=step) is None
     err = g.backend_fault(st, personas, remote_ok=False)
     assert err == "no credential for provider openai"
     assert g._backend[("pi", ("anthropic",))] is None
@@ -511,13 +528,10 @@ def test_gate_cache_keeps_pi_error_after_worker_escape(tmp_path, monkeypatch):
     gate_rows = [r for r in journal(cfg, "backend_preflight_failed") if r.get("where") == "gate"]
     assert len(gate_rows) == 1
 
-    def boom(c, s):
-        raise RuntimeError("nope")
-
-    monkeypatch.setattr("nightwright.agentic.remote_personas.persona_workers", boom)
+    monkeypatch.setattr(RPS, "persona_workers", lambda c, s: (_ for _ in ()).throw(RuntimeError("nope")))
     g2 = PG.Gate(cfg, ["c1"])
     g2._backend = dict(g._backend)
-    assert g2.backend_fault(st, personas, remote_ok=True) == err
+    assert g2.backend_fault(st, personas, remote_ok=True, step=step) == err
 
 
 def test_pi_check_each_provider_in_list(tmp_path, monkeypatch):
@@ -1110,3 +1124,138 @@ def test_backend_fault_oserror_returns_none(tmp_path, monkeypatch):
     cfg = {"data_dir": str(tmp_path / "d"), "agentic": {"runner": "cursor"}}
     st = {"id": "c1", "state": "SPEC_REVIEW", "project": "Meta-Tools", "profile": "balanced"}
     assert PG.Gate(cfg, ["c1"]).backend_fault(st, ("spec_reviewer",)) is None
+
+
+def test_writeback_rerun_pi_preflight_interrupts(tmp_path, monkeypatch):
+    from nightwright.agentic import remote_personas as RPS
+
+    monkeypatch.setattr(BP, "check", lambda kind, environ=None, *, providers=None: (
+        "node not found on PATH" if kind == "pi" else None))
+    cfg = {"data_dir": str(tmp_path / "d"), "agentic": {"runner": "pi"}}
+    (tmp_path / "d" / "campaigns").mkdir(parents=True)
+    cid = "c1"
+    rd = S.runs_dir(cfg, cid) / "001-implementer"
+    rd.mkdir(parents=True)
+    st = {"id": cid, "state": "IMPLEMENTING", "counters": {"runs": 1}, "cost": {},
+          "repo": {"worktree": str(tmp_path)}}
+    S.write_state(cfg, cid, st)
+    S.append_event(cfg, cid, "run.start", {
+        "persona": "implementer", "run_id": "001-implementer", "model": "openai/x",
+        "effort": "high", "max_budget_usd": 1.0, "timeout_s": 10,
+        "permission_mode": "default", "prompt_sha256": "0" * 64,
+        "state": "IMPLEMENTING", "step": {"kind": "implement", "personas": []},
+        "profile": "balanced"})
+    req = RunRequest(
+        persona="implementer", prompt="p", system_append="", cwd=str(tmp_path),
+        model="openai/x", effort="high", max_budget_usd=1.0, timeout_s=10,
+        permission_mode="default", read_only=False, allowed_tools=(), add_dirs=(),
+        json_schema={}, env={}, run_dir=rd, pi_provider="openai", runner="pi")
+    failed = RunResult(1, False, False, 0.1, True, None, result_text="write-back: missing",
+                       writeback_failed=True)
+
+    class Remote:
+        detachable = True
+
+        def run(self, req, hooks=None):
+            return failed
+
+    monkeypatch.setattr(RPS, "dispatch", lambda *a, **k: Remote())
+    ctx = SimpleNamespace(cfg=cfg, runner=PiRunner(), stop=threading.Event(),
+                          runner_for=lambda s, kind=None: PiRunner(),
+                          profile=lambda s: {}, project=lambda s: {"_root": str(tmp_path)})
+    res = Q._do_persona(ctx, st, Q.Step("implement", persona="implementer"),
+                        "001-implementer", req, 1.0)
+    assert res.interrupted and res.run_result.interrupted and res.run_result.cost_usd == 0.0
+    row = Q._apply_step(ctx, S.read_state(cfg, cid), res)
+    assert row["to"] == "IMPLEMENTING"
+
+
+def test_one_persona_slot_two_pi_campaigns_one_run_start(tmp_path, monkeypatch):
+    from nightwright.agentic import remote_personas as RPS
+
+    _pi_ok_env(monkeypatch)
+    _pi_check_fail_openai(monkeypatch)
+    monkeypatch.setattr(BP, "spawn_backend", lambda c, s, p: ("pi", ["openai"]))
+    cfg = {"data_dir": str(tmp_path / "d"), "agentic": {"runner": "pi"}}
+    worker = {"name": "w", "enabled": True, "kinds": ["persona"], "persona_slots": 1}
+    taken = []
+
+    def acquire(cfg, w):
+        if taken:
+            return None
+        taken.append(1)
+        return (11, 0)
+
+    monkeypatch.setattr(RPS, "persona_workers", lambda c, s: [worker])
+    monkeypatch.setattr(RPS, "ineligible", lambda *a, **k: None)
+    monkeypatch.setattr(RPS, "acquire_slot", acquire)
+    monkeypatch.setattr(RPS, "busy", lambda *a, **k: 0)
+    monkeypatch.setattr(PG, "order", lambda c, s, names: names)
+    monkeypatch.setattr(PG, "failing", lambda *a, **k: False)
+    monkeypatch.setattr(RPS, "_probe_request",
+                        lambda c, s, p, k: SimpleNamespace(persona=p))
+    step = Q.Step("review", personas=("claude_reviewer",))
+    g = PG.Gate(cfg, ["c1", "c2"])
+    st1, st2 = {"id": "c1", "state": "IMPLEMENTING"}, {"id": "c2", "state": "IMPLEMENTING"}
+    assert g.admit(st1, step) is step
+    assert g.admit(st2, step) is None
+    assert g.holds["c2"]["held_by"] == "backend_unavailable"
+
+
+def test_rate_limit_beats_failing_pi_backend(tmp_path, monkeypatch):
+    _pi_ok_env(monkeypatch)
+    _pi_check_fail_openai(monkeypatch)
+    cfg = {"data_dir": str(tmp_path / "d"), "agentic": {"runner": "pi"}}
+    PG._write_json(PG.rate_limit_path(cfg),
+                    {"until": "2099-01-01T00:00:00+00:00", "backoff_s": 900})
+    st = {"id": "c1", "state": "IMPLEMENTING"}
+    step = Q.Step("implement", persona="implementer")
+    g = PG.Gate(cfg, ["c1"], now=1_700_000_000.0)
+    assert g.admit(st, step) is None
+    assert g.holds["c1"]["held_by"] == "rate_limit"
+
+
+def test_spec_review_git_error_on_ordinary_failure_parks(tmp_path, monkeypatch):
+    monkeypatch.setenv("CURSOR_API_KEY", "k-test-value")
+    cfg = _cursor_cfg(tmp_path)
+    wt = make_repo(tmp_path)
+    rd = tmp_path / "c1" / "runs" / "001-spec_reviewer"
+    rd.mkdir(parents=True)
+    req = RunRequest(
+        persona="spec_reviewer", prompt="p", system_append="", cwd=tmp_path,
+        model="m", effort=None, max_budget_usd=1.0, timeout_s=10,
+        permission_mode="default", read_only=True, allowed_tools=(), add_dirs=(),
+        json_schema={}, env={}, run_dir=rd)
+    st = {"id": "c1", "state": "SPEC_REVIEW", "repo": {"worktree": str(wt), "branch": "main"},
+          "spec": {"rel_path": "docs/specs/x.md", "id": "SPEC-1"}, "counters": {},
+          "project": "Meta-Tools", "profile": "balanced"}
+    (wt / "docs/specs").mkdir(parents=True, exist_ok=True)
+    (wt / "docs/specs/x.md").write_text("---\nid: SPEC-1\n---\n")
+    S.write_state(cfg, "c1", dict(st))
+
+    class Runner:
+        detachable = False
+
+        def run(self, req, hooks=None):
+            return RunResult(1, False, False, 0.1, True, None, result_text="spec is unclear")
+
+    from nightwright.agentic import gitops as G
+    real_rp = G.rev_parse
+    calls = [0]
+
+    def flaky_rev_parse(worktree):
+        calls[0] += 1
+        if calls[0] > 1:
+            raise G.GitError(["rev-parse"], 1, "rev-parse failed")
+        return real_rp(worktree)
+
+    monkeypatch.setattr(G, "rev_parse", flaky_rev_parse)
+    ctx = SimpleNamespace(cfg=cfg, runner=Runner(), stop=threading.Event(),
+                          runner_for=lambda s, kind=None: Runner(),
+                          profile=lambda s: {})
+    res = Q._do_spec_review(ctx, st, Q.Step("spec_review"), "001-x", req, 1.0)
+    assert res.error and "rev-parse" in res.error
+    row = Q._apply(ctx, S.read_state(cfg, "c1"), res)
+    st2 = S.read_state(cfg, "c1")
+    assert st2.get("state") == "PARKED"
+    assert st2.get("park", {}).get("reason") == "spec_review_exhausted"

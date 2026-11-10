@@ -2447,6 +2447,18 @@ def _ledger_run_max(cfg, cid: str) -> int:
     return top
 
 
+def _hold_local_backend_before_prepare(pgate, state: dict, persona: str, step: Step | None) -> bool:
+    """SPEC-0486: when the backend check fails and no persona slot was reserved at admit, hold
+    and skip `run.start` (the reservation is adopted by `dispatch` on the remote path)."""
+    personas = (persona,)
+    if pgate.backend_fault(state, personas, remote_ok=False, step=step) is None:
+        return False
+    if (state["id"], persona) in pgate._slot_reservations:
+        return False
+    pgate._hold(state["id"], "backend_unavailable")
+    return True
+
+
 def _prepare_run(ctx: _Ctx, state: dict, persona: str, step: Step | None = None):
     """Main thread: mint the run id, build the request, append `run.start`, bump `runs` and
     write the state. Returns (run_id, request, budget). Everything that can raise happens
@@ -2802,6 +2814,7 @@ def _do_spec_review(ctx: _Ctx, state: dict, step: Step, run_id: str, req,
     worktree, branch = repo.get("worktree"), repo.get("branch")
     spec_file = Path(worktree or ".") / (state.get("spec") or {}).get("rel_path", "")
     res.spec_review = sr = {"sha": _spec_sha(spec_file), "modified": None}
+    env_interrupt = False
     try:
         head = git.rev_parse(worktree)
         try:
@@ -2819,6 +2832,7 @@ def _do_spec_review(ctx: _Ctx, state: dict, step: Step, run_id: str, req,
                     rr, interrupted=True,
                     cost_usd=0.0 if rr.cost_usd is None else rr.cost_usd)
                 res.interrupted = True
+                env_interrupt = True
                 if getattr(ctx, "cfg", None) is not None:
                     BP.note_fault(ctx.cfg, BP.fault_kind(fault), fault, where="run")
             elif res.run_result is not None and res.run_result.interrupted:
@@ -2833,7 +2847,7 @@ def _do_spec_review(ctx: _Ctx, state: dict, step: Step, run_id: str, req,
             git.git(worktree, "reset", "--hard", head)
             sr["modified"] = "reviewer modified the worktree"
     except (GitError, ValueError, OSError) as e:
-        if not res.interrupted:
+        if not env_interrupt:
             res.error = getattr(e, "tail", None) or str(e)
     return res
 
@@ -2912,8 +2926,9 @@ def _do_persona(ctx: _Ctx, state: dict, step: Step, run_id: str, req, budget: fl
         local = _local_runner(ctx, state, req)
         if adopted is None:                       # SPEC-0484: never in place of a live run
             local = _preflight_hold(ctx, state, req, local)
+        reservations = getattr(ctx, "_slot_reservations", None)
         remote = RPS.dispatch(cfg, state, step.kind, req, adopted=adopted is not None,
-                              local=local) if cfg is not None else None
+                              local=local, reservations=reservations) if cfg is not None else None
         runner = remote or local
         detachable = bool(getattr(runner, "detachable", False))
         started = time.time() if adopted is None else None     # SPEC-0345: an adopted run's is unknown
@@ -3116,7 +3131,7 @@ def _rerun_locally(ctx: _Ctx, state: dict, step: Step, run_id: str, req, budget:
         mark_held(new_req)
         return new_id, new_req, _synthetic(new_req, "the write-back re-run was not started "
                                                     "during the rate-limit backoff", cost_usd=0.0)
-    local = _local_runner(ctx, state, new_req)
+    local = _preflight_hold(ctx, state, new_req, _local_runner(ctx, state, new_req))
     if hooks is not None and getattr(local, "detachable", False):
         if not hooks.restart(new_req.run_dir):
             return new_id, new_req, DETACHED
@@ -6509,6 +6524,8 @@ def _tick(cfg, ctx: _Ctx, pool: StepPool, report: TickReport, *, admit: bool, ow
     # SPEC-0345: the dispatch gate. Its live count also reads the campaigns with a step in
     # flight that are not active any more (a human parked one mid-run): the run still runs.
     pgate = PG.Gate(cfg, [s["id"] for s in busy] + sorted(flying - {s["id"] for s in busy}))
+    ctx._slot_reservations = pgate._slot_reservations
+    ctx._pgate = pgate
     for st in busy:
         ctx.progress()
         if st.get("state") not in ACTIVE_STATES or st["id"] in admitted_ids \
@@ -6582,7 +6599,7 @@ def _tick(cfg, ctx: _Ctx, pool: StepPool, report: TickReport, *, admit: bool, ow
             if step is None:
                 continue
         if step.kind == "review":
-            group = _prepare_reviews(ctx, st, step, profile, pending_agent, report)
+            group = _prepare_reviews(ctx, pgate, st, step, profile, pending_agent, report)
             if group:
                 groups.append(group)
             continue
@@ -6595,6 +6612,9 @@ def _tick(cfg, ctx: _Ctx, pool: StepPool, report: TickReport, *, admit: bool, ow
             if fault is not None:
                 pgate._hold(st["id"], "backend_unavailable")
                 continue
+        if step.kind in PG.GATED_KINDS and _hold_local_backend_before_prepare(
+                pgate, st, step.persona, step):
+            continue
         try:
             run_id, req, budget = _prepare_run(ctx, st, step.persona, step)
         except (ValueError, OSError) as e:
@@ -6847,8 +6867,8 @@ def _adopt(cfg, ctx: _Ctx, pool: StepPool, report: TickReport) -> None:
         journal(cfg, "adopt", runs=rows)
 
 
-def _prepare_reviews(ctx: _Ctx, st: dict, step: Step, profile: dict, pending_agent: list,
-                     report: TickReport):
+def _prepare_reviews(ctx: _Ctx, pgate: PG.Gate, st: dict, step: Step, profile: dict,
+                     pending_agent: list, report: TickReport):
     """Prepare one run per pending reviewer, in profile order (run ids are allocated before any
     task starts). A failure with one reviewer configured is the campaign-wide error of
     SPEC-0187; with several it is that reviewer's missing result and its siblings still run.
@@ -6860,6 +6880,10 @@ def _prepare_reviews(ctx: _Ctx, st: dict, step: Step, profile: dict, pending_age
         if ctx.stop.is_set():
             break
         sub = Step("review", persona=persona, personas=step.personas)
+        if _hold_local_backend_before_prepare(pgate, st, persona, sub):
+            if not multi:
+                return None
+            continue
         try:
             run_id, req, budget = _prepare_run(ctx, st, persona, step)
         except (ValueError, OSError) as e:

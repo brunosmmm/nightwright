@@ -347,6 +347,7 @@ class Gate:
         self.taken = 0
         self.holds: dict = {}
         self._backend: dict = {}               # SPEC-0484/0486: (kind, providers) -> error | None
+        self._slot_reservations: dict = {}     # (campaign, persona) -> worker slot probe hold
 
     def backend_fault(self, state: dict, personas=(), *, remote_ok: bool = True,
                       step=None) -> str | None:
@@ -392,7 +393,8 @@ class Gate:
         if remote_ok:
             try:
                 from . import remote_personas as RPS
-                if step is not None and RPS.can_dispatch_step(self.cfg, state, step):
+                if step is not None and RPS.can_dispatch_step(
+                        self.cfg, state, step, reservations=self._slot_reservations):
                     return None
             except Exception:                  # noqa: BLE001
                 pass
@@ -436,6 +438,8 @@ class Gate:
     def flush(self) -> None:
         """Write the tick's holds, stamped `at` (the tick's time): rewritten on every tick that
         holds something, so `read_holds` can tell a live runner's holds from a dead one's."""
+        from . import remote_personas as RPS
+        RPS.release_reservations(self._slot_reservations)
         p = holds_path(self.cfg)
         old = _read_json(p).get("holds") or {}
         if not self.holds and not old:
