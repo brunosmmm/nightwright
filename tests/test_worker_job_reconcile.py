@@ -128,6 +128,40 @@ def test_confirmed_gone_marks_lost_once(cfg, monkeypatch):
     assert RJ.read(cfg, jid)["state"] == "lost"
 
 
+def test_two_gone_records_on_one_worker_both_mark_lost(cfg, monkeypatch):
+    _seed(cfg, _w())
+    jid1 = _job(cfg, job_id="c-1-gate-001-a1", state="attached", accepted_at="t")
+    jid2 = _job(cfg, job_id="c-1-gate-002-a1", state="attached", accepted_at="t")
+    clock = {"t": 0.0}
+
+    def mono():
+        return clock["t"]
+
+    def run(argv, *, timeout, input=None):
+        if "jobs" in argv:
+            clock["t"] = 15.0
+            return subprocess.CompletedProcess(argv, 0, b"[]", b"")
+        return subprocess.CompletedProcess(
+            argv, 1, b'{"type":"status","state":"unknown"}\n', b"")
+
+    poll_timeouts = []
+
+    def capture_run(argv, *, timeout, input=None):
+        if "poll" in argv:
+            poll_timeouts.append(timeout)
+        return run(argv, timeout=timeout, input=input)
+
+    monkeypatch.setattr(time, "monotonic", mono)
+    monkeypatch.setattr(WK, "_reconcile_run", capture_run)
+    WK.reconcile_draining(cfg, ["box"])
+    assert RJ.read(cfg, jid1)["state"] == "lost"
+    assert RJ.read(cfg, jid2)["state"] == "lost"
+    assert len(_journal(cfg, "worker_job_reconciled")) == 2
+    assert len(poll_timeouts) == 2
+    assert poll_timeouts[0] == pytest.approx(3.0)
+    assert poll_timeouts[1] == pytest.approx(5.0)
+
+
 def test_reread_leaves_final_record(cfg, monkeypatch, tmp_path):
     for final in ("done", "local", "lost", "cancelled"):
         c = {"data_dir": str(tmp_path / final / "data"), "agentic": {"gates": {"slots": 1}}}
@@ -694,7 +728,7 @@ def test_one_worker_two_eligible_records(cfg, monkeypatch):
         if "jobs" in argv:
             return subprocess.CompletedProcess(argv, 0, b"[]", b"")
         if j1 in argv:
-            assert timeout <= 9.0
+            assert timeout == pytest.approx(15.0)
             return "timeout"
         if j2 in argv:
             return subprocess.CompletedProcess(

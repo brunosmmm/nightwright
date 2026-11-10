@@ -464,10 +464,11 @@ def _reconcile_worker(cfg, worker: dict, t0: float, *, progress=None) -> set[str
         budget = left()
         if budget < RECONCILE_POLL_MIN_S:
             continue
-        remaining = len(need_poll) - i
-        reserve = RECONCILE_POLL_MIN_S * (remaining - 1)
-        poll_timeout = budget if remaining == 1 else min(
-            budget, max(RECONCILE_POLL_MIN_S, budget - reserve) / remaining)
+        later = len(need_poll) - i - 1
+        poll_timeout = min(
+            budget - RECONCILE_POLL_MIN_S * later, RECONCILE_JOBS_TIMEOUT_S)
+        if poll_timeout < RECONCILE_POLL_MIN_S:
+            continue
         stamp()
         ensure_record_ssh_dir(cfg, worker)
         try:

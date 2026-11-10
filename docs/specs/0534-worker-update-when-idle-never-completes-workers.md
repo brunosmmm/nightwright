@@ -453,6 +453,20 @@ not describe an age mark or stale-job lines.
   least `RECONCILE_POLL_MIN_S` (2 s) remains reserved per later id; a slow or timed-out poll
   on an earlier id no longer consumes the whole per-worker budget.
 
+### Test record (implementer campaign loop 0, 2026-11-10)
+
+- `uv run pytest -q tests/test_worker_job_reconcile.py tests/test_workers_update_schedule.py tests/test_workers_drain.py tests/test_workers_registry.py` — 152 passed.
+- `python3 tools/test_tiers.py --check` — exit 0.
+- `python3 tools/spec_lint.py --write-ledger` and `python3 tools/spec_lint.py` — exit 0.
+- Full suite left to campaign gating.
+- Manual verification on live `box` not run in this loop.
+
+### As shipped (implementer campaign loop 0)
+
+- Per-poll SSH timeout is `min(budget - RECONCILE_POLL_MIN_S * later_ids,
+  RECONCILE_JOBS_TIMEOUT_S)` (floor `RECONCILE_POLL_MIN_S`); reserve is not divided by the
+  number of polls still pending.
+
 ## Clock Log
 
 Implementation sessions clock IDEA-1162 with `nw idea clock-in` and
