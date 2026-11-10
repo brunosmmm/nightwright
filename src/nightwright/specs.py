@@ -122,6 +122,14 @@ def _idea_context(task):
     return f"{header}\n\n{notes}" if notes else header
 
 
+def _request_context(agreed) -> str:
+    """Context from the public request file (SPEC-0535)."""
+    header = f"Promoted from request `{agreed.req_id}` ({agreed.title})."
+    if (agreed.summary or "").strip():
+        return f"{header}\n\n{agreed.summary}"
+    return header
+
+
 def _refuse_closed_idea(cfg, task, force):
     """SPEC-0167: never silently re-promote a finished idea. Ideas files are shared across
     concurrent sessions and ids are global, so a terminal (`is_done`) or archived idea reaching
@@ -142,6 +150,8 @@ def scaffold_from_idea(cfg, selector, *, epic=False, title=None, force=False):
     subtree, set `source_idea`, and write the reciprocal `:SPEC:` property + SPECCED state back
     onto the idea. Returns (spec_path, spec_id). Errors if `selector` isn't an idea, or if it's
     already promoted (has a `:SPEC:` property) unless `force`."""
+    from . import idea_link as IL
+
     task = resolve_selector(cfg, selector)
     if not task.is_idea:
         raise ValueError(f"{selector!r} resolved to {task.heading!r}, which is not an idea "
@@ -162,25 +172,77 @@ def scaffold_from_idea(cfg, selector, *, epic=False, title=None, force=False):
         if title != task.heading.strip():
             warn(f"  ! long idea heading; used a truncated title (pass --title to override). "
                  f"Full text is in the spec's Context.")
-    from . import spec_numbers
+    agreed = IL.load_agreed_request(cfg, task)
     specs_dir = _specs_dir(cfg)
+    citing = IL.will_cite(cfg, task, specs_dir) if agreed else False
+    if agreed and citing:
+        if agreed.spec and not force:
+            raise ValueError(f"{agreed.req_id} already cites {agreed.spec}")
+        IL.preflight_cite(agreed.repo)
+
+    from . import spec_numbers
     rec = spec_numbers.allocate(cfg, by="spec new", note=task.id, specs_dir=specs_dir)
+    spec_id = rec["id"]
+    spec_path: Path | None = None
+    cite_sha: str | None = None
+    cite_old: str | None = None
     try:
-        return _scaffold_allocated(cfg, task, rec, specs_dir, epic, title)
-    except BaseException:
-        try:
-            spec_numbers.release(cfg, rec["number"], specs_dir=specs_dir)
-        except Exception:
-            pass                      # the original error matters; a stale reservation self-prunes
+        with W.org_write_lock(cfg):
+            task = W.resolve_selector(cfg, selector)
+            agreed = IL.load_agreed_request(cfg, task)
+            citing = IL.will_cite(cfg, task, specs_dir) if agreed else False
+            if agreed and citing and agreed.spec and agreed.spec != spec_id and not force:
+                raise ValueError(f"{agreed.req_id} already cites {agreed.spec}")
+            spec_path, text = _build_scaffold_text(
+                cfg, task, rec, specs_dir, epic, title, agreed)
+            specs_dir.mkdir(parents=True, exist_ok=True)
+            spec_path.write_text(text)
+            if agreed and citing:
+                cite_sha, cite_old = IL.cite_spec(cfg, agreed, spec_id)
+            try:
+                W.set_property(cfg, task, "SPEC", spec_id)
+                W.set_state(cfg, task, "SPECCED")
+            except BaseException as e:
+                if cite_sha and agreed:
+                    try:
+                        IL.restore_cite_backlog_tip_or_bail(
+                            agreed.repo, spec_id=spec_id, req_id=agreed.req_id,
+                            new_sha=cite_sha, old_tip=cite_old)
+                    except ValueError as restore_err:
+                        if isinstance(e, KeyboardInterrupt | SystemExit):
+                            raise e
+                        if "restored refs/heads/nw-backlog" in str(restore_err):
+                            if spec_path and spec_path.is_file():
+                                spec_path.unlink()
+                            try:
+                                spec_numbers.release(cfg, rec["number"], specs_dir=specs_dir)
+                            except Exception:
+                                pass
+                        raise restore_err from e
+                if spec_path and spec_path.is_file():
+                    spec_path.unlink()
+                raise
+        return spec_path, spec_id
+    except BaseException as err:
+        lost = "no longer points at" in str(err) or "restore failed" in str(err)
+        if not lost:
+            try:
+                spec_numbers.release(cfg, rec["number"], specs_dir=specs_dir)
+            except Exception:
+                pass
+        if spec_path and spec_path.is_file() and not lost:
+            try:
+                spec_path.unlink()
+            except OSError:
+                pass
         raise
 
 
-def _scaffold_allocated(cfg, task, rec, specs_dir, epic, title):
-    """Everything after the number is allocated (SPEC-0208): the caller releases it on error."""
-    num = f"{rec['number']:04d}"
-    spec_id = rec["id"]
+def _build_scaffold_text(cfg, task, rec, specs_dir, epic, title, agreed):
+    """Build scaffolded spec text before the file is written (SPEC-0535)."""
     slug = slugify(title)
-    spec_path = specs_dir / f"{num}-{slug}.md"
+    spec_path = specs_dir / f"{rec['number']:04d}-{slug}.md"
+    spec_id = rec["id"]
 
     template_name = "TEMPLATE-epic.md" if epic else "TEMPLATE.md"
     text = (specs_dir / template_name).read_text()
@@ -189,6 +251,8 @@ def _scaffold_allocated(cfg, task, rec, specs_dir, epic, title):
     text = re.sub(r"^id: SPEC-NNNN$", f"id: {spec_id}", text, count=1, flags=re.M)
     text = re.sub(r"^title: .*$", f"title: {_yaml_fm_value(title)}", text, count=1, flags=re.M)
     extra = [f"created: {created}", f"source_idea: {task.id}"]
+    if agreed:
+        extra.append(f"source_request: {agreed.req_id}")
     idea_epic = task.properties.get("EPIC")
     if idea_epic:
         if idea_epic in known_epics(cfg):
@@ -197,16 +261,19 @@ def _scaffold_allocated(cfg, task, rec, specs_dir, epic, title):
             warn(f"  ! idea {task.id} has :EPIC: {idea_epic!r}, which doesn't resolve to a "
                  f"known kind:epic spec; leaving parent unset")
     text = re.sub(r"^created: YYYY-MM-DD$", "\n".join(extra), text, count=1, flags=re.M)
-    context = _idea_context(task)
+    context = _request_context(agreed) if agreed else _idea_context(task)
     text = _CONTEXT_RE.sub(lambda m: m.group(1) + context + m.group(2), text, count=1)
+    return spec_path, text
 
+
+def _scaffold_allocated(cfg, task, rec, specs_dir, epic, title):
+    """Everything after the number is allocated (SPEC-0208): the caller releases it on error."""
+    spec_path, text = _build_scaffold_text(cfg, task, rec, specs_dir, epic, title, None)
     specs_dir.mkdir(parents=True, exist_ok=True)
     spec_path.write_text(text)
-
-    W.set_property(cfg, task, "SPEC", spec_id)
+    W.set_property(cfg, task, "SPEC", rec["id"])
     W.set_state(cfg, task, "SPECCED")
-
-    return spec_path, spec_id
+    return spec_path, rec["id"]
 
 
 def promote_idea(cfg, selector, *, internal=False, target=None, epic=False, title=None,

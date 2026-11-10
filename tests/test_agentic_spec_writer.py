@@ -1258,3 +1258,204 @@ def test_spec_write_without_a_write_result_parks_instead_of_raising(tmp_path, mo
     assert park["reason"] == "spec_write_failed" and park["resume_to"] == "SPEC_WRITING"
     assert park["detail"] == "spec writer returned no write result"
     assert len(ledger(cfg, cid, "run.end")) == 1
+
+
+# ---- SPEC-0535: source_request cite -----------------------------------------------------------
+
+def _publish_for_campaign(cfg, monkeypatch, repo, iid, summary="Public body"):
+    from test_agentic_e2e import run_cli
+    _git(repo, "config", "user.name", "nightwright test")
+    _git(repo, "config", "user.email", "nightwright@test")
+    run_cli(cfg, monkeypatch, ["idea", "summary", iid, "--set", summary])
+    t = idea(cfg, iid)
+    if not (t.properties.get("PROJECT") or "").strip():
+        OW.set_property(cfg, t, "PROJECT", "Meta-Tools")
+    r = run_cli(cfg, monkeypatch, ["idea", "publish", iid])
+    assert r.exit_code == 0, r.output
+    return idea(cfg, iid).properties["REQ"]
+
+
+def spec_with_req(number, iid, req, **kw):
+    return spec_written(number, iid, fm={"source_request": req}, **kw)
+
+
+def test_linked_idea_writer_uses_the_public_summary_and_cites(tmp_path, monkeypatch):
+    repo = make_project(tmp_path)
+    cfg = make_cfg(tmp_path, repo, script(tmp_path, []))
+    monkeypatch.setattr("nightwright.cli.load_config", lambda: cfg)
+    iid = capture(cfg)
+    req = _publish_for_campaign(cfg, monkeypatch, repo, iid, "Public body")
+    cid = add_idea_campaign(cfg, monkeypatch, iid)
+    Q.tick(cfg)
+    st = S.read_state(cfg, cid)
+    assert st["state"] == "SPEC_WRITING"
+    assert st["idea"]["summary"] == "Public body"
+    assert st["idea"]["source_request"] == req
+    assert "public summary" in SW.write_rules(
+        "write", {"path": "docs/specs/0002-x.md", "number": 2}, st["idea"], None)
+    script(tmp_path, [spec_written(2, iid), spec_with_req(2, iid, req)])
+    Q.tick(cfg)
+    probs = (S.read_state(cfg, cid).get("pending_brief") or {}).get("write_problems") or []
+    assert any("source_request must be" in p for p in probs)
+    tips = []
+    real_run = subprocess.run
+
+    def spy(cmd, **kw):
+        if len(cmd) >= 4 and cmd[0] == "git" and Path(cmd[2]).resolve() == repo.resolve():
+            if len(cmd) > 3 and cmd[3] in ("hash-object", "mktree", "commit-tree", "update-ref"):
+                tips.append(cmd[3:])
+        return real_run(cmd, **kw)
+
+    monkeypatch.setattr(subprocess, "run", spy)
+    Q.tick(cfg)
+    in_review(cfg, cid)
+    assert tips
+    blob = subprocess.run(
+        ["git", "-C", str(repo), "show", f"refs/heads/nw-backlog:{req}.md"],
+        check=True, capture_output=True, text=True,
+    ).stdout
+    assert "spec: SPEC-0002" in blob
+    assert idea(cfg, iid).properties["SPEC"] == "SPEC-0002"
+    backlog_n = int(_git(repo, "rev-list", "--count", "refs/heads/nw-backlog"))
+    to_writer_park(cfg, cid)
+    with S.item_lock(cfg, cid):
+        st = S.read_state(cfg, cid)
+        st["pending_brief"] = BRIEF
+        st["admission"] = "revise_pending"
+        S.write_state(cfg, cid, st)
+    script(tmp_path, [spec_with_req(2, iid, req, mode="revise")])
+    resume(cfg, cid)
+    Q.tick(cfg)
+    assert int(_git(repo, "rev-list", "--count", "refs/heads/nw-backlog")) == backlog_n
+
+
+def test_drift_before_write_parks_without_a_cite(tmp_path, monkeypatch):
+    repo = make_project(tmp_path)
+    cfg = make_cfg(tmp_path, repo, script(tmp_path, []))
+    monkeypatch.setattr("nightwright.cli.load_config", lambda: cfg)
+    iid = capture(cfg)
+    req = _publish_for_campaign(cfg, monkeypatch, repo, iid)
+    cid = add_idea_campaign(cfg, monkeypatch, iid)
+    Q.tick(cfg)
+    script(tmp_path, [spec_with_req(2, iid, req)])
+    from test_agentic_e2e import run_cli
+    run_cli(cfg, monkeypatch, ["idea", "summary", iid, "--set", "Drifted private"])
+    hash_calls = []
+    real_run = subprocess.run
+
+    def spy(cmd, **kw):
+        if len(cmd) > 3 and cmd[3] == "hash-object" and "nw-backlog" in " ".join(map(str, cmd)):
+            hash_calls.append(cmd)
+        return real_run(cmd, **kw)
+
+    monkeypatch.setattr(subprocess, "run", spy)
+    Q.tick(cfg)
+    Q.tick(cfg)
+    park = parked(cfg, cid)
+    assert park["reason"] == "spec_write_failed"
+    assert "do not match :REQ_BASE:" in park["detail"]
+    assert not (wtree(cfg, cid) / "docs/specs/0002-add-a-thing.md").exists()
+    assert not hash_calls
+
+
+def test_queue_add_refuses_a_drifted_pair(tmp_path, monkeypatch):
+    from test_agentic_e2e import run_cli
+
+    repo = make_project(tmp_path)
+    cfg = make_cfg(tmp_path, repo, script(tmp_path, []))
+    monkeypatch.setattr("nightwright.cli.load_config", lambda: cfg)
+    iid = capture(cfg)
+    _publish_for_campaign(cfg, monkeypatch, repo, iid)
+    run_cli(cfg, monkeypatch, ["idea", "summary", iid, "--set", "Drifted"])
+    with pytest.raises(ValueError, match="do not match :REQ_BASE:"):
+        Q.plan_add_idea(cfg, iid)
+    assert "CAMPAIGN" not in idea(cfg, iid).properties
+
+
+def test_queue_add_refuses_when_the_request_already_cites(tmp_path, monkeypatch):
+    from nightwright import idea_link as IL
+
+    repo = make_project(tmp_path)
+    cfg = make_cfg(tmp_path, repo, script(tmp_path, []))
+    monkeypatch.setattr("nightwright.cli.load_config", lambda: cfg)
+    iid = capture(cfg)
+    _publish_for_campaign(cfg, monkeypatch, repo, iid)
+    task = idea(cfg, iid)
+    agreed = IL.load_agreed_request(cfg, task)
+    IL.cite_spec(cfg, agreed, "SPEC-0099")
+    created = []
+
+    def spy(cfg, state, **kw):
+        created.append(1)
+        return S.create_campaign(cfg, state, **kw)
+
+    monkeypatch.setattr(S, "create_campaign", spy)
+    with pytest.raises(ValueError, match="already cites"):
+        Q.plan_add_idea(cfg, iid)
+    assert not created
+
+
+def test_link_idea_refuses_a_different_cite(tmp_path, monkeypatch):
+    from nightwright import idea_link as IL
+
+    repo = make_project(tmp_path)
+    cfg = make_cfg(tmp_path, repo, script(tmp_path, []))
+    monkeypatch.setattr("nightwright.cli.load_config", lambda: cfg)
+    iid = capture(cfg)
+    _publish_for_campaign(cfg, monkeypatch, repo, iid)
+    cid = add_idea_campaign(cfg, monkeypatch, iid)
+    st = S.read_state(cfg, cid)
+    st["spec_write"] = {"mode": "write"}
+    agreed = IL.load_agreed_request(cfg, idea(cfg, iid))
+    IL.cite_spec(cfg, agreed, "SPEC-0099")
+    err = Q._link_idea(cfg, st, "SPEC-0002")
+    assert err and "already cites" in err
+    assert idea(cfg, iid).properties.get("SPEC") != "SPEC-0002"
+    agreed = IL.load_agreed_request(cfg, idea(cfg, iid))
+    IL.cite_spec(cfg, agreed, "SPEC-0002")
+    tip = _git(repo, "rev-parse", "refs/heads/nw-backlog")
+    assert Q._link_idea(cfg, st, "SPEC-0002") is None
+    assert idea(cfg, iid).properties["SPEC"] == "SPEC-0002"
+    assert _git(repo, "rev-parse", "refs/heads/nw-backlog") == tip
+
+
+def test_campaign_cite_follows_resolve_linked_repo(tmp_path, monkeypatch):
+    from test_agentic_e2e import _write, make_cfg, make_repo
+
+    base = tmp_path / "split"
+    (base / "nw").mkdir(parents=True)
+    (base / "out").mkdir(parents=True)
+    (base / "data").mkdir(parents=True)
+    nw = make_repo(base / "nw")
+    out = make_repo(base / "out")
+    _git(nw, "config", "user.name", "nightwright test")
+    _git(nw, "config", "user.email", "nightwright@test")
+    scr = script(base / "data", [])
+    cfg = make_cfg(base / "data", out, scr,
+                   outbox={"Meta-Tools": {"repo_path": str(out)}})
+    cfg["nw_checkout"] = str(nw)
+    cfg["specs_dir"] = str(nw / "docs/specs")
+    monkeypatch.setattr("nightwright.cli.load_config", lambda: cfg)
+    for rel in ("docs/specs/TEMPLATE.md", "docs/specs/SCHEMA.md", "docs/specs/spec.schema.json"):
+        _write(nw, rel, (ROOT / rel).read_text())
+    iid = capture(cfg)
+    OW.set_property(cfg, idea(cfg, iid), "PROJECT", "Meta-Tools")
+    req = _publish_for_campaign(cfg, monkeypatch, nw, iid)
+    nw_tip = _git(nw, "rev-parse", "refs/heads/nw-backlog")
+    out_tip = _backlog_tip(out)
+    cid = add_idea_campaign(cfg, monkeypatch, iid)
+    script(base / "data", [spec_with_req(2, iid, req)])
+    Q.tick(cfg)
+    Q.tick(cfg)
+    assert f"source_request: {req}" in (wtree(cfg, cid) / "docs/specs/0002-add-a-thing.md").read_text()
+    assert idea(cfg, iid).properties["SPEC"] == "SPEC-0002"
+    assert _git(nw, "rev-parse", "refs/heads/nw-backlog") == nw_tip
+    assert _backlog_tip(out) == out_tip
+
+
+def _backlog_tip(repo: Path) -> str | None:
+    r = subprocess.run(
+        ["git", "-C", str(repo), "rev-parse", "--verify", "-q", "refs/heads/nw-backlog"],
+        capture_output=True, text=True,
+    )
+    return r.stdout.strip() if r.returncode == 0 else None

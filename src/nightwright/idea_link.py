@@ -6,16 +6,23 @@ import os
 import re
 import secrets
 import subprocess
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 
 from .explore import idea_summary_text
 from .org import Task
 from .rules import INTERNAL_PROJECT, nw_checkout
+from .specmeta import split_frontmatter
 
 _CROCKFORD = "0123456789ABCDEFGHJKMNPQRSTVWXYZ"
 _BACKLOG_REF = "refs/heads/nw-backlog"
 _NULL_SHA = "0000000000000000000000000000000000000000"
+_REQ_ID_RE = re.compile(r"^REQ-[0-9A-HJKMNP-TV-Z]{8}$")
+_SPEC_CITE_RE = re.compile(r"^SPEC-[0-9]{4}$")
+_ALLOWED_REQ_FM_KEYS = frozenset({
+    "id", "title", "status", "created", "updated", "created_by", "updated_by", "spec",
+})
 _GIT_SCRUB = (
     "GIT_DIR",
     "GIT_WORK_TREE",
@@ -297,6 +304,220 @@ def _restore_backlog_tip(
     if old_tip is None:
         return _git(repo, "update-ref", "-d", _BACKLOG_REF, new_sha, check=False)
     return _git(repo, "update-ref", _BACKLOG_REF, old_tip, new_sha, check=False)
+
+
+@dataclass(frozen=True)
+class AgreedRequest:
+    """A linked idea whose private and public sides still match :REQ_BASE: (SPEC-0535)."""
+    req_id: str
+    repo: Path
+    title: str
+    summary: str
+    status: str
+    created: str
+    created_by: str
+    updated_by: str
+    spec: str | None
+    raw_bytes: bytes
+
+
+def _idea_public_id(task: Task) -> str:
+    return (task.properties or {}).get("ID", "").strip() or task.id
+
+
+def _drift_error(idea_id: str, req_id: str) -> str:
+    return (f"{idea_id} and {req_id} do not match :REQ_BASE:; push, pull, or choose one "
+            f"summary before writing a spec")
+
+
+def _raw_fm_line(yaml_block: str, key: str) -> str | None:
+    prefix = f"{key}:"
+    for line in yaml_block.splitlines():
+        if line.startswith(prefix):
+            return line[len(prefix):].strip()
+    return None
+
+
+def _repo_worktree_roots(repo: Path) -> list[Path]:
+    r = _git(repo, "worktree", "list", "--porcelain", check=False)
+    if r.returncode != 0:
+        return [repo.resolve()]
+    roots: list[Path] = []
+    for line in _git_stdout_text(r.stdout).splitlines():
+        if line.startswith("worktree "):
+            roots.append(Path(line.removeprefix("worktree ").strip()).resolve())
+    return roots or [repo.resolve()]
+
+
+def load_agreed_request(cfg, task: Task) -> AgreedRequest | None:
+    """Read and validate the public request for a linked idea, or None when unlinked (SPEC-0535)."""
+    props = task.properties or {}
+    req_id = (props.get("REQ") or "").strip()
+    if not req_id:
+        return None
+    idea_id = _idea_public_id(task)
+    if not _REQ_ID_RE.match(req_id):
+        raise ValueError(f"{idea_id} has invalid :REQ: {req_id}")
+    stored_base = (props.get("REQ_BASE") or "").strip()
+    if not stored_base:
+        raise ValueError(f"{idea_id} has {req_id} but no :REQ_BASE:")
+
+    project = (props.get("PROJECT") or "").strip()
+    if not project:
+        raise ValueError("project is required")
+    repo = resolve_linked_repo(cfg, project)
+
+    rel = f"{req_id}.md"
+    r = _git(repo, "show", f"{_BACKLOG_REF}:{rel}", check=False)
+    if r.returncode != 0:
+        raise ValueError(f"{req_id} is not on refs/heads/nw-backlog")
+    raw = r.stdout
+    try:
+        text = raw.decode("utf-8")
+    except UnicodeDecodeError as err:
+        raise ValueError(f"{req_id} file is not a request") from err
+    m = re.match(r"^---\n(.*?)\n---\n(.*)$", text, re.S)
+    if not m:
+        raise ValueError(f"{req_id} file is not a request")
+    yaml_block, body = m.group(1), m.group(2)
+    try:
+        fm = split_frontmatter(text)[0]
+    except Exception as err:
+        raise ValueError(f"{req_id} file is not a request") from err
+    if not isinstance(fm, dict):
+        raise ValueError(f"{req_id} file is not a request")
+
+    file_id = str(fm.get("id") or "")
+    if file_id != req_id:
+        raise ValueError(f"{req_id} file id is {file_id}")
+
+    for key in fm:
+        if key not in _ALLOWED_REQ_FM_KEYS:
+            raise ValueError(f"{req_id} file has an unexpected key {key}")
+
+    for key in ("title", "status", "created", "created_by", "updated", "updated_by"):
+        if key not in fm or fm[key] in (None, ""):
+            raise ValueError(f"{req_id} file is not a request")
+
+    spec_val = fm.get("spec")
+    if spec_val is not None:
+        spec_s = str(spec_val).strip()
+        if not _SPEC_CITE_RE.match(spec_s):
+            raise ValueError(f"{req_id} file spec is {spec_val}")
+        spec_out: str | None = spec_s
+    else:
+        spec_out = None
+
+    created_raw = _raw_fm_line(yaml_block, "created")
+    if not created_raw:
+        raise ValueError(f"{req_id} file is not a request")
+
+    pub_title = str(fm["title"])
+    canon_title, _ = canonical_pair(pub_title, "")
+    if canon_title != pub_title:
+        raise ValueError(f"{req_id} file title is not canonical")
+
+    canon_summary = canonical_pair(pub_title, body)[1]
+    if body != canon_summary:
+        raise ValueError(f"{req_id} file summary is not canonical")
+
+    try:
+        priv_summary = idea_summary_text(cfg, task, strict=True)
+    except Exception as err:
+        raise ValueError(f"could not read Summary for {idea_id}: {err}") from err
+
+    priv_digest = req_base(task.heading, priv_summary)
+    pub_digest = req_base(pub_title, body)
+    if priv_digest != stored_base or pub_digest != stored_base:
+        raise ValueError(_drift_error(idea_id, req_id))
+
+    return AgreedRequest(
+        req_id=req_id,
+        repo=repo,
+        title=pub_title,
+        summary=body,
+        status=str(fm["status"]),
+        created=created_raw,
+        created_by=str(fm["created_by"]),
+        updated_by=str(fm["updated_by"]),
+        spec=spec_out,
+        raw_bytes=raw,
+    )
+
+
+def preflight_cite(repo: Path) -> None:
+    """Identity and nw-backlog checkout guards before a cite commit (SPEC-0535)."""
+    _git_identity(repo)
+    if _nw_backlog_checked_out(repo):
+        raise ValueError("refusing to update nw-backlog while it is checked out")
+
+
+def will_cite(cfg, task: Task, specs_dir: Path) -> bool:
+    """True when the spec directory is docs/specs of a worktree of the linked repo (SPEC-0535)."""
+    agreed = load_agreed_request(cfg, task)
+    if agreed is None:
+        return False
+    target = Path(specs_dir).resolve()
+    for wt in _repo_worktree_roots(agreed.repo):
+        if target == (wt / "docs" / "specs").resolve():
+            return True
+    return False
+
+
+def cite_spec(cfg, agreed: AgreedRequest, spec_id: str) -> tuple[str | None, str | None]:
+    """Compare-and-swap `spec:` onto the public file. Returns (new_sha, old_tip) when committed."""
+    if agreed.spec == spec_id:
+        return None, None
+    name, email = _git_identity(agreed.repo)
+    _validate_identity_value("user.name", name)
+    _validate_identity_value("user.email", email)
+    author = f"{name} <{email}>"
+    body = render_request(
+        req_id=agreed.req_id,
+        title=agreed.title,
+        summary=agreed.summary,
+        status=agreed.status,
+        created=agreed.created,
+        updated=_utc_now_z(),
+        created_by=agreed.created_by,
+        updated_by=author,
+        spec=spec_id,
+    )
+    try:
+        new_sha, old_tip, _blob = _publish_commit(
+            agreed.repo,
+            rel_path=f"{agreed.req_id}.md",
+            body=body,
+            message=f"cite {agreed.req_id} {spec_id}",
+            name=name,
+            email=email,
+        )
+    except ValueError as e:
+        if str(e) == "update-ref failed":
+            raise ValueError(
+                f"{agreed.req_id} was not cited; refs/heads/nw-backlog unchanged"
+            ) from e
+        raise
+    return new_sha, old_tip
+
+
+def restore_cite_backlog_tip_or_bail(
+    repo: Path, *, spec_id: str, req_id: str, new_sha: str, old_tip: str | None
+) -> None:
+    """Undo a cite commit after a failed org write (SPEC-0535). Always raises ValueError."""
+    cur = _ref_tip(repo, _BACKLOG_REF)
+    if cur != new_sha:
+        raise ValueError(
+            f"{spec_id} was not cited on {req_id}; refs/heads/nw-backlog no longer points at "
+            f"{new_sha}; left unchanged"
+        )
+    r = _restore_backlog_tip(repo, new_sha=new_sha, old_tip=old_tip)
+    if r.returncode != 0:
+        raise ValueError(
+            f"{spec_id} was not cited on {req_id}; refs/heads/nw-backlog restore failed; "
+            "left unchanged"
+        )
+    raise ValueError(f"{spec_id} was not cited on {req_id}; restored refs/heads/nw-backlog")
 
 
 def _restore_backlog_tip_or_bail(

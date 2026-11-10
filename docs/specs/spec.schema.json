@@ -80,6 +80,11 @@
       "type": "string",
       "minLength": 1,
       "description": "The org idea this spec was promoted from (its :ID: or file:line), set by `nw spec new --from-idea` (SPEC-0013)."
+    },
+    "source_request": {
+      "type": "string",
+      "pattern": "^REQ-[0-9A-HJKMNP-TV-Z]{8}$",
+      "description": "The public request this spec was written from (SPEC-0535)."
     }
   },
   "allOf": [

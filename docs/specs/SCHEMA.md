@@ -22,6 +22,7 @@ by a **Markdown body** with a conventional set of sections.
 | `supersedes` | – | `SPEC-NNNN[]` | Decisions this replaces. |
 | `superseded_by` | – | `SPEC-NNNN` | Required when `status: superseded`. |
 | `source_idea` | – | string | The org idea's `:ID:`/`file:line`, set when the spec was scaffolded via `nw spec new --from-idea` (SPEC-0013). |
+| `source_request` | – | string | The `REQ-` id of the public file, set when the spec is written from an idea that has `:REQ:` (SPEC-0535). The key is the provenance that travels with the repo. `source_idea` still names the private idea on the machine that holds it. |
 
 `additionalProperties` is `false` — unknown keys fail validation, so typos are caught.
 

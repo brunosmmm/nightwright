@@ -130,6 +130,14 @@ def _front_matter_problems(fm, spec_id, idea, must_depend_on=()) -> list:
     if fm.get("source_idea") != (idea or {}).get("id"):
         out.append(f"front matter: source_idea must be {(idea or {}).get('id')!r}, "
                    f"got {fm.get('source_idea')!r}")
+    req = (idea or {}).get("source_request")
+    if req:
+        if fm.get("source_request") != req:
+            out.append(f"front matter: source_request must be {req!r}, "
+                       f"got {fm.get('source_request')!r}")
+    elif "source_request" in fm:
+        out.append("front matter: source_request must be absent (the idea has no :REQ:), "
+                   f"got {fm.get('source_request')!r}")
     if fm.get("owner") != "user":
         out.append(f"front matter: owner must be user, got {fm.get('owner')!r}")
     if fm.get("kind", "feature") != "feature":
@@ -383,15 +391,28 @@ def write_rules(mode, spec_write, idea, brief) -> str:
         fm = [f"`id: {spec_id_of(spec_write['number'])}`", "`status: proposed`",
               f"`source_idea: {(idea or {}).get('id')}`", "`owner: user`", "`kind: feature`",
               "`title`", "`created` (today, YYYY-MM-DD)"]
+        req = (idea or {}).get("source_request")
+        if req:
+            fm.insert(3, f"`source_request: {req}`")
         if epic:
             fm.append(f"`parent: {epic}`")
         must = _must_depend(spec_write.get("must_depend_on"))
         if must:                                            # SPEC-0423
             fm.append("`depends_on` must include: " + ", ".join(
                 f"{sid} (prerequisite {ref})" if sid != ref else sid for sid, ref in must))
+        summary_note = ""
+        if req:
+            summary_note = (
+                " The Context section is the public summary in the idea JSON `summary` field "
+                "for that request, the text other people have seen; the private log and open "
+                "questions stay available for the rest of the spec and are not a replacement "
+                "for that summary."
+            )
+        else:
+            summary_note = " The front matter has no `source_request` key."
         return (f"Write mode: create exactly `{path}`, following the template. Its front matter "
-                f"carries {', '.join(fm)} and no keys the schema does not know. Required "
-                f"sections: {', '.join(REQUIRED_HEADINGS)} (and Definition of done).")
+                f"carries {', '.join(fm)} and no keys the schema does not know.{summary_note} "
+                f"Required sections: {', '.join(REQUIRED_HEADINGS)} (and Definition of done).")
     if mode == "split":
         sp = spec_write["split"]
         efm = spec_write["expected_fm"]
@@ -417,6 +438,8 @@ def write_rules(mode, spec_write, idea, brief) -> str:
                 "`updated`; address every finding in the brief.")
     rules = (f"Revise mode: edit only `{path}`; keep its id, `source_idea` and "
              "`status: proposed`; address every must_fix and major finding in the brief.")
+    if (idea or {}).get("source_request"):
+        rules += " Keep `source_request` when the idea has one."
     if (brief or {}).get("suggested_splits"):
         rules += (" The review suggests splitting: narrow the spec to the first suggested split "
                   "(or the one a human note names) and list the rest under Non-goals.")

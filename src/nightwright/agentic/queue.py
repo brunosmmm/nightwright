@@ -2523,6 +2523,15 @@ def _prepare_spec_write(ctx: _Ctx, state: dict) -> dict:
         elif spec.get("id"):
             mode, number, path = "revise", int(str(spec["id"])[5:]), spec["rel_path"]
         else:
+            from .. import idea_link as IL
+            task = _idea_task(ctx.cfg, _idea_id_of(state))
+            if task is not None:
+                agreed = IL.load_agreed_request(ctx.cfg, task)
+                if agreed:
+                    idea = dict(state.get("idea") or {})
+                    idea["source_request"] = agreed.req_id
+                    idea["summary"] = agreed.summary
+                    state["idea"] = idea
             from .. import spec_numbers as SN
             rec = SN.allocate(ctx.cfg, by="queue", campaign=state["id"],
                               specs_dir=worktree / "docs" / "specs")
@@ -4737,19 +4746,51 @@ def _finish_amend(cfg, state: dict, sw: dict, finish):
 
 
 def _link_idea(cfg, state: dict, spec_id: str) -> str | None:
-    """Give the campaign's idea `:SPEC:` and SPECCED; both are idempotent. Best-effort
-    (SPEC-0256): returns the error text when the ideas file drifted, lacks SPECCED or cannot be
-    read, else None; never raises."""
+    """Give the campaign's idea `:SPEC:` and SPECCED; cite the public file on write (SPEC-0535).
+
+    Best-effort (SPEC-0256): returns the error text when the ideas file drifted, lacks SPECCED
+    or cannot be read, else None; never raises."""
+    from .. import idea_link as IL
     from .. import org_write as OW
-    try:
-        task = _idea_task(cfg, _idea_id_of(state))
-        if task is None:
-            return None
+
+    def _set_spec_specced(task):
         if (task.properties.get("SPEC") or "").strip() != spec_id:
             OW.set_property(cfg, task, "SPEC", spec_id)
             task = _idea_task(cfg, _idea_id_of(state))
         if task is not None and task.state != "SPECCED":
             OW.set_state(cfg, task, "SPECCED")
+
+    sw = state.get("spec_write") or {}
+    if sw.get("mode") != "write":
+        try:
+            task = _idea_task(cfg, _idea_id_of(state))
+            if task is None:
+                return None
+            _set_spec_specced(task)
+        except (ValueError, OSError) as e:
+            return str(e) or type(e).__name__
+        return None
+
+    try:
+        with OW.org_write_lock(cfg):
+            task = _idea_task(cfg, _idea_id_of(state))
+            if task is None:
+                return None
+            req = (task.properties.get("REQ") or "").strip()
+            if not req:
+                _set_spec_specced(task)
+                return None
+            agreed = IL.load_agreed_request(cfg, task)
+            if agreed is None:
+                _set_spec_specced(task)
+                return None
+            if agreed.spec and agreed.spec != spec_id:
+                return f"{agreed.req_id} already cites {agreed.spec}"
+            worktree = Path((state.get("repo") or {}).get("worktree") or ".")
+            citing = IL.will_cite(cfg, task, worktree / "docs" / "specs")
+            if agreed.spec != spec_id and citing:
+                IL.cite_spec(cfg, agreed, spec_id)
+            _set_spec_specced(task)
     except (ValueError, OSError) as e:
         return str(e) or type(e).__name__
     return None
@@ -9696,6 +9737,10 @@ def plan_add_idea(cfg, idea_id, *, project=None, profile=None, base=None,
     if active:
         raise ValueError(f"{idea_id} already has an active campaign {active['id']} "
                          f"({active.get('state')}); abandon it first")
+    from .. import idea_link as IL
+    agreed = IL.load_agreed_request(cfg, task)
+    if agreed and agreed.spec:
+        raise ValueError(f"{agreed.req_id} already cites {agreed.spec}")
     project = project or (task.properties.get("PROJECT") or "").strip() or "Meta-Tools"
     pcfg = P.project_config(cfg, project)
     root = Path(pcfg["_root"])
@@ -9732,7 +9777,12 @@ def apply_add_idea(cfg, plan: dict, *, by="human") -> dict:
         task = _idea_task(cfg, idea_id)
         if task is None:
             raise ValueError(f"unknown idea {idea_id}")
+        from .. import idea_link as IL
+        agreed = IL.load_agreed_request(cfg, task)
         idea = EX.idea_show_payload(cfg, task)
+        if agreed:
+            idea["source_request"] = agreed.req_id
+            idea["summary"] = agreed.summary
         idea["epic"] = task.properties.get("EPIC")
         idea["state_before"] = task.state
         state = {

@@ -1,7 +1,7 @@
 ---
 id: SPEC-0535
 title: Specs cite the public request they come from
-status: accepted
+status: done
 owner: user
 created: 2026-11-10
 updated: 2026-11-10
@@ -352,16 +352,16 @@ Revise and amend do not call `cite_spec`.
 
 ## Acceptance criteria
 
-- [ ] `docs/specs/spec.schema.json` accepts `source_request: REQ-01234567` and
+- [x] `docs/specs/spec.schema.json` accepts `source_request: REQ-01234567` and
       rejects `REQ-IIIIIIII`, `REQ-123`, and `hello`. A spec with no
       `source_request` still validates. `docs/specs/SCHEMA.md` documents the
       key. `python3 tools/spec_lint.py` exits 0.
-- [ ] `load_agreed_request` on an idea with no `:REQ:` returns `None` and does
+- [x] `load_agreed_request` on an idea with no `:REQ:` returns `None` and does
       not call `resolve_linked_repo`. `scaffold_from_idea` of that idea writes
       `source_idea`, writes no `source_request`, prefills Context with
       `Promoted from idea`, and runs no `git show` of `refs/heads/nw-backlog`.
       `plan_add_idea` of that idea also does not call `resolve_linked_repo`.
-- [ ] On an agreed linked idea, `nw spec new --from-idea` writes
+- [x] On an agreed linked idea, `nw spec new --from-idea` writes
       `source_request` equal to `:REQ:` on the line after `source_idea`, for
       both `TEMPLATE.md` and `TEMPLATE-epic.md`. Context is
       `Promoted from request `{req_id}` (`{title}`).` and the public body. A
@@ -369,7 +369,7 @@ Revise and amend do not call `cite_spec`.
       spec. The idea becomes `SPECCED` with `:SPEC:` set to that id. `:REQ:`
       and `:REQ_BASE:` are unchanged. Summary, log, questions, tags, and the
       headline stay.
-- [ ] That command's cite commit is `cite {req_id} {spec_id}` via
+- [x] That command's cite commit is `cite {req_id} {spec_id}` via
       `hash-object`, `mktree`, `commit-tree`, and `update-ref` in
       `agreed.repo`, whose expected value is the previous tip. The file gains
       `spec: {spec_id}` after `updated_by`. `created` is byte-for-byte
@@ -381,7 +381,7 @@ Revise and amend do not call `cite_spec`.
       A second `cite_spec` of the same spec id adds no commit.
       `load_agreed_request` still returns a request whose `spec` is set; a
       present `spec:` does not raise from that function.
-- [ ] Drift (private digest differs, public digest differs, or either differs
+- [x] Drift (private digest differs, public digest differs, or either differs
       from `:REQ_BASE:`), a missing `:REQ_BASE:`, a missing file, a
       non-canonical summary (`Hello\n`), an unexpected front-matter key, a
       file id mismatch, and `{req_id} already cites {spec}` each exit 1 with
@@ -389,12 +389,12 @@ Revise and amend do not call `cite_spec`.
       org bytes unchanged. Unset `user.name` or `user.email`, and `nw-backlog`
       checked out, refuse before `hash-object` with publish's stderr, only
       when `will_cite` is true.
-- [ ] `--internal` into another checkout, whose specs directory is not
+- [x] `--internal` into another checkout, whose specs directory is not
       `docs/specs` of a worktree listed for `agreed.repo`, still requires
       agreement, writes `source_request` and the public Context, and leaves
       the request blob sha unchanged. Outbound `promote_idea` of a linked
       idea does not call `load_agreed_request`.
-- [ ] `plan_add_idea` raises `{req_id} already cites {spec}` when
+- [x] `plan_add_idea` raises `{req_id} already cites {spec}` when
       `load_agreed_request` returns a request whose `spec` is not `None`, and
       `create_campaign` is not called. `_link_idea` raises
       `{req_id} already cites {spec}` when `agreed.spec` is a different id,
@@ -404,11 +404,11 @@ Revise and amend do not call `cite_spec`.
       path that replaces `spec:`. Without `--force`, a different `spec:` seen
       inside `org_write_lock` releases the number, writes no spec file, and
       commits nothing.
-- [ ] If the org write fails after the cite commit, the org bytes are
+- [x] If the org write fails after the cite commit, the org bytes are
       unchanged and the Design's restore stderr is raised. A successful
       restore deletes the new spec file and releases the number. A lost
       compare-and-swap leaves the spec file and the ref.
-- [ ] `plan_add_idea` and `apply_add_idea` raise the drift error and do not
+- [x] `plan_add_idea` and `apply_add_idea` raise the drift error and do not
       create a campaign or set `:CAMPAIGN:`. On agreement, `apply_add_idea`
       sets `idea["source_request"]` and sets `idea["summary"]` to the public
       body. `_prepare_spec_write` in `write` mode re-checks before allocate
@@ -421,12 +421,12 @@ Revise and amend do not call `cite_spec`.
       and sets `:SPEC:` and `SPECCED`. When `will_cite` is false, `_link_idea`
       still sets `:SPEC:` and `SPECCED` and leaves `refs/heads/nw-backlog`
       unchanged. Revise does not commit another cite.
-- [ ] When the campaign worktree is a worktree of `resolve_linked_repo`, the
+- [x] When the campaign worktree is a worktree of `resolve_linked_repo`, the
       cite commit is on that repo's `refs/heads/nw-backlog`. When a Meta-Tools
       idea's `outbox_targets` repo is a different checkout from `nw_checkout`,
       the spec records `source_request`, the idea gains `:SPEC:` and
       `SPECCED`, and that outbox repo's `nw-backlog` is unchanged.
-- [ ] `nw ideas` and `nw hub` still build rows with `idea_row`. The TUI list
+- [x] `nw ideas` and `nw hub` still build rows with `idea_row`. The TUI list
       still uses `_row_for`. `load_detail` and the callers in
       `agentic/queue.py` and `agentic/spec_review.py` still call
       `idea_show_payload` with one argument.
@@ -532,7 +532,7 @@ Revise and amend do not call `cite_spec`.
 
 ## Clock Log
 
-No implementation session yet.
+- 2026-11-10: SPEC-0535 implementation (IDEA-1021 campaign loop 0).
 
 ## Rollout / migration
 
@@ -546,13 +546,23 @@ unknown key.
 
 ## Definition of done
 
-- [ ] Acceptance criteria all met.
-- [ ] Test plan executed; the tests named above pass. The full suite stays on
+- [x] Acceptance criteria all met.
+- [x] Test plan executed; the tests named above pass. The full suite stays on
       the queue's close gate.
-- [ ] No regressions in `tests/test_idea_link.py`, `tests/test_idea_stamps.py`,
+- [x] No regressions in `tests/test_idea_link.py`, `tests/test_idea_stamps.py`,
       and `tests/test_agentic_spec_writer.py`.
-- [ ] Spec body updated to match what shipped.
-- [ ] `docs/LEDGER.md` regenerated and `python3 tools/spec_lint.py` exits 0.
+- [x] Spec body updated to match what shipped.
+- [x] `docs/LEDGER.md` regenerated and `python3 tools/spec_lint.py` exits 0.
+
+### Test record (2026-11-10)
+
+- `python3 tools/test_tiers.py --check` — pass
+- `uv run pytest tests/test_spec_source_request.py -q` — 8 passed
+- `uv run pytest tests/test_idea_link.py tests/test_idea_stamps.py::test_stamp_creates_missing_drawer_without_corrupting_sections -q` — pass
+- `uv run pytest tests/test_agentic_spec_writer.py -q -k "linked_idea or drift_before or queue_add_refuses or link_idea_refuses or campaign_cite or link_idea_returns"` — 7 passed
+- `uv run pytest tests/test_promote.py tests/test_routing.py tests/test_spec_numbers.py -q` — 49 passed
+- `python3 tools/spec_lint.py --write-ledger` — pass
+- Full suite left to campaign gating.
 
 ## Open questions
 
