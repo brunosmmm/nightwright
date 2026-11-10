@@ -2686,8 +2686,9 @@ def _do_write_spec(ctx: _Ctx, state: dict, step: Step, run_id: str, req,
         on_branch()
         try:
             SW.rollback(worktree, sw)
-        except GitError:
+        except GitError as e:
             w["rollback_failed"] = True
+            w["rollback_detail"] = getattr(e, "tail", None) or str(e)
             raise
 
     try:
@@ -2702,6 +2703,10 @@ def _do_write_spec(ctx: _Ctx, state: dict, step: Step, run_id: str, req,
             env_interrupt = True
             if getattr(ctx, "cfg", None) is not None:
                 BP.note_fault(ctx.cfg, BP.fault_kind(fault), fault, where="run")
+        elif rr.interrupted:
+            res.interrupted = True
+            if BP.env_fault_text(getattr(rr, "result_text", "") or ""):
+                env_interrupt = True
         _note_rate_limit(ctx, state, rr, started, _run_persona(req, step))      # SPEC-0345
         if not res.interrupted:
             res.interrupted = ctx.stop.is_set()
@@ -3231,6 +3236,10 @@ def _do_resolve(ctx: _Ctx, state: dict, step: Step, run_id: str, req, budget: fl
                 env_interrupt = True
                 if getattr(ctx, "cfg", None) is not None:
                     BP.note_fault(ctx.cfg, BP.fault_kind(fault), fault, where="run")
+            elif rr.interrupted:
+                res.interrupted = True
+                if BP.env_fault_text(getattr(rr, "result_text", "") or ""):
+                    env_interrupt = True
             _note_rate_limit(ctx, state, rr, started, _run_persona(req, step))  # SPEC-0345
         except Exception as e:          # a crashing resolver is a failed attempt, not a stuck close
             crash = f"the run raised: {e}"
@@ -4535,6 +4544,12 @@ def _apply_spec_write(ctx, state, counters, res, row, events, finish):
     row["cost_estimated"] = rr.cost_usd is None
     state["last_verdict"] = {"persona": persona, "run": res.run_id, "verdict": rr.verdict,
                              "verdict_ok": rr.verdict_ok}
+    park_back = {"resume_to": "SPEC_WRITING"}
+    if (w or {}).get("rollback_failed"):
+        detail = (w or {}).get("rollback_detail") or (
+            "rollback failed; clean the worktree, then resume")
+        return finish("PARKED", "spec_write_failed", park={
+            "reason": "spec_write_failed", "detail": detail, **park_back})
     if res.interrupted or rr.interrupted:
         # rolled back by the worker; no retry counted, the next tick runs a fresh writer
         with store.item_lock(cfg, cid):
@@ -4543,7 +4558,6 @@ def _apply_spec_write(ctx, state, counters, res, row, events, finish):
             store.write_state(cfg, cid, state)
         row["to"], row["reason"] = res.from_state, "interrupted"
         return row
-    park_back = {"resume_to": "SPEC_WRITING"}
     if not isinstance(w, dict):          # SPEC-0441: no payload must park, never raise
         return finish("PARKED", "spec_write_failed", park={
             "reason": "spec_write_failed", "detail": "spec writer returned no write result",

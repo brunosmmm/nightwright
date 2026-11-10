@@ -54,8 +54,7 @@ def test_spec_review_hold_skips_prepare_and_spends_no_retry(tmp_path, monkeypatc
     assert PG.read_holds(cfg).get(cid, {}).get("held_by") == "backend_unavailable"
     starts = [e for e in S.read_ledger(cfg, cid, types=["run.start"]) if e.get("persona") == "spec_reviewer"]
     assert not starts
-    monkeypatch.setattr("nightwright.agentic.remote_personas.can_dispatch_step",
-                        lambda *a, **k: True)
+    _worker_can_dispatch(monkeypatch)
     Q.tick(cfg)
     st2 = S.read_state(cfg, cid)
     assert st2["state"] == "SPEC_REVIEW"
@@ -1788,7 +1787,8 @@ def test_do_write_spec_converts_startup_fault(tmp_path, monkeypatch):
     ctx.runner = fail_text("no credential for provider openai")()
     ctx.runner_for = lambda s, kind=None: fail_text("no credential for provider openai")()
     monkeypatch.setattr(SW, "rollback",
-                        lambda *a, **k: (_ for _ in ()).throw(GitError(["rollback"], 1, "rollback failed")))
+                        lambda *a, **k: (_ for _ in ()).throw(GitError(["git"], 1, "rollback")))
+    counters = {"spec_write_retries": 0}
 
     def run(self, req, hooks=None):
         return RunResult(1, False, False, 0.1, True, None,
@@ -1798,6 +1798,56 @@ def test_do_write_spec_converts_startup_fault(tmp_path, monkeypatch):
     ctx.runner_for = lambda s, kind=None: ctx.runner
     res = Q._do_write_spec(ctx, st, Q.Step("write_spec", persona="spec_writer"), "004-x", req, 1.0)
     assert res.interrupted and res.error is None
+    assert res.write["rollback_failed"]
+    row = {}
+    park = {}
+    Q._apply_spec_write(
+        ctx, {**st, "counters": counters}, counters, res, row, [],
+        lambda to, reason, **kw: (row.update({"to": to, "reason": reason}),
+                                  park.update(kw.get("park") or {})))
+    assert counters["spec_write_retries"] == 0
+    assert row["to"] == "PARKED" and row["reason"] == "spec_write_failed"
+    assert "rollback" in (park.get("detail") or "").lower()
+
+    preflight_text = (
+        "the run was not started: the pi backend fails its preflight "
+        "(no credential for provider openai)")
+    counters = {"spec_write_retries": 0}
+    row = {}
+    park = {}
+
+    def preflight_run(self, req, hooks=None):
+        return RunResult(-1, False, True, 0.0, True, 0.0, None, result_text=preflight_text)
+
+    ctx.runner = type("R", (), {"detachable": False, "run": preflight_run})()
+    ctx.runner_for = lambda s, kind=None: ctx.runner
+    res = Q._do_write_spec(ctx, st, Q.Step("write_spec", persona="spec_writer"), "005-x", req, 1.0)
+    assert res.error is None and res.interrupted and res.write["rollback_failed"]
+    Q._apply_spec_write(
+        ctx, {**st, "counters": counters}, counters, res, row, [],
+        lambda to, reason, **kw: (row.update({"to": to, "reason": reason}),
+                                  park.update(kw.get("park") or {})))
+    assert counters["spec_write_retries"] == 0
+    assert row["to"] == "PARKED" and row["reason"] == "spec_write_failed"
+    assert "rollback" in (park.get("detail") or "").lower()
+
+    from test_agentic_spec_writer import start as spec_start
+
+    monkeypatch.delenv("CURSOR_API_KEY", raising=False)
+    _no_key(monkeypatch)
+    p2 = tmp_path / "p2"
+    p2.mkdir()
+    cfg2, repo2, iid2, cid2 = spec_start(p2, monkeypatch, lambda i: [])
+    cfg2["agentic"]["runner"] = "cursor"
+    st2 = S.read_state(cfg2, cid2)
+    st2["state"] = "PARKED"
+    st2["park"] = {"reason": "spec_write_failed", "resume_to": "SPEC_WRITING",
+                   "detail": park.get("detail") or "rollback"}
+    S.write_state(cfg2, cid2, st2)
+    Q.tick(cfg2)
+    starts = [e for e in S.read_ledger(cfg2, cid2, types=["run.start"])
+              if e.get("persona") == "spec_writer"]
+    assert not starts
 
 
 def test_do_resolve_converts_startup_fault(tmp_path, monkeypatch):
@@ -1851,6 +1901,35 @@ def test_do_resolve_converts_startup_fault(tmp_path, monkeypatch):
     Q._apply_resolve(st2, counters, res, res.run_result, row, events, finish)
     assert st2["closing"]["resolve_attempts"] == 1
     assert st2["closing"]["resolve_failed"]["n"] == 1
+
+    from nightwright.agentic.gitops import GitError
+
+    preflight_text = (
+        "the run was not started: the pi backend fails its preflight "
+        "(no credential for provider openai)")
+    restore_calls = []
+
+    def fail_restore(*a, **k):
+        restore_calls.append(1)
+        if len(restore_calls) > 1:
+            raise GitError(["git"], 1, "restore")
+        return None
+
+    monkeypatch.setattr(git, "restore_branch", fail_restore)
+
+    def preflight_run(self, req, hooks=None):
+        return RunResult(-1, False, True, 0.0, True, 0.0, None, result_text=preflight_text)
+
+    ctx.runner = type("R", (), {"detachable": False, "run": preflight_run})()
+    ctx.runner_for = lambda s, kind=None: ctx.runner
+    st3 = dict(st)
+    res = Q._do_resolve(ctx, st3, Q.Step("resolve", persona="conflict_resolver"), "005-x", req, 1.0)
+    assert res.error is None and res.interrupted
+    state = dict(st3)
+    Q._apply(ctx, state, res)
+    assert state["closing"].get("resolve_attempts", 0) == 0
+    assert int((state["closing"].get("resolve_failed") or {}).get("n") or 0) == 0
+    assert state.get("state") == "CLOSING"
 
 
 def test_check_pi_probe_exception_is_not_passing(tmp_path, monkeypatch):

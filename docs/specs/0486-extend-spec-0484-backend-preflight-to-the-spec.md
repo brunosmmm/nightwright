@@ -530,10 +530,25 @@ faults; `_prepare_reviews` releases admit persona-cap charges on a local prepare
 `python3 tools/test_tiers.py --check` — ok. `python3 tools/spec_lint.py --write-ledger` — ok.
 Full suite left to gating.
 
+### Test record (2026-11-10, loop 3 implementer)
+
+`_do_write_spec` and `_do_resolve` treat already-interrupted preflight text as `env_interrupt`
+(like `_do_spec_review`); failed write rollback parks `spec_write_failed` from the write
+payload instead of returning `interrupted` and respawning the writer. Spec-review hold test
+uses a dispatchable worker; rollback/restore `GitError` cases hardened.
+`uv run pytest tests/test_backend_preflight_extend.py tests/test_runner_selfheal.py tests/test_remote_persona_limits.py::test_spec_review_is_neither_counted_nor_gated -q` — 78 passed.
+`python3 tools/test_tiers.py --check` — ok. `python3 tools/spec_lint.py --write-ledger` — ok.
+Full suite left to gating.
+
 ### As shipped (2026-11-10, loop 2 campaign implementer)
 
 `backend_fault` skips a persona whose `spawn_backend` raises `ValueError` or `OSError` and
 continues checking siblings rather than returning `None` immediately.
+
+### As shipped (2026-11-10, loop 3 implementer)
+
+A failed write rollback on an environment-fault interrupt parks from `res.write`
+(`rollback_detail`) via `_apply_spec_write` and does not respawn the spec writer.
 
 - **Regression guard:** `python3 tools/affected_tests.py --run uv run pytest -q` on the
   touched files. `tests/test_runner_selfheal.py` (the SPEC-0484 cursor hold, spawn, and
