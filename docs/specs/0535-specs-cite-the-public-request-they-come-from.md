@@ -1,9 +1,10 @@
 ---
 id: SPEC-0535
 title: Specs cite the public request they come from
-status: proposed
+status: accepted
 owner: user
 created: 2026-11-10
+updated: 2026-11-10
 kind: feature
 tags: [public-backlog]
 depends_on: [SPEC-0480]
