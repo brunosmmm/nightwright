@@ -311,6 +311,14 @@ a job nobody renews for `agentic.workers.job_lease_s` (default 900 s) cancels it
 process that stops heartbeating (`job_heartbeat_s`, default 10 s) for `job_lost_after_s`
 (default 60 s), or dies, is `lost`; `cancel` and `gc` kill what is left of it.
 
+**Executor (SPEC-0503).** How the worker host starts, cancels and admits a job is its
+executor, chosen by the host's own `agentic.workers.executor` (default `local`: the detached
+job process and gate slots above). An unknown name refuses `submit` and `gate-job` with an
+`error` frame, `stage: "executor"`, and claims nothing; `nw worker info --json` reports
+`executor` and the feature `executor:<name>`. The job body is also `nw worker run-job JOBDIR`
+(started on the host by an executor, not over SSH); a rerun of the same dir is a new attempt
+(`NW_JOB_ATTEMPT`) that starts from fresh scratch and writes an `attempt` frame first.
+
 Register a worker on the coordinator with the registry commands (SPEC-0337; not to be
 confused with `nw worker`, which runs on the worker host): `nw workers add NAME --ssh me@box
 [--slots N] [--nw PATH] [--no-check]` registers it (it runs `check` first unless `--no-check`),

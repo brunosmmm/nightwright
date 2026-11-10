@@ -154,6 +154,16 @@ def worker_submit(cfg):
     raise SystemExit(WJ.submit(cfg, sys.stdin.buffer, sys.stdout.buffer))
 
 
+@worker_group.command("run-job", hidden=True)
+@click.argument("jobdir", type=click.Path(file_okay=False))
+def worker_run_job(jobdir):
+    """SPEC-0503: run a claimed job dir's body (checkout, gates or persona run, frames,
+    result.json) in this process. Started by the worker's executor on the host, never over SSH
+    (not in the forced-command grammar). A rerun of the same dir is a new attempt
+    (`NW_JOB_ATTEMPT`, else `job.json` `run_attempts` + 1) that starts from fresh scratch."""
+    raise SystemExit(WJ.main([jobdir]))
+
+
 @worker_group.command("attach")
 @click.argument("job_id")
 @click.option("--from", "after", type=click.IntRange(min=0), default=0, show_default=True,

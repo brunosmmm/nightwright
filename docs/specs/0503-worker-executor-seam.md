@@ -1,7 +1,7 @@
 ---
 id: SPEC-0503
 title: "Executor seam on the worker: job start, cancel and slot admission go through a pluggable executor (local = today)"
-status: accepted
+status: in-progress
 owner: user
 created: 2026-11-09
 updated: 2026-11-09

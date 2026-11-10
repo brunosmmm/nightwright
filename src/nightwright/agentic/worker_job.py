@@ -28,6 +28,7 @@ import threading
 import time
 from pathlib import Path
 
+from . import executors as EX
 from . import gates as G
 from . import runproc
 from . import worker as W
@@ -210,6 +211,13 @@ def _live_state(job: Path, sett: dict, now: float) -> tuple[str, float | None]:
     return "running", age
 
 
+def _exec_state(cfg, job: Path, sett: dict, now: float) -> tuple[str, float | None]:
+    """SPEC-0503: a live job's state as the executor that started it reads it (`local`:
+    `_live_state`), handed its start record (`spawn.json`)."""
+    start = runproc.read_json(job / "spawn.json") or {}
+    return EX.for_job(cfg, job).state(cfg, job, start, sett, now)
+
+
 def _leader(rec: dict) -> dict:
     """A job process's own group (`proc.json` / `spawn.json`), as the kill path signals it."""
     return {"pid": rec.get("pid"), "pgid": rec.get("pgid") or rec.get("pid"),
@@ -224,7 +232,7 @@ def job_state(cfg, job: Path, sett: dict | None = None, locked: bool = False) ->
     now = time.time()
     res = runproc.read_json(job / "result.json")
     if res is None:
-        state, age = _live_state(job, sett, now)
+        state, age = _exec_state(cfg, job, sett, now)
         if state != "lost":
             return {"state": state, "heartbeat_age_s": age}
         res = runproc.read_json(job / "result.json")    # it may have ended between the reads
@@ -510,7 +518,7 @@ def reap(cfg, job: Path, ident=None) -> bool:
         ident = now_ident
         if (job / "result.json").exists():
             return True
-        if _live_state(job, settings(cfg), time.time())[0] != "lost":
+        if _exec_state(cfg, job, settings(cfg), time.time())[0] != "lost":
             print(f"nw worker: {job.name}: no longer lost; not reaping it", file=sys.stderr)
             return False
         proc = runproc.read_json(job / "proc.json") or {}
@@ -538,13 +546,16 @@ def reap(cfg, job: Path, ident=None) -> bool:
                 print(stale, file=sys.stderr)
                 return False
             if job.is_dir() and not (job / "result.json").exists():
-                own = (runproc.read_json(job / "job.json") or {}).get("state")
+                rec = runproc.read_json(job / "job.json") or {}
+                own = rec.get("state")
+                n = rec.get("run_attempts")     # SPEC-0503: the attempt this result ends
+                at = {"attempt": n} if isinstance(n, int) and not isinstance(n, bool) else {}
                 if own in ("done", "error"):    # it died after its final job.json: keep it
                     _write_atomic(job / "result.json", {"state": own, "frame": None,
-                                                        "reaped_at": now_iso()})
+                                                        "reaped_at": now_iso(), **at})
                 else:
                     _write_atomic(job / "result.json", {"state": "lost", "frame": None,
-                                                        "reaped_at": now_iso()})
+                                                        "reaped_at": now_iso(), **at})
                     _set_job_json(job, state="lost", finished_at=now_iso())
     finally:
         fcntl.flock(fd, fcntl.LOCK_UN)
@@ -623,7 +634,7 @@ def _spawn(cfg, job: Path, lock_fd: int) -> subprocess.Popen:
             start_new_session=True, pass_fds=(lock_fd,))
 
 
-def _claim(job: Path, h: dict, digest: str) -> tuple[int, dict]:
+def _claim(job: Path, h: dict, digest: str, executor: str = EX.DEFAULT) -> tuple[int, dict]:
     """The claim's writes into the new dir (under `jobs_lock`): `job.lock` (flocked, the fd
     returned), `job.json`, `header.json`. When one fails, the dir goes again and the error is
     raised."""
@@ -638,7 +649,7 @@ def _claim(job: Path, h: dict, digest: str) -> tuple[int, dict]:
                    "attempt": h.get("attempt"), "seq": payload.get("seq"),
                    "tier": payload.get("tier"), "pid": os.getpid(),
                    "claimed_at": now_iso(), "state": "accepted", "header_digest": digest,
-                   "submitted_ts": time.time()}
+                   "submitted_ts": time.time(), "executor": executor}
         _write_atomic(job / "job.json", job_rec)
         _write_atomic(job / "header.json", h)
     except OSError:
@@ -667,6 +678,12 @@ def submit(cfg, stdin, stdout) -> int:
         if h["job_id"].startswith("-"):          # it could never be named to attach/poll
             raise W.WorkerError("validate", "job_id must not start with '-'")
     except W.WorkerError as e:
+        frames.emit("error", stage=e.stage, error=e.error)
+        return W.EXIT_ERROR
+    try:                                        # SPEC-0503: an unknown executor claims nothing
+        ex = EX.get(cfg)
+    except W.WorkerError as e:
+        _drain(stdin, h["bundle_bytes"])
         frames.emit("error", stage=e.stage, error=e.error)
         return W.EXIT_ERROR
     digest = header_digest(h)
@@ -701,7 +718,7 @@ def submit(cfg, stdin, stdout) -> int:
                 claim_error = f"could not claim job {h['job_id']}: {e}"
             if existing is None and claim_error is None:
                 try:
-                    lock_fd, job_rec = _claim(job, h, digest)
+                    lock_fd, job_rec = _claim(job, h, digest, ex.name)
                     frames.log = job / "frames.jsonl"
                 except OSError as e:                # a full disk: un-claimed, no traceback
                     claim_error = f"could not claim job {h['job_id']}: {e}"
@@ -726,7 +743,7 @@ def submit(cfg, stdin, stdout) -> int:
             _renew(job, sett["job_lease_s"])     # the first lease, before the process exists
             job_rec["spawned_ts"] = time.time()
             _write_atomic(job / "job.json", job_rec)
-            child = _spawn(cfg, job, lock_fd)
+            started = ex.start(cfg, job, h, lock_fd)    # SPEC-0503 (`local`: `_spawn`)
         except W.WorkerError as e:
             return _unclaim(cfg, job, frames, e.stage, e.error)
         except OSError as e:
@@ -734,9 +751,7 @@ def submit(cfg, stdin, stdout) -> int:
     finally:
         os.close(lock_fd)                       # the job process keeps the flock
     try:                                        # the pid the kill path needs before proc.json
-        _write_atomic(job / "spawn.json", {"pid": child.pid, "pgid": child.pid,
-                                           "start_ticks": runproc.start_ticks(child.pid),
-                                           "spawned_at": now_iso()})
+        _write_atomic(job / "spawn.json", {**started, "spawned_at": now_iso()})
     except OSError as e:
         print(f"nw worker: could not record the job process: {e}", file=sys.stderr)
     _print(stdout, _status(h["job_id"], "accepted", n=0))
@@ -832,8 +847,8 @@ def cancel(cfg, job_id, stdout) -> int:
             _print(stdout, _status(job_id, st))
             return EXIT_UNKNOWN
         if st in ("accepted", "running"):
-            try:
-                (job / "cancel").write_text(now_iso() + "\n", encoding="utf-8")
+            try:                                # SPEC-0503 (`local`: the `cancel` file)
+                EX.for_job(cfg, job).cancel(cfg, job, runproc.read_json(job / "spawn.json") or {})
             except OSError as e:
                 _print(stdout, _status(job_id, st, cancel="failed", error=str(e)))
                 return EXIT_UNKNOWN
@@ -904,9 +919,10 @@ def _heartbeat(job: Path, every: float, stop: threading.Event) -> None:
             return
 
 
-def _watch(job: Path, proc: dict, cancel: threading.Event, stop: threading.Event) -> None:
+def _watch(job: Path, proc: dict, cancel: threading.Event, stop: threading.Event,
+           lease_cancels: bool = True) -> None:
     """Every `WATCH_TICK_S`: record new gate process groups in `proc.json`; cancel the job on
-    a `cancel` file or an expired lease."""
+    a `cancel` file or (when its executor's `lease_cancels`, SPEC-0503) an expired lease."""
     recorded: dict[int, dict] = {}
     while not stop.wait(WATCH_TICK_S):
         with G._LOCK:
@@ -927,7 +943,7 @@ def _watch(job: Path, proc: dict, cancel: threading.Event, stop: threading.Event
         why = None
         if (job / "cancel").exists():
             why = "cancel requested"
-        else:
+        elif lease_cancels:
             until = (runproc.read_json(job / "lease.json") or {}).get("lease_until")
             if isinstance(until, (int, float)) and time.time() > until:
                 why = "the lease expired"
@@ -937,23 +953,69 @@ def _watch(job: Path, proc: dict, cancel: threading.Event, stop: threading.Event
             G.terminate_all()
 
 
+ATTEMPT_ENV = "NW_JOB_ATTEMPT"
+
+
+def _attempt(job: Path) -> int:
+    """SPEC-0503: which run of this job dir this is: `NW_JOB_ATTEMPT` (an executor that reruns
+    a job, a Slurm requeue, sets it), else `job.json` `run_attempts` + 1."""
+    raw = os.environ.get(ATTEMPT_ENV, "")
+    if raw.isdigit() and int(raw) >= 1:
+        return int(raw)
+    done = (runproc.read_json(job / "job.json") or {}).get("run_attempts")
+    return (done if isinstance(done, int) and not isinstance(done, bool) and done > 0 else 0) + 1
+
+
+def _result_attempt(res: dict) -> int:
+    """The attempt a `result.json` belongs to (one written before SPEC-0503, or by `reap`
+    without one, is attempt 1)."""
+    n = res.get("attempt") if isinstance(res, dict) else None
+    return n if isinstance(n, int) and not isinstance(n, bool) and n > 0 else 1
+
+
+def _fresh_attempt(job: Path, attempt: int) -> None:
+    """A rerun (attempt > 1) starts from fresh scratch: `tree/`, `out/`, `tmp/` go, and a
+    `result.json` of an older attempt goes (never a newer one: attempts are compared, not
+    inferred from which files are there)."""
+    for sub in W.JOB_SCRATCH:
+        shutil.rmtree(job / sub, ignore_errors=True)
+    res = runproc.read_json(job / "result.json")
+    if res is not None and _result_attempt(res) < attempt:
+        (job / "result.json").unlink(missing_ok=True)
+
+
 def run_job(cfg, job: Path, proc: dict) -> int:
-    """The job's checkout and gates, frames into `frames.jsonl`, then `result.json`."""
+    """The job's checkout and gates, frames into `frames.jsonl`, then `result.json`. A rerun of
+    the same dir (attempt > 1, SPEC-0503) starts from fresh scratch and first writes an
+    `attempt` frame, so a reader can drop the earlier attempt's partial gate frames."""
     sett = settings(cfg)
     h = json.loads((job / "header.json").read_text(encoding="utf-8"))
+    attempt = proc.get("attempt") or _attempt(job)
+    ex = EX.for_job(cfg, job)
     cancel, stop = threading.Event(), threading.Event()
     frames = W._Frames(h["job_id"], None, cancel)
     frames.closed = True                        # no stream: the file is the only copy
     frames.log = job / "frames.jsonl"
     frames.n = _last_n(job)
+    if attempt > 1:
+        _fresh_attempt(job, attempt)
     with W.jobs_lock(cfg):
-        _set_job_json(job, state="running", pid=os.getpid(), started_at=now_iso())
+        _set_job_json(job, state="running", pid=os.getpid(), started_at=now_iso(),
+                      run_attempts=attempt)
+    if attempt > 1:
+        frames.emit("attempt", attempt=attempt)
     threading.Thread(target=_heartbeat, args=(job, sett["job_heartbeat_s"], stop),
                      daemon=True).start()
-    threading.Thread(target=_watch, args=(job, proc, cancel, stop), daemon=True).start()
+    threading.Thread(target=_watch, args=(job, proc, cancel, stop, ex.lease_cancels),
+                     daemon=True).start()
     stage, state, extra = "checkout", "error", {}
     try:
-        W._checkout(cfg, h, job, None, bundle=job / "bundle")
+        bundle = job / "bundle"
+        if attempt > 1 and not bundle.exists():
+            # the first attempt fetched the bundle into the cache (and removed it): the
+            # commits are there (`refs/nw/have/*`), only the clone is redone
+            h = {**h, "bundle_bytes": 0}
+        W._checkout(cfg, h, job, None, bundle=bundle)
         stage = "slot"
         frames.stage = None
         frames.emit("accepted")
@@ -987,7 +1049,7 @@ def run_job(cfg, job: Path, proc: dict) -> int:
     except Exception as e:
         print(f"nw worker job: cleanup failed: {e}", file=sys.stderr)
     _write_atomic(job / "result.json", {"state": state, "frame": frames.last,
-                                        "finished_at": now_iso()})
+                                        "finished_at": now_iso(), "attempt": attempt})
     stop.set()
     W._start_gc(cfg)
     return 0 if state == "done" else W.EXIT_ERROR
@@ -1028,13 +1090,20 @@ def main(argv=None) -> int:
     if lock_fd is None:
         print(f"nw worker job: {job} is locked by another process", file=sys.stderr)
         return W.EXIT_ERROR
-    if (job / "result.json").exists():
+    attempt = _attempt(job)
+    res = runproc.read_json(job / "result.json")
+    if (job / "result.json").exists() and (res is None or _result_attempt(res) >= attempt):
         print(f"nw worker job: {job} already has a result", file=sys.stderr)
         return W.EXIT_ERROR
     me = os.getpid()
     proc = {"pid": me, "pgid": os.getpgid(0), "start_ticks": runproc.start_ticks(me),
             "started_ts": time.time(), "started_mono": time.monotonic(), "boot": _boot(),
-            "started_at": now_iso(), "gates": []}
+            "started_at": now_iso(), "gates": [], "attempt": attempt}
+    old = runproc.read_json(job / "proc.json")
+    if attempt > 1 and old is not None and (old.get("attempt") or 1) < attempt:
+        # an earlier attempt's claim: we hold `job.lock`, which that process held until it
+        # exited, so it is gone (SPEC-0503)
+        (job / "proc.json").unlink(missing_ok=True)
     if not runproc.claim(job, proc):
         print(f"nw worker job: {job} is already claimed", file=sys.stderr)
         return W.EXIT_ERROR

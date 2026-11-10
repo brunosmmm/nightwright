@@ -982,8 +982,21 @@ def _install_stop_handler(handler) -> dict:
 
 
 def gate_job(cfg, stdin, stdout) -> int:
-    """`nw worker gate-job`: run one job from `stdin` (binary), frames to `stdout` (binary).
-    Returns the exit code: 0 after `done` (pass, fail or interrupted), 3 after `error`.
+    """`nw worker gate-job`: run one job from `stdin` (binary), frames to `stdout` (binary),
+    through this host's executor (SPEC-0503; `local` runs it in this process,
+    `_gate_job_local`). An unknown executor is an `error` frame, `stage: "executor"`, with
+    nothing claimed."""
+    from . import executors as EX
+    try:
+        ex = EX.get(cfg)
+    except WorkerError as e:
+        return EX.refuse_gate_job(stdin, stdout, e)
+    return ex.run_inline(cfg, ["gate-job"], stdin, stdout)
+
+
+def _gate_job_local(cfg, stdin, stdout) -> int:
+    """The `local` executor's `gate-job`: run one job from `stdin` (binary), frames to `stdout`
+    (binary). Returns the exit code: 0 after `done` (pass, fail or interrupted), 3 after `error`.
 
     SIGTERM/SIGINT/SIGHUP cancel like stdin EOF: before the slot stage the job ends with an
     `error` frame (`stage: "signal"`); from then on the slot wait or the live gates stop (their
@@ -1046,7 +1059,7 @@ def gate_job(cfg, stdin, stdout) -> int:
                            "repo_key": h["repo_key"], "commit": h["commit"], "base": h["base"],
                            "attempt": h.get("attempt"), "seq": payload["seq"],
                            "tier": payload.get("tier"), "pid": os.getpid(),
-                           "claimed_at": now_iso()}
+                           "claimed_at": now_iso(), "executor": "local"}
                 _write_job_json(job / "job.json", job_rec)
             stop.check()
 
@@ -1103,16 +1116,15 @@ def _run_gates(cfg, h: dict, job: Path, frames: _Frames, cancel: threading.Event
     `done`. `cancel` (stdin EOF) ends the slot wait or the running gate. SPEC-0391: the host's
     slot limit is the coordinator's `payload.host_slots` (the worker's registry slots), else
     this host's own `agentic.gates.slots`; each job scans only its own limit's slots."""
+    from . import executors as EX
     payload, base = h["payload"], h["base"]
     seq = payload["seq"]
-    n_slots = payload.get("host_slots") or gate_slots.settings(cfg)["slots"]
 
     def announce(_occ, waited_s):
         frames.emit("slot_wait", waited_s=waited_s)
 
-    with gate_slots.acquire(cfg, SLOT_CAMPAIGN_PREFIX + h["campaign"], stop=cancel, on_wait=announce,
-                            wait_event_s=_slot_wait_event_s(),
-                            pools=[(None, n_slots)]) as hold:
+    # SPEC-0503: the host slot is the job's executor's (`local`: `gate_slots.acquire`)
+    with EX.for_job(cfg, job).host_slot(cfg, h, cancel, announce) as hold:
         if hold.interrupted:
             frames.emit("done", ok=False, started_at=now_iso(), duration_s=0.0,
                         slot_wait_s=hold.waited_s, interrupted=True, changed=[])
@@ -1392,13 +1404,22 @@ def _version_out(*cmd) -> str | None:
 
 def info(cfg) -> dict:
     from .. import __version__, buildid
+    from . import executors as EX
     pkg = Path(__file__).resolve().parents[1]
     sha = _version_out("git", "-C", str(pkg), "rev-parse", "HEAD")
-    return {"schema": INFO_SCHEMA, "protocol": JOB_SCHEMA, "features": ["async", "persona", "update"],
+    # SPEC-0503: the executor this host's config names (`executor:<name>` only when known)
+    executor = EX.configured(cfg)
+    features = ["async", "persona", "update"]
+    extra = {}
+    if executor in EX.known():
+        features.append(f"executor:{executor}")
+    else:
+        extra["executor_error"] = f"unknown executor {executor!r}"
+    return {"schema": INFO_SCHEMA, "protocol": JOB_SCHEMA, "features": features,
             "version": __version__,
             "git_sha": sha, "build_id": buildid.local(), "data_dir": str(cfg["data_dir"]),
             "git": _version_out("git", "--version"), "uv": _version_out("uv", "--version"),
-            "free_bytes": _free_bytes(cfg)}
+            "free_bytes": _free_bytes(cfg), "executor": executor, **extra}
 
 
 CLAUDE_CHECK_SCHEMA = "nw.worker.claude_check.v1"
