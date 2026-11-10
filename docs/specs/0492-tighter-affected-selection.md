@@ -122,26 +122,26 @@ new one, and record both median percentages of that commit's test files in *As s
 
 ## Acceptance criteria
 
-- [ ] A new spec file or `docs/LEDGER.md` selects only the tests reached by its basename needle
+- [x] A new spec file or `docs/LEDGER.md` selects only the tests reached by its basename needle
   (expanded with `nearest_tests`) plus the `--guards` modules when set. It adds no tree readers
   and no parent-directory readers, and an empty basename hit is not the full suite.
   `SCHEMA.md`, `spec.schema.json` and `TEMPLATE*.md` still fall back to the directory.
-- [ ] A body-only edit of one public top-level function, in a module whose nearest tests exceed
+- [x] A body-only edit of one public top-level function, in a module whose nearest tests exceed
   `--hot-threshold` (default 30), selects the nearest tests whose source contains that name as a
   word, plus that module's name-rule tests and the `src/nightwright` tree readers, and the
   report's `hot` maps the path to that name. At or below the threshold the whole nearest set is
   kept.
-- [ ] The whole nearest set is kept when a hunk lies outside the spans (including a trailing
+- [x] The whole nearest set is kept when a hunk lies outside the spans (including a trailing
   comment), when any changed name starts with `_`, when the file does not parse, and when the
   diff cannot be read, including when the diff also edits a public function. A git failure on
   `--changed` skips narrowing and is not the full suite.
-- [ ] `--strict` does not narrow and is unchanged.
-- [ ] A non-Python fixture file under `tests/fixtures/<dir>/...` whose basename no test names
+- [x] `--strict` does not narrow and is unchanged.
+- [x] A non-Python fixture file under `tests/fixtures/<dir>/...` whose basename no test names
   selects the tests with a `has_dir_ref(<dir>)` match, `<dir>` being the first component, also
   for files nested deeper. A basename hit stays the basename readers. No basename hit and no
   `<dir>` reference selects the full suite with reason `no test references <rel>`.
   `tests/fixtures/a.txt` and `tests/data/` are unchanged.
-- [ ] The 200-commit replay is recorded in *As shipped*: for each commit it checks out that
+- [x] The 200-commit replay is recorded in *As shipped*: for each commit it checks out that
   commit and runs the selector with `--repo`, `--base <commit>^`, `--guards` and the two
   `--include`s (no `--changed`), before and after. The after median is lower than the before
   median and below the SPEC-0489 figure of 44 %.
@@ -193,8 +193,14 @@ new one, and record both median percentages of that commit's test files in *As s
   (no gate-job token within 600 s). The affected tests ran locally in the worktree with `TMPDIR`
   on `/home`, because `/tmp` (a tmpfs) had run out of inodes, mostly under
   `/tmp/pytest-of-bruno`. An earlier local run with `TMPDIR=/tmp` errored on ENOSPC, for that
-  environmental reason only. `tests/test_affected_tests.py` and `tests/test_affected_tests_replay.py`:
-  169 passed. Known failure on main, not caused by this change: `test_conduct_skill_never_asks_the_human`.
+  environmental reason only.
+- **The affected-tests run was waived by the human on 2026-11-09 to merge sooner.** Only these
+  ran (`TMPDIR` on `/home`, each under `timeout 300`), plus `spec_lint`:
+  - `tests/test_affected_tests.py`: 163 passed in 41 s.
+  - `tests/test_affected_tests_replay.py`: 6 passed in 63 s.
+  
+  The full affected selection (60 files) was not run to completion. The regression-guard item of
+  the Test plan is therefore not met, and the spec stays `in-progress` until a close gate runs it.
 
 ## Rollout / migration
 
