@@ -133,3 +133,5 @@ Additive. Old events lack `placement`; the renderer prints nothing for them. Sup
   lane's gate was disturbed): `uv run nw campaign show` printed
   `Gate #1 - passed (0s) · local: no_placeable_worker (no remote worker is enabled for gates)`
   and `--json` carried the `placement` object.
+
+- Landing: rebased onto main (SPEC-0507/0522/0523) and merged on the human's order for an immediate merge; the post-rebase box gate was waived. Verified post-rebase: spec_lint, focused tests (test_gates_placement_reason, test_remote_gates_writes, test_worker_job_retry, test_queue_exclusive_regate); the pre-rebase gates/worker/remote_gates test files all passed.
