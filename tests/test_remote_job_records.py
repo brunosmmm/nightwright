@@ -1167,3 +1167,81 @@ def test_adoption_defers_on_a_git_failure(aw, remote, monkeypatch):
     res, row = _gate_and_apply(aw)
     assert res.gate_run.seq == 1 and res.gate_run.worker == "box" and row["to"] == "REVIEWING"
     assert _rec(aw)["state"] == "done" and len(aw.ledger(["gate"])) == 1
+
+
+# ---- SPEC-0522: a quiet attach asks `poll`, so a finished job always ends the step ----------
+
+_HANG_BEFORE_DONE = """import json, subprocess, sys, time
+p = subprocess.Popen(sys.argv[1:], stdout=subprocess.PIPE)
+for line in p.stdout:
+    if json.loads(line).get("type") == "done":
+        continue                                # the `done` frame never reaches the coordinator
+    sys.stdout.buffer.write(line)
+    sys.stdout.buffer.flush()
+p.wait()
+time.sleep(3600)                                # the SSH session stays open, silent
+"""
+
+
+def test_quiet_attach_of_a_finished_job_ends_by_poll(aw, remote, monkeypatch):
+    """IDEA-1115: the job finishes on the worker but the attach stream never delivers `done`
+    and never closes. After `QUIET_POLL_S` of silence a separate `poll` sees `done`, its frames
+    end the step with the full run, and the hung attach is ended; no give-up, no fallback."""
+    tmp = aw.tmp
+    (tmp / "hangattach.py").write_text(_HANG_BEFORE_DONE)
+    calls = tmp / "calls"
+    ssh = _script(tmp / "ssh-hangattach", (
+        f'echo "$*" >> {calls}\n'
+        f'case "$*" in *" attach "*) exec {sys.executable} {tmp / "hangattach.py"} '
+        f'{remote.ssh} "$@";; esac\n'
+        f'exec {remote.ssh} "$@"'))
+    remote.register(ssh=ssh, info=ASYNC_INFO)
+    monkeypatch.setattr(RG, "QUIET_POLL_S", 0.5)
+    aw.release()
+    t0 = time.monotonic()
+    res, row = _gate_and_apply(aw)
+    assert time.monotonic() - t0 < 60
+    run = res.gate_run
+    assert run.ok and run.worker == "box" and row["to"] == "REVIEWING"
+    assert [r.name for r in run.results] == ["g1", "g2", "g3"]
+    lines = calls.read_text().splitlines()
+    assert len([ln for ln in lines if " attach " in ln]) == 1
+    assert any(" poll " in ln and ln.endswith("--renew") for ln in lines)
+    assert not aw.ledger(["worker_failed"]) and not aw.ledger(["worker_job_lost"])
+    assert _rec(aw)["state"] == "done" and len(aw.ledger(["gate"])) == 1
+    _files_match_frames(aw, remote)
+
+
+class _FakeJob:
+    def __init__(self, cfg, last_seen):
+        self.cfg, self.worker, self.job_id, self.seen = cfg, {"name": "box"}, JOB, 4
+        self.last_seen, self.fed = last_seen, []
+
+    def feed(self, frame):
+        self.fed.append(frame)
+        return None
+
+
+def test_quiet_check_states(aw, monkeypatch):
+    """SPEC-0522 `_quiet_check` over a fake `poll`: running stays attached (and counts as the
+    worker answering), lost ends as lost, unreachable stays attached until `worker_ttl_s`."""
+    clock = [1000.0]
+    monkeypatch.setattr(RG, "_now", lambda: clock[0])
+    answer = {}
+    monkeypatch.setattr(RG, "_call", lambda worker, *args, **kw: answer.get("v"))
+    ttl = RJ.settings(aw.cfg)["worker_ttl_s"]
+
+    job = _FakeJob(aw.cfg, last_seen=0.0)
+    answer["v"] = (0, [{"type": "status", "job_id": JOB, "state": "running"}], b"")
+    assert RG._quiet_check(job) is None and job.last_seen == 1000.0 and job.fed == []
+
+    answer["v"] = (0, [{"type": "status", "job_id": JOB, "state": "lost"}], b"")
+    assert RG._quiet_check(job) == ("lost", "lost")
+    answer["v"] = (1, [{"type": "status", "job_id": JOB, "state": "unknown"}], b"")
+    assert RG._quiet_check(job) == ("lost", "unknown")
+
+    answer["v"] = None                                       # unreachable
+    job.last_seen = clock[0] - ttl + 1
+    assert RG._quiet_check(job) is None
+    job.last_seen = clock[0] - ttl - 1
+    assert RG._quiet_check(job) == ("dropped", False)

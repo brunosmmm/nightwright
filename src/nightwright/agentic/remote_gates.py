@@ -941,6 +941,7 @@ BACKOFF_START_S = 2.0               # re-attach backoff: 2, 4, 8, ... capped at 
 BACKOFF_MAX_S = 60.0
 CANCEL_GRACE_S = 10.0               # a cancel attaches this long for the job's `done`
 CALL_TIMEOUT_S = 60.0               # one `poll` / `cancel` call
+QUIET_POLL_S = 30.0                 # SPEC-0522: an attach silent this long asks `poll` directly
 _now = time.time                    # the wall clock of `last_seen_at` / `deadline_at` (tests swap it)
 
 
@@ -1256,6 +1257,37 @@ class _Job:
                          event_uid=f"{self.job_id}:{n}", changed=changed)
 
 
+def _quiet_check(job: _Job):
+    """SPEC-0522: the attach stream has been silent for `QUIET_POLL_S`; ask the worker with a
+    separate `poll --renew`, so a job that ended always ends the attach, whatever keeps the
+    attach's SSH session open. None: stay attached (the job runs, or the worker is unreachable
+    but still within `worker_ttl_s`). Otherwise an `_attach` result: `("done", run)` from the
+    poll's frames, `("lost", state)`, or `("dropped", fed)` (re-attach, or give up on TTL)."""
+    got = _call(job.worker, "poll", job.job_id, "--from", job.seen, "--renew")
+    if got is None or got[0] not in (0, 1):
+        if _now() - job.last_seen > RJ.settings(job.cfg)["worker_ttl_s"]:
+            return "dropped", False
+        return None
+    job.last_seen = _now()
+    state = _status_of(got[1])
+    if state in ("lost", "unknown"):
+        return "lost", state
+    if state not in ("done", "error"):
+        return None
+    fed = False
+    for rec in got[1]:
+        if rec.get("type") == "status":
+            continue
+        frame = _frame(json.dumps(rec, ensure_ascii=False).encode("utf-8"), job.job_id)
+        run = job.feed(frame)
+        fed = True
+        if run is not None:
+            return "done", run
+    if state == "error":
+        raise RemoteFailure("error", "the job ended in `error` while its attach was silent")
+    return "dropped", fed
+
+
 def _attach(job: _Job, stop):
     """One `attach JOB --from seen`: `("done", run)`, `("lost", "lost" | "unknown")`,
     `("stopped", None)`, `("deadline", None)` or `("dropped", got_frames)` (the connection
@@ -1268,6 +1300,7 @@ def _attach(job: _Job, stop):
         return "dropped", False
     lines: queue.Queue = queue.Queue()
     got = False
+    quiet_since = time.monotonic()
     try:
         for target, stream in ((_reader, proc.stdout), (_drain, proc.stderr)):
             threading.Thread(target=target,
@@ -1281,7 +1314,15 @@ def _attach(job: _Job, stop):
             try:
                 line = lines.get(timeout=_POLL_S)
             except queue.Empty:
+                if time.monotonic() - quiet_since >= QUIET_POLL_S:
+                    quiet_since = time.monotonic()
+                    out = _quiet_check(job)
+                    if out is not None and out[0] == "dropped":
+                        return "dropped", bool(out[1] or got)
+                    if out is not None:
+                        return out
                 continue
+            quiet_since = time.monotonic()
             if line is None:
                 return "dropped", got
             if not line.endswith(b"\n"):       # the frame cut off at EOF: SSH died mid-write

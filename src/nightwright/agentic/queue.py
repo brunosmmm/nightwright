@@ -5248,21 +5248,54 @@ def _submit(ctx: _Ctx, pool: StepPool, report: TickReport, pending_agent: list,
             report.steps.append(_finish_reviews(ctx, report, group))
 
 
-def _gates_in_flight(ctx: _Ctx, pool: StepPool) -> tuple[int, bool]:
+GATE_HOLD_SLACK_S = 600     # SPEC-0522: past its longest gate timeout + this, a step holds nobody
+
+
+def _gate_hold_s(pcfg) -> float:
+    """SPEC-0522: how long one gate step (or re-gating close) may hold other gate starts: the
+    project's longest gate `timeout_s` (at least the default) plus `GATE_HOLD_SLACK_S`."""
+    outs = [float(g.get("timeout_s") or 0) for g in (pcfg or {}).get("gates") or []]
+    return max(outs + [float(P.GATE_DEFAULTS["timeout_s"])]) + GATE_HOLD_SLACK_S
+
+
+def _flight_age_s(fl, now) -> float | None:
+    import datetime as dt
+    try:
+        return (now - dt.datetime.fromisoformat(fl.started_at)).total_seconds()
+    except (TypeError, ValueError):
+        return None
+
+
+def _gates_in_flight(ctx: _Ctx, pool: StepPool, now=None) -> tuple[int, bool]:
     """(gate steps in flight, whether one is exclusive) (SPEC-0311). A `close` whose project
-    re-gates counts as a gate step: it runs the same full suite."""
+    re-gates counts as a gate step: it runs the same full suite. SPEC-0522: a step in flight
+    longer than `_gate_hold_s` no longer counts (it keeps running but holds no other gate
+    start); `gate_hold_expired` is journaled once per flight."""
+    import datetime as dt
+    now = now or dt.datetime.now().astimezone()
     n, exclusive = 0, False
     for fl in list(pool.flights.values()):
         for step, fut, _hooks in list(fl.tasks):
             if fut.done():
                 continue
-            if step.kind == "close":
-                try:
-                    if not _close_regates(fl.state, ctx.project(fl.state)):
-                        continue
-                except ValueError:
+            if step.kind not in ("close", "gate"):
+                continue
+            try:
+                pcfg = ctx.project(fl.state)
+                if step.kind == "close" and not _close_regates(fl.state, pcfg):
                     continue
-            elif step.kind != "gate":
+            except ValueError:
+                if step.kind == "close":
+                    continue
+                pcfg = None
+            age, hold = _flight_age_s(fl, now), _gate_hold_s(pcfg)
+            if age is not None and age > hold:
+                key = ("gate_hold_expired", fl.state.get("id"), fl.started_at)
+                if key not in pool.deferred_noted:
+                    pool.deferred_noted.add(key)
+                    journal(ctx.cfg, "gate_hold_expired", campaign=fl.state.get("id"),
+                            step=step.kind, age_s=round(age), bound_s=round(hold),
+                            exclusive=bool(gate_exclusive(fl.state)))
                 continue
             n += 1
             exclusive = exclusive or (step.kind == "gate" and bool(gate_exclusive(fl.state)))

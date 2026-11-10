@@ -2363,6 +2363,40 @@ def test_gate_starts_counts_flights_and_close_regates(opened):
     assert [k for k, _ in calls] == ["gate_timeout_deferred"] * 2
 
 
+def test_exclusive_hold_expires_past_gate_timeout(opened, monkeypatch):
+    """SPEC-0522: an exclusive gate step holds other gate starts only within its bound (the
+    project's longest gate timeout + slack); past it the step no longer counts, the waiting
+    campaign starts, and `gate_hold_expired` is journaled once."""
+    import datetime as dt
+    from concurrent.futures import Future
+    cfg, cid, ctx = opened
+    pool = Q.StepPool()
+    calls = []
+    monkeypatch.setattr(Q, "journal", lambda cfg_, kind, **kw: calls.append((kind, kw)))
+    st = dict(S.read_state(cfg, cid), id="B", state="GATING",
+              gate_exclusive={"entered_at": "2026-11-09T21:15:06-05:00"})
+    hold = Q._gate_hold_s(ctx.project(st))
+    assert hold >= Q.GATE_HOLD_SLACK_S + max(g["timeout_s"] for g in ctx.project(st)["gates"])
+    now = dt.datetime(2026, 11, 9, 22, 0, tzinfo=dt.timezone.utc)
+    fl = Q._Flight(st, ctx)
+    fl.tasks.append((Q.Step("gate"), Future(), None))            # never finishes
+    pool.flights["B"] = fl
+    c = _gs("C")
+
+    fl.started_at = (now - dt.timedelta(seconds=hold - 60)).isoformat()   # within its bound
+    assert Q._gates_in_flight(ctx, pool, now=now) == (1, True)
+    assert Q.select_gate_starts([c], *Q._gates_in_flight(ctx, pool, now=now)) == []
+    assert calls == []
+
+    fl.started_at = (now - dt.timedelta(seconds=hold + 60)).isoformat()   # past it
+    assert Q._gates_in_flight(ctx, pool, now=now) == (0, False)
+    assert Q.select_gate_starts([c], *Q._gates_in_flight(ctx, pool, now=now)) == ["C"]
+    assert [k for k, _ in calls] == ["gate_hold_expired"]
+    kw = calls[0][1]
+    assert kw["campaign"] == "B" and kw["step"] == "gate" and kw["exclusive"] is True
+    assert kw["bound_s"] == round(hold) and kw["age_s"] == round(hold + 60)
+
+
 def test_tick_defers_gate_steps_around_exclusive_regate(opened, monkeypatch):
     """`_tick` itself applies the serialization (SPEC-0311): with B's gate in flight, the
     exclusive A and the later C are not submitted and their state and ledger stay untouched, while
