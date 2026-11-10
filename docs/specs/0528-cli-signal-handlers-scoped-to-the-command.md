@@ -132,7 +132,28 @@ gate log (it does not fail or kill the test; no pytest-timeout dependency).
 
 ## As shipped
 
-(filled at close)
+- Shipped as designed (`scoped_signals.scoped`; `herdr watch`, `gate run`/`_exec`,
+  `campaign tail --follow-campaign` use it; `Watcher.run(max_s)`; `faulthandler_timeout = 300`).
+- Leak audit (an audit-hook plugin logging a SIGTERM handler still changed after a test and any
+  kill aimed at the worker's own pid/group), over the 34 signal-touching test files, before the
+  fix: 10 leaking tests: `test_gate_jobs.py` x6 (`_stop_on_signals`: SIGTERM+SIGINT became
+  no-ops for the rest of the worker), `test_herdr.py` x4 (`herdr_watch._term`,
+  `campaign_tail._bye`). After the fix, the same plugin over `test_gate_jobs`, `test_herdr*`,
+  `test_scoped_signals`, `test_remote_workers_integration`: 0 leaks. The only self-kills are
+  `test_worker.py`'s three deliberate SIGTERM tests, under their own (restored) handler.
+- No in-process loop hang reproduced: every in-process `herdr watch` in the tests is `--once`
+  (bounded), and the one in-process loop test stops on an event. 8 x pre-fix and 20 x post-fix
+  `pytest -n 4 tests/test_herdr*.py (+ test_scoped_signals.py)`: all green. The confirmed defect
+  is the leaked handler that changes how a worker reacts to SIGTERM/SIGINT; the exact test that
+  stalled the two gates is not named by the logs, which is what `faulthandler_timeout = 300` is
+  for (a stall > 5 min now dumps every thread's stack into the gate log).
+- `faulthandler_timeout` works with the existing setup (no pytest-timeout): local runs pass with
+  it; it only dumps, never fails a test.
+- `tests/test_remote_workers_integration.py::test_no_workers_run_matches_the_pre_epic_golden`
+  fails on main too (verified with this change stashed); unrelated.
+- Box gate (`--tier loop`): not run yet: the box was stuck `updating (draining, 1 jobs)` with no
+  jobs for > 40 min (`nw gate run` exit 3, "no placeable gate worker"). Status stays `accepted`
+  until that gate is green.
 
 ## Definition of done
 
