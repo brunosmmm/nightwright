@@ -866,6 +866,11 @@ def _cache_tree_corrupt(root: Path, sources: dict | None = None) -> bool:
                         path.unlink()
                     except OSError:
                         pass
+            for path in camp.glob("*.json"):
+                if _is_tmp(path.name):
+                    continue
+                if _read_json(path) is None:
+                    return True
         return False
     idx = root / "index.jsonl"
     if idx.is_file():
@@ -2131,7 +2136,8 @@ def _ensure_writable_cache(cfg, root: Path, *, now=None, progress=None) -> bool:
     ):
         v1_peek = (sources_peek or {}).get("v1_files") or {}
         if isinstance(v1_peek, dict) and _v1_cursors_match_records_quiet(root, v1_peek):
-            return False
+            if not _cache_tree_corrupt(root, sources_peek):
+                return False
     if _cache_tree_corrupt(root, sources_peek):
         with _cache_write_guard(root):
             _clear_v1_except_lock(root)
@@ -3037,7 +3043,12 @@ def _campaign_history_cached(cfg, cid, now, root: Path) -> dict:
         hit = _doc_hit(cfg, root, cid, now, sources)
         base = store.campaign_dir(cfg, cid)
         sig = _campaign_signature_from_root_scan(base) if base is not None else None
-        if hit is not None and sig is not None and hit.get("signature") == sig:
+        if (
+            hit is not None
+            and sig is not None
+            and hit.get("signature") == sig
+            and _sources_unchanged_light(cfg, sources)
+        ):
             return hit
     _sync_globals(cfg, root, now)
     sources = _read_json(root / "sources.json") or {}

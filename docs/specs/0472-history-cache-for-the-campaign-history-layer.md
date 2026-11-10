@@ -1,7 +1,7 @@
 ---
 id: SPEC-0472
 title: "History cache for the campaign history layer"
-status: in-progress
+status: done
 owner: user
 created: 2026-11-08
 updated: 2026-11-09
@@ -655,6 +655,14 @@ Queue `pytest-affected` rerun left in flight. Full suite left to queue gating.
 `tests/test_history.py tests/test_cli_campaign_history.py tests/test_history_scale.py`
 `tests/test_history_fixture.py` (140 passed). `python3 tools/spec_lint.py --write-ledger` exit 0.
 Full suite left to queue gating.
+
+### Test record (2026-11-09, implementer loop 2 of 3, IDEA-1015-faf2)
+
+Gate fix: terminal `campaign_history` hit requires `_sources_unchanged_light` so deleted
+`runner.jsonl` falls through to `_sync_globals` gap recompute. Records quiet bootstrap calls
+`_cache_tree_corrupt` even when `v1_files` matches index/records only; fast corrupt check
+parses `campaigns/*.json`. `uv run pytest -q tests/test_history_cache.py` (45 passed).
+`python3 tools/spec_lint.py --write-ledger` exit 0. Full suite left to gating.
 
 ### Test record (2026-11-09, implementer loop 2 of 3)
 
