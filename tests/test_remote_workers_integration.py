@@ -627,11 +627,10 @@ def forged_done(frame, doc):
 def emit(forged):
     global shift
     shift = 1
-    with open(marker, "a") as m:             # proof that a forged frame went onto the stream
-        m.write(json.dumps(forged) + "\\n")
-        m.flush()
     sys.stdout.buffer.write((json.dumps(forged) + "\\n").encode())
     sys.stdout.buffer.flush()
+    with open(marker, "a") as m:             # proof that a forged frame went onto the stream
+        m.write(json.dumps(forged) + "\\n")
 
 for line in p.stdout:
     try:

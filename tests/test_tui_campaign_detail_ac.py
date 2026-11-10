@@ -143,7 +143,9 @@ def test_focus_run_record_and_unknown(tmp_path):
             cid, hist = c, h
             break
     assert cid and hist
-    run_id = hist["runs"][0]["run_id"]
+    judged = [r for r in hist["runs"] if r.get("verdict_status") is not None]
+    run_row = (judged or hist["runs"])[0]
+    run_id = run_row["run_id"]
     record_id = hist["records"][0]["id"]
     app = IdeaDesk(cfg, tab="queue")
     app.notes = []
@@ -161,6 +163,10 @@ def test_focus_run_record_and_unknown(tmp_path):
             assert run_id in keys
             assert await pilot_until(
                 pilot, lambda: str(s.query_one("#runs-detail-text").content).strip())
+            if run_row.get("verdict_status") is not None:
+                # The detail leads with that run's verdict status.
+                assert str(s.query_one("#runs-detail-text").content).splitlines()[0].startswith(
+                    str(run_row["verdict_status"]))
             await press(app, pilot, ["escape"])
             await settle(app, pilot)
             app.open_campaign_detail(cid, focus={"tab": "records", "record": record_id})
@@ -256,7 +262,8 @@ def test_popup_frame_and_pane_keys(tmp_path):
                 await settle(app, pilot)
                 assert tabs.active == "tab-queue"
                 assert body.active == want
-            assert "placeholder: runs" not in str(s.query_one("#runs-detail-text").content)
+            assert s.query_one("#campaign-runs", DataTable).row_count == len(
+                s.view.history["runs"])
             assert "placeholder: records" in str(s.query_one("#placeholder-records").content)
             assert "placeholder: mail" in str(s.query_one("#placeholder-mail").content)
             assert ids["ready"] in overview(app)

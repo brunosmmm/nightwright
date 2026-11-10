@@ -9,6 +9,7 @@ conditions, ping digest, followers) is read-only throughout: it never syncs the 
 a reader.
 """
 import datetime as dt
+from collections import deque
 import json
 import os
 import re
@@ -1263,54 +1264,77 @@ _TERMINAL_OUTCOMES = frozenset({"merged", "handed_off", "abandoned"})
 RUNS_STDERR_LINES = 200
 RUNS_RESULT_LINES = 200
 RUNS_STREAM_LINES = 200
+RUNS_FOLLOW_MAX_LINES = 2000
 RUNS_TABLE_COLUMNS = ("run_id", "persona", "phase", "status", "verdict_status",
                       "duration_s", "cost_usd")
+_CTRL = re.compile(r"[\x00-\x08\x0b-\x1f\x7f]")
+
+
+def _clean(value) -> str:
+    """Strip terminal control characters (keeps tab and newline) from file-sourced text."""
+    return _CTRL.sub("", str(value))
 
 
 @dataclass
 class RunPaneDetail:
-    text: Text
+    head: Text
+    body: list[str]
     renderer: object | None
     offset: int
     has_stream: bool
     run_id: str
+    ended: bool = False
+
+    @property
+    def text(self) -> Text:
+        t = Text()
+        t.append_text(self.head)
+        for ln in self.body:
+            t.append(ln)
+            t.append("\n")
+        return t
 
 
 def _verdict_status_line(verdict: dict | None) -> str:
+    """Lead (status, disposition, or verdict) plus score and summary. history's
+    `verdict_status` carries only the lead, so the line is built here with the same key order."""
     if not isinstance(verdict, dict):
         return ""
     lead = next((verdict[k] for k in ("status", "disposition", "verdict")
                  if verdict.get(k) is not None), None)
     parts: list[str] = []
     if lead is not None:
-        parts.append(str(lead))
+        parts.append(_clean(lead))
     if verdict.get("score") is not None:
-        parts.append(str(verdict["score"]))
+        parts.append(_clean(verdict["score"]))
     if verdict.get("summary"):
-        parts.append(str(verdict["summary"]))
+        parts.append(_clean(verdict["summary"]))
     return " ".join(parts)
+
+
+def _files_list(value) -> list:
+    return value if isinstance(value, list) else []
 
 
 def _blocking_rows(verdict: dict | None) -> list[tuple[str, str, list | None]]:
     if not isinstance(verdict, dict):
         return []
     out: list[tuple[str, str, list | None]] = []
-    for f in verdict.get("findings") or []:
+    findings = verdict.get("findings")
+    for f in findings if isinstance(findings, list) else []:
         if not isinstance(f, dict):
             continue
         sev = f.get("severity")
         if sev in ("must_fix", "major"):
-            files = f.get("files") if isinstance(f.get("files"), list) else []
-            out.append((str(sev), str(f.get("title") or ""), files))
-    for item in verdict.get("must_fix") or []:
+            out.append((str(sev), _clean(f.get("title") or ""), _files_list(f.get("files"))))
+    must_fix = verdict.get("must_fix")
+    for item in must_fix if isinstance(must_fix, list) else []:
         if isinstance(item, dict):
-            files = item.get("files") if isinstance(item.get("files"), list) else []
-            out.append(("must_fix", str(item.get("title") or ""), files))
-        elif isinstance(item, str):
-            out.append(("must_fix", item, []))
-    for b in verdict.get("blockers") or []:
+            out.append(("must_fix", _clean(item.get("title") or ""), _files_list(item.get("files"))))
+    blockers = verdict.get("blockers")
+    for b in blockers if isinstance(blockers, list) else []:
         if isinstance(b, str):
-            out.append(("major", b, None))
+            out.append(("major", _clean(b), None))
     return out
 
 
@@ -1327,7 +1351,7 @@ def _append_blocking_rows(t: Text, verdict: dict | None) -> None:
         t.append(title)
         t.append("\n")
         if files:
-            t.append("  files: " + ", ".join(str(f) for f in files) + "\n", style="dim")
+            t.append("  files: " + ", ".join(_clean(f) for f in files) + "\n", style="dim")
 
 
 def _stderr_tail_text(run_dir: Path) -> Text:
@@ -1342,7 +1366,7 @@ def _stderr_tail_text(run_dir: Path) -> Text:
         t.append("no stderr\n")
         return t
     for ln in lines:
-        t.append(ln)
+        t.append(_clean(ln))
         t.append("\n")
     return t
 
@@ -1351,8 +1375,9 @@ def _result_file_path(run_dir: Path, run_json: dict | None) -> Path:
     path = run_dir / "result.json"
     if not isinstance(run_json, dict):
         return path
-    raw = (run_json.get("files") or {}).get("raw")
-    if not isinstance(raw, str) or not raw.strip():
+    files = run_json.get("files")
+    raw = files.get("raw") if isinstance(files, dict) else None
+    if not isinstance(raw, str) or not raw.strip() or Path(raw).is_absolute():
         return path
     try:
         base = run_dir.resolve()
@@ -1364,97 +1389,90 @@ def _result_file_path(run_dir: Path, run_json: dict | None) -> Path:
     return path
 
 
-def _result_fallback_text(run_dir: Path, run_json: dict | None) -> Text:
-    t = Text()
+def _result_fallback_lines(run_dir: Path, run_json: dict | None) -> list[str]:
     path = _result_file_path(run_dir, run_json)
     if not path.is_file():
-        t.append("no result.json\n")
-        return t
+        return ["no result.json"]
     text = RP._text(path)
     obj = None
     try:
         obj = json.loads(text) if text.strip() else None
     except ValueError:
         obj = None
-    body_lines: list[str] = []
     if isinstance(obj, dict):
         body = obj.get("result")
         if (isinstance(body, str) and body.strip()
                 and not isinstance(obj.get("structured_output"), dict)):
-            body_lines = body.splitlines()[-RUNS_RESULT_LINES:]
+            lines = body.splitlines()[-RUNS_RESULT_LINES:]
         else:
-            body_lines = text.splitlines()[-RUNS_RESULT_LINES:]
+            lines = text.splitlines()[-RUNS_RESULT_LINES:]
     elif text.strip():
-        body_lines = text.splitlines()[-RUNS_RESULT_LINES:]
+        lines = text.splitlines()[-RUNS_RESULT_LINES:]
     else:
-        t.append("no result.json\n")
-        return t
-    for ln in body_lines:
-        t.append(ln)
-        t.append("\n")
-    return t
+        return ["no result.json"]
+    return [_clean(ln) for ln in lines]
 
 
-def _stream_initial_tail(cfg, run_dir: Path) -> tuple[Text, object, int]:
+def _feed(renderer, line: str) -> list[str]:
+    """Render one stream line; a renderer failure becomes a visible line, never a retry."""
+    try:
+        return [_clean(x.plain) for x in renderer.feed_line(line)]
+    except Exception as e:  # noqa: BLE001 - one bad event must not stall the follow
+        return [f"(stream line skipped: {_clean(e)})"]
+
+
+def _flush(renderer) -> list[str]:
+    try:
+        return [_clean(x.plain) for x in renderer.flush_prose()]
+    except Exception as e:  # noqa: BLE001
+        return [f"(stream flush skipped: {_clean(e)})"]
+
+
+def _fragment_lines(renderer, stream: Path, offset: int) -> list[str]:
+    """A trailing no-newline fragment, rendered when it is one JSON object."""
+    frag = TL._fragment(stream, offset)
+    if frag and "\n" not in frag:
+        try:
+            if isinstance(json.loads(frag), dict):
+                return _feed(renderer, frag)
+        except ValueError:
+            pass
+    return []
+
+
+def run_follow_state(cfg, campaign_id, run_id) -> tuple[bool, bool]:
+    """(has stream.jsonl, run ended), read in a worker thread."""
+    run_dir = store.runs_dir(cfg, campaign_id) / run_id
+    has_stream = (run_dir / "stream.jsonl").is_file()
+    try:
+        ended = TL._ended(run_dir)
+    except OSError:
+        ended = True
+    return has_stream, ended
+
+
+def _stream_initial_tail(cfg, run_dir: Path, ended: bool) -> tuple[list[str], object, int]:
+    """Feed the whole stream; keep the last RUNS_STREAM_LINES rendered lines. `ended` was read
+    before the stream, so an ended run's file is complete and its fragment can be drained."""
     renderer = _run_renderer(cfg, run_dir)
     stream = run_dir / "stream.jsonl"
-    offset = 0
-    rendered: list[Text] = []
-    while True:
-        prev = offset
-        lines, offset = TL.read_lines(stream, offset)
-        for line in lines:
-            rendered.extend(renderer.feed_line(line))
+    rendered: deque[str] = deque(maxlen=RUNS_STREAM_LINES)
+    lines, offset = TL.read_lines(stream, 0)
+    for line in lines:
+        rendered.extend(_feed(renderer, line))
+    if ended:
+        rendered.extend(_fragment_lines(renderer, stream, offset))
         try:
-            st_size = stream.stat().st_size
+            offset = stream.stat().st_size
         except OSError:
-            st_size = offset
-        try:
-            ended = TL._ended(run_dir)
-        except OSError:
-            ended = True
-        if not ended:
-            break
-        if offset >= st_size:
-            break
-        if not lines or offset == prev:
-            break
-    if TL._ended(run_dir):
-        try:
-            st_size = stream.stat().st_size
-        except OSError:
-            st_size = offset
-        frag = TL._fragment(stream, offset)
-        if frag and "\n" not in frag:
-            try:
-                if isinstance(json.loads(frag), dict):
-                    rendered.extend(renderer.feed_line(frag))
-            except ValueError:
-                pass
-        elif frag:
-            more, offset = TL.read_lines(stream, offset)
-            for line in more:
-                rendered.extend(renderer.feed_line(line))
-        offset = st_size
-    rendered.extend(renderer.flush_prose())
-    plains = [t.plain for t in rendered][-RUNS_STREAM_LINES:]
-    t = Text()
-    for ln in plains:
-        t.append(ln)
-        t.append("\n")
-    return t, renderer, offset
+            pass
+    rendered.extend(_flush(renderer))
+    return list(rendered), renderer, offset
 
 
-def load_run_pane_detail(cfg, cid, run_id: str) -> RunPaneDetail:
-    """Verdict, blockers, stderr, and stream or pre-stream result for one run. Never raises."""
-    run_dir = store.runs_dir(cfg, cid) / run_id
+def _head_text(run_dir: Path) -> tuple[Text, dict | None]:
+    """Verdict, blocking rows and stderr tail from run.json and stderr.log."""
     t = Text()
-    renderer = None
-    offset = 0
-    has_stream = False
-    if not run_dir.is_dir():
-        t.append("no run directory\n")
-        return RunPaneDetail(t, None, 0, False, run_id)
     run_json = None
     run_path = run_dir / "run.json"
     if run_path.is_file():
@@ -1464,20 +1482,37 @@ def load_run_pane_detail(cfg, cid, run_id: str) -> RunPaneDetail:
             run_json = None
             t.append("run.json malformed\n")
     verdict = run_json.get("verdict") if isinstance(run_json, dict) else None
-    line = _verdict_status_line(verdict if isinstance(verdict, dict) else None)
+    verdict = verdict if isinstance(verdict, dict) else None
+    line = _verdict_status_line(verdict)
     if line:
         t.append(line)
         t.append("\n")
-    _append_blocking_rows(t, verdict if isinstance(verdict, dict) else None)
+    _append_blocking_rows(t, verdict)
     t.append_text(_stderr_tail_text(run_dir))
-    stream = run_dir / "stream.jsonl"
-    if stream.is_file():
-        has_stream = True
-        stream_text, renderer, offset = _stream_initial_tail(cfg, run_dir)
-        t.append_text(stream_text)
-    else:
-        t.append_text(_result_fallback_text(run_dir, run_json if isinstance(run_json, dict) else None))
-    return RunPaneDetail(t, renderer, offset, has_stream, run_id)
+    return t, run_json if isinstance(run_json, dict) else None
+
+
+def load_run_head(cfg, cid, run_id: str) -> Text:
+    """Just the run.json / stderr.log part of the detail, re-read when a followed run ends."""
+    run_dir = store.runs_dir(cfg, cid) / run_id
+    if not run_dir.is_dir():
+        return Text("no run directory\n")
+    return _head_text(run_dir)[0]
+
+
+def load_run_pane_detail(cfg, cid, run_id: str) -> RunPaneDetail:
+    """Verdict, blockers, stderr, and stream or pre-stream result for one run. Malformed
+    run.json shapes are tolerated; only an unexpected OS error escapes (the widget catches it)."""
+    run_dir = store.runs_dir(cfg, cid) / run_id
+    if not run_dir.is_dir():
+        return RunPaneDetail(Text("no run directory\n"), [], None, 0, False, run_id)
+    has_stream, ended = run_follow_state(cfg, cid, run_id)
+    head, run_json = _head_text(run_dir)
+    if has_stream:
+        body, renderer, offset = _stream_initial_tail(cfg, run_dir, ended)
+        return RunPaneDetail(head, body, renderer, offset, True, run_id, ended)
+    return RunPaneDetail(head, _result_fallback_lines(run_dir, run_json), None, 0, False,
+                         run_id, ended)
 
 
 def stream_tail(cfg, campaign_id, run_id, offset, renderer) -> tuple[list[str], int]:
@@ -1486,38 +1521,22 @@ def stream_tail(cfg, campaign_id, run_id, offset, renderer) -> tuple[list[str], 
     lines, next_offset = TL.read_lines(run_dir / "stream.jsonl", offset)
     out: list[str] = []
     for line in lines:
-        out.extend(x.plain for x in renderer.feed_line(line))
-    out.extend(x.plain for x in renderer.flush_prose())
+        out.extend(_feed(renderer, line))
+    out.extend(_flush(renderer))
     return out, next_offset
 
 
 def stream_tail_drain(cfg, campaign_id, run_id, offset, renderer) -> tuple[list[str], int]:
-    """One drain when the run ends: trailing JSON fragment with no newline, if any."""
+    """One drain when the run ends: remaining lines and a trailing no-newline JSON fragment."""
     run_dir = store.runs_dir(cfg, campaign_id) / run_id
     stream = run_dir / "stream.jsonl"
-    out: list[str] = []
-    try:
-        st_size = stream.stat().st_size
-    except OSError:
-        st_size = offset
-    while offset < st_size:
-        lines, offset = TL.read_lines(stream, offset)
-        if not lines:
-            break
-        for line in lines:
-            out.extend(x.plain for x in renderer.feed_line(line))
-    frag = TL._fragment(stream, offset)
-    if frag and "\n" not in frag:
-        try:
-            if isinstance(json.loads(frag), dict):
-                out.extend(x.plain for x in renderer.feed_line(frag))
-        except ValueError:
-            pass
+    out, offset = stream_tail(cfg, campaign_id, run_id, offset, renderer)
+    out.extend(_fragment_lines(renderer, stream, offset))
     try:
         offset = stream.stat().st_size
     except OSError:
         pass
-    out.extend(x.plain for x in renderer.flush_prose())
+    out.extend(_flush(renderer))
     return out, offset
 
 
