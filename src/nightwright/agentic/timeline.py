@@ -22,6 +22,9 @@ import re
 from datetime import datetime
 
 SCHEMA = "nw.campaign.story.v1"
+# SPEC-0515: how a gate's infra outcome (`GateResult.infra`) reads next to the gate
+INFRA_LABELS = {"oom": "oom", "slurm_timeout": "slurm timeout", "node_fail": "node failure",
+                "preempted": "preempted"}
 
 # The phase of each campaign state. The coarse phases are SPEC-0405's `history.PHASES`
 # (queue/spec/implement/gate/review/close/parked/waiting); `done` is the terminal visit.
@@ -793,6 +796,8 @@ class _Builder:
         for r in results:
             mark = "✓" if r.get("ok") else "✗"
             extra = "" if r.get("ok") else f", exit {r.get('exit_code')}"
+            if not r.get("ok") and r.get("infra"):     # SPEC-0515: infra, not the code
+                extra = f", {INFRA_LABELS.get(r['infra'], r['infra'])}"
             opt = "" if r.get("required", True) else ", optional"
             kids.append({"text": f"{mark} {r.get('name')} ({fmt_duration(r.get('duration_s'))}"
                                  f"{extra}{opt})", "tone": "ok" if r.get("ok") else "bad",

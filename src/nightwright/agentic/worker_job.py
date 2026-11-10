@@ -1023,8 +1023,9 @@ def run_job(cfg, job: Path, proc: dict) -> int:
                       run_attempts=attempt)
     if attempt > 1:
         frames.emit("attempt", attempt=attempt)
+    outside = threading.Event()                 # SPEC-0515: Slurm ended the job from outside
     if getattr(ex, "term_cancels", False):     # SPEC-0510: scancel / the time limit's TERM
-        _cancel_on_term(cancel)
+        _cancel_on_term(cancel, job, frames, outside)
     threading.Thread(target=_heartbeat, args=(job, sett["job_heartbeat_s"], stop),
                      daemon=True).start()
     threading.Thread(target=_watch, args=(job, proc, cancel, stop, ex.lease_cancels),
@@ -1057,6 +1058,8 @@ def run_job(cfg, job: Path, proc: dict) -> int:
         # the file (and on ENOSPC the disk and the job's directory sizes)
         extra = {"stage": frames.stage or stage, "error": f"{type(e).__name__}: {e}",
                  **W.error_detail(cfg, e, job)}
+    if outside.is_set():
+        return _await_slurm_end(stop)
     if extra:
         if "done" in frames.sent:               # `done` is out: never a second final frame
             print(f"nw worker job: after done: {extra['error']}", file=sys.stderr)
@@ -1076,19 +1079,49 @@ def run_job(cfg, job: Path, proc: dict) -> int:
     return 0 if state == "done" else W.EXIT_ERROR
 
 
-def _cancel_on_term(cancel: threading.Event) -> None:
-    """SPEC-0510: under Slurm, SIGTERM (`scancel --batch --signal=TERM`, the time limit's
-    `--signal=B:TERM`) is a cancel: the gates end and `done` goes out interrupted, as for a
-    `cancel` file. Only from the main thread (an in-process caller installs nothing)."""
+OUTSIDE_WAIT_ENV = "NW_WORKER_SLURM_END_WAIT_S"
+DEFAULT_OUTSIDE_WAIT_S = 150.0  # > `--signal=B:TERM@60` + the box's KillWait (30 s)
+
+
+def _cancel_on_term(cancel: threading.Event, job: Path | None = None, frames=None,
+                    outside: threading.Event | None = None) -> None:
+    """SPEC-0510: under Slurm, SIGTERM ends the gates, as a `cancel` file does. With the job's
+    `cancel` file (nw's own cancel: `scancel --batch --signal=TERM` after writing it) `done`
+    goes out interrupted. SPEC-0515: without one, Slurm ended the job from outside (its time
+    limit's `--signal=B:TERM@60`, a preemption, a node going down, an admin's `scancel`):
+    no final frame (`frames.mute_final`) and no `result.json`; the job waits for Slurm to end
+    it, and a reader writes the frame Slurm's end state calls for (`TIMEOUT`: `slurm_timeout`)
+    or the requeued attempt reruns. Only from the main thread."""
     def on_term(_signum, _frame):
-        if not cancel.is_set():
+        if cancel.is_set():
+            return
+        if job is not None and outside is not None and not (job / "cancel").exists():
+            print("nw worker job: SIGTERM from Slurm; ending the gates, leaving the end to "
+                  "Slurm", file=sys.stderr)
+            outside.set()
+            if frames is not None:
+                frames.mute_final = True
+        else:
             print("nw worker job: SIGTERM; cancelling", file=sys.stderr)
-            cancel.set()
-            threading.Thread(target=G.terminate_all, daemon=True).start()
+        cancel.set()
+        threading.Thread(target=G.terminate_all, daemon=True).start()
     try:
         signal.signal(signal.SIGTERM, on_term)
     except ValueError:
         pass
+
+
+def _await_slurm_end(stop: threading.Event) -> int:
+    """SPEC-0515: after a TERM from Slurm, wait (bounded) for Slurm's KILL, so the job's end
+    state is Slurm's own (`TIMEOUT`, requeued) and not FAILED by an early exit. The heartbeat
+    stops; `job.lock` is held until the process ends."""
+    stop.set()
+    try:
+        wait_s = float(os.environ.get(OUTSIDE_WAIT_ENV) or DEFAULT_OUTSIDE_WAIT_S)
+    except ValueError:
+        wait_s = DEFAULT_OUTSIDE_WAIT_S
+    threading.Event().wait(max(0.0, wait_s))
+    return 128 + signal.SIGTERM
 
 
 def _own_session(argv) -> int:

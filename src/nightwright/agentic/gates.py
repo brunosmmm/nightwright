@@ -78,6 +78,7 @@ class GateResult:
     report: dict | None = None  # SPEC-0359: the parsed `NW_GATE_REPORT` (< REPORT_MAX_BYTES)
     infra_error: str | None = None  # SPEC-0387: the host could not write the gate's log/sidecar
     resources: dict | None = None   # SPEC-0504: {"request": {...}, "used": {cpu_s, max_rss_mb, ...}}
+    infra: str | None = None        # SPEC-0515: an infra outcome (`INFRA_CODES`), never a test failure
 
 
 @dataclass(frozen=True)
@@ -102,7 +103,11 @@ class GateRun:
 
 
 LOCAL_REASONS = ("requested_local", "ineligible", "no_placeable_worker", "transport", "tree",
-                 "rejected", "retries_exhausted", "no_retry_pool", "adopt_fell_back")
+                 "rejected", "retries_exhausted", "no_retry_pool", "adopt_fell_back",
+                 "node_fail")                   # SPEC-0515: a Slurm node failure, re-gated once
+# SPEC-0515: a gate's infra outcome (`GateResult.infra`): the job's memory, Slurm's time limit,
+# a node failure or a preemption ended it, not the code under test
+INFRA_CODES = ("oom", "slurm_timeout", "node_fail", "preempted")
 
 
 def local_placement(code: str, detail: str = "", *, worker: str | None = None,
@@ -864,7 +869,8 @@ def cadence_job_of(project_cfg: dict, campaign_state: dict) -> dict | None:
 def run_all(project_cfg: dict, campaign_state: dict, cfg, *, seq: int,
             stop: threading.Event | None = None, tier: str | None = None,
             worker: str | None = None, local: bool = False,
-            adopt: dict | None = None, lost: dict | None = None) -> GateRun:
+            adopt: dict | None = None, lost: dict | None = None,
+            local_reason: str | None = None, local_detail: str | None = None) -> GateRun:
     """Run every gate of `project_cfg` in the campaign's worktree; logs land at
     `gates/<seq:03>-<name>.log` under the campaign dir. `ok` = every *required* gate ok.
     The returned `GateRun.seq` is the seq actually used (higher than `seq` if it was taken).
@@ -944,7 +950,9 @@ def run_all(project_cfg: dict, campaign_state: dict, cfg, *, seq: int,
                                slot_wait_s=hold.waited_s)
             head, tree = head_tree(worktree)        # SPEC-0359: the tree this run gates
             if hold.pool is None:
-                if local:
+                if local and local_reason in LOCAL_REASONS:     # SPEC-0515: `node_fail`
+                    why = local_placement(local_reason, local_detail or "")
+                elif local:
                     why = local_placement("requested_local", "the caller asked for a local run")
                 elif why_pools.get("ineligible"):
                     why = local_placement("ineligible", why_pools["ineligible"])
@@ -1123,6 +1131,8 @@ def as_payload(run: GateRun) -> dict:
             del r["report"]
         if r.get("resources") is None:    # SPEC-0504: absent from an older worker's result
             r.pop("resources", None)
+        if r.get("infra") is None:        # SPEC-0515: only recorded for an infra outcome
+            r.pop("infra", None)
         for key in ("attempts", "flaky"):     # SPEC-0289: only recorded when a retry ran
             if not r[key]:
                 del r[key]

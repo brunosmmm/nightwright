@@ -15,6 +15,9 @@ SHORT = {"QUEUED": "queued", "OPENING": "open", "SPEC_WRITING": "spec",
          "WAITING": "waiting", "MERGED": "merged", "HANDED_OFF": "handed off",
          "ABANDONED": "abandoned"}
 TRACK_CAP = 8
+# SPEC-0515: how a gate's infra outcome (`GateResult.infra`) reads next to the gate
+INFRA_LABELS = {"oom": "oom", "slurm_timeout": "slurm timeout", "node_fail": "node failure",
+                "preempted": "preempted"}
 _SKIP_VISITS = ("QUEUED", "OPENING")      # admission and the worktree open are not the journey
 _REVIEW_NOTE = re.compile(r"review score (\d+(?:\.\d+)?)/(\d+(?:\.\d+)?) (\w+)")
 
@@ -360,6 +363,8 @@ def _event_text(ev: dict) -> str:
             return f"gates #{ev.get('gate_seq')} green in {_dur(ev.get('duration_s'))}"
         bad = [r for r in ev.get("results") or [] if isinstance(r, dict) and not r.get("ok")]
         names = ", ".join(str(r.get("name")) + (" (timeout)" if r.get("timed_out") else
+                                                f" ({INFRA_LABELS.get(r['infra'], r['infra'])})"
+                                                if r.get("infra") else
                                                 f" ({r['summary']['failed']} failed)"
                                                 if (r.get("summary") or {}).get("failed") else "")
                           for r in bad)

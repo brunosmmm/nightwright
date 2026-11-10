@@ -44,6 +44,7 @@ INFO_SCHEMA = "nw.worker.info.v1"
 # worker cannot append `close` / `park` / `merge` by sending an `event` frame.
 FRAME_TYPES = frozenset({
     "accepted", "slot_wait", "started", "gate", "done", "error", "status", "progress",
+    "attempt",                      # SPEC-0503/0515: a rerun of the job dir (a Slurm requeue)
 })
 # SPEC-0420: NW_AFFECTED_FULL makes a red-base fix's gates run the full suite on the worker too
 ENV_ALLOWLIST = frozenset({"NW_CAMPAIGN", "NW_SPEC_ID", "NW_BASE", "NW_AFFECTED_FULL", "NW_ALL_TIERS"})
@@ -667,8 +668,13 @@ class _Frames:
         self.n = 0                              # SPEC-0340: the last `n` written to the log
         self.last: dict | None = None
         self._torn = False                      # the log may end in a torn, unterminated line
+        # SPEC-0515: a Slurm job ended from outside (time limit, preemption): no final frame;
+        # the reader writes the one Slurm's end state calls for
+        self.mute_final = False
 
     def emit(self, type_, **payload) -> None:
+        if self.mute_final and type_ in ("done", "error"):
+            return
         rec = {"schema": FRAME_SCHEMA, "type": type_, "job_id": self.job_id, "at": now_iso(),
                **payload}
         if self.log is not None:                # SPEC-0340: a claimed job's frames are numbered
@@ -1156,6 +1162,7 @@ def _run_gates(cfg, h: dict, job: Path, frames: _Frames, cancel: threading.Event
         ph = {"worktree": str(tree), "base": base["name"], "spec_id": h["spec_id"],
               "campaign": h["campaign"]}
         results, cut = [], False
+        from . import cgroup_oom as CO
         from . import gate_resources as GR
         per_gate = (payload.get("resources") or {}).get("gates") or {}
         # SPEC-0509: the job's request (an older coordinator sends none: the gates' defaults);
@@ -1175,6 +1182,7 @@ def _run_gates(cfg, h: dict, job: Path, frames: _Frames, cancel: threading.Event
                     frames.stage = f"gate:{gate['name']}"
                     if gate["name"] in per_gate:    # SPEC-0504: the coordinator's request
                         gate = {**gate, GR.REQUEST_KEY: per_gate[gate["name"]]}
+                    oom0 = CO.oom_kills()   # SPEC-0515: the job cgroup's OOM kills so far
                     try:
                         r = G.run_gate_with_retries(gate, tree, env, out / f"{stem}.log", ph,
                                                     log_rel=f"gates/{stem}.log", stop=cancel,
@@ -1189,6 +1197,7 @@ def _run_gates(cfg, h: dict, job: Path, frames: _Frames, cancel: threading.Event
                     if guard.aborted:           # SPEC-0388: killed for the host's sake
                         frames.stage = "disk"
                         raise DiskAbort(errno.ENOSPC, guard.aborted)
+                    r = CO.classify(r, oom0)    # SIGKILLed while the counter rose: `oom`
                     results.append(r)
                     frames.stage = "frame"
                     frames.emit("gate", result=asdict(r), files=gate_files(out, stem))
@@ -1430,6 +1439,9 @@ def info(cfg) -> dict:
     extra = {}
     if executor in EX.known():
         features.append(f"executor:{executor}")
+        # SPEC-0513: a job of this executor never ends on a lapsed lease (Slurm bounds it)
+        if not getattr(EX._make(executor), "lease_cancels", True):
+            features.append("lease:none")
     else:
         extra["executor_error"] = f"unknown executor {executor!r}"
     return {"schema": INFO_SCHEMA, "protocol": JOB_SCHEMA, "features": features,

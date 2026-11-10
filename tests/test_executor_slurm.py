@@ -300,7 +300,9 @@ def test_sigterm_to_the_batch_step_ends_the_job_interrupted(src, tmp_path, wenv,
     job, jid = _job_dir(wenv, h["job_id"]), fake.ids()[0]
     fake.start(jid)
     assert until(lambda: "started" in [f["type"] for f in _frames(job)])
-    # scancel --batch --signal=TERM, without a cancel file: the TERM alone cancels
+    # nw's cancel: the `cancel` file, then scancel --batch --signal=TERM (SPEC-0515: a TERM
+    # without the file is Slurm's own, `test_gate_infra_outcomes`)
+    (job / "cancel").write_text("now\n")
     subprocess.run(["scancel", "--batch", "--signal=TERM", str(jid)], check=True, timeout=30)
     assert fake.finish(jid) == 0
     done = _frames(job)[-1]

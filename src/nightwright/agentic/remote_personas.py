@@ -502,14 +502,20 @@ def _fresh(rr: R.RemoteRunner, req, hooks):
         except (W.WorkerError, R.NotRemotable, OSError, ValueError):
             return _local(rr, req, hooks)
         now = time.time()
+        # SPEC-0513: a lease-free (Slurm) worker's job may wait in Slurm's queue: its deadline
+        # is `max_pending_s` until `started` re-arms it from the start (`_attach`)
+        free = WK.lease_free(cfg, w["name"])
+        span = RJ.max_pending_s(cfg) if free \
+            else header["timeout_s"] + RJ.settings(cfg)["worker_ttl_s"]
         RJ.create(cfg, job_id=job_id, campaign=cid, worker=w["name"], attempt=1, seq=0,
                   submitted_at=now, kind=KIND, commit=header["commit"], head=base_head,
-                  deadline_at=now + header["timeout_s"] + RJ.settings(cfg)["worker_ttl_s"])
+                  deadline_at=now + span)
         # `request`: an adopted runner rebuilds the full request from it (`adopted_request`)
         rec = RJ.update(cfg, job_id, run_id=run_id, persona=req.persona, base_head=base_head,
                         read_only=req.read_only, started_at=store.now_iso(),
                         step={"state": state.get("state")},
-                        request=header["payload"]["request"])
+                        request=header["payload"]["request"], timeout_s=header["timeout_s"],
+                        **({"lease": "none"} if free else {}))
         _hold_job(rr, job_id)
         try:
             RG._submit(w, header, bundle, cfg)
@@ -538,7 +544,8 @@ def _failed(cfg, cid, w: dict, job_id: str, f) -> None:
 # Kinds a persona attach applies. `gate` / `slot_wait` are allowlisted for gate jobs; on a
 # persona stream they are the wrong kind and are refused, as is any other frame whose
 # `job_id` is not this job's (`remote_gates._frame`).
-_PERSONA_FRAMES = frozenset({"accepted", "started", "progress", "done", "error", "status"})
+_PERSONA_FRAMES = frozenset({"accepted", "started", "progress", "done", "error", "status",
+                             "attempt"})         # SPEC-0515: a requeued (Slurm) job's rerun
 
 
 def _accepted_frame(line: bytes, job_id: str) -> dict:
@@ -587,7 +594,8 @@ def _attach(rr: R.RemoteRunner, req, hooks, job: dict):
             try:
                 line = lines.get(timeout=_POLL_S)
             except _queue.Empty:
-                if time.time() > job["deadline"]:    # frames already read come first
+                job["last_seen"] += job["clock"].slept()    # SPEC-0513: asleep is not silent
+                if _past_deadline(rr, job):          # frames already read come first
                     return "lost", "deadline"
                 continue
             if line is None or not line.endswith(b"\n"):
@@ -616,6 +624,11 @@ def _attach(rr: R.RemoteRunner, req, hooks, job: dict):
                 return "done", frame
             fields = {"cursor": job["seen"], "state": "attached",
                       "last_seen_at": RJ.iso(job["last_seen"])}
+            if kind == "started" and job.get("lease_free"):
+                # SPEC-0513: the deadline counts from the job's start, not its submit
+                at = min(RJ.epoch(frame.get("at")) or time.time(), time.time())
+                job["deadline"] = at + job["timeout_s"] + RJ.settings(rr.cfg)["worker_ttl_s"]
+                fields["deadline_at"] = RJ.iso(job["deadline"])
             if kind == "progress":
                 prog = {k: frame.get(k) for k in ("ts", "transcript_bytes", "last_line_ts")}
                 fields["progress"] = prog
@@ -631,6 +644,19 @@ def _attach(rr: R.RemoteRunner, req, hooks, job: dict):
             pass
         proc.wait()
         proc.stdout.close()
+
+
+def _past_deadline(rr: R.RemoteRunner, job: dict) -> bool:
+    """The job's deadline passed and it has not ended on the worker. SPEC-0513: a job that
+    ended there (a coordinator that slept through it) is replayed, however late; the deadline
+    bounds waiting, not results already there."""
+    from . import remote_gates as RG
+    if time.time() <= job["deadline"]:
+        return False
+    if RG.poll(rr.worker, job["id"], job["seen"]) in ("done", "error"):
+        job["deadline"] = float("inf")
+        return False
+    return True
 
 
 def _cancelled(cfg, job_id: str) -> bool:
@@ -657,7 +683,10 @@ def _follow(rr: R.RemoteRunner, req, hooks, rec: dict):
         return PJ.follow_persona(rr, req, hooks, rec)
     cfg = rr.cfg
     job = {"id": rec["job_id"], "seen": int(rec.get("cursor") or 0), "last_seen": time.time(),
-           "deadline": RJ.epoch(rec.get("deadline_at")) or time.time() + RG.MAX_JOB_TIMEOUT_S}
+           "deadline": RJ.epoch(rec.get("deadline_at")) or time.time() + RG.MAX_JOB_TIMEOUT_S,
+           "lease_free": rec.get("lease") == "none", "clock": RJ.SleepClock(),
+           "timeout_s": rec.get("timeout_s") if isinstance(rec.get("timeout_s"), (int, float))
+           else RG.MAX_JOB_TIMEOUT_S}
     ttl = RJ.settings(cfg)["worker_ttl_s"]
     delay = BACKOFF_START_S
     while True:
@@ -670,7 +699,8 @@ def _follow(rr: R.RemoteRunner, req, hooks, rec: dict):
         if kind == "lost":
             return _lost(rr, req, hooks, rec, val)
         while True:
-            if time.time() > job["deadline"]:
+            job["last_seen"] += job["clock"].slept()    # SPEC-0513: asleep is not silent
+            if _past_deadline(rr, job):
                 return _lost(rr, req, hooks, rec, "deadline")
             if time.time() - job["last_seen"] > ttl:
                 return _lost(rr, req, hooks, rec, "unreachable")

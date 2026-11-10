@@ -102,6 +102,7 @@ PARK_REASONS = frozenset({
     "diverging_rework",                               # SPEC-0462: the triager says the spec is the problem
     "regenerate_failed",                               # SPEC-0255: close-time regenerate failed/dirtied
     "gate_timeout",                                    # SPEC-0311: gates keep timing out under load
+    "gate_oom",                                        # SPEC-0515: a gate OOMs even with 1.5x memory
     "restart",                                         # SPEC-0375: parked across `nw queue restart`
     "fixforward_weakens", "revert_conflict",           # SPEC-0420: red-base fix campaigns
     "spec_status",                                     # SPEC-0468: only spec-dod failed at close
@@ -133,6 +134,12 @@ TRIAGE_RETRY_MAX = 1
 GATE_RETRY_MAX = 1
 # SPEC-0311: consecutive timeout-only gate runs re-gated (serialized) before `gate_timeout`.
 TIMEOUT_REGATE_MAX = 2
+# SPEC-0515: an OOM-killed gate run is re-gated once with this much more memory, then parks
+# `gate_oom`; a node failure (or a preemption that reached the coordinator) re-gates once on
+# the worker, then once locally (SPEC-0338 fallback, placement reason `node_fail`).
+OOM_RETRY_MAX = 1
+MEM_BOOST = 1.5
+NODE_FAIL_REGATE_MAX = 1
 # SPEC-0507 + SPEC-0523: the longest an exclusive re-gate marker holds other gate starts,
 # counted from its `entered_at`, pending or running: past it a pending one starts as a normal
 # gate and a running one no longer counts as exclusive. Exclusivity is advisory: the box is
@@ -461,6 +468,55 @@ def timeout_only(run_payload: dict) -> bool:
     return bool(failing) and all(r.get("timed_out") and not r.get("interrupted") for r in failing)
 
 
+def infra_only(run_payload: dict) -> bool:
+    """Pure (SPEC-0515): whether a failed gate run failed only for infra reasons: some required
+    result failed and every failing required result carries an `infra` code (an OOM kill,
+    Slurm's time limit, a node failure, a preemption). Such a run is never triaged."""
+    failing = [r for r in (run_payload or {}).get("results") or []
+               if not r.get("ok") and r.get("required", True)]
+    return bool(failing) and all(r.get("infra") in G.INFRA_CODES for r in failing)
+
+
+def _infra_gates(run_payload: dict, code: str | None = None) -> list:
+    return [r for r in (run_payload or {}).get("results") or []
+            if not r.get("ok") and r.get("required", True) and r.get("infra")
+            and (code is None or r.get("infra") == code)]
+
+
+def suggested_mem_mb(mem_mb: int) -> int:
+    """SPEC-0515: `mem_mb` x `MEM_BOOST`, rounded up to 256 MB (the boosted request, and the
+    value a `gate_oom` park suggests after the boosted run OOMed too)."""
+    return int(math.ceil(max(1, int(mem_mb)) * MEM_BOOST / 256.0) * 256)
+
+
+def decide_gate_infra(state: dict, mem_mb: int | None = None) -> Step:
+    """Pure (SPEC-0515): the transition for an `infra_only` gate run (`state["last_gate"]`).
+    `oom` first: re-gate with `MEM_BOOST` x memory while `oom_retries < OOM_RETRY_MAX`, else
+    park `gate_oom` naming the gate, the request it outgrew (`mem_mb`, the boosted request)
+    and a suggested value. `slurm_timeout` next: `Step("gate", reason="slurm_timeout")`, which
+    the caller hands to `decide_gate_timeout` (nw's own gate-timeout path). `node_fail` /
+    `preempted`: re-gate on the worker while `node_fail_regates < NODE_FAIL_REGATE_MAX`, then
+    `gate_node_fail_local` (the caller runs the next gate locally)."""
+    last = state.get("last_gate") or {}
+    counters = state.get("counters") or {}
+    oom = _infra_gates(last, "oom")
+    if oom:
+        if int(counters.get("oom_retries") or 0) < OOM_RETRY_MAX:
+            return Step("gate", reason="gate_oom_regate")
+        names = ", ".join(str(r.get("name")) for r in oom)
+        used = f"> {int(mem_mb)} MB" if mem_mb else "more memory than its request"
+        tip = f"suggested: {suggested_mem_mb(mem_mb)}M; " if mem_mb else ""
+        return Step("park", reason="gate_oom", resume_to="GATING",
+                    detail=f"gate {names} used {used} (OOM-killed again after a "
+                           f"{MEM_BOOST:g}x memory re-gate); raise resources.mem in "
+                           f".nw/project.yaml ({tip}`nw gate stats` shows measured peaks)")
+    if _infra_gates(last, "slurm_timeout"):
+        return Step("gate", reason="slurm_timeout")
+    if int(counters.get("node_fail_regates") or 0) < NODE_FAIL_REGATE_MAX:
+        return Step("gate", reason="gate_node_fail_regate")
+    return Step("gate", reason="gate_node_fail_local")
+
+
 def _timed_out_gates(run_payload: dict) -> list:
     return [r for r in (run_payload or {}).get("results") or []
             if not r.get("ok") and r.get("required", True) and r.get("timed_out")]
@@ -485,6 +541,22 @@ def decide_gate_timeout(state: dict, timeouts: dict | None = None) -> Step:
 def _timed_out_names(run_payload: dict, timeouts: dict | None = None) -> list:
     return [f"{r.get('name')} ({timeouts[r.get('name')]}s)" if (timeouts or {}).get(r.get("name"))
             else str(r.get("name")) for r in _timed_out_gates(run_payload)]
+
+
+def _gate_mem_mb(ctx, state: dict) -> int | None:
+    """SPEC-0515: the memory request (MB) the last loop gate run was sent with: the campaign's
+    loop gates' job request, times `state["mem_boost"]` once a re-gate boosted it. None when
+    the project config is unreadable."""
+    from . import gate_resources as GR
+    try:
+        pcfg = ctx.project(state)
+        worktree = (state.get("repo") or {}).get("worktree")
+        if worktree:
+            pcfg, _ = P.campaign_gate_config(ctx.cfg, pcfg, worktree)
+        mem = GR.job_request(P.gates_for(pcfg, "loop"), ctx.cfg, time_s=0)["mem_mb"]
+    except (ValueError, OSError, KeyError, TypeError):
+        return None
+    return suggested_mem_mb(mem) if state.get("mem_boost") else int(mem)
 
 
 def _gate_timeouts(ctx, state: dict) -> dict:
@@ -3084,8 +3156,13 @@ def _do_gate(ctx: _Ctx, state: dict) -> StepResult:
             lost = lost if ok else None
         seq = int(live["seq_or_run"]) if live else int(lost["seq_or_run"]) if lost \
             else G.next_gate_seq(ctx.cfg, state["id"])
+        # SPEC-0515: after a node failure re-gate failed the same way, one run is local
+        local = state.get("gate_local") if live is None and lost is None else None
         res.gate_run = G.run_all(pcfg, state, ctx.cfg, seq=seq, stop=ctx.stop,
-                                 tier="loop", adopt=live, lost=lost)     # SPEC-0328
+                                 tier="loop", adopt=live, lost=lost,     # SPEC-0328
+                                 local=bool(local),
+                                 local_reason=(local or {}).get("reason"),
+                                 local_detail=(local or {}).get("detail"))
     except (ValueError, OSError) as e:
         res.error = str(e)
     return res
@@ -3295,7 +3372,8 @@ def _apply_step(ctx: _Ctx, state: dict, res: StepResult) -> dict:
                       "pending_brief", "close", "review_carry", "closing", "spec_write", "spec_id",
                       "merge", "admission", "spec_review", "split",   # SPEC-0279: amend flips it
                       "gate_exclusive", "last_green_loop", "close_red", "gate_retry_pending",
-                      "divergence", "conflict_mail"):
+                      "divergence", "conflict_mail",
+                      "mem_boost", "gate_local"):            # SPEC-0515
                 if k in state:
                     current[k] = state[k]
             requested = current.get("park_requested")
@@ -3568,12 +3646,40 @@ def _apply_step(ctx: _Ctx, state: dict, res: StepResult) -> dict:
         retried = bool(state.get("gate_retry_pending"))   # only the run a `retry_gate` led to
         state["gate_retry_pending"] = False
         events += _flaky_events(cfg, state, payload, previous, run.ok, retried=retried)
+        state["gate_local"] = None                       # SPEC-0515: one local run only
+        infra = infra_only(payload)                      # SPEC-0515: never triaged
+        if not (infra and (_infra_gates(payload, "node_fail")
+                           or _infra_gates(payload, "preempted"))):
+            counters["node_fail_regates"] = 0
         if run.ok:
             counters["timeout_regates"] = 0
             if state.get("kind") == "fixforward":       # SPEC-0420: full suite + weakening check
                 return finish("CLOSING", "gates_green")
             return finish("REVIEWING", "gates_green")
-        if timeout_only(payload):                        # SPEC-0311: load, not a code fix
+        if infra:
+            decision = decide_gate_infra(state, _gate_mem_mb(ctx, state))
+            if decision.kind == "park":
+                return finish("PARKED", decision.reason, park={
+                    "reason": decision.reason, "detail": decision.detail,
+                    "resume_to": decision.resume_to})
+            codes = sorted({str(r.get("infra")) for r in _infra_gates(payload)})
+            if decision.reason == "gate_oom_regate":
+                counters["oom_retries"] = int(counters.get("oom_retries") or 0) + 1
+                state["mem_boost"] = MEM_BOOST
+            elif decision.reason == "gate_node_fail_regate":
+                counters["node_fail_regates"] = int(counters.get("node_fail_regates") or 0) + 1
+            elif decision.reason == "gate_node_fail_local":
+                state["gate_local"] = {"reason": "node_fail",
+                                       "detail": f"the worker's Slurm job ended {'/'.join(codes)} "
+                                                 f"twice; this run is local"}
+            if decision.reason != "slurm_timeout":
+                events.append(("note", {
+                    "text": f"gate infra outcome {'/'.join(codes)} "
+                            f"({', '.join(str(r.get('name')) for r in _infra_gates(payload))}): "
+                            f"{decision.reason.replace('_', ' ')}, no triage",
+                    "author": "queue"}))
+                return finish("GATING", decision.reason)
+        if infra or timeout_only(payload):               # SPEC-0311: load, not a code fix
             timeouts = _gate_timeouts(ctx, state)
             decision = decide_gate_timeout(state, timeouts)
             if decision.kind == "park":
@@ -3585,8 +3691,10 @@ def _apply_step(ctx: _Ctx, state: dict, res: StepResult) -> dict:
             # is a normal gate there, no exclusive box
             if not workers.runs_slurm(cfg, run.worker):
                 state["gate_exclusive"] = {"entered_at": store.now_iso()}
+            names = _timed_out_names(payload, timeouts) or [   # SPEC-0515: Slurm's time limit
+                f"{r.get('name')} (Slurm time limit)" for r in _infra_gates(payload, "slurm_timeout")]
             events.append(("note", {
-                "text": f"gate timeout: {', '.join(_timed_out_names(payload, timeouts))}; "
+                "text": f"gate timeout: {', '.join(names)}; "
                         f"re-gating alone (timeout_regates "
                         f"{counters['timeout_regates']}/{TIMEOUT_REGATE_MAX})",
                 "author": "queue"}))
@@ -10174,6 +10282,10 @@ def apply_resume(cfg, plan: dict, *, busy=None, slots=None) -> dict:
             c.pop("must_fix_baseline", None)
             c.pop("must_fix_baseline_set", None)
         _counters(st)["timeout_regates"] = 0                 # SPEC-0311: a fresh re-gate budget
+        if (st.get("park") or {}).get("reason") == "gate_oom":
+            # SPEC-0515: the human raised `resources.mem` (or chose to retry): a fresh OOM budget
+            _counters(st)["oom_retries"] = 0
+            st.pop("mem_boost", None)
         if (st.get("park") or {}).get("reason") == "gate_timeout" and plan["to"] == "GATING":
             st["gate_exclusive"] = {"entered_at": store.now_iso()}   # re-gate alone, first
         if by == "queue" and plan.get("auto_rule"):      # SPEC-0302: bounded automatic resumes

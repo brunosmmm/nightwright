@@ -15,6 +15,7 @@ import json
 import math
 import os
 import re
+import time
 from contextlib import contextmanager
 from pathlib import Path
 
@@ -66,6 +67,38 @@ def settings(cfg) -> dict:
                          f"integer of at least 1 (got {v!r})")
     out["max_remote_attempts"] = v
     return out
+
+
+DEFAULT_MAX_PENDING_S = 6 * 3600.0  # `agentic.slurm.max_pending_s` (SPEC-0513)
+SLEEP_MIN_S = 30.0                  # a wall-clock lead over the monotonic clock this big is a sleep
+_wall = time.time                   # SPEC-0513: the sleep detector's clocks (tests swap them)
+_mono = time.monotonic
+
+
+def max_pending_s(cfg) -> float:
+    """SPEC-0513: how long a job on a lease-free (Slurm) worker may wait for its `started`
+    frame, from its submit: `agentic.slurm.max_pending_s` (a positive finite number), else
+    6 h. Pending time in Slurm's queue is queueing, not a hang."""
+    raw = ((cfg.get("agentic") or {}).get("slurm") or {})
+    v = raw.get("max_pending_s") if isinstance(raw, dict) else None
+    ok = isinstance(v, (int, float)) and not isinstance(v, bool) and math.isfinite(v) and v > 0
+    return float(v) if ok else DEFAULT_MAX_PENDING_S
+
+
+class SleepClock:
+    """SPEC-0513: how long this process was suspended (a laptop coordinator asleep). Linux's
+    monotonic clock stops during suspend while the wall clock does not, so the wall clock's
+    lead over the monotonic one since the last `slept()` call is the time asleep (0.0 below
+    `SLEEP_MIN_S`, so clock slew and NTP steps of a few seconds never count)."""
+
+    def __init__(self):
+        self.w, self.m = _wall(), _mono()
+
+    def slept(self) -> float:
+        w, m = _wall(), _mono()
+        lead = (w - self.w) - (m - self.m)
+        self.w, self.m = w, m
+        return lead if lead > SLEEP_MIN_S else 0.0
 
 
 def has_async(worker: dict) -> bool:

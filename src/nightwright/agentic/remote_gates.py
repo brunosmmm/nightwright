@@ -86,6 +86,44 @@ def _error_failure(stage: str, frame: dict, *, rejected: bool = False) -> Remote
                          rejected=rejected, job_error=job_error)
 
 
+# SPEC-0515: a Slurm job that ended without a result (the worker's `error` frame
+# `{stage: "slurm", slurm_state, infra: true}`, SPEC-0510) is an infra outcome of its gates
+SLURM_INFRA = {"OUT_OF_MEMORY": "oom", "TIMEOUT": "slurm_timeout", "NODE_FAIL": "node_fail",
+               "BOOT_FAIL": "node_fail", "PREEMPTED": "preempted"}
+
+
+def infra_code(frame: dict) -> str | None:
+    """The infra code of a worker's `error` frame (`SLURM_INFRA`), or None for any other
+    error (a FAILED / CANCELLED Slurm job, a worker failure): those still fall back."""
+    if frame.get("stage") != "slurm" or frame.get("infra") is not True:
+        return None
+    return SLURM_INFRA.get(str(frame.get("slurm_state") or ""))
+
+
+def infra_run(seq: int, received, gates: list, code: str, frame: dict, *, started_at: str,
+              duration_s: float, **run_kw) -> G.GateRun | None:
+    """SPEC-0515: the `GateRun` of a job Slurm ended (`code`): the results received stand, a
+    received red or interrupted one and every gate that never reported are marked `infra`.
+    None when every gate reported green (the job died after its gates: nothing to blame on
+    the gates; the caller falls back as before)."""
+    got = {r.name: r for r in received}
+    names = [g["name"] for g in gates]
+    if names and all(n in got and got[n].ok for n in names):
+        return None
+    state = str(frame.get("slurm_state") or "?")
+    note = f"the Slurm job ended {state} before this gate reported ({code}: infra)"
+    results = []
+    for g in gates:
+        r = got.get(g["name"])
+        if r is None:
+            r = G.GateResult(g["name"], bool(g.get("required", True)), False, None, False, 0.0,
+                             "", note, cmd=str(g.get("cmd") or ""), infra=code)
+        elif not r.ok:
+            r = replace(r, infra=r.infra or code, interrupted=False)
+        results.append(r)
+    return G.GateRun(seq, False, tuple(results), started_at, duration_s, **run_kw)
+
+
 class _Stopped(Exception):
     """A stop (SPEC-0229) arrived before the job was sent: nothing ran, nothing falls back."""
 
@@ -408,6 +446,9 @@ def _header(project_cfg: dict, campaign_state: dict, cfg, seq: int, job_id: str,
     from . import gate_resources as GR          # SPEC-0504: the job's request
     payload["resources"] = GR.job_request(project_cfg.get("gates") or [], cfg)
     payload["job_class"] = job_class(campaign_state)      # SPEC-0511
+    if campaign_state.get("mem_boost"):         # SPEC-0515: the re-gate after an OOM kill
+        from .queue import suggested_mem_mb     # (the worker clamps it to the node)
+        payload["resources"]["mem_mb"] = suggested_mem_mb(payload["resources"]["mem_mb"])
     if host_slots is not None:
         payload["host_slots"] = host_slots
     if any(g.get("writes") for g in gl):        # SPEC-0506: this coordinator takes `written`
@@ -701,6 +742,8 @@ def _bad_result_field(result: dict) -> str | None:
             bad = v is not None and not isinstance(v, list)
         elif key == "resources":                # SPEC-0504
             bad = v is not None and not isinstance(v, dict)
+        elif key == "infra":                    # SPEC-0515
+            bad = v is not None and v not in G.INFRA_CODES
         else:
             continue
         if bad:
@@ -847,9 +890,18 @@ def _dispatch(worker: dict, header: dict, bundle: Path, cfg, cid, seq: int, stop
             kind = frame["type"]
             if kind == "error":
                 stage = str(frame.get("stage") or "error")
+                code = infra_code(frame)        # SPEC-0515: Slurm ended the job (OOM, time)
+                run = None if code is None else infra_run(
+                    seq, results, header["payload"]["gates"], code, frame,
+                    started_at=started_at, duration_s=round(time.monotonic() - t0, 3),
+                    worker=worker["name"], wait_reason=wait_reason)
+                if run is not None:
+                    return Outcome(run, worker_wait)
                 # `claim` (a duplicate job id) and `validate` (the coordinator's own header)
                 # say nothing about the host
                 raise _error_failure(stage, frame, rejected=stage == "validate")
+            if kind == "attempt":               # SPEC-0515: a requeue reruns the job afresh
+                results = []
             if kind == "started":
                 started = True
                 worker_wait = _num(frame, "slot_wait_s")
@@ -1328,15 +1380,20 @@ def _run_async(worker: dict, project_cfg: dict, campaign_state: dict, cfg, seq: 
     head = _git(wt, "rev-parse", "HEAD")
     tree = _git(wt, "rev-parse", f"{header['commit']}^{{tree}}")
     submitted = _now()
+    # SPEC-0513: a lease-free (Slurm) worker's job may sit in Slurm's queue: until `started`
+    # its deadline is `max_pending_s` from the submit; `started` re-arms it (`_Job.feed`)
+    free = WK.lease_free(cfg, worker["name"])
+    span = RJ.max_pending_s(cfg) if free \
+        else header["timeout_s"] + RJ.settings(cfg)["worker_ttl_s"]
     # the record comes first: a submit the worker accepted but whose reply never arrived (or a
     # crash right after it) still has a record, so the job is cancelled (`_failed`) or adopted
     rec = RJ.create(cfg, job_id=job_id, campaign=cid, worker=worker["name"], attempt=attempt,
-                    seq=seq, submitted_at=submitted,
-                    deadline_at=submitted + header["timeout_s"]
-                    + RJ.settings(cfg)["worker_ttl_s"],
+                    seq=seq, submitted_at=submitted, deadline_at=submitted + span,
                     tier=tier, commit=header["commit"], head=head, tree=tree,
                     excluded_workers=excluded)
-    rec = RJ.update(cfg, job_id, gates=[g["name"] for g in header["payload"]["gates"]]) or rec
+    rec = RJ.update(cfg, job_id, gates=[g["name"] for g in header["payload"]["gates"]],
+                    timeout_s=header["timeout_s"],
+                    **({"lease": "none"} if free else {})) or rec
     if on_attempt is not None:
         on_attempt(job_id, True)
     _submit(worker, header, bundle, cfg)
@@ -1366,6 +1423,11 @@ class _Job:
         self.started_at, self.t0 = store.now_iso(), time.monotonic()
         self.last_seen = _now()
         self.deadline = RJ.epoch(rec.get("deadline_at")) or (_now() + MAX_JOB_TIMEOUT_S)
+        # SPEC-0513: a lease-free (Slurm) job's deadline counts from its `started`
+        self.lease_free = rec.get("lease") == "none"
+        self.timeout_s = rec.get("timeout_s") if isinstance(rec.get("timeout_s"), (int, float)) \
+            else MAX_JOB_TIMEOUT_S
+        self.clock = RJ.SleepClock()
 
     def cancelled(self) -> bool:
         """An abandon or a park cancelled the job (`cancel_campaign`)."""
@@ -1374,10 +1436,13 @@ class _Job:
     def past_deadline(self) -> bool:
         """The record's `deadline_at` has passed and the job is not finished on the worker. A
         job `done` there is only replayed, however late: that costs nothing, and the deadline
-        bounds waiting, not results already there."""
+        bounds waiting, not results already there (SPEC-0515: an `error` there too, whose
+        final frame may be an infra outcome). SPEC-0513: time the coordinator spent asleep
+        does not count against the worker's TTL (`last_seen` moves forward by it)."""
+        self.last_seen += self.clock.slept()
         if _now() < self.deadline:
             return False
-        if poll(self.worker, self.job_id, self.seen) == "done":
+        if poll(self.worker, self.job_id, self.seen) in ("done", "error"):
             self.deadline = math.inf
             return False
         return True
@@ -1403,10 +1468,25 @@ class _Job:
         kind, out = frame["type"], None
         if kind == "error":
             stage = str(frame.get("stage") or "error")
-            raise _error_failure(stage, frame)
-        if kind == "started":
+            code = infra_code(frame)            # SPEC-0515: Slurm ended the job (OOM, time)
+            out = None if code is None else self._infra(frame, n, code)
+            if out is None:
+                raise _error_failure(stage, frame)
+        elif kind == "started":
             self.started = True
             self.worker_wait = _num(frame, "slot_wait_s")
+            if self.lease_free and n > self.cursor:
+                # SPEC-0513: from the job's start, not its submit (Slurm's queue time is free)
+                at = min(RJ.epoch(frame.get("at")) or _now(), _now())
+                self.deadline = at + self.timeout_s + RJ.settings(self.cfg)["worker_ttl_s"]
+                RJ.update(self.cfg, self.job_id, deadline_at=RJ.iso(self.deadline))
+        elif kind == "attempt":
+            # SPEC-0515: a requeued job (preemption, a node failure) reruns from scratch:
+            # the earlier attempt's partial results go, and its files once (past the cursor)
+            self.results = []
+            if n > self.cursor:
+                for p in self.gates_dir.glob(f"{self.seq:03d}-*"):
+                    p.unlink(missing_ok=True)
         elif kind == "gate":
             self.results.append(_take_gate(frame, self.gates_dir, self.seq, self.names,
                                            write=n > self.cursor))
@@ -1421,6 +1501,16 @@ class _Job:
             self.cursor = n
             self.saw_worker(cursor=n, state="attached")
         return out
+
+    def _infra(self, frame: dict, n: int, code: str) -> G.GateRun | None:
+        """SPEC-0515: the run of a job Slurm ended without a result (`infra_run`)."""
+        by_name = {g.get("name"): g for g in self.gates}
+        gates = [{"required": True, **by_name.get(name, {}), "name": name} for name in self.order]
+        return infra_run(self.seq, self.results, gates, code, frame,
+                         started_at=self.started_at,
+                         duration_s=round(time.monotonic() - self.t0, 3),
+                         worker=self.worker["name"], job_id=self.job_id,
+                         event_uid=f"{self.job_id}:{n}", wait_reason=self.wait_reason)
 
     def _done(self, frame: dict, n: int) -> G.GateRun:
         ok, cut = _flag(frame, "ok", required=True), _flag(frame, "interrupted", required=False)
