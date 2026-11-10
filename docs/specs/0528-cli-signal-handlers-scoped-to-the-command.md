@@ -1,7 +1,7 @@
 ---
 id: SPEC-0528
 title: "CLI signal handlers scoped to the command: herdr watch, gate run, campaign tail restore the previous handler; bounded in-process watch loop"
-status: accepted
+status: done
 owner: user
 created: 2026-11-10
 updated: 2026-11-10
@@ -157,8 +157,10 @@ gate log (it does not fail or kill the test; no pytest-timeout dependency).
 
 ## Definition of done
 
-- [ ] Acceptance criteria all met.
-- [ ] Test plan executed; affected tests pass; manual steps performed and recorded.
-- [ ] No regressions (box gate, loop tier).
-- [ ] Spec body updated to match what shipped (As shipped).
-- [ ] `docs/LEDGER.md` updated (status + date).
+- [x] Acceptance criteria all met.
+- [x] Test plan executed; affected tests pass; manual steps performed and recorded.
+- [x] No regressions (box gate, loop tier).
+- [x] Spec body updated to match what shipped (As shipped).
+- [x] `docs/LEDGER.md` updated (status + date).
+
+**Box gate (2026-11-10):** landed on main at 3123fe52 after GATEJOB-1570 (close tier, box) passed.
