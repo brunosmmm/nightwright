@@ -207,8 +207,14 @@ def test_tmp_files_ignored(data_dir, cache_dir):
     v1 = cache_dir / "history" / "v1"
     junk = v1 / "index.jsonl.tmp-1-deadbeef"
     junk.write_text('{"campaign":"x"}\n')
+    rec_ino = (v1 / "records.jsonl").stat().st_ino
     idx = H.history_index(c, now=NOW, cache=True)
+    assert junk.is_file()
+    assert (v1 / "records.jsonl").stat().st_ino == rec_ino
     assert all(row["campaign"] != "x" for row in idx)
+    H.rebuild_cache(c, now=NOW)
+    assert not junk.exists()
+    assert H.history_index(c, now=NOW, cache=True) == H.history_index(c, now=NOW, cache=False)
 
 
 def test_cache_true_missing_cache_dir_gap(data_dir):
@@ -1337,3 +1343,69 @@ def test_corrupt_version_rebuilds_to_one(data_dir, cache_dir):
     idx = H.history_index(c, now=NOW, cache=True)
     assert (v1 / "version").read_bytes() == b"1\n"
     assert idx == H.history_index(cfg(data_dir), now=NOW, cache=False)
+
+
+def test_pending_prune_relinks_survivor_mail(data_dir, cache_dir):
+    c = cfg(data_dir, cache_dir)
+    a = "SPEC-0394-20261102-ae5b"
+    b = "SPEC-0336-20261031-6558"
+    mail = data_dir / "agentic" / "mailbox" / "human.jsonl"
+    marker = "dual-link-mail-marker"
+    with mail.open("a") as stream:
+        stream.write(json.dumps({
+            "schema": "nw.message.v1", "id": "dual-link-mail", "seq": 99999,
+            "ts": store.now_iso(NOW), "from": "conductor", "to": "human",
+            "kind": "note", "re": None, "text": f"{marker} {a} {b}",
+        }) + "\n")
+    H.history_index(c, now=NOW, cache=True)
+    v1 = cache_dir / "history" / "v1"
+    idx_a = next(r for r in H.history_index(c, now=NOW, cache=False) if r["campaign"] == a)
+    shutil.rmtree(data_dir / "agentic" / "campaigns" / a)
+    (v1 / "campaigns" / f"{a}.json").write_text(json.dumps({"stale": True}) + "\n")
+    (v1 / "index.writes.jsonl").write_text(json.dumps(idx_a, ensure_ascii=False) + "\n")
+    H.history_index(c, now=NOW, cache=True)
+    rec_ino = (v1 / "records.jsonl").stat().st_ino
+    pure_b = H.campaign_history(c, b, now=NOW, cache=False)
+    cached_b = H.campaign_history(c, b, now=NOW, cache=True)
+    assert {k: v for k, v in cached_b.items() if k != "generated_at"} == {
+        k: v for k, v in pure_b.items() if k != "generated_at"
+    }
+    mail_rec = next(r for r in H.history_records(c, cache=True) if marker in (r.get("text") or ""))
+    assert mail_rec.get("campaign") == next(
+        r for r in H.history_records(c, cache=False) if r.get("id") == mail_rec["id"]
+    ).get("campaign")
+    row_b = next(r for r in H.history_index(c, now=NOW, cache=True) if r["campaign"] == b)
+    pure_row = next(r for r in H.history_index(c, now=NOW, cache=False) if r["campaign"] == b)
+    assert row_b["records"] == pure_row["records"]
+    H.history_index(c, now=NOW, cache=True)
+    assert (v1 / "records.jsonl").stat().st_ino == rec_ino
+
+
+def test_sentinel_dir_appears_updates_terminal_gaps(data_dir, cache_dir):
+    c = cfg(data_dir, cache_dir)
+    sent = data_dir / "agentic" / "sentinel"
+    if sent.is_dir():
+        shutil.rmtree(sent)
+    cid = "SPEC-0394-20261102-ae5b"
+    H.history_index(c, now=NOW, cache=True)
+    cached = H.campaign_history(c, cid, now=NOW, cache=True)
+    assert "sentinel/: missing" in cached["gaps"]
+    sent.mkdir()
+    (sent / "Meta-Tools.lock").write_text("held\n")
+    HC._records_mem.clear()
+    cached2 = H.campaign_history(c, cid, now=NOW, cache=True)
+    pure = H.campaign_history(c, cid, now=NOW, cache=False)
+    assert "sentinel/: missing" not in cached2["gaps"]
+    assert cached2["gaps"] == pure["gaps"]
+
+
+def test_runner_null_line_gap_matches_pure(data_dir, cache_dir):
+    c = cfg(data_dir, cache_dir)
+    run = data_dir / "agentic" / "runner.jsonl"
+    with run.open("a") as stream:
+        stream.write("null\n")
+    cid = "SPEC-0394-20261102-ae5b"
+    H.history_index(c, now=NOW, cache=True)
+    cached = H.campaign_history(c, cid, now=NOW, cache=True)
+    pure = H.campaign_history(c, cid, now=NOW, cache=False)
+    assert cached["gaps"] == pure["gaps"]

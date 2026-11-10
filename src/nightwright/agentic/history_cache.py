@@ -298,6 +298,15 @@ def _agentic_tree_sig(agentic: Path, name: str, sub: str) -> str:
     return _tree_sig(root_path)
 
 
+def _agentic_dir_presence(agentic: Path) -> dict[str, bool]:
+    return {
+        "escalations": (agentic / "escalations").is_dir(),
+        "reviews": (agentic / "reviews").is_dir(),
+        "sentinel": (agentic / "sentinel").is_dir(),
+        "mailbox": (agentic / "mailbox").is_dir(),
+    }
+
+
 _LOGICAL_CACHE_NAMES = frozenset({
     "version", ".lock", "index.jsonl", "index.writes.jsonl", "records.jsonl", "sources.json",
 })
@@ -871,20 +880,8 @@ def _cache_tree_corrupt(root: Path, sources: dict | None = None) -> bool:
                 return True
         except OSError:
             return True
-        for path in root.iterdir():
-            if path.is_file() and _is_tmp(path.name):
-                try:
-                    path.unlink()
-                except OSError:
-                    pass
         camp = root / "campaigns"
         if camp.is_dir():
-            for path in camp.iterdir():
-                if path.is_file() and _is_tmp(path.name):
-                    try:
-                        path.unlink()
-                    except OSError:
-                        pass
             for path in camp.glob("*.json"):
                 if _is_tmp(path.name):
                     continue
@@ -931,20 +928,6 @@ def _cache_tree_corrupt(root: Path, sources: dict | None = None) -> bool:
         sources = _read_json(root / "sources.json")
     if (root / "sources.json").is_file() and not _sources_ok(sources):
         return True
-    for path in root.iterdir():
-        if path.is_file() and _is_tmp(path.name):
-            try:
-                path.unlink()
-            except OSError:
-                pass
-    camp = root / "campaigns"
-    if camp.is_dir():
-        for path in camp.iterdir():
-            if path.is_file() and _is_tmp(path.name):
-                try:
-                    path.unlink()
-                except OSError:
-                    pass
     return False
 
 
@@ -1105,6 +1088,24 @@ def _index_quiet_fingerprint(
     return (str(root.resolve()), v1_sig, frozenset(live), len(index_rows))
 
 
+def _unlink_orphan_temps(root: Path) -> None:
+    if root.is_dir():
+        for path in root.iterdir():
+            if path.is_file() and _is_tmp(path.name):
+                try:
+                    path.unlink()
+                except OSError:
+                    pass
+    camp = root / "campaigns"
+    if camp.is_dir():
+        for path in camp.iterdir():
+            if path.is_file() and _is_tmp(path.name):
+                try:
+                    path.unlink()
+                except OSError:
+                    pass
+
+
 @contextmanager
 def _cache_write_guard(root: Path):
     with _CACHE_WRITE_LOCK:
@@ -1113,6 +1114,7 @@ def _cache_write_guard(root: Path):
         fd = os.open(lock_path, os.O_RDWR | os.O_CREAT, 0o644)
         try:
             fcntl.flock(fd, fcntl.LOCK_EX)
+            _unlink_orphan_temps(root)
             yield
             if not lock_path.is_file():
                 with lock_path.open("ab"):
@@ -1410,6 +1412,7 @@ def _scan_sources(
         "files": files,
         "trees": trees,
         "tree_dirs": tree_dirs,
+        "dir_present": _agentic_dir_presence(agentic),
         "transcripts": transcripts,
         "prices": _prices_canonical(cfg),
         "profile_layers": _profile_layer_cursors(cfg),
@@ -1865,16 +1868,18 @@ def _apply_pending_index_writes(cfg, root: Path, *, _hold_guard: bool = False) -
         return
 
     def _do() -> None:
+        H = _lazy_history()
+        now = H._aware(dt.datetime.now().astimezone())
         pruned = _pruned_campaign_ids(cfg, root)
         for cid in pruned:
             _safe_unlink_campaign_file(root, cid)
         committed = _read_index(root)
         pending = _read_pending_index_writes(root)
         merged_idx = _merge_index_writes(committed, pending, pruned)
-        records_changed = False
         records = _read_records(root)
+        records_at_start = list(records)
+        index_at_start = list(committed)
         if pruned:
-            H = _lazy_history()
             records = _merge_records(
                 records,
                 drop_predicate=lambda r, p=pruned: (
@@ -1888,11 +1893,39 @@ def _apply_pending_index_writes(cfg, root: Path, *, _hold_guard: bool = False) -
                 records, drop_predicate=lambda r: r.get("source") not in _LOCAL_SOURCES,
             )
             records.extend(H._enrich_records(global_recs, _headers_for_enrich(merged_idx)))
-            records_changed = True
-        _write_index(root, merged_idx)
-        if records_changed:
-            _write_records(root, records)
-        writes_path.unlink()
+        sources_out = None
+        if pruned:
+            live = _live_campaign_ids(cfg)
+            survivors = {
+                r["campaign"] for r in merged_idx
+                if r.get("outcome") in _TERMINAL_OUTCOMES and r.get("campaign") in live
+            }
+            touch: set[str] = set()
+            for cid in survivors:
+                doc = _read_json(root / "campaigns" / f"{cid}.json")
+                if not isinstance(doc, dict):
+                    touch.add(cid)
+                    continue
+                pure = H.campaign_history(cfg, cid, now=now, cache=False)
+                a = {k: v for k, v in doc.items() if k != "generated_at"}
+                b = {k: v for k, v in pure.items() if k != "generated_at"}
+                if a != b:
+                    touch.add(cid)
+            if touch:
+                merged_idx, records, sources_out = _recompute_terminal_documents(
+                    cfg, root, now, merged_idx, records, touch,
+                )
+        sources = sources_out or _read_json(root / "sources.json") or {}
+        _persist_index_records(
+            cfg,
+            root,
+            records_at_start=records_at_start,
+            records=records,
+            index_at_start=index_at_start,
+            index_rows=merged_idx,
+            sources=sources,
+            _hold_guard=True,
+        )
 
     if _hold_guard:
         _do()
@@ -2007,62 +2040,64 @@ def _patch_one_window(index_rows: list[dict], cid: str, window: dict) -> list[di
     return _patch_index_windows(index_rows, {cid: window or {}})
 
 
-def _runner_log_snapshot(cfg, gaps: list[str]) -> tuple[list[tuple], int]:
+def _runner_log_snapshot(cfg, gaps: list[str]) -> tuple[list[tuple], int, int]:
     """One read of runner.jsonl for cold fill: intervals and committed byte offset."""
     H = _lazy_history()
     path = store.agentic_dir(cfg) / "runner.jsonl"
     if not path.is_file():
         gaps.append("runner.jsonl: missing")
         return [], 0, 0
-    out, down, last_stamp, saw_start = [], None, None, False
+    rows: list[tuple[int, dict]] = []
     committed = 0
+    file_lines = 0
     try:
         with path.open("rb") as stream:
             line = 0
             while True:
-                pos = stream.tell()
+                offset = stream.tell()
                 raw = stream.readline()
                 if not raw:
-                    committed = stream.tell()
                     break
                 if not raw.endswith(b"\n"):
-                    committed = pos
+                    if raw:
+                        stream.seek(offset)
                     break
+                committed = stream.tell()
                 line += 1
+                file_lines = line
                 if not raw.strip():
-                    committed = stream.tell()
                     continue
                 try:
-                    row = json.loads(raw.decode("utf-8"))
+                    value = json.loads(raw.decode("utf-8"))
                 except (ValueError, UnicodeError):
                     gaps.append(f"runner.jsonl: line {line} unparsable")
-                    committed = stream.tell()
                     continue
-                if not isinstance(row, dict):
-                    committed = stream.tell()
-                    continue
-                stamp = H._parse_ts(row.get("ts"))
-                if not stamp:
-                    gaps.append(f"runner.jsonl: line {line} timestamp malformed")
-                    committed = stream.tell()
-                    continue
-                kind = row.get("kind")
-                if kind in ("stop", "crash"):
-                    if down is None:
-                        down = stamp
-                elif kind == "start":
-                    if down is not None and stamp > down:
-                        out.append((down, stamp))
-                    elif saw_start and last_stamp is not None and stamp > last_stamp:
-                        out.append((last_stamp, stamp))
-                    saw_start = True
-                    down = None
-                last_stamp = stamp
-                committed = stream.tell()
+                if isinstance(value, dict):
+                    rows.append((offset, value))
+                else:
+                    gaps.append(f"runner.jsonl: line {line} unparsable")
     except OSError:
         gaps.append("runner.jsonl: missing")
         return [], 0, 0
-    return out, committed, line
+    out, down, last_stamp, saw_start = [], None, None, False
+    for line, (_, row) in enumerate(rows, 1):
+        stamp = H._parse_ts(row.get("ts"))
+        if not stamp:
+            gaps.append(f"runner.jsonl: line {line} timestamp malformed")
+            continue
+        kind = row.get("kind")
+        if kind in ("stop", "crash"):
+            if down is None:
+                down = stamp
+        elif kind == "start":
+            if down is not None and stamp > down:
+                out.append((down, stamp))
+            elif saw_start and last_stamp is not None and stamp > last_stamp:
+                out.append((last_stamp, stamp))
+            saw_start = True
+            down = None
+        last_stamp = stamp
+    return out, committed, file_lines
 
 
 def _parsed_log_offsets(cfg, *, exclude: frozenset[str] = frozenset()) -> dict[str, int]:
@@ -2153,7 +2188,13 @@ def _cold_fill(cfg, root: Path, *, now=None, progress=None, _hold_guard: bool = 
         H2 = _lazy_history()
         all_records = H2._enrich_records(all_records, headers)
         pending = _read_pending_index_writes(root)
-        merged_idx = _merge_index_writes([], pending, set())
+        live = _live_campaign_ids(cfg)
+        committed_cold = _read_index(root)
+        known = _known_campaign_ids(root, committed_cold, pending)
+        pruned = known - live
+        for cid in pruned:
+            _safe_unlink_campaign_file(root, cid)
+        merged_idx = _merge_index_writes(committed_cold, pending, pruned)
         _write_index(root, merged_idx)
         writes_path = root / "index.writes.jsonl"
         if writes_path.is_file():
@@ -2165,7 +2206,7 @@ def _cold_fill(cfg, root: Path, *, now=None, progress=None, _hold_guard: bool = 
         sources["complete"] = True
         _stamp_v1_files(sources, root)
         _atomic_write_json(root / "sources.json", sources)
-        return {"campaigns": len(cids), "records": len(all_records)}
+        return {"campaigns": len(merged_idx), "records": len(all_records)}
 
     if _hold_guard:
         return _persist()
@@ -2439,6 +2480,7 @@ def _prune_gone_campaigns(cfg, root: Path, index_rows: list[dict], records: list
                     )
             records_at_start = _read_records(root)
             index_at_start = _read_index(root)
+            sources_for_persist = sources_out or _read_json(root / "sources.json") or {}
             _persist_index_records(
                 cfg,
                 root,
@@ -2446,7 +2488,7 @@ def _prune_gone_campaigns(cfg, root: Path, index_rows: list[dict], records: list
                 records=records,
                 index_at_start=index_at_start,
                 index_rows=index_rows,
-                sources=sources_out,
+                sources=sources_for_persist,
                 _hold_guard=_hold_guard,
             )
     return index_rows, records
@@ -2611,6 +2653,8 @@ def _sources_unchanged_light(cfg, stored: dict) -> bool:
         entry = _file_entry(Path(resolved))
         if _file_meta(old) != _file_meta(entry or {}):
             return False
+    if _agentic_dir_presence(agentic) != (stored.get("dir_present") or {}):
+        return False
     return True
 
 
@@ -2909,6 +2953,7 @@ def _sync_globals(cfg, root: Path, now, *, _hold_guard: bool = False) -> set[str
     esc_tree_changed = old_trees.get("escalations") != new_trees.get("escalations")
     sent_tree_changed = old_trees.get("sentinel") != new_trees.get("sentinel")
     esc_sent_tree_changed = esc_tree_changed or sent_tree_changed
+    dir_pres_changed = (sources.get("dir_present") or {}) != (fresh.get("dir_present") or {})
     old_sess = old_logs.get("conductor/sessions.jsonl")
     new_sess = new_logs.get("conductor/sessions.jsonl")
     sess_incomplete = _log_tail_incomplete(old_sess, new_sess) if old_sess and new_sess else False
@@ -2930,7 +2975,10 @@ def _sync_globals(cfg, root: Path, now, *, _hold_guard: bool = False) -> set[str
             if row.get("outcome") in _TERMINAL_OUTCOMES:
                 affected.add(row["campaign"])
 
-    need_global = needs_spec_review or mailbox_changed or flaky_changed or esc_sent_tree_changed
+    need_global = (
+        needs_spec_review or mailbox_changed or flaky_changed or esc_sent_tree_changed
+        or dir_pres_changed
+    )
     if need_global:
         glob_gaps: list[str] = []
         global_recs = H._global_records(cfg, cids, glob_gaps)

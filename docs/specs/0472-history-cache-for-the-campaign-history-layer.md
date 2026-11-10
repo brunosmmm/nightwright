@@ -4,7 +4,7 @@ title: "History cache for the campaign history layer"
 status: in-progress
 owner: user
 created: 2026-11-08
-updated: 2026-11-10
+updated: 2026-11-11
 source_idea: IDEA-1015
 kind: feature
 parent: SPEC-0405
@@ -672,6 +672,15 @@ Fixed records quiet-path order and gates staleness. `uv run pytest -q`
 `tests/test_history_perf.py::test_warm_index_no_terminal_campaign_stat` (3 passed);
 history bundle 141 passed. `python3 tools/spec_lint.py --write-ledger` exit 0. Full suite left to gating.
 
+### Test record (2026-11-11, implementer loop 2 of 3, IDEA-1015-faf2)
+
+Pending-index prune recomputes survivor terminals and restamps v1 via `_persist_index_records`;
+cold fill passes fresh `pruned` into `_merge_index_writes`; unlocked reads keep orphan temps;
+locked refresh cleans temps; `dir_present` cursors invalidate terminal gaps; runner snapshot
+gaps match `_jsonl`/`_runner_intervals`. `uv run pytest -q tests/test_history_cache.py
+tests/test_history_scale.py tests/test_cli_campaign_history.py` (82 passed).
+`python3 tools/spec_lint.py --write-ledger` exit 0. Full suite left to gating.
+
 ### Test record (2026-11-10, implementer loop 3 of 3, IDEA-1015-faf2)
 
 Warm corrupt check stats `campaigns/*.json` cursors instead of parsing; records quiet
@@ -757,6 +766,12 @@ persistence via `_hold_guard`. Terminal `campaign_history` hits require the inde
 set to match live directories. Decision cursors store the byte offset from the parse pass.
 Remaining test-plan matrix gaps (mailbox/profile/run.json invalidation detail, CLI hash
 assertions, clone_fixture append contract, schema-id pinning) are follow-up for loop 2+.
+
+### As shipped (2026-11-11, loop 2)
+
+Loop 2: `_apply_pending_index_writes` survivor recompute + v1 stamp; cold-fill prune before
+merge; orphan temps only under lock; `sources.dir_present` for sentinel/reviews/escalations/mailbox;
+single-pass `_runner_log_snapshot` aligned with pure reader gaps.
 
 ### As shipped (2026-11-10, loop 0)
 
