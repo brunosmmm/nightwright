@@ -179,6 +179,29 @@ class HubClient:
                 return v
         return None
 
+    def _connect(self) -> socket.socket:
+        deadline = time.monotonic() + self.CONNECT_TIMEOUT
+        try:
+            addrs = socket.getaddrinfo(self.host, self.port, type=socket.SOCK_STREAM)
+        except OSError as e:
+            raise ConnectionError(f"{type(e).__name__}: {e}") from e
+        last: OSError | None = None
+        for _family, _type, _proto, _canon, sockaddr in addrs:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise ConnectionError("TimeoutError: timed out")
+            sock = socket.socket(_family, _type, _proto)
+            try:
+                sock.settimeout(remaining)
+                sock.connect(sockaddr)
+                return sock
+            except OSError as e:
+                last = e
+                sock.close()
+        if last is not None:
+            raise ConnectionError(f"{type(last).__name__}: {last}") from last
+        raise ConnectionError("gaierror: no addresses")
+
     def request(self, method: str, path: str, body: bytes = b"") -> tuple[int, bytes, dict]:
         data = body or b""
         target = self._target(path)
@@ -190,8 +213,7 @@ class HubClient:
         sock = None
         try:
             if self.https:
-                sock = socket.create_connection((self.host, self.port),
-                                                  timeout=self.CONNECT_TIMEOUT)
+                sock = self._connect()
                 ctx = ssl.create_default_context()
                 ssl_sock = ctx.wrap_socket(sock, server_hostname=self.host)
                 sock = None
@@ -199,8 +221,7 @@ class HubClient:
                 conn.sock = ssl_sock
             else:
                 conn = http.client.HTTPConnection(self.host, self.port)
-                conn.sock = socket.create_connection((self.host, self.port),
-                                                     timeout=self.CONNECT_TIMEOUT)
+                conn.sock = self._connect()
             conn.request(method, target, body=data, headers=headers)
             conn.sock.settimeout(self.READ_TIMEOUT)
             resp = conn.getresponse()
@@ -232,7 +253,7 @@ class HubClient:
         _, raw, _ = self.request("GET", path)
         try:
             doc = json.loads(raw)
-        except ValueError as e:
+        except (ValueError, RecursionError) as e:
             raise ConnectionError("response is not JSON") from e
         if not isinstance(doc, dict):
             raise ConnectionError("response is not a JSON object")

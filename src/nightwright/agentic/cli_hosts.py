@@ -153,7 +153,7 @@ def hosts_check(cfg):
         try:
             client = Fed.HubClient(rec, cfg)
             doc = client.get_json("/v1/status")
-        except (ConnectionError, ValueError, OSError, http.client.HTTPException) as e:
+        except (ConnectionError, ValueError, OSError, http.client.HTTPException, RecursionError) as e:
             click.echo(f"{name} unreachable: {e}")
             exit_code = 1
             continue

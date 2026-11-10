@@ -99,7 +99,20 @@ class _Handler(http.server.BaseHTTPRequestHandler):
             return
         if not self.parse_request():
             return
-        self._dispatch(self.command)
+        try:
+            self._dispatch(self.command)
+        except ValueError:
+            self.close_connection = True
+            self._reject_bad_request(self.command)
+
+    def _reject_bad_request(self, method: str) -> None:
+        fed = F.read_federation(self.server.cfg)
+        if fed is None:
+            self._json_error(401, "unauthorized", signed=False, method=method, path="/",
+                             secret=None)
+            return
+        self._json_error(401, "unauthorized", signed=True, method=method, path="/",
+                         secret=fed["secret"])
 
     def _path(self) -> str:
         parts = urlsplit(self.path)
@@ -107,9 +120,10 @@ class _Handler(http.server.BaseHTTPRequestHandler):
 
     def _read_body(self) -> bytes | None:
         raw = self.headers.get("Content-Length")
-        if not raw or not raw.isdigit():
+        s = str(raw) if raw is not None else ""
+        if not s or not (s.isascii() and s.isdigit()):
             return b""
-        n = int(raw)
+        n = int(s)
         if n > MAX_BODY_BYTES:
             return None
         return self.rfile.read(n) if n > 0 else b""
@@ -137,7 +151,10 @@ class _Handler(http.server.BaseHTTPRequestHandler):
         self._write(status, data, signed=signed, method=method, path=path, secret=secret)
 
     def _dispatch(self, method: str) -> None:
-        path = self._path()
+        try:
+            path = self._path()
+        except ValueError:
+            raise ValueError("bad request target") from None
         fed = F.read_federation(self.server.cfg)
         if fed is None:
             self._json_error(401, "unauthorized", signed=False, method=method, path=path,
@@ -174,7 +191,10 @@ class _Handler(http.server.BaseHTTPRequestHandler):
             self._json_error(401, "unauthorized", signed=True, method=method, path=path,
                              secret=secret_key)
             return
-        route = urlsplit(self.path).path
+        try:
+            route = urlsplit(self.path).path
+        except ValueError:
+            raise ValueError("bad request target") from None
         if route == "/v1/status" and method == "GET":
             doc = status_document(self.server.cfg)
             data = json.dumps(doc, separators=(",", ":")).encode()
