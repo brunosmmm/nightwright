@@ -16,6 +16,8 @@ from nightwright.cli import cli
 from nightwright.org import Task, load_tasks
 from nightwright.specmeta import split_frontmatter
 
+pytestmark = pytest.mark.fast
+
 ROOT = Path(__file__).resolve().parent.parent
 PINNED = "9700eaa1f712c11423e0542ae8882ba96653f4575be89e3f481d05df79eff208"
 VEC2 = "a0d1682323b9536aa06d0ce3c5a21ab22ac8f0be7cf24906aa88df17bc50c45d"
