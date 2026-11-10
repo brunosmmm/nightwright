@@ -1,7 +1,7 @@
 ---
 id: SPEC-0493
 title: "Cadence runner trigger, red-main source and nightwright's jobs"
-status: accepted
+status: in-progress
 owner: user
 created: 2026-11-09
 updated: 2026-11-09
