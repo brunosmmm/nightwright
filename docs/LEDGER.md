@@ -339,7 +339,7 @@ progress. This is the single place to see *what has been decided* and *what is i
 | [SPEC-0466](./specs/0466-gpt-only-pi-sdk-model-set-for-all-nightwright.md) | GPT-only Pi SDK model set for all nightwright personas | feature | in-progress | — | 2026-11-08 |
 | [SPEC-0468](./specs/0468-stop-queue-thrash.md) | Stop the queue from thrashing a finished campaign | feature | accepted | — | 2026-11-08 |
 | [SPEC-0470](./specs/0470-close-follows-a-renamed-spec.md) | Close follows a spec file the branch renamed | feature | accepted | — | 2026-11-08 |
-| [SPEC-0473](./specs/0473-public-backlog-on-an-orphan-nw-backlog-branch.md) | Public backlog on an orphan nw-backlog branch | feature | proposed | — | 2026-11-10 |
+| [SPEC-0473](./specs/0473-public-backlog-on-an-orphan-nw-backlog-branch.md) | Public backlog on an orphan nw-backlog branch | feature | accepted | — | 2026-11-10 |
 | [SPEC-0476](./specs/0476-campaign-detail-runs-pane.md) | Campaign detail Runs pane: run table, verdict, and stream tail | feature | accepted | — | 2026-11-08 |
 | [SPEC-0477](./specs/0477-campaign-detail-findings-and-mail.md) | Campaign detail Findings & decisions pane and Mail pane | feature | accepted | — | 2026-11-08 |
 | [SPEC-0489](./specs/0489-test-tiers-and-cadenced-heavy-runs.md) | Test tiers: campaign gates run the fast tier only; heavy tiers run on a per-project cadence | epic | accepted | M9: agentic workflow | 2026-11-09 |
