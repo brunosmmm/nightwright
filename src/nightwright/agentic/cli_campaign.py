@@ -583,19 +583,19 @@ def attach(campaign_group):
         if follow_campaign:
             import signal
 
+            from .scoped_signals import scoped
+
             def _bye(signum, frame):
                 raise KeyboardInterrupt
-            for sig in (signal.SIGTERM, signal.SIGHUP):
+            # SPEC-0528: the handlers end with the command (an in-process run keeps none)
+            with scoped({signal.SIGTERM: _bye, signal.SIGHUP: _bye}):
                 try:
-                    signal.signal(sig, _bye)
-                except ValueError:                   # not the main thread (tests)
-                    pass
-            try:
-                sys.exit(TL.follow_campaign(cfg, campaign, raw=raw, out=console))
-            except ValueError as e:
-                raise click.ClickException(str(e))
-            except KeyboardInterrupt:
-                sys.exit(130)
+                    rc = TL.follow_campaign(cfg, campaign, raw=raw, out=console)
+                except ValueError as e:
+                    raise click.ClickException(str(e))
+                except KeyboardInterrupt:
+                    rc = 130
+            sys.exit(rc)
         try:
             run_dir = TL.resolve(cfg, campaign, run)
         except ValueError as e:

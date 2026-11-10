@@ -313,11 +313,14 @@ class Watcher:
                 pass
             return None
 
-    def run(self, *, once=False, stop=None, sleep=time.sleep, on_locked=None) -> None:
+    def run(self, *, once=False, stop=None, sleep=time.sleep, on_locked=None,
+            max_s=None) -> None:
         """Hold the `herdr` reader lock; poll events every `min(POLL_S, interval)` and push
         tokens every interval until `stop()` (or a signal). A clean exit clears what it pushed;
         `once` does one poll + one push and leaves the tokens to their TTL. `on_locked()` runs
-        once the lock is held (SPEC-0365: the CLI records `herdr_watch.json` there)."""
+        once the lock is held (SPEC-0365: the CLI records `herdr_watch.json` there). `max_s`
+        bounds the loop (a clean exit once it passes; SPEC-0528: in-process callers, tests,
+        never run it unbounded); None, the CLI's default, runs until stopped."""
         with E.reader_lock(self.cfg, READER):
             if on_locked is not None:
                 self._guard(on_locked)
@@ -330,6 +333,7 @@ class Watcher:
                 return
             poll = min(POLL_S, self.interval_s)
             next_push = 0.0
+            end = None if max_s is None else time.monotonic() + max_s
             try:
                 while True:
                     self._guard(self.poll_events)
@@ -338,7 +342,9 @@ class Watcher:
                         next_push = time.monotonic() + self.interval_s
                     if stop is not None and stop():
                         return
-                    sleep(poll)
+                    if end is not None and time.monotonic() >= end:
+                        return
+                    sleep(poll if end is None else max(0.0, min(poll, end - time.monotonic())))
             finally:
                 self.clear()
                 if self.run_panes is not None:

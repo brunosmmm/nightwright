@@ -10,12 +10,14 @@ import signal
 import subprocess
 import sys
 import threading
+from contextlib import contextmanager
 
 import click
 
 from ..console import console
 from ..report import _dump_json
 from . import gate_jobs as J
+from .scoped_signals import scoped
 
 
 @click.group("gate")
@@ -32,18 +34,17 @@ def gate_group():
     """
 
 
-def _stop_on_signals() -> threading.Event:
+@contextmanager
+def _stop_on_signals():
+    """SIGTERM/SIGINT set the yielded stop event while the block runs; the previous handlers
+    are back afterwards (SPEC-0528: an in-process run must not leave them behind)."""
     stop = threading.Event()
 
     def _handler(_sig, _frm):
         stop.set()
 
-    for s in (signal.SIGTERM, signal.SIGINT):
-        try:
-            signal.signal(s, _handler)
-        except ValueError:                      # not the main thread (tests)
-            pass
-    return stop
+    with scoped({signal.SIGTERM: _handler, signal.SIGINT: _handler}):
+        yield stop
 
 
 def _report(cfg, rec: dict, as_json: bool, reused: bool = False) -> int:
@@ -121,8 +122,9 @@ def gate_run(cfg, project, worktree, branch, base, tier, cmds, by, wait, wait_s,
     if reused:
         if not wait:
             sys.exit(_report(cfg, rec, as_json, reused=True))
-        sys.exit(_report(cfg, J.follow(cfg, rec["id"], stop=_stop_on_signals()), as_json,
-                         reused=True))
+        with _stop_on_signals() as stop:
+            rec = J.follow(cfg, rec["id"], stop=stop)
+        sys.exit(_report(cfg, rec, as_json, reused=True))
     if not wait:
         log = J.job_dir(cfg, rec["id"]) / "exec.log"
         with open(log, "ab") as fh:
@@ -132,7 +134,8 @@ def gate_run(cfg, project, worktree, branch, base, tier, cmds, by, wait, wait_s,
                                  env=os.environ.copy())
         rec = J.update(cfg, rec["id"], pid=p.pid)
         sys.exit(_report(cfg, rec, as_json))
-    rec = J.execute(cfg, rec["id"], stop=_stop_on_signals(), wait_s=wait_s)
+    with _stop_on_signals() as stop:
+        rec = J.execute(cfg, rec["id"], stop=stop, wait_s=wait_s)
     sys.exit(_report(cfg, rec, as_json))
 
 
@@ -142,7 +145,8 @@ def gate_run(cfg, project, worktree, branch, base, tier, cmds, by, wait, wait_s,
 @click.pass_obj
 def gate_exec(cfg, job_id, wait_s):
     """Run a recorded job (the `--detach` child)."""
-    rec = J.execute(cfg, job_id, stop=_stop_on_signals(), wait_s=wait_s)
+    with _stop_on_signals() as stop:
+        rec = J.execute(cfg, job_id, stop=stop, wait_s=wait_s)
     sys.exit(J.EXIT.get(rec.get("status"), 2))
 
 

@@ -6,6 +6,8 @@ import signal
 
 import click
 
+from .scoped_signals import scoped
+
 
 @click.group("herdr")
 def herdr_group():
@@ -64,10 +66,6 @@ def herdr_watch(cfg, interval_s, conductor_pane, workspace, once, run_panes, run
 
     def _term(signum, frame):
         raise KeyboardInterrupt
-    try:
-        signal.signal(signal.SIGTERM, _term)
-    except ValueError:                       # not the main thread (tests)
-        pass
 
     def record_state():
         AW.write_state(cfg, "auto" if par else "manual", par)
@@ -77,16 +75,19 @@ def herdr_watch(cfg, interval_s, conductor_pane, workspace, once, run_panes, run
             click.echo(f"nw herdr: supervising follower pid {par[0]} is gone; exiting")
             return True
         return False
-    try:
-        w.run(once=once, stop=parent_gone if par else None,
-              on_locked=None if once else record_state)
-    except KeyboardInterrupt:
-        pass
-    except ValueError as e:                  # reader lock held by another watcher
-        raise click.ClickException(str(e))
-    finally:
-        if not once:
-            AW.clear_state(cfg)
+    # SPEC-0528: SIGTERM -> clean exit for this command only; the previous handler is back
+    # once it returns, so an in-process run (tests) never leaves it on the caller's process.
+    with scoped({signal.SIGTERM: _term}):
+        try:
+            w.run(once=once, stop=parent_gone if par else None,
+                  on_locked=None if once else record_state)
+        except KeyboardInterrupt:
+            pass
+        except ValueError as e:              # reader lock held by another watcher
+            raise click.ClickException(str(e))
+        finally:
+            if not once:
+                AW.clear_state(cfg)
 
 
 @herdr_group.command("status")

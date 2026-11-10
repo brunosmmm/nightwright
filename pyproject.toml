@@ -57,6 +57,8 @@ addopts = ["--strict-markers"]
 # SPEC-0524: a passing test leaves no tmp dir; only the last failing session is kept for debugging.
 tmp_path_retention_policy = "failed"
 tmp_path_retention_count = 1
+# A test stuck for 5 min dumps every thread's stack into the (gate) log; it does not fail it.
+faulthandler_timeout = 300
 markers = [
   "fast: default unit tests (SPEC-0490)",
   "integration: slow, e2e, or wide tests (SPEC-0490)",

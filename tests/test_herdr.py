@@ -7,6 +7,7 @@ the fake's directory (plus the interpreter's) on PATH."""
 import io
 import json
 import os
+import signal
 import subprocess
 import sys
 import threading
@@ -466,7 +467,9 @@ def test_watch_loop_pushes_and_stops(fake, tmp_path):
     _place(cfg, "conductor", "pane-cond", "ws-a")
     stop = threading.Event()
     w = HW.Watcher(cfg, H.Client(), interval_s=1)
-    t = threading.Thread(target=w.run, kwargs={"stop": stop.is_set})
+    # SPEC-0528: bounded (max_s) and a daemon, so a missed stop can never wedge the worker
+    t = threading.Thread(target=w.run, kwargs={"stop": stop.is_set, "max_s": waits.WAIT_S},
+                         daemon=True)
     t.start()
     try:
         assert waits.until(lambda: len(_metadata(fake.calls())) >= 1)
@@ -501,6 +504,37 @@ def test_cli_once_with_fake(fake, tmp_path, monkeypatch):
     assert set(md) == {("workspace", "w7"), ("pane", "w7:p2")}
     assert _opt(md[("workspace", "w7")], "--ttl-ms") == "15000"
     assert _opt(md[("pane", "w7:p2")], "--display-agent") == "claude · conductor"
+
+
+def test_cli_watch_handler_lives_only_while_the_command_runs(fake, tmp_path, monkeypatch):
+    """SPEC-0528: `herdr watch` run in-process (here, an xdist worker's main thread) installs
+    its SIGTERM -> clean-exit handler for the watch only and puts the previous one back, for
+    `--once`, for the loop and when the watch raises."""
+    cfg = _cfg(tmp_path)
+    monkeypatch.setattr("nightwright.cli.load_config", lambda: cfg)
+    before = signal.getsignal(signal.SIGTERM)
+    during = []
+    real = HW.Watcher.run
+
+    def spy(self, **kw):
+        during.append(signal.getsignal(signal.SIGTERM))
+        return real(self, **kw)
+    monkeypatch.setattr(HW.Watcher, "run", spy)
+    r = CliRunner().invoke(cli, ["herdr", "watch", "--once"])
+    assert r.exit_code == 0, r.output
+    assert signal.getsignal(signal.SIGTERM) is before
+    gone = subprocess.Popen([sys.executable, "-c", "pass"])
+    gone.wait(timeout=60)                        # a reaped pid: the "follower" is gone
+    r = CliRunner().invoke(cli, ["herdr", "watch", "--interval", "1",
+                                 "--parent", f"{gone.pid}:{RP.start_ticks(os.getpid())}"])
+    assert r.exit_code == 0 and "is gone; exiting" in r.output, r.output
+    assert signal.getsignal(signal.SIGTERM) is before
+    monkeypatch.setattr(HW.Watcher, "run", lambda self, **kw: (
+        during.append(signal.getsignal(signal.SIGTERM)), signal.raise_signal(signal.SIGTERM)))
+    r = CliRunner().invoke(cli, ["herdr", "watch"])  # SIGTERM mid-watch: the clean exit
+    assert r.exit_code == 0, r.output
+    assert signal.getsignal(signal.SIGTERM) is before
+    assert len(during) == 3 and all(h is not before and callable(h) for h in during)
 
 
 # ---- isolation and persona env -------------------------------------------------------------
@@ -810,8 +844,10 @@ def test_follow_campaign_cli_and_restored_pane_shows_the_last_run(tmp_path, monk
     monkeypatch.setattr("nightwright.cli.load_config", lambda: cfg)
     monkeypatch.setattr(TL, "follow_campaign", lambda *a, **k: (_ for _ in ()).throw(
         KeyboardInterrupt))
+    prev = {s: signal.getsignal(s) for s in (signal.SIGTERM, signal.SIGHUP)}
     r = CliRunner().invoke(cli, ["campaign", "tail", cid, "--follow-campaign"])
     assert r.exit_code == 130, r.output
+    assert {s: signal.getsignal(s) for s in prev} == prev          # SPEC-0528: none left behind
 
 
 def test_second_campaign_gets_a_second_tab_never_a_split(fake, tmp_path):
