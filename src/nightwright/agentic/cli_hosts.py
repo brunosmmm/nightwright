@@ -102,8 +102,9 @@ def hosts_rm(cfg, name):
             F.drop_host_secrets(cfg, name)
     finally:
         os.close(fd)
-    if removed:
-        click.echo("run nw hosts unenrol on the host")
+    if not removed:
+        raise click.ClickException(f"no host {name!r}")
+    click.echo("run nw hosts unenrol on the host")
 
 
 @hosts_group.command("on")

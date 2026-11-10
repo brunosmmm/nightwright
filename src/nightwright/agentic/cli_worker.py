@@ -409,6 +409,8 @@ def serve_cmd(cfg, jobs, dashboard, federate, bind, tls_cert, tls_key, client_ca
         except (ValueError, OSError) as e:
             raise click.ClickException(str(e))
         host, port = srv.server_address[:2]
+        if ":" in host:
+            host = f"[{host}]"
         try:
             click.echo(f"nw serve: federation on {'https' if tls_cert else 'http'}://{host}:{port}",
                        err=True)

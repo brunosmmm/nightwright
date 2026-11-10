@@ -86,10 +86,16 @@ class _Handler(http.server.BaseHTTPRequestHandler):
         pass
 
     def handle_one_request(self):
-        self.raw_requestline = self.rfile.readline(65537)
+        try:
+            self.raw_requestline = self.rfile.readline(65537)
+        except TimeoutError:
+            self.close_connection = True
+            return
         if len(self.raw_requestline) > 65536:
+            self.close_connection = True
             return
         if not self.raw_requestline:
+            self.close_connection = True
             return
         if not self.parse_request():
             return
@@ -110,6 +116,7 @@ class _Handler(http.server.BaseHTTPRequestHandler):
 
     def _write(self, status: int, data: bytes, *, signed: bool, method: str, path: str,
                secret: str | None, now: float | None = None) -> None:
+        self.close_connection = True
         self.send_response(status)
         if data:
             self.send_header("Content-Type", "application/json")
@@ -118,6 +125,7 @@ class _Handler(http.server.BaseHTTPRequestHandler):
             self.send_header("X-NW-Sig-Ts", hdrs["X-NW-Sig-Ts"])
             self.send_header("X-NW-Sig", hdrs["X-NW-Sig"])
         self.send_header("Content-Length", str(len(data)))
+        self.send_header("Connection", "close")
         self.end_headers()
         if data:
             self.wfile.write(data)
@@ -138,12 +146,16 @@ class _Handler(http.server.BaseHTTPRequestHandler):
         secret_key = fed["secret"]
         auth = self.headers.get("Authorization") or ""
         token = auth[7:].strip() if auth.startswith("Bearer ") else None
+        clen = self.headers.get("Content-Length")
+        if clen and str(clen).isascii() and str(clen).isdigit() and int(clen) > 0:
+            self.close_connection = True
         if not token or not hmac.compare_digest(token, tok):
             self._json_error(401, "unauthorized", signed=True, method=method, path=path,
                              secret=secret_key)
             return
         ts_raw = self.headers.get("X-NW-Req-Ts") or self.headers.get("x-nw-req-ts")
-        if not ts_raw or not str(ts_raw).isdigit():
+        ts_s = str(ts_raw) if ts_raw is not None else ""
+        if not ts_s.isascii() or not ts_s.isdigit() or (len(ts_s) > 1 and ts_s[0] == "0"):
             self._json_error(401, "unauthorized", signed=True, method=method, path=path,
                              secret=secret_key)
             return
@@ -153,7 +165,7 @@ class _Handler(http.server.BaseHTTPRequestHandler):
                              secret=secret_key)
             return
         mac = self.headers.get("X-NW-Req-Sig") or self.headers.get("x-nw-req-sig")
-        if F.verify(secret_key, method, path, body, mac or "", int(ts_raw)):
+        if F.verify(secret_key, method, path, body, mac or "", int(ts_s)):
             self._json_error(401, "unauthorized", signed=True, method=method, path=path,
                              secret=secret_key)
             return

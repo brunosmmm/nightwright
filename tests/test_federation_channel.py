@@ -5,6 +5,7 @@ import ast
 import http.client
 import json
 import os
+import shutil
 import socket
 import stat
 import subprocess
@@ -15,6 +16,7 @@ from pathlib import Path
 import pytest
 from click.testing import CliRunner
 
+from nightwright.agentic import cli_hosts
 from nightwright.agentic import federation as F
 from nightwright.agentic import federation_host as FH
 from nightwright.agentic import hosts as H
@@ -94,6 +96,26 @@ def _resp_sig(secret, method, path, hdrs, raw):
     assert F.verify(secret, method, path, raw, mac, int(ts), now=NOW) is None
 
 
+def _lease_checker_threads():
+    for t in threading.enumerate():
+        fn = getattr(getattr(t, "_target", None), "__func__", None)
+        if fn is PJ.PullServer.check_leases:
+            yield t
+
+
+def _mini_tls_pair(tmp_path):
+    if shutil.which("openssl") is None:
+        pytest.skip("openssl is not installed")
+    d = tmp_path / "tls"
+    d.mkdir()
+    subprocess.run(
+        ["openssl", "req", "-x509", "-newkey", "rsa:2048", "-nodes", "-keyout", "k.pem",
+         "-out", "c.pem", "-days", "1", "-subj", "/CN=localhost"],
+        cwd=d, check=True, capture_output=True,
+    )
+    return str(d / "c.pem"), str(d / "k.pem")
+
+
 def _queue_import_violations(source: str, *, federation_host_payload_only: bool = False) -> list[str]:
     tree = ast.parse(source)
     queue_names: set[str] = set()
@@ -146,6 +168,13 @@ def test_add_stores_0600_secrets_and_hash_only_record(tmp_path, monkeypatch):
     assert rec["token_sha256"] == PJ.token_hash(blob["token"])
     assert tok_p.read_text().strip() == blob["token"]
     assert key_p.read_text().strip() == blob["secret"]
+    for name, url in (("v6loop", "http://[::1]:8792"), ("v6tail", "http://[fd7a:115c:a1e0::1]:8792")):
+        r6 = _invoke(cfg, monkeypatch, "add", name, "--url", url)
+        assert r6.exit_code == 0, r6.output
+        rec6 = H.find(H.load(cfg), name)
+        assert rec6["url"] == url
+        F.HubClient(rec6, cfg)
+    assert H.find(H.load(cfg), "box")["url"] == "http://127.0.0.1:8792"
 
 
 def test_add_rejects_duplicate_bad_name_and_bad_url(tmp_path, monkeypatch):
@@ -202,6 +231,25 @@ def test_registry_fsync_failure_keeps_previous_bytes(tmp_path, monkeypatch):
                                         "secret_ref": "secrets/hosts/b.key",
                                         "enabled": True, "status_cache": None}))
     assert len(H.load(cfg)) == 2
+
+
+def test_registry_concurrent_updates_both_persist(tmp_path):
+    cfg = _cfg(tmp_path)
+    names = [f"h{i:02d}" for i in range(8)]
+
+    def add_one(n):
+        H.update(cfg, lambda rs, name=n: rs.append({
+            "name": name, "url": f"http://127.0.0.1:{1000 + int(name[1:])}",
+            "token_sha256": "a" * 64, "secret_ref": f"secrets/hosts/{name}.key",
+            "enabled": True, "status_cache": None,
+        }))
+
+    threads = [threading.Thread(target=add_one, args=(n,)) for n in names]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(timeout=30)
+    assert sorted(r["name"] for r in H.load(cfg)) == sorted(names)
 
 
 def test_rm_deletes_secrets_prints_unenrol_and_makes_no_http(tmp_path, monkeypatch):
@@ -271,9 +319,10 @@ def test_enrol_stdin_only_0600(tmp_path, monkeypatch):
     assert CliRunner().invoke(cli, ["hosts", "unenrol"], env=env).exit_code == 0
     assert not p.exists()
     assert CliRunner().invoke(cli, ["hosts", "unenrol"], env=env).exit_code == 0
+    assert set(cli_hosts.hosts_group.commands) == {
+        "add", "list", "rm", "on", "off", "check", "enrol", "unenrol",
+    }
     help_out = CliRunner().invoke(cli, ["hosts", "--help"]).output
-    for cmd in ("add", "list", "rm", "on", "off", "check", "enrol", "unenrol"):
-        assert cmd in help_out
     assert "revoke" not in help_out
 
 
@@ -395,6 +444,21 @@ def test_enrolled_request_auth(tmp_path, monkeypatch):
     st, h, raw = req("POST", "/v1/revoke", headers=rev_hdrs)
     assert st == 404
     _resp_sig(secret, "POST", "/v1/revoke", h, raw)
+    qpath = "/v1/status?z=1&a=2"
+    q_hdrs = {**F.request_headers(secret, "GET", qpath, b"", now=NOW), "Authorization": "Bearer tok"}
+    st, h, raw = req("GET", qpath, headers=q_hdrs)
+    assert st == 200
+    _resp_sig(secret, "GET", qpath, h, raw)
+    bad_q = {**F.request_headers(secret, "GET", "/v1/status?a=2&z=1", b"", now=NOW),
+             "Authorization": "Bearer tok"}
+    st, h, raw = req("GET", qpath, headers=bad_q)
+    assert st == 401
+    _resp_sig(secret, "GET", qpath, h, raw)
+    unicode_ts = {**F.request_headers(secret, "GET", "/v1/status", b"", now=NOW),
+                "Authorization": "Bearer tok", "X-NW-Req-Ts": "\u00b2"}
+    st, h, raw = req("GET", "/v1/status", headers=unicode_ts)
+    assert st == 401
+    _resp_sig(secret, "GET", "/v1/status", h, raw)
     srv.shutdown()
 
 
@@ -412,7 +476,8 @@ def test_hubclient_rejects_bad_responses(tmp_path, monkeypatch):
     secret = blob["secret"]
     client = F.HubClient(rec, hub, now=NOW)
     assert client.CONNECT_TIMEOUT == 2 and client.READ_TIMEOUT == 2
-    assert client.get_json("/v1/status")["schema"] == "nw.federation.status.v1"
+    for _ in range(25):
+        assert client.get_json("/v1/status")["schema"] == "nw.federation.status.v1"
     rec2 = {**rec, "url": rec["url"] + "/"}
     F.HubClient(rec2, hub, now=NOW).get_json("/v1/status")
     with pytest.raises(ConnectionError):
@@ -495,6 +560,7 @@ def test_status_maps_queue_payload_items(tmp_path, monkeypatch):
     assert resp.status == 404
     _resp_sig("abc", "GET", "/v1/lease", lease_hdrs, lease_raw)
     assert not isinstance(srv, PJ.PullServer)
+    assert not list(_lease_checker_threads())
     srv.shutdown()
 
 
@@ -510,7 +576,14 @@ def test_bind_and_serve_flags(tmp_path, monkeypatch):
     monkeypatch.setattr("nightwright.cli.load_config", lambda: host)
     assert CliRunner().invoke(cli, ["serve", "--federate", "--client-ca", "/x"]).exit_code != 0
     assert CliRunner().invoke(cli, ["serve", "--jobs", "--federate"]).exit_code != 0
-    assert CliRunner().invoke(cli, ["serve", "--federate", "--tls-cert", "/x.pem"]).exit_code != 0
+    cert, key = _mini_tls_pair(tmp_path)
+    with pytest.raises(ValueError, match="tls-cert"):
+        FH.make_federate_server(host, "127.0.0.1:0", tls_cert=cert, tls_key=None)
+    with pytest.raises(ValueError, match="client-ca"):
+        FH.make_federate_server(host, "127.0.0.1:0", client_ca=cert)
+    FH.make_federate_server(host, "127.0.0.1:0", tls_cert=cert, tls_key=key).server_close()
+    assert CliRunner().invoke(cli, ["serve", "--federate", "--tls-cert", cert]).exit_code != 0
+
     def puff(self, *a, **kw):
         raise KeyboardInterrupt()
 
@@ -518,6 +591,17 @@ def test_bind_and_serve_flags(tmp_path, monkeypatch):
     r = CliRunner().invoke(cli, ["serve", "--federate", "--bind", "127.0.0.1:0"])
     assert r.exit_code == 0
     assert "nw serve: federation on" in r.stderr
+    real_make = FH.make_federate_server
+
+    def _v6_echo_server(cfg, bind, **kw):
+        srv = real_make(cfg, "127.0.0.1:0", **kw)
+        srv.server_address = ("::1", srv.server_address[1])
+        return srv
+
+    monkeypatch.setattr(FH, "make_federate_server", _v6_echo_server)
+    r6 = CliRunner().invoke(cli, ["serve", "--federate", "--bind", "[::1]:0"])
+    assert r6.exit_code == 0
+    assert "nw serve: federation on http://[::1]:" in r6.stderr
 
 
 def test_check_overlap_unreachable_and_disabled(tmp_path, monkeypatch):
@@ -547,20 +631,52 @@ def test_check_overlap_unreachable_and_disabled(tmp_path, monkeypatch):
     _campaign(host_b, repo, "B-C", "QUEUED", project="Both")
     _campaign(host_a, repo, "A2", "QUEUED", project="OnlyA")
     _campaign(host_a, repo, "SA", "QUEUED", project="Shared")
-    blob_a = _add_and_enrol(host_a, hub_full, monkeypatch, name="a")
-    blob_b = _add_and_enrol(host_b, hub_full, monkeypatch, name="b")
+    _add_and_enrol(host_a, hub_full, monkeypatch, name="zlast")
+    _add_and_enrol(host_b, hub_full, monkeypatch, name="mfirst")
     srv_a, url_a = _serve(host_a)
     srv_b, url_b = _serve(host_b)
-    _point_hub(hub_full, "a", url_a)
-    _point_hub(hub_full, "b", url_b)
+    _point_hub(hub_full, "zlast", url_a)
+    _point_hub(hub_full, "mfirst", url_b)
     r_overlap = _invoke(hub_full, monkeypatch, "check")
     assert r_overlap.exit_code == 1
-    assert "project Both on a and b" in r_overlap.output
-    assert "project Shared on hub and a" in r_overlap.output or "project Shared on hub and b" in r_overlap.output
-    rec_a = H.find(H.load(hub_full), "a")
-    assert rec_a["status_cache"] and rec_a["status_cache"]["projects"]
+    assert "project Both on mfirst and zlast" in r_overlap.output
+    assert "project Shared on hub and zlast" in r_overlap.output or (
+        "project Shared on hub and mfirst" in r_overlap.output)
+    doc_a = FH.status_document(host_a)
+    rec_z = H.find(H.load(hub_full), "zlast")
+    cache = rec_z["status_cache"]
+    assert cache
+    assert cache["fetched_at"]
+    assert cache["projects"] == doc_a["projects"]
+    assert cache["campaigns"] == doc_a["campaigns"]
     srv_a.shutdown()
     srv_b.shutdown()
+
+    hub_disjoint = _cfg(tmp_path, "hub-disjoint")
+    dis_root = tmp_path / "hub-disjoint-data"
+    dis_root.mkdir()
+    hub_disjoint_data = make_cfg(dis_root, repo, script(dis_root, []))
+    hub_disjoint["data_dir"] = hub_disjoint_data["data_dir"]
+    host_x = _host_cfg("hx")
+    host_y = _host_cfg("hy")
+    _campaign(host_x, repo, "X1", "QUEUED", project="Px")
+    _campaign(host_y, repo, "Y1", "QUEUED", project="Py")
+    _add_and_enrol(host_x, hub_disjoint, monkeypatch, name="xhost")
+    _add_and_enrol(host_y, hub_disjoint, monkeypatch, name="yhost")
+    sx, ux = _serve(host_x)
+    sy, uy = _serve(host_y)
+    _point_hub(hub_disjoint, "xhost", ux)
+    _point_hub(hub_disjoint, "yhost", uy)
+    r_ok = _invoke(hub_disjoint, monkeypatch, "check")
+    assert r_ok.exit_code == 0
+    assert "xhost ok" in r_ok.output and "yhost ok" in r_ok.output
+    doc_x = FH.status_document(host_x)
+    rec_x = H.find(H.load(hub_disjoint), "xhost")
+    assert rec_x["status_cache"]["projects"] == doc_x["projects"]
+    assert rec_x["status_cache"]["campaigns"] == doc_x["campaigns"]
+    assert rec_x["status_cache"]["fetched_at"]
+    sx.shutdown()
+    sy.shutdown()
 
     _invoke(hub_full, monkeypatch, "add", "dead", "--url", "http://127.0.0.1:9")
     cache = {"fetched_at": "2020-01-01T00:00:00+00:00", "projects": ["old"], "campaigns": []}
@@ -574,17 +690,19 @@ def test_check_overlap_unreachable_and_disabled(tmp_path, monkeypatch):
     assert r_dead.exit_code == 1 and "unreachable" in r_dead.output
     assert json.dumps(H.find(H.load(hub_full), "dead")["status_cache"], sort_keys=True) == snap
 
-    _invoke(hub_full, monkeypatch, "off", "b")
+    _invoke(hub_full, monkeypatch, "off", "mfirst")
     _invoke(hub_full, monkeypatch, "off", "dead")
 
     def plant_disabled(recs):
-        H.find(recs, "a")["enabled"] = False
-        H.find(recs, "a")["status_cache"] = {"fetched_at": "x", "projects": ["Shared"], "campaigns": []}
+        H.find(recs, "zlast")["enabled"] = False
+        H.find(recs, "zlast")["status_cache"] = {
+            "fetched_at": "x", "projects": ["Shared"], "campaigns": [],
+        }
 
     H.update(hub_full, plant_disabled)
     r_off = _invoke(hub_full, monkeypatch, "check")
     assert r_off.exit_code == 0
-    assert "a off" in r_off.output
+    assert "zlast off" in r_off.output
 
 
 def test_hub_modules_do_not_import_queue():

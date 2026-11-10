@@ -35,8 +35,11 @@ def validate_url(url: str) -> str:
         raise ValueError(f"url {url!r} must be http(s)://HOST[:PORT]")
     if "\r" in url or "\n" in url:
         raise ValueError(f"url {url!r} must be http(s)://HOST[:PORT]")
+    host = u.hostname
+    if ":" in host:
+        host = f"[{host}]"
     port = f":{u.port}" if u.port else ""
-    return f"{u.scheme}://{u.hostname}{port}"
+    return f"{u.scheme}://{host}{port}"
 
 
 def load(cfg) -> list[dict]:

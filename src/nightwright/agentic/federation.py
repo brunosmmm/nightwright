@@ -191,7 +191,8 @@ class HubClient:
             raise ConnectionError(f"HTTP {status}")
         ts_raw = self._header(hdrs, "X-NW-Sig-Ts")
         mac = self._header(hdrs, "X-NW-Sig")
-        if not ts_raw or not str(ts_raw).isdigit() or not mac:
+        if (not ts_raw or not str(ts_raw).isascii() or not str(ts_raw).isdigit()
+                or not mac):
             raise ConnectionError("missing response signature")
         why = verify(self.secret, method, target, raw, mac, int(ts_raw), now=self._now)
         if why:
