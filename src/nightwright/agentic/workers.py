@@ -329,13 +329,182 @@ def mark_update(rec: dict, since: str) -> None:
     rec["update_pending"] = {"reason": "update", "since": since}
 
 
-def _drained(cfg, name: str) -> bool:
+RECONCILE_BUDGET_S = 20.0
+RECONCILE_JOBS_TIMEOUT_S = 15.0
+RECONCILE_POLL_FROM = 1 << 30
+_RECONCILE_BUSY = frozenset({"accepted", "running"})
+_RECONCILE_NOT_BUSY = frozenset({"done", "error"})
+_RECONCILE_GONE_POLL = frozenset({"unknown", "lost"})
+
+
+def _reconcile_unaccepted(rec: dict) -> bool:
+    """A submit still uploading: no `accepted_at` and cursor 0 (`remote_gates._gone`)."""
+    if rec.get("accepted_at"):
+        return False
+    try:
+        return int(rec.get("cursor") or 0) == 0
+    except (TypeError, ValueError):
+        return False
+
+
+def _eligible_reconcile(cfg, worker: str) -> list[dict]:
+    from . import remote_gates as RG
+    from . import remote_jobs as RJ
+    out = []
+    for rec in RJ.live(cfg):
+        if rec.get("worker") != worker:
+            continue
+        if RG.attached(rec.get("campaign")):
+            continue
+        if _reconcile_unaccepted(rec):
+            continue
+        out.append(rec)
+    return out
+
+
+def parse_jobs_answer(rc: int, stdout: bytes) -> list[dict] | None:
+    """`jobs --json` counts on exit 0 and a JSON list; else no answer (SPEC-0534)."""
+    if rc != 0:
+        return None
+    try:
+        val = json.loads(stdout.decode("utf-8"))
+    except (UnicodeDecodeError, ValueError, RecursionError):
+        return None
+    if not isinstance(val, list):
+        return None
+    out = []
+    for obj in val:
+        if isinstance(obj, dict) and isinstance(obj.get("job_id"), str) \
+                and isinstance(obj.get("state"), str):
+            out.append(obj)
+    return out
+
+
+def parse_poll_answer(rc: int, stdout: bytes) -> str | None:
+    """Last `status` line on exit 0 or 1; else no answer (SPEC-0534)."""
+    if rc not in (0, 1):
+        return None
+    state = None
+    for raw in stdout.splitlines():
+        try:
+            rec = json.loads(raw.decode("utf-8"))
+        except (UnicodeDecodeError, ValueError, RecursionError):
+            continue
+        if isinstance(rec, dict) and rec.get("type") == "status" \
+                and isinstance(rec.get("state"), str):
+            state = rec["state"]
+    return state
+
+
+def _reconcile_run(argv, *, timeout: float, input: bytes | None = None):
+    return subprocess.run(argv, input=input, capture_output=True, timeout=timeout,
+                          start_new_session=True,
+                          stdin=subprocess.DEVNULL if input is None else None)
+
+
+def _mark_reconciled_lost(cfg, worker: str, scan_rec: dict, reported: str) -> bool:
+    from . import queue as Q
+    from . import remote_jobs as RJ
+    job_id = scan_rec["job_id"]
+    prior = scan_rec.get("state")
+    with RJ._lock(cfg):
+        cur = RJ.read(cfg, job_id)
+        if cur is None or cur.get("state") not in RJ.LIVE:
+            return False
+        cur["state"] = "lost"
+        cur["lost_reason"] = "reconciled"
+        RJ._write(cfg, cur)
+    Q.journal(cfg, "worker_job_reconciled", worker=worker, job_id=job_id,
+              prior_state=prior, reported=reported, via="poll")
+    return True
+
+
+def _reconcile_worker(cfg, worker: dict, t0: float) -> set[str]:
+    from . import remote_gates as RG
+    name = worker["name"]
+    eligible = _eligible_reconcile(cfg, name)
+    if not eligible:
+        return set()
+
+    def left() -> float:
+        return RECONCILE_BUDGET_S - (time.monotonic() - t0)
+
+    budget = left()
+    if budget <= 0:
+        return set()
+    try:
+        proc = _reconcile_run(RG._argv(worker, "jobs", "--json"),
+                              timeout=min(RECONCILE_JOBS_TIMEOUT_S, budget))
+    except (OSError, subprocess.TimeoutExpired):
+        return set()
+    reports = parse_jobs_answer(proc.returncode, proc.stdout)
+    if reports is None:
+        return set()
+    by_id = {r["job_id"]: r["state"] for r in reports}
+    not_busy: set[str] = set()
+    need_poll = []
+    for rec in eligible:
+        jid = rec["job_id"]
+        st = by_id.get(jid)
+        if st in _RECONCILE_BUSY:
+            continue
+        if st in _RECONCILE_NOT_BUSY:
+            not_busy.add(jid)
+            continue
+        need_poll.append(rec)
+    for rec in need_poll:
+        jid = rec["job_id"]
+        budget = left()
+        if budget < 2:
+            continue
+        try:
+            proc = _reconcile_run(RG._argv(worker, "poll", jid, "--from", RECONCILE_POLL_FROM),
+                                  timeout=budget)
+        except (OSError, subprocess.TimeoutExpired):
+            continue
+        poll_st = parse_poll_answer(proc.returncode, proc.stdout)
+        if poll_st is None:
+            continue
+        if poll_st in _RECONCILE_GONE_POLL:
+            reported = by_id[jid] if jid in by_id else "absent"
+            _mark_reconciled_lost(cfg, name, rec, reported)
+        elif poll_st in _RECONCILE_NOT_BUSY:
+            not_busy.add(jid)
+    return not_busy
+
+
+def reconcile_draining(cfg, names: list[str]) -> set[str]:
+    """SPEC-0534: before idleness, probe selected draining SSH workers and mark records the
+    worker confirms gone as `lost`. Returns job ids reported `done` or `error` (they stay live
+    but do not occupy `_drained`)."""
+    if not names:
+        return set()
+    by_name = {r["name"]: normalize(cfg, r) for r in read_strict(cfg)}
+    not_busy: set[str] = set()
+    for name in names:
+        w = by_name.get(name)
+        if w is None or w.get("mode") == "pull":
+            continue
+        if not _eligible_reconcile(cfg, name):
+            continue
+        not_busy |= _reconcile_worker(cfg, w, time.monotonic())
+    return not_busy
+
+
+def _drained(cfg, name: str, *, not_busy=None) -> bool:
     """A draining worker is idle: no non-final job record names it and no slot of its pool is
-    held (a gate between `acquire` and `submit` has a slot but no record yet)."""
+    held (a gate between `acquire` and `submit` has a slot but no record yet). Live records
+  whose ids are in `not_busy` (done/error on this tick's probe) do not occupy the worker."""
     from . import gate_slots
     from . import remote_jobs as RJ
-    return not any(r.get("worker") == name for r in RJ.live(cfg)) \
-        and not gate_slots.held(cfg, name)
+    skip = not_busy if not_busy is not None else frozenset()
+    for rec in RJ.live(cfg):
+        if rec.get("worker") != name:
+            continue
+        if rec.get("job_id") in skip:
+            continue
+        return False
+    return not gate_slots.held(cfg, name)
 
 
 class _NoDrain(Exception):
@@ -383,7 +552,8 @@ def finish_drains(cfg) -> list[str]:
     if not names:
         return []
     _check_job_records(cfg)
-    if not any(_drained(cfg, n) for n in names):
+    not_busy = reconcile_draining(cfg, names)
+    if not any(_drained(cfg, n, not_busy=not_busy) for n in names):
         return []
 
     def fn(records):
@@ -391,7 +561,7 @@ def finish_drains(cfg) -> list[str]:
         done = []                               # unusable since the pre-check aborts the write
         for r in records:
             if r.get("draining") is True and not update_pending(r) \
-                    and _drained(cfg, r["name"]):
+                    and _drained(cfg, r["name"], not_busy=not_busy):
                 r["enabled"] = False
                 r.pop("draining", None)
                 done.append(r["name"])
@@ -413,13 +583,14 @@ def due_updates(cfg, now=None) -> tuple[list[dict], list[dict]]:
     if not pend:
         return [], []
     _check_job_records(cfg)
+    not_busy = reconcile_draining(cfg, [r["name"] for r in pend])
     now = now or dt.datetime.now()
     if now.tzinfo is None:
         now = now.astimezone()
     limit = dt.timedelta(hours=update_drain_timeout_h(cfg))
     idle, late = [], []
     for r in pend:
-        if _drained(cfg, r["name"]):
+        if _drained(cfg, r["name"], not_busy=not_busy):
             idle.append(normalize(cfg, r))
             continue
         since = _parse_ts(update_pending(r).get("since"))

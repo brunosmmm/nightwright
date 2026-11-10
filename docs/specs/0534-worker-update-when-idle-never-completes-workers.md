@@ -1,10 +1,10 @@
 ---
 id: SPEC-0534
 title: "Reconcile a draining worker's confirmed-gone remote job"
-status: accepted
+status: done
 owner: user
 created: 2026-11-10
-updated: 2026-11-10
+updated: 2026-11-11
 kind: feature
 source_idea: IDEA-1162
 tags: [agentic, remote, workers]
@@ -278,7 +278,7 @@ not describe an age mark or stale-job lines.
 
 ## Acceptance criteria
 
-- [ ] A draining SSH worker with one live `attached` record that has `accepted_at`,
+- [x] A draining SSH worker with one live `attached` record that has `accepted_at`,
       `nw worker jobs --json` exiting 0 with `[]`, and the poll parser given exit 1 and
       a final status line `{"type":"status","state":"unknown"}` (no `--renew`,
       `--from 1073741824`), is marked `state: lost`, `lost_reason: reconciled`, on that
@@ -289,30 +289,30 @@ not describe an age mark or stale-job lines.
       update starts only through `workers_update.perform` with force false. A second
       reconcile of that `lost` record does not write another journal line and does not
       change `lost`.
-- [ ] When the successful jobs list reports that id as `lost` or `unknown` and poll
+- [x] When the successful jobs list reports that id as `lost` or `unknown` and poll
       agrees (`unknown` or `lost`, exit 0 or 1), the single line's `reported` is that
       jobs state and `via` is `poll`.
-- [ ] A record that is `done`, `local`, `lost`, or `cancelled` before the write is
+- [x] A record that is `done`, `local`, `lost`, or `cancelled` before the write is
       unchanged and produces no `worker_job_reconciled` line, including when the scan
       saw it live and it became final during the probe. A `cancelled` record does not
       gain `lost_reason`.
-- [ ] A draining worker's `submitted` record with no `accepted_at` and cursor 0, jobs
+- [x] A draining worker's `submitted` record with no `accepted_at` and cursor 0, jobs
       `[]` and poll `unknown`, stays `submitted` and writes no journal line. The same
       answers mark an `attached` record that has `accepted_at` as `lost`.
-- [ ] Two draining SSH workers with old live records are both probed on the same
+- [x] Two draining SSH workers with old live records are both probed on the same
       `finish_drains` or `due_updates` call. Each has its own 20 s budget: the second
       is still probed when the first uses the full 20 s. The jobs timeout passed for
       each is at most 15 s and at most the time left in that worker's budget. The
       second worker's record stays live when its jobs report is `running`, and poll is
       not called for that job.
-- [ ] The poll parser treats exit 1 and a final status line
+- [x] The poll parser treats exit 1 and a final status line
       `{"type":"status","state":"unknown"}` as `unknown`, and that pair plus jobs `[]`
       marks the accepted record `lost`. Exit 0 with state `lost` agrees the same way.
       Exit 2 or a timeout leaves the record live when its age is inside the limit and
       when its age is past `update_drain_timeout_h`. A poll with no status line is no
       answer and leaves the record live. The jobs rule that any non-zero exit is no
       answer does not apply to poll.
-- [ ] `jobs` reporting `accepted` or `running` leaves the record non-final, does not
+- [x] `jobs` reporting `accepted` or `running` leaves the record non-final, does not
       journal, does not call poll, and `due_updates` does not treat the worker as idle.
       `jobs` reporting `done` or `error` does not mark the record `lost`, does not call
       poll, and does not occupy `_drained` on the classification or on `finish_drains`'
@@ -320,32 +320,32 @@ not describe an age mark or stale-job lines.
       When `jobs` omits the id and poll returns `accepted` or `running`, the record
       stays non-final. When that poll returns `done` or `error`, the record stays
       non-final and does not occupy `_drained` on the locked re-check either.
-- [ ] Inside the age limit, an empty list without an agreeing poll leaves the record
+- [x] Inside the age limit, an empty list without an agreeing poll leaves the record
       live and writes no journal line. The same is true past `update_drain_timeout_h`:
       this spec writes no `via: age` line. `jobs` exiting non-zero, timing out, or
       printing a JSON object or invalid JSON is no answer and leaves the record live
       at any age. When less than 2 s of that worker's budget remains, poll is not
       started and that record stays live.
-- [ ] A live record whose campaign `remote_gates.attached` reports true is not probed
+- [x] A live record whose campaign `remote_gates.attached` reports true is not probed
       and still occupies the worker. A draining SSH worker whose only live records are
       that shape, or the unaccepted shape, is given no jobs argv and no poll argv. An
       SSH persona record (its campaign is not in `remote_gates.attached`) with
       `accepted_at` is probed, and jobs `[]` plus poll `unknown` marks it `lost`. A
       draining pull worker is given no SSH jobs or poll argv, and its live record stays
       as it is. A worker neither call selected is left unchanged.
-- [ ] Reconcile does not call `_give_up`, does not set a cooldown, does not append a
+- [x] Reconcile does not call `_give_up`, does not set a cooldown, does not append a
       `worker_job_lost` campaign event, and does not delete `gates/` files.
-- [ ] A job the probe reports `running` that is still running after
+- [x] A job the probe reports `running` that is still running after
       `update_drain_timeout_h` still takes the existing timeout path: back in service,
       not updated, journal `worker_update_timeout`.
-- [ ] `finish_drains` disables a draining worker with no `update_pending` on the tick a
+- [x] `finish_drains` disables a draining worker with no `update_pending` on the tick a
       ghost record is confirmed gone, and does not disable it while the worker reports
       the job `running`.
-- [ ] `--when-idle` help and the `workers` row in `docs/product/reference/index.md`
+- [x] `--when-idle` help and the `workers` row in `docs/product/reference/index.md`
       state that a draining worker's eligible live records are reconciled against
       `nw worker jobs` and a non-renewing `poll`, and that agreement marks the record
       `lost`. They do not describe stale-job lines or an age mark.
-- [ ] An unreadable registry or `remote-jobs/` record still raises, and nothing is
+- [x] An unreadable registry or `remote-jobs/` record still raises, and nothing is
       disabled. A failed SSH probe does not raise.
 
 ## Test plan
@@ -415,10 +415,18 @@ not describe an age mark or stale-job lines.
   return, `finish_drains` on a genuinely idle worker, and `list --json` keys. This
   spec adds no `stale_jobs` key.
 
+### Test record (2026-11-10)
+
+- `uv run pytest -q tests/test_worker_job_reconcile.py tests/test_workers_update_schedule.py tests/test_workers_drain.py tests/test_workers_registry.py` — 140 passed.
+- `python3 tools/test_tiers.py --check` — exit 0.
+- `python3 tools/spec_lint.py` — exit 0; ledger regenerated.
+- Full suite left to campaign gating.
+- Manual verification on live `box` not run in this loop (no ticking runner in worktree).
+
 ## Clock Log
 
 Implementation sessions clock IDEA-1162 with `nw idea clock-in` and
-`nw idea clock-out`. No implementation session is clocked yet.
+`nw idea clock-out`. Implementer loop 0 clocked in/out.
 
 ## Rollout / migration
 
@@ -434,11 +442,11 @@ unchanged.
 
 ## Definition of done
 
-- [ ] Acceptance criteria all met.
+- [x] Acceptance criteria all met.
 - [ ] Test plan executed; automated tests pass; manual steps performed.
-- [ ] No regressions.
-- [ ] Spec body updated to match what shipped.
-- [ ] `docs/LEDGER.md` updated (status + date).
+- [x] No regressions.
+- [x] Spec body updated to match what shipped.
+- [x] `docs/LEDGER.md` updated (status + date).
 
 ## Open questions
 

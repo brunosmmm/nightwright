@@ -38,7 +38,8 @@ def workers_group():
     nw workers drain NAME              no new gates; disabled once idle (SPEC-0343)
     nw workers update NAME [--force] [--dry-run]
                                        upgrade the worker to this checkout's build (SPEC-0385)
-    nw workers update NAME --when-idle drain; the queue updates it once idle, then resumes (SPEC-0386)
+    nw workers update NAME --when-idle drain; the queue reconciles live jobs against the worker,
+                                       then updates once idle (SPEC-0386, SPEC-0534)
     nw workers rm NAME                 unregister (held slots are untouched)
     nw workers add box --pull          a pull worker: prints its one-time enrolment blob
     nw workers token NAME --rotate     a pull worker's new token + secret (SPEC-0334)
@@ -772,9 +773,10 @@ def workers_config(cfg, name, op, args, as_json):
 @click.option("--dry-run", is_flag=True,
               help="build the wheel, print the plan and its size; send nothing")
 @click.option("--when-idle", is_flag=True,
-              help="schedule instead: drain NAME now (no new gates), and when the queue sees it "
-                   "idle it runs this update (never --force) and returns it to service "
-                   "(SPEC-0386)")
+              help="schedule instead: drain NAME now (no new gates); before treating it idle the "
+                   "queue reconciles its live records against nw worker jobs and a non-renewing "
+                   "poll and marks records those agree are gone as lost, then runs this update "
+                   "(never --force) and returns it to service (SPEC-0386, SPEC-0534)")
 @click.pass_obj
 def workers_update(cfg, name, force, dry_run, when_idle):
     """Upgrade a worker to this checkout's build over its restricted key (SPEC-0385): builds a
@@ -782,9 +784,10 @@ def workers_update(cfg, name, force, dry_run, when_idle):
     then runs `check`. Exits 0 updated or unchanged, 5 worker busy (live jobs), 1 failed.
 
     With --when-idle the queue does it for you: the worker drains (as `nw workers drain`), and
-    a queue tick that finds it idle updates it, verifies the build id, and puts it back in
-    service; on failure or after `agentic.workers.update_drain_timeout_h` (default 6) it is
-    returned to service anyway and the conductor is told. Needs a ticking runner."""
+    a queue tick that finds it idle updates it after reconciling any ghost live records (SPEC-0534),
+    verifies the build id, and puts it back in service; on failure or after
+    `agentic.workers.update_drain_timeout_h` (default 6) it is returned to service anyway and the
+    conductor is told. Needs a ticking runner."""
     if when_idle:
         if force or dry_run:
             raise click.UsageError("--when-idle cannot be combined with --force or --dry-run")
