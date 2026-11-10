@@ -290,3 +290,30 @@ paths_hit, last_run_at, last_run_sha, last_ok, due, next, running` in that order
 - [ ] No regressions.
 - [ ] Spec body updated to match what shipped.
 - [ ] `docs/LEDGER.md` updated.
+
+### As shipped (2026-11-09)
+
+- `agentic/project.py`: `cadence` default `[]`, `_check_cadence`, `cadence_triggers`,
+  `cadence_gate`. `agentic/cadence.py` (new): state, `ensure`, `record_merge`, `due`, `begin`,
+  `finish`, `abort`, `reconcile`, `status_rows`. `agentic/close.py`: `_record_cadence_merge`,
+  called right after the `ff_merge` identity check in the merge path. `agentic/cli_gate.py`:
+  `nw gate cadence status [--project] [--json]`.
+- API choices the spec left open: functions take `(cfg, project, ...)` and read the jobs from the
+  project config (an optional `project_cfg=` avoids a reload; the close hook passes it). `begin`,
+  `finish` and `abort` take the job *name*; `due` takes the config job dict and the state row.
+  `record_merge` skips the file entirely when the project has no `cadence`.
+- A bad file renamed aside gets a `-N` suffix when the same-second name exists, so two bad files
+  never overwrite each other. `finish` drops from `paths_hit` the longest suffix of
+  `inflight.paths` that is a prefix of the current list (equal to the prefix rule, and still
+  correct once the 20-entry cap has dropped the oldest entries during a run).
+- `ensure`, `reconcile` and `status` journal an `OSError` as `cadence_unreadable` and carry on;
+  `record_merge`, `begin`, `finish` and `abort` let it propagate. Status never renames a bad
+  file (read-only); it reads it as unseeded.
+- A red or failed job in its `RETRY_S` backoff shows `next` `"at <ISO>"` (the retry time), a
+  case the spec did not list.
+- Table output is one line per job, `key=<json value>` pairs in the specified key order.
+- Tests: `tests/test_agentic_cadence.py` (new, 37), merge-hook cases in
+  `tests/test_agentic_close.py`, `cadence status` in `tests/test_gate_jobs.py`.
+- Manual verification: the close test (a real two-commit ff-merge through `close_campaign`
+  against git repos) followed by the status command through the CLI runner shows the counters
+  moving; a hand run against a registered scratch project was not possible in this session.
