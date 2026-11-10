@@ -195,32 +195,32 @@ stays undetected for at most 5 merges, on `tui` for at most 10, and on `remote` 
 
 ## Acceptance criteria
 
-- [ ] A tick starts at most one cadence run and does not scan while a future is in flight on
+- [x] A tick starts at most one cadence run and does not scan while a future is in flight on
   `pool.sentinel`. On the first remaining registered project with a due job, a forced job wins
   over an older due job (ties: earlier in the list), otherwise the due job with the oldest
   `last_run_at or seeded_at`; only when no sentinel run started and no campaign waits for a slot,
   never for a project that is `SN.running`, and for a registered cadence project with no
   `gate_reuse.json` (empty `SN.projects()`). A project whose config fails to load is journalled
   `cadence_failed` once per reason and skipped.
-- [ ] Before `due`, the scan seeds each job row (`seeded_at` set once): a cadence project that
+- [x] Before `due`, the scan seeds each job row (`seeded_at` set once): a cadence project that
   has never merged has seeded rows after one tick and an `every_hours`-only job becomes due after
   `seeded_at + every_hours`; a crash-left `inflight` is consumed before the due check, so that
   job waits `RETRY_S` instead of starting again at once.
-- [ ] A registered cadence project absent from `SN.projects()` gets an `open_fixforward` on the
+- [x] A registered cadence project absent from `SN.projects()` gets an `open_fixforward` on the
   tick after a red run (`_red_main_step` visits it); a project whose config fails to load is
   skipped.
-- [ ] A finished run, red or `ok` null, returns a result and the harvest journals `cadence_done`
+- [x] A finished run, red or `ok` null, returns a result and the harvest journals `cadence_done`
   (never `sentinel_done`) before `_red_main_step`, plus one `cadence` event; a deferral also
   journals `cadence_deferred`; an exception escaping `cadence.run` journals `cadence_failed`
   only. `cadence` is in `events.EVENT_TYPES` and `schemas.EVENT_KEYS`, `quiet.RULES["cadence"]`
   is `hold`, and the conduct skill's Always held list matches. A project with `cadence:` skips
   `SN.time_due`.
-- [ ] `nw gate cadence status` shows `running` from `SN.running`, the same value on every job row
+- [x] `nw gate cadence status` shows `running` from `SN.running`, the same value on every job row
   while the project lock is held.
-- [ ] `cadence.run` while `run_lock` is held raises `Busy` without calling `_prepare_worktree`;
+- [x] `cadence.run` while `run_lock` is held raises `Busy` without calling `_prepare_worktree`;
   a running job makes `SN.running` true; it writes no `<project>.last.json` and does not call
   `SN._note_run`.
-- [ ] `cadence.begin` is called only after `_prepare_worktree` returned a sha (a prepare failure
+- [x] `cadence.begin` is called only after `_prepare_worktree` returned a sha (a prepare failure
   does not clear `forced`). The run calls `_placement` with the one-gate config, then sets the
   campaign id to `sentinel-<E._safe(project)>-<job>` and calls `header_refusal` again (a project
   name with a space yields an id `validate_header` accepts; a refusal runs locally); it holds a
@@ -229,38 +229,38 @@ stays undetected for at most 5 merges, on `tui` for at most 10, and on `remote` 
   logs go under `wt.parent/<wt.name>.logs/cadence-<job>`. A stop during the slot wait or the gate
   restores `forced` (`cadence.abort`), writes no `finish` and calls neither red-main hook; any
   other exception after `begin` finishes with `ok` null and calls neither hook.
-- [ ] A red run opens an episode with source `cadence:<job>`; `ok` null opens none. With a
+- [x] A red run opens an episode with source `cadence:<job>`; `ok` null opens none. With a
   `cadence:tui` episode open, `on_red` for `cadence:remote` or a sentinel red leaves the source
   and failing ids unchanged, journals `cadence_deferred` and stores the `pending_source` /
   `pending_failing` / `pending_sha` triple; a second different-source `on_red` does not replace
   it (first wins; a repeat of the same pending source refreshes it); `on_green` for another
   source leaves the episode open and, unless it is the `pending_source`, writes nothing; the
   `pending_source`'s own green clears the triple.
-- [ ] A merge during a `cadence:<job>` episode forces that job (no `due_reason`), and a
+- [x] A merge during a `cadence:<job>` episode forces that job (no `due_reason`), and a
   same-source green closes the episode; a deferred sentinel red becomes the next episode in that
   same write (episode + 1, `first_red_sha = last_red_sha = pending_sha`, `awaiting_refresh`
   true, `due_reason` `deferred sentinel red`; a promoted cadence source sets its job's `forced`);
   `step()` is none while `awaiting_refresh` is true until the refreshing same-source run.
-- [ ] The fix brief names the job on its first line and lists that job's failing ids;
+- [x] The fix brief names the job on its first line and lists that job's failing ids;
   `open_fixforward` sets `cadence_job`; `step()` for a `cadence:` source is none while a fix is in
   flight, a merged fix awaits confirmation, usage is exhausted or `awaiting_refresh` is true, then
   returns `open_fixforward` under `fixforward_attempts` and `escalate` once exhausted (even with
   revert enabled and a culprit known), and never `localize` or `open_revert`. `holding()` names
   the episode source; an episode with no source reads as `sentinel` and its `record_merge` still
   sets `due_reason`.
-- [ ] A fix campaign with `cadence_job: tui` runs the tui command at close even when the branch
+- [x] A fix campaign with `cadence_job: tui` runs the tui command at close even when the branch
   touches none of the job's `on_paths`, appended to the list just assigned from `gates_for` in
   `run_all` (so the adopt, remote and local paths all see it), only when `tier == close` and
   `cadence_job` names a configured job. A sentinel or ordinary close list for the same project
   does not include it.
-- [ ] A reuse-suspect trigger (SPEC-0359) on a cadence project still starts a sentinel run and
+- [x] A reuse-suspect trigger (SPEC-0359) on a cadence project still starts a sentinel run and
   does not set `NW_ALL_TIERS`.
-- [ ] `nw gate cadence run JOB` sets `forced` whether or not the lease is held, `--project`
+- [x] `nw gate cadence run JOB` sets `forced` whether or not the lease is held, `--project`
   defaults like `status`, and prints the queued / no-runner message. The next tick that starts a
   job of that project starts `JOB`, inside `RETRY_S`, on a green unchanged sha, and when another
   job of that project is also due. It does not claim `JOB` starts when an earlier registered
   project takes the slot.
-- [ ] nightwright's five jobs validate with `timeout_s: 2400`, `retries: 1`,
+- [x] nightwright's five jobs validate with `timeout_s: 2400`, `retries: 1`,
   `results.format: pytest`; every `on_paths` entry is one full repo-relative SPEC-0350 glob (no
   bare basename), and `path_matches` matches `src/nightwright/agentic/queue.py` for
   `integration` and `src/nightwright/agentic/remote_gates.py` for `remote`, and does not match a
@@ -305,8 +305,49 @@ stays undetected for at most 5 merges, on `tui` for at most 10, and on `remote` 
 
 ## Definition of done
 
-- [ ] Acceptance criteria all met.
-- [ ] Test plan executed; affected tests pass at the close gate; manual steps performed.
-- [ ] No regressions.
-- [ ] Spec body updated to match what shipped.
-- [ ] `docs/LEDGER.md` updated.
+- [x] Acceptance criteria all met.
+- [x] Test plan executed; affected tests pass (AFFECTED_RESULT); manual steps not performed (see As shipped).
+- [x] No regressions.
+- [x] Spec body updated to match what shipped.
+- [x] `docs/LEDGER.md` updated.
+
+### As shipped (2026-11-09)
+
+- `agentic/cadence.py`: `pick` (ensure, reconcile, then forced first / oldest due, list order
+  on ties), `run` / `_run_locked` under `SN.run_lock`, `campaign_id`
+  (`sentinel-<E._safe(project)>-<job>`), `force`, `_find_job`, `FAILING_EVENT_MAX = 50`; status
+  `running` from `SN.running`. The `cadence` event is appended `by="queue"`.
+- `agentic/queue.py`: `_sentinel_step` no longer returns early on an empty `SN.projects()`;
+  a project with `cadence:` skips the clock (`SN.time_due`); after the sentinel loop starts
+  nothing, `_cadence_scan` walks `registered_projects`. `pool.sentinel` holds a 3-tuple
+  `(project, future, job)` for a cadence run; harvest (`_cadence_harvest`) journals
+  `cadence_done` / `cadence_failed`, and the scan journals `cadence_started`. `_waiting_on`
+  lists a cadence flight as kind `cadence`. `_red_main_step` adds the registered projects whose
+  config loads with a non-empty `cadence:` (`_cadence_projects`).
+- Decided: a registered project with no repo or no `.nw/project.yaml` is skipped silently by
+  the scan (most registered projects have no cadence; journalling them every tick would be
+  noise). Only a config that exists but fails to load, or a base sha that cannot be read,
+  journals `cadence_failed`, once per (project, error).
+- `agentic/redmain.py`: `source` on episodes (`source_of`, `cadence_job`, `source_label`), the
+  pending triple and `_promote`, `awaiting_refresh`, cadence-aware `step` / `holding` / `brief`
+  / `open_fixforward` / `record_merge`. A cadence episode's `last_green_sha` comes from the
+  job's cadence row, so a cadence red never creates sentinel state. The deferral journal kind
+  is `cadence_deferred` for both directions (a sentinel red deferred behind a cadence episode
+  too). `sentinel.settle` passes `source="sentinel"`.
+- `agentic/gates.py`: `cadence_job_of`; `run_all` appends the job gate at close.
+- `schemas.py` / `events.py` / `quiet.py` / `skills/nw-conduct/SKILL.md`: the `cadence` event
+  type (keys `project, job, ok, sha, reason, duration_s`, plus `failing` when `ok` is false),
+  `hold`.
+- `cli_gate.py`: `nw gate cadence run JOB [--project P]`; an unknown job exits 2.
+- `.nw/project.yaml`: the five jobs as in the table.
+- Tests: the run, pick, runner-scan, harvest, `_red_main_step`, CLI `run` and status `running`
+  tests are in a new file, `tests/test_agentic_cadence_run.py` (it reuses the `world` git
+  fixture of `test_agentic_close`), instead of `test_agentic_cadence.py` /
+  `test_agentic_sentinel.py` / `test_gate_jobs.py`. Red-main source tests are in
+  `tests/test_redmain.py`, the close append in `tests/test_agentic_gates.py`, the event keys
+  and skill list in `tests/test_agentic_events.py`, `hold` in `tests/test_agentic_quiet.py`,
+  the five jobs in `tests/test_agentic_dogfood_config.py`.
+- Manual verification was **not performed**: it needs `nw queue restart` and a real worker
+  dispatch, and this implementation session was told not to touch the runner or `nw queue`.
+  It remains for the first runner restart after merge: `nw gate cadence status` should list
+  the five jobs seeded, and `nw gate cadence run perf` should dispatch within one tick.

@@ -233,6 +233,21 @@ def test_interrupt_in_the_slot_wait_restores_forced(cw, monkeypatch):
     assert _events(cfg, "cadence") == []
 
 
+def test_a_stop_during_the_gate_is_an_interrupt(cw, monkeypatch):
+    cfg = cw["cfg"]
+    CAD.force(cfg, PROJECT, "tui")
+    _worker(monkeypatch)
+    monkeypatch.setattr(RG, "header_refusal", lambda *a: None)
+    monkeypatch.setattr(gate_slots, "acquire", _slot("box"))
+    monkeypatch.setattr(RG, "run_detached", lambda *a, **k: None)   # stopped mid-run
+    hooks = []
+    monkeypatch.setattr(RM, "on_red", lambda *a, **k: hooks.append("red"))
+    monkeypatch.setattr(RM, "on_green", lambda *a, **k: hooks.append("green"))
+    out = CAD.run(cfg, PROJECT, "tui", project_cfg=cw["pcfg"], now=NOW)
+    assert out["interrupted"] is True and hooks == [] and _row(cfg, "tui")["forced"] is True
+    assert _events(cfg, "cadence") == []
+
+
 def test_an_exception_after_begin_finishes_failed_without_hooks(cw, monkeypatch):
     cfg = cw["cfg"]
 

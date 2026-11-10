@@ -484,5 +484,13 @@ def test_holding_brief_and_step_name_the_cadence_source(w):
     action, why = RM.step({}, PROJECT, now=NOW + 60, red=two)
     assert action == "escalate" and "no revert for a cadence red" in why
     assert RM.step({}, PROJECT, now=NOW + 60, red={**two, "escalation": "ESC-1"})[0] == "none"
+    culprit = {"campaign": "C-B", "target_sha": "a", "merged_sha": "b"}
+    assert RM.step(_cfg(revert=True), PROJECT, now=NOW + 60,
+                   red={**two, "culprit": culprit})[0] == "escalate", "never open_revert"
+    live = [{"id": "FIX-1", "project": PROJECT, "kind": "fixforward", "red_episode": 3,
+             "state": "IMPLEMENTING"}]
+    one = _rec(source="cadence:tui")
+    assert RM.step({}, PROJECT, now=NOW + 60, red=one, active=live)[0] == "none"
+    assert RM.step({}, PROJECT, now=NOW + 60, red=one) == ("open_fixforward", "attempt 1 of 2")
     # a legacy episode (no source) still localizes
     assert RM.step({}, PROJECT, now=NOW + 60, red=_rec(fixes=two["fixes"]))[0] == "localize"
