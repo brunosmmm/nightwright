@@ -491,6 +491,20 @@ not describe an age mark or stale-job lines.
 - Full suite left to campaign gating.
 - Manual verification on live `box` not run in this loop.
 
+### Test record (implementer campaign loop 3, 2026-11-10)
+
+- `uv run pytest -q tests/test_worker_job_reconcile.py tests/test_workers_update_schedule.py tests/test_workers_drain.py tests/test_workers_registry.py` — 155 passed.
+- `python3 tools/test_tiers.py --check` — exit 0.
+- `python3 tools/spec_lint.py --write-ledger` and `python3 tools/spec_lint.py` — exit 0.
+- Full suite left to campaign gating.
+- Manual verification on live `box` not run in this loop.
+
+### As shipped (implementer campaign loop 3)
+
+- Tests only: ISO old-age fixtures and `_drained` / `due_updates` / `finish_drains` occupancy
+  assertions on no-answer paths; poll exit 1 with keeping states; mixed attached-campaign plus
+  eligible ghost on one worker; detached start state; `_run_worker_updates` timeout journal.
+
 ## Clock Log
 
 Implementation sessions clock IDEA-1162 with `nw idea clock-in` and

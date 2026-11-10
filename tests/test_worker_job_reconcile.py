@@ -64,6 +64,19 @@ def _journal(cfg, kind=None):
     return [r for r in rows if kind is None or r.get("kind") == kind]
 
 
+def _old_iso(hours=8):
+    return (dt.datetime.now().astimezone() - dt.timedelta(hours=hours)).isoformat(
+        timespec="seconds")
+
+
+def _assert_still_occupies_worker(cfg, jid, not_busy):
+    """No-answer leaves the record live and still blocking idleness (SPEC-0534)."""
+    assert RJ.read(cfg, jid)["state"] in RJ.LIVE
+    assert jid not in not_busy
+    assert not WK._drained(cfg, "box", not_busy=not_busy)
+    assert not any(r.get("via") == "age" for r in _journal(cfg))
+
+
 def _assert_jobs_argv(argv):
     assert "jobs" in argv and "--json" in argv
 
@@ -354,21 +367,30 @@ def test_poll_exit_1_unknown_marks_lost(cfg, monkeypatch, tmp_path):
         lines = _journal(c, "worker_job_reconciled")
         assert len(lines) == 1
         assert lines[0]["via"] == "poll" and lines[0]["reported"] == "absent"
-    old = (dt.datetime.now().astimezone() - dt.timedelta(hours=8)).isoformat()
     for age_old in (False, True):
-        stamp = old if age_old else "t"
+        stamp = _old_iso() if age_old else "t"
         for step in ("timeout", (2, b""), (0, b"not json\n")):
             tag = f"no-answer-{'old' if age_old else 'young'}-{step!s}"
             c = {"data_dir": str(tmp_path / tag / "data"), "agentic": {"gates": {"slots": 1}}}
             _seed(c, _w())
             jid = _job(c, state="attached", accepted_at=stamp, last_seen_at=stamp)
-            if step == "timeout":
-                monkeypatch.setattr(WK, "_reconcile_run", _Probe([(0, b"[]"), "timeout"]))
-            else:
-                monkeypatch.setattr(WK, "_reconcile_run", _Probe([(0, b"[]"), step]))
-            WK.reconcile_draining(c, ["box"])
-            assert RJ.read(c, jid)["state"] == "attached"
+            def run_no_answer(argv, *, timeout, input=None, _step=step):
+                if "jobs" in argv:
+                    return subprocess.CompletedProcess(argv, 0, b"[]", b"")
+                if _step == "timeout":
+                    raise subprocess.TimeoutExpired(argv, timeout)
+                rc, stdout = _step
+                out = stdout if isinstance(stdout, bytes) else stdout.encode()
+                return subprocess.CompletedProcess(argv, rc, out, b"")
+
+            monkeypatch.setattr(WK, "_reconcile_run", run_no_answer)
+            not_busy = WK.reconcile_draining(c, ["box"])
+            _assert_still_occupies_worker(c, jid, not_busy)
             assert not _journal(c, "worker_job_reconciled")
+            _schedule_update(c)
+            idle, late = WK.due_updates(c)
+            assert idle == [] and late == []
+            assert WK.finish_drains(c) == []
 
 
 def test_jobs_running_and_done_paths(cfg, monkeypatch, tmp_path):
@@ -442,20 +464,29 @@ def test_poll_wins_over_empty_jobs(cfg, monkeypatch):
     _seed(cfg, _w())
     jid = _job(cfg, state="attached", accepted_at="t")
     for poll_st in ("accepted", "running"):
-        probe = _Probe([
-            (0, b"[]"), (0, json.dumps({"type": "status", "state": poll_st}).encode() + b"\n")])
-        monkeypatch.setattr(WK, "_reconcile_run", probe)
-        not_busy = WK.reconcile_draining(cfg, ["box"])
-        assert RJ.read(cfg, jid)["state"] == "attached"
-        assert not_busy == set()
-        assert not WK._drained(cfg, "box", not_busy=not_busy)
-        _assert_poll_argv(probe.calls[1][0], jid)
-        _schedule_update(cfg)
-        probe2 = _Probe([
-            (0, b"[]"), (0, json.dumps({"type": "status", "state": poll_st}).encode() + b"\n")])
-        monkeypatch.setattr(WK, "_reconcile_run", probe2)
-        idle, _ = WK.due_updates(cfg)
-        assert idle == []
+        for exit_rc in (0, 1):
+            poll = json.dumps({"type": "status", "state": poll_st}).encode() + b"\n"
+            probe = _Probe([(0, b"[]"), (exit_rc, poll)])
+            monkeypatch.setattr(WK, "_reconcile_run", probe)
+            not_busy = WK.reconcile_draining(cfg, ["box"])
+            assert RJ.read(cfg, jid)["state"] == "attached"
+            assert not_busy == set()
+            assert not WK._drained(cfg, "box", not_busy=not_busy)
+            _assert_poll_argv(probe.calls[1][0], jid)
+            _schedule_update(cfg)
+            probe2 = _Probe([(0, b"[]"), (exit_rc, poll)])
+            monkeypatch.setattr(WK, "_reconcile_run", probe2)
+            idle, _ = WK.due_updates(cfg)
+            assert idle == []
+    for poll_st in ("done", "error"):
+        for exit_rc in (0, 1):
+            poll = json.dumps({"type": "status", "state": poll_st}).encode() + b"\n"
+            probe = _Probe([(0, b"[]"), (exit_rc, poll)])
+            monkeypatch.setattr(WK, "_reconcile_run", probe)
+            not_busy = WK.reconcile_draining(cfg, ["box"])
+            assert RJ.read(cfg, jid)["state"] == "attached"
+            assert jid in not_busy
+            assert WK._drained(cfg, "box", not_busy=not_busy)
     probe = _Probe([(0, b"[]"), (0, b'{"type":"status","state":"done"}\n')])
     monkeypatch.setattr(WK, "_reconcile_run", probe)
     not_busy = WK.reconcile_draining(cfg, ["box"])
@@ -463,43 +494,69 @@ def test_poll_wins_over_empty_jobs(cfg, monkeypatch):
 
 
 def test_bad_jobs_and_skipped_poll(cfg, monkeypatch, tmp_path):
-    for step in ((1, b"[]"), "timeout", (0, b"{}"), (0, b"not-json")):
-        c = {"data_dir": str(tmp_path / str(step) / "data"), "agentic": {"gates": {"slots": 1}}}
-        _seed(c, _w())
-        jid = _job(c, state="attached", accepted_at="t")
-        if step == "timeout":
-            probe = _Probe(["timeout"])
-        else:
-            probe = _Probe([step])
-        monkeypatch.setattr(WK, "_reconcile_run", probe)
-        WK.reconcile_draining(c, ["box"])
-        assert RJ.read(c, jid)["state"] == "attached"
-        assert not _journal(c, "worker_job_reconciled")
+    for age_old in (False, True):
+        stamp = _old_iso() if age_old else "t"
+        for step in ((1, b"[]"), "timeout", (0, b"{}"), (0, b"not-json")):
+            tag = f"{'old' if age_old else 'young'}-{step!s}"
+            c = {"data_dir": str(tmp_path / tag / "data"), "agentic": {"gates": {"slots": 1}}}
+            _seed(c, _w())
+            jid = _job(c, state="attached", accepted_at=stamp, last_seen_at=stamp)
+            def run_bad_jobs(argv, *, timeout, input=None, _step=step):
+                if "jobs" not in argv:
+                    raise AssertionError(argv)
+                if _step == "timeout":
+                    raise subprocess.TimeoutExpired(argv, timeout)
+                rc, stdout = _step
+                out = stdout if isinstance(stdout, bytes) else stdout.encode()
+                return subprocess.CompletedProcess(argv, rc, out, b"")
+
+            monkeypatch.setattr(WK, "_reconcile_run", run_bad_jobs)
+            not_busy = WK.reconcile_draining(c, ["box"])
+            _assert_still_occupies_worker(c, jid, not_busy)
+            assert not _journal(c, "worker_job_reconciled")
+            _schedule_update(c)
+            assert WK.due_updates(c)[0] == []
     for at, expect_poll in ((19.5, False), (18.0, True)):
-        c = {"data_dir": str(tmp_path / f"budget-{at}" / "data"),
-             "agentic": {"gates": {"slots": 1}}}
-        _seed(c, _w())
-        jid = _job(c, state="attached", accepted_at="t")
-        clock = {"t": 0.0}
-        calls = []
+        for age_old in (False, True):
+            stamp = _old_iso() if age_old else "t"
+            tag = f"budget-{at}-{'old' if age_old else 'young'}"
+            c = {"data_dir": str(tmp_path / tag / "data"),
+                 "agentic": {"gates": {"slots": 1}}}
+            _seed(c, _w())
+            jid = _job(c, state="attached", accepted_at=stamp, last_seen_at=stamp)
+            clock = {"t": 0.0}
+            calls = []
 
-        def mono():
-            return clock["t"]
+            def mono():
+                return clock["t"]
 
-        def run(argv, *, timeout, input=None):
-            calls.append((list(argv), timeout))
-            if "jobs" in argv:
-                clock["t"] = at
-            return subprocess.CompletedProcess(argv, 0, b"[]", b"")
+            def run(argv, *, timeout, input=None):
+                calls.append((list(argv), timeout))
+                if "jobs" in argv:
+                    clock["t"] = at
+                return subprocess.CompletedProcess(argv, 0, b"[]", b"")
 
-        monkeypatch.setattr(time, "monotonic", mono)
-        monkeypatch.setattr(WK, "_reconcile_run", run)
-        WK.reconcile_draining(c, ["box"])
-        assert RJ.read(c, jid)["state"] == "attached"
-        poll_timeouts = [t for a, t in calls if "poll" in a]
-        assert (len(poll_timeouts) > 0) == expect_poll
-        if expect_poll:
-            assert poll_timeouts[0] <= 2.0
+            monkeypatch.setattr(time, "monotonic", mono)
+            monkeypatch.setattr(WK, "_reconcile_run", run)
+            not_busy = WK.reconcile_draining(c, ["box"])
+            _assert_still_occupies_worker(c, jid, not_busy)
+            poll_timeouts = [t for a, t in calls if "poll" in a]
+            assert (len(poll_timeouts) > 0) == expect_poll
+            if expect_poll:
+                assert poll_timeouts[0] <= 2.0
+
+
+def test_detached_record_jobs_poll_marks_lost(cfg, monkeypatch):
+    _seed(cfg, _w())
+    jid = _job(cfg, state="detached", accepted_at="t")
+    probe = _Probe([(0, b"[]"), (1, b'{"type":"status","state":"unknown"}\n')])
+    monkeypatch.setattr(WK, "_reconcile_run", probe)
+    not_busy = WK.reconcile_draining(cfg, ["box"])
+    rec = RJ.read(cfg, jid)
+    assert rec["state"] == "lost" and rec.get("lost_reason") == "reconciled"
+    assert not_busy == set()
+    lines = _journal(cfg, "worker_job_reconciled")
+    assert len(lines) == 1 and lines[0]["prior_state"] == "detached"
 
 
 def test_attached_campaign_and_pull_skipped(cfg, monkeypatch, tmp_path):
@@ -514,6 +571,15 @@ def test_attached_campaign_and_pull_skipped(cfg, monkeypatch, tmp_path):
         WK.reconcile_draining(cfg, ["box", "pull"])
         assert probe.calls == []
         assert not WK._drained(cfg, "box")
+        ghost = _job(cfg, job_id="c-2-gate-002-a1", campaign="c-2", worker="box",
+                     state="attached", accepted_at="t")
+        probe2 = _Probe([(0, b"[]"), (1, b'{"type":"status","state":"unknown"}\n')])
+        monkeypatch.setattr(WK, "_reconcile_run", probe2)
+        WK.reconcile_draining(cfg, ["box"])
+        assert RJ.read(cfg, jid)["state"] == "attached"
+        assert RJ.read(cfg, ghost)["state"] == "lost"
+        assert not WK._drained(cfg, "box")
+        assert len(_journal(cfg, "worker_job_reconciled")) == 1
         pj = "c-2-gate-001-a1"
         _job(cfg, job_id=pj, worker="pull", campaign="c-2", state="attached", accepted_at="t")
         before = dict(RJ.read(cfg, pj))
@@ -569,7 +635,13 @@ def test_running_past_timeout_still_times_out(cfg, monkeypatch):
     _schedule_update(cfg)
     jid = _job(cfg, state="attached", accepted_at="t")
     body = json.dumps([{"job_id": jid, "state": "running"}]).encode()
-    monkeypatch.setattr(WK, "_reconcile_run", _Probe([(0, body)]))
+
+    def run_running(argv, *, timeout, input=None):
+        if "jobs" in argv:
+            return subprocess.CompletedProcess(argv, 0, body, b"")
+        raise AssertionError(argv)
+
+    monkeypatch.setattr(WK, "_reconcile_run", run_running)
     old = (dt.datetime.now().astimezone() - dt.timedelta(hours=2)).isoformat()
 
     def fn(records):
@@ -577,6 +649,16 @@ def test_running_past_timeout_still_times_out(cfg, monkeypatch):
     WK.update(cfg, fn)
     idle, late = WK.due_updates(cfg)
     assert idle == [] and len(late) == 1
+    perf = mock.Mock(side_effect=AssertionError("perform must not run"))
+    monkeypatch.setattr(WU, "perform", perf)
+    Q._UPDATING.clear()
+    Q._run_worker_updates(cfg, progress=mock.Mock())
+    assert perf.call_count == 0
+    timeouts = _journal(cfg, "worker_update_timeout")
+    assert len(timeouts) == 1 and timeouts[0]["worker"] == "box"
+    wrec = next(r for r in WK.read_strict(cfg) if r["name"] == "box")
+    assert wrec.get("update_last", {}).get("state") == "timeout"
+    assert "draining" not in wrec and "update_pending" not in wrec
 
 
 def test_finish_drains_after_gone_not_while_running(cfg, monkeypatch):
