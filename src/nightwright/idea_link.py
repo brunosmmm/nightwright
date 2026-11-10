@@ -40,6 +40,11 @@ def req_base(title: str, summary: str) -> str:
     return hashlib.sha256(payload).hexdigest()
 
 
+def _disallowed_yaml_scalar_char(ch: str) -> bool:
+    o = ord(ch)
+    return o < 32 or o == 0x7F or (0x80 <= o <= 0x9F)
+
+
 def _yaml_double_quoted(text: str, *, field: str = "title") -> str:
     out = ['"']
     for ch in text:
@@ -51,7 +56,7 @@ def _yaml_double_quoted(text: str, *, field: str = "title") -> str:
             if field == "title":
                 raise ValueError("title must be one line")
             raise ValueError(f"{field} must be one line")
-        elif ord(ch) < 32 or ch == "\u0085":
+        elif _disallowed_yaml_scalar_char(ch):
             if field == "title":
                 raise ValueError("title contains unsupported control character")
             raise ValueError(f"{field} contains unsupported control character")
@@ -64,7 +69,7 @@ def _yaml_double_quoted(text: str, *, field: str = "title") -> str:
 def _validate_identity_value(key: str, value: str) -> None:
     if re.search(r"[\n\r]", value):
         raise ValueError(f"{key} must be one line")
-    if any(ord(ch) < 32 or ch == "\u0085" for ch in value):
+    if any(_disallowed_yaml_scalar_char(ch) for ch in value):
         raise ValueError(f"{key} contains unsupported control character")
 
 
@@ -148,8 +153,13 @@ def _git_stdout_text(stdout: bytes) -> str:
 
 
 def _git_config(repo: Path, key: str) -> str:
-    r = _git(repo, "config", "--local", key, check=False)
-    return (_git_stdout_text(r.stdout).strip() if r.returncode == 0 else "")
+    r = _git(repo, "config", "--local", "--get", key, check=False)
+    if r.returncode == 0:
+        return _git_stdout_text(r.stdout).strip()
+    if r.returncode == 1 and not r.stderr.strip():
+        return ""
+    detail = _git_stdout_text(r.stderr).strip() if r.stderr else "git config failed"
+    raise ValueError(f"git config --local {key} failed: {detail}")
 
 
 def _git_identity(repo: Path) -> tuple[str, str]:
@@ -230,7 +240,7 @@ def _mktree(repo: Path, parent_sha: str | None, path: str, blob_sha: str) -> str
         f"{mode} {typ} {sha}\t".encode("ascii") + name + b"\0"
         for name, mode, typ, sha in sorted(entries, key=lambda row: row[0])
     )
-    r = _git(repo, "mktree", "-z", input=tree_input, check=False)
+    r = _git(repo, "mktree", "-z", "--missing", input=tree_input, check=False)
     if r.returncode != 0:
         raise ValueError("mktree failed")
     return _git_stdout_text(r.stdout).strip()

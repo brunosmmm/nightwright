@@ -491,6 +491,13 @@ the guard.
 - `python3 tools/spec_lint.py --write-ledger && python3 tools/spec_lint.py` — exit 0.
 - Full suite left to queue gating.
 
+### Test record (2026-11-10, review loop 3)
+
+- `uv run pytest tests/test_idea_link.py -q` — 30 passed (adversarial guards: UTF-8 stdout, strict Summary, KI restore, headline/CLOCK, published-idea list spy, identity/git-config/mktree --missing).
+- `uv run pytest tests/test_idea_stamps.py::test_stamp_creates_missing_drawer_without_corrupting_sections tests/test_workflow.py -q` — 19 passed.
+- `python3 tools/spec_lint.py --write-ledger && python3 tools/spec_lint.py` — exit 0.
+- Full suite left to queue gating.
+
 ### Test record (2026-11-09, adversarial review loop 4)
 
 - `uv run pytest tests/test_idea_link.py -q` — 22 passed (tightened adversarial-review coverage).
@@ -511,6 +518,12 @@ the guard.
 - Git stdout from the linked repo is decoded as strict UTF-8 (`_git_stdout_text`); non-UTF-8 refuses before ref update.
 - `user.name` / `user.email` are validated for one line and C0 controls before `render_request`; identity field errors name the key.
 - After a successful backlog commit, org-link failure runs backlog restore on `BaseException` but still re-raises `KeyboardInterrupt` / `SystemExit`.
+
+### As shipped (2026-11-10, review loop 3)
+
+- Scalar validation rejects C0, DEL (`0x7F`), and C1 (`0x80`–`0x9F`) before any backlog write.
+- `git config --local --get` failures with stderr surface as `git config --local <key> failed: …` rather than “not set”.
+- `git mktree` uses `--missing` when rebuilding `nw-backlog` trees.
 
 ### As shipped (2026-11-09, adversarial review loop 4)
 

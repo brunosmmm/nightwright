@@ -379,6 +379,9 @@ def test_publish_links_without_changing_state_or_sections(tmp_path, monkeypatch)
     repo = _init_repo(tmp_path / "proj")
     cfg = _cfg(tmp_path, repo=repo)
     idea = _seed_idea(monkeypatch, cfg, state="INCUBATE")
+    assert CliRunner().invoke(cli, ["idea", "clock-in", idea.properties["ID"]]).exit_code == 0
+    idea = W.resolve_selector(cfg, idea.properties["ID"])
+    headline_before = idea.heading
     org_before = Path(cfg["org_ideas_file"]).read_text()
     wt_before = _git(repo, "status", "--porcelain").strip()
     index_before = (repo / ".git" / "index").read_bytes()
@@ -406,6 +409,7 @@ def test_publish_links_without_changing_state_or_sections(tmp_path, monkeypatch)
     assert ":REQ:" in org_writes[0] and ":REQ_BASE:" in org_writes[0]
     fresh = W.resolve_selector(cfg, idea.properties["ID"])
     assert fresh.state == "INCUBATE"
+    assert fresh.heading == headline_before
     req = fresh.properties["REQ"]
     assert _REQ_RE.match(req)
     assert fresh.properties.get("REQ_BASE") == PINNED
@@ -416,6 +420,8 @@ def test_publish_links_without_changing_state_or_sections(tmp_path, monkeypatch)
     assert ":session-triage:" in after
     assert "** Open questions" in after
     assert "** Log" in after
+    assert "CLOCK:" in after
+    assert f"* INCUBATE {headline_before} :session-triage:" in after
     blob = _show_backlog(repo, f"{req}.md")
     fm, body = split_frontmatter(blob.decode())
     assert fm["status"] == "open"
@@ -656,11 +662,12 @@ def test_publish_refuses_when_summary_read_fails(tmp_path, monkeypatch):
     repo = _init_repo(tmp_path / "proj")
     cfg = _cfg(tmp_path, repo=repo)
     idea = _seed_idea(monkeypatch, cfg, text="Drift")
-    monkeypatch.setattr(
-        "nightwright.idea_link.idea_summary_text",
-        mock.Mock(side_effect=ValueError("drift")),
-    )
-    r = CliRunner().invoke(cli, ["idea", "publish", idea.properties["ID"]])
+    org_path = Path(cfg["org_ideas_file"])
+    org_path.chmod(0)
+    try:
+        r = CliRunner().invoke(cli, ["idea", "publish", idea.properties["ID"]])
+    finally:
+        org_path.chmod(0o600)
     assert r.exit_code != 0
     assert "could not read Summary" in r.output
     assert _backlog_tip(repo) is None
@@ -811,11 +818,42 @@ def test_heading_without_level_matches_only_task_line():
     assert W._is_same_headline(task_b, lines_same_heading, 4)
     assert not W._is_same_headline(task_b, lines_same_heading, 0)
 
+    task_empty_heading = Task(
+        id="IDEA-001",
+        heading="",
+        state="INCUBATE",
+        is_done=False,
+        tags=frozenset(),
+        priority=None,
+        properties={"ID": "IDEA-001"},
+        level=None,
+        file="f.org",
+        line=1,
+        is_idea=True,
+    )
+    assert not W._is_same_headline(task_empty_heading, lines, 0)
+
+    task_miss = Task(
+        id="IDEA-001",
+        heading="NoMatch",
+        state="INCUBATE",
+        is_done=False,
+        tags=frozenset(),
+        priority=None,
+        properties={"ID": "IDEA-001"},
+        level=None,
+        file="f.org",
+        line=1,
+        is_idea=True,
+    )
+    assert not W._is_same_headline(task_miss, lines, 0)
+
 
 def test_ideas_and_hub_keep_idea_row(tmp_path, monkeypatch):
     repo = _init_repo(tmp_path / "proj")
     cfg = _cfg(tmp_path, repo=repo)
-    _seed_idea(monkeypatch, cfg)
+    idea = _seed_idea(monkeypatch, cfg)
+    assert CliRunner().invoke(cli, ["idea", "publish", idea.properties["ID"]]).exit_code == 0
     git_calls = []
     real_run = subprocess.run
     idea_row_calls = []
@@ -893,6 +931,9 @@ def test_ideas_and_hub_keep_idea_row(tmp_path, monkeypatch):
     load_calls = _show_payload_calls(tm_tree)
     assert load_calls, "expected idea_show_payload call in load_detail"
     assert all(len(c.args) == 2 and not c.keywords for c in load_calls)
+
+    load_names = _func_body_names(tm_tree, "load_detail")
+    assert "next_step_for_idea" in load_names
 
 
 def test_publish_scrubs_git_env_and_writes_project_repo(tmp_path, monkeypatch):
@@ -1003,8 +1044,11 @@ def test_link_idea_request_refuses_when_req_already_set(tmp_path, monkeypatch):
     idea = _seed_idea(monkeypatch, cfg, text="HasReq")
     W.set_property(cfg, idea, "REQ", "REQ-ABCDEFGH")
     fresh = W.resolve_selector(cfg, idea.properties["ID"])
+    org_before = Path(cfg["org_ideas_file"]).read_bytes()
     with pytest.raises(ValueError, match="already linked"):
         W.link_idea_request(cfg, fresh, "REQ-NEWNEW01", "deadbeef")
+    assert Path(cfg["org_ideas_file"]).read_bytes() == org_before
+    assert ":REQ_BASE:" not in Path(cfg["org_ideas_file"]).read_text()
 
 
 def test_publish_restores_backlog_when_link_sees_req_race(tmp_path, monkeypatch):
@@ -1029,6 +1073,7 @@ def test_publish_restores_backlog_when_link_sees_req_race(tmp_path, monkeypatch)
     assert _backlog_tip(repo) == tip_before
     fresh = W.resolve_selector(cfg, idea_id)
     assert fresh.properties.get("REQ") == "REQ-RACE0001"
+    assert ":REQ_BASE:" not in Path(cfg["org_ideas_file"]).read_text()
 
 
 def test_publish_refuses_when_worktree_list_fails_but_branch_checked_out(
@@ -1091,17 +1136,22 @@ def test_publish_refuses_invalid_utf8_git_config(tmp_path, monkeypatch):
     repo = _init_repo(tmp_path / "proj")
     cfg = _cfg(tmp_path, repo=repo)
     idea = _seed_idea(monkeypatch, cfg)
+    hash_calls = []
+    real_run = subprocess.run
 
-    def bad_config(repo, key):
-        if key == "user.name":
-            raise ValueError("git output is not valid UTF-8")
-        return "test@example.com"
+    def spy(cmd, **kw):
+        if len(cmd) >= 5 and cmd[0] == "git" and cmd[3] == "config" and cmd[-1] == "user.name":
+            return mock.Mock(returncode=0, stdout=b"\xff\xfe", stderr=b"")
+        if len(cmd) >= 4 and cmd[0] == "git" and cmd[3] == "hash-object":
+            hash_calls.append(cmd)
+        return real_run(cmd, **kw)
 
-    monkeypatch.setattr("nightwright.idea_link._git_config", bad_config)
+    monkeypatch.setattr("subprocess.run", spy)
     r = CliRunner().invoke(cli, ["idea", "publish", idea.properties["ID"]])
     assert r.exit_code != 0
     assert "not valid UTF-8" in r.output
     assert _backlog_tip(repo) is None
+    assert not hash_calls
 
 
 def test_publish_refuses_control_character_in_user_name(tmp_path, monkeypatch):
@@ -1116,3 +1166,187 @@ def test_publish_refuses_control_character_in_user_name(tmp_path, monkeypatch):
     assert r.exit_code != 0
     assert "user.name contains unsupported control character" in r.output
     assert _backlog_tip(repo) is None
+
+
+def test_publish_refuses_del_and_c1_in_title_and_identity(tmp_path, monkeypatch):
+    repo = _init_repo(tmp_path / "proj")
+    cfg = _cfg(tmp_path, repo=repo)
+    for bad, expect in (
+        ("Del\x7ftitle", "title contains unsupported control character"),
+        ("C1\x90title", "title contains unsupported control character"),
+    ):
+        idea = _seed_idea(monkeypatch, cfg, text="ok")
+        t = W.resolve_selector(cfg, idea.properties["ID"])
+        t = Task(
+            id=t.id,
+            heading=bad,
+            state=t.state,
+            is_done=t.is_done,
+            tags=t.tags,
+            priority=t.priority,
+            properties=dict(t.properties),
+            level=t.level,
+            file=t.file,
+            line=t.line,
+            is_idea=True,
+        )
+        with pytest.raises(ValueError, match=expect):
+            L.publish_idea(cfg, t)
+        assert _backlog_tip(repo) is None
+
+    subprocess.run(
+        ["git", "-C", str(repo), "config", "user.email", "bad\x7f@example.com"],
+        check=True,
+    )
+    idea = _seed_idea(monkeypatch, cfg, text="EmailBad")
+    r = CliRunner().invoke(cli, ["idea", "publish", idea.properties["ID"]])
+    assert r.exit_code != 0
+    assert "user.email contains unsupported control character" in r.output
+    assert _backlog_tip(repo) is None
+
+
+def test_publish_refuses_multiline_user_identity(tmp_path, monkeypatch):
+    repo = _init_repo(tmp_path / "proj")
+    subprocess.run(
+        ["git", "-C", str(repo), "config", "user.name", "Bad\nName"],
+        check=True,
+    )
+    cfg = _cfg(tmp_path, repo=repo)
+    idea = _seed_idea(monkeypatch, cfg)
+    r = CliRunner().invoke(cli, ["idea", "publish", idea.properties["ID"]])
+    assert r.exit_code != 0
+    assert "user.name must be one line" in r.output
+    assert _backlog_tip(repo) is None
+
+    subprocess.run(
+        ["git", "-C", str(repo), "config", "user.name", "Test User"],
+        check=True,
+    )
+    subprocess.run(
+        ["git", "-C", str(repo), "config", "user.email", "bad\n@example.com"],
+        check=True,
+    )
+    idea2 = _seed_idea(monkeypatch, cfg, text="EmailNL")
+    r2 = CliRunner().invoke(cli, ["idea", "publish", idea2.properties["ID"]])
+    assert r2.exit_code != 0
+    assert "user.email must be one line" in r2.output
+    assert _backlog_tip(repo) is None
+
+
+def test_publish_commit_tree_uses_linked_repo_author_env(tmp_path, monkeypatch):
+    repo = _init_repo(tmp_path / "proj")
+    cfg = _cfg(tmp_path, repo=repo)
+    idea = _seed_idea(monkeypatch, cfg)
+    commit_envs = []
+    real_run = subprocess.run
+
+    def spy(cmd, **kw):
+        if len(cmd) >= 4 and cmd[0] == "git" and cmd[3] == "commit-tree":
+            commit_envs.append(dict(kw.get("env") or {}))
+        return real_run(cmd, **kw)
+
+    monkeypatch.setattr("subprocess.run", spy)
+    monkeypatch.setenv("GIT_AUTHOR_NAME", "Evil Override")
+    monkeypatch.setenv("GIT_AUTHOR_EMAIL", "evil@example.com")
+    r = CliRunner().invoke(cli, ["idea", "publish", idea.properties["ID"]])
+    assert r.exit_code == 0, r.output
+    assert commit_envs
+    env = commit_envs[0]
+    assert env.get("GIT_AUTHOR_NAME") == "Test User"
+    assert env.get("GIT_AUTHOR_EMAIL") == "test@example.com"
+    assert env.get("GIT_COMMITTER_NAME") == "Test User"
+    assert env.get("GIT_COMMITTER_EMAIL") == "test@example.com"
+
+
+def test_publish_org_write_failure_restores_on_keyboard_interrupt(tmp_path, monkeypatch):
+    repo = _init_repo(tmp_path / "proj")
+    cfg = _cfg(tmp_path, repo=repo)
+    idea = _seed_idea(monkeypatch, cfg, text="KiRestore")
+    org_before = Path(cfg["org_ideas_file"]).read_text()
+
+    def ki(*_a, **_k):
+        raise KeyboardInterrupt()
+
+    monkeypatch.setattr("nightwright.org_write.link_idea_request", ki)
+    task = W.resolve_selector(cfg, idea.properties["ID"])
+    with pytest.raises(KeyboardInterrupt):
+        L.publish_idea(cfg, task, selector=idea.properties["ID"])
+    assert _backlog_tip(repo) is None
+    assert Path(cfg["org_ideas_file"]).read_text() == org_before
+
+
+def test_publish_refuses_when_git_config_read_fails(tmp_path, monkeypatch):
+    repo = _init_repo(tmp_path / "proj")
+    cfg = _cfg(tmp_path, repo=repo)
+    idea = _seed_idea(monkeypatch, cfg)
+    real_run = subprocess.run
+
+    def spy(cmd, **kw):
+        if len(cmd) >= 6 and cmd[0] == "git" and cmd[3:6] == ["config", "--local", "--get"]:
+            return mock.Mock(
+                returncode=128,
+                stdout=b"",
+                stderr=b"fatal: detected dubious ownership",
+            )
+        return real_run(cmd, **kw)
+
+    monkeypatch.setattr("subprocess.run", spy)
+    r = CliRunner().invoke(cli, ["idea", "publish", idea.properties["ID"]])
+    assert r.exit_code != 0
+    assert "git config --local user.name failed" in r.output
+    assert _backlog_tip(repo) is None
+
+
+def test_second_publish_preserves_symlink_and_uses_mktree_missing(tmp_path, monkeypatch):
+    repo = _init_repo(tmp_path / "proj")
+    cfg = _cfg(tmp_path, repo=repo)
+    a = _seed_idea(monkeypatch, cfg, text="First", summary="one")
+    b = _seed_idea(monkeypatch, cfg, text="Second", summary="two")
+    assert CliRunner().invoke(cli, ["idea", "publish", a.properties["ID"]]).exit_code == 0
+    first = W.resolve_selector(cfg, a.properties["ID"]).properties["REQ"]
+    tip1 = _backlog_tip(repo)
+    target = "README"
+    link_sha = subprocess.run(
+        ["git", "-C", str(repo), "hash-object", "-w", "--stdin"],
+        input=target + "\n",
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    req_blob = _git(repo, "rev-parse", f"refs/heads/nw-backlog:{first}.md").strip()
+    merged = (
+        f"100644 blob {req_blob}\t{first}.md\n"
+        f"120000 blob {link_sha}\tEXTRA-LINK\n"
+    ).encode()
+    new_tree = subprocess.run(
+        ["git", "-C", str(repo), "mktree"],
+        input=merged,
+        check=True,
+        capture_output=True,
+    ).stdout.decode().strip()
+    commit = _git(
+        repo,
+        "commit-tree",
+        new_tree,
+        "-p",
+        tip1,
+        "-m",
+        "add symlink",
+    ).strip()
+    subprocess.run(
+        ["git", "-C", str(repo), "update-ref", "refs/heads/nw-backlog", commit, tip1],
+        check=True,
+    )
+    link_sha_before = _git(repo, "rev-parse", "refs/heads/nw-backlog:EXTRA-LINK").strip()
+    mktree_argv = []
+    real_run = subprocess.run
+
+    def spy(cmd, **kw):
+        if len(cmd) >= 4 and cmd[0] == "git" and cmd[3] == "mktree":
+            mktree_argv.append(list(cmd[3:]))
+        return real_run(cmd, **kw)
+
+    monkeypatch.setattr("subprocess.run", spy)
+    assert CliRunner().invoke(cli, ["idea", "publish", b.properties["ID"]]).exit_code == 0
+    assert mktree_argv and "--missing" in mktree_argv[0]
+    assert _git(repo, "rev-parse", "refs/heads/nw-backlog:EXTRA-LINK").strip() == link_sha_before
