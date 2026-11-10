@@ -15,6 +15,7 @@ from . import pull_jobs as PJ
 
 DEFAULT_BIND = "127.0.0.1:8792"
 HANDLER_TIMEOUT_S = PJ.HANDLER_TIMEOUT_S
+MAX_BODY_BYTES = PJ.MAX_FRAMES_BYTES
 
 
 def status_document(cfg) -> dict:
@@ -84,27 +85,27 @@ class _Handler(http.server.BaseHTTPRequestHandler):
     def log_message(self, fmt, *args):
         pass
 
-    def do_GET(self):
-        self._dispatch("GET")
-
-    def do_POST(self):
-        self._dispatch("POST")
-
-    def do_PUT(self):
-        self._dispatch("PUT")
-
-    def do_DELETE(self):
-        self._dispatch("DELETE")
+    def handle_one_request(self):
+        self.raw_requestline = self.rfile.readline(65537)
+        if len(self.raw_requestline) > 65536:
+            return
+        if not self.raw_requestline:
+            return
+        if not self.parse_request():
+            return
+        self._dispatch(self.command)
 
     def _path(self) -> str:
         parts = urlsplit(self.path)
         return parts.path if not parts.query else f"{parts.path}?{parts.query}"
 
-    def _read_body(self) -> bytes:
+    def _read_body(self) -> bytes | None:
         raw = self.headers.get("Content-Length")
         if not raw or not raw.isdigit():
             return b""
         n = int(raw)
+        if n > MAX_BODY_BYTES:
+            return None
         return self.rfile.read(n) if n > 0 else b""
 
     def _write(self, status: int, data: bytes, *, signed: bool, method: str, path: str,
@@ -133,7 +134,6 @@ class _Handler(http.server.BaseHTTPRequestHandler):
             self._json_error(401, "unauthorized", signed=False, method=method, path=path,
                              secret=None)
             return
-        secret = fed["token"]
         tok = fed["token"]
         secret_key = fed["secret"]
         auth = self.headers.get("Authorization") or ""
@@ -147,7 +147,11 @@ class _Handler(http.server.BaseHTTPRequestHandler):
             self._json_error(401, "unauthorized", signed=True, method=method, path=path,
                              secret=secret_key)
             return
-        body = self._read_body() if method not in ("GET", "HEAD") else b""
+        body = self._read_body()
+        if body is None:
+            self._json_error(401, "unauthorized", signed=True, method=method, path=path,
+                             secret=secret_key)
+            return
         mac = self.headers.get("X-NW-Req-Sig") or self.headers.get("x-nw-req-sig")
         if F.verify(secret_key, method, path, body, mac or "", int(ts_raw)):
             self._json_error(401, "unauthorized", signed=True, method=method, path=path,

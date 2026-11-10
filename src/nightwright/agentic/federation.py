@@ -16,6 +16,7 @@ from . import pull_jobs as PJ
 FEDERATION_REF = "secrets/federation.json"
 EMPTY_BODY_SHA = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
 SKEW_S = 120
+MAX_RESPONSE_BYTES = PJ.MAX_FRAMES_BYTES
 
 
 def federation_path(cfg) -> Path:
@@ -150,10 +151,21 @@ class HubClient:
     def _url(self, path: str) -> str:
         return self.record["url"].rstrip("/") + path
 
+    def _target(self, path: str) -> str:
+        return self.base + path if self.base else path
+
+    def _header(self, hdrs: dict[str, str], name: str) -> str | None:
+        low = name.lower()
+        for k, v in hdrs.items():
+            if k.lower() == low:
+                return v
+        return None
+
     def request(self, method: str, path: str, body: bytes = b"") -> tuple[int, bytes, dict]:
         data = body or b""
+        target = self._target(path)
         headers = {"Authorization": f"Bearer {self.token}",
-                   **request_headers(self.secret, method, path, data, now=self._now)}
+                   **request_headers(self.secret, method, target, data, now=self._now)}
         if data:
             headers["Content-Length"] = str(len(data))
         if self.https:
@@ -163,23 +175,25 @@ class HubClient:
             conn = http.client.HTTPConnection(self.host, self.port,
                                               timeout=self.CONNECT_TIMEOUT)
         try:
-            conn.request(method, self.base + path, body=data, headers=headers)
+            conn.request(method, target, body=data, headers=headers)
             conn.sock.settimeout(self.READ_TIMEOUT)
             resp = conn.getresponse()
-            raw = resp.read()
+            raw = resp.read(MAX_RESPONSE_BYTES + 1)
             hdrs = {k: v for k, v in resp.getheaders()}
             status = resp.status
-        except (OSError, ssl.SSLError) as e:
+        except (OSError, ssl.SSLError, http.client.HTTPException) as e:
             raise ConnectionError(f"{type(e).__name__}: {e}") from e
         finally:
             conn.close()
+        if len(raw) > MAX_RESPONSE_BYTES:
+            raise ConnectionError("response too large")
         if status != 200:
             raise ConnectionError(f"HTTP {status}")
-        ts_raw = hdrs.get("X-NW-Sig-Ts") or hdrs.get("x-nw-sig-ts")
-        mac = hdrs.get("X-NW-Sig") or hdrs.get("x-nw-sig")
+        ts_raw = self._header(hdrs, "X-NW-Sig-Ts")
+        mac = self._header(hdrs, "X-NW-Sig")
         if not ts_raw or not str(ts_raw).isdigit() or not mac:
             raise ConnectionError("missing response signature")
-        why = verify(self.secret, method, path, raw, mac, int(ts_raw), now=self._now)
+        why = verify(self.secret, method, target, raw, mac, int(ts_raw), now=self._now)
         if why:
             raise ConnectionError(why)
         return status, raw, hdrs

@@ -21,14 +21,22 @@ def path(cfg) -> Path:
 
 
 def _lock(cfg) -> Path:
-    return path(cfg).with_suffix(".lock")
+    p = path(cfg)
+    return p.with_name(p.name + ".lock")
 
 
 def validate_url(url: str) -> str:
     u = urlsplit(url)
     if u.scheme not in ("http", "https") or not u.hostname:
         raise ValueError(f"url {url!r} must be http(s)://HOST")
-    return url.rstrip("/")
+    if u.username or u.password or u.query or u.fragment:
+        raise ValueError(f"url {url!r} must be http(s)://HOST[:PORT]")
+    if u.path not in ("", "/"):
+        raise ValueError(f"url {url!r} must be http(s)://HOST[:PORT]")
+    if "\r" in url or "\n" in url:
+        raise ValueError(f"url {url!r} must be http(s)://HOST[:PORT]")
+    port = f":{u.port}" if u.port else ""
+    return f"{u.scheme}://{u.hostname}{port}"
 
 
 def load(cfg) -> list[dict]:
@@ -61,27 +69,46 @@ def read_strict(cfg) -> list[dict]:
 
 
 def _write_fsync(p: Path, recs: list) -> None:
-    text = json.dumps({"schema": SCHEMA, "hosts": recs}, indent=2) + "\n"
+    data = (json.dumps({"schema": SCHEMA, "hosts": recs}, indent=2) + "\n").encode("utf-8")
     tmp = p.with_name(f".{p.name}.{os.getpid()}.tmp")
     fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o644)
     try:
-        os.write(fd, text.encode("utf-8"))
+        off = 0
+        while off < len(data):
+            n = os.write(fd, data[off:])
+            if n <= 0:
+                raise OSError("short write")
+            off += n
         os.fsync(fd)
-    finally:
+    except OSError:
+        os.close(fd)
+        tmp.unlink(missing_ok=True)
+        raise
+    else:
         os.close(fd)
     os.replace(tmp, p)
 
 
+def _acquire_lock(cfg):
+    p = path(cfg)
+    p.parent.mkdir(parents=True, exist_ok=True)
+    lk = _lock(cfg)
+    fd = os.open(lk, os.O_RDWR | os.O_CREAT, 0o644)
+    fcntl.flock(fd, fcntl.LOCK_EX)
+    return fd
+
+
 def update(cfg, fn) -> list[dict]:
     """Exclusive flock, read, `fn(records)`, fsync write; return the new list."""
-    p, lk = path(cfg), _lock(cfg)
-    p.parent.mkdir(parents=True, exist_ok=True)
-    with open(lk, "a+b") as lf:
-        fcntl.flock(lf, fcntl.LOCK_EX)
+    p = path(cfg)
+    fd = _acquire_lock(cfg)
+    try:
         recs = read_strict(cfg)
         fn(recs)
         _write_fsync(p, recs)
         return recs
+    finally:
+        os.close(fd)
 
 
 def find(records: list[dict], name: str) -> dict:

@@ -1,7 +1,9 @@
 """`nw hosts` (SPEC-0529): federation enrolment and the hub host registry."""
 from __future__ import annotations
 
+import http.client
 import json
+import os
 import socket
 import sys
 
@@ -52,14 +54,21 @@ def hosts_add(cfg, name, url):
     token, secret = F.new_host_credential()
     rec = {"name": name, "url": url, "token_sha256": PJ.token_hash(token),
            "secret_ref": F.host_secret_ref(name), "enabled": True, "status_cache": None}
-
-    def add(recs):
+    p = H.path(cfg)
+    fd = H._acquire_lock(cfg)
+    try:
+        recs = H.read_strict(cfg)
         if any(r["name"] == name for r in recs):
             raise click.ClickException(f"host {name!r} already registered")
-        recs.append(rec)
-
-    _update(cfg, add)
-    F.write_host_secrets(cfg, name, token, secret)
+        F.write_host_secrets(cfg, name, token, secret)
+        try:
+            recs.append(rec)
+            H._write_fsync(p, recs)
+        except Exception:
+            F.drop_host_secrets(cfg, name)
+            raise
+    finally:
+        os.close(fd)
     blob = {"hub_name": socket.gethostname(), "host_name": name, "token": token, "secret": secret}
     click.echo(json.dumps(blob, separators=(",", ":")))
 
@@ -80,13 +89,21 @@ def hosts_rm(cfg, name):
         raise click.UsageError(f"NAME must match {H.NAME_RE.pattern}")
     if not any(r.get("name") == name for r in H.load(cfg)):
         raise click.ClickException(f"no host {name!r}")
-
-    def rm(recs):
+    p = H.path(cfg)
+    fd = H._acquire_lock(cfg)
+    removed = False
+    try:
+        recs = H.read_strict(cfg)
+        before = len(recs)
         recs[:] = [r for r in recs if r.get("name") != name]
-
-    _update(cfg, rm)
-    F.drop_host_secrets(cfg, name)
-    click.echo("run nw hosts unenrol on the host")
+        removed = len(recs) < before
+        if removed:
+            H._write_fsync(p, recs)
+            F.drop_host_secrets(cfg, name)
+    finally:
+        os.close(fd)
+    if removed:
+        click.echo("run nw hosts unenrol on the host")
 
 
 @hosts_group.command("on")
@@ -135,7 +152,7 @@ def hosts_check(cfg):
         try:
             client = Fed.HubClient(rec, cfg)
             doc = client.get_json("/v1/status")
-        except (ConnectionError, ValueError, OSError) as e:
+        except (ConnectionError, ValueError, OSError, http.client.HTTPException) as e:
             click.echo(f"{name} unreachable: {e}")
             exit_code = 1
             continue

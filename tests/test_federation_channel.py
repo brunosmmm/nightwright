@@ -72,16 +72,59 @@ def _serve(cfg):
     return srv, f"http://127.0.0.1:{srv.server_address[1]}"
 
 
-def _raw(method, url, path, token, secret, body=b"", *, now=NOW):
+def _raw(method, url, path, token, secret, body=b"", *, now=NOW, headers=None):
     host, port = url.split("://")[1].split(":")
     port = int(port)
     conn = http.client.HTTPConnection(host, port, timeout=5)
-    hdrs = {"Authorization": f"Bearer {token}", **F.request_headers(secret, method, path, body, now=now)}
+    hdrs = headers if headers is not None else {
+        "Authorization": f"Bearer {token}",
+        **F.request_headers(secret, method, path, body, now=now),
+    }
     conn.request(method, path, body=body, headers=hdrs)
     resp = conn.getresponse()
     raw = resp.read()
     conn.close()
     return resp.status, dict(resp.getheaders()), raw
+
+
+def _resp_sig(secret, method, path, hdrs, raw):
+    ts = hdrs.get("X-NW-Sig-Ts") or hdrs.get("x-nw-sig-ts")
+    mac = hdrs.get("X-NW-Sig") or hdrs.get("x-nw-sig")
+    assert ts and mac
+    assert F.verify(secret, method, path, raw, mac, int(ts), now=NOW) is None
+
+
+def _queue_import_violations(source: str, *, federation_host_payload_only: bool = False) -> list[str]:
+    tree = ast.parse(source)
+    queue_names: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                base = alias.name.split(".")[0]
+                if base == "queue":
+                    queue_names.add(alias.asname or alias.name.split(".")[-1])
+        if isinstance(node, ast.ImportFrom):
+            for alias in node.names:
+                mod = node.module or ""
+                base = mod.split(".")[0] if mod else ""
+                name = alias.name
+                if base == "queue" or name == "queue":
+                    queue_names.add(alias.asname or name)
+    violations = []
+    allowed_attrs = {"queue_payload"} if federation_host_payload_only else set()
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        func = node.func
+        if isinstance(func, ast.Name) and func.id in queue_names:
+            violations.append(f"call through queue alias {func.id!r}")
+        if isinstance(func, ast.Attribute) and isinstance(func.value, ast.Name):
+            if func.value.id in queue_names:
+                if federation_host_payload_only and func.attr not in allowed_attrs:
+                    violations.append(f"queue attribute {func.attr!r}")
+                elif not federation_host_payload_only:
+                    violations.append(f"call queue.{func.attr}")
+    return violations
 
 
 def test_add_stores_0600_secrets_and_hash_only_record(tmp_path, monkeypatch):
@@ -91,6 +134,7 @@ def test_add_stores_0600_secrets_and_hash_only_record(tmp_path, monkeypatch):
     blob = json.loads(r.output.strip())
     assert set(blob) == {"hub_name", "host_name", "token", "secret"}
     assert blob["host_name"] == "box"
+    assert blob["hub_name"] == socket.gethostname()
     tok_p = Path(cfg["config_dir"]) / "secrets/hosts/box.token"
     key_p = Path(cfg["config_dir"]) / "secrets/hosts/box.key"
     assert stat.S_IMODE(tok_p.stat().st_mode) == 0o600
@@ -101,16 +145,23 @@ def test_add_stores_0600_secrets_and_hash_only_record(tmp_path, monkeypatch):
     assert rec["secret_ref"] == "secrets/hosts/box.key"
     assert rec["token_sha256"] == PJ.token_hash(blob["token"])
     assert tok_p.read_text().strip() == blob["token"]
+    assert key_p.read_text().strip() == blob["secret"]
 
 
 def test_add_rejects_duplicate_bad_name_and_bad_url(tmp_path, monkeypatch):
     cfg = _cfg(tmp_path)
     assert _invoke(cfg, monkeypatch, "add", "box", "--url", "http://127.0.0.1:8792").exit_code == 0
+    snap_hosts = H.path(cfg).read_bytes()
+    snap_secrets = {p: p.read_bytes() for p in Path(cfg["config_dir"]).glob("secrets/hosts/*")}
     assert _invoke(cfg, monkeypatch, "add", "box", "--url", "http://127.0.0.1:8792").exit_code != 0
+    assert H.path(cfg).read_bytes() == snap_hosts
+    assert {p: p.read_bytes() for p in Path(cfg["config_dir"]).glob("secrets/hosts/*")} == snap_secrets
     assert _invoke(cfg, monkeypatch, "add", "BAD", "--url", "http://x").exit_code != 0
+    assert H.path(cfg).read_bytes() == snap_hosts
     before = list(Path(cfg["config_dir"]).glob("secrets/hosts/*"))
     assert _invoke(cfg, monkeypatch, "add", "ok", "--url", "ftp://x").exit_code != 0
     assert list(Path(cfg["config_dir"]).glob("secrets/hosts/*")) == before
+    assert _invoke(cfg, monkeypatch, "add", "ok2", "--url", "http://127.0.0.1:8792/v1/status").exit_code != 0
 
 
 def test_list_hides_secrets_and_missing_file_is_empty(tmp_path, monkeypatch):
@@ -175,8 +226,12 @@ def test_rm_deletes_secrets_prints_unenrol_and_makes_no_http(tmp_path, monkeypat
     th.join(timeout=1)
     assert not accepted
     assert not F.host_token_path(cfg, "box").exists()
+    assert not F.host_secret_path(cfg, "box").exists()
     assert not H.load(cfg)
     srv.close()
+    r_unknown = _invoke(cfg, monkeypatch, "rm", "nobody")
+    assert r_unknown.exit_code != 0
+    assert "run nw hosts unenrol" not in r_unknown.output
 
 
 def test_on_off_sets_enabled(tmp_path, monkeypatch):
@@ -191,36 +246,52 @@ def test_on_off_sets_enabled(tmp_path, monkeypatch):
 def test_enrol_stdin_only_0600(tmp_path, monkeypatch):
     cfg = _cfg(tmp_path)
     blob = {"hub_name": "h", "host_name": "box", "token": "t", "secret": "s"}
-    r = CliRunner().invoke(cli, ["hosts", "enrol"], input=json.dumps(blob) + "\n",
-                           env={**os.environ, "NW_DATA_DIR": cfg["data_dir"],
-                                "NW_CONFIG_DIR": cfg["config_dir"]})
+    env = {**os.environ, "NW_DATA_DIR": cfg["data_dir"], "NW_CONFIG_DIR": cfg["config_dir"]}
+    r = CliRunner().invoke(cli, ["hosts", "enrol"], input=json.dumps(blob) + "\n", env=env)
     assert r.exit_code == 0
     p = F.federation_path(cfg)
     assert stat.S_IMODE(p.stat().st_mode) == 0o600
-    assert set(json.loads(p.read_text())) == set(blob)
-    assert CliRunner().invoke(cli, ["hosts", "enrol", "x"], env={**os.environ,
-                "NW_DATA_DIR": cfg["data_dir"], "NW_CONFIG_DIR": cfg["config_dir"]}).exit_code != 0
-    assert CliRunner().invoke(cli, ["hosts", "enrol"], input="\n", env={**os.environ,
-                "NW_DATA_DIR": cfg["data_dir"], "NW_CONFIG_DIR": cfg["config_dir"]}).exit_code != 0
+    assert json.loads(p.read_text()) == blob
+    fail = [
+        (["hosts", "enrol", "x"], None),
+        (["hosts", "enrol"], "\n"),
+        (["hosts", "enrol"], "[]\n"),
+        (["hosts", "enrol"], json.dumps({"hub_name": "h"}) + "\n"),
+        (["hosts", "enrol"], json.dumps({**blob, "extra": "x"}) + "\n"),
+        (["hosts", "enrol"], json.dumps({**blob, "token": ""}) + "\n"),
+    ]
+    for args, inp in fail:
+        before = p.read_bytes()
+        rr = CliRunner().invoke(cli, list(args), input=inp, env=env)
+        assert rr.exit_code != 0
+        assert p.read_bytes() == before
     blob2 = {**blob, "token": "t2"}
-    assert CliRunner().invoke(cli, ["hosts", "enrol"], input=json.dumps(blob2) + "\n",
-                              env={**os.environ, "NW_DATA_DIR": cfg["data_dir"],
-                                   "NW_CONFIG_DIR": cfg["config_dir"]}).exit_code == 0
-    assert json.loads(p.read_text())["token"] == "t2"
-    p.unlink()
-    assert CliRunner().invoke(cli, ["hosts", "unenrol"], env={**os.environ,
-                "NW_DATA_DIR": cfg["data_dir"], "NW_CONFIG_DIR": cfg["config_dir"]}).exit_code == 0
+    assert CliRunner().invoke(cli, ["hosts", "enrol"], input=json.dumps(blob2) + "\n", env=env).exit_code == 0
+    assert json.loads(p.read_text()) == blob2
+    assert CliRunner().invoke(cli, ["hosts", "unenrol"], env=env).exit_code == 0
+    assert not p.exists()
+    assert CliRunner().invoke(cli, ["hosts", "unenrol"], env=env).exit_code == 0
     help_out = CliRunner().invoke(cli, ["hosts", "--help"]).output
     for cmd in ("add", "list", "rm", "on", "off", "check", "enrol", "unenrol"):
         assert cmd in help_out
+    assert "revoke" not in help_out
 
 
 def test_serve_federate_refuses_without_federation_json(tmp_path, monkeypatch):
     cfg = _cfg(tmp_path)
     monkeypatch.setattr("nightwright.cli.load_config", lambda: cfg)
+    binds = []
+    orig_bind = socket.socket.bind
+
+    def track_bind(self, addr):
+        binds.append(addr)
+        return orig_bind(self, addr)
+
+    monkeypatch.setattr(socket.socket, "bind", track_bind)
     r = CliRunner().invoke(cli, ["serve", "--federate"])
     assert r.exit_code != 0
     assert str(F.federation_path(cfg)) in r.output
+    assert not binds
 
 
 def test_unenrol_running_server_returns_unsigned_401(tmp_path, monkeypatch):
@@ -232,11 +303,16 @@ def test_unenrol_running_server_returns_unsigned_401(tmp_path, monkeypatch):
     _point_hub(hub, "box", url)
     base = f"http://127.0.0.1:{srv.server_address[1]}"
     F.federation_path(host).unlink()
-    st, hdrs, _ = _raw("GET", base, "/v1/status", blob["token"], blob["secret"])
+    st, hdrs, _ = _raw("GET", base, "/v1/status", blob["token"], blob["secret"], headers={})
     assert st == 401
-    assert "X-NW-Sig" not in {k.title() for k in hdrs} and "x-nw-sig" not in hdrs
+    lowers = {k.lower() for k in hdrs}
+    assert "x-nw-sig" not in lowers and "x-nw-sig-ts" not in lowers
     st2, hdrs2, _ = _raw("GET", base, "/v1/status", blob["token"], blob["secret"])
-    assert st2 == 401 and "x-nw-sig" not in hdrs2
+    assert st2 == 401
+    lowers2 = {k.lower() for k in hdrs2}
+    assert "x-nw-sig" not in lowers2 and "x-nw-sig-ts" not in lowers2
+    st3, hdrs3, _ = _raw("HEAD", base, "/v1/status", blob["token"], blob["secret"], headers={})
+    assert st3 == 401 and "x-nw-sig" not in {k.lower() for k in hdrs3}
     srv.shutdown()
 
 
@@ -262,51 +338,124 @@ def test_enrolled_request_auth(tmp_path, monkeypatch):
         conn.close()
         return r.status, h, raw
 
-    st, h, _ = req("GET", "/v1/status")
-    assert st == 401 and (h.get("X-NW-Sig") or h.get("x-nw-sig"))
-    hdrs = {**F.request_headers("abc", "GET", "/v1/status", b"", now=NOW), "Authorization": "Bearer tok"}
+    secret = "abc"
+    st, h, raw = req("GET", "/v1/status")
+    assert st == 401
+    _resp_sig(secret, "GET", "/v1/status", h, raw)
+    hdrs = {**F.request_headers(secret, "GET", "/v1/status", b"", now=NOW), "Authorization": "Bearer tok"}
     st, h, raw = req("GET", "/v1/status", headers=hdrs)
     assert st == 200
-    hdrs["Authorization"] = "Bearer wrong"
-    assert req("GET", "/v1/status", headers=hdrs)[0] == 401
-    hdrs = {**F.request_headers("abc", "GET", "/v1/status", b"", now=NOW + 121), "Authorization": "Bearer tok"}
-    assert req("GET", "/v1/status", headers=hdrs)[0] == 401
-    hdrs = {**F.request_headers("abc", "GET", "/v1/status", b"", now=NOW + 120), "Authorization": "Bearer tok"}
+    hdrs_bad = {**F.request_headers(secret, "GET", "/v1/status", b"", now=NOW), "Authorization": "Bearer wrong"}
+    st, h, raw = req("GET", "/v1/status", headers=hdrs_bad)
+    assert st == 401
+    _resp_sig(secret, "GET", "/v1/status", h, raw)
+    hdrs = {**F.request_headers(secret, "GET", "/v1/status", b"", now=NOW + 121), "Authorization": "Bearer tok"}
+    st, h, raw = req("GET", "/v1/status", headers=hdrs)
+    assert st == 401
+    _resp_sig(secret, "GET", "/v1/status", h, raw)
+    hdrs = {**F.request_headers(secret, "GET", "/v1/status", b"", now=NOW + 120), "Authorization": "Bearer tok"}
     assert req("GET", "/v1/status", headers=hdrs)[0] == 200
-    post_hdrs = {**F.request_headers("abc", "POST", "/v1/status", b"", now=NOW + 120),
-                 "Authorization": "Bearer tok"}
-    st, h, _ = req("POST", "/v1/status", headers=post_hdrs)
-    assert st == 405 and (h.get("X-NW-Sig") or h.get("x-nw-sig"))
-    get_hdrs = {**F.request_headers("abc", "GET", "/nope", b"", now=NOW + 120),
-                "Authorization": "Bearer tok"}
-    st, h, _ = req("GET", "/nope", headers=get_hdrs)
-    assert st == 404 and (h.get("X-NW-Sig") or h.get("x-nw-sig"))
-    rev_hdrs = {**F.request_headers("abc", "POST", "/v1/revoke", b"", now=NOW + 120),
-                "Authorization": "Bearer tok"}
-    st, h, _ = req("POST", "/v1/revoke", headers=rev_hdrs)
+    body = b"x"
+    hdrs = {**F.request_headers(secret, "GET", "/v1/status", body, now=NOW), "Authorization": "Bearer tok"}
+    st, h, raw = req("GET", "/v1/status", body=body, headers={**hdrs, "Content-Length": "1"})
+    assert st == 200
+    hdrs_empty = {**F.request_headers(secret, "GET", "/v1/status", b"", now=NOW), "Authorization": "Bearer tok"}
+    st, h, raw = req("GET", "/v1/status", body=body, headers={**hdrs_empty, "Content-Length": "1"})
+    assert st == 401
+    _resp_sig(secret, "GET", "/v1/status", h, raw)
+    tampered = {**hdrs, "X-NW-Req-Sig": hdrs["X-NW-Req-Sig"][:-1] + ("0" if hdrs["X-NW-Req-Sig"][-1] != "0" else "1")}
+    st, h, raw = req("GET", "/v1/status", headers=tampered)
+    assert st == 401
+    _resp_sig(secret, "GET", "/v1/status", h, raw)
+    post_body = b"!"
+    post_hdrs = {**F.request_headers(secret, "POST", "/v1/status", post_body, now=NOW), "Authorization": "Bearer tok",
+                 "Content-Length": "1"}
+    st, h, raw = req("POST", "/v1/status", body=b"?", headers=post_hdrs)
+    assert st == 401
+    _resp_sig(secret, "POST", "/v1/status", h, raw)
+    post_hdrs = {**F.request_headers(secret, "POST", "/v1/status", b"", now=NOW), "Authorization": "Bearer tok"}
+    st, h, raw = req("POST", "/v1/status", headers=post_hdrs)
+    assert st == 405
+    _resp_sig(secret, "POST", "/v1/status", h, raw)
+    err405 = json.dumps({"error": "method_not_allowed"}, separators=(",", ":")).encode()
+    for method in ("HEAD", "PATCH"):
+        m_hdrs = {**F.request_headers(secret, method, "/v1/status", b"", now=NOW), "Authorization": "Bearer tok"}
+        st, h, raw = req(method, "/v1/status", headers=m_hdrs)
+        assert st == 405
+        _resp_sig(secret, method, "/v1/status", h, err405 if method == "HEAD" else raw)
+    get_hdrs = {**F.request_headers(secret, "GET", "/nope", b"", now=NOW), "Authorization": "Bearer tok"}
+    st, h, raw = req("GET", "/nope", headers=get_hdrs)
     assert st == 404
+    _resp_sig(secret, "GET", "/nope", h, raw)
+    patch_hdrs = {**F.request_headers(secret, "PATCH", "/nope", b"", now=NOW), "Authorization": "Bearer tok"}
+    st, h, raw = req("PATCH", "/nope", headers=patch_hdrs)
+    assert st == 404
+    _resp_sig(secret, "PATCH", "/nope", h, raw)
+    rev_hdrs = {**F.request_headers(secret, "POST", "/v1/revoke", b"", now=NOW), "Authorization": "Bearer tok"}
+    st, h, raw = req("POST", "/v1/revoke", headers=rev_hdrs)
+    assert st == 404
+    _resp_sig(secret, "POST", "/v1/revoke", h, raw)
     srv.shutdown()
 
 
 def test_hubclient_rejects_bad_responses(tmp_path, monkeypatch):
+    import http.server
     import time
+
     monkeypatch.setattr(time, "time", lambda: NOW)
     hub = _cfg(tmp_path, "hub")
     host = _cfg(tmp_path, "host")
-    _add_and_enrol(host, hub, monkeypatch)
+    blob = _add_and_enrol(host, hub, monkeypatch)
     srv, url = _serve(host)
     _point_hub(hub, "box", url)
     rec = H.load(hub)[0]
+    secret = blob["secret"]
     client = F.HubClient(rec, hub, now=NOW)
     assert client.CONNECT_TIMEOUT == 2 and client.READ_TIMEOUT == 2
     assert client.get_json("/v1/status")["schema"] == "nw.federation.status.v1"
     rec2 = {**rec, "url": rec["url"] + "/"}
     F.HubClient(rec2, hub, now=NOW).get_json("/v1/status")
     with pytest.raises(ConnectionError):
-        F.HubClient(rec, hub, now=NOW + 121).get_json("/v1/status")
-    F.HubClient(rec, hub, now=NOW + 120).get_json("/v1/status")
-    with pytest.raises(ConnectionError):
         F.HubClient(rec, hub, now=NOW).request("GET", "/v1/status-not-really")
+
+    bad_mode = ["unsigned"]
+
+    class _Bad(http.server.BaseHTTPRequestHandler):
+        def log_message(self, *a):
+            pass
+
+        def do_GET(self):
+            body = b'{"schema":"nw.federation.status.v1","projects":[],"campaigns":[]}'
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            if bad_mode[0] == "tampered":
+                hdrs = F.response_headers(secret, "GET", "/v1/status", body, now=NOW)
+                self.send_header("X-NW-Sig-Ts", hdrs["X-NW-Sig-Ts"])
+                self.send_header("X-NW-Sig", hdrs["X-NW-Sig"])
+                body = body[:20] + bytes([body[20] ^ 0x01]) + body[21:]
+            elif bad_mode[0] == "skew121":
+                hdrs = F.response_headers(secret, "GET", "/v1/status", body, now=NOW)
+                self.send_header("X-NW-Sig-Ts", hdrs["X-NW-Sig-Ts"])
+                self.send_header("X-NW-Sig", hdrs["X-NW-Sig"])
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+    bad_srv = http.server.ThreadingHTTPServer(("127.0.0.1", 0), _Bad)
+    th = threading.Thread(target=bad_srv.serve_forever, kwargs={"poll_interval": 0.05}, daemon=True)
+    th.start()
+    bad_url = f"http://127.0.0.1:{bad_srv.server_address[1]}"
+    bad_rec = {**rec, "url": bad_url}
+    with pytest.raises(ConnectionError):
+        F.HubClient(bad_rec, hub, now=NOW).get_json("/v1/status")
+    bad_mode[0] = "tampered"
+    with pytest.raises(ConnectionError):
+        F.HubClient(bad_rec, hub, now=NOW).get_json("/v1/status")
+    bad_mode[0] = "skew121"
+    with pytest.raises(ConnectionError):
+        F.HubClient(bad_rec, hub, now=NOW + 121).get_json("/v1/status")
+    F.HubClient(rec, hub, now=NOW + 120).get_json("/v1/status")
+    bad_srv.shutdown()
     srv.shutdown()
 
 
@@ -319,17 +468,34 @@ def test_status_maps_queue_payload_items(tmp_path, monkeypatch):
     _campaign(host, repo, "SPEC-2", "ABANDONED", project="P2")
     F.write_federation(host, {"hub_name": "h", "host_name": "box", "token": "t", "secret": "abc"})
     srv, _ = _serve(host)
+    payload = Q.queue_payload(host)
     doc = FH.status_document(host)
     assert doc["schema"] == "nw.federation.status.v1"
-    assert len(doc["campaigns"]) == 1
-    assert doc["campaigns"][0]["campaign"] == "SPEC-1"
-    assert doc["projects"] == ["P1"]
-    conn = http.client.HTTPConnection("127.0.0.1", srv.server_address[1])
+    want_items = [
+        {k: item.get(k) for k in ("campaign", "project", "state", "spec_id", "kind")}
+        for item in payload["items"]
+    ]
+    assert doc["campaigns"] == want_items
+    assert doc["projects"] == sorted({i["project"] for i in want_items if i.get("project")})
+    port = srv.server_address[1]
+    conn = http.client.HTTPConnection("127.0.0.1", port)
+    st_hdrs = {**F.request_headers("abc", "GET", "/v1/status", b"", now=NOW), "Authorization": "Bearer t"}
+    conn.request("GET", "/v1/status", headers=st_hdrs)
+    resp = conn.getresponse()
+    raw = resp.read()
+    assert resp.status == 200
+    assert resp.getheader("Content-Type") == "application/json"
+    assert json.loads(raw) == doc
+    conn = http.client.HTTPConnection("127.0.0.1", port)
     hdrs = {**F.request_headers("abc", "GET", "/v1/lease", b"", now=NOW), "Authorization": "Bearer t"}
     conn.request("GET", "/v1/lease", headers=hdrs)
-    assert conn.getresponse().status == 404
+    resp = conn.getresponse()
+    lease_raw = resp.read()
+    lease_hdrs = dict(resp.getheaders())
+    assert resp.status == 404
+    _resp_sig("abc", "GET", "/v1/lease", lease_hdrs, lease_raw)
+    assert not isinstance(srv, PJ.PullServer)
     srv.shutdown()
-    assert not any("check_leases" in (t.name or "") for t in threading.enumerate())
 
 
 def test_bind_and_serve_flags(tmp_path, monkeypatch):
@@ -344,42 +510,97 @@ def test_bind_and_serve_flags(tmp_path, monkeypatch):
     monkeypatch.setattr("nightwright.cli.load_config", lambda: host)
     assert CliRunner().invoke(cli, ["serve", "--federate", "--client-ca", "/x"]).exit_code != 0
     assert CliRunner().invoke(cli, ["serve", "--jobs", "--federate"]).exit_code != 0
+    assert CliRunner().invoke(cli, ["serve", "--federate", "--tls-cert", "/x.pem"]).exit_code != 0
+    def puff(self, *a, **kw):
+        raise KeyboardInterrupt()
+
+    monkeypatch.setattr(FH.FederateServer, "serve_forever", puff)
+    r = CliRunner().invoke(cli, ["serve", "--federate", "--bind", "127.0.0.1:0"])
+    assert r.exit_code == 0
+    assert "nw serve: federation on" in r.stderr
 
 
 def test_check_overlap_unreachable_and_disabled(tmp_path, monkeypatch):
     import time
     monkeypatch.setattr(time, "time", lambda: NOW)
     hub = _cfg(tmp_path, "hub")
+    empty = _cfg(tmp_path, "empty")
+    empty["config_dir"] = hub["config_dir"]
+    empty["data_dir"] = hub["data_dir"]
+    assert _invoke(empty, monkeypatch, "check").exit_code == 0
+    assert not H.path(hub).exists()
+
     repo = make_repo(tmp_path)
     hub_full = make_cfg(tmp_path, repo, script(tmp_path, []))
     hub_full["config_dir"] = hub["config_dir"]
     hub_full["data_dir"] = hub["data_dir"]
     _campaign(hub_full, repo, "HUB-C", "QUEUED", project="Shared")
-    assert _invoke(hub_full, monkeypatch, "list").exit_code == 0
-    _invoke(hub_full, monkeypatch, "add", "a", "--url", "http://127.0.0.1:9")
-    r_bad = _invoke(hub_full, monkeypatch, "check")
-    assert r_bad.exit_code == 1 and "unreachable" in r_bad.output
-    _invoke(hub_full, monkeypatch, "off", "a")
-    assert "a off" in _invoke(hub_full, monkeypatch, "check").output
-    assert _invoke(hub_full, monkeypatch, "check").exit_code == 0
+
+    def _host_cfg(tag):
+        sub = tmp_path / tag
+        sub.mkdir()
+        return make_cfg(sub, repo, script(sub, []))
+
+    host_a = _host_cfg("ha")
+    host_b = _host_cfg("hb")
+    _campaign(host_a, repo, "A-C", "QUEUED", project="Both")
+    _campaign(host_b, repo, "B-C", "QUEUED", project="Both")
+    _campaign(host_a, repo, "A2", "QUEUED", project="OnlyA")
+    _campaign(host_a, repo, "SA", "QUEUED", project="Shared")
+    blob_a = _add_and_enrol(host_a, hub_full, monkeypatch, name="a")
+    blob_b = _add_and_enrol(host_b, hub_full, monkeypatch, name="b")
+    srv_a, url_a = _serve(host_a)
+    srv_b, url_b = _serve(host_b)
+    _point_hub(hub_full, "a", url_a)
+    _point_hub(hub_full, "b", url_b)
+    r_overlap = _invoke(hub_full, monkeypatch, "check")
+    assert r_overlap.exit_code == 1
+    assert "project Both on a and b" in r_overlap.output
+    assert "project Shared on hub and a" in r_overlap.output or "project Shared on hub and b" in r_overlap.output
+    rec_a = H.find(H.load(hub_full), "a")
+    assert rec_a["status_cache"] and rec_a["status_cache"]["projects"]
+    srv_a.shutdown()
+    srv_b.shutdown()
+
+    _invoke(hub_full, monkeypatch, "add", "dead", "--url", "http://127.0.0.1:9")
+    cache = {"fetched_at": "2020-01-01T00:00:00+00:00", "projects": ["old"], "campaigns": []}
+
+    def plant(recs):
+        H.find(recs, "dead")["status_cache"] = cache
+
+    H.update(hub_full, plant)
+    snap = json.dumps(H.find(H.load(hub_full), "dead")["status_cache"], sort_keys=True)
+    r_dead = _invoke(hub_full, monkeypatch, "check")
+    assert r_dead.exit_code == 1 and "unreachable" in r_dead.output
+    assert json.dumps(H.find(H.load(hub_full), "dead")["status_cache"], sort_keys=True) == snap
+
+    _invoke(hub_full, monkeypatch, "off", "b")
+    _invoke(hub_full, monkeypatch, "off", "dead")
+
+    def plant_disabled(recs):
+        H.find(recs, "a")["enabled"] = False
+        H.find(recs, "a")["status_cache"] = {"fetched_at": "x", "projects": ["Shared"], "campaigns": []}
+
+    H.update(hub_full, plant_disabled)
+    r_off = _invoke(hub_full, monkeypatch, "check")
+    assert r_off.exit_code == 0
+    assert "a off" in r_off.output
 
 
 def test_hub_modules_do_not_import_queue():
     root = Path(__file__).resolve().parents[1] / "src" / "nightwright" / "agentic"
-    banned = {"hosts.py", "federation.py", "cli_hosts.py"}
-    for name in banned:
-        tree = ast.parse((root / name).read_text())
-        for node in ast.walk(tree):
-            if isinstance(node, ast.Import):
-                for alias in node.names:
-                    assert alias.name.split(".")[0] != "queue"
-            if isinstance(node, ast.ImportFrom) and node.module:
-                assert node.module.split(".")[0] != "queue"
-    fh = ast.parse((root / "federation_host.py").read_text())
-    calls = [n for n in ast.walk(fh) if isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute)
-             and n.func.attr == "queue_payload"]
-    assert len(calls) == 1
-    assert "subprocess" not in (root / "federation_host.py").read_text()
+    for name in ("hosts.py", "federation.py", "cli_hosts.py"):
+        text = (root / name).read_text()
+        assert not _queue_import_violations(text), name
+    fh_text = (root / "federation_host.py").read_text()
+    attrs = set()
+    for node in ast.walk(ast.parse(fh_text)):
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute):
+            if isinstance(node.func.value, ast.Name) and node.func.value.id == "Q":
+                attrs.add(node.func.attr)
+    assert attrs == {"queue_payload"}
+    assert _queue_import_violations("from . import queue as Q\n\ndef f():\n    Q.park()\n")
+    assert "subprocess" not in fh_text
 
 
 def test_inert_without_registry_files(tmp_path, monkeypatch):
