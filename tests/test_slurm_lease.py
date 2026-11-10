@@ -11,6 +11,7 @@ import threading
 import time
 
 import pytest
+import waits
 
 from nightwright.agentic import gates as G
 from nightwright.agentic import remote_gates as RG
@@ -45,7 +46,7 @@ def test_an_expired_lease_does_not_cancel_a_lease_free_job(tmp_path):
         assert not cancel.wait(8 * WJ.WATCH_TICK_S)
     finally:
         stop.set()
-        t.join(10)
+        waits.join(t)
     assert not t.is_alive()
 
 
@@ -55,7 +56,7 @@ def test_the_local_executor_still_cancels_on_an_expired_lease(tmp_path):
         assert cancel.wait(30)
     finally:
         stop.set()
-        t.join(10)
+        waits.join(t)
         G.reset()                       # `_watch` called `terminate_all` (a sticky stop)
 
 
