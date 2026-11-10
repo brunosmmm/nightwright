@@ -1,7 +1,7 @@
 ---
 id: SPEC-0509
 title: "Gate commands size their parallelism from the job's allocation (NW_GATE_CPUS / NW_GATE_MEM_MB), with a config warning for nproc and -n auto"
-status: in-progress
+status: done
 owner: user
 created: 2026-11-09
 updated: 2026-11-10
@@ -84,8 +84,8 @@ add a non-fatal config warning for `-n auto`, `nproc`, `$(getconf _NPROCESSORS_O
       fixed Slurm allowlist (2026-11-10; real check after landing pending).
 - [x] nightwright's pytest gates size `-n` from `NW_GATE_CPUS`.
 - [x] A gate cmd containing `-n auto` or `nproc` yields a config warning, not an error.
-- [ ] The jerome outbound requirements are recorded (this Design) and exported when the jerome
-      spec is written.
+- [x] The jerome outbound requirements are recorded (this Design) and exported when the jerome
+      spec is written. (JEROME-0022, exported and landed on jerome main 706715a1.)
 
 ## Test plan
 
@@ -190,8 +190,8 @@ executor behaves as before. Supersedes nothing.
 
 ## Definition of done
 
-- [ ] Acceptance criteria all met.
-- [ ] Test plan executed; affected tests pass; manual step performed and noted.
+- [x] Acceptance criteria all met.
+- [x] Test plan executed; affected tests pass; manual step performed and noted.
 - [x] No regressions.
 - [x] Spec body updated to match what shipped.
 - [x] `docs/LEDGER.md` updated (status + date).
@@ -205,3 +205,13 @@ executor behaves as before. Supersedes nothing.
 ## Open questions
 
 - None.
+
+**Real-box verification (2026-11-10, box on `executor: slurm`, worker build b1:8febe6e86):**
+- `nw gate run --cmd` GATEJOB-1711 ran as Slurm job 192 in `nw-gatejob`, inside the job cgroup
+  (`slurmstepd.scope/.../step_batch`), and printed `SLURM_JOB_ID=192 NW_GATE_CPUS=4 NW_GATE_MEM_MB=3072`
+  with `nproc=4`: a 3-cpu request granted 4 (whole 2-thread cores), and the gate sees the grant.
+- xdist header under Slurm: the campaign gates started after the update (SPEC-0529 gate 007, IDEA-1160
+  gate 008, IDEA-1162 gate 009, IDEA-1164 gate 008, SPEC-0476 gate 020) all run `pytest -q -x -n 3`,
+  i.e. NW_GATE_CPUS 4 - 1.
+- jerome: JEROME-0022 landed on jerome main (706715a1); cargo.sh's Slurm path depends on `SLURM_JOB_ID`,
+  which worker gates now receive (990e45e3).
