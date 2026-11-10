@@ -1,7 +1,7 @@
 ---
 id: SPEC-0510
 title: "Slurm executor on the current box: verify the install, submit worker jobs with sbatch, map Slurm state, cancel with scancel"
-status: accepted
+status: in-progress
 owner: user
 created: 2026-11-09
 updated: 2026-11-09
@@ -80,9 +80,17 @@ State is merged from `squeue --json`, then `scontrol show job --json`, then (wit
 | 9 | `sacct -j <id>` | with `accounting_storage/none`: an error saying accounting is disabled (recorded; SPEC-0514 depends on slurmdbd) |
 | 10 | `scontrol show licenses` | `jerome_target` Total=3 once the human adds `Licenses=jerome_target:3` (root, one line in `slurm.conf`, `scontrol reconfigure`) |
 
-The smoke subcommand: `nw worker slurm-check [--json]` (added to the forced-command grammar,
-no arguments) runs checks 1, 3-5, 7 and 8 as the `nw` user and prints pass/fail per check;
-`nw workers check box --slurm` calls it. It is what proves "the nw user can submit".
+The smoke subcommand: `nw worker slurm-check [--json]` (added to the forced-command grammar;
+`--json` is its only argument) runs checks 1, 3-5, 7, 8 and 10 as the calling user (on the box
+over SSH: the `nw` user) and prints pass/fail per check (`nw.worker.slurm_check.v1`, exit 1 on a
+failure); `nw workers check box --slurm` calls it. It is what proves "the nw user can submit".
+As shipped, check 7 reads the smallest numeric `memory.max` walking up from the task's cgroup:
+Slurm 26.05 names the job cgroup `slurmstepd.scope/<token>/step_batch/user/task_0` (not
+`job_<id>`), and the limit sits on the job and `user` levels, not on the task's own.
+
+**Opt-in.** `local` stays the default on every host; only a worker host whose own config sets
+`agentic.workers.executor: slurm` submits to Slurm (the coordinator never chooses; a job keeps
+the executor that started it, SPEC-0503).
 
 **Worker config** (worker host's `config.yaml`):
 
@@ -91,60 +99,102 @@ agentic:
   workers:
     executor: slurm
   slurm:
-    conf: /etc/slurm-llnl/slurm.conf   # exported as SLURM_CONF to every Slurm CLI call
-    partition: nw
+    conf: /etc/slurm-llnl/slurm.conf   # exported as SLURM_CONF to every Slurm CLI call (null: inherit)
+    partition: null                     # null: Slurm's default partition (the box: nw-gatejob)
     bin_dir: null                       # null: PATH
     time_margin_s: 300
-    max_time_s: 14400                   # the partition MaxTime; longer requests are clamped + warned
+    max_time_s: 14400                   # also capped by the partition's MaxTime; clamped + warned
+    cache_s: 2                          # one squeue/scontrol answer serves readers this long
+    call_timeout_s: 30                  # every Slurm CLI call is bounded
+    cancel_grace_s: 60                  # a cancelled job still RUNNING after this is scancel'ed
 ```
 
 **Submit** (`SlurmExecutor.start`): after SPEC-0503's claim/spool, run
 
 ```
 sbatch --parsable --job-name=<job_id> --comment='{"campaign":…,"seq":…,"attempt":…,"kind":…,"requester":…}'
-  -p nw --cpus-per-task=<cpus> --mem=<mem_mb>M --time=<ceil((time_s+margin)/60)>
-  [-L jerome_target:1]            # only licenses `scontrol show licenses` defines; others dropped + warning
+  [--partition=<p>] --cpus-per-task=<cpus> --mem=<mem_mb>M --time=<ceil((time_s+margin)/60)>
+  [--licenses=jerome_target:1]    # only licenses `scontrol show licenses` defines; others dropped + warning
   --chdir=<jobdir> --output=<jobdir>/slurm.out --open-mode=append
-  --requeue --signal=B:TERM@60 --export=ALL,NW_DATA_DIR=…,NW_CONFIG_DIR=…
-  --wrap 'exec <own_nw> worker run-job <jobdir>'
+  --requeue --signal=B:TERM@60 --export=ALL
+  --wrap 'export NW_JOB_ATTEMPT=$((${SLURM_RESTART_COUNT:-0}+1)); exec <own_nw> worker run-job <jobdir>'
 ```
+
+`NW_DATA_DIR`, `NW_CONFIG_DIR`, `SLURM_CONF` and `NW_WORKER_FINISH_GC=0` are set in sbatch's own
+environment, which `--export=ALL` hands the job (comma-safe, unlike values inside `--export`).
+The job's detached finish gc is off (Slurm would kill it with the job's cgroup); `start` starts
+that gc instead, outside any job.
+
+**A request that can never be scheduled is clamped, not submitted as is** (decided with the
+jerome steward's input: jerome's whole-box wish of 12 cpus / 9G+ can never fit nw-gatejob's
+`MaxCPUsPerNode=8` or the node's 10 usable cpus, and would stay PENDING forever with reason
+`PartitionConfig`/`Resources`). `limits()` reads `scontrol show partition --json` and
+`scontrol show node --json` once per process: cpus are capped at min(partition
+`MaxCPUsPerNode`, the largest partition node's `effective_cpus`, i.e. CoreSpecCount taken off),
+memory at min(partition `MaxMemPerNode` when set, the node's `RealMemory - MemSpecLimit`), time
+at min(`max_time_s`, partition `MaxTime`). Each clamp is a warning on stderr and in `job.json`
+`slurm_warnings`; the gates size from the clamped allocation (SPEC-0509). Clamp over refusal:
+a smaller allocation still gates (slower) where a refusal would fall back to a local gate that
+competes with the box anyway; the warning keeps the request's owner informed. Unreadable limits
+clamp nothing.
 
 `<own_nw>` is `worker.own_nw()` (the `nw` user's uv tool install, sudo-free). The Slurm job id
 goes to `spawn.json` (`{"slurm_job_id": N}`) and `job.json` (`executor: "slurm"`,
 `slurm_job_id`). `sbatch` failure -> `_unclaim` with `stage: "spawn"`, its stderr as error,
 `retryable: true` when it says the controller is unreachable. `run-job` takes `job.lock` itself
-(`worker_job._take_lock`), and its attempt is `SLURM_RESTART_COUNT + 1` (SPEC-0503).
+(`worker_job._take_lock`; inside a Slurm job it waits up to 60 s for it, since submit or a reader
+may hold it for a moment, and it never re-execs into its own session: the cgroup tracks it and
+Slurm's signals must reach it), and its attempt is `SLURM_RESTART_COUNT + 1` (SPEC-0503).
+Inside a Slurm job SIGTERM is a cancel (gates ended, `done` interrupted), like the `cancel` file.
 
 **State** (`SlurmExecutor.state`), cached per call:
 
 | Slurm | nw state | extra |
 |---|---|---|
-| PENDING (reason R) | `accepted` | `pending_reason: R`; attach/poll emit `slot_wait` frames `{waited_s, reason: R}` (an existing frame type; the coordinator already counts it as worker wait) |
+| PENDING (reason R) | `accepted` | any reader (attach, poll, jobs, the sync follower) appends a numbered `slot_wait` frame `{waited_s, reason: R, slurm_job_id}` to `frames.jsonl`: the first at once, then every `NW_WORKER_SLOT_WAIT_EVENT_S` (30 s) or on a new reason; only while it holds `job.lock` (no job process writes frames then) |
 | CONFIGURING, RUNNING, COMPLETING, SUSPENDED | `running` | heartbeat age is not used for lost detection |
 | COMPLETED / FAILED / CANCELLED with `result.json` | from `result.json` (today) | |
-| any end state without `result.json` (OUT_OF_MEMORY, TIMEOUT, NODE_FAIL, PREEMPTED, FAILED, BOOT_FAIL, DEADLINE, CANCELLED) | `error` | the reader writes one final `error` frame `{stage: "slurm", slurm_state, exit_code, infra: true}` into `frames.jsonl` (under `jobs_lock`, once), so `attach` ends normally; SPEC-0515 decides retries |
+| any end state without `result.json` (OUT_OF_MEMORY, TIMEOUT, NODE_FAIL, PREEMPTED, FAILED, BOOT_FAIL, DEADLINE, CANCELLED, COMPLETED) | `error` | the reader writes one final `error` frame `{stage: "slurm", slurm_state, slurm_job_id, exit_code, signal, infra: true}` and `result.json` (`slurm_state`), once, under `job.lock` taken without waiting (a holder is the job process still finishing: the job reads `running` until it lets go), so `attach` ends normally; SPEC-0515 decides retries. A CANCELLED job with a `cancel` file gets `done` `{ok: false, interrupted: true}` instead |
 | unknown to squeue and scontrol (past `MinJobAge`), no result | `lost` | as today |
+| a Slurm CLI that cannot answer (controller down, timeout) | `running` (has `proc.json`) / `accepted` | never `lost`: gc would reap a job Slurm still runs |
 
-Lookup order: `squeue --json -j N` -> `scontrol show job N --json` -> `sacct --json -j N` only
-when `AccountingStorageType` is not `none`.
+Lookup order: `squeue --json -j N` -> `scontrol show job N --json` -> `sacct --json -j N`
+(tried whenever the first two do not know the job; without slurmdbd it says accounting is
+disabled and the job is unknown — simpler than reading `AccountingStorageType`, same result).
 
-**Cancel**: write the `cancel` file (run-job's `_watch` ends gates gracefully) and run
-`scancel N` (Slurm sends TERM, then KILL after `KillWait`). **Jobs**: `squeue --json -u nw`
-joined with job dirs by `slurm_job_id`.
+**Cancel**: write the `cancel` file (run-job's `_watch` ends gates gracefully). A PENDING job is
+`scancel N` (nothing runs yet); a running one gets `scancel --batch --signal=TERM N` (TERM to
+`run-job` only, which cancels like the file), not a plain `scancel`: that TERMs every process of
+the cgroup at once, and a gate killed before `run-job` sets its cancel flag would be recorded as
+a red gate rather than an interrupted one. Backstop: a job still RUNNING `cancel_grace_s` after
+its `cancel` file is `scancel N`ed once by the next reader. **Jobs**: per job dir, through
+`state` (a finished job never calls Slurm); no bulk `squeue -u` join (not needed at this size).
+
+**What the coordinator sees.** A Slurm job's `started` frame carries `slot_wait_s` = its time in
+Slurm's queue (sbatch to `run-job` start), so the gate record's worker wait is the Slurm wait.
+The last `slot_wait.reason` is stored live on the remote job record (`wait_reason`) and in the
+gate record (`wait_reason`, only when a reason was seen; sync and async paths).
 
 **Sync `gate-job` under Slurm**: read header + bundle exactly as today into a claimed job dir
-(same validation), `start` it as above, then follow `frames.jsonl` to stdout with the
-`attach` reader; stdin EOF or a signal -> cancel; exit code as today. The coordinator side
-(`remote_gates.run_detached`, `_dispatch`) is unchanged.
+(same validation: it runs `worker_job.submit` on the header and the rest of stdin), `start` it
+as above, then follow `frames.jsonl` to stdout with the `attach` reader; stdin EOF, a closed
+stdout or a signal -> `worker_job.cancel`, then follow the interrupted ending for at most
+150 s; exit code as today. A persona header or an existing job id is refused as the local
+`gate-job` refuses it. The coordinator's sync `started` deadline (`slot_wait_s`, 300 s) still
+applies: a job Slurm keeps pending longer is given up by the coordinator (stdin closes, the
+job is scancel'ed) and the gate falls back as today.
 
 **Admission**: `host_slot` is a no-op under Slurm. On the coordinator, the box's registry
 `slots` is raised to 20 at rollout (`nw workers set box --slots 20`) so jobs queue in Slurm,
 where `squeue` shows them, not in nw's slot wait. The queue does not set SPEC-0311's
 `gate_exclusive` marker when the campaign's gate pool is a worker whose cached info reports
-`executor:slurm` (a timeout re-gate is a normal gate; Slurm guarantees its allocation).
+`executor:slurm` (a timeout re-gate is a normal gate; Slurm guarantees its allocation). As
+shipped: the check is on the worker the timed-out run ran on (`GateRun.worker`,
+`workers.runs_slurm`).
 
 **Test fixture** `tests/slurm_fake.py`: writes executable fakes `sbatch`, `squeue`, `scontrol`,
-`scancel`, `sacct`, `sstat` into a tmp dir put first on `PATH`, backed by a JSON state file; the
+`scancel`, `sacct`, `sinfo`, `sstat` into a tmp dir put first on `PATH`, backed by a JSON state
+file (`scontrol show partition|node --json` serve the box's recorded output); the
 test drives transitions (`fake.pending(id, "Resources")`, `fake.run(id)` which executes the
 `--wrap` command, `fake.end(id, "OUT_OF_MEMORY")`); it records every argv for assertions. Used
 by SPEC-0508 and SPEC-0511..0515.

@@ -446,7 +446,9 @@ class SlurmExecutor:
         if info is None:
             return "lost", WJ._heartbeat_age(job, now, proc)
         if info["state"] in PENDING:
-            _pending(job, jid, info["reason"] or "Pending", now)
+            # a job the scheduler has not looked at yet says reason `None`: no frame for it
+            if info["reason"] and info["reason"] != "None":
+                _pending(job, jid, info["reason"], now)
             return "accepted", None
         if info["state"] in RUNNING:
             _backstop(ss, job, jid, now)

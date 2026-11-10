@@ -160,6 +160,8 @@ def test_pending_is_accepted_with_slot_wait_frames_carrying_the_reason(wenv, fak
     cfg = _cfg(wenv)
     assert _submit(cfg, _plain("j-pend"))[0] == 0
     job, jid = _job_dir(wenv, "j-pend"), fake.ids()[0]
+    fake.pending(jid, "None")                           # not yet evaluated: no frame
+    assert _state(cfg, job) == "accepted" and _frames(job) == []
     fake.pending(jid, "Resources")
     assert _state(cfg, job) == "accepted"
     assert _state(cfg, job) == "accepted"               # within the interval: no second frame
