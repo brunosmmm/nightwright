@@ -505,6 +505,12 @@ the guard.
 - `python3 tools/spec_lint.py --write-ledger && python3 tools/spec_lint.py` — exit 0.
 - Full suite left to queue gating.
 
+### Test record (2026-11-10, human review loop 0)
+
+- `uv run pytest tests/test_idea_link.py -q` — 30 passed (ls-tree mode 120000 on symlink,
+  exact `created`/`updated` UTC lines, empty `repo_path` leaves ref and `:REQ_BASE:` unchanged).
+- Full suite left to queue gating.
+
 ### As shipped (2026-11-09, review loop 2)
 
 - `nw-backlog` tree rebuild uses `git ls-tree --full-tree -z` (one level) / `git mktree -z`, raw path bytes, and raises on unparsable entries; keeps each entry's mode and object type.

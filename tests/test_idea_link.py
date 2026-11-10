@@ -24,6 +24,9 @@ VEC2 = "a0d1682323b9536aa06d0ce3c5a21ab22ac8f0be7cf24906aa88df17bc50c45d"
 VEC3 = "f8e7c032715c4691e8f0e4bfa4fae7b80f449f9fcae4c077b00d1bb1dd9fa654"
 _REQ_RE = re.compile(r"^REQ-[0-9A-HJKMNP-TV-Z]{8}$")
 _NUL = "0000000000000000000000000000000000000000"
+_RE_UTC_INSTANT_LINE = re.compile(
+    r"^(created|updated): \d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$"
+)
 _REAL_SUBPROCESS_RUN = subprocess.run
 
 
@@ -105,6 +108,11 @@ def _show_backlog(repo: Path, path: str) -> bytes:
         check=True,
         capture_output=True,
     ).stdout
+
+
+def _ls_tree_mode(repo: Path, treeish: str, path: str) -> str:
+    line = _git(repo, "ls-tree", treeish, path).strip()
+    return line.split()[0]
 
 
 def _backlog_tip(repo: Path) -> str | None:
@@ -230,6 +238,10 @@ def test_request_file_layout_and_invalid_file():
         updated_by="N <e>",
     )
     assert "created: 2026-11-08T12:00:00Z\n" in again.decode()
+    assert "updated: 2026-11-08T12:00:00Z\n" in again.decode()
+    for line in yaml_lines:
+        if line.startswith("created:") or line.startswith("updated:"):
+            assert _RE_UTC_INSTANT_LINE.match(line)
 
     assert split_frontmatter("---\na: b\n---") == (None, "---\na: b\n---")
 
@@ -290,10 +302,16 @@ def test_publish_refuses_without_a_repo(tmp_path, monkeypatch):
     cfg2["outbox_targets"] = {"Unknown": {"repo_path": ""}}
     monkeypatch.setattr("nightwright.cli.load_config", lambda: cfg2)
     idea2 = _seed_idea(monkeypatch, cfg2, project="Unknown")
+    ref_before = _backlog_tip(repo)
+    req_base_before = W.resolve_selector(cfg2, idea2.properties["ID"]).properties.get("REQ_BASE")
     r = CliRunner().invoke(cli, ["idea", "publish", idea2.properties["ID"]])
     assert r.exit_code != 0
     assert "cannot resolve a repo for project " in r.output and "Unknown" in r.output
     assert not W.resolve_selector(cfg2, idea2.properties["ID"]).properties.get("REQ")
+    assert _backlog_tip(repo) == ref_before
+    assert W.resolve_selector(cfg2, idea2.properties["ID"]).properties.get("REQ_BASE") == (
+        req_base_before
+    )
 
     bad = _init_repo(tmp_path / "bad")
     subprocess.run(["git", "-C", str(bad), "config", "--local", "--unset", "user.name"],
@@ -423,7 +441,11 @@ def test_publish_links_without_changing_state_or_sections(tmp_path, monkeypatch)
     assert "CLOCK:" in after
     assert f"* INCUBATE {headline_before} :session-triage:" in after
     blob = _show_backlog(repo, f"{req}.md")
-    fm, body = split_frontmatter(blob.decode())
+    blob_text = blob.decode()
+    for line in blob_text.split("---\n", 2)[1].splitlines():
+        if line.startswith("created:") or line.startswith("updated:"):
+            assert _RE_UTC_INSTANT_LINE.match(line)
+    fm, body = split_frontmatter(blob_text)
     assert fm["status"] == "open"
     assert fm["title"] == "Link"
     assert fm["created_by"] == "Test User <test@example.com>"
@@ -1338,6 +1360,7 @@ def test_second_publish_preserves_symlink_and_uses_mktree_missing(tmp_path, monk
         check=True,
     )
     link_sha_before = _git(repo, "rev-parse", "refs/heads/nw-backlog:EXTRA-LINK").strip()
+    assert _ls_tree_mode(repo, "refs/heads/nw-backlog", "EXTRA-LINK") == "120000"
     mktree_argv = []
     real_run = subprocess.run
 
@@ -1350,3 +1373,4 @@ def test_second_publish_preserves_symlink_and_uses_mktree_missing(tmp_path, monk
     assert CliRunner().invoke(cli, ["idea", "publish", b.properties["ID"]]).exit_code == 0
     assert mktree_argv and "--missing" in mktree_argv[0]
     assert _git(repo, "rev-parse", "refs/heads/nw-backlog:EXTRA-LINK").strip() == link_sha_before
+    assert _ls_tree_mode(repo, "refs/heads/nw-backlog", "EXTRA-LINK") == "120000"
