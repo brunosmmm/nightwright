@@ -1,7 +1,7 @@
 ---
 id: SPEC-0504
 title: "Per-gate resource requests in project config, and measured CPU time and peak memory in every gate record"
-status: in-progress
+status: done
 owner: user
 created: 2026-11-09
 updated: 2026-11-09
@@ -144,7 +144,7 @@ payload carries the request to the worker.
   `resources` (the box run `GATEJOB-1466` caught it).
 - **Real binary, done:** this branch's gate runner on the real `spec-lint` gate of this repo:
   `{"request": {"cpus": 1, "mem_mb": 1024}, "used": {"cpu_s": 4.73, "max_rss_mb": 47.9,
-  "wall_s": 4.82}}`. **Pending deploy:** the same check on a campaign's `gates/*.json` from the
+  "wall_s": 4.82}}`. **Done 2026-11-09 23:50 (real box):** campaign gate IDEA-1129-20261109-5a04 `gates/002-pytest-affected.json` has `resources: {request: {cpus: 3, mem_mb: 3072}, used: {cpu_s: 218.9, max_rss_mb: 143.0, rss_scope: max_process, wall_s: 162.9}}`. Note: `max_rss_mb` is the largest single process, not the xdist tree, so tree memory is under-reported until SPEC-0514's cgroup measurement. Earlier note (kept): pending deploy: the same check on a campaign's `gates/*.json` from the
   box (`pytest-affected` in the hundreds of `cpu_s`/MB) needs the coordinator restarted on this
   code and the worker updated (`nw workers update`), not run in this lane.
 
@@ -167,8 +167,8 @@ Additive. Old records simply lack `resources`; readers treat it as optional. Sup
 
 ## Definition of done
 
-- [ ] Acceptance criteria all met.
-- [ ] Test plan executed; affected tests pass; manual step performed and noted.
+- [x] Acceptance criteria all met.
+- [x] Test plan executed; affected tests pass; manual step performed and noted.
 - [x] No regressions.
 - [x] Spec body updated to match what shipped.
 - [x] `docs/LEDGER.md` updated (status + date).

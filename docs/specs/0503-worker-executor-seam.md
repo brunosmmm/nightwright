@@ -1,7 +1,7 @@
 ---
 id: SPEC-0503
 title: "Executor seam on the worker: job start, cancel and slot admission go through a pluggable executor (local = today)"
-status: in-progress
+status: done
 owner: user
 created: 2026-11-09
 updated: 2026-11-09
@@ -161,7 +161,7 @@ class Executor(Protocol):
   attempt refused, lease gating). `tests/test_rich_output_guard.py` names `_gate_job_local`
   and `executors.for_job`. Box: `GATEJOB-1461` (loop tier, green, 1253 tests) and the
   integration/remote affected runs listed below.
-- **Manual verification (real binary): pending deploy.** The box's worker runs the installed
+- **Manual verification (real binary): done 2026-11-09 23:50** after the conductor's `nw workers update box`: `nw workers check box --json` reports `"executor": "local"`, and campaign gates ran end-to-end through the updated worker (e.g. IDEA-1129-20261109-5a04 gate 002 pytest-affected, ok, result and frames consumed by the coordinator unchanged). The worker job dirs are not readable from the coordinator account, so the frames.jsonl comparison was done by the coordinator's successful parse rather than by diffing files. Earlier note (kept for history): pending deploy. The box's worker runs the installed
   build; deploying needs `nw workers update`, which this lane may not run. Done instead:
   `uv run nw worker info --json` from this branch reports `"executor": "local"` and
   `executor:local`. To do after the update: one campaign gate through the forced command,
@@ -186,8 +186,8 @@ Merge; nothing changes until a host sets `executor: slurm` (SPEC-0510). Supersed
 
 ## Definition of done
 
-- [ ] Acceptance criteria all met.
-- [ ] Test plan executed; affected tests pass; manual step performed and noted.
+- [x] Acceptance criteria all met.
+- [x] Test plan executed; affected tests pass; manual step performed and noted.
 - [x] No regressions.
 - [x] Spec body updated to match what shipped.
 - [x] `docs/LEDGER.md` updated (status + date).

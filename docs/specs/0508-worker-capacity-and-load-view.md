@@ -1,7 +1,7 @@
 ---
 id: SPEC-0508
 title: "Worker capacity and load: nw worker info reports cores, memory, load and per-job usage; nw workers list shows them"
-status: in-progress
+status: done
 owner: user
 created: 2026-11-09
 updated: 2026-11-09
@@ -115,7 +115,7 @@ Extend `worker.info` with `capacity` read from `/proc` (local) or from `scontrol
   branch's module piped to `python3`): `proc` -> `cpus 12, mem_total_mb 31955`; `slurm` ->
   `cpus 12, mem_total_mb 31955, alloc_cpus 0, alloc_mem_mb 0`, matching
   `scontrol show node morais-Desktop`. This laptop's `uv run nw worker info --json` reports
-  its own block. **Pending deploy:** `nw workers check box` + `nw workers list` showing the box
+  its own block. **Done 2026-11-09 23:50 (real box):** `nw workers list` shows the box's `cpus load mem` column (`12 0% 44%`), and `nw workers check box` prints `capacity (proc): 12 cpus, load 333%, mem 49% of 31955 MB, 1 running job(s)` with per-job cpu/rss in `--json`. Earlier note (kept): pending deploy: `nw workers check box` + `nw workers list` showing the box
   needs the worker updated (`nw workers update`, not run in this lane); until then the box's
   cached info has no block and the list prints `-`.
 
@@ -138,8 +138,8 @@ Additive; an old worker's info lacks `capacity` and the list prints `-`. Superse
 
 ## Definition of done
 
-- [ ] Acceptance criteria all met.
-- [ ] Test plan executed; affected tests pass; manual step performed and noted.
+- [x] Acceptance criteria all met.
+- [x] Test plan executed; affected tests pass; manual step performed and noted.
 - [x] No regressions.
 - [x] Spec body updated to match what shipped.
 - [x] `docs/LEDGER.md` updated (status + date).
