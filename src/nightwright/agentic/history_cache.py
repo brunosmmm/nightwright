@@ -138,7 +138,17 @@ def _atomic_write_json(path: Path, value) -> None:
 
 
 def _is_tmp(name: str) -> bool:
-    return name.endswith(".tmp") or ".tmp-" in name
+    if name.endswith(".tmp"):
+        return True
+  # atomic-write temps: <logical>.tmp-<pid>-<hex>, not campaign ids containing ".tmp-"
+    i = name.rfind(".tmp-")
+    if i == -1:
+        return False
+    tail = name[i + len(".tmp-") :]
+    if not tail or "." in tail:
+        return False
+    pid_part, _, hex_part = tail.partition("-")
+    return pid_part.isdigit() and len(hex_part) == 8 and all(c in "0123456789abcdef" for c in hex_part)
 
 
 def _file_entry(path: Path) -> dict | None:
@@ -2743,6 +2753,8 @@ def _global_cursor_unchanged(stored: dict, fresh: dict) -> bool:
         if (old.get("inode"), old.get("size"), old.get("mtime_ns")) != (
                 new.get("inode"), new.get("size"), new.get("mtime_ns")):
             return False
+    if (stored.get("dir_present") or {}) != (fresh.get("dir_present") or {}):
+        return False
     return True
 
 

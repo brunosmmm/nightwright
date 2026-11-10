@@ -1,10 +1,10 @@
 ---
 id: SPEC-0472
 title: "History cache for the campaign history layer"
-status: in-progress
+status: done
 owner: user
 created: 2026-11-08
-updated: 2026-11-11
+updated: 2026-11-10
 source_idea: IDEA-1015
 kind: feature
 parent: SPEC-0405
@@ -681,6 +681,14 @@ gaps match `_jsonl`/`_runner_intervals`. `uv run pytest -q tests/test_history_ca
 tests/test_history_scale.py tests/test_cli_campaign_history.py` (82 passed).
 `python3 tools/spec_lint.py --write-ledger` exit 0. Full suite left to gating.
 
+### Test record (2026-11-10, implementer loop 3 of 3, IDEA-1015-faf2, run 066)
+
+`_global_cursor_unchanged` compares `dir_present`; `_is_tmp` matches atomic-write temps
+only; sentinel dir-presence test extended for index refresh, sources, and warm hits.
+`uv run pytest -q tests/test_history_cache.py tests/test_cli_campaign_history.py
+tests/test_history.py tests/test_history_scale.py` (105 passed).
+`python3 tools/spec_lint.py --write-ledger` exit 0. Full suite left to gating.
+
 ### Test record (2026-11-10, implementer loop 3 of 3, IDEA-1015-faf2)
 
 Warm corrupt check stats `campaigns/*.json` cursors instead of parsing; records quiet
@@ -772,6 +780,13 @@ assertions, clone_fixture append contract, schema-id pinning) are follow-up for 
 Loop 2: `_apply_pending_index_writes` survivor recompute + v1 stamp; cold-fill prune before
 merge; orphan temps only under lock; `sources.dir_present` for sentinel/reviews/escalations/mailbox;
 single-pass `_runner_log_snapshot` aligned with pure reader gaps.
+
+### As shipped (2026-11-10, loop 3, run 066)
+
+Loop 3: `_global_cursor_unchanged` treats `dir_present` like other global cursors so empty
+or lock-only sentinel/mailbox/reviews/escalations dirs refresh terminal gaps on
+`history_index`. `_is_tmp` recognizes only `.tmp` suffixes and `.<name>.tmp-<pid>-<hex>`
+atomic-write tails so campaign ids containing `.tmp-` are not unlinked as orphans.
 
 ### As shipped (2026-11-10, loop 0)
 

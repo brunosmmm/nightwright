@@ -217,6 +217,17 @@ def test_tmp_files_ignored(data_dir, cache_dir):
     assert H.history_index(c, now=NOW, cache=True) == H.history_index(c, now=NOW, cache=False)
 
 
+def test_campaign_id_with_tmp_substring_not_orphan(cache_dir):
+    fake_id = "IDEA.tmp-1015-20261108-faf2"
+    v1 = cache_dir / "history" / "v1"
+    path = v1 / "campaigns" / f"{fake_id}.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("{}\n")
+    assert not HC._is_tmp(path.name)
+    HC._unlink_orphan_temps(v1)
+    assert path.is_file()
+
+
 def test_cache_true_missing_cache_dir_gap(data_dir):
     c = cfg(data_dir)
     c["cache_dir"] = ""
@@ -1393,6 +1404,39 @@ def test_sentinel_dir_appears_updates_terminal_gaps(data_dir, cache_dir):
     sent.mkdir()
     (sent / "Meta-Tools.lock").write_text("held\n")
     HC._records_mem.clear()
+    v1 = cache_dir / "history" / "v1"
+    H.history_index(c, now=NOW, cache=True)
+    sources = json.loads((v1 / "sources.json").read_text())
+    assert sources.get("dir_present", {}).get("sentinel") is True
+    assert "sentinel/: missing" not in (sources.get("global_gaps") or [])
+    for row in H.history_index(c, now=NOW, cache=False):
+        if row.get("outcome") not in ("merged", "handed_off", "abandoned"):
+            continue
+        tid = row["campaign"]
+        stored = json.loads((v1 / "campaigns" / f"{tid}.json").read_text())
+        pure = H.campaign_history(c, tid, now=NOW, cache=False)
+        assert {k: v for k, v in stored.items() if k != "generated_at"} == {
+            k: v for k, v in pure.items() if k != "generated_at"
+        }
+        assert "sentinel/: missing" not in stored.get("gaps", [])
+    rec_ino = (v1 / "records.jsonl").stat().st_ino
+    prefix = (data_dir / "agentic" / "campaigns" / cid).resolve().as_posix() + os.sep
+    ledger = (data_dir / "agentic" / "campaigns" / cid / "ledger.jsonl").resolve().as_posix()
+    camp_json = (v1 / "campaigns" / f"{cid}.json").resolve().as_posix()
+    real_open = builtins.open
+
+    def open_ok(file, *args, **kwargs):
+        text = _path_str(file)
+        if text == ledger or text == camp_json or (
+            text.startswith(prefix) and "ledger.jsonl" in text
+        ):
+            raise AssertionError(f"unexpected open {text}")
+        return real_open(file, *args, **kwargs)
+
+    with mock.patch("builtins.open", open_ok):
+        H.campaign_history(c, cid, now=NOW, cache=True)
+        H.history_index(c, now=NOW, cache=True)
+    assert (v1 / "records.jsonl").stat().st_ino == rec_ino
     cached2 = H.campaign_history(c, cid, now=NOW, cache=True)
     pure = H.campaign_history(c, cid, now=NOW, cache=False)
     assert "sentinel/: missing" not in cached2["gaps"]
