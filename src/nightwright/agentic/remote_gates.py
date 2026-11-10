@@ -833,6 +833,11 @@ def _dispatch(worker: dict, header: dict, bundle: Path, cfg, cid, seq: int, stop
     results: list = []
     started, worker_wait = False, 0.0
     wait_reason = None                          # SPEC-0510: Slurm's pending reason, if any
+    # SPEC-0513 (GATEJOB-1671): while the worker reports the job PENDING in Slurm (a
+    # `slot_wait` frame with a `reason`), `slot_wait_s` does not run out: each such frame
+    # re-arms the wait for `started` by `slot_wait_s` + one frame interval, capped at
+    # `max_pending_s` from the first such frame (`pending_cap`, never moved after it)
+    pending_cap, pending_last = None, None
     t0, started_at = time.monotonic(), store.now_iso()
     # the upload (header + bundle) gets its own bound, scaled to the bundle; the wait for
     # `started` is bounded by `slot_wait_s` from the end of the upload
@@ -858,7 +863,7 @@ def _dispatch(worker: dict, header: dict, bundle: Path, cfg, cid, seq: int, stop
             now = time.monotonic()
             if not upload_seen and written.is_set():
                 upload_seen = True
-                if not started:
+                if not started and pending_cap is None:
                     deadline = now + slot_wait_s
             if stop_at is not None and now >= stop_at:
                 grace = 0.0
@@ -869,6 +874,18 @@ def _dispatch(worker: dict, header: dict, bundle: Path, cfg, cid, seq: int, stop
                     raise RemoteFailure("upload", f"the header and {header['bundle_bytes']} B "
                                                   f"bundle were not sent within {upload_s:g}s"
                                                   f"{stderr_tail()}")
+                if not started and pending_cap is not None and now >= pending_cap:
+                    # queueing on a busy box, not a broken link: a distinct stage
+                    raise RemoteFailure("slurm_pending", f"the job was still pending in Slurm "
+                                                         f"({wait_reason}) after "
+                                                         f"{RJ.max_pending_s(cfg):g}s "
+                                                         f"(agentic.slurm.max_pending_s)",
+                                        cooldown=False)
+                if not started and pending_last is not None:
+                    raise RemoteFailure("slot_wait", f"the job left Slurm's queue "
+                                                     f"({wait_reason}) but sent no `started` "
+                                                     f"within {now - pending_last:.0f}s",
+                                        cooldown=False)
                 if not started:
                     raise RemoteFailure("slot_wait", f"the worker held no gate slot after "
                                                      f"{slot_wait_s:g}s", cooldown=False)
@@ -944,6 +961,13 @@ def _dispatch(worker: dict, header: dict, bundle: Path, cfg, cid, seq: int, stop
                                worker_wait)
             elif kind == "slot_wait" and isinstance(frame.get("reason"), str):
                 wait_reason = frame["reason"][:200]     # SPEC-0510: a Slurm job's pending reason
+                if not started:                 # SPEC-0513: pending in Slurm is queueing
+                    pending_last = now = time.monotonic()
+                    if pending_cap is None:
+                        upload_seen = True      # the worker submitted: it has the bundle
+                        pending_cap = now + RJ.max_pending_s(cfg)
+                    deadline = min(pending_cap, max(deadline, now + slot_wait_s
+                                                    + gate_slots.WAIT_EVENT_S))
             # `accepted` and `slot_wait` are progress only
     except RemoteFailure as f:
         grace = min(grace, 2.0)

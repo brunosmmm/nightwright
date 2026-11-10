@@ -56,7 +56,7 @@ def gw(tmp_path, monkeypatch):
             if stop is not None and stop.is_set():
                 return G.GateRun(seq, False, (), "", 0.0, interrupted=True)
         if behaviour["raise"]:
-            raise RG.RemoteFailure("ssh", behaviour["raise"])
+            raise RG.RemoteFailure(behaviour.get("stage") or "ssh", behaviour["raise"])
         gates_dir.mkdir(parents=True, exist_ok=True)
         res = []
         for g in pcfg["gates"]:
@@ -136,6 +136,19 @@ def test_transport_failure_exits_4(gw, monkeypatch):
     assert r.exit_code == 4
     out = json.loads(r.output)
     assert out["status"] == "transport_error" and "connection refused" in out["error"]
+
+
+def test_slurm_pending_past_max_pending_exits_3_not_4(gw, monkeypatch):
+    """SPEC-0513 (GATEJOB-1671): a job still queued in Slurm past `max_pending_s` is a busy box
+    (`unavailable`, exit 3), not a transport failure."""
+    _workers(gw["cfg"], ("box", 4))
+    gw["b"]["stage"] = "slurm_pending"
+    gw["b"]["raise"] = "the job was still pending in Slurm (Resources) after 3s"
+    r = _invoke(gw["cfg"], monkeypatch, "run", "--worktree", str(gw["repo"]), *CMD, "--json")
+    assert r.exit_code == 3
+    out = json.loads(r.output)
+    assert out["status"] == "unavailable"
+    assert out["error"].startswith("box busy on box: the job was still pending in Slurm")
 
 
 def test_slot_wait_timeout_exits_3(gw, monkeypatch):

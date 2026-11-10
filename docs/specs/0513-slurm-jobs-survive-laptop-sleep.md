@@ -75,6 +75,27 @@ As shipped (decided while implementing; details in As shipped below):
   of the wall clock over the monotonic one since the last check (over 30 s) moves `last_seen`
   forward. Checked every attach tick (`_Job.past_deadline`) and in the persona attach/follow
   loops. Without this AC 2 failed for any sleep longer than `worker_ttl_s`.
+- **The synchronous `gate-job` path too** (found live, 2026-11-10, GATEJOB-1671): the rule above
+  covered `_run_async` only. `nw gate run` (and the sentinel, `run_detached`) use the sync path,
+  `remote_gates._dispatch`, whose wait for `started` was a flat `agentic.workers.slot_wait_s`
+  (300 s) from the end of the upload. On `morais-Desktop` under `executor: slurm`, Slurm job 86
+  sat PENDING `Reason=Resources` from 08:38:52 and was cancelled at 08:43:51, exactly 300 s:
+  the coordinator gave up (`transport_error`, exit 4, "the worker held no gate slot after 300s")
+  while Slurm was queueing normally. Fix: in `_dispatch`, every `slot_wait` frame carrying a
+  Slurm `reason` (the sync `gate-job` follows the same `frames.jsonl`, so SPEC-0510's frames
+  arrive here) re-arms the wait for `started` to `now + slot_wait_s + gate_slots.WAIT_EVENT_S`
+  (one worker frame interval of slack), capped at `max_pending_s` from the first such frame
+  (fixed there, never moved, as on the async path). Bound: the same `agentic.slurm.max_pending_s`
+  (default 6 h) rather than a second knob: the sync caller is a process the human can stop, and
+  one setting keeps both paths' "how long may a job queue" identical. The per-frame re-arm (not a
+  flat jump to the cap) keeps a job that left PENDING but never sent `started` bounded by about
+  `slot_wait_s`, not 6 h. Past the cap the failure has its own stage, `slurm_pending` ("the job
+  was still pending in Slurm (<reason>) after Ns (agentic.slurm.max_pending_s)", no cooldown);
+  `nw gate run` reports it as `unavailable` ("box busy on <worker>: ...", exit 3) instead of
+  `transport_error` (exit 4), since a busy box is not a broken link. A job that left Slurm's queue
+  and then sent no `started` stays `slot_wait`, worded "the job left Slurm's queue (<reason>) but
+  sent no `started` within Ns". Frames without a `reason` (the local executor's host-slot wait)
+  change nothing: `slot_wait_s` still applies there.
 
 ## Alternatives considered
 
@@ -117,6 +138,16 @@ the first `started` (`at` + `timeout_s` + `worker_ttl_s`, persisted); `_Job.past
 credits sleep to `last_seen` and replays a job that ended on the worker (`done` or `error`).
 `remote_personas.py`: the same deadline rule, sleep credit and `_past_deadline` replay check.
 Tests: `tests/test_slurm_lease.py` (fast tier, 14 tests).
+Sync path (GATEJOB-1671): `remote_gates._dispatch` re-arms the `started` wait on Slurm-pending
+`slot_wait` frames up to `max_pending_s` and fails `slurm_pending` past it; `gate_jobs.execute`
+maps `slurm_pending` to `unavailable`. Tests: `tests/test_sync_gate_slurm_pending.py`
+(integration tier; a real `nw worker gate-job` under the fake Slurm behind a stand-in ssh, with
+`slot_wait_s` 1 s and `max_pending_s` 3 s / 60 s: PENDING 3 s then run -> ok; PENDING past 3 s ->
+`slurm_pending` and the job scancelled; a scripted local stream still fails `slot_wait` at 1 s),
+and `tests/test_gate_jobs.py::test_slurm_pending_past_max_pending_exits_3_not_4`. Both sync tests
+fail on the pre-fix code. Post-landing check (box, by the conductor): an `nw gate run` while the
+live queue keeps the box busy must wait out Slurm's queue and end `passed`/`failed`, not
+`transport_error (slot_wait)`.
 
 **Deviations from the accepted Design** (recorded in Design above): no per-`slot_wait` re-arm (a
 fixed `max_pending_s` bound from the submit); `poll --renew` still writes `lease.json` (it has no

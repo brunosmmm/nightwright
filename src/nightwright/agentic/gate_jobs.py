@@ -532,6 +532,9 @@ def execute(cfg, job_id: str, *, stop: threading.Event | None = None,
                 run = RG.run_detached(hold.pool, pcfg, state, cfg, SEQ, jdir / "gates",
                                       stop=stop, keep_changed=True)
             except RG.RemoteFailure as f:
+                if f.stage == "slurm_pending":  # SPEC-0513: a busy box, not a broken link
+                    return _finish(cfg, job_id, "unavailable",
+                                   error=f"box busy on {hold.pool}: {f.error}"[:2000])
                 return _finish(cfg, job_id, "transport_error",
                                error=f"transport failure on {hold.pool} ({f.stage}): "
                                      f"{f.error}"[:2000])
