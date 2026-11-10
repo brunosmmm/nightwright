@@ -91,15 +91,15 @@ class Executor(Protocol):
 
 ## Acceptance criteria
 
-- [ ] `agentic.workers.executor` absent or `local`: submit/attach/poll/cancel/jobs/gate-job
+- [x] `agentic.workers.executor` absent or `local`: submit/attach/poll/cancel/jobs/gate-job
       behave exactly as before (same frames, files and exit codes).
-- [ ] An unknown executor name refuses `submit` and `gate-job` with an `error` frame,
+- [x] An unknown executor name refuses `submit` and `gate-job` with an `error` frame,
       `stage: "executor"`, and claims nothing.
-- [ ] `nw worker run-job JOBDIR` runs a claimed job's body; a second run of the same dir after a
+- [x] `nw worker run-job JOBDIR` runs a claimed job's body; a second run of the same dir after a
       finished attempt (with `NW_JOB_ATTEMPT=2`) starts from fresh scratch, writes an `attempt`
       frame and a `result.json` with `attempt: 2`.
-- [ ] `nw worker info --json` reports `executor` and the `executor:<name>` feature.
-- [ ] `_run_gates` takes its host slot through `executor.host_slot`.
+- [x] `nw worker info --json` reports `executor` and the `executor:<name>` feature.
+- [x] `_run_gates` takes its host slot through `executor.host_slot`.
 
 ## Test plan
 
@@ -160,12 +160,20 @@ class Executor(Protocol):
   attempt-2 rerun through the real `nw worker run-job` with stale scratch planted, an older
   attempt refused, lease gating). `tests/test_rich_output_guard.py` names `_gate_job_local`
   and `executors.for_job`. Box: `GATEJOB-1461` (loop tier, green, 1253 tests) and the
-  integration/remote affected run (see SPEC-0504's As shipped, run on the combined branch).
+  integration/remote affected runs listed below.
 - **Manual verification (real binary): pending deploy.** The box's worker runs the installed
   build; deploying needs `nw workers update`, which this lane may not run. Done instead:
   `uv run nw worker info --json` from this branch reports `"executor": "local"` and
   `executor:local`. To do after the update: one campaign gate through the forced command,
   compare its `frames.jsonl` with a pre-change job dir.
+
+- **Box runs (one lane, SPEC-0503..0509 together):** loop tier `GATEJOB-1461` (0503, green),
+  `GATEJOB-1466` (0504, red: a pinned payload key set, fixed), `GATEJOB-1470` (0509, green),
+  `GATEJOB-1476` (0508, red: the list table wrapped at 80 columns, fixed); integration+remote
+  affected (`--cmd`, `-m 'integration or remote'`) `GATEJOB-1465` (10 pinned shapes/goldens,
+  fixed) and `GATEJOB-1475` (1 env allowlist, fixed). The lane's final loop gate on its last
+  commit is recorded below. **Status stays `in-progress`** until the real-binary step that
+  needs the deployed worker build is done (not run in this lane).
 
 ## Rollout / migration
 
@@ -176,7 +184,7 @@ Merge; nothing changes until a host sets `executor: slurm` (SPEC-0510). Supersed
 - [ ] Acceptance criteria all met.
 - [ ] Test plan executed; affected tests pass; manual step performed and noted.
 - [ ] No regressions.
-- [ ] Spec body updated to match what shipped.
+- [x] Spec body updated to match what shipped.
 - [ ] `docs/LEDGER.md` updated (status + date).
 
 ## Risks

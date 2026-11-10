@@ -75,10 +75,10 @@ add a non-fatal config warning for `-n auto`, `nproc`, `$(getconf _NPROCESSORS_O
 
 ## Acceptance criteria
 
-- [ ] A local and a remote gate both see `NW_GATE_CPUS`/`NW_GATE_MEM_MB` equal to the job request.
-- [ ] Under a Slurm job the values equal `SLURM_CPUS_PER_TASK` / `SLURM_MEM_PER_NODE`.
-- [ ] nightwright's pytest gates size `-n` from `NW_GATE_CPUS`.
-- [ ] A gate cmd containing `-n auto` or `nproc` yields a config warning, not an error.
+- [x] A local and a remote gate both see `NW_GATE_CPUS`/`NW_GATE_MEM_MB` equal to the job request.
+- [x] Under a Slurm job the values equal `SLURM_CPUS_PER_TASK` / `SLURM_MEM_PER_NODE`.
+- [x] nightwright's pytest gates size `-n` from `NW_GATE_CPUS`.
+- [x] A gate cmd containing `-n auto` or `nproc` yields a config warning, not an error.
 - [ ] The jerome outbound requirements are recorded (this Design) and exported when the jerome
       spec is written.
 
@@ -123,7 +123,18 @@ add a non-fatal config warning for `-n auto`, `nproc`, `$(getconf _NPROCESSORS_O
   in the three pytest gates, `NW_GATE_CPUS` used, no warnings).
 - **Manual verification (real binary): pending SPEC-0510** as the Test plan says (an xdist
   header under Slurm). Done meanwhile: the box run of this branch (old worker build, no
-  variable set) ran `pytest-affected` with the default expression, see the gate id below.
+  variable set) gated it green, but `nw gate run` takes the gate list from main's
+  `.nw/project.yaml`, so the new expression first runs on the box after merge. The expression
+  itself was run in `bash` and `dash` (unset -> 2, `NW_GATE_CPUS=1` -> 1, 5 -> 4).
+- Open: the jerome portable spec (AC 5's export) and the Slurm xdist check (after SPEC-0510).
+
+- **Box runs (one lane, SPEC-0503..0509 together):** loop tier `GATEJOB-1461` (0503, green),
+  `GATEJOB-1466` (0504, red: a pinned payload key set, fixed), `GATEJOB-1470` (0509, green),
+  `GATEJOB-1476` (0508, red: the list table wrapped at 80 columns, fixed); integration+remote
+  affected (`--cmd`, `-m 'integration or remote'`) `GATEJOB-1465` (10 pinned shapes/goldens,
+  fixed) and `GATEJOB-1475` (1 env allowlist, fixed). The lane's final loop gate on its last
+  commit is recorded below. **Status stays `in-progress`** until the real-binary step that
+  needs the deployed worker build is done (not run in this lane).
 
 ## Rollout / migration
 
@@ -135,7 +146,7 @@ executor behaves as before. Supersedes nothing.
 - [ ] Acceptance criteria all met.
 - [ ] Test plan executed; affected tests pass; manual step performed and noted.
 - [ ] No regressions.
-- [ ] Spec body updated to match what shipped.
+- [x] Spec body updated to match what shipped.
 - [ ] `docs/LEDGER.md` updated (status + date).
 
 ## Risks

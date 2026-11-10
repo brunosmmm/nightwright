@@ -83,14 +83,14 @@ payload carries the request to the worker.
 
 ## Acceptance criteria
 
-- [ ] The project config validation (`project.py`, surfaced by `nw projects config`) accepts `resources: {cpus: 3, mem: 3G,
+- [x] The project config validation (`project.py`, surfaced by `nw projects config`) accepts `resources: {cpus: 3, mem: 3G,
       licenses: [jerome_target]}` and rejects `cpus: 0`, `mem: 3GB`, unknown sub-keys.
-- [ ] `job_request` returns max cpus/mem, union licenses and the existing job timeout for a
+- [x] `job_request` returns max cpus/mem, union licenses and the existing job timeout for a
       mixed gate list; defaults apply per the table.
-- [ ] A remote job header carries `payload.resources`; a header without it is still valid.
-- [ ] Every gate record written after this ships (local and remote, campaign and gate job)
+- [x] A remote job header carries `payload.resources`; a header without it is still valid.
+- [x] Every gate record written after this ships (local and remote, campaign and gate job)
       has `resources.request` and `resources.used` with `cpu_s`, `max_rss_mb`, `wall_s`.
-- [ ] nightwright's own `.nw/project.yaml` declares `resources` on `pytest-affected`
+- [x] nightwright's own `.nw/project.yaml` declares `resources` on `pytest-affected`
       (`cpus: 3, mem: 3G`), `pytest` (`cpus: 5, mem: 5G`), `docs-tests` (`cpus: 3, mem: 3G`).
 
 ## Test plan
@@ -148,6 +148,14 @@ payload carries the request to the worker.
   box (`pytest-affected` in the hundreds of `cpu_s`/MB) needs the coordinator restarted on this
   code and the worker updated (`nw workers update`), not run in this lane.
 
+- **Box runs (one lane, SPEC-0503..0509 together):** loop tier `GATEJOB-1461` (0503, green),
+  `GATEJOB-1466` (0504, red: a pinned payload key set, fixed), `GATEJOB-1470` (0509, green),
+  `GATEJOB-1476` (0508, red: the list table wrapped at 80 columns, fixed); integration+remote
+  affected (`--cmd`, `-m 'integration or remote'`) `GATEJOB-1465` (10 pinned shapes/goldens,
+  fixed) and `GATEJOB-1475` (1 env allowlist, fixed). The lane's final loop gate on its last
+  commit is recorded below. **Status stays `in-progress`** until the real-binary step that
+  needs the deployed worker build is done (not run in this lane).
+
 ## Rollout / migration
 
 Additive. Old records simply lack `resources`; readers treat it as optional. Supersedes nothing.
@@ -157,7 +165,7 @@ Additive. Old records simply lack `resources`; readers treat it as optional. Sup
 - [ ] Acceptance criteria all met.
 - [ ] Test plan executed; affected tests pass; manual step performed and noted.
 - [ ] No regressions.
-- [ ] Spec body updated to match what shipped.
+- [x] Spec body updated to match what shipped.
 - [ ] `docs/LEDGER.md` updated (status + date).
 
 ## Risks

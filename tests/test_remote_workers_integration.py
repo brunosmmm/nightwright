@@ -57,7 +57,8 @@ WORKER_OWN = frozenset({"NW_DATA_DIR", "NW_CONFIG_DIR", "NW_WORKTREE", "NW_PERSO
 # `PWD`, `SHLVL` and `_` are set by the shell that runs the command, after the worker has
 # already handed it only the allowset. They are not inherited from the coordinator.
 EXACT_ENV = W.ENV_ALLOWLIST | WORKER_OWN | frozenset({
-    "PATH", "HOME", "TMPDIR", "TEMP", "TMP", "NW_WORKER_PROGRESS_S", "PWD", "SHLVL", "_"})
+    "PATH", "HOME", "TMPDIR", "TEMP", "TMP", "NW_WORKER_PROGRESS_S", "PWD", "SHLVL", "_",
+    "NW_GATE_CPUS", "NW_GATE_MEM_MB"})                 # SPEC-0509: the worker sets them
 FORBIDDEN_ENV = ("GIT_ASKPASS", "SSH_AUTH_SOCK", "GH_TOKEN", "GITHUB_TOKEN")
 POISON = {"GH_TOKEN": "poison-gh", "GITHUB_TOKEN": "poison-github", "GIT_ASKPASS": "/poison/askpass",
           "SSH_AUTH_SOCK": "/poison/agent.sock", "GIT_CONFIG_COUNT": "1",

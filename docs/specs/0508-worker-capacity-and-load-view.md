@@ -66,10 +66,10 @@ Extend `worker.info` with `capacity` read from `/proc` (local) or from `scontrol
 
 ## Acceptance criteria
 
-- [ ] `nw worker info --json` has `capacity` with `cpus`, `mem_total_mb`, `mem_available_mb`,
+- [x] `nw worker info --json` has `capacity` with `cpus`, `mem_total_mb`, `mem_available_mb`,
       `loadavg`, `jobs[]` on a local-executor host.
-- [ ] With `executor: slurm`, the block comes from `scontrol show node` and fills `alloc_*`.
-- [ ] `nw workers list` shows load and memory per worker from the cached info.
+- [x] With `executor: slurm`, the block comes from `scontrol show node` and fills `alloc_*`.
+- [x] `nw workers list` shows load and memory per worker from the cached info.
 
 ## Test plan
 
@@ -119,6 +119,14 @@ Extend `worker.info` with `capacity` read from `/proc` (local) or from `scontrol
   needs the worker updated (`nw workers update`, not run in this lane); until then the box's
   cached info has no block and the list prints `-`.
 
+- **Box runs (one lane, SPEC-0503..0509 together):** loop tier `GATEJOB-1461` (0503, green),
+  `GATEJOB-1466` (0504, red: a pinned payload key set, fixed), `GATEJOB-1470` (0509, green),
+  `GATEJOB-1476` (0508, red: the list table wrapped at 80 columns, fixed); integration+remote
+  affected (`--cmd`, `-m 'integration or remote'`) `GATEJOB-1465` (10 pinned shapes/goldens,
+  fixed) and `GATEJOB-1475` (1 env allowlist, fixed). The lane's final loop gate on its last
+  commit is recorded below. **Status stays `in-progress`** until the real-binary step that
+  needs the deployed worker build is done (not run in this lane).
+
 ## Rollout / migration
 
 Additive; an old worker's info lacks `capacity` and the list prints `-`. Supersedes nothing.
@@ -128,7 +136,7 @@ Additive; an old worker's info lacks `capacity` and the list prints `-`. Superse
 - [ ] Acceptance criteria all met.
 - [ ] Test plan executed; affected tests pass; manual step performed and noted.
 - [ ] No regressions.
-- [ ] Spec body updated to match what shipped.
+- [x] Spec body updated to match what shipped.
 - [ ] `docs/LEDGER.md` updated (status + date).
 
 ## Risks
