@@ -5,7 +5,6 @@ import fcntl
 import json
 import os
 import stat
-from contextlib import contextmanager
 from datetime import datetime
 from pathlib import Path
 
@@ -52,10 +51,6 @@ def _emit(rec: dict) -> None:
     print(json.dumps(rec), flush=True)
 
 
-def _effective(cfg: dict) -> str:
-    return EX.configured(cfg)
-
-
 def _effective_doc(doc: dict) -> str:
     ag = doc.get("agentic")
     return EX.configured({"agentic": ag if isinstance(ag, dict) else {}})
@@ -80,22 +75,25 @@ def _path_lstat(path: Path) -> os.stat_result | None:
         return None
 
 
-@contextmanager
-def _config_lock(cdir: Path):
-    lock = cdir / "config.yaml.lock"
-    fd = os.open(lock, os.O_RDWR | os.O_CREAT, 0o600)
+def _lock_acquire(cdir: Path) -> int:
+    fd = os.open(cdir / "config.yaml.lock", os.O_RDWR | os.O_CREAT, 0o600)
     try:
         fcntl.flock(fd, fcntl.LOCK_EX)
-        yield
-    finally:
+    except BaseException:
+        os.close(fd)
+        raise
+    return fd
+
+
+def _lock_release(fd: int) -> None:
+    try:
         fcntl.flock(fd, fcntl.LOCK_UN)
+    finally:
         os.close(fd)
 
 
 def _dir_path_error(st: os.stat_result, label: str) -> str | None:
-    if stat.S_ISLNK(st.st_mode):
-        return f"{label} is not a directory"
-    if not stat.S_ISDIR(st.st_mode):
+    if stat.S_ISLNK(st.st_mode) or not stat.S_ISDIR(st.st_mode):
         return f"{label} is not a directory"
     return None
 
@@ -277,73 +275,89 @@ def _exclusive_temp(cdir: Path) -> tuple[int, Path]:
 def set_key(cfg: dict, key: str, value: str) -> dict:
     validate_value(key, value)
     cdir = config_dir()
-    dir_err = _ensure_config_dir_for_set(cdir)
+    try:
+        dir_err = _ensure_config_dir_for_set(cdir)
+    except OSError as e:
+        return _result(ok=False, error=f"config directory unusable: {e}")
     if dir_err:
         return _result(ok=False, error=dir_err)
     path = config_path()
-    with _config_lock(cdir):
-        path_st = _path_lstat(path)
+    try:
+        lock_fd = _lock_acquire(cdir)
+    except OSError as e:
+        return _result(ok=False, error=f"config lock unusable: {e}")
+    try:
+        return _set_locked(cdir, path, key, value)
+    finally:
+        _lock_release(lock_fd)
+
+
+def _set_locked(cdir: Path, path: Path, key: str, value: str) -> dict:
+    path_st = _path_lstat(path)
+    if path_st is not None:
+        if stat.S_ISLNK(path_st.st_mode) or not stat.S_ISREG(path_st.st_mode):
+            return _result(ok=False, error="config.yaml is not a regular file")
+    doc, err = _load_mapping(path) if path_st is not None else ({}, None)
+    if err:
+        return _result(ok=False, error=err)
+    assert doc is not None
+    bad = _mapping_nodes_ok(doc)
+    if bad:
+        return _result(ok=False, error=bad)
+    cur = _nested_get(doc, key)
+    unchanged = isinstance(cur, str) and cur == value
+    if unchanged:
+        eff = _effective_doc(doc)
+        return _result(ok=True, op="set", key=key, value=value, effective=eff, unchanged=True)
+    new_doc = _set_nested(doc, key, value)
+    text = yaml.safe_dump(new_doc, sort_keys=False, default_flow_style=False)
+    bak: Path | None = None
+    bak_created = False
+    tmp: Path | None = None
+    tmp_fd: int | None = None
+    replaced = False
+    try:
         if path_st is not None:
-            if stat.S_ISLNK(path_st.st_mode) or not stat.S_ISREG(path_st.st_mode):
-                return _result(ok=False, error="config.yaml is not a regular file")
-        doc, err = _load_mapping(path) if path_st is not None else ({}, None)
-        if err:
-            return _result(ok=False, error=err)
-        assert doc is not None
-        bad = _mapping_nodes_ok(doc)
-        if bad:
-            return _result(ok=False, error=bad)
-        cur = _nested_get(doc, key)
-        unchanged = isinstance(cur, str) and cur == value
-        if unchanged:
-            eff = _effective_doc(doc)
-            return _result(ok=True, op="set", key=key, value=value, effective=eff, unchanged=True)
-        new_doc = _set_nested(doc, key, value)
-        text = yaml.safe_dump(new_doc, sort_keys=False, default_flow_style=False)
-        bak: Path | None = None
-        bak_created = False
-        tmp: Path | None = None
-        tmp_fd: int | None = None
-        replaced = False
-        try:
-            if path_st is not None:
-                prev_bytes = _read_config_bytes(path)
-                bak = _backup_path(path)
-                bfd = os.open(bak, os.O_WRONLY | os.O_CREAT | os.O_EXCL | _O_NOFOLLOW, 0o600)
-                bak_created = True
-                try:
-                    _write_fd(bfd, prev_bytes)
-                    os.fsync(bfd)
-                finally:
-                    os.close(bfd)
-            tmp_fd, tmp = _exclusive_temp(cdir)
-            _write_fd(tmp_fd, text.encode("utf-8"))
-            os.fsync(tmp_fd)
-            os.fchmod(tmp_fd, 0o600)
-            os.close(tmp_fd)
-            tmp_fd = None
-            os.replace(tmp, path)
-            tmp = None
-            replaced = True
-        except OSError as e:
-            if tmp_fd is not None:
-                try:
-                    os.close(tmp_fd)
-                except OSError:
-                    pass
-            if tmp is not None and not replaced:
-                try:
-                    tmp.unlink(missing_ok=True)
-                except OSError:
-                    pass
-            if bak is not None and bak_created and not replaced:
-                try:
-                    bak.unlink(missing_ok=True)
-                except OSError:
-                    pass
-            return _result(ok=False, error=str(e))
-        eff = _effective_doc(new_doc)
-        return _result(ok=True, op="set", key=key, value=value, effective=eff, unchanged=False)
+            prev_bytes = _read_config_bytes(path)
+            bak = _backup_path(path)
+            bfd = os.open(bak, os.O_WRONLY | os.O_CREAT | os.O_EXCL | _O_NOFOLLOW, 0o600)
+            bak_created = True
+            try:
+                _write_fd(bfd, prev_bytes)
+                os.fsync(bfd)
+            finally:
+                os.close(bfd)
+        tmp_fd, tmp = _exclusive_temp(cdir)
+        _write_fd(tmp_fd, text.encode("utf-8"))
+        os.fsync(tmp_fd)
+        os.fchmod(tmp_fd, 0o600)
+        os.close(tmp_fd)
+        tmp_fd = None
+        os.replace(tmp, path)
+        tmp = None
+        replaced = True
+    except BaseException as e:
+        # also a kill or a non-OSError between backup and replace: leave no temp or duplicate backup
+        if tmp_fd is not None:
+            try:
+                os.close(tmp_fd)
+            except OSError:
+                pass
+        if tmp is not None and not replaced:
+            try:
+                tmp.unlink(missing_ok=True)
+            except OSError:
+                pass
+        if bak is not None and bak_created and not replaced:
+            try:
+                bak.unlink(missing_ok=True)
+            except OSError:
+                pass
+        if not isinstance(e, OSError):
+            raise
+        return _result(ok=False, error=str(e))
+    eff = _effective_doc(new_doc)
+    return _result(ok=True, op="set", key=key, value=value, effective=eff, unchanged=False)
 
 
 def run(argv: list[str], cfg: dict) -> int:
@@ -362,7 +376,10 @@ def run(argv: list[str], cfg: dict) -> int:
             except ValueError as e:
                 _emit(_result(ok=False, error=str(e)))
                 return EXIT_REFUSE
-        rec = get_key(cfg, key)
+        try:
+            rec = get_key(cfg, key)
+        except OSError as e:
+            rec = _result(ok=False, error=f"config unreadable: {e}")
         if not rec.get("ok"):
             _emit(rec)
             return EXIT_FILE

@@ -704,10 +704,7 @@ def workers_config(cfg, name, op, args, as_json):
         for r in records:
             if r.get("name") == name:
                 r["executor"] = value
-    try:
-        _update(cfg, fn)
-    except click.ClickException:
-        raise
+    _update(cfg, fn)
     desired = value
     sock_err = _try_ensure_ssh_dir(cfg, w)
     if sock_err:
@@ -755,7 +752,7 @@ def workers_config(cfg, name, op, args, as_json):
     WK._cache_info(cfg, name, info)
     stored = _find(_load_or_fail(cfg), name)
     if stored.get("info") != info:
-        _set_json("info cache not refreshed: info not stored on record")
+        _set_json("info not stored on record")
     if as_json:
         _dump_json({"name": name, "op": "set", "key": key, "value": value,
                     "effective": eff, "desired": desired, "unchanged": unchanged,

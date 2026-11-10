@@ -301,7 +301,8 @@ Setup on the worker (all of it is mandatory):
    `have --repo <key> <sha>...`, `gate-job`, `gc [--keep-days <n>]` and the async job
    commands (SPEC-0340) `submit`, `attach <job> [--from <n>]`,
    `poll <job> [--from <n>] [--renew]`, `cancel <job>` and `jobs [--json]`; SPEC-0538's
-   `config-set get [executor]` and `config-set set executor local|slurm`; anything else exits 2
+   `config-set get`, `config-set get executor`, `config-set set executor local` and
+   `config-set set executor slurm`; anything else exits 2
    with `refused: <reason>` and runs nothing.
 
 **Async jobs (SPEC-0340).** `nw worker submit` takes the same header and bundle as

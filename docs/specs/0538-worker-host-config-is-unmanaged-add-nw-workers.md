@@ -371,7 +371,24 @@ add a bootstrap step bullet.
 - Manual box steps: not run; after deploy per Rollout.
 - Full suite: left to campaign gating.
 
+### Test record (2026-11-11, loop 4)
+
+- `uv run pytest -q tests/test_worker_host_config.py tests/test_worker_ssh_command.py tests/test_workers_bootstrap.py tests/test_workers_update_cmd.py` (221 passed)
+- `python3 tools/test_tiers.py --check` (exit 0)
+- `python3 tools/spec_lint.py --write-ledger` and `python3 tools/spec_lint.py` (exit 0)
+- Manual box steps: not run; deferred to Rollout after deploy.
+- Full suite: left to campaign gating.
+
 ### As shipped (2026-11-10)
+
+Additions beyond Design: `src/nightwright/agentic/workers_host_config.py` is the coordinator-side
+SSH transport for `config-set` and the post-push `nw worker info --json` probe (parsed like
+`workers._check`); and `cli.py` falls back to a default config when `load_config()` fails and
+argv is `worker config-set`, so a worker with a broken coordinator `config.yaml` still reaches
+the exit-3 JSON path. Set also turns an `OSError` from creating the config dir or opening the
+lock into the exit-3 JSON line, and removes its temp and backup on any exception. Other writers
+of `config.yaml` (`queue.apply_host_backend`, project add, outbox migrate) do not take
+`config.yaml.lock`; that is filed as a follow-up.
 
 Review waived (steward): non-UTF-8 config.yaml mapping, `FileExistsError` mkdir race,
 `O_NOFOLLOW` on `config.yaml.lock`, and further test-plan gaps filed as follow-up ideas;
@@ -458,8 +475,8 @@ clean reinstall restore the key without another `set`.
 ## Definition of done
 
 - [x] Acceptance criteria all met.
-- [x] Test plan executed; the automated tests listed above pass; the manual steps were run
-      and their results noted in this spec.
+- [x] Test plan executed; the automated tests listed above pass; the manual box steps are
+      deferred to Rollout after deploy (the test records say so).
 - [x] No regressions.
 - [x] Spec body updated to match what shipped.
 - [x] `docs/LEDGER.md` regenerated (`python3 tools/spec_lint.py --write-ledger`) and

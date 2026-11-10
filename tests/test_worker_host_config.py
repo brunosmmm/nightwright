@@ -399,7 +399,9 @@ def test_workers_config_set_refreshes_info(coord_world):
     r = CliRunner().invoke(cli, ["workers", "config", "box", "set", "executor", "slurm", "--json"])
     assert r.exit_code == 0, r.output
     payload = json.loads(r.output)
-    assert payload["pushed"] is True
+    assert payload == {"name": "box", "op": "set", "key": "executor", "value": "slurm",
+                       "effective": "slurm", "desired": "slurm", "unchanged": False,
+                       "pushed": True}
     rec = json.loads(WK.path(cfg).read_text())["workers"][0]
     assert rec["executor"] == "slurm"
     assert rec["info"]["executor"] == "slurm"
@@ -426,9 +428,14 @@ def test_set_unchanged_refreshes_info_no_jobs_line(coord_world):
     (st / "live_executor.txt").write_text("slurm")
     (st / "host_config.yaml").write_text("agentic:\n  workers:\n    executor: slurm\n")
     (st / "scenario").write_text("unchanged_set")
+    rj = CliRunner().invoke(cli, ["workers", "config", "box", "set", "executor", "slurm", "--json"])
+    assert rj.exit_code == 0, rj.output
+    assert json.loads(rj.output) == {"name": "box", "op": "set", "key": "executor",
+                                     "value": "slurm", "effective": "slurm",
+                                     "desired": "slurm", "unchanged": True, "pushed": True}
     r = CliRunner().invoke(cli, ["workers", "config", "box", "set", "executor", "slurm"])
     assert r.exit_code == 0, r.output
-    assert "unchanged" in r.output or "(unchanged)" in r.output
+    assert "box executor slurm (unchanged)" in r.output
     assert "jobs already running" not in r.output
     rec = json.loads(WK.path(cfg).read_text())["workers"][0]
     assert rec["info"]["executor"] == "slurm"
@@ -492,7 +499,11 @@ def test_info_fail_after_push(coord_world, monkeypatch):
     rj = CliRunner().invoke(cli, ["workers", "config", "box", "set", "executor", "slurm", "--json"])
     assert rj.exit_code == 1
     payload = json.loads(rj.output)
-    assert payload["pushed"] is True and "error" in payload
+    assert set(payload) == {"name", "op", "key", "value", "effective", "desired", "unchanged",
+                            "pushed", "error"}
+    assert payload["pushed"] is True and payload["error"]
+    assert (payload["name"], payload["key"], payload["value"], payload["desired"]) == (
+        "box", "executor", "slurm", "slurm")
 
 
 def test_ensure_ssh_dir_before_ssh(coord_world, monkeypatch):
@@ -678,12 +689,13 @@ def _cli_config_set_result(runner_output):
     return json.loads(lines[0])
 
 
-@pytest.mark.parametrize("body", ["agentic: {\n", "- a\n"])
+@pytest.mark.parametrize("body", ["agentic: {\n", "config.yaml-is-a-directory"],
+                         ids=["invalid-yaml", "non-regular-file"])
 def test_cli_worker_config_set_bad_document_refused(tmp_path, monkeypatch, body):
     cdir = tmp_path / "cfg"
     cdir.mkdir()
     target = cdir / "config.yaml"
-    if body.startswith("-"):
+    if body == "config.yaml-is-a-directory":
         target.mkdir()
         inode = target.stat().st_ino
         raw = None
@@ -817,13 +829,15 @@ def test_config_set_help_and_workflow_four_forms():
     from pathlib import Path
 
     doc = (Path(__file__).resolve().parents[1] / "docs" / "WORKFLOW.md").read_text()
-    assert "config-set get" in doc and "[executor]" in doc
-    assert "config-set set executor local" in doc or "set executor local" in doc
-    assert "set executor slurm" in doc
+    forms = ["config-set get", "config-set get executor", "config-set set executor local",
+             "config-set set executor slurm"]
+    flat_doc = " ".join(doc.split())
+    for f in forms:
+        assert f"`{f}`" in flat_doc, f
     r = CliRunner().invoke(cli, ["worker", "--help"])
     assert r.exit_code == 0
-    assert "config-set get" in r.output
-    assert "set executor" in r.output and "local" in r.output and "slurm" in r.output
+    for f in forms:
+        assert f in r.output, f
     r = CliRunner().invoke(cli, ["workers", "--help"])
     assert r.exit_code == 0
     assert "workers config" in r.output and "executor" in r.output
@@ -912,26 +926,6 @@ def test_unreadable_config_yaml_get(cfg_home):
         assert WHC.run(["get", "executor"], cfg) == 3
     finally:
         os.chmod(p, 0o600)
-
-
-def test_chmod_failure_after_replace_still_ok(cfg_home, monkeypatch):
-    cdir, cfg = cfg_home
-    cdir.mkdir()
-    p = cdir / "config.yaml"
-    p.write_text("agentic:\n  workers:\n    executor: local\n")
-    before = p.read_bytes()
-
-    def boom(path, mode):
-        if Path(path) == p:
-            raise OSError("chmod refused")
-
-    monkeypatch.setattr(os, "chmod", boom)
-    assert WHC.run(["set", "executor", "slurm"], cfg) == 0
-    assert p.read_bytes() != before
-    assert (p.stat().st_mode & 0o777) == 0o600
-    baks = list(cdir.glob("config.yaml.bak.*"))
-    assert len(baks) == 1
-    assert baks[0].read_bytes() == before
 
 
 def test_fake_executor_not_allowlisted(cfg_home):
@@ -1158,10 +1152,21 @@ def test_temp_fsync_before_replace(cfg_home, monkeypatch):
             fsynced.add(fd)
         real_fsync(fd)
 
+    real_replace = os.replace
+    seen_at_replace: list[bool] = []
+
+    def track_replace(src, dst):
+        seen_at_replace.append(bool(fsynced))
+        real_replace(src, dst)
+
     monkeypatch.setattr(os, "open", track_open)
     monkeypatch.setattr(os, "fsync", track_fsync)
+    monkeypatch.setattr(os, "replace", track_replace)
+    inode = p.stat().st_ino
     assert WHC.run(["set", "executor", "slurm"], cfg) == 0
     assert fsynced
+    assert seen_at_replace == [True]
+    assert p.stat().st_ino != inode
 
 
 def test_registry_update_failure_skips_ssh(coord_world, monkeypatch):
@@ -1215,15 +1220,295 @@ def test_info_bad_exit_messages_and_json(coord_world):
     assert payload["pushed"] is True and payload.get("error")
 
 
-def test_set_leaves_running_job_untouched(coord_world):
-    st, cfg, *_ = coord_world
-    job_dir = W.jobs_dir(cfg) / "j-running"
-    job_dir.mkdir(parents=True)
-    job_body = {"job_id": "j-running", "state": "running", "executor": "local"}
-    job_json = job_dir / "job.json"
-    job_json.write_text(json.dumps(job_body))
-    before = job_json.read_bytes()
+# ---- review-driven coverage (loop 1 of review) ----
+
+WK_SCHEMA = "nw.worker.config_set.result.v1"
+
+
+def _one_json_line(capsys) -> dict:
+    lines = [ln for ln in capsys.readouterr().out.splitlines() if ln.strip()]
+    assert len(lines) == 1
+    return json.loads(lines[0])
+
+
+def _worker_cfg_with_record(cfg, rec_patch=None):
+    p = WK.path(cfg)
+    data = json.loads(p.read_text())
+    if rec_patch is not None:
+        data["workers"][0].update(rec_patch)
+        p.write_text(json.dumps(data))
+    return data["workers"][0]
+
+
+def test_info_not_stored_exits_1_with_one_prefix(coord_world, monkeypatch):
+    st, cfg, _, _, host_seed, seeded_info = coord_world
+    monkeypatch.setattr(WK, "_cache_info", lambda *a, **k: None)
     r = CliRunner().invoke(cli, ["workers", "config", "box", "set", "executor", "slurm"])
+    assert r.exit_code == 1, r.output
+    assert r.output.count("info cache not refreshed:") == 1
+    assert "info not stored on record" in r.output
+    assert "executor: slurm" in host_seed.read_text()
+    assert json.loads(WK.path(cfg).read_text())["workers"][0]["info"] == seeded_info
+    rj = CliRunner().invoke(cli, ["workers", "config", "box", "set", "executor", "slurm", "--json"])
+    assert rj.exit_code == 1
+    payload = json.loads(rj.output)
+    assert payload["pushed"] is True and payload["error"] == "info not stored on record"
+
+
+def test_get_and_set_argument_refusals_cli(coord_world, monkeypatch):
+    st, cfg, *_ = coord_world
+    before = WK.path(cfg).read_bytes()
+    for args in (["get", "slots"], ["get", "a", "b"], ["set"], ["set", "executor"],
+                 ["set", "executor", "slurm", "extra"], ["set", "slots", "3"]):
+        r = CliRunner().invoke(cli, ["workers", "config", "box", *args])
+        assert r.exit_code == 2, (args, r.output)
+    assert not (st / "argv").exists()
+    assert WK.path(cfg).read_bytes() == before
+
+
+@pytest.mark.parametrize("argv", [[], ["get", "slots"], ["get", "executor", "extra"],
+                                  ["frob"], ["set", "executor"], ["set", "slots", "x"]])
+def test_worker_run_malformed_refused(cfg_home, capsys, argv):
+    cdir, cfg = cfg_home
+    assert WHC.run(argv, cfg) == 2
+    rec = _one_json_line(capsys)
+    assert rec["ok"] is False and rec["schema"] == WK_SCHEMA and rec["error"]
+    assert not cdir.exists()
+
+
+def test_set_oserror_on_mkdir_is_exit_3_json(cfg_home, monkeypatch, capsys):
+    cdir, cfg = cfg_home
+
+    def boom(self, *a, **k):
+        raise PermissionError("read-only home")
+
+    monkeypatch.setattr(Path, "mkdir", boom)
+    assert WHC.run(["set", "executor", "slurm"], cfg) == 3
+    rec = _one_json_line(capsys)
+    assert rec["ok"] is False and rec["schema"] == WK_SCHEMA
+    assert not cdir.exists()
+
+
+def test_set_oserror_on_lock_open_is_exit_3_json(cfg_home, monkeypatch, capsys):
+    cdir, cfg = cfg_home
+    cdir.mkdir()
+    real_open = os.open
+
+    def deny(path, *a, **k):
+        if os.fspath(path).endswith("config.yaml.lock"):
+            raise PermissionError("no lock for you")
+        return real_open(path, *a, **k)
+
+    monkeypatch.setattr(os, "open", deny)
+    assert WHC.run(["set", "executor", "slurm"], cfg) == 3
+    rec = _one_json_line(capsys)
+    assert rec["ok"] is False and "lock" in rec["error"]
+    assert list(cdir.iterdir()) == []
+
+
+def test_get_oserror_on_lstat_is_exit_3_json(cfg_home, monkeypatch, capsys):
+    cdir, cfg = cfg_home
+
+    def boom(path):
+        raise PermissionError("denied")
+
+    monkeypatch.setattr(WHC, "_path_lstat", boom)
+    assert WHC.run(["get"], cfg) == 3
+    assert _one_json_line(capsys)["ok"] is False
+
+
+def test_set_dir_and_file_modes_under_restrictive_umask(cfg_home):
+    cdir, cfg = cfg_home
+    old = os.umask(0o277)
+    try:
+        assert WHC.run(["set", "executor", "slurm"], cfg) == 0
+    finally:
+        os.umask(old)
+    assert cdir.stat().st_mode & 0o777 == 0o700
+    assert (cdir / "config.yaml").stat().st_mode & 0o777 == 0o600
+
+
+def test_non_oserror_between_backup_and_replace_cleans_up(cfg_home, monkeypatch):
+    cdir, cfg = cfg_home
+    cdir.mkdir()
+    p = cdir / "config.yaml"
+    p.write_text("agentic:\n  workers:\n    executor: local\n")
+    before = p.read_bytes()
+
+    def boom(src, dst):
+        raise RuntimeError("killed")
+
+    monkeypatch.setattr(os, "replace", boom)
+    with pytest.raises(RuntimeError):
+        WHC.run(["set", "executor", "slurm"], cfg)
+    assert p.read_bytes() == before
+    assert list(cdir.glob("config.yaml.tmp*")) == []
+    assert list(cdir.glob("config.yaml.bak.*")) == []
+
+
+def test_fchmod_failure_cleans_up_and_refuses(cfg_home, monkeypatch):
+    cdir, cfg = cfg_home
+    cdir.mkdir()
+    p = cdir / "config.yaml"
+    p.write_text("agentic:\n  workers:\n    executor: local\n")
+    before = p.read_bytes()
+
+    def boom(fd, mode):
+        raise OSError("fchmod refused")
+
+    monkeypatch.setattr(os, "fchmod", boom)
+    assert WHC.run(["set", "executor", "slurm"], cfg) == 3
+    assert p.read_bytes() == before
+    assert list(cdir.glob("config.yaml.tmp*")) == []
+    assert list(cdir.glob("config.yaml.bak.*")) == []
+
+
+@pytest.mark.parametrize("text", ["", "  \n\n", "agentic:\n", "agentic:\n  slurm:\n    conf: /x\n",
+                                  "agentic:\n  workers:\n"])
+def test_set_empty_null_and_missing_nodes(cfg_home, text):
+    cdir, cfg = cfg_home
+    cdir.mkdir()
+    p = cdir / "config.yaml"
+    p.write_text(text)
+    assert WHC.run(["set", "executor", "slurm"], cfg) == 0
+    doc = yaml.safe_load(p.read_text())
+    assert doc["agentic"]["workers"]["executor"] == "slurm"
+    if "conf" in text:
+        assert doc["agentic"]["slurm"] == {"conf": "/x"}
+    assert p.stat().st_mode & 0o777 == 0o600
+
+
+def test_human_get_unset_desired_and_live(coord_world):
+    st, cfg, *_ = coord_world
+    (st / "scenario_live").write_text("distinctive-remote")
+    r = CliRunner().invoke(cli, ["workers", "config", "box", "get"])
     assert r.exit_code == 0, r.output
-    assert job_json.read_bytes() == before
-    assert json.loads(job_json.read_text())["executor"] == "local"
+    assert r.output.strip() == "box executor live=(unset) effective=local desired=(unset)"
+    r = CliRunner().invoke(cli, ["workers", "config", "box", "get", "executor"])
+    assert r.output.strip() == "box executor live=(unset) effective=local desired=(unset)"
+    _worker_cfg_with_record(cfg, {"executor": "slurm"})
+    (st / "scenario_live").write_text("slurm")
+    r = CliRunner().invoke(cli, ["workers", "config", "box", "get"])
+    assert r.output.strip() == "box executor live=slurm effective=slurm desired=slurm"
+
+
+def test_get_failure_json_shape(coord_world):
+    st, cfg, *_ = coord_world
+    (st / "scenario").write_text("config_fail")
+    r = CliRunner().invoke(cli, ["workers", "config", "box", "get", "--json"])
+    assert r.exit_code == 1
+    assert json.loads(r.output) == {"name": "box", "op": "get", "desired": None, "error": "nope"}
+
+
+def test_push_exit0_garbage_stdout(coord_world, monkeypatch):
+    from nightwright.agentic import workers_host_config as WC
+
+    st, cfg, _, _, host_seed, seeded_info = coord_world
+    monkeypatch.setattr(WC, "_ssh_run", lambda w, tail: (0, "total garbage\n", ""))
+    r = CliRunner().invoke(cli, ["workers", "config", "box", "set", "executor", "slurm", "--json"])
+    assert r.exit_code == 1
+    payload = json.loads(r.output)
+    assert payload["pushed"] is False and "no config-set result" in payload["error"]
+    rec = json.loads(WK.path(cfg).read_text())["workers"][0]
+    assert rec["executor"] == "slurm" and rec["info"] == seeded_info
+    assert "executor: local" in host_seed.read_text()
+
+
+def test_parse_takes_last_matching_result_line():
+    first = json.dumps({"schema": WK_SCHEMA, "ok": False, "error": "old"})
+    last = json.dumps({"schema": WK_SCHEMA, "ok": True, "op": "get"})
+    other = json.dumps({"schema": "other.v1", "ok": False})
+    rec, err = WHC.parse_config_set_result(f"banner\n{first}\n{last}\n{other}\nnoise\n")
+    assert rec == {"schema": WK_SCHEMA, "ok": True, "op": "get"} and err == ""
+    rec, err = WHC.parse_config_set_result("nothing\n")
+    assert rec is None and err
+
+
+def test_remote_info_timeout_and_non_mapping(coord_world, monkeypatch):
+    import subprocess
+    from nightwright.agentic import workers_host_config as WC
+
+    w = WK.normalize({"data_dir": "/x", "agentic": {}},
+                     json.loads(WK.path(coord_world[1]).read_text())["workers"][0])
+
+    def timeout(*_a, **_k):
+        raise subprocess.TimeoutExpired(cmd="ssh", timeout=1)
+
+    monkeypatch.setattr(subprocess, "run", timeout)
+    info, err = WC.remote_info(w)
+    assert info is None and "timed out" in err
+
+    class P:
+        returncode = 0
+        stdout = "[1, 2]"
+        stderr = ""
+
+    monkeypatch.setattr(subprocess, "run", lambda *a, **k: P())
+    info, err = WC.remote_info(w)
+    assert info is None and "not a mapping" in err
+
+
+def test_set_info_timeout_leaves_info_and_exits_1(coord_world, monkeypatch):
+    from nightwright.agentic import workers_host_config as WC
+
+    st, cfg, _, _, _, seeded_info = coord_world
+    monkeypatch.setattr(WC, "remote_info", lambda w: (None, "ssh timed out after 30s"))
+    r = CliRunner().invoke(cli, ["workers", "config", "box", "set", "executor", "slurm"])
+    assert r.exit_code == 1
+    assert "info cache not refreshed: ssh timed out after 30s" in r.output
+    assert json.loads(WK.path(cfg).read_text())["workers"][0]["info"] == seeded_info
+
+
+def test_argv_after_root_options_prefix_handling(monkeypatch):
+    import nightwright.cli as C
+
+    assert C._argv_after_root_options(["--split", "-h", "worker", "config-set"]) == [
+        "worker", "config-set"]
+    assert C._argv_after_root_options(["worker", "--split"]) == ["worker", "--split"]
+    monkeypatch.setattr(sys, "argv", ["nw", "--split", "worker", "config-set", "get"])
+    assert C._is_worker_config_set_argv()
+    monkeypatch.setattr(sys, "argv", ["nw", "worker", "info"])
+    assert not C._is_worker_config_set_argv()
+    monkeypatch.setattr(sys, "argv", ["nw", "worker"])
+    assert not C._is_worker_config_set_argv()
+
+
+def test_broken_coordinator_config_only_tolerated_for_config_set(tmp_path, monkeypatch):
+    cdir = tmp_path / "cfg"
+    cdir.mkdir()
+    (cdir / "config.yaml").write_text("agentic: {\n")
+    monkeypatch.setenv("NW_CONFIG_DIR", str(cdir))
+    monkeypatch.setenv("NW_DATA_DIR", str(tmp_path / "data"))
+    # another command still surfaces the config error
+    monkeypatch.setattr(sys, "argv", ["nw", "workers", "list"])
+    r = CliRunner().invoke(cli, ["workers", "list"])
+    assert r.exit_code != 0
+    assert r.exception is not None
+    # config-set tolerates it: get still answers (the broken file is not a mapping/YAML -> exit 3)
+    monkeypatch.setattr(sys, "argv", ["nw", "worker", "config-set", "get"])
+    r = CliRunner().invoke(cli, ["worker", "config-set", "get"])
+    assert r.exit_code == 3, r.output
+    assert _cli_config_set_result(r.output)["schema"] == WK_SCHEMA
+
+
+def test_config_set_succeeds_when_coordinator_config_broken(tmp_path, monkeypatch):
+    # the coordinator config is broken only for load_config; the worker file is what config-set edits
+    import nightwright.cli as C
+
+    cdir = tmp_path / "cfg"
+    monkeypatch.setenv("NW_CONFIG_DIR", str(cdir))
+    monkeypatch.setenv("NW_DATA_DIR", str(tmp_path / "data"))
+
+    def broken():
+        raise ValueError("broken coordinator config")
+
+    monkeypatch.setattr(C, "load_config", broken)
+    monkeypatch.setattr(sys, "argv", ["nw", "worker", "config-set", "set", "executor", "slurm"])
+    r = CliRunner().invoke(cli, ["worker", "config-set", "set", "executor", "slurm"])
+    assert r.exit_code == 0, r.output
+    assert _cli_config_set_result(r.output)["unchanged"] is False
+    assert yaml.safe_load((cdir / "config.yaml").read_text())["agentic"]["workers"][
+        "executor"] == "slurm"
+    monkeypatch.setattr(sys, "argv", ["nw", "workers", "list"])
+    r = CliRunner().invoke(cli, ["workers", "list"])
+    assert r.exit_code != 0 and isinstance(r.exception, ValueError)

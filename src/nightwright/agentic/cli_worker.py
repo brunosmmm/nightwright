@@ -30,9 +30,10 @@ def worker_group():
     nw worker jobs --json              the jobs on this worker and their states
     nw worker gc --keep-days 2         age out job dirs and cached objects
     nw worker update [--force]         install the wheel on stdin (SPEC-0369)
-    nw worker config-set get [executor]
-    nw worker config-set set executor (local|slurm)
-                                       allowlisted host config.yaml keys (SPEC-0538)
+    nw worker config-set get           allowlisted host config.yaml keys (SPEC-0538)
+    nw worker config-set get executor
+    nw worker config-set set executor local
+    nw worker config-set set executor slurm
     nw worker slurm-check [--json]     can this user run Slurm jobs (SPEC-0510)
     nw worker slurm-jobs --json        this worker's live nw Slurm jobs (SPEC-0512)
     nw worker slurm-ctl VERB JOB [ARG] hold|release|top|requeue|cancel|nice|class
