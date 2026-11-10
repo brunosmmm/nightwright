@@ -1,10 +1,10 @@
 ---
 id: SPEC-0511
 title: "Slurm job classes: campaign > gatejob > persona > bulk, as class partitions now and a QOS ladder once slurmdbd runs"
-status: accepted
+status: in-progress
 owner: user
 created: 2026-11-09
-updated: 2026-11-09
+updated: 2026-11-10
 milestone: "M9: agentic workflow"
 parent: SPEC-0501
 tags: [agentic, workers, slurm, priority]
@@ -55,6 +55,13 @@ the latest), the mapping switches to one `nw` partition + the QOS ladder.
 
 A header without `job_class` (old coordinator) is `gatejob`.
 
+As shipped, `remote_gates.job_class(state)` decides from the campaign-shaped state every gate
+caller already builds (no caller changed): an explicit `job_class` wins, else `GATEJOB-NNNN` is
+`gatejob`, `sentinel-<project>` (full suite) and `sentinel-<project>-<job>` (cadence) are `bulk`
+(every cadence job is a SPEC-0489 heavy tier, so no cadence job is `gatejob` today), anything
+else is a campaign. `remote_personas._header` stamps `persona`. An unknown class from a newer
+coordinator is submitted as `gatejob` with a warning (never refused).
+
 **Worker mapping** (`executor_slurm.py`), defaults:
 
 ```yaml
@@ -69,9 +76,15 @@ agentic:
     # classes: {campaign: {partition: nw, qos: nw-campaign}, gatejob: {partition: nw, qos: nw-gatejob}, ...}
 ```
 
-`sbatch` gets `-p <partition>` and, when set, `--qos=<qos>`. A partition or QOS that Slurm
-rejects at submit falls back once to `-p nw` without `--qos`, with a `warning` frame, so a config
-mistake never stops gating.
+`sbatch` gets `-p <partition>` and, when set, `--qos=<qos>`; the request is clamped to the class
+partition's limits (SPEC-0510's `limits`, per partition). A partition or QOS that Slurm rejects
+at submit (`Invalid partition name`, `Invalid qos`, ...) falls back once to
+`agentic.slurm.partition` (null: Slurm's default partition, nw-gatejob on the box; the box has
+no `nw` partition) without `--qos`, so a config mistake never stops gating. The warning goes to
+stderr and `job.json` `slurm_warnings` (as SPEC-0510's clamp warnings), not a new frame type:
+every deployed coordinator fails a job on an unknown frame type (`worker.FRAME_TYPES`). Any
+other sbatch error never falls back. `job.json` records `job_class`, `slurm_partition`,
+`slurm_qos`. A class mapped to `partition: null` uses the fallback partition.
 
 **Root config for the human (Phase 1, appended to `/etc/slurm-llnl/slurm.conf`, then
 `scontrol reconfigure`)**:
@@ -102,7 +115,11 @@ with `PriorityWeightQOS=100000`, `PriorityWeightAge=100`, `PreemptType=preempt/q
 for the 112-thread box; on the 12-thread box they are halved by the human). SPEC-0516 owns the
 switch.
 
-`nw worker slurm-check` (SPEC-0510) reports which partitions/QOS of the mapping exist.
+`nw worker slurm-check` (SPEC-0510) reports which partitions/QOS of the mapping exist. As
+shipped: a `classes` check (`{class: {partition, partition_exists, qos, qos_exists}}`, from
+`scontrol show partition --json`; QOS names from `sacctmgr`, so a QOS mapping without slurmdbd
+fails it). Seen on the box: without slurmdbd `sbatch --qos=<anything>` is accepted, not
+rejected, so the fallback never fires for a QOS until slurmdbd enforces it.
 
 ## Alternatives considered
 
@@ -112,11 +129,14 @@ switch.
 
 ## Acceptance criteria
 
-- [ ] Every remote job header carries `job_class` per the table.
-- [ ] The worker submits with the mapped partition (and QOS when configured); a rejected
-      mapping falls back to `-p nw` with a warning frame.
-- [ ] On the box, with a campaign gate and a gatejob both pending for cpus, the campaign gate
+- [x] Every remote job header carries `job_class` per the table.
+- [x] The worker submits with the mapped partition (and QOS when configured); a rejected
+      mapping falls back to `agentic.slurm.partition` (not `-p nw`, which the box lacks) with a
+      warning (stderr + `job.json`, not a frame).
+- [x] On the box, with a campaign gate and a gatejob both pending for cpus, the campaign gate
       starts first; a `bulk` job running when a campaign gate needs its cpus is requeued.
+      *Proven with this branch's worker as `bruno` (As shipped); the same run through the `nw`
+      user's deployed worker and `nw gate run` / a real campaign gate is pending.*
 
 ## Test plan
 
@@ -129,6 +149,39 @@ switch.
   started first and the bulk job `REQUEUED`/`PENDING (BeginTime)`. Record in As shipped.
 - **Regression guard:** affected tests of `remote_gates.py`, `remote_personas.py`,
   `executor_slurm.py`.
+
+## As shipped
+
+**Code.** `executor_slurm.py`: `CLASSES`, `DEFAULT_CLASSES`, `settings()["classes"]`,
+`job_class(h)`, `target(sett, cls, fallback=)`, `sbatch_argv(..., tgt)`, the one-shot
+fallback in `SlurmExecutor.start` (`_REJECTED_RE`), `_classes_check` in `slurm_check`.
+`remote_gates.job_class` + `payload.job_class` in `_header`; `remote_personas._header`:
+`persona`. Tests: `tests/test_slurm_job_classes.py` (new: class per caller, header stamping
+for gates and personas, settings, argv per class in partition and QOS modes, per-class clamp,
+partition/QOS rejection fallback, a failing fallback unclaims, other errors never fall back,
+the `classes` check); `tests/slurm_fake.py` gained `reject(partition|qos, name)`, `qos`,
+`user`; `test_executor_slurm.py` / `test_worker_slurm_check.py` follow the class default
+(an old header now goes to `nw-gatejob` explicitly; the `classes` check exists).
+
+**Real-binary run (box, 2026-11-10, as bruno; this branch's tree in `/tmp/nw0511-e2e`, a temp
+data dir with `executor: slurm`, jobs sent through `nw worker submit` with real bundles; never
+the `nw` user's install or the live worker config; removed afterwards):**
+- B1 `bulk` 10 cpus running (Slurm 30). G1 `gatejob` 8 cpus submitted at 00:52:06 started at
+  once by preempting B1 (B1 `PENDING BeginTime`, later rerun as attempt 2). G2 `gatejob`
+  (32, submitted 00:52:08) and C1 `campaign` (33, submitted 00:52:09) then both pended:
+  `squeue` C1 `Resources`, G2 `Nodes ... reserved for jobs in higher priority partitions`.
+  When G1 ended (00:52:52) C1 started (00:52:53) before the earlier G2 (00:53:40); B1 reran
+  at 00:54:28 (`attempt` frame 2). Partitions in `squeue`: nw-bulk / nw-gatejob / nw-campaign.
+- A pending `bulk` job (57) re-classed to `campaign` with `nw queue jobs class` (SPEC-0512)
+  started at once and requeued the running `bulk` job 56.
+- Seen: a preempted (or requeued) running job gets TERM, which SPEC-0510's run-job treats as a
+  cancel: it ends `done` interrupted (result.json) while Slurm queues it again (BeginTime
+  ~2 min). What a requeued attempt means to the coordinator is SPEC-0515's.
+
+**Pending (deployed `nw` worker + the box opted into `executor: slurm`, the human's call):**
+`nw workers check box --slurm` showing the `classes` check; a campaign gate, an `nw gate run`
+and a bulk sentinel through the `nw` user with `squeue -u nw -o '%i %j %P %T %r %Q'`. Until
+then the spec stays `in-progress`.
 
 ## Rollout / migration
 

@@ -423,6 +423,7 @@ def _header(cfg, w: dict, state: dict, req, job_id: str, bundle: Path) -> dict:
                      "runner": kind if kind in ("claude", "cursor", "pi") else None}}
     from . import gate_resources as GR          # SPEC-0504: a persona job's request
     h["payload"]["resources"] = {**GR.persona_request(cfg), "time_s": h["timeout_s"]}
+    h["payload"]["job_class"] = "persona"         # SPEC-0511
     W.validate_header(h)
     return h
 

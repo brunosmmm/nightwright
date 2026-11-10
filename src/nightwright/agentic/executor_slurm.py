@@ -15,6 +15,9 @@ its Slurm jobs through this module.
   the job ends its gates and reports `done` interrupted; a pending job is `scancel`ed outright,
   and a running one that has not ended `cancel_grace_s` later is `scancel`ed too (the backstop).
 - `host_slot`: a no-op (the allocation is the admission).
+- Job classes (SPEC-0511): the header's `payload.job_class` (campaign, gatejob, persona, bulk; absent:
+  gatejob) picks `{partition, qos}` from `agentic.slurm.classes`; a mapping Slurm rejects at
+  submit is retried once on `agentic.slurm.partition` (null: Slurm's default) without a QOS.
 - `run_inline` (sync `gate-job`): claim + spool + submit through `worker_job.submit`, then follow
   `frames.jsonl` to stdout; stdin EOF or a signal cancels."""
 from __future__ import annotations
@@ -52,6 +55,12 @@ LOCK_WAIT_S = 60.0
 WAIT_FILE = "slurm_wait.json"           # the last `slot_wait` frame a reader appended
 KILL_FILE = "slurm_scancel.json"        # the backstop `scancel` was sent
 CHECK_SCHEMA = "nw.worker.slurm_check.v1"
+# SPEC-0511: job classes, highest first; a header without one (an older coordinator) is gatejob
+CLASSES = ("campaign", "gatejob", "persona", "bulk")
+DEFAULT_CLASS = "gatejob"
+# Phase 1 (no slurmdbd): one partition per class, ordered by PriorityTier; Phase 2 (SPEC-0516)
+# maps every class to one partition plus a QOS of the ladder, by config only
+DEFAULT_CLASSES = {c: {"partition": f"nw-{c}", "qos": None} for c in CLASSES}
 
 
 class SlurmUnavailable(Exception):
@@ -72,7 +81,41 @@ def settings(cfg) -> dict:
         if isinstance(v, (int, float)) and not isinstance(v, bool) and math.isfinite(v) \
                 and v >= 0:
             out[key] = v
+    out["classes"] = _classes(raw.get("classes"))
     return out
+
+
+def _classes(raw) -> dict:
+    """`agentic.slurm.classes` over `DEFAULT_CLASSES`, per class: `{partition, qos}` (a value
+    left out keeps its default; an explicit null means none: the fallback partition, no QOS)."""
+    out = {c: dict(v) for c, v in DEFAULT_CLASSES.items()}
+    for c, v in (raw.items() if isinstance(raw, dict) else ()):
+        if c not in out or not isinstance(v, dict):
+            continue
+        for key in ("partition", "qos"):
+            if key in v:
+                x = v[key]
+                out[c][key] = x.strip() if isinstance(x, str) and x.strip() else None
+    return out
+
+
+def job_class(h: dict) -> tuple[str, str | None]:
+    """`(class, warning)` of a job header: `payload.job_class` (SPEC-0511); absent (an older
+    coordinator) is gatejob; an unknown one is gatejob with a warning."""
+    v = (h.get("payload") or {}).get("job_class")
+    if v is None:
+        return DEFAULT_CLASS, None
+    if v in CLASSES:
+        return v, None
+    return DEFAULT_CLASS, f"unknown job class {v!r}; submitted as {DEFAULT_CLASS}"
+
+
+def target(sett: dict, cls: str, *, fallback: bool = False) -> dict:
+    """`{class, partition, qos}` a job of class `cls` is submitted with; `fallback`: the plain
+    `agentic.slurm.partition` (None: Slurm's default) without a QOS."""
+    m = {} if fallback else (sett.get("classes") or DEFAULT_CLASSES).get(cls) or {}
+    return {"class": cls, "partition": m.get("partition") or sett.get("partition"),
+            "qos": m.get("qos")}
 
 
 def _exe(sett: dict, name: str) -> str:
@@ -284,11 +327,18 @@ def request(cfg, h: dict) -> dict:
             "licenses": dict(req.get("licenses") or {}), "time_s": int(time_s)}
 
 
-def sbatch_argv(cfg, sett: dict, job: Path, h: dict, nw: list[str]) -> tuple[list[str], list]:
-    """`(sbatch argv after the executable, warnings)` for job dir `job` with header `h`."""
+def sbatch_argv(cfg, sett: dict, job: Path, h: dict, nw: list[str],
+                tgt: dict | None = None) -> tuple[list[str], list]:
+    """`(sbatch argv after the executable, warnings)` for job dir `job` with header `h`,
+    submitted with `tgt` (`target`; default: the header's class mapping)."""
     req = request(cfg, h)
     warnings = []
-    lim = limits(sett)
+    if tgt is None:
+        cls, warn = job_class(h)
+        tgt = target(sett, cls)
+        if warn:
+            warnings.append(warn)
+    lim = limits({**sett, "partition": tgt["partition"]})
     where = f"partition {lim.get('partition')}" if lim.get("partition") else "the partition"
     # a request no node of the partition can ever hold would stay PENDING forever: clamp it
     # to what the partition and its nodes allow (the gates size from the allocation, SPEC-0509)
@@ -315,8 +365,10 @@ def sbatch_argv(cfg, sett: dict, job: Path, h: dict, nw: list[str]) -> tuple[lis
     wck = payload.get("project")
     if isinstance(wck, str) and WCKEY_RE.match(wck) and accounting_on(sett):
         argv.append(f"--wckey={wck}")       # SPEC-0514: per-project usage once slurmdbd runs
-    if sett.get("partition"):
-        argv.append(f"--partition={sett['partition']}")
+    if tgt["partition"]:
+        argv.append(f"--partition={tgt['partition']}")
+    if tgt["qos"]:
+        argv.append(f"--qos={tgt['qos']}")
     argv += [f"--cpus-per-task={req['cpus']}", f"--mem={req['mem_mb']}M",
              f"--time={minutes}"]
     if req["licenses"]:
@@ -434,6 +486,10 @@ def _job_env(cfg, sett: dict) -> dict:
     return env
 
 
+# sbatch's refusals of a partition or QOS name (or a combination) a config mistake causes
+_REJECTED_RE = re.compile(r"invalid partition|invalid qos|partition .*(not available|does not "
+                          r"exist|unknown)|qos .*(not|invalid)|account/partition combination|"
+                          r"job's qos not permitted", re.I)
 _UNREACHABLE_RE = re.compile(r"unable to contact|connection refused|timed out|"
                              r"socket timed out|not responding|try again", re.I)
 
@@ -473,26 +529,50 @@ class SlurmExecutor:
     def start(self, cfg, job: Path, h: dict, lock_fd: int) -> dict:
         from . import worker_job as WJ
         sett = settings(cfg)
-        argv, warnings = sbatch_argv(cfg, sett, job, h, W.own_nw())
-        for w in warnings:
-            print(f"nw worker: {h['job_id']}: {w}", file=sys.stderr)
-        try:
-            p = _run(sett, "sbatch", *argv, env=_job_env(cfg, sett))
-        except SlurmUnavailable as e:
-            raise W.WorkerError("spawn", f"sbatch could not run: {e}", retryable=True)
+        cls, warn = job_class(h)
+        tgt = target(sett, cls)
+        p, warnings = self._sbatch(cfg, sett, job, h, tgt)
+        if warn:
+            warnings.insert(0, warn)
         out = (p.stdout or "").strip().split(";")[0]
-        if p.returncode != 0 or not out.isdigit():
+        err = (p.stderr or p.stdout or "").strip() or f"exit {p.returncode}"
+        fb = target(sett, cls, fallback=True)
+        if (p.returncode != 0 or not out.isdigit()) and _REJECTED_RE.search(err) \
+                and (fb["partition"], fb["qos"]) != (tgt["partition"], tgt["qos"]):
+            # SPEC-0511: a class mapping Slurm refuses (a config mistake) never stops gating
+            what = " / ".join(x for x in (tgt["partition"] and f"partition {tgt['partition']}",
+                                          tgt["qos"] and f"qos {tgt['qos']}") if x)
+            fallback = (f"class {cls}: Slurm rejected {what} ({err.splitlines()[-1]}); "
+                        f"submitted to {fb['partition'] or 'the default partition'} "
+                        f"without a QOS")
+            print(f"nw worker: {h['job_id']}: {fallback}", file=sys.stderr)
+            tgt = fb
+            p, warnings = self._sbatch(cfg, sett, job, h, tgt)
+            warnings = [*([warn] if warn else []), fallback, *warnings]
+            out = (p.stdout or "").strip().split(";")[0]
             err = (p.stderr or p.stdout or "").strip() or f"exit {p.returncode}"
+        if p.returncode != 0 or not out.isdigit():
             raise W.WorkerError("spawn", f"sbatch failed: {err}",
                                 retryable=bool(_UNREACHABLE_RE.search(err)))
         jid = int(out)
-        fields = {"slurm_job_id": jid}
+        fields = {"slurm_job_id": jid, "job_class": cls, "slurm_partition": tgt["partition"],
+                  "slurm_qos": tgt["qos"]}
         if warnings:
             fields["slurm_warnings"] = warnings
         with W.jobs_lock(cfg):
             WJ._set_job_json(job, **fields)
         W._start_gc(cfg)            # the finish gc runs here, outside any job's cgroup
         return {"slurm_job_id": jid}
+
+    @staticmethod
+    def _sbatch(cfg, sett: dict, job: Path, h: dict, tgt: dict):
+        argv, warnings = sbatch_argv(cfg, sett, job, h, W.own_nw(), tgt)
+        for w in warnings:
+            print(f"nw worker: {h['job_id']}: {w}", file=sys.stderr)
+        try:
+            return _run(sett, "sbatch", *argv, env=_job_env(cfg, sett)), warnings
+        except SlurmUnavailable as e:
+            raise W.WorkerError("spawn", f"sbatch could not run: {e}", retryable=True)
 
     def cancel(self, cfg, job: Path, rec: dict) -> None:
         (job / "cancel").write_text(now_iso() + "\n", encoding="utf-8")
@@ -833,6 +913,7 @@ def slurm_check(cfg, wait_s: float = END_STATES_WAIT_S) -> dict:
     p, out = cli("scontrol", "show", "licenses")
     add("licenses", p is not None and p.returncode == 0,
         re.findall(r"LicenseName=(\S+)", out) if p is not None else out)
+    add("classes", *_classes_check(sett, cli))
 
     work = W.worker_dir(cfg) / "slurm-check"
     work.mkdir(parents=True, exist_ok=True)
@@ -864,6 +945,33 @@ def slurm_check(cfg, wait_s: float = END_STATES_WAIT_S) -> dict:
                                      "output": txt.strip()[-400:]})
         outf.unlink(missing_ok=True)
     return {"schema": CHECK_SCHEMA, "ok": all(c["ok"] for c in checks), "checks": checks}
+
+
+def _classes_check(sett: dict, cli) -> tuple[bool, dict]:
+    """SPEC-0511: which partitions (and QOS, when mapped) of `agentic.slurm.classes` exist.
+    `(ok, {class: {partition, partition_exists, qos, qos_exists}})`; QOS names come from
+    `sacctmgr` (slurmdbd), so a QOS mapping without one fails the check."""
+    p, out = cli("scontrol", "show", "partition", "--json")
+    try:
+        parts = {x.get("name") for x in json.loads(out).get("partitions") or []
+                 if isinstance(x, dict)} if p is not None and p.returncode == 0 else None
+    except (ValueError, AttributeError):
+        parts = None
+    if parts is None:
+        return False, {"error": f"scontrol show partition: {out}"[:400]}
+    tgts = {c: target(sett, c) for c in CLASSES}
+    qos = None
+    if any(t["qos"] for t in tgts.values()):
+        q, qout = cli("sacctmgr", "-n", "-P", "show", "qos", "format=name")
+        qos = set(qout.split()) if q is not None and q.returncode == 0 else set()
+    detail, ok = {}, True
+    for c, t in tgts.items():
+        row = {"partition": t["partition"],
+               "partition_exists": t["partition"] in parts if t["partition"] else None,
+               "qos": t["qos"], "qos_exists": (t["qos"] in qos) if t["qos"] else None}
+        ok = ok and row["partition_exists"] is not False and row["qos_exists"] is not False
+        detail[c] = row
+    return ok, detail
 
 
 def remote_check(w: dict) -> tuple[list[str], dict | None]:

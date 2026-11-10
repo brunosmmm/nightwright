@@ -45,7 +45,7 @@ def test_a_healthy_slurm_passes_every_check(tmp_path, fake):
     rec = ES.slurm_check(_cfg(tmp_path), wait_s=10)
     assert rec["schema"] == ES.CHECK_SCHEMA and rec["ok"] is True, rec
     assert set(_judge(rec)) == {"version", "node", "config", "node_spec", "licenses",
-                                "cgroup", "oom"}
+                                "classes", "cgroup", "oom"}         # SPEC-0511: classes
     cg = next(c for c in rec["checks"] if c["name"] == "cgroup")
     assert cg["detail"]["state"] == "COMPLETED" and cg["detail"]["output"].split() == \
         ["2", str(1 << 30)]

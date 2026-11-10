@@ -130,7 +130,7 @@ def test_the_time_is_clamped_to_the_partition_maximum(wenv, fake):
     cfg = _cfg(wenv, slurm={"max_time_s": 600})
     assert _submit(cfg, _plain("j-clamp", time_s=3600))[0] == 0
     (argv,) = fake.calls("sbatch")
-    assert "--time=10" in argv and not any(a.startswith("--partition") for a in argv)
+    assert "--time=10" in argv and "--partition=nw-gatejob" in argv    # SPEC-0511: gatejob
     assert not any(a.startswith("--licenses") for a in argv)
     assert any("clamped" in w for w in _read(_job_dir(wenv, "j-clamp") / "job.json")
                ["slurm_warnings"])
@@ -443,8 +443,9 @@ def test_a_request_over_the_partition_and_node_limits_is_clamped(wenv, fake):
 
 
 def test_the_named_partition_s_limits_apply(wenv, fake):
-    cfg = _cfg(wenv, slurm={"partition": "nw-persona"})
-    assert _submit(cfg, _plain("j-persona-part", cpus=6, mem_mb=8192))[0] == 0
+    h = _plain("j-persona-part", cpus=6, mem_mb=8192)
+    h["payload"]["job_class"] = "persona"               # SPEC-0511: -> nw-persona
+    assert _submit(_cfg(wenv), h)[0] == 0
     opts = _argv_opts(fake.calls("sbatch")[0])
     assert opts["--cpus-per-task"] == "4" and opts["--mem"] == "8192M"
 

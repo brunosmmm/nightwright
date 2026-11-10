@@ -60,7 +60,11 @@ def record(jid, j):
             "state_reason": j.get("reason") or "None", "state_description": "",
             "cpus_per_task": num(j["cpus"]), "cpus": num(j["cpus"]),
             "memory_per_node": num(j["mem_mb"]), "comment": j.get("comment", ""),
-            "partition": j.get("partition") or "nw-gatejob", "user_name": "nw",
+            "partition": j.get("partition") or "nw-gatejob", "user_name": j.get("user") or "nw",
+            "qos": j.get("qos") or "", "nice": j.get("nice", 0), "hold": bool(j.get("held")),
+            "nodes": "fake" if j["state"] not in ("PENDING",) else "",
+            "submit_time": num(j.get("submit_ts") or 1700000000),
+            "start_time": num(j.get("start_ts") or 0),
             "time_limit": num(j.get("time_min") or 0), "restart_cnt": j.get("restart_cnt", 0),
             "licenses": j.get("licenses", ""),
             "exit_code": {"status": ["SUCCESS" if rc == 0 else "FAILED"],
@@ -93,6 +97,48 @@ def opts(args):
     return out, pos
 
 
+def control(st, pos):
+    """`scontrol hold|release|top|requeue N` and `scontrol update JobId=N Key=V...`."""
+    verb = pos[0]
+    kv = dict(x.split("=", 1) for x in pos[1:] if "=" in x)
+    jid = kv.get("JobId") if verb == "update" else (pos[1] if len(pos) > 1 else None)
+    j = st["jobs"].get(jid)
+    if j is None or jid in st["forgotten"]:
+        return 1, "", "Invalid job id specified"
+    deny = st.get("deny", {}).get(verb)
+    if deny and deny["left"] != 0:
+        if deny["left"] is not None:
+            deny["left"] -= 1
+        return 1, "", deny["err"] + f" for job {jid}"
+    if verb in ("hold", "release", "top") and j["state"] != "PENDING":
+        return 1, "", f"Job is no longer pending execution for job {jid}"
+    if verb == "hold":
+        j["held"], j["reason"] = True, "JobHeldUser"
+    elif verb == "release":
+        j["held"], j["reason"] = False, "None"
+    elif verb == "top":
+        st.setdefault("topped", []).append(jid)
+    elif verb == "requeue":
+        if j["state"] == "PENDING":
+            return 1, "", f"Job is pending execution for job {jid}"
+        j.update(state="PENDING", reason="BeginTime",
+                 restart_cnt=int(j.get("restart_cnt") or 0) + 1, pid=None)
+    else:
+        if "Partition" in kv:
+            if j["state"] != "PENDING":
+                return 1, "", f"Job is no longer pending execution for job {jid}"
+            if kv["Partition"] in st.get("reject", {}).get("partition", []):
+                return 1, "", f"Invalid partition name specified for job {jid}"
+            j["partition"] = kv["Partition"]
+        if "QOS" in kv:
+            j["qos"] = kv["QOS"]
+        if "Nice" in kv:
+            if int(kv["Nice"]) < 0:
+                return 1, "", f"Access/permission denied for job {jid}"
+            j["nice"] = int(kv["Nice"])
+    return 0, "", ""
+
+
 def main():
     name, args = sys.argv[1], sys.argv[2:]
     fd = os.open(STATE, os.O_RDWR)
@@ -119,13 +165,21 @@ def run(st, name, args):
     o, pos = opts(args)
     jobs = st["jobs"]
     if name == "sbatch":
+        part = o.get("partition") or o.get("p")
+        if part and part in st.get("reject", {}).get("partition", []):
+            return 1, "", ("sbatch: error: invalid partition specified: %%s\nsbatch: error: Batch "
+                           "job submission failed: Invalid partition name specified" %% part)
+        if o.get("qos") and o["qos"] in st.get("reject", {}).get("qos", []):
+            return 1, "", ("sbatch: error: Batch job submission failed: Invalid qos "
+                           "specification")
         jid = str(st["next_id"])
         st["next_id"] += 1
         mem = str(o.get("mem", "1024M"))
         mem_mb = int(float(mem[:-1]) * (1024 if mem[-1] == "G" else 1)) if mem[-1] in "MG" \
             else int(mem)
         j = {"name": o.get("job-name", "wrap"), "comment": o.get("comment", ""),
-             "partition": o.get("partition") or o.get("p"),
+             "partition": o.get("partition") or o.get("p"), "qos": o.get("qos"),
+             "user": st.get("user") or "nw",
              "cpus": int(o.get("cpus-per-task") or o.get("c") or 1), "mem_mb": mem_mb,
              "time_min": int(o.get("time") or 0), "licenses": o.get("licenses") or o.get("L") or "",
              "wrap": o.get("wrap"), "chdir": o.get("chdir"), "output": o.get("output"),
@@ -145,7 +199,8 @@ def run(st, name, args):
             if not known:
                 return 1, "", "slurm_load_jobs error: Invalid job id specified"
         else:
-            known = [i for i in jobs if i not in st["forgotten"]]
+            known = [i for i in jobs if i not in st["forgotten"]
+                     and ("u" not in o or (jobs[i].get("user") or "nw") == o["u"])]
         live = [record(i, jobs[i]) for i in known if jobs[i]["state"] not in ENDED]
         return 0, doc(live, ["squeue", *args]), ""
     if name == "scontrol":
@@ -171,6 +226,8 @@ def run(st, name, args):
         if pos[:2] == ["show", "node"]:
             return 0, ("NodeName=fake CoresPerSocket=6\n   CoreSpecCount=1 CPUSpecList=10-11 "
                        "MemSpecLimit=6000\n   CfgTRES=cpu=10,mem=31955M,billing=10\n"), ""
+        if pos[:1] in (["hold"], ["release"], ["top"], ["requeue"], ["update"]):
+            return control(st, pos)
         return 1, "", f"scontrol: unsupported {args}"
     if name == "scancel":
         jid = pos[-1] if pos else None
@@ -296,6 +353,20 @@ class SlurmFake:
         """Serve `scontrol show <what> --json` from `path` (None: the call fails)."""
         self._edit(lambda st: st["fixtures"].__setitem__(what, None if path is None
                                                          else str(path)))
+
+    def reject(self, what: str, name: str) -> None:
+        """sbatch / `scontrol update` refuse partition (or qos) `name` as Slurm does."""
+        self._edit(lambda st: st.setdefault("reject", {}).setdefault(what, []).append(name))
+
+    def deny(self, verb: str, err: str, times: int | None = None) -> None:
+        """`scontrol <verb>` fails with `err` (e.g. `top` without enable_user_top), the next
+        `times` calls only when given."""
+        self._edit(lambda st: st.setdefault("deny", {}).__setitem__(
+            verb, {"err": err, "left": times}))
+
+    def as_user(self, user: str) -> None:
+        """Jobs submitted from now on belong to `user` (default `nw`)."""
+        self._edit(lambda st: st.__setitem__("user", user))
 
     def heal(self, name: str) -> None:
         self._edit(lambda st: st["fail"].pop(name, None))

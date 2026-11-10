@@ -407,6 +407,7 @@ def _header(project_cfg: dict, campaign_state: dict, cfg, seq: int, job_id: str,
         payload["project"] = proj
     from . import gate_resources as GR          # SPEC-0504: the job's request
     payload["resources"] = GR.job_request(project_cfg.get("gates") or [], cfg)
+    payload["job_class"] = job_class(campaign_state)      # SPEC-0511
     if host_slots is not None:
         payload["host_slots"] = host_slots
     if any(g.get("writes") for g in gl):        # SPEC-0506: this coordinator takes `written`
@@ -418,6 +419,23 @@ def _header(project_cfg: dict, campaign_state: dict, cfg, seq: int, job_id: str,
                     "NW_BASE": base_name, **G.full_suite_env(campaign_state),
                     **G.all_tiers_env(cfg, campaign_state, header=True)},   # SPEC-0420/0490
             "timeout_s": job_timeout_s(cfg, gl), "attempt": 0, "payload": payload}
+
+
+def job_class(campaign_state: dict) -> str:
+    """SPEC-0511: the Slurm job class of a gate run for this campaign-shaped state: an explicit
+    `job_class`, else by its id: `GATEJOB-NNNN` (`nw gate run`, SPEC-0381) is `gatejob`, a
+    `sentinel-<project>` full-suite run (SPEC-0379) and a `sentinel-<project>-<job>` cadence run
+    (SPEC-0493; every cadence job is a SPEC-0489 heavy tier) are `bulk`, a campaign is
+    `campaign`. Persona jobs are `persona` (`remote_personas._header`)."""
+    explicit = campaign_state.get("job_class")
+    if explicit in ("campaign", "gatejob", "persona", "bulk"):
+        return explicit
+    cid = str(campaign_state.get("id") or "")
+    if cid.startswith("GATEJOB-"):
+        return "gatejob"
+    if cid.startswith("sentinel-"):
+        return "bulk"
+    return "campaign"
 
 
 def header_refusal(project_cfg: dict, campaign_state: dict, cfg, seq: int) -> str | None:
