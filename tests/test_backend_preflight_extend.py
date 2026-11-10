@@ -24,6 +24,8 @@ from nightwright.agentic.runner import (
     ClaudeRunner, CursorRunner, FakeRunner, PiRunner, PreflightHeldRunner, RunRequest, RunResult,
 )
 
+pytestmark = pytest.mark.fast
+
 
 def _pi_ok_env(monkeypatch):
     monkeypatch.setattr(BP, "_sdk_on_walk", lambda script, environ=None: True)
