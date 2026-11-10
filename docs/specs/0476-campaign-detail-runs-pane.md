@@ -1,10 +1,10 @@
 ---
 id: SPEC-0476
 title: "Campaign detail Runs pane: run table, verdict, and stream tail"
-status: in-progress
+status: done
 owner: user
 created: 2026-11-08
-updated: 2026-11-09
+updated: 2026-11-10
 kind: feature
 parent: SPEC-0405
 source_idea: IDEA-1035
@@ -277,6 +277,10 @@ Ran `uv run pytest tests/test_tui_campaign_runs.py`, `tests/test_tui_campaign_de
 ### Test record (2026-11-09, loop 1)
 
 Ran `uv run pytest tests/test_tui_campaign_runs.py` (14 passed) and `tests/test_tui_campaign_detail_ac.py -k runs` (3 passed). Full suite left to gating.
+
+### Test record (2026-11-10, loop 0 gate)
+
+Ran `python3 tools/test_tiers.py --check` (exit 0) and `uv run pytest -q tests/test_test_tiers.py::test_every_real_test_module_has_exactly_one_tier` after adding `pytestmark = pytest.mark.tui` to `tests/test_tui_campaign_runs.py`. Full suite left to gating.
 
 ### As shipped
 

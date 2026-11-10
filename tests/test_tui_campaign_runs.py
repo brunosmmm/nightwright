@@ -32,6 +32,8 @@ from nightwright.tui import campaign_detail as CD
 from nightwright.tui.app import IdeaDesk
 from waits import pilot_until
 
+pytestmark = pytest.mark.tui
+
 GATE_TITLE = "Command reference page does not list the new top-level `worker` command"
 MAJOR_TITLE = "`origin/<rest>` base name path (refs/remotes/origin/*) untested"
 CID_MULTI = MULTI
