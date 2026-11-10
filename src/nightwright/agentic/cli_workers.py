@@ -42,6 +42,9 @@ def workers_group():
     nw workers rm NAME                 unregister (held slots are untouched)
     nw workers add box --pull          a pull worker: prints its one-time enrolment blob
     nw workers token NAME --rotate     a pull worker's new token + secret (SPEC-0334)
+    nw workers config NAME get [KEY]   read allowlisted host config keys (SPEC-0538)
+    nw workers config NAME set KEY VALUE
+                                       record desired executor and write agentic.workers.executor
     """
 
 
@@ -403,6 +406,14 @@ def workers_check(cfg, name, as_json, auth, slurm=False):
                                 if isinstance(r.get("info"), dict) else None)
             if cap:
                 _say(f"  {cap}", "dim")
+            info = r.get("info")
+            if isinstance(info, dict):
+                ex = info.get("executor")
+                if isinstance(ex, str):
+                    _say(f"  executor: {ex}", "dim")
+                ex_err = info.get("executor_error")
+                if isinstance(ex_err, str):
+                    _say(f"  executor_error: {ex_err}", "red")
     if WK.auto_update(cfg):                      # SPEC-0386: schedule stale workers
         for r in results:
             if any(w.startswith("worker stale:") for w in r["warnings"]):
@@ -599,6 +610,147 @@ def workers_rm(cfg, name):
         _say(f"{name}: removed and revoked" + (f"; {len(lost)} job(s) given up" if lost else ""))
         return
     _say(f"{name}: removed")
+
+
+def _workers_config_record(cfg, name):
+    rec = _find(_load_or_fail(cfg), name)
+    w = WK.normalize(cfg, rec)
+    if w["mode"] == "pull":
+        raise click.ClickException("no ssh to a pull worker")
+    return rec, w
+
+
+def _ensure_ssh_dir(cfg, w: dict) -> None:
+    try:
+        WK.ensure_record_ssh_dir(cfg, w)
+    except OSError as e:
+        raise click.ClickException(f"ssh socket directory unusable: {e}")
+
+
+def _desired_str(rec: dict) -> str | None:
+    ex = rec.get("executor")
+    return ex if isinstance(ex, str) else None
+
+
+@workers_group.command("config")
+@click.argument("name")
+@click.argument("op", type=click.Choice(["get", "set"]))
+@click.argument("args", nargs=-1)
+@click.option("--json", "as_json", is_flag=True)
+@click.pass_obj
+def workers_config(cfg, name, op, args, as_json):
+    """Read or write allowlisted keys on a worker's config.yaml over SSH (SPEC-0538)."""
+    from . import worker_host_config as WHC
+    from . import workers_host_config as WC
+    rec, w = _workers_config_record(cfg, name)
+    desired = _desired_str(rec)
+
+    if op == "get":
+        _ensure_ssh_dir(cfg, w)
+        if len(args) > 1:
+            raise click.UsageError("get takes at most one KEY")
+        key = args[0] if args else None
+        if key is not None:
+            try:
+                WHC.validate_key(key)
+            except ValueError as e:
+                raise click.UsageError(str(e)) from e
+        tail = ["get", *( [key] if key else [])]
+        remote, reason, _code = WC.remote_config_set(w, tail)
+        if remote is None or not remote.get("ok"):
+            err = reason or (remote or {}).get("error") or "host read failed"
+            if as_json:
+                _dump_json({"name": name, "op": "get", "desired": desired, "error": err})
+            else:
+                if key:
+                    _say(f"{name} executor desired={desired or '(unset)'}; "
+                         f"host not updated: {err}", "red")
+                else:
+                    _say(f"{name}: get failed: {err}", "red")
+            raise SystemExit(1)
+        if as_json:
+            if key:
+                keys = {key: {"value": remote.get("value"), "effective": remote.get("effective")}}
+            else:
+                keys = remote.get("keys") or {}
+            _dump_json({"name": name, "op": "get", "desired": desired, "keys": keys})
+            return
+        if key:
+            live = remote.get("value")
+            _say(f"{name} executor live={live if live is not None else '(unset)'} "
+                 f"effective={remote.get('effective')} "
+                 f"desired={desired or '(unset)'}")
+        else:
+            for k, cell in (remote.get("keys") or {}).items():
+                live = cell.get("value")
+                _say(f"{name} {k} live={live if live is not None else '(unset)'} "
+                     f"effective={cell.get('effective')} desired={desired or '(unset)'}")
+        return
+
+    if op != "set":
+        raise click.UsageError("unknown operation")
+    if len(args) != 2:
+        raise click.UsageError("set requires KEY VALUE")
+    key, value = args
+    try:
+        WHC.validate_value(key, value)
+    except ValueError as e:
+        raise click.UsageError(str(e)) from e
+
+    def fn(records):
+        for r in records:
+            if r.get("name") == name:
+                r["executor"] = value
+    try:
+        _update(cfg, fn)
+    except click.ClickException:
+        raise
+    desired = value
+    _ensure_ssh_dir(cfg, w)
+
+    remote, reason, _code = WC.remote_config_set(w, ["set", key, value])
+    pushed = bool(remote and remote.get("ok"))
+    unchanged = bool(remote and remote.get("unchanged"))
+    eff = remote.get("effective") if isinstance(remote, dict) else None
+
+    def _set_json(err: str | None, exit_code: int = 1):
+        payload = {"name": name, "op": "set", "key": key, "value": value,
+                   "effective": eff, "desired": desired, "unchanged": unchanged,
+                   "pushed": pushed}
+        if err:
+            payload["error"] = err
+        if as_json:
+            _dump_json(payload)
+        else:
+            if pushed and err:
+                tag = "unchanged" if unchanged else "written"
+                _say(f"{name} executor {value} ({tag}); info cache not refreshed: {err}", "red")
+            elif pushed:
+                tag = "unchanged" if unchanged else "written"
+                _say(f"{name} executor {value} ({tag})", "green")
+                if not unchanged:
+                    _say(f"{name}: jobs already running keep the executor they started with",
+                         "dim")
+            else:
+                _say(f"{name} executor desired={value}; host not updated: {err or reason}", "red")
+        raise SystemExit(exit_code)
+
+    if not pushed:
+        _set_json(reason or (remote or {}).get("error") or "push failed")
+
+    info, ierr = WC.remote_info(w)
+    if ierr or not isinstance(info, dict) or info.get("executor") != value:
+        _set_json(ierr or f"info executor is {info.get('executor')!r}, not {value!r}")
+    WK._cache_info(cfg, name, info)
+    if as_json:
+        _dump_json({"name": name, "op": "set", "key": key, "value": value,
+                    "effective": eff, "desired": desired, "unchanged": unchanged,
+                    "pushed": True})
+        return
+    tag = "unchanged" if unchanged else "written"
+    _say(f"{name} executor {value} ({tag})", "green")
+    if not unchanged:
+        _say(f"{name}: jobs already running keep the executor they started with", "dim")
 
 
 @workers_group.command("update")

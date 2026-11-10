@@ -43,6 +43,10 @@ def execs(monkeypatch, own):
     ("nw worker gc --keep-days 0", ["gc", "--keep-days", "0"]),
     ("nw worker update", ["update"]),                       # SPEC-0369
     ("nw worker update --force", ["update", "--force"]),
+    ("nw worker config-set get", ["config-set", "get"]),
+    ("nw worker config-set get executor", ["config-set", "get", "executor"]),
+    ("nw worker config-set set executor local", ["config-set", "set", "executor", "local"]),
+    ("nw worker config-set set executor slurm", ["config-set", "set", "executor", "slurm"]),
 ])
 def test_allowed_commands_are_execd(execs, own, cmd, argv):
     W.ssh_command({"SSH_ORIGINAL_COMMAND": cmd})
@@ -66,6 +70,9 @@ def test_allowed_commands_are_execd(execs, own, cmd, argv):
     "nw worker update ;id",
     "nw worker update --force; id",
     "nw worker update $(id)",
+    "nw worker config-set",
+    "nw worker config-set set executor SLURM",
+    "nw worker config-set set executor local; id",
     "nw worker update /tmp/x.whl",
     "nw worker gate-job --force",
     "nw worker gc --keep-days -1",

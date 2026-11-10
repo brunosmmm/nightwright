@@ -64,7 +64,7 @@ EXIT_REFUSED = 2
 UPDATING_ERROR = "worker updating"
 SSH_SUBCOMMANDS = ("info", "have", "gate-job", "gc", "submit", "attach", "poll", "cancel", "jobs",
                    "claude-check", "cursor-check", "pi-check", "update", "slurm-check",
-                   "slurm-jobs", "slurm-ctl")
+                   "slurm-jobs", "slurm-ctl", "config-set")
 # when this interpreter started (SPEC-0369): a claim that began before an install did is the old
 # code, and must not run against the venv that install replaced
 PROCESS_STARTED = time.time()
@@ -1561,8 +1561,9 @@ def check_ssh_command(original: str | None) -> list[str]:
     `cancel <job>`; `jobs [--json]`; SPEC-0344's `claude-check [--auth]`; SPEC-0436's
     `cursor-check`; SPEC-0465's `pi-check`; SPEC-0369's `update [--force]`; SPEC-0510's
     `slurm-check [--json]`; SPEC-0512's `slurm-jobs [--json]`,
-    `slurm-ctl (hold|release|top|requeue|cancel) <job>`, `slurm-ctl nice <job> <0..10000>` and
-    `slurm-ctl class <job> (campaign|gatejob|persona|bulk)`."""
+    `slurm-ctl (hold|release|top|requeue|cancel) <job>`, `slurm-ctl nice <job> <0..10000>`,
+    `slurm-ctl class <job> (campaign|gatejob|persona|bulk)`; and SPEC-0538's
+    `config-set get [executor]`, `config-set set executor (local|slurm)`."""
     if not original or not original.strip():
         raise ValueError("empty command")
     try:
@@ -1602,6 +1603,9 @@ def check_ssh_command(original: str | None) -> list[str]:
         ok = args in ([], ["--json"])
     elif sub == "slurm-ctl":                    # SPEC-0512: a closed verb set
         ok = _slurm_ctl_args(args)
+    elif sub == "config-set":                   # SPEC-0538
+        ok = args in (["get"], ["get", "executor"],
+                      ["set", "executor", "local"], ["set", "executor", "slurm"])
     elif sub == "cancel":
         ok = len(args) == 1 and _job_arg(args[0])
     elif sub in ("attach", "poll"):

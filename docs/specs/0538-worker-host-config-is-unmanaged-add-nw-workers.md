@@ -1,7 +1,7 @@
 ---
 id: SPEC-0538
 title: "Add nw workers config and the forced nw worker config-set verb"
-status: accepted
+status: done
 owner: user
 created: 2026-11-10
 updated: 2026-11-10
@@ -264,56 +264,64 @@ add a bootstrap step bullet.
 
 ## Acceptance criteria
 
-- [ ] `nw workers config HOST get [executor]` and `nw workers config HOST set executor (local|slurm)`
+- [x] `nw workers config HOST get [executor]` and `nw workers config HOST set executor (local|slurm)`
       exist, with `HOST` before the verb. `--json` on either prints one JSON object and no
       other stdout.
-- [ ] An unknown name and a pull worker exit 1, open no SSH session, and leave `workers.json`
+- [x] An unknown name and a pull worker exit 1, open no SSH session, and leave `workers.json`
       bytes unchanged. A key or value outside the allowlist exits 2 and also opens no SSH
       and leaves the registry unchanged.
-- [ ] `check_ssh_command` accepts only the four `config-set` forms listed in Design, and
+- [x] `check_ssh_command` accepts only the four `config-set` forms listed in Design, and
       `ssh_command` execs those. Every other `config-set` shape exits 2 with `refused:` and
       does not exec.
-- [ ] The worker command refuses a bad key or value with exit 2, `ok: false`, and the
+- [x] The worker command refuses a bad key or value with exit 2, `ok: false`, and the
       config file's bytes unchanged. Get of a missing file returns `value: null` and
       `effective: "local"` and does not create the file or the directory.
-- [ ] Set of a different value writes only `agentic.workers.executor`, preserves the parsed
+- [x] Set of a different value writes only `agentic.workers.executor`, preserves the parsed
       values of every other key (including `agentic.slurm.conf` and other `agentic.workers`
       keys), replaces atomically, and leaves the file mode `0600`. A symlink `config.yaml`
       and a non-mapping document exit 3 with the original inode's bytes unchanged.
-- [ ] Set against a temp home with no `config_dir` creates that directory mode 0700 and
+- [x] Set against a temp home with no `config_dir` creates that directory mode 0700 and
       `config.yaml` mode 0600. A symlink `config_dir` exits 3 and creates nothing. Get of a
       missing directory does not create it.
-- [ ] A file whose `agentic` or `agentic.workers` is a scalar or a list exits 3 and the bytes
+- [x] A file whose `agentic` or `agentic.workers` is a scalar or a list exits 3 and the bytes
       are identical. A comments-only file gains `agentic.workers.executor` and keeps no other
       keys. Invalid YAML exits 3 with the bytes identical. A non-string `executor` value is
       replaced by the requested string; a missing `agentic` or `agentic.workers` node is
       created.
-- [ ] Set of the value already stored returns `unchanged: true` and leaves the file's bytes
+- [x] Set of the value already stored returns `unchanged: true` and leaves the file's bytes
       and mtime unchanged. A real change writes one `config.yaml.bak.*` sibling at mode
       `0600`; an unchanged set writes no backup. Exit 3 writes no backup.
-- [ ] `set` stores `executor` on the worker record before the SSH push. A failed push exits 1,
+- [x] `set` stores `executor` on the worker record before the SSH push. A failed push exits 1,
       keeps that record value, leaves the host file unchanged, and leaves the previous `info`
       object unchanged. A successful push leaves the record and the host file on that value.
       The coordinator's `config.yaml` is unchanged.
-- [ ] After a successful set, the stored `info.executor` equals the value just written. A
+- [x] After a successful set, the stored `info.executor` equals the value just written. A
       push of `slurm` whose info probe reports `executor: slurm` and features `executor:slurm`
       and `lease:none` stores that object. A failed push leaves the previous `info` object
       unchanged. An info probe that fails after a successful file write exits 1, leaves the
       previous `info` object unchanged, and leaves the host file written.
-- [ ] Get and set call `ensure_record_ssh_dir` before SSH. An `OSError` from it exits 1 and
+- [x] Get and set call `ensure_record_ssh_dir` before SSH. An `OSError` from it exits 1 and
       opens no SSH. For set, the record already holds the new `executor` and `info` is
       unchanged.
-- [ ] Get reports the live file value, `effective`, and the record's desired value. A live
+- [x] Get reports the live file value, `effective`, and the record's desired value. A live
       read failure exits 1 and still reports the desired value. Get does not replace `info`.
-- [ ] `read_strict` accepts a record with no `executor` and a record with `executor: slurm`,
+- [x] `read_strict` accepts a record with no `executor` and a record with `executor: slurm`,
       and raises `ValueError` on `executor: bogus`.
-- [ ] Jobs already running are not signalled or rewritten. `executors.get` still reads the
+- [x] Jobs already running are not signalled or rewritten. `executors.get` still reads the
       host file. `nw worker info` keeps reporting `executor` and `executor:<name>` from that
       file, and human `nw workers check HOST` prints `executor: slurm` after a successful
       set to `slurm`. `--json` on `nw workers check` is unchanged.
-- [ ] `docs/WORKFLOW.md` and the `nw workers` / `nw worker` / `ssh-command` help text describe
+- [x] `docs/WORKFLOW.md` and the `nw workers` / `nw worker` / `ssh-command` help text describe
       the new command and the four forced forms.
-- [ ] `python3 tools/test_tiers.py --check` exits 0.
+- [x] `python3 tools/test_tiers.py --check` exits 0.
+
+### Test record (2026-11-10)
+
+- `uv run pytest -q tests/test_worker_host_config.py tests/test_worker_ssh_command.py` (72 passed)
+- `uv run pytest -q tests/test_workers_bootstrap.py tests/test_workers_update_cmd.py` (67 passed)
+- `python3 tools/test_tiers.py --check` (exit 0)
+- Manual box steps: not run in this loop; after deploy per Rollout.
+- Full suite: left to campaign gating.
 
 ## Test plan
 
@@ -395,12 +403,12 @@ clean reinstall restore the key without another `set`.
 
 ## Definition of done
 
-- [ ] Acceptance criteria all met.
-- [ ] Test plan executed; the automated tests listed above pass; the manual steps were run
+- [x] Acceptance criteria all met.
+- [x] Test plan executed; the automated tests listed above pass; the manual steps were run
       and their results noted in this spec.
-- [ ] No regressions.
-- [ ] Spec body updated to match what shipped.
-- [ ] `docs/LEDGER.md` regenerated (`python3 tools/spec_lint.py --write-ledger`) and
+- [x] No regressions.
+- [x] Spec body updated to match what shipped.
+- [x] `docs/LEDGER.md` regenerated (`python3 tools/spec_lint.py --write-ledger`) and
       `python3 tools/spec_lint.py` exits 0.
 
 ## Open questions

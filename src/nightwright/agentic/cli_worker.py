@@ -30,6 +30,9 @@ def worker_group():
     nw worker jobs --json              the jobs on this worker and their states
     nw worker gc --keep-days 2         age out job dirs and cached objects
     nw worker update [--force]         install the wheel on stdin (SPEC-0369)
+    nw worker config-set get [executor]
+    nw worker config-set set executor (local|slurm)
+                                       allowlisted host config.yaml keys (SPEC-0538)
     nw worker slurm-check [--json]     can this user run Slurm jobs (SPEC-0510)
     nw worker slurm-jobs --json        this worker's live nw Slurm jobs (SPEC-0512)
     nw worker slurm-ctl VERB JOB [ARG] hold|release|top|requeue|cancel|nice|class
@@ -72,6 +75,16 @@ def worker_cursor_check(cfg):
     click.echo(json.dumps(rec))
     if not rec["ok"]:
         raise SystemExit(1)
+
+
+@worker_group.command("config-set", context_settings={"ignore_unknown_options": True})
+@click.argument("argv", nargs=-1)
+@click.pass_obj
+def worker_config_set(cfg, argv):
+    """SPEC-0538: read or write allowlisted keys in this host's config.yaml (one JSON line).
+    `get [executor]`; `set executor local|slurm`. Exit 2 refuses; exit 3 leaves the file."""
+    from . import worker_host_config as WHC
+    raise SystemExit(WHC.run(list(argv), cfg))
 
 
 @worker_group.command("slurm-check")
@@ -310,7 +323,7 @@ def worker_update(cfg, force):
 def worker_ssh_command():
     """The SSH forced command: exec `nw worker
     <info|have|gate-job|gc|submit|attach|poll|cancel|jobs|claude-check|cursor-check|update|
-    slurm-check|slurm-jobs|slurm-ctl>` from SSH_ORIGINAL_COMMAND, refuse
+    slurm-check|slurm-jobs|slurm-ctl|config-set>` from SSH_ORIGINAL_COMMAND, refuse
     anything else (exit 2)."""
     raise SystemExit(W.ssh_command())
 

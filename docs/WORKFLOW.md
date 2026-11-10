@@ -300,8 +300,9 @@ Setup on the worker (all of it is mandatory):
    reads `SSH_ORIGINAL_COMMAND` and execs only `nw worker info [--json]`,
    `have --repo <key> <sha>...`, `gate-job`, `gc [--keep-days <n>]` and the async job
    commands (SPEC-0340) `submit`, `attach <job> [--from <n>]`,
-   `poll <job> [--from <n>] [--renew]`, `cancel <job>` and `jobs [--json]`; anything else
-   exits 2 with `refused: <reason>` and runs nothing.
+   `poll <job> [--from <n>] [--renew]`, `cancel <job>` and `jobs [--json]`; SPEC-0538's
+   `config-set get [executor]` and `config-set set executor local|slurm`; anything else exits 2
+   with `refused: <reason>` and runs nothing.
 
 **Async jobs (SPEC-0340).** `nw worker submit` takes the same header and bundle as
 `gate-job`, starts a detached job process and returns at once; the job survives the SSH
@@ -323,8 +324,9 @@ Register a worker on the coordinator with the registry commands (SPEC-0337; not 
 confused with `nw worker`, which runs on the worker host): `nw workers add NAME --ssh me@box
 [--slots N] [--nw PATH] [--no-check]` registers it (it runs `check` first unless `--no-check`),
 and `nw workers check [NAME] [--json]` probes over SSH with `nw worker info --json` (exit 1 if
-any probe fails; a version mismatch or a `worker stale` build id only warns). `nw workers list|on|off|rm` manage
-the rest.
+any probe fails; a version mismatch or a `worker stale` build id only warns). `nw workers
+config NAME set executor slurm` records the desired executor on the worker and writes
+`agentic.workers.executor` on the host. `nw workers list|on|off|rm` manage the rest.
 
 **Bootstrap (SPEC-0354).** `nw workers bootstrap NAME --ssh nw@box [--slots N] [--install-key]
 [--admin me@box] [--reinstall] [--dry-run]` does steps 2 and 3 and the registration, skipping what is already

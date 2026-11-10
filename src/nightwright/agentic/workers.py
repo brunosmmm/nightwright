@@ -115,6 +115,12 @@ def _check_record(rec) -> None:
     mode = rec.get("mode", "ssh")
     if mode not in MODES:
         raise ValueError(f"worker {name}: mode {mode!r} is not one of {list(MODES)}")
+    ex = rec.get("executor")
+    if ex is not None:
+        from .worker_host_config import ALLOWED
+        if ex not in ALLOWED["executor"]:
+            raise ValueError(f"worker {name}: executor {ex!r} is not one of "
+                             f"{sorted(ALLOWED['executor'])}")
     if mode == "pull":                          # SPEC-0334: no SSH; a token hash instead
         th = rec.get("token_sha256")
         if not isinstance(th, str) or not re.fullmatch(r"[0-9a-f]{64}", th):
