@@ -1,9 +1,10 @@
 ---
 id: SPEC-0534
 title: "Reconcile a draining worker's confirmed-gone remote job"
-status: proposed
+status: accepted
 owner: user
 created: 2026-11-10
+updated: 2026-11-10
 kind: feature
 source_idea: IDEA-1162
 tags: [agentic, remote, workers]
