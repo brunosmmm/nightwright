@@ -26,7 +26,9 @@ from waits import join, until
 pytestmark = pytest.mark.remote
 
 GOLDEN = Path(__file__).parent / "data" / "remote_gates_golden.json"
-_MASK = {"started_at", "duration_s", "slot_wait_s", "ts", "since", "waited_s", "nw_sha"}
+# SPEC-0504: a gate's measured usage (`resources.used`) varies run to run like its duration
+_MASK = {"started_at", "duration_s", "slot_wait_s", "ts", "since", "waited_s", "nw_sha",
+         "cpu_s", "max_rss_mb", "wall_s"}
 
 
 def _mask(obj, tmp):

@@ -264,7 +264,8 @@ def test_no_workers_run_matches_the_pre_epic_golden(tmp_path, monkeypatch):
                "error", "log")
     assert {k: mine_s[k] for k in sfields} == {k: base_s[k] for k in sfields}
     assert mine_s["schema"] == "nw.gate.v1" and mine_s["timeout_s"] == 60 and mine_s["error"] is None
-    assert set(mine_s) == set(base_s) and mine_s["cwd"] and base_s["cwd"]
+    # SPEC-0504: the pre-epic snapshot drops a sidecar's `resources`; SPEC-0338's golden has it
+    assert set(mine_s) == set(base_s) - {"resources"} and mine_s["cwd"] and base_s["cwd"]
     assert mine_s["started_at"] and base_s["started_at"]
     assert mine_s["duration_s"] == base_s["duration_s"] == "<X>"
     assert sha.sub("<SHA>", snap["files"]["001-ok.log"]) == \
@@ -483,7 +484,7 @@ def test_a_killed_persona_job_is_retried_and_the_campaign_merges(tmp_path, monke
     # no `done` frame, and exactly one implementer commit is on the merged branch (the retry's)
     assert json.loads((jdir / "result.json").read_text()) == {
         "state": "lost", "frame": None, "reaped_at": json.loads(
-            (jdir / "result.json").read_text())["reaped_at"]}
+            (jdir / "result.json").read_text())["reaped_at"], "attempt": 1}    # SPEC-0503
     assert '"done"' not in (jdir / "frames.jsonl").read_text()
     merged = _git(c.repo, "rev-parse", "main")
     assert merged == st["close"]["merged_sha"]

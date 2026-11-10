@@ -41,6 +41,19 @@
           "name": "ok",
           "ok": true,
           "required": true,
+          "resources": {
+            "request": {
+              "cpus": 1,
+              "licenses": {},
+              "mem_mb": 1024
+            },
+            "used": {
+              "cpu_s": "<X>",
+              "max_rss_mb": "<X>",
+              "rss_scope": "max_process",
+              "wall_s": "<X>"
+            }
+          },
           "tail": "hello\n044090052af4839a792db70550a24512ba8ee79f",
           "timed_out": false
         },
@@ -53,6 +66,19 @@
           "name": "opt",
           "ok": false,
           "required": false,
+          "resources": {
+            "request": {
+              "cpus": 1,
+              "licenses": {},
+              "mem_mb": 1024
+            },
+            "used": {
+              "cpu_s": "<X>",
+              "max_rss_mb": "<X>",
+              "rss_scope": "max_process",
+              "wall_s": "<X>"
+            }
+          },
           "tail": "boom",
           "timed_out": false
         },
@@ -89,6 +115,19 @@
           "name": "flaky",
           "ok": true,
           "required": true,
+          "resources": {
+            "request": {
+              "cpus": 1,
+              "licenses": {},
+              "mem_mb": 1024
+            },
+            "used": {
+              "cpu_s": "<X>",
+              "max_rss_mb": "<X>",
+              "rss_scope": "max_process",
+              "wall_s": "<X>"
+            }
+          },
           "tail": "try 1",
           "timed_out": false
         }
@@ -136,6 +175,19 @@
       "name": "flaky",
       "ok": true,
       "required": true,
+      "resources": {
+        "request": {
+          "cpus": 1,
+          "licenses": {},
+          "mem_mb": 1024
+        },
+        "used": {
+          "cpu_s": "<X>",
+          "max_rss_mb": "<X>",
+          "rss_scope": "max_process",
+          "wall_s": "<X>"
+        }
+      },
       "schema": "nw.gate.v1",
       "started_at": "<X>",
       "timed_out": false,
@@ -153,6 +205,19 @@
       "name": "flaky",
       "ok": true,
       "required": true,
+      "resources": {
+        "request": {
+          "cpus": 1,
+          "licenses": {},
+          "mem_mb": 1024
+        },
+        "used": {
+          "cpu_s": "<X>",
+          "max_rss_mb": "<X>",
+          "rss_scope": "max_process",
+          "wall_s": "<X>"
+        }
+      },
       "schema": "nw.gate.v1",
       "started_at": "<X>",
       "timed_out": false,
@@ -169,6 +234,19 @@
       "name": "ok",
       "ok": true,
       "required": true,
+      "resources": {
+        "request": {
+          "cpus": 1,
+          "licenses": {},
+          "mem_mb": 1024
+        },
+        "used": {
+          "cpu_s": "<X>",
+          "max_rss_mb": "<X>",
+          "rss_scope": "max_process",
+          "wall_s": "<X>"
+        }
+      },
       "schema": "nw.gate.v1",
       "started_at": "<X>",
       "timed_out": false,
@@ -185,6 +263,19 @@
       "name": "opt",
       "ok": false,
       "required": false,
+      "resources": {
+        "request": {
+          "cpus": 1,
+          "licenses": {},
+          "mem_mb": 1024
+        },
+        "used": {
+          "cpu_s": "<X>",
+          "max_rss_mb": "<X>",
+          "rss_scope": "max_process",
+          "wall_s": "<X>"
+        }
+      },
       "schema": "nw.gate.v1",
       "started_at": "<X>",
       "timed_out": false,
@@ -220,6 +311,19 @@
         "name": "ok",
         "ok": true,
         "required": true,
+        "resources": {
+          "request": {
+            "cpus": 1,
+            "licenses": {},
+            "mem_mb": 1024
+          },
+          "used": {
+            "cpu_s": "<X>",
+            "max_rss_mb": "<X>",
+            "rss_scope": "max_process",
+            "wall_s": "<X>"
+          }
+        },
         "tail": "hello\n044090052af4839a792db70550a24512ba8ee79f",
         "timed_out": false
       },
@@ -232,6 +336,19 @@
         "name": "opt",
         "ok": false,
         "required": false,
+        "resources": {
+          "request": {
+            "cpus": 1,
+            "licenses": {},
+            "mem_mb": 1024
+          },
+          "used": {
+            "cpu_s": "<X>",
+            "max_rss_mb": "<X>",
+            "rss_scope": "max_process",
+            "wall_s": "<X>"
+          }
+        },
         "tail": "boom",
         "timed_out": false
       },
@@ -268,6 +385,19 @@
         "name": "flaky",
         "ok": true,
         "required": true,
+        "resources": {
+          "request": {
+            "cpus": 1,
+            "licenses": {},
+            "mem_mb": 1024
+          },
+          "used": {
+            "cpu_s": "<X>",
+            "max_rss_mb": "<X>",
+            "rss_scope": "max_process",
+            "wall_s": "<X>"
+          }
+        },
         "tail": "try 1",
         "timed_out": false
       }

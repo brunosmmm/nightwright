@@ -32,8 +32,11 @@ _MASKS = (
 )
 # `prompt_sha256` / `profile_sha256` hash text that contains the temp path, so they are masked
 # like `nw_sha`. `head`, `tree` and `seq` are stable once shas are masked and are not dropped.
+# SPEC-0504: a gate's `resources` (request and measured usage) is masked like a duration; its
+# presence on every gate result is kept (`with_kept_fields`), and sidecar files drop it
 _MASKED_KEYS = frozenset({"ts", "duration_s", "nw_sha", "slot_wait_s", "started_at", "at",
-                          "finished_at", "elapsed_s", "uid", "prompt_sha256", "profile_sha256"})
+                          "finished_at", "elapsed_s", "uid", "prompt_sha256", "profile_sha256",
+                          "resources"})
 
 
 def _walk(obj, tmp: str):
@@ -78,12 +81,29 @@ def with_kept_fields(golden: dict) -> dict:
         if e.get("type") == "gate":
             e["head"] = "<SHA>"
             e["tree"] = "<SHA>"
+            e["results"] = [{**r, "resources": "<X>"} for r in e.get("results") or []]
         if e.get("type") == "note" and not any(x.get("type") == "review_outcome" for x in events):
             events.append(dict(_REVIEW_OUTCOME))
         events.append(e)
     for i, e in enumerate(events, 1):
         e["seq"] = i
     return {"events": events, "files": golden["files"], "final": golden["final"]}
+
+
+def _without_resources(p: Path) -> str:
+    """A gate sidecar's text without SPEC-0504's `resources` (written the way `gates.py` writes
+    it), so the pre-epic sidecars still compare byte for byte; any other file as it is."""
+    text = p.read_text(errors="replace")
+    if p.suffix != ".json":
+        return text
+    try:
+        rec = json.loads(text)
+    except ValueError:
+        return text
+    if not isinstance(rec, dict) or "resources" not in rec:
+        return text
+    rec.pop("resources")
+    return json.dumps(rec, indent=2, ensure_ascii=False) + "\n"
 
 
 def snapshot(cfg: dict, cid: str, tmp) -> dict:
@@ -97,7 +117,7 @@ def snapshot(cfg: dict, cid: str, tmp) -> dict:
     if gdir.is_dir():
         for p in sorted(gdir.iterdir()):
             if p.is_file():
-                files[_walk(p.name, tmp)] = _walk(p.read_text(errors="replace"), tmp)
+                files[_walk(p.name, tmp)] = _walk(_without_resources(p), tmp)
     return {"events": _walk(S.read_ledger(cfg, cid), tmp), "files": files,
             "final": {"state": st["state"], "close": _walk(st.get("close"), tmp)}}
 
