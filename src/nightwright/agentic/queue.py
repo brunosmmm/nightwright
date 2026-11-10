@@ -2841,8 +2841,16 @@ def _do_spec_review(ctx: _Ctx, state: dict, step: Step, run_id: str, req,
                     env_interrupt = True
         if not res.interrupted:
             res.interrupted = ctx.stop.is_set()
-        if git.rev_parse(worktree) != head or _spec_sha(spec_file) != sr["sha"] \
-                or not git.is_clean(worktree, untracked=False):
+        moved = False
+        try:
+            moved = git.rev_parse(worktree) != head
+        except GitError:
+            if not env_interrupt:
+                raise
+            moved = True
+        dirty = moved or _spec_sha(spec_file) != sr["sha"] \
+                or not git.is_clean(worktree, untracked=False)
+        if dirty:
             sr["saved"] = _save_worktree_changes(worktree, state["id"], run_id, head)
             if branch and git.current_branch(worktree) != branch:
                 git.git(worktree, "checkout", "-f", branch)
@@ -2913,7 +2921,8 @@ def _do_finalize_split(ctx: _Ctx, state: dict) -> StepResult:
 
 
 def _do_persona(ctx: _Ctx, state: dict, step: Step, run_id: str, req, budget: float,
-                hooks: RunHooks | None = None, adopted: dict | None = None) -> StepResult:
+                hooks: RunHooks | None = None, adopted: dict | None = None,
+                slot_hold=None) -> StepResult:
     """Worker thread: run the persona; for the implementer, commit afterwards (the triager and
     the reviewer are read-only and commit nothing). With `hooks` (SPEC-0225) the run may be
     detached by the pool: then nothing happens here and the result says so. `adopted` marks a
@@ -2929,6 +2938,9 @@ def _do_persona(ctx: _Ctx, state: dict, step: Step, run_id: str, req, budget: fl
         if adopted is None:                       # SPEC-0484: never in place of a live run
             local = _preflight_hold(ctx, state, req, local)
         reservations = getattr(ctx, "_slot_reservations", None)
+        if slot_hold is not None:
+            persona = step.persona or req.persona
+            reservations = {(state["id"], persona): slot_hold}
         remote = RPS.dispatch(cfg, state, step.kind, req, adopted=adopted is not None,
                               local=local, reservations=reservations) if cfg is not None else None
         runner = remote or local
@@ -5602,8 +5614,12 @@ def _submit(ctx: _Ctx, pool: StepPool, report: TickReport, pending_agent: list,
             fl.runs.append((run_id, getattr(req, "timeout_s", None)))
         else:
             hooks = pool.hooks(req.run_dir)
+            slot_hold = None
+            reservations = getattr(ctx, "_slot_reservations", None)
+            if reservations is not None and step.persona:
+                slot_hold = reservations.pop((st["id"], step.persona), None)
             fl.tasks.append((step, pool.submit(_do_persona, ctx, st, step, run_id, req, budget,
-                                               hooks), hooks))
+                                               hooks, None, slot_hold), hooks))
             rows[st["id"]]["run_ids"].append(run_id)
             fl.runs.append((run_id, getattr(req, "timeout_s", None)))
     for group in groups:              # a fan-out whose every prepare failed: nothing to run
@@ -6883,6 +6899,7 @@ def _prepare_reviews(ctx: _Ctx, pgate: PG.Gate, st: dict, step: Step, profile: d
     for persona in step.personas:
         sub = Step("review", persona=persona, personas=step.personas)
         if _hold_local_backend_before_prepare(pgate, st, persona, sub):
+            pgate.release_campaign_reservations(st["id"], step.personas)
             pgate._hold(st["id"], "backend_unavailable")
             return None
     group = _ReviewGroup(st, step)

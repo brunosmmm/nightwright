@@ -385,9 +385,8 @@ class Gate:
                     self._backend[key] = None
                 if self._backend[key] is not None:
                     BP.note_fault(self.cfg, kind, self._backend[key], where="gate")
-            if self._backend[key] is not None:
+            if self._backend[key] is not None and fault is None:
                 fault = self._backend[key]
-                break
         if fault is None:
             return None
         if remote_ok:
@@ -404,12 +403,15 @@ class Gate:
                         if pk in ("cursor", "pi") and self._backend.get(key) is not None:
                             failing.append(persona)
                     if failing:
+                        staged: dict = {}
                         for persona in failing:
                             req = RPS._probe_request(self.cfg, state, persona, step.kind)
                             if req is None or not RPS.can_dispatch(
                                     self.cfg, state, step.kind, req,
-                                    reservations=self._slot_reservations):
+                                    reservations=staged):
+                                RPS.release_reservations(staged)
                                 return fault
+                        self._slot_reservations.update(staged)
                         return None
                 if step is not None and RPS.can_dispatch_step(
                         self.cfg, state, step, reservations=self._slot_reservations):
@@ -417,6 +419,17 @@ class Gate:
             except Exception:                  # noqa: BLE001
                 pass
         return fault
+
+    def release_campaign_reservations(self, cid: str, personas=()) -> None:
+        """Drop probe slot holds for this campaign when admit or prepare will not run the step."""
+        from . import remote_personas as RPS
+        if personas:
+            keys = {(cid, p) for p in personas}
+        else:
+            keys = {k for k in self._slot_reservations if k[0] == cid}
+        staged = {k: self._slot_reservations.pop(k) for k in list(self._slot_reservations)
+                  if k in keys}
+        RPS.release_reservations(staged)
 
     def live(self) -> int:
         if self._live is None:
@@ -445,9 +458,11 @@ class Gate:
         room = self.cap - self.live() - self.taken
         personas = step_personas if step.kind == "review" else ()
         if room <= 0:
+            self.release_campaign_reservations(cid, step_personas)
             self._hold(cid, "persona_cap", personas)
             return None
         if len(personas) > room:
+            self.release_campaign_reservations(cid, personas[room:])
             step = replace(step, personas=personas[:room], held=personas[room:])
             self._hold(cid, "persona_cap", personas[room:])
         self.taken += max(1, min(len(personas), room))

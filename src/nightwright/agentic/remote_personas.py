@@ -536,7 +536,10 @@ def run(rr: R.RemoteRunner, req, hooks=None):
         for name in ("job_lock", "slot"):
             fd = getattr(rr, name)
             if fd is not None:
-                os.close(fd)
+                try:
+                    os.close(fd)
+                except OSError:
+                    pass
                 setattr(rr, name, None)
         if rr.job_id is not None and (RJ.read(rr.cfg, rr.job_id) or {}).get("state") not in RJ.LIVE:
             job_lock_path(rr.cfg, rr.worker, rr.job_id).unlink(missing_ok=True)

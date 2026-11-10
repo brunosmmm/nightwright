@@ -480,6 +480,17 @@ Spec-review git restore failures surface when the interrupt was not an environme
 for `pass:` mappings. Added tests for persona-less Pi hold, passing `_preflight_hold`, and
 env-mapped credentials. `uv run pytest tests/test_backend_preflight_extend.py tests/test_runner_selfheal.py tests/test_remote_persona_limits.py::test_spec_review_is_neither_counted_nor_gated -q` — 51 passed. `python3 tools/spec_lint.py --write-ledger` — ok. Full suite left to gating.
 
+### Test record (2026-11-10, loop 3 campaign implementer)
+
+Review fan-out stages slot probes and rolls them back when any failing reviewer cannot
+dispatch; admit drops probe holds on persona-cap holds; `_prepare_reviews` releases holds
+when the fan-out is held locally; `_submit` pops probe fds before workers start; spec review
+still resets the worktree on environment-fault interrupts when git check fails. Hardened
+tests for dual-reviewer slot leak, multi-provider fan-out, env-fault git reset, slot
+handoff through `tick`, and spec-review `where=run` escalation.
+`uv run pytest tests/test_backend_preflight_extend.py tests/test_runner_selfheal.py tests/test_remote_persona_limits.py::test_spec_review_is_neither_counted_nor_gated -q` — 64 passed.
+`python3 tools/spec_lint.py --write-ledger` — ok. Full suite left to gating.
+
 ### Test record (2026-11-10, loop 2 implementer)
 
 Review fixes: `env_fault_text` for PreflightHeldRunner git swallow; `_apply_step` parks

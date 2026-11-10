@@ -911,6 +911,91 @@ def test_pi_gate_holds_review_fanout_persona(tmp_path, monkeypatch):
     assert g.holds["c1"]["held_by"] == "backend_unavailable"
 
 
+def test_review_fanout_does_not_keep_unused_slot(tmp_path, monkeypatch):
+    from nightwright.agentic import remote_personas as RPS
+
+    _pi_ok_env(monkeypatch)
+    _pi_check_fail_openai(monkeypatch)
+    cfg = {"data_dir": str(tmp_path / "d"), "agentic": {"runner": "pi"}}
+    monkeypatch.setattr(BP, "spawn_backend", lambda c, s, p: ("pi", ["openai"]))
+    worker = {"name": "w", "enabled": True, "kinds": ["persona"], "persona_slots": 1}
+    acquire_calls = []
+
+    def acquire(c, w):
+        acquire_calls.append(1)
+        if len(acquire_calls) > 1:
+            return None
+        return (os.open(os.devnull, os.O_RDONLY), 0)
+
+    monkeypatch.setattr(RPS, "persona_workers", lambda c, s: [worker])
+    monkeypatch.setattr(RPS, "ineligible", lambda *a, **k: None)
+    monkeypatch.setattr(RPS, "acquire_slot", acquire)
+    monkeypatch.setattr(RPS, "busy", lambda *a, **k: 0)
+    monkeypatch.setattr(PG, "order", lambda c, s, names: names)
+    monkeypatch.setattr(PG, "failing", lambda *a, **k: False)
+    monkeypatch.setattr(RPS, "_probe_request",
+                        lambda c, s, p, k: SimpleNamespace(persona=p))
+    review_st = {"id": "c_review", "state": "REVIEWING", "project": "Meta-Tools", "profile": "balanced"}
+    impl_st = {"id": "c_impl", "state": "IMPLEMENTING", "project": "Meta-Tools", "profile": "balanced"}
+    g = PG.Gate(cfg, ["c_review", "c_impl"])
+    review_step = Q.Step("review", personas=("conformance_reviewer", "adversarial_reviewer"))
+    impl_step = Q.Step("implement", persona="implementer")
+    assert g.admit(review_st, review_step) is None
+    assert g.holds["c_review"]["held_by"] == "backend_unavailable"
+    assert not g._slot_reservations
+    assert len(acquire_calls) == 2
+    acquire_calls.clear()
+    assert g.admit(impl_st, impl_step) is impl_step
+    assert len(acquire_calls) == 1
+
+
+def test_review_fanout_checks_every_failing_provider(tmp_path, monkeypatch):
+    from nightwright.agentic import remote_personas as RPS
+
+    _pi_ok_env(monkeypatch)
+    real_check = BP.check
+
+    def check(kind, environ=None, *, providers=None):
+        if kind == "pi" and providers and providers[0] == "openai":
+            return "no credential for provider openai"
+        if kind == "cursor":
+            return "CURSOR_API_KEY is not set"
+        return real_check(kind, environ=environ, providers=providers)
+
+    monkeypatch.setattr(BP, "check", check)
+
+    def spawn(c, s, p):
+        if p == "conformance_reviewer":
+            return ("pi", ["openai"])
+        if p == "adversarial_reviewer":
+            return ("cursor", [])
+        return ("claude", [])
+
+    monkeypatch.setattr(BP, "spawn_backend", spawn)
+    cfg = {"data_dir": str(tmp_path / "d"), "agentic": {"runner": "pi"}}
+    worker = {"name": "w", "enabled": True, "kinds": ["persona"], "persona_slots": 2}
+    monkeypatch.setattr(RPS, "persona_workers", lambda c, s: [worker])
+    monkeypatch.setattr(RPS, "ineligible", lambda *a, **k: None)
+    monkeypatch.setattr(RPS, "acquire_slot", lambda c, w: (os.open(os.devnull, os.O_RDONLY), 0))
+    monkeypatch.setattr(RPS, "busy", lambda *a, **k: 0)
+    monkeypatch.setattr(PG, "order", lambda c, s, names: names)
+    monkeypatch.setattr(PG, "failing", lambda *a, **k: False)
+    monkeypatch.setattr(RPS, "_probe_request",
+                        lambda c, s, p, k: SimpleNamespace(persona=p))
+
+    def can_dispatch(c, s, kind, req, *, reservations=None):
+        return req.persona == "conformance_reviewer"
+
+    monkeypatch.setattr(RPS, "can_dispatch", can_dispatch)
+    st = {"id": "c1", "state": "REVIEWING", "project": "Meta-Tools", "profile": "balanced"}
+    step = Q.Step("review", personas=("conformance_reviewer", "adversarial_reviewer"))
+    g = PG.Gate(cfg, ["c1"])
+    assert g.admit(st, step) is None
+    assert g.holds["c1"]["held_by"] == "backend_unavailable"
+    assert not g._slot_reservations
+    assert g.taken == 0
+
+
 def test_review_fanout_holds_when_worker_dispatches_only_first_pi(tmp_path, monkeypatch):
     from nightwright.agentic import remote_personas as RPS
 
@@ -1011,11 +1096,47 @@ def test_spec_review_git_error_after_env_fault_stays_on_review(tmp_path, monkeyp
     monkeypatch.setattr(G, "rev_parse", flaky_rev_parse)
     ctx = SimpleNamespace(cfg=cfg, runner=Runner(), stop=threading.Event(),
                           runner_for=lambda st, kind=None: Runner())
+    (wt / "tracked-edit.txt").write_text("dirty")
+    G.git(wt, "add", "tracked-edit.txt")
     res = Q._do_spec_review(ctx, st, Q.Step("spec_review"), "001-x", req, 1.0)
     assert res.interrupted and res.error is None
+    assert calls[0] >= 2
+    assert not (wt / "tracked-edit.txt").exists()
     counters = {"spec_review_retries": 0}
     row = Q._apply_spec_review(ctx, {**st, "counters": counters}, {}, counters, res, {}, [], lambda *a, **k: ())
     assert counters["spec_review_retries"] == 0 and row["to"] == "SPEC_REVIEW"
+
+
+def test_do_spec_review_unknown_startup_fault_escalates(tmp_path, monkeypatch):
+    monkeypatch.setenv("CURSOR_API_KEY", "k-test-value")
+    cfg = _cursor_cfg(tmp_path)
+    wt = make_repo(tmp_path)
+    rd = tmp_path / "c1" / "runs" / "001-spec_reviewer"
+    rd.mkdir(parents=True)
+    req = RunRequest(
+        persona="spec_reviewer", prompt="p", system_append="", cwd=tmp_path,
+        model="m", effort=None, max_budget_usd=1.0, timeout_s=10,
+        permission_mode="default", read_only=True, allowed_tools=(), add_dirs=(),
+        json_schema={}, env={}, run_dir=rd)
+    st = {"id": "c1", "state": "SPEC_REVIEW", "repo": {"worktree": str(wt)},
+          "spec": {"rel_path": "docs/specs/x.md", "id": "SPEC-1"}}
+    (wt / "docs/specs").mkdir(parents=True, exist_ok=True)
+    (wt / "docs/specs/x.md").write_text("---\nid: SPEC-1\n---\n")
+    BP.reset_noted()
+
+    class Runner:
+        detachable = False
+
+        def run(self, req, hooks=None):
+            return RunResult(1, False, False, 0.0, True, None,
+                             result_text="pi_exec.mjs missing at /nope/pi_exec.mjs")
+
+    ctx = SimpleNamespace(cfg=cfg, runner=Runner(), stop=threading.Event(),
+                          runner_for=lambda st, kind=None: Runner())
+    res = Q._do_spec_review(ctx, st, Q.Step("spec_review"), "001-x", req, 1.0)
+    assert res.interrupted
+    run_rows = [r for r in journal(cfg, "backend_preflight_failed") if r.get("where") == "run"]
+    assert len(run_rows) == 1
 
 
 def test_spec_review_precheck_before_backend_hold(tmp_path, monkeypatch):
@@ -1367,12 +1488,80 @@ def test_spec_review_git_error_after_preflight_hold_stays_on_review(tmp_path, mo
         return real_rp(worktree)
 
     monkeypatch.setattr(G, "rev_parse", flaky_rev_parse)
+    (wt / "tracked-edit.txt").write_text("dirty")
+    G.git(wt, "add", "tracked-edit.txt")
     ctx = SimpleNamespace(cfg=cfg, runner=CursorRunner(), stop=threading.Event())
     res = Q._do_spec_review(ctx, st, Q.Step("spec_review"), "001-x", req, 1.0)
     assert res.interrupted and res.error is None
+    assert calls[0] >= 2
+    assert not (wt / "tracked-edit.txt").exists()
     counters = {"spec_review_retries": 0}
     row = Q._apply_spec_review(ctx, {**st, "counters": counters}, {}, counters, res, {}, [], lambda *a, **k: ())
     assert counters["spec_review_retries"] == 0 and row["to"] == "SPEC_REVIEW"
+
+
+def test_pi_slot_handoff_through_tick(tmp_path, monkeypatch):
+    from test_agentic_e2e import added, impl_done, make_cfg, make_repo, review, script
+    from nightwright.agentic import remote_personas as RPS
+    from nightwright.agentic.runner import RunResult
+
+    _pi_ok_env(monkeypatch)
+    _pi_check_fail_openai(monkeypatch)
+    repo = make_repo(tmp_path)
+    cfg = make_cfg(tmp_path, repo, script(tmp_path, [impl_done(), review()]))
+    cfg["agentic"]["runner"] = "pi"
+    cfg["agentic"].pop("fake_script", None)
+    worker = {"name": "w", "enabled": True, "kinds": ["persona"], "persona_slots": 1,
+              "ssh": "-", "info": {"features": ["async"]}}
+    acquire_calls = []
+    slot_fd = os.open(os.devnull, os.O_RDONLY)
+    release_seen = []
+
+    def acquire(c, w):
+        acquire_calls.append(1)
+        return (slot_fd, 0) if len(acquire_calls) == 1 else None
+
+    class Remote:
+        detachable = True
+
+        def run(self, req, hooks=None):
+            return RunResult(0, False, True, 0.5, False, {"type": "result", "subtype": "success"},
+                             result_text="ok")
+
+    dispatch_acquires = []
+
+    def dispatch(cfg, state, step_kind, req, **kw):
+        reservations = kw.get("reservations") or {}
+        key = (state["id"], req.persona)
+        assert reservations.get(key) is not None
+        dispatch_acquires.append(len(acquire_calls))
+        return Remote()
+
+    def release(reservations):
+        release_seen.append(dict(reservations or {}))
+        RPS.release_reservations(reservations)
+
+    monkeypatch.setattr(RPS, "persona_workers", lambda c, s: [worker])
+    monkeypatch.setattr(RPS, "ineligible", lambda *a, **k: None)
+    monkeypatch.setattr(RPS, "acquire_slot", acquire)
+    monkeypatch.setattr(RPS, "busy", lambda *a, **k: 0)
+    monkeypatch.setattr(PG, "order", lambda c, s, names: names)
+    monkeypatch.setattr(PG, "failing", lambda *a, **k: False)
+    monkeypatch.setattr(RPS, "dispatch", dispatch)
+    monkeypatch.setattr(PG.Gate, "release_slot_reservations",
+                        lambda self: release(self._slot_reservations))
+    cid = added(cfg, monkeypatch)
+    starts = []
+    for _ in range(12):
+        Q.tick(cfg)
+        starts = S.read_ledger(cfg, cid, types=["run.start"])
+        if starts:
+            break
+    hold = PG.read_holds(cfg).get(cid, {}).get("held_by")
+    assert len(starts) == 1, f"held_by={hold!r} state={S.read_state(cfg, cid).get('state')}"
+    assert len(acquire_calls) == 1
+    assert dispatch_acquires == [1]
+    assert release_seen and not release_seen[-1]
 
 
 def test_spec_review_git_error_on_ordinary_failure_parks(tmp_path, monkeypatch):
