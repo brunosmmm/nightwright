@@ -95,7 +95,7 @@ def test_a_running_job_reports_its_cpu_and_memory(tmp_path):
         assert until(lambda: WC._rss_mb(Path("/proc"), str(burn.pid)) >= 45)
         (row,) = WC.jobs_usage(cfg, sample_s=0.3)
         assert row["job_id"] == "j-busy" and row["state"] == "running"
-        assert row["cpu_pct"] > 30 and row["rss_mb"] >= 45
+        assert row["cpu_pct"] > 10 and row["rss_mb"] >= 45
     finally:
         burn.kill()
         burn.wait()

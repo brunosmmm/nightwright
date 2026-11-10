@@ -8,6 +8,8 @@ import pytest
 from nightwright.agentic import disk_clean as DC
 from nightwright.agentic import store
 
+pytestmark = pytest.mark.fast
+
 DAY = 86400
 
 
