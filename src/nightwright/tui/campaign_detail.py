@@ -777,16 +777,11 @@ class CampaignDetail(QueueActions, ModalScreen):
                 self._run_follow_done = True
             elif snap.has_stream:
                 run_dir = store.runs_dir(self.cfg, self.campaign_id) / run_id
-                stream_path = run_dir / "stream.jsonl"
                 try:
                     ended = TL._ended(run_dir)
                 except OSError:
                     ended = True
-                try:
-                    st_size = stream_path.stat().st_size
-                except OSError:
-                    st_size = snap.offset
-                self._run_follow_done = ended and snap.offset >= st_size
+                self._run_follow_done = ended
             else:
                 self._run_follow_done = False
             self._run_renderer = snap.renderer
@@ -862,11 +857,7 @@ class CampaignDetail(QueueActions, ModalScreen):
                 if self._selected_run_id != rid:
                     return
                 self._run_offset = offset
-                try:
-                    st_size = stream_path.stat().st_size
-                except OSError:
-                    st_size = offset
-                self._run_follow_done = offset >= st_size
+                self._run_follow_done = True
                 if drain:
                     pane = self.query_one("#runs-detail-text", Static)
                     cur = (pane.content if isinstance(pane.content, Text)

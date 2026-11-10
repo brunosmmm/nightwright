@@ -120,9 +120,11 @@ def test_focus_select_run_and_unknown(tmp_path):
             assert s.query_one("#detail-body", TabbedContent).active == "tab-runs"
             assert runs_table(app).cursor_row == next(
                 i for i, r in enumerate(hist["runs"]) if r["run_id"] == run_id)
-            assert str(AM._verdict_status_line(json.loads(
+            vr = json.loads(
                 (S.runs_dir(cfg, cid) / run_id / "run.json").read_text(encoding="utf-8")
-            ).get("verdict"))) in runs_detail(app)
+            ).get("verdict") or {}
+            assert vr.get("verdict") in runs_detail(app)
+            assert str(vr.get("score")) in runs_detail(app)
             await press(app, pilot, ["escape"])
             await settle(app, pilot)
             app.open_campaign_detail(cid, focus={"tab": "runs", "run": "nope-run"})
@@ -180,14 +182,39 @@ def test_gate_and_reviewer_blockers_in_pane(tmp_path):
             conf = json.loads(
                 (S.runs_dir(cfg, cid) / "033-conformance_reviewer" / "run.json").read_text(
                     encoding="utf-8"))
-            vline = AM._verdict_status_line(conf.get("verdict"))
-            assert await pilot_until(pilot, lambda: vline and vline in runs_detail(app))
+            cv = conf.get("verdict") or {}
+            assert await pilot_until(
+                pilot, lambda: str(cv.get("score")) in runs_detail(app))
+            assert cv.get("verdict") in runs_detail(app)
             detail = runs_detail(app)
             for nit in (f["title"] for f in conf["verdict"]["findings"]
                         if f.get("severity") == "nit"):
                 assert f"nit: {nit}" not in detail
 
     _run(drive())
+
+
+def test_verdict_line_lead_priority(tmp_path):
+    cfg = TH.fixture_cfg(tmp_path)
+    TH.prepare_queue_window(cfg)
+    cid = CID_MULTI
+    run_id = "001-implementer"
+    run_dir = S.runs_dir(cfg, cid) / run_id
+    rj = json.loads((run_dir / "run.json").read_text(encoding="utf-8"))
+    rj["verdict"] = {
+        "status": "status-lead-0476",
+        "disposition": "disp-0476",
+        "verdict": "verdict-0476",
+        "score": 7,
+        "summary": "summary-0476",
+    }
+    (run_dir / "run.json").write_text(json.dumps(rj), encoding="utf-8")
+    plain = AM.load_run_pane_detail(cfg, cid, run_id).text.plain.splitlines()[0]
+    assert plain.startswith("status-lead-0476")
+    assert "disp-0476" not in plain
+    assert "verdict-0476" not in plain
+    assert "7" in plain
+    assert "summary-0476" in plain
 
 
 def test_verdict_blockers_string_rendered(tmp_path):
@@ -214,6 +241,7 @@ def test_stream_result_and_stream_tail_unit(tmp_path):
     snap = AM.load_run_pane_detail(cfg, cid_stream, stream_id)
     assert snap.offset == stream_path.stat().st_size
     assert "■ result:" in snap.text.plain
+
     raw = stream_path.read_text(encoding="utf-8")
     assert raw.splitlines()[-1] not in snap.text.plain or "{" not in snap.text.plain.split("\n")[-3:]
 
@@ -269,6 +297,34 @@ def test_stream_result_and_stream_tail_unit(tmp_path):
     assert any("live-append-0476" in ln for ln in lines3)
     assert off3 == stream_path.stat().st_size
     assert not any(ln.lstrip().startswith("{") and '"type":' in ln for ln in lines3)
+
+
+def test_stream_initial_paint_caps_rendered_lines(tmp_path):
+    cfg = TH.fixture_cfg(tmp_path)
+    TH.prepare_queue_window(cfg)
+    cid_stream = CID_STREAM
+    camp = S.campaign_dir(cfg, cid_stream)
+    dst = camp.parent / f"{cid_stream}-stream200"
+    shutil.copytree(camp, dst)
+    cid3 = dst.name
+    rid = "001-implementer"
+    run_dir = S.runs_dir(cfg, cid3) / rid
+    chunks = [
+        json.dumps({
+            "type": "user",
+            "message": {"content": [{
+                "type": "tool_result",
+                "tool_use_id": "t1",
+                "content": f"tool-out-{i:04d}",
+            }]},
+        })
+        for i in range(250)
+    ]
+    (run_dir / "stream.jsonl").write_text("\n".join(chunks) + "\n", encoding="utf-8")
+    big = AM.load_run_pane_detail(cfg, cid3, rid)
+    assert big.offset == (run_dir / "stream.jsonl").stat().st_size
+    assert "tool-out-0049" not in big.text.plain
+    assert "tool-out-0050" in big.text.plain
 
 
 def test_ended_stream_trailing_fragment(tmp_path):
@@ -461,6 +517,91 @@ def test_live_follow_stream(tmp_path, monkeypatch):
     _run(drive())
 
 
+def test_follow_ended_latches_trailing_space(tmp_path, monkeypatch):
+    monkeypatch.setattr(CD, "POLL_S", 0.08)
+    _, cfg, ids = _fixture(tmp_path)
+    cid = ids["impl"]
+    camp = S.campaign_dir(cfg, cid)
+    dst = camp.parent / f"{cid}-space-tail"
+    shutil.copytree(camp, dst)
+    cid2 = dst.name
+    run_id = "002-implementer"
+    run_dir = S.runs_dir(cfg, cid2) / run_id
+    run_dir.mkdir(parents=True, exist_ok=True)
+    (run_dir / "stream.jsonl").write_text("", encoding="utf-8")
+    (run_dir / "request.json").write_text(json.dumps({"persona": "implementer"}), encoding="utf-8")
+    st = json.loads((S.campaign_dir(cfg, cid2) / "state.json").read_text(encoding="utf-8"))
+    st["state"] = "IMPLEMENTING"
+    (S.campaign_dir(cfg, cid2) / "state.json").write_text(json.dumps(st), encoding="utf-8")
+    (run_dir / "exit.json").unlink(missing_ok=True)
+    (run_dir / "run.json").unlink(missing_ok=True)
+    ended = {"v": False}
+    monkeypatch.setattr(TL, "_ended", lambda rd: ended["v"])
+    app = _desk(cfg, tab="queue")
+
+    async def drive():
+        async with app.run_test(size=SIZE) as pilot:
+            await settle(app, pilot)
+            app.open_campaign_detail(cid2, focus={"tab": "runs", "run": run_id})
+            s = detail_screen(app)
+            assert await pilot_until(pilot, lambda: s._run_renderer is not None)
+            ended["v"] = True
+            frag = json.dumps({
+                "type": "result", "subtype": "success", "result": "space-tail-0476"}) + " "
+            with open(run_dir / "stream.jsonl", "ab") as f:
+                f.write(frag.encode("utf-8"))
+            assert await pilot_until(pilot, lambda: s._run_follow_done)
+            assert "■ result:" in runs_detail(app)
+            with open(run_dir / "stream.jsonl", "a", encoding="utf-8") as f:
+                f.write(json.dumps({"type": "assistant", "message": {"content": [
+                    {"type": "text", "text": "blocked-space"}]}}) + "\n")
+            await settle(app, pilot)
+            assert "blocked-space" not in runs_detail(app)
+
+    _run(drive())
+
+
+def test_follow_ended_latches_non_json_tail(tmp_path, monkeypatch):
+    monkeypatch.setattr(CD, "POLL_S", 0.08)
+    _, cfg, ids = _fixture(tmp_path)
+    cid = ids["impl"]
+    camp = S.campaign_dir(cfg, cid)
+    dst = camp.parent / f"{cid}-bad-tail"
+    shutil.copytree(camp, dst)
+    cid2 = dst.name
+    run_id = "002-implementer"
+    run_dir = S.runs_dir(cfg, cid2) / run_id
+    run_dir.mkdir(parents=True, exist_ok=True)
+    (run_dir / "stream.jsonl").write_text("", encoding="utf-8")
+    (run_dir / "request.json").write_text(json.dumps({"persona": "implementer"}), encoding="utf-8")
+    st = json.loads((S.campaign_dir(cfg, cid2) / "state.json").read_text(encoding="utf-8"))
+    st["state"] = "IMPLEMENTING"
+    (S.campaign_dir(cfg, cid2) / "state.json").write_text(json.dumps(st), encoding="utf-8")
+    (run_dir / "exit.json").unlink(missing_ok=True)
+    (run_dir / "run.json").unlink(missing_ok=True)
+    ended = {"v": False}
+    monkeypatch.setattr(TL, "_ended", lambda rd: ended["v"])
+    app = _desk(cfg, tab="queue")
+
+    async def drive():
+        async with app.run_test(size=SIZE) as pilot:
+            await settle(app, pilot)
+            app.open_campaign_detail(cid2, focus={"tab": "runs", "run": run_id})
+            s = detail_screen(app)
+            assert await pilot_until(pilot, lambda: s._run_renderer is not None)
+            ended["v"] = True
+            with open(run_dir / "stream.jsonl", "ab") as f:
+                f.write(b"{")
+            assert await pilot_until(pilot, lambda: s._run_follow_done)
+            with open(run_dir / "stream.jsonl", "a", encoding="utf-8") as f:
+                f.write(json.dumps({"type": "assistant", "message": {"content": [
+                    {"type": "text", "text": "blocked-brace"}]}}) + "\n")
+            await settle(app, pilot)
+            assert "blocked-brace" not in runs_detail(app)
+
+    _run(drive())
+
+
 def test_non_first_run_focus_survives_reload(tmp_path, monkeypatch):
     monkeypatch.setattr(CD, "POLL_S", 0.08)
     cfg = TH.fixture_cfg(tmp_path)
@@ -591,9 +732,15 @@ def test_string_result_and_files_raw(tmp_path):
     rj.setdefault("files", {})["raw"] = "alt.txt"
     (run_dir / "run.json").write_text(json.dumps(rj), encoding="utf-8")
     assert "alt-raw-file-0476" in AM.load_run_pane_detail(cfg, cid2, run_id).text.plain
-    rj["files"]["raw"] = "../../../outside"
+    outside = run_dir.parent.parent.parent / "outside-sentinel-0476.txt"
+    outside.write_text("outside-sentinel-0476\n", encoding="utf-8")
+    rj["files"]["raw"] = "../../../outside-sentinel-0476.txt"
     (run_dir / "run.json").write_text(json.dumps(rj), encoding="utf-8")
-    assert "alt-raw-file-0476" in AM.load_run_pane_detail(cfg, cid2, run_id).text.plain
+    esc = AM.load_run_pane_detail(cfg, cid2, run_id).text.plain
+    assert "line50" in esc
+    assert "line49" not in esc
+    assert "alt-raw-file-0476" not in esc
+    assert "outside-sentinel-0476" not in esc
 
 
 def test_runs_cursor_jk_and_arrows(tmp_path):
@@ -607,6 +754,7 @@ def test_runs_cursor_jk_and_arrows(tmp_path):
         async with app.run_test(size=SIZE) as pilot:
             await open_screen(app, pilot, cid, "delivered", timeline=False)
             await press(app, pilot, ["3"])
+            s = detail_screen(app)
             tbl = runs_table(app)
             assert await pilot_until(pilot, lambda: tbl.row_count > 1)
             row0 = tbl.cursor_row
@@ -621,6 +769,21 @@ def test_runs_cursor_jk_and_arrows(tmp_path):
             assert rid1 == hist["runs"][row0 + 1]["run_id"]
             await press(app, pilot, ["k"])
             assert await pilot_until(pilot, lambda: tbl.cursor_row == row0)
+            s.select_run("002-gate_triager")
+            assert await pilot_until(pilot, lambda: GATE_TITLE in runs_detail(app))
+            tri_row = tbl.cursor_row
+            next_id = hist["runs"][tri_row + 1]["run_id"]
+            await press(app, pilot, ["down"])
+            assert await pilot_until(pilot, lambda: tbl.cursor_row == tri_row + 1)
+            assert await pilot_until(
+                pilot,
+                lambda: (
+                    MAJOR_TITLE in runs_detail(app)
+                    if next_id == "020-test_reviewer"
+                    else GATE_TITLE not in runs_detail(app)
+                ),
+            )
+            assert str(tbl.ordered_rows[tbl.cursor_row].key.value) == next_id
 
     _run(drive())
 
@@ -712,7 +875,10 @@ def test_poll_does_not_cancel_slow_detail_load(tmp_path, monkeypatch):
     async def drive():
         async with app.run_test(size=SIZE) as pilot:
             await settle(app, pilot)
-            app.open_campaign_detail(cid2, focus={"tab": "runs", "run": run_id})
+            app.open_campaign_detail(cid2)
+            s = detail_screen(app)
+            await press(app, pilot, ["3"])
+            s.select_run(run_id)
             assert await pilot_until(pilot, lambda: "slow-detail-0476" in runs_detail(app))
             extra = json.dumps({"type": "assistant", "message": {"content": [
                 {"type": "text", "text": "slow-append-once"}]}}) + "\n"
@@ -720,6 +886,39 @@ def test_poll_does_not_cancel_slow_detail_load(tmp_path, monkeypatch):
                 f.write(extra)
             assert await pilot_until(pilot, lambda: "slow-append-once" in runs_detail(app))
             assert runs_detail(app).count("slow-append-once") == 1
+
+    _run(drive())
+
+
+def test_stale_run_detail_dropped_on_switch(tmp_path, monkeypatch):
+    monkeypatch.setattr(CD, "POLL_S", 0.05)
+    cfg = TH.fixture_cfg(tmp_path)
+    TH.prepare_queue_window(cfg)
+    cid = CID_MULTI
+    slow_id, other = "002-gate_triager", "020-test_reviewer"
+    slow_marker = GATE_TITLE
+    other_marker = MAJOR_TITLE
+    real = AM.load_run_pane_detail
+
+    def slow(cfg, campaign_id, rid):
+        if rid == slow_id:
+            time.sleep(max(CD.POLL_S * 3, 0.25))
+        return real(cfg, campaign_id, rid)
+
+    monkeypatch.setattr(AM, "load_run_pane_detail", slow)
+    app = _desk(cfg, tab="queue")
+
+    async def drive():
+        async with app.run_test(size=SIZE) as pilot:
+            await open_screen(app, pilot, cid, "delivered", timeline=False)
+            s = detail_screen(app)
+            await press(app, pilot, ["3"])
+            s.select_run(slow_id)
+            s.select_run(other)
+            assert await pilot_until(pilot, lambda: other_marker in runs_detail(app))
+            await pilot.pause(max(CD.POLL_S * 8, 0.5))
+            assert other_marker in runs_detail(app)
+            assert slow_marker not in runs_detail(app)
 
     _run(drive())
 
@@ -767,5 +966,57 @@ def test_poll_does_not_cancel_slow_stream_tail(tmp_path, monkeypatch):
             assert await pilot_until(pilot, lambda: "slow-tail-0476" in runs_detail(app))
             assert s._run_offset > off0
             assert runs_detail(app).count("slow-tail-0476") == 1
+
+    _run(drive())
+
+
+def test_stale_stream_tail_dropped_on_switch(tmp_path, monkeypatch):
+    monkeypatch.setattr(CD, "POLL_S", 0.05)
+    cfg = TH.fixture_cfg(tmp_path)
+    TH.prepare_queue_window(cfg)
+    cid = CID_STREAM
+    hist = Hist.campaign_history(cfg, cid)
+    stream_runs = [r["run_id"] for r in hist["runs"] if r.get("has_stream")]
+    assert len(stream_runs) >= 2
+    slow_id, other = stream_runs[0], stream_runs[1]
+    other_marker = AM.load_run_pane_detail(cfg, cid, other).text.plain.splitlines()[0]
+    real = AM.stream_tail
+    camp = S.campaign_dir(cfg, cid)
+    dst = camp.parent / f"{cid}-stale-tail"
+    shutil.copytree(camp, dst)
+    cid2 = dst.name
+    st = json.loads((S.campaign_dir(cfg, cid2) / "state.json").read_text(encoding="utf-8"))
+    st["state"] = "IMPLEMENTING"
+    (S.campaign_dir(cfg, cid2) / "state.json").write_text(json.dumps(st), encoding="utf-8")
+    slow_dir = S.runs_dir(cfg, cid2) / slow_id
+    (slow_dir / "exit.json").unlink(missing_ok=True)
+    (slow_dir / "run.json").unlink(missing_ok=True)
+    line = json.dumps({"type": "assistant", "message": {"content": [
+        {"type": "text", "text": "stale-tail-0476"}]}}) + "\n"
+
+    def slow_tail2(cfg, campaign_id, rid, offset, renderer):
+        if rid == slow_id:
+            time.sleep(max(CD.POLL_S * 3, 0.25))
+            with open(slow_dir / "stream.jsonl", "a", encoding="utf-8") as f:
+                f.write(line)
+        return real(cfg, campaign_id, rid, offset, renderer)
+
+    monkeypatch.setattr(AM, "stream_tail", slow_tail2)
+    monkeypatch.setattr(TL, "_ended", lambda rd: False)
+    app = _desk(cfg, tab="queue")
+
+    async def drive():
+        async with app.run_test(size=SIZE) as pilot:
+            await settle(app, pilot)
+            app.open_campaign_detail(cid2)
+            s = detail_screen(app)
+            await press(app, pilot, ["3"])
+            s.select_run(slow_id)
+            assert await pilot_until(pilot, lambda: s._run_renderer is not None)
+            s.select_run(other)
+            assert await pilot_until(pilot, lambda: other_marker in runs_detail(app))
+            await pilot.pause(max(CD.POLL_S * 8, 0.5))
+            assert other_marker in runs_detail(app)
+            assert "stale-tail-0476" not in runs_detail(app)
 
     _run(drive())

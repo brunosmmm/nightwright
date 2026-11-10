@@ -1401,6 +1401,7 @@ def _stream_initial_tail(cfg, run_dir: Path) -> tuple[Text, object, int]:
     offset = 0
     rendered: list[Text] = []
     while True:
+        prev = offset
         lines, offset = TL.read_lines(stream, offset)
         for line in lines:
             rendered.extend(renderer.feed_line(line))
@@ -1416,19 +1417,25 @@ def _stream_initial_tail(cfg, run_dir: Path) -> tuple[Text, object, int]:
             break
         if offset >= st_size:
             break
+        if not lines or offset == prev:
+            break
     if TL._ended(run_dir):
+        try:
+            st_size = stream.stat().st_size
+        except OSError:
+            st_size = offset
         frag = TL._fragment(stream, offset)
         if frag and "\n" not in frag:
             try:
                 if isinstance(json.loads(frag), dict):
                     rendered.extend(renderer.feed_line(frag))
-                    offset += len(frag.encode("utf-8"))
             except ValueError:
                 pass
         elif frag:
             more, offset = TL.read_lines(stream, offset)
             for line in more:
                 rendered.extend(renderer.feed_line(line))
+        offset = st_size
     rendered.extend(renderer.flush_prose())
     plains = [t.plain for t in rendered][-RUNS_STREAM_LINES:]
     t = Text()
@@ -1504,9 +1511,12 @@ def stream_tail_drain(cfg, campaign_id, run_id, offset, renderer) -> tuple[list[
         try:
             if isinstance(json.loads(frag), dict):
                 out.extend(x.plain for x in renderer.feed_line(frag))
-                offset += len(frag.encode("utf-8"))
         except ValueError:
             pass
+    try:
+        offset = stream.stat().st_size
+    except OSError:
+        pass
     out.extend(x.plain for x in renderer.flush_prose())
     return out, offset
 
