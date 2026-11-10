@@ -391,10 +391,10 @@ def test_poll_exit_1_unknown_marks_lost(cfg, monkeypatch, tmp_path):
             not_busy = WK.reconcile_draining(c, ["box"])
             _assert_still_occupies_worker(c, jid, not_busy)
             assert not _journal(c, "worker_job_reconciled")
+            assert WK.finish_drains(c) == []
             _schedule_update(c)
             idle, late = WK.due_updates(c)
             assert idle == [] and late == []
-            assert WK.finish_drains(c) == []
 
 
 def test_jobs_running_and_done_paths(cfg, monkeypatch, tmp_path):
@@ -495,6 +495,48 @@ def test_poll_wins_over_empty_jobs(cfg, monkeypatch):
     monkeypatch.setattr(WK, "_reconcile_run", probe)
     not_busy = WK.reconcile_draining(cfg, ["box"])
     assert jid in not_busy
+
+
+_DONE_ERROR_CASES = [
+    pytest.param("done", None, id="jobs-done"),
+    pytest.param("error", None, id="jobs-error"),
+    pytest.param(None, "done", id="poll-done"),
+    pytest.param(None, "error", id="poll-error"),
+]
+
+
+def _done_error_script(jid, jobs_st, poll_st):
+    if jobs_st:
+        return [(0, json.dumps([{"job_id": jid, "state": jobs_st}]).encode())]
+    poll = json.dumps({"type": "status", "state": poll_st}).encode() + b"\n"
+    return [(0, b"[]"), (0, poll)]
+
+
+@pytest.mark.parametrize("jobs_st,poll_st", _DONE_ERROR_CASES)
+def test_due_updates_done_error_record_is_idle(cfg, monkeypatch, jobs_st, poll_st):
+    """`due_updates` passes the reconcile set to `_drained`: a done/error report does not
+    hold a scheduled update, and the record is neither lost nor journaled."""
+    _seed(cfg, _w())
+    _schedule_update(cfg)
+    jid = _job(cfg, state="attached", accepted_at="t")
+    monkeypatch.setattr(WK, "_reconcile_run", _Probe(_done_error_script(jid, jobs_st, poll_st)))
+    idle, _ = WK.due_updates(cfg)
+    assert [r["name"] for r in idle] == ["box"]
+    assert RJ.read(cfg, jid)["state"] == "attached"
+    assert not _journal(cfg, "worker_job_reconciled")
+
+
+@pytest.mark.parametrize("jobs_st,poll_st", _DONE_ERROR_CASES)
+def test_due_updates_done_error_held_slot_not_idle(cfg, monkeypatch, jobs_st, poll_st):
+    _seed(cfg, _w())
+    _schedule_update(cfg)
+    jid = _job(cfg, state="attached", accepted_at="t")
+    monkeypatch.setattr(WK, "_reconcile_run", _Probe(_done_error_script(jid, jobs_st, poll_st)))
+    with GS.acquire(cfg, "c-1", pools=[("box", 1)]):
+        idle, _ = WK.due_updates(cfg)
+    assert idle == []
+    assert RJ.read(cfg, jid)["state"] == "attached"
+    assert not _journal(cfg, "worker_job_reconciled")
 
 
 def test_bad_jobs_and_skipped_poll(cfg, monkeypatch, tmp_path):

@@ -543,6 +543,22 @@ not describe an age mark or stale-job lines.
   `finish_drains` / `due_updates` do not probe workers the call did not select; jobs-parser
   edge cases; recent ISO stamps for the inside-the-limit fixtures.
 
+### Test record (implementer campaign loop 2 review, 2026-11-10)
+
+- `uv run pytest -q tests/test_worker_job_reconcile.py tests/test_workers_update_schedule.py tests/test_workers_drain.py tests/test_workers_registry.py` — 175 passed.
+- `python3 tools/test_tiers.py --check` — exit 0; `python3 tools/spec_lint.py` — exit 0.
+- Mutation check: dropping `not_busy=` from the `due_updates` `_drained` call fails the new
+  `test_due_updates_done_error_record_is_idle` cases; restored afterwards.
+- Full suite left to campaign gating.
+- Manual verification on live `box` not run in this loop.
+
+### As shipped (implementer campaign loop 2 review)
+
+- Tests only: `due_updates` with a record reported `done`/`error` (jobs, or poll after empty
+  jobs) is idle, stays `attached`, journals nothing, and a held gate slot keeps `idle == []`;
+  `test_poll_exit_1_unknown_marks_lost` runs `finish_drains` before scheduling the update so
+  its `== []` assertion is not vacuous.
+
 ## Clock Log
 
 Implementation sessions clock IDEA-1162 with `nw idea clock-in` and
