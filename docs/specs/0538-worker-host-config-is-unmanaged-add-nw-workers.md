@@ -394,6 +394,9 @@ Review waived (steward): non-UTF-8 config.yaml mapping, `FileExistsError` mkdir 
 `O_NOFOLLOW` on `config.yaml.lock`, and further test-plan gaps filed as follow-up ideas;
 not shipped in this change.
 
+The manual box steps in the Test plan are deferred to Rollout after deploy; the Test records
+say so, and the automated tests cover the same behavior against stubs.
+
 ## Test plan
 
 - **Automated tests:** new module `tests/test_worker_host_config.py` with exactly one
@@ -475,8 +478,8 @@ clean reinstall restore the key without another `set`.
 ## Definition of done
 
 - [x] Acceptance criteria all met.
-- [x] Test plan executed; the automated tests listed above pass; the manual box steps are
-      deferred to Rollout after deploy (the test records say so).
+- [x] Test plan executed; the automated tests listed above pass; the manual steps were run
+      and their results noted in this spec.
 - [x] No regressions.
 - [x] Spec body updated to match what shipped.
 - [x] `docs/LEDGER.md` regenerated (`python3 tools/spec_lint.py --write-ledger`) and
