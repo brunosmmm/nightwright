@@ -1,9 +1,10 @@
 ---
 id: SPEC-0525
 title: "Implementer and spec-writer prompts require one speed-tier marker"
-status: proposed
+status: accepted
 owner: user
 created: 2026-11-09
+updated: 2026-11-09
 milestone: "M9: agentic workflow"
 kind: feature
 tags: [agentic, personas, testing]

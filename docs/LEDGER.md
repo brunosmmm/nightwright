@@ -359,7 +359,7 @@ progress. This is the single place to see *what has been decided* and *what is i
 | [SPEC-0521](./specs/0521-retire-pull-workers.md) | Retire pull workers: remove the coordinator job API, pull_jobs, pull_worker and nw serve --jobs | feature | draft | M9: agentic workflow | 2026-11-09 |
 | [SPEC-0523](./specs/0523-exclusive-regate-is-advisory-and-short.md) | An exclusive re-gate is advisory: it holds other campaigns' gates for at most 300 s | feature | accepted | M9: agentic workflow | 2026-11-09 |
 | [SPEC-0524](./specs/0524-disk-self-clean.md) | Finished work cleans up after itself: pytest tmp retention and an hourly disk sweep | feature | accepted | M9: agentic workflow | 2026-11-09 |
-| [SPEC-0525](./specs/0525-implementer-and-spec-writer-prompts-must-say-new.md) | Implementer and spec-writer prompts require one speed-tier marker | feature | proposed | M9: agentic workflow | 2026-11-09 |
+| [SPEC-0525](./specs/0525-implementer-and-spec-writer-prompts-must-say-new.md) | Implementer and spec-writer prompts require one speed-tier marker | feature | accepted | M9: agentic workflow | 2026-11-09 |
 | [SPEC-0529](./specs/0529-federation-enrolment-and-the-signed-host-channel.md) | Federation enrolment and the signed host channel | feature | accepted | — | 2026-11-10 |
 | [SPEC-0530](./specs/0530-hub-event-relay-health-and-read-only-host-views.md) | Hub event relay, health, and read-only host views | feature | accepted | — | 2026-11-10 |
 | [SPEC-0532](./specs/0532-exactly-once-mail-between-hub-and-host.md) | Exactly-once mail between hub and host | feature | accepted | — | 2026-11-10 |
