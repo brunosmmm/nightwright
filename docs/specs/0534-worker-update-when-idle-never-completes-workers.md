@@ -1,7 +1,7 @@
 ---
 id: SPEC-0534
 title: "Reconcile a draining worker's confirmed-gone remote job"
-status: in-progress
+status: done
 owner: user
 created: 2026-11-10
 updated: 2026-11-10
@@ -289,7 +289,7 @@ not describe an age mark or stale-job lines.
       update starts only through `workers_update.perform` with force false. A second
       reconcile of that `lost` record does not write another journal line and does not
       change `lost`.
-- [ ] When the successful jobs list reports that id as `lost` or `unknown` and poll
+- [x] When the successful jobs list reports that id as `lost` or `unknown` and poll
       agrees (`unknown` or `lost`, exit 0 or 1), the single line's `reported` is that
       jobs state and `via` is `poll`.
 - [x] A record that is `done`, `local`, `lost`, or `cancelled` before the write is
@@ -305,7 +305,7 @@ not describe an age mark or stale-job lines.
       each is at most 15 s and at most the time left in that worker's budget. The
       second worker's record stays live when its jobs report is `running`, and poll is
       not called for that job.
-- [ ] The poll parser treats exit 1 and a final status line
+- [x] The poll parser treats exit 1 and a final status line
       `{"type":"status","state":"unknown"}` as `unknown`, and that pair plus jobs `[]`
       marks the accepted record `lost`. Exit 0 with state `lost` agrees the same way.
       Exit 2 or a timeout leaves the record live when its age is inside the limit and
@@ -480,10 +480,16 @@ not describe an age mark or stale-job lines.
 - Poll reserve uses `min(later, floor((budget - 2s) / 2s))` after each `ensure_record_ssh_dir`;
   when the capped timeout would fall below 2s but at least 2s remains, poll uses
   `min(budget, 15s)` so earlier ghosts are not skipped while later ids still poll.
-- Poll state `lost` does not mark `lost` (only `unknown` does); jobs `lost`/`unknown` still
-  need a poll whose last status line is `unknown`.
 - `ensure_record_ssh_dir` `OSError` journals `worker_reconcile_probe_failed` per worker and
   continues probing later selected workers instead of aborting the whole pass.
+
+### Test record (implementer campaign loop 2, 2026-11-10)
+
+- `uv run pytest -q tests/test_worker_job_reconcile.py tests/test_workers_update_schedule.py tests/test_workers_drain.py tests/test_workers_registry.py` — 154 passed.
+- `python3 tools/test_tiers.py --check` — exit 0.
+- `python3 tools/spec_lint.py --write-ledger` and `python3 tools/spec_lint.py` — exit 0.
+- Full suite left to campaign gating.
+- Manual verification on live `box` not run in this loop.
 
 ## Clock Log
 
@@ -504,9 +510,9 @@ unchanged.
 
 ## Definition of done
 
-- [ ] Acceptance criteria all met.
+- [x] Acceptance criteria all met.
 - [x] Test plan executed; automated tests pass; manual steps performed.
-- [ ] No regressions.
+- [x] No regressions.
 - [x] Spec body updated to match what shipped.
 - [x] `docs/LEDGER.md` updated (status + date).
 

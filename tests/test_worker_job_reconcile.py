@@ -189,8 +189,7 @@ def test_three_gone_records_oldest_polled_after_15s_jobs(cfg, monkeypatch):
     monkeypatch.setattr(WK, "_reconcile_run", run)
     WK.reconcile_draining(cfg, ["box"])
     assert len(poll_timeouts) == 1
-    assert poll_timeouts[0] >= 2.0
-    assert poll_timeouts[0] <= 5.0
+    assert poll_timeouts[0] == pytest.approx(3.0)
     assert RJ.read(cfg, jid1)["state"] == "lost"
     assert RJ.read(cfg, jid2)["state"] == "attached"
     assert RJ.read(cfg, jid3)["state"] == "attached"
@@ -213,7 +212,7 @@ def test_reread_leaves_final_record(cfg, monkeypatch, tmp_path):
         WK.reconcile_draining(c, ["box"])
         rec = RJ.read(c, jid)
         assert rec["state"] == final
-        if final == "cancelled":
+        if final in ("cancelled", "lost"):
             assert "lost_reason" not in rec
         assert not _journal(c, "worker_job_reconciled")
 
@@ -339,33 +338,37 @@ def test_jobs_timeout_capped_to_budget_left(cfg, monkeypatch):
     WK.reconcile_draining(cfg, ["box"])
 
 
-def test_poll_exit_1_unknown_marks_lost(cfg, monkeypatch):
-    _seed(cfg, _w())
-    jid = _job(cfg, state="attached", accepted_at="t")
-    probe = _Probe([(0, b"[]"), (1, b'{"type":"status","state":"unknown"}\n')])
-    monkeypatch.setattr(WK, "_reconcile_run", probe)
-    WK.reconcile_draining(cfg, ["box"])
-    assert RJ.read(cfg, jid)["state"] == "lost"
-    _assert_jobs_argv(probe.calls[0][0])
-    _assert_poll_argv(probe.calls[1][0], jid)
-    c = {"data_dir": cfg["data_dir"] + "-poll-lost", "agentic": cfg["agentic"]}
-    _seed(c, _w())
-    jid = _job(c, state="attached", accepted_at="t")
-    probe = _Probe([(0, b"[]"), (0, b'{"type":"status","state":"lost"}\n')])
-    monkeypatch.setattr(WK, "_reconcile_run", probe)
-    WK.reconcile_draining(c, ["box"])
-    assert RJ.read(c, jid)["state"] == "attached"
-    assert not _journal(c, "worker_job_reconciled")
+def test_poll_exit_1_unknown_marks_lost(cfg, monkeypatch, tmp_path):
+    assert WK.parse_poll_answer(0, b'{"type":"status","state":"unknown"}\n') == "unknown"
+    for exit_rc, poll_line in ((1, "unknown"), (0, "unknown"), (1, "lost"), (0, "lost")):
+        c = {"data_dir": str(tmp_path / f"ex{exit_rc}-{poll_line}" / "data"),
+             "agentic": {"gates": {"slots": 1}}}
+        _seed(c, _w())
+        jid = _job(c, state="attached", accepted_at="t")
+        poll = json.dumps({"type": "status", "state": poll_line}).encode() + b"\n"
+        probe = _Probe([(0, b"[]"), (exit_rc, poll)])
+        monkeypatch.setattr(WK, "_reconcile_run", probe)
+        WK.reconcile_draining(c, ["box"])
+        rec = RJ.read(c, jid)
+        assert rec["state"] == "lost" and rec.get("lost_reason") == "reconciled"
+        lines = _journal(c, "worker_job_reconciled")
+        assert len(lines) == 1
+        assert lines[0]["via"] == "poll" and lines[0]["reported"] == "absent"
     old = (dt.datetime.now().astimezone() - dt.timedelta(hours=8)).isoformat()
-    for step in ("timeout", (2, b""), (0, b"not json\n")):
-        _seed(cfg, _w())
-        jid = _job(cfg, state="attached", accepted_at=old, last_seen_at=old)
-        if step == "timeout":
-            monkeypatch.setattr(WK, "_reconcile_run", _Probe([(0, b"[]"), "timeout"]))
-        else:
-            monkeypatch.setattr(WK, "_reconcile_run", _Probe([(0, b"[]"), step]))
-        WK.reconcile_draining(cfg, ["box"])
-        assert RJ.read(cfg, jid)["state"] == "attached"
+    for age_old in (False, True):
+        stamp = old if age_old else "t"
+        for step in ("timeout", (2, b""), (0, b"not json\n")):
+            tag = f"no-answer-{'old' if age_old else 'young'}-{step!s}"
+            c = {"data_dir": str(tmp_path / tag / "data"), "agentic": {"gates": {"slots": 1}}}
+            _seed(c, _w())
+            jid = _job(c, state="attached", accepted_at=stamp, last_seen_at=stamp)
+            if step == "timeout":
+                monkeypatch.setattr(WK, "_reconcile_run", _Probe([(0, b"[]"), "timeout"]))
+            else:
+                monkeypatch.setattr(WK, "_reconcile_run", _Probe([(0, b"[]"), step]))
+            WK.reconcile_draining(c, ["box"])
+            assert RJ.read(c, jid)["state"] == "attached"
+            assert not _journal(c, "worker_job_reconciled")
 
 
 def test_jobs_running_and_done_paths(cfg, monkeypatch, tmp_path):
@@ -596,6 +599,8 @@ def test_unreadable_registry_raises(cfg, monkeypatch):
     bad.write_text("{", encoding="utf-8")
     with pytest.raises(ValueError):
         WK.finish_drains(cfg)
+    wrec = next(r for r in WK.read_strict(cfg) if r["name"] == "box")
+    assert wrec.get("draining") is True and wrec.get("enabled") is not False
     probe = _Probe(["oserror"])
     monkeypatch.setattr(WK, "_reconcile_run", probe)
     assert WK.reconcile_draining(cfg, ["box"]) == set()
@@ -654,34 +659,31 @@ def test_reported_jobs_state_when_list_agrees(cfg, monkeypatch, tmp_path):
         probe = _Probe([(0, body), (1, poll)])
         monkeypatch.setattr(WK, "_reconcile_run", probe)
         WK.reconcile_draining(c, ["box"])
+        rec = RJ.read(c, jid)
+        assert rec["state"] == "lost" and rec.get("lost_reason") == "reconciled"
         lines = _journal(c, "worker_job_reconciled")
         assert len(lines) == 1
         assert lines[0]["reported"] == st
         assert lines[0]["via"] == "poll"
         _assert_poll_argv(probe.calls[1][0], jid)
-    for jobs_st, poll_st in (("lost", "unknown"),):
-        tag = f"{jobs_st}-{poll_st}"
+    for jobs_st, poll_st, exit_rc in (("lost", "unknown", 1), ("lost", "lost", 0),
+                                        ("lost", "lost", 1), ("unknown", "lost", 0),
+                                        ("unknown", "lost", 1)):
+        tag = f"{jobs_st}-{poll_st}-ex{exit_rc}"
         c = {"data_dir": str(tmp_path / tag / "data"), "agentic": {"gates": {"slots": 1}}}
         _seed(c, _w())
         jid = _job(c, state="attached", accepted_at="t")
         body = json.dumps([{"job_id": jid, "state": jobs_st}]).encode()
         poll_line = json.dumps({"type": "status", "state": poll_st}).encode() + b"\n"
-        probe = _Probe([(0, body), (1 if poll_st == "unknown" else 0, poll_line)])
+        probe = _Probe([(0, body), (exit_rc, poll_line)])
         monkeypatch.setattr(WK, "_reconcile_run", probe)
         WK.reconcile_draining(c, ["box"])
+        rec = RJ.read(c, jid)
+        assert rec["state"] == "lost" and rec.get("lost_reason") == "reconciled"
         lines = _journal(c, "worker_job_reconciled")
         assert len(lines) == 1
         assert lines[0]["reported"] == jobs_st
-    c = {"data_dir": str(tmp_path / "jobs-lost-poll-lost" / "data"),
-         "agentic": {"gates": {"slots": 1}}}
-    _seed(c, _w())
-    jid = _job(c, state="attached", accepted_at="t")
-    body = json.dumps([{"job_id": jid, "state": "lost"}]).encode()
-    monkeypatch.setattr(WK, "_reconcile_run", _Probe([
-        (0, body), (0, b'{"type":"status","state":"lost"}\n')]))
-    WK.reconcile_draining(c, ["box"])
-    assert RJ.read(c, jid)["state"] == "attached"
-    assert not _journal(c, "worker_job_reconciled")
+        assert lines[0]["via"] == "poll"
     c = {"data_dir": str(tmp_path / "disagree" / "data"), "agentic": {"gates": {"slots": 1}}}
     _seed(c, _w())
     jid = _job(c, state="attached", accepted_at="t")
@@ -780,11 +782,49 @@ def test_workers_reference_row_mentions_reconcile():
     assert "via: age" not in low
 
 
+def test_mark_reconciled_lost_skips_on_missing_or_write_error(cfg, monkeypatch):
+    _seed(cfg, _w())
+    jid = _job(cfg, state="attached", accepted_at="t")
+
+    def run(argv, *, timeout, input=None):
+        if "jobs" in argv:
+            return subprocess.CompletedProcess(argv, 0, b"[]", b"")
+        path = RJ.path(cfg, jid)
+        path.unlink()
+        return subprocess.CompletedProcess(
+            argv, 1, b'{"type":"status","state":"unknown"}\n', b"")
+
+    monkeypatch.setattr(WK, "_reconcile_run", run)
+    WK.reconcile_draining(cfg, ["box"])
+    assert not _journal(cfg, "worker_job_reconciled")
+    assert RJ.read(cfg, jid) is None
+    _seed(cfg, _w())
+    jid = _job(cfg, state="attached", accepted_at="t")
+    probe = _Probe([(0, b"[]"), (1, b'{"type":"status","state":"unknown"}\n')])
+    real_write = RJ._write
+
+    def boom(c, rec):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(WK, "_reconcile_run", probe)
+    monkeypatch.setattr(RJ, "_write", boom)
+    with pytest.raises(OSError):
+        WK.reconcile_draining(cfg, ["box"])
+    assert not _journal(cfg, "worker_job_reconciled")
+    assert RJ.read(cfg, jid)["state"] == "attached"
+    assert not WK._drained(cfg, "box")
+    wrec = next(r for r in WK.read_strict(cfg) if r["name"] == "box")
+    assert wrec.get("draining") is True and wrec.get("enabled") is not False
+    monkeypatch.setattr(RJ, "_write", real_write)
+
+
 def test_parse_jobs_and_poll_units():
     assert WK.parse_jobs_answer(0, b"[]") == []
     assert WK.parse_jobs_answer(1, b"[]") is None
     pretty = json.dumps([{"job_id": "j", "state": "running"}], indent=2).encode()
     assert WK.parse_jobs_answer(0, pretty) == [{"job_id": "j", "state": "running"}]
+    assert WK.parse_poll_answer(0, b'{"type":"status","state":"unknown"}\n') == "unknown"
+    assert WK.parse_poll_answer(0, b'{"type":"status","state":"lost"}\n') == "lost"
     assert WK.parse_poll_answer(1, b'{"type":"status","state":"unknown"}\n') == "unknown"
     assert WK.parse_poll_answer(2, b'{"type":"status","state":"unknown"}\n') is None
     buf = (b'garbage\n{"type":"status","state":"running"}\n'

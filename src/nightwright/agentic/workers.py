@@ -335,7 +335,7 @@ RECONCILE_POLL_MIN_S = 2.0
 RECONCILE_POLL_FROM = 1 << 30
 _RECONCILE_BUSY = frozenset({"accepted", "running"})
 _RECONCILE_NOT_BUSY = frozenset({"done", "error"})
-_RECONCILE_GONE_POLL = frozenset({"unknown"})
+_RECONCILE_GONE_POLL = frozenset({"unknown", "lost"})
 
 
 def _reconcile_unaccepted(rec: dict) -> bool:
