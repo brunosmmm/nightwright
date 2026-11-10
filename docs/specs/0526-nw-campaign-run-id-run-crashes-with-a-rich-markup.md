@@ -1,9 +1,10 @@
 ---
 id: SPEC-0526
 title: "nw campaign run renders verdict text that contains brackets"
-status: proposed
+status: accepted
 owner: user
 created: 2026-11-09
+updated: 2026-11-09
 kind: feature
 source_idea: IDEA-1128
 tags: [agentic, campaign, cli]
