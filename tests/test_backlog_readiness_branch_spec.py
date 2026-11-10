@@ -154,6 +154,43 @@ def test_branch_blob_is_ready_when_the_worktree_is_not_the_checkout(tmp_path):
     assert Q.backlog_readiness({}, _campaign(repo, ghost)) == (True, [])
 
 
+def test_missing_branch_blob_does_not_fall_back_to_base(tmp_path):
+    repo = _init_repo(tmp_path)
+    wt = tmp_path / "wt"
+    _add_worktree(repo, wt)
+    _git(wt, "commit", "--allow-empty", "-qm", "branch tip without spec")
+    _git(repo, "worktree", "remove", str(wt), "--force")
+    ghost = tmp_path / "ghost-wt"
+    _write_spec(repo / REL, "accepted")
+    assert Q.backlog_readiness({}, _campaign(repo, ghost)) == (False, ["spec file missing"])
+
+
+def test_existing_planned_dir_is_not_the_source_when_not_the_checkout(tmp_path):
+    repo = _init_repo(tmp_path)
+    wt = tmp_path / "wt"
+    _add_worktree(repo, wt)
+    _write_spec(wt / REL, "draft")
+    _git(wt, "add", REL)
+    _git(wt, "commit", "-qm", "draft blob")
+    _git(repo, "worktree", "remove", str(wt), "--force")
+    ghost = tmp_path / "ghost-wt"
+    ghost.mkdir(parents=True)
+    _write_spec(ghost / REL, "accepted")
+    _write_spec(repo / REL, "accepted")
+    assert Q.backlog_readiness({}, _campaign(repo, ghost)) == (False, ["spec status is draft"])
+
+
+def test_missing_branch_ignores_planned_dir_draft(tmp_path):
+    repo = _init_repo(tmp_path)
+    wt = tmp_path / "wt"
+    st = _campaign(repo, wt)
+    st["repo"] = {**st["repo"], "branch": "nw/missing"}
+    wt.mkdir(parents=True)
+    _write_spec(wt / REL, "draft")
+    _write_spec(repo / REL, "accepted")
+    assert Q.backlog_readiness({}, st) == (True, [])
+
+
 def test_missing_branch_reads_the_base_checkout(tmp_path):
     repo = _init_repo(tmp_path)
     wt = tmp_path / "wt"
@@ -184,6 +221,11 @@ def test_non_git_root_reads_the_base_file(tmp_path, monkeypatch):
 
     missing = tmp_path / "nope" / "root"
     miss_st = _campaign(missing, tmp_path / "wt")
+
+    def _git_err(*_a, **_k):
+        raise git.GitError(["git"], 1, "missing root")
+
+    monkeypatch.setattr(git, "branch_exists", _git_err)
     assert Q.backlog_readiness({}, miss_st) == (False, ["spec file missing"])
 
     cwd_repo = tmp_path / "cwd-spec"
@@ -209,6 +251,8 @@ def test_depends_on_resolves_against_the_base_specs_dir(tmp_path):
     _write_spec(wt / REL, "accepted", depends_on="[SPEC-0002]")
     _git(wt, "add", "-A")
     _git(wt, "commit", "-qm", "campaign spec")
+    assert Q.backlog_readiness({}, _campaign(repo, wt)) == (True, [])
+    (wt / dep_rel).unlink()
     assert Q.backlog_readiness({}, _campaign(repo, wt)) == (True, [])
 
     _write_spec(repo / dep_rel, "accepted", id="SPEC-0002")
@@ -242,6 +286,7 @@ def test_split_readiness_stays_on_the_base_file(tmp_path):
     assert Q.backlog_readiness({}, st) == (True, [])
     (repo / orig).write_text((repo / orig).read_text() + "\nedited\n")
     assert Q.backlog_readiness({}, st) == (False, ["spec changed since the split review"])
+    _write_spec(wt / orig, "accepted", id="SPEC-0005")
     (repo / orig).write_text(_spec_md("draft", id="SPEC-0005"))
     ready, blocked = Q.backlog_readiness({}, st)
     assert not ready and "spec status is draft" in blocked
@@ -272,6 +317,12 @@ def test_branch_source_parse_failure_does_not_raise(tmp_path):
     _write_spec(repo / REL, "accepted")
     assert Q.backlog_readiness({}, _campaign(repo, wt)) == (False, ["spec file missing"])
 
+    (wt / REL).write_text("body only, no frontmatter fence\n")
+    assert Q.backlog_readiness({}, _campaign(repo, wt)) == (False, ["spec file missing"])
+
+    (wt / REL).write_text("---\n- SPEC-0002\n---\n\nbody\n")
+    assert Q.backlog_readiness({}, _campaign(repo, wt)) == (False, ["spec file missing"])
+
     blob_parent = tmp_path / "blob-case"
     blob_parent.mkdir()
     repo2 = _init_repo(blob_parent)
@@ -295,12 +346,57 @@ def test_worktree_list_error_falls_through_to_the_blob(tmp_path, monkeypatch):
     _write_spec(wt / REL, "accepted")
     _git(wt, "add", REL)
     _git(wt, "commit", "-qm", "on branch")
+    _write_spec(wt / REL, "draft")
 
     def _boom(*_a, **_k):
         raise git.GitError(["git", "worktree", "list"], 1, "fail")
 
     monkeypatch.setattr(git, "worktree_for_branch", _boom)
     assert Q.backlog_readiness({}, _campaign(repo, wt)) == (True, [])
+
+
+@pytest.mark.parametrize("bad_dep", ["false", "no", "off"])
+def test_branch_invalid_falsy_depends_on_still_waits_on_deps(tmp_path, bad_dep):
+    repo = _init_repo(tmp_path)
+    wt = tmp_path / "wt"
+    _add_worktree(repo, wt)
+    dep_rel = "docs/specs/0002-d.md"
+    _write_spec(repo / dep_rel, "accepted", id="SPEC-0002")
+    fm = _spec_md("accepted").replace("status: accepted", f"status: accepted\ndepends_on: {bad_dep}")
+    (wt / REL).parent.mkdir(parents=True, exist_ok=True)
+    (wt / REL).write_text(fm)
+    assert Q.backlog_readiness({}, _campaign(repo, wt)) != (True, [])
+    _git(wt, "add", REL)
+    _git(wt, "commit", "-qm", "bad depends_on")
+    assert Q.backlog_readiness({}, _campaign(repo, wt)) == (False, ["spec file missing"])
+
+
+@pytest.mark.parametrize("bad_dep", ["true", "yes", "on", "1"])
+def test_branch_invalid_truthy_depends_on_does_not_raise(tmp_path, bad_dep):
+    repo = _init_repo(tmp_path)
+    wt = tmp_path / "wt"
+    _add_worktree(repo, wt)
+    fm = _spec_md("accepted").replace("status: accepted", f"status: accepted\ndepends_on: {bad_dep}")
+    (wt / REL).parent.mkdir(parents=True, exist_ok=True)
+    (wt / REL).write_text(fm)
+    _git(wt, "add", REL)
+    _git(wt, "commit", "-qm", "bad depends_on")
+    assert Q.backlog_readiness({}, _campaign(repo, wt)) == (False, ["spec file missing"])
+
+
+def test_branch_blob_size_is_capped(tmp_path, monkeypatch):
+    repo = _init_repo(tmp_path)
+    wt = tmp_path / "wt"
+    _add_worktree(repo, wt)
+    huge = b"---\nstatus: accepted\n---\n\n" + b"x" * 500
+    (wt / REL).parent.mkdir(parents=True, exist_ok=True)
+    (wt / REL).write_bytes(huge)
+    _git(wt, "add", REL)
+    _git(wt, "commit", "-qm", "huge spec")
+    _git(repo, "worktree", "remove", str(wt), "--force")
+    ghost = tmp_path / "ghost-wt"
+    monkeypatch.setattr(Q, "MAX_WORKTREE_SPEC_BYTES", 200)
+    assert Q.backlog_readiness({}, _campaign(repo, ghost)) == (False, ["spec file missing"])
 
 
 def test_early_returns_still_precede_the_branch_read(tmp_path, monkeypatch):

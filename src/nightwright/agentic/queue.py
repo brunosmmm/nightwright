@@ -1095,6 +1095,20 @@ def _idea_id_of(st: dict) -> str | None:
     return (st.get("idea") or {}).get("id")
 
 
+def _readiness_dep_ids(fm: dict) -> list[str] | None:
+    """Frontmatter dependency ids for `backlog_readiness`; ``None`` when ``depends_on`` is invalid."""
+    raw = fm.get("depends_on") if isinstance(fm, dict) else None
+    if raw is None:
+        return []
+    if isinstance(raw, bool):
+        return None
+    if isinstance(raw, str):
+        return [raw] if raw.strip() else []
+    if isinstance(raw, list):
+        return [str(d) for d in raw if d]
+    return None
+
+
 def _campaign_spec_text(state: dict) -> tuple[str | None, bool]:
     """The campaign spec body for readiness and whether it came from the branch line (SPEC-0539)."""
     repo = state.get("repo") or {}
@@ -1122,9 +1136,11 @@ def _campaign_spec_text(state: dict) -> tuple[str | None, bool]:
                 return None, True
         if not rel:
             return None, True
-        show = git.git(root, "show", f"{branch}:{rel}", check=False)
+        show = git.git(root, "show", f"{branch}:{rel}", check=False, binary=True)
         if show.returncode == 0 and show.stdout:
-            return show.stdout, True
+            if len(show.stdout) > MAX_WORKTREE_SPEC_BYTES:
+                return None, True
+            return _spec_bytes_as_text(show.stdout), True
         return None, True
     except (GitError, OSError, UnicodeDecodeError):
         return None, True
@@ -1199,8 +1215,10 @@ def backlog_readiness(cfg, state: dict) -> tuple[bool, list[str]]:
         if _spec_sha(spec_path) != (state.get("split") or {}).get("review_sha"):
             blocked.append("spec changed since the split review")
         return not blocked, blocked
-    deps = fm.get("depends_on") or []
-    for dep in [deps] if isinstance(deps, str) else deps:
+    deps = _readiness_dep_ids(fm)
+    if deps is None:
+        return False, ["spec file missing"]
+    for dep in deps:
         dep = str(dep)
         camp = _dep_campaign(cfg, dep, state.get("project"))
         merged = (camp or {}).get("state") == "MERGED"

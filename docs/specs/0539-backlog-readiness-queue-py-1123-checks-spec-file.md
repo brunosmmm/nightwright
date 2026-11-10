@@ -333,6 +333,18 @@ rules, and open then applies SPEC-0463.
 - `python3 tools/spec_lint.py --write-ledger` and `python3 tools/spec_lint.py` — exit 0.
 - Full suite left to gating.
 
+### Test record (2026-11-10, loop 2)
+
+- `uv run pytest -q tests/test_backlog_readiness_branch_spec.py tests/test_agentic_queue.py::test_backlog_readiness_reasons tests/test_agentic_split.py::test_split_readiness_ignores_depends_on tests/test_idea_ordering.py::test_after_idea_waits_then_is_ready_when_prerequisite_merges` — 28 passed.
+- `python3 tools/test_tiers.py --check` — exit 0.
+- `python3 tools/spec_lint.py --write-ledger` and `python3 tools/spec_lint.py` — exit 0.
+- Full suite left to gating.
+
+### As shipped (2026-11-10, loop 2)
+
+- Branch `git show` bytes are capped at `MAX_WORKTREE_SPEC_BYTES` like the worktree read.
+- Invalid branch-sourced `depends_on` (booleans, non-lists) yields `spec file missing` via `_readiness_dep_ids`.
+
 ## Rollout / migration
 
 Ship the readiness change with the new tests. No campaign rewrite and no
