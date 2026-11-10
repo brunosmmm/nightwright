@@ -81,7 +81,10 @@ module's `nearest_tests`.
   test names is reached only through other code, so dropping to the name readers would select
   nothing that exercises it.
 - Otherwise keep the files in N whose source contains one of those names, plus the module's
-  name-rule tests and the `src/nightwright` tree readers the selector already adds. `--guards`
+  name-rule tests that are in N, and the `src/nightwright` tree readers the selector already adds.
+  The narrowed set is always a subset of N: the name rule also matches a test that merely holds
+  the command token as a constant (`"project"`), and adding those widened `project.py` from 44 to
+  95 files in the replay of `9d437f87`. `--guards`
   stays the union in `main()`.
 
 The JSON report's `hot` object maps the repo-relative path to the names used, for modules that
@@ -161,6 +164,37 @@ new one, and record both median percentages of that commit's test files in *As s
 - **Manual verification:** the replay, recorded in *As shipped*.
 - **Regression guard:** the existing `test_affected_tests.py` cases pass. Run the affected
   tests.
+
+## As shipped
+
+- `tools/affected_tests.py` implements all three rules as in *Design*, plus these decisions made
+  during implementation:
+  - A changed name that no nearest test names keeps N.
+  - The old side of the diff is checked, and a pure deletion keeps N.
+  - Blank changed lines are ignored.
+  - The closure adds the fixture-root readers.
+  - Narrowing is intersected with N.
+  
+  New flag: `--hot-threshold`. The report always has a `hot` key.
+- **Replay** (Measurement in *Design*): 200 first-parent commits of main ending at `52181e93`,
+  with the selector from `52181e93` (before) and the one from this branch (after).
+
+  | selector | median | mean | full suite |
+  | --- | --- | --- | --- |
+  | before | 40.0 % | 43.1 % | 4 |
+  | after | 12.1 % | 24.1 % | 4 |
+
+  The after selection is lower on 170 commits and higher on none. Hot narrowing fired on 20
+  commits. The first after-run (median 12.1 %, mean 24.5 %) showed two commits that grew
+  (`9d437f87` 59.6 % -> 66.6 %, `c25ce23b` 60.6 % -> 64.2 %): the name rule was adding tests outside
+  N. After the subset fix, the 20 hot commits were re-run (the fix changes no other commit), and
+  those two now land at 56.1 % and 57.7 %.
+- **Verification was local, because the box was unavailable.** `GATEJOB-1383` ended `unavailable`
+  (no gate-job token within 600 s). The affected tests ran locally in the worktree with `TMPDIR`
+  on `/home`, because `/tmp` (a tmpfs) had run out of inodes, mostly under
+  `/tmp/pytest-of-bruno`. An earlier local run with `TMPDIR=/tmp` errored on ENOSPC, for that
+  environmental reason only. `tests/test_affected_tests.py` and `tests/test_affected_tests_replay.py`:
+  169 passed. Known failure on main, not caused by this change: `test_conduct_skill_never_asks_the_human`.
 
 ## Rollout / migration
 
