@@ -4,7 +4,7 @@ title: Public backlog on an orphan nw-backlog branch
 status: proposed
 owner: user
 created: 2026-11-08
-updated: 2026-11-08
+updated: 2026-11-10
 kind: feature
 tags: [public-backlog]
 source_idea: IDEA-1019
@@ -32,6 +32,10 @@ without moving the product checkout. Reads and provenance, fetch and
 fast-forward publication, and concurrent merge and resolution are later specs.
 Their binding rules are listed under Non-goals so this slice does not invent
 a conflicting contract for them.
+
+This file is SPEC-0473 and its status is proposed. Review of this file runs
+before acceptance. On main, SPEC-0449 is the tail-shell spec. This backlog's
+governing id is SPEC-0473.
 
 ## Goals / Non-goals
 
@@ -443,7 +447,10 @@ Each attempt:
 No attempt uses `update-ref -d`. No command creates `MERGE_HEAD` in the
 product git directory.
 
-### As shipped (2026-11-07)
+### Binding notes (2026-11-07)
+
+These notes are part of this proposed spec's contract. They record behavior
+the tests lock.
 
 - `commit-tree` is given the one-line message with no trailing newline.
   `git log -1 --format=%B` is tformat and appends one newline, so that log
@@ -586,7 +593,7 @@ drops unknown keys, and refreshes `updated` and `updated_by`.
       and stderr is empty. The work tree does not gain those files.
       `git log -1 --format=%B` is `backlog: add <id>\n`. Author and committer
       names, emails, and unix times equal that identity and that second.
-- [x] A second `add` leaves the first filename in place and adds no path other
+      A second `add` leaves the first filename in place and adds no path other
       than the new item. If `README.md` already differs from the fixed text,
       its blob sha is unchanged. If a plumbing commit removes `README.md`,
       the next `edit` commit names `README.md` and that one item, the README
@@ -605,7 +612,7 @@ drops unknown keys, and refreshes `updated` and `updated_by`.
       `title: "a\"b\\c"`. An edit `--summary ""`
       clears an existing body. `--spec SPEC-0473` adds that key last, and
       `--spec SPEC-449` exits 1 with `invalid spec id` and no commit.
-- [x] `--spec` together with `--clear-spec` exits 1 with
+      `--spec` together with `--clear-spec` exits 1 with
       `spec and clear-spec are mutually exclusive` and no commit, including
       when `--repo` is not a git directory. `edit` with no field flag exits 1
       with `nothing to change`. An id that is not `REQ-` plus eight alphabet
@@ -615,7 +622,7 @@ drops unknown keys, and refreshes `updated` and `updated_by`.
       `idea` key in the blob. An edit that changes the title of a file that
       also contains `idea` and `IDEA-1019` writes a blob with no key outside
       the format, the new title, and the previous `created` and `created_by`.
-- [x] `parse_item` returns the reason token of the first matching validation
+- [ ] `parse_item` returns the reason token of the first matching validation
       row for a fixture of each row, including YAML 1.1 `status: yes`, a
       duplicate key, a filename/id mismatch, `SPEC-12`, an offset timestamp,
       and `2026-02-31T00:00:00Z`. `edit`, `close`, and `reopen` of that blob
@@ -625,12 +632,11 @@ drops unknown keys, and refreshes `updated` and `updated_by`.
       unchanged. A valid file whose `updated` is earlier than `created`, or
       whose keys are permuted, can be closed; the new blob is canonical and
       keeps those instants' `created` value and the parsed `created_by`.
-- [ ] `parse_item` on a blob whose frontmatter keys are `yes` and `true`
+      `parse_item` on a blob whose frontmatter keys are `yes` and `true`
       returns `invalid yaml`, not `duplicate key True`. A repeated string
-      key `id` returns `duplicate key id`. `edit`, `close`, and `reopen` of
-      the boolean-key blob exit 1 with
-      `invalid backlog item <id>: invalid yaml`, do not call `hash-object`,
-      and leave the tip sha unchanged.
+      key `id` returns `duplicate key id`. `edit`, `close`, and `reopen` of the boolean-key
+      blob exit 1 with `invalid backlog item <id>: invalid yaml`, do not call
+      `hash-object`, and leave the tip sha unchanged.
 - [x] `close` sets `status: closed`, refreshes `updated` and `updated_by`,
       drops unknown keys, and leaves title, summary, spec, `created`, and
       `created_by` as parsed. A second `close` exits 1 with
@@ -638,7 +644,7 @@ drops unknown keys, and refreshes `updated` and `updated_by`.
       returns `status` to `open`, and a second `reopen` exits 1 with
       `<id> is already open` and no commit. Unknown id exits 1 with
       `<id> is not on nw-backlog`.
-- [x] With `user.name` or `user.email` missing or whitespace-only, `add` exits
+- [ ] With `user.name` or `user.email` missing or whitespace-only, `add` exits
       1, prints `<key> is unset` for each such key with the name line first,
       and does not call `hash-object`. A value that contains a line break
       prints `<key> contains a line break`. A name containing `<` or `>`, and
@@ -649,16 +655,17 @@ drops unknown keys, and refreshes `updated` and `updated_by`.
       values, the commit's author and committer are the local pair and the
       injected instant. A name that contains a double quote is stored in
       `created_by` with the same backslash and quote escaping as a title.
-- [ ] `user.name` uses git's ident crud set: a code point `<= 32`, or one of
-      `.`, `,`, `:`, `;`, `<`, `>`, `"`, `'`, and `\`. `(` and `)` are not
-      in that set. `Ada <Lovelace` exits 1 with `user.name contains '<'`
+      `user.name` uses git's ident crud set: a code point `<= 32`, or one of
+      `.`, `,`, `:`, `;`, `<`, `>`, `"`, `'`, and `\`. `(` and `)` are outside
+      that set. `Ada <Lovelace` exits 1 with `user.name contains '<'`
       and does not call `hash-object`. `.` and `'` exit 1 with
       `user.name consists only of disallowed characters` and do not call
       `hash-object`. `Ada Jr.` exits 1 with
       `user.name contains a leading or trailing disallowed character`, does
-      not call `hash-object`, and leaves the ref unchanged, so the name is
-      not stored as `Ada Jr`. `"Ada"` commits and `created_by` keeps the
-      quotes. `()` commits, and `%an` and `%cn` equal `()`.
+      not call `hash-object`, and leaves the ref unchanged, so the stored
+      name stays the raw `user.name` and is never rewritten to `Ada Jr`.
+      `"Ada"` commits and `created_by` keeps
+      the quotes. `()` commits, and `%an` and `%cn` equal `()`.
 - [x] A tip whose tree or whose root commit contains `notes.txt`,
       `REQ-IIIIIIII.md`, a slash path, or mode `100755` makes `add`, `edit`,
       `close`, and `reopen` exit 1 with the header
@@ -691,7 +698,7 @@ drops unknown keys, and refreshes `updated` and `updated_by`.
       If the second tip already contains the minted id, `add` exits 1 with
       `<id> is already on nw-backlog`, does not call `update-ref` again, and
       does not mint a different id.
-- [x] `--repo` selects the repository that receives the branch. The current
+- [ ] `--repo` selects the repository that receives the branch. The current
       directory is the default. A `--repo` that is not a non-bare work tree
       exits 1 with `not a git work tree` after argument validation.
       `nw backlog --help` lists `add`, `edit`, `close`, and `reopen` and does
@@ -699,8 +706,8 @@ drops unknown keys, and refreshes `updated` and `updated_by`.
       lists `--title`, `--summary`, `--spec`, and `--repo`, and does not list
       `--push` or `--clear-spec`. An aware `current_time` of
       `2026-11-07T10:41:00-05:00` is stored as `2026-11-07T15:41:00Z`.
-- [ ] `nw backlog add --help`, `edit --help`, `close --help`, and
-      `reopen --help` do not list `--visibility`, `--public`, or `--private`.
+      `nw backlog add --help`, `edit --help`, `close --help`, and
+      `reopen --help` omit `--visibility`, `--public`, and `--private`.
       The item blob after `add`, and after `edit`, `close`, and `reopen`, has
       no `visibility` key. `git rev-parse --symbolic-full-name nw-backlog` is
       `refs/heads/nw-backlog`.
