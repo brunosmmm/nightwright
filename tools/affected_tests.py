@@ -37,6 +37,11 @@ mapped to test modules through a static AST import graph over `src/nightwright` 
   non-full selection, so a guard that landed on main after the branch was cut still runs; and, not
   with `--strict`, a changed or added file under `tests/` or `src/nightwright/` selects the test
   modules that scan that root or an ancestor of it (`_tree_roots`).
+- (SPEC-0492, not with `--strict`) a numbered spec or `docs/LEDGER.md` selects only the tests naming
+  its basename (no directory fallback); a fixture under `tests/fixtures/<dir>/...` no test names
+  falls back to the readers of `<dir>`; a src module with more than `--hot-threshold` nearest tests
+  keeps only those naming a public top-level definition its diff edits (`hot` in the report), and
+  keeps them all on any doubt.
 
 Usage:
     python3 tools/affected_tests.py [--base REF] [--repo DIR] [--include PATH]...
@@ -87,15 +92,21 @@ HUBS = ("nightwright.cli", "nightwright.agentic.cli")
 # the modules scanning its own root or an ancestor of it.
 TREE_ROOTS = ("tests", "src/nightwright", "src", ".")
 GUARD_MARKER = "tree_guard"
+# SPEC-0492: basename-only docs, the fixture root, and the hot-module threshold
+SPECS_DIR = "docs/specs"
+LEDGER = "docs/LEDGER.md"
+FIXTURES = "fixtures"
+HOT_THRESHOLD = 30
 _SCAN_ATTRS = ("glob", "rglob", "iterdir")
 _SCAN_OS = ("walk", "scandir", "listdir")
 
 
 class Selection:
-    def __init__(self, full, tests, reason):
+    def __init__(self, full, tests, reason, hot=None):
         self.full = full
         self.tests = sorted(tests)
         self.reason = reason
+        self.hot = dict(hot or {})          # SPEC-0492: narrowed hot module -> edited names
 
 
 def _git(repo, *args):
@@ -551,11 +562,30 @@ def nearest_tests(name, mods, reverse, depth=0, through_hubs=False):
     return hits
 
 
+def _spec_doc(rel):
+    """SPEC-0492: a numbered spec (`docs/specs/NNNN-*.md`) or the ledger, read by basename only."""
+    p = Path(rel)
+    if rel == LEDGER:
+        return True
+    return (p.parent.as_posix() == SPECS_DIR and p.suffix == ".md" and len(p.name) > 5
+            and p.name[:4].isdigit() and p.name[4] == "-")
+
+
+def _fixture_root(rel):
+    """SPEC-0492: `<dir>` of a non-Python file under `tests/fixtures/<dir>/...` (the first component
+    under `tests/fixtures/`, however deep the file), else None."""
+    p = Path(rel)
+    if p.suffix == ".py" or len(p.parts) < 4 or p.parts[:2] != (TESTS_DIR, FIXTURES):
+        return None
+    return p.parts[2]
+
+
 def _referencing(ix, rel, wide=False):
     """Modules (names) that reference the file `rel` by needle: a string constant containing its
     basename, or an import of its stem (tools/X.py); when none names the basename, a path-shaped
     reference to its parent directory. `wide` (the closure) always adds the directory readers,
-    since a closure may only err toward more paths."""
+    since a closure may only err toward more paths. Not `wide` (SPEC-0492): a spec or the ledger
+    has no directory fallback, and a fixture under `tests/fixtures/<dir>/...` falls back to `<dir>`."""
     p = Path(rel)
     refs = {m for m, info in ix.info.items() if p.name in info.blob}
     if p.suffix == ".py" and p.parts[0] == TOOLS_DIR and len(p.parts) == 2 and p.stem in ix.mods:
@@ -564,10 +594,14 @@ def _referencing(ix, rel, wide=False):
         refs |= ix.reverse.get(p.stem, set())
     if refs and not wide:
         return refs
+    if not wide and _spec_doc(rel):
+        return refs
     parent = p.parent.as_posix()
     if parent in (".", *TOP_DIRS, f"{SRC_ROOT}/{SRC_PKG}"):
         return refs                          # no directory-level reference for a top-level file
-    return refs | {m for m, info in ix.info.items() if info.has_dir_ref(p.parent.name)}
+    root = _fixture_root(rel)
+    names = ({p.parent.name, root} - {None}) if wide else {root or p.parent.name}
+    return refs | {m for m, info in ix.info.items() if any(info.has_dir_ref(d) for d in names)}
 
 
 def _guards(ix):
@@ -647,10 +681,107 @@ def _removed(ix, rel, depth):
     return hits, None
 
 
-def select(repo, changed, max_fraction=None, depth=0, strict=False, base=None):
+def _spans(text):
+    """SPEC-0492: [(first, last, name)] of the top-level functions, classes and single-name
+    assignments in `text` (first decorator line through `end_lineno`), None when unparsable."""
+    try:
+        tree = ast.parse(text)
+    except (SyntaxError, ValueError):
+        return None
+    out = []
+    for n in tree.body:
+        if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            name, first = n.name, min([n.lineno] + [d.lineno for d in n.decorator_list])
+        elif isinstance(n, ast.Assign) and len(n.targets) == 1 and isinstance(n.targets[0], ast.Name):
+            name, first = n.targets[0].id, n.lineno
+        elif isinstance(n, ast.AnnAssign) and isinstance(n.target, ast.Name):
+            name, first = n.target.id, n.lineno
+        else:
+            continue
+        out.append((first, n.end_lineno, name))
+    return out
+
+
+def _hunks(repo, mb, rel):
+    """[(old_start, old_count, new_start, new_count)] of `git diff -U0 <mb> -- <rel>` against the
+    worktree (committed, staged and unstaged edits); an untracked file is one hunk covering every
+    line. RuntimeError on a git failure."""
+    import re
+    out = _git(repo, "diff", "-U0", "--no-color", "--no-ext-diff", mb, "--", rel)
+    hunks = []
+    for line in out.splitlines():
+        m = re.match(r"@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@", line)
+        if m:
+            a, b, c, d = m.groups()
+            hunks.append((int(a), 1 if b is None else int(b), int(c), 1 if d is None else int(d)))
+    if not hunks and not _git(repo, "ls-files", "--", rel).strip():
+        n = len((Path(repo) / rel).read_text(encoding="utf-8").splitlines())
+        hunks = [(0, 0, 1, n)]
+    return hunks
+
+
+def _changed_names(repo, mb, rel):
+    """SPEC-0492: the top-level names a src module's diff edits, or None when the diff cannot be
+    narrowed: a git failure, an unparsable side, a pure deletion, or a non-blank changed line (new
+    side, or old side of a modification) outside every span (an import, a module statement, a
+    trailing comment)."""
+    try:
+        hunks = _hunks(repo, mb, rel)
+        new = (Path(repo) / rel).read_text(encoding="utf-8")
+    except (RuntimeError, OSError, UnicodeDecodeError):
+        return None
+    old = _show(repo, mb, rel)
+    sides = {"new": (new.splitlines(), _spans(new))}
+    sides["old"] = (old.splitlines(), _spans(old)) if old is not None else ([], [])
+    if any(spans is None for _, spans in sides.values()):
+        return None
+    names = set()
+    for a, b, c, d in hunks:
+        if d == 0:
+            return None                      # a pure deletion: no span to name it by
+        for side, start, count in (("new", c, d), ("old", a, b)):
+            lines, spans = sides[side]
+            for ln in range(start, start + count):
+                if ln < 1 or ln > len(lines) or not lines[ln - 1].strip():
+                    continue
+                hit = {name for first, last, name in spans if first <= ln <= last}
+                if not hit:
+                    return None
+                names |= hit
+    return names or None
+
+
+def _hot_narrow(ix, rel, name, nearest, mb):
+    """SPEC-0492: (tests, names) narrowing the nearest tests of hot src module `rel` to those naming
+    an edited definition as a word, or None to keep `nearest` (no narrowable diff, a private name,
+    or a name no nearest test names)."""
+    import re
+    names = _changed_names(ix.repo, mb, rel)
+    if not names or any(n.startswith("_") for n in names):
+        return None
+    words = {n: re.compile(rf"\b{re.escape(n)}\b") for n in names}
+    keep, named = set(), set()
+    for t in nearest:
+        try:
+            text = (Path(ix.repo) / t).read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError):
+            return None
+        hit = {n for n, w in words.items() if w.search(text)}
+        if hit:
+            keep.add(t)
+            named |= hit
+    if named != names:
+        return None                          # a definition no nearest test names: callers unknown
+    return keep | _name_rule(ix, rel, name), sorted(names)
+
+
+def select(repo, changed, max_fraction=None, depth=0, strict=False, base=None, hot_base=None,
+           hot_threshold=HOT_THRESHOLD):
     """The Selection for `changed` (repo-relative paths) in `repo`. `base` (the merge-base sha)
     lets a pyproject.toml / uv.lock change be read (SPEC-0378). `max_fraction` None: no cap,
-    except `strict`, which keeps `MAX_FRACTION`."""
+    except `strict`, which keeps `MAX_FRACTION`. `hot_base` (the merge-base sha, SPEC-0492) lets a
+    src module whose nearest tests exceed `hot_threshold` narrow to the tests naming what it edits;
+    None (no git, e.g. the replay's copy) never narrows."""
     changed = [rel for rel in changed if rel]
     if max_fraction is None and strict:
         max_fraction = MAX_FRACTION
@@ -666,6 +797,7 @@ def select(repo, changed, max_fraction=None, depth=0, strict=False, base=None):
     all_tests = sorted(rel for rel in mods.values() if _is_test_module(rel))
     selected = set()
     rules = []
+    hot = {}
     for rel in changed:
         if rel in FULL_TRIGGERS:
             rules.append(f"{rel}: metadata only")
@@ -728,6 +860,11 @@ def select(repo, changed, max_fraction=None, depth=0, strict=False, base=None):
                     rules.append(f"reference scan for {rel}")
             continue                        # docs, specs, ...: no test module mapped
         hits = nearest_tests(name, mods, reverse, depth)
+        if not strict and hot_base and is_src and p.suffix == ".py" and len(hits) > hot_threshold:
+            narrowed = _hot_narrow(ix, rel, name, hits, hot_base)
+            if narrowed:
+                hits, hot[rel] = narrowed
+                rules.append(f"hot {rel} narrowed to {', '.join(hot[rel])}")
         if not hits and rel.startswith(f"{SRC_ROOT}/"):
             if not strict:
                 hits = _name_rule(ix, rel, name)
@@ -747,7 +884,7 @@ def select(repo, changed, max_fraction=None, depth=0, strict=False, base=None):
               f"{len(changed)} changed files")
     if rules:
         reason += " (" + "; ".join(rules) + ")"
-    return Selection(False, selected, reason)
+    return Selection(False, selected, reason, hot)
 
 
 def _tracked_data_files(repo):
@@ -878,6 +1015,9 @@ def main(argv=None):
                     help="also select every registered tree guard (SPEC-0421), read from the tree")
     ap.add_argument("--depth", type=int, default=0,
                     help="src import hops always walked before stopping at the nearest tests")
+    ap.add_argument("--hot-threshold", type=int, default=HOT_THRESHOLD, metavar="N",
+                    help="a src module with more nearest tests narrows to the tests naming what "
+                         f"its diff edits (SPEC-0492; default {HOT_THRESHOLD})")
     ap.add_argument("--strict", action="store_true",
                     help="SPEC-0328 behaviour exactly (also: NW_AFFECTED_STRICT=1)")
     ap.add_argument("--json", action="store_true",
@@ -899,12 +1039,18 @@ def main(argv=None):
             changed, sel = [], Selection(True, [], forced)
         elif args.changed is not None:
             changed = normalize_changed(repo, args.changed)
-            sel = select(repo, changed, args.max_fraction, args.depth, strict)
+            try:                            # SPEC-0492: hunks only; no base skips narrowing
+                hot_base = None if strict else _merge_base(repo, args.base)
+            except RuntimeError:
+                hot_base = None
+            sel = select(repo, changed, args.max_fraction, args.depth, strict, hot_base=hot_base,
+                         hot_threshold=args.hot_threshold)
         else:
             mb = _merge_base(repo, args.base)
             changed = _changed_since(repo, mb)
             base_sha = mb
-            sel = select(repo, changed, args.max_fraction, args.depth, strict, base=mb)
+            sel = select(repo, changed, args.max_fraction, args.depth, strict, base=mb, hot_base=mb,
+                         hot_threshold=args.hot_threshold)
     except RuntimeError as e:
         changed, base_sha = [], None
         sel = Selection(True, [], f"cannot diff against {args.base!r}: {e}")
@@ -928,7 +1074,7 @@ def main(argv=None):
                   "include": list(args.include), "changed": changed, "base_sha": base_sha,
                   "head_sha": _git_out(repo, "rev-parse", "HEAD"),
                   "head_tree": _git_out(repo, "rev-parse", "HEAD^{tree}"),
-                  "exclude_marks": exclude, "all_tiers": all_tiers}
+                  "exclude_marks": exclude, "all_tiers": all_tiers, "hot": sel.hot}
         if args.guards:
             report["guards"] = guards
         if report_path:

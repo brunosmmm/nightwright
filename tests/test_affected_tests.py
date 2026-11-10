@@ -405,7 +405,7 @@ def test_report_file_has_the_keys_and_does_not_change_output(repo2, tmp_path, mo
     assert r.returncode == 0 and r.stdout.split() == ["tests/test_base.py", "tests/test_cfg.py"]
     rep = json.loads(out.read_text())
     assert set(rep) == {"full", "reason", "tests", "include", "changed", "base_sha", "head_sha",
-                        "head_tree", "exclude_marks", "all_tiers"}
+                        "head_tree", "exclude_marks", "all_tiers", "hot"}
     assert rep["full"] is False and rep["tests"] == ["tests/test_base.py", "tests/test_cfg.py"]
     assert rep["include"] == ["tests/test_base.py"] and rep["changed"] == [".nw/project.yaml"]
     assert rep["head_sha"] == _git(repo2, "rev-parse", "HEAD").strip()
@@ -608,7 +608,7 @@ def test_report_is_written_on_the_run_path(repo2, tmp_path, monkeypatch, change,
     assert r.returncode == 0 and r.stdout.strip() == stdout
     rep = json.loads(out.read_text())
     assert set(rep) == {"full", "reason", "tests", "include", "changed", "base_sha", "head_sha",
-                        "head_tree", "exclude_marks", "all_tiers"}
+                        "head_tree", "exclude_marks", "all_tiers", "hot"}
     assert rep["full"] is full and rep["tests"] == tests and rep["include"] == include
     assert rep["changed"] == [change]
 
@@ -1046,3 +1046,241 @@ def test_guards_keep_a_heavy_tree_guard_and_drop_a_heavy_module(tmp_path, monkey
     assert "tests/test_org_write_race.py::test_race" in out.stdout
     assert "tests/test_light.py::test_light" in out.stdout
     assert "test_heavy" not in out.stdout
+
+
+# --- SPEC-0492: spec/ledger basename only, hot-module narrowing, fixture root -----------------------
+
+def _on_main(repo, files):
+    """Commit `files` on main (the base) and re-cut `feat` from it."""
+    _git(repo, "checkout", "-q", "main")
+    _commit_new(repo, files)
+    _git(repo, "checkout", "-qB", "feat")
+
+
+def _edit(repo, rel, old, new, commit=True):
+    p = repo / rel
+    text = p.read_text()
+    assert old in text, (rel, old)
+    p.write_text(text.replace(old, new, 1))
+    if commit:
+        _git(repo, "add", "-A")
+        _git(repo, "commit", "-qm", "edit")
+
+
+SPEC_FILES = {
+    "docs/specs/0001-unnamed.md": "x\n",
+    "docs/specs/0002-named.md": "x\n",
+    "docs/specs/SCHEMA.md": "x\n",
+    "docs/specs/spec.schema.json": "{}\n",
+    "docs/specs/TEMPLATE.md": "x\n",
+    "docs/specs/TEMPLATE-epic.md": "x\n",
+    "docs/LEDGER.md": "x\n",
+    "tests/test_specs_dir.py": ('from pathlib import Path\n'
+                                'D = Path(__file__).parents[1] / "docs" / "specs"\n'),
+    "tests/test_names_spec.py": 'X = "0002-named.md"\n',
+    "tests/test_guard_doc.py": "import pytest\npytestmark = pytest.mark.tree_guard\n",
+}
+
+
+@pytest.mark.parametrize("rel,expected", [
+    ("docs/specs/0001-unnamed.md", []),                                 # no hit: nothing, not full
+    ("docs/specs/0002-named.md", ["tests/test_names_spec.py"]),         # basename needle only
+    ("docs/LEDGER.md", []),                                             # no `docs` directory readers
+    ("docs/specs/SCHEMA.md", ["tests/test_specs_dir.py"]),              # today's directory fallback
+    ("docs/specs/spec.schema.json", ["tests/test_specs_dir.py"]),
+    ("docs/specs/TEMPLATE.md", ["tests/test_specs_dir.py"]),
+    ("docs/specs/TEMPLATE-epic.md", ["tests/test_specs_dir.py"]),
+])
+def test_spec_and_ledger_select_only_their_basename_readers(repo2, rel, expected):
+    _on_main(repo2, SPEC_FILES)
+    sel = _sel2(repo2, rel)
+    assert not sel.full and sel.tests == expected, sel.reason
+    rep = json.loads(_cli(repo2, "--guards", "--json").stdout)
+    assert rep["full"] is False and rep["tests"] == sorted(set(expected) | {"tests/test_guard_doc.py"})
+
+
+def test_ledger_named_by_a_test_selects_it(repo2):
+    _on_main(repo2, {**SPEC_FILES, "tests/test_ledger.py": 'L = "docs/LEDGER.md"\n'})
+    assert _sel2(repo2, "docs/LEDGER.md").tests == ["tests/test_ledger.py"]
+
+
+def test_spec_rule_is_off_in_strict_mode(repo2):
+    _on_main(repo2, SPEC_FILES)
+    assert _sel2(repo2, "docs/specs/0001-unnamed.md", strict=True).tests == []
+
+
+ENGINE = '''import os
+
+CONST = 1
+
+
+def alpha():
+    return 1
+
+
+def deco(f):
+    return f
+
+
+@deco
+def beta():
+    return 2
+
+
+def _priv():
+    return 3
+
+
+class Gamma:
+    def meth(self):
+        return 4
+'''
+
+HOT_FILES = {
+    "src/nightwright/engine.py": ENGINE,
+    "tests/test_e0.py": "from nightwright.engine import alpha\n",
+    "tests/test_e1.py": "from nightwright import engine\nengine.beta()\n",
+    "tests/test_e2.py": "from nightwright.engine import Gamma\n",
+    "tests/test_e3.py": "from nightwright import engine\nX = 'alphabet alpha_x'\n",   # no word match
+    "tests/test_e4.py": "from nightwright import engine\nengine.CONST\n",
+    "tests/test_engine.py": "import nightwright.engine\n",                     # the name rule
+    "tests/test_scan_src.py": ("from pathlib import Path\n"
+                               "R = Path(__file__).parents[1] / 'src' / 'nightwright'\n"
+                               "F = list(R.rglob('*.py'))\n"),              # a src tree reader
+}
+NEAREST = ["tests/test_e0.py", "tests/test_e1.py", "tests/test_e2.py", "tests/test_e3.py",
+           "tests/test_e4.py", "tests/test_engine.py", "tests/test_scan_src.py"]
+ENGINE_REL = "src/nightwright/engine.py"
+
+
+@pytest.fixture
+def hrepo(repo):
+    _on_main(repo, HOT_FILES)
+    return repo
+
+
+def _hot(repo, threshold=3, strict=False):
+    mb = AT._merge_base(repo, "main")
+    return AT.select(repo, AT.changed_files(repo, "main"), max_fraction=1.0, strict=strict, base=mb,
+                     hot_base=mb, hot_threshold=threshold)
+
+
+@pytest.mark.parametrize("old,new,commit,expected,names", [
+    ("    return 1\n", "    return 10\n", True, ["tests/test_e0.py"], ["alpha"]),     # body-only
+    ("    return 1\n", "    return 10\n", False, ["tests/test_e0.py"], ["alpha"]),    # unstaged
+    ("@deco\n", "@deco  # d\n", True, ["tests/test_e1.py"], ["beta"]),                # decorator line
+    ("        return 4\n", "        return 40\n", True, ["tests/test_e2.py"], ["Gamma"]),   # a method
+    ("CONST = 1\n", "CONST = 2\n", True, ["tests/test_e4.py"], ["CONST"]),           # an assignment
+])
+def test_hot_module_narrows_to_the_tests_naming_the_edited_definition(hrepo, old, new, commit,
+                                                                      expected, names):
+    _edit(hrepo, ENGINE_REL, old, new, commit=commit)
+    sel = _hot(hrepo)
+    # + the name-rule test and the src tree reader; test_e3 holds `alpha` only inside other words
+    assert not sel.full and sel.tests == sorted(expected + ["tests/test_engine.py",
+                                                            "tests/test_scan_src.py"]), sel.reason
+    assert sel.hot == {ENGINE_REL: names} and f"hot {ENGINE_REL} narrowed" in sel.reason
+
+
+def test_hot_report_and_cli_threshold(hrepo):
+    _edit(hrepo, ENGINE_REL, "    return 1\n", "    return 10\n")
+    rep = json.loads(_cli(hrepo, "--json", "--hot-threshold", "3").stdout)
+    assert rep["hot"] == {ENGINE_REL: ["alpha"]}
+    assert rep["tests"] == ["tests/test_e0.py", "tests/test_engine.py", "tests/test_scan_src.py"]
+    rep = json.loads(_cli(hrepo, "--json").stdout)                # default 30: 7 nearest kept
+    assert rep["hot"] == {} and rep["tests"] == NEAREST
+    rep = json.loads(_cli(hrepo, "--json", "--hot-threshold", "7").stdout)   # at the threshold
+    assert rep["hot"] == {} and rep["tests"] == NEAREST
+    rep = json.loads(_cli(hrepo, "--json", "--hot-threshold", "3", "--changed", ENGINE_REL).stdout)
+    assert rep["hot"] == {ENGINE_REL: ["alpha"]} and len(rep["tests"]) == 3   # same diff on --changed
+
+
+@pytest.mark.parametrize("edits", [
+    [],                                                                     # trailing comment (_change)
+    [("def _priv():\n    return 3\n", "def _priv():\n    return 30\n")],    # a private name
+    [("    return 1\n", "    return 10\n"),
+     ("def _priv():\n    return 3\n", "def _priv():\n    return 30\n")],    # public + private
+    [("import os\n", "import os\nimport sys\n")],                           # an import
+    [("    return 1\n", "    return 10\n"), ("import os\n", "import os, sys\n")],   # public + import
+    [("    return 1\n", "    return 10\n"), ("class Gamma:\n", "class Gamma(\n")],  # unparsable
+    [("def deco(f):\n    return f\n", "def deco(f):\n    return None\n")],  # no test names `deco`
+    [("@deco\ndef beta():\n    return 2\n", "")],                           # a pure deletion
+])
+def test_hot_module_keeps_every_nearest_test_on_doubt(hrepo, edits):
+    for old, new in edits:
+        _edit(hrepo, ENGINE_REL, old, new)
+    if not edits:
+        _change(hrepo, ENGINE_REL)
+    sel = _hot(hrepo)
+    assert not sel.full and sel.tests == NEAREST and sel.hot == {}, sel.reason
+
+
+def test_hot_git_failure_keeps_every_nearest_test_and_is_not_full(hrepo):
+    _edit(hrepo, ENGINE_REL, "    return 1\n", "    return 10\n")
+    rep = json.loads(_cli(hrepo, "--json", "--base", "no-such-ref", "--hot-threshold", "3",
+                          "--changed", ENGINE_REL).stdout)
+    assert rep["full"] is False and rep["tests"] == NEAREST and rep["hot"] == {}
+    mb = AT._merge_base(hrepo, "main")
+    sel = AT.select(hrepo, [ENGINE_REL], hot_base="0" * 40, hot_threshold=3)   # an unknown commit
+    assert not sel.full and sel.tests == NEAREST
+    assert AT.select(hrepo, [ENGINE_REL], hot_threshold=3).tests == NEAREST    # no base: no git
+    assert AT.select(hrepo, [ENGINE_REL], hot_base=mb, hot_threshold=3).hot
+
+
+def test_hot_narrowing_is_off_in_strict_mode(hrepo):
+    _edit(hrepo, ENGINE_REL, "    return 1\n", "    return 10\n")
+    sel = _hot(hrepo, strict=True)
+    assert sel.tests == sorted(set(NEAREST) - {"tests/test_scan_src.py"}) and sel.hot == {}
+    rep = json.loads(_cli(hrepo, "--json", "--strict", "--max-fraction", "1", "--hot-threshold", "3").stdout)
+    assert rep["hot"] == {} and len(rep["tests"]) == 6
+
+
+def test_changed_names_spans_and_untracked_file(hrepo):
+    assert AT._spans("x = (\n") is None
+    assert [n for _, _, n in AT._spans(ENGINE)] == ["CONST", "alpha", "deco", "beta", "_priv", "Gamma"]
+    beta = [s for s in AT._spans(ENGINE) if s[2] == "beta"][0]
+    assert ENGINE.splitlines()[beta[0] - 1] == "@deco"                      # from the decorator line
+    (hrepo / "src/nightwright/fresh.py").write_text("def f():\n    return 1\n")
+    mb = AT._merge_base(hrepo, "main")
+    assert AT._hunks(hrepo, mb, "src/nightwright/fresh.py") == [(0, 0, 1, 2)]
+    assert AT._changed_names(hrepo, mb, "src/nightwright/fresh.py") == {"f"}
+
+
+FIXTURE_FILES = {
+    "tests/fixtures/deep/sub/nested.json": "{}\n",
+    "tests/fixtures/deep/named.json": "{}\n",
+    "tests/fixtures/empty/x.json": "{}\n",
+    "tests/test_deep.py": 'from pathlib import Path\nP = Path(__file__).parent / "fixtures" / "deep"\n',
+    "tests/test_deep_str.py": 'P = "tests/fixtures/deep/"\n',
+    "tests/test_named_fixture.py": 'X = "named.json"\n',
+    "tests/test_bare_deep.py": 'X = "deepest"\nY = "deep"\n',                # not path-shaped
+    "tests/test_sub_reader.py": 'from pathlib import Path\nP = Path(__file__).parent / "sub"\n',
+}
+
+
+@pytest.mark.parametrize("rel,expected", [
+    ("tests/fixtures/deep/sub/nested.json", ["tests/test_deep.py", "tests/test_deep_str.py"]),
+    ("tests/fixtures/deep/named.json", ["tests/test_named_fixture.py"]),   # the basename wins
+])
+def test_fixture_root_is_the_first_component_under_fixtures(repo2, rel, expected):
+    _on_main(repo2, FIXTURE_FILES)
+    sel = _sel2(repo2, rel)
+    assert not sel.full and sel.tests == expected, sel.reason
+
+
+def test_unreferenced_fixture_root_is_the_full_suite(repo2):
+    _on_main(repo2, FIXTURE_FILES)
+    sel = _sel2(repo2, "tests/fixtures/empty/x.json")
+    assert sel.full and sel.reason == "no test references tests/fixtures/empty/x.json"
+
+
+def test_fixture_rule_leaves_other_data_and_strict_alone(repo2):
+    _on_main(repo2, FIXTURE_FILES)
+    # directly in tests/fixtures: today's `fixtures` directory readers
+    assert _sel2(repo2, "tests/fixtures/a.txt").tests == ["tests/test_deep.py", "tests/test_deep_str.py",
+                                                          "tests/test_dirstr.py"]
+    _git(repo2, "reset", "-q", "--hard", "main")
+    assert _sel2(repo2, "tests/data/other.json").tests == ["tests/test_dirpath.py",
+                                                           "tests/test_golden.py"]
+    _git(repo2, "reset", "-q", "--hard", "main")
+    assert _sel2(repo2, "tests/fixtures/deep/sub/nested.json", strict=True).full
