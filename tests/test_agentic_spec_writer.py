@@ -1300,16 +1300,25 @@ def test_linked_idea_writer_uses_the_public_summary_and_cites(tmp_path, monkeypa
     tips = []
     real_run = subprocess.run
 
+    forbidden = {"checkout", "switch", "add", "fetch", "push"}
+    tip_before = _git(repo, "rev-parse", "refs/heads/nw-backlog").strip()
+
     def spy(cmd, **kw):
         if len(cmd) >= 4 and cmd[0] == "git" and Path(cmd[2]).resolve() == repo.resolve():
-            if len(cmd) > 3 and cmd[3] in ("hash-object", "mktree", "commit-tree", "update-ref"):
+            if len(cmd) > 3:
                 tips.append(cmd[3:])
+                if cmd[3] in forbidden:
+                    raise AssertionError(f"unexpected git {cmd[3]!r}")
         return real_run(cmd, **kw)
 
     monkeypatch.setattr(subprocess, "run", spy)
     Q.tick(cfg)
     in_review(cfg, cid)
-    assert tips
+    kinds = {c[0] for c in tips if c}
+    assert kinds >= {"hash-object", "mktree", "commit-tree", "update-ref"}
+    upd = [c for c in tips if c and c[0] == "update-ref"]
+    assert upd and upd[-1][-1] == tip_before
+    assert idea(cfg, iid).state == "SPECCED"
     blob = subprocess.run(
         ["git", "-C", str(repo), "show", f"refs/heads/nw-backlog:{req}.md"],
         check=True, capture_output=True, text=True,
@@ -1380,7 +1389,7 @@ def test_drift_before_write_parks_without_a_cite(tmp_path, monkeypatch):
     real_run = subprocess.run
 
     def spy(cmd, **kw):
-        if len(cmd) > 3 and cmd[3] == "hash-object" and "nw-backlog" in " ".join(map(str, cmd)):
+        if len(cmd) > 3 and cmd[3] == "hash-object":
             hash_calls.append(cmd)
         return real_run(cmd, **kw)
 
@@ -1401,10 +1410,16 @@ def test_queue_add_refuses_a_drifted_pair(tmp_path, monkeypatch):
     cfg = make_cfg(tmp_path, repo, script(tmp_path, []))
     monkeypatch.setattr("nightwright.cli.load_config", lambda: cfg)
     iid = capture(cfg)
-    _publish_for_campaign(cfg, monkeypatch, repo, iid)
+    _publish_for_campaign(cfg, monkeypatch, repo, iid, "Hello")
     run_cli(cfg, monkeypatch, ["idea", "summary", iid, "--set", "Drifted"])
     with pytest.raises(ValueError, match="do not match :REQ_BASE:"):
         Q.plan_add_idea(cfg, iid)
+    assert "CAMPAIGN" not in idea(cfg, iid).properties
+    run_cli(cfg, monkeypatch, ["idea", "summary", iid, "--set", "Hello"])
+    plan = Q.plan_add_idea(cfg, iid)
+    run_cli(cfg, monkeypatch, ["idea", "summary", iid, "--set", "Drifted"])
+    with pytest.raises(ValueError, match="do not match :REQ_BASE:"):
+        Q.apply_add_idea(cfg, plan)
     assert "CAMPAIGN" not in idea(cfg, iid).properties
 
 
@@ -1438,20 +1453,39 @@ def test_link_idea_refuses_a_different_cite(tmp_path, monkeypatch):
     cfg = make_cfg(tmp_path, repo, script(tmp_path, []))
     monkeypatch.setattr("nightwright.cli.load_config", lambda: cfg)
     iid = capture(cfg)
-    _publish_for_campaign(cfg, monkeypatch, repo, iid)
+    req = _publish_for_campaign(cfg, monkeypatch, repo, iid)
     cid = add_idea_campaign(cfg, monkeypatch, iid)
     st = S.read_state(cfg, cid)
     st["spec_write"] = {"mode": "write"}
     agreed = IL.load_agreed_request(cfg, idea(cfg, iid))
     IL.cite_spec(cfg, agreed, "SPEC-0099")
+    blob_before = subprocess.run(
+        ["git", "-C", str(repo), "show", f"refs/heads/nw-backlog:{req}.md"],
+        check=True, capture_output=True, text=True,
+    ).stdout
+    cite_calls = []
+    real_cite = IL.cite_spec
+
+    def spy_cite(cfg_a, ag, sid):
+        cite_calls.append(sid)
+        return real_cite(cfg_a, ag, sid)
+
+    monkeypatch.setattr(IL, "cite_spec", spy_cite)
     err = Q._link_idea(cfg, st, "SPEC-0002")
     assert err and "already cites" in err
+    assert cite_calls == []
     assert idea(cfg, iid).properties.get("SPEC") != "SPEC-0002"
+    assert subprocess.run(
+        ["git", "-C", str(repo), "show", f"refs/heads/nw-backlog:{req}.md"],
+        check=True, capture_output=True, text=True,
+    ).stdout == blob_before
+    monkeypatch.setattr(IL, "cite_spec", real_cite)
     agreed = IL.load_agreed_request(cfg, idea(cfg, iid))
     IL.cite_spec(cfg, agreed, "SPEC-0002")
     tip = _git(repo, "rev-parse", "refs/heads/nw-backlog")
     assert Q._link_idea(cfg, st, "SPEC-0002") is None
     assert idea(cfg, iid).properties["SPEC"] == "SPEC-0002"
+    assert idea(cfg, iid).state == "SPECCED"
     assert _git(repo, "rev-parse", "refs/heads/nw-backlog") == tip
 
 

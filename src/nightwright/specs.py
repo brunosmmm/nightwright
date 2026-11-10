@@ -194,6 +194,8 @@ def scaffold_from_idea(cfg, selector, *, epic=False, title=None, force=False):
             citing = IL.will_cite(cfg, task, specs_dir) if agreed else False
             if agreed and citing and agreed.spec and agreed.spec != spec_id and not force:
                 raise ValueError(f"{agreed.req_id} already cites {agreed.spec}")
+            org_path = Path(os.path.expanduser(cfg["org_ideas_file"]))
+            org_snapshot = org_path.read_bytes()
             spec_path, text = _build_scaffold_text(
                 cfg, task, rec, specs_dir, epic, title, agreed)
             specs_dir.mkdir(parents=True, exist_ok=True)
@@ -206,7 +208,7 @@ def scaffold_from_idea(cfg, selector, *, epic=False, title=None, force=False):
                     W.set_state(cfg, task, "SPECCED")
                 except BaseException as e:
                     try:
-                        W.clear_property(cfg, task, "SPEC")
+                        org_path.write_bytes(org_snapshot)
                     except Exception:
                         pass
                     raise e
@@ -220,6 +222,10 @@ def scaffold_from_idea(cfg, selector, *, epic=False, title=None, force=False):
                         if isinstance(e, KeyboardInterrupt | SystemExit):
                             raise e
                         if "restored refs/heads/nw-backlog" in str(restore_err):
+                            try:
+                                org_path.write_bytes(org_snapshot)
+                            except Exception:
+                                pass
                             if spec_path and spec_path.is_file():
                                 spec_path.unlink()
                             if not number_released:
@@ -231,6 +237,10 @@ def scaffold_from_idea(cfg, selector, *, epic=False, title=None, force=False):
                         raise restore_err from e
                 if spec_path and spec_path.is_file():
                     spec_path.unlink()
+                try:
+                    org_path.write_bytes(org_snapshot)
+                except Exception:
+                    pass
                 raise
         return spec_path, spec_id
     except BaseException as err:

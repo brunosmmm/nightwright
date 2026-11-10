@@ -573,6 +573,15 @@ unknown key.
 - `python3 tools/spec_lint.py --write-ledger` — pass
 - Full suite left to campaign gating.
 
+### Test record (2026-11-10 loop 2)
+
+- `python3 tools/test_tiers.py --check` — pass
+- `uv run pytest tests/test_spec_source_request.py -q` — 9 passed
+- `uv run pytest tests/test_agentic_spec_writer.py -q -k "linked_idea or drift_before or queue_add_refuses or link_idea_refuses or campaign_cite"` — 7 passed
+- `uv run pytest tests/test_idea_link.py -q -k publish` — 29 passed
+- `python3 tools/spec_lint.py --write-ledger` — pass
+- Full suite left to campaign gating.
+
 ## Open questions
 
 None.

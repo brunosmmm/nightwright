@@ -18,6 +18,7 @@ from click.testing import CliRunner
 
 from nightwright import idea_link as L
 from nightwright import org_write as W
+from nightwright import spec_numbers as SN
 from nightwright import specs as S
 from nightwright.agentic import queue as Q
 from nightwright.cli import cli
@@ -148,6 +149,42 @@ def _backlog_tip(repo: Path) -> str | None:
     return r.stdout.strip() if r.returncode == 0 else None
 
 
+_FORBIDDEN_GIT = frozenset({"checkout", "switch", "add", "fetch", "push"})
+
+
+def _git_spy(monkeypatch, repo: Path):
+    """Record git subcommands run in ``repo``; forbid index/worktree mutators."""
+    calls: list[tuple] = []
+    real_run = _REAL_SUBPROCESS_RUN
+
+    def spy(cmd, **kw):
+        if len(cmd) >= 4 and cmd[0] == "git" and Path(cmd[2]).resolve() == repo.resolve():
+            tail = tuple(cmd[3:])
+            calls.append(tail)
+            if tail and tail[0] in _FORBIDDEN_GIT:
+                raise AssertionError(f"unexpected git {tail[0]!r}")
+        return real_run(cmd, **kw)
+
+    monkeypatch.setattr(subprocess, "run", spy)
+    return calls
+
+
+def _assert_cite_plumbing(calls: list[tuple], *, tip_before: str):
+    kinds = {c[0] for c in calls if c}
+    assert kinds >= {"hash-object", "mktree", "commit-tree", "update-ref"}
+    upd = [c for c in calls if c and c[0] == "update-ref"]
+    assert upd and upd[-1][-1] == tip_before
+    ct = [c for c in calls if c and c[0] == "commit-tree"]
+    assert ct and "-p" in ct[0]
+
+
+def _fm_lines_after_source_idea(text: str) -> list[str]:
+    fm = text.split("---\n", 2)[1]
+    lines = fm.splitlines()
+    ix = next(i for i, ln in enumerate(lines) if ln.startswith("source_idea:"))
+    return lines[ix + 1 : ix + 3]
+
+
 def _backlog_root_entries(repo: Path) -> list[tuple[str, str, str]]:
     out = _git(repo, "ls-tree", "refs/heads/nw-backlog").strip()
     if not out:
@@ -217,19 +254,21 @@ def test_schema_accepts_source_request(tmp_path):
             jsonschema.validate({**good, "source_request": bad_val}, _SCHEMA)
     jsonschema.validate({k: v for k, v in good.items() if k != "source_request"}, _SCHEMA)
     assert "source_request" in (ROOT / "docs/specs/SCHEMA.md").read_text()
-    fixture = ROOT / "docs/specs/9998-source-request-fixture.md"
-    try:
-        fixture.write_text(_valid_spec_text("REQ-01234567").replace("SPEC-0999", "SPEC-9998")
-                           .replace("0999-fixture", "9998-source-request-fixture"))
-        subprocess.run([sys.executable, "tools/spec_lint.py", "--write-ledger"], cwd=ROOT,
-                       check=True, capture_output=True, text=True)
-        r = subprocess.run([sys.executable, "tools/spec_lint.py"], cwd=ROOT,
-                           capture_output=True, text=True)
-        assert r.returncode == 0, r.stderr or r.stdout
-    finally:
-        fixture.unlink(missing_ok=True)
-        subprocess.run([sys.executable, "tools/spec_lint.py", "--write-ledger"], cwd=ROOT,
-                       check=False, capture_output=True, text=True)
+    lint_root = tmp_path / "lint-tree"
+    (lint_root / "docs" / "specs").mkdir(parents=True)
+    shutil.copy(ROOT / "docs/LEDGER.md", lint_root / "docs/LEDGER.md")
+    for name in ("SCHEMA.md", "spec.schema.json", "TEMPLATE.md", "0000-how-we-write-specs.md"):
+        shutil.copy(ROOT / "docs/specs" / name, lint_root / "docs/specs" / name)
+    (lint_root / "tools").mkdir()
+    shutil.copy(_LINT, lint_root / "tools/spec_lint.py")
+    fixture = lint_root / "docs/specs/9998-source-request-fixture.md"
+    fixture.write_text(_valid_spec_text("REQ-01234567").replace("SPEC-0999", "SPEC-9998")
+                       .replace("0999-fixture", "9998-source-request-fixture"))
+    subprocess.run([sys.executable, "tools/spec_lint.py", "--write-ledger"], cwd=lint_root,
+                   check=True, capture_output=True, text=True)
+    r = subprocess.run([sys.executable, "tools/spec_lint.py"], cwd=lint_root,
+                       capture_output=True, text=True)
+    assert r.returncode == 0, r.stderr or r.stdout
 
 
 def test_unlinked_idea_does_not_read_the_backlog(tmp_path, monkeypatch):
@@ -271,46 +310,82 @@ def test_scaffold_cites_the_public_summary(tmp_path, monkeypatch):
     CliRunner().invoke(cli, ["idea", "log", idea.properties["ID"], "--note", "secret log"])
     idea = _publish(monkeypatch, cfg, idea)
     req = idea.properties["REQ"]
+    title = L.load_agreed_request(cfg, idea).title
     blob_before = _show_backlog(repo, f"{req}.md")
-    created_line = [ln for ln in blob_before.decode().splitlines() if ln.startswith("created:")][0]
-    tip_before = _backlog_tip(repo)
+    blob_text = blob_before.decode()
+    created_line = [ln for ln in blob_text.splitlines() if ln.startswith("created:")][0]
+    status_line = [ln for ln in blob_text.splitlines() if ln.startswith("status:")][0]
+    org_before_text = Path(cfg["org_ideas_file"]).read_text()
+    task_before = W.resolve_selector(cfg, idea.properties["ID"])
+    req_base_before = task_before.properties["REQ_BASE"]
+    req_prop_before = task_before.properties["REQ"]
+    headline_before = task_before.heading
     sibling = _seed_idea(monkeypatch, cfg, text="Sibling", summary="other")
     _publish(monkeypatch, cfg, sibling)
     sib_id = W.resolve_selector(cfg, sibling.properties["ID"]).properties["REQ"]
     sib_sha = _git(repo, "rev-parse", f"refs/heads/nw-backlog:{sib_id}.md").strip()
+    tip_before = _backlog_tip(repo)
     head_before = _git(repo, "symbolic-ref", "HEAD").strip()
-    git_calls = []
-
-    def spy(cmd, **kw):
-        if len(cmd) >= 4 and cmd[0] == "git" and Path(cmd[2]).resolve() == repo.resolve():
-            git_calls.append(cmd[3:])
-        return _REAL_SUBPROCESS_RUN(cmd, **kw)
-
-    monkeypatch.setattr(subprocess, "run", spy)
+    git_calls = _git_spy(monkeypatch, repo)
     path, spec_id = S.scaffold_from_idea(cfg, idea.properties["ID"])
     text = path.read_text()
-    assert f"source_request: {req}" in text
+    after_si = _fm_lines_after_source_idea(text)
+    assert after_si[0] == f"source_request: {req}"
     assert "secret log" not in text
-    assert "Promoted from request" in text and "Public words" in text
-    req_base = W.resolve_selector(cfg, idea.properties["ID"]).properties["REQ_BASE"]
-    assert W.resolve_selector(cfg, idea.properties["ID"]).properties.get("REQ_BASE") == req_base
-    assert W.resolve_selector(cfg, idea.properties["ID"]).state == "SPECCED"
+    ctx = text.split("## Context", 1)[1].split("## Goals", 1)[0]
+    assert ctx.strip().startswith(f"Promoted from request `{req}` ({title}).")
+    assert "Public words" in ctx
+    fresh = W.resolve_selector(cfg, idea.properties["ID"])
+    assert fresh.state == "SPECCED"
+    assert fresh.properties["SPEC"] == spec_id
+    assert fresh.properties["REQ_BASE"] == req_base_before
+    assert fresh.properties["REQ"] == req_prop_before
+    assert fresh.heading == headline_before
+    org_after = Path(cfg["org_ideas_file"]).read_text()
+    assert "secret log" in org_after
+    assert fresh.properties.get("REQ_BASE") == req_base_before
+    assert fresh.properties.get("REQ") == req_prop_before
+    assert f":SPEC: {spec_id}" in org_after
+    for ln in org_before_text.splitlines():
+        if ln.startswith(":REQ:") or ln.startswith(":REQ_BASE:") or ln.startswith("* INCUBATE"):
+            assert ln in org_after or ln.replace("INCUBATE", "SPECCED") in org_after
     cited = _show_backlog(repo, f"{req}.md")
-    fm, body = split_frontmatter(cited.decode())
+    cited_text = cited.decode()
+    fm, body = split_frontmatter(cited_text)
     assert fm["spec"] == spec_id
-    assert [ln for ln in cited.decode().splitlines() if ln.startswith("created:")][0] == created_line
+    assert idea.properties["ID"] not in cited_text
+    ub = cited_text.splitlines()
+    i_ub = next(i for i, ln in enumerate(ub) if ln.startswith("updated_by:"))
+    i_spec = next(i for i, ln in enumerate(ub) if ln.startswith("spec:"))
+    assert i_ub < i_spec
+    assert [ln for ln in cited_text.splitlines() if ln.startswith("created:")][0] == created_line
+    assert [ln for ln in cited_text.splitlines() if ln.startswith("status:")][0] == status_line
     assert body == "Public words"
     assert _git(repo, "rev-parse", f"refs/heads/nw-backlog:{sib_id}.md").strip() == sib_sha
+    _assert_cite_plumbing(git_calls, tip_before=tip_before)
+    log_row = _git(repo, "log", "-1", "--format=%s|%an|%ae", "refs/heads/nw-backlog").strip()
+    subj, an, ae = log_row.split("|")
+    assert subj == f"cite {req} {spec_id}"
+    assert an == "Test User" and ae == "test@example.com"
+    assert _git(repo, "symbolic-ref", "HEAD").strip() == head_before
+
+    empty = _seed_idea(monkeypatch, cfg, text="Empty pub", summary="")
+    empty = _publish(monkeypatch, cfg, empty)
+    ereq = empty.properties["REQ"]
+    p_empty, _ = S.scaffold_from_idea(cfg, empty.properties["ID"])
+    ectx = p_empty.read_text().split("## Context", 1)[1].split("## Goals", 1)[0].strip()
+    assert ectx == f"Promoted from request `{ereq}` (Empty pub)."
+    assert "Public words" not in ectx
+
     path_epic, _spec_epic = S.scaffold_from_idea(cfg, sibling.properties["ID"], epic=True)
     assert f"source_request: {sib_id}" in path_epic.read_text()
-    assert _git(repo, "symbolic-ref", "HEAD").strip() == head_before
-    cite_cmds = [c for c in git_calls if c and c[0] in ("hash-object", "mktree", "commit-tree", "update-ref")]
-    assert cite_cmds
-    assert f"cite {req} {spec_id}" in _git(repo, "log", "--format=%s", "refs/heads/nw-backlog").splitlines()
     agreed = L.load_agreed_request(cfg, W.resolve_selector(cfg, idea.properties["ID"]))
     assert agreed and agreed.spec == spec_id
+    tip_before_redo = _backlog_tip(repo)
+    n_commits = int(_git(repo, "rev-list", "--count", "refs/heads/nw-backlog"))
     L.cite_spec(cfg, agreed, spec_id)
-    assert _backlog_tip(repo) == _git(repo, "rev-parse", "refs/heads/nw-backlog").strip()
+    assert _backlog_tip(repo) == tip_before_redo
+    assert int(_git(repo, "rev-list", "--count", "refs/heads/nw-backlog")) == n_commits
 
 
 def test_scaffold_refuses_drift_and_bad_files(tmp_path, monkeypatch):
@@ -334,6 +409,39 @@ def test_scaffold_refuses_drift_and_bad_files(tmp_path, monkeypatch):
 
     CliRunner().invoke(cli, ["idea", "summary", idea.properties["ID"], "--set", "Drifted"])
     refuse("do not match :REQ_BASE:")
+
+    idea = W.resolve_selector(cfg, idea.properties["ID"])
+    CliRunner().invoke(cli, ["idea", "summary", idea.properties["ID"], "--set", "Hello"])
+    published = _show_backlog(repo, f"{req}.md").decode()
+    fm_pub, _ = split_frontmatter(published)
+    drift_pub = L.render_request(
+        req_id=req, title=fm_pub["title"], summary="Public drift", status=fm_pub["status"],
+        created=[ln.split(": ", 1)[1] for ln in published.splitlines() if ln.startswith("created:")][0],
+        updated=fm_pub["updated"], created_by=fm_pub["created_by"], updated_by=fm_pub["updated_by"],
+    )
+    L._publish_commit(repo, rel_path=f"{req}.md", body=drift_pub,
+                      message="pub drift", name="Test User", email="test@example.com")
+    refuse("do not match :REQ_BASE:")
+    L._publish_commit(repo, rel_path=f"{req}.md", body=published.encode(),
+                      message="restore pub", name="Test User", email="test@example.com")
+
+    matched = "Matched wrong base"
+    CliRunner().invoke(cli, ["idea", "summary", idea.properties["ID"], "--set", matched])
+    L._publish_commit(
+        repo, rel_path=f"{req}.md",
+        body=L.render_request(
+            req_id=req, title="Link", summary=matched, status="open",
+            created="2026-11-08T12:00:00Z", updated="2026-11-08T12:00:00Z",
+            created_by="Test User <test@example.com>", updated_by="Test User <test@example.com>",
+        ),
+        message="both drift", name="Test User", email="test@example.com",
+    )
+    refuse("do not match :REQ_BASE:")
+    CliRunner().invoke(cli, ["idea", "summary", idea.properties["ID"], "--set", "Hello"])
+    restore_good = lambda: L._publish_commit(
+        repo, rel_path=f"{req}.md", body=published.encode(),
+        message="restore", name="Test User", email="test@example.com")
+    restore_good()
 
     idea = W.resolve_selector(cfg, idea.properties["ID"])
     CliRunner().invoke(cli, ["idea", "summary", idea.properties["ID"], "--set", "Hello"])
@@ -383,10 +491,37 @@ def test_scaffold_refuses_drift_and_bad_files(tmp_path, monkeypatch):
     refuse("already cites")
     restore_good()
 
+    bad_spec = L.render_request(
+        req_id=req, title="Link", summary="Hello", status="open",
+        created="2026-11-08T12:00:00Z", updated="2026-11-08T12:00:00Z",
+        created_by="Test User <test@example.com>", updated_by="Test User <test@example.com>",
+        spec="SPEC-ABCD",
+    )
+    L._publish_commit(repo, rel_path=f"{req}.md", body=bad_spec,
+                      message="bad spec", name="Test User", email="test@example.com")
+    refuse("file spec is")
+    restore_good()
+
+    bad_title_text = good_text.replace('title: "Link"', 'title: "Link "', 1)
+    L._publish_commit(repo, rel_path=f"{req}.md", body=bad_title_text.encode(),
+                      message="bad title", name="Test User", email="test@example.com")
+    refuse("title is not canonical")
+    restore_good()
+
+    idea = W.resolve_selector(cfg, idea.properties["ID"])
+    W.set_property(cfg, idea, "REQ", "REQ-123")
+    refuse("invalid :REQ:")
+    idea = W.resolve_selector(cfg, idea.properties["ID"])
+    W.set_property(cfg, idea, "REQ", req)
+
     subprocess.run(["git", "-C", str(repo), "config", "--unset", "user.name"], check=True)
     refuse("user.name")
 
     subprocess.run(["git", "-C", str(repo), "config", "user.name", "Test User"], check=True)
+    subprocess.run(["git", "-C", str(repo), "config", "--unset", "user.email"], check=True)
+    refuse("user.email")
+    subprocess.run(["git", "-C", str(repo), "config", "user.email", "test@example.com"], check=True)
+
     wt = tmp_path / "backlog-wt"
     if _backlog_tip(repo):
         subprocess.run(
@@ -426,8 +561,13 @@ def test_scaffold_refuses_drift_and_bad_files(tmp_path, monkeypatch):
         return ag
 
     monkeypatch.setattr(L, "load_agreed_request", second_load)
+    tip_pin = _backlog_tip(repo)
+    res_n = len(SN.list_reservations(cfg))
     with pytest.raises(ValueError, match="already cites"):
         S.scaffold_from_idea(cfg, idea.properties["ID"])
+    assert not list(Path(cfg["specs_dir"]).glob("[0-9]*.md"))
+    assert _backlog_tip(repo) == tip_pin
+    assert len(SN.list_reservations(cfg)) == res_n
 
 
 def test_force_replaces_an_existing_spec_cite(tmp_path, monkeypatch):
@@ -460,11 +600,19 @@ def test_internal_into_another_checkout_records_source_request_only(tmp_path, mo
     cfg = _cfg(tmp_path, repo=linked, nw_checkout=nw, project="Meta-Tools", specs_dir=specs)
     cfg["outbox_targets"]["Meta-Tools"]["repo_path"] = str(linked)
     idea = _seed_idea(monkeypatch, cfg, project="Meta-Tools")
+    CliRunner().invoke(cli, ["idea", "log", idea.properties["ID"], "--note", "private only"])
     idea = _publish(monkeypatch, cfg, idea)
     req = idea.properties["REQ"]
     blob_before = _show_backlog(nw, f"{req}.md")
+    CliRunner().invoke(cli, ["idea", "summary", idea.properties["ID"], "--set", "Drifted"])
+    with pytest.raises(ValueError, match="do not match :REQ_BASE:"):
+        S.promote_idea(cfg, idea.properties["ID"], internal=True)
+    CliRunner().invoke(cli, ["idea", "summary", idea.properties["ID"], "--set", "Hello"])
     path, _, _kind = S.promote_idea(cfg, idea.properties["ID"], internal=True)
-    assert f"source_request: {req}" in path.read_text()
+    body = path.read_text()
+    assert f"source_request: {req}" in body
+    assert "private only" not in body
+    assert "Promoted from request" in body
     assert _show_backlog(nw, f"{req}.md") == blob_before
     load_calls = []
     real = L.load_agreed_request
@@ -475,6 +623,7 @@ def test_internal_into_another_checkout_records_source_request_only(tmp_path, mo
 
     monkeypatch.setattr(L, "load_agreed_request", spy_load)
     acme = _seed_idea(monkeypatch, cfg, text="Out", project="acme", summary="out")
+    _publish(monkeypatch, cfg, acme)
     S.promote_idea(cfg, acme.properties["ID"])
     assert load_calls == []
 
@@ -503,6 +652,8 @@ def test_cite_org_write_failure_restores_the_tip(tmp_path, monkeypatch):
     idea = _publish(monkeypatch, cfg, _seed_idea(monkeypatch, cfg, text="Specced fail"))
     idea_id = idea.properties["ID"]
     tip = _backlog_tip(repo)
+    org_before2 = Path(cfg["org_ideas_file"]).read_bytes()
+    res_n = len(SN.list_reservations(cfg))
 
     def boom_state(cfg_a, task, state):
         raise OSError("disk full")
@@ -513,6 +664,9 @@ def test_cite_org_write_failure_restores_the_tip(tmp_path, monkeypatch):
     after = W.resolve_selector(cfg, idea_id)
     assert not (after.properties.get("SPEC") or "").strip()
     assert _backlog_tip(repo) == tip
+    assert Path(cfg["org_ideas_file"]).read_bytes() == org_before2
+    assert not list(Path(cfg["specs_dir"]).glob("[0-9]*.md"))
+    assert len(SN.list_reservations(cfg)) == res_n
 
     idea = _publish(monkeypatch, cfg, _seed_idea(monkeypatch, cfg, text="Cas"))
     tip_old = _backlog_tip(repo)
@@ -531,13 +685,41 @@ def test_cite_org_write_failure_restores_the_tip(tmp_path, monkeypatch):
     assert _backlog_tip(repo) != tip_old
 
 
+def test_cite_preserves_quoted_status(tmp_path, monkeypatch):
+    repo = _init_repo(tmp_path / "proj")
+    cfg = _cfg_citing_repo(tmp_path, repo)
+    idea = _seed_idea(monkeypatch, cfg)
+    idea = _publish(monkeypatch, cfg, idea)
+    req = idea.properties["REQ"]
+    yes = L.render_request(
+        req_id=req, title="Link", summary="Hello", status="yes",
+        created="2026-11-08T12:00:00Z", updated="2026-11-08T12:00:00Z",
+        created_by="Test User <test@example.com>", updated_by="Test User <test@example.com>",
+    )
+    L._publish_commit(repo, rel_path=f"{req}.md", body=yes,
+                      message="yes status", name="Test User", email="test@example.com")
+    path, spec_id = S.scaffold_from_idea(cfg, idea.properties["ID"])
+    assert path.exists()
+    blob = _show_backlog(repo, f"{req}.md").decode()
+    assert 'status: "yes"' in blob
+    fm, _ = split_frontmatter(blob)
+    assert fm["status"] == "yes"
+    assert fm["spec"] == spec_id
+
+
 def test_write_rules_and_front_matter_require_source_request():
+    import nightwright.agentic.spec_write as SW
+
     idea = {"id": "IDEA-001", "source_request": "REQ-01234567", "summary": "pub"}
-    rules = __import__("nightwright.agentic.spec_write", fromlist=["write_rules"]).write_rules(
+    rules = SW.write_rules(
         "write", {"path": "docs/specs/0002-x.md", "number": 2}, idea, None)
     assert "`source_request: REQ-01234567`" in rules
     assert "public summary" in rules
-    from nightwright.agentic import spec_write as SW
+    rev = SW.write_rules("revise", {"path": "docs/specs/0002-x.md", "number": 2}, idea, None)
+    assert "source_request" in rev and "Keep" in rev
+    plain_rules = SW.write_rules(
+        "write", {"path": "docs/specs/0002-x.md", "number": 2}, {"id": "IDEA-002"}, None)
+    assert "no `source_request` key" in plain_rules
 
     fm = {"id": "SPEC-0002", "status": "proposed", "source_idea": "IDEA-001",
           "source_request": "REQ-01234567", "owner": "user", "kind": "feature"}

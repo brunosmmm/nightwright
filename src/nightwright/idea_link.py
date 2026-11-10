@@ -98,7 +98,7 @@ def render_request(
         "---\n",
         f"id: {req_id}\n",
         f"title: {_yaml_double_quoted(ct)}\n",
-        f"status: {status}\n",
+        f"status: {_yaml_double_quoted(status, field='status')}\n",
         f"created: {created}\n",
         f"updated: {updated}\n",
         f"created_by: {_yaml_double_quoted(created_by, field='created_by')}\n",
