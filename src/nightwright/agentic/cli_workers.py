@@ -754,8 +754,8 @@ def workers_config(cfg, name, op, args, as_json):
         _set_json(ierr or f"info executor is {info.get('executor')!r}, not {value!r}")
     WK._cache_info(cfg, name, info)
     stored = _find(_load_or_fail(cfg), name)
-    if (stored.get("info") or {}).get("executor") != value:
-        _set_json("info cache not refreshed: executor not stored on record")
+    if stored.get("info") != info:
+        _set_json("info cache not refreshed: info not stored on record")
     if as_json:
         _dump_json({"name": name, "op": "set", "key": key, "value": value,
                     "effective": eff, "desired": desired, "unchanged": unchanged,

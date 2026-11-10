@@ -4,7 +4,7 @@ title: "Add nw workers config and the forced nw worker config-set verb"
 status: done
 owner: user
 created: 2026-11-10
-updated: 2026-11-10
+updated: 2026-11-11
 milestone: "M9: agentic workflow"
 kind: feature
 tags: [agentic, workers, slurm, ops]
@@ -321,6 +321,14 @@ add a bootstrap step bullet.
 - `uv run pytest -q tests/test_workers_bootstrap.py tests/test_workers_update_cmd.py` (67 passed)
 - `python3 tools/test_tiers.py --check` (exit 0)
 - Manual box steps: not run in this loop; after deploy per Rollout.
+- Full suite: left to campaign gating.
+
+### Test record (2026-11-11, loop 1)
+
+- `uv run pytest -q tests/test_worker_host_config.py tests/test_worker_ssh_command.py` (99 passed)
+- `python3 tools/test_tiers.py --check` (exit 0)
+- `python3 tools/spec_lint.py --write-ledger` and `python3 tools/spec_lint.py` (exit 0)
+- Manual box steps: not run; after deploy per Rollout.
 - Full suite: left to campaign gating.
 
 ### Test record (2026-11-11, loop 2)

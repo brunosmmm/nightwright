@@ -320,6 +320,7 @@ def set_key(cfg: dict, key: str, value: str) -> dict:
             tmp_fd, tmp = _exclusive_temp(cdir)
             _write_fd(tmp_fd, text.encode("utf-8"))
             os.fsync(tmp_fd)
+            os.fchmod(tmp_fd, 0o600)
             os.close(tmp_fd)
             tmp_fd = None
             os.replace(tmp, path)

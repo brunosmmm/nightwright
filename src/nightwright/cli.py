@@ -26,7 +26,8 @@ from rich.markup import escape
 
 from . import report as R
 from . import completion as C
-from .config import load_config
+from . import paths
+from .config import DEFAULT_CONFIG, load_config
 from .console import console
 from .dates import parse_date, week_days
 from .history import snapshot
@@ -59,6 +60,30 @@ class NwRootGroup(click.Group):
             raise click.ClickException(str(e))
 
 
+def _argv_after_root_options(argv: list[str]) -> list[str]:
+    i = 0
+    while i < len(argv):
+        if argv[i] in ("--split", "-h", "--help"):
+            i += 1
+            continue
+        break
+    return argv[i:]
+
+
+def _is_worker_config_set_argv() -> bool:
+    tail = _argv_after_root_options(sys.argv[1:])
+    return len(tail) >= 2 and tail[0] == "worker" and tail[1] == "config-set"
+
+
+def _worker_config_set_fallback_cfg() -> dict:
+    cfg = dict(DEFAULT_CONFIG)
+    cfg["agentic"] = {}
+    cfg["config_dir"] = paths.config_dir()
+    cfg["data_dir"] = paths.data_dir()
+    cfg["cache_dir"] = paths.cache_dir()
+    return cfg
+
+
 @click.group(cls=NwRootGroup, invoke_without_command=True,
              context_settings={"help_option_names": ["-h", "--help"]})
 @click.option("--split", is_flag=True, help="diagnostic: Claude-generating vs your-turn time")
@@ -75,7 +100,13 @@ def cli(ctx, split):
             ctx.obj = None
             ctx.meta["nw.config_error"] = f"{type(e).__name__}: {e}"
     else:
-        ctx.obj = load_config()
+        try:
+            ctx.obj = load_config()
+        except Exception:
+            if _is_worker_config_set_argv():
+                ctx.obj = _worker_config_set_fallback_cfg()
+            else:
+                raise
     if ctx.invoked_subcommand is None:
         cfg = ctx.obj
         console.rule("[bold cyan]today[/]")
