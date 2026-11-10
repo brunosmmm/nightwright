@@ -331,6 +331,14 @@ add a bootstrap step bullet.
 - Manual box steps: not run; after deploy per Rollout.
 - Full suite: left to campaign gating.
 
+### Test record (2026-11-10, loop 3)
+
+- `uv run pytest -q tests/test_worker_host_config.py tests/test_worker_ssh_command.py` (120 passed)
+- `python3 tools/test_tiers.py --check` (exit 0)
+- `python3 tools/spec_lint.py --write-ledger` and `python3 tools/spec_lint.py` (exit 0)
+- Manual box steps: not run; after deploy per Rollout.
+- Full suite: left to campaign gating.
+
 ### Test record (2026-11-11, loop 2)
 
 - `uv run pytest -q tests/test_worker_host_config.py tests/test_worker_ssh_command.py` (81 passed)

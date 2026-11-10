@@ -176,6 +176,8 @@ def test_symlink_config_dir_refused(cfg_home, tmp_path):
     code = WHC.run(["set", "executor", "slurm"], cfg)
     assert code == 3
     assert not (real / "config.yaml").exists()
+    assert not (real / "config.yaml.lock").exists()
+    assert list(real.glob("config.yaml.*")) == []
 
 
 def test_preserve_siblings_and_unchanged(cfg_home):
@@ -184,7 +186,10 @@ def test_preserve_siblings_and_unchanged(cfg_home):
 
     cdir, cfg = cfg_home
     cdir.mkdir()
-    body = {"agentic": {"slurm": {"conf": "x"}, "workers": {"executor": "local", "key": 1}}}
+    body = {
+        "work_root": "/var/nw",
+        "agentic": {"slurm": {"conf": "x"}, "workers": {"executor": "local", "key": 1}},
+    }
     p = cdir / "config.yaml"
     p.write_text(yaml.dump(body))
     os.chmod(p, 0o600)
@@ -204,7 +209,9 @@ def test_preserve_siblings_and_unchanged(cfg_home):
     assert code2 == 0
     assert json.loads(cap.getvalue().strip()).get("unchanged") is False
     doc = yaml.safe_load(p.read_text())
+    assert doc["work_root"] == "/var/nw"
     assert doc["agentic"]["slurm"]["conf"] == "x"
+    assert list(doc["agentic"]["workers"].keys()) == ["executor", "key"]
     assert doc["agentic"]["workers"]["key"] == 1
     assert doc["agentic"]["workers"]["executor"] == "slurm"
 
@@ -311,6 +318,47 @@ def test_backup_on_change(cfg_home):
     assert baks[0].read_bytes() == before
 
 
+def test_config_dir_regular_file_refused(cfg_home):
+    cdir, cfg = cfg_home
+    cdir.parent.mkdir(parents=True, exist_ok=True)
+    cdir.write_text("not a directory\n")
+    code = WHC.run(["set", "executor", "slurm"], cfg)
+    assert code == 3
+    assert cdir.is_file()
+    assert not (cdir.parent / "config.yaml").exists()
+
+
+def test_backup_write_failure_leaves_no_artifacts(cfg_home, monkeypatch):
+    cdir, cfg = cfg_home
+    cdir.mkdir()
+    p = cdir / "config.yaml"
+    p.write_text("agentic:\n  workers:\n    executor: local\n")
+    os.chmod(p, 0o600)
+    before = p.read_bytes()
+    backup_fds: set[int] = set()
+    real_open = os.open
+
+    def track_open(path, flags, mode=0o777, *args, **kwargs):
+        fd = real_open(path, flags, mode, *args, **kwargs)
+        if "config.yaml.bak." in os.fspath(path):
+            backup_fds.add(fd)
+        return fd
+
+    real_fsync = os.fsync
+
+    def fail_backup_fsync(fd):
+        if fd in backup_fds:
+            raise OSError("backup fsync failed")
+        real_fsync(fd)
+
+    monkeypatch.setattr(os, "open", track_open)
+    monkeypatch.setattr(os, "fsync", fail_backup_fsync)
+    assert WHC.run(["set", "executor", "slurm"], cfg) == 3
+    assert p.read_bytes() == before
+    assert list(cdir.glob("config.yaml.bak.*")) == []
+    assert list(cdir.glob("config.yaml.tmp*")) == []
+
+
 @pytest.fixture
 def coord_world(tmp_path, monkeypatch):
     from nightwright.config import load_config
@@ -364,6 +412,10 @@ def test_workers_config_set_refreshes_info(coord_world):
     info_idx = next(i for i, a in enumerate(argv) if "info" in a and "--json" in a)
     set_idx = next(i for i, a in enumerate(argv) if "config-set" in a and "set" in a)
     assert info_idx > set_idx
+    set_argv = argv[set_idx]
+    assert set_argv == ["nw@box", "/b/nw", "worker", "config-set", "set", "executor", "slurm"]
+    info_argv = argv[info_idx]
+    assert info_argv == ["nw@box", "/b/nw", "worker", "info", "--json"]
 
 
 def test_set_unchanged_refreshes_info_no_jobs_line(coord_world):
@@ -950,3 +1002,55 @@ def test_workers_config_get_no_key_cli(coord_world):
     r = CliRunner().invoke(cli, ["workers", "config", "box", "get"])
     assert r.exit_code == 0
     assert "box executor live=slurm" in r.output
+
+
+def test_workers_config_ssh_timeout_get(coord_world, monkeypatch):
+    import subprocess
+
+    st, cfg, *_ = coord_world
+    records = json.loads(WK.path(cfg).read_text())["workers"]
+    records[0]["executor"] = "slurm"
+    WK.path(cfg).write_text(json.dumps({"schema": WK.SCHEMA, "workers": records}))
+    seeded = dict(records[0]["info"])
+
+    def timeout(*_a, **_k):
+        raise subprocess.TimeoutExpired(cmd="ssh", timeout=WK.CHECK_TIMEOUT_S)
+
+    monkeypatch.setattr(subprocess, "run", timeout)
+    r = CliRunner().invoke(cli, ["workers", "config", "box", "get", "executor"])
+    assert r.exit_code == 1
+    assert "timed out" in r.output
+    assert "desired=slurm" in r.output
+    rec_after = json.loads(WK.path(cfg).read_text())["workers"][0]
+    assert rec_after["info"] == seeded
+
+
+def test_workers_config_get_failure_keeps_info(coord_world):
+    st, cfg, *_ = coord_world
+    (st / "scenario").write_text("config_fail")
+    seeded = json.loads(WK.path(cfg).read_text())["workers"][0]["info"]
+    r = CliRunner().invoke(cli, ["workers", "config", "box", "get", "executor"])
+    assert r.exit_code == 1
+    rec_after = json.loads(WK.path(cfg).read_text())["workers"][0]
+    assert rec_after["info"] == seeded
+
+
+def test_replace_failure_cleans_temp_and_leaves_config(cfg_home, monkeypatch):
+    cdir, cfg = cfg_home
+    cdir.mkdir()
+    p = cdir / "config.yaml"
+    p.write_text("agentic:\n  workers:\n    executor: local\n")
+    os.chmod(p, 0o600)
+    before = p.read_bytes()
+    real_replace = os.replace
+
+    def boom(src, dst):
+        if Path(dst) == p:
+            raise OSError("replace refused")
+        real_replace(src, dst)
+
+    monkeypatch.setattr(os, "replace", boom)
+    assert WHC.run(["set", "executor", "slurm"], cfg) == 3
+    assert p.read_bytes() == before
+    assert list(cdir.glob("config.yaml.tmp*")) == []
+    assert list(cdir.glob("config.yaml.bak.*")) == []

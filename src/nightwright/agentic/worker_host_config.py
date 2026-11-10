@@ -311,7 +311,7 @@ def set_key(cfg: dict, key: str, value: str) -> dict:
         new_doc = _set_nested(doc, key, value)
         text = yaml.safe_dump(new_doc, sort_keys=False, default_flow_style=False)
         bak: Path | None = None
-        bak_written = False
+        bak_created = False
         tmp: Path | None = None
         tmp_fd: int | None = None
         replaced = False
@@ -320,10 +320,10 @@ def set_key(cfg: dict, key: str, value: str) -> dict:
                 prev_bytes = _read_config_bytes(path)
                 bak = _backup_path(path)
                 bfd = os.open(bak, os.O_WRONLY | os.O_CREAT | os.O_EXCL | _O_NOFOLLOW, 0o600)
+                bak_created = True
                 try:
                     _write_fd(bfd, prev_bytes)
                     os.fsync(bfd)
-                    bak_written = True
                 finally:
                     os.close(bfd)
             tmp_fd, tmp = _exclusive_temp(cdir)
@@ -337,11 +337,20 @@ def set_key(cfg: dict, key: str, value: str) -> dict:
             replaced = True
         except OSError as e:
             if tmp_fd is not None:
-                os.close(tmp_fd)
+                try:
+                    os.close(tmp_fd)
+                except OSError:
+                    pass
             if tmp is not None and not replaced:
-                tmp.unlink(missing_ok=True)
-            if bak is not None and bak_written and not replaced:
-                bak.unlink(missing_ok=True)
+                try:
+                    tmp.unlink(missing_ok=True)
+                except OSError:
+                    pass
+            if bak is not None and bak_created and not replaced:
+                try:
+                    bak.unlink(missing_ok=True)
+                except OSError:
+                    pass
             return _result(ok=False, error=str(e))
         eff = _effective(_merge_file(cfg, new_doc))
         return _result(ok=True, op="set", key=key, value=value, effective=eff, unchanged=False)
