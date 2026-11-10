@@ -135,6 +135,11 @@ add a non-fatal config warning for `-n auto`, `nproc`, `$(getconf _NPROCESSORS_O
   fixed) and `GATEJOB-1475` (1 env allowlist, fixed). The lane's final loop gate on its last
   commit is recorded below. **Status stays `in-progress`** until the real-binary step that
   needs the deployed worker build is done (not run in this lane).
+  **Final lane gate:** `GATEJOB-1504`, loop tier on `83a7894e`, green (3382 passed). An earlier
+  run on the same commit, `GATEJOB-1485`, hung near the end of pytest and was cancelled; the
+  lane's touched and new test files ran serially with `faulthandler_timeout=60` without a hang,
+  and the rerun passed, so no test of this lane is identified as the cause (the box holds 18
+  orphaned xdist worker processes from older jobs, days old, a pre-existing pattern).
 
 ## Rollout / migration
 
@@ -145,9 +150,9 @@ executor behaves as before. Supersedes nothing.
 
 - [ ] Acceptance criteria all met.
 - [ ] Test plan executed; affected tests pass; manual step performed and noted.
-- [ ] No regressions.
+- [x] No regressions.
 - [x] Spec body updated to match what shipped.
-- [ ] `docs/LEDGER.md` updated (status + date).
+- [x] `docs/LEDGER.md` updated (status + date).
 
 ## Risks
 
