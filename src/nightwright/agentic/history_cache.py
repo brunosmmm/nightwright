@@ -62,17 +62,27 @@ def consume_cache_write_fallback() -> bool:
 
 
 def cache_wanted(cfg, cache) -> bool:
-    """True when callers should use the cache path (cache=False never; True always; else cache_dir)."""
+    """True when callers should use the cache path (SPEC-0536).
+
+    cache=False never; cache=True always; cache=None only when config
+    agentic.history.cache is true (the default is the pure reader)."""
     if cache is False:
         return False
     if cache is True:
         return True
-    cd = cfg.get("cache_dir")
-    return isinstance(cd, str) and bool(cd.strip())
+    agentic = cfg.get("agentic") or {}
+    return bool((agentic.get("history") or {}).get("cache"))
 
 
 def cache_enabled(cfg, cache) -> bool:
-    return cache_wanted(cfg, cache)
+    if cache is False:
+        return False
+    if cache is True:
+        return True
+    if not cache_wanted(cfg, cache):
+        return False
+    cd = cfg.get("cache_dir")
+    return isinstance(cd, str) and bool(cd.strip())
 
 
 def _not_writable(cfg, cache) -> bool:

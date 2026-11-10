@@ -94,6 +94,8 @@ DEFAULT_CONFIG = {
         # wins; a failed resolution holds the steps that need it and is retried every tick.
         # e.g. {"CURSOR_API_KEY": "pass:cursor/sdk"}. Values are never written or logged.
         "credentials": {},
+        # SPEC-0536: the campaign history cache is opt-in; cache=None readers stay pure unless true.
+        "history": {"cache": False},
         "profiles": {},
     },
 }

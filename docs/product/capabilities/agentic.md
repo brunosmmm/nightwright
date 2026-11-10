@@ -149,6 +149,8 @@ agentic:
   default_profile: balanced
   runner: claude                 # or cursor or pi; default stays claude
   lease_ttl_s: 120
+  history:
+    cache: false                 # true opts campaign history into the <cache_dir>/history cache (SPEC-0536)
   profiles:
     balanced:
       personas:

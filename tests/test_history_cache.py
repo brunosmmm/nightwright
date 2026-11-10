@@ -42,8 +42,10 @@ def cache_dir(tmp_path, data_dir):
     return path
 
 
-def cfg(data_dir, cache_dir=None, **extra):
+def cfg(data_dir, cache_dir=None, *, use_cache=True, **extra):
     agentic = {"default_profile": "balanced", **(extra.pop("agentic", None) or {})}
+    if use_cache and cache_dir is not None:
+        agentic.setdefault("history", {})["cache"] = True  # SPEC-0536 opt-in
     out = {"data_dir": str(data_dir), "agentic": agentic, **extra}
     if cache_dir is not None:
         out["cache_dir"] = str(cache_dir)
@@ -80,6 +82,27 @@ def test_no_cache_dir_no_write_or_gap(data_dir, tmp_path):
     H.history_records(c)
     assert _hashes(data_dir) == before
     assert not list(tmp_path.rglob("history"))
+
+
+def test_default_cfg_is_pure_with_cache_dir_and_writes_nothing(data_dir, cache_dir):
+    c = cfg(data_dir, cache_dir, use_cache=False)  # cache_dir set, no opt-in
+    before = _hashes(data_dir)
+    cid = "SPEC-0394-20261102-ae5b"
+    pure = cfg(data_dir)
+    doc = H.campaign_history(c, cid, now=NOW)
+    assert doc == H.campaign_history(pure, cid, now=NOW, cache=False)
+    assert "cache: not writable" not in doc.get("gaps", [])
+    assert H.history_index(c, now=NOW) == H.history_index(pure, now=NOW, cache=False)
+    assert H.history_records(c) == H.history_records(pure, cache=False)
+    assert _hashes(data_dir) == before
+    assert list(cache_dir.rglob("*")) == []
+
+
+def test_config_opt_in_uses_cache(data_dir, cache_dir):
+    c = cfg(data_dir, cache_dir)
+    assert c["agentic"]["history"]["cache"] is True
+    H.history_index(c, now=NOW)
+    assert (cache_dir / "history" / "v1" / "version").read_bytes() == b"1\n"
 
 
 def test_cache_dir_default_builds_v1_and_matches_pure(data_dir, cache_dir):
