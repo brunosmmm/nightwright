@@ -1095,9 +1095,46 @@ def _idea_id_of(st: dict) -> str | None:
     return (st.get("idea") or {}).get("id")
 
 
+def _campaign_spec_text(state: dict) -> tuple[str | None, bool]:
+    """The campaign spec body for readiness and whether it came from the branch line (SPEC-0539)."""
+    repo = state.get("repo") or {}
+    rel = (state.get("spec") or {}).get("rel_path") or ""
+    root = repo.get("root") or ""
+    branch = repo.get("branch") or ""
+    worktree = repo.get("worktree") or ""
+    if not root or not branch:
+        return None, False
+    try:
+        if not git.branch_exists(root, branch):
+            return None, False
+    except GitError:
+        return None, False
+    try:
+        if worktree:
+            try:
+                elsewhere = git.worktree_for_branch(root, branch)
+            except GitError:
+                elsewhere = None
+            if elsewhere is not None and elsewhere == Path(worktree).resolve():
+                data, read_err = _read_worktree_spec_bytes(Path(worktree), rel)
+                if data is not None and read_err is None:
+                    return _spec_bytes_as_text(data), True
+                return None, True
+        if not rel:
+            return None, True
+        show = git.git(root, "show", f"{branch}:{rel}", check=False)
+        if show.returncode == 0 and show.stdout:
+            return show.stdout, True
+        return None, True
+    except (GitError, OSError, UnicodeDecodeError):
+        return None, True
+
+
 def backlog_readiness(cfg, state: dict) -> tuple[bool, list[str]]:
-    """Can this queued campaign be admitted? Re-reads the spec and its `depends_on` from the
-    project's base checkout (`repo.root`): the spec must still be `accepted` (`in-progress` for a
+    """Can this queued campaign be admitted? Re-reads the campaign spec and its `depends_on`. The
+    spec comes from the campaign branch's worktree or committed blob when `repo.branch` exists
+    (SPEC-0539); otherwise from the base checkout (`repo.root`). Dependency files are always
+    resolved in the base specs directory. The spec must still be `accepted` (`in-progress` for a
     `--force` add) and every dependency `done` or `superseded`. Unknown ids block. An idea
     campaign without a spec (SPEC-0209) is ready while its idea is still open. A merge request
     (SPEC-0233) is ready while its branch exists."""
@@ -1120,16 +1157,39 @@ def backlog_readiness(cfg, state: dict) -> tuple[bool, list[str]]:
         if idea_is_open(task):
             return True, []
         return False, [f"idea {iid} is {task.state}"]
-    root = Path((state.get("repo") or {}).get("root") or "")
+    repo = state.get("repo") or {}
+    root_s = repo.get("root") or ""
+    root = Path(root_s)
     split = state.get("kind") == "split"
     rel = (state.get("split") or {}).get("original_rel") if split \
         else (state.get("spec") or {}).get("rel_path")
-    spec_path = root / (rel or "")
-    try:
-        fm, _ = split_frontmatter(spec_path.read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        return False, ["spec file missing"]
-    fm = fm if isinstance(fm, dict) else {}
+    rel = rel or ""
+    if split:
+        spec_path = root / rel
+        try:
+            fm, _ = split_frontmatter(spec_path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return False, ["spec file missing"]
+        fm = fm if isinstance(fm, dict) else {}
+    else:
+        text, from_branch = _campaign_spec_text(state)
+        if from_branch:
+            if text is None:
+                return False, ["spec file missing"]
+            try:
+                fm, _ = split_frontmatter(text)
+            except (OSError, ValueError, UnicodeDecodeError, yaml.YAMLError):
+                return False, ["spec file missing"]
+            if not isinstance(fm, dict):
+                return False, ["spec file missing"]
+        else:
+            spec_path = root / rel
+            try:
+                fm, _ = split_frontmatter(spec_path.read_text(encoding="utf-8"))
+            except (OSError, ValueError):
+                return False, ["spec file missing"]
+            fm = fm if isinstance(fm, dict) else {}
+        spec_path = root / ((state.get("spec") or {}).get("rel_path") or "")
     blocked = []
     status = str(fm.get("status") or "")
     allowed = ("accepted", "in-progress") if state.get("force") else ("accepted",)

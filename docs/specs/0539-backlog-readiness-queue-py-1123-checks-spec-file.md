@@ -1,7 +1,7 @@
 ---
 id: SPEC-0539
 title: Backlog readiness reads the campaign spec from its worktree or branch
-status: accepted
+status: done
 owner: user
 created: 2026-11-10
 updated: 2026-11-10
@@ -183,63 +183,63 @@ rules, and open then applies SPEC-0463.
 
 ## Acceptance criteria
 
-- [ ] A `QUEUED` campaign whose `repo.branch` is checked out at `repo.worktree`,
+- [x] A `QUEUED` campaign whose `repo.branch` is checked out at `repo.worktree`,
       whose `spec.rel_path` there is status `accepted`, and whose base checkout
       has no file at that path, gets `(True, [])` from `backlog_readiness`.
       `pick_admissions` with one free slot includes that campaign.
-- [ ] On that same checkout, status `proposed` yields
+- [x] On that same checkout, status `proposed` yields
       `(False, ["spec status is proposed"])` when the base file is `accepted`
       or absent. Status `in-progress` yields
       `(False, ["spec status is in-progress"])` when `force` is false, and
       `(True, [])` when `force` is true.
-- [ ] An uncommitted `accepted` file in that checkout is ready when the branch
+- [x] An uncommitted `accepted` file in that checkout is ready when the branch
       tip and the base checkout both lack the path.
-- [ ] On the planned checkout, a working-tree status `accepted` yields
+- [x] On the planned checkout, a working-tree status `accepted` yields
       `(True, [])` when the branch-tip blob is `draft` and the base file is
       absent. A working-tree status `draft` yields
       `(False, ["spec status is draft"])` when the branch-tip blob is
       `accepted` and the base file is absent.
-- [ ] When that checkout is the branch's worktree and the working-tree path is
+- [x] When that checkout is the branch's worktree and the working-tree path is
       absent, readiness is `(False, ["spec file missing"])` when the branch tip
       has an `accepted` spec and when the base checkout has an `accepted` spec.
-- [ ] When the branch exists and is not checked out at `repo.worktree`, an
+- [x] When the branch exists and is not checked out at `repo.worktree`, an
       `accepted` blob at `branch:spec.rel_path` yields `(True, [])` when the
       base checkout has no such file.
-- [ ] When `repo.branch` names a branch that does not exist, an `accepted` file
+- [x] When `repo.branch` names a branch that does not exist, an `accepted` file
       at `repo.root / spec.rel_path` yields `(True, [])`, a `draft` file yields
       `(False, ["spec status is draft"])`, and a missing file yields
       `(False, ["spec file missing"])`.
-- [ ] When `repo.root` is not a git checkout and `repo.branch` is set, those
+- [x] When `repo.root` is not a git checkout and `repo.branch` is set, those
       same three base-file results hold, and `backlog_readiness` does not raise.
       When `repo.root` is absent or `""`, `branch_exists` is not called, and an
       accepted file at `spec.rel_path` relative to the current directory yields
       `(True, [])`. When `repo.root` is a non-empty path whose directory is
       absent, `branch_exists` raises `GitError`, that error is caught, and the
       result is `(False, ["spec file missing"])` without raising.
-- [ ] With the campaign spec read from the worktree and
+- [x] With the campaign spec read from the worktree and
       `depends_on: [SPEC-0002]`: a base specs file `SPEC-0002` at status `done`
       yields `(True, [])` when the worktree copy of SPEC-0002 is `accepted` or
       absent; a base file at status `accepted` yields
       `(False, ["waiting on SPEC-0002 (accepted)"])` when the worktree copy is
       `done`; a missing base file yields `(False, ["SPEC-0002 not found"])`
       when the worktree copy is `done`.
-- [ ] A `kind: split` campaign whose branch is checked out at `repo.worktree`
+- [x] A `kind: split` campaign whose branch is checked out at `repo.worktree`
       is judged from `repo.root / split.original_rel`. An `accepted` base file
       whose sha matches `split.review_sha` yields `(True, [])` when the
       worktree copy is `draft`. Editing the base file yields
       `(False, ["spec changed since the split review"])`. A base status of
       `draft` yields a blocked list containing `spec status is draft` when the
       worktree copy is `accepted`.
-- [ ] A symlink at the spec path inside the planned checkout, pointing at an
+- [x] A symlink at the spec path inside the planned checkout, pointing at an
       `accepted` spec outside the worktree, yields
       `(False, ["spec file missing"])` when the branch tip has an `accepted`
       blob at that path and the base checkout has an `accepted` file at that
       path.
-- [ ] A worktree file that is not valid UTF-8, and a branch blob whose
+- [x] A worktree file that is not valid UTF-8, and a branch blob whose
       frontmatter is invalid YAML, each yield `(False, ["spec file missing"])`
       and `backlog_readiness` does not raise, including when the base checkout
       has an `accepted` file at that path.
-- [ ] Red-kind, merge, unmet `after`, and `has_no_spec` returns still happen
+- [x] Red-kind, merge, unmet `after`, and `has_no_spec` returns still happen
       before the branch read. An idea campaign with an unmet `after` stays
       blocked with the `after` text while it has no spec id.
 
@@ -326,6 +326,13 @@ rules, and open then applies SPEC-0463.
   `tests/test_idea_ordering.py` is not required; each already has its one
   module-level tier marker.
 
+### Test record (2026-11-10)
+
+- `uv run pytest -q tests/test_backlog_readiness_branch_spec.py tests/test_agentic_queue.py::test_backlog_readiness_reasons tests/test_agentic_split.py::test_split_readiness_ignores_depends_on tests/test_idea_ordering.py::test_after_idea_waits_then_is_ready_when_prerequisite_merges` — 17 passed.
+- `python3 tools/test_tiers.py --check` — exit 0.
+- `python3 tools/spec_lint.py --write-ledger` and `python3 tools/spec_lint.py` — exit 0.
+- Full suite left to gating.
+
 ## Rollout / migration
 
 Ship the readiness change with the new tests. No campaign rewrite and no
@@ -340,11 +347,11 @@ open path.
 
 ## Definition of done
 
-- [ ] Acceptance criteria all met.
-- [ ] Test plan executed; the automated tests above pass. No manual steps.
-- [ ] No regressions in the readiness, split, and `after` tests named above.
-- [ ] Spec body updated to match what shipped.
-- [ ] `docs/LEDGER.md` regenerated (`python3 tools/spec_lint.py --write-ledger`).
+- [x] Acceptance criteria all met.
+- [x] Test plan executed; the automated tests above pass. No manual steps.
+- [x] No regressions in the readiness, split, and `after` tests named above.
+- [x] Spec body updated to match what shipped.
+- [x] `docs/LEDGER.md` regenerated (`python3 tools/spec_lint.py --write-ledger`).
 
 ## Open questions
 

@@ -364,7 +364,6 @@ progress. This is the single place to see *what has been decided* and *what is i
 | [SPEC-0530](./specs/0530-hub-event-relay-health-and-read-only-host-views.md) | Hub event relay, health, and read-only host views | feature | accepted | — | 2026-11-10 |
 | [SPEC-0532](./specs/0532-exactly-once-mail-between-hub-and-host.md) | Exactly-once mail between hub and host | feature | accepted | — | 2026-11-10 |
 | [SPEC-0533](./specs/0533-remote-park-and-resume.md) | Remote park and resume | feature | accepted | — | 2026-11-10 |
-| [SPEC-0539](./specs/0539-backlog-readiness-queue-py-1123-checks-spec-file.md) | Backlog readiness reads the campaign spec from its worktree or branch | feature | accepted | M9: agentic workflow | 2026-11-10 |
 
 ## Done
 
@@ -820,6 +819,7 @@ progress. This is the single place to see *what has been decided* and *what is i
 | [SPEC-0526](./specs/0526-nw-campaign-run-id-run-crashes-with-a-rich-markup.md) | nw campaign run renders verdict text that contains brackets | feature | done | — | 2026-11-09 |
 | [SPEC-0528](./specs/0528-cli-signal-handlers-scoped-to-the-command.md) | CLI signal handlers scoped to the command: herdr watch, gate run, campaign tail restore the previous handler; bounded in-process watch loop | feature | done | M9: agentic workflow | 2026-11-10 |
 | [SPEC-0531](./specs/0531-spec-review-precheck-skips-review-on-a-stale-spec.md) | Spec-review precheck scopes already-accepted to the current spec | feature | done | — | 2026-11-10 |
+| [SPEC-0539](./specs/0539-backlog-readiness-queue-py-1123-checks-spec-file.md) | Backlog readiness reads the campaign spec from its worktree or branch | feature | done | M9: agentic workflow | 2026-11-10 |
 
 ## Superseded / rejected
 
