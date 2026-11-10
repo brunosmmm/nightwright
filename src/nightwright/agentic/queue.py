@@ -132,6 +132,10 @@ TRIAGE_RETRY_MAX = 1
 GATE_RETRY_MAX = 1
 # SPEC-0311: consecutive timeout-only gate runs re-gated (serialized) before `gate_timeout`.
 TIMEOUT_REGATE_MAX = 2
+# SPEC-0507: the longest a pending exclusive re-gate waits before it starts as a normal gate.
+# A drain of the gate steps already running ends within their own `timeout_s` (2400 s for
+# pytest-affected); waiting past that means a stream of new starts or a lost job.
+EXCLUSIVE_WAIT_MAX_S = 2700
 # Malformed conformance-review verdicts tolerated per loop before the review escalates.
 REVIEW_RETRY_MAX = 1
 # SPEC-0221: failed conflict-resolver runs per entry into CLOSING before the rebase_conflict park.
@@ -515,6 +519,36 @@ def select_gate_starts(candidates: list, in_flight: int, exclusive_in_flight: bo
     if pending:
         return [pending[0]["id"]] if in_flight == 0 else []
     return [c["id"] for c in candidates]
+
+
+def exclusive_wait_max_s(cfg) -> int:
+    """`agentic.gates.exclusive_wait_max_s` (SPEC-0507); anything but a positive number falls
+    back to `EXCLUSIVE_WAIT_MAX_S`."""
+    raw = (((cfg.get("agentic") or {}).get("gates")) or {}).get("exclusive_wait_max_s")
+    ok = isinstance(raw, (int, float)) and not isinstance(raw, bool) and raw > 0
+    return int(raw) if ok else EXCLUSIVE_WAIT_MAX_S
+
+
+def exclusive_waited_s(state: dict, now) -> float | None:
+    """Seconds the exclusive marker of `state` has been pending at `now` (an aware datetime),
+    None without a marker; an unreadable `entered_at` counts as waiting forever (SPEC-0507)."""
+    import datetime as dt
+    marker = gate_exclusive(state)
+    if not marker:
+        return None
+    try:
+        t = dt.datetime.fromisoformat(str(marker.get("entered_at") or ""))
+    except ValueError:
+        return math.inf
+    return (now - t.astimezone()).total_seconds()
+
+
+def expired_exclusives(candidates: list, now, wait_max_s: float) -> list:
+    """Pure (SPEC-0507): ids of the candidates whose exclusive marker has waited longer than
+    `wait_max_s`, in `(entered_at, id)` order. The caller clears their marker and starts them as
+    normal gates, so a pending exclusive re-gate waits a bounded time."""
+    old = [c for c in candidates if (exclusive_waited_s(c, now) or 0) > wait_max_s]
+    return [c["id"] for c in sorted(old, key=_exclusive_key)]
 
 
 def norm_finding_title(title) -> str:
@@ -5266,14 +5300,14 @@ def _flight_age_s(fl, now) -> float | None:
         return None
 
 
-def _gates_in_flight(ctx: _Ctx, pool: StepPool, now=None) -> tuple[int, bool]:
-    """(gate steps in flight, whether one is exclusive) (SPEC-0311). A `close` whose project
-    re-gates counts as a gate step: it runs the same full suite. SPEC-0522: a step in flight
-    longer than `_gate_hold_s` no longer counts (it keeps running but holds no other gate
-    start); `gate_hold_expired` is journaled once per flight."""
+def _gate_flights(ctx: _Ctx, pool: StepPool, now=None) -> list:
+    """`(campaign id, exclusive)` of each gate step in flight (SPEC-0311). A `close` whose
+    project re-gates counts as a gate step: it runs the same full suite. SPEC-0522: a step in
+    flight longer than `_gate_hold_s` no longer counts (it keeps running but holds no other
+    gate start); `gate_hold_expired` is journaled once per flight."""
     import datetime as dt
     now = now or dt.datetime.now().astimezone()
-    n, exclusive = 0, False
+    out = []
     for fl in list(pool.flights.values()):
         for step, fut, _hooks in list(fl.tasks):
             if fut.done():
@@ -5297,31 +5331,133 @@ def _gates_in_flight(ctx: _Ctx, pool: StepPool, now=None) -> tuple[int, bool]:
                             step=step.kind, age_s=round(age), bound_s=round(hold),
                             exclusive=bool(gate_exclusive(fl.state)))
                 continue
-            n += 1
-            exclusive = exclusive or (step.kind == "gate" and bool(gate_exclusive(fl.state)))
-    return n, exclusive
+            out.append((fl.state["id"],
+                        step.kind == "gate" and bool(gate_exclusive(fl.state))))
+    return out
+
+
+def _gates_in_flight(ctx: _Ctx, pool: StepPool) -> tuple[int, bool]:
+    """(gate steps in flight, whether one is exclusive) (SPEC-0311)."""
+    flights = _gate_flights(ctx, pool)
+    return len(flights), any(ex for _cid, ex in flights)
 
 
 def _gate_starts(ctx: _Ctx, pool: StepPool, busy: list, admitted_ids: set, flying: set) -> set:
-    """Ids of the GATING campaigns allowed to start their gate step this tick (SPEC-0311)."""
+    """Ids of the GATING campaigns allowed to start their gate step this tick (SPEC-0311).
+    SPEC-0507: an exclusive marker pending longer than `exclusive_wait_max_s` is cleared (with a
+    ledger note) and its gate starts now as a normal one, unless an exclusive gate is running."""
     candidates = [s for s in busy if s.get("state") == "GATING" and s["id"] not in admitted_ids
                   and s["id"] not in flying]
     n, exclusive = _gates_in_flight(ctx, pool)
-    return set(select_gate_starts(candidates, n, exclusive))
+    if exclusive:
+        return set()
+    import datetime as dt
+    now = dt.datetime.now().astimezone()
+    wait_max = exclusive_wait_max_s(ctx.cfg)
+    expired = []
+    for cid in expired_exclusives(candidates, now, wait_max):
+        st = next(c for c in candidates if c["id"] == cid)
+        if _expire_exclusive(ctx, pool, st, now, wait_max):
+            expired.append(cid)
+    rest = [c for c in candidates if c["id"] not in expired]
+    return set(expired) | set(select_gate_starts(rest, n, False))
 
 
-def _note_gate_deferred(ctx: _Ctx, pool: StepPool, st: dict) -> None:
-    """Journal (runner memory de-dupes; no campaign state or ledger write) that an exclusive
-    re-gate waits, once per campaign per `timeout_regates` value (SPEC-0311)."""
+def _flight_list(ids: list) -> str:
+    return ", ".join(ids) if ids else "none"
+
+
+def _expire_exclusive(ctx: _Ctx, pool: StepPool, st: dict, now, wait_max: int) -> bool:
+    """Clear a too-old exclusive marker on disk and in `st`, with a ledger note (SPEC-0507).
+    False when the campaign moved on meanwhile (the marker on disk is not this one)."""
+    cfg, cid, marker = ctx.cfg, st["id"], gate_exclusive(st)
+    waited = exclusive_waited_s(st, now)
+    flights = [f for f, _ex in _gate_flights(ctx, pool)]
+    if not store.campaign_dir(cfg, cid).is_dir():
+        return False
+    with store.item_lock(cfg, cid):
+        try:
+            cur = store.read_state(cfg, cid)
+        except ValueError:
+            return False
+        if cur.get("state") != "GATING" or gate_exclusive(cur) != marker:
+            return False
+        cur["gate_exclusive"] = None
+        shown = "?" if waited == math.inf else str(int(waited))
+        store.append_event(cfg, cid, "note", {
+            "text": f"exclusive re-gate waited {shown}s (max {wait_max}s) for "
+                    f"{len(flights)} gate step(s) ({_flight_list(flights)}); "
+                    "starting non-exclusively",
+            "author": "queue"})
+        store.write_state(cfg, cid, cur)
+    st["gate_exclusive"] = None
+    journal(cfg, "gate_exclusive_expired", campaign=cid,
+            waited_s=None if waited == math.inf else int(waited), in_flight=flights)
+    return True
+
+
+def _exclusive_held(ctx: _Ctx, pool: StepPool, busy: list) -> list:
+    """Ids of the exclusive re-gates pending or running (SPEC-0507), oldest first: while any,
+    a close that re-gates does not start either."""
+    held = [s for s in busy if s.get("state") == "GATING" and gate_exclusive(s)]
+    running = {cid for cid, ex in _gate_flights(ctx, pool) if ex}
+    return sorted({s["id"] for s in held} | running)
+
+
+def _note_gate_deferred(ctx: _Ctx, pool: StepPool, st: dict, busy: list = ()) -> None:
+    """Journal (runner memory de-dupes) that an exclusive re-gate waits, once per campaign per
+    `timeout_regates` value (SPEC-0311). SPEC-0507: the first deferral of each marker also
+    appends a ledger `note` naming the gate steps in flight and the older exclusive re-gates it
+    queues behind (`gate_exclusive.noted` on disk keeps it once across runner restarts)."""
     marker = gate_exclusive(st)
     if not marker:
         return
     key = (st["id"], int((st.get("counters") or {}).get("timeout_regates", 0)),
            marker.get("entered_at"))
+    if key not in pool.deferred_noted:
+        pool.deferred_noted.add(key)
+        journal(ctx.cfg, "gate_timeout_deferred", campaign=st["id"], timeout_regates=key[1])
+    if marker.get("noted"):
+        return
+    cfg, cid = ctx.cfg, st["id"]
+    flights = [f for f, _ex in _gate_flights(ctx, pool)]
+    ahead = [s["id"] for s in sorted(busy, key=_exclusive_key)
+             if s["id"] != cid and s.get("state") == "GATING" and gate_exclusive(s)
+             and _exclusive_key(s) < _exclusive_key(st)]
+    text = (f"exclusive re-gate waiting: {len(flights)} gate step(s) in flight "
+            f"({_flight_list(flights)})")
+    if ahead:
+        text += f"; queued behind exclusive re-gate(s) {_flight_list(ahead)}"
+    if not store.campaign_dir(cfg, cid).is_dir():
+        return
+    with store.item_lock(cfg, cid):
+        try:
+            cur = store.read_state(cfg, cid)
+        except ValueError:
+            return
+        if gate_exclusive(cur) != marker:
+            return
+        cur["gate_exclusive"] = {**marker, "noted": True}
+        store.append_event(cfg, cid, "note", {"text": text, "author": "queue"})
+        store.write_state(cfg, cid, cur)
+    st["gate_exclusive"] = dict(cur["gate_exclusive"])
+
+
+def _note_close_deferred(ctx: _Ctx, pool: StepPool, st: dict, held: list) -> None:
+    """A close that re-gates waits for the exclusive re-gates `held` (SPEC-0507): journal and
+    note it once per campaign per head exclusive re-gate (runner memory)."""
+    key = ("close", st["id"], held[0])
     if key in pool.deferred_noted:
         return
     pool.deferred_noted.add(key)
-    journal(ctx.cfg, "gate_timeout_deferred", campaign=st["id"], timeout_regates=key[1])
+    cfg, cid = ctx.cfg, st["id"]
+    journal(cfg, "close_deferred_for_exclusive", campaign=cid, exclusive=held)
+    if not store.campaign_dir(cfg, cid).is_dir():
+        return
+    with store.item_lock(cfg, cid):
+        store.append_event(cfg, cid, "note", {
+            "text": f"close re-gate waits for exclusive re-gate(s) {_flight_list(held)}",
+            "author": "queue"})
 
 
 def _sentinel_busy(pool: StepPool) -> bool:
@@ -6042,6 +6178,7 @@ def _tick(cfg, ctx: _Ctx, pool: StepPool, report: TickReport, *, admit: bool, ow
     trains = close_train(members.values(), set(close_roots))
     train_pos = {cid: (ids[0], i) for ids in trains.values() for i, cid in enumerate(ids)}
     gate_starts = _gate_starts(ctx, pool, busy, admitted_ids, flying)
+    exclusive_held = _exclusive_held(ctx, pool, busy)       # SPEC-0507: closes yield to them
     # SPEC-0345: the dispatch gate. Its live count also reads the campaigns with a step in
     # flight that are not active any more (a human parked one mid-run): the run still runs.
     pgate = PG.Gate(cfg, [s["id"] for s in busy] + sorted(flying - {s["id"] for s in busy}))
@@ -6082,6 +6219,9 @@ def _tick(cfg, ctx: _Ctx, pool: StepPool, report: TickReport, *, admit: bool, ow
             if st["id"] in holder_rows:
                 holder_rows[st["id"]]["deferred"] = True        # SPEC-0268
             continue                 # SPEC-0229: a draining tick starts no in-process work
+        if step.kind == "close" and exclusive_held and _close_regates(st, pcfg):
+            _note_close_deferred(ctx, pool, st, exclusive_held)      # SPEC-0507
+            continue
         if step.kind == "close":
             head_id, position = train_pos.get(st["id"], (None, 0))
             if head_id is None:      # not a train member: never close beside a running close
@@ -6101,7 +6241,7 @@ def _tick(cfg, ctx: _Ctx, pool: StepPool, report: TickReport, *, admit: bool, ow
                 pending_agent.append((st, step, None, None, 0.0, None))
             continue
         if step.kind == "gate" and st["id"] not in gate_starts:
-            _note_gate_deferred(ctx, pool, st)       # SPEC-0311: retried on a later tick
+            _note_gate_deferred(ctx, pool, st, busy)   # SPEC-0311: retried on a later tick
             continue
         if step.kind in ("gate", "finalize_split"):
             pending_agent.append((st, step, None, None, 0.0, None))

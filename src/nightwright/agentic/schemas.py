@@ -170,6 +170,8 @@ RUNNER_KINDS = {"start": ("pid", "argv", "interval_s"),
                 "admission_blocked": ("tick", "ready", "slots", "occupied", "holders", "draining"),
                 "adopt": ("runs",),
                 "gate_timeout_deferred": ("campaign", "timeout_regates"),
+                "gate_exclusive_expired": ("campaign", "waited_s", "in_flight"),  # SPEC-0507
+                "close_deferred_for_exclusive": ("campaign", "exclusive"),       # SPEC-0507
                 "restart": ("id", "phase")}                       # SPEC-0375
 
 

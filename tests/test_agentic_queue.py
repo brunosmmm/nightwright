@@ -2447,7 +2447,7 @@ def test_tick_defers_gate_steps_around_exclusive_regate(opened, monkeypatch):
         clone("B")
         Q.tick(cfg, pool=pool)
         assert until(lambda: started == ["B"])       # a step records itself on its worker thread
-        clone("A", gate_exclusive={"entered_at": "2026-10-30T10:00:00"})
+        clone("A", gate_exclusive={"entered_at": S.now_iso()})   # fresh: not expired (SPEC-0507)
         clone("C")
         S.write_state(cfg, d_id, base)            # D implements: a non-gate step
         before = snapshot("A", "C")
@@ -2456,7 +2456,11 @@ def test_tick_defers_gate_steps_around_exclusive_regate(opened, monkeypatch):
         assert until(lambda: started == ["B", "D:implement"])
         assert set(pool.flights) == {ids["B"], ids["D"]}
         Q.tick(cfg, pool=pool)
-        assert started == ["B", "D:implement"] and snapshot("A", "C") == before
+        # SPEC-0507: A's first deferral adds one ledger note (and the `noted` flag); C is untouched
+        assert started == ["B", "D:implement"] and snapshot("C") == {"C": before["C"]}
+        a_notes = S.read_ledger(cfg, ids["A"])[len(before["A"][1]):]
+        assert [e["type"] for e in a_notes] == ["note"]
+        assert ids["B"] in a_notes[0]["text"]
         finish("B")
         Q.tick(cfg, pool=pool)                    # (c) B harvested: only the exclusive A starts
         assert until(lambda: gate_starts() == ["B", "A"]) and ids["C"] not in pool.flights
