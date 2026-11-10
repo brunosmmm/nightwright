@@ -91,6 +91,40 @@ add a non-fatal config warning for `-n auto`, `nproc`, `$(getconf _NPROCESSORS_O
   Slurm: its log's xdist header shows `N workers` with N = requested cpus - 1.
 - **Regression guard:** affected tests of `gates.py`, `worker.py`, `project.py`.
 
+## As shipped
+
+- `gate_resources.sizing_env(req, environ)` gives `NW_GATE_CPUS` / `NW_GATE_MEM_MB` from a
+  request; `SLURM_CPUS_PER_TASK` / `SLURM_MEM_PER_NODE` in the process environment win
+  whenever they are set (in a Slurm job they are: no executor check needed).
+- **Local:** `gates._run_all_held` adds them to the gate env from the job request of the run's
+  gate list (not `gate_env` itself, which has no gate list; every local campaign/sentinel/
+  cadence run goes through `_run_all_held`). **Remote:** `worker._run_gates` adds them from
+  `payload.resources`; a header from an older coordinator (no block) gets the gates' own
+  defaults (`job_request` on the payload's gates).
+- **Decision: the shell expression keeps today's value without the variable.**
+  `pytest-affected` and `docs-tests` use `-n $(( ${NW_GATE_CPUS:-3} > 1 ? ${NW_GATE_CPUS:-3} - 1 : 1 ))`,
+  `pytest` the same with default 5 (its old `-n 4`). A worker or coordinator not yet on this
+  code sets no variable and runs exactly the old `-n`; POSIX arithmetic, so `dash` runs it
+  too. With the SPEC-0504 requests the values are unchanged (3 -> 2, 5 -> 4).
+- **Warnings:** `project.config_warnings(doc)` (gate and cadence commands matching `-n auto`,
+  `--numprocesses auto`, `nproc`, `getconf _NPROCESSORS_ONLN`, `os.cpu_count`,
+  `multiprocessing.cpu_count`) -> `gate <name> sizes from the machine; use $NW_GATE_CPUS`.
+  `nw projects config` prints them on stderr (yellow) and puts them in `--json` as `warnings`;
+  validation never fails on them.
+- Not changed: the cadence jobs' fixed `-n` (outside this spec; cadence entries take no
+  `resources` key yet).
+- **jerome outbound:** the requirements stay recorded in *Design*. The portable jerome spec is
+  not authored or exported in this change (another repo's outbox; listed in SPEC-0501's
+  breakdown as its own item).
+- Tests: `tests/test_gate_env_sizing.py` (sizing unit; a local run's gate sees the job's max
+  request; a remote in-process worker job with and without `payload.resources`; Slurm values
+  win locally and remotely), `tests/test_agentic_project.py` (warning table, `nw projects
+  config --json` shows them), `tests/test_agentic_dogfood_config.py` (no fixed `-n <digit>`
+  in the three pytest gates, `NW_GATE_CPUS` used, no warnings).
+- **Manual verification (real binary): pending SPEC-0510** as the Test plan says (an xdist
+  header under Slurm). Done meanwhile: the box run of this branch (old worker build, no
+  variable set) ran `pytest-affected` with the default expression, see the gate id below.
+
 ## Rollout / migration
 
 Ships with the default requests of SPEC-0504 (3 cpus -> `-n 2`, today's value), so the local

@@ -273,6 +273,7 @@ def workers_list(cfg, as_json):
     # a disabled worker is not draining, even with a stale `draining` key (a hand edit)
     drain = {w["name"] for w in ws if w["draining"] and w["enabled"]}
     jobs = WK.draining_jobs(cfg) if drain else {}
+    caps = _cached_capacity(cfg)                # SPEC-0508: from the cached `info`
     rows = [{"name": w["name"], "ssh": w.get("ssh"), "slots": w["slots"], "kinds": w["kinds"],
              "enabled": w["enabled"], "cooldown_until": w["cooldown_until"]
              if WK.in_cooldown(w) else None,
@@ -280,7 +281,8 @@ def workers_list(cfg, as_json):
              "identity": w.get("identity"), "draining": w["name"] in drain,
              "updating": w["name"] in drain and bool(WK.update_pending(w)),
              "update_last": w.get("update_last"),
-             "draining_jobs": jobs.get(w["name"], 0) if w["name"] in drain else None}
+             "draining_jobs": jobs.get(w["name"], 0) if w["name"] in drain else None,
+             "capacity": caps.get(w["name"])}
             for w in ws]
     if as_json:
         _dump_json({"schema": "nw.workers.list.v1", "workers": rows})
@@ -289,7 +291,7 @@ def workers_list(cfg, as_json):
         console.print("[dim]no workers registered[/]")
         return
     t = Table(title="Workers")
-    for col in ("name", "ssh", "slots", "enabled", "cooldown", "held"):
+    for col in ("name", "ssh", "slots", "enabled", "cooldown", "held", "cpus", "load", "mem"):
         t.add_column(col)
     for r in rows:
         enabled = "yes" if r["enabled"] else "no"
@@ -297,8 +299,53 @@ def workers_list(cfg, as_json):
             enabled = (f"updating (draining, {r['draining_jobs']} jobs)" if r["updating"]
                        else f"draining ({r['draining_jobs']} jobs)")
         t.add_row(r["name"], r["ssh"] or "(pull)", str(r["slots"]), enabled,
-                  r["cooldown_until"] or "—", f"{r['held']}/{r['slots']}")
+                  r["cooldown_until"] or "—", f"{r['held']}/{r['slots']}",
+                  *_capacity_cells(r["capacity"]))
     console.print(t)
+
+
+def _cached_capacity(cfg) -> dict:
+    """SPEC-0508: `{name: capacity}` from each worker's cached `info` (an older worker's info
+    has none)."""
+    try:
+        records = WK.read_strict(cfg)
+    except (OSError, ValueError):
+        return {}
+    out = {}
+    for r in records:
+        cap = (r.get("info") or {}).get("capacity") if isinstance(r.get("info"), dict) else None
+        if isinstance(cap, dict) and r.get("name"):
+            out[r["name"]] = cap
+    return out
+
+
+def _pct(x) -> str:
+    return "-" if x is None else f"{round(x * 100)}%"
+
+
+def _capacity_cells(cap) -> tuple[str, str, str]:
+    """`(cpus, load, mem)` list cells: load = 1-minute load per cpu, mem = in use (Slurm:
+    allocated) of the total; `-` without a capacity block."""
+    from . import worker_capacity as WC
+    if not isinstance(cap, dict):
+        return "-", "-", "-"
+    load, mem = WC.ratios(cap)
+    cpus = cap.get("cpus")
+    if cap.get("source") == "slurm" and cap.get("alloc_cpus") is not None:
+        cpus = f"{cap['alloc_cpus']}/{cpus}"
+    return ("-" if cpus is None else str(cpus)), _pct(load), _pct(mem)
+
+
+def capacity_line(cap) -> str | None:
+    """SPEC-0508: one line for `nw workers check`."""
+    if not isinstance(cap, dict):
+        return None
+    cpus, load, mem = _capacity_cells(cap)
+    total = cap.get("mem_total_mb")
+    jobs = cap.get("jobs") or []
+    line = (f"capacity ({cap.get('source')}): {cpus} cpus, load {load}, mem {mem}"
+            + (f" of {total} MB" if total else "") + f", {len(jobs)} running job(s)")
+    return line + (f" [error: {cap['error']}]" if cap.get("error") else "")
 
 
 @workers_group.command("check")
@@ -343,6 +390,10 @@ def workers_check(cfg, name, as_json, auth):
                 _say(f"  error: {e}", "red")
             for w in r["warnings"]:
                 _say(f"  warning: {w}", "yellow")
+            cap = capacity_line((r.get("info") or {}).get("capacity")
+                                if isinstance(r.get("info"), dict) else None)
+            if cap:
+                _say(f"  {cap}", "dim")
     if WK.auto_update(cfg):                      # SPEC-0386: schedule stale workers
         for r in results:
             if any(w.startswith("worker stale:") for w in r["warnings"]):

@@ -1,7 +1,7 @@
 ---
 id: SPEC-0508
 title: "Worker capacity and load: nw worker info reports cores, memory, load and per-job usage; nw workers list shows them"
-status: accepted
+status: in-progress
 owner: user
 created: 2026-11-09
 updated: 2026-11-09
@@ -82,6 +82,42 @@ Extend `worker.info` with `capacity` read from `/proc` (local) or from `scontrol
   `source: slurm` and `alloc_cpus` matching `scontrol show node morais-Desktop` run as
   `bruno@morais-Desktop`.
 - **Regression guard:** affected tests of `worker.py`, `cli_workers.py`, `workers.py`.
+
+## As shipped
+
+- `src/nightwright/agentic/worker_capacity.py`; `worker.info` adds `capacity` (never raises:
+  a failure is `error` in the block).
+- `source: proc`: `os.cpu_count()`, `/proc/meminfo`, `/proc/loadavg` (the same numbers as
+  `os.getloadavg()`, read from the file so a fake root can stand in).
+- `source: slurm` (executor `slurm`): `scontrol show node <short hostname> --json` (5 s
+  timeout). Slurm numbers may be `{"set", "number"}` objects (24.05+) or plain; both are read.
+  `loadavg` is `[cpu_load / 100]` (Slurm's 1-minute load x 100). **Decision:**
+  `mem_available_mb` = `real_memory - alloc_memory` (what Slurm can still allocate); the node's
+  `free_mem` is the kernel's MemFree (page cache counts as used: 4783 MB free vs 15729 MB
+  available on the box, 2026-11-09) and is kept as `free_mem_mb`. Any CLI or parse failure
+  falls back to `proc` with `error`.
+- **Deviation: per-job usage always comes from `/proc`, also under Slurm.** A running job
+  (`job.lock` held, no `result.json`) contributes every process whose process group is the job
+  process's or one its `proc.json` records for a gate (so pytest-xdist workers count), sampled
+  twice `SAMPLE_S` (0.5 s) apart: `cpu_pct` (100 = one core) and `rss_mb` (sum of `VmRSS`).
+  The jobs run on this host under either executor, so `sstat` adds nothing for one node; a
+  multi-node view (SPEC-0514 / Phase 2) is where it belongs. The sample runs only when a job
+  runs.
+- `nw workers list` gains `cpus` (Slurm: `alloc/total`), `load` (1-minute load per cpu) and
+  `mem` (in use, Slurm: allocated, of the total) from the cached `info` (`-` for a worker whose
+  info has no block); `--json` rows carry `capacity`. `nw workers check` prints one
+  `capacity (...)` line per worker.
+- Tests: `tests/test_worker_capacity.py`: a fake `/proc` root; the recorded real
+  `scontrol show node morais-Desktop --json` output (`tests/fixtures/slurm/scontrol_show_node.json`,
+  Slurm 26.05.5) through a fake runner, its failure fallbacks; a real busy process group
+  sampled from the real `/proc`; `info`'s block; the list render (proc, slurm, old worker).
+- **Real binary, done:** the readers ran on the box (`bruno@morais-Desktop`, read-only, this
+  branch's module piped to `python3`): `proc` -> `cpus 12, mem_total_mb 31955`; `slurm` ->
+  `cpus 12, mem_total_mb 31955, alloc_cpus 0, alloc_mem_mb 0`, matching
+  `scontrol show node morais-Desktop`. This laptop's `uv run nw worker info --json` reports
+  its own block. **Pending deploy:** `nw workers check box` + `nw workers list` showing the box
+  needs the worker updated (`nw workers update`, not run in this lane); until then the box's
+  cached info has no block and the list prints `-`.
 
 ## Rollout / migration
 

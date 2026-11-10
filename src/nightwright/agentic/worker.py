@@ -1418,6 +1418,7 @@ def _version_out(*cmd) -> str | None:
 def info(cfg) -> dict:
     from .. import __version__, buildid
     from . import executors as EX
+    from . import worker_capacity as WC
     pkg = Path(__file__).resolve().parents[1]
     sha = _version_out("git", "-C", str(pkg), "rev-parse", "HEAD")
     # SPEC-0503: the executor this host's config names (`executor:<name>` only when known)
@@ -1432,7 +1433,8 @@ def info(cfg) -> dict:
             "version": __version__,
             "git_sha": sha, "build_id": buildid.local(), "data_dir": str(cfg["data_dir"]),
             "git": _version_out("git", "--version"), "uv": _version_out("uv", "--version"),
-            "free_bytes": _free_bytes(cfg), "executor": executor, **extra}
+            "free_bytes": _free_bytes(cfg), "executor": executor, **extra,
+            "capacity": WC.capacity(cfg)}       # SPEC-0508
 
 
 CLAUDE_CHECK_SCHEMA = "nw.worker.claude_check.v1"

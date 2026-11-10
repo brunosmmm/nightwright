@@ -1,0 +1,152 @@
+{
+  "nodes": [
+    {
+      "architecture": "x86_64",
+      "burstbuffer_network_address": "",
+      "boards": 1,
+      "boot_time": {
+        "set": true,
+        "infinite": false,
+        "number": 1793482615
+      },
+      "tls_cert_last_renewal": {
+        "set": true,
+        "infinite": false,
+        "number": 0
+      },
+      "cert_flags": [],
+      "cluster_name": "",
+      "cores": 6,
+      "specialized_cores": 1,
+      "cpu_binding": 0,
+      "cpu_load": 2592,
+      "free_mem": {
+        "set": true,
+        "infinite": false,
+        "number": 9883
+      },
+      "cpus": 12,
+      "effective_cpus": 10,
+      "specialized_cpus": "10-11",
+      "energy": {
+        "average_watts": 0,
+        "base_consumed_energy": 0,
+        "consumed_energy": 0,
+        "current_watts": {
+          "set": true,
+          "infinite": false,
+          "number": 0
+        },
+        "previous_consumed_energy": 0,
+        "last_collected": 0
+      },
+      "extra": "",
+      "features": [],
+      "active_features": [],
+      "gpu_spec": "",
+      "gres": "",
+      "gres_drained": "N\/A",
+      "gres_used": "",
+      "instance_id": "",
+      "instance_type": "",
+      "last_busy": {
+        "set": true,
+        "infinite": false,
+        "number": 1794276814
+      },
+      "mcs_label": "",
+      "specialized_memory": 6000,
+      "name": "morais-Desktop",
+      "next_state_after_reboot": [
+        "INVALID"
+      ],
+      "address": "morais-Desktop",
+      "hostname": "morais-Desktop",
+      "state": [
+        "IDLE"
+      ],
+      "operating_system": "Linux 7.0.12-arch1-1 #1 SMP PREEMPT_DYNAMIC Wed, 10 Jun 2026 08:58:02 +0000",
+      "owner": "",
+      "partitions": [
+        "nw-campaign",
+        "nw-gatejob",
+        "nw-persona",
+        "nw-bulk"
+      ],
+      "port": 6818,
+      "real_memory": 31955,
+      "res_cores_per_gpu": 0,
+      "comment": "",
+      "reason": "",
+      "reason_changed_at": {
+        "set": true,
+        "infinite": false,
+        "number": 0
+      },
+      "reason_set_by_user": "",
+      "resume_after": {
+        "set": true,
+        "infinite": false,
+        "number": 0
+      },
+      "reservation": "",
+      "suspend_time": {
+        "set": false,
+        "infinite": true,
+        "number": 0
+      },
+      "alloc_memory": 0,
+      "alloc_cpus": 0,
+      "alloc_idle_cpus": 12,
+      "tres_used": "",
+      "slurmd_start_time": {
+        "set": true,
+        "infinite": false,
+        "number": 1794276782
+      },
+      "sockets": 1,
+      "threads": 2,
+      "temporary_disk": 0,
+      "weight": 1,
+      "topology": "",
+      "tres": "cpu=10,mem=31955M,billing=10",
+      "version": "26.05.5"
+    }
+  ],
+  "last_update": {
+    "set": true,
+    "infinite": false,
+    "number": 1794277737
+  },
+  "meta": {
+    "plugin": {
+      "type": "",
+      "name": "",
+      "data_parser": "data_parser\/v0.0.45",
+      "accounting_storage": ""
+    },
+    "client": {
+      "source": "",
+      "user": "bruno",
+      "group": "bruno"
+    },
+    "command": [
+      "scontrol",
+      "show",
+      "node",
+      "morais-Desktop",
+      "--json"
+    ],
+    "slurm": {
+      "version": {
+        "major": "26",
+        "micro": "5",
+        "minor": "05"
+      },
+      "release": "26.05.5",
+      "cluster": "nw"
+    }
+  },
+  "errors": [],
+  "warnings": []
+}

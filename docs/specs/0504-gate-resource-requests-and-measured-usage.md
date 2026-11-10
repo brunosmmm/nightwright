@@ -105,6 +105,49 @@ payload carries the request to the worker.
 - **Regression guard:** affected tests of `project.py`, `gates.py`, `remote_gates.py`,
   `worker.py`, `gate_jobs.py`.
 
+## As shipped
+
+- `src/nightwright/agentic/gate_resources.py`: config check, the defaults table (keys
+  `pytest-full`, `pytest`, `default`, `persona`; `agentic.gates.resource_defaults.<key>:
+  {cpus, mem}` overrides per host, a malformed override is ignored), `gate_request`,
+  `persona_request`, `job_request`, `check_payload` (the worker's bounds check).
+- **Shapes.** A request is `{"cpus": int, "mem_mb": int, "licenses": {name: count}}` (a mapping,
+  not a list: the max-count union needs counts). `job_request(gates, cfg, time_s=None)` adds
+  `time_s` (default `remote_gates.job_timeout_s(cfg, gates) + RUN_TIMEOUT_MARGIN_S`, the
+  coordinator's real deadline for the job) and `gates: {name: request}`.
+- **Decision: `resources` never travels inside the header's gate list.** `remote_gates._header`
+  drops it with the other coordinator-only keys and sends the resolved job request as
+  `payload.resources` (with the per-gate requests). An older worker validates the gate list
+  against its own project schema and would refuse an unknown `resources` key on every job;
+  it ignores an extra payload key. The worker hands each gate its request
+  (`gate_resources.REQUEST_KEY`), a local run resolves it with the host's defaults
+  (`_run_all_held`). A persona header carries `payload.resources` = `persona_request` +
+  `time_s`.
+- **Measurement.** `gates._MeteredPopen` overrides `Popen._try_wait` (and `poll`) to reap with
+  `os.wait4`: the one reap the existing wait/kill code already did, now with rusage, so the
+  timeout and kill paths are unchanged and a timed-out gate still has its numbers. `used` =
+  `{cpu_s, max_rss_mb, rss_scope: "max_process", wall_s}` (`None` values only if the process
+  was never reaped through `wait4`). A retried gate's `used` sums CPU and wall over all its
+  attempts (and a `failed_first` prelude) and keeps the peak RSS.
+- Where it lands: `GateResult.resources` -> the `gate` frame (`asdict`), the sidecar
+  `gates/<seq>-<name>.json` (written by `_write_sidecar`, kept by `_rewrite_sidecar`; for a
+  remote gate the worker's sidecar is the file the coordinator writes), the ledger `gate`
+  event (`as_payload`; dropped when `None`, an older worker's result), `gate_jobs._rows`.
+  `remote_gates._bad_result_field` accepts only a mapping (or null) for `resources`.
+- `.nw/project.yaml` declares the three requests from the AC.
+- Tests: `tests/test_gate_resources.py` (validation table, defaults, overrides, `job_request`,
+  payload bounds, header with and without the block, the dogfood config);
+  `tests/test_gates_rusage.py` (a real gate burning ~0.5 s CPU and ~100 MB: `cpu_s >= 0.4`,
+  `max_rss_mb >= 90`; a timed-out gate keeps usage; retries sum; an in-process worker job's
+  `gate` frame, `_take_gate`'s sidecar and `as_payload` carry it; the header strips per-gate
+  `resources`). `tests/test_agentic_gates.py`'s pinned payload key set now includes
+  `resources` (the box run `GATEJOB-1466` caught it).
+- **Real binary, done:** this branch's gate runner on the real `spec-lint` gate of this repo:
+  `{"request": {"cpus": 1, "mem_mb": 1024}, "used": {"cpu_s": 4.73, "max_rss_mb": 47.9,
+  "wall_s": 4.82}}`. **Pending deploy:** the same check on a campaign's `gates/*.json` from the
+  box (`pytest-affected` in the hundreds of `cpu_s`/MB) needs the coordinator restarted on this
+  code and the worker updated (`nw workers update`), not run in this lane.
+
 ## Rollout / migration
 
 Additive. Old records simply lack `resources`; readers treat it as optional. Supersedes nothing.

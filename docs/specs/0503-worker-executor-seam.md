@@ -114,6 +114,59 @@ class Executor(Protocol):
   `"executor": "local"`.
 - **Regression guard:** the affected tests of `worker_job.py`, `worker.py`, `remote_gates.py`.
 
+## As shipped
+
+- `src/nightwright/agentic/executors.py`: the `Executor` protocol, `LocalExecutor` (today's
+  code, looked up on its modules at call time so existing monkeypatches still apply),
+  `register`/`unregister` (SPEC-0510's `slurm`, tests' fakes), `get(cfg)` (unknown name ->
+  `WorkerError("executor")`) and `for_job(cfg, job)`.
+- **Decision: a job records its executor.** `job.json` gains `executor` at claim (`submit` and
+  `gate-job`); every later read of that job (`state`, `cancel`, `run-job`, `host_slot`) goes
+  through `for_job`, the executor that started it, not the host's current setting. A dir
+  without the key (every pre-0503 job) or with a name this build does not know is `local`.
+- `state(cfg, job, rec, ...)` receives the job's start record (`spawn.json`); `cancel` the
+  same. `jobs` delegates through `state` (`job_state` -> `_exec_state`); its rows are unchanged.
+- `submit`: the executor is resolved after header validation and before the claim; a refusal
+  drains the client's upload (like a claim refusal) and prints one `error` frame
+  (`stage: "executor"`). `spawn.json` is the executor's start record plus `spawned_at`.
+- `gate-job`: `worker.gate_job` resolves the executor and calls `run_inline`; the old body is
+  `_gate_job_local`. Under an unknown executor it reads only the header line (for the job id
+  in the frame) and claims nothing.
+- `nw worker info`: `executor` (the configured name) and the feature `executor:<name>` (only
+  for a known name; an unknown one adds `executor_error` instead).
+- `nw worker run-job JOBDIR` (hidden, not in the forced-command grammar) calls
+  `worker_job.main`.
+- **Restart safety.** `_attempt(job)` = `NW_JOB_ATTEMPT`, else `job.json.run_attempts` + 1.
+  `main` refuses only when `result.json` belongs to the same or a newer attempt (a result
+  without `attempt`, pre-0503 or from `reap`, is attempt 1; `reap` now records
+  `run_attempts`); a `proc.json` of an older attempt is removed under `job.lock` before the
+  claim. `run_job` removes `tree/`/`out/`/`tmp/` and an older `result.json`, records
+  `run_attempts`, and on attempt > 1 writes the frame first. Attempt 1 behaves as before
+  (no extra frame); `proc.json`, `job.json` and `result.json` gain the additive keys
+  `attempt` / `run_attempts` / `attempt`.
+- **Deviation: the attempt frame's shape.** It is
+  `{"type": "attempt", "attempt": <k>, ..., "n": <seq>}`, not `{"t": "attempt", "n": <k>}`:
+  `n` is every frame's sequence number (attach/poll cursors), so it cannot carry the attempt.
+- **Deviation: a rerun's checkout.** The first attempt fetched and removed the bundle; a rerun
+  without a bundle file checks out from the repo cache (`bundle_bytes` 0 for that checkout:
+  the commit and base are kept there by `refs/nw/have/*`).
+- **Left to SPEC-0510:** `attempt` is not in the coordinator's `FRAME_TYPES` yet, so a
+  coordinator reading one fails the job as a protocol error (falls back, never mixes
+  attempts). Dropping the earlier attempt's partial gate frames in `remote_gates` belongs with
+  the executor that produces reruns; under `local` no attempt > 1 ever happens.
+- `_watch(..., lease_cancels)`: the lease check runs only when the job's executor says so.
+- Tests: `tests/test_worker_executor_seam.py` (recording executor for
+  start/cancel/state/host_slot/run_inline, unknown name on submit and gate-job, info, the
+  attempt-2 rerun through the real `nw worker run-job` with stale scratch planted, an older
+  attempt refused, lease gating). `tests/test_rich_output_guard.py` names `_gate_job_local`
+  and `executors.for_job`. Box: `GATEJOB-1461` (loop tier, green, 1253 tests) and the
+  integration/remote affected run (see SPEC-0504's As shipped, run on the combined branch).
+- **Manual verification (real binary): pending deploy.** The box's worker runs the installed
+  build; deploying needs `nw workers update`, which this lane may not run. Done instead:
+  `uv run nw worker info --json` from this branch reports `"executor": "local"` and
+  `executor:local`. To do after the update: one campaign gate through the forced command,
+  compare its `frames.jsonl` with a pre-change job dir.
+
 ## Rollout / migration
 
 Merge; nothing changes until a host sets `executor: slurm` (SPEC-0510). Supersedes nothing.
