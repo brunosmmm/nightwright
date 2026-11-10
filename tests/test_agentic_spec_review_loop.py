@@ -652,6 +652,25 @@ def _resume_accepted_to_review(cfg, cid, wt, status=None):
     assert len(ledger(cfg, cid, "spec_accepted")) == accepted
 
 
+def test_spec_accepted_for_another_spec_id_does_not_skip_review(tmp_path, monkeypatch):
+    cfg, repo, iid, cid = begin(tmp_path, monkeypatch, [reviewed()])
+    S.append_event(cfg, cid, "spec_accepted", {"spec_id": "SPEC-0001", "round": 1})
+    Q.tick(cfg)
+    st = S.read_state(cfg, cid)
+    assert st["state"] == "IMPLEMENTING"
+    assert len(reviews(cfg, cid)) == 1
+    assert [e["spec_id"] for e in ledger(cfg, cid, "spec_accepted")] == ["SPEC-0001", "SPEC-0002"]
+
+
+def test_current_spec_accepted_still_skips_review_when_a_later_event_names_another_spec(
+        tmp_path, monkeypatch):
+    cfg, repo, iid, cid = begin(tmp_path, monkeypatch, [reviewed()])
+    Q.tick(cfg)
+    assert S.read_state(cfg, cid)["state"] == "IMPLEMENTING"
+    S.append_event(cfg, cid, "spec_accepted", {"spec_id": "SPEC-0001", "round": 1})
+    _resume_accepted_to_review(cfg, cid, wtree(cfg, cid))
+
+
 def test_resume_to_spec_review_after_acceptance_keeps_the_close_guard_baseline(tmp_path, monkeypatch):
     cfg, repo, iid, cid = begin(tmp_path, monkeypatch, [reviewed()])
     Q.tick(cfg)

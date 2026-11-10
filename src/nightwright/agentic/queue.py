@@ -2628,8 +2628,11 @@ def _spec_review_precheck(ctx: _Ctx, state: dict, step: Step) -> StepResult | No
         # campaign history, not the spec's status, says whether a review phase may still accept:
         # a plain spec campaign, or one that already has `spec_accepted`, was accepted before
         # this phase and its close-guard baseline must not be reset (whatever the status now)
-        if state.get("kind") != "idea" or \
-                store.read_ledger(ctx.cfg, state["id"], types=["spec_accepted"]):
+        current_id = str(spec.get("id") or state.get("spec_id") or "")
+        if state.get("kind") != "idea" or (
+                current_id and any(e.get("spec_id") == current_id
+                                   for e in store.read_ledger(ctx.cfg, state["id"],
+                                                              types=["spec_accepted"]))):
             res.spec_review = {"already_accepted": True}
             return res
         head = git.git(worktree, "show", f"HEAD:{spec.get('rel_path')}", check=False)

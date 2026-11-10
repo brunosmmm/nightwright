@@ -1,7 +1,7 @@
 ---
 id: SPEC-0531
 title: Spec-review precheck scopes already-accepted to the current spec
-status: accepted
+status: done
 owner: user
 created: 2026-11-10
 updated: 2026-11-10
@@ -105,24 +105,24 @@ still resumes the accept.
 
 ## Acceptance criteria
 
-- [ ] An idea campaign in SPEC_REVIEW, current spec id S, committed spec status
+- [x] An idea campaign in SPEC_REVIEW, current spec id S, committed spec status
       `proposed`, whose ledger `spec_accepted` events are only for a spec id other than
       S, runs the spec reviewer on the next tick: a `spec_review` event is recorded and
       the campaign is not parked `spec_review_exhausted` for "already accepted". On an
       approve verdict it reaches IMPLEMENTING and appends `spec_accepted` with
       `spec_id` S. The other spec's `spec_accepted` event is still in the ledger.
-- [ ] An idea campaign that already has `spec_accepted` for its current spec id, resumed
+- [x] An idea campaign that already has `spec_accepted` for its current spec id, resumed
       `--to SPEC_REVIEW` after a committed body edit, parks `spec_review_exhausted` with
       `resume_to` IMPLEMENTING and detail containing `already accepted`. The reviewer
       does not run, `spec_accepted` count is unchanged, and `spec_at_open.md` and
       `sha256_at_open` are unchanged. This remains true when a `spec_accepted` for a
       different spec id is the latest such event, and when the file's status line was
       changed to `done` before the resume.
-- [ ] A campaign whose `kind` is not `idea`, resumed `--to SPEC_REVIEW`, parks the same
+- [x] A campaign whose `kind` is not `idea`, resumed `--to SPEC_REVIEW`, parks the same
       way and runs no reviewer, with the baseline and the `spec_accepted` count
       unchanged, including when the spec status is `in-progress` and the ledger has no
       `spec_accepted` event.
-- [ ] An idea campaign with no `spec_accepted` event still reviews a proposed spec and,
+- [x] An idea campaign with no `spec_accepted` event still reviews a proposed spec and,
       on approve, accepts it once (one `spec_accepted` for that spec id). A revise
       verdict still sends the campaign to the writer and accepts the revision without a
       second review.
@@ -152,6 +152,11 @@ still resumes the accept.
   Run the new tests with that file via
   `python3 tools/affected_tests.py --run uv run pytest -q tests/test_agentic_spec_review_loop.py`.
 
+### Test record (2026-11-10)
+
+- `uv run pytest -q tests/test_agentic_spec_review_loop.py` — 48 passed.
+- Full suite left to gating.
+
 ## Rollout / migration
 
 Ship the precheck change with the tests. No ledger rewrite and no snapshot migration.
@@ -162,11 +167,11 @@ SPEC_REVIEW. After this change, that resume reviews the current spec when no
 
 ## Definition of done
 
-- [ ] Acceptance criteria all met.
-- [ ] Test plan executed; the automated tests above pass. No manual steps.
-- [ ] No regressions in the spec-review resume and accept tests named above.
-- [ ] Spec body updated to match what shipped.
-- [ ] `docs/LEDGER.md` regenerated (`python3 tools/spec_lint.py --write-ledger`).
+- [x] Acceptance criteria all met.
+- [x] Test plan executed; the automated tests above pass. No manual steps.
+- [x] No regressions in the spec-review resume and accept tests named above.
+- [x] Spec body updated to match what shipped.
+- [x] `docs/LEDGER.md` regenerated (`python3 tools/spec_lint.py --write-ledger`).
 
 ## Open questions
 

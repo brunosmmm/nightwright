@@ -356,7 +356,6 @@ progress. This is the single place to see *what has been decided* and *what is i
 | [SPEC-0523](./specs/0523-exclusive-regate-is-advisory-and-short.md) | An exclusive re-gate is advisory: it holds other campaigns' gates for at most 300 s | feature | accepted | M9: agentic workflow | 2026-11-09 |
 | [SPEC-0524](./specs/0524-disk-self-clean.md) | Finished work cleans up after itself: pytest tmp retention and an hourly disk sweep | feature | accepted | M9: agentic workflow | 2026-11-09 |
 | [SPEC-0527](./specs/0527-federation-bounded-relay-mail-and-two-remote-verbs.md) | Federation, bounded: relay, mail and two remote verbs | feature | accepted | — | 2026-11-09 |
-| [SPEC-0531](./specs/0531-spec-review-precheck-skips-review-on-a-stale-spec.md) | Spec-review precheck scopes already-accepted to the current spec | feature | accepted | — | 2026-11-10 |
 
 ## Done
 
@@ -805,6 +804,7 @@ progress. This is the single place to see *what has been decided* and *what is i
 | [SPEC-0508](./specs/0508-worker-capacity-and-load-view.md) | Worker capacity and load: nw worker info reports cores, memory, load and per-job usage; nw workers list shows them | feature | done | M9: agentic workflow | 2026-11-09 |
 | [SPEC-0522](./specs/0522-remote-gate-attach-ends-and-exclusive-hold-is-bounded.md) | A finished remote gate job always ends its attach, and an exclusive gate step cannot hold other gates forever | feature | done | M9: agentic workflow | 2026-11-09 |
 | [SPEC-0528](./specs/0528-cli-signal-handlers-scoped-to-the-command.md) | CLI signal handlers scoped to the command: herdr watch, gate run, campaign tail restore the previous handler; bounded in-process watch loop | feature | done | M9: agentic workflow | 2026-11-10 |
+| [SPEC-0531](./specs/0531-spec-review-precheck-skips-review-on-a-stale-spec.md) | Spec-review precheck scopes already-accepted to the current spec | feature | done | — | 2026-11-10 |
 
 ## Superseded / rejected
 
