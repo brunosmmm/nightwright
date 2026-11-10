@@ -56,19 +56,9 @@ def _effective(cfg: dict) -> str:
     return EX.configured(cfg)
 
 
-def _merge_file(cfg: dict, doc: dict) -> dict:
-    merged = dict(cfg)
-    agentic = dict(merged.get("agentic") or {})
-    file_ag = doc.get("agentic")
-    if isinstance(file_ag, dict):
-        fw = file_ag.get("workers")
-        wk = dict(agentic.get("workers") or {}) if isinstance(agentic.get("workers"), dict) else {}
-        if isinstance(fw, dict):
-            wk = {**wk, **fw}
-        agentic = {**agentic, **{k: v for k, v in file_ag.items() if k != "workers"}}
-        agentic["workers"] = wk
-    merged["agentic"] = agentic
-    return merged
+def _effective_doc(doc: dict) -> str:
+    ag = doc.get("agentic")
+    return EX.configured({"agentic": ag if isinstance(ag, dict) else {}})
 
 
 def _nested_get(doc: dict, key: str):
@@ -229,7 +219,7 @@ def get_key(cfg: dict, key: str | None) -> dict:
         if err:
             return err
         keys = {}
-        eff = _effective(_merge_file(cfg, stored))
+        eff = _effective_doc(stored)
         for k in ALLOWED:
             raw = _nested_get(stored, k)
             keys[k] = {"value": raw if isinstance(raw, str) else None, "effective": eff}
@@ -240,7 +230,7 @@ def get_key(cfg: dict, key: str | None) -> dict:
         return err
     raw = _nested_get(stored, key)
     value = raw if isinstance(raw, str) else None
-    eff = _effective(_merge_file(cfg, stored))
+    eff = _effective_doc(stored)
     return _result(ok=True, op="get", key=key, value=value, effective=eff)
 
 
@@ -306,7 +296,7 @@ def set_key(cfg: dict, key: str, value: str) -> dict:
         cur = _nested_get(doc, key)
         unchanged = isinstance(cur, str) and cur == value
         if unchanged:
-            eff = _effective(_merge_file(cfg, doc))
+            eff = _effective_doc(doc)
             return _result(ok=True, op="set", key=key, value=value, effective=eff, unchanged=True)
         new_doc = _set_nested(doc, key, value)
         text = yaml.safe_dump(new_doc, sort_keys=False, default_flow_style=False)
@@ -352,7 +342,7 @@ def set_key(cfg: dict, key: str, value: str) -> dict:
                 except OSError:
                     pass
             return _result(ok=False, error=str(e))
-        eff = _effective(_merge_file(cfg, new_doc))
+        eff = _effective_doc(new_doc)
         return _result(ok=True, op="set", key=key, value=value, effective=eff, unchanged=False)
 
 

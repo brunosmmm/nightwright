@@ -118,6 +118,8 @@ def _check_record(rec) -> None:
     ex = rec.get("executor")
     if ex is not None:
         from .worker_host_config import ALLOWED
+        if not isinstance(ex, str):
+            raise ValueError(f"worker {name}: executor must be a string, got {type(ex).__name__}")
         if ex not in ALLOWED["executor"]:
             raise ValueError(f"worker {name}: executor {ex!r} is not one of "
                              f"{sorted(ALLOWED['executor'])}")

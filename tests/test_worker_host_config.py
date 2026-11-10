@@ -258,6 +258,7 @@ def test_symlink_config_refused(cfg_home):
     p.symlink_to(tgt)
     raw = tgt.read_bytes()
     assert WHC.run(["set", "executor", "slurm"], cfg) == 3
+    assert p.is_symlink()
     assert tgt.read_bytes() == raw
 
 
@@ -472,6 +473,10 @@ def test_failed_push_keeps_old_info(coord_world):
     assert host_seed.read_bytes() == host_before
     assert sentinel.read_bytes() == sentinel_bytes
     assert [x for x in (st / "argv").read_text().splitlines() if "info" in x] == []
+    rj = CliRunner().invoke(cli, ["workers", "config", "box", "set", "executor", "slurm", "--json"])
+    assert rj.exit_code == 1
+    payload = json.loads(rj.output)
+    assert payload["pushed"] is False and "error" in payload
 
 
 def test_info_fail_after_push(coord_world, monkeypatch):
@@ -483,6 +488,11 @@ def test_info_fail_after_push(coord_world, monkeypatch):
     assert rec["info"] == seeded_info
     assert sentinel.read_bytes() == sentinel_bytes
     assert "executor: slurm" in host_seed.read_text()
+    assert "info cache not refreshed:" in r.output
+    rj = CliRunner().invoke(cli, ["workers", "config", "box", "set", "executor", "slurm", "--json"])
+    assert rj.exit_code == 1
+    payload = json.loads(rj.output)
+    assert payload["pushed"] is True and "error" in payload
 
 
 def test_ensure_ssh_dir_before_ssh(coord_world, monkeypatch):
@@ -596,11 +606,18 @@ def test_pull_and_unknown(coord_world):
     r = CliRunner().invoke(cli, ["workers", "config", "nope", "get"])
     assert r.exit_code == 1 and before == p.read_bytes()
     assert not (st / "argv").exists()
+    r = CliRunner().invoke(cli, ["workers", "config", "pull", "set", "executor", "slurm"])
+    assert r.exit_code == 1 and before == p.read_bytes()
+    assert not (st / "argv").exists()
+    r = CliRunner().invoke(cli, ["workers", "config", "nope", "set", "executor", "slurm"])
+    assert r.exit_code == 1 and before == p.read_bytes()
+    assert not (st / "argv").exists()
     r = CliRunner().invoke(cli, ["workers", "config", "box", "set", "slots", "3"])
     assert r.exit_code == 2 and before == p.read_bytes()
     assert not (st / "argv").exists()
     r = CliRunner().invoke(cli, ["workers", "config", "box", "set", "executor", "bogus"])
     assert r.exit_code == 2 and before == p.read_bytes()
+    assert not (st / "argv").exists()
 
 
 def test_read_strict_executor(tmp_path):
@@ -621,6 +638,11 @@ def test_read_strict_executor(tmp_path):
         {"name": "b", "ssh": "u@h", "executor": "bogus"}]}))
     with pytest.raises(ValueError):
         WK.read_strict(cfg)
+    for bad in ('["slurm"]', '{"name": "slurm"}'):
+        p.write_text(json.dumps({"schema": WK.SCHEMA, "workers": [
+            {"name": "b", "ssh": "u@h", "executor": json.loads(bad)}]}))
+        with pytest.raises(ValueError):
+            WK.read_strict(cfg)
 
 
 def test_workers_check_prints_executor(coord_world):
@@ -628,7 +650,7 @@ def test_workers_check_prints_executor(coord_world):
     (st / "scenario_live").write_text("slurm")
     r = CliRunner().invoke(cli, ["workers", "check", "box"])
     assert r.exit_code == 0, r.output
-    assert "executor: slurm" in r.output
+    assert "  executor: slurm" in r.output
     rj = CliRunner().invoke(cli, ["workers", "check", "box", "--json"])
     payload = json.loads(rj.output)
     assert set(payload[0]) == {"name", "ok", "errors", "warnings", "info"}
@@ -944,8 +966,8 @@ print(json.dumps({{"protocol": "nw.job.v1", "git": "g", "version": "0.1.0",
     WK.path(cfg).write_text(json.dumps({"schema": WK.SCHEMA, "workers": records}))
     r = CliRunner().invoke(cli, ["workers", "check", "box"])
     assert r.exit_code == 0, r.output
-    assert "executor: slurm" in r.output
-    assert "executor_error: slurm binary missing" in r.output
+    assert "  executor: slurm" in r.output
+    assert "  executor_error: slurm binary missing" in r.output
     rj = CliRunner().invoke(cli, ["workers", "check", "box", "--json"])
     info = json.loads(rj.output)[0]["info"]
     assert info["executor"] == "slurm"
@@ -978,17 +1000,20 @@ def test_info_bad_exit_after_push(coord_world):
     assert rec["info"] == seeded_info
     assert host_seed.read_bytes() != before_host
     assert "executor: slurm" in host_seed.read_text()
+    assert "info cache not refreshed:" in r.output
 
 
 def test_info_probe_bad_json_asserts_host_written(coord_world):
     st, cfg, _, _, host_seed, seeded_info = coord_world
     before = host_seed.read_bytes()
     (st / "scenario").write_text("info_bad_json")
-    r = CliRunner().invoke(cli, ["workers", "config", "box", "set", "executor", "slurm"])
+    r = CliRunner().invoke(cli, ["workers", "config", "box", "set", "executor", "slurm", "--json"])
     assert r.exit_code == 1
     assert host_seed.read_bytes() != before
     rec = json.loads(WK.path(cfg).read_text())["workers"][0]
     assert rec["info"] == seeded_info
+    payload = json.loads(r.output)
+    assert payload["pushed"] is True and payload.get("error")
 
 
 def test_workers_config_get_no_key_cli(coord_world):
@@ -1012,8 +1037,10 @@ def test_workers_config_ssh_timeout_get(coord_world, monkeypatch):
     records[0]["executor"] = "slurm"
     WK.path(cfg).write_text(json.dumps({"schema": WK.SCHEMA, "workers": records}))
     seeded = dict(records[0]["info"])
+    seen: list[dict] = []
 
-    def timeout(*_a, **_k):
+    def timeout(*_a, **kw):
+        seen.append(kw)
         raise subprocess.TimeoutExpired(cmd="ssh", timeout=WK.CHECK_TIMEOUT_S)
 
     monkeypatch.setattr(subprocess, "run", timeout)
@@ -1023,6 +1050,7 @@ def test_workers_config_ssh_timeout_get(coord_world, monkeypatch):
     assert "desired=slurm" in r.output
     rec_after = json.loads(WK.path(cfg).read_text())["workers"][0]
     assert rec_after["info"] == seeded
+    assert seen and seen[0].get("timeout") == WK.CHECK_TIMEOUT_S
 
 
 def test_workers_config_get_failure_keeps_info(coord_world):
@@ -1054,3 +1082,148 @@ def test_replace_failure_cleans_temp_and_leaves_config(cfg_home, monkeypatch):
     assert p.read_bytes() == before
     assert list(cdir.glob("config.yaml.tmp*")) == []
     assert list(cdir.glob("config.yaml.bak.*")) == []
+
+
+def test_blank_executor_get_effective_local(cfg_home):
+    cdir, cfg = cfg_home
+    cdir.mkdir()
+    p = cdir / "config.yaml"
+    for text, want in (('agentic:\n  workers:\n    executor: ""\n', ""),
+                       ('agentic:\n  workers:\n    executor: "  "\n', "  ")):
+        p.write_text(text)
+        raw = p.read_bytes()
+        rec = WHC.get_key(cfg, "executor")
+        assert rec["value"] == want
+        assert rec["effective"] == "local"
+        assert p.read_bytes() == raw
+
+
+def test_get_effective_ignores_process_executor(cfg_home):
+    cdir, cfg = cfg_home
+    cdir.mkdir()
+    p = cdir / "config.yaml"
+    p.write_text("agentic:\n  workers:\n    key: 1\n")
+    cfg["agentic"] = {"workers": {"executor": "slurm"}}
+    rec = WHC.get_key(cfg, "executor")
+    assert rec["value"] is None
+    assert rec["effective"] == "local"
+
+
+def test_backup_name_collision_suffix(cfg_home, monkeypatch):
+    cdir, cfg = cfg_home
+    WHC.run(["set", "executor", "local"], cfg)
+    p = cdir / "config.yaml"
+    stamp = "19990101120000"
+
+    class _Now:
+        @staticmethod
+        def strftime(_fmt):
+            return stamp
+
+    class _Datetime:
+        @staticmethod
+        def now():
+            return _Now()
+
+    monkeypatch.setattr(WHC, "datetime", _Datetime)
+    pre = p.with_name(f"config.yaml.bak.{stamp}")
+    pre.write_bytes(p.read_bytes())
+    os.chmod(pre, 0o600)
+    before = p.read_bytes()
+    WHC.run(["set", "executor", "slurm"], cfg)
+    baks = sorted(cdir.glob("config.yaml.bak.*"))
+    assert any(f"config.yaml.bak.{stamp}-" in b.name for b in baks)
+    assert pre.read_bytes() == before
+
+
+def test_temp_fsync_before_replace(cfg_home, monkeypatch):
+    cdir, cfg = cfg_home
+    cdir.mkdir()
+    p = cdir / "config.yaml"
+    p.write_text("agentic:\n  workers:\n    executor: local\n")
+    os.chmod(p, 0o600)
+    temp_fds: set[int] = set()
+    fsynced: set[int] = set()
+    real_open = os.open
+    real_fsync = os.fsync
+
+    def track_open(path, flags, mode=0o777, *args, **kwargs):
+        fd = real_open(path, flags, mode, *args, **kwargs)
+        if "config.yaml.tmp." in os.fspath(path):
+            temp_fds.add(fd)
+        return fd
+
+    def track_fsync(fd):
+        if fd in temp_fds:
+            fsynced.add(fd)
+        real_fsync(fd)
+
+    monkeypatch.setattr(os, "open", track_open)
+    monkeypatch.setattr(os, "fsync", track_fsync)
+    assert WHC.run(["set", "executor", "slurm"], cfg) == 0
+    assert fsynced
+
+
+def test_registry_update_failure_skips_ssh(coord_world, monkeypatch):
+    st, cfg, sentinel, sentinel_bytes, host_seed, seeded_info = coord_world
+    host_before = host_seed.read_bytes()
+    before = WK.path(cfg).read_bytes()
+
+    def boom(_c, _fn):
+        raise OSError("registry locked")
+
+    monkeypatch.setattr(WK, "update", boom)
+    r = CliRunner().invoke(cli, ["workers", "config", "box", "set", "executor", "slurm"])
+    assert r.exit_code == 1
+    assert WK.path(cfg).read_bytes() == before
+    assert not (st / "argv").exists()
+    rec = json.loads(WK.path(cfg).read_text())["workers"][0]
+    assert rec.get("executor") != "slurm"
+    assert rec["info"] == seeded_info
+    assert host_seed.read_bytes() == host_before
+    assert sentinel.read_bytes() == sentinel_bytes
+
+
+def test_workers_config_ssh_timeout_set(coord_world, monkeypatch):
+    import subprocess
+
+    st, cfg, *_ = coord_world
+    seeded = json.loads(WK.path(cfg).read_text())["workers"][0]["info"]
+    seen: list[dict] = []
+
+    def timeout(*_a, **kw):
+        seen.append(kw)
+        raise subprocess.TimeoutExpired(cmd="ssh", timeout=WK.CHECK_TIMEOUT_S)
+
+    monkeypatch.setattr(subprocess, "run", timeout)
+    r = CliRunner().invoke(cli, ["workers", "config", "box", "set", "executor", "slurm"])
+    assert r.exit_code == 1
+    rec = json.loads(WK.path(cfg).read_text())["workers"][0]
+    assert rec["executor"] == "slurm"
+    assert rec["info"] == seeded
+    assert seen and seen[0].get("timeout") == WK.CHECK_TIMEOUT_S
+
+
+def test_info_bad_exit_messages_and_json(coord_world):
+    st, cfg, _, _, _, seeded_info = coord_world
+    (st / "scenario").write_text("info_bad_exit")
+    r = CliRunner().invoke(cli, ["workers", "config", "box", "set", "executor", "slurm", "--json"])
+    assert r.exit_code == 1
+    rec = json.loads(WK.path(cfg).read_text())["workers"][0]
+    assert rec["info"] == seeded_info
+    payload = json.loads(r.output)
+    assert payload["pushed"] is True and payload.get("error")
+
+
+def test_set_leaves_running_job_untouched(coord_world):
+    st, cfg, *_ = coord_world
+    job_dir = W.jobs_dir(cfg) / "j-running"
+    job_dir.mkdir(parents=True)
+    job_body = {"job_id": "j-running", "state": "running", "executor": "local"}
+    job_json = job_dir / "job.json"
+    job_json.write_text(json.dumps(job_body))
+    before = job_json.read_bytes()
+    r = CliRunner().invoke(cli, ["workers", "config", "box", "set", "executor", "slurm"])
+    assert r.exit_code == 0, r.output
+    assert job_json.read_bytes() == before
+    assert json.loads(job_json.read_text())["executor"] == "local"
