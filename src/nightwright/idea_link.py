@@ -356,6 +356,7 @@ class AgreedRequest:
     updated_by: str
     spec: str | None
     raw_bytes: bytes
+    backlog_tip: str
 
 
 def _idea_public_id(task: Task) -> str:
@@ -422,7 +423,10 @@ def load_agreed_request(cfg, task: Task) -> AgreedRequest | None:
     repo = resolve_linked_repo(cfg, project)
 
     rel = f"{req_id}.md"
-    r = _git(repo, "show", f"{_BACKLOG_REF}:{rel}", check=False)
+    tip = _ref_tip(repo, _BACKLOG_REF)
+    if tip is None:
+        raise ValueError(f"{req_id} is not on refs/heads/nw-backlog")
+    r = _git(repo, "show", f"{tip}:{rel}", check=False)
     if r.returncode != 0:
         raise ValueError(f"{req_id} is not on refs/heads/nw-backlog")
     raw = r.stdout
@@ -506,7 +510,23 @@ def load_agreed_request(cfg, task: Task) -> AgreedRequest | None:
         updated_by=str(fm["updated_by"]),
         spec=spec_out,
         raw_bytes=raw,
+        backlog_tip=tip,
     )
+
+
+def agreed_after_backlog_move(
+    cfg, task: Task, agreed: AgreedRequest, spec_id: str, *, force: bool = False
+) -> AgreedRequest:
+    """Return `agreed`, or re-load when the backlog tip moved before cite (SPEC-0535)."""
+    cur = _ref_tip(agreed.repo, _BACKLOG_REF)
+    if cur == agreed.backlog_tip:
+        return agreed
+    fresh = load_agreed_request(cfg, task)
+    if fresh is None:
+        raise ValueError(f"{agreed.req_id} is not on refs/heads/nw-backlog")
+    if fresh.spec and fresh.spec != spec_id and not force:
+        raise ValueError(f"{fresh.req_id} already cites {fresh.spec}")
+    return fresh
 
 
 def preflight_cite(repo: Path) -> None:
@@ -516,9 +536,12 @@ def preflight_cite(repo: Path) -> None:
         raise ValueError("refusing to update nw-backlog while it is checked out")
 
 
-def will_cite(cfg, task: Task, specs_dir: Path) -> bool:
+def will_cite(
+    cfg, task: Task, specs_dir: Path, *, agreed: AgreedRequest | None = None
+) -> bool:
     """True when the spec directory is docs/specs of a worktree of the linked repo (SPEC-0535)."""
-    agreed = load_agreed_request(cfg, task)
+    if agreed is None:
+        agreed = load_agreed_request(cfg, task)
     if agreed is None:
         return False
     target = Path(specs_dir).resolve()

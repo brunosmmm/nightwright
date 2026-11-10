@@ -557,6 +557,7 @@ Revise and amend do not call `cite_spec`.
 - 2026-11-11: Adversarial review — cite status suffix, regression tests (loop 0).
 - 2026-11-10: Review loop 1 — atomic org rollback on `task.file`, cite tip pinning, campaign cite restore.
 - 2026-11-10: Implementer loop 1 — review test hardening, block-scalar refusal, `_link_idea` org snapshot restore.
+- 2026-11-10: Implementer loop 2 — backlog tip pinning, org drift rollback, campaign cite guards.
 
 ## Rollout / migration
 
@@ -659,6 +660,24 @@ unknown key.
   spec file and reservation in place and propagates the I/O error.
 - `cite_spec` accepts `expected_backlog_tip` from the in-lock `load_agreed_request`
   read; `_link_idea` restores `nw-backlog` when the org write after a cite fails.
+
+### Test record (2026-11-10 implementer loop 2)
+
+- `uv run pytest tests/test_spec_source_request.py -q` — 19 passed
+- `uv run pytest tests/test_agentic_spec_writer.py -q` — 104 passed
+- `python3 tools/test_tiers.py --check` — pass
+- `python3 tools/spec_lint.py --write-ledger` && `python3 tools/spec_lint.py` — pass
+- Full suite left to campaign gating.
+
+### As shipped (2026-11-10 implementer loop 2)
+
+- `AgreedRequest.backlog_tip` pins `git show <tip>:{req}.md` at load time;
+  `will_cite` accepts a pre-loaded `agreed`; cite paths pass that tip to
+  `cite_spec` and refresh via `agreed_after_backlog_move` when the ref moves.
+- Org rollback snapshots `task.file` only immediately before org writes; drift
+  failures do not restore a pre-cite snapshot.
+- `apply_add_idea` and `_prepare_spec_write` refuse when the public file already
+  cites a spec.
 
 ## Open questions
 

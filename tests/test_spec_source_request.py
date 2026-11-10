@@ -861,11 +861,46 @@ def test_cite_org_rollback_replace_failure_keeps_spec(tmp_path, monkeypatch):
         raise OSError("disk full")
 
     monkeypatch.setattr(W, "set_property", boom_sp)
-    with pytest.raises(OSError, match="replace failed"):
+    with pytest.raises(ValueError, match="restored refs/heads/nw-backlog"):
         S.scaffold_from_idea(cfg, idea.properties["ID"])
-    assert list(Path(cfg["specs_dir"]).glob("[0-9]*.md"))
+    assert not list(Path(cfg["specs_dir"]).glob("[0-9]*.md"))
     assert _backlog_tip(repo) == tip
-    assert len(SN.list_reservations(cfg)) == res_n + 1
+    assert len(SN.list_reservations(cfg)) == res_n
+
+
+def test_scaffold_refuses_in_lock_spec_race(tmp_path, monkeypatch):
+    repo = _init_repo(tmp_path / "proj")
+    cfg = _cfg_citing_repo(tmp_path, repo)
+    idea = _seed_idea(monkeypatch, cfg)
+    idea = _publish(monkeypatch, cfg, idea)
+    req = idea.properties["REQ"]
+    real_will = L.will_cite
+    real_cite = L.cite_spec
+    cite_calls: list = []
+    will_calls = [0]
+    race_tip: list = []
+
+    def will_cite_race(cfg, task, specs_dir, **kw):
+        will_calls[0] += 1
+        ag = kw.get("agreed")
+        if will_calls[0] >= 2 and ag is not None and ag.spec is None:
+            real_cite(cfg, L.load_agreed_request(cfg, task), "SPEC-0099")
+            race_tip.append(_backlog_tip(repo))
+        return real_will(cfg, task, specs_dir, agreed=ag)
+
+    def spy_cite(cfg, agreed, spec_id, **kw):
+        cite_calls.append(spec_id)
+        return real_cite(cfg, agreed, spec_id, **kw)
+
+    monkeypatch.setattr(L, "will_cite", will_cite_race)
+    monkeypatch.setattr(L, "cite_spec", spy_cite)
+    with pytest.raises(ValueError, match="already cites"):
+        S.scaffold_from_idea(cfg, idea.properties["ID"])
+    blob = _show_backlog(repo, f"{req}.md").decode()
+    assert "SPEC-0099" in blob
+    assert race_tip and _backlog_tip(repo) == race_tip[0]
+    assert cite_calls == []
+    assert not list(Path(cfg["specs_dir"]).glob("[0-9]*.md"))
 
 
 def test_cite_pins_backlog_tip_at_in_lock_load(tmp_path, monkeypatch):
@@ -1032,6 +1067,35 @@ def test_cite_preserves_quoted_status(tmp_path, monkeypatch):
     fm, _ = split_frontmatter(blob)
     assert fm["status"] == "yes"
     assert fm["spec"] == spec_id
+
+
+def test_load_agreed_request_rejects_block_scalar_created(tmp_path, monkeypatch):
+    repo = _init_repo(tmp_path / "proj")
+    cfg = _cfg_citing_repo(tmp_path, repo)
+    idea = _seed_idea(monkeypatch, cfg)
+    idea = _publish(monkeypatch, cfg, idea)
+    req = idea.properties["REQ"]
+    task = W.resolve_selector(cfg, idea.properties["ID"])
+    pub = _show_backlog(repo, f"{req}.md").decode()
+    fm, body = split_frontmatter(pub)
+    block_created = (
+        f"---\n"
+        f"id: {req}\n"
+        f'title: "{fm["title"]}"\n'
+        f"status: {fm['status']}\n"
+        f"created: |\n"
+        f"  {fm['created']}\n"
+        f'created_by: "{fm["created_by"]}"\n'
+        f"updated: {fm['updated']}\n"
+        f'updated_by: "{fm["updated_by"]}"\n'
+        f"---\n{body}"
+    )
+    L._publish_commit(repo, rel_path=f"{req}.md", body=block_created.encode(),
+                      message="block created", name="Test User", email="test@example.com")
+    with pytest.raises(ValueError, match="is not a request"):
+        L.load_agreed_request(cfg, task)
+    with pytest.raises(ValueError, match="is not a request"):
+        S.scaffold_from_idea(cfg, idea.properties["ID"])
 
 
 def test_load_agreed_request_rejects_block_scalar_status(tmp_path, monkeypatch):

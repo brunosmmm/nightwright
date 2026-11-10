@@ -2528,6 +2528,8 @@ def _prepare_spec_write(ctx: _Ctx, state: dict) -> dict:
             if task is not None:
                 agreed = IL.load_agreed_request(ctx.cfg, task)
                 if agreed:
+                    if agreed.spec:
+                        raise ValueError(f"{agreed.req_id} already cites {agreed.spec}")
                     idea = dict(state.get("idea") or {})
                     idea["source_request"] = agreed.req_id
                     idea["summary"] = agreed.summary
@@ -4786,26 +4788,39 @@ def _link_idea(cfg, state: dict, spec_id: str) -> str | None:
                 return None
             if agreed.spec and agreed.spec != spec_id:
                 return f"{agreed.req_id} already cites {agreed.spec}"
-            org_snapshot = Path(task.file).read_bytes()
             worktree = Path((state.get("repo") or {}).get("worktree") or ".")
-            citing = IL.will_cite(cfg, task, worktree / "docs" / "specs")
+            citing = IL.will_cite(cfg, task, worktree / "docs" / "specs", agreed=agreed)
             cite_sha = cite_old = None
             if agreed.spec != spec_id and citing:
-                cite_backlog_tip = IL.backlog_ref_tip(agreed.repo)
+                agreed = IL.agreed_after_backlog_move(cfg, task, agreed, spec_id)
                 cite_sha, cite_old = IL.cite_spec(
-                    cfg, agreed, spec_id, expected_backlog_tip=cite_backlog_tip)
+                    cfg, agreed, spec_id, expected_backlog_tip=agreed.backlog_tip)
+            org_snapshot = Path(task.file).read_bytes()
+            property_written = False
             try:
-                _set_spec_specced(task)
+                if (task.properties.get("SPEC") or "").strip() != spec_id:
+                    OW.set_property(cfg, task, "SPEC", spec_id)
+                    property_written = True
+                    task = _idea_task(cfg, _idea_id_of(state))
+                if task is not None and task.state != "SPECCED":
+                    OW.set_state(cfg, task, "SPECCED")
             except (ValueError, OSError) as org_err:
+                drift = isinstance(org_err, ValueError) and str(org_err).startswith("drift:")
                 if cite_sha:
                     try:
                         IL.restore_cite_backlog_tip_or_bail(
                             agreed.repo, spec_id=spec_id, req_id=agreed.req_id,
                             new_sha=cite_sha, old_tip=cite_old)
                     except ValueError as restore_err:
-                        if "restored refs/heads/nw-backlog" in str(restore_err):
+                        if (
+                            "restored refs/heads/nw-backlog" in str(restore_err)
+                            and property_written
+                            and not drift
+                        ):
                             OW._atomic_replace_bytes(task.file, org_snapshot)
                         return str(restore_err)
+                if property_written and not drift:
+                    OW._atomic_replace_bytes(task.file, org_snapshot)
                 return str(org_err) or type(org_err).__name__
     except (ValueError, OSError, subprocess.CalledProcessError) as e:
         return str(e) or type(e).__name__
@@ -9795,6 +9810,8 @@ def apply_add_idea(cfg, plan: dict, *, by="human") -> dict:
             raise ValueError(f"unknown idea {idea_id}")
         from .. import idea_link as IL
         agreed = IL.load_agreed_request(cfg, task)
+        if agreed and agreed.spec:
+            raise ValueError(f"{agreed.req_id} already cites {agreed.spec}")
         idea = EX.idea_show_payload(cfg, task)
         if agreed:
             idea["source_request"] = agreed.req_id

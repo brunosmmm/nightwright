@@ -1508,6 +1508,22 @@ def test_queue_add_refuses_a_drifted_pair(tmp_path, monkeypatch):
     assert "CAMPAIGN" not in idea(cfg, iid).properties
 
 
+def test_apply_add_idea_refuses_when_request_already_cites(tmp_path, monkeypatch):
+    from nightwright import idea_link as IL
+
+    repo = make_project(tmp_path)
+    cfg = make_cfg(tmp_path, repo, script(tmp_path, []))
+    monkeypatch.setattr("nightwright.cli.load_config", lambda: cfg)
+    iid = capture(cfg)
+    _publish_for_campaign(cfg, monkeypatch, repo, iid)
+    plan = Q.plan_add_idea(cfg, iid)
+    agreed = IL.load_agreed_request(cfg, idea(cfg, iid))
+    IL.cite_spec(cfg, agreed, "SPEC-0099")
+    with pytest.raises(ValueError, match="already cites"):
+        Q.apply_add_idea(cfg, plan)
+    assert "CAMPAIGN" not in idea(cfg, iid).properties
+
+
 def test_queue_add_refuses_when_the_request_already_cites(tmp_path, monkeypatch):
     from nightwright import idea_link as IL
 

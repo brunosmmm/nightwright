@@ -174,7 +174,7 @@ def scaffold_from_idea(cfg, selector, *, epic=False, title=None, force=False):
                  f"Full text is in the spec's Context.")
     agreed = IL.load_agreed_request(cfg, task)
     specs_dir = _specs_dir(cfg)
-    citing = IL.will_cite(cfg, task, specs_dir) if agreed else False
+    citing = IL.will_cite(cfg, task, specs_dir, agreed=agreed) if agreed else False
     if agreed and citing:
         if agreed.spec and not force:
             raise ValueError(f"{agreed.req_id} already cites {agreed.spec}")
@@ -191,25 +191,29 @@ def scaffold_from_idea(cfg, selector, *, epic=False, title=None, force=False):
         with W.org_write_lock(cfg):
             task = W.resolve_selector(cfg, selector)
             agreed = IL.load_agreed_request(cfg, task)
-            citing = IL.will_cite(cfg, task, specs_dir) if agreed else False
+            citing = IL.will_cite(cfg, task, specs_dir, agreed=agreed) if agreed else False
             if agreed and citing and agreed.spec and agreed.spec != spec_id and not force:
                 raise ValueError(f"{agreed.req_id} already cites {agreed.spec}")
-            org_snapshot = Path(task.file).read_bytes()
-            cite_backlog_tip = IL.backlog_ref_tip(agreed.repo) if agreed and citing else None
             spec_path, text = _build_scaffold_text(
                 cfg, task, rec, specs_dir, epic, title, agreed)
             specs_dir.mkdir(parents=True, exist_ok=True)
             spec_path.write_text(text)
 
+            def _org_drift(err: BaseException) -> bool:
+                return isinstance(err, ValueError) and str(err).startswith("drift:")
+
             def _rollback_scaffold_after_failed_org(
                 e: BaseException,
                 *,
                 backlog_restore_err: ValueError | None = None,
+                property_written: bool = False,
             ) -> None:
                 nonlocal number_released
+                restore_org = property_written and not _org_drift(e)
                 if backlog_restore_err is not None:
                     if "restored refs/heads/nw-backlog" in str(backlog_restore_err):
-                        W._atomic_replace_bytes(task.file, org_snapshot)
+                        if restore_org:
+                            W._atomic_replace_bytes(task.file, org_snapshot)
                         if spec_path and spec_path.is_file():
                             spec_path.unlink()
                         if not number_released:
@@ -218,16 +222,21 @@ def scaffold_from_idea(cfg, selector, *, epic=False, title=None, force=False):
                     if isinstance(e, KeyboardInterrupt | SystemExit):
                         raise e
                     raise backlog_restore_err from e
-                W._atomic_replace_bytes(task.file, org_snapshot)
+                if restore_org:
+                    W._atomic_replace_bytes(task.file, org_snapshot)
                 if spec_path and spec_path.is_file():
                     spec_path.unlink()
                 raise e
 
             if agreed and citing:
+                agreed = IL.agreed_after_backlog_move(cfg, task, agreed, spec_id, force=force)
                 cite_sha, cite_old = IL.cite_spec(
-                    cfg, agreed, spec_id, expected_backlog_tip=cite_backlog_tip)
+                    cfg, agreed, spec_id, expected_backlog_tip=agreed.backlog_tip)
+            org_snapshot = Path(task.file).read_bytes()
+            property_written = False
             try:
                 W.set_property(cfg, task, "SPEC", spec_id)
+                property_written = True
                 W.set_state(cfg, task, "SPECCED")
             except BaseException as e:
                 if cite_sha and agreed:
@@ -237,8 +246,8 @@ def scaffold_from_idea(cfg, selector, *, epic=False, title=None, force=False):
                             new_sha=cite_sha, old_tip=cite_old)
                     except ValueError as restore_err:
                         _rollback_scaffold_after_failed_org(
-                            e, backlog_restore_err=restore_err)
-                _rollback_scaffold_after_failed_org(e)
+                            e, backlog_restore_err=restore_err, property_written=property_written)
+                _rollback_scaffold_after_failed_org(e, property_written=property_written)
         return spec_path, spec_id
     except BaseException as err:
         lost = "no longer points at" in str(err) or "restore failed" in str(err)
