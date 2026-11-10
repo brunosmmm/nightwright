@@ -521,6 +521,20 @@ escape on spec review, interrupted restore park, slot adoption, and partial fan-
 `uv run pytest tests/test_backend_preflight_extend.py tests/test_runner_selfheal.py tests/test_remote_persona_limits.py::test_spec_review_is_neither_counted_nor_gated -q` — 60 passed.
 `python3 tools/spec_lint.py --write-ledger` — ok. Full suite left to gating.
 
+### Test record (2026-11-10, loop 2 campaign implementer)
+
+Conformance fixes: `backend_fault` skips broken personas and still surfaces sibling Pi/Cursor
+faults; `_prepare_reviews` releases admit persona-cap charges on a local prepare hold;
+`_do_write_spec` keeps `res.error` unset when rollback fails on an environment-fault interrupt.
+`uv run pytest tests/test_backend_preflight_extend.py tests/test_runner_selfheal.py tests/test_remote_persona_limits.py::test_spec_review_is_neither_counted_nor_gated -q` — 78 passed.
+`python3 tools/test_tiers.py --check` — ok. `python3 tools/spec_lint.py --write-ledger` — ok.
+Full suite left to gating.
+
+### As shipped (2026-11-10, loop 2 campaign implementer)
+
+`backend_fault` skips a persona whose `spawn_backend` raises `ValueError` or `OSError` and
+continues checking siblings rather than returning `None` immediately.
+
 - **Regression guard:** `python3 tools/affected_tests.py --run uv run pytest -q` on the
   touched files. `tests/test_runner_selfheal.py` (the SPEC-0484 cursor hold, spawn, and
   startup tests) and `tests/test_remote_persona_limits.py::test_spec_review_is_neither_counted_nor_gated`

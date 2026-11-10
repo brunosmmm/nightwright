@@ -2748,7 +2748,7 @@ def _do_write_spec(ctx: _Ctx, state: dict, step: Step, run_id: str, req,
                 roll_back()
             except (GitError, ValueError):
                 pass                            # roll_back marked rollback_failed
-        if w["rollback_failed"]:
+        if w["rollback_failed"] and not env_interrupt:
             res.error = "rollback failed; clean the worktree, then resume"
     return res
 
@@ -6927,6 +6927,7 @@ def _prepare_reviews(ctx: _Ctx, pgate: PG.Gate, st: dict, step: Step, profile: d
         sub = Step("review", persona=persona, personas=step.personas)
         if _hold_local_backend_before_prepare(pgate, st, persona, sub):
             pgate.release_campaign_reservations(st["id"], step.personas)
+            pgate.release_admit_charge(st["id"])
             pgate._hold(st["id"], "backend_unavailable")
             return None
     group = _ReviewGroup(st, step)

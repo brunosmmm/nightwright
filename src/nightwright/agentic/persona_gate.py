@@ -348,6 +348,7 @@ class Gate:
         self.holds: dict = {}
         self._backend: dict = {}               # SPEC-0484/0486: (kind, providers) -> error | None
         self._slot_reservations: dict = {}     # (campaign, persona) -> worker slot probe hold
+        self._admit_units: dict[str, int] = {}   # campaign -> persona-cap units charged at admit
 
     def backend_fault(self, state: dict, personas=(), *, remote_ok: bool = True,
                       step=None) -> str | None:
@@ -361,7 +362,7 @@ class Gate:
                 try:
                     kind, providers = BP.spawn_backend(self.cfg, state, persona)
                 except (ValueError, OSError):
-                    return None
+                    continue
                 if kind in ("cursor", "pi"):
                     checks.append((kind, list(providers or ())))
         else:
@@ -398,7 +399,7 @@ class Gate:
                         try:
                             pk, providers = BP.spawn_backend(self.cfg, state, persona)
                         except (ValueError, OSError):
-                            return fault
+                            continue
                         key = (pk, tuple(providers or ()))
                         if pk in ("cursor", "pi") and self._backend.get(key) is not None:
                             failing.append(persona)
@@ -423,6 +424,12 @@ class Gate:
             except Exception:                  # noqa: BLE001
                 pass
         return fault
+
+    def release_admit_charge(self, cid: str) -> None:
+        """Return persona-cap units admit charged when prepare will not run the step (SPEC-0486)."""
+        units = self._admit_units.pop(cid, 0)
+        if units:
+            self.taken = max(0, self.taken - units)
 
     def release_campaign_reservations(self, cid: str, personas=()) -> None:
         """Drop probe slot holds for this campaign when admit or prepare will not run the step."""
@@ -470,7 +477,9 @@ class Gate:
             self.release_campaign_reservations(cid, personas[room:])
             step = replace(step, personas=personas[:room], held=personas[room:])
             self._hold(cid, "persona_cap", personas[room:])
-        self.taken += max(1, min(len(personas), room))
+        units = max(1, min(len(personas), room))
+        self.taken += units
+        self._admit_units[cid] = units
         return step
 
     def release_slot_reservations(self) -> None:

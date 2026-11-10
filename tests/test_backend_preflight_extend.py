@@ -1259,7 +1259,74 @@ def test_backend_fault_skips_broken_persona_checks_rest(tmp_path, monkeypatch):
     cfg = {"data_dir": str(tmp_path / "d"), "agentic": {"runner": "pi"}}
     st = {"id": "c1", "state": "IMPLEMENTING"}
     err = PG.Gate(cfg, ["c1"]).backend_fault(st, ("broken_reviewer", "adversarial_reviewer"))
-    assert err is None
+    assert err == "no credential for provider openai"
+
+
+def test_review_fanout_spawn_skip_at_cap_one_does_not_block_impl(tmp_path, monkeypatch):
+    _pi_ok_env(monkeypatch)
+    _pi_check_fail_openai(monkeypatch)
+
+    def spawn(c, s, p):
+        if p == "conformance_reviewer":
+            raise ValueError("unknown model set")
+        if p == "adversarial_reviewer":
+            return ("pi", ["openai"])
+        return ("claude", [])
+
+    monkeypatch.setattr(BP, "spawn_backend", spawn)
+    cfg = {"data_dir": str(tmp_path / "d"), "agentic": {"runner": "pi", "workers": {"max_personas": 1}}}
+    review_st = {"id": "c_review", "state": "REVIEWING", "project": "Meta-Tools", "profile": "balanced"}
+    impl_st = {"id": "c_impl", "state": "IMPLEMENTING", "project": "Meta-Tools", "profile": "balanced"}
+    g = PG.Gate(cfg, ["c_review", "c_impl"])
+    review_step = Q.Step("review", personas=("conformance_reviewer", "adversarial_reviewer"))
+    impl_step = Q.Step("implement", persona="implementer")
+    assert g.admit(review_st, review_step) is None
+    assert g.holds["c_review"]["held_by"] == "backend_unavailable"
+    assert g.taken == 0
+    assert g.admit(impl_st, impl_step) is impl_step
+    assert g.holds.get("c_impl", {}).get("held_by") != "persona_cap"
+
+
+def test_review_fanout_spawn_skip_prepare_hold_frees_persona_cap(tmp_path, monkeypatch):
+    from nightwright.agentic import remote_personas as RPS
+
+    _pi_ok_env(monkeypatch)
+    _pi_check_fail_openai(monkeypatch)
+
+    def spawn(c, s, p):
+        if p == "conformance_reviewer":
+            raise ValueError("unknown model set")
+        return ("pi", ["openai"])
+
+    monkeypatch.setattr(BP, "spawn_backend", spawn)
+    cfg = {"data_dir": str(tmp_path / "d"), "agentic": {"runner": "pi", "workers": {"max_personas": 2}}}
+    worker = {"name": "w", "enabled": True, "kinds": ["persona"], "persona_slots": 2}
+    monkeypatch.setattr(RPS, "persona_workers", lambda c, s: [worker])
+    monkeypatch.setattr(RPS, "ineligible", lambda *a, **k: None)
+    monkeypatch.setattr(RPS, "acquire_slot", lambda c, w: (os.open(os.devnull, os.O_RDONLY), 0))
+    monkeypatch.setattr(RPS, "busy", lambda *a, **k: 0)
+    monkeypatch.setattr(PG, "order", lambda c, s, names: names)
+    monkeypatch.setattr(PG, "failing", lambda *a, **k: False)
+    monkeypatch.setattr(RPS, "_probe_request",
+                        lambda c, s, p, k: SimpleNamespace(persona=p))
+    monkeypatch.setattr(RPS, "can_dispatch", lambda *a, **k: True)
+    review_st = {"id": "c_review", "state": "REVIEWING", "project": "Meta-Tools", "profile": "balanced"}
+    impl_st = {"id": "c_impl", "state": "IMPLEMENTING", "project": "Meta-Tools", "profile": "balanced"}
+    g = PG.Gate(cfg, ["c_review", "c_impl"])
+    review_step = Q.Step("review", personas=("conformance_reviewer", "adversarial_reviewer"))
+    impl_step = Q.Step("implement", persona="implementer")
+    admitted = g.admit(review_st, review_step)
+    assert admitted is review_step
+    assert g.taken == 2
+    profile = {"reviewers": ["conformance_reviewer", "adversarial_reviewer"]}
+    ctx = SimpleNamespace(cfg=cfg, stop=threading.Event(), profile=lambda s: profile,
+                          project=lambda s: {"_root": str(tmp_path)})
+    report = Q.TickReport()
+    assert Q._prepare_reviews(ctx, g, review_st, review_step, profile, [], report) is None
+    assert g.holds["c_review"]["held_by"] == "backend_unavailable"
+    assert g.taken == 0
+    assert g.admit(impl_st, impl_step) is impl_step
+    assert g.holds.get("c_impl", {}).get("held_by") != "persona_cap"
 
 
 def test_backend_fault_oserror_returns_none(tmp_path, monkeypatch):
@@ -1720,7 +1787,8 @@ def test_do_write_spec_converts_startup_fault(tmp_path, monkeypatch):
 
     ctx.runner = fail_text("no credential for provider openai")()
     ctx.runner_for = lambda s, kind=None: fail_text("no credential for provider openai")()
-    monkeypatch.setattr(SW, "rollback", lambda *a, **k: (_ for _ in ()).throw(GitError("rollback")))
+    monkeypatch.setattr(SW, "rollback",
+                        lambda *a, **k: (_ for _ in ()).throw(GitError(["rollback"], 1, "rollback failed")))
 
     def run(self, req, hooks=None):
         return RunResult(1, False, False, 0.1, True, None,
