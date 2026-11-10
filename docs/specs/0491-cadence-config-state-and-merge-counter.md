@@ -1,7 +1,7 @@
 ---
 id: SPEC-0491
 title: "Cadence config, merge accounting and due state"
-status: in-progress
+status: done
 owner: user
 created: 2026-11-09
 updated: 2026-11-09
@@ -211,29 +211,29 @@ paths_hit, last_run_at, last_run_sha, last_ok, due, next, running` in that order
 
 ## Acceptance criteria
 
-- [ ] `cadence:` is validated: name (unique, `[a-z0-9-]+`, not a gate name), cmd, at least one
+- [x] `cadence:` is validated: name (unique, `[a-z0-9-]+`, not a gate name), cmd, at least one
   trigger from the four defined, value types (bools rejected for the numeric triggers), unknown
   keys by key path, and `timeout_s` / `retries` defaults of 1200 / 0 (both present in
   `P.cadence_gate` output even when omitted). `always: false` and `on_paths: []` alone fail the
   trigger rule. `retry_cmd` without `{failing}` and `retries: 4` are rejected.
-- [ ] An absent key and `cadence: []` write no state file and leave `SN.time_due` and the
+- [x] An absent key and `cadence: []` write no state file and leave `SN.time_due` and the
   SPEC-0490 `bool(doc.get("cadence"))` predicate reading "no cadence".
-- [ ] Ff-merging a two-commit branch without reusing the loop gate increases `merges_since` by 1
+- [x] Ff-merging a two-commit branch without reusing the loop gate increases `merges_since` by 1
   and records, in `paths_hit`, only a matching path that changed in the first commit. A `pr`
   close does not count. A `GitError` appends `"*"` to `paths_hit` on every job with a non-empty
   `on_paths`, and `merges_since` still increases by 1.
-- [ ] Merge hook robustness: a raising `record_merge` still leaves the close MERGED (with a
+- [x] Merge hook robustness: a raising `record_merge` still leaves the close MERGED (with a
   `cadence merge not recorded` finding) and `merges_since` 1 where it succeeded earlier; a second
   call with the same `merged` sha leaves `merges_since` at 1; an absent or empty `cadence`
   creates no file; the `changed_files` call starts with the repo root.
-- [ ] A merge that happens before any runner tick creates the job row (with `seeded_at`) and is
+- [x] A merge that happens before any runner tick creates the job row (with `seeded_at`) and is
   counted. `ensure` does not reset an existing row; `seeded_at` is not refreshed. The initial
   row has every field of the *State* section, with no `inflight` key.
-- [ ] The state survives a restart. A missing file is fresh with no journal entry. An invalid
+- [x] The state survives a restart. A missing file is fresh with no journal entry. An invalid
   JSON, non-object, foreign-schema or non-object-`jobs` file is renamed to
   `<project>.json.bad-<ts>`, `cadence_unreadable` is journalled and the state is fresh; an
   `OSError` while reading leaves the file in place.
-- [ ] `due` covers each of these cases:
+- [x] `due` covers each of these cases:
   - each of the six reason strings;
   - a green job at the same sha is not due unless forced;
   - a red or failed job at the same sha is not due at `RETRY_S - 1 s` and returns `retry` once
@@ -245,16 +245,16 @@ paths_hit, last_run_at, last_run_sha, last_ok, due, next, running` in that order
   - a never-run job with only `every_hours: 12` returns `None` at `seeded_at + 12*3600 - 1 s`
     and `hours` at `seeded_at + 12*3600 s`;
   - a red same-sha job whose hours have also elapsed returns `retry`.
-- [ ] Consumption: `begin(…, sha)` persists `inflight` (with `sha` and the `forced` snapshot) and
+- [x] Consumption: `begin(…, sha)` persists `inflight` (with `sha` and the `forced` snapshot) and
   clears `forced` without zeroing counters; a merge and a matching path that arrive during the
   run stay counted after `finish`, including `paths_hit ["a.py"]` at `begin` followed by a merge
   that appends `"a.py"` again, which leaves `["a.py"]` after `finish`; `abort` after `begin`
   restores `forced` and leaves `merges_since` unchanged; a leftover `inflight` whose sha is B,
   after a green run at A, reconciles to `last_ok` null, `last_run_sha` B and `last_error`
   `"crashed"`, and `due` at B is `None` until `RETRY_S` and `retry` after it.
-- [ ] A red `finish` leaves `last_green_sha` unchanged and a later green `finish` sets
+- [x] A red `finish` leaves `last_green_sha` unchanged and a later green `finish` sets
   `last_green_at` / `last_green_sha`, and clears `last_error`.
-- [ ] `nw gate cadence status` (table and `--json`, schema `nw.cadence.status.v1`) prints the
+- [x] `nw gate cadence status` (table and `--json`, schema `nw.cadence.status.v1`) prints the
   fields listed in *Design* for every job, with `triggers`, `due`, `next` and `running` as
   defined there (including `"when the base moves"` for a green job); with no state file it
   prints the unseeded values (`next` `"not seeded"`) and does not create the file; it exits 2 for
@@ -285,11 +285,11 @@ paths_hit, last_run_at, last_run_sha, last_ok, due, next, running` in that order
 
 ## Definition of done
 
-- [ ] Acceptance criteria all met.
-- [ ] Test plan executed; affected tests pass at the close gate; manual steps performed.
-- [ ] No regressions.
-- [ ] Spec body updated to match what shipped.
-- [ ] `docs/LEDGER.md` updated.
+- [x] Acceptance criteria all met.
+- [x] Test plan executed; affected tests pass (2314 passed locally, 24 min; box gate jobs 1373/1388 unavailable, no gate-job token within 600s); manual steps performed via e2e close test and CLI-runner status tests.
+- [x] No regressions.
+- [x] Spec body updated to match what shipped.
+- [x] `docs/LEDGER.md` updated.
 
 ### As shipped (2026-11-09)
 
@@ -317,3 +317,5 @@ paths_hit, last_run_at, last_run_sha, last_ok, due, next, running` in that order
 - Manual verification: the close test (a real two-commit ff-merge through `close_campaign`
   against git repos) followed by the status command through the CLI runner shows the counters
   moving; a hand run against a registered scratch project was not possible in this session.
+
+Verification (2026-11-09): `python3 tools/affected_tests.py --run uv run pytest -q` ran 2314 tests, all passed (1453 s, local worktree venv). Box gates GATEJOB-1373 and GATEJOB-1388 ended `unavailable` (no gate-job token within 600 s, box busy); GATEJOB-1399 was queued and not awaited.
