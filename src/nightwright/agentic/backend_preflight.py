@@ -242,13 +242,18 @@ def _check_pi(environ, providers: list[str] | None) -> str | None:
     return None
 
 
+def env_fault_text(text: str) -> str | None:
+    """Whether `text` names a backend startup fault (including a PreflightHeldRunner wrapper)."""
+    m = _ENV_FAULT_RE.search(str(text or ""))
+    return m.group(0) if m else None
+
+
 def env_fault(result) -> str | None:
     """The environment fault a finished, failed persona run reports, else None."""
     if result is None or not getattr(result, "is_error", False) \
             or getattr(result, "interrupted", False):
         return None
-    m = _ENV_FAULT_RE.search(str(getattr(result, "result_text", "") or ""))
-    return m.group(0) if m else None
+    return env_fault_text(getattr(result, "result_text", "") or "")
 
 
 def fault_kind(error: str) -> str:

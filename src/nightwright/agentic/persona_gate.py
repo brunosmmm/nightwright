@@ -393,6 +393,24 @@ class Gate:
         if remote_ok:
             try:
                 from . import remote_personas as RPS
+                if step is not None and step.kind == "review" and step.personas:
+                    failing = []
+                    for persona in step.personas:
+                        try:
+                            pk, providers = BP.spawn_backend(self.cfg, state, persona)
+                        except (ValueError, OSError):
+                            return fault
+                        key = (pk, tuple(providers or ()))
+                        if pk in ("cursor", "pi") and self._backend.get(key) is not None:
+                            failing.append(persona)
+                    if failing:
+                        for persona in failing:
+                            req = RPS._probe_request(self.cfg, state, persona, step.kind)
+                            if req is None or not RPS.can_dispatch(
+                                    self.cfg, state, step.kind, req,
+                                    reservations=self._slot_reservations):
+                                return fault
+                        return None
                 if step is not None and RPS.can_dispatch_step(
                         self.cfg, state, step, reservations=self._slot_reservations):
                     return None
@@ -435,11 +453,14 @@ class Gate:
         self.taken += max(1, min(len(personas), room))
         return step
 
+    def release_slot_reservations(self) -> None:
+        """Close probe slot fds after `dispatch` has adopted them (SPEC-0486)."""
+        from . import remote_personas as RPS
+        RPS.release_reservations(self._slot_reservations)
+
     def flush(self) -> None:
         """Write the tick's holds, stamped `at` (the tick's time): rewritten on every tick that
         holds something, so `read_holds` can tell a live runner's holds from a dead one's."""
-        from . import remote_personas as RPS
-        RPS.release_reservations(self._slot_reservations)
         p = holds_path(self.cfg)
         old = _read_json(p).get("holds") or {}
         if not self.holds and not old:

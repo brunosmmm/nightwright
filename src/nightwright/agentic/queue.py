@@ -2837,6 +2837,8 @@ def _do_spec_review(ctx: _Ctx, state: dict, step: Step, run_id: str, req,
                     BP.note_fault(ctx.cfg, BP.fault_kind(fault), fault, where="run")
             elif res.run_result is not None and res.run_result.interrupted:
                 res.interrupted = True
+                if BP.env_fault_text(getattr(res.run_result, "result_text", "") or ""):
+                    env_interrupt = True
         if not res.interrupted:
             res.interrupted = ctx.stop.is_set()
         if git.rev_parse(worktree) != head or _spec_sha(spec_file) != sr["sha"] \
@@ -3592,8 +3594,7 @@ def _apply_step(ctx: _Ctx, state: dict, res: StepResult) -> dict:
             "detail": res.error if res.error.startswith("profile: ")
             else f"project config: {res.error}",
             "resume_to": resume if resume in RESUMABLE_STATES else "IMPLEMENTING"})
-    if res.error and kind != "close" and not (
-            kind == "spec_review" and res.interrupted and res.run_result is not None):
+    if res.error and kind != "close":
         reason = {"open": "open_failed", "write_spec": "spec_write_failed",
                   "spec_review": "spec_review_exhausted",
                   "finalize_split": "spec_write_failed"}.get(kind, "open_failed")
@@ -6633,6 +6634,10 @@ def _tick(cfg, ctx: _Ctx, pool: StepPool, report: TickReport, *, admit: bool, ow
 
     # 3. agent steps: submitted; a single-shot tick waits for its own and applies them now
     _submit(ctx, pool, report, pending_agent, groups)
+    try:
+        pgate.release_slot_reservations()
+    except Exception:                          # noqa: BLE001
+        pass
     ctx.progress()
     if not own and not draining:
         try:                                # SPEC-0359: the full suite on base, when due
@@ -6875,15 +6880,16 @@ def _prepare_reviews(ctx: _Ctx, pgate: PG.Gate, st: dict, step: Step, profile: d
     Returns the `_ReviewGroup` to apply when its flight is harvested, or None."""
     # the triager (SPEC-0206) never takes the one-reviewer campaign-wide error path
     multi = len(reviewers_of(profile)) > 1 or step.persona == "review_triager"
+    for persona in step.personas:
+        sub = Step("review", persona=persona, personas=step.personas)
+        if _hold_local_backend_before_prepare(pgate, st, persona, sub):
+            pgate._hold(st["id"], "backend_unavailable")
+            return None
     group = _ReviewGroup(st, step)
     for persona in step.personas:
         if ctx.stop.is_set():
             break
         sub = Step("review", persona=persona, personas=step.personas)
-        if _hold_local_backend_before_prepare(pgate, st, persona, sub):
-            if not multi:
-                return None
-            continue
         try:
             run_id, req, budget = _prepare_run(ctx, st, persona, step)
         except (ValueError, OSError) as e:
