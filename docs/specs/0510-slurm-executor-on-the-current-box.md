@@ -209,18 +209,22 @@ by SPEC-0508 and SPEC-0511..0515.
 
 ## Acceptance criteria
 
-- [ ] The verification checklist was run on the box and its output is recorded in As shipped.
+- [x] The verification checklist was run on the box and its output is recorded in As shipped.
 - [ ] `nw worker slurm-check --json` passes on the box as the `nw` user (submit, cgroup cpus,
-      memory.max, OOM enforcement).
+      memory.max, OOM enforcement). *Passes as `bruno` from this branch (As shipped); as `nw`
+      it needs the deployed build (pending).*
 - [ ] With `executor: slurm`, a campaign gate, a persona run and an `nw gate run` job each
       appear in `squeue -u nw` with name = nw job id, the requested cpus/mem, and finish with
-      the same frames and gate records as under `local`.
-- [ ] A PENDING job's reason reaches the coordinator as `slot_wait.reason`.
-- [ ] A job that ends in Slurm without `result.json` yields one `error` frame with
+      the same frames and gate records as under `local`. *Worker side proven as `bruno` with the
+      opt-in config (async gate, sync `gate-job`); the `nw`-user campaign gate / persona /
+      `nw gate run` runs need the deployed build and the box opted in (pending).*
+- [x] A PENDING job's reason reaches the coordinator as `slot_wait.reason`.
+- [x] A job that ends in Slurm without `result.json` yields one `error` frame with
       `stage: "slurm"` and `slurm_state`.
 - [ ] `nw gate cancel` / campaign cancel ends the Slurm job (`scancel`), and the gate reports
-      interrupted.
-- [ ] Inside the job, `NW_GATE_CPUS` equals `SLURM_CPUS_PER_TASK`.
+      interrupted. *`nw worker cancel` (what both call) proven on the real box; the coordinator
+      run through the `nw` user is pending with the deploy.*
+- [x] Inside the job, `NW_GATE_CPUS` equals `SLURM_CPUS_PER_TASK`.
 
 ## Test plan
 
@@ -238,6 +242,88 @@ by SPEC-0508 and SPEC-0511..0515.
   a running job and confirm `scontrol show job <id>` says CANCELLED. Record outputs in As shipped.
 - **Regression guard:** affected tests of `worker_job.py`, `worker.py`, `remote_gates.py`,
   `gate_jobs.py`; the local executor's tests run unchanged.
+
+## As shipped
+
+**Code.** `src/nightwright/agentic/executor_slurm.py` (`SlurmExecutor`, `limits`, `lookup`,
+`sbatch_argv`, the sync `gate_job`/`follow`, `slurm_check`, `remote_check`), registered as
+`slurm` in `executors.py`. `worker_job.py`: `_unclaim` passes `retryable`; `run_job` turns
+SIGTERM into a cancel when the executor says `term_cancels`; `main` inside a Slurm job neither
+re-execs into its own session nor fails on a briefly held `job.lock` (waits up to 60 s).
+`worker.py`: `slurm-check [--json]` in the forced-command grammar. `cli_worker.py`:
+`nw worker slurm-check`; `cli_workers.py`: `nw workers check NAME --slurm`. `gates.py`:
+`GateRun.wait_reason` / payload `wait_reason`; `remote_gates.py`: the last `slot_wait.reason`
+on the job record and the gate record (async and sync); `workers.runs_slurm` +
+`queue.py`: no `gate_exclusive` after a timeout on a Slurm worker. Tests:
+`tests/slurm_fake.py`, `tests/test_executor_slurm.py`, `tests/test_worker_slurm_check.py`,
+fixture `tests/fixtures/slurm/scontrol_show_partition.json` (the box's real output).
+
+**Deviations from the accepted Design** (all recorded in Design above): no `-p nw` (the box
+has `nw-campaign/nw-gatejob/nw-persona/nw-bulk`; `partition: null` = Slurm's default,
+nw-gatejob; SPEC-0511 maps job classes to partitions); requests clamped to partition/node
+limits (steward input); a running job is cancelled with a TERM to the batch step plus a
+`scancel` backstop, so a real cancel ends `COMPLETED` with `done` interrupted, not
+`CANCELLED` (a pending one is `CANCELLED`); `sacct` is tried whenever the job is unknown;
+no bulk `squeue -u` join for `jobs`; the gate record's worker wait is the Slurm queue time;
+check 7 walks the cgroup tree (26.05 has no `job_<id>` dir).
+
+**Verification checklist (box, 2026-11-09/10, as bruno):**
+1. `sinfo --version` -> `slurm 26.05.5`.
+2. `systemctl is-active munge slurmctld slurmd` -> `active` x3; `is-enabled` -> `enabled` x3.
+3. `sinfo -N -o '%N %c %m %T'` -> `morais-Desktop 12 31955 idle` (once per partition, 4 partitions).
+4. `scontrol show config`: `AuthType=auth/munge`, `SelectType=select/cons_tres`,
+   `SelectTypeParameters=CR_CORE_MEMORY`, `ProctrackType=proctrack/cgroup`,
+   `TaskPlugin=task/cgroup,task/affinity`, `JobAcctGatherType=jobacct_gather/cgroup`,
+   `AccountingStorageType=(null)`, `PriorityType=priority/multifactor`,
+   `PreemptType=preempt/partition_prio` (`PreemptMode=REQUEUE`), `MinJobAge=300 sec`,
+   `KillWait=30 sec`, `SchedulerParameters=enable_user_top`, `Licenses=jerome_target:3`;
+   partitions nw-campaign (tier 4) / nw-gatejob (3, Default, MaxCPUsPerNode=8) / nw-persona (2,
+   MaxCPUsPerNode=4) / nw-bulk (1, PreemptMode=REQUEUE), each `MaxTime=04:00:00`.
+5. `scontrol show node`: `CfgTRES=cpu=10,mem=31955M,billing=10`, `CoreSpecCount=1
+   CPUSpecList=10-11 MemSpecLimit=6000` (cpu=10 usable, not 12: one core kept for the desktop).
+6. `/sys/fs/cgroup/cgroup.controllers` -> `cpuset cpu io memory hugetlb pids rdma misc dmem`.
+7. job 11 (`-c 2 --mem=1G`): `nproc` 2; cgroup
+   `/system.slice/slurmstepd.scope/s0HNM71X1XSR00/step_batch/user/task_0` (`memory.max` max),
+   `.../step_batch/user` and the job level `1073741824`; `SLURM_CPUS_PER_TASK=2
+   SLURM_MEM_PER_NODE=1024`. Through `slurm-check`: job 19 COMPLETED, output `2 / 1073741824`.
+8. job 12 (`--mem=200M`, 400 MiB bytearray): `OUT_OF_MEMORY`, reason `OutOfMemory`, "Detected 1
+   oom_kill event in StepId=12.batch". Through `slurm-check`: job 20 `OUT_OF_MEMORY`.
+9. `sacct -j 9` -> exit 1 "Slurm accounting storage is disabled" (SPEC-0514 needs slurmdbd).
+10. `scontrol show licenses` -> `LicenseName=jerome_target Total=3 Used=0 Free=3`.
+Also: `squeue --json -j` of an ended job -> `{"jobs": []}` exit 0; of a purged/unknown id -> exit
+1 "Invalid job id specified"; `scontrol show job <unknown> --json` -> empty list, exit 0;
+`SLURM_RESTART_COUNT` is unset on a first run (the wrap defaults it to 0).
+
+**Real-binary run of this branch (box, as bruno, `git archive` of the branch in
+`/tmp/nw0510-e2e`, temp data dir with `executor: slurm`; never the `nw` user's install or the
+live worker config):** `nw worker slurm-check` -> every check ok (jobs 19, 20).
+- async submit + attach, request 2 cpus / 1024M: Slurm job 13, `squeue` `13 e2e-run-000902 2 1G
+  RUNNING None`; frames accepted, started (`slot_wait_s` 0.926), gate ok, done ok; the gate log
+  `NW_GATE_CPUS=2 NW_GATE_MEM_MB=1024 nproc=2`, cgroup `slurmstepd.scope/.../task_0`; time limit
+  15 min; `COMPLETED`.
+- pending on a license (a blocker job 14 held `jerome_target:3`): job 15 `PENDING Licenses`;
+  `poll` printed `slot_wait {waited_s 4.5, reason "Licenses", slurm_job_id 15}`; after the
+  blocker's scancel it ran: `started` `slot_wait_s` 5.004, done ok. (A first `slot_wait` with
+  reason `None`, before the scheduler's first pass, is no longer written: fixed after the run,
+  covered by the fake.)
+- cancel of a running job (`sleep 300` gate): job 16, `nw worker cancel` -> `cancel requested`;
+  gate exit -15, `done {ok: false, interrupted: true}`; `scontrol` `COMPLETED`.
+- sync `gate-job`, stdin held open: job 17, frames accepted/started/gate/done ok, rc 0.
+- sync `gate-job`, stdin EOF right after the upload: job 18 scancel'ed while pending,
+  `done {interrupted: true, slurm_state: CANCELLED}`, rc 0; `scontrol` `CANCELLED`.
+
+**Pending (needs the deployed worker build; not run in this lane):** `nw workers update box`,
+then `nw workers check box --slurm` (the `nw` user's `slurm-check`); set `executor: slurm`
+(+ `agentic.slurm.conf`) on the box's worker config; one nightwright campaign gate, one persona
+run and one `nw gate run` through the `nw` user with `squeue -u nw -o '%i %j %C %m %T %r'`
+during the run; `nw gate cancel` of a running one. Until then the spec stays `in-progress`.
+
+**For SPEC-0511..0515.** The `attempt` frame of a requeued job (attempt 2) is still not in the
+coordinator's `FRAME_TYPES`: a requeue makes the coordinator fail the job as a protocol error and
+fall back (SPEC-0515). Partition choice per job class is SPEC-0511's (`partition` is one value
+here). `limits()` and `licenses()` are read once per worker process. `tests/slurm_fake.py`
+supports `pending`, `start`/`finish`/`run`, `end`, `requeue`, `forget`, `fail`/`heal`, `auto`
+(an sbatch that ends at once with an output) and `fixture` (partition/node JSON).
 
 ## Rollout / migration
 

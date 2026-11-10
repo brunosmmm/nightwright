@@ -726,6 +726,7 @@ def slurm_check(cfg, wait_s: float = END_STATES_WAIT_S) -> dict:
     p, out = cli("sinfo", "--version")
     add("version", p is not None and p.returncode == 0 and out.startswith("slurm "), out)
     p, out = cli("sinfo", "-N", "-h", "-o", "%N %c %m %T")
+    out = "\n".join(dict.fromkeys(out.splitlines()))     # one line per node, not per partition
     add("node", p is not None and p.returncode == 0 and bool(out), out)
     p, out = cli("scontrol", "show", "config")
     keys = ("SelectType", "SelectTypeParameters", "ProctrackType", "TaskPlugin",
