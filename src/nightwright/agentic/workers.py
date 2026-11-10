@@ -571,6 +571,8 @@ def _check_job_records(cfg) -> None:
             raise ValueError(f"job record {p} has no known state")  # may be a running job
         if rec.get("state") in RJ.LIVE and not isinstance(rec.get("worker"), str):
             raise ValueError(f"live job record {p} names no worker")
+        if rec.get("state") in RJ.LIVE and not isinstance(rec.get("job_id"), str):
+            raise ValueError(f"live job record {p} has no job_id")
 
 
 def finish_drains(cfg, *, progress=None) -> list[str]:

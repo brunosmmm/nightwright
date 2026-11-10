@@ -132,6 +132,8 @@ def test_confirmed_gone_marks_lost_once(cfg, monkeypatch):
     lines = _journal(cfg, "worker_job_reconciled")
     assert len(lines) == 1
     assert lines[0]["via"] == "poll" and lines[0]["reported"] == "absent"
+    assert lines[0]["worker"] == "box" and lines[0]["job_id"] == jid
+    assert lines[0]["prior_state"] == "attached"
     _assert_jobs_argv(probe.calls[0][0])
     _assert_poll_argv(probe.calls[1][0], jid)
     probe2 = _Probe([(0, b"[]"), (1, b'{"type":"status","state":"unknown"}\n')])
@@ -263,7 +265,9 @@ def test_unaccepted_submit_stays_submitted(cfg, monkeypatch):
     monkeypatch.setattr(WK, "_reconcile_run", _Probe([
         (0, b"[]"), (1, b'{"type":"status","state":"unknown"}\n')]))
     WK.reconcile_draining(cfg, ["box"])
+    assert RJ.read(cfg, jid)["state"] == "submitted"
     assert RJ.read(cfg, jid2)["state"] == "lost"
+    assert not any(r.get("job_id") == jid for r in _journal(cfg, "worker_job_reconciled"))
 
 
 def test_unaccepted_cursor_nonzero_is_probed(cfg, monkeypatch):
@@ -583,8 +587,10 @@ def test_attached_campaign_and_pull_skipped(cfg, monkeypatch, tmp_path):
         pj = "c-2-gate-001-a1"
         _job(cfg, job_id=pj, worker="pull", campaign="c-2", state="attached", accepted_at="t")
         before = dict(RJ.read(cfg, pj))
+        probe_pull = _Probe([])
+        monkeypatch.setattr(WK, "_reconcile_run", probe_pull)
         WK.reconcile_draining(cfg, ["pull"])
-        assert probe.calls == []
+        assert probe_pull.calls == []
         assert RJ.read(cfg, pj) == before
     finally:
         RG._ATTACHED.pop("c-1", None)
@@ -683,9 +689,12 @@ def test_unreadable_registry_raises(cfg, monkeypatch):
         WK.finish_drains(cfg)
     wrec = next(r for r in WK.read_strict(cfg) if r["name"] == "box")
     assert wrec.get("draining") is True and wrec.get("enabled") is not False
+    jid = RJ.gate_job_id("c-1", 1)
     probe = _Probe(["oserror"])
     monkeypatch.setattr(WK, "_reconcile_run", probe)
     assert WK.reconcile_draining(cfg, ["box"]) == set()
+    assert RJ.read(cfg, jid)["state"] == "attached"
+    assert not _journal(cfg, "worker_job_reconciled")
 
 
 def test_ensure_ssh_dir_failure_aborts_without_disable(cfg, monkeypatch):
@@ -816,6 +825,26 @@ def test_tick_forwards_progress_to_reconcile(cfg, monkeypatch):
     monkeypatch.setattr(WK, "_reconcile_run", _Probe([(0, body)]))
     tick_cb = mock.Mock()
     Q._finish_worker_drains(cfg, progress=tick_cb)
+    assert captured.get("progress") is tick_cb
+
+
+def test_tick_forwards_progress_to_due_updates(cfg, monkeypatch):
+    _seed(cfg, _w())
+    _schedule_update(cfg)
+    _job(cfg, state="attached", accepted_at="t")
+    captured = {}
+    real = WK.due_updates
+
+    def wrap(cfg_, *a, progress=None, **kw):
+        captured["progress"] = progress
+        return real(cfg_, *a, progress=progress, **kw)
+
+    monkeypatch.setattr(WK, "due_updates", wrap)
+    jid = RJ.gate_job_id("c-1", 1)
+    body = json.dumps([{"job_id": jid, "state": "running"}]).encode()
+    monkeypatch.setattr(WK, "_reconcile_run", _Probe([(0, body)]))
+    tick_cb = mock.Mock()
+    Q._run_worker_updates(cfg, progress=tick_cb)
     assert captured.get("progress") is tick_cb
 
 
@@ -958,3 +987,31 @@ def test_running_sibling_ghost_lost_same_worker(cfg, monkeypatch):
     assert not_busy == set()
     assert not WK._drained(cfg, "box", not_busy=not_busy)
     assert sum(1 for a, _ in probe.calls if "poll" in a) == 1
+
+
+@pytest.mark.parametrize("poll_st", ("submitted", "detached", "cancelled", "foo"))
+def test_poll_unrecognized_state_stays_live(cfg, monkeypatch, tmp_path, poll_st):
+    c = {"data_dir": str(tmp_path / poll_st / "data"), "agentic": {"gates": {"slots": 1}}}
+    _seed(c, _w())
+    jid = _job(c, state="attached", accepted_at="t")
+    poll = json.dumps({"type": "status", "state": poll_st}).encode() + b"\n"
+    probe = _Probe([(0, b"[]"), (1, poll)])
+    monkeypatch.setattr(WK, "_reconcile_run", probe)
+    not_busy = WK.reconcile_draining(c, ["box"])
+    _assert_still_occupies_worker(c, jid, not_busy)
+    assert not _journal(c, "worker_job_reconciled")
+
+
+def test_live_record_missing_job_id_skips_reconcile_pass(cfg, monkeypatch):
+    _seed(cfg, _w())
+    _schedule_update(cfg)
+    jid = _job(cfg, state="attached", accepted_at="t")
+    path = RJ.path(cfg, jid)
+    rec = json.loads(path.read_text(encoding="utf-8"))
+    rec.pop("job_id", None)
+    path.write_text(json.dumps(rec, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    probe = _Probe([(0, b"[]"), (1, b'{"type":"status","state":"unknown"}\n')])
+    monkeypatch.setattr(WK, "_reconcile_run", probe)
+    Q._run_worker_updates(cfg, progress=mock.Mock())
+    assert probe.calls == []
+    assert RJ.read(cfg, jid)["state"] == "attached"

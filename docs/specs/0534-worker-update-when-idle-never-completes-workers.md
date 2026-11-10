@@ -505,6 +505,22 @@ not describe an age mark or stale-job lines.
   assertions on no-answer paths; poll exit 1 with keeping states; mixed attached-campaign plus
   eligible ghost on one worker; detached start state; `_run_worker_updates` timeout journal.
 
+### Test record (implementer campaign loop 0 review, 2026-11-10)
+
+- `uv run pytest -q tests/test_worker_job_reconcile.py tests/test_workers_update_schedule.py tests/test_workers_drain.py tests/test_workers_registry.py` — 161 passed.
+- `python3 tools/test_tiers.py --check` — exit 0.
+- `python3 tools/spec_lint.py --write-ledger` and `python3 tools/spec_lint.py` — exit 0.
+- Full suite left to campaign gating.
+- Manual verification on live `box` not run in this loop.
+
+### As shipped (implementer campaign loop 0 review)
+
+- `_check_job_records` raises `ValueError` for a live record with no string `job_id`, so the
+  drain/update pass skips instead of `KeyError` in reconcile.
+- Tests: unrecognized poll states stay live; SSH `OSError` leaves record live; journal
+  identity fields; unaccepted sibling after ghost; `due_updates` progress via `_run_worker_updates`;
+  pull worker argv on dedicated probe stub; missing `job_id` skips probe.
+
 ## Clock Log
 
 Implementation sessions clock IDEA-1162 with `nw idea clock-in` and
