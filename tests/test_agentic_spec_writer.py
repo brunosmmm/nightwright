@@ -1329,6 +1329,42 @@ def test_linked_idea_writer_uses_the_public_summary_and_cites(tmp_path, monkeypa
     assert int(_git(repo, "rev-list", "--count", "refs/heads/nw-backlog")) == backlog_n
 
 
+def test_linked_idea_resume_preserves_source_request_for_revise(tmp_path, monkeypatch):
+    repo = make_project(tmp_path)
+    cfg = make_cfg(tmp_path, repo, script(tmp_path, []))
+    monkeypatch.setattr("nightwright.cli.load_config", lambda: cfg)
+    iid = capture(cfg)
+    req = _publish_for_campaign(cfg, monkeypatch, repo, iid, "Public body")
+    cid = add_idea_campaign(cfg, monkeypatch, iid)
+    Q.tick(cfg)
+    script(tmp_path, [spec_with_req(2, iid, req)])
+    Q.tick(cfg)
+    in_review(cfg, cid)
+    backlog_n = int(_git(repo, "rev-list", "--count", "refs/heads/nw-backlog"))
+    st = S.read_state(cfg, cid)
+    Q._park(cfg, st, "spec_review_exhausted", "test", "SPEC_WRITING")
+    resume(cfg, cid)
+    st = S.read_state(cfg, cid)
+    assert st["state"] == "SPEC_WRITING"
+    assert st.get("admission") != "revise_pending"
+    assert st["idea"]["source_request"] == req
+    assert st["idea"]["summary"] == "Public body"
+    spec_path = wtree(cfg, cid) / "docs/specs/0002-add-a-thing.md"
+    from nightwright.specmeta import split_frontmatter
+    no_req = "\n".join(
+        ln for ln in spec_path.read_text().splitlines() if not ln.startswith("source_request:")
+    ) + "\n"
+    fm, _ = split_frontmatter(no_req)
+    assert any("source_request must be" in p for p in SW._front_matter_problems(
+        fm, "SPEC-0002", st["idea"]))
+    kept = spec_path.read_text().replace("Why.", "Public still.")
+    good = spec_written(2, iid, mode="revise", no_edit=True)
+    good["edits"] = [{"path": "docs/specs/0002-add-a-thing.md", "write": kept}]
+    script(tmp_path, [good])
+    Q.tick(cfg)
+    assert int(_git(repo, "rev-list", "--count", "refs/heads/nw-backlog")) == backlog_n
+
+
 def test_drift_before_write_parks_without_a_cite(tmp_path, monkeypatch):
     repo = make_project(tmp_path)
     cfg = make_cfg(tmp_path, repo, script(tmp_path, []))

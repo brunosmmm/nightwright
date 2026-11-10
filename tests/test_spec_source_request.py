@@ -497,6 +497,23 @@ def test_cite_org_write_failure_restores_the_tip(tmp_path, monkeypatch):
     assert Path(cfg["org_ideas_file"]).read_bytes() == org_before
     assert _backlog_tip(repo) == tip_publish
 
+    from nightwright.org_write import set_property as real_set_property
+
+    monkeypatch.setattr(W, "set_property", real_set_property)
+    idea = _publish(monkeypatch, cfg, _seed_idea(monkeypatch, cfg, text="Specced fail"))
+    idea_id = idea.properties["ID"]
+    tip = _backlog_tip(repo)
+
+    def boom_state(cfg_a, task, state):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(W, "set_state", boom_state)
+    with pytest.raises(ValueError, match="restored refs/heads/nw-backlog"):
+        S.scaffold_from_idea(cfg, idea_id)
+    after = W.resolve_selector(cfg, idea_id)
+    assert not (after.properties.get("SPEC") or "").strip()
+    assert _backlog_tip(repo) == tip
+
     idea = _publish(monkeypatch, cfg, _seed_idea(monkeypatch, cfg, text="Cas"))
     tip_old = _backlog_tip(repo)
     main = _git(repo, "rev-parse", "main").strip()

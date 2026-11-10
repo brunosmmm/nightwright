@@ -331,10 +331,11 @@ def _drift_error(idea_id: str, req_id: str) -> str:
 
 
 def _raw_fm_line(yaml_block: str, key: str) -> str | None:
-    prefix = f"{key}:"
+    pat = re.compile(rf"^{re.escape(key)}:\s*(.*)$")
     for line in yaml_block.splitlines():
-        if line.startswith(prefix):
-            return line[len(prefix):].strip()
+        m = pat.match(line)
+        if m:
+            return m.group(1).strip()
     return None
 
 
@@ -471,6 +472,7 @@ def cite_spec(cfg, agreed: AgreedRequest, spec_id: str) -> tuple[str | None, str
     name, email = _git_identity(agreed.repo)
     _validate_identity_value("user.name", name)
     _validate_identity_value("user.email", email)
+    _validate_identity_value("status", agreed.status)
     author = f"{name} <{email}>"
     body = render_request(
         req_id=agreed.req_id,

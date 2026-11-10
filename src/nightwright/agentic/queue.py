@@ -4791,7 +4791,7 @@ def _link_idea(cfg, state: dict, spec_id: str) -> str | None:
             if agreed.spec != spec_id and citing:
                 IL.cite_spec(cfg, agreed, spec_id)
             _set_spec_specced(task)
-    except (ValueError, OSError) as e:
+    except (ValueError, OSError, subprocess.CalledProcessError) as e:
         return str(e) or type(e).__name__
     return None
 
@@ -10470,9 +10470,21 @@ def _reset_spec_write(cfg, st: dict) -> None:
     task = _idea_task(cfg, old.get("id")) if st.get("kind") == "idea" else None
     if task is not None:
         from .. import explore as EX
+        from .. import idea_link as IL
         fresh = EX.idea_show_payload(cfg, task)
         fresh["epic"] = task.properties.get("EPIC")
         fresh["state_before"] = old.get("state_before")
+        if (task.properties.get("REQ") or "").strip():
+            try:
+                agreed = IL.load_agreed_request(cfg, task)
+                if agreed:
+                    fresh["source_request"] = agreed.req_id
+                    fresh["summary"] = agreed.summary
+            except ValueError:
+                if old.get("source_request"):
+                    fresh["source_request"] = old["source_request"]
+                if old.get("summary") is not None and "source_request" in old:
+                    fresh["summary"] = old["summary"]
         st["idea"] = fresh
 
 

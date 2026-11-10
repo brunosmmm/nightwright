@@ -533,6 +533,7 @@ Revise and amend do not call `cite_spec`.
 ## Clock Log
 
 - 2026-11-10: SPEC-0535 implementation (IDEA-1021 campaign loop 0).
+- 2026-11-10: Review fixes — resume overlay, cite rollback, `_raw_fm_line` (loop 1).
 
 ## Rollout / migration
 
@@ -561,6 +562,14 @@ unknown key.
 - `uv run pytest tests/test_idea_link.py tests/test_idea_stamps.py::test_stamp_creates_missing_drawer_without_corrupting_sections -q` — pass
 - `uv run pytest tests/test_agentic_spec_writer.py -q -k "linked_idea or drift_before or queue_add_refuses or link_idea_refuses or campaign_cite or link_idea_returns"` — 7 passed
 - `uv run pytest tests/test_promote.py tests/test_routing.py tests/test_spec_numbers.py -q` — 49 passed
+- `python3 tools/spec_lint.py --write-ledger` — pass
+- Full suite left to campaign gating.
+
+### Test record (2026-11-10 loop 1)
+
+- `python3 tools/test_tiers.py --check` — pass
+- `uv run pytest tests/test_spec_source_request.py -q` — 8 passed
+- `uv run pytest tests/test_agentic_spec_writer.py -q -k "linked_idea_resume or linked_idea_writer"` — 2 passed
 - `python3 tools/spec_lint.py --write-ledger` — pass
 - Full suite left to campaign gating.
 

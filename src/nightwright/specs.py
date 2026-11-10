@@ -186,6 +186,7 @@ def scaffold_from_idea(cfg, selector, *, epic=False, title=None, force=False):
     spec_path: Path | None = None
     cite_sha: str | None = None
     cite_old: str | None = None
+    number_released = False
     try:
         with W.org_write_lock(cfg):
             task = W.resolve_selector(cfg, selector)
@@ -201,7 +202,14 @@ def scaffold_from_idea(cfg, selector, *, epic=False, title=None, force=False):
                 cite_sha, cite_old = IL.cite_spec(cfg, agreed, spec_id)
             try:
                 W.set_property(cfg, task, "SPEC", spec_id)
-                W.set_state(cfg, task, "SPECCED")
+                try:
+                    W.set_state(cfg, task, "SPECCED")
+                except BaseException as e:
+                    try:
+                        W.clear_property(cfg, task, "SPEC")
+                    except Exception:
+                        pass
+                    raise e
             except BaseException as e:
                 if cite_sha and agreed:
                     try:
@@ -214,10 +222,12 @@ def scaffold_from_idea(cfg, selector, *, epic=False, title=None, force=False):
                         if "restored refs/heads/nw-backlog" in str(restore_err):
                             if spec_path and spec_path.is_file():
                                 spec_path.unlink()
-                            try:
-                                spec_numbers.release(cfg, rec["number"], specs_dir=specs_dir)
-                            except Exception:
-                                pass
+                            if not number_released:
+                                try:
+                                    spec_numbers.release(cfg, rec["number"], specs_dir=specs_dir)
+                                    number_released = True
+                                except Exception:
+                                    pass
                         raise restore_err from e
                 if spec_path and spec_path.is_file():
                     spec_path.unlink()
@@ -225,7 +235,7 @@ def scaffold_from_idea(cfg, selector, *, epic=False, title=None, force=False):
         return spec_path, spec_id
     except BaseException as err:
         lost = "no longer points at" in str(err) or "restore failed" in str(err)
-        if not lost:
+        if not lost and not number_released:
             try:
                 spec_numbers.release(cfg, rec["number"], specs_dir=specs_dir)
             except Exception:
