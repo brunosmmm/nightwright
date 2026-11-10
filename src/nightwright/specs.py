@@ -228,18 +228,7 @@ def scaffold_from_idea(cfg, selector, *, epic=False, title=None, force=False):
                     cfg, agreed, spec_id, expected_backlog_tip=cite_backlog_tip)
             try:
                 W.set_property(cfg, task, "SPEC", spec_id)
-                try:
-                    W.set_state(cfg, task, "SPECCED")
-                except BaseException as e:
-                    if cite_sha and agreed:
-                        try:
-                            IL.restore_cite_backlog_tip_or_bail(
-                                agreed.repo, spec_id=spec_id, req_id=agreed.req_id,
-                                new_sha=cite_sha, old_tip=cite_old)
-                        except ValueError as restore_err:
-                            _rollback_scaffold_after_failed_org(
-                                e, backlog_restore_err=restore_err)
-                    _rollback_scaffold_after_failed_org(e)
+                W.set_state(cfg, task, "SPECCED")
             except BaseException as e:
                 if cite_sha and agreed:
                     try:
@@ -247,7 +236,8 @@ def scaffold_from_idea(cfg, selector, *, epic=False, title=None, force=False):
                             agreed.repo, spec_id=spec_id, req_id=agreed.req_id,
                             new_sha=cite_sha, old_tip=cite_old)
                     except ValueError as restore_err:
-                        _rollback_scaffold_after_failed_org(e, backlog_restore_err=restore_err)
+                        _rollback_scaffold_after_failed_org(
+                            e, backlog_restore_err=restore_err)
                 _rollback_scaffold_after_failed_org(e)
         return spec_path, spec_id
     except BaseException as err:
