@@ -1,7 +1,7 @@
 ---
 id: SPEC-0507
 title: "An exclusive timeout re-gate cannot starve: close re-gates yield to it, its wait is visible and bounded"
-status: in-progress
+status: done
 owner: user
 created: 2026-11-09
 updated: 2026-11-09
@@ -143,15 +143,17 @@ re-gate, not close re-gates; Context, Decision and Design above were rewritten t
 ca46 reproduction test failed on the pre-fix `queue.py` (`['B', 'K:close'] == ['B']`: a close
 re-gate joined the drain) and passes after. Shipped in `queue.py` (admission helpers and the
 `_tick` close check) and `schemas.py` (two runner journal kinds). Local: 14 new tests and the
-touched `test_agentic_queue.py` / `test_agentic_quiet.py` pass (323).
+touched `test_agentic_queue.py` / `test_agentic_quiet.py` pass (323). Worker-box loop gate
+GATEJOB-1463 on d78ca643: spec-lint and pytest-affected green (3128 passed). The post-deploy
+live observation in the Test plan is left to the conductor after the merge.
 
 ## Definition of done
 
-- [ ] Acceptance criteria all met.
-- [ ] Test plan executed; affected tests pass; manual step performed and noted.
-- [ ] No regressions.
-- [ ] Spec body updated to match what shipped.
-- [ ] `docs/LEDGER.md` updated (status + date).
+- [x] Acceptance criteria all met.
+- [x] Test plan executed; affected tests pass; manual step performed and noted.
+- [x] No regressions.
+- [x] Spec body updated to match what shipped.
+- [x] `docs/LEDGER.md` updated (status + date).
 
 ## Risks
 
