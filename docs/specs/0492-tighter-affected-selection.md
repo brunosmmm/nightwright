@@ -74,13 +74,20 @@ module's `nearest_tests`.
 - Keep N when the file does not parse, when any hunk intersects no span (an import, a deletion,
   a module statement, a trailing comment), or when any changed name starts with `_` (a private
   helper may be called from public functions not in the diff, so the rule is simply "private
-  keeps N").
+  keeps N"). Both sides of the diff are checked: a changed old line must lie in a span of the
+  merge-base version (its name joins the set), so a pure deletion keeps N too. Changed lines
+  that are blank are ignored.
+- Keep N also when some changed name appears as a word in no file of N: a public definition no
+  test names is reached only through other code, so dropping to the name readers would select
+  nothing that exercises it.
 - Otherwise keep the files in N whose source contains one of those names, plus the module's
   name-rule tests and the `src/nightwright` tree readers the selector already adds. `--guards`
   stays the union in `main()`.
 
 The JSON report's `hot` object maps the repo-relative path to the names used, for modules that
-narrowed; modules that kept N are omitted.
+narrowed; modules that kept N are omitted, and the key is always present (`{}` when nothing
+narrowed). On `--changed`, the merge-base is resolved only to read hunks; the report's
+`base_sha` stays null as before.
 
 **Fixture data.** A fixture data file whose basename no test names selects the path-shaped
 readers of its fixture root. For a non-Python file under `tests/fixtures/<dir>/...`, `<dir>` is
@@ -94,6 +101,8 @@ the first path component under `tests/fixtures/`, including files nested deeper.
   `no test references <rel>` (today's reason).
 - A file directly in `tests/fixtures/`, and every data file outside `tests/fixtures/<dir>/`,
   keep today's rule (`tests/fixtures/a.txt` and `tests/data/` stay as they are).
+- The wide closure (the readers of a changed file's readers) adds both the immediate parent's
+  and the fixture root's directory readers, so it never shrinks.
 
 **Measurement.** For each of the last 200 first-parent commits on main, check out that commit
 and run the selector under test with `--repo` at that checkout, `--base <commit>^`, `--guards`,
