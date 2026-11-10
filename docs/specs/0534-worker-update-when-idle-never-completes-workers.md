@@ -443,7 +443,7 @@ unchanged.
 ## Definition of done
 
 - [x] Acceptance criteria all met.
-- [ ] Test plan executed; automated tests pass; manual steps performed.
+- [x] Test plan executed; automated tests pass; manual steps performed.
 - [x] No regressions.
 - [x] Spec body updated to match what shipped.
 - [x] `docs/LEDGER.md` updated (status + date).
