@@ -121,15 +121,19 @@ stay. `Text` does not parse markup; those lines need no `escape`.
 - [ ] `nw campaign run C R` on a run whose `verdict.status` is `blocked [/bold] keep [x]`,
       whose `summary` is `see [x] and [/dim]`, with `must_fix` `["fix [link]"]`, `blockers`
       `["wait [/on] review"]`, and `result_tail` `err [/red]`, exits 0. The human output
-      contains each of those five strings with the brackets intact, and it contains no
-      `MarkupError` and no traceback.
+      contains the status `blocked [/bold] keep [x]`, the summary `see [x] and [/dim]`,
+      the must_fix item `fix [link]`, the blocker `wait [/on] review`, and the error tail
+      `err [/red]`, each with its brackets intact, and it contains no `MarkupError` and no
+      traceback.
 - [ ] The same command on a run with `disposition: fix` (`verdict_status` `fix`) and on a run
       with an empty verdict dict (`verdict_status` `?`) exits 0, and the output contains
       `fix` and `?`.
 - [ ] A mapped status still prints: the existing human views that show `done`, `pass`, and
       `blocked` still contain those words.
-- [ ] `--json` for the bracketed run returns `verdict.status`, `summary`, `must_fix`,
-      `blockers`, and `result_tail` exactly as stored, with no backslash escapes added.
+- [ ] `--json` for that run returns `run.verdict.status` and `run.verdict.summary` equal
+      to those two strings, `run.must_fix` equal to `["fix [link]"]`, `run.blockers` equal
+      to `["wait [/on] review"]`, and `run.result_tail` equal to `err [/red]`, with no
+      backslash escapes added.
 - [ ] A stderr line `boom [/dim]` printed by the human view appears in full.
 
 ## Test plan
@@ -137,15 +141,20 @@ stay. `Text` does not parse markup; those lines need no `escape`.
 - **Automated tests:** extend `tests/test_agentic_campaign_runs.py`, using the existing
   `merged` fixture, `add_run`, and `run_cli` from `test_agentic_e2e`.
   - `test_run_human_view_prints_bracketed_verdict`: `add_run` a `060-implementer` `run.end`
-    with `verdict_ok: True` and the verdict, `must_fix`, `blockers`, and `result_tail` in
-    the first acceptance criterion. Write `stderr.log` with a final line `boom [/dim]`.
+    with `verdict_ok: True`, `result_tail: "err [/red]"`, and `verdict: {"status":
+    "blocked [/bold] keep [x]", "summary": "see [x] and [/dim]", "must_fix": ["fix [link]"],
+    "blockers": ["wait [/on] review"]}`. Write `stderr.log` with a final line `boom [/dim]`.
     `run_cli(…, ["campaign", "run", cid, "060"])` exits 0 and `r.exception` is `None`.
-    Assert each bracketed string and `boom [/dim]` are substrings of `r.output`.
+    Assert the five printed strings (`blocked [/bold] keep [x]`, `see [x] and [/dim]`,
+    `fix [link]`, `wait [/on] review`, and `err [/red]` — the item text `_print_run` emits,
+    not the JSON array literals) and `boom [/dim]` are substrings of `r.output`.
   - `test_run_human_view_prints_unstyled_verdict_status`: two further runs, one
     `{"disposition": "fix"}` and one `{}`, both with `verdict_ok: True`. Each human
     `campaign run` exits 0 and the output contains `fix` or `?`.
-  - `test_run_json_keeps_bracketed_verdict`: `campaign run … --json` on `060` parses, and
-    the five stored strings match the input with no added escapes.
+  - `test_run_json_keeps_bracketed_verdict`: `campaign run … --json` on `060` parses.
+    `run.verdict.status` and `run.verdict.summary` equal those two strings, `run.must_fix`
+    equals `["fix [link]"]`, `run.blockers` equals `["wait [/on] review"]`, and
+    `run.result_tail` equals `err [/red]`, with no added escapes.
 - **Manual verification:** where those campaigns are still on disk, `nw campaign run
   IDEA-1020 025`, `nw campaign run IDEA-1070 006`, `nw campaign run IDEA-1070 007`, and
   `nw campaign run IDEA-1040 025` each exit 0 and print the verdict. The automated test is
