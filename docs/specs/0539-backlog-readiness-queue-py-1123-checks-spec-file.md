@@ -1,9 +1,10 @@
 ---
 id: SPEC-0539
 title: Backlog readiness reads the campaign spec from its worktree or branch
-status: proposed
+status: accepted
 owner: user
 created: 2026-11-10
+updated: 2026-11-10
 milestone: "M9: agentic workflow"
 kind: feature
 tags: [agentic, queue]
