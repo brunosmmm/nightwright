@@ -382,7 +382,7 @@ class Gate:
                     self._backend[key] = BP.check(
                         kind, providers=providers if kind == "pi" else None)
                 except Exception:              # noqa: BLE001
-                    self._backend[key] = None
+                    self._backend[key] = f"{kind} backend preflight failed"
                 if self._backend[key] is not None:
                     BP.note_fault(self.cfg, kind, self._backend[key], where="gate")
             if self._backend[key] is not None and fault is None:
@@ -454,7 +454,8 @@ class Gate:
             return None
         step_personas = tuple(step.personas or ()) if step.kind == "review" else (
             (step.persona,) if step.persona else ())
-        if self.backend_fault(state, step_personas, step=step) is not None:  # SPEC-0484/0486
+        remote_ok = step.kind not in ("write_spec", "resolve")
+        if self.backend_fault(state, step_personas, remote_ok=remote_ok, step=step) is not None:
             self._hold(cid, "backend_unavailable")
             return None
         if self.cap is None:

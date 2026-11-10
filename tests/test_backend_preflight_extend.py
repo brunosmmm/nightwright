@@ -1638,6 +1638,178 @@ def test_write_spec_held_backend_unavailable_despite_worker(tmp_path, monkeypatc
     assert not starts
 
 
+def test_write_spec_backend_hold_does_not_burn_persona_cap(tmp_path, monkeypatch):
+    from test_agentic_spec_writer import start as spec_start
+
+    _no_key(monkeypatch)
+    cfg, repo, iid, cid1 = spec_start(tmp_path, monkeypatch, lambda i: [])
+    cfg["agentic"]["runner"] = "cursor"
+    cfg.setdefault("agentic", {}).setdefault("workers", {})["max_personas"] = 1
+    _worker_can_dispatch(monkeypatch)
+    cid2 = added(cfg, monkeypatch)
+    Q.tick(cfg)
+    assert S.read_state(cfg, cid2)["state"] == "IMPLEMENTING"
+    assert PG.read_holds(cfg).get(cid1, {}).get("held_by") == "backend_unavailable"
+    assert not [e for e in S.read_ledger(cfg, cid1, types=["run.start"])
+                if e.get("persona") == "spec_writer"]
+    hold2 = PG.read_holds(cfg).get(cid2, {}).get("held_by")
+    assert hold2 != "persona_cap"
+
+
+def test_do_write_spec_converts_startup_fault(tmp_path, monkeypatch):
+    from nightwright.agentic import gitops as git
+    from nightwright.agentic import spec_write as SW
+    from nightwright.agentic.gitops import GitError
+
+    wt = make_repo(tmp_path)
+    cfg = _cursor_cfg(tmp_path)
+    monkeypatch.setenv("CURSOR_API_KEY", "k-test-value")
+    branch = git.current_branch(wt)
+    head = git.rev_parse(wt)
+    st = {
+        "id": "c1", "state": "SPEC_WRITING",
+        "repo": {"worktree": str(wt), "branch": branch},
+        "spec_write": {"mode": "write", "number": 2, "path": "docs/specs/0002-x.md",
+                       "head_before": head, "untracked_before": []},
+    }
+    monkeypatch.setattr(SW, "rollback", lambda *a, **k: None)
+    (wt / "docs/specs").mkdir(parents=True, exist_ok=True)
+    (wt / "docs/specs/0002-x.md").write_text("---\nid: SPEC-0002\n---\n")
+
+    def fail_text(text):
+        class Runner:
+            detachable = False
+
+            def run(self, req, hooks=None):
+                return RunResult(1, False, False, 0.1, True, None, result_text=text)
+
+        return Runner
+
+    ctx = SimpleNamespace(cfg=cfg, runner=fail_text("no credential for provider openai")(),
+                          stop=threading.Event(),
+                          runner_for=lambda s, kind=None: fail_text("no credential for provider openai")(),
+                          project=lambda s: {})
+    req = SimpleNamespace(run_dir=tmp_path / "r", persona="spec_writer", pi_provider=None,
+                          runner=None)
+    BP.reset_noted()
+    res = Q._do_write_spec(ctx, st, Q.Step("write_spec", persona="spec_writer"), "001-x", req, 1.0)
+    assert res.interrupted and res.run_result.cost_usd == 0.0 and res.error is None
+    counters = {"spec_write_retries": 0}
+    row = {}
+    Q._apply_spec_write(ctx, {**st, "counters": counters}, counters, res, row, [], lambda *a, **k: ())
+    assert counters["spec_write_retries"] == 0
+    assert row["to"] == "SPEC_WRITING" and row["reason"] == "interrupted"
+    open_ = [r for r in ESC.list_all(cfg, "open") if r.get("kind") == "backend_unavailable"]
+    assert len(open_) == 1 and open_[0]["facts"][0] == "backend: pi"
+
+    ctx.runner = fail_text("pi-coding-agent is not installed")()
+    ctx.runner_for = lambda s, kind=None: fail_text("pi-coding-agent is not installed")()
+    BP.reset_noted()
+    res = Q._do_write_spec(ctx, st, Q.Step("write_spec", persona="spec_writer"), "002-x", req, 1.0)
+    assert res.interrupted and counters["spec_write_retries"] == 0
+
+    ctx.runner = fail_text("unknown model openai/nope")()
+    ctx.runner_for = lambda s, kind=None: fail_text("unknown model openai/nope")()
+    counters["spec_write_retries"] = 0
+    res = Q._do_write_spec(ctx, st, Q.Step("write_spec", persona="spec_writer"), "003-x", req, 1.0)
+    assert not res.interrupted
+    assert res.write["problems"]
+    row = {}
+    Q._apply_spec_write(ctx, {**st, "counters": counters}, counters, res, row, [], lambda *a, **k: ())
+    assert counters["spec_write_retries"] == 1
+
+    ctx.runner = fail_text("no credential for provider openai")()
+    ctx.runner_for = lambda s, kind=None: fail_text("no credential for provider openai")()
+    monkeypatch.setattr(SW, "rollback", lambda *a, **k: (_ for _ in ()).throw(GitError("rollback")))
+
+    def run(self, req, hooks=None):
+        return RunResult(1, False, False, 0.1, True, None,
+                         result_text="no credential for provider openai")
+
+    ctx.runner = type("R", (), {"detachable": False, "run": run})()
+    ctx.runner_for = lambda s, kind=None: ctx.runner
+    res = Q._do_write_spec(ctx, st, Q.Step("write_spec", persona="spec_writer"), "004-x", req, 1.0)
+    assert res.interrupted and res.error is None
+
+
+def test_do_resolve_converts_startup_fault(tmp_path, monkeypatch):
+    from nightwright.agentic import gitops as git
+
+    wt = make_repo(tmp_path)
+    cfg = _cursor_cfg(tmp_path)
+    monkeypatch.setattr(git, "restore_branch", lambda *a, **k: None)
+
+    def fail_text(text):
+        class Runner:
+            detachable = False
+
+            def run(self, req, hooks=None):
+                return RunResult(1, False, False, 0.1, True, None, result_text=text)
+
+        return Runner
+
+    ctx = SimpleNamespace(cfg=cfg, runner=fail_text("no credential for provider openai")(),
+                          stop=threading.Event(),
+                          runner_for=lambda s, kind=None: fail_text("no credential for provider openai")(),
+                          project=lambda s: {})
+    req = SimpleNamespace(run_dir=tmp_path / "r", persona="conflict_resolver", runner=None)
+    st = {
+        "id": "c1", "state": "CLOSING",
+        "closing": {"resolve": {"pre_head": "deadbeef", "target_sha": "abc", "fork": False},
+                    "resolve_attempts": 0, "resolve_failed": {"n": 0}},
+        "repo": {"worktree": str(wt), "branch": git.current_branch(wt)},
+    }
+    BP.reset_noted()
+    res = Q._do_resolve(ctx, st, Q.Step("resolve", persona="conflict_resolver"), "003-x", req, 1.0)
+    assert res.interrupted and res.run_result.cost_usd == 0.0 and res.error is None
+    state = dict(st)
+    row = {}
+    events = []
+    Q._apply(ctx, state, res)
+    assert state["closing"].get("resolve_attempts", 0) == 0
+    assert int((state["closing"].get("resolve_failed") or {}).get("n") or 0) == 0
+    open_ = [r for r in ESC.list_all(cfg, "open") if r.get("kind") == "backend_unavailable"]
+    assert open_[0]["facts"][0] == "backend: pi"
+
+    ctx.runner = fail_text("unknown model openai/nope")()
+    ctx.runner_for = lambda s, kind=None: fail_text("unknown model openai/nope")()
+    st2 = dict(st)
+    res = Q._do_resolve(ctx, st2, Q.Step("resolve", persona="conflict_resolver"), "004-x", req, 1.0)
+    assert not res.interrupted
+    counters = {}
+    row = {}
+    events = []
+    finish = lambda *a, **k: row.update({"to": a[0], "reason": a[1]})
+    Q._apply_resolve(st2, counters, res, res.run_result, row, events, finish)
+    assert st2["closing"]["resolve_attempts"] == 1
+    assert st2["closing"]["resolve_failed"]["n"] == 1
+
+
+def test_check_pi_probe_exception_is_not_passing(tmp_path, monkeypatch):
+    _pi_ok_env(monkeypatch)
+
+    def boom(*a, **k):
+        raise RuntimeError("probe broke")
+
+    monkeypatch.setattr(BP, "_check_pi", boom)
+    with pytest.raises(RuntimeError, match="probe broke"):
+        BP.check("pi")
+    cfg = {"data_dir": str(tmp_path / "d"), "agentic": {"runner": "pi"}}
+    st = {"id": "c1", "state": "IMPLEMENTING"}
+    monkeypatch.setattr(BP, "spawn_backend", lambda c, s, p: ("pi", ["openai"]))
+    assert PG.Gate(cfg, ["c1"]).backend_fault(st, ("implementer",)) == "pi backend preflight failed"
+
+
+def test_auth_json_oversize_counts_as_missing_credential(tmp_path, monkeypatch):
+    _pi_ok_env(monkeypatch)
+    agent = tmp_path / "agent"
+    agent.mkdir(parents=True)
+    env = {"HOME": str(tmp_path), "PI_CODING_AGENT_DIR": str(agent),
+           "PATH": os.environ.get("PATH", "/usr/bin:/bin")}
+    (agent / "auth.json").write_bytes(b"x" * (64 * 1024 + 1))
+    assert BP.check("pi", environ=env, providers=["openai"]) == "no credential for provider openai"
+
+
 def test_resolve_held_backend_unavailable_despite_worker(tmp_path, monkeypatch):
     _no_key(monkeypatch)
     repo = make_repo(tmp_path)

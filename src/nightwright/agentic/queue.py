@@ -2672,6 +2672,7 @@ def _do_write_spec(ctx: _Ctx, state: dict, step: Step, run_id: str, req,
                  "title": None, "mode": sw["mode"], "rollback_failed": False}
     w = res.write
     branch = (state.get("repo") or {}).get("branch")
+    env_interrupt = False
 
     def on_branch():
         """A reset must only ever hit the campaign branch: the writer runs with full permissions
@@ -2692,8 +2693,18 @@ def _do_write_spec(ctx: _Ctx, state: dict, step: Step, run_id: str, req,
     try:
         started = time.time()
         res.run_result = rr = _gated_runner(ctx, req, state).run(req)
+        fault = BP.env_fault(rr)
+        if fault is not None:
+            rr = replace(rr, interrupted=True,
+                         cost_usd=0.0 if rr.cost_usd is None else rr.cost_usd)
+            res.run_result = rr
+            res.interrupted = True
+            env_interrupt = True
+            if getattr(ctx, "cfg", None) is not None:
+                BP.note_fault(ctx.cfg, BP.fault_kind(fault), fault, where="run")
         _note_rate_limit(ctx, state, rr, started, _run_persona(req, step))      # SPEC-0345
-        res.interrupted = ctx.stop.is_set()
+        if not res.interrupted:
+            res.interrupted = ctx.stop.is_set()
         verdict = rr.verdict if isinstance(rr.verdict, dict) else {}
         if res.interrupted or rr.interrupted:
             roll_back()
@@ -2727,10 +2738,11 @@ def _do_write_spec(ctx: _Ctx, state: dict, step: Step, run_id: str, req,
                 w["committed"] = True
                 w["head"] = git.rev_parse(worktree)
     except Exception as e:                      # nothing may leave the worktree unrolled
-        res.error = getattr(e, "tail", None) or str(e)
-        if not isinstance(e, (GitError, ValueError, OSError)):
-            res.error = repr(e)
-            res.crashed = repr(e)               # still a report.errors entry
+        if not env_interrupt:
+            res.error = getattr(e, "tail", None) or str(e)
+            if not isinstance(e, (GitError, ValueError, OSError)):
+                res.error = repr(e)
+                res.crashed = repr(e)               # still a report.errors entry
         if not w["rollback_failed"] and not res.interrupted:
             try:
                 roll_back()
@@ -3203,17 +3215,28 @@ def _do_resolve(ctx: _Ctx, state: dict, step: Step, run_id: str, req, budget: fl
     worktree, branch = repo.get("worktree"), repo.get("branch")
     rs = (state.get("closing") or {}).get("resolve") or {}
     pre_head = rs.get("pre_head")
+    env_interrupt = False
     try:
         git.restore_branch(worktree, branch, pre_head)
         crash = None
         try:
             started = time.time()
             res.run_result = rr = _gated_runner(ctx, req, state).run(req)
+            fault = BP.env_fault(rr)
+            if fault is not None:
+                rr = replace(rr, interrupted=True,
+                             cost_usd=0.0 if rr.cost_usd is None else rr.cost_usd)
+                res.run_result = rr
+                res.interrupted = True
+                env_interrupt = True
+                if getattr(ctx, "cfg", None) is not None:
+                    BP.note_fault(ctx.cfg, BP.fault_kind(fault), fault, where="run")
             _note_rate_limit(ctx, state, rr, started, _run_persona(req, step))  # SPEC-0345
         except Exception as e:          # a crashing resolver is a failed attempt, not a stuck close
             crash = f"the run raised: {e}"
             res.run_result = rr = _synthetic_failure(crash)
-        res.interrupted = ctx.stop.is_set()
+        if not res.interrupted:
+            res.interrupted = ctx.stop.is_set()
         verdict = rr.verdict if isinstance(rr.verdict, dict) else {}
         pcfg = ctx.project(state)
         failed = check = commit_sha = None
@@ -3247,8 +3270,9 @@ def _do_resolve(ctx: _Ctx, state: dict, step: Step, run_id: str, req, budget: fl
         else:
             git.restore_branch(worktree, branch, pre_head)
     except (GitError, ValueError, OSError) as e:
-        res.error = getattr(e, "tail", None) or str(e)
-        res.resolution = None
+        if not env_interrupt:
+            res.error = getattr(e, "tail", None) or str(e)
+            res.resolution = None
         if pre_head and worktree and branch:    # a verified result that errored after is undone
             try:
                 git.restore_branch(worktree, branch, pre_head)

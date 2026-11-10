@@ -125,10 +125,7 @@ def check(kind, environ=None, *, providers: list[str] | None = None) -> str | No
         return None if rec.get("ok") else (rec.get("error") or "cursor backend unavailable")
     if kind != "pi":
         return None
-    try:
-        return _check_pi(environ, providers)
-    except Exception:                        # noqa: BLE001 — a probe bug is not a fault
-        return None
+    return _check_pi(environ, providers)
 
 
 def _pi_script() -> Path:
@@ -187,6 +184,8 @@ def _auth_json(environ) -> dict | None:
     if not path.is_file():
         return None
     try:
+        if path.stat().st_size > 64 * 1024:
+            return None
         doc = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError, TypeError, ValueError, RecursionError):
         return None

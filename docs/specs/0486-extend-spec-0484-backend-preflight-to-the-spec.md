@@ -491,6 +491,16 @@ handoff through `tick`, and spec-review `where=run` escalation.
 `uv run pytest tests/test_backend_preflight_extend.py tests/test_runner_selfheal.py tests/test_remote_persona_limits.py::test_spec_review_is_neither_counted_nor_gated -q` — 64 passed.
 `python3 tools/spec_lint.py --write-ledger` — ok. Full suite left to gating.
 
+### Test record (2026-11-10, loop 1 implementer)
+
+Review fixes: `admit` uses `remote_ok=False` for `write_spec` and `resolve`; `_do_write_spec` and
+`_do_resolve` convert finished Pi startup faults like `_do_spec_review`; Pi `auth.json` capped at
+64 KiB; Pi `check` and gate cache no longer treat probe exceptions as passing. Regression:
+`max_personas: 1` with a held spec writer does not leave a later campaign on `persona_cap`.
+`uv run pytest tests/test_backend_preflight_extend.py tests/test_runner_selfheal.py tests/test_remote_persona_limits.py::test_spec_review_is_neither_counted_nor_gated -q` — all passed.
+`python3 tools/test_tiers.py --check` — ok. `python3 tools/spec_lint.py --write-ledger` — ok.
+Full suite left to gating.
+
 ### Test record (2026-11-10, loop 0 implementer)
 
 Conformance tests: `write_spec` and `resolve` hold `backend_unavailable` with no `run.start`
