@@ -4,7 +4,7 @@ title: Specs cite the public request they come from
 status: done
 owner: user
 created: 2026-11-10
-updated: 2026-11-10
+updated: 2026-11-11
 kind: feature
 tags: [public-backlog]
 depends_on: [SPEC-0480]
@@ -534,6 +534,7 @@ Revise and amend do not call `cite_spec`.
 
 - 2026-11-10: SPEC-0535 implementation (IDEA-1021 campaign loop 0).
 - 2026-11-10: Review fixes — resume overlay, cite rollback, `_raw_fm_line` (loop 1).
+- 2026-11-11: Adversarial review — cite status suffix, regression tests (loop 0).
 
 ## Rollout / migration
 
@@ -589,6 +590,22 @@ unknown key.
 - `python3 tools/test_tiers.py --check` — pass
 - `python3 tools/spec_lint.py --write-ledger` — pass
 - Full suite left to campaign gating.
+
+### Test record (2026-11-11 loop 0)
+
+- `uv run pytest tests/test_spec_source_request.py -q` — 12 passed
+- `uv run pytest tests/test_agentic_spec_writer.py -q -k "linked_idea or drift_before or queue_add_refuses or link_idea or campaign_cite"` — 10 passed
+- `uv run pytest tests/test_idea_link.py -q -k publish` — pass
+- `python3 tools/test_tiers.py --check` — pass
+- `python3 tools/spec_lint.py --write-ledger` — pass
+- Full suite left to campaign gating.
+
+### As shipped (2026-11-11)
+
+- `AgreedRequest` carries `status_suffix`, the raw `status:` line tail from the
+  public file; `cite_spec` passes it to `render_request` so bare YAML 1.1
+  scalars and existing quoting round-trip unchanged (not re-encoded via
+  `str(bool)` or double-quoting).
 
 ## Open questions
 

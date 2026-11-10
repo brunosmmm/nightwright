@@ -308,7 +308,13 @@ def test_scaffold_cites_the_public_summary(tmp_path, monkeypatch):
     cfg = _cfg_citing_repo(tmp_path, repo)
     idea = _seed_idea(monkeypatch, cfg, summary="Public words")
     CliRunner().invoke(cli, ["idea", "log", idea.properties["ID"], "--note", "secret log"])
+    CliRunner().invoke(cli, ["idea", "questions", idea.properties["ID"], "--add", "Still open?"])
+    CliRunner().invoke(cli, ["idea", "clock-in", idea.properties["ID"]])
     idea = _publish(monkeypatch, cfg, idea)
+    org_after_publish = Path(cfg["org_ideas_file"]).read_text()
+    assert "Public words" in org_after_publish
+    assert "session-triage" in org_after_publish
+    assert "Still open?" in org_after_publish
     req = idea.properties["REQ"]
     title = L.load_agreed_request(cfg, idea).title
     blob_before = _show_backlog(repo, f"{req}.md")
@@ -343,6 +349,10 @@ def test_scaffold_cites_the_public_summary(tmp_path, monkeypatch):
     assert fresh.heading == headline_before
     org_after = Path(cfg["org_ideas_file"]).read_text()
     assert "secret log" in org_after
+    assert "Public words" in org_after
+    assert "session-triage" in org_after
+    assert "Still open?" in org_after
+    assert "clock" in org_after.lower() or "CLOCK" in org_after
     assert fresh.properties.get("REQ_BASE") == req_base_before
     assert fresh.properties.get("REQ") == req_prop_before
     assert f":SPEC: {spec_id}" in org_after
@@ -378,7 +388,8 @@ def test_scaffold_cites_the_public_summary(tmp_path, monkeypatch):
     assert "Public words" not in ectx
 
     path_epic, _spec_epic = S.scaffold_from_idea(cfg, sibling.properties["ID"], epic=True)
-    assert f"source_request: {sib_id}" in path_epic.read_text()
+    epic_si = _fm_lines_after_source_idea(path_epic.read_text())
+    assert epic_si[0] == f"source_request: {sib_id}"
     agreed = L.load_agreed_request(cfg, W.resolve_selector(cfg, idea.properties["ID"]))
     assert agreed and agreed.spec == spec_id
     tip_before_redo = _backlog_tip(repo)
@@ -614,6 +625,43 @@ def test_internal_into_another_checkout_records_source_request_only(tmp_path, mo
     assert "private only" not in body
     assert "Promoted from request" in body
     assert _show_backlog(nw, f"{req}.md") == blob_before
+    idea2 = _publish(monkeypatch, cfg, _seed_idea(monkeypatch, cfg, project="Meta-Tools", text="No preflight"))
+    subprocess.run(["git", "-C", str(nw), "config", "--unset", "user.name"], check=True)
+    path2, _, _ = S.promote_idea(cfg, idea2.properties["ID"], internal=True)
+    assert path2.exists()
+    subprocess.run(["git", "-C", str(nw), "config", "user.name", "Test User"], check=True)
+    idea3 = _publish(monkeypatch, cfg, _seed_idea(monkeypatch, cfg, project="Meta-Tools", text="No checkout guard"))
+    wt = tmp_path / "nw-bk-wt"
+    if _backlog_tip(nw):
+        subprocess.run(["git", "-C", str(nw), "worktree", "add", "-q", str(wt), "nw-backlog"],
+                       check=True)
+    else:
+        subprocess.run(
+            ["git", "-C", str(nw), "worktree", "add", "-q", "-b", "nw-backlog", str(wt)],
+            check=True,
+        )
+    hash_calls = []
+
+    def spy_hash(cmd, **kw):
+        if len(cmd) >= 4 and cmd[0] == "git" and Path(cmd[2]).resolve() == nw.resolve():
+            if cmd[3] == "hash-object":
+                hash_calls.append(cmd)
+        return _REAL_SUBPROCESS_RUN(cmd, **kw)
+
+    monkeypatch.setattr(subprocess, "run", spy_hash)
+    path3, _, _ = S.promote_idea(cfg, idea3.properties["ID"], internal=True)
+    assert path3.exists() and not hash_calls
+    subprocess.run(["git", "-C", str(nw), "worktree", "remove", "-f", str(wt)], check=True)
+    monkeypatch.setattr(subprocess, "run", _REAL_SUBPROCESS_RUN)
+    idea4 = _publish(monkeypatch, cfg, _seed_idea(monkeypatch, cfg, project="Meta-Tools", text="Both unset"))
+    subprocess.run(["git", "-C", str(nw), "config", "--unset", "user.name"], check=True)
+    subprocess.run(["git", "-C", str(nw), "config", "--unset", "user.email"], check=True)
+    blob4 = _show_backlog(nw, f"{idea4.properties['REQ']}.md")
+    path4, _, _ = S.promote_idea(cfg, idea4.properties["ID"], internal=True)
+    assert path4.exists()
+    assert _show_backlog(nw, f"{idea4.properties['REQ']}.md") == blob4
+    subprocess.run(["git", "-C", str(nw), "config", "user.name", "Test User"], check=True)
+    subprocess.run(["git", "-C", str(nw), "config", "user.email", "test@example.com"], check=True)
     load_calls = []
     real = L.load_agreed_request
 
@@ -671,6 +719,8 @@ def test_cite_org_write_failure_restores_the_tip(tmp_path, monkeypatch):
     idea = _publish(monkeypatch, cfg, _seed_idea(monkeypatch, cfg, text="Cas"))
     tip_old = _backlog_tip(repo)
     main = _git(repo, "rev-parse", "main").strip()
+    org_cas = Path(cfg["org_ideas_file"]).read_bytes()
+    res_cas = len(SN.list_reservations(cfg))
 
     def boom_move(*_a, **_k):
         subprocess.run(["git", "-C", str(repo), "update-ref", "refs/heads/nw-backlog", main],
@@ -683,6 +733,150 @@ def test_cite_org_write_failure_restores_the_tip(tmp_path, monkeypatch):
     assert list(Path(cfg["specs_dir"]).glob("[0-9]*.md"))
     assert _git(repo, "rev-parse", "refs/heads/nw-backlog").strip() == main
     assert _backlog_tip(repo) != tip_old
+    assert Path(cfg["org_ideas_file"]).read_bytes() == org_cas
+    assert len(SN.list_reservations(cfg)) == res_cas + 1
+
+    from nightwright.org_write import set_property as real_sp
+
+    monkeypatch.setattr(W, "set_property", real_sp)
+    idea = _publish(monkeypatch, cfg, _seed_idea(monkeypatch, cfg, text="Restore fail"))
+    org_restore = Path(cfg["org_ideas_file"]).read_bytes()
+    res_restore = len(SN.list_reservations(cfg))
+    tip_restore = _backlog_tip(repo)
+    backlog_ref_updates = []
+    real_run = _REAL_SUBPROCESS_RUN
+
+    def fail_restore(cmd, **kw):
+        if (
+            len(cmd) >= 6
+            and cmd[0] == "git"
+            and str(repo) in cmd[2]
+            and cmd[3] == "update-ref"
+            and "refs/heads/nw-backlog" in cmd
+        ):
+            backlog_ref_updates.append(cmd)
+            if len(backlog_ref_updates) >= 2:
+                return mock.Mock(returncode=1, stdout=b"", stderr=b"")
+        return real_run(cmd, **kw)
+
+    monkeypatch.setattr(subprocess, "run", fail_restore)
+
+    def boom_sp(*_a, **_k):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(W, "set_property", boom_sp)
+    with pytest.raises(ValueError, match="restore failed") as exc:
+        S.scaffold_from_idea(cfg, idea.properties["ID"])
+    assert "restored refs/heads/nw-backlog" not in str(exc.value)
+    assert list(Path(cfg["specs_dir"]).glob("[0-9]*.md"))
+    assert Path(cfg["org_ideas_file"]).read_bytes() == org_restore
+    assert len(SN.list_reservations(cfg)) == res_restore + 1
+    assert _backlog_tip(repo) != tip_restore
+
+
+def test_scaffold_rollback_when_cite_update_ref_fails(tmp_path, monkeypatch):
+    repo = _init_repo(tmp_path / "proj")
+    cfg = _cfg_citing_repo(tmp_path, repo)
+    idea = _seed_idea(monkeypatch, cfg)
+    idea = _publish(monkeypatch, cfg, idea)
+    org_before = Path(cfg["org_ideas_file"]).read_bytes()
+    tip = _backlog_tip(repo)
+    res_n = len(SN.list_reservations(cfg))
+    real_run = _REAL_SUBPROCESS_RUN
+
+    def fail_upd(cmd, **kw):
+        if (
+            len(cmd) >= 5
+            and cmd[0] == "git"
+            and Path(cmd[2]).resolve() == repo.resolve()
+            and cmd[3] == "update-ref"
+            and cmd[4] == "refs/heads/nw-backlog"
+        ):
+            return mock.Mock(returncode=1, stdout=b"", stderr=b"")
+        return real_run(cmd, **kw)
+
+    monkeypatch.setattr(subprocess, "run", fail_upd)
+    with pytest.raises(ValueError, match="was not cited; refs/heads/nw-backlog unchanged"):
+        S.scaffold_from_idea(cfg, idea.properties["ID"])
+    assert not list(Path(cfg["specs_dir"]).glob("[0-9]*.md"))
+    assert Path(cfg["org_ideas_file"]).read_bytes() == org_before
+    assert _backlog_tip(repo) == tip
+    assert len(SN.list_reservations(cfg)) == res_n
+    fresh = W.resolve_selector(cfg, idea.properties["ID"])
+    assert not (fresh.properties.get("SPEC") or "").strip()
+
+
+def test_load_agreed_request_rejects_bad_request_files(tmp_path, monkeypatch):
+    repo = _init_repo(tmp_path / "proj")
+    cfg = _cfg_citing_repo(tmp_path, repo)
+    idea = _seed_idea(monkeypatch, cfg)
+    idea = _publish(monkeypatch, cfg, idea)
+    req = idea.properties["REQ"]
+    task = W.resolve_selector(cfg, idea.properties["ID"])
+    good = _show_backlog(repo, f"{req}.md")
+
+    def publish_body(body: bytes):
+        L._publish_commit(repo, rel_path=f"{req}.md", body=body,
+                          message="mutate", name="Test User", email="test@example.com")
+
+    def restore():
+        publish_body(good)
+
+    publish_body(b"\xff\xfe".ljust(20, b"\x00"))
+    with pytest.raises(ValueError, match="is not a request"):
+        L.load_agreed_request(cfg, task)
+    restore()
+
+    publish_body(b"---\n- not-a-dict\n---\n\n")
+    with pytest.raises(ValueError, match="is not a request"):
+        L.load_agreed_request(cfg, task)
+    restore()
+
+    txt = good.decode()
+    missing_title = txt.replace('title: "Link"\n', "", 1)
+    publish_body(missing_title.encode())
+    with pytest.raises(ValueError, match="is not a request"):
+        L.load_agreed_request(cfg, task)
+    restore()
+
+    real_summary = L.idea_summary_text
+
+    def boom_summary(cfg_a, task_a, **kw):
+        raise OSError("no summary drawer")
+
+    monkeypatch.setattr(L, "idea_summary_text", boom_summary)
+    with pytest.raises(ValueError, match="could not read Summary"):
+        L.load_agreed_request(cfg, task)
+    monkeypatch.setattr(L, "idea_summary_text", real_summary)
+
+
+def test_cite_preserves_bare_yaml_status(tmp_path, monkeypatch):
+    repo = _init_repo(tmp_path / "proj")
+    cfg = _cfg_citing_repo(tmp_path, repo)
+    idea = _seed_idea(monkeypatch, cfg)
+    idea = _publish(monkeypatch, cfg, idea)
+    req = idea.properties["REQ"]
+    pub = _show_backlog(repo, f"{req}.md").decode()
+    fm, body = split_frontmatter(pub)
+    bare = (
+        f"---\n"
+        f"id: {req}\n"
+        f'title: "{fm["title"]}"\n'
+        f"status: yes\n"
+        f"created: {[ln.split(': ', 1)[1] for ln in pub.splitlines() if ln.startswith('created:')][0]}\n"
+        f"updated: {fm['updated']}\n"
+        f'created_by: "{fm["created_by"]}"\n'
+        f'updated_by: "{fm["updated_by"]}"\n'
+        f"---\n{body}"
+    )
+    L._publish_commit(repo, rel_path=f"{req}.md", body=bare.encode(),
+                      message="bare yes", name="Test User", email="test@example.com")
+    path, spec_id = S.scaffold_from_idea(cfg, idea.properties["ID"])
+    assert path.exists()
+    blob = _show_backlog(repo, f"{req}.md").decode()
+    assert re.search(r"^status: yes\n", blob, re.M)
+    assert "status: True" not in blob and "status: false" not in blob.lower()
+    assert split_frontmatter(blob)[0]["spec"] == spec_id
 
 
 def test_cite_preserves_quoted_status(tmp_path, monkeypatch):

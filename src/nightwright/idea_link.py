@@ -118,6 +118,7 @@ def render_request(
     created_by: str,
     updated_by: str,
     spec: str | None = None,
+    status_suffix: str | None = None,
 ) -> bytes:
     """UTF-8 request file body for refs/heads/nw-backlog (no path suffix on req_id)."""
     ct, cs = canonical_pair(title, summary)
@@ -125,7 +126,7 @@ def render_request(
         "---\n",
         f"id: {req_id}\n",
         f"title: {_yaml_double_quoted(ct)}\n",
-        f"status: {_yaml_status_scalar(status)}\n",
+        f"status: {status_suffix if status_suffix is not None else _yaml_status_scalar(status)}\n",
         f"created: {created}\n",
         f"updated: {updated}\n",
         f"created_by: {_yaml_double_quoted(created_by, field='created_by')}\n",
@@ -341,6 +342,7 @@ class AgreedRequest:
     title: str
     summary: str
     status: str
+    status_suffix: str
     created: str
     created_by: str
     updated_by: str
@@ -363,6 +365,16 @@ def _raw_fm_line(yaml_block: str, key: str) -> str | None:
         m = pat.match(line)
         if m:
             return m.group(1).strip()
+    return None
+
+
+def _raw_fm_line_suffix(yaml_block: str, key: str) -> str | None:
+    """Text after ``key:`` on the front-matter line (preserves quoting/spacing)."""
+    pat = re.compile(rf"^{re.escape(key)}:\s*(.*)$")
+    for line in yaml_block.splitlines():
+        m = pat.match(line)
+        if m:
+            return m.group(1)
     return None
 
 
@@ -439,6 +451,10 @@ def load_agreed_request(cfg, task: Task) -> AgreedRequest | None:
     created_raw = _raw_fm_line(yaml_block, "created")
     if not created_raw:
         raise ValueError(f"{req_id} file is not a request")
+    status_raw = _raw_fm_line(yaml_block, "status")
+    status_suffix = _raw_fm_line_suffix(yaml_block, "status")
+    if not status_raw or status_suffix is None:
+        raise ValueError(f"{req_id} file is not a request")
 
     pub_title = str(fm["title"])
     canon_title, _ = canonical_pair(pub_title, "")
@@ -464,7 +480,8 @@ def load_agreed_request(cfg, task: Task) -> AgreedRequest | None:
         repo=repo,
         title=pub_title,
         summary=body,
-        status=str(fm["status"]),
+        status=status_raw,
+        status_suffix=status_suffix,
         created=created_raw,
         created_by=str(fm["created_by"]),
         updated_by=str(fm["updated_by"]),
@@ -511,6 +528,7 @@ def cite_spec(cfg, agreed: AgreedRequest, spec_id: str) -> tuple[str | None, str
         created_by=agreed.created_by,
         updated_by=author,
         spec=spec_id,
+        status_suffix=agreed.status_suffix,
     )
     try:
         new_sha, old_tip, _blob = _publish_commit(

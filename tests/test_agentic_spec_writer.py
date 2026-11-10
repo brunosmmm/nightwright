@@ -1519,8 +1519,40 @@ def test_campaign_cite_follows_resolve_linked_repo(tmp_path, monkeypatch):
     Q.tick(cfg)
     assert f"source_request: {req}" in (wtree(cfg, cid) / "docs/specs/0002-add-a-thing.md").read_text()
     assert idea(cfg, iid).properties["SPEC"] == "SPEC-0002"
+    assert idea(cfg, iid).state == "SPECCED"
     assert _git(nw, "rev-parse", "refs/heads/nw-backlog") == nw_tip
     assert _backlog_tip(out) == out_tip
+
+
+def test_link_idea_drifts_after_spec_committed(tmp_path, monkeypatch):
+    from test_agentic_e2e import run_cli
+
+    repo = make_project(tmp_path)
+    cfg = make_cfg(tmp_path, repo, script(tmp_path, []))
+    monkeypatch.setattr("nightwright.cli.load_config", lambda: cfg)
+    iid = capture(cfg)
+    req = _publish_for_campaign(cfg, monkeypatch, repo, iid)
+    cid = add_idea_campaign(cfg, monkeypatch, iid)
+    Q.tick(cfg)
+    script(tmp_path, [spec_with_req(2, iid, req)])
+    real_link = Q._link_idea
+
+    def drift_before_link(cfg_a, state, spec_id):
+        run_cli(cfg_a, monkeypatch, ["idea", "summary", iid, "--set", "Drifted after write"])
+        return real_link(cfg_a, state, spec_id)
+
+    monkeypatch.setattr(Q, "_link_idea", drift_before_link)
+    Q.tick(cfg)
+    in_review(cfg, cid)
+    fail = _link_failure_checks(cfg, iid, cid)
+    assert "do not match :REQ_BASE:" in fail["error"]
+    assert idea(cfg, iid).properties.get("SPEC") != "SPEC-0002"
+    assert (wtree(cfg, cid) / "docs/specs/0002-add-a-thing.md").exists()
+    blob = subprocess.run(
+        ["git", "-C", str(repo), "show", f"refs/heads/nw-backlog:{req}.md"],
+        check=True, capture_output=True, text=True,
+    ).stdout
+    assert "spec: SPEC-0002" not in blob
 
 
 def _backlog_tip(repo: Path) -> str | None:
