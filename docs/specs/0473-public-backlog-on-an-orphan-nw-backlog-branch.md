@@ -902,6 +902,15 @@ drops unknown keys, and refreshes `updated` and `updated_by`.
 - `python3 tools/spec_lint.py --write-ledger` and `python3 tools/spec_lint.py` — exit 0.
 - Full suite left to gating.
 
+### Test record (campaign loop 2, 2026-11-10)
+
+- Gate triager fixes: deleted stray ``0449-public-backlog-on-an-orphan-nw-backlog-branch.md``
+  (duplicate SPEC-0449); ``pytestmark = pytest.mark.fast`` on ``tests/test_backlog.py``.
+- `uv run pytest -q tests/test_backlog.py tests/test_specs.py::test_all_specs_pass_lint tests/test_test_tiers.py::test_every_real_test_module_has_exactly_one_tier` — 107 passed.
+- `python3 tools/spec_lint.py --write-ledger` and `python3 tools/spec_lint.py` — exit 0.
+- `python3 tools/test_tiers.py --check` — exit 0.
+- Full suite left to gating.
+
 ## Clock Log
 
 No session is recorded in this file. Implementation clocks IDEA-1019 with

@@ -11,6 +11,8 @@ from click.testing import CliRunner
 from nightwright import backlog as B
 from nightwright.cli import cli
 
+pytestmark = pytest.mark.fast
+
 REF = "refs/heads/nw-backlog"
 ALLOWED = {
     "rev-parse", "rev-list", "ls-tree", "show", "config", "worktree",
