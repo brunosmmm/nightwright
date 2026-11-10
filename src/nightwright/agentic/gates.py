@@ -1055,14 +1055,17 @@ def _fallback(project_cfg, campaign_state, cfg, cid, worktree, seq, stop, tier, 
 
 def _run_all_held(project_cfg, campaign_state, cfg, cid, worktree, seq, stop, tier) -> GateRun:
     """The local run under a held slot and the caller's `gate-<seq>` claim."""
+    from . import gate_resources as GR
     env = gate_env(cfg, campaign_state, seq)
+    # SPEC-0509: what the gates size their parallelism from (the job's request)
+    env.update(GR.sizing_env(GR.job_request(project_cfg.get("gates") or [], cfg, time_s=0),
+                             os.environ))
     ph = placeholders(campaign_state)
     cdir = store.campaign_dir(cfg, cid)
     started_at = store.now_iso()
     t0 = time.monotonic()
     results = []
     cut = False
-    from . import gate_resources as GR
     from .events import settings as events_settings     # lazy: events imports the queue lazily
     deadline = t0 + float(events_settings(cfg)["gate_budget_s"])   # SPEC-0289: retries stay in it
     # SPEC-0358: the loop tier hands each `failed_first` gate its previous same-name result

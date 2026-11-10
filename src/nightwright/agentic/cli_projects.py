@@ -42,14 +42,17 @@ def attach(projects_group):
         except ValueError as e:
             raise click.ClickException(str(e))
         root, path = doc.pop("_root"), doc.pop("_path")
+        warnings = P.config_warnings(doc)               # SPEC-0509: never fails the config
         if as_json:
             payload = {"schema": "nw.project.config.v1", "project": project, "root": root,
-                       "path": path, "config": doc}
+                       "path": path, "config": doc, "warnings": warnings}
             json.dump(payload, sys.stdout, indent=2, ensure_ascii=False)
             sys.stdout.write("\n")
             return
         R.print_code(yaml.safe_dump(doc, sort_keys=False, default_flow_style=False), "yaml",
                      console=console, title=str(path))
+        for w in warnings:
+            R.warn(f"warning: {w}")
 
     @projects_group.command("init")
     @click.argument("project", required=False, shell_complete=C.complete_project)

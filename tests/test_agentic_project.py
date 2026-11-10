@@ -474,3 +474,33 @@ def test_new_events_in_schema_with_required_keys():
     E.validate("sentinel", {"project": "p", "ok": True, "sha": "s", "suspects": []})
     with pytest.raises(ValueError, match="failing"):
         E.validate("sentinel", {"project": "p", "ok": False, "sha": "s", "suspects": []})
+
+
+# ---- SPEC-0509: machine-sized gate commands warn, never fail -----------------------------------
+
+@pytest.mark.parametrize("cmd, warns", [
+    ("uv run pytest -q -n auto", True),
+    ("make -j$(nproc)", True),
+    ("cargo build -j $(getconf _NPROCESSORS_ONLN)", True),
+    ("python -c 'import os; print(os.cpu_count())'", True),
+    ("uv run pytest -q -n $(( ${NW_GATE_CPUS:-3} - 1 ))", False),
+    ("uv run pytest -q -n 2", False),
+])
+def test_machine_sized_gate_cmd_is_a_warning_not_an_error(cmd, warns):
+    doc = {"schema": P.SCHEMA, "gates": [{"name": "g", "cmd": cmd}]}
+    P.validate(doc)                                     # never a config problem
+    got = P.config_warnings(doc)
+    assert got == (["gate g sizes from the machine; use $NW_GATE_CPUS"] if warns else [])
+
+
+def test_projects_config_shows_the_warnings(tmp_path, monkeypatch):
+    repo = tmp_path / "repo"
+    (repo / ".nw").mkdir(parents=True)
+    (repo / ".nw" / "project.yaml").write_text(
+        "schema: nw.project.v1\ngates:\n  - name: t\n    cmd: pytest -n auto\n")
+    monkeypatch.setattr(P, "project_config", lambda cfg, project: {
+        **P.load_project_config(repo / ".nw" / "project.yaml"),
+        "_root": str(repo), "_path": str(repo / ".nw" / "project.yaml")})
+    r = CliRunner().invoke(cli, ["projects", "config", "X", "--json"])
+    assert r.exit_code == 0, r.output
+    assert json.loads(r.stdout)["warnings"] == ["gate t sizes from the machine; use $NW_GATE_CPUS"]

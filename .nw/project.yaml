@@ -16,6 +16,8 @@ gates:
     timeout_s: 120
     required: true
     writes: ["docs/LEDGER.md"]
+  # SPEC-0509: pytest gates size xdist from NW_GATE_CPUS (their job's request; under Slurm the
+  # allocation): workers = cpus - 1 (+1 controller), floored at 1. The default keeps today's -n.
   # SPEC-0328: tiered gates. The fix loop (GATING after implement / each fix) runs only the
   # tests the branch affects (static import graph, tools/affected_tests.py; it falls back to the
   # full suite when selection is unsafe) plus a ~1 s config smoke set; the full suite runs once,
@@ -33,8 +35,8 @@ gates:
       && X=--exclude-marks=integration,tui,remote,perf || X=;
       python3 tools/affected_tests.py $G $X
       --include tests/test_agentic_dogfood_config.py --include tests/test_agentic_project.py
-      --run uv run pytest -q -x -n 2;
-      else uv run pytest -q -x -n 2; fi
+      --run uv run pytest -q -x -n $(( ${NW_GATE_CPUS:-3} > 1 ? ${NW_GATE_CPUS:-3} - 1 : 1 ));
+      else uv run pytest -q -x -n $(( ${NW_GATE_CPUS:-3} > 1 ? ${NW_GATE_CPUS:-3} - 1 : 1 )); fi
     retry_cmd: uv run pytest -q -n 0 -m "not (integration or tui or remote or perf) or tree_guard" {failing}
     # SPEC-0358: a round after a red one reruns the previous failing ids first
     failed_first: true
@@ -54,7 +56,7 @@ gates:
   - name: docs-tests
     when: close
     cmd: >-
-      uv run pytest -q -n 2 tests/test_docs_*.py tests/test_spec_lint*.py tests/test_specs.py
+      uv run pytest -q -n $(( ${NW_GATE_CPUS:-3} > 1 ? ${NW_GATE_CPUS:-3} - 1 : 1 )) tests/test_docs_*.py tests/test_spec_lint*.py tests/test_specs.py
       tests/test_agentic_profiles.py
     retry_cmd: uv run pytest -q -n 0 {failing}
     results: {format: pytest}
@@ -91,14 +93,15 @@ gates:
     # against merge-base($NW_BASE, HEAD), narrowed fallbacks, no fraction cap); the full
     # suite runs only as the main sentinel (SPEC-0379, interval agentic.sentinel.interval_hours),
     # which affected_tests.py detects (NW_CAMPAIGN sentinel-*) and runs in full.
-    # SPEC-0309: 4 xdist workers (8 cores / 2 gate slots); the targeted rerun stays serial.
+    # SPEC-0509: xdist workers = the job's cpus - 1 (NW_GATE_CPUS, 5 -> 4, SPEC-0309's old fixed
+    # -n 4); the targeted rerun stays serial.
     # SPEC-0421: --guards adds the tree_guard modules (tests that scan the tests/src tree) to every
     # non-full selection, so a guard that landed on main after the branch was cut still runs.
     cmd: >-
       python3 tools/affected_tests.py --guards
       --exclude-marks integration,tui,remote,perf
       --include tests/test_agentic_dogfood_config.py --include tests/test_agentic_project.py
-      --run uv run pytest -q -x -n 4
+      --run uv run pytest -q -x -n $(( ${NW_GATE_CPUS:-5} > 1 ? ${NW_GATE_CPUS:-5} - 1 : 1 ))
     retry_cmd: uv run pytest -q -n 0 -m "not (integration or tui or remote or perf) or tree_guard" {failing}
     results: {format: pytest}
     # the sentinel's full suite takes 13-19 min alone and timed out under concurrent gates at

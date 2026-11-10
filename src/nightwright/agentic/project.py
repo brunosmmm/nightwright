@@ -679,6 +679,21 @@ def worktree_root(doc, repo_root, project):
     return p if p.is_absolute() else (repo_root / p).resolve()
 
 
+def config_warnings(doc) -> list[str]:
+    """Problems that do not fail validation (SPEC-0509): a gate or cadence command that sizes
+    its parallelism from the whole machine (`-n auto`, `nproc`, ...) instead of its allocation
+    (`$NW_GATE_CPUS`). Shown by `nw projects config`."""
+    from . import gate_resources as GR
+    out = []
+    for section in ("gates", "cadence"):
+        for g in (doc or {}).get(section) or []:
+            if isinstance(g, dict):
+                w = GR.machine_sized_warning(g.get("name"), g.get("cmd"))
+                if w:
+                    out.append(w)
+    return out
+
+
 def expand_cmd(cmd, **values):
     """Replace the known `{placeholder}`s only; other braces are left alone (never format)."""
     out = cmd

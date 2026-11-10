@@ -149,3 +149,44 @@ def check_payload(res) -> str | None:
     if not isinstance(per, dict) or any(bad_req(r) for r in per.values()):
         return "payload.resources.gates must map gate names to requests"
     return None
+
+
+SLURM_CPUS_ENV = "SLURM_CPUS_PER_TASK"
+SLURM_MEM_ENV = "SLURM_MEM_PER_NODE"
+
+
+def _pos_int(raw) -> int | None:
+    try:
+        n = int(str(raw).strip())
+    except (TypeError, ValueError):
+        return None
+    return n if n > 0 else None
+
+
+def sizing_env(req: dict | None, environ=None) -> dict[str, str]:
+    """SPEC-0509: `NW_GATE_CPUS` / `NW_GATE_MEM_MB`, what a gate command sizes its
+    parallelism from: the job's request, or, inside a Slurm job, what the allocation grants
+    (`SLURM_CPUS_PER_TASK`, `SLURM_MEM_PER_NODE` in MB: they win, they are the cgroup's)."""
+    environ = environ if environ is not None else {}
+    req = req or {}
+    cpus = _pos_int(environ.get(SLURM_CPUS_ENV)) or _pos_int(req.get("cpus"))
+    mem = _pos_int(environ.get(SLURM_MEM_ENV)) or _pos_int(req.get("mem_mb"))
+    out = {}
+    if cpus:
+        out["NW_GATE_CPUS"] = str(cpus)
+    if mem:
+        out["NW_GATE_MEM_MB"] = str(mem)
+    return out
+
+
+# a gate command that sizes itself from the whole machine, not its allocation
+MACHINE_SIZED_RE = re.compile(r"(-n\s*auto\b|--numprocesses[=\s]+auto\b|\bnproc\b|"
+                              r"getconf\s+_NPROCESSORS_ONLN|os\.cpu_count|"
+                              r"multiprocessing\.cpu_count)")
+
+
+def machine_sized_warning(name: str, cmd) -> str | None:
+    """SPEC-0509: the config warning for a gate command that sizes from the machine."""
+    if isinstance(cmd, str) and MACHINE_SIZED_RE.search(cmd):
+        return f"gate {name} sizes from the machine; use $NW_GATE_CPUS"
+    return None

@@ -1157,6 +1157,10 @@ def _run_gates(cfg, h: dict, job: Path, frames: _Frames, cancel: threading.Event
         results, cut = [], False
         from . import gate_resources as GR
         per_gate = (payload.get("resources") or {}).get("gates") or {}
+        # SPEC-0509: the job's request (an older coordinator sends none: the gates' defaults);
+        # inside a Slurm job its allocation wins
+        req = payload.get("resources") or GR.job_request(payload["gates"], cfg, time_s=0)
+        env.update(GR.sizing_env(req, os.environ))
         # SPEC-0346: the child env is the dict above. Set on the gates module, not as a
         # keyword, so the call stays the signature an in-run abort's stand-in already has.
         token = G._GATE_INHERIT_ENV.set(False)

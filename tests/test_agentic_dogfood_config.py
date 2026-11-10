@@ -99,3 +99,16 @@ def test_dogfood_cadence_declares_the_five_heavy_jobs():
     assert P.path_matches(jobs["remote"]["on_paths"], "src/nightwright/agentic/remote_gates.py")
     assert P.path_matches(jobs["tui"]["on_paths"], "src/nightwright/tui/app.py")
     assert "on_paths" not in jobs["perf"] and "on_paths" not in jobs["fast-full"]
+
+
+def test_dogfood_pytest_gates_size_xdist_from_their_allocation():
+    """SPEC-0509: no fixed `-n 2` / `-n 4`: xdist workers come from NW_GATE_CPUS, and nothing
+    sizes from the machine."""
+    import re
+    doc = P.load_project_config(ROOT / ".nw" / "project.yaml")
+    gates = {g["name"]: g for g in doc["gates"]}
+    for name in ("pytest-affected", "docs-tests", "pytest"):
+        cmd = gates[name]["cmd"]
+        assert not re.search(r"-n [0-9]", cmd), (name, cmd)
+        assert "NW_GATE_CPUS" in cmd, name
+    assert P.config_warnings(doc) == []
