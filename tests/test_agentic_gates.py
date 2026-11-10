@@ -218,7 +218,9 @@ def test_as_payload_and_next_seq(world):
     assert p["gate_seq"] == 1 and p["ok"] is True and p["results"][0]["name"] == "a"
     assert "seq" not in p                                      # never clobber the ledger seq
     assert set(p["results"][0]) == {"name", "required", "ok", "exit_code", "timed_out",
-                                    "duration_s", "log", "tail", "cmd", "cwd"}
+                                    "duration_s", "log", "tail", "cmd", "cwd",
+                                    "resources"}                     # SPEC-0504
+    assert set(p["results"][0]["resources"]) == {"request", "used"}
     json.dumps(p)                                               # ledger-serializable
     assert G.next_gate_seq(cfg, CID) == 2
 
