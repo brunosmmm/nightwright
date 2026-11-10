@@ -331,6 +331,7 @@ def mark_update(rec: dict, since: str) -> None:
 
 RECONCILE_BUDGET_S = 20.0
 RECONCILE_JOBS_TIMEOUT_S = 15.0
+RECONCILE_POLL_MIN_S = 2.0
 RECONCILE_POLL_FROM = 1 << 30
 _RECONCILE_BUSY = frozenset({"accepted", "running"})
 _RECONCILE_NOT_BUSY = frozenset({"done", "error"})
@@ -458,16 +459,20 @@ def _reconcile_worker(cfg, worker: dict, t0: float, *, progress=None) -> set[str
             not_busy.add(jid)
             continue
         need_poll.append(rec)
-    for rec in need_poll:
+    for i, rec in enumerate(need_poll):
         jid = rec["job_id"]
         budget = left()
-        if budget < 2:
+        if budget < RECONCILE_POLL_MIN_S:
             continue
+        remaining = len(need_poll) - i
+        reserve = RECONCILE_POLL_MIN_S * (remaining - 1)
+        poll_timeout = budget if remaining == 1 else min(
+            budget, max(RECONCILE_POLL_MIN_S, budget - reserve) / remaining)
         stamp()
         ensure_record_ssh_dir(cfg, worker)
         try:
             proc = _reconcile_run(RG._argv(worker, "poll", jid, "--from", RECONCILE_POLL_FROM),
-                                  timeout=budget)
+                                  timeout=poll_timeout)
         except (OSError, subprocess.TimeoutExpired):
             continue
         poll_st = parse_poll_answer(proc.returncode, proc.stdout)

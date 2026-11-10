@@ -439,6 +439,20 @@ not describe an age mark or stale-job lines.
   `finish_drains` / `due_updates`) and stamps it during serial probes.
 - Jobs SSH timeout is taken from `left()` after `ensure_record_ssh_dir`, not at worker entry.
 
+### Test record (implementer loop 3, 2026-11-10)
+
+- `uv run pytest -q tests/test_worker_job_reconcile.py tests/test_workers_update_schedule.py tests/test_workers_drain.py tests/test_workers_registry.py` — 151 passed.
+- `python3 tools/test_tiers.py --check` — exit 0.
+- `python3 tools/spec_lint.py --write-ledger` and `python3 tools/spec_lint.py` — exit 0.
+- Full suite left to campaign gating.
+- Manual verification on live `box` not run in this loop.
+
+### As shipped (implementer loop 3)
+
+- When several eligible ids on one worker need `poll`, each call's timeout is capped so at
+  least `RECONCILE_POLL_MIN_S` (2 s) remains reserved per later id; a slow or timed-out poll
+  on an earlier id no longer consumes the whole per-worker budget.
+
 ## Clock Log
 
 Implementation sessions clock IDEA-1162 with `nw idea clock-in` and

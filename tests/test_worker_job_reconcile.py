@@ -10,13 +10,16 @@ from unittest import mock
 import pytest
 from click.testing import CliRunner
 
+from nightwright.agentic import events as EV
 from nightwright.agentic import gate_slots as GS
 from nightwright.agentic import queue as Q
 from nightwright.agentic import remote_gates as RG
 from nightwright.agentic import remote_jobs as RJ
+from nightwright.agentic import store as S
 from nightwright.agentic import workers as WK
 from nightwright.agentic import workers_update as WU
 from nightwright.cli import cli
+from waits import until
 
 pytestmark = pytest.mark.fast
 
@@ -367,9 +370,17 @@ def test_poll_wins_over_empty_jobs(cfg, monkeypatch):
         probe = _Probe([
             (0, b"[]"), (0, json.dumps({"type": "status", "state": poll_st}).encode() + b"\n")])
         monkeypatch.setattr(WK, "_reconcile_run", probe)
-        WK.reconcile_draining(cfg, ["box"])
+        not_busy = WK.reconcile_draining(cfg, ["box"])
         assert RJ.read(cfg, jid)["state"] == "attached"
+        assert not_busy == set()
+        assert not WK._drained(cfg, "box", not_busy=not_busy)
         _assert_poll_argv(probe.calls[1][0], jid)
+        _schedule_update(cfg)
+        probe2 = _Probe([
+            (0, b"[]"), (0, json.dumps({"type": "status", "state": poll_st}).encode() + b"\n")])
+        monkeypatch.setattr(WK, "_reconcile_run", probe2)
+        idle, _ = WK.due_updates(cfg)
+        assert idle == []
     probe = _Probe([(0, b"[]"), (0, b'{"type":"status","state":"done"}\n')])
     monkeypatch.setattr(WK, "_reconcile_run", probe)
     not_busy = WK.reconcile_draining(cfg, ["box"])
@@ -457,12 +468,24 @@ def test_unselected_worker_unchanged(cfg, monkeypatch):
 def test_no_give_up_or_side_effects(cfg, monkeypatch):
     _seed(cfg, _w())
     _job(cfg, state="attached", accepted_at="t")
+    gdir = S.gates_dir(cfg, "c-1")
+    gdir.mkdir(parents=True)
+    gate = gdir / "001-gate.json"
+    gate.write_text("{}")
+    cool_before = WK.read_strict(cfg)[0].get("cooldown_until")
     monkeypatch.setattr(WK, "_reconcile_run", _Probe([
         (0, b"[]"), (1, b'{"type":"status","state":"unknown"}\n')]))
     give_up = mock.Mock(side_effect=AssertionError("give_up"))
+    cool = mock.Mock(side_effect=AssertionError("cooldown"))
     monkeypatch.setattr(RG, "_give_up", give_up)
+    monkeypatch.setattr(RG, "set_cooldown", cool)
     WK.reconcile_draining(cfg, ["box"])
     give_up.assert_not_called()
+    cool.assert_not_called()
+    assert WK.read_strict(cfg)[0].get("cooldown_until") == cool_before
+    assert S.read_ledger(cfg, "c-1", types=["worker_job_lost"]) == []
+    assert not EV.read_since(cfg, 0, types=["worker_job_lost"])
+    assert gate.is_file()
 
 
 def test_running_past_timeout_still_times_out(cfg, monkeypatch):
@@ -536,6 +559,20 @@ def test_reported_jobs_state_when_list_agrees(cfg, monkeypatch, tmp_path):
         assert lines[0]["reported"] == st
         assert lines[0]["via"] == "poll"
         _assert_poll_argv(probe.calls[1][0], jid)
+    for jobs_st, poll_st in (("lost", "unknown"), ("unknown", "lost")):
+        tag = f"{jobs_st}-{poll_st}"
+        c = {"data_dir": str(tmp_path / tag / "data"), "agentic": {"gates": {"slots": 1}}}
+        _seed(c, _w())
+        jid = _job(c, state="attached", accepted_at="t")
+        body = json.dumps([{"job_id": jid, "state": jobs_st}]).encode()
+        poll_line = json.dumps({"type": "status", "state": poll_st}).encode() + b"\n"
+        probe = _Probe([(0, body), (1 if poll_st == "unknown" else 0, poll_line)])
+        monkeypatch.setattr(WK, "_reconcile_run", probe)
+        WK.reconcile_draining(c, ["box"])
+        lines = _journal(c, "worker_job_reconciled")
+        assert len(lines) == 1
+        assert lines[0]["reported"] == jobs_st
+        assert lines[0]["reported"] != poll_st or jobs_st == poll_st
     c = {"data_dir": str(tmp_path / "disagree" / "data"), "agentic": {"gates": {"slots": 1}}}
     _seed(c, _w())
     jid = _job(c, state="attached", accepted_at="t")
@@ -551,15 +588,42 @@ def test_reconcile_stamps_progress(cfg, monkeypatch):
     _seed(cfg, _w("one"), _w("two", ssh_argv=["ssh-2"]))
     _job(cfg, job_id="c-1-gate-001-a1", worker="one", state="attached", accepted_at="t")
     _job(cfg, job_id="c-1-gate-002-a1", worker="two", state="attached", accepted_at="t")
-    seen = []
+    order = []
 
     def progress():
-        seen.append(1)
+        order.append("p")
 
-    monkeypatch.setattr(WK, "_reconcile_run", _Probe([(0, b"[]"), (1, b'{"type":"status","state":"unknown"}\n'),
-                                                      (0, b"[]"), (1, b'{"type":"status","state":"unknown"}\n')]))
+    probe = _Probe([(0, b"[]"), (1, b'{"type":"status","state":"unknown"}\n'),
+                    (0, b"[]"), (1, b'{"type":"status","state":"unknown"}\n')])
+
+    def run(argv, *, timeout, input=None):
+        order.append("s")
+        return probe(argv, timeout=timeout, input=input)
+
+    monkeypatch.setattr(WK, "_reconcile_run", run)
     WK.reconcile_draining(cfg, ["one", "two"], progress=progress)
-    assert len(seen) >= 2
+    assert order.count("p") >= 2
+    assert "s" in order
+    assert order.index("p") < order.index("s")
+
+
+def test_tick_forwards_progress_to_reconcile(cfg, monkeypatch):
+    _seed(cfg, _w(update_pending=None))
+    _job(cfg, state="attached", accepted_at="t")
+    captured = {}
+    real = WK.reconcile_draining
+
+    def wrap(cfg_, names, *, progress=None):
+        captured["progress"] = progress
+        return real(cfg_, names, progress=progress)
+
+    monkeypatch.setattr(WK, "reconcile_draining", wrap)
+    jid = RJ.gate_job_id("c-1", 1)
+    body = json.dumps([{"job_id": jid, "state": "running"}]).encode()
+    monkeypatch.setattr(WK, "_reconcile_run", _Probe([(0, body)]))
+    tick_cb = mock.Mock()
+    Q._finish_worker_drains(cfg, progress=tick_cb)
+    assert captured.get("progress") is tick_cb
 
 
 def test_due_updates_idle_starts_update_force_false(cfg, monkeypatch, tmp_path):
@@ -569,11 +633,14 @@ def test_due_updates_idle_starts_update_force_false(cfg, monkeypatch, tmp_path):
     jid = _job(cfg, state="attached", accepted_at=old, last_seen_at=old)
     monkeypatch.setattr(WK, "_reconcile_run", _Probe([
         (0, b"[]"), (1, b'{"type":"status","state":"unknown"}\n')]))
+    send = mock.Mock(side_effect=AssertionError("send should not run"))
     perf = mock.Mock(return_value=WU.Outcome("updated", "", build_id="b"))
+    monkeypatch.setattr(WU, "send", send)
     monkeypatch.setattr(WU, "perform", perf)
     idle, _ = WK.due_updates(cfg)
     assert len(idle) == 1
-    Q._run_worker_updates(cfg)
+    Q._run_worker_updates(cfg, progress=mock.Mock())
+    assert until(lambda: not Q._UPDATING)
     assert perf.call_count == 1
     assert RJ.read(cfg, jid)["state"] == "lost"
     assert not _journal(cfg, "worker_update_timeout")
@@ -607,5 +674,56 @@ def test_workers_reference_row_mentions_reconcile():
 def test_parse_jobs_and_poll_units():
     assert WK.parse_jobs_answer(0, b"[]") == []
     assert WK.parse_jobs_answer(1, b"[]") is None
+    pretty = json.dumps([{"job_id": "j", "state": "running"}], indent=2).encode()
+    assert WK.parse_jobs_answer(0, pretty) == [{"job_id": "j", "state": "running"}]
     assert WK.parse_poll_answer(1, b'{"type":"status","state":"unknown"}\n') == "unknown"
     assert WK.parse_poll_answer(2, b'{"type":"status","state":"unknown"}\n') is None
+    buf = (b'garbage\n{"type":"status","state":"running"}\n'
+           b'{"type":"status","state":"unknown"}\n')
+    assert WK.parse_poll_answer(1, buf) == "unknown"
+
+
+def test_one_worker_two_eligible_records(cfg, monkeypatch):
+    _seed(cfg, _w())
+    j1 = _job(cfg, job_id=RJ.gate_job_id("c-1", 1), state="attached", accepted_at="t")
+    j2 = _job(cfg, job_id=RJ.gate_job_id("c-1", 2), state="attached", accepted_at="t")
+    calls = []
+
+    def run(argv, *, timeout, input=None):
+        calls.append((list(argv), timeout))
+        if "jobs" in argv:
+            return subprocess.CompletedProcess(argv, 0, b"[]", b"")
+        if j1 in argv:
+            assert timeout <= 9.0
+            return "timeout"
+        if j2 in argv:
+            return subprocess.CompletedProcess(
+                argv, 1, b'{"type":"status","state":"unknown"}\n', b"")
+        raise AssertionError(argv)
+
+    def reconcile_run(argv, *, timeout, input=None):
+        out = run(argv, timeout=timeout, input=input)
+        if out == "timeout":
+            raise subprocess.TimeoutExpired(argv, timeout)
+        return out
+
+    monkeypatch.setattr(WK, "_reconcile_run", reconcile_run)
+    WK.reconcile_draining(cfg, ["box"])
+    assert len([c for c in calls if "poll" in c[0]]) == 2
+    assert RJ.read(cfg, j1)["state"] == "attached"
+    assert RJ.read(cfg, j2)["state"] == "lost"
+
+
+def test_running_sibling_ghost_lost_same_worker(cfg, monkeypatch):
+    _seed(cfg, _w())
+    j1 = _job(cfg, job_id=RJ.gate_job_id("c-1", 1), state="attached", accepted_at="t")
+    j2 = _job(cfg, job_id=RJ.gate_job_id("c-1", 2), state="attached", accepted_at="t")
+    body = json.dumps([{"job_id": j1, "state": "running"}]).encode()
+    probe = _Probe([(0, body), (1, b'{"type":"status","state":"unknown"}\n')])
+    monkeypatch.setattr(WK, "_reconcile_run", probe)
+    not_busy = WK.reconcile_draining(cfg, ["box"])
+    assert RJ.read(cfg, j1)["state"] == "attached"
+    assert RJ.read(cfg, j2)["state"] == "lost"
+    assert not_busy == set()
+    assert not WK._drained(cfg, "box", not_busy=not_busy)
+    assert sum(1 for a, _ in probe.calls if "poll" in a) == 1
