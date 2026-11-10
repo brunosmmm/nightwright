@@ -291,8 +291,9 @@ def workers_list(cfg, as_json):
         console.print("[dim]no workers registered[/]")
         return
     t = Table(title="Workers")
-    for col in ("name", "ssh", "slots", "enabled", "cooldown", "held", "cpus", "load", "mem"):
-        t.add_column(col)
+    for col in ("name", "ssh", "slots", "enabled", "cooldown", "held"):
+        t.add_column(col, no_wrap=col == "enabled")
+    t.add_column("cpus load mem")               # SPEC-0508: one column, so 80 columns still fit
     for r in rows:
         enabled = "yes" if r["enabled"] else "no"
         if r["draining"]:
@@ -300,7 +301,7 @@ def workers_list(cfg, as_json):
                        else f"draining ({r['draining_jobs']} jobs)")
         t.add_row(r["name"], r["ssh"] or "(pull)", str(r["slots"]), enabled,
                   r["cooldown_until"] or "—", f"{r['held']}/{r['slots']}",
-                  *_capacity_cells(r["capacity"]))
+                  " ".join(_capacity_cells(r["capacity"])))
     console.print(t)
 
 
