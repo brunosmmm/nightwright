@@ -8,6 +8,8 @@ import pytest
 
 from nightwright.agentic import escalations as ESC
 
+pytestmark = pytest.mark.fast
+
 
 @pytest.fixture
 def fake_notify_send(tmp_path, monkeypatch):
