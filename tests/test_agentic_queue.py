@@ -2342,8 +2342,11 @@ def test_gate_starts_counts_flights_and_close_regates(opened):
     assert Q._gates_in_flight(ctx, pool)[0] == 1
     assert Q._gate_starts(ctx, pool, [a], set(), {"D"}) == set()
     pool.flights.clear()
-    fly(_state("GATING", id="B", gate_exclusive={"entered_at": "x"}), "gate")
+    fly(_state("GATING", id="B", gate_exclusive={"entered_at": S.now_iso()}), "gate")
     assert Q._gates_in_flight(ctx, pool) == (1, True)
+    pool.flights.clear()                         # SPEC-0523: an unreadable marker holds nobody
+    fly(_state("GATING", id="B", gate_exclusive={"entered_at": "x"}), "gate")
+    assert Q._gates_in_flight(ctx, pool) == (1, False)
     pool.flights.clear()
     fly(_state("GATING", id="B"), "gate", done=True)
     assert Q._gates_in_flight(ctx, pool) == (0, False)

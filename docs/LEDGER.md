@@ -357,6 +357,7 @@ progress. This is the single place to see *what has been decided* and *what is i
 | [SPEC-0519](./specs/0519-retire-count-slots-and-gate-job-tokens.md) | Retire nw's own admission: count-based gate slots, persona slots and SPEC-0500 gate-job tokens give way to Slurm | feature | draft | M9: agentic workflow | 2026-11-09 |
 | [SPEC-0520](./specs/0520-retire-placement-cooldown-retry-drain-lost-paths.md) | Retire nw's placement, worker cooldown, cross-worker retry, drain internals, lease and lost-job kill paths, and the sync gate-job path | feature | draft | M9: agentic workflow | 2026-11-09 |
 | [SPEC-0521](./specs/0521-retire-pull-workers.md) | Retire pull workers: remove the coordinator job API, pull_jobs, pull_worker and nw serve --jobs | feature | draft | M9: agentic workflow | 2026-11-09 |
+| [SPEC-0523](./specs/0523-exclusive-regate-is-advisory-and-short.md) | An exclusive re-gate is advisory: it holds other campaigns' gates for at most 300 s | feature | accepted | M9: agentic workflow | 2026-11-09 |
 
 ## Done
 

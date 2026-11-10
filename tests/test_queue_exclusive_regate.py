@@ -35,7 +35,8 @@ def _notes(cfg, cid, since=0):
 
 def test_exclusive_wait_max_setting():
     assert Q.exclusive_wait_max_s({}) == Q.EXCLUSIVE_WAIT_MAX_S
-    for raw, want in ((600, 600), (90.5, 90), (0, Q.EXCLUSIVE_WAIT_MAX_S),
+    for raw, want in ((600, Q.EXCLUSIVE_WAIT_MAX_S), (120, 120), (90.5, 90),
+                      (0, Q.EXCLUSIVE_WAIT_MAX_S),
                       (-5, Q.EXCLUSIVE_WAIT_MAX_S), (True, Q.EXCLUSIVE_WAIT_MAX_S),
                       ("600", Q.EXCLUSIVE_WAIT_MAX_S), (None, Q.EXCLUSIVE_WAIT_MAX_S)):
         cfg = {"agentic": {"gates": {"exclusive_wait_max_s": raw}}}
@@ -111,7 +112,7 @@ def test_ca46_reproduction(opened, monkeypatch):
         clone("B", "GATING")
         Q.tick(cfg, pool=pool)
         assert until(lambda: started == ["B"])
-        clone("X", "GATING", gate_exclusive={"entered_at": _ago(600)})
+        clone("X", "GATING", gate_exclusive={"entered_at": _ago(120)})   # within SPEC-0523's bound
         clone("CA", "GATING", gate_exclusive={"entered_at": _ago(60)})
         clone("K", "CLOSING")
         for _ in range(3):                                   # the runner keeps ticking
@@ -239,3 +240,95 @@ def test_exclusive_held_counts_pending_and_running(opened):
     assert Q._exclusive_held(ctx, pool, [_gs("A", _ago(1))]) == ["A"]
     _fly(pool, ctx, _state("GATING", id="R", gate_exclusive={"entered_at": _ago(1)}), "gate")
     assert Q._exclusive_held(ctx, pool, [_gs("A")]) == ["R"]
+
+
+# ---- SPEC-0523: exclusivity is advisory and short ----------------------------------------------
+
+def _six_waiting(opened, monkeypatch):
+    """The 2026-11-09 21:50 queue: SPEC-0476-20261109-ca46 (CA) holds an exclusive re-gate whose
+    marker entered at 21:15; six other campaigns are GATING. Returns (cfg, ids, started, release,
+    journaled)."""
+    cfg, base_id, _ctx = opened
+    base = S.read_state(cfg, base_id)
+    ids, started, release, journaled = {}, [], threading.Event(), []
+    real_journal = Q.journal
+
+    def spy(cfg_, kind, **kw):
+        journaled.append((kind, kw))
+        return real_journal(cfg_, kind, **kw)
+
+    def fake_gate(ctx, state):
+        started.append(next(k for k, v in ids.items() if v == state["id"]))
+        release.wait(10)
+        return Q.StepResult(state["id"], Q.Step("gate"), "GATING",
+                            gate_run=_gate_run(1, ("test", True, True, False)))
+
+    monkeypatch.setattr(Q, "_do_gate", fake_gate)
+    monkeypatch.setattr(Q, "journal", spy)
+    S.write_state(cfg, base_id, dict(base, state="PARKED", park={
+        "reason": "x", "detail": "", "resume_to": "IMPLEMENTING"}))
+    for name in ("CA", "W1", "W2", "W3", "W4", "W5", "W6"):
+        ids[name] = f"{base_id}-{name}"
+        over = {"gate_exclusive": {"entered_at": _ago(35 * 60)}} if name == "CA" else {}
+        S.write_state(cfg, ids[name], dict(base, id=ids[name], state="GATING",
+                                           counters=dict(base["counters"]), **over))
+    return cfg, ids, started, release, journaled
+
+
+def test_in_flight_exclusive_past_bound_releases_waiting_gates(opened, monkeypatch):
+    """CA's exclusive gate step is in flight with a marker older than the bound: at the next
+    tick all six waiting campaigns start their gates beside it, and `gate_exclusive_lapsed` is
+    journaled once (not per tick)."""
+    from concurrent.futures import Future
+    cfg, ids, started, release, journaled = _six_waiting(opened, monkeypatch)
+    _cfg, _base, ctx = opened
+    pool = Q.StepPool()
+    try:
+        fl = Q._Flight(S.read_state(cfg, ids["CA"]), ctx)
+        fl.tasks.append((Q.Step("gate"), Future(), None))       # running, never finishes here
+        pool.flights[ids["CA"]] = fl
+        Q.tick(cfg, pool=pool)
+        six = {"W1", "W2", "W3", "W4", "W5", "W6"}
+        assert until(lambda: set(started) == six)
+        Q.tick(cfg, pool=pool)
+        lapsed = [kw for k, kw in journaled if k == "gate_exclusive_lapsed"]
+        assert len(lapsed) == 1 and lapsed[0]["campaign"] == ids["CA"]
+        assert lapsed[0]["bound_s"] == Q.EXCLUSIVE_WAIT_MAX_S and lapsed[0]["age_s"] >= 35 * 60
+        assert sorted(started) == sorted(six)                  # CA's own step is not restarted
+    finally:
+        release.set()
+        pool.shutdown()
+
+
+def test_reexec_releases_pending_exclusive_and_waiting_gates(opened, monkeypatch):
+    """After a runner re-exec nothing is in flight and CA's marker (35 min old) is pending: the
+    first tick clears it (SPEC-0507 note) and starts CA and the six others together."""
+    cfg, ids, started, release, journaled = _six_waiting(opened, monkeypatch)
+    pool = Q.StepPool()
+    try:
+        Q.tick(cfg, pool=pool)
+        assert until(lambda: set(started) == set(ids))
+        assert not Q.gate_exclusive(S.read_state(cfg, ids["CA"]))
+        assert [kw["campaign"] for k, kw in journaled if k == "gate_exclusive_expired"] \
+            == [ids["CA"]]
+        assert any("starting non-exclusively" in t for t in _notes(cfg, ids["CA"]))
+    finally:
+        release.set()
+        pool.shutdown()
+
+
+def test_fresh_exclusive_still_runs_first_but_holds_at_most_the_bound(opened):
+    """The ordering SPEC-0311 still buys: a fresh exclusive gate step holds the others; the same
+    step past `EXCLUSIVE_WAIT_MAX_S` (from its marker) holds nobody."""
+    from concurrent.futures import Future
+    _cfg, _cid, ctx = opened
+    now = dt.datetime.now().astimezone()
+    pool = Q.StepPool()
+    st = _state("GATING", id="R", gate_exclusive={"entered_at": _ago(Q.EXCLUSIVE_WAIT_MAX_S - 30)})
+    fl = Q._Flight(st, ctx)
+    fl.tasks.append((Q.Step("gate"), Future(), None))
+    pool.flights["R"] = fl
+    assert Q._gates_in_flight(ctx, pool, now=now) == (1, True)
+    later = now + dt.timedelta(seconds=60)
+    assert Q._gates_in_flight(ctx, pool, now=later) == (1, False)
+    assert Q.select_gate_starts([_gs("C")], *Q._gates_in_flight(ctx, pool, now=later)) == ["C"]

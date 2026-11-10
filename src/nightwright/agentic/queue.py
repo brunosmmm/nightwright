@@ -132,10 +132,11 @@ TRIAGE_RETRY_MAX = 1
 GATE_RETRY_MAX = 1
 # SPEC-0311: consecutive timeout-only gate runs re-gated (serialized) before `gate_timeout`.
 TIMEOUT_REGATE_MAX = 2
-# SPEC-0507: the longest a pending exclusive re-gate waits before it starts as a normal gate.
-# A drain of the gate steps already running ends within their own `timeout_s` (2400 s for
-# pytest-affected); waiting past that means a stream of new starts or a lost job.
-EXCLUSIVE_WAIT_MAX_S = 2700
+# SPEC-0507 + SPEC-0523: the longest an exclusive re-gate marker holds other gate starts,
+# counted from its `entered_at`, pending or running: past it a pending one starts as a normal
+# gate and a running one no longer counts as exclusive. Exclusivity is advisory: the box is
+# shared with other jobs anyway, so "alone" cannot be bought by stalling the queue.
+EXCLUSIVE_WAIT_MAX_S = 300
 # Malformed conformance-review verdicts tolerated per loop before the review escalates.
 REVIEW_RETRY_MAX = 1
 # SPEC-0221: failed conflict-resolver runs per entry into CLOSING before the rebase_conflict park.
@@ -523,10 +524,10 @@ def select_gate_starts(candidates: list, in_flight: int, exclusive_in_flight: bo
 
 def exclusive_wait_max_s(cfg) -> int:
     """`agentic.gates.exclusive_wait_max_s` (SPEC-0507); anything but a positive number falls
-    back to `EXCLUSIVE_WAIT_MAX_S`."""
+    back to `EXCLUSIVE_WAIT_MAX_S`. SPEC-0523: it may shorten the bound, never lengthen it."""
     raw = (((cfg.get("agentic") or {}).get("gates")) or {}).get("exclusive_wait_max_s")
     ok = isinstance(raw, (int, float)) and not isinstance(raw, bool) and raw > 0
-    return int(raw) if ok else EXCLUSIVE_WAIT_MAX_S
+    return min(int(raw), EXCLUSIVE_WAIT_MAX_S) if ok else EXCLUSIVE_WAIT_MAX_S
 
 
 def exclusive_waited_s(state: dict, now) -> float | None:
@@ -5304,9 +5305,12 @@ def _gate_flights(ctx: _Ctx, pool: StepPool, now=None) -> list:
     """`(campaign id, exclusive)` of each gate step in flight (SPEC-0311). A `close` whose
     project re-gates counts as a gate step: it runs the same full suite. SPEC-0522: a step in
     flight longer than `_gate_hold_s` no longer counts (it keeps running but holds no other
-    gate start); `gate_hold_expired` is journaled once per flight."""
+    gate start); `gate_hold_expired` is journaled once per flight. SPEC-0523: a gate step is
+    exclusive only while its marker is younger than `exclusive_wait_max_s` (from `entered_at`);
+    past that it counts as a normal gate step and `gate_exclusive_lapsed` is journaled once."""
     import datetime as dt
     now = now or dt.datetime.now().astimezone()
+    excl_max = exclusive_wait_max_s(ctx.cfg)
     out = []
     for fl in list(pool.flights.values()):
         for step, fut, _hooks in list(fl.tasks):
@@ -5331,8 +5335,18 @@ def _gate_flights(ctx: _Ctx, pool: StepPool, now=None) -> list:
                             step=step.kind, age_s=round(age), bound_s=round(hold),
                             exclusive=bool(gate_exclusive(fl.state)))
                 continue
-            out.append((fl.state["id"],
-                        step.kind == "gate" and bool(gate_exclusive(fl.state))))
+            exclusive = step.kind == "gate" and bool(gate_exclusive(fl.state))
+            if exclusive:
+                held_s = exclusive_waited_s(fl.state, now)
+                if held_s > excl_max:
+                    exclusive = False
+                    key = ("gate_exclusive_lapsed", fl.state.get("id"), fl.started_at)
+                    if key not in pool.deferred_noted:
+                        pool.deferred_noted.add(key)
+                        journal(ctx.cfg, "gate_exclusive_lapsed", campaign=fl.state.get("id"),
+                                age_s=None if held_s == math.inf else round(held_s),
+                                bound_s=excl_max)
+            out.append((fl.state["id"], exclusive))
     return out
 
 
