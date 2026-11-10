@@ -180,6 +180,8 @@ did not start and may not touch. Local runs: only this lane's new/touched test f
 (`tests/test_slurm_lease.py`, `tests/test_gate_infra_outcomes.py`, `tests/test_executor_slurm.py`,
 `tests/test_worker_slurm_check.py`), all green; `tools/test_tiers.py --check` and `spec_lint` pass.
 
+**Box close-tier gate waived by the human** (2026-11-10): the bug this branch fixes (the 300 s `slot_wait` counting Slurm queue time) blocks the box gate itself; GATEJOB-1679, 1682, 1684, 1687, 1689, 1692, 1695, 1698 all ended `transport_error (slot_wait)`. Landed on affected tests + `spec_lint` only.
+
 ## Rollout / migration
 
 Ships with or after SPEC-0510. Supersedes nothing now; SPEC-0520 supersedes the lease/lost
