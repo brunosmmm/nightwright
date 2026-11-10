@@ -95,6 +95,9 @@ EVENT_TYPES = {
     "cadence": SC.EVENT_KEYS["cadence"],
     # SPEC-0381: a standalone `nw gate run` job was dispatched or finished
     "gate_job": ("job_id", "status"),
+    # SPEC-0512: `nw queue jobs` held / released / topped / bumped / re-classed / requeued /
+    # cancelled one of nw's Slurm jobs (held for the conductor's digest, `quiet.RULES`)
+    "queue_job_governed": ("job", "verb", "by", "slurm_id"),
     # SPEC-0420: red-base episodes (queue-owned fix-forward / revert) and held closes
     "red_main": ("episode", "sha", "failing"),
     "red_main_fix_opened": ("campaign", "kind", "attempt"),

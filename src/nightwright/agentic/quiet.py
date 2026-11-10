@@ -53,6 +53,8 @@ RULES = {
     "close_held": "hold",
     # SPEC-0493: a finished cadence job run (red_main carries any episode it opens)
     "cadence": "hold",
+    # SPEC-0512: a human governed one of nw's Slurm jobs (`nw queue jobs`; in the digest)
+    "queue_job_governed": "hold",
     # SPEC-0345: a rate-limit backoff episode began (dispatch resumes on its own at `until`)
     "rate_limited": "hold",
     "backlog": "cond", "backlog_blocked_long": "cond", "conductor_ping": "cond",

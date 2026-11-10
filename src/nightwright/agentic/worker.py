@@ -62,7 +62,8 @@ EXIT_ERROR = 3
 EXIT_REFUSED = 2
 UPDATING_ERROR = "worker updating"
 SSH_SUBCOMMANDS = ("info", "have", "gate-job", "gc", "submit", "attach", "poll", "cancel", "jobs",
-                   "claude-check", "cursor-check", "pi-check", "update", "slurm-check")
+                   "claude-check", "cursor-check", "pi-check", "update", "slurm-check",
+                   "slurm-jobs", "slurm-ctl")
 # when this interpreter started (SPEC-0369): a claim that began before an install did is the old
 # code, and must not run against the venv that install replaced
 PROCESS_STARTED = time.time()
@@ -1514,6 +1515,26 @@ def _job_arg(word: str) -> bool:
     return bool(KEY_RE.match(word)) and not word.startswith("-")
 
 
+SLURM_CTL_JOB_VERBS = ("hold", "release", "top", "requeue", "cancel")
+SLURM_CLASSES = ("campaign", "gatejob", "persona", "bulk")
+SLURM_NICE_MAX = 10000
+
+
+def _slurm_ctl_args(args: list[str]) -> bool:
+    """SPEC-0512: `VERB JOB`, `nice JOB 0..10000` or `class JOB CLASS`, nothing else."""
+    if len(args) < 2 or not _job_arg(args[1]):
+        return False
+    verb, rest = args[0], args[2:]
+    if verb in SLURM_CTL_JOB_VERBS:
+        return rest == []
+    if verb == "nice":
+        return len(rest) == 1 and bool(DIGITS_RE.match(rest[0])) and len(rest[0]) <= 5 \
+            and int(rest[0]) <= SLURM_NICE_MAX
+    if verb == "class":
+        return len(rest) == 1 and rest[0] in SLURM_CLASSES
+    return False
+
+
 def check_ssh_command(original: str | None) -> list[str]:
     """The `nw worker` argv (`[sub, *args]`) `SSH_ORIGINAL_COMMAND` asks for, else raise
     `ValueError(reason)`. The grammar is literal: `info [--json]`;
@@ -1521,7 +1542,9 @@ def check_ssh_command(original: str | None) -> list[str]:
     `submit`; `attach <job> [--from <n>]`; `poll <job> [--from <n>] [--renew]`;
     `cancel <job>`; `jobs [--json]`; SPEC-0344's `claude-check [--auth]`; SPEC-0436's
     `cursor-check`; SPEC-0465's `pi-check`; SPEC-0369's `update [--force]`; SPEC-0510's
-    `slurm-check [--json]`."""
+    `slurm-check [--json]`; SPEC-0512's `slurm-jobs [--json]`,
+    `slurm-ctl (hold|release|top|requeue|cancel) <job>`, `slurm-ctl nice <job> <0..10000>` and
+    `slurm-ctl class <job> (campaign|gatejob|persona|bulk)`."""
     if not original or not original.strip():
         raise ValueError("empty command")
     try:
@@ -1557,6 +1580,10 @@ def check_ssh_command(original: str | None) -> list[str]:
         ok = args in ([], ["--force"])
     elif sub == "slurm-check":                  # SPEC-0510
         ok = args in ([], ["--json"])
+    elif sub == "slurm-jobs":                   # SPEC-0512
+        ok = args in ([], ["--json"])
+    elif sub == "slurm-ctl":                    # SPEC-0512: a closed verb set
+        ok = _slurm_ctl_args(args)
     elif sub == "cancel":
         ok = len(args) == 1 and _job_arg(args[0])
     elif sub in ("attach", "poll"):

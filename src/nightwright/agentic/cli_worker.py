@@ -31,6 +31,8 @@ def worker_group():
     nw worker gc --keep-days 2         age out job dirs and cached objects
     nw worker update [--force]         install the wheel on stdin (SPEC-0369)
     nw worker slurm-check [--json]     can this user run Slurm jobs (SPEC-0510)
+    nw worker slurm-jobs --json        this worker's live nw Slurm jobs (SPEC-0512)
+    nw worker slurm-ctl VERB JOB [ARG] hold|release|top|requeue|cancel|nice|class
     nw worker ssh-command              the forced command for the worker's SSH key
     nw worker serve --enrol BLOB       a pull worker: dial the coordinator (SPEC-0334)
     """
@@ -88,6 +90,50 @@ def worker_slurm_check(cfg, as_json):
             click.echo(f"{'ok  ' if c['ok'] else 'FAIL'} {c['name']}: {c['detail']}")
     if not rec["ok"]:
         raise SystemExit(1)
+
+
+@worker_group.command("slurm-jobs")
+@click.option("--json", "as_json", is_flag=True, help="emit one nw.worker.slurm_jobs.v1 line")
+@click.pass_obj
+def worker_slurm_jobs(cfg, as_json):
+    """SPEC-0512: this worker's pending and running nw jobs in Slurm (this user's, named by an
+    nw job id of this worker). Exit 1 when the executor is not slurm, 3 when Slurm cannot be
+    asked."""
+    from . import slurm_govern as SG
+    rc, rec = SG.listing(cfg)
+    if as_json:
+        click.echo(SG.dumps(rec))
+    elif not rec["ok"]:
+        click.echo(f"error: {rec['error']}", err=True)
+    else:
+        for r in rec["jobs"]:
+            click.echo(f"{r['job_id']} {r['class'] or '-'} {r['state']} ({r['reason'] or '-'}) "
+                       f"slurm {r['slurm_job_id']}")
+    raise SystemExit(rc)
+
+
+@worker_group.command("slurm-ctl")
+@click.argument("verb", type=click.Choice(["hold", "release", "top", "requeue", "cancel",
+                                           "nice", "class"]))
+@click.argument("job")
+@click.argument("arg", required=False)
+@click.pass_obj
+def worker_slurm_ctl(cfg, verb, job, arg):
+    """SPEC-0512: act on one of this worker's nw Slurm jobs (an nw job id or a Slurm id):
+    `hold|release|top|requeue|cancel JOB`, `nice JOB 0..10000`, `class JOB CLASS`. One
+    nw.worker.slurm_ctl.v1 line; exit 1 refused (not an nw job, bad argument, executor not
+    slurm), 3 Slurm refused."""
+    from . import slurm_govern as SG
+    if verb == "nice":
+        try:
+            arg = int(arg)
+        except (TypeError, ValueError):
+            arg = None
+    elif verb in SG.JOB_VERBS and arg is not None:
+        raise click.UsageError(f"{verb} takes no argument")
+    rc, rec = SG.control(cfg, verb, job, arg)
+    click.echo(SG.dumps(rec))
+    raise SystemExit(rc)
 
 
 @worker_group.command("pi-check")
@@ -264,7 +310,7 @@ def worker_update(cfg, force):
 def worker_ssh_command():
     """The SSH forced command: exec `nw worker
     <info|have|gate-job|gc|submit|attach|poll|cancel|jobs|claude-check|cursor-check|update|
-    slurm-check>` from SSH_ORIGINAL_COMMAND, refuse
+    slurm-check|slurm-jobs|slurm-ctl>` from SSH_ORIGINAL_COMMAND, refuse
     anything else (exit 2)."""
     raise SystemExit(W.ssh_command())
 
