@@ -54,6 +54,8 @@ ALLOWED = {
     ("agentic/executor_slurm.py", "state"): "stderr diagnostic on the worker host: Slurm unavailable (SPEC-0510)",
     ("agentic/executor_slurm.py", "_pending"): "stderr diagnostic on the worker host (SPEC-0510)",
     ("agentic/executor_slurm.py", "_backstop"): "stderr diagnostic on the worker host (SPEC-0510)",
+    ("agentic/worker_job.py", "_acct_extra"): "stderr diagnostic outside the frame protocol (SPEC-0514)",
+    ("agentic/remote_gates.py", "accounting"): "stderr diagnostic of a best-effort merge (SPEC-0514)",
     ("agentic/worker_job.py", "on_term"): "stderr diagnostic from the Slurm job process (SPEC-0510)",
     ("agentic/worker_job.py", "reap"): "stderr diagnostic outside the frame protocol (SPEC-0340)",
     ("agentic/worker_job.py", "_unclaim"): "stderr diagnostic outside the frame protocol (SPEC-0340)",
