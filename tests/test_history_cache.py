@@ -42,8 +42,11 @@ def cache_dir(tmp_path, data_dir):
     return path
 
 
-def cfg(data_dir, cache_dir=None, **extra):
-    out = {"data_dir": str(data_dir), "agentic": {"default_profile": "balanced"}, **extra}
+def cfg(data_dir, cache_dir=None, *, use_cache=True, **extra):
+    agentic = {"default_profile": "balanced", **(extra.pop("agentic", None) or {})}
+    if use_cache and cache_dir is not None:
+        agentic.setdefault("history", {})["cache"] = True
+    out = {"data_dir": str(data_dir), "agentic": agentic, **extra}
     if cache_dir is not None:
         out["cache_dir"] = str(cache_dir)
     return out
@@ -81,6 +84,20 @@ def test_no_cache_dir_no_write_or_gap(data_dir, tmp_path):
     assert not list(tmp_path.rglob("history"))
 
 
+def test_cache_dir_opt_out_matches_pure_and_writes_nothing(data_dir, cache_dir):
+    c = cfg(data_dir, cache_dir, use_cache=False)
+    before = _hashes(data_dir)
+    cid = "SPEC-0394-20261102-ae5b"
+    pure_doc = H.campaign_history(cfg(data_dir), cid, now=NOW, cache=False)
+    doc = H.campaign_history(c, cid, now=NOW)
+    assert doc == pure_doc
+    assert "cache: not writable" not in doc.get("gaps", [])
+    assert H.history_index(c, now=NOW) == H.history_index(cfg(data_dir), now=NOW, cache=False)
+    assert H.history_records(c) == H.history_records(cfg(data_dir), cache=False)
+    assert _hashes(data_dir) == before
+    assert not (cache_dir / "history").exists()
+
+
 def test_cache_false_no_write(data_dir, cache_dir):
     c = cfg(data_dir, cache_dir=data_dir / "agentic")
     before = _hashes(data_dir)
@@ -94,7 +111,7 @@ def test_cache_false_no_write(data_dir, cache_dir):
 def test_not_writable_gap(data_dir, tmp_path):
     c = cfg(data_dir, cache_dir=tmp_path / "notadir")
     (tmp_path / "notadir").write_text("x")
-    doc = H.campaign_history(c, "SPEC-0394-20261102-ae5b", now=NOW)
+    doc = H.campaign_history(c, "SPEC-0394-20261102-ae5b", now=NOW, cache=True)
     assert "cache: not writable" in doc.get("gaps", [])
     idx = H.history_index(c, now=NOW)
     recs = H.history_records(c)
@@ -108,7 +125,7 @@ def test_v1_inside_data_dir_not_writable(data_dir):
     inner = data_dir / "inner-cache"
     inner.mkdir()
     c = cfg(data_dir, cache_dir=inner)
-    doc = H.campaign_history(c, "SPEC-0394-20261102-ae5b", now=NOW)
+    doc = H.campaign_history(c, "SPEC-0394-20261102-ae5b", now=NOW, cache=True)
     assert "cache: not writable" in doc.get("gaps", [])
 
 
@@ -381,10 +398,10 @@ def test_symlink_v1_inside_data_dir_not_writable(data_dir, tmp_path):
     (outer / "history").symlink_to(target, target_is_directory=True)
     before = _hashes(data_dir)
     c = cfg(data_dir, outer)
-    doc = H.campaign_history(c, "SPEC-0394-20261102-ae5b", now=NOW, cache=None)
+    doc = H.campaign_history(c, "SPEC-0394-20261102-ae5b", now=NOW, cache=True)
     assert "cache: not writable" in doc.get("gaps", [])
-    assert H.history_index(c, now=NOW, cache=None) == H.history_index(cfg(data_dir), now=NOW)
-    assert H.history_records(c, cache=None) == H.history_records(cfg(data_dir))
+    assert H.history_index(c, now=NOW, cache=True) == H.history_index(cfg(data_dir), now=NOW)
+    assert H.history_records(c, cache=True) == H.history_records(cfg(data_dir))
     assert _hashes(data_dir) == before
 
 
@@ -1208,3 +1225,48 @@ def test_corrupt_campaign_json_rebuilds_and_removes_tmp(data_dir, cache_dir):
     assert (v1 / "version").read_bytes() == b"1\n"
     assert not tmp.exists()
     assert json.loads(camp.read_text())["campaign"] == cid
+
+
+def test_decision_append_keeps_stored_unparsable_gaps(data_dir, cache_dir):
+    c = cfg(data_dir, cache_dir)
+    cid = "SPEC-0394-20261102-ae5b"
+    H.history_index(c, now=NOW, cache=True)
+    dec = data_dir / "agentic" / "conductor" / "decisions.jsonl"
+    with dec.open("a") as stream:
+        stream.write("not-json-before-append\n")
+    H.history_index(c, now=NOW, cache=True)
+    unc_before = H.campaign_history(c, cid, now=NOW, cache=False)
+    gap_prefix = "decisions.jsonl: line"
+    assert any(g.startswith(gap_prefix) for g in unc_before.get("gaps", []))
+    row = {
+        "schema": "nw.conductor.decision.v1", "seq": 88887, "ts": store.now_iso(NOW),
+        "by": "conductor", "campaign": cid, "event_id": "gap-keep-test",
+        "rule": "test", "kind": "resume", "action": None, "rationale": "r",
+    }
+    with dec.open("a") as stream:
+        stream.write(json.dumps(row) + "\n")
+    unc = H.campaign_history(c, cid, now=NOW, cache=False)
+    cached = H.campaign_history(c, cid, now=NOW, cache=True)
+    assert cached["gaps"] == unc["gaps"]
+    assert any(g.startswith(gap_prefix) for g in cached.get("gaps", []))
+
+
+def test_runner_same_size_mtime_resets_log_offset(data_dir, cache_dir):
+    c = cfg(data_dir, cache_dir)
+    H.history_index(c, now=NOW, cache=True)
+    v1 = cache_dir / "history" / "v1"
+    old_sources = json.loads((v1 / "sources.json").read_text())
+    old_off = old_sources["logs"]["runner.jsonl"]["offset"]
+    assert old_off > 0
+    run_path = data_dir / "agentic" / "runner.jsonl"
+    st = run_path.stat()
+    os.utime(run_path, ns=(st.st_atime_ns, st.st_mtime_ns + 1_000_000))
+    fresh = HC._scan_sources(c, prev=old_sources)
+    assert fresh["logs"]["runner.jsonl"]["offset"] == 0
+    HC._records_mem.clear()
+    cid = "SPEC-0394-20261102-ae5b"
+    unc = H.campaign_history(c, cid, now=NOW, cache=False)
+    cached = H.campaign_history(c, cid, now=NOW, cache=True)
+    assert {k: v for k, v in cached.items() if k != "generated_at"} == {
+        k: v for k, v in unc.items() if k != "generated_at"
+    }

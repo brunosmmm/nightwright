@@ -29,6 +29,8 @@ from . import timeline as TL
 
 def _history_cache_unwritable_warn(cfg) -> None:
     from . import history_cache as HC
+    if not HC.cache_wanted(cfg, None):
+        return
     if HC._not_writable(cfg, None) or HC.consume_cache_write_fallback():
         R.err_console.print(Text("cache: not writable"))
 
@@ -438,7 +440,11 @@ def attach(campaign_group):
     def campaign_history(ctx, campaign, as_list, rebuild_cache, project, state, spec_id, since,
                          until, min_cost, as_json):
         cfg = ctx.obj
-        """Derived history for exactly one CAMPAIGN, --list, or --rebuild-cache."""
+        """Derived history for exactly one CAMPAIGN, --list, or --rebuild-cache.
+
+        List, records, and CAMPAIGN use cache=None: caching runs only when
+        config agentic.history.cache is true (and cache_dir is set); cache=True
+        forces it. --rebuild-cache always builds under cache_dir."""
         modes = sum(bool(x) for x in (campaign, as_list, rebuild_cache))
         if modes != 1:
             raise click.UsageError(

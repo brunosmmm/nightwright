@@ -1211,12 +1211,8 @@ def _uncached_history_index(cfg, *, now=None, progress=None) -> list[dict]:
 
 
 def _history_cache_active(cfg, cache) -> bool:
-    if cache is False:
-        return False
-    if cache is True:
-        return True
-    cd = cfg.get("cache_dir")
-    return isinstance(cd, str) and bool(cd.strip())
+    from . import history_cache as HC
+    return HC.cache_enabled(cfg, cache)
 
 
 def campaign_history(cfg, cid, *, now=None, cache=None) -> dict:

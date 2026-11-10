@@ -34,7 +34,11 @@ def scaled_data(tmp_path_factory):
 
 
 def _cfg(data_dir: Path, cache_dir: Path) -> dict:
-    return {"data_dir": str(data_dir), "cache_dir": str(cache_dir), "agentic": {"default_profile": "balanced"}}
+    return {
+        "data_dir": str(data_dir),
+        "cache_dir": str(cache_dir),
+        "agentic": {"default_profile": "balanced", "history": {"cache": True}},
+    }
 
 
 def test_record_count_and_budgets(scaled_data):

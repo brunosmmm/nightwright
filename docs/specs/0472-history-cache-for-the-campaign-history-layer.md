@@ -702,6 +702,14 @@ sync; `conductor_cost.sessions` newline rule; cold fill `version` + `index.write
 `tests/test_history_cache.py::test_live_ledger_finding_in_history_records_without_campaign_history` (5 passed).
 `python3 tools/spec_lint.py --write-ledger` exit 0. Full suite left to queue gating.
 
+### Test record (2026-11-10, implementer loop 0, IDEA-1015-faf2)
+
+Opt-in `agentic.history.cache`, decision gap preservation on tail append, runner
+same-size `mtime_ns` full re-read, CLI/doc help. `uv run pytest -q tests/test_history_cache.py
+tests/test_cli_campaign_history.py tests/test_history.py tests/test_history_scale.py
+tests/test_history_perf.py::test_record_count_and_budgets` (98 passed).
+`python3 tools/spec_lint.py --write-ledger` exit 0. Full suite left to gating.
+
 ### Test record (2026-11-08, implementer loop 0)
 
 `uv run pytest -q tests/test_history_perf.py::test_record_count_and_budgets`,
@@ -731,6 +739,15 @@ Loop 3: `_INDEX_QUIET_KEY` no longer skips data-dir invalidation on `history_rec
 tree hash no longer reuses stale directory-mtime snapshots; `_sources_unchanged_light` treats
 reappeared canonical logs, flaky-tests.json, and session transcripts as changes; log `lines`
 cursors survive `_scan_sources`; same-inode/size `mtime_ns` edits force log offset zero.
+
+### As shipped (2026-11-10, loop 0)
+
+`cache=None` (default) stays on the pure reader unless `agentic.history.cache` is true and
+`cache_dir` is set; `cache=True` still forces the cache. `--rebuild-cache` always uses
+`cache_dir`. CLI `campaign history` docstring documents the config key. Production defaults
+leave history caching off until IDEA-1077 flips the config default and lands remaining
+invalidation/conformance tests (runner same-size rewrite detail, mailbox/decisions matrix,
+offsets, clone_fixture append checks).
 
 ## Clock Log
 

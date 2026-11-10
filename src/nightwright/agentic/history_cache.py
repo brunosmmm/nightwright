@@ -61,8 +61,29 @@ def consume_cache_write_fallback() -> bool:
     return False
 
 
-def _not_writable(cfg, cache) -> bool:
+def cache_wanted(cfg, cache) -> bool:
+    """True when callers should use the cache path (cache=True always; default needs opt-in)."""
     if cache is False:
+        return False
+    if cache is True:
+        return True
+    agentic = cfg.get("agentic") or {}
+    return bool((agentic.get("history") or {}).get("cache"))
+
+
+def cache_enabled(cfg, cache) -> bool:
+    if cache is False:
+        return False
+    if cache is True:
+        return True
+    if not cache_wanted(cfg, cache):
+        return False
+    cd = cfg.get("cache_dir")
+    return isinstance(cd, str) and bool(cd.strip())
+
+
+def _not_writable(cfg, cache) -> bool:
+    if not cache_wanted(cfg, cache):
         return False
     cd = cfg.get("cache_dir")
     if cache is True and (not cd or not str(cd).strip()):
@@ -150,6 +171,8 @@ def _log_entry(path: Path, offset: int | None = None, *, prev: dict | None = Non
                 row["offset"] = prev.get("offset", row["size"])
         elif prev.get("inode") == row.get("inode") and row.get("size", 0) > prev.get("size", 0):
             row["offset"] = _complete_log_offset_from(path, int(prev.get("offset", 0)))
+            if row["offset"] > 0 and "lines" in prev:
+                row["lines"] = prev["lines"]
         else:
             row["offset"] = _complete_log_offset(path)
     else:
@@ -2748,8 +2771,7 @@ def _sync_globals(cfg, root: Path, now) -> set[str]:
                 records_dirty = True
         if dec_gaps:
             records_dirty = True
-        gaps = [g for g in gaps if not g.startswith("decisions.jsonl")]
-        gaps.extend(dec_gaps)
+            gaps.extend(dec_gaps)
     elif _meta_changed(old_dec, new_dec) or dec_same_size_mtime:
         old_dec_recs = [r for r in records if r.get("source") == "decisions"]
         old_ids = {r["id"] for r in old_dec_recs}
@@ -2793,7 +2815,17 @@ def _sync_globals(cfg, root: Path, now) -> set[str]:
     run_path = agentic / "runner.jsonl"
     old_run = old_logs.get("runner.jsonl")
     new_run = new_logs.get("runner.jsonl")
-    if _meta_changed(old_run, new_run):
+    run_same_size_mtime = (
+        old_run and new_run
+        and old_run.get("inode") == new_run.get("inode")
+        and old_run.get("size") == new_run.get("size")
+        and old_run.get("mtime_ns") != new_run.get("mtime_ns")
+    )
+    run_shrink = (
+        old_run and new_run
+        and int(new_run.get("size", 0)) < int(old_run.get("size", 0))
+    )
+    if _meta_changed(old_run, new_run) or run_same_size_mtime:
         runner_changed = True
         gaps_run: list[str] = []
         all_iv = H._runner_intervals(cfg, gaps_run)
@@ -2801,8 +2833,9 @@ def _sync_globals(cfg, root: Path, now) -> set[str]:
         tail = (
             new_run and old_run
             and new_run.get("inode") == old_run.get("inode")
-            and new_run.get("size", 0) > old_run.get("offset", 0)
-            and new_run.get("size", 0) >= old_run.get("offset", 0)
+            and not run_same_size_mtime
+            and not run_shrink
+            and new_run.get("size", 0) > old_run.get("size", 0)
         )
         if tail and run_path.is_file():
             state = _runner_state_at_offset(run_path, old_run.get("offset", 0), gaps_run)

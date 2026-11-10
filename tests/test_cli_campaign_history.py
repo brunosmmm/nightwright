@@ -144,12 +144,18 @@ def test_rebuild_cache_cli(tmp_path, monkeypatch):
     shutil.copytree(FIXTURE, root)
     cache = tmp_path / "cache"
     cache.mkdir()
-    cfg = {"data_dir": str(root), "cache_dir": str(cache),
-           "agentic": {"default_profile": "balanced"}}
+    cfg = {
+        "data_dir": str(root),
+        "cache_dir": str(cache),
+        "agentic": {"default_profile": "balanced", "history": {"cache": True}},
+    }
     monkeypatch.setattr("nightwright.cli.load_config", lambda: cfg)
     runner = CliRunner()
 
     assert runner.invoke(cli, ["campaign", "history", "--rebuild-cache", "--list"]).exit_code == 2
+    assert runner.invoke(
+        cli, ["campaign", "history", "SPEC-0394-20261102-ae5b", "--rebuild-cache"],
+    ).exit_code == 2
     assert runner.invoke(cli, ["campaign", "history", "--rebuild-cache", "--state", "merged"]).exit_code == 2
     assert runner.invoke(cli, ["campaign", "history", "--rebuild-cache", "--spec", "SPEC-0394"]).exit_code == 2
     assert runner.invoke(cli, ["campaign", "history", "--rebuild-cache", "--since", "2026-11-01"]).exit_code == 2
