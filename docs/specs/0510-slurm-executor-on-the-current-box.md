@@ -318,6 +318,12 @@ then `nw workers check box --slurm` (the `nw` user's `slurm-check`); set `execut
 run and one `nw gate run` through the `nw` user with `squeue -u nw -o '%i %j %C %m %T %r'`
 during the run; `nw gate cancel` of a running one. Until then the spec stays `in-progress`.
 
+**Box gate:** `GATEJOB-1556`, loop tier on `52a5e8e9` (the code-final commit), worker `box`,
+passed (667.6 s). Local runs: only this lane's new/touched test files
+(`tests/test_executor_slurm.py`, `tests/test_worker_slurm_check.py`,
+`tests/test_rich_output_guard.py`, `tests/test_worker_executor_seam.py`,
+`tests/test_worker_ssh_command.py`), green.
+
 **For SPEC-0511..0515.** The `attempt` frame of a requeued job (attempt 2) is still not in the
 coordinator's `FRAME_TYPES`: a requeue makes the coordinator fail the job as a protocol error and
 fall back (SPEC-0515). Partition choice per job class is SPEC-0511's (`partition` is one value
