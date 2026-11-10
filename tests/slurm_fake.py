@@ -381,8 +381,16 @@ class SlurmFake:
     def _popen(self, jid) -> subprocess.Popen:
         j = self.job(jid)
         env = dict(j["env"])
+        # what sbatch's batch step exports: the request per task, the grant on the node (a
+        # test sets `alloc_cpus` for CR_Core's round-up to whole cores; default: the request)
+        alloc = j.get("alloc_cpus") or j["cpus"]
         env.update(SLURM_JOB_ID=str(jid), SLURM_CPUS_PER_TASK=str(j["cpus"]),
-                   SLURM_MEM_PER_NODE=str(j["mem_mb"]), SLURM_JOB_NAME=j["name"])
+                   SLURM_CPUS_ON_NODE=str(alloc), SLURM_JOB_CPUS_PER_NODE=str(alloc),
+                   SLURM_MEM_PER_NODE=str(j["mem_mb"]), SLURM_JOB_NAME=j["name"],
+                   SLURM_JOB_PARTITION=j.get("partition") or "nw-gatejob",
+                   SLURM_SUBMIT_DIR=str(j.get("chdir") or "/"), SLURM_NODELIST="fake-node")
+        if j.get("licenses"):
+            env["SLURM_JOB_LICENSES"] = j["licenses"]
         if j.get("restart_cnt"):
             env["SLURM_RESTART_COUNT"] = str(j["restart_cnt"])
         out = open(j["output"], "ab") if j.get("output") else subprocess.DEVNULL

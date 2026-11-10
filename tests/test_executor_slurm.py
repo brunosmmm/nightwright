@@ -291,6 +291,30 @@ def test_a_gate_job_runs_inside_slurm_with_the_allocation_sizing_it(src, tmp_pat
     assert _state(cfg, job) == "done" and _read(job / "result.json")["attempt"] == 1
 
 
+def test_a_gate_inside_slurm_sees_the_job_s_slurm_keys_and_the_granted_cpus(src, tmp_path, wenv,
+                                                                           fake):
+    """GATEJOB-1701 / Slurm job 179: a 3-cpu request granted 4 (CR_Core rounds up to whole
+    2-thread cores). The gate sees `SLURM_JOB_ID` (scripts tell "inside Slurm" by it), the
+    fixed allowlist of Slurm keys, and NW_GATE_CPUS = the grant; no other `SLURM_*` key."""
+    seen = tmp_path / "seen"
+    cmd = (f'{{ echo "cpus=$NW_GATE_CPUS mem=$NW_GATE_MEM_MB"; env | grep ^SLURM_ | sort; }} '
+           f'> "{seen}"')
+    h, data = _bundle_job(src, tmp_path, [_gate("hello", cmd)])
+    h["payload"]["resources"] = _resources(cpus=3, mem_mb=2048)
+    cfg = _cfg(wenv)
+    assert _submit(cfg, h, data)[0] == 0
+    jid = fake.ids()[0]
+    fake._set(jid, alloc_cpus=4)
+    assert fake.run(jid) == 0
+    lines = seen.read_text().splitlines()
+    assert lines[0] == "cpus=4 mem=2048"
+    got = dict(line.split("=", 1) for line in lines[1:])
+    assert got == {"SLURM_JOB_ID": str(jid), "SLURM_JOB_NAME": h["job_id"],
+                   "SLURM_CPUS_PER_TASK": "3", "SLURM_CPUS_ON_NODE": "4",
+                   "SLURM_JOB_CPUS_PER_NODE": "4", "SLURM_MEM_PER_NODE": "2048",
+                   "SLURM_JOB_PARTITION": "nw-gatejob"}
+
+
 def test_sigterm_to_the_batch_step_ends_the_job_interrupted(src, tmp_path, wenv, fake):
     marker = tmp_path / "never"
     h, data = _bundle_job(src, tmp_path, [_gate(

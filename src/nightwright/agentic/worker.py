@@ -1136,7 +1136,8 @@ def _run_gates(cfg, h: dict, job: Path, frames: _Frames, cancel: threading.Event
         frames.emit("slot_wait", waited_s=waited_s)
 
     # SPEC-0503: the host slot is the job's executor's (`local`: `gate_slots.acquire`)
-    with EX.for_job(cfg, job).host_slot(cfg, h, cancel, announce) as hold:
+    ex = EX.for_job(cfg, job)
+    with ex.host_slot(cfg, h, cancel, announce) as hold:
         if hold.interrupted:
             frames.emit("done", ok=False, started_at=now_iso(), duration_s=0.0,
                         slot_wait_s=hold.waited_s, interrupted=True, changed=[])
@@ -1153,7 +1154,8 @@ def _run_gates(cfg, h: dict, job: Path, frames: _Frames, cancel: threading.Event
         out.mkdir(exist_ok=True)
         tmp.mkdir(exist_ok=True)
         # SPEC-0336/0346: the child gets PATH and HOME from this process, the allowlisted
-        # header keys, and the keys the worker sets. Not the rest of the process env.
+        # header keys, the keys the worker sets and, in a Slurm job, `GR.SLURM_GATE_ENV`
+        # (SPEC-0509). Not the rest of the process env.
         own = {k: os.environ[k] for k in ("PATH", "HOME") if k in os.environ}
         env = {**own, "NW_CAMPAIGN": h["campaign"], "NW_SPEC_ID": h["spec_id"],
                "NW_BASE": base["name"], **(h.get("env") or {}),
@@ -1168,7 +1170,11 @@ def _run_gates(cfg, h: dict, job: Path, frames: _Frames, cancel: threading.Event
         # SPEC-0509: the job's request (an older coordinator sends none: the gates' defaults);
         # inside a Slurm job its allocation wins
         req = payload.get("resources") or GR.job_request(payload["gates"], cfg, time_s=0)
-        env.update(GR.sizing_env(req, os.environ))
+        # inside a Slurm job (the slurm executor's `run-job`) the job's fixed Slurm keys pass
+        # (`SLURM_JOB_ID`: scripts tell "inside Slurm" by it); a local job passes none
+        slurm = GR.slurm_env(os.environ) if ex.name == "slurm" else {}
+        env.update(slurm)
+        env.update(GR.sizing_env(req, slurm))
         # SPEC-0346: the child env is the dict above. Set on the gates module, not as a
         # keyword, so the call stays the signature an in-run abort's stand-in already has.
         token = G._GATE_INHERIT_ENV.set(False)

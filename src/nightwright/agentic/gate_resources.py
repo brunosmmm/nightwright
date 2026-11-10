@@ -151,8 +151,19 @@ def check_payload(res) -> str | None:
     return None
 
 
-SLURM_CPUS_ENV = "SLURM_CPUS_PER_TASK"
+SLURM_JOB_ENV = "SLURM_JOB_ID"
+SLURM_CPUS_ENV = "SLURM_CPUS_PER_TASK"     # what was asked (`--cpus-per-task`)
+SLURM_NODE_CPUS_ENV = "SLURM_CPUS_ON_NODE"  # what was granted (CR_Core rounds up to whole cores)
 SLURM_MEM_ENV = "SLURM_MEM_PER_NODE"
+# SPEC-0509: the Slurm variables a worker gate command gets from its Slurm job (an explicit
+# allowlist, SPEC-0346: never a `SLURM_*` wildcard). The job's identity (`SLURM_JOB_ID` is how a
+# script tells it runs inside a Slurm job, e.g. jerome's `cargo.sh`), its class, and its
+# allocation. Not the step/task/launch keys (`SLURM_STEP_*`, `SLURM_NODELIST`, `SLURM_TASK_*`,
+# `SLURM_SUBMIT_DIR`, `SLURM_CONF`): a gate is not meant to `srun` a step, and the submit dir is
+# the coordinator-side spawner's cwd, meaningless to a gate.
+SLURM_GATE_ENV = (SLURM_JOB_ENV, "SLURM_JOB_NAME", "SLURM_JOB_PARTITION", "SLURM_JOB_QOS",
+                  SLURM_CPUS_ENV, SLURM_NODE_CPUS_ENV, "SLURM_JOB_CPUS_PER_NODE", SLURM_MEM_ENV,
+                  "SLURM_JOB_LICENSES")
 
 
 def _pos_int(raw) -> int | None:
@@ -163,14 +174,29 @@ def _pos_int(raw) -> int | None:
     return n if n > 0 else None
 
 
+def slurm_env(environ) -> dict[str, str]:
+    """The `SLURM_GATE_ENV` keys set in `environ`, only inside a Slurm job (`SLURM_JOB_ID`
+    set); else `{}`."""
+    environ = environ or {}
+    if not environ.get(SLURM_JOB_ENV):
+        return {}
+    return {k: environ[k] for k in SLURM_GATE_ENV if environ.get(k)}
+
+
 def sizing_env(req: dict | None, environ=None) -> dict[str, str]:
     """SPEC-0509: `NW_GATE_CPUS` / `NW_GATE_MEM_MB`, what a gate command sizes its
-    parallelism from: the job's request, or, inside a Slurm job, what the allocation grants
-    (`SLURM_CPUS_PER_TASK`, `SLURM_MEM_PER_NODE` in MB: they win, they are the cgroup's)."""
+    parallelism from: the job's request, or, inside a Slurm job (`SLURM_JOB_ID` set in
+    `environ`), what the allocation grants. They win, they are the cgroup's: cpus are
+    `SLURM_CPUS_ON_NODE` (the granted count: a 3-cpu request on 2-thread cores gets 4, Slurm
+    job 179), else `SLURM_CPUS_PER_TASK`; memory is `SLURM_MEM_PER_NODE` in MB."""
     environ = environ if environ is not None else {}
     req = req or {}
-    cpus = _pos_int(environ.get(SLURM_CPUS_ENV)) or _pos_int(req.get("cpus"))
-    mem = _pos_int(environ.get(SLURM_MEM_ENV)) or _pos_int(req.get("mem_mb"))
+    cpus = mem = None
+    if environ.get(SLURM_JOB_ENV):
+        cpus = _pos_int(environ.get(SLURM_NODE_CPUS_ENV)) or _pos_int(environ.get(SLURM_CPUS_ENV))
+        mem = _pos_int(environ.get(SLURM_MEM_ENV))
+    cpus = cpus or _pos_int(req.get("cpus"))
+    mem = mem or _pos_int(req.get("mem_mb"))
     out = {}
     if cpus:
         out["NW_GATE_CPUS"] = str(cpus)

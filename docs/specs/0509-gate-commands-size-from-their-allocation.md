@@ -4,7 +4,7 @@ title: "Gate commands size their parallelism from the job's allocation (NW_GATE_
 status: in-progress
 owner: user
 created: 2026-11-09
-updated: 2026-11-09
+updated: 2026-11-10
 milestone: "M9: agentic workflow"
 parent: SPEC-0501
 tags: [agentic, gates, slurm, config]
@@ -29,7 +29,7 @@ order as load.
 
 **Goals**
 - Every gate process, local or remote, sees `NW_GATE_CPUS` and `NW_GATE_MEM_MB` = its job's
-  request (SPEC-0504), equal to `SLURM_CPUS_PER_TASK` / the job's memory under Slurm.
+  request (SPEC-0504), equal to the granted cpus / the job's memory under Slurm.
 - nightwright's own gates size from them.
 - Project config validation warns about machine-sized parallelism.
 - The jerome changes are specified for export to the jerome repo.
@@ -48,8 +48,11 @@ add a non-fatal config warning for `-n auto`, `nproc`, `$(getconf _NPROCESSORS_O
 
 - `gates.gate_env` (`gates.py:142`) and the remote gate env builder in `worker.py` add
   `NW_GATE_CPUS=<cpus>`, `NW_GATE_MEM_MB=<mem_mb>` from `job_request` (SPEC-0504). Under the
-  Slurm executor the worker uses `SLURM_CPUS_PER_TASK` and `SLURM_MEM_PER_NODE` when set (they
-  win: they are what the cgroup grants).
+  Slurm executor the worker uses the allocation when set (they win: they are what the cgroup
+  grants): cpus `SLURM_CPUS_ON_NODE` (the grant), else `SLURM_CPUS_PER_TASK` (the request);
+  memory `SLURM_MEM_PER_NODE`. The worker also passes a fixed allowlist of the job's Slurm keys
+  (`SLURM_JOB_ID` first) into each gate command, so scripts can tell they run inside Slurm
+  (see *As shipped*, 2026-11-10).
 - nightwright `.nw/project.yaml`: `pytest-affected`, `docs-tests` and `pytest` pass
   `-n $(( NW_GATE_CPUS > 1 ? NW_GATE_CPUS - 1 : 1 ))` (xdist workers + 1 controller ~= cpus),
   replacing the fixed `-n 2`.
@@ -76,7 +79,9 @@ add a non-fatal config warning for `-n auto`, `nproc`, `$(getconf _NPROCESSORS_O
 ## Acceptance criteria
 
 - [x] A local and a remote gate both see `NW_GATE_CPUS`/`NW_GATE_MEM_MB` equal to the job request.
-- [x] Under a Slurm job the values equal `SLURM_CPUS_PER_TASK` / `SLURM_MEM_PER_NODE`.
+- [x] Under a Slurm job the values equal the grant: `SLURM_CPUS_ON_NODE` (else
+      `SLURM_CPUS_PER_TASK`) / `SLURM_MEM_PER_NODE`; a worker gate sees `SLURM_JOB_ID` and the
+      fixed Slurm allowlist (2026-11-10; real check after landing pending).
 - [x] nightwright's pytest gates size `-n` from `NW_GATE_CPUS`.
 - [x] A gate cmd containing `-n auto` or `nproc` yields a config warning, not an error.
 - [ ] The jerome outbound requirements are recorded (this Design) and exported when the jerome
@@ -140,6 +145,43 @@ add a non-fatal config warning for `-n auto`, `nproc`, `$(getconf _NPROCESSORS_O
   lane's touched and new test files ran serially with `faulthandler_timeout=60` without a hang,
   and the rerun passed, so no test of this lane is identified as the cause (the box holds 18
   orphaned xdist worker processes from older jobs, days old, a pre-existing pattern).
+
+- **Slurm keys reach a worker gate; the grant sizes it (2026-11-10).** The first real Slurm run,
+  `GATEJOB-1701` (Slurm job 179, box `morais-Desktop`, Slurm 26.05, `CR_CORE_MEMORY`,
+  `task/cgroup,task/affinity`), printed `SLURM_JOB_ID=none NW_GATE_CPUS=3` and `nproc` 4. Two
+  causes: the worker's SPEC-0346 allowset (`worker._run_gates`) passed no `SLURM_*` key, and
+  `SLURM_CPUS_PER_TASK` is the *request* (3), while CR_Core grants whole 2-thread cores (4;
+  `scontrol show job`: `CPUs/Task=3`, `AllocTRES=cpu=4`). jerome's `cargo.sh` tells "inside
+  Slurm" by `SLURM_JOB_ID`, so it escaped the job's cgroup via `systemd-run --user`. Fix:
+  - `gate_resources.SLURM_GATE_ENV`, an explicit allowlist (no `SLURM_*` wildcard, SPEC-0346):
+    `SLURM_JOB_ID`, `SLURM_JOB_NAME`, `SLURM_JOB_PARTITION`, `SLURM_JOB_QOS` (identity and
+    class), `SLURM_CPUS_PER_TASK`, `SLURM_CPUS_ON_NODE`, `SLURM_JOB_CPUS_PER_NODE`,
+    `SLURM_MEM_PER_NODE`, `SLURM_JOB_LICENSES` (allocation), each only when set. Left out:
+    step/task/launch keys (`SLURM_STEP_*`, `SLURM_NODELIST`, `SLURM_TASK_*`, `SLURM_CONF`: a
+    gate is not meant to `srun` a step), `SLURM_SUBMIT_DIR` (the spawner's cwd, meaningless to a
+    gate), `SLURM_RESTART_COUNT` (nw's own attempt variable covers it).
+  - `slurm_env(environ)` returns them only when `SLURM_JOB_ID` is set; `worker._run_gates` adds
+    them only for a job of the slurm executor (`executors.for_job(...).name == "slurm"`), so a
+    local-executor job's gate env is unchanged.
+  - `sizing_env` now reads Slurm keys only when `SLURM_JOB_ID` is set, and cpus are
+    `SLURM_CPUS_ON_NODE` (the grant), else `SLURM_CPUS_PER_TASK`. The worker sizes from the
+    `slurm_env` dict, the local gate path (`_run_all_held`, e.g. a campaign run inside a Slurm
+    job) from its own process env as before. No cgroup/affinity read: the env is Slurm's own
+    statement of the grant, and with `task/affinity` it equals the cpuset. **Probed on the box
+    (as bruno, 2026-11-10, Slurm job 184, `sbatch --cpus-per-task=3 --mem=512M --time=1`):**
+    `SLURM_CPUS_PER_TASK=3`, `SLURM_CPUS_ON_NODE=4`, `SLURM_JOB_CPUS_PER_NODE=4`,
+    `SLURM_MEM_PER_NODE=512`, `SLURM_JOB_PARTITION=nw-gatejob`; `nproc` and
+    `sched_getaffinity` 4, job cgroup `cpuset.cpus.effective` `0-1,6-7`, `memory.max` 512M.
+    No `SLURM_JOB_QOS` / `SLURM_JOB_LICENSES` without a QOS / license (passed when set).
+  - Tests: `tests/test_gate_env_sizing.py` (allowlist unit; grant over per-task; no
+    `SLURM_JOB_ID` -> request; a local-executor worker gate sees `SLURM_JOB_ID=none` and the
+    request despite stray keys), `tests/test_executor_slurm.py` (a gate inside a fake Slurm job,
+    3 asked / 4 granted, sees exactly the allowlisted keys and `NW_GATE_CPUS=4`);
+    `tests/slurm_fake.py` exports the batch step's keys (`SLURM_CPUS_ON_NODE`, partition, plus
+    `SLURM_SUBMIT_DIR`/`SLURM_NODELIST` that must not pass).
+  - **Post-landing check (pending, needs `nw workers update box --when-idle`):** the same
+    `nw gate run --cmd 'echo SLURM_JOB_ID=... NW_GATE_CPUS=...; nproc'` must print a job id
+    and `NW_GATE_CPUS` = `nproc` (4 for a 3-cpu request).
 
 ## Rollout / migration
 
