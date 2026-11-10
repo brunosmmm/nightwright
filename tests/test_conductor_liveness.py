@@ -15,6 +15,8 @@ from nightwright.agentic import quiet as QT
 from nightwright.agentic import herdr_watch as HW
 from test_agentic_events import _cfg
 
+pytestmark = pytest.mark.fast
+
 T0 = dt.datetime(2026, 11, 9, 12, 0, 0).astimezone()
 
 
