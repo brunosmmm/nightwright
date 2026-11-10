@@ -256,7 +256,10 @@ def _cases():
         ("bad id", "REQ-K7H3MQ2P.md", doc(replace("id: ", "id: NOPE")), "bad id"),
         ("id mismatch", "REQ-NF6H4D2P.md", VALID, "id mismatch"),
         ("title", "REQ-K7H3MQ2P.md", doc(replace("title: ", 'title: "   "')), "title"),
-        ("status", "REQ-K7H3MQ2P.md", doc(replace("status: ", "status: yes")), "status"),
+        ("title newline", "REQ-K7H3MQ2P.md",
+         doc(replace("title: ", r'title: "line1\nline2"')), "title"),
+        ("status yes", "REQ-K7H3MQ2P.md", doc(replace("status: ", "status: yes")), "status"),
+        ("status done", "REQ-K7H3MQ2P.md", doc(replace("status: ", "status: done")), "status"),
         ("created offset", "REQ-K7H3MQ2P.md",
          doc(replace("created: ", "created: 2026-11-07T10:41:00-05:00")), "created"),
         ("created impossible day", "REQ-K7H3MQ2P.md",
@@ -493,6 +496,8 @@ def test_rejected_arguments_write_nothing(tmp_path, git_log):
         (["edit", "REQ-IIIIIIII"], "invalid id\n"),
         (["edit", "req-k7h3mq2p"], "invalid id\n"),
         (["close", "REQ-K7H3MQ2P.txt"], "invalid id\n"),
+        (["reopen", "REQ-K7H3MQ2P.txt"], "invalid id\n"),
+        (["reopen", "REQ-IIIIIIII"], "invalid id\n"),
         (["edit", "REQ-K7H3MQ2P"], "nothing to change\n"),
         (["edit", "REQ-K7H3MQ2P", "--spec", "SPEC-0449", "--clear-spec", "--repo", str(missing)],
          "spec and clear-spec are mutually exclusive\n"),
@@ -715,6 +720,42 @@ def test_close_and_reopen_are_single_file_commits(tmp_path, monkeypatch, git_log
     assert rev(repo, "nw-backlog") == tip
 
 
+def test_reopen_canonicalizes_a_noncanonical_closed_blob(tmp_path, monkeypatch):
+    freeze(monkeypatch, "2026-11-09T12:00:00+00:00")
+    repo = init_repo(tmp_path / "repo")
+    messy_closed = doc([
+        "idea: drop-me",
+        "status: closed",
+        "title: Unquoted title",
+        "id: REQ-K7H3MQ2P",
+        "updated: 2026-11-01T00:00:00Z",
+        "created: 2026-11-07T15:41:00Z",
+        'created_by: "Grace Hopper <grace@example.com>"',
+        'updated_by: "Old <old@example.com>"',
+        "spec: SPEC-0449",
+    ], "\nKept body.\n")
+    before = commit_tree(repo, {"README.md": B.README_TEXT, "REQ-K7H3MQ2P.md": messy_closed})
+    point(repo, before)
+    proc = nw(repo, ["reopen", "REQ-K7H3MQ2P"])
+    assert proc.exit_code == 0, (proc.stdout, proc.stderr, proc.exception)
+    assert proc.stdout == "" and proc.stderr == ""
+    assert cat(repo, "REQ-K7H3MQ2P.md").decode() == (
+        "---\n"
+        "id: REQ-K7H3MQ2P\n"
+        'title: "Unquoted title"\n'
+        "status: open\n"
+        "created: 2026-11-07T15:41:00Z\n"
+        "updated: 2026-11-09T12:00:00Z\n"
+        'created_by: "Grace Hopper <grace@example.com>"\n'
+        'updated_by: "Ada Lovelace <ada@example.com>"\n'
+        "spec: SPEC-0449\n"
+        "---\n"
+        "\n"
+        "Kept body.\n"
+    )
+    assert rev(repo, "nw-backlog") != before
+
+
 def _isolate(monkeypatch, directory, text=""):
     global_cfg = directory / "global.gitconfig"
     system_cfg = directory / "system.gitconfig"
@@ -733,7 +774,11 @@ def test_refuses_unset_or_illegal_identity(tmp_path, monkeypatch, git_log):
         ({"user.name": "Ada Lovelace", "user.email": "   "}, "user.email is unset\n"),
         ({"user.name": "Ada\nLovelace", "user.email": "ada@example.com"},
          "user.name contains a line break\n"),
+        ({"user.name": "Ada\rLovelace", "user.email": "ada@example.com"},
+         "user.name contains a line break\n"),
         ({"user.name": "Ada Lovelace", "user.email": "a\nb@example.com"},
+         "user.email contains a line break\n"),
+        ({"user.name": "Ada Lovelace", "user.email": "a\rb@example.com"},
          "user.email contains a line break\n"),
         ({"user.name": "Ada <Lovelace", "user.email": "ada@example.com"},
          "user.name contains '<'\n"),
