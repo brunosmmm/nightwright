@@ -356,7 +356,7 @@ progress. This is the single place to see *what has been decided* and *what is i
 | [SPEC-0523](./specs/0523-exclusive-regate-is-advisory-and-short.md) | An exclusive re-gate is advisory: it holds other campaigns' gates for at most 300 s | feature | accepted | M9: agentic workflow | 2026-11-09 |
 | [SPEC-0524](./specs/0524-disk-self-clean.md) | Finished work cleans up after itself: pytest tmp retention and an hourly disk sweep | feature | accepted | M9: agentic workflow | 2026-11-09 |
 | [SPEC-0527](./specs/0527-federation-bounded-relay-mail-and-two-remote-verbs.md) | Federation, bounded: relay, mail and two remote verbs | feature | accepted | — | 2026-11-09 |
-| [SPEC-0531](./specs/0531-spec-review-precheck-skips-review-on-a-stale-spec.md) | Spec-review precheck scopes already-accepted to the current spec | feature | proposed | — | 2026-11-10 |
+| [SPEC-0531](./specs/0531-spec-review-precheck-skips-review-on-a-stale-spec.md) | Spec-review precheck scopes already-accepted to the current spec | feature | accepted | — | 2026-11-10 |
 
 ## Done
 

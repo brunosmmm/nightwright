@@ -1,9 +1,10 @@
 ---
 id: SPEC-0531
 title: Spec-review precheck scopes already-accepted to the current spec
-status: proposed
+status: accepted
 owner: user
 created: 2026-11-10
+updated: 2026-11-10
 kind: feature
 tags: [agentic, queue]
 depends_on: [SPEC-0214]
