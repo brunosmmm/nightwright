@@ -29,7 +29,7 @@ def remote_config_set(w: dict, tail: list[str]) -> tuple[dict | None, str, int]:
     code, out, err = _ssh_run(w, tail)
     rec, perr = WHC.parse_config_set_result(out)
     if rec is None:
-        reason = perr or _last_stderr(err) or f"ssh exit {code}"
+        reason = (_last_stderr(err) if err else perr) or f"ssh exit {code}"
         return None, reason, 1
     if not rec.get("ok"):
         return rec, rec.get("error") or f"ssh exit {code}", 1 if code else 3

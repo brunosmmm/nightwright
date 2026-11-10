@@ -71,7 +71,9 @@ def test_ssh_grammar_and_refusals():
     assert W.check_ssh_command("nw worker config-set set executor slurm") == \
         ["config-set", "set", "executor", "slurm"]
     for cmd in ("nw worker config-set", "nw worker config-set set executor SLURM",
-                "nw worker config-set set slots 3", "nw worker config-set set executor local; id"):
+                "nw worker config-set set slots 3", "nw worker config-set set executor local; id",
+                "nw worker config-set set executor slurm extra",
+                "nw worker config-set get executor extra"):
         with pytest.raises(ValueError):
             W.check_ssh_command(cmd)
 
@@ -168,6 +170,44 @@ def test_symlink_config_refused(cfg_home):
     assert tgt.read_bytes() == raw
 
 
+def test_dangling_symlink_config_refused(cfg_home):
+    cdir, cfg = cfg_home
+    cdir.mkdir()
+    p = cdir / "config.yaml"
+    p.symlink_to("/no/such/config.yaml")
+    assert p.is_symlink() and not p.exists()
+    code = WHC.run(["set", "executor", "slurm"], cfg)
+    assert code == 3
+    assert p.is_symlink()
+    assert os.readlink(p) == "/no/such/config.yaml"
+    assert list(cdir.glob("config.yaml.bak.*")) == []
+    assert list(cdir.glob("config.yaml.tmp*")) == []
+
+
+def test_dangling_symlink_config_dir_refused(cfg_home):
+    cdir, cfg = cfg_home
+    dangling = cfg_home[0].parent / "gone"
+    cdir.symlink_to(dangling)
+    assert cdir.is_symlink() and not cdir.exists()
+    code = WHC.run(["set", "executor", "slurm"], cfg)
+    assert code == 3
+    assert cdir.is_symlink()
+    assert not dangling.exists()
+    assert not (cfg_home[0].parent / "config.yaml").exists()
+
+
+def test_worker_run_refuses_bad_key_and_value(cfg_home):
+    cdir, cfg = cfg_home
+    cdir.mkdir()
+    p = cdir / "config.yaml"
+    p.write_text("agentic:\n  workers:\n    executor: local\n")
+    raw = p.read_bytes()
+    for tail in (["set", "bogus", "slurm"], ["set", "executor", "bogus"]):
+        rc = WHC.run(tail, cfg)
+        assert rc == 2
+        assert p.read_bytes() == raw
+
+
 def test_backup_on_change(cfg_home):
     cdir, cfg = cfg_home
     WHC.run(["set", "executor", "local"], cfg)
@@ -251,6 +291,67 @@ def test_ensure_ssh_dir_before_ssh(coord_world, monkeypatch):
     assert rec.get("executor") == "slurm"
     assert rec["info"]["executor"] == "local"
     assert not (st / "argv").exists()
+    assert "desired=slurm" in r.output
+    assert "host not updated: ssh socket directory unusable: nope" in r.output
+
+
+def test_ensure_ssh_dir_get_shows_desired(coord_world, monkeypatch):
+    st, cfg = coord_world
+    records = json.loads(WK.path(cfg).read_text())["workers"]
+    records[0]["executor"] = "slurm"
+    WK.path(cfg).write_text(json.dumps({"schema": WK.SCHEMA, "workers": records}))
+
+    def boom(c, w):
+        raise OSError("nope")
+
+    monkeypatch.setattr(WK, "ensure_record_ssh_dir", boom)
+    r = CliRunner().invoke(cli, ["workers", "config", "box", "get", "--json"])
+    assert r.exit_code == 1
+    payload = json.loads(r.output)
+    assert payload == {"name": "box", "op": "get", "desired": "slurm", "error": "ssh socket directory unusable: nope"}
+    assert not (st / "argv").exists()
+
+
+def test_workers_config_get_success(coord_world):
+    st, cfg = coord_world
+    records = json.loads(WK.path(cfg).read_text())["workers"]
+    records[0]["executor"] = "slurm"
+    WK.path(cfg).write_text(json.dumps({"schema": WK.SCHEMA, "workers": records}))
+    r = CliRunner().invoke(cli, ["workers", "config", "box", "get", "executor", "--json"])
+    assert r.exit_code == 0, r.output
+    payload = json.loads(r.output)
+    assert set(payload) == {"name", "op", "desired", "keys"}
+    assert payload["op"] == "get" and payload["desired"] == "slurm"
+    r = CliRunner().invoke(cli, ["workers", "config", "box", "get", "executor"])
+    assert r.exit_code == 0
+    assert "box executor live=(unset) effective=local desired=slurm" in r.output
+
+
+def test_remote_config_set_surfaces_stderr(coord_world, monkeypatch):
+    from nightwright.agentic import workers_host_config as WC
+
+    def fake_ssh(w, tail):
+        return 255, "", "refused: subcommand"
+
+    monkeypatch.setattr(WC, "_ssh_run", fake_ssh)
+    w = WK.normalize({"data_dir": "/x", "agentic": {}},
+                      json.loads(WK.path(coord_world[1]).read_text())["workers"][0])
+    rec, reason, code = WC.remote_config_set(w, ["get"])
+    assert rec is None and code == 1
+    assert reason == "refused: subcommand"
+
+
+def test_bogus_set_exits_2_before_ensure(coord_world, monkeypatch):
+    st, cfg = coord_world
+
+    def boom(c, w):
+        raise OSError("nope")
+
+    monkeypatch.setattr(WK, "ensure_record_ssh_dir", boom)
+    before = WK.path(cfg).read_bytes()
+    r = CliRunner().invoke(cli, ["workers", "config", "box", "set", "executor", "bogus"])
+    assert r.exit_code == 2
+    assert WK.path(cfg).read_bytes() == before
 
 
 def test_pull_and_unknown(coord_world):

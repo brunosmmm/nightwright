@@ -73,6 +73,8 @@ def test_allowed_commands_are_execd(execs, own, cmd, argv):
     "nw worker config-set",
     "nw worker config-set set executor SLURM",
     "nw worker config-set set executor local; id",
+    "nw worker config-set set executor slurm extra",
+    "nw worker config-set get executor extra",
     "nw worker update /tmp/x.whl",
     "nw worker gate-job --force",
     "nw worker gc --keep-days -1",

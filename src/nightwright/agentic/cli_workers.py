@@ -620,11 +620,12 @@ def _workers_config_record(cfg, name):
     return rec, w
 
 
-def _ensure_ssh_dir(cfg, w: dict) -> None:
+def _try_ensure_ssh_dir(cfg, w: dict) -> str | None:
     try:
         WK.ensure_record_ssh_dir(cfg, w)
     except OSError as e:
-        raise click.ClickException(f"ssh socket directory unusable: {e}")
+        return f"ssh socket directory unusable: {e}"
+    return None
 
 
 def _desired_str(rec: dict) -> str | None:
@@ -646,7 +647,6 @@ def workers_config(cfg, name, op, args, as_json):
     desired = _desired_str(rec)
 
     if op == "get":
-        _ensure_ssh_dir(cfg, w)
         if len(args) > 1:
             raise click.UsageError("get takes at most one KEY")
         key = args[0] if args else None
@@ -655,6 +655,13 @@ def workers_config(cfg, name, op, args, as_json):
                 WHC.validate_key(key)
             except ValueError as e:
                 raise click.UsageError(str(e)) from e
+        sock_err = _try_ensure_ssh_dir(cfg, w)
+        if sock_err:
+            if as_json:
+                _dump_json({"name": name, "op": "get", "desired": desired, "error": sock_err})
+            else:
+                _say(f"{name} executor desired={desired or '(unset)'}; get failed: {sock_err}", "red")
+            raise SystemExit(1)
         tail = ["get", *( [key] if key else [])]
         remote, reason, _code = WC.remote_config_set(w, tail)
         if remote is None or not remote.get("ok"):
@@ -662,11 +669,7 @@ def workers_config(cfg, name, op, args, as_json):
             if as_json:
                 _dump_json({"name": name, "op": "get", "desired": desired, "error": err})
             else:
-                if key:
-                    _say(f"{name} executor desired={desired or '(unset)'}; "
-                         f"host not updated: {err}", "red")
-                else:
-                    _say(f"{name}: get failed: {err}", "red")
+                _say(f"{name} executor desired={desired or '(unset)'}; get failed: {err}", "red")
             raise SystemExit(1)
         if as_json:
             if key:
@@ -706,7 +709,15 @@ def workers_config(cfg, name, op, args, as_json):
     except click.ClickException:
         raise
     desired = value
-    _ensure_ssh_dir(cfg, w)
+    sock_err = _try_ensure_ssh_dir(cfg, w)
+    if sock_err:
+        if as_json:
+            _dump_json({"name": name, "op": "set", "key": key, "value": value,
+                        "effective": None, "desired": desired, "unchanged": False,
+                        "pushed": False, "error": sock_err})
+        else:
+            _say(f"{name} executor desired={value}; host not updated: {sock_err}", "red")
+        raise SystemExit(1)
 
     remote, reason, _code = WC.remote_config_set(w, ["set", key, value])
     pushed = bool(remote and remote.get("ok"))
@@ -742,6 +753,9 @@ def workers_config(cfg, name, op, args, as_json):
     if ierr or not isinstance(info, dict) or info.get("executor") != value:
         _set_json(ierr or f"info executor is {info.get('executor')!r}, not {value!r}")
     WK._cache_info(cfg, name, info)
+    stored = _find(_load_or_fail(cfg), name)
+    if (stored.get("info") or {}).get("executor") != value:
+        _set_json("info cache not refreshed: executor not stored on record")
     if as_json:
         _dump_json({"name": name, "op": "set", "key": key, "value": value,
                     "effective": eff, "desired": desired, "unchanged": unchanged,

@@ -22,6 +22,8 @@ ALLOWED: dict[str, frozenset[str]] = {
     "executor": frozenset({"local", "slurm"}),
 }
 
+_O_NOFOLLOW = getattr(os, "O_NOFOLLOW", 0)
+
 
 def validate_key(key: str) -> None:
     if key not in ALLOWED:
@@ -81,9 +83,17 @@ def _nested_get(doc: dict, key: str):
     return node.get("executor")
 
 
+def _path_lstat(path: Path) -> os.stat_result | None:
+    try:
+        return path.lstat()
+    except FileNotFoundError:
+        return None
+
+
 @contextmanager
 def _config_lock(cdir: Path):
-    fd = os.open(cdir / "config.yaml.lock", os.O_RDWR | os.O_CREAT, 0o600)
+    lock = cdir / "config.yaml.lock"
+    fd = os.open(lock, os.O_RDWR | os.O_CREAT, 0o600)
     try:
         fcntl.flock(fd, fcntl.LOCK_EX)
         yield
@@ -92,33 +102,62 @@ def _config_lock(cdir: Path):
         os.close(fd)
 
 
+def _dir_path_error(st: os.stat_result, label: str) -> str | None:
+    if stat.S_ISLNK(st.st_mode):
+        return f"{label} is not a directory"
+    if not stat.S_ISDIR(st.st_mode):
+        return f"{label} is not a directory"
+    return None
+
+
 def _ensure_config_dir_for_set(cdir: Path) -> str | None:
-    if cdir.exists():
-        if not stat.S_ISDIR(cdir.lstat().st_mode):
-            return "config directory is not a directory"
-        return None
-    to_create = []
+    st = _path_lstat(cdir)
+    if st is not None:
+        return _dir_path_error(st, "config directory")
+    to_create: list[Path] = []
     p = cdir
-    while not p.exists():
+    while True:
+        pst = _path_lstat(p)
+        if pst is not None:
+            if err := _dir_path_error(pst, "config directory"):
+                return err
+            break
         to_create.append(p)
+        if p.parent == p:
+            break
         p = p.parent
     for d in reversed(to_create):
         d.mkdir(mode=0o700)
         os.chmod(d, 0o700)
-    if (cdir.stat().st_mode & 0o777) != 0o700:
+    st = cdir.stat()
+    if (st.st_mode & 0o777) != 0o700:
         os.chmod(cdir, 0o700)
     return None
 
 
+def _read_config_bytes(path: Path) -> bytes:
+    fd = os.open(path, os.O_RDONLY | _O_NOFOLLOW)
+    try:
+        chunks: list[bytes] = []
+        while True:
+            block = os.read(fd, 1 << 20)
+            if not block:
+                break
+            chunks.append(block)
+        return b"".join(chunks)
+    finally:
+        os.close(fd)
+
+
 def _load_mapping(path: Path) -> tuple[dict | None, str | None]:
-    if not path.is_file():
+    st = _path_lstat(path)
+    if st is None:
         return {}, None
-    st = path.lstat()
     if stat.S_ISLNK(st.st_mode):
         return None, "config.yaml is a symlink"
     if not stat.S_ISREG(st.st_mode):
         return None, "config.yaml is not a regular file"
-    raw = path.read_bytes()
+    raw = _read_config_bytes(path)
     if not raw.strip():
         return {}, None
     try:
@@ -146,8 +185,11 @@ def _mapping_nodes_ok(doc: dict) -> str | None:
 def _stored_doc() -> tuple[dict, dict | None]:
     """(stored mapping for reads, file-rule error dict or None)."""
     cdir = config_dir()
-    if not cdir.is_dir():
+    st = _path_lstat(cdir)
+    if st is None:
         return {}, None
+    if _dir_path_error(st, "config directory"):
+        return {}, _result(ok=False, error="config directory is not a directory")
     path = config_path()
     doc, err = _load_mapping(path)
     if err:
@@ -188,6 +230,36 @@ def _set_nested(doc: dict, key: str, value: str) -> dict:
     return new
 
 
+def _backup_path(path: Path) -> Path:
+    stamp = datetime.now().strftime("%Y%m%d%H%M%S")
+    base = path.with_name(f"config.yaml.bak.{stamp}")
+    if not base.exists():
+        return base
+    pid = os.getpid()
+    alt = path.with_name(f"config.yaml.bak.{stamp}-{pid}")
+    if not alt.exists():
+        return alt
+    n = 0
+    while True:
+        n += 1
+        cand = path.with_name(f"config.yaml.bak.{stamp}-{pid}-{n}")
+        if not cand.exists():
+            return cand
+
+
+def _exclusive_temp(cdir: Path) -> tuple[int, Path]:
+    pid = os.getpid()
+    for n in range(32):
+        name = f"config.yaml.tmp.{pid}" if n == 0 else f"config.yaml.tmp.{pid}.{n}"
+        tmp = cdir / name
+        try:
+            fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | _O_NOFOLLOW, 0o600)
+            return fd, tmp
+        except FileExistsError:
+            continue
+    raise OSError("could not create config temp file")
+
+
 def set_key(cfg: dict, key: str, value: str) -> dict:
     validate_value(key, value)
     cdir = config_dir()
@@ -196,11 +268,11 @@ def set_key(cfg: dict, key: str, value: str) -> dict:
         return _result(ok=False, error=dir_err)
     path = config_path()
     with _config_lock(cdir):
-        if path.exists():
-            st = path.lstat()
-            if stat.S_ISLNK(st.st_mode) or not stat.S_ISREG(st.st_mode):
+        path_st = _path_lstat(path)
+        if path_st is not None:
+            if stat.S_ISLNK(path_st.st_mode) or not stat.S_ISREG(path_st.st_mode):
                 return _result(ok=False, error="config.yaml is not a regular file")
-        doc, err = _load_mapping(path) if path.is_file() else ({}, None)
+        doc, err = _load_mapping(path) if path_st is not None else ({}, None)
         if err:
             return _result(ok=False, error=err)
         assert doc is not None
@@ -214,27 +286,33 @@ def set_key(cfg: dict, key: str, value: str) -> dict:
             return _result(ok=True, op="set", key=key, value=value, effective=eff, unchanged=True)
         new_doc = _set_nested(doc, key, value)
         text = yaml.safe_dump(new_doc, sort_keys=False, default_flow_style=False)
-        tmp = path.with_suffix(path.suffix + ".tmp")
+        bak: Path | None = None
+        tmp: Path | None = None
+        tmp_fd: int | None = None
         try:
-            if path.is_file():
-                stamp = datetime.now().strftime("%Y%m%d%H%M%S")
-                bak = path.with_name(f"config.yaml.bak.{stamp}")
-                while bak.exists():
-                    bak = path.with_name(f"config.yaml.bak.{stamp}-{os.getpid()}")
-                bak.write_bytes(path.read_bytes())
-                os.chmod(bak, 0o600)
-            tmp.write_text(text, encoding="utf-8")
-            os.chmod(tmp, 0o600)
-            tmp_fd = os.open(tmp, os.O_RDONLY)
-            try:
-                os.fsync(tmp_fd)
-            finally:
-                os.close(tmp_fd)
+            if path_st is not None:
+                bak = _backup_path(path)
+                bfd = os.open(bak, os.O_WRONLY | os.O_CREAT | os.O_EXCL | _O_NOFOLLOW, 0o600)
+                try:
+                    os.write(bfd, _read_config_bytes(path))
+                    os.fsync(bfd)
+                finally:
+                    os.close(bfd)
+            tmp_fd, tmp = _exclusive_temp(cdir)
+            os.write(tmp_fd, text.encode("utf-8"))
+            os.fsync(tmp_fd)
+            os.close(tmp_fd)
+            tmp_fd = None
             os.replace(tmp, path)
+            tmp = None
             os.chmod(path, 0o600)
         except OSError as e:
-            if tmp.exists():
+            if tmp_fd is not None:
+                os.close(tmp_fd)
+            if tmp is not None:
                 tmp.unlink(missing_ok=True)
+            if bak is not None:
+                bak.unlink(missing_ok=True)
             return _result(ok=False, error=str(e))
         eff = _effective(_merge_file(cfg, new_doc))
         return _result(ok=True, op="set", key=key, value=value, effective=eff, unchanged=False)
