@@ -143,7 +143,7 @@ def _record_ineligible(cfg, campaign_id, why: dict) -> None:
 
 
 def pools_for(cfg, project_cfg: dict, campaign_state: dict, *, seq: int,
-              worker: str | None = None) -> list | None:
+              worker: str | None = None, why_out: dict | None = None) -> list | None:
     """The `pools` for `gate_slots.acquire`, or None for local only. Eligibility is checked
     only when a remote pool exists, so without an enabled worker nothing extra runs. With
     `worker` (`nw queue gates --worker`): only that worker's pool, its cooldown ignored; an
@@ -173,6 +173,8 @@ def pools_for(cfg, project_cfg: dict, campaign_state: dict, *, seq: int,
         raise ValueError(f"not eligible for remote gates: {why['title']}")
     _record_ineligible(cfg, campaign_state["id"], why)
     return None
+    if why_out is not None:                     # SPEC-0505: the reason for the local run
+        why_out["ineligible"] = why["title"]
 
 
 def _affine_first(cfg, campaign_state: dict, pools: list) -> list:

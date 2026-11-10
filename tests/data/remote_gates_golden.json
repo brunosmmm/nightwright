@@ -24,6 +24,13 @@
       "gate_seq": 1,
       "head": "044090052af4839a792db70550a24512ba8ee79f",
       "ok": true,
+      "placement": {
+        "detail": "no remote worker is enabled for gates",
+        "reason": "no_placeable_worker",
+        "stage": null,
+        "where": "local",
+        "worker": null
+      },
       "results": [
         {
           "cmd": "echo hello; git rev-parse HEAD",
@@ -196,6 +203,13 @@
     "gate_seq": 1,
     "head": "044090052af4839a792db70550a24512ba8ee79f",
     "ok": true,
+    "placement": {
+      "detail": "no remote worker is enabled for gates",
+      "reason": "no_placeable_worker",
+      "stage": null,
+      "where": "local",
+      "worker": null
+    },
     "results": [
       {
         "cmd": "echo hello; git rev-parse HEAD",

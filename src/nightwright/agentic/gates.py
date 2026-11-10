@@ -96,6 +96,31 @@ class GateRun:
     event_uid: str | None = None    # SPEC-0341: the `gate` event's uid (`<job_id>:<n of done>`)
     changed: tuple | None = None    # SPEC-0368: paths the gates wrote in the worker's checkout;
     #                                 None on a local run
+    placement: dict | None = None   # SPEC-0505: why a local run ran locally (`local_placement`)
+
+
+LOCAL_REASONS = ("requested_local", "ineligible", "no_placeable_worker", "transport", "tree",
+                 "rejected", "retries_exhausted", "no_retry_pool", "adopt_fell_back")
+
+
+def local_placement(code: str, detail: str = "", *, worker: str | None = None,
+                    stage: str | None = None) -> dict:
+    """SPEC-0505: the `placement` of a gate run that ran on the coordinator."""
+    assert code in LOCAL_REASONS, code
+    return {"where": "local", "reason": code, "detail": str(detail or ""), "worker": worker,
+            "stage": stage}
+
+
+def failure_placement(failure, worker: str | None = None) -> dict:
+    """SPEC-0505: the local `placement` for a remote run that fell back (`RemoteFailure` or
+    None): `rejected`, `tree` (the gates wrote files the run could not bring back) or
+    `transport`."""
+    if failure is None:
+        return local_placement("transport", "the remote run returned no result", worker=worker)
+    stage = getattr(failure, "stage", None)
+    detail = getattr(failure, "error", "") or str(failure)
+    code = "rejected" if failure.rejected else "tree" if stage == "tree" else "transport"
+    return local_placement(code, detail, worker=worker, stage=stage)
 
 
 def terminate_all() -> None:
@@ -817,10 +842,15 @@ def run_all(project_cfg: dict, campaign_state: dict, cfg, *, seq: int,
             if out.lost is not None:
                 return _retry(out.lost, waited, head=head, tree=tree, **retry)
             return _fallback(project_cfg, campaign_state, cfg, cid, worktree, seq, stop, tier,
-                             announce, waited, head=head, tree=tree)
+                             announce, waited, head=head, tree=tree,
+                             why=local_placement("adopt_fell_back",
+                                                 "the adopted job neither finished nor was lost",
+                                                 worker=adopt.get("worker")))
+        why_pools: dict = {}
         if not local:
             from . import remote_gates as RG    # lazy: remote_gates imports this module
-            pools = RG.pools_for(cfg, project_cfg, campaign_state, seq=seq, worker=worker)
+            pools = RG.pools_for(cfg, project_cfg, campaign_state, seq=seq, worker=worker,
+                                 why_out=why_pools)
             if pools is not None:
                 RJ.settings(cfg)                # SPEC-0342: a bad max_remote_attempts raises
             if worker is None:                  # SPEC-0343: a worker drained mid-wait is passed
@@ -835,9 +865,20 @@ def run_all(project_cfg: dict, campaign_state: dict, cfg, *, seq: int,
                                slot_wait_s=hold.waited_s)
             head, tree = head_tree(worktree)        # SPEC-0359: the tree this run gates
             if hold.pool is None:
+                if local:
+                    why = local_placement("requested_local", "the caller asked for a local run")
+                elif why_pools.get("ineligible"):
+                    why = local_placement("ineligible", why_pools["ineligible"])
+                elif pools is None:
+                    why = local_placement("no_placeable_worker",
+                                          "no remote worker is enabled for gates")
+                else:
+                    why = local_placement("no_placeable_worker",
+                                          "every remote worker is cooled down, drained or off")
                 run = _run_all_held(project_cfg, campaign_state, cfg, cid, worktree, seq, stop,
                                     tier)
-                return replace(run, slot_wait_s=hold.waited_s, head=head, tree=tree)
+                return replace(run, slot_wait_s=hold.waited_s, head=head, tree=tree,
+                               placement=why)
             out = RG.run(hold.pool, project_cfg, campaign_state, cfg, seq, owner, stop,
                          tier=tier)
         waited = round(hold.waited_s + out.worker_wait_s, 1)
@@ -848,7 +889,8 @@ def run_all(project_cfg: dict, campaign_state: dict, cfg, *, seq: int,
         if out.failure is not None and out.failure.rejected:    # SPEC-0367: say it loudly
             render.warn(RG.rejection_notice(cfg, hold.pool, out.failure))
         return _fallback(project_cfg, campaign_state, cfg, cid, worktree, seq, stop, tier,
-                         announce, waited, head=head, tree=tree)
+                         announce, waited, head=head, tree=tree,
+                         why=failure_placement(out.failure, hold.pool))
     finally:
         store.clear_child_tmp(cfg, cid, owner)
 
@@ -883,8 +925,13 @@ def _retry(lost, waited, *, project_cfg, campaign_state, cfg, cid, worktree, seq
         if pools is None:
             RJ.update(cfg, lost["job_id"], state="local")
             RG.retried(cfg, cid, lost, attempt, None)
+            why = local_placement("retries_exhausted", f"attempt {attempt} is past "
+                                  f"max_remote_attempts {limit}", worker=lost.get("worker")) \
+                if attempt > limit else local_placement(
+                    "no_retry_pool", "no other remote worker is placeable",
+                    worker=lost.get("worker"))
             return _fallback(project_cfg, campaign_state, cfg, cid, worktree, seq, stop, tier,
-                             announce, waited, head=head, tree=tree)
+                             announce, waited, head=head, tree=tree, why=why)
         repool = None
         if worker is None:                      # SPEC-0374: re-read placement while waiting
             from . import workers as WK
@@ -900,7 +947,10 @@ def _retry(lost, waited, *, project_cfg, campaign_state, cfg, cid, worktree, seq
                 RG.retried(cfg, cid, lost, attempt, None)
                 run = _run_all_held(project_cfg, campaign_state, cfg, cid, worktree, seq, stop,
                                     tier)
-                return replace(run, slot_wait_s=waited, head=head, tree=tree)
+                return replace(run, slot_wait_s=waited, head=head, tree=tree,
+                               placement=local_placement(
+                                   "no_placeable_worker", "no other remote worker is placeable "
+                                   "for the retry", worker=lost.get("worker")))
             sent = []
 
             def on_attempt(job_id, recorded, lost=lost, attempt=attempt, to=hold.pool):
@@ -922,12 +972,13 @@ def _retry(lost, waited, *, project_cfg, campaign_state, cfg, cid, worktree, seq
             if out.failure is not None and out.failure.rejected:    # SPEC-0367
                 render.warn(RG.rejection_notice(cfg, hold.pool, out.failure))
             return _fallback(project_cfg, campaign_state, cfg, cid, worktree, seq, stop, tier,
-                             announce, waited, head=head, tree=tree)
+                             announce, waited, head=head, tree=tree,
+                             why=failure_placement(out.failure, hold.pool))
         lost = out.lost
 
 
 def _fallback(project_cfg, campaign_state, cfg, cid, worktree, seq, stop, tier, announce,
-              waited, *, head=None, tree=None) -> GateRun:
+              waited, *, head=None, tree=None, why: dict) -> GateRun:
     """SPEC-0338 fallback: the remote slot is released; a local one, under the same claim."""
     with gate_slots.acquire(cfg, cid, stop=stop, on_wait=announce) as fb:
         waited = round(waited + fb.waited_s, 1)
@@ -935,7 +986,7 @@ def _fallback(project_cfg, campaign_state, cfg, cid, worktree, seq, stop, tier, 
             return GateRun(seq, False, (), store.now_iso(), 0.0, interrupted=True,
                            slot_wait_s=waited)
         run = _run_all_held(project_cfg, campaign_state, cfg, cid, worktree, seq, stop, tier)
-    return replace(run, slot_wait_s=waited, head=head, tree=tree)
+    return replace(run, slot_wait_s=waited, head=head, tree=tree, placement=why)
 
 
 def _run_all_held(project_cfg, campaign_state, cfg, cid, worktree, seq, stop, tier) -> GateRun:
@@ -1001,6 +1052,10 @@ def as_payload(run: GateRun) -> dict:
     for key in ("head", "tree"):            # SPEC-0359: the tree the run gated
         if getattr(run, key):
             out[key] = getattr(run, key)
+    if run.worker:                          # SPEC-0505: where the run ran; a local run says why
+        out["placement"] = {"where": "remote", "worker": run.worker}
+    elif run.placement:
+        out["placement"] = dict(run.placement)
     if run.changed is not None:             # SPEC-0368: a remote run's; a local payload is unchanged
         out["changed"] = list(run.changed)
     if run.reused:                          # SPEC-0359: close gates a loop result stood in for

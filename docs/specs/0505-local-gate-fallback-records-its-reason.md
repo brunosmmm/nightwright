@@ -1,7 +1,7 @@
 ---
 id: SPEC-0505
 title: "A gate run that ran locally instead of on a worker records why, in the gate event and in nw campaign show"
-status: accepted
+status: done
 owner: user
 created: 2026-11-09
 updated: 2026-11-09
@@ -72,10 +72,10 @@ Reason codes (closed set, `gates.LOCAL_REASONS`):
 
 ## Acceptance criteria
 
-- [ ] Each of the nine codes is produced by its path (unit tests force each path).
-- [ ] The `gate` ledger event of every run has `placement`; a local one has a non-empty `reason`.
-- [ ] `nw campaign show` shows `local: <code>` for a local gate run; `--json` carries `placement`.
-- [ ] Remote runs are unchanged except for `placement.where = "remote"`.
+- [x] Each of the nine codes is produced by its path (unit tests force each path).
+- [x] The `gate` ledger event of every run has `placement`; a local one has a non-empty `reason`.
+- [x] `nw campaign show` shows `local: <code>` for a local gate run; `--json` carries `placement`.
+- [x] Remote runs are unchanged except for `placement.where = "remote"`.
 
 ## Test plan
 
@@ -94,11 +94,11 @@ Additive. Old events lack `placement`; the renderer prints nothing for them. Sup
 
 ## Definition of done
 
-- [ ] Acceptance criteria all met.
-- [ ] Test plan executed; affected tests pass; manual step performed and noted.
-- [ ] No regressions.
-- [ ] Spec body updated to match what shipped.
-- [ ] `docs/LEDGER.md` updated (status + date).
+- [x] Acceptance criteria all met.
+- [x] Test plan executed; affected tests pass; manual step performed and noted.
+- [x] No regressions.
+- [x] Spec body updated to match what shipped.
+- [x] `docs/LEDGER.md` updated (status + date).
 
 ## Risks
 
@@ -108,3 +108,28 @@ Additive. Old events lack `placement`; the renderer prints nothing for them. Sup
 ## Open questions
 
 - None.
+
+## As shipped
+
+- `gates.GateRun.placement`, `gates.LOCAL_REASONS` (the nine codes), `gates.local_placement()` and
+  `gates.failure_placement()` (maps a `RemoteFailure` to `rejected` / `tree` / `transport`;
+  `stage` and `detail` come from it, `worker` is the pool that failed). Every local path passes
+  its reason: `_fallback(..., why=)` and the two direct `_run_all_held` sites set
+  `GateRun.placement`.
+- Deviation: the `placement` field is added in `gates.as_payload` (shared by the `gate` ledger
+  event and `last_gate`), not in `queue.py`; a remote run (`worker` set) always gets
+  `{"where": "remote", "worker": <name>}`. An interrupted local run with no placement carries
+  none (nothing ran).
+- `remote_gates.pools_for(..., why_out=)` reports the ineligible reason. With no enabled remote
+  worker at all `pools_for` is None and the code is `no_placeable_worker` ("no remote worker is
+  enabled for gates"); `ineligible` needs a remote pool that was refused.
+- `nw campaign show` (via `timeline._ev_gate`) ends the gate line with
+  `· local: <code> (<detail, clipped to 80>)`; the story line in `--json` carries `placement`.
+  Old events without `placement` render as before.
+- Tests: `tests/test_gates_placement_reason.py` (one test per code, event/story/legacy render);
+  `tests/data/remote_gates_golden.json` re-recorded (only the new `placement` key).
+- Manual (real binary): a throwaway campaign gated with the worker registered but
+  `enabled: false`, in an isolated data/config dir (not the shared registry, so no parallel
+  lane's gate was disturbed): `uv run nw campaign show` printed
+  `Gate #1 - passed (0s) · local: no_placeable_worker (no remote worker is enabled for gates)`
+  and `--json` carried the `placement` object.

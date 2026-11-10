@@ -785,6 +785,10 @@ class _Builder:
                      [r for r in results if not r.get("ok")]
             names = ", ".join(str(r.get("name")) for r in failed) or "?"
             text = f"{label} #{ev.get('gate_seq')}{where} — FAILED after {dur} ({names})"
+        pl = ev.get("placement") if isinstance(ev.get("placement"), dict) else None
+        if pl and pl.get("where") == "local":       # SPEC-0505: why it ran on the coordinator
+            detail = f" ({_clip(pl.get('detail'), 80)})" if pl.get("detail") else ""
+            text += f" · local: {pl.get('reason') or 'unknown'}{detail}"
         kids = []
         for r in results:
             mark = "✓" if r.get("ok") else "✗"
@@ -802,7 +806,8 @@ class _Builder:
             kids.append({"text": self._noise_text(nev), "tone": "", "seqs": [nev["seq"]]})
         g["_pending_noise"] = []
         self._line(text, "gates", sorted(seqs), kind="gate", tone="ok" if ok else "bad",
-                   ref=ev["seq"], children=kids, gate_seq=ev.get("gate_seq"))
+                   ref=ev["seq"], children=kids, gate_seq=ev.get("gate_seq"),
+                   **({"placement": pl} if pl else {}))
 
     # --- finalize --------------------------------------------------------------------------
 
