@@ -344,7 +344,7 @@ def _reconcile_unaccepted(rec: dict) -> bool:
         return False
     try:
         return int(rec.get("cursor") or 0) == 0
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         return False
 
 
@@ -437,10 +437,8 @@ def _reconcile_worker(cfg, worker: dict, t0: float, *, progress=None) -> set[str
     stamp()
     try:
         ensure_record_ssh_dir(cfg, worker)
-    except OSError as exc:
-        from . import queue as Q
-        Q.journal(cfg, "worker_reconcile_probe_failed", worker=name, error=str(exc))
-        return set()
+    except OSError:
+        return set()                    # unusable ssh dir: no answer, nothing journaled
     budget = left()
     if budget <= 0:
         return set()
@@ -472,9 +470,7 @@ def _reconcile_worker(cfg, worker: dict, t0: float, *, progress=None) -> set[str
         stamp()
         try:
             ensure_record_ssh_dir(cfg, worker)
-        except OSError as exc:
-            from . import queue as Q
-            Q.journal(cfg, "worker_reconcile_probe_failed", worker=name, error=str(exc))
+        except OSError:
             return not_busy
         budget = left()
         if budget < RECONCILE_POLL_MIN_S:

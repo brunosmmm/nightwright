@@ -480,8 +480,9 @@ not describe an age mark or stale-job lines.
 - Poll reserve uses `min(later, floor((budget - 2s) / 2s))` after each `ensure_record_ssh_dir`;
   when the capped timeout would fall below 2s but at least 2s remains, poll uses
   `min(budget, 15s)` so earlier ghosts are not skipped while later ids still poll.
-- `ensure_record_ssh_dir` `OSError` journals `worker_reconcile_probe_failed` per worker and
-  continues probing later selected workers instead of aborting the whole pass.
+- `ensure_record_ssh_dir` `OSError` is a no-answer for that worker (superseded in
+  "As shipped (implementer campaign loop 1 review)": no journal line); later selected
+  workers are still probed instead of aborting the whole pass.
 
 ### Test record (implementer campaign loop 2, 2026-11-10)
 
@@ -520,6 +521,27 @@ not describe an age mark or stale-job lines.
 - Tests: unrecognized poll states stay live; SSH `OSError` leaves record live; journal
   identity fields; unaccepted sibling after ghost; `due_updates` progress via `_run_worker_updates`;
   pull worker argv on dedicated probe stub; missing `job_id` skips probe.
+
+### Test record (implementer campaign loop 1 review, 2026-11-10)
+
+- `uv run pytest -q tests/test_worker_job_reconcile.py tests/test_workers_update_schedule.py tests/test_workers_drain.py tests/test_workers_registry.py` — 167 passed.
+- `python3 tools/test_tiers.py --check` — exit 0.
+- `python3 tools/spec_lint.py --write-ledger` and `python3 tools/spec_lint.py` — exit 0.
+- Full suite left to campaign gating.
+- Manual verification on live `box` not run in this loop.
+
+### As shipped (implementer campaign loop 1 review)
+
+- `worker_reconcile_probe_failed` is dropped: an `ensure_record_ssh_dir` `OSError` is a plain
+  no-answer for that worker (records stay live, later workers still probed, nothing raised,
+  nothing journaled), so `worker_job_reconciled` is the only journal line of this feature
+  and a persistently unusable ssh dir cannot grow the journal each tick.
+- `_reconcile_unaccepted` also treats `OverflowError` (`"cursor": Infinity`) as "not the
+  unaccepted shape" so the drain and update passes are not aborted.
+- Tests only otherwise: an expired-`since` ghost is idle and not late and the update starts
+  with no `worker_update_timeout`; `perform` is called as `(cfg, rec)` with no kwargs;
+  `finish_drains` / `due_updates` do not probe workers the call did not select; jobs-parser
+  edge cases; recent ISO stamps for the inside-the-limit fixtures.
 
 ## Clock Log
 

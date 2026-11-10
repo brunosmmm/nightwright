@@ -372,7 +372,7 @@ def test_poll_exit_1_unknown_marks_lost(cfg, monkeypatch, tmp_path):
         assert len(lines) == 1
         assert lines[0]["via"] == "poll" and lines[0]["reported"] == "absent"
     for age_old in (False, True):
-        stamp = _old_iso() if age_old else "t"
+        stamp = _old_iso() if age_old else _old_iso(0)
         for step in ("timeout", (2, b""), (0, b"not json\n")):
             tag = f"no-answer-{'old' if age_old else 'young'}-{step!s}"
             c = {"data_dir": str(tmp_path / tag / "data"), "agentic": {"gates": {"slots": 1}}}
@@ -499,7 +499,7 @@ def test_poll_wins_over_empty_jobs(cfg, monkeypatch):
 
 def test_bad_jobs_and_skipped_poll(cfg, monkeypatch, tmp_path):
     for age_old in (False, True):
-        stamp = _old_iso() if age_old else "t"
+        stamp = _old_iso() if age_old else _old_iso(0)
         for step in ((1, b"[]"), "timeout", (0, b"{}"), (0, b"not-json")):
             tag = f"{'old' if age_old else 'young'}-{step!s}"
             c = {"data_dir": str(tmp_path / tag / "data"), "agentic": {"gates": {"slots": 1}}}
@@ -522,7 +522,7 @@ def test_bad_jobs_and_skipped_poll(cfg, monkeypatch, tmp_path):
             assert WK.due_updates(c)[0] == []
     for at, expect_poll in ((19.5, False), (18.0, True)):
         for age_old in (False, True):
-            stamp = _old_iso() if age_old else "t"
+            stamp = _old_iso() if age_old else _old_iso(0)
             tag = f"budget-{at}-{'old' if age_old else 'young'}"
             c = {"data_dir": str(tmp_path / tag / "data"),
                  "agentic": {"gates": {"slots": 1}}}
@@ -723,8 +723,9 @@ def test_ensure_ssh_dir_failure_aborts_without_disable(cfg, monkeypatch):
     assert RJ.read(cfg, "c-1-gate-001-a1")["state"] == "attached"
     assert RJ.read(cfg, j2)["state"] == "lost"
     assert any(j2 in c for c in calls)
-    failed = _journal(cfg, "worker_reconcile_probe_failed")
-    assert len(failed) == 1 and failed[0]["worker"] == "one"
+    assert "one" not in WK.finish_drains(cfg)       # a second tick: still no probe_failed line
+    assert not _journal(cfg, "worker_reconcile_probe_failed")
+    assert len(_journal(cfg)) == len(_journal(cfg, "worker_job_reconciled"))
     _seed(cfg, _w("one"), _w("two", ssh_argv=["ssh-2"]))
     old = (dt.datetime.now().astimezone() - dt.timedelta(hours=7)).isoformat(timespec="seconds")
     _schedule_update(cfg, "one")
@@ -855,15 +856,15 @@ def test_due_updates_idle_starts_update_force_false(cfg, monkeypatch, tmp_path):
     jid = _job(cfg, state="attached", accepted_at=old, last_seen_at=old)
     monkeypatch.setattr(WK, "_reconcile_run", _Probe([
         (0, b"[]"), (1, b'{"type":"status","state":"unknown"}\n')]))
-    send = mock.Mock(side_effect=AssertionError("send should not run"))
     perf = mock.Mock(return_value=WU.Outcome("updated", "", build_id="b"))
-    monkeypatch.setattr(WU, "send", send)
     monkeypatch.setattr(WU, "perform", perf)
     idle, _ = WK.due_updates(cfg)
     assert len(idle) == 1
     Q._run_worker_updates(cfg, progress=mock.Mock())
     assert until(lambda: not Q._UPDATING)
     assert perf.call_count == 1
+    assert perf.call_args.args == (cfg, mock.ANY) and not perf.call_args.kwargs
+    assert perf.call_args.args[1]["name"] == "box"
     assert RJ.read(cfg, jid)["state"] == "lost"
     assert not _journal(cfg, "worker_update_timeout")
 
@@ -934,6 +935,12 @@ def test_parse_jobs_and_poll_units():
     assert WK.parse_jobs_answer(1, b"[]") is None
     pretty = json.dumps([{"job_id": "j", "state": "running"}], indent=2).encode()
     assert WK.parse_jobs_answer(0, pretty) == [{"job_id": "j", "state": "running"}]
+    for bad in (b"\xff", b"5", b'"x"', b"null", b"{}", b"not json", b"[" * 100000):
+        assert WK.parse_jobs_answer(0, bad) is None
+    assert WK.parse_jobs_answer(0, json.dumps([
+        {"job_id": 5, "state": "running"}, {"job_id": "a", "state": 7}, {"job_id": "b"},
+        {"state": "running"}, 1, "x", None, ["job_id"],
+        {"job_id": "ok", "state": "done"}]).encode()) == [{"job_id": "ok", "state": "done"}]
     assert WK.parse_poll_answer(0, b'{"type":"status","state":"unknown"}\n') == "unknown"
     assert WK.parse_poll_answer(0, b'{"type":"status","state":"lost"}\n') == "lost"
     assert WK.parse_poll_answer(1, b'{"type":"status","state":"unknown"}\n') == "unknown"
@@ -1015,3 +1022,113 @@ def test_live_record_missing_job_id_skips_reconcile_pass(cfg, monkeypatch):
     Q._run_worker_updates(cfg, progress=mock.Mock())
     assert probe.calls == []
     assert RJ.read(cfg, jid)["state"] == "attached"
+
+
+def test_malformed_jobs_entry_goes_to_poll(cfg, monkeypatch):
+    _seed(cfg, _w())
+    jid = _job(cfg, state="attached", accepted_at="t")
+    body = json.dumps([{"job_id": jid, "state": 5}, 1, "x"]).encode()
+    probe = _Probe([(0, body), (1, b'{"type":"status","state":"running"}\n')])
+    monkeypatch.setattr(WK, "_reconcile_run", probe)
+    WK.reconcile_draining(cfg, ["box"])
+    assert len(probe.calls) == 2 and "poll" in probe.calls[1][0]
+    assert RJ.read(cfg, jid)["state"] == "attached"
+
+
+def test_infinite_cursor_does_not_abort(cfg, monkeypatch):
+    _seed(cfg, _w())
+    jid = _job(cfg, state="attached", accepted_at="t")
+    path = RJ.jobs_dir(cfg) / f"{jid}.json"
+    doc = json.loads(path.read_text())
+    doc["accepted_at"] = None
+    path.write_text(json.dumps(doc).replace('"cursor": 0', '"cursor": Infinity'))
+    assert "Infinity" in path.read_text()
+    monkeypatch.setattr(WK, "_reconcile_run", _Probe([
+        (0, b"[]"), (1, b'{"type":"status","state":"unknown"}\n')]))
+    WK.reconcile_draining(cfg, ["box"])
+    assert RJ.read(cfg, jid)["state"] == "lost"
+    assert WK.finish_drains(cfg) == ["box"]
+
+
+def test_probe_failed_never_journaled_across_ticks(cfg, monkeypatch):
+    _seed(cfg, _w("box", update_pending=None))
+    jid = _job(cfg, state="attached", accepted_at="t")
+
+    def ensure(cfg_, w):
+        raise OSError("ssh dir unusable")
+
+    monkeypatch.setattr(WK, "ensure_record_ssh_dir", ensure)
+    monkeypatch.setattr(WK, "_reconcile_run", _Probe([]))
+    for _ in range(2):
+        assert WK.finish_drains(cfg) == []
+    assert not _journal(cfg)
+    assert RJ.read(cfg, jid)["state"] == "attached"
+
+
+def test_ghost_with_expired_drain_timeout_is_idle_not_late(cfg, monkeypatch):
+    _seed(cfg, _w())
+    _schedule_update(cfg)
+    old = _old_iso(7)
+
+    def stamp_old(records):
+        for r in records:
+            r["update_pending"]["since"] = old
+    WK.update(cfg, stamp_old)
+    jid = _job(cfg, state="attached", accepted_at=old, last_seen_at=old)
+    monkeypatch.setattr(WK, "_reconcile_run", _Probe([
+        (0, b"[]"), (1, b'{"type":"status","state":"unknown"}\n')]))
+    idle, late = WK.due_updates(cfg)
+    assert len(idle) == 1 and idle[0]["name"] == "box" and late == []
+    assert RJ.read(cfg, jid)["state"] == "lost"
+    perf = mock.Mock(return_value=WU.Outcome("updated", "", build_id="b"))
+    monkeypatch.setattr(WU, "perform", perf)
+    monkeypatch.setattr(WK, "_reconcile_run", _Probe([]))
+    Q._run_worker_updates(cfg, progress=mock.Mock())
+    assert until(lambda: not Q._UPDATING)
+    assert perf.call_count == 1
+    assert not _journal(cfg, "worker_update_timeout")
+    assert not _journal(cfg, "worker_update_failed")
+
+
+def _failing_probe(calls):
+    def run(argv, *, timeout, input=None):
+        calls.append(list(argv))
+        raise AssertionError(f"unselected worker probed: {argv!r}")
+    return run
+
+
+def test_finish_drains_does_not_probe_update_pending_worker(cfg, monkeypatch):
+    _seed(cfg, _w("plain", update_pending=None, ssh_argv=["ssh-plain"]),
+          _w("upd", ssh_argv=["ssh-upd"]))
+    _schedule_update(cfg, "upd")
+    _job(cfg, job_id="c-1-gate-001-a1", worker="upd", state="attached", accepted_at="t")
+    calls = []
+    monkeypatch.setattr(WK, "_reconcile_run", _failing_probe(calls))
+    assert WK.finish_drains(cfg) == ["plain"]
+    assert calls == []
+    assert RJ.read(cfg, "c-1-gate-001-a1")["state"] == "attached"
+
+
+def test_due_updates_does_not_probe_unselected_workers(cfg, monkeypatch):
+    _seed(cfg, _w("upd", ssh_argv=["ssh-upd"]),
+          _w("plain", update_pending=None, ssh_argv=["ssh-plain"]),
+          _w("off", enabled=False, draining=False, ssh_argv=["ssh-off"]),
+          _w("idle", draining=False, ssh_argv=["ssh-idle"]))
+    _schedule_update(cfg, "upd")
+    jobs = {}
+    for i, n in enumerate(("plain", "off", "idle"), start=1):
+        jobs[n] = _job(cfg, job_id=f"c-1-gate-00{i}-a1", worker=n, state="attached",
+                       accepted_at="t")
+
+    def fn(records):
+        for r in records:
+            if r["name"] == "off":
+                r["update_pending"] = {"reason": "update", "since": _old_iso(0)}
+    WK.update(cfg, fn)
+    calls = []
+    monkeypatch.setattr(WK, "_reconcile_run", _failing_probe(calls))
+    idle, late = WK.due_updates(cfg)
+    assert [r["name"] for r in idle] == ["upd"] and late == []
+    assert calls == []
+    for jid in jobs.values():
+        assert RJ.read(cfg, jid)["state"] == "attached"
