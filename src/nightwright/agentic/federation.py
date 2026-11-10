@@ -6,6 +6,7 @@ import hmac
 import http.client
 import json
 import secrets
+import socket
 import ssl
 import time
 from pathlib import Path
@@ -41,8 +42,13 @@ def new_host_credential(*, write: bool = True) -> tuple[str, str]:
 
 
 def write_host_secrets(cfg, name: str, token: str, secret: str) -> None:
-    PJ.write_private(host_token_path(cfg, name), token + "\n")
-    PJ.write_private(host_secret_path(cfg, name), secret + "\n")
+    tok_p = host_token_path(cfg, name)
+    PJ.write_private(tok_p, token + "\n")
+    try:
+        PJ.write_private(host_secret_path(cfg, name), secret + "\n")
+    except OSError:
+        tok_p.unlink(missing_ok=True)
+        raise
 
 
 def drop_host_secrets(cfg, name: str) -> None:
@@ -50,9 +56,13 @@ def drop_host_secrets(cfg, name: str) -> None:
     host_secret_path(cfg, name).unlink(missing_ok=True)
 
 
+def _strip_one_trailing_newline(s: str) -> str:
+    return s[:-1] if s.endswith("\n") else s
+
+
 def read_host_token(cfg, name: str) -> str | None:
     try:
-        s = host_token_path(cfg, name).read_text(encoding="utf-8").strip()
+        s = _strip_one_trailing_newline(host_token_path(cfg, name).read_text(encoding="utf-8"))
     except OSError:
         return None
     return s or None
@@ -60,7 +70,7 @@ def read_host_token(cfg, name: str) -> str | None:
 
 def read_host_secret(cfg, name: str) -> str | None:
     try:
-        s = host_secret_path(cfg, name).read_text(encoding="utf-8").strip()
+        s = _strip_one_trailing_newline(host_secret_path(cfg, name).read_text(encoding="utf-8"))
     except OSError:
         return None
     return s or None
@@ -107,7 +117,11 @@ def verify(secret: str, method: str, path: str, body: bytes, mac: str, ts: int,
     if abs(int(now) - int(ts)) > SKEW_S:
         return "stale signature"
     want = sign(secret, method, path, body, ts)
-    if not isinstance(mac, str) or not hmac.compare_digest(mac, want):
+    try:
+        good = isinstance(mac, str) and hmac.compare_digest(mac, want)
+    except (TypeError, ValueError):
+        good = False
+    if not good:
         return "bad signature"
     return None
 
@@ -168,13 +182,18 @@ class HubClient:
                    **request_headers(self.secret, method, target, data, now=self._now)}
         if data:
             headers["Content-Length"] = str(len(data))
-        if self.https:
-            conn = http.client.HTTPSConnection(self.host, self.port,
-                                               timeout=self.CONNECT_TIMEOUT)
-        else:
-            conn = http.client.HTTPConnection(self.host, self.port,
-                                              timeout=self.CONNECT_TIMEOUT)
         try:
+            if self.https:
+                sock = socket.create_connection((self.host, self.port),
+                                                  timeout=self.CONNECT_TIMEOUT)
+                ctx = ssl.create_default_context()
+                sock = ctx.wrap_socket(sock, server_hostname=self.host)
+                conn = http.client.HTTPSConnection(self.host, self.port)
+                conn.sock = sock
+            else:
+                conn = http.client.HTTPConnection(self.host, self.port)
+                conn.sock = socket.create_connection((self.host, self.port),
+                                                     timeout=self.CONNECT_TIMEOUT)
             conn.request(method, target, body=data, headers=headers)
             conn.sock.settimeout(self.READ_TIMEOUT)
             resp = conn.getresponse()

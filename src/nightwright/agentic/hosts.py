@@ -38,7 +38,7 @@ def validate_url(url: str) -> str:
     host = u.hostname
     if ":" in host:
         host = f"[{host}]"
-    port = f":{u.port}" if u.port else ""
+    port = f":{u.port}" if u.port is not None else ""
     return f"{u.scheme}://{host}{port}"
 
 

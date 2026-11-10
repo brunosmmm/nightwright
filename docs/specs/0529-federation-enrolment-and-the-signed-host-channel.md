@@ -496,11 +496,34 @@ any other writer).
 - `python3 tools/spec_lint.py --write-ledger` and `python3 tools/spec_lint.py` — exit 0.
 - Full suite left to gating.
 
+### Test record (2026-11-10, loop 3)
+
+- `uv run pytest tests/test_federation_channel.py tests/test_rich_output_guard.py -q` — 22 passed.
+- `python3 tools/test_tiers.py --check` — exit 0.
+- `python3 tools/spec_lint.py --write-ledger` and `python3 tools/spec_lint.py` — exit 0.
+- Manual two-directory enrolment (below) — `box ok`, then after unenrol `box unreachable` and
+  unsigned `GET /v1/status` HTTP 401.
+- Full suite left to gating.
+
 ### As shipped (2026-11-10)
 
-Manual two-machine enrolment is rollout (spec Rollout). Automated tests cover add → enrol →
-`serve --federate` → `hosts check` with isolated hub/host data dirs and a threaded server on
-`127.0.0.1:0`.
+Local hub/host dirs (`NW_DATA_DIR` / `NW_CONFIG_DIR`), `nw serve --federate --bind 127.0.0.1:0`:
+
+```
+$ nw hosts add box --url http://127.0.0.1:0
+{"hub_name":"bruno-yoga9i","host_name":"box","token":"…","secret":"…"}
+$ nw hosts enrol   # stdin blob from add
+$ nw serve --federate --bind 127.0.0.1:0   # stderr: federation on http://127.0.0.1:<port>
+$ nw hosts check
+box ok
+# status_cache.projects / campaigns populated from host queue
+$ nw hosts unenrol   # on host
+$ nw hosts check
+box unreachable: HTTP 401
+$ curl -s -o /dev/null -w "HTTP %{http_code}\n" http://127.0.0.1:<port>/v1/status
+HTTP 401
+# response has no X-NW-Sig
+```
 
 ## Clock Log
 

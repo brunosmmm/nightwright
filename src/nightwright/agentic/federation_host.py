@@ -117,18 +117,19 @@ class _Handler(http.server.BaseHTTPRequestHandler):
     def _write(self, status: int, data: bytes, *, signed: bool, method: str, path: str,
                secret: str | None, now: float | None = None) -> None:
         self.close_connection = True
+        wire = b"" if method.upper() == "HEAD" else data
         self.send_response(status)
-        if data:
+        if wire:
             self.send_header("Content-Type", "application/json")
         if signed and secret:
-            hdrs = F.response_headers(secret, method, path, data, now=now)
+            hdrs = F.response_headers(secret, method, path, wire, now=now)
             self.send_header("X-NW-Sig-Ts", hdrs["X-NW-Sig-Ts"])
             self.send_header("X-NW-Sig", hdrs["X-NW-Sig"])
-        self.send_header("Content-Length", str(len(data)))
+        self.send_header("Content-Length", str(len(wire)))
         self.send_header("Connection", "close")
         self.end_headers()
-        if data:
-            self.wfile.write(data)
+        if wire:
+            self.wfile.write(wire)
 
     def _json_error(self, status: int, error: str, *, signed: bool, method: str, path: str,
                     secret: str | None) -> None:
@@ -149,7 +150,11 @@ class _Handler(http.server.BaseHTTPRequestHandler):
         clen = self.headers.get("Content-Length")
         if clen and str(clen).isascii() and str(clen).isdigit() and int(clen) > 0:
             self.close_connection = True
-        if not token or not hmac.compare_digest(token, tok):
+        try:
+            tok_ok = bool(token) and hmac.compare_digest(token, tok)
+        except (TypeError, ValueError):
+            tok_ok = False
+        if not tok_ok:
             self._json_error(401, "unauthorized", signed=True, method=method, path=path,
                              secret=secret_key)
             return
