@@ -358,6 +358,8 @@ def worker_serve(cfg, blob, conf, kinds, slots):
 @click.command("serve")
 @click.option("--jobs", "jobs", is_flag=True,
               help="serve the pull-worker job API (default bind 127.0.0.1:8790)")
+@click.option("--federate", "federate", is_flag=True,
+              help="serve the federation host API (SPEC-0529; default bind 127.0.0.1:8792)")
 @click.option("--dashboard", "dashboard", is_flag=True,
               help="serve the dashboard and decisions inbox (SPEC-0400). Default bind "
                    "`auto:8791` (SPEC-0432): 127.0.0.1:8791 always (no login), plus this "
@@ -384,16 +386,39 @@ def worker_serve(cfg, blob, conf, kinds, slots):
                    "yet, retry for up to SECONDS before exiting 3 (SPEC-0427; a tailscale unit "
                    "passes 60). The default `auto` bind never needs it")
 @click.pass_obj
-def serve_cmd(cfg, jobs, dashboard, bind, tls_cert, tls_key, client_ca, code_root,
+def serve_cmd(cfg, jobs, dashboard, federate, bind, tls_cert, tls_key, client_ca, code_root,
               no_code_watch, tailnet_wait):
-    """Serve jobs to pull workers (--jobs, SPEC-0334) or the dashboard (--dashboard, SPEC-0400:
-    live view, decisions inbox, campaign drilldown) over HTTP(S). Exactly one mode flag is
-    required."""
-    if jobs == dashboard:
-        raise click.UsageError("give exactly one of --jobs and --dashboard")
+    """Serve jobs to pull workers (--jobs, SPEC-0334), the federation host API (--federate,
+    SPEC-0529), or the dashboard (--dashboard, SPEC-0400). Exactly one mode flag is required."""
+    if sum(bool(x) for x in (jobs, dashboard, federate)) != 1:
+        raise click.UsageError("give exactly one of --jobs, --dashboard, and --federate")
+    if client_ca and federate:
+        raise click.UsageError("--federate does not take --client-ca")
     if dashboard:
         return _serve_dashboard(cfg, bind, tls_cert, tls_key, client_ca, code_root=code_root,
                                 no_code_watch=no_code_watch, tailnet_wait=tailnet_wait)
+    if federate:
+        from . import federation as F
+        from . import federation_host as FH
+        p = F.federation_path(cfg)
+        if not F.read_federation(cfg):
+            raise click.ClickException(f"missing or invalid {p}")
+        try:
+            srv = FH.make_federate_server(cfg, bind or FH.DEFAULT_BIND, tls_cert=tls_cert,
+                                          tls_key=tls_key)
+        except (ValueError, OSError) as e:
+            raise click.ClickException(str(e))
+        host, port = srv.server_address[:2]
+        try:
+            click.echo(f"nw serve: federation on {'https' if tls_cert else 'http'}://{host}:{port}",
+                       err=True)
+            srv.serve_forever(poll_interval=0.5)
+        except KeyboardInterrupt:
+            pass
+        finally:
+            srv.stopping.set()
+            srv.server_close()
+        return
     from . import pull_jobs as PJ
     try:
         srv = PJ.make_server(cfg, bind or PJ.DEFAULT_BIND, tls_cert=tls_cert, tls_key=tls_key,

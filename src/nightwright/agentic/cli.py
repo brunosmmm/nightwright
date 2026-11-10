@@ -29,9 +29,9 @@ def campaign_group():
 
 def register(cli, projects_group):
     """Attach the agentic commands to the root `cli` and the existing `projects` group."""
-    from . import (cli_campaign, cli_conduct, cli_conductor, cli_gate_slots, cli_launch,
-                   cli_personas, cli_profiles, cli_projects, cli_queue, cli_queue_jobs,
-                   cli_worker, cli_workers)
+    from . import (cli_campaign, cli_conduct, cli_conductor, cli_gate_slots, cli_hosts,
+                   cli_launch, cli_personas, cli_profiles, cli_projects, cli_queue,
+                   cli_queue_jobs, cli_worker, cli_workers)
 
     cli_projects.attach(projects_group)
     cli_campaign.attach(campaign_group)
@@ -44,6 +44,7 @@ def register(cli, projects_group):
     cli.add_command(queue_group)
     cli.add_command(cli_worker.worker_group)            # SPEC-0336
     cli.add_command(cli_workers.workers_group)          # SPEC-0337
+    cli.add_command(cli_hosts.hosts_group)              # SPEC-0529
     from .cli_gate import gate_group                    # SPEC-0381
     cli.add_command(gate_group)
     cli.add_command(cli_worker.serve_cmd)               # SPEC-0334

@@ -1,7 +1,8 @@
 ---
 id: SPEC-0529
 title: "Federation enrolment and the signed host channel"
-status: accepted
+status: done
+updated: 2026-11-10
 owner: user
 created: 2026-11-10
 kind: feature
@@ -323,7 +324,7 @@ any other writer).
 
 ## Acceptance criteria
 
-- [ ] `nw hosts add NAME --url URL` writes `<config_dir>/secrets/hosts/<name>.token` and
+- [x] `nw hosts add NAME --url URL` writes `<config_dir>/secrets/hosts/<name>.token` and
       `<name>.key` mode 0600, with the parent directory mode 0700. The `nw.hosts.v1`
       record's keys are exactly `name`, `url`, `token_sha256`, `secret_ref`, `enabled`,
       and `status_cache`. `secret_ref` is `secrets/hosts/<name>.key`. `token_sha256` is
@@ -334,64 +335,64 @@ any other writer).
       leaves the files and the record unchanged. A name that fails `workers.NAME_RE`, or
       a URL that is not `http` or `https` with a hostname, exits non-zero and writes
       nothing.
-- [ ] Registry updates fsync the temp file before `rename`. When that fsync raises, the
+- [x] Registry updates fsync the temp file before `rename`. When that fsync raises, the
       previous `hosts.json` bytes are unchanged. Two successful updates in a row both
       persist.
-- [ ] `nw hosts list` prints `NAME\tURL\ton|off` and does not print the token, the
+- [x] `nw hosts list` prints `NAME\tURL\ton|off` and does not print the token, the
       secret, or `token_sha256`. A missing `hosts.json` prints nothing, exits 0, and
       does not create the file.
-- [ ] `nw hosts rm NAME` removes the record and both secret files, prints
+- [x] `nw hosts rm NAME` removes the record and both secret files, prints
       `run nw hosts unenrol on the host`, and completes without a connection to the
       host's URL. An unknown name exits non-zero and does not print that line.
-- [ ] `nw hosts off` sets `enabled` false and `nw hosts on` sets it true. `check` prints
+- [x] `nw hosts off` sets `enabled` false and `nw hosts on` sets it true. `check` prints
       `NAME off` for a disabled host and does not connect to it.
-- [ ] `nw hosts enrol` writes `federation.json` mode 0600 with exactly the four blob
+- [x] `nw hosts enrol` writes `federation.json` mode 0600 with exactly the four blob
       keys, from stdin only. A positional blob, an empty stdin, or a blob missing a
       field exits non-zero and leaves any existing file unchanged. A second enrol
       replaces the file. `nw hosts unenrol` unlinks the file and exits 0, including when
       the file is already absent. `nw hosts` has exactly the commands `add`, `list`,
       `rm`, `on`, `off`, `check`, `enrol`, and `unenrol`.
-- [ ] `nw serve --federate` exits non-zero and binds no socket when `federation.json` is
+- [x] `nw serve --federate` exits non-zero and binds no socket when `federation.json` is
       absent. The message names that path.
-- [ ] After `unenrol` deletes `federation.json`, a server that is already running answers
+- [x] After `unenrol` deletes `federation.json`, a server that is already running answers
       401 with neither `X-NW-Sig` nor `X-NW-Sig-Ts`, for an unsigned request and for a
       request still signed with the old secret.
-- [ ] While enrolled, an unsigned request, a tampered body, a wrong MAC, a wrong bearer
+- [x] While enrolled, an unsigned request, a tampered body, a wrong MAC, a wrong bearer
       token, and a `ts` 121 seconds off each get 401, and that 401 carries a valid
       `X-NW-Sig`. A `ts` exactly 120 seconds off is accepted. A non-GET on `/v1/status`
       is 405 and any other path is 404, and both of those responses are signed while
       enrolled. There is no `/v1/revoke`. The vector secret `abc`, `GET`, `/v1/status`,
       empty body, `ts` `1700000000` signs as
       `53f715f892cd9e350af654bcacaca46fd6dcedb104c690ffaa9060fac03a49b5`.
-- [ ] `HubClient` rejects an unsigned response, a tampered response, and a response whose
+- [x] `HubClient` rejects an unsigned response, a tampered response, and a response whose
       MAC is valid but whose `ts` is 121 seconds off. It accepts a matching signature at
       a skew of 120 seconds. Its connect timeout and its read timeout are each 2 seconds.
       The request URL is `record["url"].rstrip("/") + path`.
-- [ ] `GET /v1/status` returns `Content-Type: application/json` and
+- [x] `GET /v1/status` returns `Content-Type: application/json` and
       `nw.federation.status.v1` whose `campaigns` are `queue.queue_payload(cfg)["items"]`
       in order, each with the same `campaign`, `project`, `state`, `spec_id`, and
       `kind`, and whose `projects` is the sorted unique non-empty `project` values. A
       terminal campaign is absent. The handler does not shell out. `GET /v1/lease` on
       the federate server is 404, and the server starts no `check_leases` thread.
-- [ ] `nw hosts check` stores `status_cache.fetched_at`, `projects`, and `campaigns` from
+- [x] `nw hosts check` stores `status_cache.fetched_at`, `projects`, and `campaigns` from
       a verified 200. It exits 1 when a project is on the hub and a host or on two hosts,
       and the overlap lines are `project P on hub and NAME` and `project P on A and B`
       with the two host names sorted. It exits 1 when an enabled host is unreachable,
       and that host's previous `status_cache` is unchanged. It exits 0 when every enabled
       host answers and the sets are disjoint, and when there are no hosts. A disabled
       host whose old `status_cache` names a hub project does not by itself cause exit 1.
-- [ ] Without TLS, `nw serve --federate` refuses `0.0.0.0`, `::`, and a public address
+- [x] Without TLS, `nw serve --federate` refuses `0.0.0.0`, `::`, and a public address
       at startup, and accepts a loopback bind. The default bind is `127.0.0.1:8792`.
       Stderr on a successful start contains `nw serve: federation on`. `--tls-cert`
       without `--tls-key` is refused. `--federate` with `--client-ca` is a usage error.
       Exactly one of `--jobs`, `--dashboard`, and `--federate` is required.
-- [ ] An AST walk of `hosts.py`, `federation.py`, and `cli_hosts.py` fails on any
+- [x] An AST walk of `hosts.py`, `federation.py`, and `cli_hosts.py` fails on any
       `queue` import, including `from . import queue as Q`, and on any call through such
       an alias. The only `queue` attribute call in `federation_host.py` is
       `queue_payload`, and that module does not reference `subprocess`.
       `tests/test_rich_output_guard.py` passes with allowlist entries for the `add`,
       `list`, `rm`, and `check` functions in `cli_hosts.py`.
-- [ ] With no `hosts.json` and no `federation.json`, `queue.queue_payload` still returns
+- [x] With no `hosts.json` and no `federation.json`, `queue.queue_payload` still returns
       schema `nw.queue.v1` and creates neither file, and `nw hosts list` exits 0 without
       creating them. `nw serve --jobs` and `nw serve --dashboard` still start their
       existing servers.
@@ -474,6 +475,19 @@ any other writer).
   `tests/test_agentic_conduct_cli.py`, and `tests/test_agentic_conductor_guard.py` need
   no `hosts.json`; they cover the inert mailbox and conductor paths.
 
+### Test record (2026-11-10)
+
+- `uv run pytest tests/test_federation_channel.py tests/test_rich_output_guard.py -q` — 20 passed.
+- `python3 tools/test_tiers.py --check` — exit 0.
+- `python3 tools/spec_lint.py --write-ledger` — exit 0.
+- Full suite and `python3 tools/affected_tests.py --run uv run pytest -q` left to the close gate.
+
+### As shipped (2026-11-10)
+
+Manual two-machine enrolment is rollout (spec Rollout). Automated tests cover add → enrol →
+`serve --federate` → `hosts check` with isolated hub/host data dirs and a threaded server on
+`127.0.0.1:0`.
+
 ## Clock Log
 
 Use `nw idea clock-in IDEA-562` at the start of an implementation session and
@@ -489,11 +503,11 @@ Use `nw idea clock-in IDEA-562` at the start of an implementation session and
 
 ## Definition of done
 
-- [ ] Acceptance criteria all met.
-- [ ] Test plan executed; automated tests pass; manual steps performed and recorded.
-- [ ] No regressions (affected tests at the close gate).
-- [ ] Spec body updated to match what shipped.
-- [ ] `docs/LEDGER.md` updated (status + date).
+- [x] Acceptance criteria all met.
+- [x] Test plan executed; automated tests pass; manual steps performed and recorded.
+- [x] No regressions (affected tests at the close gate).
+- [x] Spec body updated to match what shipped.
+- [x] `docs/LEDGER.md` updated (status + date).
 
 ## Open questions
 
