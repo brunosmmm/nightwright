@@ -2310,3 +2310,34 @@ def test_close_refuses_deeply_nested_yaml_without_traceback(tmp_path, monkeypatc
     assert proc.stderr == "invalid backlog item REQ-K7H3MQ2P: invalid yaml\n"
     assert rev(repo, "nw-backlog") == sha
     assert not any(call[0] == "hash-object" for call in git_log)
+
+
+def test_quoted_star_and_ampersand_round_trip_through_add_close_reopen(tmp_path, monkeypatch):
+    freeze(monkeypatch)
+    repo = init_repo(tmp_path / "repo", name="Ada * Lovelace")
+    title = "the *public* backlog"
+    ident = added(nw(repo, ["add", "--title", title, "--summary", "S"]))
+    blob = git(repo, "show", f"nw-backlog:{ident}.md").stdout
+    item = B.parse_item(f"{ident}.md", blob)
+    assert isinstance(item, dict)
+    assert item["title"] == title
+    assert item["created_by"] == "Ada * Lovelace <ada@example.com>"
+    assert nw(repo, ["edit", ident, "--title", "Q: &A"]).exit_code == 0
+    assert nw(repo, ["close", ident]).exit_code == 0
+    item = B.parse_item(
+        f"{ident}.md", git(repo, "show", f"nw-backlog:{ident}.md").stdout)
+    assert item["title"] == "Q: &A"
+    assert item["status"] == "closed"
+    assert item["created_by"] == "Ada * Lovelace <ada@example.com>"
+    assert nw(repo, ["reopen", ident]).exit_code == 0
+
+
+def test_parse_item_rejects_real_unquoted_alias_and_anchor():
+    head = (
+        "---\nid: REQ-K7H3MQ2P\ntitle: x\nstatus: open\n"
+        "created: 2026-11-07T15:41:00Z\nupdated: 2026-11-07T15:41:00Z\n"
+        "created_by: a\nupdated_by: a\n")
+    alias = (head + "extra: &a 1\nother: *a\n---\n").encode()
+    anchor_only = (head + "extra: &a 1\n---\n").encode()
+    assert B.parse_item("REQ-K7H3MQ2P.md", alias) == "invalid yaml"
+    assert B.parse_item("REQ-K7H3MQ2P.md", anchor_only) == "invalid yaml"

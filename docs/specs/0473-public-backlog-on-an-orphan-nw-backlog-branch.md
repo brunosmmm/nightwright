@@ -920,6 +920,18 @@ drops unknown keys, and refreshes `updated` and `updated_by`.
 - `python3 tools/test_tiers.py --check` — exit 0.
 - Full suite left to gating.
 
+### Test record (campaign loop 0 steward ruling, 2026-11-10)
+
+- ``parse_item`` no longer pre-scans raw frontmatter text for ``*`` / ``&``; ``_ItemLoader``
+  refuses real YAML anchor and alias nodes, so quoted ``*`` / ``&`` in a title or identity
+  round-trip while billion-laughs and unquoted alias/anchor stay ``invalid yaml``.
+- `uv run pytest -q tests/test_backlog.py` — 111 passed (title ``the *public* backlog``,
+  ``user.name`` ``Ada * Lovelace``, ``Q: &A`` round-trip through add/edit/close/reopen;
+  real unquoted alias and anchor rejected).
+- `python3 tools/spec_lint.py --write-ledger`, `python3 tools/spec_lint.py`,
+  `python3 tools/test_tiers.py --check` — exit 0.
+- Full suite left to gating.
+
 ## Clock Log
 
 No session is recorded in this file. Implementation clocks IDEA-1019 with

@@ -67,15 +67,6 @@ class _DuplicateKey(Exception):
         super().__init__(key)
 
 
-_YAML_ALIAS_RE = re.compile(
-    r"(?m)(?:"
-    r":\s*&\S"  # anchor definition
-    r"|"
-    r"(?:^|[\s,\[])\*\S"  # alias reference
-    r")"
-)
-
-
 class _ItemLoader(yaml.SafeLoader):
     """Safe loader that rejects a repeated key.
 
@@ -83,7 +74,17 @@ class _ItemLoader(yaml.SafeLoader):
     ``YYYY-MM-DDTHH:MM:SSZ`` has to stay a string: the validation table accepts it with
     ``strptime``, and ``2026-02-31`` must be the ``created`` token rather than a loader
     error. ``yes`` / ``no`` / ``on`` / ``off`` stay YAML 1.1 booleans.
+
+    Anchors and aliases are refused at the node level, so ``*`` or ``&`` inside a quoted
+    scalar is plain text while a real alias or anchor token is ``invalid yaml``.
     """
+
+    def compose_node(self, parent, index):
+        event = self.peek_event()
+        if isinstance(event, yaml.events.AliasEvent) or getattr(event, "anchor", None):
+            raise yaml.constructor.ConstructorError(
+                None, None, "anchors and aliases are not allowed", event.start_mark)
+        return super().compose_node(parent, index)
 
 
 def _construct_mapping(loader, node):
@@ -179,8 +180,6 @@ def parse_item(filename: str, blob: bytes | str):
     if matched is None:
         return "no frontmatter"
     front = matched.group(1)
-    if _YAML_ALIAS_RE.search(front):
-        return "invalid yaml"
     try:
         doc = yaml.load(front + "\n", Loader=_ItemLoader)
     except _DuplicateKey as e:
