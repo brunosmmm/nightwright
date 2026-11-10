@@ -290,6 +290,26 @@ progress. This is the single place to see *what has been decided* and *what is i
   - [x] [SPEC-0491](./specs/0491-cadence-config-state-and-merge-counter.md) Cadence config, merge accounting and due state — done
   - [ ] [SPEC-0492](./specs/0492-tighter-affected-selection.md) Tighter affected selection for specs, hot modules and fixtures — in-progress
   - [x] [SPEC-0493](./specs/0493-cadence-runner-trigger-red-main-and-nightwright-jobs.md) Cadence runner trigger, red-main source and nightwright's jobs — done
+- **[SPEC-0501](./specs/0501-worker-execution-on-slurm.md) — Worker execution on Slurm: Slurm owns admission, placement, priorities and queues for gate and persona jobs** · accepted · (0/19 done)
+  - [ ] [SPEC-0503](./specs/0503-worker-executor-seam.md) Executor seam on the worker: job start, cancel and slot admission go through a pluggable executor (local = today) — accepted
+  - [ ] [SPEC-0504](./specs/0504-gate-resource-requests-and-measured-usage.md) Per-gate resource requests in project config, and measured CPU time and peak memory in every gate record — accepted
+  - [ ] [SPEC-0505](./specs/0505-local-gate-fallback-records-its-reason.md) A gate run that ran locally instead of on a worker records why, in the gate event and in nw campaign show — accepted
+  - [ ] [SPEC-0506](./specs/0506-worker-ledger-regen-applied-not-rerun.md) Files a remote gate is allowed to write (the regenerated ledger) come back to the worktree; the run is not repeated locally — accepted
+  - [ ] [SPEC-0507](./specs/0507-exclusive-timeout-regate-cannot-starve.md) An exclusive timeout re-gate cannot starve: close re-gates yield to it, its wait is visible and bounded — accepted
+  - [ ] [SPEC-0508](./specs/0508-worker-capacity-and-load-view.md) Worker capacity and load: nw worker info reports cores, memory, load and per-job usage; nw workers list shows them — accepted
+  - [ ] [SPEC-0509](./specs/0509-gate-commands-size-from-their-allocation.md) Gate commands size their parallelism from the job's allocation (NW_GATE_CPUS / NW_GATE_MEM_MB), with a config warning for nproc and -n auto — accepted
+  - [ ] [SPEC-0510](./specs/0510-slurm-executor-on-the-current-box.md) Slurm executor on the current box: verify the install, submit worker jobs with sbatch, map Slurm state, cancel with scancel — accepted
+  - [ ] [SPEC-0511](./specs/0511-slurm-job-classes-qos-and-priority.md) Slurm job classes: campaign > gatejob > persona > bulk, as class partitions now and a QOS ladder once slurmdbd runs — accepted
+  - [ ] [SPEC-0512](./specs/0512-nw-queue-jobs-governance-over-slurm.md) nw queue jobs: list, hold, release, top, bump, class, requeue and cancel nw's Slurm jobs by nw id — accepted
+  - [ ] [SPEC-0513](./specs/0513-slurm-jobs-survive-laptop-sleep.md) Slurm jobs survive a sleeping coordinator: no lease self-cancel, pending time does not count against the deadline, re-attach on wake — accepted
+  - [ ] [SPEC-0514](./specs/0514-slurm-accounting-and-request-sizing.md) Slurm job accounting into gate records, and nw gate stats suggests per-gate requests from measured peak memory and CPU — accepted
+  - [ ] [SPEC-0515](./specs/0515-slurm-infra-outcomes-oom-timeout-preemption.md) OOM kills, Slurm time limits, preemption and node failures are infra outcomes: retried by policy, never triaged as test failures — accepted
+  - [ ] [SPEC-0516](./specs/0516-new-box-slurm-controller-and-second-node.md) New box as Slurm controller and big node; the current box joins as a configless slurmd; nw workers bootstrap --slurm — draft
+  - [ ] [SPEC-0517](./specs/0517-multi-node-job-spool.md) Multi-node job spool: job dirs and repo caches on a shared /srv/nw, checkouts on node-local scratch — draft
+  - [ ] [SPEC-0518](./specs/0518-shared-box-slurm-policy.md) Shared-box policy: a compute partition and human QOS for other heavy work; nw never preempts humans and is capped — draft
+  - [ ] [SPEC-0519](./specs/0519-retire-count-slots-and-gate-job-tokens.md) Retire nw's own admission: count-based gate slots, persona slots and SPEC-0500 gate-job tokens give way to Slurm — draft
+  - [ ] [SPEC-0520](./specs/0520-retire-placement-cooldown-retry-drain-lost-paths.md) Retire nw's placement, worker cooldown, cross-worker retry, drain internals, lease and lost-job kill paths, and the sync gate-job path — draft
+  - [ ] [SPEC-0521](./specs/0521-retire-pull-workers.md) Retire pull workers: remove the coordinator job API, pull_jobs, pull_worker and nw serve --jobs — draft
 
 ## Active & planned
 
@@ -318,6 +338,26 @@ progress. This is the single place to see *what has been decided* and *what is i
 | [SPEC-0489](./specs/0489-test-tiers-and-cadenced-heavy-runs.md) | Test tiers: campaign gates run the fast tier only; heavy tiers run on a per-project cadence | epic | accepted | M9: agentic workflow | 2026-11-09 |
 | [SPEC-0492](./specs/0492-tighter-affected-selection.md) | Tighter affected selection for specs, hot modules and fixtures | feature | in-progress | M9: agentic workflow | 2026-11-09 |
 | [SPEC-0496](./specs/0496-subagent-worktree-commit-allowlist.md) | Sub-agents in a worktree can commit; allowed command forms are documented | feature | accepted | — | 2026-11-09 |
+| [SPEC-0501](./specs/0501-worker-execution-on-slurm.md) | Worker execution on Slurm: Slurm owns admission, placement, priorities and queues for gate and persona jobs | epic | accepted | M9: agentic workflow | 2026-11-09 |
+| [SPEC-0503](./specs/0503-worker-executor-seam.md) | Executor seam on the worker: job start, cancel and slot admission go through a pluggable executor (local = today) | feature | accepted | M9: agentic workflow | 2026-11-09 |
+| [SPEC-0504](./specs/0504-gate-resource-requests-and-measured-usage.md) | Per-gate resource requests in project config, and measured CPU time and peak memory in every gate record | feature | accepted | M9: agentic workflow | 2026-11-09 |
+| [SPEC-0505](./specs/0505-local-gate-fallback-records-its-reason.md) | A gate run that ran locally instead of on a worker records why, in the gate event and in nw campaign show | feature | accepted | M9: agentic workflow | 2026-11-09 |
+| [SPEC-0506](./specs/0506-worker-ledger-regen-applied-not-rerun.md) | Files a remote gate is allowed to write (the regenerated ledger) come back to the worktree; the run is not repeated locally | feature | accepted | M9: agentic workflow | 2026-11-09 |
+| [SPEC-0507](./specs/0507-exclusive-timeout-regate-cannot-starve.md) | An exclusive timeout re-gate cannot starve: close re-gates yield to it, its wait is visible and bounded | feature | accepted | M9: agentic workflow | 2026-11-09 |
+| [SPEC-0508](./specs/0508-worker-capacity-and-load-view.md) | Worker capacity and load: nw worker info reports cores, memory, load and per-job usage; nw workers list shows them | feature | accepted | M9: agentic workflow | 2026-11-09 |
+| [SPEC-0509](./specs/0509-gate-commands-size-from-their-allocation.md) | Gate commands size their parallelism from the job's allocation (NW_GATE_CPUS / NW_GATE_MEM_MB), with a config warning for nproc and -n auto | feature | accepted | M9: agentic workflow | 2026-11-09 |
+| [SPEC-0510](./specs/0510-slurm-executor-on-the-current-box.md) | Slurm executor on the current box: verify the install, submit worker jobs with sbatch, map Slurm state, cancel with scancel | feature | accepted | M9: agentic workflow | 2026-11-09 |
+| [SPEC-0511](./specs/0511-slurm-job-classes-qos-and-priority.md) | Slurm job classes: campaign > gatejob > persona > bulk, as class partitions now and a QOS ladder once slurmdbd runs | feature | accepted | M9: agentic workflow | 2026-11-09 |
+| [SPEC-0512](./specs/0512-nw-queue-jobs-governance-over-slurm.md) | nw queue jobs: list, hold, release, top, bump, class, requeue and cancel nw's Slurm jobs by nw id | feature | accepted | M9: agentic workflow | 2026-11-09 |
+| [SPEC-0513](./specs/0513-slurm-jobs-survive-laptop-sleep.md) | Slurm jobs survive a sleeping coordinator: no lease self-cancel, pending time does not count against the deadline, re-attach on wake | feature | accepted | M9: agentic workflow | 2026-11-09 |
+| [SPEC-0514](./specs/0514-slurm-accounting-and-request-sizing.md) | Slurm job accounting into gate records, and nw gate stats suggests per-gate requests from measured peak memory and CPU | feature | accepted | M9: agentic workflow | 2026-11-09 |
+| [SPEC-0515](./specs/0515-slurm-infra-outcomes-oom-timeout-preemption.md) | OOM kills, Slurm time limits, preemption and node failures are infra outcomes: retried by policy, never triaged as test failures | feature | accepted | M9: agentic workflow | 2026-11-09 |
+| [SPEC-0516](./specs/0516-new-box-slurm-controller-and-second-node.md) | New box as Slurm controller and big node; the current box joins as a configless slurmd; nw workers bootstrap --slurm | feature | draft | M9: agentic workflow | 2026-11-09 |
+| [SPEC-0517](./specs/0517-multi-node-job-spool.md) | Multi-node job spool: job dirs and repo caches on a shared /srv/nw, checkouts on node-local scratch | feature | draft | M9: agentic workflow | 2026-11-09 |
+| [SPEC-0518](./specs/0518-shared-box-slurm-policy.md) | Shared-box policy: a compute partition and human QOS for other heavy work; nw never preempts humans and is capped | feature | draft | M9: agentic workflow | 2026-11-09 |
+| [SPEC-0519](./specs/0519-retire-count-slots-and-gate-job-tokens.md) | Retire nw's own admission: count-based gate slots, persona slots and SPEC-0500 gate-job tokens give way to Slurm | feature | draft | M9: agentic workflow | 2026-11-09 |
+| [SPEC-0520](./specs/0520-retire-placement-cooldown-retry-drain-lost-paths.md) | Retire nw's placement, worker cooldown, cross-worker retry, drain internals, lease and lost-job kill paths, and the sync gate-job path | feature | draft | M9: agentic workflow | 2026-11-09 |
+| [SPEC-0521](./specs/0521-retire-pull-workers.md) | Retire pull workers: remove the coordinator job API, pull_jobs, pull_worker and nw serve --jobs | feature | draft | M9: agentic workflow | 2026-11-09 |
 
 ## Done
 
