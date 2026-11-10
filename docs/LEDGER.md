@@ -223,7 +223,7 @@ progress. This is the single place to see *what has been decided* and *what is i
   - [x] [SPEC-0325](./specs/0325-steward-campaign-notices-project-idea-reconcile-remote-open.md) Stewards get campaign notices; a second-project merge reconciles its idea; pr campaigns branch from the remote — done
   - [x] [SPEC-0327](./specs/0327-cross-project-spec-id-collision-the-comfort.md) Spec ids are per project: a second project's SPEC-NNNN never resolves against wt's own specs — done
   - [x] [SPEC-0393](./specs/0393-wtfug-spec-0304-20261030-7a4f-spec-0304-review.md) SPEC-0304 review follow-ups: mvp-report edge cases in E4, E5 and E6, and the tests that pin them — done
-- **[SPEC-0310](./specs/0310-remote-workers-run-gates-persona-runs-and.md) — Remote workers: run gates, persona runs and campaigns on other machines** · accepted · (16/21 done)
+- **[SPEC-0310](./specs/0310-remote-workers-run-gates-persona-runs-and.md) — Remote workers: run gates, persona runs and campaigns on other machines** · accepted · (17/21 done)
   - [x] [SPEC-0331](./specs/0331-remote-gates-over-ssh-on-one-worker-host.md) Remote gates over SSH on one worker host — superseded
   - [x] [SPEC-0332](./specs/0332-worker-owned-async-jobs.md) Worker-owned async jobs — superseded
   - [x] [SPEC-0333](./specs/0333-remote-persona-runs-with-bundle-write-back.md) Remote persona runs with bundle write-back — superseded
@@ -240,7 +240,7 @@ progress. This is the single place to see *what has been decided* and *what is i
   - [x] [SPEC-0345](./specs/0345-persona-cap-rate-limit-backoff-affinity-and-cost-by-worker.md) Persona cap, rate-limit backoff, campaign affinity and cost by worker — done
   - [x] [SPEC-0346](./specs/0346-remote-workers-integration-suite.md) Remote workers integration suite for gate and persona workers — done
   - [x] [SPEC-0354](./specs/0354-nw-workers-bootstrap.md) nw workers bootstrap — done
-  - [ ] [SPEC-0527](./specs/0527-federation-bounded-relay-mail-and-two-remote-verbs.md) Federation, bounded: relay, mail and two remote verbs — accepted
+  - [x] [SPEC-0527](./specs/0527-federation-bounded-relay-mail-and-two-remote-verbs.md) Federation, bounded: relay, mail and two remote verbs — superseded
   - [ ] [SPEC-0529](./specs/0529-federation-enrolment-and-the-signed-host-channel.md) Federation enrolment and the signed host channel — accepted
   - [ ] [SPEC-0530](./specs/0530-hub-event-relay-health-and-read-only-host-views.md) Hub event relay, health, and read-only host views — accepted
   - [ ] [SPEC-0532](./specs/0532-exactly-once-mail-between-hub-and-host.md) Exactly-once mail between hub and host — accepted
@@ -359,7 +359,6 @@ progress. This is the single place to see *what has been decided* and *what is i
 | [SPEC-0521](./specs/0521-retire-pull-workers.md) | Retire pull workers: remove the coordinator job API, pull_jobs, pull_worker and nw serve --jobs | feature | draft | M9: agentic workflow | 2026-11-09 |
 | [SPEC-0523](./specs/0523-exclusive-regate-is-advisory-and-short.md) | An exclusive re-gate is advisory: it holds other campaigns' gates for at most 300 s | feature | accepted | M9: agentic workflow | 2026-11-09 |
 | [SPEC-0524](./specs/0524-disk-self-clean.md) | Finished work cleans up after itself: pytest tmp retention and an hourly disk sweep | feature | accepted | M9: agentic workflow | 2026-11-09 |
-| [SPEC-0527](./specs/0527-federation-bounded-relay-mail-and-two-remote-verbs.md) | Federation, bounded: relay, mail and two remote verbs | feature | accepted | — | 2026-11-09 |
 | [SPEC-0529](./specs/0529-federation-enrolment-and-the-signed-host-channel.md) | Federation enrolment and the signed host channel | feature | accepted | — | 2026-11-10 |
 | [SPEC-0530](./specs/0530-hub-event-relay-health-and-read-only-host-views.md) | Hub event relay, health, and read-only host views | feature | accepted | — | 2026-11-10 |
 | [SPEC-0532](./specs/0532-exactly-once-mail-between-hub-and-host.md) | Exactly-once mail between hub and host | feature | accepted | — | 2026-11-10 |
@@ -843,6 +842,7 @@ progress. This is the single place to see *what has been decided* and *what is i
 | [SPEC-0364](./specs/0364-herdr-run-panes-one-pane-per-active-campaign-in.md) | herdr run panes: one pane per active campaign in an nw runs tab, running nw campaign tail, agent state + display agent | feature | superseded | — | 2026-11-01 |
 | [SPEC-0414](./specs/0414-dashboard-server-nw-serve-dashboard-spec-0400.md) | Dashboard server, loopback: nw serve --dashboard with token auth and GET /api/snapshot | feature | superseded | M9: agentic workflow | 2026-11-04 |
 | [SPEC-0444](./specs/0444-conductor-follower-acks-before-advancing.md) | The conductor follower commits an event only after the session acks it | feature | superseded | — | 2026-11-08 |
+| [SPEC-0527](./specs/0527-federation-bounded-relay-mail-and-two-remote-verbs.md) | Federation, bounded: relay, mail and two remote verbs | feature | superseded | — | 2026-11-10 |
 
 <!-- specs:end -->
 

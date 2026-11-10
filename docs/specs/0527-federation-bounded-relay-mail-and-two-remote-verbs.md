@@ -1,10 +1,11 @@
 ---
 id: SPEC-0527
 title: "Federation, bounded: relay, mail and two remote verbs"
-status: accepted
+status: superseded
+superseded_by: SPEC-0529
 owner: user
 created: 2026-11-09
-updated: 2026-11-09
+updated: 2026-11-10
 source_idea: IDEA-562
 parent: SPEC-0310
 tags: [agentic, remote, federation, mailbox, conductor]
