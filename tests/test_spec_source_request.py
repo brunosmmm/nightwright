@@ -4,6 +4,7 @@ from __future__ import annotations
 import dataclasses
 import importlib.util
 import json
+import os
 import re
 import shutil
 import subprocess
@@ -772,6 +773,130 @@ def test_cite_org_write_failure_restores_the_tip(tmp_path, monkeypatch):
     assert Path(cfg["org_ideas_file"]).read_bytes() == org_restore
     assert len(SN.list_reservations(cfg)) == res_restore + 1
     assert _backlog_tip(repo) != tip_restore
+
+
+def _move_idea_to_sibling_org_file(cfg, idea_id: str, alt_name: str = "ideas-rotated.org") -> Path:
+    """Put one idea in a second org file under the same directory (rotation-style)."""
+    main_org = Path(cfg["org_ideas_file"])
+    alt_org = main_org.parent / alt_name
+    task = W.resolve_selector(cfg, idea_id)
+    lines = main_org.read_text().splitlines(keepends=True)
+    start = task.line - 1
+    depth = task.level
+    end = start + 1
+    while end < len(lines):
+        ln = lines[end]
+        if ln.startswith("*") and not ln.startswith("*" * (depth + 1)):
+            break
+        end += 1
+    block = lines[start:end]
+    first_idea = next(i for i, ln in enumerate(lines) if ln.startswith("* "))
+    header = lines[:first_idea]
+    alt_org.write_text("".join(header + block))
+    main_org.write_text("".join(header + lines[end:]))
+    return alt_org
+
+
+def test_cite_org_rollback_restores_task_file(tmp_path, monkeypatch):
+    repo = _init_repo(tmp_path / "proj")
+    cfg = _cfg_citing_repo(tmp_path, repo)
+    idea = _seed_idea(monkeypatch, cfg, text="Rotated file")
+    idea = _publish(monkeypatch, cfg, idea)
+    iid = idea.properties["ID"]
+    alt_org = _move_idea_to_sibling_org_file(cfg, iid)
+    task = W.resolve_selector(cfg, iid)
+    assert Path(task.file).resolve() == alt_org.resolve()
+    tip = _backlog_tip(repo)
+    org_snapshot = alt_org.read_bytes()
+    res_n = len(SN.list_reservations(cfg))
+
+    def boom_sp(*_a, **_k):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(W, "set_property", boom_sp)
+    with pytest.raises(ValueError, match="restored refs/heads/nw-backlog"):
+        S.scaffold_from_idea(cfg, iid)
+    assert alt_org.read_bytes() == org_snapshot
+    assert Path(cfg["org_ideas_file"]).read_bytes() != org_snapshot
+    assert not list(Path(cfg["specs_dir"]).glob("[0-9]*.md"))
+    assert _backlog_tip(repo) == tip
+    assert len(SN.list_reservations(cfg)) == res_n
+
+
+def test_cite_org_rollback_replace_failure_keeps_spec(tmp_path, monkeypatch):
+    repo = _init_repo(tmp_path / "proj")
+    cfg = _cfg_citing_repo(tmp_path, repo)
+    idea = _seed_idea(monkeypatch, cfg, text="Replace fail")
+    idea = _publish(monkeypatch, cfg, idea)
+    tip = _backlog_tip(repo)
+    res_n = len(SN.list_reservations(cfg))
+    real_replace = os.replace
+
+    def fail_replace(src, dst, **kw):
+        if ".nw-org-" in str(src):
+            raise OSError("replace failed")
+        return real_replace(src, dst)
+
+    monkeypatch.setattr(os, "replace", fail_replace)
+
+    def boom_sp(*_a, **_k):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(W, "set_property", boom_sp)
+    with pytest.raises(OSError, match="replace failed"):
+        S.scaffold_from_idea(cfg, idea.properties["ID"])
+    assert list(Path(cfg["specs_dir"]).glob("[0-9]*.md"))
+    assert _backlog_tip(repo) == tip
+    assert len(SN.list_reservations(cfg)) == res_n + 1
+
+
+def test_cite_pins_backlog_tip_at_in_lock_load(tmp_path, monkeypatch):
+    repo = _init_repo(tmp_path / "proj")
+    cfg = _cfg_citing_repo(tmp_path, repo)
+    idea = _seed_idea(monkeypatch, cfg)
+    idea = _publish(monkeypatch, cfg, idea)
+    req = idea.properties["REQ"]
+    org_before = Path(cfg["org_ideas_file"]).read_bytes()
+    tip_at_publish = _backlog_tip(repo)
+    bumped = []
+    real_run = _REAL_SUBPROCESS_RUN
+    bump_body = (
+        b"---\n"
+        b"id: REQ-11111111\n"
+        b'title: "Bump"\n'
+        b"status: open\n"
+        b"created: 2020-01-01T00:00:00Z\n"
+        b'created_by: "a"\n'
+        b"updated: 2020-01-01T00:00:00Z\n"
+        b'updated_by: "a"\n'
+        b"---\n"
+        b"\n"
+    )
+
+    def spy(cmd, **kw):
+        if (
+            len(cmd) >= 6
+            and cmd[0] == "git"
+            and Path(cmd[2]).resolve() == repo.resolve()
+            and cmd[3] == "update-ref"
+            and cmd[4] == "refs/heads/nw-backlog"
+            and not bumped
+        ):
+            bumped.append(1)
+            L._publish_commit(
+                repo, rel_path="BUMP.md", body=bump_body, message="bump",
+                name="Test User", email="test@example.com",
+            )
+        return real_run(cmd, **kw)
+
+    monkeypatch.setattr(subprocess, "run", spy)
+    with pytest.raises(ValueError, match="was not cited; refs/heads/nw-backlog unchanged"):
+        S.scaffold_from_idea(cfg, idea.properties["ID"])
+    cited = _show_backlog(repo, f"{req}.md").decode()
+    assert "spec:" not in cited
+    assert _backlog_tip(repo) != tip_at_publish
+    assert Path(cfg["org_ideas_file"]).read_bytes() == org_before
+    assert not list(Path(cfg["specs_dir"]).glob("[0-9]*.md"))
 
 
 def test_scaffold_rollback_when_cite_update_ref_fails(tmp_path, monkeypatch):

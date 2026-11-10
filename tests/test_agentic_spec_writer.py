@@ -1403,6 +1403,55 @@ def test_drift_before_write_parks_without_a_cite(tmp_path, monkeypatch):
     assert not hash_calls
 
 
+def test_apply_add_idea_sets_public_summary_and_source_request(tmp_path, monkeypatch):
+    repo = make_project(tmp_path)
+    cfg = make_cfg(tmp_path, repo, script(tmp_path, []))
+    monkeypatch.setattr("nightwright.cli.load_config", lambda: cfg)
+    iid = capture(cfg)
+    req = _publish_for_campaign(cfg, monkeypatch, repo, iid, "Public-only body")
+    plan = Q.plan_add_idea(cfg, iid)
+    st = Q.apply_add_idea(cfg, plan)
+    assert st["idea"]["source_request"] == req
+    assert st["idea"]["summary"] == "Public-only body"
+    assert idea(cfg, iid).properties.get("CAMPAIGN") == plan["campaign"]
+    Q.tick(cfg)
+    st2 = S.read_state(cfg, plan["campaign"])
+    assert st2["idea"]["source_request"] == req
+    assert st2["idea"]["summary"] == "Public-only body"
+
+
+def test_link_idea_restores_backlog_when_org_write_fails(tmp_path, monkeypatch):
+    repo = make_project(tmp_path)
+    cfg = make_cfg(tmp_path, repo, script(tmp_path, []))
+    monkeypatch.setattr("nightwright.cli.load_config", lambda: cfg)
+    iid = capture(cfg)
+    req = _publish_for_campaign(cfg, monkeypatch, repo, iid, "Public body")
+    cid = add_idea_campaign(cfg, monkeypatch, iid)
+    Q.tick(cfg)
+    st = S.read_state(cfg, cid)
+    st["spec_write"] = {"mode": "write"}
+    tip = _git(repo, "rev-parse", "refs/heads/nw-backlog").strip()
+    spec_id = "SPEC-0002"
+    org_before = Path(cfg["org_ideas_file"]).read_bytes()
+
+    from nightwright import org_write as OW
+
+    def boom_sp(*_a, **_k):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(OW, "set_property", boom_sp)
+    err = Q._link_idea(cfg, st, spec_id)
+    assert err and "restored refs/heads/nw-backlog" in err
+    assert _git(repo, "rev-parse", "refs/heads/nw-backlog").strip() == tip
+    blob = subprocess.run(
+        ["git", "-C", str(repo), "show", f"refs/heads/nw-backlog:{req}.md"],
+        check=True, capture_output=True, text=True,
+    ).stdout
+    assert "spec:" not in blob
+    assert Path(cfg["org_ideas_file"]).read_bytes() == org_before
+    assert idea(cfg, iid).properties.get("SPEC", "").strip() == ""
+
+
 def test_queue_add_refuses_a_drifted_pair(tmp_path, monkeypatch):
     from test_agentic_e2e import run_cli
 

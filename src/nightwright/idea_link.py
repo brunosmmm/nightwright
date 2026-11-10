@@ -226,6 +226,11 @@ def _nw_backlog_checked_out(repo: Path) -> bool:
     return False
 
 
+def backlog_ref_tip(repo: Path) -> str | None:
+    """Current tip of ``refs/heads/nw-backlog`` (SPEC-0535 cite compare-and-swap pinning)."""
+    return _ref_tip(repo, _BACKLOG_REF)
+
+
 def _ref_tip(repo: Path, ref: str) -> str | None:
     r = _git(repo, "rev-parse", "--verify", "-q", ref, check=False)
     if r.returncode != 0:
@@ -289,13 +294,16 @@ def _publish_commit(
     message: str,
     name: str,
     email: str,
+    expected_backlog_tip: str | None = None,
 ) -> tuple[str, str | None, str]:
     """Write blob, tree, commit; compare-and-swap nw-backlog. Returns (new_sha, old_tip, blob)."""
     if _nw_backlog_checked_out(repo):
         raise ValueError("refusing to update nw-backlog while it is checked out")
 
     old_tip = _ref_tip(repo, _BACKLOG_REF)
-    expected = old_tip or _NULL_SHA
+    if expected_backlog_tip is not None and old_tip != expected_backlog_tip:
+        raise ValueError("update-ref failed")
+    expected = (expected_backlog_tip if expected_backlog_tip is not None else old_tip) or _NULL_SHA
 
     blob = _git_stdout_text(
         _git(repo, "hash-object", "-w", "--stdin", input=body).stdout
@@ -509,7 +517,13 @@ def will_cite(cfg, task: Task, specs_dir: Path) -> bool:
     return False
 
 
-def cite_spec(cfg, agreed: AgreedRequest, spec_id: str) -> tuple[str | None, str | None]:
+def cite_spec(
+    cfg,
+    agreed: AgreedRequest,
+    spec_id: str,
+    *,
+    expected_backlog_tip: str | None = None,
+) -> tuple[str | None, str | None]:
     """Compare-and-swap `spec:` onto the public file. Returns (new_sha, old_tip) when committed."""
     if agreed.spec == spec_id:
         return None, None
@@ -538,6 +552,7 @@ def cite_spec(cfg, agreed: AgreedRequest, spec_id: str) -> tuple[str | None, str
             message=f"cite {agreed.req_id} {spec_id}",
             name=name,
             email=email,
+            expected_backlog_tip=expected_backlog_tip,
         )
     except ValueError as e:
         if str(e) == "update-ref failed":

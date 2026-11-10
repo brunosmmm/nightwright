@@ -194,24 +194,52 @@ def scaffold_from_idea(cfg, selector, *, epic=False, title=None, force=False):
             citing = IL.will_cite(cfg, task, specs_dir) if agreed else False
             if agreed and citing and agreed.spec and agreed.spec != spec_id and not force:
                 raise ValueError(f"{agreed.req_id} already cites {agreed.spec}")
-            org_path = Path(os.path.expanduser(cfg["org_ideas_file"]))
-            org_snapshot = org_path.read_bytes()
+            org_snapshot = Path(task.file).read_bytes()
+            cite_backlog_tip = IL.backlog_ref_tip(agreed.repo) if agreed and citing else None
             spec_path, text = _build_scaffold_text(
                 cfg, task, rec, specs_dir, epic, title, agreed)
             specs_dir.mkdir(parents=True, exist_ok=True)
             spec_path.write_text(text)
+
+            def _rollback_scaffold_after_failed_org(
+                e: BaseException,
+                *,
+                backlog_restore_err: ValueError | None = None,
+            ) -> None:
+                nonlocal number_released
+                if backlog_restore_err is not None:
+                    if "restored refs/heads/nw-backlog" in str(backlog_restore_err):
+                        W._atomic_replace_bytes(task.file, org_snapshot)
+                        if spec_path and spec_path.is_file():
+                            spec_path.unlink()
+                        if not number_released:
+                            spec_numbers.release(cfg, rec["number"], specs_dir=specs_dir)
+                            number_released = True
+                    if isinstance(e, KeyboardInterrupt | SystemExit):
+                        raise e
+                    raise backlog_restore_err from e
+                W._atomic_replace_bytes(task.file, org_snapshot)
+                if spec_path and spec_path.is_file():
+                    spec_path.unlink()
+                raise e
+
             if agreed and citing:
-                cite_sha, cite_old = IL.cite_spec(cfg, agreed, spec_id)
+                cite_sha, cite_old = IL.cite_spec(
+                    cfg, agreed, spec_id, expected_backlog_tip=cite_backlog_tip)
             try:
                 W.set_property(cfg, task, "SPEC", spec_id)
                 try:
                     W.set_state(cfg, task, "SPECCED")
                 except BaseException as e:
-                    try:
-                        org_path.write_bytes(org_snapshot)
-                    except Exception:
-                        pass
-                    raise e
+                    if cite_sha and agreed:
+                        try:
+                            IL.restore_cite_backlog_tip_or_bail(
+                                agreed.repo, spec_id=spec_id, req_id=agreed.req_id,
+                                new_sha=cite_sha, old_tip=cite_old)
+                        except ValueError as restore_err:
+                            _rollback_scaffold_after_failed_org(
+                                e, backlog_restore_err=restore_err)
+                    _rollback_scaffold_after_failed_org(e)
             except BaseException as e:
                 if cite_sha and agreed:
                     try:
@@ -219,38 +247,20 @@ def scaffold_from_idea(cfg, selector, *, epic=False, title=None, force=False):
                             agreed.repo, spec_id=spec_id, req_id=agreed.req_id,
                             new_sha=cite_sha, old_tip=cite_old)
                     except ValueError as restore_err:
-                        if isinstance(e, KeyboardInterrupt | SystemExit):
-                            raise e
-                        if "restored refs/heads/nw-backlog" in str(restore_err):
-                            try:
-                                org_path.write_bytes(org_snapshot)
-                            except Exception:
-                                pass
-                            if spec_path and spec_path.is_file():
-                                spec_path.unlink()
-                            if not number_released:
-                                try:
-                                    spec_numbers.release(cfg, rec["number"], specs_dir=specs_dir)
-                                    number_released = True
-                                except Exception:
-                                    pass
-                        raise restore_err from e
-                if spec_path and spec_path.is_file():
-                    spec_path.unlink()
-                try:
-                    org_path.write_bytes(org_snapshot)
-                except Exception:
-                    pass
-                raise
+                        _rollback_scaffold_after_failed_org(e, backlog_restore_err=restore_err)
+                _rollback_scaffold_after_failed_org(e)
         return spec_path, spec_id
     except BaseException as err:
         lost = "no longer points at" in str(err) or "restore failed" in str(err)
-        if not lost and not number_released:
+        keep_spec = lost or (
+            isinstance(err, OSError) and spec_path is not None and spec_path.is_file()
+        )
+        if not lost and not number_released and not keep_spec:
             try:
                 spec_numbers.release(cfg, rec["number"], specs_dir=specs_dir)
             except Exception:
                 pass
-        if spec_path and spec_path.is_file() and not lost:
+        if spec_path and spec_path.is_file() and not keep_spec:
             try:
                 spec_path.unlink()
             except OSError:

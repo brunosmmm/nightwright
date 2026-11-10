@@ -4788,9 +4788,22 @@ def _link_idea(cfg, state: dict, spec_id: str) -> str | None:
                 return f"{agreed.req_id} already cites {agreed.spec}"
             worktree = Path((state.get("repo") or {}).get("worktree") or ".")
             citing = IL.will_cite(cfg, task, worktree / "docs" / "specs")
+            cite_sha = cite_old = None
             if agreed.spec != spec_id and citing:
-                IL.cite_spec(cfg, agreed, spec_id)
-            _set_spec_specced(task)
+                cite_backlog_tip = IL.backlog_ref_tip(agreed.repo)
+                cite_sha, cite_old = IL.cite_spec(
+                    cfg, agreed, spec_id, expected_backlog_tip=cite_backlog_tip)
+            try:
+                _set_spec_specced(task)
+            except (ValueError, OSError) as org_err:
+                if cite_sha:
+                    try:
+                        IL.restore_cite_backlog_tip_or_bail(
+                            agreed.repo, spec_id=spec_id, req_id=agreed.req_id,
+                            new_sha=cite_sha, old_tip=cite_old)
+                    except ValueError as restore_err:
+                        return str(restore_err)
+                return str(org_err) or type(org_err).__name__
     except (ValueError, OSError, subprocess.CalledProcessError) as e:
         return str(e) or type(e).__name__
     return None

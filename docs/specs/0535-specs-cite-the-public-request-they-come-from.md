@@ -4,7 +4,7 @@ title: Specs cite the public request they come from
 status: done
 owner: user
 created: 2026-11-10
-updated: 2026-11-11
+updated: 2026-11-10
 kind: feature
 tags: [public-backlog]
 depends_on: [SPEC-0480]
@@ -535,6 +535,7 @@ Revise and amend do not call `cite_spec`.
 - 2026-11-10: SPEC-0535 implementation (IDEA-1021 campaign loop 0).
 - 2026-11-10: Review fixes — resume overlay, cite rollback, `_raw_fm_line` (loop 1).
 - 2026-11-11: Adversarial review — cite status suffix, regression tests (loop 0).
+- 2026-11-10: Review loop 1 — atomic org rollback on `task.file`, cite tip pinning, campaign cite restore.
 
 ## Rollout / migration
 
@@ -591,6 +592,14 @@ unknown key.
 - `python3 tools/spec_lint.py --write-ledger` — pass
 - Full suite left to campaign gating.
 
+### Test record (2026-11-10 loop 1 implementer)
+
+- `uv run pytest tests/test_spec_source_request.py -q` — 15 passed
+- `uv run pytest tests/test_agentic_spec_writer.py -q -k "linked_idea or drift_before or queue_add_refuses or link_idea or campaign_cite or apply_add_idea"` — 11 passed
+- `python3 tools/test_tiers.py --check` — pass
+- `python3 tools/spec_lint.py --write-ledger` — pass
+- Full suite left to campaign gating.
+
 ### Test record (2026-11-11 loop 0)
 
 - `uv run pytest tests/test_spec_source_request.py -q` — 12 passed
@@ -606,6 +615,14 @@ unknown key.
   public file; `cite_spec` passes it to `render_request` so bare YAML 1.1
   scalars and existing quoting round-trip unchanged (not re-encoded via
   `str(bool)` or double-quoting).
+
+### As shipped (2026-11-10 loop 1)
+
+- Cite rollback snapshots `task.file` (not `org_ideas_file`) and restores via
+  `org_write._atomic_replace_bytes` (`os.replace`); a failed restore leaves the
+  spec file and reservation in place and propagates the I/O error.
+- `cite_spec` accepts `expected_backlog_tip` from the in-lock `load_agreed_request`
+  read; `_link_idea` restores `nw-backlog` when the org write after a cite fails.
 
 ## Open questions
 

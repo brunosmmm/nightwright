@@ -763,6 +763,20 @@ def clear_prune_error(cfg, basename):
         pass
 
 
+def _atomic_replace_bytes(path: str | os.PathLike, content: bytes) -> None:
+    """Replace ``path`` with ``content`` via a same-directory temp file and ``os.replace``."""
+    d = os.path.dirname(os.path.abspath(path))
+    os.makedirs(d, exist_ok=True)
+    fd, tmp = tempfile.mkstemp(dir=d, prefix=".nw-org-", suffix=".tmp")
+    try:
+        with os.fdopen(fd, "wb") as f:
+            f.write(content)
+        os.replace(tmp, path)
+    finally:
+        if os.path.exists(tmp):
+            os.remove(tmp)
+
+
 def _atomic_backup_write(cfg, path, content):
     refuse_in_persona_run()
     if os.path.exists(path):                         # back up the original (new files: nothing to)
