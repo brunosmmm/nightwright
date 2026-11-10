@@ -899,7 +899,35 @@ def test_heading_without_level_matches_only_task_line():
         ":ID: IDEA-002\n",
         ":END:\n",
     ]
-    assert not W._is_same_headline(task3, lines_drawer_only, 0)
+    assert W._is_same_headline(task3, lines_drawer_only, 0)
+    task3_empty = Task(
+        id="IDEA-002",
+        heading="",
+        state="INCUBATE",
+        is_done=False,
+        tags=frozenset(),
+        priority=None,
+        properties={"ID": "IDEA-002"},
+        level=1,
+        file="f.org",
+        line=1,
+        is_idea=True,
+    )
+    assert W._is_same_headline(task3_empty, lines_drawer_only, 0)
+    task3_none_level = Task(
+        id="IDEA-002",
+        heading="Link",
+        state="INCUBATE",
+        is_done=False,
+        tags=frozenset(),
+        priority=None,
+        properties={"ID": "IDEA-002"},
+        level=None,
+        file="f.org",
+        line=1,
+        is_idea=True,
+    )
+    assert not W._is_same_headline(task3_none_level, lines_drawer_only, 0)
 
     lines_dup = [
         "* INCUBATE  Link :tag:\n",

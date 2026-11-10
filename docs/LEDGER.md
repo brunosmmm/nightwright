@@ -790,7 +790,7 @@ progress. This is the single place to see *what has been decided* and *what is i
 | [SPEC-0469](./specs/0469-release-red-hold-when-base-moves.md) | Release the red-base hold once the base moves past the red sha | feature | done | — | 2026-11-08 |
 | [SPEC-0471](./specs/0471-run-pi-personas-through-the-node-sdk.md) | Pi test requires the task text in the user message | feature | done | — | 2026-11-08 |
 | [SPEC-0479](./specs/0479-herdr-notifications-are-silent.md) | Herdr notifications are silent | feature | done | — | 2026-11-08 |
-| [SPEC-0480](./specs/0480-link-a-private-idea-to-a-public-backlog-request.md) | Publish a backlog request and record the link | feature | done | — | 2026-11-10 |
+| [SPEC-0480](./specs/0480-link-a-private-idea-to-a-public-backlog-request.md) | Publish a backlog request and record the link | feature | done | — | 2026-11-11 |
 | [SPEC-0481](./specs/0481-conductor-follower-stays-up.md) | The conductor follower stays up across a wake | feature | done | — | 2026-11-08 |
 | [SPEC-0482](./specs/0482-adopted-spec-review-no-start-snapshot.md) | An adopted spec review with no start snapshot retries instead of crashing the runner | feature | done | — | 2026-11-09 |
 | [SPEC-0483](./specs/0483-runner-under-a-systemd-user-unit.md) | The queue runner runs under a systemd user unit and resolves its own credentials | feature | done | M9: agentic workflow | 2026-11-09 |

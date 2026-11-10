@@ -4,7 +4,7 @@ title: Publish a backlog request and record the link
 status: done
 owner: user
 created: 2026-11-08
-updated: 2026-11-10
+updated: 2026-11-11
 kind: feature
 tags: [public-backlog]
 source_idea: IDEA-1020
@@ -527,6 +527,13 @@ the guard.
 - `python3 tools/spec_lint.py --write-ledger && python3 tools/spec_lint.py` — exit 0.
 - Full suite left to queue gating.
 
+### Test record (2026-11-10, implementer loop 3)
+
+- `uv run pytest tests/test_idea_link.py -q` — passed (int-level `:ID:` matches drawer id only).
+- `uv run pytest tests/test_idea_link.py::test_heading_without_level_matches_only_task_line tests/test_idea_stamps.py::test_stamp_creates_missing_drawer_without_corrupting_sections -q` — passed.
+- `python3 tools/spec_lint.py --write-ledger && python3 tools/spec_lint.py` — exit 0.
+- Full suite left to queue gating.
+
 ### As shipped (2026-11-09, review loop 2)
 
 - `nw-backlog` tree rebuild uses `git ls-tree --full-tree -z` (one level) / `git mktree -z`, raw path bytes, and raises on unparsable entries; keeps each entry's mode and object type.
@@ -556,7 +563,6 @@ the guard.
 
 - Under `org_write_lock`, publish always re-resolves the selector (or idea id), then
   re-checks idea-ness, `:PROJECT:`, linked repo, and git identity before any backlog write.
-- Int-level `:ID:` headline match also requires `task.heading` in the headline text.
 - Title scalar validation runs before Summary read so bad titles refuse without org drift.
 - Backlog restore tests pin the compare-and-swap argument on `git update-ref`.
 
