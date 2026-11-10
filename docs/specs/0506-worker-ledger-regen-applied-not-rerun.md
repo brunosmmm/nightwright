@@ -72,12 +72,12 @@ worktree keeps today's `tree` fallback.
 
 ## Acceptance criteria
 
-- [ ] A remote run whose only change is `docs/LEDGER.md` (declared) is accepted remotely; the
+- [x] A remote run whose only change is `docs/LEDGER.md` (declared) is accepted remotely; the
       worktree's `docs/LEDGER.md` equals the worker's content; no local gate run starts.
-- [ ] A remote run that also changed an undeclared path falls back locally with reason `tree`.
-- [ ] A worktree whose tree moved during the run falls back locally (no write).
-- [ ] Oversize or hash-mismatched content falls back locally.
-- [ ] nightwright's `spec-lint` gate declares `writes: ["docs/LEDGER.md"]`.
+- [x] A remote run that also changed an undeclared path falls back locally with reason `tree`.
+- [x] A worktree whose tree moved during the run falls back locally (no write).
+- [x] Oversize or hash-mismatched content falls back locally.
+- [x] nightwright's `spec-lint` gate declares `writes: ["docs/LEDGER.md"]`.
 
 ## Test plan
 
@@ -98,11 +98,11 @@ because absent fields fall back. Supersedes nothing (refines SPEC-0338's `tree` 
 
 ## Definition of done
 
-- [ ] Acceptance criteria all met.
-- [ ] Test plan executed; affected tests pass; manual step performed and noted.
-- [ ] No regressions.
-- [ ] Spec body updated to match what shipped.
-- [ ] `docs/LEDGER.md` updated (status + date).
+- [x] Acceptance criteria all met.
+- [x] Test plan executed; affected tests pass; manual step performed and noted.
+- [x] No regressions.
+- [x] Spec body updated to match what shipped.
+- [x] `docs/LEDGER.md` updated (status + date).
 
 ## Risks
 
@@ -112,3 +112,24 @@ because absent fields fall back. Supersedes nothing (refines SPEC-0338's `tree` 
 ## Open questions
 
 - None.
+
+## As shipped
+
+- `project.py`: gate key `writes` (non-empty list of globs, same matcher as `paths`);
+  `.nw/project.yaml` `spec-lint` declares `writes: ["docs/LEDGER.md"]` (comment updated).
+- Worker (`worker.py`): `written_files()` adds `written: {path: {z, sha256}}` (gzip+base64, the
+  same encoding as gate logs) to `done` for changed paths matching a gate's `writes`, only when
+  the header payload has `writes_ok`; nothing is returned (so the run falls back) if a file is
+  missing, over 1 MiB, or the total is over 4 MiB. `changed` is unchanged.
+- Coordinator (`remote_gates.py`): `_header` sets `payload.writes_ok` when any gate declares
+  `writes`; `_writes_acceptor` is passed to `_check_changed` from both the synchronous
+  `_dispatch` and the async `_Job._done`. It verifies, on the coordinator's own gate globs (the
+  worker is not trusted): every changed path is declared and present in `written`, relative and
+  outside `.git`, inflated within the caps, sha256 equal, and `tree_under_test(worktree)[1]`
+  equals the run's tree (the commit under test's tree, so a dirty worktree also works; the spec
+  said `HEAD^{tree}`). Then files are replaced atomically and a `note` "applied N file(s)
+  regenerated on <worker>: <paths>" is appended. Anything else raises today's `tree` failure,
+  whose message now ends with the reason in parentheses. Standalone gate jobs are unchanged.
+- Tests: `tests/test_remote_gates_writes.py` (declared applied, undeclared, no `writes`, moved
+  tree, oversize, bad hash, old worker, unsafe paths, async worker, header flag, worker helper,
+  config validation, nightwright's own gate).

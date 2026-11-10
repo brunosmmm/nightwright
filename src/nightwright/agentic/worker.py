@@ -14,6 +14,7 @@ import base64
 import errno
 import fcntl
 import gzip
+import hashlib
 import json
 import math
 import os
@@ -1171,14 +1172,47 @@ def _run_gates(cfg, h: dict, job: Path, frames: _Frames, cancel: threading.Event
         finally:
             G._GATE_INHERIT_ENV.reset(token)
         frames.stage = "frame"
+        changed = tree_changes(tree)
         frames.emit("done", ok=all(r.ok for r in results if r.required),
                     started_at=started_at, duration_s=round(time.monotonic() - t0, 3),
                     slot_wait_s=hold.waited_s,
                     interrupted=cut or any(r.interrupted for r in results),
-                    changed=tree_changes(tree))
+                    changed=changed,
+                    **written_files(tree, changed, payload))
 
 
 TREE_CHANGES_MAX = 20
+WRITTEN_FILE_MAX = 1 << 20          # SPEC-0506: one returned file
+WRITTEN_TOTAL_MAX = 4 << 20
+
+
+def written_files(tree: Path, changed, payload: dict) -> dict:
+    """SPEC-0506: `{"written": {path: {"z", "sha256"}}}` for the changed files that match a
+    gate's `writes` glob, when the coordinator announced `writes_ok`: the content comes back
+    (gzip+base64) so the coordinator can apply it instead of re-running the gates. Nothing
+    (so the coordinator re-runs locally) when a file is missing, over 1 MiB, or the total is
+    over 4 MiB. Paths outside the globs are only in `changed`."""
+    if not changed or not payload.get("writes_ok"):
+        return {}
+    from .project import path_matches
+    globs = [pat for g in payload.get("gates") or [] for pat in g.get("writes") or []]
+    out, total = {}, 0
+    for path in changed:
+        if not path_matches(globs, path):
+            continue
+        f = tree / path
+        try:
+            if f.is_symlink() or not f.is_file() or f.stat().st_size > WRITTEN_FILE_MAX:
+                return {}
+            raw = f.read_bytes()
+        except OSError:
+            return {}
+        total += len(raw)
+        if total > WRITTEN_TOTAL_MAX:
+            return {}
+        out[path] = {"z": base64.b64encode(gzip.compress(raw)).decode("ascii"),
+                     "sha256": hashlib.sha256(raw).hexdigest()}
+    return {"written": out} if out else {}
 
 
 def tree_changes(tree: Path) -> list[str] | None:

@@ -28,6 +28,7 @@ from pathlib import Path
 
 from . import gate_slots
 from . import gates as G
+from . import project as P
 from . import remote_jobs as RJ
 from . import store
 from . import workers as WK
@@ -172,9 +173,9 @@ def pools_for(cfg, project_cfg: dict, campaign_state: dict, *, seq: int,
     if worker is not None:
         raise ValueError(f"not eligible for remote gates: {why['title']}")
     _record_ineligible(cfg, campaign_state["id"], why)
-    return None
     if why_out is not None:                     # SPEC-0505: the reason for the local run
         why_out["ineligible"] = why["title"]
+    return None
 
 
 def _affine_first(cfg, campaign_state: dict, pools: list) -> list:
@@ -401,6 +402,8 @@ def _header(project_cfg: dict, campaign_state: dict, cfg, seq: int, job_id: str,
                "gate_budget_s": float(events_settings(cfg)["gate_budget_s"])}
     if host_slots is not None:
         payload["host_slots"] = host_slots
+    if any(g.get("writes") for g in gl):        # SPEC-0506: this coordinator takes `written`
+        payload["writes_ok"] = True
     return {"schema": W.JOB_SCHEMA, "kind": "gate", "job_id": job_id, "repo_key": key,
             "campaign": cid, "spec_id": spec_id if spec_id else "-", "commit": sha,
             "base": {"name": base_name, "sha": base_sha}, "have": have, "bundle_bytes": size,
@@ -540,12 +543,14 @@ def _flag(frame: dict, key: str, *, required: bool) -> bool:
     return v
 
 
-def _check_changed(frame: dict) -> tuple:
+def _check_changed(frame: dict, accept=None) -> tuple:
     """`done`'s `changed`: the paths the gates wrote in the worker's checkout. Those writes
     never reach the coordinator's worktree (a regenerated ledger, a formatter's output), so a
     run that made any is re-run locally, without cooldown: the local run leaves the worktree
     as it always has. `null` (git could not tell in the worker's checkout) is treated as a
-    change. A worker that does not say is a protocol failure."""
+    change. A worker that does not say is a protocol failure.
+    SPEC-0506: `accept(frame, changed)` (`_writes_acceptor`) brings declared, regenerated files
+    back to the worktree and returns None, or returns why it could not; then the run stands."""
     changed = frame.get("changed")
     if changed is None and "changed" in frame:
         raise RemoteFailure("tree", "the worker could not tell what the gates wrote in its "
@@ -554,10 +559,87 @@ def _check_changed(frame: dict) -> tuple:
         raise RemoteFailure("protocol", f"`done` frame: bad changed {changed!r} (the worker "
                                         f"cannot tell what the gates wrote)")
     if changed:
-        raise RemoteFailure("tree", f"the gates changed {len(changed)} file(s) in the worker's "
-                                    f"checkout ({', '.join(changed[:5])}); re-running locally "
-                                    f"so the worktree gets those writes", cooldown=False)
+        why = accept(frame, changed) if accept is not None else "no `writes` declared"
+        if why is not None:
+            raise RemoteFailure("tree", f"the gates changed {len(changed)} file(s) in the "
+                                        f"worker's checkout ({', '.join(changed[:5])}); "
+                                        f"re-running locally so the worktree gets those writes "
+                                        f"({why})", cooldown=False)
     return tuple(changed)
+
+
+WRITE_FILE_MAX = 1 << 20            # SPEC-0506: one written file, inflated
+WRITE_TOTAL_MAX = 4 << 20           # SPEC-0506: every written file of a run
+
+
+def _declared_writes(gates) -> list:
+    """SPEC-0506: the union of the `writes` globs of the job's gates."""
+    out: list = []
+    for g in gates or []:
+        for pat in g.get("writes") or []:
+            if pat not in out:
+                out.append(pat)
+    return out
+
+
+def _safe_rel(path: str) -> bool:
+    parts = Path(path).parts
+    return bool(parts) and not Path(path).is_absolute() and ".." not in parts \
+        and parts[0] != ".git" and "\x00" not in path
+
+
+def _writes_acceptor(cfg, cid, worker_name: str, gates, worktree, run_tree: str):
+    """SPEC-0506: `accept(frame, changed)` for `_check_changed`. Accepts a run whose every
+    changed path matches a gate's `writes` glob and arrived in `written` (inflated within the
+    size caps, sha256 as announced), when the worktree still holds the tree under test: the
+    files are replaced atomically and a `note` says so. Returns None then, else why not (the
+    caller raises the `tree` failure, so the run is repeated locally)."""
+    globs = _declared_writes(gates)
+
+    def accept(frame: dict, changed: list) -> str | None:
+        if not globs:
+            return "no gate declares `writes`"
+        undeclared = [c for c in changed if not P.path_matches(globs, c)]
+        if undeclared:
+            return f"undeclared write: {undeclared[0]}"
+        written = frame.get("written")
+        if not isinstance(written, dict) or set(changed) != set(written):
+            return "the worker returned no content for those files (an older worker?)"
+        files, total = {}, 0
+        for path, ent in written.items():
+            if not _safe_rel(path) or not isinstance(ent, dict) \
+                    or not isinstance(ent.get("z"), str):
+                return f"bad written entry for {path!r}"
+            try:
+                raw = _inflate(path, ent["z"])
+            except RemoteFailure as e:
+                return str(e)
+            total += len(raw)
+            if len(raw) > WRITE_FILE_MAX or total > WRITE_TOTAL_MAX:
+                return f"written content over the {WRITE_FILE_MAX} B / {WRITE_TOTAL_MAX} B caps"
+            if hashlib.sha256(raw).hexdigest() != ent.get("sha256"):
+                return f"sha256 mismatch for {path}"
+            files[path] = raw
+        try:
+            if tree_under_test(worktree)[1] != run_tree:
+                return "the worktree changed during the run"
+        except RemoteFailure as e:
+            return f"cannot read the worktree's tree: {e}"
+        root = Path(worktree)
+        for path, raw in files.items():
+            dest = root / path
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            tmp = dest.with_name(f".{dest.name}.nw-writes.tmp")
+            tmp.write_bytes(raw)
+            if dest.exists():
+                os.chmod(tmp, dest.stat().st_mode & 0o7777)
+            os.replace(tmp, dest)
+        store.append_event(cfg, cid, "note",
+                           {"text": f"applied {len(files)} file(s) regenerated on {worker_name}: "
+                                    f"{', '.join(sorted(files))}", "author": "gates"},
+                           by="gates")
+        return None
+    return accept
 
 
 def _inflate(name: str, data: str) -> bytes:
@@ -663,7 +745,8 @@ def _kept_changed(frame: dict):
 
 
 def _dispatch(worker: dict, header: dict, bundle: Path, cfg, cid, seq: int, stop, *,
-              gates_dir: Path | None = None, keep_changed: bool = False) -> Outcome:
+              gates_dir: Path | None = None, keep_changed: bool = False,
+              worktree=None) -> Outcome:
     argv = worker["ssh_argv"] + [worker["ssh"], worker["nw"], "worker", "gate-job"]
     slot_wait_s = settings(cfg)["slot_wait_s"]
     try:
@@ -757,7 +840,16 @@ def _dispatch(worker: dict, header: dict, bundle: Path, cfg, cid, seq: int, stop
                     raise RemoteFailure("interrupted", "the worker interrupted the run (signal)")
                 changed = None
                 if not cut:
-                    changed = _kept_changed(frame) if keep_changed else _check_changed(frame)
+                    accept = None
+                    if worktree is not None and not keep_changed:    # SPEC-0506
+                        try:
+                            run_tree = _git(worktree, "rev-parse", f"{header['commit']}^{{tree}}")
+                        except RemoteFailure:
+                            run_tree = ""
+                        accept = _writes_acceptor(cfg, cid, worker["name"],
+                                                  header["payload"]["gates"], worktree, run_tree)
+                    changed = _kept_changed(frame) if keep_changed \
+                        else _check_changed(frame, accept)
                     if [r.name for r in results] != order:
                         raise RemoteFailure("protocol", f"`done` after results for "
                                                         f"{[r.name for r in results]}, not "
@@ -882,7 +974,8 @@ def run(worker: str, project_cfg: dict, campaign_state: dict, cfg, seq: int, own
         _check_stop(stop)                       # no job is started only to be cancelled
         if on_attempt is not None:
             on_attempt(job_id, False)
-        return _dispatch(rec, header, bundle, cfg, cid, seq, stop)
+        return _dispatch(rec, header, bundle, cfg, cid, seq, stop,
+                         worktree=(campaign_state.get("repo") or {}).get("worktree"))
     except _Stopped:                            # SPEC-0229: nothing was sent, nothing ran
         return Outcome(G.GateRun(seq, False, (), started_at, round(time.monotonic() - t0, 3),
                                  interrupted=True))
@@ -1177,6 +1270,7 @@ class _Job:
     def __init__(self, cfg, worker: dict, rec: dict, project_cfg: dict, seq: int):
         self.cfg, self.worker, self.rec, self.seq = cfg, worker, rec, seq
         self.job_id = rec["job_id"]
+        self.gates = project_cfg.get("gates") or []                    # SPEC-0506: `writes`
         self.order = list(rec.get("gates") or [g["name"] for g in project_cfg.get("gates") or []])
         self.names = set(self.order)
         self.gates_dir = store.gates_dir(cfg, rec["campaign"])
@@ -1248,7 +1342,14 @@ class _Job:
                 return self.interrupted()       # an abandon or a park cancelled it: no fallback
             raise RemoteFailure("interrupted", "the worker interrupted the run (signal or "
                                                "lease)")
-        changed = _check_changed(frame)
+        accept = None
+        try:                                    # SPEC-0506: where the files would go
+            wt = (store.read_state(self.cfg, self.rec["campaign"]).get("repo") or {})["worktree"]
+            accept = _writes_acceptor(self.cfg, self.rec["campaign"], self.worker["name"],
+                                      self.gates, wt, str(self.rec.get("tree") or ""))
+        except (ValueError, KeyError):
+            pass
+        changed = _check_changed(frame, accept)
         if [r.name for r in self.results] != self.order:
             raise RemoteFailure("protocol", f"`done` after results for "
                                             f"{[r.name for r in self.results]}, not {self.order}")

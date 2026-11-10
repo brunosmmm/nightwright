@@ -9,11 +9,13 @@ gates:
   - name: spec-lint
     # Regenerate the generated ledger block first: it is derived from frontmatter, so an
     # implementer that edited a spec but forgot --write-ledger must not fail the gate for it.
-    # On a remote worker (SPEC-0338) the regenerated ledger would stay in the worker's checkout:
-    # the worker reports the change and the run is re-run locally, which rewrites it here.
+    # On a remote worker (SPEC-0338) the regenerated ledger is written in the worker's checkout;
+    # `writes` (SPEC-0506) brings it back to this worktree, so the run stands. Any other change
+    # the gates make on the worker still re-runs the whole gate list locally.
     cmd: python3 tools/spec_lint.py --write-ledger >/dev/null && python3 tools/spec_lint.py
     timeout_s: 120
     required: true
+    writes: ["docs/LEDGER.md"]
   # SPEC-0328: tiered gates. The fix loop (GATING after implement / each fix) runs only the
   # tests the branch affects (static import graph, tools/affected_tests.py; it falls back to the
   # full suite when selection is unsafe) plus a ~1 s config smoke set; the full suite runs once,
