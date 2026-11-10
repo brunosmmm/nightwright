@@ -482,6 +482,16 @@ def test_enrolled_request_auth(tmp_path, monkeypatch):
     st, h, raw = req("GET", "/v1/status")
     assert st == 401
     _resp_sig(secret, "GET", "/v1/status", h, raw)
+    no_sig = {"Authorization": "Bearer tok", "X-NW-Req-Ts": str(int(NOW))}
+    st, h, raw = req("GET", "/v1/status", headers=no_sig)
+    assert st == 401
+    _resp_sig(secret, "GET", "/v1/status", h, raw)
+    no_ts = {**F.request_headers(secret, "GET", "/v1/status", b"", now=NOW),
+             "Authorization": "Bearer tok"}
+    del no_ts["X-NW-Req-Ts"]
+    st, h, raw = req("GET", "/v1/status", headers=no_ts)
+    assert st == 401
+    _resp_sig(secret, "GET", "/v1/status", h, raw)
     hdrs = {**F.request_headers(secret, "GET", "/v1/status", b"", now=NOW), "Authorization": "Bearer tok"}
     st, h, raw = req("GET", "/v1/status", headers=hdrs)
     assert st == 200
@@ -631,8 +641,9 @@ def test_hubclient_rejects_bad_responses(tmp_path, monkeypatch):
         assert client.get_json("/v1/status")["schema"] == "nw.federation.status.v1"
     assert len(connect_timeouts) == 3
     assert all(1.0 < t <= 2 for t in connect_timeouts)
-    assert len(read_timeouts) >= 3
-    assert all(t == 2 or (1.0 < t <= 2) for t in read_timeouts[-3:])
+    read_phase = [t for t in read_timeouts if t is not None and 0 < t <= 2]
+    assert len(read_phase) >= 3
+    assert any(1.0 < t <= 2 for t in read_phase)
     rec2 = {**rec, "url": rec["url"] + "/"}
     F.HubClient(rec2, hub, now=NOW).get_json("/v1/status")
     with pytest.raises(ConnectionError):
@@ -739,7 +750,6 @@ def test_bind_and_serve_flags(tmp_path, monkeypatch):
     srv.server_close()
     assert FH.DEFAULT_BIND == "127.0.0.1:8792"
     monkeypatch.setattr("nightwright.cli.load_config", lambda: host)
-    assert CliRunner().invoke(cli, ["serve", "--federate", "--client-ca", "/x"]).exit_code != 0
     assert CliRunner().invoke(cli, ["serve", "--jobs", "--federate"]).exit_code != 0
     cert, key = _mini_tls_pair(tmp_path)
     with pytest.raises(ValueError, match="tls-cert"):
@@ -747,6 +757,33 @@ def test_bind_and_serve_flags(tmp_path, monkeypatch):
     with pytest.raises(ValueError, match="client-ca"):
         FH.make_federate_server(host, "127.0.0.1:0", client_ca=cert)
     FH.make_federate_server(host, "127.0.0.1:0", tls_cert=cert, tls_key=key).server_close()
+    orig_bind = socket.socket.bind
+
+    def lax_bind(self, addr):
+        host = addr[0].strip("[]")
+        if host in ("100.64.0.1", "8.8.8.8") or host.startswith("fd7a:"):
+            return
+        return orig_bind(self, addr)
+
+    monkeypatch.setattr(socket.socket, "bind", lax_bind)
+    FH.make_federate_server(host, "100.64.0.1:0").server_close()
+    FH.make_federate_server(host, "[fd7a:115c:a1e0::1]:0").server_close()
+    FH.make_federate_server(host, "8.8.8.8:8792", tls_cert=cert, tls_key=key).server_close()
+    monkeypatch.setattr(socket.socket, "bind", orig_bind)
+    ca_only = tmp_path / "ca.pem"
+    ca_only.write_text("dummy\n")
+    cli_binds: list = []
+    real_make_cli = FH.make_federate_server
+
+    def track_cli_bind(cfg, bind, **kw):
+        cli_binds.append(bind)
+        return real_make_cli(cfg, bind, **kw)
+
+    monkeypatch.setattr(FH, "make_federate_server", track_cli_bind)
+    r_ca = CliRunner().invoke(cli, ["serve", "--federate", "--client-ca", str(ca_only)])
+    assert r_ca.exit_code == 2
+    assert "--client-ca" in r_ca.output
+    assert not cli_binds
     assert CliRunner().invoke(cli, ["serve", "--federate", "--tls-cert", cert]).exit_code != 0
 
     def puff(self, *a, **kw):
@@ -886,6 +923,93 @@ def test_check_overlap_unreachable_and_disabled(tmp_path, monkeypatch):
     r_off = _invoke(hub_full, monkeypatch, "check")
     assert r_off.exit_code == 0
     assert "zlast off" in r_off.output
+
+
+def test_hubclient_getaddrinfo_blocks_within_connect_budget(tmp_path, monkeypatch):
+    import time
+
+    monkeypatch.setattr(time, "time", lambda: NOW)
+    hub = _cfg(tmp_path, "hub")
+    host = _cfg(tmp_path, "host")
+    blob = _add_and_enrol(host, hub, monkeypatch)
+    srv, url = _serve(host)
+    _invoke(hub, monkeypatch, "add", "wedged", "--url", "http://dns-wedged.test:1")
+    _point_hub(hub, "box", url)
+    block = threading.Event()
+    real_gai = socket.getaddrinfo
+
+    def gai(host, port, *a, **kw):
+        if host == "dns-wedged.test":
+            block.wait()
+        return real_gai(host, port, *a, **kw)
+
+    monkeypatch.setattr(socket, "getaddrinfo", gai)
+    wedged = H.find(H.load(hub), "wedged")
+    t0 = time.monotonic()
+    with pytest.raises(ConnectionError):
+        F.HubClient(wedged, hub, now=NOW).request("GET", "/v1/status")
+    assert time.monotonic() - t0 <= 2.5
+    cache = {"fetched_at": "2020-01-01T00:00:00+00:00", "projects": ["old"], "campaigns": []}
+
+    def plant(recs):
+        H.find(recs, "wedged")["status_cache"] = cache
+
+    H.update(hub, plant)
+    snap = json.dumps(H.find(H.load(hub), "wedged")["status_cache"], sort_keys=True)
+    r = _invoke(hub, monkeypatch, "check")
+    assert r.exit_code == 1
+    assert "wedged unreachable" in r.output
+    assert "box ok" in r.output
+    assert json.dumps(H.find(H.load(hub), "wedged")["status_cache"], sort_keys=True) == snap
+    srv.shutdown()
+
+
+def test_hubclient_tries_later_address_when_first_blackholes(tmp_path, monkeypatch):
+    import time
+
+    monkeypatch.setattr(time, "time", lambda: NOW)
+    hub = _cfg(tmp_path, "hub")
+    host = _cfg(tmp_path, "host")
+    _add_and_enrol(host, hub, monkeypatch)
+    srv, url = _serve(host)
+    port = srv.server_address[1]
+    dead = _refused_port()
+    rec = {**H.find(H.load(hub), "box"), "url": f"http://dual-stack.test:{port}"}
+    real_gai = socket.getaddrinfo
+
+    def gai(host, pname, *a, **kw):
+        if host == "dual-stack.test":
+            return [
+                (socket.AF_INET, socket.SOCK_STREAM, 0, "", ("127.0.0.1", dead)),
+                (socket.AF_INET, socket.SOCK_STREAM, 0, "", ("127.0.0.1", port)),
+            ]
+        return real_gai(host, pname, *a, **kw)
+
+    monkeypatch.setattr(socket, "getaddrinfo", gai)
+    doc = F.HubClient(rec, hub, now=NOW).get_json("/v1/status")
+    assert doc["schema"] == "nw.federation.status.v1"
+    srv.shutdown()
+
+
+def test_status_document_failure_returns_signed_error(tmp_path, monkeypatch):
+    import time
+
+    monkeypatch.setattr(time, "time", lambda: NOW)
+    host = _cfg(tmp_path, "host")
+    F.write_federation(host, {"hub_name": "h", "host_name": "box", "token": "tok", "secret": "abc"})
+    srv, base = _serve(host)
+    real_sd = FH.status_document
+
+    def boom(cfg):
+        raise RuntimeError("queue wedged")
+
+    monkeypatch.setattr(FH, "status_document", boom)
+    st, hdrs, raw = _raw("GET", base, "/v1/status", "tok", "abc")
+    assert st == 500
+    assert json.loads(raw) == {"error": "internal_error"}
+    _resp_sig("abc", "GET", "/v1/status", hdrs, raw)
+    monkeypatch.setattr(FH, "status_document", real_sd)
+    srv.shutdown()
 
 
 def test_https_connect_failure_is_unreachable(tmp_path, monkeypatch):

@@ -126,7 +126,12 @@ class _Handler(http.server.BaseHTTPRequestHandler):
         n = int(s)
         if n > MAX_BODY_BYTES:
             return None
-        return self.rfile.read(n) if n > 0 else b""
+        if n <= 0:
+            return b""
+        try:
+            return self.rfile.read(n)
+        except (TimeoutError, OSError):
+            return None
 
     def _write(self, status: int, data: bytes, *, signed: bool, method: str, path: str,
                secret: str | None, now: float | None = None) -> None:
@@ -196,7 +201,12 @@ class _Handler(http.server.BaseHTTPRequestHandler):
         except ValueError:
             raise ValueError("bad request target") from None
         if route == "/v1/status" and method == "GET":
-            doc = status_document(self.server.cfg)
+            try:
+                doc = status_document(self.server.cfg)
+            except Exception:
+                self._json_error(500, "internal_error", signed=True, method=method, path=path,
+                                 secret=secret_key)
+                return
             data = json.dumps(doc, separators=(",", ":")).encode()
             self._write(200, data, signed=True, method=method, path=path, secret=secret_key)
             return

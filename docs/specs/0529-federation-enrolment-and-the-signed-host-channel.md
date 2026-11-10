@@ -512,6 +512,13 @@ any other writer).
 - `python3 tools/spec_lint.py --write-ledger` and `python3 tools/spec_lint.py` — exit 0.
 - Full suite left to gating.
 
+### Test record (2026-11-10, review loop 2)
+
+- `uv run pytest tests/test_federation_channel.py tests/test_rich_output_guard.py -q` — 29 passed.
+- `python3 tools/test_tiers.py --check` — exit 0.
+- `python3 tools/spec_lint.py --write-ledger` and `python3 tools/spec_lint.py` — exit 0.
+- Full suite left to gating.
+
 ### Test record (2026-11-10, review loop 0)
 
 - `uv run pytest tests/test_federation_channel.py::test_https_connect_failure_is_unreachable -q` — passed.

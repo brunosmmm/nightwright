@@ -8,6 +8,7 @@ import json
 import secrets
 import socket
 import ssl
+import threading
 import time
 from pathlib import Path
 from urllib.parse import urlsplit
@@ -179,28 +180,90 @@ class HubClient:
                 return v
         return None
 
+    def _resolve_addrs(self, deadline: float) -> list:
+        holder: dict = {}
+        exc_holder: dict = {}
+
+        def worker() -> None:
+            try:
+                holder["addrs"] = socket.getaddrinfo(
+                    self.host, self.port, type=socket.SOCK_STREAM)
+            except OSError as e:
+                exc_holder["e"] = e
+
+        th = threading.Thread(target=worker, daemon=True)
+        th.start()
+        wait = deadline - time.monotonic()
+        th.join(wait if wait > 0 else 0)
+        if th.is_alive():
+            raise ConnectionError("TimeoutError: timed out")
+        if "e" in exc_holder:
+            e = exc_holder["e"]
+            raise ConnectionError(f"{type(e).__name__}: {e}") from e
+        addrs = holder.get("addrs")
+        if not addrs:
+            raise ConnectionError("gaierror: no addresses")
+        return addrs
+
+    def _try_connect_one(self, family, stype, proto, sockaddr, deadline: float,
+                         out: list, lock: threading.Lock) -> None:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            return
+        sock = socket.socket(family, stype, proto)
+        try:
+            sock.settimeout(remaining)
+            sock.connect(sockaddr)
+            with lock:
+                out.append(("ok", sock))
+        except OSError as e:
+            sock.close()
+            with lock:
+                out.append(("err", e))
+
     def _connect(self) -> socket.socket:
         deadline = time.monotonic() + self.CONNECT_TIMEOUT
-        try:
-            addrs = socket.getaddrinfo(self.host, self.port, type=socket.SOCK_STREAM)
-        except OSError as e:
-            raise ConnectionError(f"{type(e).__name__}: {e}") from e
-        last: OSError | None = None
-        for _family, _type, _proto, _canon, sockaddr in addrs:
+        addrs = self._resolve_addrs(deadline)
+        if len(addrs) == 1:
+            family, stype, proto, _canon, sockaddr = addrs[0]
             remaining = deadline - time.monotonic()
             if remaining <= 0:
                 raise ConnectionError("TimeoutError: timed out")
-            sock = socket.socket(_family, _type, _proto)
+            sock = socket.socket(family, stype, proto)
             try:
                 sock.settimeout(remaining)
                 sock.connect(sockaddr)
                 return sock
             except OSError as e:
-                last = e
                 sock.close()
+                raise ConnectionError(f"{type(e).__name__}: {e}") from e
+        results: list = []
+        lock = threading.Lock()
+        threads: list[threading.Thread] = []
+        for family, stype, proto, _canon, sockaddr in addrs:
+            t = threading.Thread(
+                target=self._try_connect_one,
+                args=(family, stype, proto, sockaddr, deadline, results, lock),
+                daemon=True,
+            )
+            t.start()
+            threads.append(t)
+        last: OSError | None = None
+        seen = 0
+        while time.monotonic() < deadline:
+            with lock:
+                pending = results[seen:]
+                seen = len(results)
+            for kind, val in pending:
+                if kind == "ok":
+                    return val
+                last = val
+            if seen >= len(addrs) and all(not t.is_alive() for t in threads):
+                break
+            time.sleep(min(0.05, max(0, deadline - time.monotonic())))
         if last is not None:
             raise ConnectionError(f"{type(last).__name__}: {last}") from last
-        raise ConnectionError("gaierror: no addresses")
+        raise ConnectionError("TimeoutError: timed out")
 
     def request(self, method: str, path: str, body: bytes = b"") -> tuple[int, bytes, dict]:
         data = body or b""
@@ -223,9 +286,26 @@ class HubClient:
                 conn = http.client.HTTPConnection(self.host, self.port)
                 conn.sock = self._connect()
             conn.request(method, target, body=data, headers=headers)
-            conn.sock.settimeout(self.READ_TIMEOUT)
+            read_deadline = time.monotonic() + self.READ_TIMEOUT
+
+            def _read_to() -> float:
+                return max(0.001, read_deadline - time.monotonic())
+
+            io_sock = conn.sock
+            io_sock.settimeout(_read_to())
             resp = conn.getresponse()
-            raw = resp.read(MAX_RESPONSE_BYTES + 1)
+            raw = b""
+            while True:
+                if read_deadline - time.monotonic() <= 0:
+                    raise TimeoutError("timed out")
+                if io_sock.fileno() != -1:
+                    io_sock.settimeout(_read_to())
+                chunk = resp.read(min(65536, MAX_RESPONSE_BYTES + 1 - len(raw)))
+                if not chunk:
+                    break
+                raw += chunk
+                if len(raw) > MAX_RESPONSE_BYTES:
+                    break
             hdrs = {k: v for k, v in resp.getheaders()}
             status = resp.status
         except (OSError, ssl.SSLError, http.client.HTTPException) as e:
