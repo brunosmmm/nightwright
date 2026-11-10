@@ -523,7 +523,7 @@ def reconcile_draining(cfg, names: list[str], *, progress=None) -> set[str]:
 def _drained(cfg, name: str, *, not_busy=None) -> bool:
     """A draining worker is idle: no non-final job record names it and no slot of its pool is
     held (a gate between `acquire` and `submit` has a slot but no record yet). Live records
-  whose ids are in `not_busy` (done/error on this tick's probe) do not occupy the worker."""
+    whose ids are in `not_busy` (done/error on this tick's probe) do not occupy the worker."""
     from . import gate_slots
     from . import remote_jobs as RJ
     skip = not_busy if not_busy is not None else frozenset()

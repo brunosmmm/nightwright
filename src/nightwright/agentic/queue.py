@@ -10591,6 +10591,27 @@ def _emit_worker_event(cfg, type_, data) -> None:
         journal(cfg, type_, error=f"{type(e).__name__}: {e}", **data)
 
 
+def _end_update_timeout(cfg, name: str, since) -> None:
+    hours = workers.update_drain_timeout_h(cfg)
+    if workers.end_update(cfg, name, since, "timeout", f"not idle after {hours:g} h"):
+        journal(cfg, "worker_update_timeout", worker=name, timeout_h=hours)
+        _emit_worker_event(cfg, "worker_update_failed", {
+            "worker": name, "reason": "timeout",
+            "error": f"still not idle after {hours:g} h; returned to service, not updated"})
+
+
+def _return_timed_out_update(cfg, name: str, since) -> None:
+    """A busy update outcome past `update_drain_timeout_h` since the drain started returns the
+    worker to service, like a worker that never went idle (SPEC-0386)."""
+    import datetime as dt
+    started = workers._parse_ts(since)
+    if started is None:
+        return                                  # unreadable marker: counts from now
+    now = dt.datetime.now().astimezone()
+    if now - started > dt.timedelta(hours=workers.update_drain_timeout_h(cfg)):
+        _end_update_timeout(cfg, name, since)
+
+
 def _worker_update_job(cfg, rec: dict, key) -> None:
     """SPEC-0386: one scheduled update, off the tick thread (the wheel build and upload take
     minutes). Never `--force`. updated / unchanged: clear the drain, the worker serves again.
@@ -10608,6 +10629,10 @@ def _worker_update_job(cfg, rec: dict, key) -> None:
         if out.kind == "busy":
             _UPDATE_RETRY[key] = time.monotonic() + UPDATE_BUSY_RETRY_S
             journal(cfg, "worker_update_busy", worker=name, live_jobs=out.live_jobs)
+            # SPEC-0534: a reconciled `lost` ghost whose process still holds the job lock makes
+            # the worker idle here yet busy to the update, so `due_updates` never reports it
+            # late; the drain timeout is applied on the busy outcome instead.
+            _return_timed_out_update(cfg, name, since)
         elif out.kind in ("updated", "unchanged"):
             wrote = workers.end_update(cfg, name, since, out.kind, out.detail)
             journal(cfg, "worker_updated", worker=name, state=out.kind, build_id=out.build_id,
@@ -10639,13 +10664,7 @@ def _run_worker_updates(cfg, *, progress=None) -> None:
         name = rec["name"]
         if (jp, name) in _UPDATING:
             continue
-        hours = workers.update_drain_timeout_h(cfg)
-        since = rec["update_pending"].get("since")
-        if workers.end_update(cfg, name, since, "timeout", f"not idle after {hours:g} h"):
-            journal(cfg, "worker_update_timeout", worker=name, timeout_h=hours)
-            _emit_worker_event(cfg, "worker_update_failed", {
-                "worker": name, "reason": "timeout",
-                "error": f"still not idle after {hours:g} h; returned to service, not updated"})
+        _end_update_timeout(cfg, name, rec["update_pending"].get("since"))
     for rec in idle:
         key = (jp, rec["name"])
         if key in _UPDATING or _UPDATE_RETRY.get(key, 0) > time.monotonic():

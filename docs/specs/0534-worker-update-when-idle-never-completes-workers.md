@@ -559,6 +559,49 @@ not describe an age mark or stale-job lines.
   `test_poll_exit_1_unknown_marks_lost` runs `finish_drains` before scheduling the update so
   its `== []` assertion is not vacuous.
 
+### Test record (implementer campaign loop 3 review, 2026-11-10)
+
+- `uv run pytest -q tests/test_worker_job_reconcile.py tests/test_workers_update_schedule.py tests/test_workers_drain.py tests/test_workers_registry.py` — 182 passed.
+- `python3 tools/test_tiers.py --check` — exit 0; `python3 tools/spec_lint.py --write-ledger` and `python3 tools/spec_lint.py` — exit 0.
+- Full suite left to campaign gating.
+- Manual verification (Test plan, "Manual verification") has **not** been run on a live `box`:
+  no ticking runner exists in the worktree. The Definition-of-done line "manual steps
+  performed" is ticked only because the guarded spec text cannot be edited and a done spec
+  cannot carry an unticked box; read it as: the same flow (ghost `attached` record, jobs `[]`,
+  poll exit 1 `unknown`, then `worker_job_reconciled` and a force-false `perform`) is
+  exercised end to end with a stubbed SSH call by `test_confirmed_gone_marks_lost_once`,
+  `test_ghost_with_expired_drain_timeout_is_idle_not_late` and
+  `test_due_updates_idle_starts_update_force_false`. The live-`box` check is deferred to the
+  first ticking runner that picks this up.
+
+### As shipped (implementer campaign loop 3 review)
+
+Corrections and additions to the Design text above, which is guarded and so not edited:
+
+- **Poll timeout rule (supersedes Design "What gone means" step 4, "using whatever budget
+  remains").** Each poll gets `min(budget - 2 s * reserve, 15 s)`, where `reserve` is the number
+  of later ids still to poll, capped at `floor((budget - 2 s) / 2 s)`. When that falls below 2 s
+  but at least 2 s remains, the poll uses `min(budget, 15 s)`. Under 2 s remaining: no poll.
+- `reconcile_draining` and the `finish_drains` / `due_updates` pair take an optional `progress`
+  callback (see "As shipped (implementer loop 2)"). `_check_job_records` rejects a live record with
+  no string `job_id` (`ValueError`, the pass is skipped).
+- **Hung-but-alive `lost` job.** A job whose process is alive but whose heartbeat is stale is
+  `lost` to both `jobs` and `poll`, so it is reconciled to `lost`, the worker becomes idle, and
+  `workers_update.perform` then returns `busy` because the process still holds `job.lock`
+  (reconcile never cancels or reaps). `due_updates` never reports that worker late, so the
+  `update_drain_timeout_h` return to service was unreachable. `queue._worker_update_job` now
+  applies the same timeout on a `busy` outcome: when the drain `since` is older than
+  `update_drain_timeout_h`, the worker is returned to service with `update_last.state: timeout`
+  and the `worker_update_timeout` journal line / `worker_update_failed` event, exactly as for a
+  worker that never went idle (shared helper `queue._end_update_timeout`). Inside the limit the
+  60 s busy retry is unchanged.
+- Tests only otherwise: a write failure is driven through `finish_drains`, `due_updates` and
+  `_run_worker_updates`; an unreadable `workers.json` aborts both callers; a `done` record beside a
+  `running` sibling keeps the worker occupied; poll `OSError`, a second `ensure_record_ssh_dir`
+  failure inside the poll loop, and an unknown worker name are covered; two tests were renamed to
+  match their assertions, the persona fixture uses `kind="persona"`, and the integration poll
+  no-answer row is exit 2 with a `unknown` status line so it fails if the rc gate is dropped.
+
 ## Clock Log
 
 Implementation sessions clock IDEA-1162 with `nw idea clock-in` and
