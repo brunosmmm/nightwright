@@ -1,7 +1,7 @@
 ---
 id: SPEC-0535
 title: Specs cite the public request they come from
-status: done
+status: proposed
 owner: user
 created: 2026-11-10
 updated: 2026-11-10
@@ -268,14 +268,26 @@ just wrote, releases the number, leaves the ref, and raises
 
 ### Org-write failure after cite
 
+`scaffold_from_idea` calls `W.set_property` and then `W.set_state` in one
+`try`. There is no inner `try` around `W.set_state`. One `except
+BaseException` calls `restore_cite_backlog_tip_or_bail` at most once and then
+`_rollback_scaffold_after_failed_org`. It does not call restore again after
+that rollback re-raises. A `set_state` failure after a successful cite takes
+this same path as a `set_property` failure. On a successful restore,
+`_rollback_scaffold_after_failed_org` still writes the pre-cite snapshot of
+`task.file` back.
+
 Same restore as publish, with these stderr lines:
 
 - Tip restored (or `update-ref -d` when the old tip was absent, which cite
   does not hit because the file already existed): `{spec_id} was not cited on {req_id}; restored refs/heads/nw-backlog`.
   Scaffold then deletes the spec file and releases the number. Org bytes are
-  unchanged.
+  unchanged. The error that escapes is this restored-tip line, including when
+  `W.set_state` fails after `W.set_property` stored `:SPEC:`.
 - Ref no longer points at the new commit: `{spec_id} was not cited on {req_id}; refs/heads/nw-backlog no longer points at {new}; left unchanged`.
-  The spec file stays. The number stays reserved.
+  The spec file stays. The number stays reserved. This line is a lost
+  compare-and-swap. It is not raised after a restore that already moved the
+  ref back to the old tip.
 - Restore command fails: `{spec_id} was not cited on {req_id}; refs/heads/nw-backlog restore failed; left unchanged`.
   The spec file stays.
 
@@ -404,8 +416,13 @@ Revise and amend do not call `cite_spec`.
       path that replaces `spec:`. Without `--force`, a different `spec:` seen
       inside `org_write_lock` releases the number, writes no spec file, and
       commits nothing.
-- [x] If the org write fails after the cite commit, the org bytes are
-      unchanged and the Design's restore stderr is raised. A successful
+- [ ] If the org write fails after the cite commit, the org bytes are
+      unchanged and the Design's restore stderr is raised once.
+      `uv run pytest tests/test_spec_source_request.py::test_cite_org_write_failure_restores_the_tip -q`
+      covers `set_state` after `set_property` has stored `:SPEC:`: that case
+      raises `ValueError` matching `restored refs/heads/nw-backlog`, `:SPEC:`
+      is unset, `refs/heads/nw-backlog` is the pre-cite tip, the new spec
+      file is gone, and the reservation count is unchanged. A successful
       restore deletes the new spec file and releases the number. A lost
       compare-and-swap leaves the spec file and the ref.
 - [x] `plan_add_idea` and `apply_add_idea` raise the drift error and do not
@@ -474,9 +491,12 @@ Revise and amend do not call `cite_spec`.
     `--internal` writes `source_request` and does not change the foreign
     request blob. Outbound `promote_idea` does not call
     `load_agreed_request` (spy).
-  - `test_cite_org_write_failure_restores_the_tip` — restored case deletes
-    the spec file and releases the number; lost compare-and-swap leaves the
-    file and the ref.
+  - `test_cite_org_write_failure_restores_the_tip` — the `set_state` case
+    raises `ValueError` matching `restored refs/heads/nw-backlog`, `:SPEC:`
+    is unset, `refs/heads/nw-backlog` is the pre-cite tip, the new spec file
+    is gone, and the reservation count is unchanged. A `set_property` failure
+    uses that same single restore. A lost compare-and-swap leaves the file
+    and the ref.
   - `test_write_rules_and_front_matter_require_source_request` — calls
     `write_rules` and `_front_matter_problems` directly. Present, missing, and
     foreign `source_request`, plus the absent-key error when the idea has no
@@ -549,13 +569,13 @@ unknown key.
 
 ## Definition of done
 
-- [x] Acceptance criteria all met.
-- [x] Test plan executed; the tests named above pass. The full suite stays on
+- [ ] Acceptance criteria all met.
+- [ ] Test plan executed; the tests named above pass. The full suite stays on
       the queue's close gate.
-- [x] No regressions in `tests/test_idea_link.py`, `tests/test_idea_stamps.py`,
+- [ ] No regressions in `tests/test_idea_link.py`, `tests/test_idea_stamps.py`,
       and `tests/test_agentic_spec_writer.py`.
-- [x] Spec body updated to match what shipped.
-- [x] `docs/LEDGER.md` regenerated and `python3 tools/spec_lint.py` exits 0.
+- [ ] Spec body updated to match what shipped.
+- [ ] `docs/LEDGER.md` regenerated and `python3 tools/spec_lint.py` exits 0.
 
 ### Test record (2026-11-10)
 
