@@ -1182,6 +1182,16 @@ def test_hot_module_narrows_to_the_tests_naming_the_edited_definition(hrepo, old
     assert sel.hot == {ENGINE_REL: names} and f"hot {ENGINE_REL} narrowed" in sel.reason
 
 
+def test_hot_narrowing_never_widens_past_the_nearest_tests(hrepo):
+    # the name rule matches a test holding the command token "engine" without importing the module;
+    # narrowing may keep name-rule tests from N but never add one (replay of 9d437f87: 44 -> 95)
+    _on_main(hrepo, {"tests/test_other.py": "CMD = 'engine'\n"})
+    _edit(hrepo, ENGINE_REL, "    return 1\n", "    return 10\n")
+    sel = _hot(hrepo)
+    assert "tests/test_other.py" in AT._name_rule(AT.Index(hrepo), ENGINE_REL, "nightwright.engine")
+    assert sel.tests == ["tests/test_e0.py", "tests/test_engine.py", "tests/test_scan_src.py"]
+
+
 def test_hot_report_and_cli_threshold(hrepo):
     _edit(hrepo, ENGINE_REL, "    return 1\n", "    return 10\n")
     rep = json.loads(_cli(hrepo, "--json", "--hot-threshold", "3").stdout)

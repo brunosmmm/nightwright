@@ -772,7 +772,9 @@ def _hot_narrow(ix, rel, name, nearest, mb):
             named |= hit
     if named != names:
         return None                          # a definition no nearest test names: callers unknown
-    return keep | _name_rule(ix, rel, name), sorted(names)
+    # the name rule matches by token (any test with a "project" constant), so it may only keep, never
+    # add: narrowing is a subset of the nearest tests (GATE replay 9d437f87 widened 44 -> 95)
+    return (keep | _name_rule(ix, rel, name)) & set(nearest), sorted(names)
 
 
 def select(repo, changed, max_fraction=None, depth=0, strict=False, base=None, hot_base=None,
