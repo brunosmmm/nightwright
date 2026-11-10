@@ -1,4 +1,4 @@
-"""Public backlog on the orphan branch ``refs/heads/nw-backlog`` (SPEC-0449).
+"""Public backlog on the orphan branch ``refs/heads/nw-backlog`` (SPEC-0473).
 
 ``add``, ``edit``, ``close``, and ``reopen`` read blobs by a captured sha and write them
 through a temporary index. The product checkout, its index, and its current branch stay
@@ -67,6 +67,15 @@ class _DuplicateKey(Exception):
         super().__init__(key)
 
 
+_YAML_ALIAS_RE = re.compile(
+    r"(?m)(?:"
+    r":\s*&\S"  # anchor definition
+    r"|"
+    r"(?:^|[\s,\[])\*\S"  # alias reference
+    r")"
+)
+
+
 class _ItemLoader(yaml.SafeLoader):
     """Safe loader that rejects a repeated key.
 
@@ -91,7 +100,7 @@ def _construct_mapping(loader, node):
                 None, None, "unhashable key", key_node.start_mark) from e
         if seen:
             raise _DuplicateKey(key)
-        mapping[key] = loader.construct_object(value_node, deep=True)
+        mapping[key] = loader.construct_object(value_node, deep=False)
     return mapping
 
 
@@ -169,12 +178,15 @@ def parse_item(filename: str, blob: bytes | str):
     matched = _FRONT.fullmatch(text)
     if matched is None:
         return "no frontmatter"
+    front = matched.group(1)
+    if _YAML_ALIAS_RE.search(front):
+        return "invalid yaml"
     try:
-        doc = yaml.load(matched.group(1) + "\n", Loader=_ItemLoader)
+        doc = yaml.load(front + "\n", Loader=_ItemLoader)
     except _DuplicateKey as e:
         key = e.key if isinstance(e.key, str) else str(e.key)
         return f"duplicate key {_safe_path(key)}"
-    except (yaml.YAMLError, ValueError, TypeError, RecursionError):
+    except (yaml.YAMLError, ValueError, TypeError, RecursionError, MemoryError):
         return "invalid yaml"
     if isinstance(doc, dict) and any(not isinstance(key, str) for key in doc):
         return "invalid yaml"

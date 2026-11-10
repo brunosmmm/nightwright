@@ -911,6 +911,15 @@ drops unknown keys, and refreshes `updated` and `updated_by`.
 - `python3 tools/test_tiers.py --check` — exit 0.
 - Full suite left to gating.
 
+### Test record (campaign loop 3 review, 2026-11-10)
+
+- `uv run pytest -q tests/test_backlog.py` — 109 passed (review: omitted-spec no-ops with
+  existing ``spec``, summary trailing-newline collapse, title raw-byte round-trip, symlink and
+  gitlink mode refusal, YAML alias refusal, SPEC-0473 citations).
+- `python3 tools/spec_lint.py --write-ledger` and `python3 tools/spec_lint.py` — exit 0.
+- `python3 tools/test_tiers.py --check` — exit 0.
+- Full suite left to gating.
+
 ## Clock Log
 
 No session is recorded in this file. Implementation clocks IDEA-1019 with

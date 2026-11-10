@@ -10,8 +10,8 @@ SRC = Path(__file__).resolve().parents[1] / "src" / "nightwright"
 
 # (module relative to src/nightwright, enclosing function) -> why it may write raw
 ALLOWED = {
-    ("backlog.py", "_run"): "SPEC-0449: exact BacklogError line on stderr; Rich would mangle it",
-    ("backlog.py", "add_cmd"): "SPEC-0449: bare REQ id on stdout for scripts; Rich would mangle it",
+    ("backlog.py", "_run"): "SPEC-0473: exact BacklogError line on stderr; Rich would mangle it",
+    ("backlog.py", "add_cmd"): "SPEC-0473: bare REQ id on stdout for scripts; Rich would mangle it",
     ("config.py", "<module>"): "pyyaml missing: fails before rich can be relied on",
     ("report.py", "_dump_json"): "JSON emitter",
     ("explore.py", "dump_idea_show_json"): "JSON emitter",

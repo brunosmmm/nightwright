@@ -2789,7 +2789,7 @@ from .agentic.cli import register as _register_agentic  # noqa: E402
 
 _register_agentic(cli, projects_group)
 
-# SPEC-0449: public backlog on the orphan nw-backlog branch.
+# SPEC-0473: public backlog on the orphan nw-backlog branch.
 from .backlog import backlog as backlog_group  # noqa: E402
 
 cli.add_command(backlog_group)

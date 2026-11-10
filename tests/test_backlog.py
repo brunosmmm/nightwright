@@ -1,4 +1,4 @@
-"""SPEC-0449: orphan ``nw-backlog`` add, edit, close, and reopen."""
+"""SPEC-0473: orphan ``nw-backlog`` add, edit, close, and reopen."""
 import os
 import subprocess
 import tempfile
@@ -501,6 +501,8 @@ def test_add_summary_contract(tmp_path, monkeypatch, git_log):
     assert tail_of(spaces) == "\n  \n"
     hello = added(nw(repo, ["add", "--title", "Hello", "--summary", "Hello\r\n"]))
     assert tail_of(hello) == "\nHello\n"
+    multi_nl = added(nw(repo, ["add", "--title", "ManyNl", "--summary", "Hello\n\n\n"]))
+    assert tail_of(multi_nl) == "\nHello\n"
     hello_cr = added(nw(repo, ["add", "--title", "Hicr", "--summary", "Hello\rworld"]))
     assert tail_of(hello_cr) == "\nHello\nworld\n"
     quoted = added(nw(repo, ["add", "--title", 'a"b\\c', "--summary", "S"]))
@@ -1009,6 +1011,37 @@ def test_bad_mode_on_legal_readme_and_req(tmp_path, git_log):
     proc = nw(repo, ["add", "--title", "T", "--summary", "S"])
     assert proc.exit_code == 1 and proc.stderr == expected
     assert not any(args[0] == "hash-object" for args in git_log)
+
+
+def test_mutations_reject_symlink_and_gitlink_mode(tmp_path, git_log):
+    repo = init_repo(tmp_path / "repo")
+    sha = commit_tree(repo, {
+        "README.md": B.README_TEXT,
+        "REQ-K7H3MQ2P.md": VALID,
+        "stray-link": ("120000", b"README.md\n"),
+        "stray-gitlink": ("160000", b"0" * 40 + b"\n"),
+    })
+    point(repo, sha)
+    problems = [
+        "mode: stray-gitlink",
+        "stray: stray-gitlink",
+        "mode: stray-link",
+        "stray: stray-link",
+    ]
+    body = "\n".join(problems + [f"root {sha} {line}" for line in problems])
+    expected = "refs/heads/nw-backlog is not an orphan backlog\n" + body + "\n"
+    for args in (
+        ["add", "--title", "T", "--summary", "S"],
+        ["edit", "REQ-K7H3MQ2P", "--title", "T"],
+        ["close", "REQ-K7H3MQ2P"],
+        ["reopen", "REQ-K7H3MQ2P"],
+    ):
+        git_log.clear()
+        proc = nw(repo, args)
+        assert proc.exit_code == 1, (args, proc.stderr)
+        assert proc.stderr == expected
+        assert rev(repo, "nw-backlog") == sha
+        assert not any(call[0] == "hash-object" for call in git_log)
 
 
 def test_empty_tree_is_valid_empty_backlog(tmp_path, monkeypatch, git_log):
@@ -1768,8 +1801,15 @@ def test_title_unicode_and_tab_round_trip(tmp_path, monkeypatch):
     repo = init_repo(tmp_path / "repo")
     for title in ("Café", "a\tb"):
         ident = added(nw(repo, ["add", "--title", title, "--summary", "S"]))
-        parsed = B.parse_item(f"{ident}.md", cat(repo, f"{ident}.md"))
+        blob = cat(repo, f"{ident}.md")
+        parsed = B.parse_item(f"{ident}.md", blob)
         assert parsed["title"] == title
+        text = blob.decode("utf-8")
+        title_line = next(line for line in text.splitlines() if line.startswith("title:"))
+        assert "\\u" not in title_line and "\\t" not in title_line
+        assert title in title_line
+        if "\t" in title:
+            assert "\t" in title_line
         subprocess.run(["git", "-C", str(repo), "update-ref", "-d", "refs/heads/nw-backlog"],
                        check=False, capture_output=True)
 
@@ -2057,6 +2097,29 @@ def test_edit_same_title_only_is_noop(tmp_path, monkeypatch, git_log):
     assert not any(call[0] == "hash-object" for call in git_log)
 
 
+def test_edit_omitted_spec_is_noop_when_item_has_spec(tmp_path, monkeypatch, git_log):
+    freeze(monkeypatch)
+    repo = init_repo(tmp_path / "repo")
+    with_idea = doc([
+        "idea: keep-me",
+        *_BASE_LINES,
+        "spec: SPEC-0449",
+    ])
+    sha = commit_tree(repo, {"README.md": B.README_TEXT, "REQ-K7H3MQ2P.md": with_idea})
+    point(repo, sha)
+    for args in (
+        ["edit", "REQ-K7H3MQ2P", "--title", "Public backlog"],
+        ["edit", "REQ-K7H3MQ2P", "--summary", "The summary."],
+    ):
+        git_log.clear()
+        proc = nw(repo, args)
+        assert proc.exit_code == 0, (args, proc.stderr)
+        assert rev(repo, "nw-backlog") == sha
+        assert cat(repo, "REQ-K7H3MQ2P.md") == with_idea
+        assert b"idea: keep-me" in cat(repo, "REQ-K7H3MQ2P.md")
+        assert not any(call[0] == "hash-object" for call in git_log)
+
+
 def test_add_updates_repo_when_toplevel_path_is_not_strict_utf8(tmp_path, monkeypatch):
     freeze(monkeypatch)
     bad = b"repo\xff\xfe"
@@ -2186,6 +2249,53 @@ def _deep_frontmatter(depth: int) -> bytes:
 def test_parse_item_deep_nesting_is_invalid_yaml():
     blob = _deep_frontmatter(1000)
     assert B.parse_item("REQ-K7H3MQ2P.md", blob) == "invalid yaml"
+
+
+def _billion_laughs_frontmatter() -> bytes:
+    anchors = '\n'.join([
+        'lol0: &a ["lol","lol","lol","lol","lol","lol","lol","lol","lol"]',
+        'lol1: &b [*a,*a,*a,*a,*a,*a,*a,*a,*a]',
+        'lol2: &c [*b,*b,*b,*b,*b,*b,*b,*b,*b]',
+        'lol3: &d [*c,*c,*c,*c,*c,*c,*c,*c,*c]',
+        'lol4: &e [*d,*d,*d,*d,*d,*d,*d,*d,*d]',
+        'lol5: &f [*e,*e,*e,*e,*e,*e,*e,*e,*e]',
+        'lol6: &g [*f,*f,*f,*f,*f,*f,*f,*f,*f]',
+        'lol7: &h [*g,*g,*g,*g,*g,*g,*g,*g,*g]',
+        'lol8: &i [*h,*h,*h,*h,*h,*h,*h,*h,*h]',
+        'payload: *i',
+    ])
+    return (
+        "---\n"
+        "id: REQ-K7H3MQ2P\n"
+        'title: "Public backlog"\n'
+        "status: open\n"
+        "created: 2026-11-07T15:41:00Z\n"
+        "updated: 2026-11-07T15:41:00Z\n"
+        'created_by: "Ada Lovelace <ada@example.com>"\n'
+        'updated_by: "Ada Lovelace <ada@example.com>"\n'
+        f"{anchors}\n"
+        "---\n"
+        "\n"
+        "Body.\n"
+    ).encode()
+
+
+def test_parse_item_yaml_alias_expansion_is_bounded():
+    assert B.parse_item("REQ-K7H3MQ2P.md", _billion_laughs_frontmatter()) == "invalid yaml"
+
+
+def test_edit_refuses_billion_laughs_item_without_moving_ref(tmp_path, monkeypatch, git_log):
+    freeze(monkeypatch)
+    repo = init_repo(tmp_path / "repo")
+    blob = _billion_laughs_frontmatter()
+    sha = commit_tree(repo, {"README.md": B.README_TEXT, "REQ-K7H3MQ2P.md": blob})
+    point(repo, sha)
+    git_log.clear()
+    proc = nw(repo, ["edit", "REQ-K7H3MQ2P", "--title", "Next"])
+    assert proc.exit_code == 1
+    assert proc.stderr == "invalid backlog item REQ-K7H3MQ2P: invalid yaml\n"
+    assert rev(repo, "nw-backlog") == sha
+    assert not any(call[0] == "hash-object" for call in git_log)
 
 
 def test_close_refuses_deeply_nested_yaml_without_traceback(tmp_path, monkeypatch, git_log):
