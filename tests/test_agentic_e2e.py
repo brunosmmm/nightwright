@@ -262,8 +262,9 @@ def test_e2e_internal_merges(tmp_path, monkeypatch):
     assert (repo / "feature.txt").read_text() == "hello\n"
     assert not Path(st["repo"]["worktree"]).exists()
     assert st["counters"] == {"loops": 0, "runs": 2, "gate_runs": 2, "gate_retries": 0,
-                              "timeout_regates": 0, "triage_retries": 0, "blocked_streak": 0,
-                              "close_attempts": 1, "parks": 0, "review_retries": 0}
+                              "timeout_regates": 0, "node_fail_regates": 0, "triage_retries": 0,
+                              "blocked_streak": 0, "close_attempts": 1, "parks": 0,
+                              "review_retries": 0}
     assert st["cost"]["total_usd"] == 0.7
     assert st["cost"]["by_persona"] == {"implementer": 0.5, "conformance_reviewer": 0.2}
     assert st["last_review"]["verdict"] == "pass" and st["last_review"]["score"] == 100

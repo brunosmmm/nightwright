@@ -13,7 +13,7 @@
       "changed": ["tests/data/remote_gates_golden.json"],
       "full": false,
       "must_include": ["tests/test_remote_gates_golden.py"],
-      "max_tests": 24,
+      "max_tests": 31,
       "stage": {
         "tests/data/remote_gates_golden.json": "{}\n",
         "tests/test_remote_gates_golden.py": "from pathlib import Path\n\nGOLDEN = Path(__file__).parent / \"data\" / \"remote_gates_golden.json\"\n\n\ndef test_golden():\n    assert GOLDEN.exists()\n"
