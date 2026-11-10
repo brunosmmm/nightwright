@@ -1245,6 +1245,34 @@ def _record_line_matches(raw: str, *, kinds: set[str] | None, needle: str) -> bo
     return True
 
 
+def _warm_records_base(
+    root: Path,
+    *,
+    kinds: set[str] | None = None,
+    needle: str = "",
+) -> list[dict]:
+    """Filtered v1 record dicts from the warm slice (no search key on output)."""
+    mem = _get_records_mem(root)
+    if mem is None:
+        _load_records_mem(root)
+        mem = _get_records_mem(root)
+    if mem is not None:
+        entries = mem["entries"]
+        if kinds is not None and not needle and len(kinds) == 1:
+            idxs = mem.get("by_kind", {}).get(next(iter(kinds)))
+            if idxs is not None:
+                return [entries[i][0] for i in idxs]
+        out: list[dict] = []
+        for rec, search in entries:
+            if kinds is not None and rec.get("kind") not in kinds:
+                continue
+            if needle and needle not in search:
+                continue
+            out.append(rec)
+        return out
+    return _read_records_filtered(root, kinds=kinds, needle=needle)
+
+
 def _read_records_filtered(
     root: Path,
     *,
@@ -2710,8 +2738,6 @@ def _records_cache_quiet(cfg, root: Path, sources: dict) -> bool:
             return False
         if not _v1_cursors_match_records_quiet(root, v1_files):
             return False
-        if _stale_terminal_ids_for_records(cfg, index_rows, sources):
-            return False
         live_cids, missing = _live_refresh_targets(cfg, index_rows)
         return not live_cids and not missing
     else:
@@ -3416,7 +3442,7 @@ def _history_records_cached(cfg, *, now, root: Path, campaign=None, agent=None, 
     stream_needle = needle if needle and not extra else ""
     if _records_cache_quiet(cfg, root, sources):
         if stream_kinds is not None or stream_needle:
-            base = _read_records_filtered(root, kinds=stream_kinds, needle=stream_needle)
+            base = _warm_records_base(root, kinds=stream_kinds, needle=stream_needle)
         else:
             base = _read_records(root)
         values = {name: H._set(value) for name, value in (
@@ -3491,25 +3517,7 @@ def _history_records_cached(cfg, *, now, root: Path, campaign=None, agent=None, 
     if records is not None:
         base = records
     elif stream_kinds is not None or stream_needle:
-        mem = _get_records_mem(root)
-        if mem is not None:
-            entries = mem["entries"]
-            if stream_kinds is not None and not stream_needle and len(stream_kinds) == 1:
-                idxs = mem.get("by_kind", {}).get(next(iter(stream_kinds)))
-                if idxs is not None:
-                    base = [entries[i][0] for i in idxs]
-                else:
-                    base = []
-            else:
-                base = []
-                for rec, search in entries:
-                    if stream_kinds is not None and rec.get("kind") not in stream_kinds:
-                        continue
-                    if stream_needle and stream_needle not in search:
-                        continue
-                    base.append(rec)
-        else:
-            base = _read_records_filtered(root, kinds=stream_kinds, needle=stream_needle)
+        base = _warm_records_base(root, kinds=stream_kinds, needle=stream_needle)
     else:
         base = _read_records(root)
     values = {name: H._set(value) for name, value in (
