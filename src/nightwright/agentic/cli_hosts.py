@@ -49,7 +49,7 @@ def hosts_add(cfg, name, url):
         url = H.validate_url(url)
     except ValueError as e:
         raise click.UsageError(str(e))
-    if any(r["name"] == name for r in H.load(cfg)):
+    if any(isinstance(r, dict) and r.get("name") == name for r in H.load(cfg)):
         raise click.ClickException(f"host {name!r} already registered")
     token, secret = F.new_host_credential()
     rec = {"name": name, "url": url, "token_sha256": PJ.token_hash(token),
@@ -57,13 +57,22 @@ def hosts_add(cfg, name, url):
     p = H.path(cfg)
     fd = H._acquire_lock(cfg)
     try:
-        recs = H.read_strict(cfg)
-        if any(r["name"] == name for r in recs):
+        try:
+            recs = H.read_strict(cfg)
+        except (OSError, ValueError) as e:
+            raise click.ClickException(f"{p}: {e}")
+        if any(isinstance(r, dict) and r.get("name") == name for r in recs):
             raise click.ClickException(f"host {name!r} already registered")
-        F.write_host_secrets(cfg, name, token, secret)
+        try:
+            F.write_host_secrets(cfg, name, token, secret)
+        except OSError as e:
+            raise click.ClickException(f"cannot write host secrets: {e}")
         try:
             recs.append(rec)
             H._write_fsync(p, recs)
+        except OSError as e:
+            F.drop_host_secrets(cfg, name)
+            raise click.ClickException(f"cannot write {p}: {e}")
         except Exception:
             F.drop_host_secrets(cfg, name)
             raise
@@ -77,6 +86,8 @@ def hosts_add(cfg, name, url):
 @click.pass_obj
 def hosts_list(cfg):
     for r in H.load(cfg):
+        if not isinstance(r, dict) or not isinstance(r.get("name"), str):
+            continue
         en = "on" if r.get("enabled", True) else "off"
         click.echo(f"{r['name']}\t{r.get('url', '')}\t{en}")
 
@@ -87,19 +98,22 @@ def hosts_list(cfg):
 def hosts_rm(cfg, name):
     if not H.NAME_RE.fullmatch(name):
         raise click.UsageError(f"NAME must match {H.NAME_RE.pattern}")
-    if not any(r.get("name") == name for r in H.load(cfg)):
+    if not any(isinstance(r, dict) and r.get("name") == name for r in H.load(cfg)):
         raise click.ClickException(f"no host {name!r}")
     p = H.path(cfg)
     fd = H._acquire_lock(cfg)
     removed = False
     try:
-        recs = H.read_strict(cfg)
-        before = len(recs)
-        recs[:] = [r for r in recs if r.get("name") != name]
-        removed = len(recs) < before
-        if removed:
-            H._write_fsync(p, recs)
-            F.drop_host_secrets(cfg, name)
+        try:
+            recs = H.read_strict(cfg)
+            before = len(recs)
+            recs[:] = [r for r in recs if not (isinstance(r, dict) and r.get("name") == name)]
+            removed = len(recs) < before
+            if removed:
+                H._write_fsync(p, recs)
+                F.drop_host_secrets(cfg, name)
+        except (OSError, ValueError) as e:
+            raise click.ClickException(f"{p}: {e}")
     finally:
         os.close(fd)
     if not removed:
@@ -142,11 +156,18 @@ def hosts_check(cfg):
     recs = H.load(cfg)
     if not recs:
         return
-    hub_projects = set(FH.status_document(cfg)["projects"])
+    try:
+        hub_projects = set(FH.status_document(cfg)["projects"])
+    except Exception as e:
+        raise click.ClickException(f"cannot read the hub's own projects: {e}")
     host_projects: dict[str, set[str]] = {}
     exit_code = 0
     for rec in recs:
-        name = rec["name"]
+        name = rec.get("name") if isinstance(rec, dict) else None
+        if not isinstance(name, str) or not name:
+            click.echo("? unreachable: malformed host record")
+            exit_code = 1
+            continue
         if not rec.get("enabled", True):
             click.echo(f"{name} off")
             continue
@@ -161,7 +182,12 @@ def hosts_check(cfg):
             click.echo(f"{name} unreachable: bad schema")
             exit_code = 1
             continue
-        projects = [p for p in (doc.get("projects") or []) if isinstance(p, str)]
+        raw_projects = doc.get("projects")
+        if not isinstance(raw_projects, list):
+            click.echo(f"{name} unreachable: bad status document")
+            exit_code = 1
+            continue
+        projects = [p for p in raw_projects if isinstance(p, str)]
         campaigns = doc.get("campaigns") if isinstance(doc.get("campaigns"), list) else []
 
         def store_cache(recs_):

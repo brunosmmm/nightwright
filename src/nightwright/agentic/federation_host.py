@@ -28,7 +28,8 @@ def status_document(cfg) -> dict:
             continue
         campaigns.append({k: item.get(k) for k in ("campaign", "project", "state", "spec_id", "kind")})
     projects = sorted({item.get("project") for item in items
-                       if isinstance(item.get("project"), str) and item["project"]})
+                       if isinstance(item, dict) and isinstance(item.get("project"), str)
+                       and item["project"]})
     return {"schema": "nw.federation.status.v1", "projects": projects, "campaigns": campaigns}
 
 

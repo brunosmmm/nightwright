@@ -26,20 +26,20 @@ def _lock(cfg) -> Path:
 
 
 def validate_url(url: str) -> str:
-    u = urlsplit(url)
-    if u.scheme not in ("http", "https") or not u.hostname:
+    """`http(s)://HOST[:PORT][/PREFIX]`, returned as given (a path prefix is a hub behind a
+    reverse proxy). Userinfo, query, fragment and control characters are refused."""
+    if any(c.isspace() or ord(c) < 32 for c in url):
+        raise ValueError(f"url {url!r} must not contain whitespace")
+    try:
+        u = urlsplit(url)
+        host, _port = u.hostname, u.port
+    except ValueError as e:
+        raise ValueError(f"url {url!r} is not a valid URL: {e}")
+    if u.scheme not in ("http", "https") or not host:
         raise ValueError(f"url {url!r} must be http(s)://HOST")
-    if u.username or u.password or u.query or u.fragment:
-        raise ValueError(f"url {url!r} must be http(s)://HOST[:PORT]")
-    if u.path not in ("", "/"):
-        raise ValueError(f"url {url!r} must be http(s)://HOST[:PORT]")
-    if "\r" in url or "\n" in url:
-        raise ValueError(f"url {url!r} must be http(s)://HOST[:PORT]")
-    host = u.hostname
-    if ":" in host:
-        host = f"[{host}]"
-    port = f":{u.port}" if u.port is not None else ""
-    return f"{u.scheme}://{host}{port}"
+    if u.username is not None or u.password is not None or u.query or u.fragment:
+        raise ValueError(f"url {url!r} must be http(s)://HOST[:PORT][/PREFIX]")
+    return url
 
 
 def load(cfg) -> list[dict]:

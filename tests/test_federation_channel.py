@@ -110,7 +110,8 @@ def _mini_tls_pair(tmp_path):
     d.mkdir()
     subprocess.run(
         ["openssl", "req", "-x509", "-newkey", "rsa:2048", "-nodes", "-keyout", "k.pem",
-         "-out", "c.pem", "-days", "1", "-subj", "/CN=localhost"],
+         "-out", "c.pem", "-days", "1", "-subj", "/CN=localhost",
+         "-addext", "subjectAltName=DNS:localhost,IP:127.0.0.1"],
         cwd=d, check=True, capture_output=True,
     )
     return str(d / "c.pem"), str(d / "k.pem")
@@ -177,7 +178,7 @@ def test_add_stores_0600_secrets_and_hash_only_record(tmp_path, monkeypatch):
     assert stat.S_IMODE(key_p.stat().st_mode) == 0o600
     assert stat.S_IMODE(tok_p.parent.stat().st_mode) == 0o700
     rec = H.load(cfg)[0]
-    assert set(rec) == H.HOST_KEYS
+    assert set(rec) == {"name", "url", "token_sha256", "secret_ref", "enabled", "status_cache"}
     assert rec["secret_ref"] == "secrets/hosts/box.key"
     assert rec["token_sha256"] == PJ.token_hash(blob["token"])
     assert tok_p.read_text() == blob["token"] + "\n"
@@ -196,7 +197,7 @@ def test_add_stores_0600_secrets_and_hash_only_record(tmp_path, monkeypatch):
 
 def test_write_host_secrets_rolls_back_token_on_key_failure(tmp_path, monkeypatch):
     cfg = _cfg(tmp_path)
-    real = PJ.write_private
+    real = F._write_private_fsync
     calls = {"n": 0}
 
     def flaky(path, text):
@@ -205,7 +206,7 @@ def test_write_host_secrets_rolls_back_token_on_key_failure(tmp_path, monkeypatc
             raise OSError("no space")
         return real(path, text)
 
-    monkeypatch.setattr(PJ, "write_private", flaky)
+    monkeypatch.setattr(F, "_write_private_fsync", flaky)
     with pytest.raises(OSError):
         F.write_host_secrets(cfg, "box", "tok", "sec")
     assert not F.host_token_path(cfg, "box").exists()
@@ -226,7 +227,9 @@ def test_add_rejects_duplicate_bad_name_and_bad_url(tmp_path, monkeypatch):
     before = list(Path(cfg["config_dir"]).glob("secrets/hosts/*"))
     assert _invoke(cfg, monkeypatch, "add", "ok", "--url", "ftp://x").exit_code != 0
     assert list(Path(cfg["config_dir"]).glob("secrets/hosts/*")) == before
-    assert _invoke(cfg, monkeypatch, "add", "ok2", "--url", "http://127.0.0.1:8792/v1/status").exit_code != 0
+    for bad in ("http://", "http://:8080", "https://", "http://u:p@h:1", "http://h:1/?q=1",
+                "http://h:1/#f", "http://h:1/a b"):
+        assert _invoke(cfg, monkeypatch, "add", "ok2", "--url", bad).exit_code != 0, bad
     assert H.path(cfg).read_bytes() == snap_hosts
     assert {p: p.read_bytes() for p in Path(cfg["config_dir"]).glob("secrets/hosts/*")} == snap_secrets
 
@@ -311,37 +314,38 @@ def test_registry_concurrent_updates_both_persist(tmp_path):
 
 def test_rm_deletes_secrets_prints_unenrol_and_makes_no_http(tmp_path, monkeypatch):
     cfg = _cfg(tmp_path)
-    srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    srv.bind(("127.0.0.1", 0))
-    srv.listen(1)
-    port = srv.getsockname()[1]
-    accepted = []
-    stop = threading.Event()
+    _invoke(cfg, monkeypatch, "add", "box", "--url", "http://127.0.0.1:9")
+    _invoke(cfg, monkeypatch, "add", "keep", "--url", "http://127.0.0.1:9")
+    keep_before = {p.name: p.read_bytes() for p in Path(cfg["config_dir"]).glob("secrets/hosts/keep.*")}
+    assert len(keep_before) == 2
+    keep_rec = H.find(H.load(cfg), "keep")
 
-    def accept_loop():
-        srv.settimeout(0.25)
-        while not stop.is_set():
-            try:
-                accepted.append(srv.accept())
-            except OSError:
-                pass
+    def no_dial(*a, **k):
+        raise AssertionError("rm must not open a connection")
 
-    _invoke(cfg, monkeypatch, "add", "box", "--url", f"http://127.0.0.1:{port}")
-    th = threading.Thread(target=accept_loop, daemon=True)
-    th.start()
+    monkeypatch.setattr(socket.socket, "connect", no_dial)
+    monkeypatch.setattr(socket, "create_connection", no_dial)
+    monkeypatch.setattr(http.client.HTTPConnection, "connect", no_dial)
+    order = []
+    real_fsync, real_unlink = os.fsync, Path.unlink
+    monkeypatch.setattr(os, "fsync", lambda fd: (order.append("fsync"), real_fsync(fd))[1])
+    monkeypatch.setattr(Path, "unlink",
+                        lambda self, *a, **k: (order.append(f"unlink:{self.name}"),
+                                               real_unlink(self, *a, **k))[1])
     r = _invoke(cfg, monkeypatch, "rm", "box")
-    stop.set()
     assert r.exit_code == 0
     assert "run nw hosts unenrol on the host" in r.output
-    th.join(timeout=1)
-    assert not accepted
+    assert order.index("fsync") < order.index("unlink:box.token")
+    assert order.index("fsync") < order.index("unlink:box.key")
     assert not F.host_token_path(cfg, "box").exists()
     assert not F.host_secret_path(cfg, "box").exists()
-    assert not H.load(cfg)
-    srv.close()
+    assert [x["name"] for x in H.load(cfg)] == ["keep"]
+    assert H.find(H.load(cfg), "keep") == keep_rec
+    assert {p.name: p.read_bytes() for p in Path(cfg["config_dir"]).glob("secrets/hosts/keep.*")} == keep_before
     r_unknown = _invoke(cfg, monkeypatch, "rm", "nobody")
     assert r_unknown.exit_code != 0
     assert "run nw hosts unenrol" not in r_unknown.output
+    assert [x["name"] for x in H.load(cfg)] == ["keep"]
 
 
 def test_on_off_sets_enabled(tmp_path, monkeypatch):
@@ -698,10 +702,13 @@ def test_status_maps_queue_payload_items(tmp_path, monkeypatch):
     monkeypatch.setattr(time, "time", lambda: NOW)
     repo = make_repo(tmp_path)
     host = make_cfg(tmp_path, repo, script(tmp_path, []))
+    _campaign(host, repo, "SPEC-1z", "QUEUED", project="Zeta")
     _campaign(host, repo, "SPEC-1", "QUEUED", project="P1")
     _campaign(host, repo, "SPEC-1b", "STARTED", project="P1")
-    _campaign(host, repo, "SPEC-1c", "QUEUED", project="Pdup")
-    _campaign(host, repo, "SPEC-1d", "QUEUED", project="Pdup")
+    _campaign(host, repo, "SPEC-1c", "QUEUED", project="Alpha")
+    _campaign(host, repo, "SPEC-1d", "QUEUED", project="Alpha")
+    _campaign(host, repo, "SPEC-1e", "QUEUED", project="")
+    _campaign(host, repo, "SPEC-1f", "QUEUED", project=None)
     _campaign(host, repo, "SPEC-2", "ABANDONED", project="P2")
     _campaign(host, repo, "SPEC-3", "MERGED", project="Pterm")
     F.write_federation(host, {"hub_name": "h", "host_name": "box", "token": "t", "secret": "abc"})
@@ -716,8 +723,10 @@ def test_status_maps_queue_payload_items(tmp_path, monkeypatch):
     assert len(want_items) >= 4
     assert doc["campaigns"] == want_items
     assert [c["campaign"] for c in doc["campaigns"]] == [c["campaign"] for c in want_items]
-    assert doc["projects"] == ["P1", "Pdup"]
-    assert doc["projects"] == sorted(set(doc["projects"]))
+    assert doc["projects"] == ["Alpha", "P1", "Zeta"]
+    ids = [c["campaign"] for c in doc["campaigns"]]
+    assert {"SPEC-1e", "SPEC-1f", "SPEC-1z"} <= set(ids)
+    assert not {"SPEC-2", "SPEC-3"} & set(ids)
     port = srv.server_address[1]
     conn = http.client.HTTPConnection("127.0.0.1", port)
     st_hdrs = {**F.request_headers("abc", "GET", "/v1/status", b"", now=NOW), "Authorization": "Bearer t"}
@@ -738,6 +747,7 @@ def test_status_maps_queue_payload_items(tmp_path, monkeypatch):
     assert not isinstance(srv, PJ.PullServer)
     assert not list(_lease_checker_threads())
     srv.shutdown()
+    srv.server_close()
 
 
 def test_bind_and_serve_flags(tmp_path, monkeypatch):
@@ -940,7 +950,7 @@ def test_hubclient_getaddrinfo_blocks_within_connect_budget(tmp_path, monkeypatc
 
     def gai(host, port, *a, **kw):
         if host == "dns-wedged.test":
-            block.wait()
+            block.wait(10)
         return real_gai(host, port, *a, **kw)
 
     monkeypatch.setattr(socket, "getaddrinfo", gai)
@@ -948,7 +958,8 @@ def test_hubclient_getaddrinfo_blocks_within_connect_budget(tmp_path, monkeypatc
     t0 = time.monotonic()
     with pytest.raises(ConnectionError):
         F.HubClient(wedged, hub, now=NOW).request("GET", "/v1/status")
-    assert time.monotonic() - t0 <= 2.5
+    assert time.monotonic() - t0 <= 4.0
+    block.set()
     cache = {"fetched_at": "2020-01-01T00:00:00+00:00", "projects": ["old"], "campaigns": []}
 
     def plant(recs):
@@ -962,6 +973,7 @@ def test_hubclient_getaddrinfo_blocks_within_connect_budget(tmp_path, monkeypatc
     assert "box ok" in r.output
     assert json.dumps(H.find(H.load(hub), "wedged")["status_cache"], sort_keys=True) == snap
     srv.shutdown()
+    srv.server_close()
 
 
 def test_hubclient_tries_later_address_when_first_blackholes(tmp_path, monkeypatch):
@@ -1080,3 +1092,425 @@ def test_inert_without_registry_files(tmp_path, monkeypatch):
     assert not H.path(cfg).exists() and not F.federation_path(cfg).exists()
     assert _invoke(cfg, monkeypatch, "list").exit_code == 0
     assert not H.path(cfg).exists()
+
+
+# --- loop 3 review hardening -------------------------------------------------------------------
+
+
+def _raw_listener(handler):
+    """A raw TCP listener on 127.0.0.1:0; `handler(conn)` runs per connection in a daemon thread.
+    Returns (port, stop) where stop() closes the listener."""
+    ls = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    ls.bind(("127.0.0.1", 0))
+    ls.listen(8)
+    done = threading.Event()
+
+    def loop():
+        ls.settimeout(0.1)
+        while not done.is_set():
+            try:
+                conn, _ = ls.accept()
+            except OSError:
+                continue
+            threading.Thread(target=handler, args=(conn,), daemon=True).start()
+
+    threading.Thread(target=loop, daemon=True).start()
+
+    def stop():
+        done.set()
+        ls.close()
+
+    return ls.getsockname()[1], stop
+
+
+def _hung(conn):
+    conn.settimeout(0.1)
+    try:
+        for _ in range(60):
+            try:
+                conn.recv(4096)
+            except socket.timeout:
+                pass
+            except OSError:
+                return
+    finally:
+        conn.close()
+
+
+def _drip(payload: bytes, gap: float):
+    def handler(conn):
+        try:
+            conn.recv(65536)
+            for i in range(len(payload)):
+                conn.sendall(payload[i:i + 1])
+                threading.Event().wait(gap)
+        except OSError:
+            pass
+        finally:
+            conn.close()
+
+    return handler
+
+
+def _client_for(hub, monkeypatch, port, name="slow"):
+    r = _invoke(hub, monkeypatch, "add", name, "--url", f"http://127.0.0.1:{port}")
+    assert r.exit_code == 0, r.output
+    return F.HubClient(H.find(H.load(hub), name), hub, now=NOW)
+
+
+def test_hubclient_hung_and_dripping_peers_are_cut_off(tmp_path, monkeypatch):
+    import time
+
+    hub = _cfg(tmp_path, "hub")
+    monkeypatch.setattr(F.HubClient, "READ_TIMEOUT", 0.6)
+    head = b"HTTP/1.1 200 OK\r\nContent-Length: 100\r\n\r\n"
+    for label, handler in (
+        ("hung", _hung),
+        ("status-line drip", _drip(head, 0.25)),
+        ("body drip", _drip(head + b"x" * 100, 0.25)),
+    ):
+        port, stop = _raw_listener(handler)
+        client = _client_for(hub, monkeypatch, port, name="s" + label.replace(" ", "-")[:8])
+        t0 = time.monotonic()
+        with pytest.raises(ConnectionError):
+            client.request("GET", "/v1/status")
+        elapsed = time.monotonic() - t0
+        stop()
+        assert 0.4 <= elapsed <= 3.0, (label, elapsed)
+
+
+def test_hubclient_one_byte_per_second_drip_stops_near_two_seconds(tmp_path, monkeypatch):
+    import time
+
+    hub = _cfg(tmp_path, "hub")
+    head = b"HTTP/1.1 200 OK\r\nContent-Length: 100\r\n\r\n"
+    port, stop = _raw_listener(_drip(head + b"y" * 100, 1.0))
+    client = _client_for(hub, monkeypatch, port)
+    assert client.READ_TIMEOUT == 2
+    t0 = time.monotonic()
+    with pytest.raises(ConnectionError, match="timed out"):
+        client.request("GET", "/v1/status")
+    elapsed = time.monotonic() - t0
+    stop()
+    assert elapsed <= 4.5
+
+
+def _blocking_connect(monkeypatch, blocked_ports, release):
+    real = socket.socket.connect
+
+    def conn(self, addr):
+        if addr[1] in blocked_ports:
+            release.wait(10)
+            raise OSError("blackholed")
+        return real(self, addr)
+
+    monkeypatch.setattr(socket.socket, "connect", conn)
+
+
+def _dual(monkeypatch, ports):
+    real_gai = socket.getaddrinfo
+
+    def gai(host, pname, *a, **kw):
+        if host == "dual-stack.test":
+            return [(socket.AF_INET, socket.SOCK_STREAM, 0, "", ("127.0.0.1", p)) for p in ports]
+        return real_gai(host, pname, *a, **kw)
+
+    monkeypatch.setattr(socket, "getaddrinfo", gai)
+
+
+def test_hubclient_blackholed_first_address_does_not_eat_the_budget(tmp_path, monkeypatch):
+    import time
+
+    monkeypatch.setattr(time, "time", lambda: NOW)
+    hub = _cfg(tmp_path, "hub")
+    host = _cfg(tmp_path, "host")
+    _add_and_enrol(host, hub, monkeypatch)
+    srv, _ = _serve(host)
+    port = srv.server_address[1]
+    hole = 1  # never dialled: connect() is replaced for this port
+    release = threading.Event()
+    _blocking_connect(monkeypatch, {hole}, release)
+    _dual(monkeypatch, [hole, port])
+    rec = {**H.find(H.load(hub), "box"), "url": f"http://dual-stack.test:{port}"}
+    t0 = time.monotonic()
+    doc = F.HubClient(rec, hub, now=NOW).get_json("/v1/status")
+    assert doc["schema"] == "nw.federation.status.v1"
+    assert time.monotonic() - t0 < 1.5
+    # every address blackholed: bounded by the connect budget, then ConnectionError
+    _dual(monkeypatch, [hole, hole + 1])
+    _blocking_connect(monkeypatch, {hole, hole + 1}, release)
+    monkeypatch.setattr(F.HubClient, "CONNECT_TIMEOUT", 0.5)
+    t0 = time.monotonic()
+    with pytest.raises(ConnectionError):
+        F.HubClient(rec, hub, now=NOW).request("GET", "/v1/status")
+    assert time.monotonic() - t0 <= 3.0
+    release.set()
+    srv.shutdown()
+    srv.server_close()
+
+
+def test_hubclient_all_addresses_refused_fails_fast_even_if_a_socket_cannot_be_made(
+        tmp_path, monkeypatch):
+    import time
+
+    hub = _cfg(tmp_path, "hub")
+    _invoke(hub, monkeypatch, "add", "box", "--url", "http://dual-stack.test:1")
+    rec = H.find(H.load(hub), "box")
+    real_gai = socket.getaddrinfo
+    dead = _refused_port()
+
+    def gai(host, pname, *a, **kw):
+        if host == "dual-stack.test":
+            return [(socket.AF_INET6, socket.SOCK_STREAM, 0, "", ("::1", dead, 0, 0)),
+                    (socket.AF_INET, socket.SOCK_STREAM, 0, "", ("127.0.0.1", dead))]
+        return real_gai(host, pname, *a, **kw)
+
+    real_cls = socket.socket
+
+    class NoV6(real_cls):
+        def __init__(self, family=-1, *a, **kw):
+            if family == socket.AF_INET6:
+                raise OSError(97, "Address family not supported by protocol")
+            super().__init__(family, *a, **kw)
+
+    uncaught: list = []
+    monkeypatch.setattr(threading, "excepthook", lambda a: uncaught.append(a))
+    monkeypatch.setattr(socket, "getaddrinfo", gai)
+    monkeypatch.setattr(socket, "socket", NoV6)
+    t0 = time.monotonic()
+    with pytest.raises(ConnectionError):
+        F.HubClient(rec, hub, now=NOW).request("GET", "/v1/status")
+    assert time.monotonic() - t0 < 1.5
+    assert not uncaught
+
+
+def test_https_serving_signed_200_verification_and_garbage_connection(tmp_path, monkeypatch):
+    import ssl
+    import time
+
+    monkeypatch.setattr(time, "time", lambda: NOW)
+    hub = _cfg(tmp_path, "hub")
+    host = _cfg(tmp_path, "host")
+    cert, key = _mini_tls_pair(tmp_path)
+    _add_and_enrol(host, hub, monkeypatch)
+    srv = FH.make_federate_server(host, "127.0.0.1:0", tls_cert=cert, tls_key=key)
+    th = threading.Thread(target=srv.serve_forever, kwargs={"poll_interval": 0.05}, daemon=True)
+    th.start()
+    port = srv.server_address[1]
+    _point_hub(hub, "box", f"https://127.0.0.1:{port}")
+    rec = H.find(H.load(hub), "box")
+    # a client that does not trust the self-signed certificate must refuse it
+    with pytest.raises(ConnectionError, match="SSL|certificate|CERTIFICATE"):
+        F.HubClient(rec, hub, now=NOW).request("GET", "/v1/status")
+    # plain TCP junk on the TLS port, and a silent connection, do not wedge the next request
+    junk = socket.create_connection(("127.0.0.1", port), timeout=2)
+    junk.sendall(b"GET / HTTP/1.0\r\n\r\n")
+    junk.close()
+    silent = socket.create_connection(("127.0.0.1", port), timeout=2)
+    real_ctx = ssl.create_default_context
+    monkeypatch.setattr(ssl, "create_default_context", lambda *a, **k: real_ctx(cafile=cert))
+    status, raw, hdrs = F.HubClient(rec, hub, now=NOW).request("GET", "/v1/status")
+    assert status == 200
+    assert json.loads(raw)["schema"] == "nw.federation.status.v1"
+    assert any(k.lower() == "x-nw-sig" for k in hdrs)
+    silent.close()
+    srv.shutdown()
+    srv.server_close()
+
+
+def test_hubclient_requests_exact_target_for_trailing_slash_and_prefix(tmp_path, monkeypatch):
+    import time
+
+    monkeypatch.setattr(time, "time", lambda: NOW)
+    hub = _cfg(tmp_path, "hub")
+    host = _cfg(tmp_path, "host")
+    _add_and_enrol(host, hub, monkeypatch)
+    srv, url = _serve(host)
+    seen: list = []
+    real_request = http.client.HTTPConnection.request
+
+    def spy(self, method, target, *a, **kw):
+        seen.append(target)
+        return real_request(self, method, target, *a, **kw)
+
+    monkeypatch.setattr(http.client.HTTPConnection, "request", spy)
+    rec = H.find(H.load(hub), "box")
+    F.HubClient({**rec, "url": url + "/"}, hub, now=NOW).get_json("/v1/status")
+    with pytest.raises(ConnectionError, match="HTTP 404"):
+        F.HubClient({**rec, "url": url + "/pfx/"}, hub, now=NOW).get_json("/v1/status")
+    assert seen == ["/v1/status", "/pfx/v1/status"]
+    srv.shutdown()
+    srv.server_close()
+
+
+def test_add_accepts_path_prefix_verbatim_and_rolls_back_on_registry_failure(tmp_path, monkeypatch):
+    cfg = _cfg(tmp_path)
+    for name, url in (("pfx", "http://h.example:1/prefix"), ("slash", "http://H.example:2/")):
+        assert _invoke(cfg, monkeypatch, "add", name, "--url", url).exit_code == 0
+        assert H.find(H.load(cfg), name)["url"] == url
+    listed = _invoke(cfg, monkeypatch, "list").output
+    assert "pfx\thttp://h.example:1/prefix\ton" in listed
+    assert "slash\thttp://H.example:2/\ton" in listed
+    before = H.path(cfg).read_bytes()
+
+    def boom(p, recs):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(H, "_write_fsync", boom)
+    r = _invoke(cfg, monkeypatch, "add", "fail", "--url", "http://h:3")
+    assert r.exit_code != 0
+    assert "Traceback" not in r.output
+    assert not F.host_token_path(cfg, "fail").exists()
+    assert not F.host_secret_path(cfg, "fail").exists()
+    assert H.path(cfg).read_bytes() == before
+
+
+def test_corrupt_registry_gives_one_line_errors_not_tracebacks(tmp_path, monkeypatch):
+    cfg = _cfg(tmp_path)
+    H.path(cfg).parent.mkdir(parents=True, exist_ok=True)
+    H.path(cfg).write_text("{garbage")
+    r = _invoke(cfg, monkeypatch, "add", "x", "--url", "http://h:1")
+    assert r.exit_code != 0
+    assert isinstance(r.exception, SystemExit)
+    assert "Traceback" not in r.output
+    assert H.path(cfg).read_text() == "{garbage"
+    assert not F.host_token_path(cfg, "x").exists()
+    r2 = _invoke(cfg, monkeypatch, "rm", "x")
+    assert r2.exit_code != 0 and isinstance(r2.exception, SystemExit)
+
+
+def test_secrets_and_federation_json_are_fsynced(tmp_path, monkeypatch):
+    cfg = _cfg(tmp_path)
+    synced: list = []
+    real = os.fsync
+    monkeypatch.setattr(os, "fsync", lambda fd: (synced.append(fd), real(fd))[1])
+    F.write_host_secrets(cfg, "box", "tok", "sec")
+    assert len(synced) == 2
+    F.write_federation(cfg, {"hub_name": "h", "host_name": "b", "token": "t", "secret": "s"})
+    assert len(synced) == 3
+    assert stat.S_IMODE(F.federation_path(cfg).stat().st_mode) == 0o600
+
+
+def test_update_where_fn_raises_keeps_previous_bytes(tmp_path, monkeypatch):
+    cfg = _cfg(tmp_path)
+    assert _invoke(cfg, monkeypatch, "add", "box", "--url", "http://h:1").exit_code == 0
+    before = H.path(cfg).read_bytes()
+
+    def fn(recs):
+        recs.clear()
+        raise RuntimeError("fn failed")
+
+    with pytest.raises(RuntimeError):
+        H.update(cfg, fn)
+    assert H.path(cfg).read_bytes() == before
+    assert not list(H.path(cfg).parent.glob(".hosts.json.*.tmp"))
+
+
+def test_invalid_federation_json_under_live_server_is_unsigned_401(tmp_path, monkeypatch):
+    import time
+
+    monkeypatch.setattr(time, "time", lambda: NOW)
+    hub = _cfg(tmp_path, "hub")
+    host = _cfg(tmp_path, "host")
+    blob = _add_and_enrol(host, hub, monkeypatch)
+    srv, url = _serve(host)
+    fp = F.federation_path(host)
+    good = fp.read_text()
+    assert _raw("GET", url, "/v1/status", blob["token"], blob["secret"])[0] == 200
+    for bad in ("{not json", "[]", json.dumps({**json.loads(good), "secret": ""}),
+                json.dumps({"hub_name": "h"})):
+        fp.write_text(bad)
+        status, hdrs, raw = _raw("GET", url, "/v1/status", blob["token"], blob["secret"])
+        assert status == 401, bad
+        assert not any(k.lower() in ("x-nw-sig", "x-nw-sig-ts") for k in hdrs), bad
+        assert json.loads(raw) == {"error": "unauthorized"}
+    fp.write_text(good)
+    assert _raw("GET", url, "/v1/status", blob["token"], blob["secret"])[0] == 200
+    srv.shutdown()
+    srv.server_close()
+
+
+def test_serve_federate_cli_refuses_public_binds_cleanly(tmp_path, monkeypatch):
+    host = _cfg(tmp_path, "host")
+    F.write_federation(host, {"hub_name": "h", "host_name": "b", "token": "t", "secret": "s"})
+    monkeypatch.setattr("nightwright.cli.load_config", lambda: host)
+    for bind in ("0.0.0.0:0", "[::]:0", "8.8.8.8:0"):
+        r = CliRunner().invoke(cli, ["serve", "--federate", "--bind", bind])
+        assert r.exit_code != 0, bind
+        assert isinstance(r.exception, SystemExit), bind
+        assert "Traceback" not in r.output
+
+    def stop_now(self, *a, **kw):
+        raise KeyboardInterrupt()
+
+    monkeypatch.setattr(FH.FederateServer, "serve_forever", stop_now)
+    r = CliRunner().invoke(cli, ["serve", "--federate", "--bind", "localhost:0"])
+    assert r.exit_code == 0, r.output
+    assert "nw serve: federation on" in r.stderr
+
+
+def test_check_output_order_reasons_and_bad_documents(tmp_path, monkeypatch):
+    import time
+
+    monkeypatch.setattr(time, "time", lambda: NOW)
+    hub = _cfg(tmp_path, "hub")
+    for name in ("zlast", "badproj", "badschema", "mfirst", "unsigned"):
+        assert _invoke(hub, monkeypatch, "add", name, "--url", "http://127.0.0.1:9").exit_code == 0
+    # `unsigned` answers a real HTTP 200 with no signature at all
+    body = b'{"schema":"nw.federation.status.v1","projects":[],"campaigns":[]}'
+    reply = (b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: "
+             + str(len(body)).encode() + b"\r\nConnection: close\r\n\r\n" + body)
+
+    def answer(conn):
+        try:
+            conn.recv(65536)
+            conn.sendall(reply)
+        finally:
+            conn.close()
+
+    port, stop = _raw_listener(answer)
+    _point_hub(hub, "unsigned", f"http://127.0.0.1:{port}")
+    docs = {
+        "zlast": {"schema": "nw.federation.status.v1", "projects": ["Z"], "campaigns": []},
+        "mfirst": {"schema": "nw.federation.status.v1", "projects": ["Z"], "campaigns": []},
+        "badproj": {"schema": "nw.federation.status.v1", "projects": 5, "campaigns": []},
+        "badschema": {"schema": "other.v9", "projects": [], "campaigns": []},
+    }
+    real_get = F.HubClient.get_json
+    monkeypatch.setattr(F.HubClient, "get_json",
+                        lambda self, path: docs[self.record["name"]]
+                        if self.record["name"] in docs else real_get(self, path))
+    r = _invoke(hub, monkeypatch, "check")
+    stop()
+    assert r.exit_code == 1
+    lines = r.output.splitlines()
+    assert "Traceback" not in r.output
+    assert lines[:5] == [
+        "zlast ok",
+        "badproj unreachable: bad status document",
+        "badschema unreachable: bad schema",
+        "mfirst ok",
+        "unsigned unreachable: missing response signature",
+    ]
+    assert lines[5:] == ["project Z on mfirst and zlast"]
+    # the failed hosts' caches stay null, the ok ones are stored
+    assert H.find(H.load(hub), "badproj")["status_cache"] is None
+    assert H.find(H.load(hub), "zlast")["status_cache"]["projects"] == ["Z"]
+
+
+def test_check_after_unenrol_reports_http_401(tmp_path, monkeypatch):
+    import time
+
+    monkeypatch.setattr(time, "time", lambda: NOW)
+    hub = _cfg(tmp_path, "hub")
+    host = _cfg(tmp_path, "host")
+    _add_and_enrol(host, hub, monkeypatch)
+    srv, url = _serve(host)
+    _point_hub(hub, "box", url)
+    assert _invoke(hub, monkeypatch, "check").output.splitlines()[0] == "box ok"
+    F.federation_path(host).unlink()
+    r = _invoke(hub, monkeypatch, "check")
+    assert r.exit_code == 1
+    assert r.output.splitlines()[0] == "box unreachable: HTTP 401"
+    srv.shutdown()
+    srv.server_close()

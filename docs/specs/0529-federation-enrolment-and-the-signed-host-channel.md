@@ -505,6 +505,14 @@ any other writer).
   unsigned `GET /v1/status` HTTP 401.
 - Full suite left to gating.
 
+### Test record (2026-11-10, review loop 0)
+
+- `uv run pytest tests/test_federation_channel.py::test_https_connect_failure_is_unreachable -q` — passed.
+- `uv run pytest tests/test_federation_channel.py tests/test_rich_output_guard.py -q` — 23 passed.
+- `python3 tools/test_tiers.py --check` — exit 0.
+- `python3 tools/spec_lint.py --write-ledger` and `python3 tools/spec_lint.py` — exit 0.
+- Full suite left to gating.
+
 ### Test record (2026-11-10, review loop 1)
 
 - `uv run pytest tests/test_federation_channel.py tests/test_rich_output_guard.py -q` — 26 passed.
@@ -519,33 +527,59 @@ any other writer).
 - `python3 tools/spec_lint.py --write-ledger` and `python3 tools/spec_lint.py` — exit 0.
 - Full suite left to gating.
 
-### Test record (2026-11-10, review loop 0)
+### Test record (2026-11-10, review loop 3)
 
-- `uv run pytest tests/test_federation_channel.py::test_https_connect_failure_is_unreachable -q` — passed.
-- `uv run pytest tests/test_federation_channel.py tests/test_rich_output_guard.py -q` — 23 passed.
+- `uv run pytest tests/test_federation_channel.py tests/test_rich_output_guard.py -q` — 43 passed.
 - `python3 tools/test_tiers.py --check` — exit 0.
 - `python3 tools/spec_lint.py --write-ledger` and `python3 tools/spec_lint.py` — exit 0.
+- Manual two-directory replay (below) re-run against the final code — `box ok`, then `box unreachable: HTTP 401`.
 - Full suite left to gating.
 
 ### As shipped (2026-11-10)
 
-Local hub/host dirs (`NW_DATA_DIR` / `NW_CONFIG_DIR`), `nw serve --federate --bind 127.0.0.1:0`:
+Replay with two empty directory pairs (`HUB_*` and `HOST_*` below stand for the `NW_DATA_DIR` /
+`NW_CONFIG_DIR` of the hub and of the host); `hub`/`host` mean `nw` run with that pair exported.
+The hub's registry URL is the host's real bind (`127.0.0.1:8792`), so no re-pointing is needed.
 
 ```
-$ nw hosts add box --url http://127.0.0.1:0
-{"hub_name":"bruno-yoga9i","host_name":"box","token":"…","secret":"…"}
-$ nw hosts enrol   # stdin blob from add
-$ nw serve --federate --bind 127.0.0.1:0   # stderr: federation on http://127.0.0.1:<port>
-$ nw hosts check
+$ hub  nw hosts add box --url http://127.0.0.1:8792 > blob.json
+$ cat blob.json
+{"hub_name":"<hub-hostname>","host_name":"box","token":"…","secret":"…"}
+$ host nw hosts enrol < blob.json
+$ host nw queue status --json     # the toy in-flight campaign, items mapped to five keys:
+[{'campaign': 'SPEC-9001-20261110-0001', 'project': 'Toy', 'state': 'QUEUED', 'spec_id': 'SPEC-9001', 'kind': 'implement'}]
+$ host nw serve --federate --bind 127.0.0.1:8792
+nw serve: federation on http://127.0.0.1:8792          # stderr
+$ hub  nw hosts check
 box ok
-# status_cache.projects / campaigns populated from host queue
-$ nw hosts unenrol   # on host
-$ nw hosts check
-box unreachable: HTTP 401
-$ curl -s -o /dev/null -w "HTTP %{http_code}\n" http://127.0.0.1:<port>/v1/status
-HTTP 401
-# response has no X-NW-Sig
+$ python -c 'print(json.load(open("HUB_DATA/agentic/hosts.json"))["hosts"][0]["status_cache"])'
+{'fetched_at': '2026-11-10T18:24:19-05:00', 'projects': ['Toy'], 'campaigns': [{'campaign': 'SPEC-9001-20261110-0001', 'project': 'Toy', 'state': 'QUEUED', 'spec_id': 'SPEC-9001', 'kind': 'implement'}]}
+$ host nw hosts unenrol
+$ hub  nw hosts check
+box unreachable: HTTP 401                              # exit 1
+$ curl -s -D - -o /dev/null http://127.0.0.1:8792/v1/status
+HTTP/1.1 401 Unauthorized                              # no X-NW-Sig, no X-NW-Sig-Ts header
 ```
+
+The toy campaign was created with `store.create_campaign` in the host's data dir (state
+`QUEUED`, project `Toy`), so its `campaign`, `project`, `state`, `spec_id` and `kind` in
+`status_cache` equal the `nw queue status --json` item.
+
+Deviations from the Design wording, recorded here because Design is frozen:
+
+- `hosts.validate_url` accepts `http(s)://HOST[:PORT][/PREFIX]` and stores the URL exactly as
+  given (a hub behind a path-prefix reverse proxy can be registered). It additionally refuses
+  userinfo, a query, a fragment, and whitespace or control characters, which the Design does
+  not mention.
+- `write_host_secrets` and `write_federation` fsync the temp file before the rename, like the
+  registry, so a crash cannot leave a registry naming a host whose secret file is empty.
+- `HubClient` enforces one 2 s wall-clock budget from the end of connect for the TLS handshake,
+  the request, the headers and the body (a watchdog shuts the socket), in addition to the
+  per-recv 2 s socket timeout. A peer that drips bytes is cut off with `ConnectionError`.
+- `nw hosts check` reports a status document whose `projects` is not a list as
+  `NAME unreachable: bad status document`, and a registry record without a `name` as
+  `? unreachable: malformed host record`; it continues with the remaining hosts. `add`/`rm`
+  on a corrupt `hosts.json` exit non-zero with a one-line error.
 
 ## Clock Log
 

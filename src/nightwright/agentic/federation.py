@@ -5,6 +5,7 @@ import hashlib
 import hmac
 import http.client
 import json
+import os
 import secrets
 import socket
 import ssl
@@ -38,16 +39,33 @@ def host_secret_path(cfg, name: str) -> Path:
     return Path(cfg["config_dir"]) / host_secret_ref(name)
 
 
-def new_host_credential(*, write: bool = True) -> tuple[str, str]:
-    token, secret = secrets.token_urlsafe(32), secrets.token_hex(32)
-    return token, secret
+def new_host_credential() -> tuple[str, str]:
+    return secrets.token_urlsafe(32), secrets.token_hex(32)
+
+
+def _write_private_fsync(path: Path, text: str) -> None:
+    """`PJ.write_private` plus an fsync of the temp file before the rename, so a crash cannot
+    leave the registry naming a host whose secret file is empty."""
+    path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    tmp = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    try:
+        os.fchmod(fd, 0o600)
+        os.write(fd, text.encode("utf-8"))
+        os.fsync(fd)
+    except OSError:
+        os.close(fd)
+        tmp.unlink(missing_ok=True)
+        raise
+    os.close(fd)
+    os.replace(tmp, path)
 
 
 def write_host_secrets(cfg, name: str, token: str, secret: str) -> None:
     tok_p = host_token_path(cfg, name)
-    PJ.write_private(tok_p, token + "\n")
+    _write_private_fsync(tok_p, token + "\n")
     try:
-        PJ.write_private(host_secret_path(cfg, name), secret + "\n")
+        _write_private_fsync(host_secret_path(cfg, name), secret + "\n")
     except OSError:
         tok_p.unlink(missing_ok=True)
         raise
@@ -99,7 +117,7 @@ def write_federation(cfg, doc: dict) -> None:
     out = {k: doc[k] for k in keys if k in doc}
     if set(out) != set(keys):
         raise ValueError("federation document needs hub_name, host_name, token, and secret")
-    PJ.write_private(federation_path(cfg), json.dumps(out, sort_keys=True) + "\n")
+    _write_private_fsync(federation_path(cfg), json.dumps(out, sort_keys=True) + "\n")
 
 
 def _body_sha(body: bytes) -> str:
@@ -167,9 +185,6 @@ class HubClient:
             raise ValueError("missing host credentials")
         self.token, self.secret = token, secret
 
-    def _url(self, path: str) -> str:
-        return self.record["url"].rstrip("/") + path
-
     def _target(self, path: str) -> str:
         return self.base + path if self.base else path
 
@@ -210,14 +225,16 @@ class HubClient:
         remaining = deadline - time.monotonic()
         if remaining <= 0:
             return
-        sock = socket.socket(family, stype, proto)
+        sock = None
         try:
+            sock = socket.socket(family, stype, proto)
             sock.settimeout(remaining)
             sock.connect(sockaddr)
             with lock:
                 out.append(("ok", sock))
         except OSError as e:
-            sock.close()
+            if sock is not None:
+                sock.close()
             with lock:
                 out.append(("err", e))
 
@@ -274,32 +291,42 @@ class HubClient:
             headers["Content-Length"] = str(len(data))
         conn = None
         sock = None
+        live: list = []
+        timed_out = threading.Event()
+
+        def _expire() -> None:
+            # One wall-clock budget for handshake, send, headers and body: a peer that drips
+            # bytes inside each recv timeout is cut off by shutting the socket under it.
+            timed_out.set()
+            for s_ in list(live):
+                try:
+                    socket.socket.shutdown(s_, socket.SHUT_RDWR)
+                except (OSError, ValueError):
+                    pass
+
+        watchdog = None
+        raw = b""
         try:
+            sock = self._connect()
+            live.append(sock)
+            watchdog = threading.Timer(self.READ_TIMEOUT, _expire)
+            watchdog.daemon = True
+            watchdog.start()
             if self.https:
-                sock = self._connect()
                 ctx = ssl.create_default_context()
                 ssl_sock = ctx.wrap_socket(sock, server_hostname=self.host)
                 sock = None
+                live.append(ssl_sock)
                 conn = http.client.HTTPSConnection(self.host, self.port)
                 conn.sock = ssl_sock
             else:
                 conn = http.client.HTTPConnection(self.host, self.port)
-                conn.sock = self._connect()
+                conn.sock = sock
+                sock = None
+            conn.sock.settimeout(self.READ_TIMEOUT)
             conn.request(method, target, body=data, headers=headers)
-            read_deadline = time.monotonic() + self.READ_TIMEOUT
-
-            def _read_to() -> float:
-                return max(0.001, read_deadline - time.monotonic())
-
-            io_sock = conn.sock
-            io_sock.settimeout(_read_to())
             resp = conn.getresponse()
-            raw = b""
             while True:
-                if read_deadline - time.monotonic() <= 0:
-                    raise TimeoutError("timed out")
-                if io_sock.fileno() != -1:
-                    io_sock.settimeout(_read_to())
                 chunk = resp.read(min(65536, MAX_RESPONSE_BYTES + 1 - len(raw)))
                 if not chunk:
                     break
@@ -308,12 +335,16 @@ class HubClient:
                     break
             hdrs = {k: v for k, v in resp.getheaders()}
             status = resp.status
-        except (OSError, ssl.SSLError, http.client.HTTPException) as e:
+        except (OSError, ssl.SSLError, ValueError, http.client.HTTPException) as e:
+            if timed_out.is_set():
+                raise ConnectionError("TimeoutError: timed out") from e
             raise ConnectionError(f"{type(e).__name__}: {e}") from e
         finally:
+            if watchdog is not None:
+                watchdog.cancel()
             if conn is not None:
                 conn.close()
-            elif sock is not None:
+            if sock is not None:
                 sock.close()
         if len(raw) > MAX_RESPONSE_BYTES:
             raise ConnectionError("response too large")
