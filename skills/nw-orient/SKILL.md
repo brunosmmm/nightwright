@@ -43,7 +43,7 @@ These apply to every session that touches nightwright — conductor, steward, bu
   slots, the local machine must not run heavy suites. Forms (exact flags: `nw gate run --help`):
   `nw gate run --project <P> --worktree <path>` (HEAD, or a stash commit of a dirty tree),
   `nw gate run --branch B`, repeatable ad-hoc `--cmd '...'` (replaces the project gates),
-  `--tier loop|close|all`, `--wait-s N` (wait for a slot), `--detach` (background), `--json`
+  `--tier loop|close|all`, `--wait-s N` (wait for a slot; default `agentic.gate_jobs.wait_s`, 1800; waiters are served in arrival order), `--detach` (background), `--json`
   (`nw.gatejob.v1`). Follow a job with `nw gate status|logs|cancel GATEJOB-NNNN`. `nw gate list` takes no job id.
   Exit codes: 0 green, 1 red, 2 cannot start, 3 box unavailable, 4 transport failure,
   130 cancelled. Worker pools only: it never falls back to running locally, and campaigns get

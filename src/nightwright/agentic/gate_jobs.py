@@ -3,7 +3,9 @@ without a campaign. A job is a campaign-shaped state (`{id: GATEJOB-NNNN, projec
 SPEC-0379 sentinel builds one) run by `remote_gates.run_detached` under `gate_slots.acquire` on
 worker pools only, never locally. Campaigns win slot contention (a `skip` predicate while any
 non-job gate waits); `agentic.gate_jobs` caps jobs per requester and box-wide with flock tokens
-taken before the slot. Records live in `<agentic>/gatejobs/<id>/job.json`, logs in `gates/`."""
+taken before the slot. Records live in `<agentic>/gatejobs/<id>/job.json`, logs in `gates/`.
+SPEC-0500: tokens go first come, first served (`gatejobs/line/`), the share cap is the whole box
+while no campaign holds or waits for a slot, and the default requester is `<user>@<project>`."""
 from __future__ import annotations
 
 import datetime as dt
@@ -37,8 +39,9 @@ FINAL = ("passed", "failed", "unavailable", "transport_error", "cancelled", "err
 EXIT = {"passed": 0, "failed": 1, "error": 2, "unavailable": 3, "transport_error": 4,
         "lost": 4, "cancelled": 130}
 TIERS = ("loop", "close", "all")
-DEFAULTS = {"enabled": True, "max_per_requester": 2, "max_slots": None, "retention_days": 7}
-DEFAULT_WAIT_S = 300.0
+DEFAULT_WAIT_S = 1800.0                 # SPEC-0500: `agentic.gate_jobs.wait_s` default
+DEFAULTS = {"enabled": True, "max_per_requester": 2, "max_slots": None, "retention_days": 7,
+            "wait_s": DEFAULT_WAIT_S}
 POLL_S = 1.0
 SEQ = 1                                 # one gate run per job: logs are `gates/001-<gate>.log`
 
@@ -68,18 +71,22 @@ def settings(cfg) -> dict:
     for k in ("max_per_requester", "max_slots"):
         if _pos_int(raw.get(k)):
             out[k] = raw[k]
-    r = raw.get("retention_days")
-    if isinstance(r, (int, float)) and not isinstance(r, bool) and math.isfinite(r) and r > 0:
-        out["retention_days"] = r
+    for k in ("retention_days", "wait_s"):
+        r = raw.get(k)
+        if isinstance(r, (int, float)) and not isinstance(r, bool) and math.isfinite(r) and r > 0:
+            out[k] = r
     return out
 
 
 def max_slots(cfg) -> int:
+    """The box-wide share cap. An explicit `max_slots` wins; else every placeable worker slot
+    while no campaign or sentinel holds or waits for a gate slot, half of them (at least 1)
+    while one does (SPEC-0500)."""
     s = settings(cfg)["max_slots"]
     if s is not None:
         return s
     total = sum(w["slots"] for w in WK.load(cfg) if WK.placeable(w))
-    return max(1, total // 2)
+    return max(1, total // 2 if campaign_active(cfg) else total)
 
 
 def worker_pools(cfg) -> list:
@@ -87,8 +94,14 @@ def worker_pools(cfg) -> list:
     return [(name, n) for name, n in WK.gate_pools(cfg) if name is not WK.LOCAL]
 
 
-def requester(by=None) -> str:
-    return str(by or os.environ.get("NW_MAILBOX_ADDR") or os.environ.get("USER") or "cli")
+def requester(by=None, project=None) -> str:
+    """`--by`, else `$NW_MAILBOX_ADDR`, else `<user>@<project>` (SPEC-0500: the requester cap
+    applies per project), else `<user>`."""
+    explicit = by or os.environ.get("NW_MAILBOX_ADDR")
+    if explicit:
+        return str(explicit)
+    user = os.environ.get("USER") or "cli"
+    return f"{user}@{project}" if project else user
 
 
 def root(cfg) -> Path:
@@ -297,23 +310,92 @@ def create(cfg, target: dict, by: str, pid: int | None = None) -> tuple[dict, bo
 # ---- placement: tokens, campaign priority, the slot ------------------------------------------
 
 def _take_token(d: Path, n: int):
+    """A token fd from `d` while fewer than `n` of its `slot-*.lock` files are held, else None.
+    SPEC-0500: holders at any index count, so a cap that drops (10 -> 5) admits no new job until
+    fewer than `n` are in flight."""
     d.mkdir(parents=True, exist_ok=True)
-    for k in range(n):
+    idx = {int(p.stem[5:]) for p in d.glob("slot-*.lock") if p.stem[5:].isdigit()}
+    held, free = 0, None
+    for k in sorted(idx | set(range(n))):
         fd = os.open(d / f"slot-{k}.lock", os.O_RDWR | os.O_CREAT, 0o644)
         try:
             fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except OSError:
             os.close(fd)
+            held += 1
             continue
-        return fd
-    return None
+        if free is None:
+            free = fd
+        else:
+            fcntl.flock(fd, fcntl.LOCK_UN)
+            os.close(fd)
+    if free is not None and held >= n:
+        fcntl.flock(free, fcntl.LOCK_UN)
+        os.close(free)
+        free = None
+    return free
 
 
-def _wait_token(d: Path, n: int, wait_ev: threading.Event, poll_s: float):
+# ---- the line (SPEC-0500): first come, first served per token pool ----------------------------
+
+def _line_dir(cfg) -> Path:
+    return root(cfg) / "line"
+
+
+def _order(rec: dict) -> tuple:
+    try:
+        t = float(rec.get("created_epoch"))
+    except (TypeError, ValueError):
+        t = 0.0
+    return (t, str(rec.get("id") or ""))
+
+
+def _line_scan(cfg, pool: str) -> list[tuple]:
+    """`[(order, id)]` of the live waiters in `pool`'s line, oldest first. Call under `_lock`.
+    A marker whose record is gone, not `waiting` or whose pid is dead is deleted: a dead waiter
+    never blocks the line."""
+    d = _line_dir(cfg)
+    out = []
+    if not d.is_dir():
+        return out
+    for p in d.glob("*.json"):
+        m = GS._read_json(p)
+        jid = (m or {}).get("id")
+        rec = read(cfg, jid) if isinstance(jid, str) and ID_RE.match(jid) else None
+        if rec is None or rec.get("status") != "waiting" or not GS._pid_alive(rec.get("pid")):
+            p.unlink(missing_ok=True)
+            continue
+        if m.get("pool") == pool:
+            out.append((_order(rec), jid))
+    return sorted(out)
+
+
+def line(cfg, pool: str) -> list[str]:
+    """The live job ids waiting in `pool`'s line (`share`, `req-<hash>`), oldest first."""
+    with _lock(cfg):
+        return [jid for _o, jid in _line_scan(cfg, pool)]
+
+
+def _leave_line(cfg, job_id: str) -> None:
+    with _lock(cfg):
+        (_line_dir(cfg) / f"{job_id}.json").unlink(missing_ok=True)
+
+
+def _wait_token(cfg, rec: dict, d: Path, cap, wait_ev: threading.Event, poll_s: float):
+    """Wait in `d`'s line for a token: `(fd or None, jobs ahead at the last poll, cap)`. Under
+    the jobs lock each poll joins the line and takes a token only with nobody older ahead."""
+    me, pool = _order(rec), d.name
+    marker = _line_dir(cfg) / f"{rec['id']}.json"
     while True:
-        fd = _take_token(d, n)
+        with _lock(cfg):
+            if (GS._read_json(marker) or {}).get("pool") != pool:
+                _atomic_write(marker, json.dumps({"id": rec["id"], "pool": pool,
+                                                  "created_epoch": me[0]}) + "\n")
+            ahead = sum(1 for o, jid in _line_scan(cfg, pool) if o < me and jid != rec["id"])
+            n = cap()
+            fd = _take_token(d, n) if ahead == 0 else None
         if fd is not None or wait_ev.is_set():
-            return fd
+            return fd, ahead, n
         wait_ev.wait(poll_s)
 
 
@@ -335,6 +417,21 @@ def campaign_waiting(cfg) -> bool:
         if rec and not str(rec.get("campaign") or "").startswith(PREFIX) \
                 and GS._pid_alive(rec.get("pid")):
             return True
+    return False
+
+
+def campaign_active(cfg) -> bool:
+    """SPEC-0500: a campaign or the sentinel waits for a gate slot or holds one, on the local
+    pool or any worker pool dir. Standalone jobs then get only half the box."""
+    if campaign_waiting(cfg):
+        return True
+    d = GS.slots_dir(cfg)
+    if not d.is_dir():
+        return False
+    for pd in [d, *sorted(p for p in d.glob("w-*") if p.is_dir())]:
+        for h in GS._probe_held(pd):
+            if not str(h.get("campaign") or "").startswith(PREFIX):
+                return True
     return False
 
 
@@ -405,15 +502,20 @@ def execute(cfg, job_id: str, *, stop: threading.Event | None = None,
                      daemon=True).start()
     fds = []
     try:
-        for d, n in ((requester_tokens(cfg, by), settings(cfg)["max_per_requester"]),
-                     (share_tokens(cfg), max_slots(cfg))):
-            fd = _wait_token(d, n, wait_ev, poll_s)
+        lines = (("requester", requester_tokens(cfg, by),
+                  lambda: settings(cfg)["max_per_requester"], f"per requester {by}"),
+                 ("share", share_tokens(cfg), lambda: max_slots(cfg),
+                  "standalone jobs box-wide"))
+        for what, d, cap, scope in lines:
+            fd, ahead, n = _wait_token(cfg, rec, d, cap, wait_ev, poll_s)
             if fd is None:
-                break
+                done.set()
+                _leave_line(cfg, job_id)
+                return _ended_waiting(cfg, job_id, stop, wait_s, f"{what} token",
+                                      f": {ahead} job{'' if ahead == 1 else 's'} ahead in line "
+                                      f"(cap {n} {scope})")
             fds.append(fd)
-        if len(fds) < 2:
-            done.set()
-            return _ended_waiting(cfg, job_id, stop, wait_s, "a gate-job token")
+        _leave_line(cfg, job_id)
         holder = {"job": job_id, "by": by, "project": rec.get("project"),
                   "branch": rec.get("branch")}
         with GS.acquire(cfg, job_id, stop=wait_ev, poll_s=poll_s, pools=pools,
@@ -421,7 +523,8 @@ def execute(cfg, job_id: str, *, stop: threading.Event | None = None,
                         repool=lambda: worker_pools(cfg), holder=holder) as hold:
             done.set()
             if hold.interrupted or hold.pool is None:
-                return _ended_waiting(cfg, job_id, stop, wait_s, "a worker gate slot")
+                return _ended_waiting(cfg, job_id, stop, wait_s, "worker gate slot",
+                                      " (campaign gates go first)")
             rec = update(cfg, job_id, status="running", worker=hold.pool,
                          started_at=now_iso(), waited_s=round(time.monotonic() - t0, 1))
             _event(cfg, rec)
@@ -441,17 +544,19 @@ def execute(cfg, job_id: str, *, stop: threading.Event | None = None,
                            changed=list(run.changed) if run.changed else None)
     finally:
         done.set()
-        for fd in fds:
-            fcntl.flock(fd, fcntl.LOCK_UN)
-            os.close(fd)
+        try:
+            _leave_line(cfg, job_id)
+        finally:
+            for fd in fds:
+                fcntl.flock(fd, fcntl.LOCK_UN)
+                os.close(fd)
 
 
-def _ended_waiting(cfg, job_id, stop, wait_s, what) -> dict:
+def _ended_waiting(cfg, job_id, stop, wait_s, what, why) -> dict:
     if stop.is_set():
         return _finish(cfg, job_id, "cancelled", error="cancelled while waiting")
     return _finish(cfg, job_id, "unavailable",
-                   error=f"box unavailable: no {what} within {wait_s:g}s"
-                         + (" (campaign gates go first)" if what.endswith("slot") else ""))
+                   error=f"box unavailable: no {what} within {wait_s:g}s{why}")
 
 
 def follow(cfg, job_id: str, *, stop: threading.Event | None = None,

@@ -1,7 +1,7 @@
 ---
 id: SPEC-0500
 title: "Gate jobs: first-come-first-served tokens, full box when no campaign, per-project requester, longer default wait"
-status: accepted
+status: done
 owner: user
 created: 2026-11-09
 updated: 2026-11-09
@@ -76,7 +76,7 @@ Job records show the effect:
 - `_line_dir(cfg) = gatejobs/line/`. A marker is `<id>.json`:
   `{id, pool, created_epoch}`. `pool` is the token directory name: `req-<hash>` for the
   requester pool, `share` for the share pool.
-- `_wait_token(cfg, job_id, order, d, cap, wait_ev, poll_s)` loops until the job has a token or
+- `_wait_token(cfg, rec, d, cap, wait_ev, poll_s)` loops until the job has a token or
   the deadline or stop event fires. `cap` is a callable that returns the current cap. On each poll,
   under `_lock(cfg)`, it:
   1. writes or updates its own marker for pool `d.name`
@@ -85,8 +85,9 @@ Job records show the effect:
      record is missing, final, not `waiting` or has a dead pid are deleted on the way.
   3. tries `_take_token(d, cap())` only when `ahead` is 0.
 
-  It returns `(fd, ahead)`. The caller removes the marker in `execute`'s `finally` (under the
-  lock), so the line advances when a job takes its last token, ends or is cancelled.
+  It returns `(fd, ahead, cap)`. `execute` removes the marker (under the lock) once the job
+  holds both tokens, and again in its `finally`, so the line advances when a job takes its last
+  token, ends or is cancelled.
 - Order is `created_epoch` from the job record, with the id as a tie-break. The wait in each
   line starts when the job is created, so a job that waited longer for its requester token is
   also ahead in the share line.
@@ -175,24 +176,24 @@ the holder metadata are unchanged in shape.
 
 ## Acceptance criteria
 
-- [ ] With several jobs waiting for the same token pool, tokens go out in `(created_epoch, id)`
+- [x] With several jobs waiting for the same token pool, tokens go out in `(created_epoch, id)`
       order whatever the order in which the waiters started polling (a deterministic test with
       three waiters started in reverse order).
-- [ ] A line marker whose job record has a dead pid, or is final, does not block a younger job,
+- [x] A line marker whose job record has a dead pid, or is final, does not block a younger job,
       and the marker is deleted.
-- [ ] A job blocked by its requester cap does not block other requesters' jobs in the share line.
-- [ ] With no `max_slots` configured and no campaign holding or waiting, `max_slots(cfg)` equals
+- [x] A job blocked by its requester cap does not block other requesters' jobs in the share line.
+- [x] With no `max_slots` configured and no campaign holding or waiting, `max_slots(cfg)` equals
       the placeable worker slots. With a live campaign waiter marker, or a campaign holding a
       slot, it equals `max(1, slots // 2)`. An explicit `max_slots` overrides both.
-- [ ] `_take_token` counts held tokens: with cap `n` and `n` tokens held at any indices, no new
+- [x] `_take_token` counts held tokens: with cap `n` and `n` tokens held at any indices, no new
       token is handed out.
-- [ ] `requester(None, "P")` is `<USER>@P`. `--by` and `NW_MAILBOX_ADDR` win over it. Without a
+- [x] `requester(None, "P")` is `<USER>@P`. `--by` and `NW_MAILBOX_ADDR` win over it. Without a
       project it is the old value. `nw gate run` records the per-project requester.
-- [ ] `agentic.gate_jobs.wait_s` sets the default wait. Bad values fall back to 1800. `--wait-s`
+- [x] `agentic.gate_jobs.wait_s` sets the default wait. Bad values fall back to 1800. `--wait-s`
       overrides it, and the detached child gets the resolved value.
-- [ ] A token wait that times out says how many jobs were ahead and the cap. No message contains
+- [x] A token wait that times out says how many jobs were ahead and the cap. No message contains
       "no a ".
-- [ ] The existing `tests/test_gate_jobs.py` behaviour (caps, campaign priority, cancel,
+- [x] The existing `tests/test_gate_jobs.py` behaviour (caps, campaign priority, cancel,
       idempotence) still passes.
 
 ## Test plan
@@ -208,14 +209,16 @@ the holder metadata are unchanged in shape.
     markers are gone.
   - `test_requester_cap_does_not_block_other_requesters`: `max_per_requester: 1`. An older job by
     alice waits behind alice's held token, and a younger job by bob still runs.
-  - `test_max_slots_full_box_without_campaigns`: covers the full box with no campaign, half with
+  - `test_max_slots_full_box_without_campaigns_half_with_one` (replaces
+    `test_max_slots_defaults_to_half_the_worker_slots`): covers the full box with no campaign, half with
     a live campaign waiter marker, half while a campaign holds a worker slot, and the explicit
     override.
   - `test_take_token_counts_holders_at_any_index`.
   - `test_requester_defaults_to_user_at_project`: the `--by` and `NW_MAILBOX_ADDR` precedence,
     and the record's requester through `nw gate run`.
-  - `test_wait_s_setting_and_cli_default`: covers the settings value, a bad value, the CLI
-    default and override, and the detached child's argv.
+  - `test_settings_defaults_and_bad_values` (extended) covers the settings value and bad values.
+  - `test_wait_s_setting_is_the_cli_default`: covers the CLI
+    default, the config value and the override, through the detached child's argv.
   - `test_unavailable_message_names_line_and_cap`: the timeout message counts the jobs ahead and
     names the cap, and nothing reads "no a ".
   - The existing tests stay: `settings` defaults are updated for `wait_s`, and the token-timeout
@@ -223,6 +226,10 @@ the holder metadata are unchanged in shape.
 - **Regression guard:** `python3 tools/affected_tests.py --run uv run pytest -q` in the
   worktree, plus `tests/test_gate_jobs.py` and `tests/test_gate_slots.py`, and
   `python3 tools/spec_lint.py`.
+- **Local verification temp dirs (requirement):** local verification runs for this spec either
+  clean up their pytest temp dirs or use a base temp outside `/tmp` (`TMPDIR` or `--basetemp`
+  on `/home`). `/tmp` is a 1M-inode tmpfs shared by every agent's pytest runs, and a full run
+  leaves about 200k inodes in `/tmp/pytest-of-<user>/pytest-N`.
 - **Manual verification:** none against the real box. The task rules forbid depending on the
   worker box or touching other users' jobs, and the line logic is local file and flock logic
   that the tests run for real.
@@ -237,11 +244,42 @@ the holder metadata are unchanged in shape.
 
 ## Definition of done
 
-- [ ] Acceptance criteria all met.
-- [ ] Test plan executed; automated tests pass; manual steps performed or the skip explained.
-- [ ] No regressions.
-- [ ] Spec body updated to match what shipped.
-- [ ] `docs/LEDGER.md` updated (status + date).
+- [x] Acceptance criteria all met.
+- [x] Test plan executed; automated tests pass; manual steps performed or the skip explained.
+- [x] No regressions.
+- [x] Spec body updated to match what shipped.
+- [x] `docs/LEDGER.md` updated (status + date).
+
+## As shipped
+
+- Shipped as designed. `gate_jobs.py` gained `_line_dir`, `_line_scan`, `line`, `_leave_line`,
+  `_wait_token`, `campaign_active`, a counting `_take_token`, the dynamic `max_slots`, the
+  `wait_s` setting, `requester(by, project)` and `_ended_waiting(..., what, why)`.
+  `cli_gate.py` resolves `--wait-s` from `settings(cfg)["wait_s"]` when unset and passes the
+  target's project to `requester`.
+- The sentinel's local-pool hold counts as a campaign (tested with `SENTINEL-<project>`); a
+  standalone job's own slot hold does not; a dead campaign waiter marker does not.
+- Test names as shipped: `test_max_slots_full_box_without_campaigns_half_with_one` replaced
+  `test_max_slots_defaults_to_half_the_worker_slots`, and the wait test is
+  `test_wait_s_setting_is_the_cli_default`; bad `wait_s` values are covered in the extended
+  `test_settings_defaults_and_bad_values`.
+- Docs: `docs/product/reference/index.md` lists `wait_s` and the new defaults;
+  `skills/nw-orient/SKILL.md` notes the 1800 s default and arrival order.
+- Verification (reduced scope): full affected run waived by the human on 2026-11-09; ran only
+  `tests/test_gate_jobs.py` + `tests/test_gate_slots.py` under `timeout 300`, 60 passed in 5 s,
+  plus `python3 tools/spec_lint.py` (exit 0). The new SPEC-0500 tests also passed 6 repeated
+  runs under `-n 8`. No hanging test was found in the gate files (slowest 1.01 s).
+- What happened to the affected run, for the record: the first run (160 files) ended
+  `1 failed, 2088 passed, 430 errors` in 1833 s. The errors came from the host: `/tmp` (a
+  1M-inode tmpfs) ran out of inodes, which gave `OSError: could not create numbered dir` and
+  ENOSPC, and the queue tests saw `admission_paused: temp_pressure`. A rerun of the 98 affected
+  files with `TMPDIR` on `/home` was killed by its own 1700 s `timeout` at 94%, with no single
+  test identified as hanging, and one failure. A per-file split (300 s each) was stopped on the
+  human's order after its first file. That file, `tests/test_agentic_conductor_guard.py::
+  test_conduct_skill_never_asks_the_human`, fails on `skills/nw-conduct/SKILL.md` (the phrase
+  "wait for the human"). This branch does not touch that skill or that test, so the failure
+  already exists on main. The other 97 files were not re-verified one by one.
+- No manual run against the worker box, per the skip in the Test plan.
 
 ## Open questions
 

@@ -237,17 +237,36 @@ def test_same_commit_and_project_returns_the_running_job(gw, monkeypatch):
 def test_settings_defaults_and_bad_values():
     s = J.settings({})
     assert s == {"enabled": True, "max_per_requester": 2, "max_slots": None,
-                 "retention_days": 7}
+                 "retention_days": 7, "wait_s": 1800.0}
     bad = {"agentic": {"gate_jobs": {"enabled": "yes", "max_per_requester": 0,
-                                     "max_slots": -1, "retention_days": "x"}}}
+                                     "max_slots": -1, "retention_days": "x", "wait_s": True}}}
     assert J.settings(bad) == s
+    for w in ("x", 0, -5, float("inf"), float("nan")):
+        assert J.settings({"agentic": {"gate_jobs": {"wait_s": w}}})["wait_s"] == 1800.0
+    assert J.settings({"agentic": {"gate_jobs": {"wait_s": 60}}})["wait_s"] == 60
 
 
-def test_max_slots_defaults_to_half_the_worker_slots(gw):
-    _workers(gw["cfg"], ("box", 6), ("b2", 3))
-    assert J.max_slots(gw["cfg"]) == 4
-    gw["cfg"]["agentic"]["gate_jobs"] = {"max_slots": 1}
-    assert J.max_slots(gw["cfg"]) == 1
+def test_max_slots_full_box_without_campaigns_half_with_one(gw):
+    """SPEC-0500: every placeable slot while no campaign holds or waits; half while one does."""
+    cfg = gw["cfg"]
+    _workers(cfg, ("box", 6), ("b2", 3))
+    assert J.max_slots(cfg) == 9 and not J.campaign_active(cfg)
+    marker = GS.slots_dir(cfg) / "waiting-C-9.json"
+    marker.parent.mkdir(parents=True, exist_ok=True)
+    marker.write_text(json.dumps({"campaign": "C-9", "pid": os.getpid(), "since": "x"}))
+    assert J.max_slots(cfg) == 4
+    marker.write_text(json.dumps({"campaign": "C-9", "pid": 2 ** 22 + 12345, "since": "x"}))
+    assert J.max_slots(cfg) == 9                # a dead campaign waiter does not count
+    marker.unlink()
+    with GS.acquire(cfg, "GATEJOB-0042", pools=[("box", 6)]):
+        assert J.max_slots(cfg) == 9            # a standalone job's hold is not a campaign
+    with GS.acquire(cfg, "C-1", pools=[("box", 6)]):
+        assert J.max_slots(cfg) == 4
+    with GS.acquire(cfg, "SENTINEL-Meta-Tools"):  # the local pool (the sentinel, a campaign)
+        assert J.max_slots(cfg) == 4
+    assert J.max_slots(cfg) == 9
+    cfg["agentic"]["gate_jobs"] = {"max_slots": 1}
+    assert J.max_slots(cfg) == 1
 
 
 def test_per_requester_cap_holds_a_third_job(gw, monkeypatch):
@@ -408,6 +427,7 @@ def test_live_campaign_marker_blocks_a_free_slot_until_wait_s(gw):
     _workers(cfg, ("box", 2))
     marker = GS.slots_dir(cfg) / "waiting-C-9.json"
     marker.parent.mkdir(parents=True, exist_ok=True)
+    marker.parent.mkdir(parents=True, exist_ok=True)
     marker.write_text(json.dumps({"campaign": "C-9", "pid": os.getpid(), "since": "x"}))
     rec, _ = J.create(cfg, J.resolve(cfg, worktree=str(gw["repo"]), cmds=["true"]), "alice")
     out = J.execute(cfg, rec["id"], wait_s=0.3, poll_s=0.05)
@@ -524,3 +544,162 @@ def test_cadence_status_unloadable_project_exits_2(gw, monkeypatch):
     assert r.exit_code == 2
     r = _invoke(gw["cfg"], monkeypatch, "cadence", "status")
     assert r.exit_code == 2
+
+
+# ---- SPEC-0500: the line, the token count, requester, wait_s, messages ------------------------
+
+def _job(cfg, repo, by, n, pid=None):
+    t = J.resolve(cfg, worktree=str(repo), cmds=[f"echo {n}"])
+    return J.create(cfg, t, by, pid=pid)[0]
+
+
+def _run(cfg, rec, out, **kw):
+    th = threading.Thread(target=lambda: out.setdefault(
+        rec["id"], J.execute(cfg, rec["id"], **{"wait_s": 20, "poll_s": 0.02, **kw})))
+    th.start()
+    return th
+
+
+def test_share_line_is_first_come_first_served(gw):
+    """Waiters started newest first still get the share token oldest first."""
+    cfg = gw["cfg"]
+    _workers(cfg, ("box", 4))
+    cfg["agentic"]["gate_jobs"] = {"max_slots": 1}
+    fd = J._take_token(J.share_tokens(cfg), 1)
+    a, b, c = (_job(cfg, gw["repo"], by, n) for n, by in enumerate(("alice", "bob", "carol")))
+    out, threads, started = {}, [], []
+    try:
+        for rec in (c, b, a):                   # reverse order: each polls before the older one
+            threads.append(_run(cfg, rec, out))
+            started.insert(0, rec["id"])
+            assert waits.until(lambda: J.line(cfg, "share") == started)
+        assert J.line(cfg, "share") == [a["id"], b["id"], c["id"]]
+    finally:
+        os.close(fd)                            # frees the only share token
+    for th in threads:
+        waits.join(th)
+    assert [x["state"]["id"] for x in gw["calls"]] == [a["id"], b["id"], c["id"]]
+    assert all(out[r["id"]]["status"] == "passed" for r in (a, b, c))
+    assert J.line(cfg, "share") == [] and not list((J.root(cfg) / "line").glob("*.json"))
+
+
+def test_dead_or_final_waiter_never_blocks_the_line(gw):
+    cfg = gw["cfg"]
+    _workers(cfg, ("box", 4))
+    cfg["agentic"]["gate_jobs"] = {"max_slots": 1}
+    dead = _job(cfg, gw["repo"], "alice", 1, pid=2 ** 22 + 12345)
+    J.update(cfg, dead["id"], status="waiting")
+    ended = _job(cfg, gw["repo"], "bob", 2)
+    J.update(cfg, ended["id"], status="failed")
+    line = J.root(cfg) / "line"
+    line.mkdir(parents=True, exist_ok=True)
+    for r in (dead, ended):
+        (line / f"{r['id']}.json").write_text(json.dumps(
+            {"id": r["id"], "pool": "share", "created_epoch": r["created_epoch"]}))
+    young = _job(cfg, gw["repo"], "carol", 3)
+    assert J.execute(cfg, young["id"], wait_s=5, poll_s=0.02)["status"] == "passed"
+    assert not list(line.glob("*.json"))
+
+
+def test_requester_cap_does_not_block_other_requesters(gw):
+    cfg = gw["cfg"]
+    _workers(cfg, ("box", 4))
+    cfg["agentic"]["gate_jobs"] = {"max_per_requester": 1, "max_slots": 1}
+    alice_fd = J._take_token(J.requester_tokens(cfg, "alice"), 1)
+    old = _job(cfg, gw["repo"], "alice", 1)
+    out = {}
+    th = _run(cfg, old, out)
+    try:
+        pool = J.requester_tokens(cfg, "alice").name
+        assert waits.until(lambda: J.line(cfg, pool) == [old["id"]])
+        late = _job(cfg, gw["repo"], "bob", 2)
+        assert J.execute(cfg, late["id"], wait_s=5, poll_s=0.02)["status"] == "passed"
+        third = _job(cfg, gw["repo"], "alice", 3)
+        msg = J.execute(cfg, third["id"], wait_s=0.3, poll_s=0.02)["error"]
+        assert msg == ("box unavailable: no requester token within 0.3s: 1 job ahead in line "
+                       "(cap 1 per requester alice)")
+    finally:
+        os.close(alice_fd)
+    waits.join(th)
+    assert out[old["id"]]["status"] == "passed"
+
+
+def test_take_token_counts_holders_at_any_index(tmp_path):
+    d = tmp_path / "share"
+    fds = [J._take_token(d, 3) for _ in range(3)]
+    assert None not in fds and J._take_token(d, 3) is None
+    os.close(fds[0])                            # slot-0 is free; slot-1 and slot-2 still held
+    assert J._take_token(d, 2) is None          # the cap fell to 2: two in flight already
+    again = J._take_token(d, 3)
+    assert again is not None and J._take_token(d, 3) is None
+    for fd in (again, *fds[1:]):
+        os.close(fd)
+
+
+def test_requester_defaults_to_user_at_project(gw, monkeypatch):
+    monkeypatch.setenv("USER", "bruno")
+    assert J.requester(None, "P") == "bruno@P"
+    assert J.requester(None, None) == "bruno"
+    assert J.requester("agent:x", "P") == "agent:x"
+    monkeypatch.setenv("NW_MAILBOX_ADDR", "steward:P")
+    assert J.requester(None, "P") == "steward:P"
+    monkeypatch.delenv("NW_MAILBOX_ADDR")
+    _workers(gw["cfg"], ("box", 4))
+    pcfg = {"_root": str(gw["repo"]), "merge": {"base": "main"},
+            "gates": [{"name": "unit", "cmd": "pytest", "when": "loop"}]}
+    monkeypatch.setattr(P, "project_config", lambda c, p: pcfg)
+    r = _invoke(gw["cfg"], monkeypatch, "run", "--project", "demo", "--worktree",
+                str(gw["repo"]), "--json")
+    assert r.exit_code == 0, r.output
+    assert json.loads(r.output)["requester"] == "bruno@demo"
+
+
+def test_wait_s_setting_is_the_cli_default(gw, monkeypatch):
+    from nightwright.agentic import cli_gate
+    _workers(gw["cfg"], ("box", 4))
+    spawned = []
+    real = subprocess.Popen
+
+    def fake_popen(argv, **kw):
+        if "_exec" not in argv:
+            return real(argv, **kw)
+        spawned.append(argv)
+        return type("P", (), {"pid": os.getpid()})()
+
+    monkeypatch.setattr(cli_gate.subprocess, "Popen", fake_popen)
+    r = _invoke(gw["cfg"], monkeypatch, "run", "--worktree", str(gw["repo"]),
+                "--cmd", "echo 1", "--detach", "--json")
+    assert r.exit_code == 0, r.output
+    assert spawned[-1][-2:] == ["--wait-s", "1800.0"]
+    gw["cfg"]["agentic"]["gate_jobs"] = {"wait_s": 60}
+    r = _invoke(gw["cfg"], monkeypatch, "run", "--worktree", str(gw["repo"]),
+                "--cmd", "echo 2", "--detach", "--json")
+    assert spawned[-1][-2:] == ["--wait-s", "60.0"]
+    r = _invoke(gw["cfg"], monkeypatch, "run", "--worktree", str(gw["repo"]),
+                "--cmd", "echo 3", "--detach", "--wait-s", "5", "--json")
+    assert spawned[-1][-2:] == ["--wait-s", "5.0"]
+    assert J.DEFAULT_WAIT_S == 1800.0
+
+
+def test_unavailable_message_names_line_and_cap(gw):
+    cfg = gw["cfg"]
+    _workers(cfg, ("box", 4))
+    cfg["agentic"]["gate_jobs"] = {"max_slots": 1}
+    fd = J._take_token(J.share_tokens(cfg), 1)
+    first = _job(cfg, gw["repo"], "alice", 1)
+    stop, out = threading.Event(), {}
+    th = _run(cfg, first, out, stop=stop)
+    try:
+        assert waits.until(lambda: J.line(cfg, "share") == [first["id"]])
+        second = _job(cfg, gw["repo"], "bob", 2)
+        rec = J.execute(cfg, second["id"], wait_s=0.3, poll_s=0.02)
+        assert rec["status"] == "unavailable" and rec["exit"] == 3
+        assert rec["error"] == ("box unavailable: no share token within 0.3s: 1 job ahead in "
+                                "line (cap 1 standalone jobs box-wide)")
+        assert "no a " not in rec["error"]
+    finally:
+        stop.set()
+        waits.join(th)
+        os.close(fd)
+    assert out[first["id"]]["status"] == "cancelled"
+    assert J.line(cfg, "share") == []

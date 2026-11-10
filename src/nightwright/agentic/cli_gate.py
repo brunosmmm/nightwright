@@ -79,10 +79,12 @@ def _report(cfg, rec: dict, as_json: bool, reused: bool = False) -> int:
               help="which project gates run")
 @click.option("--cmd", "cmds", multiple=True,
               help="ad-hoc gate command (repeatable; replaces the project gates)")
-@click.option("--by", default=None, help="requester (default: $NW_MAILBOX_ADDR, $USER)")
+@click.option("--by", default=None,
+              help="requester (default: $NW_MAILBOX_ADDR, else $USER@<project>)")
 @click.option("--wait/--detach", default=True, help="block for the result (default) or not")
-@click.option("--wait-s", type=float, default=J.DEFAULT_WAIT_S, show_default=True,
-              help="seconds to wait for a worker slot before exit 3")
+@click.option("--wait-s", type=float, default=None,
+              help="seconds to wait for a token and a worker slot before exit 3 (default: "
+                   "agentic.gate_jobs.wait_s, 1800)")
 @click.option("--timeout-s", "gate_timeout_s", type=int, default=1200, show_default=True,
               help="per-gate timeout for ad-hoc --cmd gates (SPEC-0490)")
 @click.option("--json", "as_json", is_flag=True, help="emit nw.gatejob.v1 JSON")
@@ -112,7 +114,9 @@ def gate_run(cfg, project, worktree, branch, base, tier, cmds, by, wait, wait_s,
         console.print("box unavailable: no placeable gate worker (nw workers list); "
                       "standalone gates never run locally", highlight=False)
         sys.exit(3)
-    rec, reused = J.create(cfg, target, J.requester(by))
+    if wait_s is None:
+        wait_s = float(J.settings(cfg)["wait_s"])
+    rec, reused = J.create(cfg, target, J.requester(by, target["project"]))
     if reused:
         if not wait:
             sys.exit(_report(cfg, rec, as_json, reused=True))
