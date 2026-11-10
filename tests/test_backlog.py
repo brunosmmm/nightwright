@@ -2,7 +2,7 @@
 import os
 import subprocess
 import tempfile
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
@@ -210,6 +210,21 @@ def freeze(monkeypatch, text="2026-11-07T15:41:00.900000+00:00"):
     moment = datetime.fromisoformat(text)
     monkeypatch.setattr(B, "current_time", lambda: moment)
     return moment
+
+
+def freeze_advancing(monkeypatch, start="2026-11-07T15:41:00Z", *, step_seconds=3600):
+    moment = datetime.fromisoformat(start.replace("Z", "+00:00"))
+    seen = []
+
+    def tick():
+        nonlocal moment
+        seen.append(moment)
+        current = moment
+        moment = moment + timedelta(seconds=step_seconds)
+        return current
+
+    monkeypatch.setattr(B, "current_time", tick)
+    return seen
 
 
 @pytest.fixture
@@ -726,6 +741,8 @@ def test_refuses_unset_or_illegal_identity(tmp_path, monkeypatch, git_log):
          "user.name contains '>'\n"),
         ({"user.name": "Ada <x>", "user.email": "a b@example.com"},
          "user.name contains '<'\nuser.email contains whitespace\n"),
+        ({"user.name": "Ada Lovelace", "user.email": "a b<c@example.com"},
+         "user.email contains whitespace\n"),
         ({"user.name": "Ada Lovelace", "user.email": 'a"b@example.com'},
          "user.email contains '\"'\n"),
         ({"user.name": "Ada Lovelace", "user.email": "a<b@example.com"},
@@ -787,6 +804,41 @@ def test_author_follows_local_config_not_environment_or_global(tmp_path, monkeyp
     assert log_format(other, "%an") == "Grace Hopper"
     assert log_format(other, "%ae") == "grace@example.com"
     assert b'created_by: "Grace Hopper <grace@example.com>"' in cat(other, f"{ident}.md")
+
+
+def test_identity_from_system_config_only(tmp_path, monkeypatch):
+    freeze(monkeypatch)
+    system_cfg = tmp_path / "system.gitconfig"
+    system_cfg.write_text(
+        "[user]\n\tname = System User\n\temail = system@example.com\n"
+    )
+    monkeypatch.setenv("GIT_CONFIG_GLOBAL", str(tmp_path / "empty.global"))
+    monkeypatch.setenv("GIT_CONFIG_SYSTEM", str(system_cfg))
+    Path(tmp_path / "empty.global").write_text("")
+    repo = init_repo(tmp_path / "repo", name=None)
+    git(repo, "config", "--unset-all", "user.name", check=False)
+    git(repo, "config", "--unset-all", "user.email", check=False)
+    ident = added(nw(repo, ["add", "--title", "T", "--summary", "S"]))
+    assert log_format(repo, "%an") == "System User"
+    assert log_format(repo, "%ae") == "system@example.com"
+    assert b'created_by: "System User <system@example.com>"' in cat(repo, f"{ident}.md")
+
+
+def test_identity_error_before_checked_out_refusal(tmp_path, monkeypatch, git_log):
+    freeze(monkeypatch)
+    repo = init_repo(tmp_path / "repo")
+    ident = added(nw(repo, ["add", "--title", "T", "--summary", "S"]))
+    tip = rev(repo, "nw-backlog")
+    other = tmp_path / "other"
+    git(repo, "worktree", "add", str(other), "nw-backlog")
+    git(repo, "config", "user.name", ".")
+    git_log.clear()
+    proc = nw(repo, ["add", "--title", "U", "--summary", "S"])
+    assert proc.exit_code == 1
+    assert proc.stderr == "user.name consists only of disallowed characters\n"
+    assert "nw-backlog is checked out" not in proc.stderr
+    assert rev(repo, "nw-backlog") == tip
+    assert not any(args[0] == "hash-object" for args in git_log)
 
 
 def test_mutations_reject_stray_and_bad_mode(tmp_path, git_log):
@@ -908,6 +960,47 @@ def test_refuses_a_root_that_contains_product_history(tmp_path, git_log):
         assert proc.stderr == expected
         assert rev(repo, "nw-backlog") == tip
         assert not any(call[0] == "hash-object" for call in git_log)
+
+
+def test_refuses_two_roots_in_ascending_sha_order(tmp_path, git_log):
+    repo = init_repo(tmp_path / "repo")
+    root_a = commit_tree(repo, {"src/a.c": b"a\n"}, message="root-a")
+    root_b = commit_tree(repo, {"src/b.c": b"b\n"}, message="root-b")
+    first, second = sorted((root_a, root_b))
+    stray_for = {root_a: "src/a.c", root_b: "src/b.c"}
+    stray_first = stray_for[first]
+    stray_second = stray_for[second]
+    branch_a = commit_tree(
+        repo, {"README.md": B.README_TEXT, "REQ-K7H3MQ2P.md": VALID}, parent=root_a, message="a")
+    branch_b = commit_tree(
+        repo, {"README.md": B.README_TEXT, "REQ-NF6H4D2P.md": VALID}, parent=root_b, message="b")
+    merge_commit = commit_tree(repo, {
+        "README.md": B.README_TEXT,
+        "REQ-K7H3MQ2P.md": VALID,
+        "REQ-NF6H4D2P.md": VALID,
+    })
+    merge_tree = git(repo, "rev-parse", f"{merge_commit}^{{tree}}").stdout.decode().strip()
+    tip = git(
+        repo, "commit-tree", merge_tree, "-p", branch_a, "-p", branch_b, "-m", "merge"
+    ).stdout.decode().strip()
+    point(repo, tip)
+    expected = (
+        "refs/heads/nw-backlog is not an orphan backlog\n"
+        f"root {first} stray: {stray_first}\n"
+        f"root {second} stray: {stray_second}\n"
+    )
+    git_log.clear()
+    proc = nw(repo, ["add", "--title", "T", "--summary", "S"])
+    assert proc.exit_code == 1
+    assert proc.stderr == expected
+    assert not any(call[0] == "hash-object" for call in git_log)
+
+
+def test_process_safe_loader_still_parses_timestamps():
+    import yaml
+
+    loaded = yaml.safe_load("2026-11-07T15:41:00Z")
+    assert isinstance(loaded, datetime)
 
 
 def test_dirty_detached_and_unborn_checkout_stay_put(tmp_path, monkeypatch, git_log):
@@ -1124,7 +1217,7 @@ def test_update_ref_failure_without_a_moved_ref_does_not_retry(tmp_path, monkeyp
 
 def test_compare_and_swap_retry_lands_commit(tmp_path, monkeypatch):
     monkeypatch.setattr(B.secrets, "token_bytes", lambda n: bytes.fromhex("99e23a5c56"))
-    freeze(monkeypatch, "2026-11-07T15:41:00Z")
+    clock = freeze_advancing(monkeypatch, "2026-11-07T15:41:00Z")
     repo = init_repo(tmp_path / "repo")
     rivals = []
 
@@ -1150,7 +1243,44 @@ def test_compare_and_swap_retry_lands_commit(tmp_path, monkeypatch):
     assert rev(repo, "nw-backlog:README.md") == rev(repo, f"{rival}:README.md")
     text = cat(repo, "REQ-K7H3MQ2P.md").decode()
     assert "created: 2026-11-07T15:41:00Z" in text
+    assert "updated: 2026-11-07T15:41:00Z" in text
     assert 'title: "T"' in text
+    assert len(clock) == 1
+
+
+def test_compare_and_swap_edit_retry_rereads_rival_tip(tmp_path, monkeypatch):
+    freeze(monkeypatch)
+    repo = init_repo(tmp_path / "repo")
+    ident = added(nw(repo, ["add", "--title", "Seed", "--summary", "Original"]))
+    clock = freeze_advancing(monkeypatch, "2026-11-07T15:41:00Z")
+    tip = rev(repo, "nw-backlog")
+    rival = []
+
+    def on_call(_args):
+        if rival:
+            return None
+        blob = cat(repo, f"{ident}.md")
+        blob = blob.replace(b"Original", b"Rival body")
+        blob = blob.replace(
+            b'created_by: "Ada Lovelace <ada@example.com>"',
+            b'created_by: "Rival Author <rival@example.com>"',
+        )
+        sha = commit_tree(repo, {"README.md": _SPEC_README_BYTES, f"{ident}.md": blob}, parent=tip)
+        point(repo, sha)
+        rival.append(sha)
+        return _Failed()
+
+    point(repo, tip)
+    calls = _fail_update(monkeypatch, repo, on_call)
+    proc = nw(repo, ["edit", ident, "--title", "Next"])
+    assert proc.exit_code == 0, (proc.stdout, proc.stderr, proc.exception)
+    assert len(calls) == 2
+    text = cat(repo, f"{ident}.md").decode()
+    assert 'title: "Next"' in text
+    assert "Rival body" in text
+    assert 'created_by: "Rival Author <rival@example.com>"' in text
+    assert "updated: 2026-11-07T15:41:00Z" in text
+    assert len(clock) == 1
 
 
 def test_git_child_sets_git_no_replace_objects(tmp_path, monkeypatch):
@@ -1245,6 +1375,30 @@ def test_cas_retry_stops_when_item_already_closed(tmp_path, monkeypatch, git_log
     assert proc.stderr == f"{ident} is already closed\n"
     assert len(calls) == 1
     assert rev(repo, "nw-backlog") == rival[0]
+
+
+def test_cas_retry_stops_when_item_missing_on_later_tip(tmp_path, monkeypatch, git_log):
+    freeze(monkeypatch)
+    repo = init_repo(tmp_path / "repo")
+    ident = added(nw(repo, ["add", "--title", "Seed", "--summary", "S"]))
+    tip = rev(repo, "nw-backlog")
+    rival = []
+
+    def on_call(_args):
+        sha = commit_tree(repo, {"README.md": _SPEC_README_BYTES}, parent=tip)
+        point(repo, sha)
+        rival.append(sha)
+        return _Failed()
+
+    point(repo, tip)
+    calls = _fail_update(monkeypatch, repo, on_call)
+    git_log.clear()
+    proc = nw(repo, ["close", ident])
+    assert proc.exit_code == 1
+    assert proc.stderr == f"{ident} is not on nw-backlog\n"
+    assert len(calls) == 1
+    assert rev(repo, "nw-backlog") == rival[0]
+    assert sum(1 for args in git_log if args[0] == "hash-object") == 1
 
 
 def test_cas_retry_stops_on_later_noop_edit(tmp_path, monkeypatch, git_log):
@@ -1486,24 +1640,25 @@ def test_refuses_surrogate_summary_before_hash_object(tmp_path, monkeypatch, git
 
 def test_refuses_pyyaml_unsafe_git_identity(tmp_path, monkeypatch, git_log):
     freeze(monkeypatch)
-    repo = init_repo(tmp_path / "repo", name=None)
-    git(repo, "config", "user.name", "x\u0080y")
-    git(repo, "config", "user.email", "ada@example.com")
-    git_log.clear()
-    proc = nw(repo, ["add", "--title", "T", "--summary", "S"])
-    assert proc.exit_code == 1
-    assert "user.name contains control character" in proc.stderr
-    assert rev(repo, "nw-backlog") is None
-    assert not any(args[0] == "hash-object" for args in git_log)
-
-    repo2 = init_repo(tmp_path / "repo2", name=None)
-    git(repo2, "config", "user.name", "Ada")
-    git(repo2, "config", "user.email", "a\u0080@example.com")
-    git_log.clear()
-    proc2 = nw(repo2, ["add", "--title", "T", "--summary", "S"])
-    assert proc2.exit_code == 1
-    assert "user.email contains control character" in proc2.stderr
-    assert not any(args[0] == "hash-object" for args in git_log)
+    cases = [
+        ("repo-nel-name", "user.name", "x\u0085y", "user.name contains control character \\u0085\n"),
+        ("repo-ls-name", "user.name", "x\u2028y", "user.name contains control character \\u2028\n"),
+        ("repo-nel-email", "user.email", "a\u0085@example.com",
+         "user.email contains control character \\u0085\n"),
+    ]
+    for slug, key, value, message in cases:
+        repo = init_repo(tmp_path / slug, name=None)
+        git(repo, "config", "user.name", "Ada")
+        git(repo, "config", "user.email", "ada@example.com")
+        git(repo, "config", key, value)
+        seeded = commit_tree(repo, {"README.md": b"r\n"})
+        point(repo, seeded)
+        git_log.clear()
+        proc = nw(repo, ["add", "--title", "T", "--summary", "S"])
+        assert proc.exit_code == 1, (slug, proc.stderr)
+        assert proc.stderr == message
+        assert rev(repo, "nw-backlog") == seeded
+        assert not any(args[0] == "hash-object" for args in git_log)
 
 
 def test_title_unicode_and_tab_round_trip(tmp_path, monkeypatch):

@@ -381,7 +381,7 @@ def _identity_error(key: str, value: str, kind: str) -> str | None:
         return f"{key} is not valid utf-8"
     bad = _yaml_unsafe_char(value)
     if bad is not None:
-        esc = _safe_path(repr(bad)[1:-1])
+        esc = _safe_path(bad)
         return f"{key} contains control character {esc}"
     if kind == "name":
         if "<" in value:

@@ -876,6 +876,15 @@ drops unknown keys, and refreshes `updated` and `updated_by`.
 - `python3 tools/spec_lint.py --write-ledger` and `python3 tools/spec_lint.py` — exit 0.
 - Full suite left to gating.
 
+### Test record (campaign loop 3, 2026-11-10)
+
+- `uv run pytest -q tests/test_backlog.py` — 91 passed (``_identity_error`` uses
+  ``_safe_path(bad)``; CAS add/edit retry instant and rival re-read; missing-item
+  retry stop; process-wide ``yaml.safe_load`` timestamps; system-config identity;
+  identity-before-worktree; two-root ascending sha; email whitespace before ``<``).
+- `python3 tools/spec_lint.py --write-ledger` and `python3 tools/spec_lint.py` — exit 0.
+- Full suite left to gating.
+
 ## Clock Log
 
 No session is recorded in this file. Implementation clocks IDEA-1019 with
