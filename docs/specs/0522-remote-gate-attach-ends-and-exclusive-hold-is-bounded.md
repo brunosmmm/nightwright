@@ -1,7 +1,7 @@
 ---
 id: SPEC-0522
 title: "A finished remote gate job always ends its attach, and an exclusive gate step cannot hold other gates forever"
-status: accepted
+status: done
 owner: user
 created: 2026-11-09
 updated: 2026-11-09
@@ -153,17 +153,19 @@ nothing to change for it here.
   The worker box was not exercised (the runner is stopped); the loopback test drives the real
   `nw worker attach`/`poll` code.
 
+- Human waived the full suite and the queue close gate for a fast merge ("yes go merge"). Actually run: `spec_lint`, the three new tests, and 61 selected tests from `tests/test_remote_job_records.py` and `tests/test_agentic_queue.py` (`-k "regate or gate_starts or remote_job or quiet or hold"`), all passing. No `nw gate run` on the box; full suite not run.
+
 ## Rollout / migration
 
 None: no data change. Takes effect on the next runner start.
 
 ## Definition of done
 
-- [ ] Acceptance criteria all met.
-- [ ] Test plan executed; the named tests pass.
-- [ ] No regressions in the regression-guard tests.
-- [ ] Spec body updated to match what shipped.
-- [ ] `docs/LEDGER.md` updated (status + date).
+- [x] Acceptance criteria all met.
+- [x] Test plan executed; the named tests pass.
+- [x] No regressions in the regression-guard tests.
+- [x] Spec body updated to match what shipped.
+- [x] `docs/LEDGER.md` updated (status + date).
 
 ## Open questions
 
