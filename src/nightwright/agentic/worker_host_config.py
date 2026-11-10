@@ -110,15 +110,34 @@ def _dir_path_error(st: os.stat_result, label: str) -> str | None:
     return None
 
 
+def _write_fd(fd: int, data: bytes) -> None:
+    view = memoryview(data)
+    while view:
+        n = os.write(fd, view)
+        if n <= 0:
+            raise OSError("short write")
+        view = view[n:]
+
+
 def _ensure_config_dir_for_set(cdir: Path) -> str | None:
     st = _path_lstat(cdir)
     if st is not None:
+        if stat.S_ISLNK(st.st_mode):
+            return "config directory is not a directory"
         return _dir_path_error(st, "config directory")
     to_create: list[Path] = []
     p = cdir
     while True:
         pst = _path_lstat(p)
         if pst is not None:
+            if stat.S_ISLNK(pst.st_mode):
+                try:
+                    pst = p.stat()
+                except OSError as e:
+                    return f"config directory parent unusable: {e}"
+                if not stat.S_ISDIR(pst.st_mode):
+                    return "config directory is not a directory"
+                break
             if err := _dir_path_error(pst, "config directory"):
                 return err
             break
@@ -294,12 +313,12 @@ def set_key(cfg: dict, key: str, value: str) -> dict:
                 bak = _backup_path(path)
                 bfd = os.open(bak, os.O_WRONLY | os.O_CREAT | os.O_EXCL | _O_NOFOLLOW, 0o600)
                 try:
-                    os.write(bfd, _read_config_bytes(path))
+                    _write_fd(bfd, _read_config_bytes(path))
                     os.fsync(bfd)
                 finally:
                     os.close(bfd)
             tmp_fd, tmp = _exclusive_temp(cdir)
-            os.write(tmp_fd, text.encode("utf-8"))
+            _write_fd(tmp_fd, text.encode("utf-8"))
             os.fsync(tmp_fd)
             os.close(tmp_fd)
             tmp_fd = None

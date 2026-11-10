@@ -663,8 +663,8 @@ def workers_config(cfg, name, op, args, as_json):
                 _say(f"{name} executor desired={desired or '(unset)'}; get failed: {sock_err}", "red")
             raise SystemExit(1)
         tail = ["get", *( [key] if key else [])]
-        remote, reason, _code = WC.remote_config_set(w, tail)
-        if remote is None or not remote.get("ok"):
+        remote, reason, code = WC.remote_config_set(w, tail)
+        if remote is None or not remote.get("ok") or code != 0:
             err = reason or (remote or {}).get("error") or "host read failed"
             if as_json:
                 _dump_json({"name": name, "op": "get", "desired": desired, "error": err})
@@ -719,8 +719,8 @@ def workers_config(cfg, name, op, args, as_json):
             _say(f"{name} executor desired={value}; host not updated: {sock_err}", "red")
         raise SystemExit(1)
 
-    remote, reason, _code = WC.remote_config_set(w, ["set", key, value])
-    pushed = bool(remote and remote.get("ok"))
+    remote, reason, code = WC.remote_config_set(w, ["set", key, value])
+    pushed = code == 0 and bool(remote and remote.get("ok"))
     unchanged = bool(remote and remote.get("unchanged"))
     eff = remote.get("effective") if isinstance(remote, dict) else None
 

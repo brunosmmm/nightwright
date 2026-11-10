@@ -34,7 +34,7 @@ def remote_config_set(w: dict, tail: list[str]) -> tuple[dict | None, str, int]:
     if not rec.get("ok"):
         return rec, rec.get("error") or f"ssh exit {code}", 1 if code else 3
     if code != 0:
-        return rec, f"ssh exit {code}", 1
+        return None, (_last_stderr(err) if err else f"ssh exit {code}"), 1
     return rec, "", 0
 
 

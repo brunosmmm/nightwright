@@ -34,6 +34,20 @@ scn = open(S + "/scenario").read().strip()
 if scn == "config_fail":
     print(json.dumps({{"schema": "nw.worker.config_set.result.v1", "ok": False, "error": "nope"}}))
     sys.exit(1)
+if scn == "ok_bad_exit":
+    if tail[0] == "get":
+        if len(tail) == 1:
+            print(json.dumps({{"schema": "nw.worker.config_set.result.v1", "ok": True, "op": "get",
+                              "keys": {{"executor": {{"value": "slurm", "effective": "slurm"}}}}}}))
+        else:
+            print(json.dumps({{"schema": "nw.worker.config_set.result.v1", "ok": True, "op": "get",
+                              "key": "executor", "value": "slurm", "effective": "slurm"}}))
+        sys.exit(7)
+    if tail == ["set", "executor", "slurm"]:
+        print(json.dumps({{"schema": "nw.worker.config_set.result.v1", "ok": True, "op": "set",
+                          "key": "executor", "value": "slurm", "effective": "slurm",
+                          "unchanged": False}}))
+        sys.exit(7)
 if scn == "info_fail_after":
     if tail[0] == "set":
         print(json.dumps({{"schema": "nw.worker.config_set.result.v1", "ok": True,
@@ -95,6 +109,21 @@ def test_set_creates_dir_and_file(cfg_home):
     assert (p.stat().st_mode & 0o777) == 0o600
     doc = yaml.safe_load(p.read_text())
     assert doc["agentic"]["workers"]["executor"] == "slurm"
+
+
+def test_symlink_parent_allows_missing_config_dir(tmp_path, monkeypatch):
+    real = tmp_path / "real_xdg"
+    real.mkdir()
+    sym = tmp_path / ".config"
+    sym.symlink_to(real)
+    cdir = sym / "nightwright"
+    cfg = {"data_dir": str(tmp_path / "data"), "agentic": {}}
+    monkeypatch.setenv("NW_CONFIG_DIR", str(cdir))
+    rc = WHC.run(["set", "executor", "slurm"], cfg)
+    assert rc == 0
+    assert cdir.is_dir()
+    assert (cdir.stat().st_mode & 0o777) == 0o700
+    assert (cdir / "config.yaml").is_file()
 
 
 def test_symlink_config_dir_refused(cfg_home, tmp_path):
@@ -253,6 +282,31 @@ def test_workers_config_set_refreshes_info(coord_world):
     argv = [json.loads(x) for x in (st / "argv").read_text().splitlines()]
     assert any("config-set" in a for a in argv)
     assert sum("info" in a and "--json" in a for a in argv) >= 1
+
+
+def test_ok_true_nonzero_ssh_exit_set(coord_world):
+    st, cfg = coord_world
+    (st / "scenario").write_text("ok_bad_exit")
+    r = CliRunner().invoke(cli, ["workers", "config", "box", "set", "executor", "slurm"])
+    assert r.exit_code == 1
+    assert "box executor desired=slurm; host not updated:" in r.output
+    assert "ssh exit 7" in r.output
+    rec = json.loads(WK.path(cfg).read_text())["workers"][0]
+    assert rec["executor"] == "slurm"
+    assert rec["info"]["executor"] == "local"
+    assert [x for x in (st / "argv").read_text().splitlines() if "info" in x] == []
+
+
+def test_ok_true_nonzero_ssh_exit_get(coord_world):
+    st, cfg = coord_world
+    records = json.loads(WK.path(cfg).read_text())["workers"]
+    records[0]["executor"] = "slurm"
+    WK.path(cfg).write_text(json.dumps({"schema": WK.SCHEMA, "workers": records}))
+    (st / "scenario").write_text("ok_bad_exit")
+    r = CliRunner().invoke(cli, ["workers", "config", "box", "get", "executor"])
+    assert r.exit_code == 1
+    assert "desired=slurm" in r.output
+    assert "live=" not in r.output
 
 
 def test_failed_push_keeps_old_info(coord_world):
