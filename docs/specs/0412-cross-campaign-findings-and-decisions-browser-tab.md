@@ -1,10 +1,10 @@
 ---
 id: SPEC-0412
 title: "Findings record filter: parse_record_filter and a query adapter that matches nw campaign records over nw.history.record.v1"
-status: accepted
+status: in-progress
 owner: user
 created: 2026-11-03
-updated: 2026-11-03
+updated: 2026-11-10
 milestone: "M9: agentic workflow"
 kind: feature
 parent: SPEC-0405
@@ -226,38 +226,38 @@ not the history flag, is the contract.
 
 ## Acceptance criteria
 
-- [ ] **AC1.** `parse_record_filter` never raises, for any input string (including empty,
+- [x] **AC1.** `parse_record_filter` never raises, for any input string (including empty,
   unbalanced quotes, NUL bytes, very long input and random unicode), and returns a
   `RecordFilter`.
-- [ ] **AC2.** Each key `agent: kind: project: severity: status: campaign: since: until:`
+- [x] **AC2.** Each key `agent: kind: project: severity: status: campaign: since: until:`
   parses as documented in *Filter grammar*: repeated keys keep the last value; `agent:steward`
   matches `steward:Meta-Tools`; `project:` is case-insensitive; `none` works for severity,
   status and campaign; `campaign:` matches a fragment; several free-text terms are AND-ed;
   a quoted phrase is one term; relative `7d` and `12h` resolve against the injected `now`.
-- [ ] **AC3.** An unknown `key:` becomes a free-text term; an invalid `kind`, `severity`,
+- [x] **AC3.** An unknown `key:` becomes a free-text term; an invalid `kind`, `severity`,
   `status` or date is reported in `problems`, is listed in `impossible`, and makes
   `query_records` return no records (never all records) without calling the history layer.
-- [ ] **AC4.** For every filter in the CLI-expressible list of *Differential contract*
+- [x] **AC4.** For every filter in the CLI-expressible list of *Differential contract*
   (`agent:conductor`, `agent:steward:Meta-Tools`, `kind:`, `severity:major`, `status:open`,
   `since:`, `until:`, a single free-text term and their combinations), the id list from
   `query_records` is identical, including order, to `nw campaign records --json` with the
   equivalent flags on the child 2 fixture.
-- [ ] **AC5.** For every extended filter (prefix `agent:steward`, `project:` in another case,
+- [x] **AC5.** For every extended filter (prefix `agent:steward`, `project:` in another case,
   `severity:none`, `status:none`, `campaign:none`, `campaign:<fragment>`, two terms, a quoted
   phrase, relative `since:7d` with fixed `now`), the id list from `query_records` equals the
   reference predicate applied to the unfiltered `nw campaign records --json` output.
-- [ ] **AC6.** Each grammar row has its **Where** classification (`history` or `tab`)
+- [x] **AC6.** Each grammar row has its **Where** classification (`history` or `tab`)
   recorded in code as one table (`GRAMMAR_ROWS`), and a test asserts the table in this spec
   and the code agree and that a `tab` row is never passed to the history query.
-- [ ] **AC7.** `query_records` returns records ordered by `ts` descending then `id` descending,
+- [x] **AC7.** `query_records` returns records ordered by `ts` descending then `id` descending,
   includes campaign-less records, passes through a record with an unknown `kind` or `source`
   without error, and reports an exact `total_matching` and `total_records`.
-- [ ] **AC8.** A history-layer failure (corrupt cache, unreadable log, raised exception) is
+- [x] **AC8.** A history-layer failure (corrupt cache, unreadable log, raised exception) is
   returned in `RecordQueryResult.error` with no records; the function does not raise.
 - [ ] **AC9.** On the 500-campaign clone (about 50 000 records) a representative set of
   filter and full-text queries through `query_records` each completes in at most 200 ms
   (asserted with x3 slack, i.e. 600 ms), measured on a warm cache.
-- [ ] **AC10.** `findings_filter.py` imports nothing from Textual (a source scan and an
+- [x] **AC10.** `findings_filter.py` imports nothing from Textual (a source scan and an
   import test in a process without Textual on the path), writes no file other than through
   the history layer's `cache_dir` cache, and leaves every file in the data dir byte-identical
   after the whole test module runs.
@@ -313,6 +313,21 @@ unknown-kind and error cases are written through the history layer's test helper
 - **Regression guard:** run the affected tests with
   `python3 tools/affected_tests.py --run uv run pytest -q`; `python3 tools/spec_lint.py`
   exits 0. Existing `tests/test_tui_*.py` and `tests/test_agentic_dashboard.py` are untouched.
+
+### Test record (2026-11-10)
+
+- `uv run pytest -q tests/test_findings_filter.py tests/test_findings_filter_cli.py tests/test_history.py tests/test_cli_campaign_history.py`: 68 passed, 1 skipped (the skipped one is the manual `NW_FINDINGS_REAL_DATA=1` real-data-dir comparison, not run here).
+- `uv run pytest -q tests/test_history_perf.py -k findings_filter` (500 campaigns, 60 758 records): passed, but only on the adapter-share assertion; see *As shipped* for AC9.
+- `python3 tools/test_tiers.py --check`: 0. `python3 tools/spec_lint.py`: 0 after `--write-ledger`.
+- Not run: the manual steps 1 and 2 of the Test plan (real data dir). The full suite was left to gating.
+
+### As shipped (2026-11-10)
+
+- `src/nightwright/tui/findings_filter.py`: `RecordFilter` (extra fields `since_text` / `until_text` so `describe()` is canonical and `bounds(now)` can re-resolve relative dates each refresh), `parse_record_filter`, `matches`, `query_records` / `RecordQueryResult`, `GRAMMAR_ROWS`. `history.py` is untouched. `GRAMMAR_ROWS` is `(token, where)` where `where` lists the `history` / `tab` words of the table cell in order; the final **Where** column is as in *Filter grammar*.
+- Severity closed set also contains `must_fix`: the ledger writes it for the top severity and the fixture carries 3 such records, so `severity:must_fix` would otherwise be rejected.
+- `until:D` is passed to the history query as the start of day D+1 (history's bound is inclusive); `matches` makes it exclusive. The CLI's own date-only `--since/--until` compare the day as written in the record's timestamp offset, while the grammar uses local time, so they can differ for a record within hours of midnight; the differential test uses dates far from any fixture record, as the spec lists.
+- `total_records` is the unfiltered history call's length; when the filter passes no flag down the single call is reused, otherwise a second unfiltered call is made.
+- **AC9 is not met end to end.** On the clone, `query_records` took (wall s): `kind:finding severity:major` 2.2, `since:30d` 3.3, `agent:conductor kind:decision` 2.4, `pytest` 2.3, `pytest finding` 1.4, `project:META-tools` 0.9, `severity:none` 1.4, `campaign:SPEC-0394` 1.1, `agent:steward` 0.9, `status:none since:7d` 2.2 (machine under load; an unloaded single unfiltered `history_records` call is about 0.5 s, a narrowed plus a recount about 1.1 s). The time is inside `history_records`: `_records_cache_quiet` stats every terminal campaign (about 1.4 s of a 2.7 s profile), regardless of filter. The adapter's own share (wall minus time inside `history_records`) is 2-341 ms, all within the 600 ms bound the perf test asserts. Fixing the end-to-end figure needs a cheaper warm-path validity check or a record-count API in the history layer's own spec; the budget was not loosened, and the test asserts the adapter share only.
 
 ## Clock Log
 
