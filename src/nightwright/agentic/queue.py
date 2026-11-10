@@ -1105,8 +1105,31 @@ def _readiness_dep_ids(fm: dict) -> list[str] | None:
     if isinstance(raw, str):
         return [raw] if raw.strip() else []
     if isinstance(raw, list):
-        return [str(d) for d in raw if d]
+        out: list[str] = []
+        for d in raw:
+            if not isinstance(d, str) or not d.strip():
+                return None
+            out.append(d)
+        return out
     return None
+
+
+def _read_branch_spec_blob(root: str, branch: str, rel: str) -> bytes | None:
+    """Committed spec bytes at ``refs/heads/<branch>:<rel>``; None when missing or over the cap."""
+    rev = f"refs/heads/{branch}:{rel}"
+    sz = git.git(root, "cat-file", "-s", rev, check=False)
+    if sz.returncode != 0:
+        return None
+    try:
+        size = int(str(sz.stdout or "").strip())
+    except ValueError:
+        return None
+    if size > MAX_WORKTREE_SPEC_BYTES:
+        return None
+    show = git.git(root, "show", rev, check=False, binary=True)
+    if show.returncode != 0 or not show.stdout:
+        return None
+    return show.stdout
 
 
 def _campaign_spec_text(state: dict) -> tuple[str | None, bool]:
@@ -1136,20 +1159,20 @@ def _campaign_spec_text(state: dict) -> tuple[str | None, bool]:
                 return None, True
         if not rel:
             return None, True
-        show = git.git(root, "show", f"{branch}:{rel}", check=False, binary=True)
-        if show.returncode == 0 and show.stdout:
-            if len(show.stdout) > MAX_WORKTREE_SPEC_BYTES:
-                return None, True
-            return _spec_bytes_as_text(show.stdout), True
-        return None, True
-    except (GitError, OSError, UnicodeDecodeError):
+        data = _read_branch_spec_blob(root, branch, rel)
+        if data is None:
+            return None, True
+        return _spec_bytes_as_text(data), True
+    except (GitError, OSError, UnicodeDecodeError, MemoryError):
         return None, True
 
 
 def backlog_readiness(cfg, state: dict) -> tuple[bool, list[str]]:
-    """Can this queued campaign be admitted? Re-reads the campaign spec and its `depends_on`. The
-    spec comes from the campaign branch's worktree or committed blob when `repo.branch` exists
-    (SPEC-0539); otherwise from the base checkout (`repo.root`). Dependency files are always
+    """Can this queued campaign be admitted? Re-reads the campaign spec and its `depends_on`. For a
+    non-split campaign, when `repo.branch` exists on `repo.root` the spec comes from that branch's
+    worktree (only when the planned `repo.worktree` is that branch's checkout) or from the
+    committed blob at `refs/heads/<branch>:<rel>` (SPEC-0539); otherwise from the base checkout.
+    Split campaigns always read `split.original_rel` under `repo.root`. Dependency files are always
     resolved in the base specs directory. The spec must still be `accepted` (`in-progress` for a
     `--force` add) and every dependency `done` or `superseded`. Unknown ids block. An idea
     campaign without a spec (SPEC-0209) is ready while its idea is still open. A merge request
