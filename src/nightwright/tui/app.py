@@ -894,7 +894,9 @@ class IdeaDesk(App):
         # Only the user's own rail moves (keys or a click — both focus the rail) select a
         # project. `paint_rail` sets `highlighted` itself, and that queued echo must not land
         # after a newer `select_project` / `jump_to` and drag the view back.
-        if not self.query_one("#rail", OptionList).has_focus:
+        # Use the event's widget — a stale highlight echo can arrive after teardown or while
+        # the DOM is mid-repaint and `query_one("#rail")` then raises NoMatches.
+        if not event.option_list.has_focus:
             return
         index = event.option_index
         if 0 <= index < len(self._rail_keys):
