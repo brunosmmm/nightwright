@@ -1,7 +1,7 @@
 ---
 id: SPEC-0506
 title: "Files a remote gate is allowed to write (the regenerated ledger) come back to the worktree; the run is not repeated locally"
-status: in-progress
+status: done
 owner: user
 created: 2026-11-09
 updated: 2026-11-09
@@ -133,3 +133,13 @@ because absent fields fall back. Supersedes nothing (refines SPEC-0338's `tree` 
 - Tests: `tests/test_remote_gates_writes.py` (declared applied, undeclared, no `writes`, moved
   tree, oversize, bad hash, old worker, unsafe paths, async worker, header flag, worker helper,
   config validation, nightwright's own gate).
+- Verification: the new and touched test files pass locally (`test_remote_gates_writes.py`,
+  `test_remote_gates.py`); the loop-tier gate on the box (GATEJOB-1464, commit 260e12a7) passed.
+  Manual step, as far as it can run before merge: the loopback tests drive the real
+  `nw worker ssh-command` / `gate-job` process of this checkout through a real regenerating gate
+  (declared file applied, note written, `placement.where` remote). A run against the real box
+  with a stale ledger was not possible: `nw gate run` is a standalone job (SPEC-0381, keeps
+  `changed`, never applies `written`), and the box's installed `nw` is the main checkout's, so it
+  has no `written` support until this merges and `nw workers update` runs; until then it simply
+  falls back to today's `tree` re-run (the designed old-worker path). Repeat the stale-ledger
+  campaign gate after `nw workers update`.
