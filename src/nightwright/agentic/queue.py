@@ -2453,8 +2453,11 @@ def _hold_local_backend_before_prepare(pgate, state: dict, persona: str, step: S
     personas = (persona,)
     if pgate.backend_fault(state, personas, remote_ok=False, step=step) is None:
         return False
-    if (state["id"], persona) in pgate._slot_reservations:
-        return False
+    key = (state["id"], persona)
+    if key in pgate._slot_reservations:
+        if step is None or step.kind not in ("write_spec", "resolve"):
+            return False
+        pgate.release_campaign_reservations(state["id"], (persona,))
     pgate._hold(state["id"], "backend_unavailable")
     return True
 

@@ -491,6 +491,17 @@ handoff through `tick`, and spec-review `where=run` escalation.
 `uv run pytest tests/test_backend_preflight_extend.py tests/test_runner_selfheal.py tests/test_remote_persona_limits.py::test_spec_review_is_neither_counted_nor_gated -q` — 64 passed.
 `python3 tools/spec_lint.py --write-ledger` — ok. Full suite left to gating.
 
+### Test record (2026-11-10, loop 0 implementer)
+
+Conformance tests: `write_spec` and `resolve` hold `backend_unavailable` with no `run.start`
+when Cursor preflight fails despite a dispatchable worker; probe slot fds close on full worker,
+no workers, ineligible dispatch, rate-limit `HeldRunner`, and review fan-out `can_dispatch`
+exceptions (`_hold_local_backend_before_prepare` drops admit reservations before hold;
+`dispatch` closes reservations on early return).
+`uv run pytest tests/test_backend_preflight_extend.py tests/test_runner_selfheal.py tests/test_remote_persona_limits.py::test_spec_review_is_neither_counted_nor_gated -q` — all passed.
+`python3 tools/test_tiers.py --check` — ok. `python3 tools/spec_lint.py --write-ledger` — ok.
+Full suite left to gating.
+
 ### Test record (2026-11-10, loop 2 implementer)
 
 Review fixes: `env_fault_text` for PreflightHeldRunner git swallow; `_apply_step` parks

@@ -404,13 +404,17 @@ class Gate:
                             failing.append(persona)
                     if failing:
                         staged: dict = {}
-                        for persona in failing:
-                            req = RPS._probe_request(self.cfg, state, persona, step.kind)
-                            if req is None or not RPS.can_dispatch(
-                                    self.cfg, state, step.kind, req,
-                                    reservations=staged):
-                                RPS.release_reservations(staged)
-                                return fault
+                        try:
+                            for persona in failing:
+                                req = RPS._probe_request(self.cfg, state, persona, step.kind)
+                                if req is None or not RPS.can_dispatch(
+                                        self.cfg, state, step.kind, req,
+                                        reservations=staged):
+                                    RPS.release_reservations(staged)
+                                    return fault
+                        except Exception:
+                            RPS.release_reservations(staged)
+                            raise
                         self._slot_reservations.update(staged)
                         return None
                 if step is not None and RPS.can_dispatch_step(

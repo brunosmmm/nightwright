@@ -1608,3 +1608,186 @@ def test_spec_review_git_error_on_ordinary_failure_parks(tmp_path, monkeypatch):
     st2 = S.read_state(cfg, "c1")
     assert st2.get("state") == "PARKED"
     assert st2.get("park", {}).get("reason") == "spec_review_exhausted"
+
+
+def _worker_can_dispatch(monkeypatch):
+    from nightwright.agentic import remote_personas as RPS
+
+    worker = {"name": "w", "enabled": True, "kinds": ["persona"], "persona_slots": 1}
+    monkeypatch.setattr(RPS, "persona_workers", lambda c, s: [worker])
+    monkeypatch.setattr(RPS, "ineligible", lambda *a, **k: None)
+    monkeypatch.setattr(RPS, "acquire_slot", lambda c, w: (os.open(os.devnull, os.O_RDONLY), 0))
+    monkeypatch.setattr(RPS, "busy", lambda *a, **k: 0)
+    monkeypatch.setattr(PG, "order", lambda c, s, names: names)
+    monkeypatch.setattr(PG, "failing", lambda *a, **k: False)
+    monkeypatch.setattr(RPS, "_probe_request",
+                        lambda c, s, p, k: SimpleNamespace(persona=p, run_dir=Path("/tmp/x")))
+
+
+def test_write_spec_held_backend_unavailable_despite_worker(tmp_path, monkeypatch):
+    from test_agentic_spec_writer import start as spec_start
+
+    _no_key(monkeypatch)
+    cfg, repo, iid, cid = spec_start(tmp_path, monkeypatch, lambda i: [])
+    cfg["agentic"]["runner"] = "cursor"
+    _worker_can_dispatch(monkeypatch)
+    Q.tick(cfg)
+    assert PG.read_holds(cfg).get(cid, {}).get("held_by") == "backend_unavailable"
+    starts = [e for e in S.read_ledger(cfg, cid, types=["run.start"])
+              if e.get("persona") == "spec_writer"]
+    assert not starts
+
+
+def test_resolve_held_backend_unavailable_despite_worker(tmp_path, monkeypatch):
+    _no_key(monkeypatch)
+    repo = make_repo(tmp_path)
+    cfg = {"data_dir": str(tmp_path / "d"), "agentic": {"runner": "cursor"}}
+    (tmp_path / "d" / "campaigns").mkdir(parents=True, exist_ok=True)
+    st = {"id": "c1", "state": "CLOSING", "project": "Meta-Tools", "profile": "balanced",
+          "closing": {"resolve": {"pre_head": "deadbeef"}},
+          "repo": {"worktree": str(repo), "root": str(repo)}}
+    S.write_state(cfg, "c1", dict(st))
+    _worker_can_dispatch(monkeypatch)
+    Q.tick(cfg)
+    assert PG.read_holds(cfg).get("c1", {}).get("held_by") == "backend_unavailable"
+    starts = [e for e in S.read_ledger(cfg, "c1", types=["run.start"])
+              if e.get("persona") == "conflict_resolver"]
+    assert not starts
+
+
+def _track_closes(monkeypatch):
+    closed = []
+    real_close = os.close
+
+    def track(fd):
+        closed.append(fd)
+        return real_close(fd)
+
+    monkeypatch.setattr(os, "close", track)
+    return closed
+
+
+def test_can_dispatch_closes_slot_when_worker_full(tmp_path, monkeypatch):
+    from nightwright.agentic import remote_personas as RPS
+
+    closed = _track_closes(monkeypatch)
+    slot_fd = os.open(os.devnull, os.O_RDONLY)
+    cfg = {"data_dir": str(tmp_path / "d")}
+    worker = {"name": "w", "enabled": True, "kinds": ["persona"], "persona_slots": 1}
+    monkeypatch.setattr(RPS, "persona_workers", lambda c, s: [worker])
+    monkeypatch.setattr(RPS, "ineligible", lambda *a, **k: None)
+    monkeypatch.setattr(RPS, "acquire_slot", lambda c, w: (slot_fd, 0))
+    monkeypatch.setattr(RPS, "busy", lambda *a, **k: 1)
+    req = SimpleNamespace(persona="implementer", run_dir=tmp_path / "r")
+    st = {"id": "c1", "state": "IMPLEMENTING", "repo": {"worktree": str(tmp_path)}}
+    assert RPS.can_dispatch(cfg, st, "implement", req) is False
+    assert slot_fd in closed
+
+
+def test_can_dispatch_skips_acquire_without_workers(tmp_path, monkeypatch):
+    from nightwright.agentic import remote_personas as RPS
+
+    acquires = []
+    monkeypatch.setattr(RPS, "persona_workers", lambda c, s: [])
+    monkeypatch.setattr(RPS, "acquire_slot", lambda *a, **k: acquires.append(1) or (3, 0))
+    req = SimpleNamespace(persona="implementer", run_dir=tmp_path / "r")
+    st = {"id": "c1", "state": "IMPLEMENTING"}
+    assert RPS.can_dispatch({"data_dir": str(tmp_path)}, st, "implement", req) is False
+    assert not acquires
+
+
+def test_can_dispatch_skips_acquire_when_ineligible(tmp_path, monkeypatch):
+    from nightwright.agentic import remote_personas as RPS
+
+    acquires = []
+    worker = {"name": "w", "enabled": True, "kinds": ["persona"], "persona_slots": 1}
+    monkeypatch.setattr(RPS, "persona_workers", lambda c, s: [worker])
+    monkeypatch.setattr(RPS, "ineligible", lambda *a, **k: {"reason": "dirty"})
+    monkeypatch.setattr(RPS, "acquire_slot", lambda *a, **k: acquires.append(1) or (3, 0))
+    req = SimpleNamespace(persona="implementer", run_dir=tmp_path / "r")
+    st = {"id": "c1", "state": "IMPLEMENTING"}
+    assert RPS.can_dispatch({"data_dir": str(tmp_path)}, st, "implement", req) is False
+    assert not acquires
+
+
+def test_dispatch_held_runner_closes_reserved_slot_fd(tmp_path, monkeypatch):
+    from nightwright.agentic import remote_personas as RPS
+
+    closed = _track_closes(monkeypatch)
+    slot_fd = os.open(os.devnull, os.O_RDONLY)
+    cfg = {"data_dir": str(tmp_path / "d")}
+    PG._write_json(PG.rate_limit_path(cfg),
+                   {"until": "2099-01-01T00:00:00+00:00", "backoff_s": 900})
+    req = RunRequest(
+        persona="implementer", prompt="p", system_append="", cwd=str(tmp_path),
+        model="m", effort=None, max_budget_usd=1.0, timeout_s=10,
+        permission_mode="default", read_only=False, allowed_tools=(), add_dirs=(),
+        json_schema={}, env={}, run_dir=tmp_path / "r")
+    st = {"id": "c1", "state": "IMPLEMENTING"}
+    reservations = {("c1", "implementer"): ("w", slot_fd, 0)}
+    out = RPS.dispatch(cfg, st, "implement", req, local=PiRunner(),
+                       reservations=reservations)
+    assert isinstance(out, RPS.HeldRunner)
+    assert slot_fd in closed
+    assert not reservations
+
+
+def test_backend_fault_probe_exception_releases_staged_slot_fd(tmp_path, monkeypatch):
+    from nightwright.agentic import remote_personas as RPS
+
+    closed = _track_closes(monkeypatch)
+    _pi_ok_env(monkeypatch)
+    real_check = BP.check
+
+    def check(kind, environ=None, *, providers=None):
+        if kind == "pi" and providers and providers[0] == "openai":
+            return "no credential for provider openai"
+        return real_check(kind, environ=environ, providers=providers)
+
+    monkeypatch.setattr(BP, "check", check)
+
+    def spawn(c, s, p):
+        if p == "conformance_reviewer":
+            return ("pi", ["openai"])
+        if p == "adversarial_reviewer":
+            return ("pi", ["anthropic"])
+        return ("claude", [])
+
+    monkeypatch.setattr(BP, "spawn_backend", spawn)
+    cfg = {"data_dir": str(tmp_path / "d"), "agentic": {"runner": "pi"}}
+    worker = {"name": "w", "enabled": True, "kinds": ["persona"], "persona_slots": 2}
+    slot_fds = []
+
+    def acquire(c, w):
+        fd = os.open(os.devnull, os.O_RDONLY)
+        slot_fds.append(fd)
+        return (fd, len(slot_fds) - 1)
+
+    calls = [0]
+
+    def can_dispatch(c, s, kind, req, *, reservations=None):
+        calls[0] += 1
+        if calls[0] == 1:
+            if reservations is not None:
+                reservations[("c1", req.persona)] = (worker, slot_fds[-1], 0)
+            return True
+        raise RuntimeError("probe failed")
+
+    monkeypatch.setattr(RPS, "persona_workers", lambda c, s: [worker])
+    monkeypatch.setattr(RPS, "ineligible", lambda *a, **k: None)
+    monkeypatch.setattr(RPS, "acquire_slot", acquire)
+    monkeypatch.setattr(RPS, "busy", lambda *a, **k: 0)
+    monkeypatch.setattr(PG, "order", lambda c, s, names: names)
+    monkeypatch.setattr(PG, "failing", lambda *a, **k: False)
+    monkeypatch.setattr(RPS, "_probe_request",
+                        lambda c, s, p, k: SimpleNamespace(persona=p))
+    monkeypatch.setattr(RPS, "can_dispatch", can_dispatch)
+    repo = make_repo(tmp_path)
+    st = {"id": "c1", "state": "REVIEWING", "project": "Meta-Tools", "profile": "balanced",
+          "repo": {"worktree": str(repo), "root": str(repo)}}
+    step = Q.Step("review", personas=("conformance_reviewer", "adversarial_reviewer"))
+    g = PG.Gate(cfg, ["c1"])
+    err = g.backend_fault(st, step.personas, remote_ok=True, step=step)
+    assert err == "no credential for provider openai"
+    assert all(fd in closed for fd in slot_fds)
+    assert not g._slot_reservations

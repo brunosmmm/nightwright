@@ -416,13 +416,27 @@ def dispatch(cfg, state: dict, step_kind: str | None, req, *, adopted: bool = Fa
                               slot=got[0] if got else None,
                               request=adopted_request(cfg, state, rec, req.run_dir))
     from . import persona_gate as PG
+
+    def _drop_reservation() -> None:
+        if reservations is None:
+            return
+        key = _reserve_key(state, req.persona)
+        item = reservations.pop(key, None)
+        if item is not None:
+            try:
+                os.close(item[1])
+            except OSError:
+                pass
+
     if step_kind in PG.GATED_KINDS and req.persona not in PG.UNGATED_PERSONAS \
             and PG.backoff_until(cfg) is not None:
         # SPEC-0345: the tick's gate read the backoff before this run was admitted; one that
         # started since (another run's 429) holds it too, remote or local
+        _drop_reservation()
         return HeldRunner()
     workers = persona_workers(cfg, state)
     if not workers or ineligible(state, step_kind, req) is not None:
+        _drop_reservation()
         return None
     # SPEC-0345: the campaign's affine worker first; a failing worker is skipped, a full one
     # falls through to the next without clearing the affinity
