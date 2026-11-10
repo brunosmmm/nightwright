@@ -458,6 +458,13 @@ Review triager fixes: `_apply_step` parks `spec_review_exhausted` when a raised 
 
 Gate triager: `pytestmark = pytest.mark.fast` on `tests/test_backend_preflight_extend.py`. `uv run pytest tests/test_test_tiers.py::test_every_real_test_module_has_exactly_one_tier -q` — passed. Full suite left to gating.
 
+### Test record (2026-11-10, loop 0 implementer)
+
+`can_dispatch_step` builds its probe via `build_request` so gate-tool `allowed_tools` that
+are `NotRemotable` (e.g. `>/dev/null`) do not lift `backend_unavailable` when a worker is up.
+`uv run pytest tests/test_backend_preflight_extend.py tests/test_runner_selfheal.py tests/test_remote_persona_limits.py::test_spec_review_is_neither_counted_nor_gated -q` — 52 passed.
+Full suite left to gating.
+
 ### Test record (2026-11-10, loop 3 implementer)
 
 `backend_fault` returns None on spawn `ValueError`/`OSError`; gate worker escape uses

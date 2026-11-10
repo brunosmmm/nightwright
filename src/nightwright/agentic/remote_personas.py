@@ -312,22 +312,28 @@ def any_live(cfg) -> bool:
     return any(rec.get("kind") == KIND for rec in RJ.live(cfg))
 
 
-def _probe_request(state: dict, persona: str, step_kind: str | None):
-    """A minimal `RunRequest` for eligibility and slot probes at the gate."""
+def _probe_request(cfg, state: dict, persona: str, step_kind: str | None):
+    """A `RunRequest` for eligibility and slot probes at the gate (same remotability fields as
+    `build_request`: `read_only`, `allowed_tools`, `add_dirs`, `env`)."""
     from pathlib import Path
     from . import personas as PS
-    from .runner import RunRequest
+    from . import project
+    from . import profiles
     wt = (state.get("repo") or {}).get("worktree")
     if not wt:
         return None
     root = Path(wt)
-    p = PS.PERSONAS.get(persona)
-    read_only = p.read_only if p is not None else step_kind != "implement"
-    return RunRequest(
-        persona=persona, prompt="", system_append="", cwd=root, model="x", effort=None,
-        max_budget_usd=1.0, timeout_s=1, permission_mode="default", read_only=read_only,
-        allowed_tools=(), add_dirs=(), json_schema={}, env={},
-        run_dir=root / ".nw" / "dispatch-probe")
+    try:
+        proj = state.get("project")
+        pcfg = project.project_config(cfg, proj) if proj else {"_root": str(root)}
+        profile = profiles.resolve_profile(
+            cfg, state.get("profile"),
+            project_root=(state.get("repo") or {}).get("root"))
+        return PS.build_request(
+            cfg, profile, pcfg, state, persona,
+            run_dir=root / ".nw" / "dispatch-probe")
+    except (ValueError, OSError, TypeError, KeyError):
+        return None
 
 
 def can_dispatch(cfg, state: dict, step_kind: str | None, req) -> bool:
@@ -364,7 +370,7 @@ def can_dispatch_step(cfg, state: dict, step) -> bool:
     if not personas:
         return False
     for persona in personas:
-        req = _probe_request(state, persona, step.kind)
+        req = _probe_request(cfg, state, persona, step.kind)
         if req is not None and can_dispatch(cfg, state, step.kind, req):
             return True
     return False

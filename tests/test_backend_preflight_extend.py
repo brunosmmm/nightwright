@@ -388,6 +388,42 @@ def test_pi_gate_holds_unless_a_worker_can_take_it(tmp_path, monkeypatch):
     assert g2.holds["c1"]["held_by"] == "backend_unavailable"
 
 
+def test_implementer_not_remotable_holds_despite_worker(tmp_path, monkeypatch):
+    from test_agentic_e2e import _git, added, impl_done, make_cfg, make_repo, review, script
+    from test_runner_selfheal import _no_key
+    from nightwright.agentic import remote_personas as RPS
+
+    _no_key(monkeypatch)
+    repo = make_repo(tmp_path)
+    py = repo / ".nw" / "project.yaml"
+    py.write_text(py.read_text().replace(
+        "gates:\n",
+        "gates:\n"
+        "  - {name: spec-lint, cmd: 'python3 tools/spec_lint.py --write-ledger >/dev/null"
+        " && python3 tools/spec_lint.py', timeout_s: 120, required: true}\n",
+        1))
+    _git(repo, "add", ".nw/project.yaml")
+    _git(repo, "commit", "-q", "-m", "spec-lint gate")
+    cfg = make_cfg(tmp_path, repo, script(tmp_path, [impl_done(), review()]))
+    cfg["agentic"]["runner"] = "cursor"
+    monkeypatch.delenv("NW_AGENTIC_RUNNER", raising=False)
+    worker = {"name": "box", "enabled": True, "kinds": ["persona"],
+              "info": {"features": ["async"]}}
+    monkeypatch.setattr(RPS, "persona_workers", lambda c, s: [worker])
+    monkeypatch.setattr(RPS, "acquire_slot",
+                        lambda c, w: (os.open(os.devnull, os.O_RDONLY), 0))
+    monkeypatch.setattr(RPS, "busy", lambda c, w, mine=None: 0)
+    monkeypatch.setattr(RPS, "persona_slots", lambda w: 1)
+    cid = added(cfg, monkeypatch)
+    for _ in range(3):
+        Q.tick(cfg)
+        if PG.read_holds(cfg).get(cid, {}).get("held_by") == "backend_unavailable":
+            break
+    assert S.read_state(cfg, cid)["state"] == "IMPLEMENTING"
+    assert PG.read_holds(cfg).get(cid, {}).get("held_by") == "backend_unavailable"
+    assert not S.read_ledger(cfg, cid, types=["run.start"])
+
+
 def test_passing_pi_check_leaves_backend_fault_none(tmp_path, monkeypatch):
     _pi_ok_env(monkeypatch)
     monkeypatch.setenv("HOME", str(tmp_path))
