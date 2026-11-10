@@ -162,6 +162,40 @@ def test_two_gone_records_on_one_worker_both_mark_lost(cfg, monkeypatch):
     assert poll_timeouts[1] == pytest.approx(5.0)
 
 
+def test_three_gone_records_oldest_polled_after_15s_jobs(cfg, monkeypatch):
+    _seed(cfg, _w())
+    jid1 = _job(cfg, job_id="c-1-gate-001-a1", state="attached", accepted_at="t")
+    jid2 = _job(cfg, job_id="c-1-gate-002-a1", state="attached", accepted_at="t")
+    jid3 = _job(cfg, job_id="c-1-gate-003-a1", state="attached", accepted_at="t")
+    clock = {"t": 0.0}
+
+    def mono():
+        return clock["t"]
+
+    poll_timeouts = []
+
+    def run(argv, *, timeout, input=None):
+        if "jobs" in argv:
+            clock["t"] = 15.0
+            return subprocess.CompletedProcess(argv, 0, b"[]", b"")
+        if jid1 in argv:
+            poll_timeouts.append(timeout)
+            clock["t"] = 20.0
+            return subprocess.CompletedProcess(
+                argv, 1, b'{"type":"status","state":"unknown"}\n', b"")
+        raise AssertionError(f"unexpected poll {argv!r}")
+
+    monkeypatch.setattr(time, "monotonic", mono)
+    monkeypatch.setattr(WK, "_reconcile_run", run)
+    WK.reconcile_draining(cfg, ["box"])
+    assert len(poll_timeouts) == 1
+    assert poll_timeouts[0] >= 2.0
+    assert poll_timeouts[0] <= 5.0
+    assert RJ.read(cfg, jid1)["state"] == "lost"
+    assert RJ.read(cfg, jid2)["state"] == "attached"
+    assert RJ.read(cfg, jid3)["state"] == "attached"
+
+
 def test_reread_leaves_final_record(cfg, monkeypatch, tmp_path):
     for final in ("done", "local", "lost", "cancelled"):
         c = {"data_dir": str(tmp_path / final / "data"), "agentic": {"gates": {"slots": 1}}}
@@ -308,16 +342,20 @@ def test_jobs_timeout_capped_to_budget_left(cfg, monkeypatch):
 def test_poll_exit_1_unknown_marks_lost(cfg, monkeypatch):
     _seed(cfg, _w())
     jid = _job(cfg, state="attached", accepted_at="t")
-    for rc, body in ((1, b'{"type":"status","state":"unknown"}\n'),
-                     (0, b'{"type":"status","state":"lost"}\n')):
-        _seed(cfg, _w())
-        jid = _job(cfg, state="attached", accepted_at="t")
-        probe = _Probe([(0, b"[]"), (rc, body)])
-        monkeypatch.setattr(WK, "_reconcile_run", probe)
-        WK.reconcile_draining(cfg, ["box"])
-        assert RJ.read(cfg, jid)["state"] == "lost"
-        _assert_jobs_argv(probe.calls[0][0])
-        _assert_poll_argv(probe.calls[1][0], jid)
+    probe = _Probe([(0, b"[]"), (1, b'{"type":"status","state":"unknown"}\n')])
+    monkeypatch.setattr(WK, "_reconcile_run", probe)
+    WK.reconcile_draining(cfg, ["box"])
+    assert RJ.read(cfg, jid)["state"] == "lost"
+    _assert_jobs_argv(probe.calls[0][0])
+    _assert_poll_argv(probe.calls[1][0], jid)
+    c = {"data_dir": cfg["data_dir"] + "-poll-lost", "agentic": cfg["agentic"]}
+    _seed(c, _w())
+    jid = _job(c, state="attached", accepted_at="t")
+    probe = _Probe([(0, b"[]"), (0, b'{"type":"status","state":"lost"}\n')])
+    monkeypatch.setattr(WK, "_reconcile_run", probe)
+    WK.reconcile_draining(c, ["box"])
+    assert RJ.read(c, jid)["state"] == "attached"
+    assert not _journal(c, "worker_job_reconciled")
     old = (dt.datetime.now().astimezone() - dt.timedelta(hours=8)).isoformat()
     for step in ("timeout", (2, b""), (0, b"not json\n")):
         _seed(cfg, _w())
@@ -564,17 +602,46 @@ def test_unreadable_registry_raises(cfg, monkeypatch):
 
 
 def test_ensure_ssh_dir_failure_aborts_without_disable(cfg, monkeypatch):
-    _seed(cfg, _w(update_pending=None))
-    _job(cfg, state="attached", accepted_at="t")
+    _seed(cfg, _w("one", update_pending=None), _w("two", ssh_argv=["ssh-2"], update_pending=None))
+    _job(cfg, job_id="c-1-gate-001-a1", worker="one", state="attached", accepted_at="t")
+    j2 = _job(cfg, job_id="c-1-gate-002-a1", worker="two", state="attached", accepted_at="t")
+    calls = []
 
-    def boom(*a, **k):
-        raise OSError("ssh dir unusable")
+    def ensure(cfg_, w):
+        if w["name"] == "one":
+            raise OSError("ssh dir unusable")
 
-    monkeypatch.setattr(WK, "ensure_record_ssh_dir", boom)
-    with pytest.raises(OSError):
-        WK.finish_drains(cfg)
-    rec = WK.read_strict(cfg)[0]
-    assert rec.get("draining") is True and rec.get("enabled") is not False
+    def run(argv, *, timeout, input=None):
+        calls.append(list(argv))
+        if "jobs" in argv:
+            return subprocess.CompletedProcess(argv, 0, b"[]", b"")
+        return subprocess.CompletedProcess(
+            argv, 1, b'{"type":"status","state":"unknown"}\n', b"")
+
+    monkeypatch.setattr(WK, "ensure_record_ssh_dir", ensure)
+    monkeypatch.setattr(WK, "_reconcile_run", run)
+    done = WK.finish_drains(cfg)
+    assert "one" not in done
+    rec1 = next(r for r in WK.read_strict(cfg) if r["name"] == "one")
+    assert rec1.get("draining") is True and rec1.get("enabled") is not False
+    assert RJ.read(cfg, "c-1-gate-001-a1")["state"] == "attached"
+    assert RJ.read(cfg, j2)["state"] == "lost"
+    assert any(j2 in c for c in calls)
+    failed = _journal(cfg, "worker_reconcile_probe_failed")
+    assert len(failed) == 1 and failed[0]["worker"] == "one"
+    _seed(cfg, _w("one"), _w("two", ssh_argv=["ssh-2"]))
+    old = (dt.datetime.now().astimezone() - dt.timedelta(hours=7)).isoformat(timespec="seconds")
+    _schedule_update(cfg, "one")
+
+    def stamp_old(records):
+        for r in records:
+            if r["name"] == "one":
+                r["update_pending"]["since"] = old
+    WK.update(cfg, stamp_old)
+    _job(cfg, job_id="c-1-gate-003-a1", worker="one", state="attached", accepted_at=old,
+         last_seen_at=old)
+    idle, late = WK.due_updates(cfg)
+    assert idle == [] and len(late) == 1 and late[0]["name"] == "one"
 
 
 def test_reported_jobs_state_when_list_agrees(cfg, monkeypatch, tmp_path):
@@ -583,8 +650,7 @@ def test_reported_jobs_state_when_list_agrees(cfg, monkeypatch, tmp_path):
         _seed(c, _w())
         jid = _job(c, state="attached", accepted_at="t")
         body = json.dumps([{"job_id": jid, "state": st}]).encode()
-        poll = b'{"type":"status","state":"unknown"}\n' if st == "unknown" else \
-            b'{"type":"status","state":"lost"}\n'
+        poll = b'{"type":"status","state":"unknown"}\n'
         probe = _Probe([(0, body), (1, poll)])
         monkeypatch.setattr(WK, "_reconcile_run", probe)
         WK.reconcile_draining(c, ["box"])
@@ -593,7 +659,7 @@ def test_reported_jobs_state_when_list_agrees(cfg, monkeypatch, tmp_path):
         assert lines[0]["reported"] == st
         assert lines[0]["via"] == "poll"
         _assert_poll_argv(probe.calls[1][0], jid)
-    for jobs_st, poll_st in (("lost", "unknown"), ("unknown", "lost")):
+    for jobs_st, poll_st in (("lost", "unknown"),):
         tag = f"{jobs_st}-{poll_st}"
         c = {"data_dir": str(tmp_path / tag / "data"), "agentic": {"gates": {"slots": 1}}}
         _seed(c, _w())
@@ -606,7 +672,16 @@ def test_reported_jobs_state_when_list_agrees(cfg, monkeypatch, tmp_path):
         lines = _journal(c, "worker_job_reconciled")
         assert len(lines) == 1
         assert lines[0]["reported"] == jobs_st
-        assert lines[0]["reported"] != poll_st or jobs_st == poll_st
+    c = {"data_dir": str(tmp_path / "jobs-lost-poll-lost" / "data"),
+         "agentic": {"gates": {"slots": 1}}}
+    _seed(c, _w())
+    jid = _job(c, state="attached", accepted_at="t")
+    body = json.dumps([{"job_id": jid, "state": "lost"}]).encode()
+    monkeypatch.setattr(WK, "_reconcile_run", _Probe([
+        (0, body), (0, b'{"type":"status","state":"lost"}\n')]))
+    WK.reconcile_draining(c, ["box"])
+    assert RJ.read(c, jid)["state"] == "attached"
+    assert not _journal(c, "worker_job_reconciled")
     c = {"data_dir": str(tmp_path / "disagree" / "data"), "agentic": {"gates": {"slots": 1}}}
     _seed(c, _w())
     jid = _job(c, state="attached", accepted_at="t")

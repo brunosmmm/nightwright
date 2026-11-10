@@ -335,7 +335,7 @@ RECONCILE_POLL_MIN_S = 2.0
 RECONCILE_POLL_FROM = 1 << 30
 _RECONCILE_BUSY = frozenset({"accepted", "running"})
 _RECONCILE_NOT_BUSY = frozenset({"done", "error"})
-_RECONCILE_GONE_POLL = frozenset({"unknown", "lost"})
+_RECONCILE_GONE_POLL = frozenset({"unknown"})
 
 
 def _reconcile_unaccepted(rec: dict) -> bool:
@@ -435,7 +435,12 @@ def _reconcile_worker(cfg, worker: dict, t0: float, *, progress=None) -> set[str
             progress()
 
     stamp()
-    ensure_record_ssh_dir(cfg, worker)
+    try:
+        ensure_record_ssh_dir(cfg, worker)
+    except OSError as exc:
+        from . import queue as Q
+        Q.journal(cfg, "worker_reconcile_probe_failed", worker=name, error=str(exc))
+        return set()
     budget = left()
     if budget <= 0:
         return set()
@@ -463,14 +468,25 @@ def _reconcile_worker(cfg, worker: dict, t0: float, *, progress=None) -> set[str
         jid = rec["job_id"]
         budget = left()
         if budget < RECONCILE_POLL_MIN_S:
-            continue
-        later = len(need_poll) - i - 1
-        poll_timeout = min(
-            budget - RECONCILE_POLL_MIN_S * later, RECONCILE_JOBS_TIMEOUT_S)
-        if poll_timeout < RECONCILE_POLL_MIN_S:
-            continue
+            break
         stamp()
-        ensure_record_ssh_dir(cfg, worker)
+        try:
+            ensure_record_ssh_dir(cfg, worker)
+        except OSError as exc:
+            from . import queue as Q
+            Q.journal(cfg, "worker_reconcile_probe_failed", worker=name, error=str(exc))
+            return not_busy
+        budget = left()
+        if budget < RECONCILE_POLL_MIN_S:
+            break
+        later = len(need_poll) - i - 1
+        reserve = min(later, int((budget - RECONCILE_POLL_MIN_S) // RECONCILE_POLL_MIN_S))
+        poll_timeout = min(
+            budget - RECONCILE_POLL_MIN_S * reserve, RECONCILE_JOBS_TIMEOUT_S)
+        if poll_timeout < RECONCILE_POLL_MIN_S:
+            poll_timeout = min(budget, RECONCILE_JOBS_TIMEOUT_S)
+        if poll_timeout < RECONCILE_POLL_MIN_S:
+            break
         try:
             proc = _reconcile_run(RG._argv(worker, "poll", jid, "--from", RECONCILE_POLL_FROM),
                                   timeout=poll_timeout)
