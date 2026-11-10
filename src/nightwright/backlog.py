@@ -81,6 +81,9 @@ def _construct_mapping(loader, node):
     mapping = {}
     for key_node, value_node in node.value:
         key = loader.construct_object(key_node, deep=True)
+        if not isinstance(key, str):
+            raise yaml.constructor.ConstructorError(
+                None, None, "expected a string key", key_node.start_mark)
         try:
             seen = key in mapping
         except TypeError as e:
@@ -278,7 +281,21 @@ def _safe_path(path: str) -> str:
 
 
 _NON_PRINTABLE = yaml.reader.Reader.NON_PRINTABLE
-_GIT_NAME_ONLY = set(' \t\n\r<>()\\"')
+_GIT_IDENT_CRUD = set(".,:;<>\"'\\")
+
+
+def _is_git_ident_crud(ch: str) -> bool:
+    return ord(ch) <= 32 or ch in _GIT_IDENT_CRUD
+
+
+def _strip_git_ident_crud(name: str) -> str:
+    start = 0
+    end = len(name)
+    while start < end and _is_git_ident_crud(name[start]):
+        start += 1
+    while end > start and _is_git_ident_crud(name[end - 1]):
+        end -= 1
+    return name[start:end]
 
 
 def _yaml_unsafe_char(value: str) -> str | None:
@@ -360,12 +377,23 @@ def _identity_error(key: str, value: str, kind: str) -> str | None:
         esc = _safe_path(repr(bad)[1:-1])
         return f"{key} contains control character {esc}"
     if kind == "name":
-        if value and all(c in _GIT_NAME_ONLY for c in value):
-            return "user.name consists only of disallowed characters"
         if "<" in value:
             return "user.name contains '<'"
         if ">" in value:
             return "user.name contains '>'"
+        stripped = _strip_git_ident_crud(value)
+        if stripped == "":
+            return "user.name consists only of disallowed characters"
+        if stripped != value:
+            start = 0
+            while start < len(value) and _is_git_ident_crud(value[start]):
+                start += 1
+            end = len(value)
+            while end > start and _is_git_ident_crud(value[end - 1]):
+                end -= 1
+            removed = value[:start] + value[end:]
+            if any(c != '"' for c in removed):
+                return "user.name contains a leading or trailing disallowed character"
         return None
     if any(c.isspace() for c in value):
         return "user.email contains whitespace"

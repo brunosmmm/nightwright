@@ -261,6 +261,41 @@ def test_parse_item_reason_tokens(name, filename, blob, token):
     assert B.parse_item(filename, blob) == token
 
 
+def test_yes_and_true_are_invalid_yaml_before_duplicate_key(tmp_path, git_log):
+    bool_keys = (
+        b"---\n"
+        b"yes: 1\n"
+        b"true: 0\n"
+        b"id: REQ-K7H3MQ2P\n"
+        b'title: "Public backlog"\n'
+        b"status: open\n"
+        b"created: 2026-11-07T15:41:00Z\n"
+        b"updated: 2026-11-07T15:41:00Z\n"
+        b'created_by: "Ada Lovelace <ada@example.com>"\n'
+        b'updated_by: "Ada Lovelace <ada@example.com>"\n'
+        b"---\n"
+        b"\n"
+        b"The summary.\n"
+    )
+    reason = B.parse_item("REQ-K7H3MQ2P.md", bool_keys)
+    assert reason == "invalid yaml"
+    assert reason != "duplicate key True"
+    dup = doc(["id: REQ-K7H3MQ2P", *_BASE_LINES])
+    assert B.parse_item("REQ-K7H3MQ2P.md", dup) == "duplicate key id"
+    repo = init_repo(tmp_path / "repo")
+    sha = commit_tree(repo, {"README.md": b"r\n", "REQ-K7H3MQ2P.md": bool_keys})
+    point(repo, sha)
+    git_log.clear()
+    for args in (["edit", "REQ-K7H3MQ2P", "--title", "Changed"],
+                 ["close", "REQ-K7H3MQ2P"],
+                 ["reopen", "REQ-K7H3MQ2P"]):
+        proc = nw(repo, args)
+        assert proc.exit_code == 1, (args, proc.stderr, proc.exception)
+        assert proc.stderr == "invalid backlog item REQ-K7H3MQ2P: invalid yaml\n"
+        assert rev(repo, "nw-backlog") == sha
+    assert not any(args[0] == "hash-object" for args in git_log)
+
+
 def test_parse_item_accepts_a_canonical_file():
     parsed = B.parse_item("REQ-K7H3MQ2P.md", VALID)
     assert parsed["summary"] == "The summary.\n"
@@ -491,6 +526,14 @@ def test_edit_equal_values_do_not_write(tmp_path, monkeypatch, git_log):
     assert b"idea: keep-me" in cat(repo, "REQ-K7H3MQ2P.md")
     assert cat(repo, "REQ-NF6H4D2P.md") == without_spec
     assert rev(repo, "nw-backlog") == sha
+    assert not any(args[0] == "hash-object" for args in git_log)
+    hello = doc(_BASE_LINES, "\nHello\n")
+    sha_hello = commit_tree(repo, {"README.md": B.README_TEXT, "REQ-K7H3MQ2P.md": hello})
+    point(repo, sha_hello)
+    git_log.clear()
+    proc = nw(repo, ["edit", "REQ-K7H3MQ2P", "--summary", "Hello\r\n"])
+    assert proc.exit_code == 0, (proc.stdout, proc.stderr, proc.exception)
+    assert rev(repo, "nw-backlog") == sha_hello
     assert not any(args[0] == "hash-object" for args in git_log)
 
 
@@ -1619,6 +1662,33 @@ def test_created_by_escapes_leading_trailing_quotes_in_name(tmp_path, monkeypatc
     text = cat(repo, f"{ident}.md").decode()
     assert 'created_by: "\\"Ada\\" <ada@example.com>"' in text
     assert B.parse_item(f"{ident}.md", text)["created_by"] == '"Ada" <ada@example.com>'
+
+
+def test_name_crud_matches_git_ident(tmp_path, monkeypatch, git_log):
+    freeze(monkeypatch)
+    refuse = [
+        ("Ada <Lovelace", "user.name contains '<'\n"),
+        (".", "user.name consists only of disallowed characters\n"),
+        ("'", "user.name consists only of disallowed characters\n"),
+        ("Ada Jr.", "user.name contains a leading or trailing disallowed character\n"),
+    ]
+    for number, (name, message) in enumerate(refuse):
+        repo = init_repo(tmp_path / f"refuse-{number}", name=name, email="ada@example.com")
+        seeded = commit_tree(repo, {"README.md": b"r\n"})
+        point(repo, seeded)
+        git_log.clear()
+        proc = nw(repo, ["add", "--title", "T", "--summary", "S"])
+        assert proc.exit_code == 1, (name, proc.stderr, proc.exception)
+        assert proc.stderr == message
+        assert rev(repo, "nw-backlog") == seeded
+        assert not any(args[0] == "hash-object" for args in git_log)
+
+    repo = init_repo(tmp_path / "parens", name="()", email="ada@example.com")
+    ident = added(nw(repo, ["add", "--title", "T", "--summary", "S"]))
+    assert log_format(repo, "%an") == "()"
+    assert log_format(repo, "%cn") == "()"
+    text = cat(repo, f"{ident}.md").decode()
+    assert B.parse_item(f"{ident}.md", text)["created_by"] == "() <ada@example.com>"
 
 
 def _deep_frontmatter(depth: int) -> bytes:

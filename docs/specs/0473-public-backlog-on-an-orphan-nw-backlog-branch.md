@@ -858,6 +858,15 @@ drops unknown keys, and refreshes `updated` and `updated_by`.
 - `python3 tools/spec_lint.py --write-ledger` and `python3 tools/spec_lint.py` — exit 0.
 - Full suite left to gating.
 
+### Test record (campaign loop 1, 2026-11-10)
+
+- `uv run pytest -q tests/test_backlog.py` — 78 passed (``_construct_mapping`` rejects
+  non-string keys before duplicate check; git ident crud in ``_identity_error``;
+  ``test_yes_and_true_are_invalid_yaml_before_duplicate_key``,
+  ``test_name_crud_matches_git_ident``, edit summary CR/LF no-op).
+- `python3 tools/spec_lint.py --write-ledger` and `python3 tools/spec_lint.py` — exit 0.
+- Full suite left to gating.
+
 ## Clock Log
 
 No session is recorded in this file. Implementation clocks IDEA-1019 with
