@@ -49,12 +49,19 @@ request.
 - The spec's Context comes from the public summary. `source_idea` still names
   the private idea. The spec also records `source_request: REQ-…`. That key is
   the provenance that travels with the repo.
-- When the new spec file is a `docs/specs/SPEC-NNNN` of the linked repo, the
-  public file gains `spec: SPEC-NNNN` in one compare-and-swap commit. The idea
+- When the new spec file is a `docs/specs/SPEC-NNNN` of a worktree of the repo
+  `resolve_linked_repo` returned (the main checkout or a campaign worktree of
+  that same repo), the public file gains `spec: SPEC-NNNN` in one
+  compare-and-swap commit on that repo's `refs/heads/nw-backlog`. The idea
   gains `:SPEC:` and `SPECCED` as it does today. `:REQ:` and `:REQ_BASE:` stay.
 - The campaign spec writer is held to the same pair, the same public summary,
   and the same `source_request` key. After a successful first write, the queue
-  cites the spec on the public file in the same commit shape.
+  cites the spec on that repo's public file in the same commit shape only when
+  the campaign worktree is a worktree of `resolve_linked_repo`. When a
+  Meta-Tools idea's `outbox_targets` repo is a different checkout from
+  `nw_checkout`, the spec still records `source_request` and the idea still
+  gains `:SPEC:` and `SPECCED`, and that outbox repo's `nw-backlog` is
+  unchanged.
 
 **Non-goals**
 
@@ -98,10 +105,11 @@ and write nothing.
 `source_request` is an optional front-matter key, `REQ-` plus eight Crockford
 characters. `source_idea` stays. The public file records `spec:` with the same
 renderer as publish, on a new commit whose message is `cite REQ-<id> SPEC-NNNN`.
-That commit runs only when the spec is being created in the linked repo's
-`docs/specs/`. A campaign worktree of that repo counts: the spec id will be in
-that repo. An `--internal` spec written into a different checkout records
-`source_request` and does not commit `spec:`.
+That commit runs only when `will_cite` is true: `docs/specs` of the main
+checkout, or of a campaign worktree, of the repo `resolve_linked_repo`
+returned. An `--internal` spec written into a different checkout records
+`source_request` and does not commit `spec:`. A Meta-Tools `outbox_targets`
+checkout that is not that repo does not receive the cite.
 
 ## Design
 
@@ -166,19 +174,24 @@ Public digest is `req_base(parsed title, body)`. Both must equal the stored
 
 The return value carries `req_id`, `repo`, `title`, `summary` (the body text),
 `status`, `created`, `created_by`, `updated_by`, `spec` (or `None`), and the
-raw file bytes.
+raw file bytes. A present `spec:` does not raise.
 
 ### Where a cite commit is allowed
 
 `will_cite(cfg, task, specs_dir)` is true when `load_agreed_request` returns a
 request and `Path(specs_dir).resolve()` equals
-`(resolve_linked_repo(cfg, project) / "docs" / "specs").resolve()`.
-
-For a campaign idea write, `will_cite` is true when the live idea has an agreed
-`:REQ:` and the spec path is `docs/specs/SPEC-NNNN-*.md` inside that project's
-worktree. The linked repo is `state["repo"]["root"]` (the project repo
-SPEC-0480 already resolves). The worktree branch is `nw/<campaign>`, not
-`nw-backlog`.
+`(wt / "docs" / "specs").resolve()` for a worktree `wt` listed by
+`git -C agreed.repo worktree list --porcelain`, including the main checkout.
+`agreed.repo` is the path `resolve_linked_repo` returned. The main checkout
+passes. A campaign worktree of that same repo passes. Any other specs
+directory fails, including `--internal` into another checkout. `cite_spec`
+runs `hash-object`, `mktree`, `commit-tree`, and `update-ref` in
+`agreed.repo`. `_link_idea` calls `cite_spec` only when `will_cite` is true
+for `Path(state["repo"]["worktree"]) / "docs" / "specs"`. When that check
+fails, `_link_idea` still writes `:SPEC:` and `SPECCED` and leaves
+`refs/heads/nw-backlog` unchanged. `plan_add_idea` stores `repo.root` from
+`project_root`. For Meta-Tools, `project_root` follows `outbox_targets` when
+that key is set, and `resolve_linked_repo` uses `nw_checkout`.
 
 `promote_idea`'s outbound route never calls `load_agreed_request`.
 
@@ -202,7 +215,10 @@ SPEC-0480 already resolves). The worktree branch is `nw/<campaign>`, not
 The spec file, the cite commit, and `:SPEC:` / `SPECCED` run under
 `org_write_lock`. Inside the lock the idea is resolved again and
 `load_agreed_request` runs again. A drift on that second read releases the
-number, does not write the spec file, and does not commit.
+number, does not write the spec file, and does not commit. If `will_cite` is
+true and the file's `spec` is set to a value other than the id about to be
+written and `--force` is false, release the number, write no spec file,
+commit nothing, and raise `{req_id} already cites {spec}`.
 
 Front matter, both `TEMPLATE.md` and `TEMPLATE-epic.md`, inserts
 `source_request: {req_id}` immediately after `source_idea: {task.id}`. `parent`
@@ -232,15 +248,17 @@ closing fence. The summary bytes after that fence are unchanged. The `created`
 line is byte-for-byte unchanged. A title `say "hi"` still round-trips through
 `split_frontmatter`.
 
-The commit message is `cite {req_id} {spec_id}`. Author and committer are the
-linked repo's `user.name` and `user.email`. The tree replaces only
+The commit message is `cite {req_id} {spec_id}`. `hash-object`, `mktree`,
+`commit-tree`, and `update-ref` run in `agreed.repo`. Author and committer
+are `agreed.repo`'s `user.name` and `user.email`. The tree replaces only
 `{req_id}.md`. Every other path stays byte-for-byte. `update-ref`'s expected
 value is the current tip. The command runs no `git checkout`, `git switch`,
 `git add`, `git fetch`, or `git push`. Symbolic `HEAD`, the index, and the
 worktree stay.
 
 `--force` on `nw spec new` may replace a different well-formed `spec:` with
-the new id. Without `--force`, the existing `:SPEC:` guard still refuses a
+the new id. It is the only caller that invokes `cite_spec` with a different
+`spec:`. Without `--force`, the existing `:SPEC:` guard still refuses a
 second promote (`idea {id} already promoted to {existing}`) before cite.
 
 A failed `update-ref` writes no `:SPEC:`. Scaffold deletes the spec file it
@@ -263,9 +281,11 @@ Same restore as publish, with these stderr lines:
 ### Campaign
 
 `plan_add_idea` calls `load_agreed_request` on the live idea. Drift, a missing
-file, a blank `:REQ_BASE:`, a non-canonical summary, or `spec:` already set
-raises that function's error before `store.create_campaign` and before
-`:CAMPAIGN:` is written. An idea with no `:REQ:` does not call
+file, a blank `:REQ_BASE:`, or a non-canonical summary raises
+`load_agreed_request`'s error before `store.create_campaign` and before
+`:CAMPAIGN:` is written. When that load returns a request whose `spec` is not
+`None`, `plan_add_idea` raises `{req_id} already cites {spec}` and also stops
+before `store.create_campaign`. An idea with no `:REQ:` does not call
 `resolve_linked_repo`.
 
 `apply_add_idea` calls `load_agreed_request` again before `create_campaign`.
@@ -300,11 +320,17 @@ Revise uses the same check. `write_rules` for revise says to keep
 `_link_idea`, when the live idea has `:REQ:` and this write's mode is `write`,
 under `org_write_lock` re-reads the request. Drift returns the drift error and
 sets neither `:SPEC:` nor a cite commit. The campaign branch already holds the
-spec; that commit stays. Agreement calls `cite_spec`, then today's `:SPEC:`
-and `SPECCED` writes. A cite or org failure returns the error text;
-`_apply_spec_write` keeps today's `idea_link_failed` note and still advances
-to spec review. A second `_link_idea` whose file already cites this spec id
-skips the commit and only finishes `:SPEC:` / `SPECCED`.
+spec; that commit stays. If `agreed.spec` is not `None` and is not this spec
+id, return `{req_id} already cites {spec}`, do not call `cite_spec`, and do
+not write `:SPEC:`. If `agreed.spec` equals this spec id, skip the commit and
+only finish `:SPEC:` and `SPECCED`. Otherwise call `cite_spec` only when
+`will_cite` is true for `Path(state["repo"]["worktree"]) / "docs" / "specs"`,
+then today's `:SPEC:` and `SPECCED` writes. When that check fails, still write
+`:SPEC:` and `SPECCED` and leave `refs/heads/nw-backlog` unchanged.
+`cite_spec` still replaces a different `spec:` when a caller invokes it;
+`nw spec new --force` is the only caller that does. A cite or org failure
+returns the error text; `_apply_spec_write` keeps today's `idea_link_failed`
+note and still advances to spec review.
 
 Revise and amend do not call `cite_spec`.
 
@@ -343,15 +369,17 @@ Revise and amend do not call `cite_spec`.
       and `:REQ_BASE:` are unchanged. Summary, log, questions, tags, and the
       headline stay.
 - [ ] That command's cite commit is `cite {req_id} {spec_id}` via
-      `hash-object`, `mktree`, `commit-tree`, and `update-ref` whose expected
-      value is the previous tip. The file gains `spec: {spec_id}` after
-      `updated_by`. `created` is byte-for-byte unchanged. The summary bytes
-      after the closing fence are unchanged. `status` is unchanged. The blob
-      gains no idea id. Every other path's blob sha is unchanged. Author and
-      committer are the linked repo's identity. Symbolic `HEAD` is unchanged.
-      The command runs no `git checkout`, `git switch`, `git add`,
-      `git fetch`, or `git push`. A second `cite_spec` of the same spec id
-      adds no commit.
+      `hash-object`, `mktree`, `commit-tree`, and `update-ref` in
+      `agreed.repo`, whose expected value is the previous tip. The file gains
+      `spec: {spec_id}` after `updated_by`. `created` is byte-for-byte
+      unchanged. The summary bytes after the closing fence are unchanged.
+      `status` is unchanged. The blob gains no idea id. Every other path's
+      blob sha is unchanged. Author and committer are `agreed.repo`'s
+      identity. Symbolic `HEAD` is unchanged. The command runs no
+      `git checkout`, `git switch`, `git add`, `git fetch`, or `git push`.
+      A second `cite_spec` of the same spec id adds no commit.
+      `load_agreed_request` still returns a request whose `spec` is set; a
+      present `spec:` does not raise from that function.
 - [ ] Drift (private digest differs, public digest differs, or either differs
       from `:REQ_BASE:`), a missing `:REQ_BASE:`, a missing file, a
       non-canonical summary (`Hello\n`), an unexpected front-matter key, a
@@ -360,11 +388,21 @@ Revise and amend do not call `cite_spec`.
       org bytes unchanged. Unset `user.name` or `user.email`, and `nw-backlog`
       checked out, refuse before `hash-object` with publish's stderr, only
       when `will_cite` is true.
-- [ ] `--internal` of a linked idea whose specs directory is not the linked
-      repo's `docs/specs` still requires agreement, writes `source_request`
-      and the public Context, and leaves the request blob sha unchanged.
-      Outbound `promote_idea` of a linked idea does not call
-      `load_agreed_request`.
+- [ ] `--internal` into another checkout, whose specs directory is not
+      `docs/specs` of a worktree listed for `agreed.repo`, still requires
+      agreement, writes `source_request` and the public Context, and leaves
+      the request blob sha unchanged. Outbound `promote_idea` of a linked
+      idea does not call `load_agreed_request`.
+- [ ] `plan_add_idea` raises `{req_id} already cites {spec}` when
+      `load_agreed_request` returns a request whose `spec` is not `None`, and
+      `create_campaign` is not called. `_link_idea` raises
+      `{req_id} already cites {spec}` when `agreed.spec` is a different id,
+      does not call `cite_spec`, and does not write `:SPEC:`. When
+      `agreed.spec` equals this spec id, `_link_idea` skips the commit and
+      only finishes `:SPEC:` and `SPECCED`. `nw spec new --force` is the only
+      path that replaces `spec:`. Without `--force`, a different `spec:` seen
+      inside `org_write_lock` releases the number, writes no spec file, and
+      commits nothing.
 - [ ] If the org write fails after the cite commit, the org bytes are
       unchanged and the Design's restore stderr is raised. A successful
       restore deletes the new spec file and releases the number. A lost
@@ -377,9 +415,16 @@ Revise and amend do not call `cite_spec`.
       `hash-object`. `write_rules` names `source_request` and the public
       summary sentence. `_front_matter_problems` rejects a missing or different
       `source_request` when the idea has one, and rejects a present key when
-      the idea has none. After a valid first write, `_link_idea` commits
-      `spec:` and sets `:SPEC:` and `SPECCED`. Revise does not commit another
-      cite.
+      the idea has none. After a valid first write, when `will_cite` is true,
+      `_link_idea` commits `spec:` on `agreed.repo`'s `refs/heads/nw-backlog`
+      and sets `:SPEC:` and `SPECCED`. When `will_cite` is false, `_link_idea`
+      still sets `:SPEC:` and `SPECCED` and leaves `refs/heads/nw-backlog`
+      unchanged. Revise does not commit another cite.
+- [ ] When the campaign worktree is a worktree of `resolve_linked_repo`, the
+      cite commit is on that repo's `refs/heads/nw-backlog`. When a Meta-Tools
+      idea's `outbox_targets` repo is a different checkout from `nw_checkout`,
+      the spec records `source_request`, the idea gains `:SPEC:` and
+      `SPECCED`, and that outbox repo's `nw-backlog` is unchanged.
 - [ ] `nw ideas` and `nw hub` still build rows with `idea_row`. The TUI list
       still uses `_row_for`. `load_detail` and the callers in
       `agentic/queue.py` and `agentic/spec_review.py` still call
@@ -409,12 +454,21 @@ Revise and amend do not call `cite_spec`.
     `nw spec new --from-idea` and `scaffold_from_idea(..., epic=True)`.
     Context, front matter, `SPECCED`, unchanged `:REQ_BASE:`, log line absent
     from the spec, cite commit message, key order, unchanged `created` line,
-    unchanged summary bytes, unchanged sibling blob, `HEAD` untouched, second
-    `cite_spec` adds no commit.
+    unchanged summary bytes, unchanged sibling blob, `HEAD` untouched. The
+    cite's `hash-object`, `mktree`, `commit-tree`, and `update-ref` run in
+    `agreed.repo`. A second `cite_spec` of the same spec id adds no commit.
+    `load_agreed_request` returns the request when `spec:` is set and does
+    not raise.
   - `test_scaffold_refuses_drift_and_bad_files` — each refusal in the drift
     acceptance criterion, including `Hello\n`, an unexpected key, file id
     mismatch, `already cites`, unset identity, and checked-out `nw-backlog`.
-    Org bytes and the ref stay.
+    Org bytes and the ref stay. A different `spec:` seen on the second load
+    inside `org_write_lock`, with `--force` false, releases the number and
+    writes no spec file.
+  - `test_force_replaces_an_existing_spec_cite` — `nw spec new --from-idea
+    --force` is the only caller that replaces a different `spec:`. The new
+    file's `spec:` is the new id. A call that is not `--force` raises
+    `{req_id} already cites {spec}` and leaves the request blob unchanged.
   - `test_internal_into_another_checkout_records_source_request_only` —
     `--internal` writes `source_request` and does not change the foreign
     request blob. Outbound `promote_idea` does not call
@@ -434,13 +488,32 @@ Revise and amend do not call `cite_spec`.
     `summary` is the public body, `source_request` is the req id, and
     `write_rules` contains the public-summary sentence. A fake writer that
     omits `source_request` is rejected with `source_request must be`. A fake
-    writer that includes it leaves `spec:` on `nw-backlog`, `:SPEC:` and
-    `SPECCED` on the idea, and a revise tick adds no second cite commit.
+    writer that includes it leaves `spec:` on `agreed.repo`'s
+    `refs/heads/nw-backlog` (the campaign worktree is a worktree of
+    `resolve_linked_repo`), `:SPEC:` and `SPECCED` on the idea, and a revise
+    tick adds no second cite commit. `hash-object`, `mktree`, `commit-tree`,
+    and `update-ref` run in `agreed.repo`.
   - `test_drift_before_write_parks_without_a_cite` — after queue, change the
     private Summary so the digest moves, tick once, and assert
     `spec_write_failed`, no spec file, and no `hash-object` on `nw-backlog`.
   - `test_queue_add_refuses_a_drifted_pair` — `plan_add_idea` raises the drift
     error and `apply_add_idea` is not reached; no `:CAMPAIGN:`.
+  - `test_queue_add_refuses_when_the_request_already_cites` — `plan_add_idea`
+    raises `{req_id} already cites {spec}` and `create_campaign` is not
+    called.
+  - `test_link_idea_refuses_a_different_cite` — when `agreed.spec` is a
+    different id, `_link_idea` returns `{req_id} already cites {spec}`, does
+    not call `cite_spec`, and does not write `:SPEC:`. When `agreed.spec`
+    equals this spec id, it skips the commit and only finishes `:SPEC:` and
+    `SPECCED`.
+  - `test_campaign_cite_follows_resolve_linked_repo` — a Meta-Tools idea whose
+    `outbox_targets` repo is a different checkout from `nw_checkout`.
+    `plan_add_idea` stores `repo.root` from that outbox checkout.
+    `resolve_linked_repo` is `nw_checkout`. The campaign specs directory is
+    not a worktree of `nw_checkout`, so `will_cite` is false. The written
+    spec records `source_request`. The idea gains `:SPEC:` and `SPECCED`.
+    That outbox repo's `refs/heads/nw-backlog` is unchanged, and
+    `nw_checkout`'s `refs/heads/nw-backlog` gains no cite commit.
 - **Regression guard:** `tests/test_idea_link.py` and
   `tests/test_idea_stamps.py::test_stamp_creates_missing_drawer_without_corrupting_sections`
   stay green. `tests/test_agentic_spec_writer.py` existing cases stay green,
