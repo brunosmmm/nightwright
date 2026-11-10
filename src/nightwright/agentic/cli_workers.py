@@ -355,8 +355,10 @@ def capacity_line(cap) -> str | None:
               "warnings, info}")
 @click.option("--auth", is_flag=True, help="persona workers: also run a 1-token `claude -p` "
               "auth probe on the worker (costs money; SPEC-0344)")
+@click.option("--slurm", "slurm", is_flag=True, help="also run `nw worker slurm-check` on the "
+              "worker: two small real Slurm jobs as the worker's user (SPEC-0510)")
 @click.pass_obj
-def workers_check(cfg, name, as_json, auth):
+def workers_check(cfg, name, as_json, auth, slurm=False):
     """Probe workers with `nw worker info --json` over SSH. Without NAME, every registered
     worker; exits 1 if any fails (a version or sha mismatch only warns). A worker whose
     `kinds` contain `persona` must also have a working `claude` (SPEC-0344)."""
@@ -378,6 +380,12 @@ def workers_check(cfg, name, as_json, auth):
             res["ok"] = not res["errors"]
             if not res["ok"]:
                 WK.record_check(cfg, w["name"], False, failed="claude")  # SPEC-0345
+        if slurm and not res["errors"]:          # SPEC-0510
+            from . import executor_slurm as ES
+            errs, rec = ES.remote_check(w)
+            res["errors"] += errs
+            res["slurm_check"] = rec
+            res["ok"] = not res["errors"]
         results.append(res)
     if as_json:
         _dump_json(results)

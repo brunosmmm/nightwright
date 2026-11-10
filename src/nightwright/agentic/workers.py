@@ -502,6 +502,21 @@ def record_check(cfg, name: str, ok: bool, *, failed: str = "probe",
         pass
 
 
+def runs_slurm(cfg, name: str | None) -> bool:
+    """SPEC-0510: the worker's cached `info` reports `executor:slurm` (its jobs get a Slurm
+    allocation each, so a timeout re-gate needs no exclusive box). False for local gates, an
+    unknown worker, no cached `info`, or an unreadable registry."""
+    if not name:
+        return False
+    try:
+        rec = next((r for r in read_strict(cfg) if r.get("name") == name), None)
+    except (OSError, ValueError):
+        return False
+    info = rec.get("info") if isinstance(rec, dict) else None
+    feats = info.get("features") if isinstance(info, dict) else None
+    return isinstance(feats, list) and "executor:slurm" in feats
+
+
 def _cache_info(cfg, name: str, info: dict) -> None:
     """SPEC-0341: keep the worker's last `info` on its registry record; the coordinator reads
     its `features` from there (no cached `info` reads as a worker without `async`)."""

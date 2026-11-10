@@ -593,12 +593,12 @@ def reap_lost(cfg, errors: list | None = None) -> list[str]:
 
 # ---- submit ----------------------------------------------------------------------------------
 
-def _unclaim(cfg, job, frames, stage, error) -> int:
+def _unclaim(cfg, job, frames, stage, error, retryable: bool = False) -> int:
     """A claimed job that never got a job process (the bundle upload broke off, or the spawn
     failed): its dir goes, so the same header can simply be submitted again. The `error`
     frame goes to stdout only, with no `n` (there is no job to number it)."""
     frames.log = None
-    frames.emit("error", stage=stage, error=error)
+    frames.emit("error", stage=stage, error=error, **({"retryable": True} if retryable else {}))
     try:
         with W.jobs_lock(cfg):
             shutil.rmtree(job, ignore_errors=True)
@@ -745,7 +745,7 @@ def submit(cfg, stdin, stdout) -> int:
             _write_atomic(job / "job.json", job_rec)
             started = ex.start(cfg, job, h, lock_fd)    # SPEC-0503 (`local`: `_spawn`)
         except W.WorkerError as e:
-            return _unclaim(cfg, job, frames, e.stage, e.error)
+            return _unclaim(cfg, job, frames, e.stage, e.error, e.retryable)
         except OSError as e:
             return _unclaim(cfg, job, frames, "spawn", f"could not start the job process: {e}")
     finally:
@@ -1004,6 +1004,8 @@ def run_job(cfg, job: Path, proc: dict) -> int:
                       run_attempts=attempt)
     if attempt > 1:
         frames.emit("attempt", attempt=attempt)
+    if getattr(ex, "term_cancels", False):     # SPEC-0510: scancel / the time limit's TERM
+        _cancel_on_term(cancel)
     threading.Thread(target=_heartbeat, args=(job, sett["job_heartbeat_s"], stop),
                      daemon=True).start()
     threading.Thread(target=_watch, args=(job, proc, cancel, stop, ex.lease_cancels),
@@ -1055,6 +1057,21 @@ def run_job(cfg, job: Path, proc: dict) -> int:
     return 0 if state == "done" else W.EXIT_ERROR
 
 
+def _cancel_on_term(cancel: threading.Event) -> None:
+    """SPEC-0510: under Slurm, SIGTERM (`scancel --batch --signal=TERM`, the time limit's
+    `--signal=B:TERM`) is a cancel: the gates end and `done` goes out interrupted, as for a
+    `cancel` file. Only from the main thread (an in-process caller installs nothing)."""
+    def on_term(_signum, _frame):
+        if not cancel.is_set():
+            print("nw worker job: SIGTERM; cancelling", file=sys.stderr)
+            cancel.set()
+            threading.Thread(target=G.terminate_all, daemon=True).start()
+    try:
+        signal.signal(signal.SIGTERM, on_term)
+    except ValueError:
+        pass
+
+
 def _own_session(argv) -> int:
     """Run the job process again in a session of its own and wait for it. A job process started
     by hand (from a shell or a pipeline) shares the caller's process group, which the kill
@@ -1081,12 +1098,19 @@ def _own_session(argv) -> int:
 def main(argv=None) -> int:
     argv = sys.argv[1:] if argv is None else argv
     signal.signal(signal.SIGHUP, signal.SIG_IGN)
-    if os.getsid(0) != os.getpid():             # not `submit`'s spawn: started by hand
+    in_slurm = bool(os.environ.get("SLURM_JOB_ID"))
+    # not `submit`'s spawn: started by hand. A Slurm job is tracked by its cgroup, and its
+    # signals (scancel, the time limit) must reach this process: it stays as it is (SPEC-0510)
+    if os.getsid(0) != os.getpid() and not in_slurm:
         return _own_session(argv)
     job = Path(argv[0])
     from ..config import load_config
     cfg = load_config()
     lock_fd = _take_lock(job)
+    if lock_fd is None and in_slurm:
+        # submit (closing its fd just after sbatch) or a reader may hold it for a moment
+        from .executor_slurm import LOCK_WAIT_S
+        lock_fd = _take_lock_nb(job, LOCK_WAIT_S)
     if lock_fd is None:
         print(f"nw worker job: {job} is locked by another process", file=sys.stderr)
         return W.EXIT_ERROR

@@ -3581,7 +3581,10 @@ def _apply_step(ctx: _Ctx, state: dict, res: StepResult) -> dict:
                     "reason": decision.reason, "detail": decision.detail,
                     "resume_to": decision.resume_to})
             counters["timeout_regates"] += 1
-            state["gate_exclusive"] = {"entered_at": store.now_iso()}
+            # SPEC-0510: a worker under Slurm guarantees each job its allocation: the re-gate
+            # is a normal gate there, no exclusive box
+            if not workers.runs_slurm(cfg, run.worker):
+                state["gate_exclusive"] = {"entered_at": store.now_iso()}
             events.append(("note", {
                 "text": f"gate timeout: {', '.join(_timed_out_names(payload, timeouts))}; "
                         f"re-gating alone (timeout_regates "

@@ -4,7 +4,8 @@ live state and is admitted on the host, and how the synchronous `gate-job` runs.
 `local` (the default) is today's behaviour: a detached `python -m nightwright.agentic.worker_job`
 process in its own session (`worker_job._spawn`), a `cancel` file its `_watch` thread obeys, the
 lease/heartbeat state of `worker_job._live_state`, the host gate slot of `gate_slots.acquire`,
-and `gate-job` run in-process. A second executor (Slurm, SPEC-0510) registers under its own name.
+and `gate-job` run in-process. The Slurm executor (SPEC-0510, `executor_slurm.py`) is
+registered as `slurm`; a host uses it only when its own config opts in.
 
 The worker host's own config chooses: `agentic.workers.executor` (the coordinator never does).
 A job records the executor that started it in `job.json` (`executor`), so a later read, cancel
@@ -70,7 +71,12 @@ class LocalExecutor:
         return W._gate_job_local(cfg, stdin, stdout)
 
 
-_REGISTRY: dict[str, Callable[[], Executor]] = {"local": LocalExecutor}
+def _slurm() -> Executor:
+    from .executor_slurm import SlurmExecutor     # SPEC-0510 (opt-in: `executor: slurm`)
+    return SlurmExecutor()
+
+
+_REGISTRY: dict[str, Callable[[], Executor]] = {"local": LocalExecutor, "slurm": _slurm}
 
 
 def register(name: str, factory: Callable[[], Executor]) -> None:

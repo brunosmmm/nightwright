@@ -1,0 +1,578 @@
+{
+  "partitions": [
+    {
+      "nodes": {
+        "allowed_allocation": "",
+        "configured": "morais-Desktop",
+        "total": 1
+      },
+      "accounts": {
+        "allowed": "",
+        "deny": ""
+      },
+      "groups": {
+        "allowed": ""
+      },
+      "qos": {
+        "allowed": "",
+        "deny": "",
+        "assigned": ""
+      },
+      "alternate": "",
+      "tres": {
+        "billing_weights": "",
+        "configured": "cpu=10,mem=31955M,node=1,billing=10"
+      },
+      "cluster": "",
+      "select_type": [
+        "NONE"
+      ],
+      "cpus": {
+        "task_binding": [],
+        "total": 12
+      },
+      "defaults": {
+        "memory_per_cpu": 0,
+        "partition_memory_per_cpu": {
+          "set": false,
+          "infinite": false,
+          "number": 0
+        },
+        "partition_memory_per_node": {
+          "set": true,
+          "infinite": false,
+          "number": 0
+        },
+        "time": {
+          "set": false,
+          "infinite": false,
+          "number": 0
+        },
+        "job": ""
+      },
+      "flags": [],
+      "partition": {
+        "exclusive": "NO",
+        "oversubscribe": "NO",
+        "state": [
+          "UP"
+        ]
+      },
+      "grace_time": 0,
+      "maximums": {
+        "cpus_per_node": {
+          "set": false,
+          "infinite": true,
+          "number": 0
+        },
+        "cpus_per_socket": {
+          "set": false,
+          "infinite": true,
+          "number": 0
+        },
+        "memory_per_cpu": 0,
+        "partition_memory_per_cpu": {
+          "set": false,
+          "infinite": false,
+          "number": 0
+        },
+        "partition_memory_per_node": {
+          "set": true,
+          "infinite": false,
+          "number": 0
+        },
+        "nodes": {
+          "set": false,
+          "infinite": true,
+          "number": 0
+        },
+        "shares": 0,
+        "oversubscribe": {
+          "jobs": 0,
+          "flags": []
+        },
+        "time": {
+          "set": true,
+          "infinite": false,
+          "number": 240
+        },
+        "over_time_limit": {
+          "set": false,
+          "infinite": false,
+          "number": 0
+        }
+      },
+      "minimums": {
+        "nodes": 0
+      },
+      "name": "nw-campaign",
+      "node_sets": "",
+      "preempt_mode": [
+        "DISABLED"
+      ],
+      "priority": {
+        "job_factor": 1,
+        "tier": 4
+      },
+      "timeouts": {
+        "resume": {
+          "set": false,
+          "infinite": false,
+          "number": 0
+        },
+        "suspend": {
+          "set": false,
+          "infinite": false,
+          "number": 0
+        }
+      },
+      "topology": "",
+      "suspend_time": {
+        "set": false,
+        "infinite": false,
+        "number": 0
+      }
+    },
+    {
+      "nodes": {
+        "allowed_allocation": "",
+        "configured": "morais-Desktop",
+        "total": 1
+      },
+      "accounts": {
+        "allowed": "",
+        "deny": ""
+      },
+      "groups": {
+        "allowed": ""
+      },
+      "qos": {
+        "allowed": "",
+        "deny": "",
+        "assigned": ""
+      },
+      "alternate": "",
+      "tres": {
+        "billing_weights": "",
+        "configured": "cpu=10,mem=31955M,node=1,billing=10"
+      },
+      "cluster": "",
+      "select_type": [
+        "NONE"
+      ],
+      "cpus": {
+        "task_binding": [],
+        "total": 12
+      },
+      "defaults": {
+        "memory_per_cpu": 0,
+        "partition_memory_per_cpu": {
+          "set": false,
+          "infinite": false,
+          "number": 0
+        },
+        "partition_memory_per_node": {
+          "set": true,
+          "infinite": false,
+          "number": 0
+        },
+        "time": {
+          "set": false,
+          "infinite": false,
+          "number": 0
+        },
+        "job": ""
+      },
+      "flags": [
+        "DEFAULT"
+      ],
+      "partition": {
+        "exclusive": "NO",
+        "oversubscribe": "NO",
+        "state": [
+          "UP"
+        ]
+      },
+      "grace_time": 0,
+      "maximums": {
+        "cpus_per_node": {
+          "set": true,
+          "infinite": false,
+          "number": 8
+        },
+        "cpus_per_socket": {
+          "set": false,
+          "infinite": true,
+          "number": 0
+        },
+        "memory_per_cpu": 0,
+        "partition_memory_per_cpu": {
+          "set": false,
+          "infinite": false,
+          "number": 0
+        },
+        "partition_memory_per_node": {
+          "set": true,
+          "infinite": false,
+          "number": 0
+        },
+        "nodes": {
+          "set": false,
+          "infinite": true,
+          "number": 0
+        },
+        "shares": 0,
+        "oversubscribe": {
+          "jobs": 0,
+          "flags": []
+        },
+        "time": {
+          "set": true,
+          "infinite": false,
+          "number": 240
+        },
+        "over_time_limit": {
+          "set": false,
+          "infinite": false,
+          "number": 0
+        }
+      },
+      "minimums": {
+        "nodes": 0
+      },
+      "name": "nw-gatejob",
+      "node_sets": "",
+      "preempt_mode": [
+        "DISABLED"
+      ],
+      "priority": {
+        "job_factor": 1,
+        "tier": 3
+      },
+      "timeouts": {
+        "resume": {
+          "set": false,
+          "infinite": false,
+          "number": 0
+        },
+        "suspend": {
+          "set": false,
+          "infinite": false,
+          "number": 0
+        }
+      },
+      "topology": "",
+      "suspend_time": {
+        "set": false,
+        "infinite": false,
+        "number": 0
+      }
+    },
+    {
+      "nodes": {
+        "allowed_allocation": "",
+        "configured": "morais-Desktop",
+        "total": 1
+      },
+      "accounts": {
+        "allowed": "",
+        "deny": ""
+      },
+      "groups": {
+        "allowed": ""
+      },
+      "qos": {
+        "allowed": "",
+        "deny": "",
+        "assigned": ""
+      },
+      "alternate": "",
+      "tres": {
+        "billing_weights": "",
+        "configured": "cpu=10,mem=31955M,node=1,billing=10"
+      },
+      "cluster": "",
+      "select_type": [
+        "NONE"
+      ],
+      "cpus": {
+        "task_binding": [],
+        "total": 12
+      },
+      "defaults": {
+        "memory_per_cpu": 0,
+        "partition_memory_per_cpu": {
+          "set": false,
+          "infinite": false,
+          "number": 0
+        },
+        "partition_memory_per_node": {
+          "set": true,
+          "infinite": false,
+          "number": 0
+        },
+        "time": {
+          "set": false,
+          "infinite": false,
+          "number": 0
+        },
+        "job": ""
+      },
+      "flags": [],
+      "partition": {
+        "exclusive": "NO",
+        "oversubscribe": "NO",
+        "state": [
+          "UP"
+        ]
+      },
+      "grace_time": 0,
+      "maximums": {
+        "cpus_per_node": {
+          "set": true,
+          "infinite": false,
+          "number": 4
+        },
+        "cpus_per_socket": {
+          "set": false,
+          "infinite": true,
+          "number": 0
+        },
+        "memory_per_cpu": 0,
+        "partition_memory_per_cpu": {
+          "set": false,
+          "infinite": false,
+          "number": 0
+        },
+        "partition_memory_per_node": {
+          "set": true,
+          "infinite": false,
+          "number": 0
+        },
+        "nodes": {
+          "set": false,
+          "infinite": true,
+          "number": 0
+        },
+        "shares": 0,
+        "oversubscribe": {
+          "jobs": 0,
+          "flags": []
+        },
+        "time": {
+          "set": true,
+          "infinite": false,
+          "number": 240
+        },
+        "over_time_limit": {
+          "set": false,
+          "infinite": false,
+          "number": 0
+        }
+      },
+      "minimums": {
+        "nodes": 0
+      },
+      "name": "nw-persona",
+      "node_sets": "",
+      "preempt_mode": [
+        "DISABLED"
+      ],
+      "priority": {
+        "job_factor": 1,
+        "tier": 2
+      },
+      "timeouts": {
+        "resume": {
+          "set": false,
+          "infinite": false,
+          "number": 0
+        },
+        "suspend": {
+          "set": false,
+          "infinite": false,
+          "number": 0
+        }
+      },
+      "topology": "",
+      "suspend_time": {
+        "set": false,
+        "infinite": false,
+        "number": 0
+      }
+    },
+    {
+      "nodes": {
+        "allowed_allocation": "",
+        "configured": "morais-Desktop",
+        "total": 1
+      },
+      "accounts": {
+        "allowed": "",
+        "deny": ""
+      },
+      "groups": {
+        "allowed": ""
+      },
+      "qos": {
+        "allowed": "",
+        "deny": "",
+        "assigned": ""
+      },
+      "alternate": "",
+      "tres": {
+        "billing_weights": "",
+        "configured": "cpu=10,mem=31955M,node=1,billing=10"
+      },
+      "cluster": "",
+      "select_type": [
+        "NONE"
+      ],
+      "cpus": {
+        "task_binding": [],
+        "total": 12
+      },
+      "defaults": {
+        "memory_per_cpu": 0,
+        "partition_memory_per_cpu": {
+          "set": false,
+          "infinite": false,
+          "number": 0
+        },
+        "partition_memory_per_node": {
+          "set": true,
+          "infinite": false,
+          "number": 0
+        },
+        "time": {
+          "set": false,
+          "infinite": false,
+          "number": 0
+        },
+        "job": ""
+      },
+      "flags": [],
+      "partition": {
+        "exclusive": "NO",
+        "oversubscribe": "NO",
+        "state": [
+          "UP"
+        ]
+      },
+      "grace_time": 0,
+      "maximums": {
+        "cpus_per_node": {
+          "set": false,
+          "infinite": true,
+          "number": 0
+        },
+        "cpus_per_socket": {
+          "set": false,
+          "infinite": true,
+          "number": 0
+        },
+        "memory_per_cpu": 0,
+        "partition_memory_per_cpu": {
+          "set": false,
+          "infinite": false,
+          "number": 0
+        },
+        "partition_memory_per_node": {
+          "set": true,
+          "infinite": false,
+          "number": 0
+        },
+        "nodes": {
+          "set": false,
+          "infinite": true,
+          "number": 0
+        },
+        "shares": 0,
+        "oversubscribe": {
+          "jobs": 0,
+          "flags": []
+        },
+        "time": {
+          "set": true,
+          "infinite": false,
+          "number": 240
+        },
+        "over_time_limit": {
+          "set": false,
+          "infinite": false,
+          "number": 0
+        }
+      },
+      "minimums": {
+        "nodes": 0
+      },
+      "name": "nw-bulk",
+      "node_sets": "",
+      "preempt_mode": [
+        "REQUEUE"
+      ],
+      "priority": {
+        "job_factor": 1,
+        "tier": 1
+      },
+      "timeouts": {
+        "resume": {
+          "set": false,
+          "infinite": false,
+          "number": 0
+        },
+        "suspend": {
+          "set": false,
+          "infinite": false,
+          "number": 0
+        }
+      },
+      "topology": "",
+      "suspend_time": {
+        "set": false,
+        "infinite": false,
+        "number": 0
+      }
+    }
+  ],
+  "last_update": {
+    "set": true,
+    "infinite": false,
+    "number": 1794287143
+  },
+  "meta": {
+    "plugin": {
+      "type": "",
+      "name": "",
+      "data_parser": "data_parser\/v0.0.45",
+      "accounting_storage": ""
+    },
+    "client": {
+      "source": "",
+      "user": "bruno",
+      "group": "bruno"
+    },
+    "command": [
+      "scontrol",
+      "show",
+      "partition",
+      "--json"
+    ],
+    "slurm": {
+      "version": {
+        "major": "26",
+        "micro": "5",
+        "minor": "05"
+      },
+      "release": "26.05.5",
+      "cluster": "nw"
+    }
+  },
+  "errors": [],
+  "warnings": [
+    {
+      "description": "Slurm accounting storage is disabled. Could not query the following: [TRES].",
+      "source": ""
+    }
+  ]
+}

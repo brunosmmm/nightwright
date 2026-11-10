@@ -98,6 +98,7 @@ class GateRun:
     changed: tuple | None = None    # SPEC-0368: paths the gates wrote in the worker's checkout;
     #                                 None on a local run
     placement: dict | None = None   # SPEC-0505: why a local run ran locally (`local_placement`)
+    wait_reason: str | None = None  # SPEC-0510: why a Slurm worker job waited (its pending reason)
 
 
 LOCAL_REASONS = ("requested_local", "ineligible", "no_placeable_worker", "transport", "tree",
@@ -1131,6 +1132,8 @@ def as_payload(run: GateRun) -> dict:
         out["changed"] = list(run.changed)
     if run.reused:                          # SPEC-0359: close gates a loop result stood in for
         out["reused"] = list(run.reused)
+    if run.wait_reason:                     # SPEC-0510: only a Slurm job that waited has one
+        out["wait_reason"] = run.wait_reason
     out["results"] = results
     return out
 

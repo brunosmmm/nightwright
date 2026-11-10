@@ -62,7 +62,7 @@ EXIT_ERROR = 3
 EXIT_REFUSED = 2
 UPDATING_ERROR = "worker updating"
 SSH_SUBCOMMANDS = ("info", "have", "gate-job", "gc", "submit", "attach", "poll", "cancel", "jobs",
-                   "claude-check", "cursor-check", "pi-check", "update")
+                   "claude-check", "cursor-check", "pi-check", "update", "slurm-check")
 # when this interpreter started (SPEC-0369): a claim that began before an install did is the old
 # code, and must not run against the venv that install replaced
 PROCESS_STARTED = time.time()
@@ -1518,7 +1518,8 @@ def check_ssh_command(original: str | None) -> list[str]:
     `have --repo <key> <sha>...`; `gate-job`; `gc [--keep-days <n>]`; and SPEC-0340's
     `submit`; `attach <job> [--from <n>]`; `poll <job> [--from <n>] [--renew]`;
     `cancel <job>`; `jobs [--json]`; SPEC-0344's `claude-check [--auth]`; SPEC-0436's
-    `cursor-check`; SPEC-0465's `pi-check`; SPEC-0369's `update [--force]`."""
+    `cursor-check`; SPEC-0465's `pi-check`; SPEC-0369's `update [--force]`; SPEC-0510's
+    `slurm-check [--json]`."""
     if not original or not original.strip():
         raise ValueError("empty command")
     try:
@@ -1552,6 +1553,8 @@ def check_ssh_command(original: str | None) -> list[str]:
         ok = args == []
     elif sub == "update":                       # SPEC-0369
         ok = args in ([], ["--force"])
+    elif sub == "slurm-check":                  # SPEC-0510
+        ok = args in ([], ["--json"])
     elif sub == "cancel":
         ok = len(args) == 1 and _job_arg(args[0])
     elif sub in ("attach", "poll"):

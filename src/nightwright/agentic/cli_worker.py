@@ -30,6 +30,7 @@ def worker_group():
     nw worker jobs --json              the jobs on this worker and their states
     nw worker gc --keep-days 2         age out job dirs and cached objects
     nw worker update [--force]         install the wheel on stdin (SPEC-0369)
+    nw worker slurm-check [--json]     can this user run Slurm jobs (SPEC-0510)
     nw worker ssh-command              the forced command for the worker's SSH key
     nw worker serve --enrol BLOB       a pull worker: dial the coordinator (SPEC-0334)
     """
@@ -67,6 +68,24 @@ def worker_cursor_check(cfg):
     nw.worker.cursor_check.v1 JSON line; exit 1 when it fails. Not a paid `-p`."""
     rec = W.cursor_check()
     click.echo(json.dumps(rec))
+    if not rec["ok"]:
+        raise SystemExit(1)
+
+
+@worker_group.command("slurm-check")
+@click.option("--json", "as_json", is_flag=True, help="emit one nw.worker.slurm_check.v1 line")
+@click.pass_obj
+def worker_slurm_check(cfg, as_json):
+    """SPEC-0510: whether this user can run Slurm jobs here: version, node, config, and two
+    small test jobs (2 cpus + 1 GiB seen inside the cgroup; a 200 MiB job allocating 600 MiB
+    ends OUT_OF_MEMORY). Exit 1 when a check fails. Submits real jobs (a minute or two)."""
+    from . import executor_slurm as ES
+    rec = ES.slurm_check(cfg)
+    if as_json:
+        click.echo(json.dumps(rec))
+    else:
+        for c in rec["checks"]:
+            click.echo(f"{'ok  ' if c['ok'] else 'FAIL'} {c['name']}: {c['detail']}")
     if not rec["ok"]:
         raise SystemExit(1)
 
@@ -244,7 +263,8 @@ def worker_update(cfg, force):
 @worker_group.command("ssh-command")
 def worker_ssh_command():
     """The SSH forced command: exec `nw worker
-    <info|have|gate-job|gc|submit|attach|poll|cancel|jobs|claude-check|cursor-check|update>` from SSH_ORIGINAL_COMMAND, refuse
+    <info|have|gate-job|gc|submit|attach|poll|cancel|jobs|claude-check|cursor-check|update|
+    slurm-check>` from SSH_ORIGINAL_COMMAND, refuse
     anything else (exit 2)."""
     raise SystemExit(W.ssh_command())
 

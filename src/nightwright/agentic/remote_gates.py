@@ -767,6 +767,7 @@ def _dispatch(worker: dict, header: dict, bundle: Path, cfg, cid, seq: int, stop
     gates_dir = store.gates_dir(cfg, cid) if gates_dir is None else Path(gates_dir)
     results: list = []
     started, worker_wait = False, 0.0
+    wait_reason = None                          # SPEC-0510: Slurm's pending reason, if any
     t0, started_at = time.monotonic(), store.now_iso()
     # the upload (header + bundle) gets its own bound, scaled to the bundle; the wait for
     # `started` is bounded by `slot_wait_s` from the end of the upload
@@ -864,7 +865,10 @@ def _dispatch(worker: dict, header: dict, bundle: Path, cfg, cid, seq: int, stop
                 return Outcome(G.GateRun(seq, ok, tuple(results),
                                          str(frame.get("started_at") or started_at), duration,
                                          interrupted=cut, worker=worker["name"],
-                                         changed=changed), worker_wait)
+                                         changed=changed, wait_reason=wait_reason),
+                               worker_wait)
+            elif kind == "slot_wait" and isinstance(frame.get("reason"), str):
+                wait_reason = frame["reason"][:200]     # SPEC-0510: a Slurm job's pending reason
             # `accepted` and `slot_wait` are progress only
     except RemoteFailure as f:
         grace = min(grace, 2.0)
@@ -1283,6 +1287,7 @@ class _Job:
         self.seen = 0
         self.results: list = []
         self.started, self.worker_wait = False, 0.0
+        self.wait_reason = None                 # SPEC-0510: Slurm's last pending reason
         self.started_at, self.t0 = store.now_iso(), time.monotonic()
         self.last_seen = _now()
         self.deadline = RJ.epoch(rec.get("deadline_at")) or (_now() + MAX_JOB_TIMEOUT_S)
@@ -1332,6 +1337,11 @@ class _Job:
                                            write=n > self.cursor))
         elif kind == "done":
             out = self._done(frame, n)
+        elif kind == "slot_wait" and isinstance(frame.get("reason"), str):
+            # SPEC-0510: a job Slurm keeps PENDING; its reason is live on the job record
+            self.wait_reason = frame["reason"][:200]
+            if n > self.cursor:
+                RJ.update(self.cfg, self.job_id, wait_reason=self.wait_reason)
         if n > self.cursor:
             self.cursor = n
             self.saw_worker(cursor=n, state="attached")
@@ -1362,7 +1372,8 @@ class _Job:
         return G.GateRun(self.seq, ok, tuple(self.results),
                          str(frame.get("started_at") or self.started_at), duration,
                          worker=self.worker["name"], job_id=self.job_id,
-                         event_uid=f"{self.job_id}:{n}", changed=changed)
+                         event_uid=f"{self.job_id}:{n}", changed=changed,
+                         wait_reason=self.wait_reason)
 
 
 def _quiet_check(job: _Job):
