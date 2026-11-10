@@ -1,7 +1,7 @@
 ---
 id: SPEC-0473
 title: Public backlog on an orphan nw-backlog branch
-status: accepted
+status: done
 owner: user
 created: 2026-11-08
 updated: 2026-11-10
@@ -622,7 +622,7 @@ drops unknown keys, and refreshes `updated` and `updated_by`.
       `idea` key in the blob. An edit that changes the title of a file that
       also contains `idea` and `IDEA-1019` writes a blob with no key outside
       the format, the new title, and the previous `created` and `created_by`.
-- [ ] `parse_item` returns the reason token of the first matching validation
+- [x] `parse_item` returns the reason token of the first matching validation
       row for a fixture of each row, including YAML 1.1 `status: yes`, a
       duplicate key, a filename/id mismatch, `SPEC-12`, an offset timestamp,
       and `2026-02-31T00:00:00Z`. `edit`, `close`, and `reopen` of that blob
@@ -644,7 +644,7 @@ drops unknown keys, and refreshes `updated` and `updated_by`.
       returns `status` to `open`, and a second `reopen` exits 1 with
       `<id> is already open` and no commit. Unknown id exits 1 with
       `<id> is not on nw-backlog`.
-- [ ] With `user.name` or `user.email` missing or whitespace-only, `add` exits
+- [x] With `user.name` or `user.email` missing or whitespace-only, `add` exits
       1, prints `<key> is unset` for each such key with the name line first,
       and does not call `hash-object`. A value that contains a line break
       prints `<key> contains a line break`. A name containing `<` or `>`, and
@@ -698,7 +698,7 @@ drops unknown keys, and refreshes `updated` and `updated_by`.
       If the second tip already contains the minted id, `add` exits 1 with
       `<id> is already on nw-backlog`, does not call `update-ref` again, and
       does not mint a different id.
-- [ ] `--repo` selects the repository that receives the branch. The current
+- [x] `--repo` selects the repository that receives the branch. The current
       directory is the default. A `--repo` that is not a non-bare work tree
       exits 1 with `not a git work tree` after argument validation.
       `nw backlog --help` lists `add`, `edit`, `close`, and `reopen` and does
@@ -847,6 +847,17 @@ drops unknown keys, and refreshes `updated` and `updated_by`.
 - `python3 tools/spec_lint.py --write-ledger` and `python3 tools/spec_lint.py` — exit 0.
 - Full suite left to gating.
 
+### Test record (campaign loop 0, 2026-11-10)
+
+- `uv run pytest -q tests/test_backlog.py` — 76 passed (added
+  ``test_no_visibility_flag_and_ref_is_a_branch``; ticked remaining acceptance
+  criteria).
+- Manual checkout checks from the test plan: ``HEAD``, porcelain status, and work
+  tree unchanged after ``add`` on this worktree; parentless ``nw-backlog``;
+  author matches local identity; symbolic ref is ``refs/heads/nw-backlog``.
+- `python3 tools/spec_lint.py --write-ledger` and `python3 tools/spec_lint.py` — exit 0.
+- Full suite left to gating.
+
 ## Clock Log
 
 No session is recorded in this file. Implementation clocks IDEA-1019 with
@@ -868,13 +879,13 @@ move.
 
 ## Definition of done
 
-- [ ] Acceptance criteria all met.
-- [ ] Test plan executed; automated tests pass; manual steps performed and
+- [x] Acceptance criteria all met.
+- [x] Test plan executed; automated tests pass; manual steps performed and
       noted in the spec.
-- [ ] No regressions.
-- [ ] Spec body updated to match what shipped.
-- [ ] `docs/LEDGER.md` regenerated (`python3 tools/spec_lint.py --write-ledger`).
-- [ ] `python3 tools/spec_lint.py` exits 0.
+- [x] No regressions.
+- [x] Spec body updated to match what shipped.
+- [x] `docs/LEDGER.md` regenerated (`python3 tools/spec_lint.py --write-ledger`).
+- [x] `python3 tools/spec_lint.py` exits 0.
 
 ## Open questions
 

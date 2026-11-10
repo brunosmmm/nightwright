@@ -1176,6 +1176,27 @@ def test_repo_flag_and_command_surface(tmp_path, monkeypatch):
     assert "--clear-spec" not in add_help
 
 
+def test_no_visibility_flag_and_ref_is_a_branch(tmp_path, monkeypatch):
+    freeze(monkeypatch)
+    repo = init_repo(tmp_path / "repo")
+    vis = ("--visibility", "--public", "--private")
+    for cmd in ("add", "edit", "close", "reopen"):
+        help_text = CliRunner().invoke(cli, ["backlog", cmd, "--help"]).output
+        for flag in vis:
+            assert flag not in help_text
+    ident = added(nw(repo, ["add", "--title", "T", "--summary", "S"]))
+    assert b"visibility" not in cat(repo, f"{ident}.md")
+    for step in (
+        ["edit", ident, "--title", "Next"],
+        ["close", ident],
+        ["reopen", ident],
+    ):
+        assert nw(repo, step).exit_code == 0
+        assert b"visibility" not in cat(repo, f"{ident}.md")
+    sym = git(repo, "rev-parse", "--symbolic-full-name", "nw-backlog").stdout.decode().strip()
+    assert sym == REF
+
+
 def test_refuses_non_utf8_git_identity(tmp_path, monkeypatch, git_log):
     freeze(monkeypatch)
     repo = init_repo(tmp_path / "repo", name=None)
