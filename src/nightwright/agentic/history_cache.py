@@ -845,6 +845,28 @@ def _cache_tree_corrupt(root: Path, sources: dict | None = None) -> bool:
         _v1_cursors_match_records_quiet(root, v1_files)
         or _v1_cursors_match(root, v1_files)
     )
+    if fast:
+        ver = root / "version"
+        try:
+            if not ver.is_file() or ver.read_bytes() != b"1\n":
+                return True
+        except OSError:
+            return True
+        for path in root.iterdir():
+            if path.is_file() and _is_tmp(path.name):
+                try:
+                    path.unlink()
+                except OSError:
+                    pass
+        camp = root / "campaigns"
+        if camp.is_dir():
+            for path in camp.iterdir():
+                if path.is_file() and _is_tmp(path.name):
+                    try:
+                        path.unlink()
+                    except OSError:
+                        pass
+        return False
     idx = root / "index.jsonl"
     if idx.is_file():
         if not (fast and _cursor_matches(idx, v1_files.get("index.jsonl") or {})):
@@ -2100,6 +2122,16 @@ def _cold_fill(cfg, root: Path, *, now=None, progress=None, _hold_guard: bool = 
 
 def _ensure_writable_cache(cfg, root: Path, *, now=None, progress=None) -> bool:
     sources_peek = _read_json(root / "sources.json")
+    if (
+        _sources_ok(sources_peek)
+        and (root / "version").is_file()
+        and (root / "index.jsonl").is_file()
+        and (root / "records.jsonl").is_file()
+        and not (root / "index.writes.jsonl").is_file()
+    ):
+        v1_peek = (sources_peek or {}).get("v1_files") or {}
+        if isinstance(v1_peek, dict) and _v1_cursors_match_records_quiet(root, v1_peek):
+            return False
     if _cache_tree_corrupt(root, sources_peek):
         with _cache_write_guard(root):
             _clear_v1_except_lock(root)
@@ -2489,6 +2521,9 @@ def _sources_unchanged_light(cfg, stored: dict) -> bool:
         if name in ("escalations", "sentinel"):
             if prev_trees.get(name) != _agentic_tree_sig(agentic, name, sub):
                 return False
+        elif name == "reviews" and isinstance(prev_trees.get(name), str):
+            if prev_trees.get(name) != _tree_sig(root_path):
+                return False
         elif _tree_dirs_snapshot(root_path) != prev_tree_dirs.get(name):
             return False
     for resolved, old in (stored.get("transcripts") or {}).items():
@@ -2512,7 +2547,7 @@ def _cache_refresh_quiet(cfg, root: Path, sources: dict) -> bool:
     live = _live_campaign_ids(cfg)
     if {r.get("campaign") for r in index_rows if r.get("campaign")} != live:
         return False
-    if _stale_terminal_ids(cfg, index_rows, sources):
+    if _stale_terminal_ids_run_inputs_only(cfg, index_rows, sources):
         return False
     live_cids, missing = _live_refresh_targets(cfg, index_rows)
     if live_cids or missing:
@@ -2527,8 +2562,6 @@ def _records_cache_quiet(cfg, root: Path, sources: dict) -> bool:
         return False
     if (root / "index.writes.jsonl").is_file():
         return False
-    if not _sources_unchanged_light(cfg, sources):
-        return False
     v1_files = sources.get("v1_files") or {}
     if not isinstance(v1_files, dict):
         return False
@@ -2540,13 +2573,16 @@ def _records_cache_quiet(cfg, root: Path, sources: dict) -> bool:
     if fp == _INDEX_QUIET_KEY:
         if not _v1_cursors_match_records_quiet(root, v1_files):
             return False
-        stale = _stale_terminal_ids_records_quiet(cfg, index_rows, sources)
+        live_cids, missing = _live_refresh_targets(cfg, index_rows)
+        return not live_cids and not missing
     else:
+        if not _sources_unchanged_light(cfg, sources):
+            return False
         if not _v1_cursors_match_records_quiet(root, v1_files):
             return False
         stale = _stale_terminal_ids_for_records(cfg, index_rows, sources)
-    if stale:
-        return False
+        if stale:
+            return False
     live_cids, missing = _live_refresh_targets(cfg, index_rows)
     return not live_cids and not missing
 
@@ -2994,6 +3030,15 @@ def _campaign_history_cached(cfg, cid, now, root: Path) -> dict:
     H = _lazy_history()
     _ensure_writable_cache(cfg, root, now=now)
     _apply_pending_index_writes(cfg, root)
+    sources = _read_json(root / "sources.json") or {}
+    index_rows = _read_index(root)
+    row = next((r for r in index_rows if r.get("campaign") == cid), None)
+    if row and row.get("outcome") in _TERMINAL_OUTCOMES:
+        hit = _doc_hit(cfg, root, cid, now, sources)
+        base = store.campaign_dir(cfg, cid)
+        sig = _campaign_signature_from_root_scan(base) if base is not None else None
+        if hit is not None and sig is not None and hit.get("signature") == sig:
+            return hit
     _sync_globals(cfg, root, now)
     sources = _read_json(root / "sources.json") or {}
     index_rows = _read_index(root)
@@ -3094,9 +3139,6 @@ def _history_index_cached(cfg, now, progress, root: Path) -> list[dict]:
             cids = _campaign_ids(cfg)
             for done, cid in enumerate(cids, 1):
                 progress(done, len(cids))
-        shares = _conductor_shares(cfg, root, index_rows, sources)
-        if shares is not None:
-            _apply_conductor(index_rows, shares)
         return [_public_index_row(row) for row in _sort_index(index_rows)]
 
     _apply_pending_index_writes(cfg, root)

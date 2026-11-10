@@ -17,6 +17,8 @@ from nightwright.agentic import schemas as SC
 from nightwright.agentic import store
 import history_scale
 
+pytestmark = pytest.mark.fast
+
 FIXTURE = Path(__file__).parent / "fixtures" / "agentic_history"
 UTC = dt.timezone.utc
 NOW = dt.datetime(2026, 11, 7, 12, 0, tzinfo=UTC)

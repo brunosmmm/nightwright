@@ -14,6 +14,8 @@ import pytest
 
 import history_scale as HS
 
+pytestmark = pytest.mark.fast
+
 FIXTURE_AGENTIC = HS.FIXTURE_DIR / "agentic"
 SOURCES = sorted(p.name for p in (FIXTURE_AGENTIC / "campaigns").iterdir() if p.is_dir())
 MINTED_RE = re.compile(r"-\d{8}-[0-9a-f]{4}$")

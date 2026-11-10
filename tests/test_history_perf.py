@@ -13,6 +13,8 @@ from nightwright.agentic import history as H
 from nightwright.agentic import store
 import history_scale as HS
 
+pytestmark = pytest.mark.integration
+
 UTC = dt.timezone.utc
 NOW = dt.datetime(2026, 11, 7, 12, 0, tzinfo=UTC)
 LIMIT_COLD = 30.0
