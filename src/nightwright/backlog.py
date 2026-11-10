@@ -173,7 +173,7 @@ def parse_item(filename: str, blob: bytes | str):
         doc = yaml.load(matched.group(1) + "\n", Loader=_ItemLoader)
     except _DuplicateKey as e:
         key = e.key if isinstance(e.key, str) else str(e.key)
-        return f"duplicate key {key}"
+        return f"duplicate key {_safe_path(key)}"
     except (yaml.YAMLError, ValueError, TypeError, RecursionError):
         return "invalid yaml"
     if isinstance(doc, dict) and any(not isinstance(key, str) for key in doc):
@@ -275,6 +275,12 @@ def _safe_path(path: str) -> str:
             out.append("\\r")
         elif o == 0x1B:
             out.append("\\x1b")
+        elif o == 0x85:
+            out.append("\\u0085")
+        elif o == 0x2028:
+            out.append("\\u2028")
+        elif o == 0x2029:
+            out.append("\\u2029")
         else:
             out.append(ch)
     return "".join(out).encode("utf-8", "backslashreplace").decode("utf-8")
@@ -321,6 +327,7 @@ def _git(repo, args, *, env_extra=None, index=None, input=None, check=True):
     env = os.environ.copy()
     for key in _GIT_UNSET:
         env.pop(key, None)
+    env["GIT_NO_REPLACE_OBJECTS"] = "1"
     if index is not None:
         env["GIT_INDEX_FILE"] = str(index)
     if env_extra:

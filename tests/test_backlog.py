@@ -1153,6 +1153,163 @@ def test_compare_and_swap_retry_lands_commit(tmp_path, monkeypatch):
     assert 'title: "T"' in text
 
 
+def test_git_child_sets_git_no_replace_objects(tmp_path, monkeypatch):
+    repo = init_repo(tmp_path / "repo")
+    seen = []
+
+    def fake_run(cmd, **kwargs):
+        seen.append(kwargs.get("env", {}).get("GIT_NO_REPLACE_OBJECTS"))
+        return subprocess.CompletedProcess(cmd, 0, stdout=b"true\n", stderr=b"")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    B._git(repo, ["rev-parse", "--is-inside-work-tree"], check=False)
+    assert seen == ["1"]
+
+
+def test_cas_retry_stops_on_later_stray_tip(tmp_path, monkeypatch, git_log):
+    freeze(monkeypatch)
+    repo = init_repo(tmp_path / "repo")
+    ident = added(nw(repo, ["add", "--title", "Seed", "--summary", "S"]))
+    tip = rev(repo, "nw-backlog")
+    rival = []
+
+    def on_call(_args):
+        sha = commit_tree(repo, {
+            "README.md": _SPEC_README_BYTES,
+            f"{ident}.md": cat(repo, f"{ident}.md"),
+            "notes.txt": b"stray\n",
+        }, parent=tip)
+        point(repo, sha)
+        rival.append(sha)
+        return _Failed()
+
+    point(repo, tip)
+    calls = _fail_update(monkeypatch, repo, on_call)
+    git_log.clear()
+    proc = nw(repo, ["edit", ident, "--title", "Next"])
+    assert proc.exit_code == 1
+    assert proc.stderr == (
+        "refs/heads/nw-backlog is not an orphan backlog\n"
+        "stray: notes.txt\n"
+    )
+    assert len(calls) == 1
+    assert rev(repo, "nw-backlog") == rival[0]
+
+
+def test_cas_retry_stops_on_later_invalid_item(tmp_path, monkeypatch, git_log):
+    freeze(monkeypatch)
+    repo = init_repo(tmp_path / "repo")
+    ident = added(nw(repo, ["add", "--title", "Seed", "--summary", "S"]))
+    tip = rev(repo, "nw-backlog")
+    rival = []
+
+    def on_call(_args):
+        bad = cat(repo, f"{ident}.md").replace(b"status: open\n", b"status: yes\n")
+        sha = commit_tree(repo, {
+            "README.md": _SPEC_README_BYTES,
+            f"{ident}.md": bad,
+        }, parent=tip)
+        point(repo, sha)
+        rival.append(sha)
+        return _Failed()
+
+    point(repo, tip)
+    calls = _fail_update(monkeypatch, repo, on_call)
+    git_log.clear()
+    proc = nw(repo, ["edit", ident, "--title", "Next"])
+    assert proc.exit_code == 1
+    assert proc.stderr == f"invalid backlog item {ident}: status\n"
+    assert len(calls) == 1
+    assert rev(repo, "nw-backlog") == rival[0]
+
+
+def test_cas_retry_stops_when_item_already_closed(tmp_path, monkeypatch, git_log):
+    freeze(monkeypatch)
+    repo = init_repo(tmp_path / "repo")
+    ident = added(nw(repo, ["add", "--title", "Seed", "--summary", "S"]))
+    tip = rev(repo, "nw-backlog")
+    closed = cat(repo, f"{ident}.md").replace(b"status: open\n", b"status: closed\n")
+    rival = []
+
+    def on_call(_args):
+        sha = commit_tree(repo, {"README.md": _SPEC_README_BYTES, f"{ident}.md": closed}, parent=tip)
+        point(repo, sha)
+        rival.append(sha)
+        return _Failed()
+
+    point(repo, tip)
+    calls = _fail_update(monkeypatch, repo, on_call)
+    git_log.clear()
+    proc = nw(repo, ["close", ident])
+    assert proc.exit_code == 1
+    assert proc.stderr == f"{ident} is already closed\n"
+    assert len(calls) == 1
+    assert rev(repo, "nw-backlog") == rival[0]
+
+
+def test_cas_retry_stops_on_later_noop_edit(tmp_path, monkeypatch, git_log):
+    freeze(monkeypatch)
+    repo = init_repo(tmp_path / "repo")
+    ident = added(nw(repo, ["add", "--title", "Seed", "--summary", "S"]))
+    tip = rev(repo, "nw-backlog")
+    rival = []
+
+    def on_call(_args):
+        already = cat(repo, f"{ident}.md").replace(b'title: "Seed"', b'title: "Next"')
+        sha = commit_tree(repo, {
+            "README.md": _SPEC_README_BYTES,
+            f"{ident}.md": already,
+        }, parent=tip)
+        point(repo, sha)
+        rival.append(sha)
+        return _Failed()
+
+    point(repo, tip)
+    calls = _fail_update(monkeypatch, repo, on_call)
+    git_log.clear()
+    proc = nw(repo, ["edit", ident, "--title", "Next"])
+    assert proc.exit_code == 0
+    assert proc.stderr == ""
+    assert len(calls) == 1
+    assert rev(repo, "nw-backlog") == rival[0]
+
+
+def test_replace_ref_cannot_drop_sibling_item(tmp_path, monkeypatch):
+    freeze(monkeypatch)
+    repo = init_repo(tmp_path / "repo")
+    draws = [bytes.fromhex("abcd123456"), bytes.fromhex("99e23a5c56")]
+    monkeypatch.setattr(B.secrets, "token_bytes", lambda n: draws.pop(0))
+    first = added(nw(repo, ["add", "--title", "A", "--summary", "S"]))
+    second = added(nw(repo, ["add", "--title", "B", "--summary", "S"]))
+    tip = rev(repo, "nw-backlog")
+    slim = commit_tree(repo, {
+        "README.md": _SPEC_README_BYTES,
+        f"{first}.md": cat(repo, f"{first}.md"),
+    })
+    git(repo, "update-ref", f"refs/replace/{tip}", slim)
+    proc = nw(repo, ["edit", first, "--title", "A2"])
+    assert proc.exit_code == 0, (proc.stdout, proc.stderr)
+    assert f"{second}.md" in names(repo)
+    assert f"{first}.md" in names(repo)
+
+
+def test_parse_item_duplicate_key_token_is_safe_path():
+    blob = (
+        "---\n"
+        '"id\\ninj": 1\n'
+        '"id\\ninj": 2\n'
+        "id: REQ-K7H3MQ2P\n"
+        'title: "T"\n'
+        "status: open\n"
+        "created: 2026-11-07T15:41:00Z\n"
+        "updated: 2026-11-07T15:41:00Z\n"
+        'created_by: "a <a@example.com>"\n'
+        'updated_by: "a <a@example.com>"\n'
+        "---\n"
+    ).encode()
+    assert B.parse_item("REQ-K7H3MQ2P.md", blob) == "duplicate key id\\ninj"
+
+
 def test_retry_stops_when_the_minted_id_appears(tmp_path, monkeypatch):
     draws = []
 
@@ -1381,9 +1538,13 @@ def test_safe_path_sanitizes_newline_cr_and_esc():
     assert B._safe_path("a\nfake: line") == "a\\nfake: line"
     assert B._safe_path("a\rb") == "a\\rb"
     assert B._safe_path("a\x1bb") == "a\\x1bb"
+    assert B._safe_path("a\u0085b") == "a\\u0085b"
+    assert B._safe_path("a\u2028b") == "a\\u2028b"
+    assert B._safe_path("a\u2029b") == "a\\u2029b"
     assert "\n" not in B._safe_path("ok\nfake")
     assert "\r" not in B._safe_path("ok\r")
     assert "\x1b" not in B._safe_path("ok\x1b")
+    assert "\u2028" not in B._safe_path("ok\u2028")
 
 
 def test_stray_stderr_uses_safe_path_encoding():
@@ -1474,13 +1635,14 @@ def test_parse_variants_close_canonicalizes(tmp_path, monkeypatch):
         doc(_BASE_LINES, "The summary.\n"),
         doc(_BASE_LINES, "\nThe summary.\n\n\n"),
     ]
-    for blob in variants:
+    expected_titles = ('title: "bare title"\n', 'title: "Public backlog"\n', 'title: "Public backlog"\n')
+    for blob, title_line in zip(variants, expected_titles):
         assert isinstance(B.parse_item("REQ-K7H3MQ2P.md", blob), dict)
         sha = commit_tree(repo, {"README.md": _SPEC_README_BYTES, "REQ-K7H3MQ2P.md": blob})
         point(repo, sha)
         assert nw(repo, ["close", "REQ-K7H3MQ2P"]).exit_code == 0
         text = cat(repo, "REQ-K7H3MQ2P.md").decode()
-        assert 'title: "Public backlog"\n' in text or 'title: "bare title"\n' in text
+        assert title_line in text
         assert text.endswith("---\n\nThe summary.\n")
 
 
@@ -1671,6 +1833,11 @@ def test_name_crud_matches_git_ident(tmp_path, monkeypatch, git_log):
         (".", "user.name consists only of disallowed characters\n"),
         ("'", "user.name consists only of disallowed characters\n"),
         ("Ada Jr.", "user.name contains a leading or trailing disallowed character\n"),
+        ("Ada ", "user.name contains a leading or trailing disallowed character\n"),
+        ("\tAda", "user.name contains a leading or trailing disallowed character\n"),
+        ("Ada,", "user.name contains a leading or trailing disallowed character\n"),
+        ("Ada:", "user.name contains a leading or trailing disallowed character\n"),
+        ("Ada;", "user.name contains a leading or trailing disallowed character\n"),
     ]
     for number, (name, message) in enumerate(refuse):
         repo = init_repo(tmp_path / f"refuse-{number}", name=name, email="ada@example.com")
