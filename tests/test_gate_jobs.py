@@ -488,3 +488,39 @@ def test_gate_jobs_line_survives_a_long_campaign_marker():
     assert "GATEJOB-0002 by bruno (jerome@main)" in out
     gp["gate_jobs"] = []
     assert CQ._gate_jobs_line(p) is None
+
+
+# ---- SPEC-0491: nw gate cadence status ----------------------------------------------------
+
+def _cadence_project(gw, monkeypatch):
+    (gw["repo"] / ".nw").mkdir()
+    (gw["repo"] / ".nw" / "project.yaml").write_text(
+        "schema: nw.project.v1\nproject: demo\nbase: main\n"
+        "cadence:\n  - {name: full, cmd: 'true', every_n_merges: 3}\n")
+    monkeypatch.setattr(P, "project_config", lambda cfg, name: {
+        **P.load_project_config(gw["repo"] / ".nw" / "project.yaml"), "_root": str(gw["repo"])})
+
+
+def test_cadence_status_unseeded_and_seeded(gw, monkeypatch):
+    from nightwright.agentic import cadence as CAD
+    _cadence_project(gw, monkeypatch)
+    r = _invoke(gw["cfg"], monkeypatch, "cadence", "status", "--project", "demo", "--json")
+    assert r.exit_code == 0, r.output
+    out = json.loads(r.output)
+    assert out["schema"] == "nw.cadence.status.v1" and out["project"] == "demo"
+    job = out["jobs"][0]
+    assert job["next"] == "not seeded" and job["running"] == "no" and job["merges_since"] == 0
+    assert list(job) == list(CAD.STATUS_KEYS) and job["due"] is None
+    assert not CAD.state_path(gw["cfg"], "demo").exists()
+    pc = P.load_project_config(gw["repo"] / ".nw" / "project.yaml")
+    CAD.record_merge(gw["cfg"], "demo", "s1", [], project_cfg=pc)
+    r = _invoke(gw["cfg"], monkeypatch, "cadence", "status", "--project", "demo")
+    assert r.exit_code == 0 and 'name=full' in r.output and 'merges_since=1' in r.output
+    assert 'next="in 2 merges"' in r.output
+
+
+def test_cadence_status_unloadable_project_exits_2(gw, monkeypatch):
+    r = _invoke(gw["cfg"], monkeypatch, "cadence", "status", "--project", "nope")
+    assert r.exit_code == 2
+    r = _invoke(gw["cfg"], monkeypatch, "cadence", "status")
+    assert r.exit_code == 2

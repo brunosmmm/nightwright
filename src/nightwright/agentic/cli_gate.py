@@ -4,6 +4,7 @@ box without a campaign. `run` creates (or reuses) a GATEJOB and either runs it i
 and `list` read and steer the records under `<agentic>/gatejobs/`."""
 from __future__ import annotations
 
+import json
 import os
 import signal
 import subprocess
@@ -217,3 +218,42 @@ def gate_list(cfg, as_json):
     for r in rows:
         console.print(f"{r['id']}  {r['status']:<15} {r['project'] or '-'}@{r['branch'] or '-'}"
                       f"  by {r['requester']}  {r['worker'] or ''}", highlight=False)
+
+
+@gate_group.group("cadence")
+def cadence_group():
+    """Cadence jobs (SPEC-0491): when a project's heavy tests are due."""
+
+
+@cadence_group.command("status")
+@click.option("--project", default=None, help="registered project (default: the cwd's)")
+@click.option("--json", "as_json", is_flag=True, help="emit nw.cadence.status.v1 JSON")
+@click.pass_obj
+def cadence_status(cfg, project, as_json):
+    """Per-job merge counters, last run and what is due (read-only; never seeds the state)."""
+    from . import cadence as CAD
+    from . import gitops as git
+    from . import project as P
+    name = project or P.find_project_for_cwd(cfg, os.getcwd())
+    try:
+        if not name:
+            raise ValueError("no registered project here; pass --project")
+        pcfg = P.project_config(cfg, name)
+    except ValueError as e:
+        console.print(f"nw gate cadence status: {e}", highlight=False)
+        sys.exit(2)
+    base = (pcfg.get("merge") or {}).get("base") or pcfg.get("base") or "main"
+    try:
+        base_sha = git.rev_parse(pcfg["_root"], base)
+    except Exception:
+        base_sha = None
+    rows = CAD.status_rows(cfg, name, project_cfg=pcfg, base_sha=base_sha)
+    if as_json:
+        _dump_json({"schema": CAD.STATUS_SCHEMA, "project": name, "jobs": rows})
+        return
+    if not rows:
+        console.print(f"{name}: no cadence jobs", highlight=False)
+        return
+    for r in rows:
+        console.print("  ".join(f"{k}={json.dumps(r[k]) if k != 'name' else r[k]}"
+                                for k in CAD.STATUS_KEYS), highlight=False, soft_wrap=True)

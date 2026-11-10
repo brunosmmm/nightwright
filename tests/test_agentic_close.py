@@ -729,3 +729,85 @@ def test_unraised_gate_timeout_still_times_out_with_no_finding(world):
     out = CL.close_campaign(world["cfg"], world["state"], pcfg)
     assert out.next_state == "TRIAGING" and out.gate_run.results[0].timed_out
     assert _gate_limit_findings(out) == []
+
+
+# ---- SPEC-0491: cadence merge hook -----------------------------------------------------
+
+def _cadence_state(world):
+    from nightwright.agentic import cadence as CAD
+    path = CAD.state_path(world["cfg"], "demo")
+    return json.loads(path.read_text()) if path.exists() else None
+
+
+def _cad_pcfg(world, **kw):
+    pcfg = _pcfg(world, **kw)
+    pcfg["cadence"] = [{"name": "full", "cmd": "true", "every_n_merges": 5,
+                        "on_paths": ["docs/specs/**"]},
+                       {"name": "src", "cmd": "true", "on_paths": ["nothing/**"]}]
+    return pcfg
+
+
+def test_merge_counts_once_and_records_matching_first_commit_path(world):
+    out = CL.close_campaign(world["cfg"], world["state"], _cad_pcfg(world))
+    assert out.next_state == "MERGED", out
+    jobs = _cadence_state(world)["jobs"]
+    assert jobs["full"]["merges_since"] == 1
+    assert jobs["full"]["paths_hit"] == ["docs/specs/0001-t.md"]      # feature.txt: no match
+    assert jobs["src"]["merges_since"] == 1 and jobs["src"]["paths_hit"] == []
+    assert not [f for t, f in out.events if t == "finding"]
+
+
+def test_no_cadence_means_no_state_file(world):
+    out = CL.close_campaign(world["cfg"], world["state"], _pcfg(world))
+    assert out.next_state == "MERGED" and _cadence_state(world) is None
+
+
+def test_pr_close_does_not_count(world, monkeypatch):
+    _fake_gh(world["tmp"], monkeypatch)
+    out = CL.close_campaign(world["cfg"], world["state"], _cad_pcfg(world, policy="pr"))
+    assert out.next_state == "HANDED_OFF" and _cadence_state(world) is None
+
+
+def test_diff_giterror_appends_unknown_marker_and_still_counts(world, monkeypatch):
+    seen = []
+
+    def boom(root, *a, **kw):
+        seen.append(root)
+        raise G.GitError(["git", "diff"], 1, "bad range")
+
+    monkeypatch.setattr(CL.git, "changed_files", boom)
+    out = CL.close_campaign(world["cfg"], world["state"], _cad_pcfg(world))
+    assert out.next_state == "MERGED"
+    assert seen == [world["root"]] or [str(s) for s in seen] == [str(world["root"])]
+    jobs = _cadence_state(world)["jobs"]
+    assert jobs["full"]["paths_hit"] == ["*"] and jobs["full"]["merges_since"] == 1
+    assert jobs["src"]["paths_hit"] == ["*"]
+
+
+def test_raising_record_merge_leaves_the_close_merged_with_a_finding(world, monkeypatch):
+    from nightwright.agentic import cadence as CAD
+    out = CL.close_campaign(world["cfg"], world["state"], _cad_pcfg(world))
+    assert _cadence_state(world)["jobs"]["full"]["merges_since"] == 1
+    # a second close that fails to record
+    wt2 = world["tmp"] / "wts" / "c2"
+    G.worktree_add(world["root"], wt2, "nw/c2", "main")
+    _commit(wt2, "more.txt", "m\n", "more")
+    st2 = json.loads(json.dumps(world["state"]))
+    st2["id"] = "SPEC-0001-20261025-ffff"
+    st2["repo"].update(branch="nw/c2", worktree=str(wt2))
+    cdir = world["tmp"] / "data" / "agentic" / "campaigns" / st2["id"]
+    cdir.mkdir(parents=True)
+    (cdir / "spec_at_open.md").write_text(
+        (world["tmp"] / "data" / "agentic" / "campaigns" / world["state"]["id"]
+         / "spec_at_open.md").read_text())
+
+    def boom(*a, **kw):
+        raise OSError("disk gone")
+
+    monkeypatch.setattr(CAD, "record_merge", boom)
+    out2 = CL.close_campaign(world["cfg"], st2, _cad_pcfg(world))
+    assert out2.next_state == "MERGED", out2
+    finds = [f for t, f in out2.events if t == "finding"]
+    assert [f["title"] for f in finds] == ["cadence merge not recorded"]
+    assert finds[0]["gate"] == "cadence" and finds[0]["severity"] == "minor"
+    assert _cadence_state(world)["jobs"]["full"]["merges_since"] == 1

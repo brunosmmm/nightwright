@@ -26,6 +26,7 @@ import yaml
 
 from ..specmeta import sections, split_frontmatter
 from ..verify import verify_spec_file
+from . import cadence as CAD
 from . import gates as G
 from . import gitops as git
 from . import project as P
@@ -1130,6 +1131,23 @@ def _record_reused_merge(cfg, state, project_cfg, root, merged, events) -> None:
                                    "detail": err, "files": []}))
 
 
+def _record_cadence_merge(cfg, state, project_cfg, root, target_sha, merged, events) -> None:
+    """SPEC-0491: count one ff-merge for the project's cadence jobs. Never raises: main has
+    already fast-forwarded, so a failure is a minor finding, not a park."""
+    if not project_cfg.get("cadence"):
+        return
+    try:
+        try:
+            paths = git.changed_files(root, target_sha, merged, renames=False)
+        except GitError:
+            paths = None
+        CAD.record_merge(cfg, state.get("project"), merged, paths, project_cfg=project_cfg)
+    except (GitError, ValueError, OSError) as e:
+        events.append(("finding", {"persona": "close", "severity": "minor", "gate": "cadence",
+                                   "title": "cadence merge not recorded", "detail": str(e),
+                                   "files": []}))
+
+
 def finish_close(cfg, state: dict, project_cfg: dict, prepared: PreparedClose, *, attempts=1,
                  max_attempts=MAX_CLOSE_ATTEMPTS, _hooks=None) -> CloseOutcome:
     """The finish phase (SPEC-0220), on the main thread: the only part that writes the main
@@ -1174,6 +1192,7 @@ def finish_close(cfg, state: dict, project_cfg: dict, prepared: PreparedClose, *
         if merged != prepared.head:
             return _park("base_moving", f"merged {merged[:10]} != gated HEAD {prepared.head[:10]}",
                          "CLOSING", events, no_auto=True, **extra)
+        _record_cadence_merge(cfg, state, project_cfg, root, target_sha, merged, events)
         _run_post_cmds(mcfg.get("post_cmds"), root, events)
         if mcfg.get("push_after_merge"):
             try:

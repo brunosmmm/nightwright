@@ -30,6 +30,7 @@ PROJECT_DEFAULTS = {
     "project": None,
     "base": "main",
     "gates": [],
+    "cadence": [],               # SPEC-0491: heavy-test jobs run on a cadence, not per campaign
     "remote_gates": True,        # SPEC-0338: false keeps every gate run of the project local
     "merge": {
         "policy": "merge",
@@ -281,6 +282,82 @@ def _check_close_sections(problems, doc):
         _check_number(problems, sentinel.get("max_age_s"), "sentinel.max_age_s", minimum=1)
 
 
+CADENCE_KEYS = ("name", "cmd", "every_n_merges", "every_hours", "on_paths", "always",
+                "timeout_s", "retries", "retry_cmd", "results")
+CADENCE_NAME_RE = re.compile(r"[a-z0-9-]+")
+
+
+def cadence_triggers(job) -> list:
+    """SPEC-0491: the real triggers of a cadence job, in the fixed order always, every_n_merges,
+    on_paths, every_hours (`always: false` and `on_paths: []` are not triggers)."""
+    out = []
+    if job.get("always") is True:
+        out.append("always")
+    if job.get("every_n_merges") is not None:
+        out.append("every_n_merges")
+    if job.get("on_paths"):
+        out.append("on_paths")
+    if job.get("every_hours") is not None:
+        out.append("every_hours")
+    return out
+
+
+def _check_cadence(problems, doc, gate_names):
+    """SPEC-0491: the top-level `cadence:` list."""
+    jobs = doc.get("cadence")
+    if jobs is None:
+        return
+    if not isinstance(jobs, list):
+        problems.append("cadence: must be a list")
+        return
+    seen = set()
+    for i, job in enumerate(jobs):
+        p = f"cadence[{i}]"
+        if not _check_mapping(problems, job, p, CADENCE_KEYS):
+            continue
+        name = job.get("name")
+        if not isinstance(name, str) or not CADENCE_NAME_RE.fullmatch(name):
+            problems.append(f"{p}.name: required, must match [a-z0-9-]+ (got {name!r})")
+        elif name in seen:
+            problems.append(f"{p}.name: duplicate cadence job name {name!r}")
+        elif name in gate_names:
+            problems.append(f"{p}.name: {name!r} is also a gate name")
+        else:
+            seen.add(name)
+        if not _is_str(job.get("cmd")):
+            problems.append(f"{p}.cmd: required non-empty string")
+        n = job.get("every_n_merges")
+        if n is not None and (isinstance(n, bool) or not isinstance(n, int) or n < 1):
+            problems.append(f"{p}.every_n_merges: must be an integer >= 1 (got {n!r})")
+        h = job.get("every_hours")
+        if h is not None and (isinstance(h, bool) or not isinstance(h, (int, float)) or h <= 0):
+            problems.append(f"{p}.every_hours: must be a number > 0 (got {h!r})")
+        if "on_paths" in job:
+            ov = job["on_paths"]
+            if not isinstance(ov, list) or not all(_is_str(x) for x in ov):
+                problems.append(f"{p}.on_paths: must be a list of glob strings")
+        _check_bool(problems, job.get("always"), f"{p}.always")
+        t = job.get("timeout_s")
+        if t is not None and (isinstance(t, bool) or not isinstance(t, int) or t <= 0):
+            problems.append(f"{p}.timeout_s: must be a positive integer")
+        if job.get("results") is not None:
+            _check_results(problems, job["results"], f"{p}.results")
+        _check_gate_retry(problems, job, p)
+        if not cadence_triggers(job):
+            problems.append(f"{p}: needs a trigger (every_n_merges, every_hours, always: true "
+                            "or a non-empty on_paths)")
+
+
+def cadence_gate(job) -> dict:
+    """SPEC-0491: a cadence job as a gate dict for the gate runner (no `paths`, no `cwd`)."""
+    g = {"name": job["name"], "cmd": job["cmd"], "timeout_s": job.get("timeout_s") or 1200,
+         "retries": job.get("retries") or 0, "required": True, "when": "close"}
+    for k in ("retry_cmd", "results"):
+        if job.get(k) is not None:
+            g[k] = job[k]
+    return g
+
+
 def validate(doc):
     """Collect every problem in `doc` and raise one ValueError naming them by key path."""
     problems = []
@@ -340,6 +417,7 @@ def validate(doc):
         _check_reuse_from(problems, gate, gates, p)                     # SPEC-0359
     _check_bool(problems, doc.get("remote_gates"), "remote_gates")      # SPEC-0338
     _check_close_sections(problems, doc)                                # SPEC-0359
+    _check_cadence(problems, doc, all_names)                            # SPEC-0491
 
     merge = doc.get("merge")
     if merge is not None and _check_mapping(problems, merge, "merge",
@@ -397,6 +475,7 @@ def _with_defaults(doc):
     out["project"] = doc.get("project")
     out["base"] = doc.get("base", out["base"])
     out["gates"] = [{**GATE_DEFAULTS, **g} for g in doc.get("gates", [])]
+    out["cadence"] = copy.deepcopy(doc.get("cadence") or [])
     out["remote_gates"] = doc.get("remote_gates", True) is not False
     for g in out["gates"]:
         if g.get("on_fail") == "warn":          # SPEC-0289: the spelled-out `required: false`

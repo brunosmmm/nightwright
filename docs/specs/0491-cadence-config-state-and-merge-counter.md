@@ -1,7 +1,7 @@
 ---
 id: SPEC-0491
 title: "Cadence config, merge accounting and due state"
-status: accepted
+status: in-progress
 owner: user
 created: 2026-11-09
 updated: 2026-11-09
