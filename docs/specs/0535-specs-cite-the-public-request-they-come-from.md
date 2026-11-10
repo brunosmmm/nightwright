@@ -582,6 +582,14 @@ unknown key.
 - `python3 tools/spec_lint.py --write-ledger` — pass
 - Full suite left to campaign gating.
 
+### Test record (2026-11-10 loop 3)
+
+- `uv run pytest tests/test_idea_link.py::test_request_file_layout_and_invalid_file tests/test_spec_source_request.py::test_cite_preserves_quoted_status tests/test_spec_source_request.py::test_scaffold_cites_the_public_summary -q` — 3 passed
+- `uv run pytest tests/test_spec_source_request.py tests/test_idea_link.py -q` — pass
+- `python3 tools/test_tiers.py --check` — pass
+- `python3 tools/spec_lint.py --write-ledger` — pass
+- Full suite left to campaign gating.
+
 ## Open questions
 
 None.

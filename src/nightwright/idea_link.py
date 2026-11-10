@@ -73,6 +73,33 @@ def _yaml_double_quoted(text: str, *, field: str = "title") -> str:
     return "".join(out)
 
 
+_YAML_11_AMBIGUOUS_SCALARS = frozenset({
+    "true", "false", "yes", "no", "on", "off", "y", "n", "null", "~",
+})
+
+
+def _yaml_status_scalar(status: str) -> str:
+    """Bare or double-quoted status for request front matter (SPEC-0480 publish default is bare)."""
+    if re.search(r"[\n\r]", status):
+        raise ValueError("status must be one line")
+    if any(_disallowed_yaml_scalar_char(ch) for ch in status):
+        raise ValueError("status contains unsupported control character")
+    lower = status.lower()
+    needs_quote = (
+        not status
+        or lower in _YAML_11_AMBIGUOUS_SCALARS
+        or '"' in status
+        or "\\" in status
+        or status != status.strip()
+        or re.match(r"^[&*!#>|'\"%@`]", status)
+        or re.search(r"[:#\[\]{}]", status)
+        or status in ("-", "?", ",")
+    )
+    if needs_quote:
+        return _yaml_double_quoted(status, field="status")
+    return status
+
+
 def _validate_identity_value(key: str, value: str) -> None:
     if re.search(r"[\n\r]", value):
         raise ValueError(f"{key} must be one line")
@@ -98,7 +125,7 @@ def render_request(
         "---\n",
         f"id: {req_id}\n",
         f"title: {_yaml_double_quoted(ct)}\n",
-        f"status: {_yaml_double_quoted(status, field='status')}\n",
+        f"status: {_yaml_status_scalar(status)}\n",
         f"created: {created}\n",
         f"updated: {updated}\n",
         f"created_by: {_yaml_double_quoted(created_by, field='created_by')}\n",
