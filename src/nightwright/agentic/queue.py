@@ -5336,9 +5336,9 @@ def _gate_flights(ctx: _Ctx, pool: StepPool, now=None) -> list:
     return out
 
 
-def _gates_in_flight(ctx: _Ctx, pool: StepPool) -> tuple[int, bool]:
+def _gates_in_flight(ctx: _Ctx, pool: StepPool, now=None) -> tuple[int, bool]:
     """(gate steps in flight, whether one is exclusive) (SPEC-0311)."""
-    flights = _gate_flights(ctx, pool)
+    flights = _gate_flights(ctx, pool, now)
     return len(flights), any(ex for _cid, ex in flights)
 
 
