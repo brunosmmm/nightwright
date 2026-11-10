@@ -124,6 +124,21 @@ def _backlog_tip(repo: Path) -> str | None:
     return r.stdout.strip() if r.returncode == 0 else None
 
 
+def _backlog_root_entries(
+    repo: Path, treeish: str = "refs/heads/nw-backlog",
+) -> list[tuple[str, str, str]]:
+    """Root tree entries as sorted (mode, path, object-id)."""
+    out = _git(repo, "ls-tree", treeish).strip()
+    if not out:
+        return []
+    rows: list[tuple[str, str, str]] = []
+    for line in out.split("\n"):
+        meta, path = line.split("\t", 1)
+        mode, _typ, sha = meta.split()
+        rows.append((mode, path, sha))
+    return sorted(rows, key=lambda row: row[1])
+
+
 def test_req_base_known_vectors():
     assert L.req_base("  Link  ", " \n Hello \n ") == PINNED
     assert L.req_base("Link", "Hello") == PINNED
@@ -244,6 +259,33 @@ def test_request_file_layout_and_invalid_file():
             assert _RE_UTC_INSTANT_LINE.match(line)
 
     assert split_frontmatter("---\na: b\n---") == (None, "---\na: b\n---")
+
+    crlf = L.render_request(
+        req_id="REQ-01234567",
+        title="Link",
+        summary="Hello\r\nworld\r",
+        status="open",
+        created="2026-11-08T12:00:00Z",
+        updated="2026-11-08T12:00:00Z",
+        created_by="N <e>",
+        updated_by="N <e>",
+    )
+    _fm, crlf_body = split_frontmatter(crlf.decode())
+    assert crlf_body == "Hello\nworld"
+    assert "\r" not in crlf_body
+
+    padded = L.render_request(
+        req_id="REQ-01234567",
+        title="Link",
+        summary=" \n Hello \n ",
+        status="open",
+        created="2026-11-08T12:00:00Z",
+        updated="2026-11-08T12:00:00Z",
+        created_by="N <e>",
+        updated_by="N <e>",
+    )
+    _fm_p, padded_body = split_frontmatter(padded.decode())
+    assert padded_body == "Hello"
 
 
 def test_publish_uses_the_project_repo_not_cwd(tmp_path, monkeypatch):
@@ -379,6 +421,7 @@ def test_publish_refuses_without_a_repo(tmp_path, monkeypatch):
         ["git", "-C", str(linked_repo), "symbolic-ref", "HEAD", "refs/heads/main"],
         check=True,
     )
+    wt_tip_before = _git(linked_repo, "rev-parse", "refs/heads/nw-backlog").strip()
     hash_calls2 = []
 
     def spy_wt(cmd, **kw):
@@ -391,6 +434,7 @@ def test_publish_refuses_without_a_repo(tmp_path, monkeypatch):
     assert r.exit_code != 0
     assert "refusing to update nw-backlog while it is checked out" in r.output
     assert not hash_calls2
+    assert _git(linked_repo, "rev-parse", "refs/heads/nw-backlog").strip() == wt_tip_before
 
 
 def test_publish_links_without_changing_state_or_sections(tmp_path, monkeypatch):
@@ -480,6 +524,9 @@ def test_publish_links_without_changing_state_or_sections(tmp_path, monkeypatch)
     tip_sha = _git(repo, "rev-parse", "refs/heads/nw-backlog").strip()
     parents_line = _git(repo, "rev-list", "--parents", "-n", "1", tip_sha).strip()
     assert parents_line.split() == [tip_sha]
+    req_blob_sha = _git(repo, "rev-parse", f"refs/heads/nw-backlog:{req}.md").strip()
+    tree_entries = _backlog_root_entries(repo)
+    assert tree_entries == [("100644", f"{req}.md", req_blob_sha)]
 
 
 def test_second_publish_preserves_existing_requests(tmp_path, monkeypatch):
@@ -506,6 +553,13 @@ def test_second_publish_preserves_existing_requests(tmp_path, monkeypatch):
     assert _git(repo, "rev-parse", f"{tip2}^").strip() == tip1
     upd = [c for c in git_calls if c and c[0] == "update-ref" and c[1] == "refs/heads/nw-backlog"]
     assert upd and upd[0][3] == tip1
+    second = W.resolve_selector(cfg, b.properties["ID"]).properties["REQ"]
+    second_sha = _git(repo, "rev-parse", f"refs/heads/nw-backlog:{second}.md").strip()
+    tree_entries = _backlog_root_entries(repo)
+    assert len(tree_entries) == 2
+    assert ("100644", f"{first}.md", first_sha) in tree_entries
+    assert ("100644", f"{second}.md", second_sha) in tree_entries
+    assert all(mode == "100644" for mode, _path, _sha in tree_entries)
 
 
 def test_second_publish_preserves_backlog_when_linked_path_is_subdir(tmp_path, monkeypatch):
@@ -541,6 +595,10 @@ def test_publish_refuses_empty_title_multiline_title_and_second_link(tmp_path, m
     cfg = _cfg(tmp_path, repo=repo)
     monkeypatch.setattr("nightwright.cli.load_config", lambda: cfg)
     tip_at_start = _backlog_tip(repo)
+    org_path = Path(cfg["org_ideas_file"])
+
+    def org_unchanged():
+        assert ":REQ_BASE:" not in org_path.read_text()
 
     CliRunner().invoke(cli, ["add", "plain task"])
     task = [t for t in load_tasks(cfg) if not t.is_idea][0]
@@ -548,8 +606,11 @@ def test_publish_refuses_empty_title_multiline_title_and_second_link(tmp_path, m
     assert r.exit_code != 0
     assert "is not an idea" in r.output
     assert _backlog_tip(repo) == tip_at_start
+    if org_path.exists():
+        org_unchanged()
 
     idea_empty = _seed_idea(monkeypatch, cfg, text="Blank")
+    org_bytes = org_path.read_bytes()
     empty_task = W.resolve_selector(cfg, idea_empty.properties["ID"])
     empty_task = Task(
         id=empty_task.id,
@@ -567,8 +628,11 @@ def test_publish_refuses_empty_title_multiline_title_and_second_link(tmp_path, m
     with pytest.raises(ValueError, match="title is empty"):
         L.publish_idea(cfg, empty_task)
     assert _backlog_tip(repo) == tip_at_start
+    assert org_path.read_bytes() == org_bytes
+    org_unchanged()
 
     idea_ml = _seed_idea(monkeypatch, cfg, text="Multi")
+    org_bytes = org_path.read_bytes()
     ml_task = W.resolve_selector(cfg, idea_ml.properties["ID"])
     ml_task = Task(
         id=ml_task.id,
@@ -586,16 +650,20 @@ def test_publish_refuses_empty_title_multiline_title_and_second_link(tmp_path, m
     with pytest.raises(ValueError, match="title must be one line"):
         L.publish_idea(cfg, ml_task)
     assert _backlog_tip(repo) == tip_at_start
+    assert org_path.read_bytes() == org_bytes
+    org_unchanged()
 
     idea_ok = _seed_idea(monkeypatch, cfg, text="PublishMe")
     tip_before_link = _backlog_tip(repo)
     CliRunner().invoke(cli, ["idea", "publish", idea_ok.properties["ID"]])
     tip_after_first = _backlog_tip(repo)
     assert tip_after_first != tip_before_link
+    org_bytes = org_path.read_bytes()
     r = CliRunner().invoke(cli, ["idea", "publish", idea_ok.properties["ID"]])
     assert r.exit_code != 0
     assert "already linked" in r.output
     assert _backlog_tip(repo) == tip_after_first
+    assert org_path.read_bytes() == org_bytes
 
     idea2 = _seed_idea(monkeypatch, cfg, text="Another")
     real_run = subprocess.run
@@ -1113,6 +1181,7 @@ def test_publish_refuses_when_worktree_list_fails_but_branch_checked_out(
     )
     cfg = _cfg(tmp_path, repo=repo)
     idea = _seed_idea(monkeypatch, cfg)
+    tip_before = _git(repo, "rev-parse", "refs/heads/nw-backlog").strip()
     real_run = subprocess.run
 
     def spy(cmd, **kw):
@@ -1124,9 +1193,7 @@ def test_publish_refuses_when_worktree_list_fails_but_branch_checked_out(
     r = CliRunner().invoke(cli, ["idea", "publish", idea.properties["ID"]])
     assert r.exit_code != 0
     assert "refusing to update nw-backlog while it is checked out" in r.output
-    assert _backlog_tip(repo) is None or _git(repo, "rev-parse", "refs/heads/nw-backlog").strip() == (
-        _git(repo, "rev-parse", "main").strip()
-    )
+    assert _git(repo, "rev-parse", "refs/heads/nw-backlog").strip() == tip_before
 
 
 def test_link_creates_drawer_without_gluing_headline_missing_final_newline(
@@ -1374,3 +1441,87 @@ def test_second_publish_preserves_symlink_and_uses_mktree_missing(tmp_path, monk
     assert mktree_argv and "--missing" in mktree_argv[0]
     assert _git(repo, "rev-parse", "refs/heads/nw-backlog:EXTRA-LINK").strip() == link_sha_before
     assert _ls_tree_mode(repo, "refs/heads/nw-backlog", "EXTRA-LINK") == "120000"
+    second = W.resolve_selector(cfg, b.properties["ID"]).properties["REQ"]
+    tree_entries = _backlog_root_entries(repo)
+    assert len(tree_entries) == 3
+    assert all(e[0] == "100644" for e in tree_entries if e[1].endswith(".md"))
+    assert ("120000", "EXTRA-LINK", link_sha) in tree_entries
+    assert ("100644", f"{first}.md", req_blob) in tree_entries
+    assert any(e[1] == f"{second}.md" and e[0] == "100644" for e in tree_entries)
+
+
+def test_second_publish_preserves_subdirectory_tree_entry(tmp_path, monkeypatch):
+    repo = _init_repo(tmp_path / "proj")
+    sub = repo / "pkg"
+    sub.mkdir()
+    (sub / "inner").write_text("keep\n")
+    subprocess.run(["git", "-C", str(repo), "add", "pkg"], check=True)
+    subprocess.run(["git", "-C", str(repo), "commit", "-qm", "pkg"], check=True)
+    sub_tree = _git(repo, "rev-parse", "HEAD^{tree}:pkg").strip()
+    cfg = _cfg(tmp_path, repo=repo)
+    a = _seed_idea(monkeypatch, cfg, text="First", summary="one")
+    b = _seed_idea(monkeypatch, cfg, text="Second", summary="two")
+    assert CliRunner().invoke(cli, ["idea", "publish", a.properties["ID"]]).exit_code == 0
+    first = W.resolve_selector(cfg, a.properties["ID"]).properties["REQ"]
+    tip1 = _backlog_tip(repo)
+    req_blob = _git(repo, "rev-parse", f"refs/heads/nw-backlog:{first}.md").strip()
+    merged = (
+        f"100644 blob {req_blob}\t{first}.md\n"
+        f"040000 tree {sub_tree}\tpkg\n"
+    ).encode()
+    new_tree = subprocess.run(
+        ["git", "-C", str(repo), "mktree"],
+        input=merged,
+        check=True,
+        capture_output=True,
+    ).stdout.decode().strip()
+    commit = _git(repo, "commit-tree", new_tree, "-p", tip1, "-m", "add subdir").strip()
+    subprocess.run(
+        ["git", "-C", str(repo), "update-ref", "refs/heads/nw-backlog", commit, tip1],
+        check=True,
+    )
+    assert ("040000", "pkg", sub_tree) in _backlog_root_entries(repo)
+    assert CliRunner().invoke(cli, ["idea", "publish", b.properties["ID"]]).exit_code == 0
+    entries = _backlog_root_entries(repo)
+    assert ("040000", "pkg", sub_tree) in entries
+    assert _git(repo, "rev-parse", f"refs/heads/nw-backlog:{first}.md").strip() == req_blob
+
+
+def test_publish_reads_summary_under_org_lock(tmp_path, monkeypatch):
+    repo = _init_repo(tmp_path / "proj")
+    cfg = _cfg(tmp_path, repo=repo)
+    idea = _seed_idea(monkeypatch, cfg, summary="snap")
+    depths: list[int] = []
+    real_summary = L.idea_summary_text
+
+    def spy_summary(cfg, task, **kw):
+        depths.append(getattr(W._ORG_LOCK_STATE, "depth", 0))
+        return real_summary(cfg, task, **kw)
+
+    monkeypatch.setattr(L, "idea_summary_text", spy_summary)
+    assert CliRunner().invoke(cli, ["idea", "publish", idea.properties["ID"]]).exit_code == 0
+    assert depths and all(d >= 1 for d in depths)
+
+
+def test_publish_published_body_matches_summary_snapshot_during_git(tmp_path, monkeypatch):
+    repo = _init_repo(tmp_path / "proj")
+    cfg = _cfg(tmp_path, repo=repo)
+    idea = _seed_idea(monkeypatch, cfg, text="Snap", summary="before")
+    idea_id = idea.properties["ID"]
+    real_publish = L._publish_commit
+
+    def publish_then_swap(repo, **kw):
+        new_sha, old_tip, blob = real_publish(repo, **kw)
+        assert CliRunner().invoke(
+            cli, ["idea", "summary", idea_id, "--set", "after"],
+        ).exit_code == 0
+        return new_sha, old_tip, blob
+
+    monkeypatch.setattr("nightwright.idea_link._publish_commit", publish_then_swap)
+    assert CliRunner().invoke(cli, ["idea", "publish", idea_id]).exit_code == 0
+    fresh = W.resolve_selector(cfg, idea_id)
+    req = fresh.properties["REQ"]
+    _fm, body = split_frontmatter(_show_backlog(repo, f"{req}.md").decode())
+    assert body == "before"
+    assert fresh.properties["REQ_BASE"] == L.req_base("Snap", "before")
+    assert "after" in Path(cfg["org_ideas_file"]).read_text()

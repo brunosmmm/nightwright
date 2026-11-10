@@ -322,24 +322,6 @@ def publish_idea(cfg, task: Task, *, selector: str | None = None) -> str:
     if not task.is_idea:
         raise ValueError(f"{who!r} is not an idea")
 
-    existing = (task.properties or {}).get("REQ", "").strip()
-    if existing:
-        raise ValueError(f"{task.properties.get('ID', task.id)} is already linked to {existing}")
-
-    title = (task.heading or "").strip()
-    if not title:
-        raise ValueError("title is empty")
-    if re.search(r"[\n\r]", task.heading or ""):
-        raise ValueError("title must be one line")
-
-    try:
-        summary = idea_summary_text(cfg, task, strict=True)
-    except Exception as err:
-        raise ValueError(f"could not read Summary for publish: {err}") from err
-    canon_title, canon_summary = canonical_pair(title, summary)
-    if re.search(r"[\n\r]", canon_title):
-        raise ValueError("title must be one line")
-
     project = (task.properties or {}).get("PROJECT", "").strip()
     if not project:
         raise ValueError("project is required")
@@ -350,46 +332,68 @@ def publish_idea(cfg, task: Task, *, selector: str | None = None) -> str:
     _validate_identity_value("user.email", email)
     author = f"{name} <{email}>"
 
-    req_id = mint_req_id()
-    rel_path = f"{req_id}.md"
-    now = _utc_now_z()
-    body = render_request(
-        req_id=req_id,
-        title=title,
-        summary=summary,
-        status="open",
-        created=now,
-        updated=now,
-        created_by=author,
-        updated_by=author,
-    )
-    digest = req_base(title, summary)
-
-    try:
-        new_sha, old_tip, _blob = _publish_commit(
-            repo,
-            rel_path=rel_path,
-            body=body,
-            message=f"publish {req_id}",
-            name=name,
-            email=email,
-        )
-    except ValueError as e:
-        if str(e) == "update-ref failed":
-            raise ValueError("publish failed") from e
-        raise
-
     from . import org_write as W
 
-    try:
-        W.link_idea_request(cfg, task, req_id, digest)
-    except BaseException as e:
+    with W.org_write_lock(cfg):
+        if selector is not None:
+            task = W.resolve_selector(cfg, selector)
+
+        existing = (task.properties or {}).get("REQ", "").strip()
+        if existing:
+            raise ValueError(f"{task.properties.get('ID', task.id)} is already linked to {existing}")
+
+        title = (task.heading or "").strip()
+        if not title:
+            raise ValueError("title is empty")
+        if re.search(r"[\n\r]", task.heading or ""):
+            raise ValueError("title must be one line")
+
         try:
-            _restore_backlog_tip_or_bail(repo, req_id=req_id, new_sha=new_sha, old_tip=old_tip)
-        except ValueError as restore_err:
-            if isinstance(e, KeyboardInterrupt | SystemExit):
-                raise e
-            raise restore_err from e
-        raise
+            summary = idea_summary_text(cfg, task, strict=True)
+        except Exception as err:
+            raise ValueError(f"could not read Summary for publish: {err}") from err
+        canon_title, _canon_summary = canonical_pair(title, summary)
+        if re.search(r"[\n\r]", canon_title):
+            raise ValueError("title must be one line")
+
+        req_id = mint_req_id()
+        rel_path = f"{req_id}.md"
+        now = _utc_now_z()
+        body = render_request(
+            req_id=req_id,
+            title=title,
+            summary=summary,
+            status="open",
+            created=now,
+            updated=now,
+            created_by=author,
+            updated_by=author,
+        )
+        digest = req_base(title, summary)
+
+        try:
+            new_sha, old_tip, _blob = _publish_commit(
+                repo,
+                rel_path=rel_path,
+                body=body,
+                message=f"publish {req_id}",
+                name=name,
+                email=email,
+            )
+        except ValueError as e:
+            if str(e) == "update-ref failed":
+                raise ValueError("publish failed") from e
+            raise
+
+        try:
+            W.link_idea_request(cfg, task, req_id, digest)
+        except BaseException as e:
+            try:
+                _restore_backlog_tip_or_bail(repo, req_id=req_id, new_sha=new_sha, old_tip=old_tip)
+            except ValueError as restore_err:
+                if isinstance(e, KeyboardInterrupt | SystemExit):
+                    raise e
+                raise restore_err from e
+            raise
 
     return (task.properties or {}).get("ID", "").strip() or task.id

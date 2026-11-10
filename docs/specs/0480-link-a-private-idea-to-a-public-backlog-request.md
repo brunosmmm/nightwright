@@ -511,6 +511,14 @@ the guard.
   exact `created`/`updated` UTC lines, empty `repo_path` leaves ref and `:REQ_BASE:` unchanged).
 - Full suite left to queue gating.
 
+### Test record (2026-11-10, implementer loop 1)
+
+- `uv run pytest tests/test_idea_link.py -q` — 33 passed (full root `ls-tree` mode/path/sha pins,
+  early-refusal org byte guards, CRLF/padded summary render, worktree-list fail-closed tip,
+  summary snapshot under org lock).
+- `uv run pytest tests/test_idea_stamps.py::test_stamp_creates_missing_drawer_without_corrupting_sections tests/test_workflow.py -q` — 19 passed.
+- Full suite left to queue gating.
+
 ### As shipped (2026-11-09, review loop 2)
 
 - `nw-backlog` tree rebuild uses `git ls-tree --full-tree -z` (one level) / `git mktree -z`, raw path bytes, and raises on unparsable entries; keeps each entry's mode and object type.
@@ -530,6 +538,11 @@ the guard.
 - Scalar validation rejects C0, DEL (`0x7F`), and C1 (`0x80`–`0x9F`) before any backlog write.
 - `git config --local --get` failures with stderr surface as `git config --local <key> failed: …` rather than “not set”.
 - `git mktree` uses `--missing` when rebuilding `nw-backlog` trees.
+
+### As shipped (2026-11-10, implementer loop 1)
+
+- `publish_idea` holds `org_write_lock` from fresh selector parse / validation through Summary
+  read, backlog commit, and `link_idea_request` (re-entrant).
 
 ### As shipped (2026-11-09, adversarial review loop 4)
 
