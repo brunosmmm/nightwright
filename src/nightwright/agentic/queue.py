@@ -6301,8 +6301,8 @@ def _tick(cfg, ctx: _Ctx, pool: StepPool, report: TickReport, *, admit: bool, ow
     disk_clean.sweep(cfg)             # SPEC-0524: bounded leftovers of finished work, hourly
     _settle_ended_remote_jobs(cfg, flying)
     _apply_worker_escalations(cfg)
-    _finish_worker_drains(cfg)
-    _run_worker_updates(cfg)
+    _finish_worker_drains(cfg, progress=ctx.progress)
+    _run_worker_updates(cfg, progress=ctx.progress)
     items = [s for s in store.list_campaigns(cfg) if s.get("state") != "PARKED"]
     slots = slots_for(cfg)
     busy = [s for s in items if s.get("state") in ACTIVE_STATES]
@@ -10555,7 +10555,7 @@ def _settle_ended_remote_jobs(cfg, flying) -> None:
 _DRAIN_SKIPPED: dict = {}       # runner journal path -> the last `worker_drain_skipped` error
 
 
-def _finish_worker_drains(cfg) -> None:
+def _finish_worker_drains(cfg, *, progress=None) -> None:
     """SPEC-0343, every tick: disable the draining workers that are idle (`workers.finish_drains`)
     and emit `worker_drained` for each. An unreadable registry, `remote-jobs` dir or record
     skips the pass (journaled `worker_drain_skipped`); nothing is disabled. The same error on
@@ -10563,7 +10563,7 @@ def _finish_worker_drains(cfg) -> None:
     from . import events as E                   # lazy: events imports this module
     key = str(runner_journal_path(cfg))
     try:
-        drained = workers.finish_drains(cfg)
+        drained = workers.finish_drains(cfg, progress=progress)
     except (OSError, ValueError, TypeError) as e:
         err = f"{type(e).__name__}: {e}"
         if _DRAIN_SKIPPED.get(key) != err:
@@ -10624,14 +10624,14 @@ def _worker_update_job(cfg, rec: dict, key) -> None:
         _UPDATING.pop(key, None)
 
 
-def _run_worker_updates(cfg) -> None:
+def _run_worker_updates(cfg, *, progress=None) -> None:
     """SPEC-0386, every tick: a worker draining for a scheduled update (`update_pending`) that
     is idle gets the SPEC-0385 update in a background thread; one still busy after
     `agentic.workers.update_drain_timeout_h` is returned to service (journal + event; no job
     is touched). An unreadable registry or job record skips the pass (the drain pass journals it)."""
     import threading
     try:
-        idle, late = workers.due_updates(cfg)
+        idle, late = workers.due_updates(cfg, progress=progress)
     except (OSError, ValueError, TypeError):
         return
     jp = str(runner_journal_path(cfg))

@@ -406,11 +406,11 @@ def _mark_reconciled_lost(cfg, worker: str, scan_rec: dict, reported: str) -> bo
     from . import queue as Q
     from . import remote_jobs as RJ
     job_id = scan_rec["job_id"]
-    prior = scan_rec.get("state")
     with RJ._lock(cfg):
         cur = RJ.read(cfg, job_id)
         if cur is None or cur.get("state") not in RJ.LIVE:
             return False
+        prior = cur.get("state")
         cur["state"] = "lost"
         cur["lost_reason"] = "reconciled"
         RJ._write(cfg, cur)
@@ -419,7 +419,7 @@ def _mark_reconciled_lost(cfg, worker: str, scan_rec: dict, reported: str) -> bo
     return True
 
 
-def _reconcile_worker(cfg, worker: dict, t0: float) -> set[str]:
+def _reconcile_worker(cfg, worker: dict, t0: float, *, progress=None) -> set[str]:
     from . import remote_gates as RG
     name = worker["name"]
     eligible = _eligible_reconcile(cfg, name)
@@ -429,6 +429,12 @@ def _reconcile_worker(cfg, worker: dict, t0: float) -> set[str]:
     def left() -> float:
         return RECONCILE_BUDGET_S - (time.monotonic() - t0)
 
+    def stamp() -> None:
+        if progress is not None:
+            progress()
+
+    stamp()
+    ensure_record_ssh_dir(cfg, worker)
     budget = left()
     if budget <= 0:
         return set()
@@ -457,6 +463,8 @@ def _reconcile_worker(cfg, worker: dict, t0: float) -> set[str]:
         budget = left()
         if budget < 2:
             continue
+        stamp()
+        ensure_record_ssh_dir(cfg, worker)
         try:
             proc = _reconcile_run(RG._argv(worker, "poll", jid, "--from", RECONCILE_POLL_FROM),
                                   timeout=budget)
@@ -473,10 +481,11 @@ def _reconcile_worker(cfg, worker: dict, t0: float) -> set[str]:
     return not_busy
 
 
-def reconcile_draining(cfg, names: list[str]) -> set[str]:
+def reconcile_draining(cfg, names: list[str], *, progress=None) -> set[str]:
     """SPEC-0534: before idleness, probe selected draining SSH workers and mark records the
     worker confirms gone as `lost`. Returns job ids reported `done` or `error` (they stay live
-    but do not occupy `_drained`)."""
+    but do not occupy `_drained`). Optional `progress` is stamped during serial probes
+    (SPEC-0313)."""
     if not names:
         return set()
     by_name = {r["name"]: normalize(cfg, r) for r in read_strict(cfg)}
@@ -487,7 +496,9 @@ def reconcile_draining(cfg, names: list[str]) -> set[str]:
             continue
         if not _eligible_reconcile(cfg, name):
             continue
-        not_busy |= _reconcile_worker(cfg, w, time.monotonic())
+        if progress is not None:
+            progress()
+        not_busy |= _reconcile_worker(cfg, w, time.monotonic(), progress=progress)
     return not_busy
 
 
@@ -540,7 +551,7 @@ def _check_job_records(cfg) -> None:
             raise ValueError(f"live job record {p} names no worker")
 
 
-def finish_drains(cfg) -> list[str]:
+def finish_drains(cfg, *, progress=None) -> list[str]:
     """SPEC-0343, every queue tick: each draining worker that is idle (`_drained`) gets
     `enabled: false` and loses `draining`, in one `update`; returns their names. The check runs
     again inside the registry lock, so a concurrent `on` / `off` / `drain` cannot interleave;
@@ -552,7 +563,7 @@ def finish_drains(cfg) -> list[str]:
     if not names:
         return []
     _check_job_records(cfg)
-    not_busy = reconcile_draining(cfg, names)
+    not_busy = reconcile_draining(cfg, names, progress=progress)
     if not any(_drained(cfg, n, not_busy=not_busy) for n in names):
         return []
 
@@ -574,7 +585,7 @@ def finish_drains(cfg) -> list[str]:
         return []
 
 
-def due_updates(cfg, now=None) -> tuple[list[dict], list[dict]]:
+def due_updates(cfg, now=None, *, progress=None) -> tuple[list[dict], list[dict]]:
     """SPEC-0386, every queue tick: `(idle, timed_out)` normalized records of the enabled
     workers draining for an update. `idle`: no live job and no held slot (`_drained`).
     `timed_out`: not idle and `since` older than `update_drain_timeout_h`. A marker with an
@@ -583,7 +594,7 @@ def due_updates(cfg, now=None) -> tuple[list[dict], list[dict]]:
     if not pend:
         return [], []
     _check_job_records(cfg)
-    not_busy = reconcile_draining(cfg, [r["name"] for r in pend])
+    not_busy = reconcile_draining(cfg, [r["name"] for r in pend], progress=progress)
     now = now or dt.datetime.now()
     if now.tzinfo is None:
         now = now.astimezone()

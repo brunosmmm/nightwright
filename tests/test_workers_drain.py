@@ -211,7 +211,7 @@ def test_queue_tick_runs_the_drain_pass(cfg, invoke, monkeypatch):
     assert invoke("drain", "box").exit_code == 0
     calls = []
     real = Q._finish_worker_drains
-    monkeypatch.setattr(Q, "_finish_worker_drains", lambda c: (calls.append(c), real(c)))
+    monkeypatch.setattr(Q, "_finish_worker_drains", lambda c, **kw: (calls.append(c), real(c, **kw)))
     with GS.acquire(cfg, "c-1", pools=[("box", 1)]):
         Q.tick(cfg)                             # the held slot keeps it draining
     assert calls == [cfg]

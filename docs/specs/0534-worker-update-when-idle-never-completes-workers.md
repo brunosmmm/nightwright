@@ -4,7 +4,7 @@ title: "Reconcile a draining worker's confirmed-gone remote job"
 status: done
 owner: user
 created: 2026-11-10
-updated: 2026-11-11
+updated: 2026-11-10
 kind: feature
 source_idea: IDEA-1162
 tags: [agentic, remote, workers]
@@ -422,6 +422,22 @@ not describe an age mark or stale-job lines.
 - `python3 tools/spec_lint.py` — exit 0; ledger regenerated.
 - Full suite left to campaign gating.
 - Manual verification on live `box` not run in this loop (no ticking runner in worktree).
+
+### Test record (implementer loop 2, 2026-11-10)
+
+- `uv run pytest -q tests/test_worker_job_reconcile.py tests/test_workers_update_schedule.py tests/test_workers_drain.py tests/test_workers_registry.py` — 148 passed.
+- `python3 tools/test_tiers.py --check` — exit 0.
+- `python3 tools/spec_lint.py --write-ledger` and `python3 tools/spec_lint.py` — exit 0.
+- Full suite left to campaign gating.
+- Manual verification on live `box` not run in this loop.
+
+### As shipped (implementer loop 2)
+
+- `_mark_reconciled_lost` journals `prior_state` from the locked re-read, not the pre-probe scan.
+- `ensure_record_ssh_dir` runs before each `jobs` and `poll` SSH argv; `OSError` aborts the pass.
+- `reconcile_draining` accepts optional `progress` (threaded from `queue.tick` via
+  `finish_drains` / `due_updates`) and stamps it during serial probes.
+- Jobs SSH timeout is taken from `left()` after `ensure_record_ssh_dir`, not at worker entry.
 
 ## Clock Log
 
