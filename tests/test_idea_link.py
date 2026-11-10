@@ -390,10 +390,20 @@ def test_publish_links_without_changing_state_or_sections(tmp_path, monkeypatch)
             git_calls.append(cmd[3:])
         return real_run(cmd, **kw)
 
+    org_writes = []
+    real_atomic = W._atomic_backup_write
+
+    def spy_atomic(cfg, path, content):
+        org_writes.append(content)
+        return real_atomic(cfg, path, content)
+
+    monkeypatch.setattr("nightwright.org_write._atomic_backup_write", spy_atomic)
     monkeypatch.setattr("subprocess.run", spy)
     r = CliRunner().invoke(cli, ["idea", "publish", idea.properties["ID"]])
     assert r.exit_code == 0
     assert r.output == f"{idea.properties['ID']}\n"
+    assert len(org_writes) == 1
+    assert ":REQ:" in org_writes[0] and ":REQ_BASE:" in org_writes[0]
     fresh = W.resolve_selector(cfg, idea.properties["ID"])
     assert fresh.state == "INCUBATE"
     req = fresh.properties["REQ"]
@@ -410,6 +420,8 @@ def test_publish_links_without_changing_state_or_sections(tmp_path, monkeypatch)
     fm, body = split_frontmatter(blob.decode())
     assert fm["status"] == "open"
     assert fm["title"] == "Link"
+    assert fm["created_by"] == "Test User <test@example.com>"
+    assert fm["updated_by"] == "Test User <test@example.com>"
     assert body == "Hello"
     assert "spec" not in fm
     assert idea.properties["ID"] not in blob.decode()
@@ -632,10 +644,12 @@ def test_publish_org_write_failure_leaves_ref_when_cas_lost(tmp_path, monkeypatc
 
     monkeypatch.setattr("nightwright.org_write.link_idea_request", boom_and_move)
     idea2 = _seed_idea(monkeypatch, cfg, text="Race")
+    org_before = Path(cfg["org_ideas_file"]).read_text()
     r = CliRunner().invoke(cli, ["idea", "publish", idea2.properties["ID"]])
     assert r.exit_code != 0
     assert "no longer points at" in r.output
     assert _git(repo, "rev-parse", "refs/heads/nw-backlog").strip() == main
+    assert Path(cfg["org_ideas_file"]).read_text() == org_before
 
 
 def test_publish_refuses_when_summary_read_fails(tmp_path, monkeypatch):
@@ -737,8 +751,24 @@ def test_heading_without_level_matches_only_task_line():
         ":ID: IDEA-001\n",
         ":END:\n",
     ]
-    assert not W._is_same_headline(task, lines_dup, 5)
+    assert not W._is_same_headline(task, lines_dup, 4)
     assert W._locate_headline(task, lines_dup) == 0
+
+    task_wrong_line = Task(
+        id="IDEA-001",
+        heading="Link",
+        state="INCUBATE",
+        is_done=False,
+        tags=frozenset(),
+        priority=None,
+        properties={"ID": "IDEA-001"},
+        level=None,
+        file="f.org",
+        line=6,
+        is_idea=True,
+    )
+    with pytest.raises(ValueError, match="not found"):
+        W._locate_headline(task_wrong_line, lines_dup)
 
     lines_same_heading = [
         "* INCUBATE  Link :a:\n",
@@ -809,8 +839,10 @@ def test_ideas_and_hub_keep_idea_row(tmp_path, monkeypatch):
     assert r.exit_code == 0
     assert idea_row_calls
     assert not git_calls
+    idea_row_calls.clear()
     r2 = CliRunner().invoke(cli, ["hub", "--json"])
     assert r2.exit_code == 0
+    assert idea_row_calls
     assert not git_calls
 
     import ast
@@ -823,9 +855,22 @@ def test_ideas_and_hub_keep_idea_row(tmp_path, monkeypatch):
     from nightwright.agentic import queue as Q
     from nightwright.agentic import spec_review as SR
 
-    src_tm = inspect.getsource(TM)
-    assert "_row_for" in src_tm
-    assert "idea_show_payload" in src_tm
+    tm_tree = ast.parse(inspect.getsource(TM))
+
+    def _func_body_names(tree, name):
+        for n in ast.walk(tree):
+            if isinstance(n, ast.FunctionDef) and n.name == name:
+                return {
+                    (x.id if isinstance(x, ast.Name) else x.attr if isinstance(x, ast.Attribute) else None)
+                    for x in ast.walk(n)
+                    if isinstance(x, (ast.Name, ast.Attribute))
+                }
+        return set()
+
+    row_names = _func_body_names(tm_tree, "_row_for")
+    assert "idea_show_payload" not in row_names
+    assert "next_step_for_idea" not in row_names
+
     def _show_payload_calls(tree):
         out = []
         for n in ast.walk(tree):
@@ -844,6 +889,10 @@ def test_ideas_and_hub_keep_idea_row(tmp_path, monkeypatch):
         calls = _show_payload_calls(tree)
         assert calls, f"expected idea_show_payload call in {mod.__name__}"
         assert all(len(c.args) == 2 and not c.keywords for c in calls)
+
+    load_calls = _show_payload_calls(tm_tree)
+    assert load_calls, "expected idea_show_payload call in load_detail"
+    assert all(len(c.args) == 2 and not c.keywords for c in load_calls)
 
 
 def test_publish_scrubs_git_env_and_writes_project_repo(tmp_path, monkeypatch):
@@ -920,6 +969,9 @@ def test_publish_org_write_failure_when_restore_update_ref_fails(tmp_path, monke
     assert "restore failed" in r.output
     assert "restored refs/heads/nw-backlog" not in r.output
     assert Path(cfg["org_ideas_file"]).read_text() == org_before
+    tip_after = _backlog_tip(repo)
+    assert tip_after is not None
+    assert tip_after != _git(repo, "rev-parse", "main").strip()
 
 
 def test_publish_refuses_control_character_title(tmp_path, monkeypatch):
@@ -1015,15 +1067,52 @@ def test_link_creates_drawer_without_gluing_headline_missing_final_newline(
 ):
     repo = _init_repo(tmp_path / "proj")
     cfg = _cfg(tmp_path, repo=repo)
-    idea = _seed_idea(monkeypatch, cfg, text="NoNL", tags=())
+    monkeypatch.setattr("nightwright.cli.load_config", lambda: cfg)
     org = Path(cfg["org_ideas_file"])
-    raw = org.read_text()
-    if raw.endswith("\n"):
-        raw = raw[:-1]
-    org.write_text(raw)
-    task = W.resolve_selector(cfg, idea.properties["ID"])
-    W.link_idea_request(cfg, task, "REQ-NONL0001", "ab" * 32)
+    org.write_text(
+        "#+TODO: IDEA INCUBATE SPECCED | PROMOTED EXPORTED SHIPPED DROPPED\n\n"
+        "* INCUBATE NoNL\n"
+        "** Summary\n"
+        "body\n"
+    )
+    tasks = load_tasks(cfg)
+    idea = next(t for t in tasks if t.is_idea)
+    assert ":PROPERTIES:" not in org.read_text()
+    W.link_idea_request(cfg, idea, "REQ-NONL0001", "ab" * 32)
     text = org.read_text()
     assert ":PROPERTIES:" in text
-    assert "NoNL :PROPERTIES:" not in text.replace(" ", "")
-    assert "\n  :PROPERTIES:\n" in text or "\n:PROPERTIES:\n" in text
+    assert "NoNL :PROPERTIES:" not in text
+    props_idx = text.index(":PROPERTIES:")
+    headline_end = text.index("NoNL") + len("NoNL")
+    assert text[headline_end:props_idx].startswith("\n")
+
+
+def test_publish_refuses_invalid_utf8_git_config(tmp_path, monkeypatch):
+    repo = _init_repo(tmp_path / "proj")
+    cfg = _cfg(tmp_path, repo=repo)
+    idea = _seed_idea(monkeypatch, cfg)
+
+    def bad_config(repo, key):
+        if key == "user.name":
+            raise ValueError("git output is not valid UTF-8")
+        return "test@example.com"
+
+    monkeypatch.setattr("nightwright.idea_link._git_config", bad_config)
+    r = CliRunner().invoke(cli, ["idea", "publish", idea.properties["ID"]])
+    assert r.exit_code != 0
+    assert "not valid UTF-8" in r.output
+    assert _backlog_tip(repo) is None
+
+
+def test_publish_refuses_control_character_in_user_name(tmp_path, monkeypatch):
+    repo = _init_repo(tmp_path / "proj")
+    subprocess.run(
+        ["git", "-C", str(repo), "config", "user.name", "Bad\tName"],
+        check=True,
+    )
+    cfg = _cfg(tmp_path, repo=repo)
+    idea = _seed_idea(monkeypatch, cfg)
+    r = CliRunner().invoke(cli, ["idea", "publish", idea.properties["ID"]])
+    assert r.exit_code != 0
+    assert "user.name contains unsupported control character" in r.output
+    assert _backlog_tip(repo) is None

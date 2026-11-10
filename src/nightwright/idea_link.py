@@ -40,21 +40,32 @@ def req_base(title: str, summary: str) -> str:
     return hashlib.sha256(payload).hexdigest()
 
 
-def _yaml_double_quoted(title: str) -> str:
+def _yaml_double_quoted(text: str, *, field: str = "title") -> str:
     out = ['"']
-    for ch in title:
+    for ch in text:
         if ch == "\\":
             out.append("\\\\")
         elif ch == '"':
             out.append('\\"')
         elif ch in "\n\r":
-            raise ValueError("title must be one line")
+            if field == "title":
+                raise ValueError("title must be one line")
+            raise ValueError(f"{field} must be one line")
         elif ord(ch) < 32 or ch == "\u0085":
-            raise ValueError("title contains unsupported control character")
+            if field == "title":
+                raise ValueError("title contains unsupported control character")
+            raise ValueError(f"{field} contains unsupported control character")
         else:
             out.append(ch)
     out.append('"')
     return "".join(out)
+
+
+def _validate_identity_value(key: str, value: str) -> None:
+    if re.search(r"[\n\r]", value):
+        raise ValueError(f"{key} must be one line")
+    if any(ord(ch) < 32 or ch == "\u0085" for ch in value):
+        raise ValueError(f"{key} contains unsupported control character")
 
 
 def render_request(
@@ -78,8 +89,8 @@ def render_request(
         f"status: {status}\n",
         f"created: {created}\n",
         f"updated: {updated}\n",
-        f"created_by: {_yaml_double_quoted(created_by)}\n",
-        f"updated_by: {_yaml_double_quoted(updated_by)}\n",
+        f"created_by: {_yaml_double_quoted(created_by, field='created_by')}\n",
+        f"updated_by: {_yaml_double_quoted(updated_by, field='updated_by')}\n",
     ]
     if spec is not None:
         lines.append(f"spec: {spec}\n")
@@ -129,9 +140,16 @@ def _git(repo: Path, *args: str, check: bool = True, input: bytes | None = None,
     )
 
 
+def _git_stdout_text(stdout: bytes) -> str:
+    try:
+        return stdout.decode("utf-8")
+    except UnicodeDecodeError as e:
+        raise ValueError("git output is not valid UTF-8") from e
+
+
 def _git_config(repo: Path, key: str) -> str:
     r = _git(repo, "config", "--local", key, check=False)
-    return (r.stdout.decode().strip() if r.returncode == 0 else "")
+    return (_git_stdout_text(r.stdout).strip() if r.returncode == 0 else "")
 
 
 def _git_identity(repo: Path) -> tuple[str, str]:
@@ -148,7 +166,7 @@ def _symbolic_head(repo: Path) -> str | None:
     r = _git(repo, "symbolic-ref", "-q", "HEAD", check=False)
     if r.returncode != 0:
         return None
-    return r.stdout.decode().strip()
+    return _git_stdout_text(r.stdout).strip()
 
 
 def _nw_backlog_checked_out(repo: Path) -> bool:
@@ -157,7 +175,7 @@ def _nw_backlog_checked_out(repo: Path) -> bool:
     r = _git(repo, "worktree", "list", "--porcelain", check=False)
     if r.returncode != 0:
         return True
-    for line in r.stdout.decode().splitlines():
+    for line in _git_stdout_text(r.stdout).splitlines():
         if line.startswith("branch ") and line.removeprefix("branch ").strip() == _BACKLOG_REF:
             return True
     return False
@@ -167,7 +185,7 @@ def _ref_tip(repo: Path, ref: str) -> str | None:
     r = _git(repo, "rev-parse", "--verify", "-q", ref, check=False)
     if r.returncode != 0:
         return None
-    return r.stdout.decode().strip()
+    return _git_stdout_text(r.stdout).strip()
 
 
 def _parse_ls_tree_entry(line: bytes) -> tuple[bytes, str, str, str]:
@@ -215,7 +233,7 @@ def _mktree(repo: Path, parent_sha: str | None, path: str, blob_sha: str) -> str
     r = _git(repo, "mktree", "-z", input=tree_input, check=False)
     if r.returncode != 0:
         raise ValueError("mktree failed")
-    return r.stdout.decode().strip()
+    return _git_stdout_text(r.stdout).strip()
 
 
 def _publish_commit(
@@ -234,7 +252,9 @@ def _publish_commit(
     old_tip = _ref_tip(repo, _BACKLOG_REF)
     expected = old_tip or _NULL_SHA
 
-    blob = _git(repo, "hash-object", "-w", "--stdin", input=body).stdout.decode().strip()
+    blob = _git_stdout_text(
+        _git(repo, "hash-object", "-w", "--stdin", input=body).stdout
+    ).strip()
     tree = _mktree(repo, old_tip, rel_path, blob)
     parent_args = [tree]
     if old_tip:
@@ -252,7 +272,8 @@ def _publish_commit(
         "-m",
         message,
         env=commit_env,
-    ).stdout.decode().strip()
+    ).stdout
+    commit = _git_stdout_text(commit).strip()
 
     r = _git(repo, "update-ref", _BACKLOG_REF, commit, expected, check=False)
     if r.returncode != 0:
@@ -315,6 +336,8 @@ def publish_idea(cfg, task: Task, *, selector: str | None = None) -> str:
 
     repo = resolve_linked_repo(cfg, project)
     name, email = _git_identity(repo)
+    _validate_identity_value("user.name", name)
+    _validate_identity_value("user.email", email)
     author = f"{name} <{email}>"
 
     req_id = mint_req_id()
@@ -350,8 +373,13 @@ def publish_idea(cfg, task: Task, *, selector: str | None = None) -> str:
 
     try:
         W.link_idea_request(cfg, task, req_id, digest)
-    except Exception:
-        _restore_backlog_tip_or_bail(repo, req_id=req_id, new_sha=new_sha, old_tip=old_tip)
+    except BaseException as e:
+        try:
+            _restore_backlog_tip_or_bail(repo, req_id=req_id, new_sha=new_sha, old_tip=old_tip)
+        except ValueError as restore_err:
+            if isinstance(e, KeyboardInterrupt | SystemExit):
+                raise e
+            raise restore_err from e
         raise
 
     return (task.properties or {}).get("ID", "").strip() or task.id

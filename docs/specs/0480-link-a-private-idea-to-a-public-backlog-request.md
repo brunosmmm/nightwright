@@ -4,7 +4,7 @@ title: Publish a backlog request and record the link
 status: done
 owner: user
 created: 2026-11-08
-updated: 2026-11-09
+updated: 2026-11-10
 kind: feature
 tags: [public-backlog]
 source_idea: IDEA-1020
@@ -484,6 +484,13 @@ the guard.
 - `python3 tools/spec_lint.py --write-ledger && python3 tools/spec_lint.py` — exit 0.
 - Full suite left to queue gating.
 
+### Test record (2026-11-10, review loop 2)
+
+- `uv run pytest tests/test_idea_link.py -q` — 24 passed (review findings: test guards + UTF-8/identity publish).
+- `uv run pytest tests/test_idea_stamps.py::test_stamp_creates_missing_drawer_without_corrupting_sections tests/test_workflow.py -q` — 19 passed.
+- `python3 tools/spec_lint.py --write-ledger && python3 tools/spec_lint.py` — exit 0.
+- Full suite left to queue gating.
+
 ### Test record (2026-11-09, adversarial review loop 4)
 
 - `uv run pytest tests/test_idea_link.py -q` — 22 passed (tightened adversarial-review coverage).
@@ -498,6 +505,12 @@ the guard.
 - `nw-backlog` checked out in any linked worktree refuses publish like a checked-out branch.
 - `created_by` / `updated_by` are double-quoted YAML scalars; publish uses `idea_summary_text(..., strict=True)` and refuses when Summary cannot be read.
 - Restore after org-write failure checks `update-ref` exit code before reporting restored.
+
+### As shipped (2026-11-10, review loop 2)
+
+- Git stdout from the linked repo is decoded as strict UTF-8 (`_git_stdout_text`); non-UTF-8 refuses before ref update.
+- `user.name` / `user.email` are validated for one line and C0 controls before `render_request`; identity field errors name the key.
+- After a successful backlog commit, org-link failure runs backlog restore on `BaseException` but still re-raises `KeyboardInterrupt` / `SystemExit`.
 
 ### As shipped (2026-11-09, adversarial review loop 4)
 
