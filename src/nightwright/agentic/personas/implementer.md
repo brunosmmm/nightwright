@@ -48,11 +48,7 @@ speed-tier marker, `pytestmark = pytest.mark.<tier>` with `<tier>` one of `fast`
 `tui`, `remote`, or `perf`. `slow` is not a tier. Non-tier marks such as `skipif` and
 `tree_guard` may share that `pytestmark` list. A module that is not named `test_*.py` needs no
 tier. A single test may carry a heavier function-level mark; the module `pytestmark` still carries
-exactly one tier. The only `perf` module is `test_tui_budget`; a `time.monotonic` or
-`perf_counter` comparison never selects `perf`. When one test's duration is over 2 seconds and the
-module sum is not over 20 seconds, put `@pytest.mark.integration` on that test and keep the module
-tier `fast`. Take the 20-second module sum and the 2-second test duration from the targeted pytest
-run of that file in step 5. Choose the tier with the SPEC-0490 taxonomy, first match:
+exactly one tier. Choose the tier with the SPEC-0490 taxonomy, first match:
 `test_tui_budget` is `perf`; `test_gate_timeout_tree` is `integration`; `test_tui_*`, or a module
 that imports `tui_harness` or `tui_budget` or calls `run_test`, is `tui`; `test_remote_*`,
 `test_pull_worker*`, or a module that imports `remote_loopback`, `remote_support`, or

@@ -163,8 +163,9 @@ def test_implementer_prompt_targeted_tests(tmp_path):
 
 def test_implementer_prompt_requires_one_tier_marker(tmp_path):
     ctx = PS.build_context(_cfg(tmp_path), _state(tmp_path), _project_cfg())
-    p = " ".join(PS.build_prompt("implementer", ctx).split())
-    for step in ("1. ", "2. ", "3. ", "4. ", "7. ", "8. "):
+    raw = PS.build_prompt("implementer", ctx)
+    p = " ".join(raw.split())
+    for step in ("1. ", "2. ", "3. ", "4. ", "5. ", "6. ", "7. ", "8. "):
         assert step in p, step
     assert " 9. " not in p
     import re
@@ -173,23 +174,40 @@ def test_implementer_prompt_requires_one_tier_marker(tmp_path):
     assert re.search(r"^pytestmark = pytest\.mark\.fast\s*$", self_py, re.M)
     assert "Every new `tests/test_*.py` needs exactly one module-level speed-tier marker" in p
     assert "`pytestmark = pytest.mark.<tier>`" in p
-    for tier in ("fast", "integration", "tui", "remote", "perf"):
-        assert tier in p
+    assert (
+        "with `<tier>` one of `fast`, `integration`, `tui`, `remote`, or `perf`"
+        in p
+    )
     assert "`slow` is not a tier" in p
     assert "Non-tier marks such as `skipif` and `tree_guard` may share that `pytestmark` list." in p
     assert "A module that is not named `test_*.py` needs no tier" in p
     assert "function-level mark" in p and "the module `pytestmark` still carries exactly one tier" in p
-    assert "The only `perf` module is `test_tui_budget`" in p
-    assert "a `time.monotonic` or `perf_counter` comparison never selects `perf`" in p
-    assert "When one test's duration is over 2 seconds and the module sum is not over 20 seconds" in p
-    assert "@pytest.mark.integration" in p and "keep the module tier `fast`" in p
+    assert "Choose the tier with the SPEC-0490 taxonomy, first match:" in p
     assert "`test_tui_budget` is `perf`" in p
     assert "`test_gate_timeout_tree` is `integration`" in p
+    assert (
+        "`test_tui_*`, or a module that imports `tui_harness` or `tui_budget` or calls `run_test`, "
+        "is `tui`"
+    ) in p
+    assert (
+        "`test_remote_*`, `test_pull_worker*`, or a module that imports `remote_loopback`, "
+        "`remote_support`, or `remote_workers_golden`, is `remote`"
+    ) in p
+    assert (
+        "a name ending in `_e2e`, `_integration`, or `_race`, or a module whose tests sum past "
+        "20 seconds, is `integration`"
+    ) in p
+    assert "otherwise `fast`" in p
+    assert "over 2 seconds" not in p
+    assert "keep the module tier `fast`" not in p
+    assert "perf_counter" not in p
+    assert "The only `perf` module is `test_tui_budget`" not in p
     assert "`test_tui_*`, or a module that imports" in p
     assert "or a module whose tests sum past 20 seconds" in p
-    assert "`test_remote_*`" in p and "`remote_loopback`" in p
     assert "before you return and before the campaign gate" in p
     assert "python3 tools/test_tiers.py --check" in p
+    assert "when `tools/test_tiers.py` exists" in p
+    assert "fix every module it lists" in p
     assert "until it exits 0" in p
     assert "When that file is absent, skip the command." in p
     assert "The **Test tier marker** rule still applies to any tests/test_*.py you add." in p
@@ -200,6 +218,9 @@ def test_implementer_prompt_requires_one_tier_marker(tmp_path):
         in step5
     )
     assert step5.count("spec-lint") == 1
+    after8 = " ".join(raw.split("8. ")[1].split("Do not widen scope")[0].split())
+    assert "Test tier marker (SPEC-0490)" in after8
+    assert "Choose the tier with the SPEC-0490 taxonomy, first match:" in after8
 
 
 def test_spec_writer_prompt_requires_one_tier_marker(tmp_path):
@@ -212,9 +233,26 @@ def test_spec_writer_prompt_requires_one_tier_marker(tmp_path):
         in flat
     )
     assert "`pytestmark = pytest.mark.<tier>`" in flat
-    for tier in ("fast", "integration", "tui", "remote", "perf"):
-        assert tier in flat
+    assert (
+        "with `<tier>` one of `fast`, `integration`, `tui`, `remote`, or `perf`"
+        in flat
+    )
     assert "`slow` is not a tier" in flat
+    assert "SPEC-0490 taxonomy (first match):" in flat
+    assert "`test_tui_budget` is `perf`" in flat
+    assert "`test_gate_timeout_tree` is `integration`" in flat
+    assert (
+        "`test_tui_*`, or a module that imports `tui_harness` or `tui_budget` or calls `run_test`, "
+        "is `tui`"
+    ) in flat
+    assert (
+        "`test_remote_*`, `test_pull_worker*`, or a module that imports `remote_loopback`, "
+        "`remote_support`, or `remote_workers_golden`, is `remote`"
+    ) in flat
+    assert (
+        "a name ending in `_e2e`, `_integration`, or `_race` is `integration`"
+    ) in flat
+    assert "otherwise `fast`" in flat
     assert "`test_tui_*`, or a module that imports" in flat
     assert " or a module that imports `remote_loopback`" in flat
     assert "or a module whose tests sum past 20 seconds" not in flat

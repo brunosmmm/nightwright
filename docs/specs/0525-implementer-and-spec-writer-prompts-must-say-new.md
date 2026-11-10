@@ -175,15 +175,14 @@ mark.
 
 ### Test record (2026-11-09)
 
-- `uv run pytest -q tests/test_agentic_personas.py` — 66 passed.
-- `python3 tools/spec_lint.py` — exit 0.
+- `uv run pytest -q tests/test_agentic_personas.py` — 66 passed (loop 2: Design-faithful implementer paragraph + taxonomy pins).
+- `python3 tools/spec_lint.py --write-ledger` and `python3 tools/spec_lint.py` — exit 0.
 - `python3 tools/test_tiers.py --check` — exit 0.
-- `uv run nw campaign prompt IDEA-1129-20261109-5a04 implementer` / `spec_writer` — tier paragraphs present.
 - Full suite left to gating.
 
 ### As shipped (2026-11-09)
 
-Implementer **Test tier marker** paragraph adds SPEC-0490 review fixes beyond the accepted Design text: the only `perf` module is `test_tui_budget`, `perf_counter` never selects `perf`, and the 2-second function-level `@pytest.mark.integration` rule with step-5 duration measurement.
+Implementer and spec-writer persona prompts match the accepted Design text; tests pin the full SPEC-0490 taxonomy phrases and guard against the erroneous 2-second function-level rule.
 
 ## Clock Log
 
