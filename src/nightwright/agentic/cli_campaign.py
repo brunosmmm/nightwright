@@ -9,6 +9,7 @@ import sys
 from pathlib import Path
 
 import click
+from rich.markup import escape
 from rich.table import Table
 from rich.text import Text
 
@@ -132,12 +133,14 @@ def _runs_table(cid: str, runs: list[dict]) -> Table:
 
 def _print_run(rec: dict) -> None:
     def kv(key, value):
-        console.print(f"  [dim]{key:<14}[/] {value}", highlight=False)
+        console.print(f"  [dim]{key:<14}[/] {escape(str(value))}", highlight=False)
 
     vs = rec["verdict_status"]
     verdict = rec["verdict"] if isinstance(rec["verdict"], dict) else {}
-    console.print(f"[bold]{rec['run_id']}[/]  {rec['campaign']}  "
-                  f"[{_VERDICT_STYLES.get(vs, '')}]{vs}[/]  ({rec['source']}, {rec['status']})",
+    style = _VERDICT_STYLES.get(vs, "")
+    status_frag = f"[{style}]{escape(str(vs))}[/]" if style else escape(str(vs))
+    console.print(f"[bold]{escape(str(rec['run_id']))}[/]  {escape(str(rec['campaign']))}  "
+                  f"{status_frag}  ({escape(str(rec['source']))}, {escape(str(rec['status']))})",
                   highlight=False)
     kv("persona", f"{rec['persona'] or '-'}  {_model_text(rec)}")
     kv("started", f"{rec['started_at'] or '-'}  ({_duration_text(rec) or '-'})")

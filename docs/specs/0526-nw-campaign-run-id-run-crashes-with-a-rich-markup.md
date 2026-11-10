@@ -1,7 +1,7 @@
 ---
 id: SPEC-0526
 title: "nw campaign run renders verdict text that contains brackets"
-status: accepted
+status: done
 owner: user
 created: 2026-11-09
 updated: 2026-11-09
@@ -119,23 +119,23 @@ stay. `Text` does not parse markup; those lines need no `escape`.
 
 ## Acceptance criteria
 
-- [ ] `nw campaign run C R` on a run whose `verdict.status` is `blocked [/bold] keep [x]`,
+- [x] `nw campaign run C R` on a run whose `verdict.status` is `blocked [/bold] keep [x]`,
       whose `summary` is `see [x] and [/dim]`, with `must_fix` `["fix [link]"]`, `blockers`
       `["wait [/on] review"]`, and `result_tail` `err [/red]`, exits 0. The human output
       contains the status `blocked [/bold] keep [x]`, the summary `see [x] and [/dim]`,
       the must_fix item `fix [link]`, the blocker `wait [/on] review`, and the error tail
       `err [/red]`, each with its brackets intact, and it contains no `MarkupError` and no
       traceback.
-- [ ] The same command on a run with `disposition: fix` (`verdict_status` `fix`) and on a run
+- [x] The same command on a run with `disposition: fix` (`verdict_status` `fix`) and on a run
       with an empty verdict dict (`verdict_status` `?`) exits 0, and the output contains
       `fix` and `?`.
-- [ ] A mapped status still prints: the existing human views that show `done`, `pass`, and
+- [x] A mapped status still prints: the existing human views that show `done`, `pass`, and
       `blocked` still contain those words.
-- [ ] `--json` for that run returns `run.verdict.status` and `run.verdict.summary` equal
+- [x] `--json` for that run returns `run.verdict.status` and `run.verdict.summary` equal
       to those two strings, `run.must_fix` equal to `["fix [link]"]`, `run.blockers` equal
       to `["wait [/on] review"]`, and `run.result_tail` equal to `err [/red]`, with no
       backslash escapes added.
-- [ ] A stderr line `boom [/dim]` printed by the human view appears in full.
+- [x] A stderr line `boom [/dim]` printed by the human view appears in full.
 
 ## Test plan
 
@@ -166,6 +166,14 @@ stay. `Text` does not parse markup; those lines need no `escape`.
   tests/test_agentic_campaign_runs.py`. `python3 tools/spec_lint.py` exits 0 once the ledger
   is regenerated.
 
+### Test record (2026-11-09)
+
+- `uv run pytest -q tests/test_agentic_campaign_runs.py` — 25 passed.
+- `python3 tools/spec_lint.py` — exit 0 after `--write-ledger`.
+- Manual IDEA-1020/1070/1040 runs skipped (campaigns not present); automated bracketed-verdict
+  test covers the fix.
+- Full suite left to gating.
+
 ## Rollout / migration
 
 No data move and no config change. The next `nw campaign run` on an existing campaign uses
@@ -173,12 +181,12 @@ the new printer. `--json` consumers see the same document as before.
 
 ## Definition of done
 
-- [ ] Acceptance criteria all met.
-- [ ] Test plan executed; `uv run pytest -q tests/test_agentic_campaign_runs.py` passes, and
+- [x] Acceptance criteria all met.
+- [x] Test plan executed; `uv run pytest -q tests/test_agentic_campaign_runs.py` passes, and
       the manual commands above were run when those campaigns were still present.
-- [ ] No regressions.
-- [ ] Spec body updated to match what shipped.
-- [ ] `docs/LEDGER.md` regenerated (`python3 tools/spec_lint.py --write-ledger`).
+- [x] No regressions.
+- [x] Spec body updated to match what shipped.
+- [x] `docs/LEDGER.md` regenerated (`python3 tools/spec_lint.py --write-ledger`).
 
 ## Open questions
 

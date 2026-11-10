@@ -256,3 +256,60 @@ def test_empty_campaign_prints_no_runs(tmp_path, monkeypatch):
 def test_conduct_skill_names_runs():
     skill = Path(__file__).resolve().parent.parent / "skills" / "nw-conduct" / "SKILL.md"
     assert "nw campaign runs" in skill.read_text(encoding="utf-8")
+
+
+def test_run_human_view_prints_bracketed_verdict(merged):
+    cfg, cid, mp = merged
+    verdict = {
+        "status": "blocked [/bold] keep [x]",
+        "summary": "see [x] and [/dim]",
+        "must_fix": ["fix [link]"],
+        "blockers": ["wait [/on] review"],
+    }
+    add_run(cfg, cid, "060-implementer", end={
+        "verdict_ok": True, "result_tail": "err [/red]", "verdict": verdict})
+    d = runs_dir(cfg, cid) / "060-implementer"
+    d.mkdir(parents=True, exist_ok=True)
+    (d / "stderr.log").write_text("line\nboom [/dim]\n", encoding="utf-8")
+    r = run_cli(cfg, mp, ["campaign", "run", cid, "060"])
+    assert r.exit_code == 0, r.output
+    assert r.exception is None
+    for needle in (
+        "blocked [/bold] keep [x]",
+        "see [x] and [/dim]",
+        "fix [link]",
+        "wait [/on] review",
+        "err [/red]",
+        "boom [/dim]",
+    ):
+        assert needle in r.output
+
+
+def test_run_human_view_prints_unstyled_verdict_status(merged):
+    cfg, cid, mp = merged
+    add_run(cfg, cid, "061-implementer", end={"verdict_ok": True, "verdict": {"disposition": "fix"}})
+    add_run(cfg, cid, "062-implementer", end={"verdict_ok": True, "verdict": {}})
+    r_fix = run_cli(cfg, mp, ["campaign", "run", cid, "061"])
+    assert r_fix.exit_code == 0, r_fix.output
+    assert "fix" in r_fix.output
+    r_q = run_cli(cfg, mp, ["campaign", "run", cid, "062"])
+    assert r_q.exit_code == 0, r_q.output
+    assert "?" in r_q.output
+
+
+def test_run_json_keeps_bracketed_verdict(merged):
+    cfg, cid, mp = merged
+    verdict = {
+        "status": "blocked [/bold] keep [x]",
+        "summary": "see [x] and [/dim]",
+        "must_fix": ["fix [link]"],
+        "blockers": ["wait [/on] review"],
+    }
+    add_run(cfg, cid, "060-implementer", end={
+        "verdict_ok": True, "result_tail": "err [/red]", "verdict": verdict})
+    run = cli_json(cfg, mp, "run", cid, "060")["run"]
+    assert run["verdict"]["status"] == verdict["status"]
+    assert run["verdict"]["summary"] == verdict["summary"]
+    assert run["must_fix"] == ["fix [link]"]
+    assert run["blockers"] == ["wait [/on] review"]
+    assert run["result_tail"] == "err [/red]"
