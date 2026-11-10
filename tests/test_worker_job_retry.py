@@ -357,7 +357,7 @@ def test_retry_to_a_sync_worker_ends_the_chain(aw, boxes, monkeypatch, stopped):
     sync_id = f"{CID}-gate-001-a0"
     stop = threading.Event()
     if stopped:
-        def dispatch(rec, header, bundle, cfg, cid, seq, stop_):
+        def dispatch(rec, header, bundle, cfg, cid, seq, stop_, **_kw):
             assert RJ.read(cfg, A1)["state"] == "local" and _retried(aw)
             stop.set()
             return RG.Outcome(G.GateRun(seq, False, (), S.now_iso(), 0.0, interrupted=True))
