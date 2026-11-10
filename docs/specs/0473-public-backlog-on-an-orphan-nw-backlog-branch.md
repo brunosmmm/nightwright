@@ -893,6 +893,15 @@ drops unknown keys, and refreshes `updated` and `updated_by`.
 - `python3 tools/spec_lint.py --write-ledger` and `python3 tools/spec_lint.py` — exit 0.
 - Full suite left to gating.
 
+### Test record (campaign loop 1 review, 2026-11-10)
+
+- `uv run pytest -q tests/test_backlog.py` — 105 passed (adversarial review: missing-key
+  coverage, ``title: 1``/``title: yes``, summary ``---`` round-trip and mutations,
+  empty-body ``parse_item``, leading-newline logical summary, ``%ai``/``%ci`` ``+0000``,
+  ``test_reopen_refuses_unrenderable_closed_item``).
+- `python3 tools/spec_lint.py --write-ledger` and `python3 tools/spec_lint.py` — exit 0.
+- Full suite left to gating.
+
 ## Clock Log
 
 No session is recorded in this file. Implementation clocks IDEA-1019 with

@@ -252,10 +252,18 @@ def _cases():
         ("duplicate key", "REQ-K7H3MQ2P.md",
          doc(["id: REQ-K7H3MQ2P", * _BASE_LINES]), "duplicate key id"),
         ("not a mapping", "REQ-K7H3MQ2P.md", b"---\n- one\n---\n", "not a mapping"),
+        ("missing id", "REQ-K7H3MQ2P.md", doc(without("id:")), "missing id"),
         ("missing title", "REQ-K7H3MQ2P.md", doc(without("title:")), "missing title"),
+        ("missing status", "REQ-K7H3MQ2P.md", doc(without("status:")), "missing status"),
+        ("missing created", "REQ-K7H3MQ2P.md", doc(without("created:")), "missing created"),
+        ("missing updated", "REQ-K7H3MQ2P.md", doc(without("updated:")), "missing updated"),
+        ("missing created_by", "REQ-K7H3MQ2P.md", doc(without("created_by:")), "missing created_by"),
+        ("missing updated_by", "REQ-K7H3MQ2P.md", doc(without("updated_by:")), "missing updated_by"),
         ("bad id", "REQ-K7H3MQ2P.md", doc(replace("id: ", "id: NOPE")), "bad id"),
         ("id mismatch", "REQ-NF6H4D2P.md", VALID, "id mismatch"),
         ("title", "REQ-K7H3MQ2P.md", doc(replace("title: ", 'title: "   "')), "title"),
+        ("title int", "REQ-K7H3MQ2P.md", doc(replace("title: ", "title: 1")), "title"),
+        ("title yes", "REQ-K7H3MQ2P.md", doc(replace("title: ", "title: yes")), "title"),
         ("title newline", "REQ-K7H3MQ2P.md",
          doc(replace("title: ", r'title: "line1\nline2"')), "title"),
         ("status yes", "REQ-K7H3MQ2P.md", doc(replace("status: ", "status: yes")), "status"),
@@ -277,6 +285,31 @@ def _cases():
 @pytest.mark.parametrize("name,filename,blob,token", _cases(), ids=[c[0] for c in _cases()])
 def test_parse_item_reason_tokens(name, filename, blob, token):
     assert B.parse_item(filename, blob) == token
+
+
+def test_parse_item_missing_id_before_title_when_both_absent():
+    lines = [line for line in _BASE_LINES
+             if not line.startswith("id:") and not line.startswith("title:")]
+    assert B.parse_item("REQ-K7H3MQ2P.md", doc(lines)) == "missing id"
+
+
+def test_parse_item_logical_summary_and_round_trip():
+    empty = doc(_BASE_LINES, tail="")
+    parsed = B.parse_item("REQ-K7H3MQ2P.md", empty)
+    assert isinstance(parsed, dict)
+    assert parsed["summary"] == ""
+    assert B.parse_item("REQ-K7H3MQ2P.md", B.render_item(parsed)) == parsed
+
+    one_leading = doc(_BASE_LINES, tail="\n\nAfter newline\n")
+    parsed = B.parse_item("REQ-K7H3MQ2P.md", one_leading)
+    assert parsed["summary"] == "\nAfter newline\n"
+    assert B.parse_item("REQ-K7H3MQ2P.md", B.render_item(parsed)) == parsed
+
+    rule_line = doc(_BASE_LINES, tail="\nBefore\n---\nAfter\n")
+    parsed = B.parse_item("REQ-K7H3MQ2P.md", rule_line)
+    assert parsed["summary"] == "Before\n---\nAfter\n"
+    roundtrip = B.render_item(parsed)
+    assert B.parse_item("REQ-K7H3MQ2P.md", roundtrip) == parsed
 
 
 def test_yes_and_true_are_invalid_yaml_before_duplicate_key(tmp_path, git_log):
@@ -338,6 +371,8 @@ def test_add_writes_orphan_readme_and_req_file(tmp_path, monkeypatch):
     unix = str(int(moment.timestamp()))
     assert log_format(repo, "%at") == unix
     assert log_format(repo, "%ct") == unix
+    assert log_format(repo, "%ai") == "2026-11-07 15:41:00 +0000"
+    assert log_format(repo, "%ci") == "2026-11-07 15:41:00 +0000"
     assert git(repo, "log", "-1", "--format=%B", "nw-backlog").stdout == f"backlog: add {ident}\n".encode()
     assert set(names(repo)) == {"README.md", f"{ident}.md"}
     assert cat(repo, "README.md") == _README_LITERAL.encode()
@@ -453,6 +488,11 @@ def test_add_summary_contract(tmp_path, monkeypatch, git_log):
 
     empty = added(nw(repo, ["add", "--title", "Empty", "--summary", ""]))
     assert tail_of(empty) == ""
+    empty_blob = cat(repo, f"{empty}.md")
+    assert empty_blob.decode().endswith("---\n")
+    parsed_empty = B.parse_item(f"{empty}.md", empty_blob)
+    assert isinstance(parsed_empty, dict)
+    assert parsed_empty["summary"] == ""
     blank = added(nw(repo, ["add", "--title", "Blank", "--summary", "\n\n"]))
     assert tail_of(blank) == ""
     spaces = added(nw(repo, ["add", "--title", "Spaces", "--summary", "  "]))
@@ -469,6 +509,8 @@ def test_add_summary_contract(tmp_path, monkeypatch, git_log):
     assert B.parse_item(f"{padded}.md", cat(repo, f"{padded}.md"))["title"] == "  padded  "
     leading = added(nw(repo, ["add", "--title", "Lead", "--summary", "\nAfter newline"]))
     assert tail_of(leading) == "\n\nAfter newline\n"
+    leading_blob = cat(repo, f"{leading}.md")
+    assert B.parse_item(f"{leading}.md", leading_blob)["summary"] == "\nAfter newline\n"
     linked = added(nw(repo, ["add", "--title", "Spec", "--summary", "S", "--spec", "SPEC-0449"]))
     linked_text = cat(repo, f"{linked}.md").decode()
     keys = [line.split(":", 1)[0] for line in linked_text.split("\n---\n", 1)[0].splitlines()
@@ -477,6 +519,15 @@ def test_add_summary_contract(tmp_path, monkeypatch, git_log):
     assert "spec: SPEC-0449" in linked_text
     assert nw(repo, ["edit", hello, "--summary", ""]).exit_code == 0
     assert tail_of(hello) == ""
+
+    fence = added(nw(repo, ["add", "--title", "Fence", "--summary", "Before\n---\nAfter"]))
+    fence_blob = cat(repo, f"{fence}.md")
+    assert B.parse_item(f"{fence}.md", fence_blob)["summary"] == "Before\n---\nAfter\n"
+    tip = rev(repo, "nw-backlog")
+    assert nw(repo, ["edit", fence, "--summary", "Before\n---\nAfter"]).exit_code == 0
+    assert rev(repo, "nw-backlog") == tip
+    assert nw(repo, ["close", fence]).exit_code == 0
+    assert B.parse_item(f"{fence}.md", cat(repo, f"{fence}.md"))["status"] == "closed"
 
 
 def test_rejected_arguments_write_nothing(tmp_path, git_log):
@@ -839,6 +890,10 @@ def test_author_follows_local_config_not_environment_or_global(tmp_path, monkeyp
     assert log_format(repo, "%at") != "1000000000"
     assert log_format(repo, "%ct") == str(int(moment.timestamp()))
     assert log_format(repo, "%ct") != "1000000000"
+    assert log_format(repo, "%ai").endswith(" +0000")
+    assert log_format(repo, "%ci").endswith(" +0000")
+    assert log_format(repo, "%ai") == "2026-11-07 15:41:00 +0000"
+    assert log_format(repo, "%ci") == "2026-11-07 15:41:00 +0000"
     assert cat(repo, f"{ident}.md").decode().count(
         'created_by: "Ada \\"Lovelace\\" X <ada@example.com>"') == 1
 
@@ -1869,6 +1924,54 @@ Body.
     assert proc.stderr == "invalid backlog item REQ-K7H3MQ2P: title\n"
     assert rev(repo, "nw-backlog") == sha
     assert not any(call[0] == "hash-object" for call in git_log)
+
+
+def test_reopen_refuses_unrenderable_closed_item(tmp_path, monkeypatch, git_log):
+    freeze(monkeypatch)
+    repo = init_repo(tmp_path / "repo")
+    title_blob = b"""---
+id: REQ-K7H3MQ2P
+title: "Hello\xe2\x80\xa8World"
+status: closed
+created: 2026-11-07T15:41:00Z
+updated: 2026-11-07T15:41:00Z
+created_by: "Ada <ada@example.com>"
+updated_by: "Ada Lovelace <ada@example.com>"
+---
+
+Body.
+"""
+    created_blob = b"""---
+id: REQ-NF6H4D2P
+title: "Ok"
+status: closed
+created: 2026-11-07T15:41:00Z
+updated: 2026-11-07T15:41:00Z
+created_by: "Ada\xe2\x80\xa8Lovelace <ada@example.com>"
+updated_by: "Ada Lovelace <ada@example.com>"
+---
+
+Body.
+"""
+    for blob, ident, field in (
+        (title_blob, "REQ-K7H3MQ2P", "title"),
+        (created_blob, "REQ-NF6H4D2P", "created_by"),
+    ):
+        sha = commit_tree(
+            repo,
+            {
+                "README.md": _SPEC_README_BYTES,
+                "REQ-K7H3MQ2P.md": title_blob,
+                "REQ-NF6H4D2P.md": created_blob,
+            },
+        )
+        point(repo, sha)
+        git_log.clear()
+        proc = nw(repo, ["reopen", ident])
+        assert proc.exit_code == 1
+        assert proc.stderr == f"invalid backlog item {ident}: {field}\n"
+        assert rev(repo, "nw-backlog") == sha
+        assert not any(call[0] == "hash-object" for call in git_log)
 
 
 def _plant_backlog_item(repo, *, ident="REQ-K7H3MQ2P", title_line='title: "Public backlog"',
