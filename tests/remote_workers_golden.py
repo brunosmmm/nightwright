@@ -54,7 +54,13 @@ def _walk(obj, tmp: str):
 
 def comparable(obj):
     """The snapshot the golden comparison uses. Masking is done in `snapshot`; `review_outcome`
-    and the stable fields (`head`, `tree`, `seq`) are kept, so a change in any of them fails."""
+    and the stable fields (`head`, `tree`, `seq`) are kept, so a change in any of them fails.
+    The one thing dropped is SPEC-0505's additive `placement` on `gate` events (a no-workers run
+    records where=local with a reason); the pre-epic fixture predates it."""
+    if isinstance(obj, dict) and isinstance(obj.get("events"), list):
+        events = [{k: v for k, v in e.items() if not (e.get("type") == "gate" and k == "placement")}
+                  for e in obj["events"]]
+        return {**obj, "events": events}
     return obj
 
 
