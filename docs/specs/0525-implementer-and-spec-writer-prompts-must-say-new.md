@@ -76,7 +76,7 @@ through 8. Step 5 keeps its single "for nightwright itself: spec-lint" clause
 - After step 8 and before "Do not widen scope", add this paragraph (line wrapping may match
   the file; the unwrapped text is what the test pins):
 
-  **Test tier marker (SPEC-0490).** Every new `tests/test_*.py` needs exactly one module-level speed-tier marker, `pytestmark = pytest.mark.<tier>` with `<tier>` one of `fast`, `integration`, `tui`, `remote`, or `perf`. `slow` is not a tier. Non-tier marks such as `skipif` and `tree_guard` may share that `pytestmark` list. A module that is not named `test_*.py` needs no tier. A single test may carry a heavier function-level mark; the module `pytestmark` still carries exactly one tier. Choose the tier with the SPEC-0490 taxonomy, first match: `test_tui_budget` is `perf`; `test_gate_timeout_tree` is `integration`; `test_tui_*` and a module that imports `tui_harness` or `tui_budget` or calls `run_test` is `tui`; `test_remote_*`, `test_pull_worker*`, and a module that imports `remote_loopback`, `remote_support`, or `remote_workers_golden` is `remote`; a name ending in `_e2e`, `_integration`, or `_race`, and a module whose tests sum past 20 seconds, is `integration`; otherwise `fast`. In your loop, before you return and before the campaign gate, run `python3 tools/test_tiers.py --check` when `tools/test_tiers.py` exists, and fix every module it lists until it exits 0. When that file is absent, skip the command.
+  **Test tier marker (SPEC-0490).** Every new `tests/test_*.py` needs exactly one module-level speed-tier marker, `pytestmark = pytest.mark.<tier>` with `<tier>` one of `fast`, `integration`, `tui`, `remote`, or `perf`. `slow` is not a tier. Non-tier marks such as `skipif` and `tree_guard` may share that `pytestmark` list. A module that is not named `test_*.py` needs no tier. A single test may carry a heavier function-level mark; the module `pytestmark` still carries exactly one tier. Choose the tier with the SPEC-0490 taxonomy, first match: `test_tui_budget` is `perf`; `test_gate_timeout_tree` is `integration`; `test_tui_*`, or a module that imports `tui_harness` or `tui_budget` or calls `run_test`, is `tui`; `test_remote_*`, `test_pull_worker*`, or a module that imports `remote_loopback`, `remote_support`, or `remote_workers_golden`, is `remote`; a name ending in `_e2e`, `_integration`, or `_race`, or a module whose tests sum past 20 seconds, is `integration`; otherwise `fast`. In your loop, before you return and before the campaign gate, run `python3 tools/test_tiers.py --check` when `tools/test_tiers.py` exists, and fix every module it lists until it exits 0. When that file is absent, skip the command.
 
 - At the end of the **Red-base fix (no spec)** paragraph, add: `The **Test tier marker** rule still applies to any tests/test_*.py you add.`
 
@@ -112,13 +112,14 @@ mark.
       `pytestmark = pytest.mark.<tier>`, names `fast`, `integration`, `tui`, `remote`, and
       `perf`, and says `slow` is not a tier.
 - [ ] That prompt states the taxonomy in Design: `test_tui_budget` is `perf`;
-      `test_gate_timeout_tree` is `integration`; `test_tui_*`, an import of `tui_harness` or
-      `tui_budget`, or a call to `run_test` is `tui`; `test_remote_*`, `test_pull_worker*`,
-      and an import of `remote_loopback`, `remote_support`, or `remote_workers_golden` is
-      `remote`; a name ending in `_e2e`, `_integration`, or `_race`, and a module whose tests
-      sum past 20 seconds, is `integration`; otherwise `fast`. It says a function-level mark
-      may be heavier and the module `pytestmark` still carries exactly one tier, and that a
-      module not named `test_*.py` needs no tier.
+      `test_gate_timeout_tree` is `integration`; `test_tui_*`, or a module that imports
+      `tui_harness` or `tui_budget` or calls `run_test`, is `tui`; `test_remote_*`,
+      `test_pull_worker*`, or a module that imports `remote_loopback`, `remote_support`, or
+      `remote_workers_golden`, is `remote`; a name ending in `_e2e`, `_integration`, or
+      `_race`, or a module whose tests sum past 20 seconds, is `integration`; otherwise
+      `fast`. Each of those structural triggers is enough on its own. It says a
+      function-level mark may be heavier and the module `pytestmark` still carries exactly
+      one tier, and that a module not named `test_*.py` needs no tier.
 - [ ] That prompt tells the implementer to run `python3 tools/test_tiers.py --check` in their
       loop, before they return and before the campaign gate, when `tools/test_tiers.py`
       exists, and to fix every module it lists until it exits 0. Step 5 points at the
@@ -145,6 +146,7 @@ mark.
     the step-5 and red-base sentences, including `before the campaign gate`,
     `python3 tools/test_tiers.py --check`, `until it exits 0`, the five tier names, `slow` is
     not a tier, and the taxonomy names listed in the acceptance criteria. It asserts the
+    substrings `` `test_tui_*`, or a module that imports `` and `or a module whose tests sum past 20 seconds`, so the test fails if `and` joins `test_tui_*` to the import rule or joins a name suffix to the 20-second sum. It asserts the
     step-5 slice (`split("5. ")` then `split(" 6. ")`, as
     `test_implementer_prompt_targeted_tests`) contains `Test tier marker` and does not add a
     second `spec-lint`.
@@ -153,6 +155,7 @@ mark.
     placeholders render as `(none)`) and asserts the Design bullet: exactly one marker, the
     five tiers, `slow` is not a tier, the structural taxonomy, `--check` exits 0 when
     `tools/test_tiers.py` exists, and no second tier on a module that already has one. It
+    asserts the substrings `` `test_tui_*`, or a module that imports `` and `` or a module that imports `remote_loopback` ``, so the test fails if `and` joins `test_tui_*` to the import rule or joins a remote name to the `remote_loopback` import. It
     asserts that bullet sits in the "Always:" section (after `Always:` and before
     `Pending brief`).
   - Sabotage: delete the new implementer paragraph and the new spec-writer bullet, confirm
