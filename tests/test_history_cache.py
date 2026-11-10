@@ -42,10 +42,8 @@ def cache_dir(tmp_path, data_dir):
     return path
 
 
-def cfg(data_dir, cache_dir=None, *, use_cache=True, **extra):
+def cfg(data_dir, cache_dir=None, **extra):
     agentic = {"default_profile": "balanced", **(extra.pop("agentic", None) or {})}
-    if use_cache and cache_dir is not None:
-        agentic.setdefault("history", {})["cache"] = True
     out = {"data_dir": str(data_dir), "agentic": agentic, **extra}
     if cache_dir is not None:
         out["cache_dir"] = str(cache_dir)
@@ -84,18 +82,29 @@ def test_no_cache_dir_no_write_or_gap(data_dir, tmp_path):
     assert not list(tmp_path.rglob("history"))
 
 
-def test_cache_dir_opt_out_matches_pure_and_writes_nothing(data_dir, cache_dir):
-    c = cfg(data_dir, cache_dir, use_cache=False)
+def test_cache_dir_default_builds_v1_and_matches_pure(data_dir, cache_dir):
+    c = cfg(data_dir, cache_dir)
     before = _hashes(data_dir)
     cid = "SPEC-0394-20261102-ae5b"
+    pure_idx = H.history_index(cfg(data_dir), now=NOW, cache=False)
+    H.history_index(c, now=NOW)
+    v1 = cache_dir / "history" / "v1"
+    assert (v1 / "version").read_bytes() == b"1\n"
+    assert H.history_index(c, now=NOW) == pure_idx
     pure_doc = H.campaign_history(cfg(data_dir), cid, now=NOW, cache=False)
-    doc = H.campaign_history(c, cid, now=NOW)
-    assert doc == pure_doc
-    assert "cache: not writable" not in doc.get("gaps", [])
-    assert H.history_index(c, now=NOW) == H.history_index(cfg(data_dir), now=NOW, cache=False)
-    assert H.history_records(c) == H.history_records(cfg(data_dir), cache=False)
+    cached = H.campaign_history(c, cid, now=NOW)
+    assert {k: v for k, v in cached.items() if k != "generated_at"} == {
+        k: v for k, v in pure_doc.items() if k != "generated_at"
+    }
     assert _hashes(data_dir) == before
-    assert not (cache_dir / "history").exists()
+
+
+def test_cache_dir_file_unwritable_gap(data_dir, tmp_path):
+    c = cfg(data_dir, cache_dir=tmp_path / "notadir")
+    (tmp_path / "notadir").write_text("x")
+    cid = "SPEC-0394-20261102-ae5b"
+    doc = H.campaign_history(c, cid, now=NOW)
+    assert "cache: not writable" in doc.get("gaps", [])
 
 
 def test_cache_false_no_write(data_dir, cache_dir):
@@ -1270,3 +1279,61 @@ def test_runner_same_size_mtime_resets_log_offset(data_dir, cache_dir):
     assert {k: v for k, v in cached.items() if k != "generated_at"} == {
         k: v for k, v in unc.items() if k != "generated_at"
     }
+
+
+def test_decisions_unlink_matches_pure_terminal(data_dir, cache_dir):
+    c = cfg(data_dir, cache_dir)
+    cid = "SPEC-0394-20261102-ae5b"
+    H.history_index(c, now=NOW, cache=True)
+    (data_dir / "agentic" / "conductor" / "decisions.jsonl").unlink()
+    HC._records_mem.clear()
+    unc = H.campaign_history(c, cid, now=NOW, cache=False)
+    cached = H.campaign_history(c, cid, now=NOW, cache=True)
+    assert cached["gaps"] == unc["gaps"]
+    assert "decisions.jsonl: missing" in cached["gaps"]
+    assert H.history_records(c, cache=True) == H.history_records(c, cache=False)
+
+
+def test_lock_ex_before_campaign_listing_on_warm_miss(data_dir, cache_dir, monkeypatch):
+    import fcntl
+
+    c = cfg(data_dir, cache_dir)
+    H.history_index(c, now=NOW, cache=True)
+    v1 = cache_dir / "history" / "v1"
+    sample = json.loads((v1 / "index.jsonl").read_text().splitlines()[0])
+    (v1 / "index.writes.jsonl").write_text(json.dumps(sample) + "\n")
+    HC._CAMPAIGN_LISTING.clear()
+    events: list = []
+    real_flock = fcntl.flock
+
+    def track_flock(fd, op):
+        if op == fcntl.LOCK_EX:
+            events.append("lock_ex")
+        return real_flock(fd, op)
+
+    real_scandir = os.scandir
+
+    def track_scandir(path, *a, **kw):
+        events.append(("scandir", str(path)))
+        return real_scandir(path, *a, **kw)
+
+    monkeypatch.setattr(fcntl, "flock", track_flock)
+    monkeypatch.setattr(os, "scandir", track_scandir)
+    H.history_index(c, now=NOW, cache=True)
+    camp_dir = str(store.campaigns_dir(c))
+    lock_i = events.index("lock_ex")
+    scandir_i = next(
+        i for i, e in enumerate(events) if e[0] == "scandir" and e[1] == camp_dir
+    )
+    assert lock_i < scandir_i
+
+
+def test_corrupt_version_rebuilds_to_one(data_dir, cache_dir):
+    c = cfg(data_dir, cache_dir)
+    H.history_index(c, now=NOW, cache=True)
+    v1 = cache_dir / "history" / "v1"
+    (v1 / "version").write_text("999\n")
+    HC._records_mem.clear()
+    idx = H.history_index(c, now=NOW, cache=True)
+    assert (v1 / "version").read_bytes() == b"1\n"
+    assert idx == H.history_index(cfg(data_dir), now=NOW, cache=False)

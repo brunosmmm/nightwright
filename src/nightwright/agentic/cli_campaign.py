@@ -442,9 +442,8 @@ def attach(campaign_group):
         cfg = ctx.obj
         """Derived history for exactly one CAMPAIGN, --list, or --rebuild-cache.
 
-        List, records, and CAMPAIGN use cache=None: caching runs only when
-        config agentic.history.cache is true (and cache_dir is set); cache=True
-        forces it. --rebuild-cache always builds under cache_dir."""
+        List, records, and CAMPAIGN use cache=None: caching runs when cache_dir
+        is set; cache=False is always pure. --rebuild-cache always builds under cache_dir."""
         modes = sum(bool(x) for x in (campaign, as_list, rebuild_cache))
         if modes != 1:
             raise click.UsageError(

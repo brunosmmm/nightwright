@@ -1,7 +1,7 @@
 ---
 id: SPEC-0472
 title: "History cache for the campaign history layer"
-status: done
+status: in-progress
 owner: user
 created: 2026-11-08
 updated: 2026-11-10
@@ -702,6 +702,15 @@ sync; `conductor_cost.sessions` newline rule; cold fill `version` + `index.write
 `tests/test_history_cache.py::test_live_ledger_finding_in_history_records_without_campaign_history` (5 passed).
 `python3 tools/spec_lint.py --write-ledger` exit 0. Full suite left to queue gating.
 
+### Test record (2026-11-10, implementer loop 1, IDEA-1015-faf2)
+
+Restored Decision 1 default (`cache=None` uses `cache_dir`), decisions.jsonl missing
+gap, parsed decision tail offsets, exclusive lock across warm miss paths with
+`_hold_guard`, terminal hits require index/live id-set match. Added tests for
+default cache build, decisions unlink, corrupt version, and lock-before-listing.
+`uv run pytest -q tests/test_history_cache.py tests/test_cli_campaign_history.py
+tests/test_history.py` (89 passed). Full suite left to gating.
+
 ### Test record (2026-11-10, implementer loop 0, IDEA-1015-faf2)
 
 Opt-in `agentic.history.cache`, decision gap preservation on tail append, runner
@@ -739,6 +748,15 @@ Loop 3: `_INDEX_QUIET_KEY` no longer skips data-dir invalidation on `history_rec
 tree hash no longer reuses stale directory-mtime snapshots; `_sources_unchanged_light` treats
 reappeared canonical logs, flaky-tests.json, and session transcripts as changes; log `lines`
 cursors survive `_scan_sources`; same-inode/size `mtime_ns` edits force log offset zero.
+
+### As shipped (2026-11-10, loop 1)
+
+`cache=None` enables the cache whenever `cache_dir` is set; omitting `cache_dir` stays pure.
+Warm miss paths hold one `fcntl.LOCK_EX` on `.lock` through campaign JSON writes and index
+persistence via `_hold_guard`. Terminal `campaign_history` hits require the index campaign
+set to match live directories. Decision cursors store the byte offset from the parse pass.
+Remaining test-plan matrix gaps (mailbox/profile/run.json invalidation detail, CLI hash
+assertions, clone_fixture append contract, schema-id pinning) are follow-up for loop 2+.
 
 ### As shipped (2026-11-10, loop 0)
 
