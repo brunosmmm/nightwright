@@ -63,6 +63,7 @@ from . import sentinel as SN
 from . import spec_review as SR
 from . import spec_write as SW
 from . import schemas as SC
+from . import disk_clean
 from . import store
 from . import workers
 from .codewatch import (_CODE_PATHS, _changed_paths, _git_out, code_changes,  # noqa: F401
@@ -6082,6 +6083,7 @@ def _tick(cfg, ctx: _Ctx, pool: StepPool, report: TickReport, *, admit: bool, ow
     for st in store.list_campaigns(cfg):          # SPEC-0253: residue of a killed runner
         ctx.progress()
         store.sweep_campaign_tmp(cfg, st["id"])
+    disk_clean.sweep(cfg)             # SPEC-0524: bounded leftovers of finished work, hourly
     _settle_ended_remote_jobs(cfg, flying)
     _apply_worker_escalations(cfg)
     _finish_worker_drains(cfg)

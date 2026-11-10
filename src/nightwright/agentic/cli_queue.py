@@ -2431,6 +2431,19 @@ def attach(queue_group):
         if failed or plan["errors"]:
             ctx.exit(1)
 
+    @queue_group.command("disk-clean")
+    @click.option("--run-days", type=click.FloatRange(min=0), default=None,
+                  help="also drop replay logs of finished campaigns older than this (default 14)")
+    @click.pass_context
+    def queue_disk_clean(ctx, run_days):
+        """Sweep finished work's leftovers now (SPEC-0524): terminal campaigns' tmp and replay
+        logs, old sentinel logs, old gate-job records. The runner does this hourly."""
+        from . import disk_clean as DC
+        res = DC.sweep(ctx.obj, force=True, run_days=run_days)
+        console.print(f"freed {res['bytes'] / 1e6:.1f} MB: {res['tmp_dirs']} tmp dirs, "
+                      f"{res['streams']} replay logs, {res['logs']} sentinel logs, "
+                      f"{res['gate_jobs']} gate jobs" + (f" ({res['error']})" if res.get("error") else ""))
+
     @queue_group.group("sentinel")
     def queue_sentinel():
         """Full-suite sentinel on a project's base after close-tier reuses (SPEC-0359)."""
