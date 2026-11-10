@@ -823,6 +823,30 @@ def test_check_overlap_unreachable_and_disabled(tmp_path, monkeypatch):
     assert "zlast off" in r_off.output
 
 
+def test_https_connect_failure_is_unreachable(tmp_path, monkeypatch):
+    import time
+
+    monkeypatch.setattr(time, "time", lambda: NOW)
+    hub = _cfg(tmp_path)
+    closed_port = 59991
+    _invoke(hub, monkeypatch, "add", "tlsdead", "--url", f"https://127.0.0.1:{closed_port}")
+    rec = H.find(H.load(hub), "tlsdead")
+    with pytest.raises(ConnectionError):
+        F.HubClient(rec, hub, now=NOW).request("GET", "/v1/status")
+    cache = {"fetched_at": "2020-01-01T00:00:00+00:00", "projects": ["stale"], "campaigns": []}
+
+    def plant(recs):
+        H.find(recs, "tlsdead")["status_cache"] = cache
+
+    H.update(hub, plant)
+    snap = json.dumps(H.find(H.load(hub), "tlsdead")["status_cache"], sort_keys=True)
+    r = _invoke(hub, monkeypatch, "check")
+    assert r.exit_code == 1
+    assert "tlsdead unreachable:" in r.output
+    assert "Traceback" not in r.output
+    assert json.dumps(H.find(H.load(hub), "tlsdead")["status_cache"], sort_keys=True) == snap
+
+
 def test_hub_modules_do_not_import_queue():
     root = Path(__file__).resolve().parents[1] / "src" / "nightwright" / "agentic"
     for name in ("hosts.py", "federation.py", "cli_hosts.py"):

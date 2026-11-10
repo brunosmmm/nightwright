@@ -13,6 +13,7 @@ from pathlib import Path
 from urllib.parse import urlsplit
 
 from . import pull_jobs as PJ
+from . import workers as WK
 
 FEDERATION_REF = "secrets/federation.json"
 EMPTY_BODY_SHA = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
@@ -154,10 +155,13 @@ class HubClient:
             raise ValueError(f"url {url!r} is not http(s)://HOST")
         self.https = u.scheme == "https"
         self.host = u.hostname
-        self.port = u.port or (443 if self.https else 80)
+        self.port = u.port if u.port is not None else (443 if self.https else 80)
         self.base = u.path.rstrip("/")
-        token = read_host_token(cfg, record["name"])
-        secret = read_host_secret(cfg, record["name"])
+        name = record.get("name")
+        if not isinstance(name, str) or not WK.NAME_RE.fullmatch(name):
+            raise ValueError(f"host name must match {WK.NAME_RE.pattern}")
+        token = read_host_token(cfg, name)
+        secret = read_host_secret(cfg, name)
         if not token or not secret:
             raise ValueError("missing host credentials")
         self.token, self.secret = token, secret
@@ -182,14 +186,17 @@ class HubClient:
                    **request_headers(self.secret, method, target, data, now=self._now)}
         if data:
             headers["Content-Length"] = str(len(data))
+        conn = None
+        sock = None
         try:
             if self.https:
                 sock = socket.create_connection((self.host, self.port),
                                                   timeout=self.CONNECT_TIMEOUT)
                 ctx = ssl.create_default_context()
-                sock = ctx.wrap_socket(sock, server_hostname=self.host)
+                ssl_sock = ctx.wrap_socket(sock, server_hostname=self.host)
+                sock = None
                 conn = http.client.HTTPSConnection(self.host, self.port)
-                conn.sock = sock
+                conn.sock = ssl_sock
             else:
                 conn = http.client.HTTPConnection(self.host, self.port)
                 conn.sock = socket.create_connection((self.host, self.port),
@@ -203,7 +210,10 @@ class HubClient:
         except (OSError, ssl.SSLError, http.client.HTTPException) as e:
             raise ConnectionError(f"{type(e).__name__}: {e}") from e
         finally:
-            conn.close()
+            if conn is not None:
+                conn.close()
+            elif sock is not None:
+                sock.close()
         if len(raw) > MAX_RESPONSE_BYTES:
             raise ConnectionError("response too large")
         if status != 200:
