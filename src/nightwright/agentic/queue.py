@@ -35,13 +35,14 @@ from pathlib import Path
 import yaml
 
 from .. import specs as SP
-from ..rules import INTERNAL_PROJECT
+from ..rules import INTERNAL_PROJECT, registered_projects
 from ..spec_scope import idea_project
 from ..specmeta import split_frontmatter
 from . import autopark as AP
 from . import backend_preflight as BP
 from . import credentials as CR
 from . import runner_jobs as RNJ
+from . import cadence as CAD
 from . import close as CL
 from . import cost_policy as CP
 from . import decisions as DEC
@@ -5304,27 +5305,33 @@ def _sentinel_step(ctx: _Ctx, pool: StepPool, busy: list) -> str | None:
     there less than `SN.RETRY_S` ago) waits. SPEC-0379: a project is also due on the clock
     (`SN.time_due`: the base moved since the last green run, which is older than
     `agentic.sentinel.interval_hours`) when it has close gates; the candidates stay the projects
-    with sentinel state (every merge records it). Returns the project started, if any."""
+    with sentinel state (every merge records it). Returns the project started, if any.
+
+    SPEC-0493: a project with `cadence:` skips `SN.time_due` (its cadence jobs cover the clock);
+    when no sentinel run started, `_cadence_scan` may start one cadence job on the same
+    `pool.sentinel` slot (a 3-tuple `(project, future, job)`), harvested here as
+    `cadence_done` / `cadence_failed`."""
     cfg = ctx.cfg
     fl = pool.sentinel
     if fl is not None:
-        project, fut = fl
+        project, fut = fl[0], fl[1]
         if not fut.done():
             return None
         pool.sentinel = None
-        try:
-            out = fut.result()
-            journal(cfg, "sentinel_done", project=project, ok=out.get("ok"),
-                    sha=out.get("sha"), interrupted=out.get("interrupted"))
-        except SN.Busy as e:
-            journal(cfg, "sentinel_skipped", project=project, reason=str(e))
-        except Exception as e:
-            journal(cfg, "sentinel_failed", project=project, error=f"{type(e).__name__}: {e}")
+        if len(fl) > 2:
+            _cadence_harvest(cfg, project, fl[2], fut)
+        else:
+            try:
+                out = fut.result()
+                journal(cfg, "sentinel_done", project=project, ok=out.get("ok"),
+                        sha=out.get("sha"), interrupted=out.get("interrupted"))
+            except SN.Busy as e:
+                journal(cfg, "sentinel_skipped", project=project, reason=str(e))
+            except Exception as e:
+                journal(cfg, "sentinel_failed", project=project, error=f"{type(e).__name__}: {e}")
     if ctx.stop.is_set():
         return None
     candidates = SN.projects(cfg)
-    if not candidates:
-        return None
     flying = pool.ids()
     if any(s.get("state") == "GATING" and s["id"] not in flying for s in busy):
         return None
@@ -5334,8 +5341,9 @@ def _sentinel_step(ctx: _Ctx, pool: StepPool, busy: list) -> str | None:
         try:
             pcfg = P.project_config(cfg, project)
             due = SN.check_due(cfg, project, root=pcfg.get("_root"), project_cfg=pcfg)
-            if not due and (SN.interval_hours(cfg) <= 0 or not P.gates_for(pcfg, "close")):
-                continue                                    # the clock is off / nothing to run
+            if not due and (SN.interval_hours(cfg) <= 0 or not P.gates_for(pcfg, "close")
+                            or pcfg.get("cadence")):
+                continue                    # the clock is off / nothing to run / cadence owns it
             if SN.running(cfg, project):
                 continue                                    # a CLI run holds the lock
             # an unresolvable base (renamed branch, re-cloned repo) is a failure, not a run
@@ -5360,6 +5368,68 @@ def _sentinel_step(ctx: _Ctx, pool: StepPool, busy: list) -> str | None:
             continue
         pool.sentinel = (project, pool.submit(lambda: SN.run(cfg, project, project_cfg=pcfg, stop=ctx.stop)))
         journal(cfg, "sentinel_started", project=project)
+        return project
+    return _cadence_scan(ctx, pool)
+
+
+def _cadence_harvest(cfg, project, job, fut) -> None:
+    """A finished cadence run (SPEC-0493): `cadence_done`, or `cadence_failed` when `run`
+    raised (a held run lock included). The run itself journalled any `cadence_deferred`."""
+    try:
+        out = fut.result()
+        journal(cfg, "cadence_done", project=project, job=job, ok=out.get("ok"),
+                sha=out.get("sha"), interrupted=out.get("interrupted"), error=out.get("error"),
+                deferred=out.get("deferred"))
+    except Exception as e:
+        journal(cfg, "cadence_failed", project=project, job=job,
+                error=f"{type(e).__name__}: {e}"[:500])
+
+
+def _cadence_projects(cfg) -> list:
+    """Registered projects whose config loads with a non-empty `cadence:` (load errors skipped)."""
+    out = []
+    for project in registered_projects(cfg):
+        try:
+            if P.project_config(cfg, project).get("cadence"):
+                out.append(project)
+        except (ValueError, OSError):
+            continue
+    return out
+
+
+def _cadence_scan(ctx: _Ctx, pool: StepPool) -> str | None:
+    """SPEC-0493: start at most one due cadence job, on the first registered project (in order)
+    that has one; `CAD.pick` seeds and reconciles the rows before the due check. Called only
+    when no sentinel is in flight or started, the tick is not stopping and no campaign waits
+    for a gate slot. A load or base-sha failure is journalled `cadence_failed` once per reason."""
+    cfg = ctx.cfg
+    for project in registered_projects(cfg):
+        try:
+            root = P.project_root(cfg, project)
+            if not P.config_path(root).is_file():
+                continue                            # no repo / not a nightwright-run project
+        except (ValueError, OSError):
+            continue
+        try:
+            pcfg = P.project_config(cfg, project)
+            if not pcfg.get("cadence") or SN.running(cfg, project):
+                continue
+            base_sha = git.rev_parse(pcfg.get("_root") or P.project_root(cfg, project),
+                                     SN._base(pcfg))
+            hit = CAD.pick(cfg, project, project_cfg=pcfg, base_sha=base_sha)
+        except (GitError, ValueError, OSError) as e:         # never out of the tick
+            err = " ".join(str(e).split())[:500]
+            key = ("cadence", project, err)
+            if key not in pool.deferred_noted:              # once per reason, not per tick
+                pool.deferred_noted.add(key)
+                journal(cfg, "cadence_failed", project=project, error=err)
+            continue
+        if hit is None:
+            continue
+        job, why = hit
+        pool.sentinel = (project, pool.submit(
+            lambda: CAD.run(cfg, project, job, project_cfg=pcfg, stop=ctx.stop, reason=why)), job)
+        journal(cfg, "cadence_started", project=project, job=job, reason=why)
         return project
     return None
 
@@ -5470,7 +5540,9 @@ def _red_main_step(ctx: _Ctx, pool: StepPool, report: TickReport, *, own: bool) 
         pool.red_localize = None
         _red_localized(cfg, fl[0], fl[1])
     flying = pool.ids()
-    for project in SN.projects(cfg):
+    projects = list(SN.projects(cfg))
+    projects += [p for p in _cadence_projects(cfg) if p not in projects]   # SPEC-0493
+    for project in projects:
         ctx.progress()
         try:
             pcfg = P.project_config(cfg, project)
@@ -6906,8 +6978,13 @@ def _waiting_on(cfg, pool: StepPool) -> list:
         out.append({"campaign": cid, "kind": kind, "run_ids": [r for r, _ in fl.runs],
                     "timeout_s": timeout})
     if _sentinel_busy(pool):                                # SPEC-0359: a full close suite
-        out.append({"campaign": f"sentinel-{pool.sentinel[0]}", "kind": "sentinel",
-                    "run_ids": [], "timeout_s": events_settings(cfg)["gate_budget_s"]})
+        fl = pool.sentinel
+        if len(fl) > 2:                                     # SPEC-0493: a cadence job
+            out.append({"campaign": CAD.campaign_id(fl[0], fl[2]), "kind": "cadence",
+                        "run_ids": [], "timeout_s": events_settings(cfg)["gate_budget_s"]})
+        else:
+            out.append({"campaign": f"sentinel-{fl[0]}", "kind": "sentinel",
+                        "run_ids": [], "timeout_s": events_settings(cfg)["gate_budget_s"]})
     return out
 
 

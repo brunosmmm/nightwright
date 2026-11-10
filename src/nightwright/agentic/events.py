@@ -91,6 +91,8 @@ EVENT_TYPES = {
     "spec_accepted": ("spec_id",),
     # SPEC-0359: a full-suite sentinel run on a project's base (keys: `schemas.EVENT_KEYS`)
     "sentinel": SC.EVENT_KEYS["sentinel"],
+    # SPEC-0493: a finished cadence job run on a project's base (keys: `schemas.EVENT_KEYS`)
+    "cadence": SC.EVENT_KEYS["cadence"],
     # SPEC-0381: a standalone `nw gate run` job was dispatched or finished
     "gate_job": ("job_id", "status"),
     # SPEC-0420: red-base episodes (queue-owned fix-forward / revert) and held closes
@@ -255,7 +257,8 @@ def _last_id(path: Path) -> int:
 def validate(type_: str, data: dict) -> None:
     if type_ not in EVENT_TYPES:
         raise ValueError(f"unknown event type {type_!r}")
-    required = SC.required_keys(type_, data) if type_ == "sentinel" else EVENT_TYPES[type_]
+    required = SC.required_keys(type_, data) if type_ in ("sentinel", "cadence") \
+        else EVENT_TYPES[type_]
     missing = [k for k in required if k not in (data or {})]
     if missing:
         raise ValueError(f"event {type_!r} missing data keys: {', '.join(missing)}")

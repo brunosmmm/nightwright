@@ -196,6 +196,20 @@ def test_run_all_runs_everything_and_required_decides(world):
     assert G.blocking_failures(only_optional) == []
 
 
+def test_run_all_appends_the_cadence_job_gate_only_at_close(world):
+    """SPEC-0493: a red-main fix of a cadence episode (`cadence_job`) re-runs that job at close."""
+    cfg, st, wt = world
+    job = {"name": "tui", "cmd": "true", "timeout_s": 30, "every_hours": 24}
+    proj = {**_project(_gate("a", "true")), "cadence": [job]}
+    fix = {**st, "cadence_job": "tui"}
+    assert [r.name for r in G.run_all(proj, fix, cfg, seq=1, tier="close").results] == ["a", "tui"]
+    assert [r.name for r in G.run_all(proj, fix, cfg, seq=2, tier="loop").results] == ["a"]
+    assert [r.name for r in G.run_all(proj, st, cfg, seq=3, tier="close").results] == ["a"]
+    gone = {**st, "cadence_job": "nope"}
+    assert [r.name for r in G.run_all(proj, gone, cfg, seq=4, tier="close").results] == ["a"]
+    assert G.cadence_job_of(proj, fix) == job and G.cadence_job_of({}, fix) is None
+
+
 def test_as_payload_and_next_seq(world):
     cfg, st, wt = world
     assert G.next_gate_seq(cfg, CID) == 1

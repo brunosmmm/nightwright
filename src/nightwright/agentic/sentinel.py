@@ -726,10 +726,10 @@ def settle(cfg, project, sha, ok, failing=(), *, root=None, project_cfg=None, no
     if red_main:
         try:
             if ok:
-                RM.on_green(cfg, project, sha, now=now)
+                RM.on_green(cfg, project, sha, now=now, source=RM.SENTINEL)
             else:
                 RM.on_red(cfg, project, sha, list(failing), root=root, base=base, logs=logs,
-                          now=now)
+                          now=now, source=RM.SENTINEL)
         except (OSError, ValueError) as e:       # best effort: the sentinel result stands
             _journal(cfg, project, f"redmain.{'on_green' if ok else 'on_red'} failed: {e}")
     elif not ok and not repeat:

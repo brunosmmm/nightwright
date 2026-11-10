@@ -731,3 +731,24 @@ def test_rebase_resolved_is_projected(tmp_path):                                
     assert len(hit) == 1 and hit[0]["data"]["conflicts"] == ["src/app.py"]
     E.sync(cfg)
     assert len([e for e in E.read_since(cfg, 0) if e["type"] == "rebase_resolved"]) == 1
+
+
+def test_cadence_event_keys_need_failing_only_when_red():
+    """SPEC-0493: the `cadence` queue event carries `failing` when (and only when) ok is false."""
+    from nightwright.agentic import schemas as SC
+    base = {"project": "p", "job": "tui", "sha": "a", "reason": "hours", "duration_s": 1.0}
+    E.validate("cadence", {**base, "ok": True})
+    E.validate("cadence", {**base, "ok": None, "error": "ssh"})
+    with pytest.raises(ValueError, match="failing"):
+        E.validate("cadence", {**base, "ok": False})
+    E.validate("cadence", {**base, "ok": False, "failing": []})
+    assert "failing" in SC.required_keys("cadence", {"ok": False})
+    with pytest.raises(ValueError, match="job"):
+        E.validate("cadence", {k: v for k, v in base.items() if k != "job"} | {"ok": True})
+
+
+def test_conduct_skill_holds_cadence_events():
+    from pathlib import Path
+    text = (Path(__file__).resolve().parent.parent / "skills" / "nw-conduct" / "SKILL.md").read_text()
+    held = next(line for line in text.splitlines() if "Always held" in line)
+    assert "`cadence`" in held

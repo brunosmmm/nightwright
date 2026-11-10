@@ -105,6 +105,9 @@ EVENT_KEYS: dict[str, tuple[str, ...]] = {
     # SPEC-0359: a full-suite sentinel run on the project's base (a queue event, `events.py`);
     # `failing` is required too when `ok` is false (see `required_keys`)
     "sentinel": ("project", "ok", "sha", "suspects"),
+    # SPEC-0493: a finished cadence job run on the project's base (a queue event, `events.py`);
+    # `failing` is required too when `ok` is false (see `required_keys`)
+    "cadence": ("project", "job", "ok", "sha", "reason", "duration_s"),
     "worker_failed": ("worker", "stage", "error", "job_id"),      # SPEC-0338
     "worker_job_lost": ("worker", "job_id", "attempt", "reason"),  # SPEC-0341
     "worker_job_retried": ("job_id", "from_worker", "to_worker", "attempt"),  # SPEC-0342
@@ -172,9 +175,10 @@ RUNNER_KINDS = {"start": ("pid", "argv", "interval_s"),
 
 def required_keys(etype: str, payload: dict | None = None) -> tuple[str, ...]:
     """The required payload keys of `etype` given the payload: `EVENT_KEYS` plus the
-    conditional ones (SPEC-0359: a `sentinel` with `ok` false needs `failing`)."""
+    conditional ones (SPEC-0359 / SPEC-0493: a `sentinel` or `cadence` with `ok` false needs
+    `failing`)."""
     keys = EVENT_KEYS.get(etype, ())
-    if etype == "sentinel" and (payload or {}).get("ok") is False:
+    if etype in ("sentinel", "cadence") and (payload or {}).get("ok") is False:
         keys = (*keys, "failing")
     return keys
 

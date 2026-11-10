@@ -275,30 +275,98 @@ def _withdraw(cfg, esc_id, reason) -> bool:
         return False
 
 
-def on_red(cfg, project, sha, failing, *, root=None, base=None, logs=(), now=None) -> dict:
-    """A red sentinel at `sha`: open the project's episode, or update the open one. Appends a
-    `red_main` event when the episode opens or its failing set changes. Never escalates; opening
-    an episode withdraws the legacy "Sentinel red on <project>" escalations as superseded."""
-    from . import sentinel as SN
+SENTINEL = "sentinel"
+CADENCE_PREFIX = "cadence:"
+
+
+def source_of(rec: dict | None) -> str:
+    """SPEC-0493: what opened the episode (`sentinel` or `cadence:<job>`); an episode written
+    before SPEC-0493 has no `source` and reads as `sentinel`."""
+    return str((rec or {}).get("source") or SENTINEL)
+
+
+def cadence_job(source) -> str | None:
+    """The job name of a `cadence:<job>` source, else None."""
+    s = str(source or "")
+    return (s[len(CADENCE_PREFIX):] or None) if s.startswith(CADENCE_PREFIX) else None
+
+
+def source_label(source) -> str:
+    job = cadence_job(source)
+    return f"cadence job {job}" if job else "sentinel"
+
+
+def _green_of(cfg, project, source, root=None):
+    """The last green sha the source saw: the sentinel's `last_green_sha`, or the cadence job's
+    `last_green_sha` (a cadence project may have no sentinel state; reading it would create one)."""
+    job = cadence_job(source)
+    try:
+        if job:
+            from . import cadence as CAD
+            doc = CAD._read_doc(CAD.state_path(cfg, project)) or {}
+            return ((doc.get("jobs") or {}).get(job) or {}).get("last_green_sha")
+        from . import sentinel as SN
+        return SN.read(cfg, project, root=root).get("last_green_sha")
+    except (ValueError, OSError):
+        return None
+
+
+def _clear_pending(rec: dict) -> None:
+    for k in ("pending_source", "pending_failing", "pending_sha"):
+        rec.pop(k, None)
+
+
+def _journal_deferred(cfg, project, source, rec, sha) -> None:
+    try:
+        from .queue import journal
+        journal(cfg, "cadence_deferred", project=project, source=source,
+                episode=rec.get("episode"), episode_source=source_of(rec), sha=sha,
+                pending_source=rec.get("pending_source"))
+    except Exception:
+        pass
+
+
+def on_red(cfg, project, sha, failing, *, root=None, base=None, logs=(), now=None,
+           source=SENTINEL) -> dict:
+    """A red run of `source` (`sentinel`, or `cadence:<job>`, SPEC-0493) at `sha`: open the
+    project's episode, or update the open one of the same source. Appends a `red_main` event
+    when the episode opens or its failing set changes. Never escalates; opening an episode
+    withdraws the legacy "Sentinel red on <project>" escalations as superseded.
+
+    A red of another source while an episode is open changes neither its source nor its failing
+    ids: it journals `cadence_deferred` and is kept as the pending triple (`pending_source`,
+    `pending_failing`, `pending_sha`; the first pending source wins, a repeat of it refreshes
+    it), promoted by the episode's own green (`on_green`)."""
+    source = str(source or SENTINEL)
     failing = [str(f) for f in failing or ()][:FAILING_MAX]
-    opened = changed = False
+    opened = changed = deferred = False
     with locked(cfg, project):
         rec = {**_blank(), **(_load(cfg, project) or {})}
-        _clear_due(rec)
-        if not rec.get("open"):
-            try:
-                green = SN.read(cfg, project, root=root).get("last_green_sha")
-            except (ValueError, OSError):
-                green = None
+        if rec.get("open") and source_of(rec) != source:
+            ps = rec.get("pending_source")
+            if not ps or ps == source:
+                rec.update(pending_source=source, pending_failing=failing, pending_sha=sha)
+            _hist(rec, f"{source} red at {str(sha)[:10]} deferred behind {source_of(rec)}", now)
+            _save(cfg, project, rec)
+            deferred = True
+        elif not rec.get("open"):
+            keep = {} if source == SENTINEL else \
+                {k: rec[k] for k in ("due_reason", "due_at") if rec.get(k)}
+            green = _green_of(cfg, project, source, root)
             prev = int(rec.get("episode") or 0)
-            rec = {**_blank(), "episode": prev + 1, "open": True, "opened_at": _iso(now),
-                   "first_red_sha": sha, "last_red_sha": sha, "last_green_sha": green,
-                   "failing": failing, "fingerprint": fingerprint(failing), "runs": 1,
+            rec = {**_blank(), **keep, "episode": prev + 1, "open": True, "opened_at": _iso(now),
+                   "source": source, "first_red_sha": sha, "last_red_sha": sha,
+                   "last_green_sha": green, "failing": failing,
+                   "fingerprint": fingerprint(failing), "runs": 1,
                    "merges": merges_between(cfg, project, root, sha, green),
                    "logs": [str(p) for p in logs]}
-            _hist(rec, f"opened at {str(sha)[:10]}", now)
+            _hist(rec, f"opened at {str(sha)[:10]} ({source})", now)
             opened = True
+            _save(cfg, project, rec)
         else:
+            if source == SENTINEL:
+                _clear_due(rec)
+            rec.pop("awaiting_refresh", None)
             old = rec.get("fingerprint")
             union = list(dict.fromkeys(list(rec.get("failing") or []) + failing))[:FAILING_MAX]
             rec.update(last_red_sha=sha, runs=int(rec.get("runs") or 0) + 1, failing=union,
@@ -316,11 +384,14 @@ def on_red(cfg, project, sha, failing, *, root=None, base=None, logs=(), now=Non
                     _hist(rec, f"{fx['campaign']} merged but the base stayed red", now)
             changed = rec["fingerprint"] != old
             _hist(rec, f"red again at {str(sha)[:10]}", now)
-        _save(cfg, project, rec)
+            _save(cfg, project, rec)
+    if deferred:
+        _journal_deferred(cfg, project, source, rec, sha)
+        return rec
     if opened or changed:
         _event(cfg, "red_main", project, {
             "episode": rec["episode"], "sha": sha, "failing": failing[:20],
-            "opened": opened,
+            "opened": opened, "source": source,
             "merges": [{"campaign": m["campaign"], "spec_id": m.get("spec_id")}
                        for m in rec.get("merges") or []]})
     if opened:
@@ -330,37 +401,98 @@ def on_red(cfg, project, sha, failing, *, root=None, base=None, logs=(), now=Non
     return rec
 
 
-def on_green(cfg, project, sha, *, now=None) -> dict | None:
-    """A green sentinel at `sha`: close the open episode (`red_main_cleared`), withdraw its
-    escalation and every open legacy "Sentinel red on <project>" escalation. The fix campaigns it
-    made moot are abandoned by the next tick (`sweep_moot`), which runs on the main thread."""
-    closed = None
+def _promote(cfg, project, rec: dict, now) -> dict:
+    """The closed episode's pending triple becomes the next episode (SPEC-0493), opened the way
+    `on_red` opens one but `awaiting_refresh`: no fix is opened from a sha the base may have
+    left until a same-source run refreshes it."""
+    source = str(rec.get("pending_source"))
+    failing = [str(f) for f in rec.get("pending_failing") or ()][:FAILING_MAX]
+    sha = rec.get("pending_sha")
+    keep = {k: rec[k] for k in ("due_reason", "due_at") if rec.get(k)}
+    new = {**_blank(), **keep, "episode": int(rec.get("episode") or 0) + 1, "open": True,
+           "opened_at": _iso(now), "source": source, "first_red_sha": sha, "last_red_sha": sha,
+           "last_green_sha": _green_of(cfg, project, source), "failing": failing,
+           "fingerprint": fingerprint(failing), "runs": 1, "merges": [], "logs": [],
+           "awaiting_refresh": True, "history": list(rec.get("history") or [])}
+    if source == SENTINEL:
+        new["due_reason"] = "deferred sentinel red"
+        new["due_at"] = _iso(now)
+    _hist(new, f"opened at {str(sha)[:10]} ({source}, deferred red); awaiting a refreshing run",
+          now)
+    return new
+
+
+def on_green(cfg, project, sha, *, now=None, source=SENTINEL) -> dict | None:
+    """A green run of `source` at `sha`. The episode's own source closes it (`red_main_cleared`),
+    withdraws its escalation and (sentinel) every open legacy "Sentinel red on <project>"
+    escalation; a pending red of another source becomes the next episode in the same write
+    (SPEC-0493). A green of another source never closes the episode: the pending source's green
+    clears the pending triple, any other writes nothing. The fix campaigns a close made moot are
+    abandoned by the next tick (`sweep_moot`), which runs on the main thread."""
+    source = str(source or SENTINEL)
+    closed = promoted = None
     with locked(cfg, project):
         rec = _load(cfg, project)
         if rec is not None:
             rec = {**_blank(), **rec}
-            _clear_due(rec)
+            if rec.get("open") and source_of(rec) != source:
+                if rec.get("pending_source") == source:
+                    _clear_pending(rec)
+                    _hist(rec, f"{source} green at {str(sha)[:10]}: pending red dropped", now)
+                    _save(cfg, project, rec)
+                return None
+            if not rec.get("open") and source != SENTINEL:
+                return None
+            if source == SENTINEL:
+                _clear_due(rec)
             if rec.get("open"):
                 rec.update(open=False, closed_at=_iso(now))
+                rec.pop("awaiting_refresh", None)
                 _hist(rec, f"closed: green at {str(sha)[:10]}", now)
-                closed = rec
+                closed = dict(rec)
+                if rec.get("pending_source"):
+                    promoted = _promote(cfg, project, rec, now)
+                    rec = promoted
             _save(cfg, project, rec)
-    reason = f"sentinel green at {str(sha)[:10]}"
+    reason = f"{source_label(source)} green at {str(sha)[:10]}"
     if closed is not None:
         if closed.get("escalation"):
             _withdraw(cfg, closed["escalation"], reason)
         opened = _ts(closed.get("opened_at")) or _now(now)
         _event(cfg, "red_main_cleared", project, {
-            "episode": closed["episode"], "sha": sha,
+            "episode": closed["episode"], "sha": sha, "source": source,
             "duration_s": max(0, int(_now(now) - opened)),
             "fixes": [{"campaign": f.get("campaign"), "kind": f.get("kind"),
                        "outcome": f.get("outcome")} for f in closed.get("fixes") or []]})
         for fx in closed.get("fixes") or []:
             if fx.get("kind") == "revert" and fx.get("outcome") == "merged":
                 _mail_reverted(cfg, project, closed, fx)
-    for esc in legacy_escalations(cfg, project):
-        _withdraw(cfg, esc["id"], reason)
+    if promoted is not None:
+        _event(cfg, "red_main", project, {
+            "episode": promoted["episode"], "sha": promoted["first_red_sha"],
+            "failing": list(promoted["failing"])[:20], "opened": True,
+            "source": promoted["source"], "merges": []})
+        job = cadence_job(promoted["source"])
+        if job:
+            _force(cfg, project, job)
+    if source == SENTINEL:
+        for esc in legacy_escalations(cfg, project):
+            _withdraw(cfg, esc["id"], reason)
     return closed
+
+
+def _force(cfg, project, job) -> None:
+    """Set the cadence job's `forced` flag (best effort; a failure is journalled)."""
+    try:
+        from . import cadence as CAD
+        CAD.force(cfg, project, job)
+    except (OSError, ValueError) as e:
+        try:
+            from .queue import journal
+            journal(cfg, "red_main_failed", project=project,
+                    error=f"cadence.force({job}) failed: {e}"[:500])
+        except Exception:
+            pass
 
 
 def _mail_reverted(cfg, project, rec, fx) -> None:
@@ -413,8 +545,9 @@ def holding(cfg, project, state: dict, red: dict | None = None,
         return None
     if _base_ahead_of_red(project_cfg, red):
         return None
-    return (f"base of {project} is red (episode {red.get('episode')}, since "
-            f"{red.get('opened_at')}): non-fix merges are held until a green sentinel")
+    label = source_label(source_of(red))
+    return (f"base of {project} is red (episode {red.get('episode')}, {label}, since "
+            f"{red.get('opened_at')}): non-fix merges are held until a green {label}")
 
 
 # ---- the decision ---------------------------------------------------------------------------
@@ -521,7 +654,9 @@ def step(cfg, project, *, now=None, active=(), red=None, project_cfg=None) -> tu
         if not escalated and age > sett["escalate_after_s"]:
             return "escalate", (f"red for {int(age)} s with no fix in flight ({pending} "
                                 "awaits the sentinel)")
-        return "none", f"{pending} awaits the next sentinel"
+        return "none", f"{pending} awaits the next {source_label(source_of(rec))} run"
+    if rec.get("awaiting_refresh"):                 # SPEC-0493: a promoted (deferred) red
+        return "none", f"awaiting a refreshing {source_label(source_of(rec))} run"
     from . import persona_gate as PG
     try:                                            # a cfg with no data dir has no pause file
         usage_holds = PG.usage_until(cfg) is not None
@@ -532,6 +667,11 @@ def step(cfg, project, *, now=None, active=(), red=None, project_cfg=None) -> tu
     failed = failed_fixforwards(rec)
     if failed < sett["fixforward_attempts"]:
         return "open_fixforward", f"attempt {failed + 1} of {sett['fixforward_attempts']}"
+    if cadence_job(source_of(rec)):                 # SPEC-0493: no localize / revert
+        if escalated:
+            return "none", f"escalated ({rec['escalation']}); waiting for the answer"
+        return "escalate", (f"automatic fixing exhausted: {failed} fix-forward attempts failed "
+                            f"({source_label(source_of(rec))}; no revert for a cadence red)")
     policy = ((project_cfg or {}).get("merge") or {}).get("policy") or "merge"
     reverts = [f for f in rec.get("fixes") or [] if f.get("kind") == "revert"]
     loc = rec.get("localize") or {}
@@ -558,15 +698,22 @@ def brief(cfg, rec: dict, *, root=None, project=None) -> str:
     green (spec id, diffstat), the culprit, and the rules."""
     sett = settings(cfg)
     ids = list(rec.get("failing") or [])
-    lines = [f"The base branch of {project or '?'} is RED (red episode {rec.get('episode')}, "
-             f"first red at {str(rec.get('first_red_sha') or '?')[:10]}, last red at "
-             f"{str(rec.get('last_red_sha') or '?')[:10]}). The full test suite fails on the base.",
-             "", f"Failing tests ({len(ids)}):"]
+    job = cadence_job(source_of(rec))
+    span = (f"red episode {rec.get('episode')}, first red at "
+            f"{str(rec.get('first_red_sha') or '?')[:10]}, last red at "
+            f"{str(rec.get('last_red_sha') or '?')[:10]}")
+    if job:                                         # SPEC-0493: one heavy job, not the suite
+        lines = [f"The base branch of {project or '?'} is RED (cadence job {job}).",
+                 f"The cadence job {job} fails on the base ({span}).",
+                 "", f"Failing tests of {job} ({len(ids)}):"]
+    else:
+        lines = [f"The base branch of {project or '?'} is RED ({span}). The full test suite "
+                 "fails on the base.", "", f"Failing tests ({len(ids)}):"]
     lines += [f"- {i}" for i in ids[:BRIEF_IDS_MAX]]
     if len(ids) > BRIEF_IDS_MAX:
         lines.append(f"- … and {len(ids) - BRIEF_IDS_MAX} more")
     merges = rec.get("merges") or []
-    lines += ["", f"Merges since the last green sentinel ({len(merges)}):"]
+    lines += ["", f"Merges since the last green {source_label(source_of(rec))} ({len(merges)}):"]
     for m in merges:
         stat = ""
         if root and m.get("target_sha") and m.get("merged_sha"):
@@ -590,7 +737,8 @@ def brief(cfg, rec: dict, *, root=None, project=None) -> str:
         except OSError:
             continue
         if n and tail:
-            lines += ["", f"Sentinel gate log {Path(p).name} (last {len(tail)} lines):", "```"]
+            lines += ["", f"{'Cadence' if job else 'Sentinel'} gate log {Path(p).name} "
+                          f"(last {len(tail)} lines):", "```"]
             lines += tail + ["```"]
     lines += ["", "Rules:",
               "- Make every failing test above pass on the base. Run them by id while you work.",
@@ -653,7 +801,8 @@ def _open(cfg, project, kind, *, now=None, extra=None) -> dict:
 def open_fixforward(cfg, project, *, now=None) -> dict:
     def extra(rec, st):
         text = brief(cfg, rec, root=st["repo"]["root"], project=project)
-        return {"red_brief": text,
+        job = cadence_job(source_of(rec))
+        return {**({"cadence_job": job} if job else {}), "red_brief": text,
                 "pending_brief": {"source": "red_main", "fix_brief": text,
                                   "must_fix": list(rec.get("failing") or [])[:BRIEF_IDS_MAX],
                                   "human_notes": []}}
@@ -691,10 +840,17 @@ def record_merge(cfg, state: dict, merged_sha, *, now=None) -> bool:
                    else state.get("kind"), "opened_at": _iso(now), "outcome": None}
             rec["fixes"].append(hit)
         hit.update(outcome="merged", merged_sha=merged_sha)
-        rec["due_reason"] = f"fix merged ({state['id']})"
-        rec["due_at"] = _iso(now)
-        _hist(rec, f"{state['id']} merged {str(merged_sha)[:10]}; sentinel due", now)
+        job = cadence_job(source_of(rec))
+        if job:                                     # SPEC-0493: the job is the confirmation
+            _hist(rec, f"{state['id']} merged {str(merged_sha)[:10]}; cadence job {job} forced",
+                  now)
+        else:
+            rec["due_reason"] = f"fix merged ({state['id']})"
+            rec["due_at"] = _iso(now)
+            _hist(rec, f"{state['id']} merged {str(merged_sha)[:10]}; sentinel due", now)
         _save(cfg, project, rec)
+    if job:
+        _force(cfg, project, job)
     return True
 
 

@@ -80,3 +80,22 @@ def test_loop_gate_passes_exclude_marks_only_to_a_tool_that_knows_it(tmp_path, k
     argv = (tmp_path / "argv.txt").read_text()
     assert argv.startswith("--guards ")
     assert ("--exclude-marks=integration,tui,remote,perf" in argv) is knows
+
+
+def test_dogfood_cadence_declares_the_five_heavy_jobs():
+    """SPEC-0493: the SPEC-0490 heavy tiers run on a cadence, each a marker selection."""
+    doc = P.load_project_config(ROOT / ".nw" / "project.yaml")
+    jobs = {j["name"]: j for j in doc["cadence"]}
+    assert list(jobs) == ["fast-full", "integration", "tui", "remote", "perf"]
+    assert '-m "not (integration or tui or remote or perf)"' in jobs["fast-full"]["cmd"]
+    for m in ("integration", "tui", "remote", "perf"):
+        assert jobs[m]["cmd"].endswith(f"-m {m}")
+    assert (jobs["fast-full"]["every_n_merges"], jobs["fast-full"]["every_hours"]) == (5, 12)
+    assert jobs["tui"]["every_n_merges"] == 10 and jobs["perf"]["every_hours"] == 24
+    for j in jobs.values():
+        assert j["timeout_s"] == 2400 and j["results"]["format"] == "pytest"
+    assert P.path_matches(jobs["integration"]["on_paths"], "src/nightwright/agentic/queue.py")
+    assert not P.path_matches(jobs["integration"]["on_paths"], "src/nightwright/agentic/cli.py")
+    assert P.path_matches(jobs["remote"]["on_paths"], "src/nightwright/agentic/remote_gates.py")
+    assert P.path_matches(jobs["tui"]["on_paths"], "src/nightwright/tui/app.py")
+    assert "on_paths" not in jobs["perf"] and "on_paths" not in jobs["fast-full"]

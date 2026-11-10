@@ -355,3 +355,134 @@ def test_status_resume_fix_and_clear(w):
     assert RM.clear(cfg, PROJECT, by="human")["open"] is False
     assert RM.clear(cfg, PROJECT) is None
     assert json.loads(RM.path(cfg, PROJECT).read_text())["history"][-1]["what"] == "cleared"
+
+
+# ---- SPEC-0493: episode sources (sentinel / cadence:<job>) ----------------------------------
+
+def _cad_row(cfg, job):
+    from nightwright.agentic import cadence as CAD
+    doc = CAD._read_doc(CAD.state_path(cfg, PROJECT)) or {}
+    return (doc.get("jobs") or {}).get(job) or {}
+
+
+def test_source_helpers_and_legacy_episode():
+    assert RM.source_of(None) == "sentinel" and RM.source_of({"open": True}) == "sentinel"
+    assert RM.source_of({"source": "cadence:tui"}) == "cadence:tui"
+    assert RM.cadence_job("cadence:tui") == "tui" and RM.cadence_job("sentinel") is None
+    assert RM.cadence_job("cadence:") is None and RM.cadence_job(None) is None
+    assert RM.source_label("cadence:perf") == "cadence job perf"
+    assert RM.source_label("sentinel") == "sentinel"
+
+
+def test_cadence_red_opens_with_source_and_its_own_green_closes(w):
+    cfg, root = w["cfg"], w["root"]
+    sha = git.rev_parse(root)
+    rec = RM.on_red(cfg, PROJECT, sha, ["t::a"], root=str(root), now=NOW, source="cadence:tui")
+    assert rec["open"] and rec["source"] == "cadence:tui"
+    assert not SN.state_path(cfg, PROJECT).exists(), "a cadence red reads no sentinel state"
+    (ev,) = _red_events(cfg)
+    assert ev["data"]["source"] == "cadence:tui" and ev["data"]["opened"]
+    assert RM.on_green(cfg, PROJECT, sha, now=NOW, source="sentinel") is None
+    assert RM.read(cfg, PROJECT)["open"], "another source's green never closes it"
+    assert RM.on_green(cfg, PROJECT, sha, now=NOW, source="cadence:perf") is None
+    closed = RM.on_green(cfg, PROJECT, sha, now=NOW, source="cadence:tui")
+    assert closed and not RM.read(cfg, PROJECT)["open"]
+    (cl,) = [e for e in E.read_since(cfg, 0, types=["red_main_cleared"])]
+    assert cl["data"]["source"] == "cadence:tui"
+    # a cadence green with no open episode writes nothing
+    before = RM.read(cfg, PROJECT)
+    assert RM.on_green(cfg, PROJECT, sha, now=NOW, source="cadence:tui") is None
+    assert RM.read(cfg, PROJECT) == before
+
+
+def test_cross_source_red_is_deferred_as_a_pending_triple(w):
+    cfg, root = w["cfg"], w["root"]
+    sha = git.rev_parse(root)
+    RM.on_red(cfg, PROJECT, sha, ["t::a"], root=str(root), now=NOW)
+    rec = RM.on_red(cfg, PROJECT, "b" * 40, ["t::tui"], root=str(root), now=NOW,
+                    source="cadence:tui")
+    assert rec["source"] == "sentinel" and rec["failing"] == ["t::a"]
+    assert (rec["pending_source"], rec["pending_failing"], rec["pending_sha"]) == \
+        ("cadence:tui", ["t::tui"], "b" * 40)
+    # the first pending source wins; a repeat of it refreshes the triple
+    RM.on_red(cfg, PROJECT, "c" * 40, ["t::perf"], root=str(root), now=NOW,
+              source="cadence:perf")
+    assert RM.read(cfg, PROJECT)["pending_source"] == "cadence:tui"
+    RM.on_red(cfg, PROJECT, "d" * 40, ["t::tui2"], root=str(root), now=NOW,
+              source="cadence:tui")
+    rec = RM.read(cfg, PROJECT)
+    assert rec["pending_sha"] == "d" * 40 and rec["pending_failing"] == ["t::tui2"]
+    assert len(_red_events(cfg)) == 1, "a deferred red appends no red_main event"
+    from nightwright.agentic import queue as Q
+    rows = [r for r in Q.read_journal(cfg) if r.get("kind") == "cadence_deferred"]
+    assert len(rows) == 3 and rows[0]["episode_source"] == "sentinel"
+    # the pending source's green clears the triple; the episode stays open
+    assert RM.on_green(cfg, PROJECT, "e" * 40, now=NOW, source="cadence:tui") is None
+    rec = RM.read(cfg, PROJECT)
+    assert rec["open"] and "pending_source" not in rec
+
+
+def test_own_green_promotes_the_pending_red_awaiting_refresh(w):
+    cfg, root = w["cfg"], w["root"]
+    sha = git.rev_parse(root)
+    RM.on_red(cfg, PROJECT, sha, ["t::a"], root=str(root), now=NOW)
+    RM.on_red(cfg, PROJECT, "b" * 40, ["t::tui"], root=str(root), now=NOW,
+              source="cadence:tui")
+    closed = RM.on_green(cfg, PROJECT, sha, now=NOW + 60)
+    assert closed["episode"] == 1
+    rec = RM.read(cfg, PROJECT)
+    assert rec["open"] and rec["episode"] == 2 and rec["source"] == "cadence:tui"
+    assert rec["awaiting_refresh"] and rec["first_red_sha"] == "b" * 40
+    assert "pending_source" not in rec
+    assert _cad_row(cfg, "tui").get("forced") is True, "the promoted job is forced"
+    assert [e["data"]["source"] for e in _red_events(cfg)] == ["sentinel", "cadence:tui"]
+    assert RM.step(cfg, PROJECT, now=NOW + 120, red=rec)[0] == "none"
+    assert "awaiting a refreshing cadence job tui" in RM.step(cfg, PROJECT, now=NOW + 120,
+                                                              red=rec)[1]
+    # the job's red refreshes it: fixes may open
+    rec = RM.on_red(cfg, PROJECT, "f" * 40, ["t::tui"], root=str(root), now=NOW + 180,
+                    source="cadence:tui")
+    assert "awaiting_refresh" not in rec
+    assert RM.step(cfg, PROJECT, now=NOW + 240, red=rec)[0] == "open_fixforward"
+
+
+def test_a_promoted_sentinel_red_is_marked_due(w):
+    cfg, root = w["cfg"], w["root"]
+    sha = git.rev_parse(root)
+    RM.on_red(cfg, PROJECT, sha, ["t::tui"], root=str(root), now=NOW, source="cadence:tui")
+    RM.on_red(cfg, PROJECT, "b" * 40, ["t::a"], root=str(root), now=NOW)
+    RM.on_green(cfg, PROJECT, sha, now=NOW + 60, source="cadence:tui")
+    rec = RM.read(cfg, PROJECT)
+    assert rec["source"] == "sentinel" and rec["awaiting_refresh"]
+    assert rec["due_reason"] == "deferred sentinel red" and rec["first_red_sha"] == "b" * 40
+
+
+def test_record_merge_forces_the_cadence_job(w):
+    cfg, root = w["cfg"], w["root"]
+    sha = git.rev_parse(root)
+    RM.on_red(cfg, PROJECT, sha, ["t::tui"], root=str(root), now=NOW, source="cadence:tui")
+    st = {"id": "FIX-1", "project": PROJECT, "kind": "fixforward"}
+    assert RM.record_merge(cfg, st, "a" * 40, now=NOW)
+    rec = RM.read(cfg, PROJECT)
+    assert not rec.get("due_reason") and _cad_row(cfg, "tui")["forced"] is True
+    assert rec["fixes"][0]["outcome"] == "merged"
+
+
+def test_holding_brief_and_step_name_the_cadence_source(w):
+    cfg = w["cfg"]
+    red = _rec(source="cadence:tui", failing=["t::x"], first_red_sha="a" * 40,
+               last_red_sha="a" * 40)
+    msg = RM.holding(cfg, PROJECT, {"kind": "implement", "project": PROJECT}, red=red)
+    assert msg and "cadence job tui" in msg and "green cadence job tui" in msg
+    text = RM.brief(cfg, red, project=PROJECT)
+    assert "cadence job tui" in text and "full test suite" not in text
+    assert "Merges since the last green cadence job tui" in text
+    legacy = _rec(failing=["t::x"])
+    assert "full test suite" in RM.brief(cfg, legacy, project=PROJECT)
+    two = _rec(source="cadence:tui", fixes=[{"campaign": f"F{i}", "kind": "fixforward",
+                                             "outcome": "failed"} for i in (1, 2)])
+    action, why = RM.step({}, PROJECT, now=NOW + 60, red=two)
+    assert action == "escalate" and "no revert for a cadence red" in why
+    assert RM.step({}, PROJECT, now=NOW + 60, red={**two, "escalation": "ESC-1"})[0] == "none"
+    # a legacy episode (no source) still localizes
+    assert RM.step({}, PROJECT, now=NOW + 60, red=_rec(fixes=two["fixes"]))[0] == "localize"

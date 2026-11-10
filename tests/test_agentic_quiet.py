@@ -18,7 +18,8 @@ from nightwright.cli import cli
 pytestmark = pytest.mark.fast
 
 HOLD = ["admitted", "resumed", "waiting", "abandoned", "cost_warning", "escalation",
-        "escalation_withdrawn", "rebase_resolved", "run_failed", "merged", "handed_off"]
+        "escalation_withdrawn", "rebase_resolved", "run_failed", "merged", "handed_off",
+        "cadence"]   # SPEC-0493
 WAKE = ["parked", "park_undecided", "runner_dead", "lease_stale", "run_overdue", "message",
         "escalation_answered", "ready_not_admitted", "waiting_not_admitted",
         "runner_journal_silent", "temp_pressure", "runner_config_invalid",

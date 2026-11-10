@@ -4,8 +4,9 @@
 a merge touching given paths, or every merge). This module is the data half: the per-project
 state `<agentic>/cadence/<project>.json` (`nw.cadence.v1`), the merge counter the close hook
 feeds, a pure `due` rule, the ensure / begin / finish / abort / reconcile accounting a runner
-calls, and the read-only status rows behind `nw gate cadence status`. It starts no run
-(SPEC-0493). An absent or empty `cadence` writes no file.
+calls, and the read-only status rows behind `nw gate cadence status`. SPEC-0493 adds `run` (one
+job on the base under the sentinel run lock and a gate slot, settled through `redmain` with
+source `cadence:<job>`) and `force`. An absent or empty `cadence` writes no file.
 
 Every function that stamps takes `now` (epoch seconds, default the clock; the unit of
 `sentinel._now`). Time stamps are timezone-aware ISO-8601 strings. All mutating functions hold
@@ -15,11 +16,15 @@ from __future__ import annotations
 
 import datetime as dt
 import json
+import shutil
+import time
 from contextlib import contextmanager
 from pathlib import Path
 
 from ..export import _atomic_write
 from . import events as E
+from . import gate_slots
+from . import gates as G
 from . import project as P
 from . import sentinel as SN
 from . import store
@@ -283,6 +288,179 @@ def abort(cfg, project, job, *, now=None) -> None:
         _write(cfg, project, doc)
 
 
+def force(cfg, project, job, *, now=None) -> None:
+    """Set the job's `forced` flag (`nw gate cadence run`, a red-main confirmation): `due`
+    returns `forced` until a run of it begins. OSError propagates."""
+    with locked(cfg, project):
+        doc = _load_locked(cfg, project)
+        _row(doc, job, now)["forced"] = True
+        _write(cfg, project, doc)
+
+
+# ---- the run (SPEC-0493) -------------------------------------------------------------------
+
+FAILING_EVENT_MAX = 50
+
+
+def pick(cfg, project, *, project_cfg=None, base_sha=None, now=None):
+    """The runner scan for one project (SPEC-0493): seed the rows (`ensure`), consume a
+    crash-left `inflight` (`reconcile`), then `(job_name, reason)` for the job to start, or
+    None. A forced job wins (ties: list order); otherwise the due job with the oldest
+    `last_run_at or seeded_at` (ties: list order). OSError propagates."""
+    jobs = [j for j in _jobs(cfg, project, project_cfg) if isinstance(j, dict) and j.get("name")]
+    if not jobs:
+        return None
+    now = time.time() if now is None else now
+    ensure(cfg, project, project_cfg={"cadence": jobs}, now=now)
+    reconcile(cfg, project, now=now)
+    doc = _read_doc(state_path(cfg, project)) or _fresh()
+    best = None
+    for i, j in enumerate(jobs):
+        row = doc["jobs"].get(j["name"]) or initial_row(now)
+        why = due(j, row, base_sha, now)
+        if why is None:
+            continue
+        if why == "forced":
+            return j["name"], why
+        since = _ts(row.get("last_run_at") or row.get("seeded_at"))
+        key = (since if since is not None else float("-inf"), i)
+        if best is None or key < best[0]:
+            best = (key, j["name"], why)
+    return (best[1], best[2]) if best else None
+
+
+def campaign_id(project, job) -> str:
+    """The run's campaign-shaped id (a `sentinel-` prefix: SPEC-0490 reads it as a sentinel run)."""
+    return f"sentinel-{E._safe(str(project))}-{job}"
+
+
+def _find_job(pcfg, job) -> dict:
+    hit = next((j for j in pcfg.get("cadence") or []
+                if isinstance(j, dict) and j.get("name") == job), None)
+    if hit is None:
+        raise ValueError(f"{pcfg.get('project') or '?'} has no cadence job {job!r}")
+    return hit
+
+
+def run(cfg, project, job, *, project_cfg=None, stop=None, now=None, reason=None) -> dict:
+    """Run cadence job `job` of `project` once on the base HEAD (SPEC-0493): under the sentinel
+    run lock (Busy before anything when held), in the sentinel worktree, holding one gate slot,
+    on a worker when one is placeable and the header would be accepted, else locally. A red or
+    green run is settled through `redmain` with source `cadence:<job>`; `ok` None (a failure, a
+    `RemoteFailure`) calls neither hook; an interrupt calls `abort`. Returns
+    `{project, job, ok, sha, interrupted, error, deferred, reason, failing, logs}`."""
+    with SN.run_lock(cfg, project):
+        return _run_locked(cfg, project, job, project_cfg=project_cfg, stop=stop, now=now,
+                           reason=reason)
+
+
+def _run_locked(cfg, project, job, *, project_cfg, stop, now, reason) -> dict:
+    from . import redmain as RM
+    from . import remote_gates as RG
+    pcfg = project_cfg or P.project_config(cfg, project)
+    spec = _find_job(pcfg, job)
+    root = pcfg.get("_root") or str(P.project_root(cfg, project))
+    base = SN._base(pcfg)
+    wt = SN.worktree_path(cfg, project)
+    sha = SN._prepare_worktree(root, wt, base, pcfg)
+    begin(cfg, project, job, sha, now=now)
+    started = time.monotonic()
+    out = {"project": project, "job": job, "ok": None, "sha": sha, "interrupted": False,
+           "error": None, "deferred": False, "reason": reason, "failing": [], "logs": []}
+    owner = campaign_id(project, job)
+    logs = wt.parent / f"{wt.name}.logs" / f"cadence-{job}"
+    tmp = wt.parent / f"{wt.name}.tmp"
+    gate = P.cadence_gate(spec)
+    one = {**pcfg, "gates": [gate]}
+    try:
+        shutil.rmtree(tmp, ignore_errors=True)
+        tmp.mkdir(parents=True, exist_ok=True)
+        seq = G.next_gate_seq_in(logs)
+        pools, repool, state = SN._placement(cfg, project, one, wt, seq)
+        state["id"] = owner
+        if pools is not None and RG.header_refusal(
+                {**one, "gates": P.gates_for(one, "close")}, state, cfg, seq) is not None:
+            pools, repool = None, None
+        sent_state = {"id": owner, "project": project, "repo": {"worktree": str(wt), "base": base}}
+        env = {**G.tmp_env(tmp), "NW_DATA_DIR": str(cfg["data_dir"]),
+               "NW_CONFIG_DIR": str(cfg.get("config_dir") or ""), "NW_CAMPAIGN": "",
+               "NW_SPEC_ID": "", "NW_WORKTREE": str(wt), "NW_BASE": base,
+               "NW_SENTINEL": str(project), **G.all_tiers_env(cfg, sent_state, header=True)}
+        ph = {"spec_id": None, "campaign": owner, "worktree": str(wt), "base": base}
+        results, interrupted, failure = [], False, None
+        with gate_slots.acquire(cfg, owner, stop=stop, pools=pools, repool=repool) as hold:
+            if hold.interrupted:
+                interrupted = True
+            elif hold.pool is not None:
+                try:
+                    r = RG.run_detached(hold.pool, one, state, cfg, seq, logs, stop=stop)
+                except RG.RemoteFailure as f:
+                    failure = f"remote cadence run on {hold.pool} failed ({f.stage}): {f.error}"
+                else:
+                    results = list(r.results) if r is not None else []
+                    interrupted = r is None or r.interrupted
+            elif stop is not None and stop.is_set():
+                interrupted = True
+            else:
+                rel = f"{seq:03d}-{gate['name']}.log"
+                results.append(G.run_gate_with_retries(gate, wt, env, logs / rel, ph,
+                                                       log_rel=rel, stop=stop))
+        shutil.rmtree(tmp, ignore_errors=True)
+        interrupted = interrupted or any(r.interrupted for r in results)
+    except BaseException as e:
+        shutil.rmtree(tmp, ignore_errors=True)
+        if isinstance(e, Exception):
+            out["error"] = f"{type(e).__name__}: {e}"[:500]
+            finish(cfg, project, job, None, sha, out["error"], now=now)
+            _event(cfg, out, started)
+            return out
+        abort(cfg, project, job, now=now)
+        raise
+    if interrupted:
+        abort(cfg, project, job, now=now)
+        out["interrupted"] = True
+        return out
+    out["logs"] = [str(logs / r.log) for r in results if r.log]
+    if failure is not None:
+        out["error"] = failure[:500]
+    elif not results:
+        out["error"] = "the run produced no gate result"
+    else:
+        out["ok"] = all(r.ok for r in results if r.required)
+        if not out["ok"]:
+            out["failing"] = SN._failing(results)
+    finish(cfg, project, job, out["ok"], sha, out["error"], now=now)
+    if out["ok"] is not None and RM.enabled(cfg):
+        source = f"cadence:{job}"
+        try:
+            if out["ok"]:
+                RM.on_green(cfg, project, sha, now=now, source=source)
+            else:
+                red_logs = [str(logs / r.log) for r in results
+                            if r.required and not r.ok and r.log]
+                rec = RM.on_red(cfg, project, sha, list(out["failing"]), root=root, base=base,
+                                logs=red_logs, now=now, source=source)
+                out["deferred"] = RM.source_of(rec) != source
+        except (OSError, ValueError) as e:      # best effort: the run result stands
+            SN._journal(cfg, project, f"redmain.{'on_green' if out['ok'] else 'on_red'} "
+                                      f"failed ({source}): {e}")
+    _event(cfg, out, started)
+    return out
+
+
+def _event(cfg, out, started) -> None:
+    data = {"project": out["project"], "job": out["job"], "ok": out["ok"], "sha": out["sha"],
+            "reason": out["reason"], "duration_s": max(0, int(time.monotonic() - started))}
+    if out["ok"] is False:
+        data["failing"] = list(out["failing"])[:FAILING_EVENT_MAX]
+    if out["error"]:
+        data["error"] = out["error"]
+    try:
+        E.append(cfg, "cadence", project=out["project"], by="queue", data=data)
+    except (ValueError, OSError):
+        pass
+
+
 # ---- status ------------------------------------------------------------------------------------
 
 def _next(job, row, base_sha, now, reason) -> str | None:
@@ -322,6 +500,7 @@ def status_rows(cfg, project, *, project_cfg=None, base_sha=None, now=None) -> l
         doc = None
     rows = (doc or {}).get("jobs") or {}
     t = SN._now(now)
+    running = "yes" if jobs and SN.running(cfg, project) else "no"   # SPEC-0493
     out = []
     for j in jobs:
         row = rows.get(j["name"])
@@ -330,13 +509,13 @@ def status_rows(cfg, project, *, project_cfg=None, base_sha=None, now=None) -> l
         if not isinstance(row, dict):
             r = {**base, "merges_since": 0, "paths_hit": [], "last_run_at": None,
                  "last_run_sha": None, "last_ok": None, "due": None, "next": "not seeded",
-                 "running": "no"}
+                 "running": running}
         else:
             reason = due(j, row, base_sha, t)
             r = {**base, "merges_since": row.get("merges_since", 0),
                  "paths_hit": list(row.get("paths_hit") or []),
                  "last_run_at": row.get("last_run_at"), "last_run_sha": row.get("last_run_sha"),
                  "last_ok": row.get("last_ok"), "due": reason,
-                 "next": _next(j, row, base_sha, t, reason), "running": "no"}
+                 "next": _next(j, row, base_sha, t, reason), "running": running}
         out.append({k: r[k] for k in STATUS_KEYS})
     return out

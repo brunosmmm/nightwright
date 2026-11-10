@@ -104,6 +104,60 @@ gates:
     required: true
     # SPEC-0289: a failing run re-runs its failing ids, then the selection once more, before triage.
     retries: 2
+# SPEC-0493: the heavy test tiers (SPEC-0490 markers) run on a cadence from the queue runner,
+# not per campaign; a red run opens a red-main episode with source cadence:<job>. Numbers assume
+# 10-20 merges a day (defaults; tune from `cadence` events). on_paths entries are full
+# repo-relative SPEC-0350 globs, one per entry (braces are literal; a bare basename matches at
+# any depth).
+cadence:
+  - name: fast-full
+    cmd: uv run pytest -q -n 4 -m "not (integration or tui or remote or perf)"
+    every_n_merges: 5
+    every_hours: 12
+    timeout_s: 2400
+    retries: 1
+    results: {format: pytest}
+  - name: integration
+    cmd: uv run pytest -q -n 4 -m integration
+    every_n_merges: 5
+    every_hours: 24
+    on_paths:
+      - "src/nightwright/agentic/queue.py"
+      - "src/nightwright/agentic/close.py"
+      - "src/nightwright/agentic/gates.py"
+      - "src/nightwright/agentic/runner.py"
+      - "src/nightwright/agentic/sentinel.py"
+      - "src/nightwright/agentic/redmain.py"
+    timeout_s: 2400
+    retries: 1
+    results: {format: pytest}
+  - name: tui
+    cmd: uv run pytest -q -n 4 -m tui
+    every_n_merges: 10
+    every_hours: 24
+    on_paths:
+      - "src/nightwright/tui/**"
+      - "src/nightwright/agentic/dashboard/**"
+    timeout_s: 2400
+    retries: 1
+    results: {format: pytest}
+  - name: remote
+    cmd: uv run pytest -q -n 2 -m remote
+    every_hours: 24
+    on_paths:
+      - "src/nightwright/agentic/remote_*.py"
+      - "src/nightwright/agentic/worker*.py"
+      - "src/nightwright/agentic/pull_*.py"
+      - "src/nightwright/agentic/gate_jobs.py"
+    timeout_s: 2400
+    retries: 1
+    results: {format: pytest}
+  - name: perf
+    cmd: uv run pytest -q -n 0 -m perf
+    every_hours: 24
+    timeout_s: 2400
+    retries: 1
+    results: {format: pytest}
 merge:
   policy: merge
   base: main

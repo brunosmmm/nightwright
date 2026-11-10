@@ -28,6 +28,7 @@ def gate_group():
     nw gate status GATEJOB-0001        a job's state (--json: nw.gatejob.v1)
     nw gate logs GATEJOB-0001 [GATE]   its gate logs
     nw gate cancel GATEJOB-0001        stop a waiting or running job
+    nw gate cadence run JOB            force a cadence job on the runner's next start
     """
 
 
@@ -261,3 +262,31 @@ def cadence_status(cfg, project, as_json):
     for r in rows:
         console.print("  ".join(f"{k}={json.dumps(r[k]) if k != 'name' else r[k]}"
                                 for k in CAD.STATUS_KEYS), highlight=False, soft_wrap=True)
+
+
+@cadence_group.command("run")
+@click.argument("job")
+@click.option("--project", default=None, help="registered project (default: the cwd's)")
+@click.pass_obj
+def cadence_run(cfg, job, project):
+    """Force JOB (SPEC-0493): the queue runner's next cadence start for this project runs it."""
+    from . import cadence as CAD
+    from . import lease as L
+    from . import project as P
+    name = project or P.find_project_for_cwd(cfg, os.getcwd())
+    try:
+        if not name:
+            raise ValueError("no registered project here; pass --project")
+        pcfg = P.project_config(cfg, name)
+        CAD._find_job(pcfg, job)
+        CAD.force(cfg, name, job)
+    except (ValueError, OSError) as e:
+        console.print(f"nw gate cadence run: {e}", highlight=False)
+        sys.exit(2)
+    if L.is_held(cfg):
+        console.print(f"{name}: cadence job {job} forced; queued for the runner's next cadence "
+                      "start (an earlier project's due job can take the slot first)",
+                      highlight=False)
+    else:
+        console.print(f"{name}: cadence job {job} forced, but no runner is up; it runs once "
+                      "`nw queue` runs", highlight=False)

@@ -747,6 +747,16 @@ def _claim_seq(cfg, cid, seq) -> tuple[int, str]:
             seq += 1
 
 
+def cadence_job_of(project_cfg: dict, campaign_state: dict) -> dict | None:
+    """SPEC-0493: the cadence job a red-main fix campaign must re-run at close
+    (`campaign_state["cadence_job"]` naming a job of `project_cfg["cadence"]`), else None."""
+    name = (campaign_state or {}).get("cadence_job")
+    if not name:
+        return None
+    return next((j for j in (project_cfg or {}).get("cadence") or []
+                 if isinstance(j, dict) and j.get("name") == name), None)
+
+
 def run_all(project_cfg: dict, campaign_state: dict, cfg, *, seq: int,
             stop: threading.Event | None = None, tier: str | None = None,
             worker: str | None = None, local: bool = False,
@@ -770,6 +780,9 @@ def run_all(project_cfg: dict, campaign_state: dict, cfg, *, seq: int,
     next attempt a crash never wrote (`seq` is its seq): the run continues that chain."""
     cid = campaign_state["id"]
     project_cfg = {**project_cfg, "gates": P.gates_for(project_cfg, tier)}
+    job = cadence_job_of(project_cfg, campaign_state) if tier == "close" else None
+    if job is not None:                         # SPEC-0493: a cadence fix re-runs its job
+        project_cfg["gates"] = list(project_cfg["gates"]) + [P.cadence_gate(job)]
     worktree = (campaign_state.get("repo") or {}).get("worktree")
     if not worktree:
         raise ValueError(f"campaign {cid} has no worktree recorded")
