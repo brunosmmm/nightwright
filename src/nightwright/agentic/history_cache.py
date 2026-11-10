@@ -144,7 +144,10 @@ def _log_entry(path: Path, offset: int | None = None, *, prev: dict | None = Non
     elif prev is not None:
         same = (prev.get("inode"), prev.get("size")) == (row.get("inode"), row.get("size"))
         if same:
-            row["offset"] = prev.get("offset", row["size"])
+            if prev.get("mtime_ns") != row.get("mtime_ns"):
+                row["offset"] = 0
+            else:
+                row["offset"] = prev.get("offset", row["size"])
         elif prev.get("inode") == row.get("inode") and row.get("size", 0) > prev.get("size", 0):
             row["offset"] = _complete_log_offset_from(path, int(prev.get("offset", 0)))
         else:
@@ -869,6 +872,10 @@ def _cache_tree_corrupt(root: Path, sources: dict | None = None) -> bool:
             for path in camp.glob("*.json"):
                 if _is_tmp(path.name):
                     continue
+                key = f"campaigns/{path.name}"
+                cur = (v1_files or {}).get(key) or {}
+                if _cursor_matches(path, cur):
+                    continue
                 if _read_json(path) is None:
                     return True
         return False
@@ -1324,6 +1331,12 @@ def _scan_sources(
             continue
         entry = _log_entry(path, prev=prev_log)
         if entry is not None:
+            if prev_log and (
+                (prev_log.get("inode"), prev_log.get("size"), prev_log.get("mtime_ns"))
+                == (entry.get("inode"), entry.get("size"), entry.get("mtime_ns"))
+            ):
+                if "lines" in prev_log:
+                    entry["lines"] = prev_log["lines"]
             logs[key] = entry
     mailbox = agentic / "mailbox"
     if mailbox.is_dir():
@@ -1338,6 +1351,12 @@ def _scan_sources(
                 continue
             entry = _log_entry(path, prev=prev_log)
             if entry is not None:
+                if prev_log and (
+                    (prev_log.get("inode"), prev_log.get("size"), prev_log.get("mtime_ns"))
+                    == (entry.get("inode"), entry.get("size"), entry.get("mtime_ns"))
+                ):
+                    if "lines" in prev_log:
+                        entry["lines"] = prev_log["lines"]
                 logs[key] = entry
     files = {}
     flaky = agentic / "flaky-tests.json"
@@ -1356,8 +1375,6 @@ def _scan_sources(
         tree_dirs[name] = snap
         if name in ("escalations", "sentinel"):
             trees[name] = _agentic_tree_sig(agentic, name, sub)
-        elif prev_tree_dirs.get(name) == snap and isinstance(prev_trees.get(name), str):
-            trees[name] = prev_trees[name]
         else:
             trees[name] = _tree_sig(root_path)
     CC = _lazy_conductor()
@@ -2489,6 +2506,26 @@ def _sources_unchanged_light(cfg, stored: dict) -> bool:
     if stored.get("profile_layers") != _profile_layer_cursors(cfg):
         return False
     agentic = store.agentic_dir(cfg)
+    stored_logs = stored.get("logs") or {}
+    for key in (
+        "conductor/decisions.jsonl",
+        "conductor/sessions.jsonl",
+        "spec-reviews.jsonl",
+        "runner.jsonl",
+    ):
+        if (agentic / key).is_file() and key not in stored_logs:
+            return False
+    flaky = agentic / "flaky-tests.json"
+    if flaky.is_file() and "flaky-tests.json" not in (stored.get("files") or {}):
+        return False
+    CC = _lazy_conductor()
+    stored_trans = stored.get("transcripts") or {}
+    for row in CC.sessions(cfg):
+        path = CC.find_transcript(cfg, row["session_id"])
+        if path is not None:
+            resolved = str(path.resolve())
+            if resolved not in stored_trans:
+                return False
     for key, old in (stored.get("logs") or {}).items():
         path = agentic / key
         entry = _log_entry(path, prev=old)
@@ -2527,7 +2564,7 @@ def _sources_unchanged_light(cfg, stored: dict) -> bool:
         if name in ("escalations", "sentinel"):
             if prev_trees.get(name) != _agentic_tree_sig(agentic, name, sub):
                 return False
-        elif name == "reviews" and isinstance(prev_trees.get(name), str):
+        elif name == "reviews":
             if prev_trees.get(name) != _tree_sig(root_path):
                 return False
         elif _tree_dirs_snapshot(root_path) != prev_tree_dirs.get(name):
@@ -2577,7 +2614,11 @@ def _records_cache_quiet(cfg, root: Path, sources: dict) -> bool:
         return False
     fp = _index_quiet_fingerprint(cfg, root, sources, index_rows, live)
     if fp == _INDEX_QUIET_KEY:
+        if not _sources_unchanged_light(cfg, sources):
+            return False
         if not _v1_cursors_match_records_quiet(root, v1_files):
+            return False
+        if _stale_terminal_ids_for_records(cfg, index_rows, sources):
             return False
         live_cids, missing = _live_refresh_targets(cfg, index_rows)
         return not live_cids and not missing
@@ -2669,7 +2710,7 @@ def _sync_globals(cfg, root: Path, now) -> set[str]:
     dec_tail = (
         old_dec and new_dec
         and old_dec.get("inode") == new_dec.get("inode")
-        and new_dec.get("size", 0) > int(old_dec.get("offset", 0))
+        and int(new_dec.get("size", 0)) > int(old_dec.get("size", 0))
     )
     dec_same_size_mtime = (
         old_dec and new_dec
@@ -3059,7 +3100,11 @@ def _campaign_history_cached(cfg, cid, now, root: Path) -> dict:
     if row and row.get("outcome") in _TERMINAL_OUTCOMES:
         hit = _doc_hit(cfg, root, cid, now, sources)
         sig = H.campaign_signature(cfg, cid)
-        if hit is not None and hit.get("signature") == sig:
+        if (
+            hit is not None
+            and hit.get("signature") == sig
+            and _sources_unchanged_light(cfg, sources)
+        ):
             return hit
     gaps = []
     global_recs = H._global_records(cfg, _campaign_ids(cfg), gaps)

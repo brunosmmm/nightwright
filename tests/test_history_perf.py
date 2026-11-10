@@ -60,6 +60,11 @@ def test_record_count_and_budgets(scaled_data):
     warm = time.perf_counter() - t0
     assert warm <= LIMIT_WARM_INDEX, warm
 
+    v1 = cache_dir / "history" / "v1"
+    rec_path = v1 / "records.jsonl"
+    rec_stat = rec_path.stat()
+    rec_inode = (rec_stat.st_ino, rec_stat.st_mtime_ns)
+
     terminal = "SPEC-0394-20261102-ae5b"
     t0 = time.perf_counter()
     H.campaign_history(c, terminal, now=NOW, cache=True)
@@ -71,10 +76,22 @@ def test_record_count_and_budgets(scaled_data):
     kind_t = time.perf_counter() - t0
     assert kind_t <= LIMIT_RECORDS, kind_t
 
+    v1_posix = v1.resolve().as_posix()
+    real_open = open
+
+    def open_no_cache_campaign_parse(file, *args, **kwargs):
+        text = file if isinstance(file, int) else str(file)
+        if text.startswith(f"{v1_posix}/campaigns/") and text.endswith(".json"):
+            raise AssertionError(f"warm records must not parse {text}")
+        return real_open(file, *args, **kwargs)
+
     t0 = time.perf_counter()
-    H.history_records(c, query="pytest")
+    with mock.patch("builtins.open", open_no_cache_campaign_parse):
+        H.history_records(c, query="pytest")
     query_t = time.perf_counter() - t0
     assert query_t <= LIMIT_RECORDS, query_t
+    rec_after = rec_path.stat()
+    assert (rec_after.st_ino, rec_after.st_mtime_ns) == rec_inode
 
 
 def test_warm_index_no_terminal_campaign_stat(scaled_data):

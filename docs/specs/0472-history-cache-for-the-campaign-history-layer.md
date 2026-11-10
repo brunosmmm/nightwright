@@ -4,7 +4,7 @@ title: "History cache for the campaign history layer"
 status: done
 owner: user
 created: 2026-11-08
-updated: 2026-11-09
+updated: 2026-11-10
 source_idea: IDEA-1015
 kind: feature
 parent: SPEC-0405
@@ -672,6 +672,19 @@ Fixed records quiet-path order and gates staleness. `uv run pytest -q`
 `tests/test_history_perf.py::test_warm_index_no_terminal_campaign_stat` (3 passed);
 history bundle 141 passed. `python3 tools/spec_lint.py --write-ledger` exit 0. Full suite left to gating.
 
+### Test record (2026-11-10, implementer loop 3 of 3, IDEA-1015-faf2)
+
+Warm corrupt check stats `campaigns/*.json` cursors instead of parsing; records quiet
+fingerprint re-checks `_sources_unchanged_light` and terminal staleness; reviews tree
+always file-hashed; missing/recreated global logs invalidate; decision `lines` preserved
+across `_scan_sources`. `uv run pytest -q tests/test_history_cache.py tests/test_history.py
+tests/test_cli_campaign_history.py tests/test_history_scale.py` (94 passed);
+`tests/test_history_cache.py::test_warm_index_stat_spy`
+`tests/test_history_perf.py::test_warm_index_no_terminal_campaign_stat` (2 passed);
+`tests/test_history_perf.py` (1 passed, `test_record_count_and_budgets` timing flake 601 ms
+≤600 ms budget on one run). `python3 tools/spec_lint.py --write-ledger` exit 0. Full suite
+left to gating.
+
 ### Test record (2026-11-08, implementer loop 3)
 
 Adversarial fixes: pending-index record prune; quiet `history_records` terminal invalidation;
@@ -711,6 +724,13 @@ uses the stored `campaign_files` path list with file-count guard before rglob. W
 `index.writes.jsonl` merges on every cached read entry; OSError fallbacks set a thread-local
 flag consumed by the CLI stderr line. Trailing partial JSONL lines do not commit gaps until
 newline-terminated. Profile cursors include builtin defs and in-memory `agentic.profiles`.
+
+### As shipped (2026-11-10, loop 3)
+
+Loop 3: `_INDEX_QUIET_KEY` no longer skips data-dir invalidation on `history_records`; reviews
+tree hash no longer reuses stale directory-mtime snapshots; `_sources_unchanged_light` treats
+reappeared canonical logs, flaky-tests.json, and session transcripts as changes; log `lines`
+cursors survive `_scan_sources`; same-inode/size `mtime_ns` edits force log offset zero.
 
 ## Clock Log
 

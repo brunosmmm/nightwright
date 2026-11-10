@@ -202,6 +202,7 @@ def test_warm_index_stat_spy(data_dir, cache_dir):
     c = cfg(data_dir, cache_dir)
     terminal = "SPEC-0394-20261102-ae5b"
     H.history_index(c, now=NOW, cache=True)
+    v1 = (cache_dir / "history" / "v1").resolve().as_posix()
     prefix = (data_dir / "agentic" / "campaigns" / terminal).resolve().as_posix() + os.sep
     seen = []
     real_stat = os.stat
@@ -241,6 +242,11 @@ def test_warm_index_stat_spy(data_dir, cache_dir):
 
     def open_wrap(file, *args, **kwargs):
         text = _path_str(file)
+        camp_prefix = f"{v1}/campaigns/"
+        if text.startswith(camp_prefix) and text.endswith(".json"):
+            raise AssertionError(f"cache warm index must not open {text}")
+        if text == f"{v1}/records.jsonl":
+            raise AssertionError(f"cache warm index must not open {text}")
         if ledger in text or text.endswith("ledger.jsonl") and text.startswith(prefix):
             raise AssertionError("ledger opened on warm index")
         if text.startswith(prefix) and (
@@ -251,7 +257,19 @@ def test_warm_index_stat_spy(data_dir, cache_dir):
             raise AssertionError(f"unexpected open {text}")
         return real_open(file, *args, **kwargs)
 
+    def path_open_wrap(self, *args, **kwargs):
+        text = self.resolve().as_posix()
+        camp_prefix = f"{v1}/campaigns/"
+        if text.startswith(camp_prefix) and text.endswith(".json"):
+            raise AssertionError(f"cache warm index must not open {text}")
+        if text == f"{v1}/records.jsonl":
+            raise AssertionError(f"cache warm index must not open {text}")
+        if text.startswith(prefix):
+            seen.append(text)
+        return real_path_open(self, *args, **kwargs)
+
     with mock.patch("os.stat", stat_ok), mock.patch("builtins.open", open_wrap), \
+            mock.patch.object(Path, "open", path_open_wrap), \
             mock.patch.object(CC, "attribute", side_effect=lambda *a, **k: attr_calls.append(1)), \
             mock.patch.object(CC, "live_windows", side_effect=lambda *a, **k: lw_calls.append(1) or []):
         H.history_index(c, now=NOW, cache=True)
@@ -1069,6 +1087,109 @@ def test_escalation_write_invalidates_records(data_dir, cache_dir):
     unc = H.history_records(c, cache=False)
     assert cached == unc
     assert any(r.get("id") == "escalation:ESC-99001" for r in cached)
+
+
+def test_warm_index_then_decision_records_without_reindex(data_dir, cache_dir):
+    c = cfg(data_dir, cache_dir)
+    cid = "SPEC-0336-20261031-6558"
+    H.history_index(c, now=NOW, cache=True)
+    H.history_index(c, now=NOW, cache=True)
+    dec = data_dir / "agentic" / "conductor" / "decisions.jsonl"
+    marker = "warm-quiet-records-decision"
+    row = {
+        "schema": "nw.conductor.decision.v1", "seq": 99997, "ts": store.now_iso(NOW),
+        "by": "conductor", "campaign": cid, "spec_id": "SPEC-0336", "event_id": marker,
+        "rule": "test", "kind": "resume", "action": None, "rationale": "r",
+    }
+    with dec.open("a") as stream:
+        stream.write(json.dumps(row) + "\n")
+    HC._records_mem.clear()
+    cached = H.history_records(c, cache=True)
+    unc = H.history_records(c, cache=False)
+    assert cached == unc
+
+
+def test_warm_index_then_run_json_records_without_reindex(data_dir, cache_dir):
+    c = cfg(data_dir, cache_dir)
+    cid = "SPEC-0394-20261102-ae5b"
+    H.history_index(c, now=NOW, cache=True)
+    H.history_index(c, now=NOW, cache=True)
+    run_root = data_dir / "agentic" / "campaigns" / cid / "runs"
+    run_json = next(p for p in run_root.iterdir() if p.is_dir()) / "run.json"
+    payload = json.loads(run_json.read_text())
+    payload["note"] = "warm-quiet-run-json-only"
+    run_json.write_text(json.dumps(payload, indent=2) + "\n")
+    HC._records_mem.clear()
+    cached = H.history_records(c, campaign=cid, cache=True)
+    unc = H.history_records(c, campaign=cid, cache=False)
+    assert cached == unc
+
+
+def test_runner_recreated_after_missing_updates_terminal(data_dir, cache_dir):
+    c = cfg(data_dir, cache_dir)
+    cid = "SPEC-0336-20261031-6558"
+    H.history_index(c, now=NOW, cache=True)
+    runner = data_dir / "agentic" / "runner.jsonl"
+    runner.unlink()
+    H.history_index(c, now=NOW, cache=True)
+    unc_missing = H.campaign_history(c, cid, now=NOW, cache=False)
+    cached_missing = H.campaign_history(c, cid, now=NOW, cache=True)
+    assert "runner.jsonl: missing" in cached_missing["gaps"]
+    doc = cached_missing
+    created = H._parse_ts(doc["header"]["created_at"])
+    closed = H._parse_ts(doc["header"]["closed_at"])
+    assert created and closed
+    down_start = created - dt.timedelta(minutes=5)
+    down_end = closed + dt.timedelta(minutes=5)
+    with runner.open("w") as stream:
+        stream.write(json.dumps({"ts": store.now_iso(down_start), "kind": "down"}) + "\n")
+        stream.write(json.dumps({"ts": store.now_iso(down_end), "kind": "up"}) + "\n")
+    HC._records_mem.clear()
+    unc = H.campaign_history(c, cid, now=NOW, cache=False)
+    cached = H.campaign_history(c, cid, now=NOW, cache=True)
+    u = {k: v for k, v in unc.items() if k != "generated_at"}
+    d = {k: v for k, v in cached.items() if k != "generated_at"}
+    assert d == u
+    assert "runner.jsonl: missing" not in cached["gaps"]
+    def _runner_down_total(doc):
+        phases = doc.get("phases") or []
+        rows = phases.values() if isinstance(phases, dict) else phases
+        return sum(int(p.get("runner_down_s") or 0) for p in rows)
+    assert _runner_down_total(cached) == _runner_down_total(unc)
+
+
+def test_review_inplace_refreshes_records(data_dir, cache_dir):
+    c = cfg(data_dir, cache_dir)
+    H.history_index(c, now=NOW, cache=True)
+    review_dir = data_dir / "agentic" / "reviews" / "SPEC-0394"
+    review = next(review_dir.glob("*.json"))
+    body = json.loads(review.read_text())
+    body["title"] = "cache-review-inplace-title"
+    review.write_text(json.dumps(body, indent=2) + "\n")
+    HC._records_mem.clear()
+    cached = H.history_records(c, query="cache-review-inplace-title", cache=True)
+    unc = H.history_records(c, query="cache-review-inplace-title", cache=False)
+    assert cached == unc
+    assert cached
+
+
+def test_decision_unparsable_line_number_after_global_sync(data_dir, cache_dir):
+    c = cfg(data_dir, cache_dir)
+    cid = "SPEC-0394-20261102-ae5b"
+    H.history_index(c, now=NOW, cache=True)
+    flaky = data_dir / "agentic" / "flaky-tests.json"
+    body = json.loads(flaky.read_text())
+    body["note"] = "touch-flaky-for-lines-preserve"
+    flaky.write_text(json.dumps(body) + "\n")
+    H.history_index(c, now=NOW, cache=True)
+    dec = data_dir / "agentic" / "conductor" / "decisions.jsonl"
+    with dec.open("a") as stream:
+        stream.write("not-json-decision-line\n")
+    unc = H.campaign_history(c, cid, now=NOW, cache=False)
+    cached = H.campaign_history(c, cid, now=NOW, cache=True)
+    u = {k: v for k, v in unc.items() if k != "generated_at"}
+    d = {k: v for k, v in cached.items() if k != "generated_at"}
+    assert d == u
 
 
 def test_corrupt_campaign_json_rebuilds_and_removes_tmp(data_dir, cache_dir):
