@@ -145,7 +145,12 @@ def _is_same_headline(task, lines, idx) -> bool:
         return bool(task.heading in m.group(3))
     want_id = (task.properties or {}).get("ID")
     if want_id:
-        return _drawer_id(lines, idx) == want_id
+        if _drawer_id(lines, idx) != want_id:
+            return False
+        heading = task.heading
+        if not isinstance(heading, str) or not heading:
+            return False
+        return bool(task.heading in m.group(3))
     return len(m.group(1)) == task.level and bool(task.heading) and task.heading in m.group(3)
 
 

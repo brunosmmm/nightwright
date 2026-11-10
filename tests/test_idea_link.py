@@ -625,8 +625,17 @@ def test_publish_refuses_empty_title_multiline_title_and_second_link(tmp_path, m
         line=empty_task.line,
         is_idea=True,
     )
+    oid = idea_empty.properties["ID"]
+    real_resolve = W.resolve_selector
+
+    def overlay_empty(cfg, sel):
+        if sel == oid and getattr(W._ORG_LOCK_STATE, "depth", 0) >= 1:
+            return empty_task
+        return real_resolve(cfg, sel)
+
+    monkeypatch.setattr(W, "resolve_selector", overlay_empty)
     with pytest.raises(ValueError, match="title is empty"):
-        L.publish_idea(cfg, empty_task)
+        L.publish_idea(cfg, empty_task, selector=oid)
     assert _backlog_tip(repo) == tip_at_start
     assert org_path.read_bytes() == org_bytes
     org_unchanged()
@@ -647,8 +656,16 @@ def test_publish_refuses_empty_title_multiline_title_and_second_link(tmp_path, m
         line=ml_task.line,
         is_idea=True,
     )
+    oid_ml = idea_ml.properties["ID"]
+
+    def overlay_ml(cfg, sel):
+        if sel == oid_ml and getattr(W._ORG_LOCK_STATE, "depth", 0) >= 1:
+            return ml_task
+        return real_resolve(cfg, sel)
+
+    monkeypatch.setattr(W, "resolve_selector", overlay_ml)
     with pytest.raises(ValueError, match="title must be one line"):
-        L.publish_idea(cfg, ml_task)
+        L.publish_idea(cfg, ml_task, selector=oid_ml)
     assert _backlog_tip(repo) == tip_at_start
     assert org_path.read_bytes() == org_bytes
     org_unchanged()
@@ -689,10 +706,24 @@ def test_publish_org_write_failure_restores_the_old_tip(tmp_path, monkeypatch):
     cfg = _cfg(tmp_path, repo=repo)
     idea = _seed_idea(monkeypatch, cfg, text="Rollback")
     org_before = Path(cfg["org_ideas_file"]).read_text()
+    ref_updates: list[list[str]] = []
+    real_run = subprocess.run
+
+    def spy_ref(cmd, **kw):
+        if (
+            len(cmd) >= 5
+            and cmd[0] == "git"
+            and str(repo) in cmd[2]
+            and cmd[3] == "update-ref"
+            and "refs/heads/nw-backlog" in cmd
+        ):
+            ref_updates.append(list(cmd))
+        return real_run(cmd, **kw)
 
     def boom(*_a, **_k):
         raise OSError("disk full")
 
+    monkeypatch.setattr("subprocess.run", spy_ref)
     monkeypatch.setattr("nightwright.org_write.link_idea_request", boom)
     r = CliRunner().invoke(cli, ["idea", "publish", idea.properties["ID"]])
     assert r.exit_code != 0
@@ -701,6 +732,12 @@ def test_publish_org_write_failure_restores_the_old_tip(tmp_path, monkeypatch):
     assert _backlog_tip(repo) is None
     assert Path(cfg["org_ideas_file"]).read_text() == org_before
     assert not W.resolve_selector(cfg, idea.properties["ID"]).properties.get("REQ")
+    assert len(ref_updates) == 2
+    new_sha = ref_updates[0][5]
+    assert ref_updates[1][:6] == [
+        "git", "-C", str(repo), "update-ref", "-d", "refs/heads/nw-backlog",
+    ]
+    assert ref_updates[1][6] == new_sha
 
 
 def test_publish_org_write_failure_restores_existing_tip(tmp_path, monkeypatch):
@@ -714,6 +751,21 @@ def test_publish_org_write_failure_restores_existing_tip(tmp_path, monkeypatch):
     def boom(*_a, **_k):
         raise OSError("disk full")
 
+    ref_updates: list[list[str]] = []
+    real_run = subprocess.run
+
+    def spy_ref(cmd, **kw):
+        if (
+            len(cmd) >= 5
+            and cmd[0] == "git"
+            and str(repo) in cmd[2]
+            and cmd[3] == "update-ref"
+            and "refs/heads/nw-backlog" in cmd
+        ):
+            ref_updates.append(list(cmd))
+        return real_run(cmd, **kw)
+
+    monkeypatch.setattr("subprocess.run", spy_ref)
     monkeypatch.setattr("nightwright.org_write.link_idea_request", boom)
     idea_b = _seed_idea(monkeypatch, cfg, text="FailOrg")
     org_mid = Path(cfg["org_ideas_file"]).read_text()
@@ -724,6 +776,10 @@ def test_publish_org_write_failure_restores_existing_tip(tmp_path, monkeypatch):
     assert _backlog_tip(repo) == tip_old
     assert Path(cfg["org_ideas_file"]).read_text() == org_mid
     assert not W.resolve_selector(cfg, idea_b.properties["ID"]).properties.get("REQ")
+    publish_refs = [c for c in ref_updates if c[3] == "update-ref" and c[4] == "refs/heads/nw-backlog"]
+    assert len(publish_refs) >= 2
+    new_sha = publish_refs[-2][5]
+    assert publish_refs[-1][4:] == ["refs/heads/nw-backlog", tip_old, new_sha]
 
 
 def test_publish_org_write_failure_leaves_ref_when_cas_lost(tmp_path, monkeypatch):
@@ -837,6 +893,13 @@ def test_heading_without_level_matches_only_task_line():
     lines3 = list(lines)
     lines3[6:6] = [":PROPERTIES:\n", ":ID: IDEA-002\n", ":END:\n"]
     assert W._is_same_headline(task3, lines3, 5)
+    lines_drawer_only = [
+        "* INCUBATE  Other :tag:\n",
+        ":PROPERTIES:\n",
+        ":ID: IDEA-002\n",
+        ":END:\n",
+    ]
+    assert not W._is_same_headline(task3, lines_drawer_only, 0)
 
     lines_dup = [
         "* INCUBATE  Link :tag:\n",
@@ -1103,6 +1166,11 @@ def test_publish_org_write_failure_when_restore_update_ref_fails(tmp_path, monke
     tip_after = _backlog_tip(repo)
     assert tip_after is not None
     assert tip_after != _git(repo, "rev-parse", "main").strip()
+    assert len(backlog_ref_updates) >= 2
+    new_sha = backlog_ref_updates[0][5]
+    restore = backlog_ref_updates[1]
+    assert restore[3] == "update-ref"
+    assert restore[4:] == ["-d", "refs/heads/nw-backlog", new_sha]
 
 
 def test_publish_refuses_control_character_title(tmp_path, monkeypatch):
@@ -1123,8 +1191,17 @@ def test_publish_refuses_control_character_title(tmp_path, monkeypatch):
         line=t.line,
         is_idea=True,
     )
+    oid = idea.properties["ID"]
+    real_resolve = W.resolve_selector
+
+    def overlay_tab(cfg, sel):
+        if sel == oid and getattr(W._ORG_LOCK_STATE, "depth", 0) >= 1:
+            return t
+        return real_resolve(cfg, sel)
+
+    monkeypatch.setattr(W, "resolve_selector", overlay_tab)
     with pytest.raises(ValueError, match="unsupported control character"):
-        L.publish_idea(cfg, t)
+        L.publish_idea(cfg, t, selector=oid)
     assert _backlog_tip(repo) is None
 
 
@@ -1260,6 +1337,7 @@ def test_publish_refuses_control_character_in_user_name(tmp_path, monkeypatch):
 def test_publish_refuses_del_and_c1_in_title_and_identity(tmp_path, monkeypatch):
     repo = _init_repo(tmp_path / "proj")
     cfg = _cfg(tmp_path, repo=repo)
+    real_resolve = W.resolve_selector
     for bad, expect in (
         ("Del\x7ftitle", "title contains unsupported control character"),
         ("C1\x90title", "title contains unsupported control character"),
@@ -1279,8 +1357,16 @@ def test_publish_refuses_del_and_c1_in_title_and_identity(tmp_path, monkeypatch)
             line=t.line,
             is_idea=True,
         )
+        oid = idea.properties["ID"]
+
+        def overlay_bad(cfg, sel):
+            if sel == oid and getattr(W._ORG_LOCK_STATE, "depth", 0) >= 1:
+                return t
+            return real_resolve(cfg, sel)
+
+        monkeypatch.setattr(W, "resolve_selector", overlay_bad)
         with pytest.raises(ValueError, match=expect):
-            L.publish_idea(cfg, t)
+            L.publish_idea(cfg, t, selector=oid)
         assert _backlog_tip(repo) is None
 
     subprocess.run(
@@ -1487,18 +1573,76 @@ def test_second_publish_preserves_subdirectory_tree_entry(tmp_path, monkeypatch)
     assert _git(repo, "rev-parse", f"refs/heads/nw-backlog:{first}.md").strip() == req_blob
 
 
+def test_publish_commits_to_fresh_project_after_locked_resolve(tmp_path, monkeypatch):
+    repo_a = _init_repo(tmp_path / "proj-a")
+    repo_b = _init_repo(tmp_path / "proj-b")
+    cfg = _cfg(tmp_path, repo=repo_a, project="Example")
+    cfg["outbox_targets"]["Other"] = {"repo_path": str(repo_b)}
+    conf = Path(cfg["config_dir"]) / "mappings.yaml"
+    conf.write_text(conf.read_text() + "Other:\n  bucket: Other\n")
+    idea = _seed_idea(monkeypatch, cfg, text="SwapProj", project="Example")
+    idea_id = idea.properties["ID"]
+    org_path = Path(cfg["org_ideas_file"])
+    real_resolve = W.resolve_selector
+
+    def swap_project_on_publish(cfg, sel):
+        if sel == idea_id and getattr(W._ORG_LOCK_STATE, "depth", 0) >= 1:
+            org_path.write_text(
+                org_path.read_text().replace(":PROJECT: Example", ":PROJECT: Other", 1)
+            )
+        return real_resolve(cfg, sel)
+
+    monkeypatch.setattr(W, "resolve_selector", swap_project_on_publish)
+    assert CliRunner().invoke(cli, ["idea", "publish", idea_id]).exit_code == 0
+    assert _backlog_tip(repo_b) is not None
+    assert _backlog_tip(repo_a) is None
+    req = W.resolve_selector(cfg, idea_id).properties["REQ"]
+    _show_backlog(repo_b, f"{req}.md")
+
+
+def test_publish_locked_resolve_rejects_cleared_project(tmp_path, monkeypatch):
+    repo = _init_repo(tmp_path / "proj")
+    cfg = _cfg(tmp_path, repo=repo)
+    idea = _seed_idea(monkeypatch, cfg, text="NoProj")
+    idea_id = idea.properties["ID"]
+    org_path = Path(cfg["org_ideas_file"])
+    real_resolve = W.resolve_selector
+
+    def clear_project_on_publish(cfg, sel):
+        if sel == idea_id and getattr(W._ORG_LOCK_STATE, "depth", 0) >= 1:
+            org_path.write_text(
+                re.sub(r"^\s*:PROJECT:.*\n", "", org_path.read_text(), flags=re.M)
+            )
+        return real_resolve(cfg, sel)
+
+    monkeypatch.setattr(W, "resolve_selector", clear_project_on_publish)
+    r = CliRunner().invoke(cli, ["idea", "publish", idea_id])
+    assert r.exit_code != 0
+    assert "project is required" in r.output
+    assert _backlog_tip(repo) is None
+    fresh = W.resolve_selector(cfg, idea_id)
+    assert not fresh.properties.get("REQ")
+    assert not fresh.properties.get("REQ_BASE")
+
+
 def test_publish_reads_summary_under_org_lock(tmp_path, monkeypatch):
     repo = _init_repo(tmp_path / "proj")
     cfg = _cfg(tmp_path, repo=repo)
     idea = _seed_idea(monkeypatch, cfg, summary="snap")
     depths: list[int] = []
     real_summary = L.idea_summary_text
+    real_publish = L._publish_commit
 
     def spy_summary(cfg, task, **kw):
         depths.append(getattr(W._ORG_LOCK_STATE, "depth", 0))
         return real_summary(cfg, task, **kw)
 
+    def spy_publish(repo, **kw):
+        depths.append(getattr(W._ORG_LOCK_STATE, "depth", 0))
+        return real_publish(repo, **kw)
+
     monkeypatch.setattr(L, "idea_summary_text", spy_summary)
+    monkeypatch.setattr(L, "_publish_commit", spy_publish)
     assert CliRunner().invoke(cli, ["idea", "publish", idea.properties["ID"]]).exit_code == 0
     assert depths and all(d >= 1 for d in depths)
 
@@ -1511,10 +1655,11 @@ def test_publish_published_body_matches_summary_snapshot_during_git(tmp_path, mo
     real_publish = L._publish_commit
 
     def publish_then_swap(repo, **kw):
-        new_sha, old_tip, blob = real_publish(repo, **kw)
         assert CliRunner().invoke(
             cli, ["idea", "summary", idea_id, "--set", "after"],
         ).exit_code == 0
+        assert getattr(W._ORG_LOCK_STATE, "depth", 0) >= 1
+        new_sha, old_tip, blob = real_publish(repo, **kw)
         return new_sha, old_tip, blob
 
     monkeypatch.setattr("nightwright.idea_link._publish_commit", publish_then_swap)

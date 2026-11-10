@@ -319,24 +319,26 @@ def _restore_backlog_tip_or_bail(
 def publish_idea(cfg, task: Task, *, selector: str | None = None) -> str:
     """Publish one idea to nw-backlog and set :REQ: / :REQ_BASE:. Stdout value is :ID:."""
     who = selector if selector is not None else (task.properties or {}).get("ID") or task.id
-    if not task.is_idea:
-        raise ValueError(f"{who!r} is not an idea")
-
-    project = (task.properties or {}).get("PROJECT", "").strip()
-    if not project:
-        raise ValueError("project is required")
-
-    repo = resolve_linked_repo(cfg, project)
-    name, email = _git_identity(repo)
-    _validate_identity_value("user.name", name)
-    _validate_identity_value("user.email", email)
-    author = f"{name} <{email}>"
 
     from . import org_write as W
 
     with W.org_write_lock(cfg):
-        if selector is not None:
-            task = W.resolve_selector(cfg, selector)
+        idea_sel = selector if selector is not None else who
+        task = W.resolve_selector(cfg, idea_sel)
+        who = selector if selector is not None else (task.properties or {}).get("ID") or task.id
+
+        if not task.is_idea:
+            raise ValueError(f"{who!r} is not an idea")
+
+        project = (task.properties or {}).get("PROJECT", "").strip()
+        if not project:
+            raise ValueError("project is required")
+
+        repo = resolve_linked_repo(cfg, project)
+        name, email = _git_identity(repo)
+        _validate_identity_value("user.name", name)
+        _validate_identity_value("user.email", email)
+        author = f"{name} <{email}>"
 
         existing = (task.properties or {}).get("REQ", "").strip()
         if existing:
@@ -347,6 +349,11 @@ def publish_idea(cfg, task: Task, *, selector: str | None = None) -> str:
             raise ValueError("title is empty")
         if re.search(r"[\n\r]", task.heading or ""):
             raise ValueError("title must be one line")
+
+        try:
+            _yaml_double_quoted(canonical_pair(title, "")[0])
+        except ValueError:
+            raise
 
         try:
             summary = idea_summary_text(cfg, task, strict=True)

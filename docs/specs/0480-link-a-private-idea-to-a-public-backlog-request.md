@@ -519,6 +519,14 @@ the guard.
 - `uv run pytest tests/test_idea_stamps.py::test_stamp_creates_missing_drawer_without_corrupting_sections tests/test_workflow.py -q` — 19 passed.
 - Full suite left to queue gating.
 
+### Test record (2026-11-10, implementer loop 2)
+
+- `uv run pytest tests/test_idea_link.py -q` — 35 passed (locked re-parse project/idea,
+  backlog commit under org lock, restore `update-ref` CAS args, int-level `:ID:` + heading).
+- `uv run pytest tests/test_idea_stamps.py::test_stamp_creates_missing_drawer_without_corrupting_sections tests/test_workflow.py -q` — 19 passed.
+- `python3 tools/spec_lint.py --write-ledger && python3 tools/spec_lint.py` — exit 0.
+- Full suite left to queue gating.
+
 ### As shipped (2026-11-09, review loop 2)
 
 - `nw-backlog` tree rebuild uses `git ls-tree --full-tree -z` (one level) / `git mktree -z`, raw path bytes, and raises on unparsable entries; keeps each entry's mode and object type.
@@ -543,6 +551,14 @@ the guard.
 
 - `publish_idea` holds `org_write_lock` from fresh selector parse / validation through Summary
   read, backlog commit, and `link_idea_request` (re-entrant).
+
+### As shipped (2026-11-10, implementer loop 2)
+
+- Under `org_write_lock`, publish always re-resolves the selector (or idea id), then
+  re-checks idea-ness, `:PROJECT:`, linked repo, and git identity before any backlog write.
+- Int-level `:ID:` headline match also requires `task.heading` in the headline text.
+- Title scalar validation runs before Summary read so bad titles refuse without org drift.
+- Backlog restore tests pin the compare-and-swap argument on `git update-ref`.
 
 ### As shipped (2026-11-09, adversarial review loop 4)
 
