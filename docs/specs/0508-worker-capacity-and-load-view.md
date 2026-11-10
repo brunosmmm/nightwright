@@ -103,8 +103,8 @@ Extend `worker.info` with `capacity` read from `/proc` (local) or from `scontrol
   The jobs run on this host under either executor, so `sstat` adds nothing for one node; a
   multi-node view (SPEC-0514 / Phase 2) is where it belongs. The sample runs only when a job
   runs.
-- `nw workers list` gains one column `cpus load mem` (so an 80-column table still fits: `cpus`, Slurm `alloc/total`; `load`, 1-minute load per cpu; and
-  `mem` (in use, Slurm: allocated, of the total) from the cached `info` (`-` for a worker whose
+- `nw workers list` gains one column `cpus load mem` (so an 80-column table still fits: `cpus`, Slurm `alloc/total`; `load`, 1-minute load per cpu;
+  `mem`, in use, Slurm: allocated, of the total) from the cached `info` (`-` for a worker whose
   info has no block); `--json` rows carry `capacity`. `nw workers check` prints one
   `capacity (...)` line per worker.
 - Tests: `tests/test_worker_capacity.py`: a fake `/proc` root; the recorded real
