@@ -1,7 +1,7 @@
 ---
 id: SPEC-0506
 title: "Files a remote gate is allowed to write (the regenerated ledger) come back to the worktree; the run is not repeated locally"
-status: done
+status: in-progress
 owner: user
 created: 2026-11-09
 updated: 2026-11-09
