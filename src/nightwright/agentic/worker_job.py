@@ -825,9 +825,28 @@ def poll(cfg, job_id, after: int, renew: bool, stdout) -> int:
     reader = _Reader(job / "frames.jsonl", after)
     for line in reader.read():
         stdout.write(line)
+    extra = _acct_extra(cfg, job) if st["state"] == "done" else {}
     _print(stdout, _status(job_id, st["state"], heartbeat_age_s=st["heartbeat_age_s"],
-                           n=reader.after))
+                           n=reader.after, **extra))
     return 0
+
+
+def _acct_extra(cfg, job: Path) -> dict:
+    """SPEC-0514: a finished Slurm job's accounting for `poll`: `slurm: {...}` once `sacct` has
+    it, `slurm_pending: true` while accounting is on but the job is not in it yet. Nothing for a
+    local job or when accounting is off (no `sacct` call)."""
+    rec = runproc.read_json(job / "job.json") or {}
+    if not isinstance(rec.get("slurm_job_id"), int):
+        return {}
+    from . import executor_slurm as XS
+    try:
+        blk = XS.accounting_for(cfg, job, rec)
+        if blk is not None:
+            return {"slurm": blk}
+        return {"slurm_pending": True} if XS.accounting_on(XS.settings(cfg)) else {}
+    except Exception as e:                      # best effort: never fails a poll
+        print(f"nw worker: accounting for {job.name}: {e}", file=sys.stderr)
+        return {}
 
 
 def cancel(cfg, job_id, stdout) -> int:

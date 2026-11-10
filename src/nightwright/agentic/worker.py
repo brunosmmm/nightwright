@@ -1203,6 +1203,8 @@ def _run_gates(cfg, h: dict, job: Path, frames: _Frames, cancel: threading.Event
                     slot_wait_s=hold.waited_s,
                     interrupted=cut or any(r.interrupted for r in results),
                     changed=changed,
+                    **({"slurm_job_id": int(os.environ["SLURM_JOB_ID"])}
+                       if str(os.environ.get("SLURM_JOB_ID", "")).isdigit() else {}),
                     **written_files(tree, changed, payload))
 
 

@@ -20,6 +20,7 @@ import queue
 import re
 import signal
 import subprocess
+import sys
 import threading
 import time
 import zlib
@@ -401,6 +402,9 @@ def _header(project_cfg: dict, campaign_state: dict, cfg, seq: int, job_id: str,
     spec_id = campaign_state.get("spec_id")
     payload = {"seq": seq, "gates": gl,
                "gate_budget_s": float(events_settings(cfg)["gate_budget_s"])}
+    proj = campaign_state.get("project") or project_cfg.get("project")
+    if isinstance(proj, str) and proj:          # SPEC-0514: Slurm's `--wckey` (project usage)
+        payload["project"] = proj
     from . import gate_resources as GR          # SPEC-0504: the job's request
     payload["resources"] = GR.job_request(project_cfg.get("gates") or [], cfg)
     if host_slots is not None:
@@ -862,6 +866,7 @@ def _dispatch(worker: dict, header: dict, bundle: Path, cfg, cid, seq: int, stop
                                                         f"{order}")
                     # the run's verdict is the received results', as a local run computes it
                     ok = all(r.ok for r in results if r.required)
+                    accounting(cfg, worker, header["job_id"], frame, gates_dir, seq, results)
                 return Outcome(G.GateRun(seq, ok, tuple(results),
                                          str(frame.get("started_at") or started_at), duration,
                                          interrupted=cut, worker=worker["name"],
@@ -1186,6 +1191,58 @@ def poll(worker: dict, job_id: str, after: int = 0) -> str | None:
     return _status_of(got[1])
 
 
+SACCT_RETRY_S = 30.0                # SPEC-0514: `sacct` lags the end of a job
+
+
+def _poll_status(worker: dict, job_id: str) -> dict:
+    """The last `status` line of `poll JOB` (no renew), `{}` when the worker cannot answer."""
+    got = _call(worker, "poll", job_id, "--from", 1 << 30)
+    if got is None or got[0] not in (0, 1):
+        return {}
+    st = [r for r in got[1] if r.get("type") == "status"]
+    return st[-1] if st else {}
+
+
+def merge_slurm(gates_dir: Path, seq: int, results, blk: dict) -> None:
+    """Stamp `blk` into `resources.slurm` of every gate record of run `seq` (the sidecars)."""
+    for path in sorted(gates_dir.glob(f"{seq:03d}-*.json")):
+        if path.name.endswith(".report.json"):
+            continue
+        try:
+            rec = json.loads(path.read_text(encoding="utf-8"))
+            if not isinstance(rec, dict) or not isinstance(rec.get("resources"), dict):
+                continue
+            rec["resources"]["slurm"] = blk
+            path.write_text(json.dumps(rec, indent=2, ensure_ascii=False) + "\n",
+                            encoding="utf-8")
+        except (OSError, ValueError):
+            continue
+
+
+def accounting(cfg, worker: dict, job_id: str, frame: dict, gates_dir: Path, seq: int,
+               results) -> dict | None:
+    """SPEC-0514: after a Slurm job's `done` (its frame carries `slurm_job_id`), the worker's
+    `slurm` accounting block merged into the gate records and the job record. Best effort: one
+    retry after `SACCT_RETRY_S` while the worker says accounting is on but has no row yet;
+    never raises. A local job (no `slurm_job_id`) or accounting off costs no call."""
+    if not isinstance(frame.get("slurm_job_id"), int):
+        return None
+    try:
+        for attempt in (0, 1):
+            st = _poll_status(worker, job_id)
+            blk = st.get("slurm")
+            if isinstance(blk, dict):
+                merge_slurm(gates_dir, seq, results, blk)
+                RJ.update(cfg, job_id, slurm=blk)
+                return blk
+            if not st.get("slurm_pending") or attempt:
+                return None
+            time.sleep(SACCT_RETRY_S)
+    except Exception as e:                      # noqa: BLE001 -- accounting never fails a gate
+        print(f"nw: slurm accounting for {job_id}: {e}", file=sys.stderr)
+    return None
+
+
 def _submit(worker: dict, header: dict, bundle: Path, cfg) -> None:
     """`nw worker submit` with the header line and the bundle on stdin; returns once the worker
     printed `accepted` (or the current state of an identical earlier submit). SPEC-0334: a pull
@@ -1369,6 +1426,8 @@ class _Job:
             raise RemoteFailure("protocol", f"`done` after results for "
                                             f"{[r.name for r in self.results]}, not {self.order}")
         ok = all(r.ok for r in self.results if r.required)
+        accounting(self.cfg, self.worker, self.job_id, frame, self.gates_dir, self.seq,
+                   self.results)
         return G.GateRun(self.seq, ok, tuple(self.results),
                          str(frame.get("started_at") or self.started_at), duration,
                          worker=self.worker["name"], job_id=self.job_id,

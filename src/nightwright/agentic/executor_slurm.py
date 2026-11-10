@@ -312,6 +312,9 @@ def sbatch_argv(cfg, sett: dict, job: Path, h: dict, nw: list[str]) -> tuple[lis
                           "requester": h.get("requester") or payload.get("requester")},
                          separators=(",", ":"))
     argv = ["--parsable", f"--job-name={h['job_id']}", f"--comment={comment}"]
+    wck = payload.get("project")
+    if isinstance(wck, str) and WCKEY_RE.match(wck) and accounting_on(sett):
+        argv.append(f"--wckey={wck}")       # SPEC-0514: per-project usage once slurmdbd runs
     if sett.get("partition"):
         argv.append(f"--partition={sett['partition']}")
     argv += [f"--cpus-per-task={req['cpus']}", f"--mem={req['mem_mb']}M",
@@ -328,6 +331,89 @@ def sbatch_argv(cfg, sett: dict, job: Path, h: dict, nw: list[str]) -> tuple[lis
     argv += [f"--chdir={job}", f"--output={job / 'slurm.out'}", "--open-mode=append",
              "--requeue", "--signal=B:TERM@60", "--export=ALL", f"--wrap={wrap}"]
     return argv, warnings
+
+
+WCKEY_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}\Z")
+ACCT_CACHE_S = 300.0
+_ACCT_ON: dict = {}
+ACCT_FIELDS = "JobID,State,Elapsed,TotalCPU,MaxRSS,NodeList,ExitCode"
+
+
+def accounting_on(sett: dict) -> bool:
+    """SPEC-0514: `scontrol show config` reports an `AccountingStorageType` other than none
+    (cached `ACCT_CACHE_S`). False when Slurm cannot say: nothing then calls `sacct`."""
+    key = (sett.get("conf"), sett.get("bin_dir"))
+    now = time.monotonic()
+    hit = _ACCT_ON.get(key)
+    if hit is not None and now - hit[0] < ACCT_CACHE_S:
+        return hit[1]
+    on = False
+    try:
+        p = _run(sett, "scontrol", "show", "config")
+        if p.returncode == 0:
+            m = re.search(r"^AccountingStorageType\s*=\s*(\S+)", p.stdout or "", re.M)
+            on = bool(m) and m.group(1).split("/")[-1].lower() not in ("none", "(null)", "null")
+    except SlurmUnavailable:
+        pass
+    _ACCT_ON[key] = (now, on)
+    return on
+
+
+def _mem_mb(text: str):
+    """`sacct` MaxRSS (`123456K`, `1.5G`, ...) -> MB."""
+    m = re.match(r"^([\d.]+)([KMGT]?)\Z", (text or "").strip())
+    if not m:
+        return None
+    mult = {"": 1 / 2**20, "K": 1 / 1024, "M": 1, "G": 1024, "T": 1024 * 1024}[m.group(2)]
+    return round(float(m.group(1)) * mult, 1)
+
+
+def acct_block(sett: dict, jid: int) -> dict | None:
+    """SPEC-0514: the job-level `slurm` block from `sacct -P -j JID` (MaxRSS is per step, so
+    the rows are folded: the max over steps; State, Elapsed, TotalCPU, ExitCode, NodeList
+    from the job's own row), or None when `sacct` has no such job yet or cannot answer."""
+    try:
+        p = _run(sett, "sacct", "-P", "-n", "-o", ACCT_FIELDS, "-j", jid)
+    except SlurmUnavailable:
+        return None
+    if p.returncode != 0:
+        return None
+    head, rss = None, []
+    for ln in (p.stdout or "").splitlines():
+        f = ln.split("|")
+        if len(f) < 7:
+            continue
+        if f[0] == str(jid):
+            head = f
+        mb = _mem_mb(f[4])
+        if mb is not None:
+            rss.append(mb)
+    if head is None:
+        return None
+    return {"JobID": jid, "State": head[1].split(" ")[0], "Elapsed": head[2],
+            "TotalCPU": head[3], "MaxRSS": f"{max(rss):g}M" if rss else None,
+            "MaxRSS_mb": max(rss) if rss else None, "NodeList": head[5],
+            "ExitCode": head[6]}
+
+
+ACCT_FILE = "slurm_acct.json"
+
+
+def accounting_for(cfg, job: Path, rec: dict | None = None) -> dict | None:
+    """`nw worker poll`'s `slurm` block of a finished Slurm job: read from `ACCT_FILE`, else
+    asked of `sacct` (accounting on only) and kept once found. None when there is none."""
+    got = runproc.read_json(job / ACCT_FILE)
+    if got is not None:
+        return got
+    jid = _slurm_id(job, rec)
+    sett = settings(cfg)
+    if jid is None or not accounting_on(sett):
+        return None
+    blk = acct_block(sett, jid)
+    if blk is not None:
+        from . import worker_job as WJ
+        WJ._write_atomic(job / ACCT_FILE, blk)
+    return blk
 
 
 def _attempt_env() -> str:

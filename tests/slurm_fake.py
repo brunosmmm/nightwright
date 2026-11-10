@@ -16,7 +16,8 @@
 The JSON records have the shape of real Slurm 26.05 output (`tests/fixtures/slurm/`): `job_state`
 a list, numbers as `{set, infinite, number}`. `squeue` lists only jobs not yet ended (an unknown
 id exits 1 "Invalid job id specified"); `scontrol show job` knows ended jobs until forgotten
-(then an empty list, exit 0); `sacct` says accounting is disabled (no slurmdbd), as on the box.
+(then an empty list, exit 0); `sacct` says accounting is disabled (no slurmdbd), as on the box,
+until `fake.accounting()` (SPEC-0514: `show config` reports slurmdbd, `fake.acct(jid, rows)`).
 
 `scancel N` cancels (CANCELLED; a running job's process group gets SIGTERM); `scancel --batch
 --signal=TERM N` sends TERM to the job's batch process only and leaves the state to the process.
@@ -159,7 +160,9 @@ def run(st, name, args):
             return 0, ("SelectType              = select/cons_tres\n"
                        "ProctrackType           = proctrack/cgroup\n"
                        "TaskPlugin              = task/cgroup,task/affinity\n"
-                       "AccountingStorageType   = (null)\n"
+                       "AccountingStorageType   = " + ("accounting_storage/slurmdbd"
+                                                      if st.get("accounting") else "(null)")
+                       + "\n"
                        "MinJobAge               = 300 sec\n"), ""
         if pos[:2] in (["show", "partition"], ["show", "node"]) and "json" in o:
             if st["fixtures"].get(pos[1]) is None:
@@ -192,7 +195,10 @@ def run(st, name, args):
                 pass
         return 0, "", ""
     if name == "sacct":
-        return 1, "", "Slurm accounting storage is disabled"
+        if not st.get("accounting"):
+            return 1, "", "Slurm accounting storage is disabled"
+        jid = str(o.get("j") or o.get("jobs") or "")
+        return 0, "\n".join((jobs.get(jid) or {}).get("acct") or []), ""
     if name == "sinfo":
         if "version" in o:
             return 0, "slurm 26.05.5", ""
@@ -271,6 +277,14 @@ class SlurmFake:
 
     def end(self, jid, state: str, exit_code: int = 0) -> None:
         self._set(jid, state=state, reason="None", exit_code=exit_code, pid=None)
+
+    def accounting(self, on: bool = True) -> None:
+        """`AccountingStorageType` is slurmdbd (`sacct` answers from `acct()`), or none."""
+        self._edit(lambda st: st.__setitem__("accounting", bool(on)))
+
+    def acct(self, jid, *rows: str) -> None:
+        """The `sacct -P -n -o JobID,State,Elapsed,TotalCPU,MaxRSS,NodeList,ExitCode` rows."""
+        self._set(jid, acct=list(rows))
 
     def forget(self, jid) -> None:
         self._edit(lambda st: st["forgotten"].append(str(jid)))

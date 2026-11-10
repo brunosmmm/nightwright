@@ -229,6 +229,48 @@ def gate_list(cfg, as_json):
                       f"  by {r['requester']}  {r['worker'] or ''}", highlight=False)
 
 
+@gate_group.command("stats")
+@click.option("--project", default=None, help="only this project")
+@click.option("--since", default="14d", show_default=True, help="window: 14d, 36h, 90m")
+@click.option("--json", "as_json", is_flag=True,
+              help="emit nw.gate.stats.v1 JSON (per-gate stats and one row per gate record)")
+@click.pass_obj
+def stats_cmd(cfg, project, since, as_json):
+    """Measured usage per (project, gate) and a suggested request (SPEC-0514).
+
+    Reads the gate records of campaigns and standalone gate jobs. Suggestion: cpus = ceil(p95
+    effective cpus), mem = p95 peak memory x 1.25 rounded up to 256M; `over` = the request is
+    more than 50% above it, `under` = p95 peak memory exceeds the request. Memory from a
+    wait4-measured record is one process, not the tree: marked `~`, never `over`. Read-only;
+    edit `.nw/project.yaml` yourself."""
+    from . import gate_stats as GS
+    try:
+        window = GS.parse_since(since)
+    except ValueError as e:
+        console.print(f"nw gate stats: {e}", highlight=False)
+        sys.exit(2)
+    rows = GS.collect(cfg, window, project)
+    summary = GS.summarize(rows)
+    if as_json:
+        _dump_json({"schema": GS.SCHEMA, "since": since, "project": project,
+                    "gates": summary, "rows": GS.public_rows(rows)})
+        return
+    if not summary:
+        console.print(f"no gate records with resources in the last {since}", highlight=False)
+        return
+    for g in summary:
+        s, r = g["suggested"], g["request"]
+        approx = "" if s["mem_exact"] else "~"
+        console.print(
+            f"{g['project']}/{g['gate']}  n={g['n']}  wall p50/p95 {g['wall_s']['p50']}/"
+            f"{g['wall_s']['p95']}s  cpus p50/p95 {g['cpus']['p50']}/{g['cpus']['p95']}  "
+            f"rss p50/p95 {g['max_rss_mb']['p50']}/{g['max_rss_mb']['p95']}M "
+            f"({g['rss_scope'] or '-'})  request {r['cpus']}c/{GS.fmt_mem(r['mem_mb'])}  "
+            f"suggest {s['cpus']}c/{approx}{GS.fmt_mem(s['mem_mb'])}  "
+            f"oom={g['oom']}" + (f"  flags={','.join(g['flags'])}" if g["flags"] else ""),
+            highlight=False, soft_wrap=True)
+
+
 @gate_group.group("cadence")
 def cadence_group():
     """Cadence jobs (SPEC-0491): when a project's heavy tests are due."""

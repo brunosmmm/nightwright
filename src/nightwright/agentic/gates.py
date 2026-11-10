@@ -407,13 +407,21 @@ def _used(proc, wall_s: float) -> dict:
             "rss_scope": "max_process", "wall_s": wall_s}
 
 
+def _merged_scope(used: list) -> str:
+    """The weakest scope among the attempts (`max_process` < cumulative < `job_cgroup`)."""
+    order = ["max_process", "job_cgroup_cumulative", "job_cgroup"]
+    scopes = [u.get("rss_scope") for u in used if u and u.get("rss_scope") in order]
+    return min(scopes, key=order.index) if scopes else "max_process"
+
+
 def merge_used(used: list) -> dict:
     """The usage of several attempts of one gate: CPU and wall summed, peak RSS the max."""
     cpu = [u.get("cpu_s") for u in used if u]
     rss = [u.get("max_rss_mb") for u in used if u and u.get("max_rss_mb") is not None]
     return {"cpu_s": round(sum(c for c in cpu if c is not None), 3)
             if any(c is not None for c in cpu) else None,
-            "max_rss_mb": max(rss) if rss else None, "rss_scope": "max_process",
+            "max_rss_mb": max(rss) if rss else None,
+            "rss_scope": _merged_scope(used),
             "wall_s": round(sum((u or {}).get("wall_s") or 0.0 for u in used), 3)}
 
 
@@ -505,6 +513,9 @@ def run_gate(gate: dict, worktree, env: dict, log_path, placeholders: dict, *,
     # Inheriting the process env would hand the gate sshd's and the job lock's keys.
     base = os.environ if inherit_env and _GATE_INHERIT_ENV.get() else {}
     child_env = {**base, **env, "NW_GATE_REPORT": str(report_path)}
+    from . import gate_cgroup as GC             # SPEC-0514
+    meter = GC.Meter.for_job()
+    meter.begin()
     started = time.monotonic()
     started_ns = time.time_ns()     # SPEC-0284: a junit file older than this is a leftover
     timed_out = False
@@ -547,6 +558,9 @@ def run_gate(gate: dict, worktree, env: dict, log_path, placeholders: dict, *,
         summary = gate_results.parse(gate.get("results"), log_path, cwd, started_ns)
     from . import gate_resources as GR          # SPEC-0504
     resources = {"request": GR.gate_request(gate), "used": _used(proc, duration)}
+    cg = meter.end(duration)                    # SPEC-0514: the job cgroup's, when there is one
+    if cg is not None and proc is not None:
+        resources["used"] = cg
     result = GateResult(gate["name"], bool(gate.get("required", True)), ok, exit_code,
                         timed_out, duration, log_rel or str(log_path), tail(log_path),
                         cmd=cmd, cwd=str(cwd), interrupted=interrupted, summary=summary,
