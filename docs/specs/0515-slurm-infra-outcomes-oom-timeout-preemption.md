@@ -180,6 +180,13 @@ decision):** the Test plan's manual step through a real campaign (a throwaway pr
 `resources: {mem: 1G}`: `nw campaign show` shows `oom`, the re-gate at 1536 MB, the `gate_oom`
 park). Until then the spec stays `in-progress`.
 
+**Box gate: not run yet.** `nw gate run --project Meta-Tools --worktree <this worktree> --tier
+loop --json` on `add38a6e` exited 3 ("box unavailable: no placeable gate worker"): the box worker
+was `updating (draining, 1 jobs)` for 50+ minutes (01:03 to 01:32 at least), an update this lane
+did not start and may not touch. Local runs: only this lane's new/touched test files
+(`tests/test_slurm_lease.py`, `tests/test_gate_infra_outcomes.py`, `tests/test_executor_slurm.py`,
+`tests/test_worker_slurm_check.py`), all green; `tools/test_tiers.py --check` and `spec_lint` pass.
+
 ## Rollout / migration
 
 Ships with or right after SPEC-0510. Supersedes nothing.
