@@ -68,7 +68,10 @@ already has its own spec line.
 - `after` resolution, `_specs_dir_of`, red-kind and merge early returns, and
   `has_no_spec`. An unmet `after` still blocks before the spec file is read.
 - A new `blocked_by` string. Absence, a symlink, a path that escapes the
-  worktree, and a frontmatter parse failure stay `["spec file missing"]`.
+  worktree, and a branch-source frontmatter parse failure stay
+  `["spec file missing"]` and do not raise. Invalid YAML and a non-UTF-8 file
+  are parse failures. The base-source read keeps today's `(OSError, ValueError)`
+  mapping.
 - Rewriting SPEC-0180. This spec amends only the source of the campaign spec's
   own frontmatter inside `backlog_readiness`.
 
@@ -97,9 +100,12 @@ spec-file read that follows, and only when `state.kind` is not `split`.
 
 Add `_campaign_spec_text(state) -> tuple[str | None, bool]` next to
 `backlog_readiness`. The bool is true when the campaign branch is the source.
-`repo` is `state["repo"]`, `rel` is `state["spec"]["rel_path"]`, `root` is
-`repo["root"]`, `branch` is `repo["branch"]`, and `worktree` is
-`repo["worktree"]`.
+`repo` is `state.get("repo") or {}`, `rel` is
+`(state.get("spec") or {}).get("rel_path") or ""`, `root` is
+`repo.get("root") or ""`, `branch` is `repo.get("branch") or ""`, and
+`worktree` is `repo.get("worktree") or ""`. A missing key is empty and does
+not raise. `allowed` is `("accepted", "in-progress")` when
+`state.get("force")` is true, and `("accepted",)` otherwise.
 
 The branch is the source only when `root` is a non-empty string, `branch` is a
 non-empty string, and `git.branch_exists(root, branch)` is true. A `GitError`
@@ -122,23 +128,23 @@ When the branch is the source:
   blob below, still without reading the base checkout.
 - Otherwise the source is the committed blob. Run
   `git.git(root, "show", f"{branch}:{rel}", check=False)` (one argument, no
-  shell). Return code 0 and stdout is the spec text. Any other return, a
-  `GitError`, or an empty `rel` means no readable file.
+  shell). Return code 0 and stdout is the spec text.
 
-`backlog_readiness` then:
+`_campaign_spec_text` catches `GitError`, `OSError`, and `UnicodeDecodeError`
+from the worktree decode, from `git.git`, and from `_spec_bytes_as_text`. Any
+of those, a non-zero `git show`, or an empty `rel` returns `(None, True)` when
+the branch is the source, and `backlog_readiness` returns
+`(False, ["spec file missing"])`. On branch text, `split_frontmatter` is
+inside `except (OSError, ValueError, UnicodeDecodeError, yaml.YAMLError)`; a
+non-mapping frontmatter, including `None` when the `---` block is absent,
+returns `(False, ["spec file missing"])`.
 
-- Branch source and no text: return `(False, ["spec file missing"])`.
-- Branch source and text: `split_frontmatter` on that text. `OSError`,
-  `ValueError`, `UnicodeDecodeError`, or a non-mapping frontmatter returns
-  `(False, ["spec file missing"])`.
-- Base source (the bool is false), including every split: keep today's
-  `Path(root or "") / rel` read and the same exception mapping. Split keeps
-  using `split.original_rel` and `_spec_sha` on that base path.
+Base source (the bool is false), including every split: keep today's
+`Path(root or "") / rel` read and the same `(OSError, ValueError)` mapping.
+Split keeps using `split.original_rel` and `_spec_sha` on that base path.
 
 The status check is the existing one, applied to the frontmatter just parsed.
-`allowed` is `("accepted", "in-progress")` when `state["force"]` is true, and
-`("accepted",)` otherwise. Any other status appends
-`spec status is <status or 'missing'>`.
+Any other status appends `spec status is <status or 'missing'>`.
 
 For a non-split campaign, `depends_on` is taken from that frontmatter. The
 directory passed to `_find_dep_spec` and `dependency_met` is the parent of
@@ -187,6 +193,11 @@ rules, and open then applies SPEC-0463.
       `(True, [])` when `force` is true.
 - [ ] An uncommitted `accepted` file in that checkout is ready when the branch
       tip and the base checkout both lack the path.
+- [ ] On the planned checkout, a working-tree status `accepted` yields
+      `(True, [])` when the branch-tip blob is `draft` and the base file is
+      absent. A working-tree status `draft` yields
+      `(False, ["spec status is draft"])` when the branch-tip blob is
+      `accepted` and the base file is absent.
 - [ ] When that checkout is the branch's worktree and the working-tree path is
       absent, readiness is `(False, ["spec file missing"])` when the branch tip
       has an `accepted` spec and when the base checkout has an `accepted` spec.
@@ -199,8 +210,11 @@ rules, and open then applies SPEC-0463.
       `(False, ["spec file missing"])`.
 - [ ] When `repo.root` is not a git checkout and `repo.branch` is set, those
       same three base-file results hold, and `backlog_readiness` does not raise.
-      When `repo.root` is missing or `""`, `branch_exists` is not called, and a
-      spec file at the relative path yields `(True, [])` for status `accepted`.
+      When `repo.root` is absent or `""`, `branch_exists` is not called, and an
+      accepted file at `spec.rel_path` relative to the current directory yields
+      `(True, [])`. When `repo.root` is a non-empty path whose directory is
+      absent, `branch_exists` raises `GitError`, that error is caught, and the
+      result is `(False, ["spec file missing"])` without raising.
 - [ ] With the campaign spec read from the worktree and
       `depends_on: [SPEC-0002]`: a base specs file `SPEC-0002` at status `done`
       yields `(True, [])` when the worktree copy of SPEC-0002 is `accepted` or
@@ -217,8 +231,13 @@ rules, and open then applies SPEC-0463.
       worktree copy is `accepted`.
 - [ ] A symlink at the spec path inside the planned checkout, pointing at an
       `accepted` spec outside the worktree, yields
-      `(False, ["spec file missing"])` when the base checkout has no file at
-      that path.
+      `(False, ["spec file missing"])` when the branch tip has an `accepted`
+      blob at that path and the base checkout has an `accepted` file at that
+      path.
+- [ ] A worktree file that is not valid UTF-8, and a branch blob whose
+      frontmatter is invalid YAML, each yield `(False, ["spec file missing"])`
+      and `backlog_readiness` does not raise, including when the base checkout
+      has an `accepted` file at that path.
 - [ ] Red-kind, merge, unmet `after`, and `has_no_spec` returns still happen
       before the branch read. An idea campaign with an unmet `after` stays
       blocked with the `after` text while it has no spec id.
@@ -232,7 +251,8 @@ rules, and open then applies SPEC-0463.
   module-level speed-tier marker is `pytestmark = pytest.mark.fast`. SPEC-0490
   classifies that name as `fast`. `python3 tools/test_tiers.py --check` exits 0.
   Each test builds a temp git repo with `git init -b main` and one commit that
-  does not add the campaign spec, except the non-git and empty-root cases.
+  does not add the campaign spec, except the non-git, empty-root, and
+  missing-directory states.
   Campaign state is a dict passed to `queue.backlog_readiness` (and
   `pick_admissions` in the first test): `repo.root`, `repo.branch`,
   `repo.worktree`, `spec.rel_path`, `kind`, `force`, and for the split case
@@ -249,6 +269,11 @@ rules, and open then applies SPEC-0463.
   - `test_uncommitted_worktree_spec_is_the_readiness_source`: checkout at the
     planned path, spec `accepted` on disk, not committed, absent from main.
     Assert `(True, [])`.
+  - `test_worktree_file_beats_the_branch_blob`: on the planned checkout, with
+    the base file absent, commit `draft` on the branch, rewrite the worktree
+    file to `accepted` without committing, and assert `(True, [])`. Commit
+    `accepted`, rewrite the worktree file to `draft` without committing, and
+    assert `(False, ["spec status is draft"])`.
   - `test_absent_worktree_file_does_not_fall_through`: commit the `accepted`
     spec on the branch, delete the working-tree file without committing, and
     also write an `accepted` copy on main. Assert
@@ -265,6 +290,9 @@ rules, and open then applies SPEC-0463.
     the call returns. A second state with `repo.root` `""` uses
     `monkeypatch.chdir` onto a directory that contains an `accepted` spec, and
     `monkeypatch` makes `git.branch_exists` raise if called. Assert `(True, [])`.
+    A third state sets `repo.root` to a non-empty path whose directory does not
+    exist, with `repo.branch` set. Assert `(False, ["spec file missing"])` and
+    that the call does not raise.
   - `test_depends_on_resolves_against_the_base_specs_dir`: worktree campaign
     spec `depends_on: [SPEC-0002]`, base file
     `docs/specs/0002-d.md`. Assert the three results in the dependency
@@ -275,9 +303,15 @@ rules, and open then applies SPEC-0463.
     checked out at `repo.worktree`, `split.review_sha` equal to the sha256 of
     the base file bytes. Assert the three split results in the acceptance
     criterion.
-  - `test_worktree_symlink_spec_is_not_ready`: the worktree spec path is a
-    symlink to an `accepted` file outside the worktree, and main has no file
-    at `spec.rel_path`. Assert `(False, ["spec file missing"])`.
+  - `test_worktree_symlink_spec_is_not_ready`: commit the `accepted` spec on
+    the branch, replace the worktree path with a symlink pointing at an
+    `accepted` spec outside the worktree, write an `accepted` copy on main,
+    and assert `(False, ["spec file missing"])`.
+  - `test_branch_source_parse_failure_does_not_raise`: on the planned checkout,
+    the worktree file is not valid UTF-8. Separately, the branch is not checked
+    out at `repo.worktree` and the blob's frontmatter is invalid YAML. In both
+    cases the base checkout has an `accepted` file at that path. Each yields
+    `(False, ["spec file missing"])` and `backlog_readiness` does not raise.
 - **Manual verification:** none. The tests use a temp repo. Do not point them
   at the live data directory or the existing IDEA-889 worktree.
 - **Regression guard:** `tests/test_agentic_queue.py::test_backlog_readiness_reasons`
