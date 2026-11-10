@@ -30,6 +30,16 @@ Always:
   regenerates them.
 - If the idea needs several independent specs, write nothing and answer `blocked`, naming
   the parts in `blockers`.
+- A new `tests/test_*.py` that the Test plan introduces needs exactly one module-level
+  speed-tier marker written into that plan: `pytestmark = pytest.mark.<tier>` with `<tier>` one of
+  `fast`, `integration`, `tui`, `remote`, or `perf`. `slow` is not a tier. Name the tier from the
+  SPEC-0490 taxonomy (first match): `test_tui_budget` is `perf`; `test_gate_timeout_tree` is
+  `integration`; `test_tui_*`, or a module that imports `tui_harness` or `tui_budget` or calls
+  `run_test`, is `tui`; `test_remote_*`, `test_pull_worker*`, or a module that imports
+  `remote_loopback`, `remote_support`, or `remote_workers_golden`, is `remote`; a name ending in
+  `_e2e`, `_integration`, or `_race` is `integration`; otherwise `fast`. The Test plan must say
+  that `python3 tools/test_tiers.py --check` exits 0 when `tools/test_tiers.py` exists. Extending
+  a module that already has its one marker adds no second tier.
 
 ## Pending brief (problems, review findings, human notes)
 

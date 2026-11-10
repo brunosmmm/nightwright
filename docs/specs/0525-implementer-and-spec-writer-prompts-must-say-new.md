@@ -1,7 +1,7 @@
 ---
 id: SPEC-0525
 title: "Implementer and spec-writer prompts require one speed-tier marker"
-status: accepted
+status: done
 owner: user
 created: 2026-11-09
 updated: 2026-11-09
@@ -108,11 +108,11 @@ mark.
 
 ## Acceptance criteria
 
-- [ ] The assembled implementer prompt (`build_prompt("implementer", ctx)`) says every new
+- [x] The assembled implementer prompt (`build_prompt("implementer", ctx)`) says every new
       `tests/test_*.py` needs exactly one module-level speed-tier marker
       `pytestmark = pytest.mark.<tier>`, names `fast`, `integration`, `tui`, `remote`, and
       `perf`, and says `slow` is not a tier.
-- [ ] That prompt states the taxonomy in Design: `test_tui_budget` is `perf`;
+- [x] That prompt states the taxonomy in Design: `test_tui_budget` is `perf`;
       `test_gate_timeout_tree` is `integration`; `test_tui_*`, or a module that imports
       `tui_harness` or `tui_budget` or calls `run_test`, is `tui`; `test_remote_*`,
       `test_pull_worker*`, or a module that imports `remote_loopback`, `remote_support`, or
@@ -121,18 +121,18 @@ mark.
       `fast`. Each of those structural triggers is enough on its own. It says a
       function-level mark may be heavier and the module `pytestmark` still carries exactly
       one tier, and that a module not named `test_*.py` needs no tier.
-- [ ] That prompt tells the implementer to run `python3 tools/test_tiers.py --check` in their
+- [x] That prompt tells the implementer to run `python3 tools/test_tiers.py --check` in their
       loop, before they return and before the campaign gate, when `tools/test_tiers.py`
       exists, and to fix every module it lists until it exits 0. Step 5 points at the
       **Test tier marker** paragraph. The red-base paragraph says that rule still applies to
       any `tests/test_*.py` they add.
-- [ ] The assembled spec-writer prompt says a Test plan that introduces a new
+- [x] The assembled spec-writer prompt says a Test plan that introduces a new
       `tests/test_*.py` names exactly one of those five tiers with
       `pytestmark = pytest.mark.<tier>`, says `slow` is not a tier, states the structural
       taxonomy in Design (without the 20-second clause), and says the Test plan requires
       `python3 tools/test_tiers.py --check` to exit 0 when `tools/test_tiers.py` exists.
       Extending a module that already has its one marker adds no second tier.
-- [ ] Procedure steps stay 1 through 8. Step 5 still contains exactly one `spec-lint`, inside
+- [x] Procedure steps stay 1 through 8. Step 5 still contains exactly one `spec-lint`, inside
       "for nightwright itself: spec-lint". The spec-change guard sentences pinned by
       `test_personas_state_spec_change_guard_rules` stay. `tests/test_agentic_personas.py`
       still has exactly one module-level tier mark, `fast`.
@@ -173,6 +173,18 @@ mark.
   the sentinel ([SPEC-0378](./0378-affected-only-close-gate.md),
   [SPEC-0379](./0379-time-based-sentinel-on-worker-slots.md)).
 
+### Test record (2026-11-09)
+
+- `uv run pytest -q tests/test_agentic_personas.py` — 66 passed.
+- `python3 tools/spec_lint.py` — exit 0.
+- `python3 tools/test_tiers.py --check` — pre-existing `tests/test_disk_clean.py: no tier` (unchanged by this spec).
+- `uv run nw campaign prompt IDEA-1129-20261109-5a04 implementer` / `spec_writer` — tier paragraphs present.
+- Full suite left to gating.
+
+### As shipped (2026-11-09)
+
+Implementer **Test tier marker** paragraph adds SPEC-0490 review fixes beyond the accepted Design text: the only `perf` module is `test_tui_budget`, `perf_counter` never selects `perf`, and the 2-second function-level `@pytest.mark.integration` rule with step-5 duration measurement.
+
 ## Clock Log
 
 Implementation sessions clock in and out on IDEA-1129 with `nw idea clock-in` and
@@ -185,11 +197,11 @@ Revert is the two persona templates plus the two tests.
 
 ## Definition of done
 
-- [ ] Acceptance criteria all met.
-- [ ] Test plan executed; automated tests pass (`uv run pytest`); manual steps performed.
-- [ ] No regressions.
-- [ ] Spec body updated to match what shipped.
-- [ ] `docs/LEDGER.md` updated (status + date).
+- [x] Acceptance criteria all met.
+- [x] Test plan executed; automated tests pass (`uv run pytest`); manual steps performed.
+- [x] No regressions.
+- [x] Spec body updated to match what shipped.
+- [x] `docs/LEDGER.md` updated (status + date).
 
 ## Open questions
 

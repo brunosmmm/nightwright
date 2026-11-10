@@ -161,6 +161,73 @@ def test_implementer_prompt_targeted_tests(tmp_path):
     assert step5.count("spec-lint") == 1 and "for nightwright itself: spec-lint" in step5
 
 
+def test_implementer_prompt_requires_one_tier_marker(tmp_path):
+    ctx = PS.build_context(_cfg(tmp_path), _state(tmp_path), _project_cfg())
+    p = " ".join(PS.build_prompt("implementer", ctx).split())
+    for step in ("1. ", "2. ", "3. ", "4. ", "7. ", "8. "):
+        assert step in p, step
+    assert " 9. " not in p
+    import re
+    self_py = (ROOT / "tests" / "test_agentic_personas.py").read_text()
+    assert len(re.findall(r"^pytestmark\s*=", self_py, re.M)) == 1
+    assert re.search(r"^pytestmark = pytest\.mark\.fast\s*$", self_py, re.M)
+    assert "Every new `tests/test_*.py` needs exactly one module-level speed-tier marker" in p
+    assert "`pytestmark = pytest.mark.<tier>`" in p
+    for tier in ("fast", "integration", "tui", "remote", "perf"):
+        assert tier in p
+    assert "`slow` is not a tier" in p
+    assert "Non-tier marks such as `skipif` and `tree_guard` may share that `pytestmark` list." in p
+    assert "A module that is not named `test_*.py` needs no tier" in p
+    assert "function-level mark" in p and "the module `pytestmark` still carries exactly one tier" in p
+    assert "The only `perf` module is `test_tui_budget`" in p
+    assert "a `time.monotonic` or `perf_counter` comparison never selects `perf`" in p
+    assert "When one test's duration is over 2 seconds and the module sum is not over 20 seconds" in p
+    assert "@pytest.mark.integration" in p and "keep the module tier `fast`" in p
+    assert "`test_tui_budget` is `perf`" in p
+    assert "`test_gate_timeout_tree` is `integration`" in p
+    assert "`test_tui_*`, or a module that imports" in p
+    assert "or a module whose tests sum past 20 seconds" in p
+    assert "`test_remote_*`" in p and "`remote_loopback`" in p
+    assert "before you return and before the campaign gate" in p
+    assert "python3 tools/test_tiers.py --check" in p
+    assert "until it exits 0" in p
+    assert "When that file is absent, skip the command." in p
+    assert "The **Test tier marker** rule still applies to any tests/test_*.py you add." in p
+    step5 = p.split("5. ")[1].split(" 6. ")[0]
+    assert "Test tier marker" in step5
+    assert (
+        "On each iteration that adds a tests/test_*.py, run the tier check in **Test tier marker**"
+        in step5
+    )
+    assert step5.count("spec-lint") == 1
+
+
+def test_spec_writer_prompt_requires_one_tier_marker(tmp_path):
+    ctx = PS.build_context(_cfg(tmp_path), _state(tmp_path), _project_cfg())
+    p = PS.build_prompt("spec_writer", ctx)
+    flat = " ".join(p.split())
+    assert "Every new `tests/test_*.py` needs exactly one" not in flat  # implementer-only opener
+    assert (
+        "A new `tests/test_*.py` that the Test plan introduces needs exactly one module-level"
+        in flat
+    )
+    assert "`pytestmark = pytest.mark.<tier>`" in flat
+    for tier in ("fast", "integration", "tui", "remote", "perf"):
+        assert tier in flat
+    assert "`slow` is not a tier" in flat
+    assert "`test_tui_*`, or a module that imports" in flat
+    assert " or a module that imports `remote_loopback`" in flat
+    assert "or a module whose tests sum past 20 seconds" not in flat
+    assert "python3 tools/test_tiers.py --check` exits 0 when `tools/test_tiers.py` exists" in flat
+    assert "Extending a module that already has its one marker adds no second tier" in flat
+    always = p.split("Always:")[1].split("## Pending brief")[0]
+    assert (
+        "A new `tests/test_*.py` that the Test plan introduces needs exactly one module-level"
+        in always
+    )
+    assert "## Pending brief" in p
+
+
 def test_render_leaves_unknown_braces_alone():
     assert PS.render("a {{x}} {y} {{z}}", {"x": "1"}) == "a 1 {y} (none)"
 

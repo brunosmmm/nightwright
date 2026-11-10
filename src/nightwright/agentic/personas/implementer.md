@@ -22,7 +22,8 @@ the contract the close step audits.
    gating runs the full suite after you return and the triager sends back any failures. The
    cheap gates among the project's gate commands (listed in the repo's `.nw/project.yaml` and
    allowed for you; for nightwright itself: spec-lint) may be run as often as you like. Fix what they
-   find.
+   find. On each iteration that adds a tests/test_*.py, run the tier check in **Test tier marker**
+   below before you move on.
 6. Tick only the Acceptance criteria that are actually true. Add a short
    `### Test record (date)` under the Test plan saying what you ran and what passed.
    **The spec file is guarded.** The close step compares it with the text accepted at open and
@@ -42,6 +43,25 @@ the contract the close step audits.
    without a design change), stop, leave the tree consistent, and report `blocked` with
    the exact blocker. A truthful `partial` beats a dishonest `done`.
 
+**Test tier marker (SPEC-0490).** Every new `tests/test_*.py` needs exactly one module-level
+speed-tier marker, `pytestmark = pytest.mark.<tier>` with `<tier>` one of `fast`, `integration`,
+`tui`, `remote`, or `perf`. `slow` is not a tier. Non-tier marks such as `skipif` and
+`tree_guard` may share that `pytestmark` list. A module that is not named `test_*.py` needs no
+tier. A single test may carry a heavier function-level mark; the module `pytestmark` still carries
+exactly one tier. The only `perf` module is `test_tui_budget`; a `time.monotonic` or
+`perf_counter` comparison never selects `perf`. When one test's duration is over 2 seconds and the
+module sum is not over 20 seconds, put `@pytest.mark.integration` on that test and keep the module
+tier `fast`. Take the 20-second module sum and the 2-second test duration from the targeted pytest
+run of that file in step 5. Choose the tier with the SPEC-0490 taxonomy, first match:
+`test_tui_budget` is `perf`; `test_gate_timeout_tree` is `integration`; `test_tui_*`, or a module
+that imports `tui_harness` or `tui_budget` or calls `run_test`, is `tui`; `test_remote_*`,
+`test_pull_worker*`, or a module that imports `remote_loopback`, `remote_support`, or
+`remote_workers_golden`, is `remote`; a name ending in `_e2e`, `_integration`, or `_race`, or a
+module whose tests sum past 20 seconds, is `integration`; otherwise `fast`. In your loop, before
+you return and before the campaign gate, run `python3 tools/test_tiers.py --check` when
+`tools/test_tiers.py` exists, and fix every module it lists until it exits 0. When that file is
+absent, skip the command.
+
 Do not widen scope. Anything you notice outside the spec goes in `followup_ideas`.
 
 **Red-base fix (no spec).** When *The spec* below starts with `RED-BASE FIX (no spec)`, this
@@ -50,7 +70,8 @@ no spec file: skip steps 2, 4, 6 and 7 (no status, no ticks, no ledger) and do n
 `docs/specs/`. Make the failing tests it lists pass with the smallest change, following its
 rules: never delete, skip, xfail or importorskip a test, never add `collect_ignore`, never
 weaken a guard test. The close runs the full suite and refuses a diff that weakens the tests.
-Report `done` once the listed tests pass.
+Report `done` once the listed tests pass. The **Test tier marker** rule still applies to any
+tests/test_*.py you add.
 
 ## Brief from the previous loop
 
