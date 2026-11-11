@@ -57,7 +57,9 @@ is clean. A plan failure is escalated the same way.
 ### Skill (`skills/nw-conduct/SKILL.md`)
 
 The combined `parked.main_dirty, parked.main_not_on_base` row is split. The
-`parked.main_not_on_base` row keeps today's text for that reason only. The `wt_broken` row
+`parked.main_not_on_base` row is today's combined row verbatim, with `` `parked.main_dirty`, ``
+removed from the first column and `` `main_dirty` / `` removed from the second; its body (third
+column) is unchanged. The `wt_broken` row
 stops saying "same as `main_dirty`" and spells out its current move procedure. The "Clear
 blockers yourself" bullet names `parked.main_dirty` as the exception for a dirty main checkout
 (plan and escalate, never clear).
@@ -71,47 +73,72 @@ The new `parked.main_dirty` row, triggered by `parked` `main_dirty`, and by a
 `conductor_ping` / `park_undecided` / `escalation_answered` that concerns an undecided
 `main_dirty` park or its escalation:
 
-1. For each `main_dirty` campaign read `repo.root` and `repo.base` from
-   `nw campaign show <id> --json`; group by (`root`, `base`). Per group run
-   `nw queue main-dirty-plan --root <root> --base <base> --json` in the conductor's own context
-   (read-only, no sub-agent). **If it exits non-zero**, escalate once per root (step 3's check
-   first) with `--question "Cannot plan the main checkout <root>: <first stderr line>"`,
+**Quoting rule (one rule for the whole row).** Every value substituted into a command in this
+row (`--root`, `--base`, `--question`, `--option`, `--fact`, `--decision`) is a single-quoted
+shell string with each `'` written as `'\''`; the commands below are written with single-quoted
+placeholders (`--root '<root>'`, `--question '<question>'`). Campaign ids (`<id>`) and ESC ids
+are plain tokens and are not quoted.
+
+1. Find the campaigns with `nw queue list --json` (campaigns PARKED with `park.reason`
+   `main_dirty`). For each, read `repo.root` and `repo.base` from `nw campaign show <id> --json`;
+   group by (`root`, `base`). Per group run
+   `nw queue main-dirty-plan --root '<root>' --base '<base>' --json` in the conductor's own
+   context (read-only, no sub-agent). **If it exits non-zero**, escalate once per root (step 3's
+   check first) with `--question 'Cannot plan the main checkout <root>: <first stderr line>'`,
    options `I fixed it` / `I cleared it another way`, `--fact 'root: <root>'`, then step 4's
    decisions; the answer re-runs step 1.
-2. `action: resume` (clean and on the base): for each non-terminal `main_dirty` campaign of that
-   group, `nw queue resume <id> --to CLOSING --by conductor --decision "main checkout clean"
-   --rule parked.main_dirty --yes`. Done.
+2. `action: resume` (clean and on the base): for each campaign of that group still PARKED
+   `main_dirty`, `nw queue resume <id> --to CLOSING --by conductor --decision 'main checkout
+   clean' --rule parked.main_dirty --yes`. Done.
 3. Otherwise, if `nw escalations list --json` already has an open `human_checkout` record whose
    facts contain exactly `root: <root>`, do not escalate again; record
-   `nw queue decision <id> --kind wait --rule parked.main_dirty "waiting on ESC-NNNN"` once per
+   `nw queue decision <id> --kind wait --rule parked.main_dirty 'waiting on ESC-NNNN'` once per
    campaign that has no decision after its park.
-4. Else escalate once, no campaign: `nw queue escalate --topic human_checkout --question
-   "<question>" --option "I ran the recommended commands" --option "I cleared it another way"
-   --recommend 1 --fact 'root: <root>' --fact 'class: <class>, action: <action>' --fact
-   '<command>'` (one `--fact` per `recommended` line, one per path up to 10) `--yes`. Every
-   `--fact` value is a single-quoted shell string with each `'` written as `'\''`; a path that
-   contains `$`, a backtick, `"` or a newline is not listed, and one fact
-   `<n> paths (see nw queue main-dirty-plan)` stands for all such paths. `<question>` is "Main
-   checkout <root> has <class> tracked edits blocking closes: run the commands below in order,
-   stop at the first error, then answer"; for `class: clean` with `action: hold` it is "Main
-   checkout <root> is on <branch>, not <base>: run the command below, then answer". For
-   `merge` the first option is `I will finish the <in_progress> in the main checkout`. Then
-   `nw queue decision <id> --kind escalate --rule parked.main_dirty "escalated ESC-NNNN"` for
+4. Else escalate once, no campaign:
+   `nw queue escalate --topic human_checkout --question '<question>' --option 'I ran the recommended commands' --option 'I cleared it another way' --recommend 1 --fact 'root: <root>' --fact 'class: <class>, action: <action>' --fact '<command>' --yes`.
+   The `--fact '<command>'` clause stands for a variable number of facts, each quoted by the
+   rule above: one per `recommended` line (none for `class: merge`, whose `recommended` is
+   `[]`), then one per path in `paths`, for the first 10 paths. Paths beyond the first 10 are
+   summarised in one fact `<m> more paths (see nw queue main-dirty-plan)`. A path that contains
+   a newline is not listed (a fact is one line) and counts toward `<m>`; a path with `$`, a
+   backtick or `"` is listed like any other, since single-quoting keeps it literal.
+   `<question>` is "Main checkout <root> has <class> tracked edits blocking closes: run the
+   commands below in order, stop at the first error, then answer", with three variants:
+   - `class: clean` with `action: hold`: "Main checkout <root> is not on <base>: run the
+     command below, then answer".
+   - `class: merge` (always `action: escalate`): "Main checkout <root> has a <in_progress> in
+     progress, blocking closes: finish or abort it, then answer", no command facts, and the
+     first option is `I will finish the <in_progress> in the main checkout`.
+   - every other class: the question above.
+
+   Every placeholder maps to a SPEC-0546 `nw.main_dirty_plan.v1` key (`root`, `class`,
+   `action`, `in_progress`, `recommended`, `paths`) or to `base` read in step 1. Then
+   `nw queue decision <id> --kind escalate --rule parked.main_dirty 'escalated ESC-NNNN'` for
    each `main_dirty` campaign of that root, so the park counts as decided and `park_undecided`
    does not repeat.
 5. On `escalation_answered` for that record, run step 1 again: `resume` → step 2; still dirty →
-   step 4 with an extra `--fact 'still dirty after ESC-NNNN'`.
+   step 4 with an extra `--fact 'still dirty after ESC-NNNN'`. A campaign that is no longer
+   PARKED `main_dirty` is skipped.
 
 The row runs no git command other than through `main-dirty-plan`, dispatches no sub-agent, and
 never names `main-dirty-apply` (SPEC-0551 later adds the `--trivial-only` step as `2b`).
+
+**E5 blind spot.** `mvp_report.e5` counts human-owned `park` events and escalations with
+`campaign == cid`. After this spec a `main_dirty` park is conductor-owned and its
+`human_checkout` record has no campaign, so E5 shows no touchpoint although the human still
+clears the checkout until SPEC-0551. This blind spot is accepted and not fixed here.
 
 **What wakes a decided park.** Once the campaigns carry the `escalate` decision they leave the
 ping fingerprint and `park_undecided` does not fire again; `main_dirty` has no auto-resume. The
 only wake is the answer to the escalation (step 5). A checkout the human cleans without
 answering leaves the campaigns parked until the human answers ESC-NNNN or runs
-`nw queue resume`; the question says "then answer" for that reason. This is accepted: the
-human-owned record is in Needs you and never times out, so the block is visible, unlike the
-silent park this spec removes.
+`nw queue resume`; the question says "then answer" for that reason. A withdrawn ESC-NNNN has
+the same effect as an unanswered one (`escalation_withdrawn` reaches the conductor only in the
+digest and is `hold`): the human resumes the campaigns with `nw queue resume`. This is
+accepted: the open campaign-less `human_checkout` record never times out and stays visible in
+`nw escalations list` and in the dashboard inbox `escalations` section until it is answered or
+withdrawn (AC9), unlike the silent park this spec removes. The parks themselves are under
+Conductor handling, no longer under Needs you.
 
 ### Files the implementer may cherry-pick from `nw/IDEA-1159-20261110-02ed`
 
@@ -150,36 +177,70 @@ An optional source (tip `61876af9`), never the contract:
       returns `wake` for it.
 - [ ] AC4 (SPEC-0542 AC4) Herdr emits `nw: parked` for a `main_dirty` park; `HOST_FIX` has no
       `main_dirty` key; `mvp_report.e5` on a campaign that really parked `main_dirty` has no
-      touchpoint for it, while a `main_not_on_base` park still is one.
+      touchpoint for it, while a `main_not_on_base` park still is one. This is the accepted E5
+      blind spot (Design): the campaign-less `human_checkout` record is not counted as a
+      touchpoint until SPEC-0551.
 - [ ] AC5 (SPEC-0542 AC13) Skill: the `parked.main_dirty` row (extracted by its rule id)
-      contains the literal substrings `main-dirty-plan`, `--base <base>`,
-      `nw campaign show <id> --json`, `Cannot plan the main checkout`, `human_checkout`,
-      `--yes`, `--recommend 1`, `recommended`, `escalation_answered`, `--to CLOSING`,
-      `--rule parked.main_dirty`, `stop at the first error`, `is on <branch>, not <base>`,
-      `nw escalations list --json`, `root: <root>`, and `'\''`; it contains none of `git add`,
-      `git commit`, `git checkout`, `git rm`, `git worktree add`, `main-dirty-apply`,
-      `isolation`. The `escalation_answered` row names `human_checkout` and
+      contains the literal substrings `main-dirty-plan`, `--root '<root>'`, `--base '<base>'`,
+      `nw queue list --json`, `still PARKED`, `nw campaign show <id> --json`,
+      `Cannot plan the main checkout`, `human_checkout`, `--yes`, `--recommend 1`,
+      `recommended`, `escalation_answered`, `--to CLOSING`, `--rule parked.main_dirty`,
+      `stop at the first error`, `is not on <base>`, `nw escalations list --json`,
+      `root: <root>`, `nw queue decision`, `--kind escalate`, `--kind wait`,
+      `still dirty after`, `more paths`, and `'\''`; it does not contain `is on <branch>`, and
+      contains none of `git add`, `git commit`, `git checkout`, `git rm`, `git worktree add`,
+      `main-dirty-apply`, `isolation`. The `escalation_answered` row names `human_checkout` and
       `parked.main_dirty`. The "Clear blockers yourself" bullet names `parked.main_dirty`. The
-      `wt_broken` row does not contain `same as`; `parked.main_not_on_base` is its own row.
-- [ ] AC6 (SPEC-0542 AC14) The test extracts the step-4 command from the row, substitutes sample
-      values for the placeholders (a root, `class: branch`, two sample `recommended` lines, and a
-      sample path containing a space and a `'`), drops `--yes`, runs it through `CliRunner` as
-      `nw queue escalate … --json` against a temp cfg (via `shlex.split`), and asserts exit 0,
-      `written: false`, `topic: human_checkout`, `campaign: null`, `recommendation: 1`, two
-      options, a `root: <root>` fact, and one fact per sample line equal to the input byte for
-      byte. The same test with the step-1 failure command asserts two options and the
-      `Cannot plan` question.
+      `wt_broken` row does not contain `same as`; `parked.main_not_on_base` is its own row, and
+      the test (holding the pre-change combined row as a literal fixture) asserts that row
+      equals the old row with only `` `parked.main_dirty`, `` removed from the first cell and
+      `` `main_dirty` / `` removed from the second, so the body is byte-identical.
+- [ ] AC6 (SPEC-0542 AC14) The test takes the backticked span of the `parked.main_dirty` row that
+      begins at `nw queue escalate` and ends at `--yes` (the single-line template of step 4),
+      expands the `--fact '<command>'` clause itself (one `--fact` per sample `recommended` line,
+      then one per sample path up to 10, then the `<m> more paths` fact), substitutes the
+      `<question>`, `<root>`, `<class>` and `<action>` placeholders, appends nothing else, drops
+      `--yes`, and runs the result through `CliRunner` as `nw queue escalate … --json` against a
+      temp cfg (via `shlex.split`). The sample root contains a space, a `'` and a `$`; one
+      sample `recommended` line and one sample stderr line (in the step-1 failure `--question`)
+      contain a backtick and a `$`. The test runs three step-4 variants and asserts exit 0,
+      `written: false`, `topic: human_checkout`, `campaign: null`, `recommendation: 1`:
+      - `class: branch`: the row's question, two options, a `root: <root>` fact equal to the
+        input byte for byte, one fact per sample `recommended` line equal to the input byte for
+        byte, a path containing `$` and a path containing a space and a `'` each listed
+        verbatim, and, with 12 sample paths, the 11th and 12th absent and one
+        `2 more paths (see nw queue main-dirty-plan)` fact present.
+      - `class: clean`, `action: hold`: the `is not on <base>` question and two options.
+      - `class: merge`: the `has a <in_progress> in progress` question, two options whose first
+        label is `I will finish the <in_progress> in the main checkout`, and no fact other than
+        `root: …` and `class: merge, action: escalate`.
+      The question and the `root:` fact round-trip byte for byte, with the `$` and backtick
+      arriving unexpanded. A fourth run builds the step-1 failure command from the same span:
+      `<question>` becomes `Cannot plan the main checkout <root>: <first stderr line>` (sample
+      root and sample stderr line as above), the first option becomes `I fixed it`, and the
+      `class:` fact, the `<command>` clause and `--recommend 1` are removed. It asserts two
+      options (`I fixed it`, `I cleared it another way`), the `root: <root>` fact, and the
+      question equal byte for byte to the sample text.
 - [ ] AC7 (SPEC-0542 AC15) `launch.py` and `tests/test_agentic_launch.py` are unchanged by this
       spec; `finish_close` still parks `main_dirty` with `resume_to: CLOSING` and still merges
       once the checkout is tracked-clean.
+- [ ] AC8 A grep test over `docs/product/loop/operate.md` and
+      `docs/product/capabilities/agentic.md` finds wording that the conductor classifies and
+      escalates a dirty main checkout, finds `main-dirty-plan`, and finds no `main-dirty-apply`.
+- [ ] AC9 With a campaign-less open `human_checkout` record (created through the row's step-4
+      command with `--yes` against a temp cfg), `nw escalations list --json` includes it and the
+      dashboard inbox payload's `escalations` section includes it; after
+      `nw escalations withdraw` it is gone from both, and the `main_dirty` campaigns stay
+      PARKED until `nw queue resume`.
 
 ## Test plan
 
 - **Automated tests:** the existing-module updates listed in Design (each module already has its
   tier marker); E5 uses a `main_dirty` park planted through `finish_close` (AC3, AC4). The
-  skill-row tests (AC5, AC6) go in `tests/test_main_dirty_plan.py` (SPEC-0546's module), the
-  branch's `test_skill_row_phrases` rewritten to AC5 (rows extracted by rule id; negative
-  phrases).
+  skill-row tests (AC5, AC6) and the docs grep test (AC8) go in `tests/test_main_dirty_plan.py`
+  (SPEC-0546's module, which already carries its one `pytestmark` tier; no second marker is
+  added), the branch's `test_skill_row_phrases` rewritten to AC5 (rows extracted by rule id;
+  negative phrases). The AC9 visibility check goes in `tests/test_dashboard_inbox.py`.
 - **Regression guard:** `tests/test_agentic_close.py`, `tests/test_agentic_mvp_integration.py`,
   `tests/test_agentic_launch.py` pass unchanged. `python3 tools/affected_tests.py --run uv run
   pytest -q`, `python3 tools/test_tiers.py --check`, `python3 tools/spec_lint.py`.
@@ -189,7 +250,12 @@ An optional source (tip `61876af9`), never the contract:
   `--yes` → a dry-run `human_checkout` record whose facts list the `recommended` lines. Record
   the output in As shipped.
 
-## Out of scope
+## Goals / Non-goals
+
+**Goals.** A `main_dirty` park wakes the conductor, which plans once and escalates once per
+root with the exact commands.
+
+**Non-goals.**
 
 - The classifier and `nw queue main-dirty-plan` (SPEC-0546).
 - Any git write by the conductor or a sub-agent for `main_dirty`; no sub-agent is dispatched
@@ -214,7 +280,7 @@ open until SPEC-0551 is done. Queued under project Meta-Tools after SPEC-0546.
 - [ ] Test plan executed, including the manual check; affected tests pass.
 - [ ] No regressions in close, dashboard, herdr, launch, E5 tests.
 - [ ] `docs/product/loop/operate.md` and `docs/product/capabilities/agentic.md` say the
-      conductor classifies and escalates, and name only `main-dirty-plan`.
+      conductor classifies and escalates, and name only `main-dirty-plan` (AC8).
 - [ ] Spec body updated to match what shipped.
 - [ ] `docs/LEDGER.md` regenerated; `python3 tools/spec_lint.py` exits 0.
 
