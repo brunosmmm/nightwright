@@ -4,9 +4,10 @@ layer's `nw.history.record.v1` records (`agentic/history.py`, the same data as
 
 Pure and Textual-free: nothing here imports Textual, renders anything, or writes a file other
 than through the history layer's disposable `cache_dir` cache. `matches` is the authority for the
-grammar; the history flags `query_records` passes down are only a narrowing that must never
-exclude a record `matches` would accept (relative dates are resolved first, `until` is passed as
-the inclusive end of the exclusive bound, a prefix `agent:` is never passed down).
+grammar. `query_records` makes one unfiltered history call and applies `matches` to it, so no
+flag is passed down (a narrowed call plus a recount for `total_records` cost twice the history
+layer's warm-path time); the `history` rows of `GRAMMAR_ROWS` only say which `nw campaign records`
+flag has the same semantics.
 """
 from __future__ import annotations
 
@@ -26,7 +27,8 @@ STATUSES = frozenset({"open", "fixed", "waived", "filed", "carried", "answered",
 NONE = "none"
 
 # (token, where): each grammar row and who implements it, in the order of the spec's table.
-# `history` = passed down as the matching `nw campaign records` flag; `tab` = applied by `matches`.
+# `history` = the matching `nw campaign records` flag has the same semantics; `tab` = only `matches`
+# implements it. `query_records` itself applies every row through `matches`.
 GRAMMAR_ROWS: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("agent:X", ("history", "tab")),            # history for a full agent id, else tab
     ("kind:X", ("history",)),
@@ -217,27 +219,6 @@ class RecordQueryResult:
     error: str | None = None
 
 
-def _history_args(flt: RecordFilter, now) -> dict:
-    """The `history` rows of the grammar as `history_records` keyword arguments."""
-    args: dict = {}
-    if flt.agent and ":" in flt.agent:
-        args["agent"] = [flt.agent]
-    if flt.kind:
-        args["kind"] = [flt.kind]
-    for key in ("severity", "status"):
-        value = getattr(flt, key)
-        if value and value != NONE:
-            args[key] = [value]
-    since, until = flt.bounds(now)
-    if since is not None:
-        args["since"] = since
-    if until is not None:
-        args["until"] = until          # history's bound is inclusive; `matches` makes it exclusive
-    if flt.terms:
-        args["query"] = flt.terms[0]
-    return args
-
-
 def _sort_key(rec):
     return (H._time_key(rec.get("ts")), str(rec.get("id") or ""))
 
@@ -248,11 +229,12 @@ def query_records(cfg, flt: RecordFilter, now=None) -> RecordQueryResult:
     if flt.impossible:
         return RecordQueryResult(problems=flt.problems)
     try:
-        args = _history_args(flt, now)
-        rows = H.history_records(cfg, **args)
+        # One unfiltered call: `total_records` is its length and `matches` does all the narrowing.
+        # A narrowed call plus a recount doubled the history layer's cost, which is the budget.
+        rows = H.history_records(cfg)
         if not isinstance(rows, list) or not all(isinstance(r, dict) for r in rows):
             raise ValueError("history returned unexpected data")
-        total = len(rows) if not args else len(H.history_records(cfg))
+        total = len(rows)
         keep = _matcher(flt, now)
         out = [rec for rec in rows if keep(rec)]
         out.sort(key=_sort_key, reverse=True)

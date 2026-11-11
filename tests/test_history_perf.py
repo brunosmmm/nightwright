@@ -146,12 +146,15 @@ def test_warm_index_no_terminal_campaign_stat(scaled_data):
     assert touches
 
 
-def test_findings_filter_queries_meet_the_budget(scaled_data, monkeypatch):
-    """SPEC-0412 AC9 on the 500-campaign clone, warm cache. Each query is timed end to end and the
-    adapter's own share (wall time minus the time inside `history_records`) is held to the budget
-    of 200 ms x3 slack. The end-to-end figure is dominated by the history layer's warm-path
-    staleness check (about 0.5-1.4 s per call here, whatever the filter) and is recorded in the
-    spec's *As shipped*, not asserted: that cost belongs to the history layer's own spec."""
+FINDINGS_QUERIES = [
+    "kind:finding severity:major", "since:30d", "agent:conductor kind:decision", "pytest",
+    "pytest finding", "project:META-tools", "severity:none", "campaign:SPEC-0394",
+    "agent:steward", "status:none since:7d",
+]
+
+
+def _timed_findings_queries(scaled_data, monkeypatch):
+    """(text, wall seconds, adapter's own seconds, history call count) for each query, warm."""
     from nightwright.tui import findings_filter as FF
 
     data_dir, cache_dir = scaled_data
@@ -169,13 +172,8 @@ def test_findings_filter_queries_meet_the_budget(scaled_data, monkeypatch):
             spent.append(time.perf_counter() - t0)
 
     monkeypatch.setattr(H, "history_records", timed)
-    queries = [
-        "kind:finding severity:major", "since:30d", "agent:conductor kind:decision", "pytest",
-        "pytest finding", "project:META-tools", "severity:none", "campaign:SPEC-0394",
-        "agent:steward", "status:none since:7d",
-    ]
-    slow, measured = {}, {}
-    for text in queries:
+    out = []
+    for text in FINDINGS_QUERIES:
         flt = FF.parse_record_filter(text)
         assert not flt.problems, text
         spent.clear()
@@ -183,10 +181,27 @@ def test_findings_filter_queries_meet_the_budget(scaled_data, monkeypatch):
         res = FF.query_records(c, flt)
         wall = time.perf_counter() - t0
         assert res.error is None and res.total_records >= 50_000, text
-        assert len(spent) <= 2, text                        # one narrowed call, one recount
-        own = wall - sum(spent)
-        measured[text] = (round(wall, 3), round(own, 3))
-        if own > LIMIT_FILTER:
-            slow[text] = round(own, 3)
-    print("query_records (wall s, adapter s):", measured)
-    assert not slow, slow
+        out.append((text, wall, wall - sum(spent), len(spent)))
+    return out
+
+
+def test_findings_filter_adapter_share_meets_the_budget(scaled_data, monkeypatch):
+    """SPEC-0412: what `query_records` adds on top of the history layer (matching, sorting) is held
+    to 200 ms x3, and it makes exactly one history call. The end-to-end bound is the xfail below."""
+    rows = _timed_findings_queries(scaled_data, monkeypatch)
+    print("query_records (wall s, adapter s):", {t: (round(w, 3), round(o, 3)) for t, w, o, _ in rows})
+    assert all(calls == 1 for *_, calls in rows)
+    assert {t: round(o, 3) for t, _, o, _ in rows if o > LIMIT_FILTER} == {}
+
+
+@pytest.mark.xfail(strict=False, reason=(
+    "SPEC-0412 AC9 is not met end to end: every history_records call on the 500-campaign clone "
+    "spends 0.5-1.4 s in the warm-path staleness check (history_cache._records_cache_quiet stats "
+    "every terminal campaign), whatever the filter. Needs a cheaper warm-path validity check in "
+    "the history layer's own spec (SPEC-0406 or a follow-up); remove this marker when it lands. "
+    "The budget must not be loosened. Not strict: the figure sits around the 0.6 s bound and a "
+    "quiet machine can pass it, which must not fail the suite."))
+def test_findings_filter_queries_meet_the_budget_end_to_end(scaled_data, monkeypatch):
+    rows = _timed_findings_queries(scaled_data, monkeypatch)
+    assert len(rows) >= 8
+    assert {t: round(w, 3) for t, w, _, _ in rows if w > LIMIT_FILTER} == {}

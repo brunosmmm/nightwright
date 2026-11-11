@@ -121,7 +121,14 @@ def test_parse_never_raises_fuzz():
     inputs = list(nasty) + [
         "".join(rng.choice(alphabet) for _ in range(rng.randint(0, 60))) for _ in range(2500)]
     for text in inputs:
-        assert isinstance(parse(text, now=NOW), F.RecordFilter)
+        flt = parse(text, now=NOW)
+        assert isinstance(flt, F.RecordFilter)
+        assert "text" not in flt.impossible, repr(text)   # the catch-all fallback hides a crash
+
+
+def test_severity_closed_set_is_pinned():
+    # `must_fix` is what the ledger writes for the top severity; keep it with the spec's set
+    assert F.SEVERITIES == {"blocker", "must_fix", "major", "minor", "nit", "info"}
 
 
 # --- matches (AC2, AC7) ---------------------------------------------------------------------
@@ -212,31 +219,16 @@ def fake(monkeypatch):
     return install
 
 
-# which history keyword each history-capable row feeds; a `tab` row has no entry
-HISTORY_KWARG = {"agent:X": "agent", "kind:X": "kind", "severity:X": "severity",
-                 "status:X": "status", "since:D / until:D": ("since", "until"),
-                 "anything else": "query"}
-
-
-def test_only_history_rows_reach_the_history_query(fake):
-    fh = fake()
-    allowed = {k for token, where in F.GRAMMAR_ROWS if "history" in where
-               for k in ([HISTORY_KWARG[token]] if isinstance(HISTORY_KWARG[token], str)
-                         else HISTORY_KWARG[token])}
+def test_one_unfiltered_history_call_whatever_the_filter(fake):
+    """No flag is passed down (so no `tab` row can reach history) and there is no recount."""
+    fh = fake(rows=[rec()])
     assert {t for t, w in F.GRAMMAR_ROWS if "history" not in w} == {"project:X", "campaign:X"}
-    def narrowed(text):                 # the first call is the narrowed one, the second counts
+    for text in ("", "project:x campaign:0179 agent:steward severity:none status:none alpha beta",
+                 "agent:steward:Meta-Tools kind:finding severity:major status:open since:7d "
+                 "until:2026-11-01 alpha beta"):
         fh.calls.clear()
         F.query_records({}, parse(text, now=NOW), NOW)
-        return fh.calls[0]
-
-    assert narrowed("project:x campaign:0179 agent:steward severity:none status:none "
-                    "alpha beta") == {"query": "alpha"}            # first term only
-    call = narrowed("agent:steward:Meta-Tools kind:finding severity:major status:open "
-                    "since:7d until:2026-11-01 alpha beta")
-    assert set(call) == {"agent", "kind", "severity", "status", "since", "until", "query"} <= allowed
-    assert call["agent"] == ["steward:Meta-Tools"] and call["kind"] == ["finding"]
-    assert call["since"] == NOW - dt.timedelta(days=7) and call["query"] == "alpha"
-    assert narrowed("") == {} and len(fh.calls) == 1               # nothing narrowed: no recount
+        assert fh.calls == [{}], text
 
 
 def test_impossible_filter_never_calls_history(fake):
@@ -261,8 +253,8 @@ def test_query_orders_ts_desc_then_id_desc_and_counts(fake):
     res = F.query_records({}, parse("campaign:none"), NOW)
     assert [r["id"] for r in res.records] == ["a:4", "z:9"]        # campaign-less + unknown kind
     assert (res.total_matching, res.total_records) == (2, 5)
-    res = F.query_records({}, parse("kind:finding"), NOW)           # history ran with a flag
-    assert res.total_records == 5 and len(fh.calls) == 3            # one narrowed, one unfiltered
+    res = F.query_records({}, parse("kind:finding"), NOW)
+    assert res.total_records == 5 and len(fh.calls) == 2            # one call per query_records
 
 
 def test_history_is_rechecked_by_matches(fake):

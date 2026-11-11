@@ -93,6 +93,12 @@ def words(records):
 def test_cli_expressible_filters_equal_the_cli(env, cli_ids, all_records):
     cfg = env[0]
     assert all_records, "fixture has no records"
+    # the date cases below are only equal to the CLI's if no record is near a bound: the CLI
+    # compares the day in the record's own offset, the grammar the local day (at most +-14 h apart)
+    for bound in (dt.datetime(2026, 1, 1, tzinfo=UTC), dt.datetime(2026, 7, 1, tzinfo=UTC)):
+        near = [r["id"] for r in all_records if r.get("ts") and H._parse_ts(r["ts"]) is not None
+                and abs(H._parse_ts(r["ts"]) - bound) < dt.timedelta(hours=14)]
+        assert near == [], f"fixture records within 14 h of {bound.date()}: {near}"
     word = words(all_records)[0][0]
     cases = [
         ("agent:conductor", ["--agent", "conductor"]),
@@ -141,6 +147,11 @@ def test_extended_filters_equal_matches_over_the_unfiltered_cli(env, all_records
         f'"{phrase.lower()}"': None,           # a phrase need not occur; only the equality counts
         "since:7d": True,
         "agent:steward severity:none since:7d": None,
+        # date-only bounds: the CLI compares the day as written in the record's offset, the grammar
+        # the local day, so these are held to the grammar (`matches`), not to the CLI flags
+        "since:2026-01-01": True,
+        "until:2026-06-30": None,
+        "since:2026-01-01 until:2026-06-30": None,
     }
     for text, must_be_nonempty in cases.items():
         flt = F.parse_record_filter(text, now=now)
@@ -164,6 +175,33 @@ def test_total_counts_and_campaignless_records(env, all_records):
         [r["id"] for r in all_records]
     assert {r["severity"] for r in all_records} - {None} <= F.SEVERITIES
     assert {r["status"] for r in all_records} - {None} <= F.STATUSES
+
+
+def test_since_relative_resolves_against_the_current_time(env, all_records):
+    cfg = env[0]
+    flt = F.parse_record_filter("since:7d")
+    res = F.query_records(cfg, flt)                 # no `now`: the clock is read here
+    assert res.error is None
+    assert [r["id"] for r in res.records] == [
+        r["id"] for r in all_records if F.matches(r, flt)]
+    cutoff = dt.datetime.now(UTC) - dt.timedelta(days=7)
+    assert all(H._parse_ts(r["ts"]) >= cutoff - dt.timedelta(minutes=5) for r in res.records)
+
+
+def test_unknown_kind_and_source_pass_through_the_real_history_layer(env, monkeypatch):
+    """History never writes an unknown kind today; a future version might, so one is injected
+    after the real layer has built its records and must come through query_records untouched."""
+    cfg = env[0]
+    odd = {"schema": "nw.history.record.v1", "id": "telemetry:zzz:1", "ts": "2026-11-09T00:00:00+00:00",
+           "source": "telemetry", "kind": "brand_new", "agent": None, "campaign": None,
+           "spec_id": None, "project": None, "severity": None, "status": None,
+           "title": "odd record", "text": "", "links": {}, "linked_by": "none"}
+    real = H.history_records
+    monkeypatch.setattr(H, "history_records", lambda c, **kw: real(c, **kw) + [odd])
+    res = F.query_records(cfg, F.parse_record_filter("odd record"))
+    assert res.error is None and [r["id"] for r in res.records] == ["telemetry:zzz:1"]
+    everything = F.query_records(cfg, F.parse_record_filter(""))
+    assert odd in everything.records and everything.total_records == len(everything.records)
 
 
 # --- the same answer on the real data dir (manual, SPEC-0412 Test plan) ---------------------
