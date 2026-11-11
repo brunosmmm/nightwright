@@ -418,7 +418,11 @@ class Gate:
                             raise
                         self._slot_reservations.update(staged)
                         return None
-                if step is not None and RPS.can_dispatch_step(
+                if step is None:
+                    # Step-less call: the spec's bare escape — any persona worker lifts it.
+                    if RPS.persona_workers(self.cfg, state):
+                        return None
+                elif RPS.can_dispatch_step(
                         self.cfg, state, step, reservations=self._slot_reservations):
                     return None
             except Exception:                  # noqa: BLE001

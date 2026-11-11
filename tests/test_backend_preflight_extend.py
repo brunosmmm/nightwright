@@ -55,7 +55,17 @@ def test_spec_review_hold_skips_prepare_and_spends_no_retry(tmp_path, monkeypatc
     starts = [e for e in S.read_ledger(cfg, cid, types=["run.start"]) if e.get("persona") == "spec_reviewer"]
     assert not starts
     _worker_can_dispatch(monkeypatch)
+    seen: list[dict] = []
+    real_bf = PG.Gate.backend_fault
+
+    def spy(self, state, personas=(), **kw):
+        if tuple(personas) == ("spec_reviewer",):
+            seen.append(kw)
+        return real_bf(self, state, personas, **kw)
+
+    monkeypatch.setattr(PG.Gate, "backend_fault", spy)
     Q.tick(cfg)
+    assert seen and all(kw.get("remote_ok") is False for kw in seen)
     st2 = S.read_state(cfg, cid)
     assert st2["state"] == "SPEC_REVIEW"
     assert st2["counters"].get("spec_review_retries", 0) == 0
@@ -526,6 +536,43 @@ def test_gate_cache_keeps_pi_error_after_worker_escape(tmp_path, monkeypatch):
     assert g2.backend_fault(st, personas, remote_ok=True, step=step) == err
 
 
+def test_gate_stepless_worker_escape_uses_bare_persona_workers(tmp_path, monkeypatch):
+    from nightwright.agentic import remote_personas as RPS
+
+    _pi_ok_env(monkeypatch)
+    _pi_check_fail_openai(monkeypatch)
+    monkeypatch.setattr(BP, "spawn_backend", lambda c, s, p: ("pi", ["openai"]))
+    cfg = {"data_dir": str(tmp_path / "d"), "agentic": {"runner": "pi"}}
+    st = {"id": "c1", "state": "IMPLEMENTING"}
+    BP.reset_noted()
+    g = PG.Gate(cfg, ["c1"])
+    worker = {"name": "w", "enabled": True, "kinds": ["persona"]}
+    monkeypatch.setattr(RPS, "persona_workers", lambda c, s: [worker])
+    assert g.backend_fault(st, ("implementer",), remote_ok=True) is None
+    err = g.backend_fault(st, ("implementer",), remote_ok=False)
+    assert err == "no credential for provider openai"
+    monkeypatch.setattr(RPS, "persona_workers",
+                        lambda c, s: (_ for _ in ()).throw(RuntimeError("nope")))
+    assert g.backend_fault(st, ("implementer",), remote_ok=True) == err
+
+
+def test_gate_remote_ok_flag_is_the_only_difference_with_real_dispatch(tmp_path, monkeypatch):
+    _pi_ok_env(monkeypatch)
+    _pi_check_fail_openai(monkeypatch)
+    monkeypatch.setattr(BP, "spawn_backend", lambda c, s, p: ("pi", ["openai"]))
+    _worker_can_dispatch(monkeypatch)
+    cfg = {"data_dir": str(tmp_path / "d"), "agentic": {"runner": "pi"}}
+    st = {"id": "c1", "state": "IMPLEMENTING"}
+    step = Q.Step("implement", persona="implementer")
+    err = PG.Gate(cfg, ["c1"]).backend_fault(
+        st, ("implementer",), remote_ok=False, step=step)
+    assert err == "no credential for provider openai"
+    g = PG.Gate(cfg, ["c1"])
+    assert g.backend_fault(st, ("implementer",), remote_ok=True, step=step) is None
+    from nightwright.agentic import remote_personas as RPS
+    RPS.release_reservations(g._slot_reservations)
+
+
 def test_pi_check_each_provider_in_list(tmp_path, monkeypatch):
     _pi_ok_env(monkeypatch)
     env = {"HOME": str(tmp_path), "PATH": os.environ.get("PATH", "/usr/bin:/bin"),
@@ -624,6 +671,19 @@ def test_pi_credential_env_map_still_escalates(tmp_path):
     BP.note_fault(cfg, "pi", "no credential for provider openai", where="gate")
     open_ = [r for r in ESC.list_all(cfg, "open") if r.get("kind") == "backend_unavailable"]
     assert len(open_) == 1 and open_[0]["facts"][0] == "backend: pi"
+
+
+def test_pi_credential_escalation_skip_is_pass_only(tmp_path):
+    # Only a `pass:` mapping has a credential escalation naming the fix; an `env` mapping or
+    # no mapping files the backend escalation. (Cursor's `{var} is not set` match is unchanged.)
+    for creds, expect in (({"OPENAI_API_KEY": "pass:openai/key"}, 0),
+                          ({"OPENAI_API_KEY": "env"}, 1), ({}, 1)):
+        cfg = {"data_dir": str(tmp_path / f"d{expect}{len(creds)}"),
+               "agentic": {"credentials": creds}}
+        BP.reset_noted()
+        BP.note_fault(cfg, "pi", "no credential for provider openai", where="gate")
+        open_ = [r for r in ESC.list_all(cfg, "open") if r.get("kind") == "backend_unavailable"]
+        assert len(open_) == expect
 
 
 def test_startup_check_pi_empty_providers_still_checks_node(tmp_path, monkeypatch):

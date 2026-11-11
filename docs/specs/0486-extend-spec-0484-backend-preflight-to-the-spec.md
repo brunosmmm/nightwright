@@ -565,6 +565,40 @@ A failed write rollback on an environment-fault interrupt parks from `res.write`
   startup tests) and `tests/test_remote_persona_limits.py::test_spec_review_is_neither_counted_nor_gated`
   plus `test_an_ungated_spec_review_run_neither_starts_nor_resets_the_backoff` stay green.
 
+### As shipped (2026-11-10, loop 1 review fixes)
+
+Deviations and additions to Design, recorded here because Design is frozen:
+
+- **`Gate.backend_fault` signature** is `(state, personas=(), *, remote_ok=True, step=None)`.
+  Without `step` the worker escape is the bare one in Design: any `persona_workers` entry returns
+  None (an exception there is ignored; the cached error is returned). With `step`, which `admit`
+  always passes, the escape is `RPS.can_dispatch_step` (eligible request, free slot reservation,
+  no failing worker, clean worktree), and a review fan-out stages one slot probe per failing
+  persona and rolls them back when any cannot dispatch; reservations are kept in the gate and
+  released by `admit` on a persona-cap hold, by `_hold_local_backend_before_prepare`, or after
+  `dispatch`. `remote_ok=False` skips the escape in both forms (the tick's spec-review branch,
+  and `admit` for `write_spec` and `resolve`, which have no remote dispatch).
+- **Cache value:** the stored value is `check`'s string or None, except that when `check` itself
+  raises the gate stores `"<kind> backend preflight failed"` (and files the gate fault) rather
+  than treating the exception as a pass.
+- **Write-spec / resolve:** `_do_write_spec` and `_do_resolve` get the same spawn hold and
+  startup-fault conversion as `_do_spec_review`; the tick holds `write_spec` and `resolve`
+  `backend_unavailable` before `_prepare_run`. `_prepare_spec_write` refuses to start a writer
+  while HEAD is not `repo.branch`.
+- **Pi `auth.json`** is read only up to 64 KiB; a larger file counts as absent.
+- **Credential-map skip in `note_fault`** applies to Pi only for `pass:` mappings, because only
+  a `pass:` source files a credential escalation that names the fix; an `env` mapping or no
+  mapping files the backend escalation. Cursor keeps its SPEC-0484 rule (a mapped var named in
+  the error is skipped, including an `env` mapping).
+- Tests added: step-less worker escape, `remote_ok` as the only difference with the real
+  `can_dispatch_step`, the tick passing `remote_ok=False` for the spec reviewer, and the
+  `pass:`/`env`/unmapped Pi escalation matrix.
+
+### Test record (2026-11-10, loop 1 review fixes)
+
+`uv run pytest tests/test_backend_preflight_extend.py tests/test_runner_selfheal.py tests/test_remote_persona_limits.py -q` — 176 passed.
+`python3 tools/test_tiers.py --check` — ok. Full suite left to gating.
+
 ## Rollout / migration
 
 Lands with the code. The next runner start (re-exec on merge) runs `startup_check` for Pi
