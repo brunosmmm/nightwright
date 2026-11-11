@@ -360,6 +360,9 @@ progress. This is the single place to see *what has been decided* and *what is i
 | [SPEC-0530](./specs/0530-hub-event-relay-health-and-read-only-host-views.md) | Hub event relay, health, and read-only host views | feature | accepted | — | 2026-11-10 |
 | [SPEC-0532](./specs/0532-exactly-once-mail-between-hub-and-host.md) | Exactly-once mail between hub and host | feature | accepted | — | 2026-11-10 |
 | [SPEC-0533](./specs/0533-remote-park-and-resume.md) | Remote park and resume | feature | accepted | — | 2026-11-10 |
+| [SPEC-0542](./specs/0542-main-dirty-plan-and-escalate.md) | main_dirty is conductor-owned; plan the clear and escalate it | feature | accepted | — | 2026-11-11 |
+| [SPEC-0543](./specs/0543-main-dirty-apply-audited-verb.md) | nw queue main-dirty-apply, the audited main-checkout clear (human or steward run) | feature | accepted | — | 2026-11-11 |
+| [SPEC-0544](./specs/0544-conductor-runs-main-dirty-apply-for-trivial.md) | Conductor runs main-dirty-apply for the trivial class only | feature | accepted | — | 2026-11-11 |
 
 ## Done
 
@@ -860,6 +863,7 @@ progress. This is the single place to see *what has been decided* and *what is i
 | [SPEC-0414](./specs/0414-dashboard-server-nw-serve-dashboard-spec-0400.md) | Dashboard server, loopback: nw serve --dashboard with token auth and GET /api/snapshot | feature | superseded | M9: agentic workflow | 2026-11-04 |
 | [SPEC-0444](./specs/0444-conductor-follower-acks-before-advancing.md) | The conductor follower commits an event only after the session acks it | feature | superseded | — | 2026-11-08 |
 | [SPEC-0527](./specs/0527-federation-bounded-relay-mail-and-two-remote-verbs.md) | Federation, bounded: relay, mail and two remote verbs | feature | superseded | — | 2026-11-10 |
+| [SPEC-0537](./specs/0537-conductor-must-clear-main-dirty-itself-a-stray.md) | Conductor clears main_dirty itself | feature | superseded | — | 2026-11-11 |
 
 <!-- specs:end -->
 
