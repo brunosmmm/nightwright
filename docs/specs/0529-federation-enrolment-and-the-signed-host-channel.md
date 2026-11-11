@@ -548,6 +548,16 @@ any other writer).
 - `python3 tools/test_tiers.py --check` — exit 0.
 - Full suite left to gating.
 
+### Test record (2026-11-10, review loop 4)
+
+- Tests only, no code change: `test_bind_and_serve_flags` now invokes `nw serve` with no mode
+  flag, `--jobs --dashboard`, `--jobs --federate`, `--dashboard --federate` and all three, and
+  asserts exit 2, the `exactly one of` message, and that neither `make_federate_server` nor
+  `PJ.make_server` is called; it also refuses `--federate --tls-key` alone.
+- `uv run pytest tests/test_federation_channel.py tests/test_rich_output_guard.py -q` — 44 passed.
+- `python3 tools/test_tiers.py --check` — exit 0.
+- Full suite left to gating.
+
 ### As shipped (2026-11-10)
 
 Replay with two empty directory pairs (`HUB_*` and `HOST_*` below stand for the `NW_DATA_DIR` /

@@ -816,7 +816,19 @@ def test_bind_and_serve_flags(tmp_path, monkeypatch):
     srv.server_close()
     assert FH.DEFAULT_BIND == "127.0.0.1:8792"
     monkeypatch.setattr("nightwright.cli.load_config", lambda: host)
-    assert CliRunner().invoke(cli, ["serve", "--jobs", "--federate"]).exit_code != 0
+
+    def _no_server(*a, **kw):
+        raise AssertionError("a server was constructed for an invalid mode combination")
+
+    with monkeypatch.context() as m:
+        m.setattr(FH, "make_federate_server", _no_server)
+        m.setattr(PJ, "make_server", _no_server)
+        # Exactly one of --jobs, --dashboard, --federate: none, and any two, are usage errors.
+        for flags in ([], ["--jobs", "--dashboard"], ["--jobs", "--federate"],
+                      ["--dashboard", "--federate"], ["--jobs", "--dashboard", "--federate"]):
+            r_mode = CliRunner().invoke(cli, ["serve", *flags])
+            assert r_mode.exit_code == 2, (flags, r_mode.output)
+            assert "exactly one of" in r_mode.output, (flags, r_mode.output)
     cert, key = _mini_tls_pair(tmp_path)
     with pytest.raises(ValueError, match="tls-cert"):
         FH.make_federate_server(host, "127.0.0.1:0", tls_cert=cert, tls_key=None)
@@ -851,6 +863,7 @@ def test_bind_and_serve_flags(tmp_path, monkeypatch):
     assert "--client-ca" in r_ca.output
     assert not cli_binds
     assert CliRunner().invoke(cli, ["serve", "--federate", "--tls-cert", cert]).exit_code != 0
+    assert CliRunner().invoke(cli, ["serve", "--federate", "--tls-key", key]).exit_code != 0
 
     def puff(self, *a, **kw):
         raise KeyboardInterrupt()
@@ -873,7 +886,6 @@ def test_bind_and_serve_flags(tmp_path, monkeypatch):
     r_def = CliRunner().invoke(cli, ["serve", "--federate"])
     assert r_def.exit_code == 0
     assert binds_used == [FH.DEFAULT_BIND]
-    assert CliRunner().invoke(cli, ["serve", "--dashboard", "--federate"]).exit_code != 0
     real_make = FH.make_federate_server
 
     def _v6_echo_server(cfg, bind, **kw):
