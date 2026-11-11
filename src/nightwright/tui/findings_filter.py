@@ -34,7 +34,7 @@ GRAMMAR_ROWS: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("severity:X", ("history", "tab")),         # history for a value, tab for `none`
     ("status:X", ("history", "tab")),           # history for a value, tab for `none`
     ("campaign:X", ("tab",)),
-    ("since:D / until:D", ("history",)),        # passed down widened a day for date-only values
+    ("since:D / until:D", ("history",)),        # relative values only; date-only stay on matches
     ("anything else", ("history", "tab")),      # first term history (--query), the rest tab
 )
 
@@ -236,15 +236,13 @@ def _history_kwargs(flt: RecordFilter, now=None) -> dict:
     if flt.agent is not None and ":" in flt.agent:            # a bare agent is a prefix: `tab`
         out["agent"] = flt.agent
     since, until = flt.bounds(now)
-    # The CLI's date-only bounds use the record's own UTC offset for the day, the grammar uses the
-    # local day: widen by a day each way (offsets are under 24 h) so history never drops a record
-    # that `matches` accepts. Relative bounds are instants, identical on both sides.
-    if since is not None:
-        out["since"] = (dt.date.fromisoformat(flt.since_text) - dt.timedelta(days=1)
-                        if _DATE.fullmatch(flt.since_text or "") else since)
-    if until is not None:
-        out["until"] = (dt.date.fromisoformat(flt.until_text) + dt.timedelta(days=1)
-                        if _DATE.fullmatch(flt.until_text or "") else until)
+    # Only relative bounds (instants, identical on both sides) go down. A date-only bound stays on
+    # `matches`: the CLI takes the day as written in the record's own UTC offset, the grammar the
+    # local day, so passing it down could drop a record `matches` accepts (SPEC-0412 As shipped).
+    if since is not None and not _DATE.fullmatch(flt.since_text or ""):
+        out["since"] = since
+    if until is not None and not _DATE.fullmatch(flt.until_text or ""):
+        out["until"] = until
     if flt.terms:
         out["query"] = flt.terms[0]
     return out

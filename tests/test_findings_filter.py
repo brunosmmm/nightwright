@@ -228,8 +228,10 @@ PASSED_DOWN = [
     ("agent:steward:Meta-Tools", {"agent": "steward:Meta-Tools"}),
     ("alpha beta", {"query": "alpha"}),
     ("since:7d", {"since": NOW - dt.timedelta(days=7)}),
-    ("since:2026-05-02 until:2026-05-04",
-     {"since": dt.date(2026, 5, 1), "until": dt.date(2026, 5, 5)}),
+    ("since:7d until:12h",
+     {"since": NOW - dt.timedelta(days=7), "until": NOW - dt.timedelta(hours=12)}),
+    # date-only bounds stay on `matches` (CLI and grammar disagree on the day near midnight)
+    ("since:2026-05-02 until:2026-05-04", {}),
     ("kind:finding severity:major status:open agent:conductor:x alpha",
      {"kind": "finding", "severity": "major", "status": "open", "agent": "conductor:x",
       "query": "alpha"}),
