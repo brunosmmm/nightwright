@@ -108,7 +108,7 @@ test("real snapshot on the SPEC-0401 fixture renders the page", { skip: !process
   const bar = t.doc.created.find((e) => e.tag === "progress");
   assert.equal(bar.attrs["aria-valuenow"], String(Math.min(100, Math.round((a.cost_usd / a.cap_usd) * 100))));
   const needs = t.text("needs");
-  assert.ok(needs.includes("ESC-0001") && needs.includes("main_dirty"), needs);
+  assert.ok(needs.includes("ESC-0001") && needs.includes("main_not_on_base"), needs);
   assert.ok(t.text("health").includes("runner") && t.text("health").includes("herdr watch"));
   const evs = t.doc.getElementById("events").children;
   assert.ok(evs.length <= 20 && evs.length === Math.min(20, s.recent_events.length));
