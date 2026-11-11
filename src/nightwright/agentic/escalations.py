@@ -688,8 +688,9 @@ def plan_answer(cfg, esc_id, *, choose=None, text=None, waive=(), attest=(), rea
 def _reversible(rec: dict, by: str) -> bool:
     """SPEC-0425: an `answered` record whose answer was auto-applied takes one more answer, from
     the human or a steward."""
-    return (rec.get("status") == "answered" and bool((rec.get("answer") or {}).get("auto"))
-            and (by == "human" or by.startswith(M._STEWARD)))
+    answer = rec.get("answer") if isinstance(rec, dict) else None
+    return (isinstance(answer, dict) and rec.get("status") == "answered"
+            and bool(answer.get("auto")) and (by == "human" or by.startswith(M._STEWARD)))
 
 
 def summarize(answer: dict) -> str:
