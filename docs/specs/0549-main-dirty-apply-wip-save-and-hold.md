@@ -291,6 +291,16 @@ failure table, the WIP location, guard 7).
   prints `wip_branch`, `wip_path`, `wip_sha` and a one-line `replanned` (tested). Affected tests
   (`test_main_dirty_apply.py`, `test_main_dirty_plan.py`) pass; `python3 tools/test_tiers.py --check`
   and `python3 tools/spec_lint.py` exit 0; the full suite is left to gating.
+- Review loop 2 (tests only): `test_main_dirty_apply.py` gained the `hold` ok:true conditions
+  (a `post-checkout` hook, exit 0, that dirties a tracked file after the switch; a switch that
+  exits 0 but leaves the re-plan off the base; mutating `_hold_switch`'s `elif` to `False` made both
+  fail, reverted), row (a)'s partial-directory removal, row (b) faults in `update-index`,
+  `hash-object` and `rm` in the WIP tree, row (e) mode-change and reappeared-deletion re-verifies,
+  `_reverify_path` branch tests, and a clean `hold` with a missing `refs/heads/<base>` or a detached
+  HEAD on no branch. `test_main_dirty_plan.py` runs SPEC-0546's AC5 save fixtures (rm, mv,
+  unstaged_delete, logic, mixed) through the verb with a committed `.nw/project.yaml` and the same
+  end-state checks (shared helper with the raw-list run). `uv run pytest -q -n 4` over the two files:
+  742 passed; `python3 tools/test_tiers.py --check` exits 0; the full suite is left to gating.
 
 ### As shipped (2026-11-11)
 
@@ -316,6 +326,12 @@ choices the Design left open:
   kept; the AC6 hook test therefore fails only on the branch-switch flag in main.
 - `_head_map` gained a `rev` argument (verify reads the WIP commit); `_assert_safe_argv` in the tests
   now carries this spec's never-run list.
+- **Empty `project:`.** The config loader rejects it first (`invalid project config:\n  - project:
+  must be a non-empty string`), so guard 7's own `bad project name` never sees an empty string; the
+  result is still `ok: false` with no write (tested).
+- **Re-read base.** A base that is option-shaped in HEAD's copy is rejected by `_base` before guard
+  7's check, so that `hold` error reads `invalid base branch '-x'` (save kept, no `switch`); a missing
+  `refs/heads/<base>` reads `bad base <base>`.
 
 ## Goals / Non-goals
 

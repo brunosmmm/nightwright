@@ -738,6 +738,11 @@ def test_recommended_save_list_runs(tmp_path, variant):
     assert p["recommended"] == _save_list(repo, wip, "substantive", upaths)
     base_head = _git(repo, "rev-parse", "main").stdout
     _run_list(repo, p["recommended"])
+    _check_save_variant_end_state(repo, variant, wip, base_head)
+
+
+def _check_save_variant_end_state(repo, variant, wip, base_head):
+    """The end state of SPEC-0546's AC5 save fixtures, shared by the raw-list run and the verb run."""
     _after_run_checks(repo)
     assert _git(repo, "rev-parse", "--abbrev-ref", "HEAD").stdout.strip() == "main"
     assert _git(repo, "rev-parse", "main").stdout == base_head
@@ -757,6 +762,23 @@ def test_recommended_save_list_runs(tmp_path, variant):
         assert changes == {"M\tsrc/a.py"} and _show(repo, wip, "src/a.py") == "x = 2\n"
     else:
         assert changes == {"D\tsrc/b.py", "M\tsrc/a.py"} and _show(repo, wip, "src/a.py") == "x = 2\n"
+
+
+@pytest.mark.parametrize("variant", list(SAVE_VARIANTS))
+def test_recommended_save_variant_runs_through_the_verb(tmp_path, variant):
+    """SPEC-0549 AC7: the same fixtures with a committed `.nw/project.yaml` recommend the verb, and
+    running it through the CLI reaches the same end state (staged `git rm`, staged rename and mixed
+    staging go through `apply_clear`'s restore)."""
+    files, edit, _ = SAVE_VARIANTS[variant]
+    repo = _repo(tmp_path, files)
+    edit(repo)
+    _put(repo, "untracked.txt", "u\n")
+    p = MD.plan_clear(repo)
+    assert p["action"] == "branch_and_escalate"
+    base_head = _git(repo, "rev-parse", "main").stdout
+    (wip,) = _run_verb(repo, p)
+    assert re.fullmatch(r"wip/main-dirty-\d{8}T\d{6}Z", wip)
+    _check_save_variant_end_state(repo, variant, wip, base_head)
 
 
 def test_recommended_branch_class_save_list(tmp_path):

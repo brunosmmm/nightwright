@@ -2031,7 +2031,7 @@ def test_hold_detached_head_at_a_branch_tip_is_accepted(tmp_path):
     assert out["ok"] is True and _branch(repo) == "main", out
 
 
-def test_hold_reads_the_base_after_the_restore(tmp_path):
+def test_hold_reads_the_base_after_the_restore(tmp_path, monkeypatch):
     repo = _saveable(tmp_path)
     _on_feature(repo)
     _put(repo, ".nw/project.yaml", yaml.safe_dump({"schema": "nw.project.v1", "project": "T",
@@ -2039,8 +2039,11 @@ def test_hold_reads_the_base_after_the_restore(tmp_path):
     _git(repo, "commit", "-qam", "bad base in HEAD")
     _put(repo, ".nw/project.yaml", yaml.safe_dump({"schema": "nw.project.v1", "project": "T",
                                                    "base": "main"}))          # the stray dirty copy
+    calls = _record(monkeypatch)
     out = MD.apply_clear(repo)
     assert out["ok"] is False and out["wip_branch"] in _wips(repo) and "replanned" not in out
+    assert out["error"] == "invalid base branch '-x'"        # `_base` rejects it before guard 7's check
+    assert "switch" not in _verbs(calls)
     assert _branch(repo) == "feat" and _tracked_clean(repo)
 
 
@@ -2436,3 +2439,166 @@ def test_cli_text_mode_has_no_wip_keys_for_a_failure_before_the_save(tmp_path):
     _hook(repo, "pre-commit", "exit 1\n")
     r = _invoke("--root", str(repo))
     assert r.exit_code == 1 and not any(ln.startswith("wip_") for ln in r.output.splitlines())
+
+
+# ---- review loop 2: hold's other ok:true conditions, more phase faults, reverify branches ---------
+
+def test_hold_switch_that_exits_zero_but_leaves_main_dirty_is_not_ok(tmp_path):
+    """`hold` is ok only when the switch exited 0, the re-plan is on the base AND main is
+    tracked-clean: a `post-checkout` hook (exit 0) that dirties a tracked file on the new branch
+    fails the last condition; `replanned` is the real re-plan, not inferred from the exit status."""
+    repo = _saveable(tmp_path)
+    _on_feature(repo)
+    _put(repo, "src/x.py", "x = 2\n")
+    real = os.path.realpath(repo)
+    _hook(repo, "post-checkout", f'[ "$PWD" = "{real}" ] && [ "$3" = 1 ] && echo dirt >> README.md\nexit 0\n')
+    out = MD.apply_clear(repo)
+    assert _branch(repo) == "main" and not _tracked_clean(repo)                # the switch did run
+    assert out["ok"] is False and out["error"]
+    assert out["wip_branch"] in _wips(repo) and out["wip_sha"] and os.path.isdir(out["wip_path"])
+    live = MD.plan_clear(repo)
+    assert out["replanned"] == {"on_base": live["on_base"], "action": live["action"],
+                                "class": live["class"]}
+    assert out["replanned"]["on_base"] is True
+    assert (out["replanned"]["action"], out["replanned"]["class"]) != ("resume", "clean")
+    assert (repo / "README.md").read_bytes() == b"# hi\ndirt\n"               # untouched by the verb
+
+
+def test_hold_switch_that_exits_zero_off_the_base_is_not_ok(tmp_path, monkeypatch):
+    """The other half of the same condition: the switch exits 0 but the re-plan is not on the base."""
+    repo = _saveable(tmp_path)
+    _on_feature(repo)
+    _put(repo, "src/x.py", "x = 2\n")
+    real = MD._git
+
+    def switch_is_a_noop(root, *args, **kw):
+        if args[:1] == ("switch",):
+            return subprocess.CompletedProcess(["git", *args], 0, b"", b"")
+        return real(root, *args, **kw)
+
+    monkeypatch.setattr(MD, "_git", switch_is_a_noop)
+    out = MD.apply_clear(repo)
+    assert out["ok"] is False and out["error"] == "not on the base and tracked-clean after the switch"
+    assert out["wip_branch"] in _wips(repo) and _branch(repo) == "feat"
+    assert out["replanned"] == {"on_base": False, "action": "hold", "class": "clean"}
+
+
+def test_clean_hold_with_a_base_that_has_no_branch_is_refused(tmp_path, monkeypatch):
+    repo = _saveable(tmp_path)
+    _put(repo, ".nw/project.yaml", yaml.safe_dump({"schema": "nw.project.v1", "project": "T",
+                                                   "base": "ghost"}))
+    _git(repo, "commit", "-qam", "ghost base")
+    _on_feature(repo)
+    calls = _record(monkeypatch)
+    out = MD.apply_clear(repo)
+    assert (out["ok"], out["action"], out["error"]) == (False, "hold", "bad base ghost")
+    assert "switch" not in _verbs(calls) and _branch(repo) == "feat"
+    assert not (tmp_path / ".nw-worktrees").exists()
+
+
+def test_clean_hold_on_a_detached_head_not_on_a_branch_is_refused(tmp_path, monkeypatch):
+    repo = _saveable(tmp_path)
+    _git(repo, "switch", "-q", "--detach")
+    _git(repo, "commit", "-q", "--allow-empty", "-m", "orphan")
+    assert not _git(repo, "status", "--porcelain", "--untracked-files=no").stdout
+    calls = _record(monkeypatch)
+    out = MD.apply_clear(repo)
+    assert (out["ok"], out["action"], out["error"]) == (False, "hold", "detached HEAD not on any branch")
+    assert "switch" not in _verbs(calls)
+
+
+def test_row_a_removes_a_partial_directory_the_verb_created(tmp_path, monkeypatch):
+    """`worktree add` fails after creating a directory git never registered: the verb removes the
+    directory it created (and there is no branch to delete)."""
+    repo = _saveable(tmp_path)
+    _dirt_text(repo)
+
+    def failing_add(argv):
+        if "worktree" in argv and "add" in argv:
+            wip = Path(argv[argv.index("add") + 3])
+            (wip / "half").mkdir(parents=True)
+            (wip / "half" / "f").write_text("partial")
+            return subprocess.CompletedProcess(argv, 128, b"", b"fatal: half done")
+        return None
+
+    _wrap_run(monkeypatch, failing_add)
+    before = _snap(repo)
+    out = MD.apply_clear(repo)
+    assert out["ok"] is False and "half done" in out["error"]
+    assert not {"wip_branch", "wip_path", "wip_sha"} & set(out)
+    _only_main(repo)
+    assert not _wip_root(tmp_path).exists() or list(_wip_root(tmp_path).iterdir()) == []
+    assert _snap(repo)["files"] == before["files"]
+
+
+@pytest.mark.parametrize("fault,dirt", [("update-index", _dirt_text), ("hash-object", _dirt_text),
+                                        ("rm", _dirt_deleted)])
+def test_row_b_other_wip_tree_faults_remove_worktree_then_branch(tmp_path, monkeypatch, fault, dirt):
+    repo = _saveable(tmp_path)
+    dirt(repo)
+    seen = []
+
+    def fail_in_the_wip_tree(argv):
+        if len(argv) > 3 and "main-dirty-" in argv[2] and fault in argv[3:]:
+            seen.append(argv)
+            return subprocess.CompletedProcess(argv, 1, b"", f"fatal: {fault} broke".encode())
+        return None
+
+    _wrap_run(monkeypatch, fail_in_the_wip_tree)
+    calls = _record(monkeypatch)
+    before = _snap(repo)
+    out = MD.apply_clear(repo)
+    assert seen and out["ok"] is False and f"{fault} broke" in out["error"], out
+    assert not {"wip_branch", "wip_path", "wip_sha"} & set(out)
+    _only_main(repo)
+    assert _snap(repo)["files"] == before["files"]
+    verbs = _verbs(calls)
+    rm = next(i for i, c in enumerate(calls) if verbs[i] == "worktree" and "remove" in c)
+    br = next(i for i, c in enumerate(calls) if verbs[i] == "branch" and "-d" in c)
+    assert rm < br
+
+
+def test_row_e_a_mode_change_before_the_restore_is_refused(tmp_path, monkeypatch):
+    repo = _saveable(tmp_path)
+    _dirt_text(repo)
+    real = MD._restore_main
+
+    def chmod_then_restore(root, paths, modes, oids, head):
+        os.chmod(repo / "config/a.json", 0o755)
+        return real(root, paths, modes, oids, head)
+
+    monkeypatch.setattr(MD, "_restore_main", chmod_then_restore)
+    out = MD.apply_clear(repo)
+    _keeps(repo, out)
+    assert out["error"] == "config/a.json: changed since the save"
+    assert (repo / "config/a.json").read_bytes() == b'{"a": 1}\n' and _mode(repo, "config/a.json") == "100755"
+
+
+def test_row_e_a_deleted_path_that_reappears_is_refused(tmp_path, monkeypatch):
+    repo = _saveable(tmp_path)
+    _dirt_deleted(repo)
+    real = MD._restore_main
+
+    def recreate_then_restore(root, paths, modes, oids, head):
+        _put(repo, "config/a.json", "back again\n")
+        return real(root, paths, modes, oids, head)
+
+    monkeypatch.setattr(MD, "_restore_main", recreate_then_restore)
+    out = MD.apply_clear(repo)
+    _keeps(repo, out)
+    assert out["error"] == "config/a.json: changed since the save"
+    assert (repo / "config/a.json").read_bytes() == b"back again\n"
+
+
+def test_reverify_path_branches(tmp_path):
+    repo = _saveable(tmp_path)
+    root = Path(repo)
+    oid = _git(repo, "hash-object", "--no-filters", "--", "config/a.json").stdout.strip()
+    assert MD._reverify_path(root, "config/a.json", "100644", oid) is None
+    assert MD._reverify_path(root, "config/a.json", "100755", oid) == "changed since the save"   # mode
+    assert MD._reverify_path(root, "config/a.json", "100644", "0" * 40) == "changed since the save"
+    assert MD._reverify_path(root, "config/a.json", None, None) == "changed since the save"      # reappeared
+    assert MD._reverify_path(root, "config/gone.json", None, None) is None
+    assert MD._reverify_path(root, "config/gone.json", "100644", oid) == "changed since the save"
+    (repo / "link").symlink_to("config/a.json")
+    assert MD._reverify_path(root, "link", "100644", oid) == "changed since the save"
