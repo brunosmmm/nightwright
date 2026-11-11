@@ -46,6 +46,25 @@ _KNOWN_SUFFIXES = (_PY_SUFFIXES | _HASH_SUFFIXES | _CLIKE_SUFFIXES | _MD_SUFFIXE
 _SPLICE_SUFFIXES = frozenset({".py", ".pyi", ".sh", ".bash", ".rb", ".pl"}) | _CLIKE_SUFFIXES
 
 
+# suffixes whose quoted literals can span lines (a comment-looking line inside one is data)
+_DQUOTE_SUFFIXES = frozenset({".sh", ".bash", ".rb", ".pl", ".yml", ".yaml", ".rs", ".jsx", ".tsx"})
+_SQUOTE_SUFFIXES = frozenset({".sh", ".bash", ".rb", ".pl", ".yml", ".yaml"})
+_JSX_RE = re.compile(r"<[A-Za-z/>]")       # JSX children: a `//` line there is text, not a comment
+_RUST_RAW_RE = re.compile(r'\br#*"')
+_ESCAPED_RE = re.compile(r"\\.")
+# pragma-style comments change behaviour (build tags, cgo, encodings, compiler directives)
+_PRAGMA_RES = {
+    ".py": re.compile(r"#.*coding[:=]"), ".pyi": re.compile(r"#.*coding[:=]"),
+    ".rb": re.compile(r"#\s*(frozen_string_literal|encoding|coding)\s*:"),
+    ".go": re.compile(r"//\s*(go:|\+build|export\b|line\b)"),
+    ".ts": re.compile(r"//\s*@ts-|///\s*<reference"), ".tsx": re.compile(r"//\s*@ts-|///\s*<reference"),
+    ".js": re.compile(r"//\s*@(flow|jsx|ts-)|//#\s*source"),
+    ".jsx": re.compile(r"//\s*@(flow|jsx|ts-)|//#\s*source"),
+    ".mjs": re.compile(r"//\s*@(flow|jsx|ts-)|//#\s*source"),
+    ".cjs": re.compile(r"//\s*@(flow|jsx|ts-)|//#\s*source"),
+}
+
+
 class NotAWorktree(Exception):
     """`--root` is not the top of a git worktree (CLI exit 2)."""
 
@@ -94,11 +113,12 @@ def _base(root: Path, base) -> str:
     config (`--base` is then ignored), else `--base`, else `main`."""
     path = P.config_path(root)
     try:
-        if path.is_file():
-            return P.load_project_config(path)["merge"]["base"]
+        found = P.load_project_config(path)["merge"]["base"] if path.is_file() else (base or "main")
     except (ValueError, OSError) as e:
         raise PlanError(str(e))
-    return base or "main"
+    if found.startswith("-") or not found.strip():
+        raise PlanError(f"invalid base branch {found!r}")   # `git switch <base>` would read an option
+    return found
 
 
 def _in_progress(root: Path, xys) -> str | None:
@@ -212,7 +232,9 @@ def _scan(path: str, text: str):
     clike = suf in _CLIKE_SUFFIXES or suf == ".css"
     for line in lines:
         ln = line[:-1] if line.endswith("\r") else line
-        s = ln.strip()
+        # ASCII blanks only: a line that is whitespace for a Unicode reason (NBSP, U+3000,
+        # U+2000-U+200A) is not `blank`; it stays non-empty `text` and sets `hazard`
+        s = ln.strip(" \t\x0b\x0c")
         if s and any(c in ln for c in _LINE_BREAKS):
             hazard = True
         if suf in (".sh", ".bash", ".rb", ".pl") and "<<" in ln:
@@ -288,6 +310,21 @@ def _scan(path: str, text: str):
                 hazard = True
         else:
             kind = "text"
+        pragma = _PRAGMA_RES.get(suf)
+        if kind == "comment" and pragma and pragma.match(s):
+            kind = "text"
+        if kind == "text":
+            bare = _ESCAPED_RE.sub("", ln)
+            if suf in _DQUOTE_SUFFIXES and bare.count('"') % 2:
+                hazard = True          # a quoted literal that may span lines
+            if suf in _SQUOTE_SUFFIXES and bare.count("'") % 2:
+                hazard = True
+            if suf == ".rs" and _RUST_RAW_RE.search(ln):
+                hazard = True          # a raw string
+            if suf in (".jsx", ".tsx") and _JSX_RE.search(ln):
+                hazard = True          # JSX children
+            if suf == ".go" and s == 'import "C"':
+                hazard = True          # the block comment before it is cgo source
         kinds.append(kind)
     if tok is not None:
         hazard = True                   # an unterminated triple-quoted string

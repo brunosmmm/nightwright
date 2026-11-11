@@ -1556,6 +1556,10 @@ def attach(queue_group):
         if as_json:
             _dump_json(plan)
             return
+        if any(ord(c) < 32 or c == "\x7f" for path in plan["paths"] for c in path):
+            # one path per line: a control character (a newline in a name) would forge lines
+            R.warn("error: a path in the plan has a control character; use --json")
+            ctx.exit(3)
         console.print(Text(f"{plan['action']} {plan['class']} {len(plan['paths'])} paths"))
         for line in (*plan["paths"], *plan["recommended"]):
             # soft_wrap: a terminal must never fold a path or a command a human pastes

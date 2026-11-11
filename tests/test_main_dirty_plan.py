@@ -1288,3 +1288,244 @@ def test_cli_non_utf8_path_exits_3_without_output(tmp_path):
     for args in (("--root", str(repo)), ("--root", str(repo), "--json")):
         r = _cli(*args)
         assert r.exit_code == 3 and "error:" in r.stderr and r.stdout == "", (r.stderr, r.stdout)
+
+
+# ---- review loop 3 (test review): mode / symlink checks must be what makes these non-trivial ---
+
+FM = "---\nstatus: a\n---\n\nbody\n"
+
+
+def _chmod_x(repo, rel, stage):
+    os.chmod(repo / rel, 0o755)
+    if stage:
+        _git(repo, "add", "--", rel)
+
+
+@pytest.mark.parametrize("stage", [False, True])
+def test_chmod_only_on_docs_with_frontmatter_is_other(tmp_path, stage):
+    # identical bytes + frontmatter would read as `frontmatter`/`trivial` if the mode were ignored
+    repo = _repo(tmp_path, {"docs/a.md": FM})
+    _chmod_x(repo, "docs/a.md", stage)
+    p = MD.plan_clear(repo)
+    assert (p["class"], p["action"], _fc(p)) == ("branch", "save_branch", {"docs/a.md": "other"})
+
+
+@pytest.mark.parametrize("stage", [False, True])
+def test_prose_edit_plus_chmod_on_docs_is_other(tmp_path, stage):
+    repo = _repo(tmp_path, {"docs/a.md": "# T\n\nprose\n"})
+    _put(repo, "docs/a.md", "# T\n\nprose 2\n")
+    _chmod_x(repo, "docs/a.md", stage)
+    p = MD.plan_clear(repo)
+    assert (p["class"], p["action"], _fc(p)) == ("branch", "save_branch", {"docs/a.md": "other"})
+
+
+@pytest.mark.parametrize("stage", [False, True])
+def test_comment_edit_plus_chmod_on_code_is_code(tmp_path, stage):
+    repo = _repo(tmp_path, {"src/x.py": "x = 1\n# old\n"})
+    _put(repo, "src/x.py", "x = 1\n# new\n")
+    _chmod_x(repo, "src/x.py", stage)
+    p = MD.plan_clear(repo)
+    assert (p["class"], p["action"], _fc(p)) == ("substantive", "branch_and_escalate",
+                                                  {"src/x.py": "code"})
+
+
+@pytest.mark.parametrize("stage", [False, True])
+def test_retargeted_docs_symlink_is_other_not_docs(tmp_path, stage):
+    repo = _repo(tmp_path, {"docs/a.md": "# A\n", "docs/b.md": "# B\n"})
+    os.symlink("a.md", repo / "docs/link.md")
+    _git(repo, "add", "docs/link.md")
+    _git(repo, "commit", "-qm", "link")
+    (repo / "docs/link.md").unlink()
+    os.symlink("b.md", repo / "docs/link.md")
+    if stage:
+        _git(repo, "add", "docs/link.md")
+    p = MD.plan_clear(repo)
+    assert (p["class"], p["action"], _fc(p)) == ("branch", "save_branch", {"docs/link.md": "other"})
+
+
+def test_mm_staged_edit_reverted_in_the_worktree_is_not_trivial(tmp_path):
+    # the combined pair (HEAD vs worktree) is identical frontmatter text: only the staged half
+    # (a fence edit) shows the change
+    old = FM + "\n```\ncode\n```\n"
+    repo = _repo(tmp_path, {"docs/a.md": old})
+    _put(repo, "docs/a.md", old.replace("\ncode\n", "\ncode2\n"))
+    _git(repo, "add", "docs/a.md")
+    _put(repo, "docs/a.md", old)
+    p = MD.plan_clear(repo)
+    assert p["files"][0]["status"] == "MM"
+    assert (p["class"], p["action"], _fc(p)) == ("branch", "save_branch", {"docs/a.md": "other"})
+
+
+# ---- non-docs `.md` never gets the docs rules --------------------------------------------------
+
+@pytest.mark.parametrize("path", [".claude/commands/x.md", "CLAUDE.md", "pkg/README.md"])
+@pytest.mark.parametrize("edit", ["prose", "frontmatter", "comment"])
+def test_non_docs_md_is_other(tmp_path, path, edit):
+    old = "---\nname: a\n---\n\nbody\n\n<!-- n -->\n"
+    new = {"prose": old.replace("body", "body 2"), "frontmatter": old.replace("name: a", "name: b"),
+           "comment": old.replace("<!-- n -->", "<!-- m -->")}[edit]
+    repo = _repo(tmp_path, {path: old})
+    _put(repo, path, new)
+    p = MD.plan_clear(repo)
+    assert (p["class"], p["action"], _fc(p)) == ("branch", "save_branch", {path: "other"})
+
+
+# ---- scanner / classifier pins -----------------------------------------------------------------
+
+def test_python_triple_double_quote_is_not_closed_by_triple_single():
+    assert _k("x.py", '"""\n# x\n\'\'\'\n# y\n"""\n# z\n') == (["text"] * 5 + ["comment"], False)
+    kinds, hz = _k("x.py", "'''\n# x\n\"\"\"\n# y\n'''\n")
+    assert kinds == ["text"] * 5 and not hz
+    kinds, hz = _k("x.py", '"""\n# x\n\'\'\'\n')          # never closed
+    assert kinds == ["text"] * 3 and hz
+
+
+_MARKER_ORDER = [("MERGE_HEAD", "merge", False), ("CHERRY_PICK_HEAD", "cherry-pick", False),
+                 ("REVERT_HEAD", "revert", False), ("rebase-merge", "rebase", True),
+                 ("rebase-apply", "rebase", True)]
+
+
+@pytest.mark.parametrize("i", range(len(_MARKER_ORDER) - 1))
+def test_adjacent_markers_in_progress_precedence(tmp_path, i):
+    repo = _repo(tmp_path)
+    for marker, _label, is_dir in (_MARKER_ORDER[i], _MARKER_ORDER[i + 1]):
+        m = repo / ".git" / marker
+        m.mkdir() if is_dir else m.write_text("0" * 40 + "\n")
+    p = MD.plan_clear(repo)
+    assert (p["class"], p["in_progress"]) == ("merge", _MARKER_ORDER[i][1])
+
+
+CODE_PATHS = (
+    [(f"lib/x{s}", True) for s in (".py", ".pyi", ".sh", ".bash", ".js", ".mjs", ".cjs", ".jsx", ".ts",
+                                    ".tsx", ".go", ".rs", ".c", ".h", ".cc", ".cpp", ".cxx", ".hpp",
+                                    ".rb", ".pl", ".java", ".sql", ".lua")]
+    + [("lib/x.PY", True), ("src/x.txt", True), ("tests/x.json", True), ("tools/x.txt", True),
+       ("tools/sub/y", True), ("x.py", True)]
+    + [(f"lib/x{s}", False) for s in (".kt", ".php", ".swift", ".json", ".txt", ".md", ".cs", ".scala")]
+    + [("lib/tools/x.txt", False), ("srcs/x.txt", False), ("docs/tools/x.txt", False), ("Makefile", False)]
+)
+
+
+@pytest.mark.parametrize("path,code", CODE_PATHS)
+def test_code_path_table(path, code):
+    assert MD._is_code_path(path) is code
+
+
+@pytest.mark.parametrize("path,want", [("tools/run.txt", S), ("lib/x.kt", B)])
+def test_code_path_decides_substantive_or_branch(tmp_path, path, want):
+    repo = _repo(tmp_path, {path: "a\n"})
+    _put(repo, path, "b\n")
+    p = MD.plan_clear(repo)
+    assert (p["class"], p["action"]) == want
+
+
+def test_git_children_get_a_stable_environment(tmp_path, monkeypatch):
+    repo = _repo(tmp_path, {"docs/a.md": "# T\n"})
+    _put(repo, "docs/a.md", "# T\n\nx\n")
+    seen = []
+    real = subprocess.run
+
+    def spy(cmd, *a, **kw):
+        seen.append(kw.get("env"))
+        return real(cmd, *a, **kw)
+
+    monkeypatch.setattr(MD.subprocess, "run", spy)
+    monkeypatch.setenv("LC_ALL", "de_DE.UTF-8")
+    monkeypatch.setenv("GIT_OPTIONAL_LOCKS", "1")
+    for var in ("GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE"):
+        monkeypatch.setenv(var, "/nonexistent")
+    assert MD.plan_clear(repo)["class"] == "trivial"
+    assert seen
+    for env in seen:
+        assert env["LC_ALL"] == "C" and env["GIT_OPTIONAL_LOCKS"] == "0"
+        assert not {"GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE"} & set(env)
+
+
+def test_cli_root_that_is_a_regular_file_exits_2(tmp_path):
+    f = tmp_path / "file.txt"
+    f.write_text("x\n")
+    for args in (("--root", str(f)), ("--root", str(f), "--json")):
+        r = _cli(*args)
+        assert r.exit_code == 2 and "error:" in r.stderr and r.stdout == ""
+
+
+def test_cli_oserror_in_the_config_loader_exits_3(tmp_path, monkeypatch):
+    repo = _repo(tmp_path, {"docs/a.md": "# T\n"})
+
+    def boom(path):
+        raise OSError("disk on fire")
+
+    monkeypatch.setattr(P, "load_project_config", boom)
+    r = _cli("--root", str(repo), "--json")
+    assert r.exit_code == 3 and "disk on fire" in r.stderr and r.stdout == ""
+
+
+# ---- review loop 3 (adversarial review): more false-`trivial` holes ----------------------------
+
+@pytest.mark.parametrize("path,old,new", [
+    ("src/x.sh", 'echo "a\nb"\n', 'echo "a\n\nb"\n'),
+    ("src/x.sh", 'echo "a\nb"\n', 'echo "a\n# x\nb"\n'),
+    ("src/x.sh", "echo 'a\nb'\n", "echo 'a\n# x\nb'\n"),
+    ("src/x.rs", 'let s = r#"a\nb"#;\n', 'let s = r#"a\n// x\nb"#;\n'),
+    ("src/x.rs", 'let s = "a\nb";\n', 'let s = "a\n\nb";\n'),
+    ("src/x.jsx", "const a = (\n  <div>\n    t\n  </div>\n);\n",
+     "const a = (\n  <div>\n    // x\n    t\n  </div>\n);\n"),
+    ("src/x.tsx", "const a = (\n  <p>\n    t\n  </p>\n);\n",
+     "const a = (\n  <p>\n\n    t\n  </p>\n);\n"),
+    ("src/x.rb", 'x = "a\nb"\n', 'x = "a\n# x\nb"\n'),
+    ("src/x.pl", "print 'a\nb';\n", "print 'a\n# x\nb';\n"),
+    (".github/ci.yml", 'k: "a\n  b"\n', 'k: "a\n  # x\n  b"\n'),
+])
+def test_multiline_quoted_literals_are_never_trivial(tmp_path, path, old, new):
+    repo = _repo(tmp_path, {path: old})
+    _put(repo, path, new)
+    p = MD.plan_clear(repo)
+    assert (p["class"], p["action"]) == (("substantive", "branch_and_escalate") if "src/" in path else B)
+
+
+@pytest.mark.parametrize("path,old,new", [
+    ("src/x.go", "//go:build linux\npackage a\n", "//go:build ignore\npackage a\n"),
+    ("src/x.go", "// +build linux\n\npackage a\n", "// +build ignore\n\npackage a\n"),
+    ("src/x.go", "package a\n//export F\nfunc F() {}\n", "package a\n//export G\nfunc F() {}\n"),
+    ("src/x.go", '/*\n#include <a.h>\n*/\nimport "C"\n', '/*\n#include <b.h>\n*/\nimport "C"\n'),
+    ("src/x.py", "# -*- coding: latin-1 -*-\nx = 1\n", "# -*- coding: utf-8 -*-\nx = 1\n"),
+    ("src/x.py", "# coding=latin-1\nx = 1\n", "# coding=ascii\nx = 1\n"),
+    ("src/x.rb", "# frozen_string_literal: true\nx = 1\n", "# frozen_string_literal: false\nx = 1\n"),
+    ("src/x.rb", "# encoding: utf-8\nx = 1\n", "# encoding: ascii\nx = 1\n"),
+    ("src/x.ts", "// @ts-ignore\nx();\n", "// @ts-expect-error\nx();\n"),
+    ("src/x.ts", "/// <reference types=\"a\" />\nx();\n", "/// <reference types=\"b\" />\nx();\n"),
+])
+def test_pragma_comments_are_code(tmp_path, path, old, new):
+    repo = _repo(tmp_path, {path: old})
+    _put(repo, path, new)
+    p = MD.plan_clear(repo)
+    assert (p["class"], p["action"], _fc(p)) == (*S, {path: "code"})
+
+
+@pytest.mark.parametrize("ch", [" ", "　", " ", " ", " "])
+def test_unicode_whitespace_only_line_is_not_blank(tmp_path, ch):
+    assert _k("x.py", f"{ch}\n")[0] == ["text"]
+    repo = _repo(tmp_path, {"src/x.py": "x = 1\n"})
+    _put(repo, "src/x.py", f"x = 1\n{ch}\n")
+    p = MD.plan_clear(repo)
+    assert (p["class"], p["action"]) == S
+
+
+def test_ascii_blank_lines_are_still_blank():
+    assert _k("x.py", " \t\n\x0c\n\x0b\n") == (["blank"] * 3, False)
+
+
+@pytest.mark.parametrize("base", ["-d", "--orphan"])
+def test_base_that_looks_like_an_option_exits_3(tmp_path, base):
+    repo = _repo(tmp_path, project=False)
+    r = _cli("--root", str(repo), "--base", base)
+    assert r.exit_code == 3 and "error:" in r.stderr and r.stdout == ""
+
+
+def test_cli_text_mode_with_a_control_character_in_a_path_exits_3(tmp_path):
+    repo = _repo(tmp_path, {"docs/a\nb.md": "# T\n"})
+    _put(repo, "docs/a\nb.md", "# T\n\nx\n")
+    r = _cli("--root", str(repo))
+    assert r.exit_code == 3 and "error:" in r.stderr and r.stdout == ""
+    r = _cli("--root", str(repo), "--json")
+    assert r.exit_code == 0 and json.loads(r.stdout)["paths"] == ["docs/a\nb.md"]

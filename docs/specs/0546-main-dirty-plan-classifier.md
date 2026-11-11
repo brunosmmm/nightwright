@@ -535,6 +535,17 @@ optional source, never the contract: where the branch and this spec differ, this
   `switch <base>`, and treating an absent `old` as empty each fail a test.
   `python3 tools/test_tiers.py --check` and `python3 tools/spec_lint.py` exit 0. The full suite was left
   to gating.
+- Review loop 4 (test and adversarial review fixes): `uv run pytest -q tests/test_main_dirty_plan.py`
+  passes (452 tests). New rows make mode and symlink checks load-bearing: `chmod +x` alone on a docs file
+  with frontmatter, prose edit plus `chmod +x`, comment-only edit plus `chmod +x` on `src/x.py`, and a
+  retargeted `docs/link.md` symlink, each unstaged and staged; an MM case with a staged fence edit reverted
+  in the worktree; non-docs `.md` rows; the `"""`/`'''` pin; adjacent-marker `in_progress` precedence; a
+  code-path table; the `LC_ALL=C` / `GIT_OPTIONAL_LOCKS=0` child env; `--root` as a file (exit 2) and an
+  `OSError` in the loader (exit 3); multi-line quoted literals, pragma comments, Unicode-only whitespace
+  lines, option-like base and control-character paths. Mutations re-run by hand: deleting the `om != nm`
+  block fails 6 tests, dropping `120000` from the mode check fails the 2 symlink tests.
+  `python3 tools/test_tiers.py --check` and `python3 tools/spec_lint.py` exit 0. The full suite was left to
+  gating.
 - The full suite was left to gating.
 
 ### As shipped (2026-11-11)
@@ -566,6 +577,14 @@ optional source, never the contract: where the branch and this spec differ, this
   line, a `"""` in `.java` and a YAML block scalar header with indent/chomp indicators or a comment
   (`|2`, `|  # x`) set `hazard`; `root` is `abspath` only when that has the same realpath, else
   `realpath`; the command exits 3 before printing when a path is not valid UTF-8.
+- Review loop 4 hardening (only toward `branch`; no spec-mandated list changed): `blank` is ASCII-whitespace
+  only (`" \t\x0b\x0c"`), so a NBSP/U+3000/U+2000-U+200A line is `text`; a `text` line with an odd count
+  of unescaped `"` (and `'` for sh, rb, pl, yaml) in `.sh .bash .rb .pl .yml .yaml .rs .jsx .tsx`, a Rust
+  raw string, JSX markup in `.jsx`/`.tsx` and a Go `import "C"` set `hazard`; pragma comments (Go `//go:`,
+  `// +build`, `//export`; Python coding cookie; Ruby `frozen_string_literal`/`encoding`; TS/JS `@ts-`,
+  `/// <reference`, `@flow`, `@jsx`, source maps) are `text`, not `comment`; a base starting with `-` or
+  empty exits 3; text mode exits 3 when a path has a control character (`--json` still works). Skipped: a
+  size cap on blobs.
 - Code: `src/nightwright/agentic/main_dirty.py`, the `main-dirty-plan` command in `cli_queue.py`,
   the reference-index entry, `tests/test_main_dirty_plan.py`.
 
