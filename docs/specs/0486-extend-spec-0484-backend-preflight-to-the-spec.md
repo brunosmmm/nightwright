@@ -540,6 +540,16 @@ uses a dispatchable worker; rollback/restore `GitError` cases hardened.
 `python3 tools/test_tiers.py --check` — ok. `python3 tools/spec_lint.py --write-ledger` — ok.
 Full suite left to gating.
 
+### Test record (2026-11-10, loop 0 implementer, ESC-0060)
+
+Spec-writer off-branch rollback: `on_branch` records `rollback_detail` naming the campaign branch
+(also when `git.current_branch` raises), so an environment-fault interrupt parks
+`spec_write_failed` instead of a clean `SPEC_WRITING` interrupt; `_prepare_spec_write` refuses
+to start a writer while HEAD is not `repo.branch`, clean tree or not. Updated the
+`tests/test_agentic_spec_writer.py` off-branch park-detail assertions.
+`uv run pytest tests/test_agentic_spec_writer.py tests/test_backend_preflight_extend.py tests/test_runner_selfheal.py tests/test_remote_persona_limits.py::test_spec_review_is_neither_counted_nor_gated -q` — all passed.
+Full suite left to gating.
+
 ### As shipped (2026-11-10, loop 2 campaign implementer)
 
 `backend_fault` skips a persona whose `spawn_backend` raises `ValueError` or `OSError` and

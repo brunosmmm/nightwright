@@ -1850,6 +1850,98 @@ def test_do_write_spec_converts_startup_fault(tmp_path, monkeypatch):
     assert not starts
 
 
+def _spec_write_branch_case(tmp_path, monkeypatch):
+    from nightwright.agentic import gitops as git
+    from nightwright.agentic import spec_write as SW
+
+    wt = make_repo(tmp_path)
+    cfg = _cursor_cfg(tmp_path)
+    branch = git.current_branch(wt)
+    st = {
+        "id": "c1", "state": "SPEC_WRITING",
+        "repo": {"worktree": str(wt), "branch": branch},
+        "spec_write": {"mode": "write", "number": 2, "path": "docs/specs/0002-x.md",
+                       "head_before": git.rev_parse(wt), "untracked_before": []},
+    }
+    monkeypatch.setattr(SW, "rollback", lambda *a, **k: None)
+
+    def run(self, req, hooks=None):
+        return RunResult(1, False, False, 0.1, True, None,
+                         result_text="no credential for provider openai")
+
+    runner = type("R", (), {"detachable": False, "run": run})()
+    ctx = SimpleNamespace(cfg=cfg, runner=runner, stop=threading.Event(),
+                          runner_for=lambda s, kind=None: runner, project=lambda s: {})
+    req = SimpleNamespace(run_dir=tmp_path / "r", persona="spec_writer", pi_provider=None,
+                          runner=None)
+    return wt, branch, st, ctx, req
+
+
+def _park_detail(ctx, st, res):
+    row, park = {}, {}
+    counters = {"spec_write_retries": 0}
+    Q._apply_spec_write(
+        ctx, {**st, "counters": counters}, counters, res, row, [],
+        lambda to, reason, **kw: (row.update({"to": to, "reason": reason}),
+                                  park.update(kw.get("park") or {})))
+    assert counters["spec_write_retries"] == 0
+    assert row["to"] == "PARKED" and row["reason"] == "spec_write_failed"
+    return park.get("detail") or ""
+
+
+def test_do_write_spec_env_fault_on_wrong_branch_parks_naming_branch(tmp_path, monkeypatch):
+    from nightwright.agentic import gitops as git
+
+    wt, branch, st, ctx, req = _spec_write_branch_case(tmp_path, monkeypatch)
+    git.git(wt, "checkout", "-q", "-b", "other-branch")
+    BP.reset_noted()
+    res = Q._do_write_spec(ctx, st, Q.Step("write_spec", persona="spec_writer"), "001-x", req, 1.0)
+    assert res.interrupted and res.error is None and res.write["rollback_failed"]
+    detail = _park_detail(ctx, st, res)
+    assert branch in detail and "other-branch" in detail
+    assert "clean the worktree, then resume" not in detail
+
+    git.git(wt, "checkout", "-q", "--detach")
+    res = Q._do_write_spec(ctx, st, Q.Step("write_spec", persona="spec_writer"), "002-x", req, 1.0)
+    assert res.write["rollback_failed"] and branch in _park_detail(ctx, st, res)
+
+
+def test_do_write_spec_unreadable_head_is_a_failed_rollback(tmp_path, monkeypatch):
+    from nightwright.agentic import gitops as git
+    from nightwright.agentic.gitops import GitError
+
+    wt, branch, st, ctx, req = _spec_write_branch_case(tmp_path, monkeypatch)
+
+    def boom(repo):
+        raise GitError(["git", "symbolic-ref"], 128, "fatal: unreadable HEAD")
+
+    monkeypatch.setattr(git, "current_branch", boom)
+    BP.reset_noted()
+    res = Q._do_write_spec(ctx, st, Q.Step("write_spec", persona="spec_writer"), "001-x", req, 1.0)
+    assert res.interrupted and res.error is None and res.write["rollback_failed"]
+    detail = _park_detail(ctx, st, res)
+    assert branch in detail and "unreadable HEAD" in detail
+
+
+def test_prepare_spec_write_refuses_a_clean_tree_on_another_branch(tmp_path, monkeypatch):
+    from nightwright.agentic import gitops as git
+    from nightwright.agentic.gitops import GitError
+
+    wt, branch, st, ctx, req = _spec_write_branch_case(tmp_path, monkeypatch)
+    st["spec"] = {}
+    st["idea"] = {"heading": "x"}
+    git.git(wt, "checkout", "-q", "-b", "other-branch")
+    with pytest.raises(ValueError, match=branch):
+        Q._prepare_spec_write(ctx, st)
+
+    def boom(repo):
+        raise GitError(["git", "symbolic-ref"], 128, "fatal: unreadable HEAD")
+
+    monkeypatch.setattr(git, "current_branch", boom)
+    with pytest.raises(ValueError, match="unreadable HEAD"):
+        Q._prepare_spec_write(ctx, st)
+
+
 def test_do_resolve_converts_startup_fault(tmp_path, monkeypatch):
     from nightwright.agentic import gitops as git
 

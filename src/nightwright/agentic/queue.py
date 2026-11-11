@@ -2527,7 +2527,13 @@ def _prepare_spec_write(ctx: _Ctx, state: dict) -> dict:
     epic_text = SW.epic_context(worktree, epic) if epic else None
     spec = state.get("spec") or {}
     counters = _counters(state)
+    branch = (state.get("repo") or {}).get("branch")
     try:
+        # the writer runs with full permissions: never start one on another branch (its rollback
+        # would refuse, and its commit would land there)
+        if branch and git.current_branch(worktree) != branch:
+            raise ValueError(f"HEAD is no longer on {branch}; check the worktree out on it, "
+                             "then resume")
         if SW.tracked_dirty(worktree):
             raise ValueError("the worktree has uncommitted changes to tracked files; clean the "
                              "worktree, then resume")
@@ -2673,14 +2679,27 @@ def _do_write_spec(ctx: _Ctx, state: dict, step: Step, run_id: str, req,
     w = res.write
     branch = (state.get("repo") or {}).get("branch")
     env_interrupt = False
+    off_branch: list[str] = []
 
     def on_branch():
         """A reset must only ever hit the campaign branch: the writer runs with full permissions
         and may have switched or detached HEAD. Otherwise nothing is reset and a human fixes it."""
-        if branch and git.current_branch(worktree) != branch:
+        if not branch:
+            return
+        try:
+            head = git.current_branch(worktree)
+            wrong = head != branch
+        except (GitError, OSError) as e:    # an unreadable HEAD is a failed rollback too
+            head, wrong = None, True
+            why = getattr(e, "tail", None) or str(e)
+        else:
+            why = f"HEAD is on {head or 'a detached commit'}"
+        if wrong:
             w["rollback_failed"] = True
-            raise ValueError(f"HEAD is no longer on {branch}; check the worktree out on it, "
-                             "clean it, then resume")
+            w["rollback_detail"] = (f"HEAD is no longer on {branch} ({why}); check the worktree "
+                                    "out on it, clean it, then resume")
+            off_branch.append(w["rollback_detail"])
+            raise ValueError(w["rollback_detail"])
 
     def roll_back():
         on_branch()
@@ -2754,7 +2773,8 @@ def _do_write_spec(ctx: _Ctx, state: dict, step: Step, run_id: str, req,
             except (GitError, ValueError):
                 pass                            # roll_back marked rollback_failed
         if w["rollback_failed"] and not env_interrupt:
-            res.error = "rollback failed; clean the worktree, then resume"
+            res.error = off_branch[0] if off_branch else \
+                "rollback failed; clean the worktree, then resume"
     return res
 
 

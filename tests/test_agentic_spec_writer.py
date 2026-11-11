@@ -473,7 +473,8 @@ def test_writer_leaving_the_branch_parks_without_a_reset(tmp_path, monkeypatch):
     Q.tick(cfg, runner=Hooked(tmp_path, after=lambda req: _git(wt, "checkout", "-q", "--detach")))
     park = parked(cfg, cid)
     assert park["reason"] == "spec_write_failed"
-    assert park["detail"] == "rollback failed; clean the worktree, then resume"
+    assert park["detail"].startswith("HEAD is no longer on ")
+    assert "clean the worktree, then resume" not in park["detail"]
     assert (wt / "docs/specs/0002-add-a-thing.md").exists()
 
 
@@ -502,7 +503,8 @@ def test_off_branch_rollback_never_resets_the_other_branch(tmp_path, monkeypatch
     other = _git(wt, "rev-parse", "other")
     park = parked(cfg, cid)
     assert park["reason"] == "spec_write_failed"
-    assert park["detail"] == "rollback failed; clean the worktree, then resume"
+    assert park["detail"].startswith("HEAD is no longer on ")
+    assert "clean the worktree, then resume" not in park["detail"]
     assert _git(wt, "rev-parse", "other") == other and (wt / "other.txt").exists()
     assert _git(wt, "log", "-1", "--format=%s", "other") == "other work"
 
