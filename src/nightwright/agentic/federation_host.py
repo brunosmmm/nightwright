@@ -181,6 +181,15 @@ class _Handler(http.server.BaseHTTPRequestHandler):
             self._json_error(401, "unauthorized", signed=True, method=method, path=path,
                              secret=secret_key)
             return
+        # Responses are signed with the request construction, so a signed error body doubles as a
+        # valid request MAC for that method+path. Every route is bodyless: refuse a GET/HEAD that
+        # carries a body so a reflected response can never authenticate a request.
+        if method in ("GET", "HEAD") and (
+                self.headers.get("Transfer-Encoding") is not None
+                or (clen and str(clen).isascii() and str(clen).isdigit() and int(clen) > 0)):
+            self._json_error(401, "unauthorized", signed=True, method=method, path=path,
+                             secret=secret_key)
+            return
         ts_raw = self.headers.get("X-NW-Req-Ts") or self.headers.get("x-nw-req-ts")
         ts_s = str(ts_raw) if ts_raw is not None else ""
         if not ts_s.isascii() or not ts_s.isdigit() or (len(ts_s) > 1 and ts_s[0] == "0"):

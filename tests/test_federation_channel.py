@@ -519,8 +519,20 @@ def test_enrolled_request_auth(tmp_path, monkeypatch):
     assert req("GET", "/v1/status", headers=hdrs_p120)[0] == 200
     body = b"x"
     hdrs = {**F.request_headers(secret, "GET", "/v1/status", body, now=NOW), "Authorization": "Bearer tok"}
+    # A GET carrying a body is refused even with a matching MAC (signed 401): a signed response
+    # must never be replayable as a request.
     st, h, raw = req("GET", "/v1/status", body=body, headers={**hdrs, "Content-Length": "1"})
-    assert st == 200
+    assert st == 401
+    _resp_sig(secret, "GET", "/v1/status", h, raw)
+    # Reflection: lift a signed 401's ts/sig and replay them as the request MAC over its body.
+    st, h, raw401 = req("GET", "/v1/status", headers={"Authorization": "Bearer wrong"})
+    assert st == 401
+    replay = {"Authorization": "Bearer tok", "X-NW-Req-Ts": h["X-NW-Sig-Ts"],
+              "X-NW-Req-Sig": h["X-NW-Sig"], "Content-Length": str(len(raw401))}
+    st, h2, raw2 = req("GET", "/v1/status", body=raw401, headers=replay)
+    assert st == 401
+    assert b"schema" not in raw2
+    _resp_sig(secret, "GET", "/v1/status", h2, raw2)
     hdrs_empty = {**F.request_headers(secret, "GET", "/v1/status", b"", now=NOW), "Authorization": "Bearer tok"}
     st, h, raw = req("GET", "/v1/status", body=body, headers={**hdrs_empty, "Content-Length": "1"})
     assert st == 401

@@ -558,6 +558,14 @@ any other writer).
 - `python3 tools/test_tiers.py --check` — exit 0.
 - Full suite left to gating.
 
+### Test record (2026-11-11, review loop 5)
+
+- Closed the signed-401 reflection oracle: `federation_host._dispatch` refuses a GET/HEAD with a
+  body (signed 401); `test_enrolled_request_auth` now expects 401 for a bodied GET with a matching
+  MAC and replays a captured signed 401 as a request MAC (401, no status document).
+- `uv run pytest tests/test_federation_channel.py tests/test_rich_output_guard.py -q` — 44 passed.
+- Full suite left to gating.
+
 ### As shipped (2026-11-10)
 
 Replay with two empty directory pairs (`HUB_*` and `HOST_*` below stand for the `NW_DATA_DIR` /
@@ -599,6 +607,13 @@ Deviations from the Design wording, recorded here because Design is frozen:
 - `HubClient` enforces one 2 s wall-clock budget from the end of connect for the TLS handshake,
   the request, the headers and the body (a watchdog shuts the socket), in addition to the
   per-recv 2 s socket timeout. A peer that drips bytes is cut off with `ConnectionError`.
+- The host answers a GET or HEAD that carries a body (positive `Content-Length` or any
+  `Transfer-Encoding`) with a signed 401 before the MAC check. Responses are signed with the same
+  construction as requests, so without this a signed error body for `GET /v1/status` was a valid
+  request MAC for that method and path, and a bearer-token holder without the secret could replay
+  it. `test_enrolled_request_auth` now covers the replay. Parts 3 and 4 must domain-separate
+  request and response MACs (a direction tag and the status code in the signed string) before any
+  route accepts bodies; that changes the frozen `abc` vector, so it belongs to a later part.
 - `nw hosts check` reports a status document whose `projects` is not a list as
   `NAME unreachable: bad status document`, and a registry record without a `name` as
   `? unreachable: malformed host record`; it continues with the remaining hosts. `add`/`rm`
