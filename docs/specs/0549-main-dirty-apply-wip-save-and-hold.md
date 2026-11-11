@@ -19,7 +19,10 @@ guards and the trivial `commit`; its save actions refuse with `save not supporte
 spec adds the write the human asked for in resume note seq 437 (campaign
 `IDEA-1159-20261110-02ed`): "save non-trivial diffs to a WIP branch before restoring". It is the
 second half of [SPEC-0543](./0543-main-dirty-apply-audited-verb.md), split per its spec review
-(verdict `split`). It replaces part of [SPEC-0537](./0537-conductor-must-clear-main-dirty-itself-a-stray.md)
+(verdict `split`): [SPEC-0548](./0548-main-dirty-apply-core-commit.md) carries the first half
+(guards and `commit`) and SPEC-0549 carries the second half (the save actions), so both name
+SPEC-0543 and the ledger shows both successors; SPEC-0549's `supersedes: [SPEC-0543]` is
+deliberate. It replaces part of [SPEC-0537](./0537-conductor-must-clear-main-dirty-itself-a-stray.md)
 (human chose "split / narrow" at ESC-0067).
 
 The chain, in queue order: [SPEC-0546](./0546-main-dirty-plan-classifier.md),
@@ -52,13 +55,24 @@ and WIP location) joins `verb_refusal`. `recommended` names the verb for the sav
 ### Guard 7, base and WIP location
 
 For actions that save or switch (`save_branch`, `branch_and_escalate`, `hold`), after
-SPEC-0548's guards 1–6: `base` must pass `git check-ref-format --branch`, must not start with
-`-`, and `refs/heads/<base>` must exist; a detached HEAD that no branch contains is refused
-(`error: detached HEAD not on any branch`). `.nw/project.yaml` must exist and carry a `project:`
-key, else `error: no project config to place the WIP worktree`; `project` must be a non-empty
-string and a single path component (no `/`, `\`, `..`), else `error: bad project name`. A
-malformed `worktrees` value is `ok: false` JSON. `commit` and `resume` need none of this.
-`verb_refusal` runs guard 7 for these actions.
+SPEC-0548's guards 1–6 (the base checks, always):
+
+- `base` must pass `git check-ref-format --branch`, must not start with `-`, and
+  `refs/heads/<base>` must exist (else `error: bad base <base>`).
+- A detached HEAD is accepted only when `git for-each-ref --contains HEAD refs/heads` is
+  non-empty; otherwise `error: detached HEAD not on any branch`. (This spec wins over the
+  branch's `_head_on_a_branch` where they differ.)
+
+The WIP-location checks apply **only when the plan has tracked dirt to save**; a `hold` with no
+dirt needs only the base checks above:
+
+- `.nw/project.yaml` must exist and carry a `project:` key, else
+  `error: no project config to place the WIP worktree`.
+- `project` is a non-empty string, not `.` or `..`, with no `/`, `\` or NUL, and unchanged by
+  `strip()`, else `error: bad project name`.
+- A malformed `worktrees` value is `ok: false` JSON.
+
+`commit` and `resume` need none of this. `verb_refusal` runs guard 7 for these actions.
 
 ### Interface additions
 
@@ -73,32 +87,52 @@ dirt); an error after a substantive save stays `true`.
   `P.worktree_root(doc, root, project) / f"main-dirty-{ts}"` (`doc` is `.nw/project.yaml`,
   `project` its `project:` key; default `<root>/../.nw-worktrees/<project>`, or the configured
   `worktrees.root`), suffix `-2`, `-3`, … when either exists.
-- `git worktree add -b <wip> <path> HEAD`. Copy each text path's bytes and mode; a binary path
-  through `git hash-object -w` + `git update-index --add --cacheinfo`; a deletion through
-  `git rm -f --` in the WIP tree. Commit there with subject
+- `git worktree add -b <wip> <path> HEAD`. Copy each non-deleted path's bytes and mode into the
+  WIP tree, then stage it by `git hash-object -w --no-filters -- <p>` +
+  `git update-index --add --cacheinfo <mode>,<oid>,<p>` (text and binary alike; `git add` is
+  never used, because it applies clean filters and EOL conversion); a deletion goes through
+  `git --literal-pathspecs rm -f -- <p>` in the WIP tree. Every path call, in main and in the
+  WIP tree, carries `--literal-pathspecs`. Commit there with subject
   `WIP: stray main-checkout edits (<class>)` and one `-m` line per path.
-- Verify each path's blob and mode **from the WIP commit** against main's worktree (absent for a
-  deletion).
+- **Comparator.** WIP blobs are the raw worktree bytes (`--no-filters`), so a repo with
+  `.gitattributes` `text=auto eol=crlf` or `filter=lfs` saves exactly what main's file holds.
+  Verify compares each WIP blob against `git hash-object --no-filters -- <p>` of main's file
+  (absent for a deletion), never against a filtered hash.
+- Verify, **from the WIP commit**: each planned path's blob and mode equals the comparator
+  above, and `git diff-tree -r --name-only -z HEAD <wip_sha>` equals the planned paths exactly
+  (an unplanned path in the WIP commit fails phase (d)).
 - Only then restore main path by path, re-verifying that path just before:
-  `git checkout HEAD -- <p>` when in HEAD, else `git rm -f -- <p>`. Success requires main
-  tracked-clean and the WIP commit present.
+  `git checkout HEAD -- <p>` when in HEAD, else `git rm -f -- <p>`.
+- Success requires, after every path is restored, main tracked-clean and the WIP commit
+  present (phase (f)).
 
 **`hold`:** the save above (if dirty), then `git switch --no-guess <base>` only when
-tracked-clean (never `-f`, `--discard-changes`, `-C`), re-plan, return `replanned`. `base` is
-read again after the restore (HEAD's `.nw/project.yaml` may differ from the stray dirty one);
-the re-read value passes guard 7's base checks again, else `ok: false`, the save kept, and no
-switch runs. A failed switch keeps `wip_*` and reports `replanned.action: hold`.
+tracked-clean (never `-f`, `--discard-changes`, `-C`), re-plan, return `replanned`, which is
+always the real re-plan result `{on_base, action, class}` (never inferred from the switch's exit
+status). `base` is read again after the restore (HEAD's `.nw/project.yaml` may differ from the
+stray dirty one); the re-read value passes guard 7's base checks again, else `ok: false`, the
+save kept, and no switch runs. A failed switch keeps `wip_*`. `hold` returns `ok: true` only
+when the switch exited 0, the re-plan reports `on_base: true`, and main is tracked-clean;
+otherwise `ok: false` with `wip_*` kept (when a save ran). A switch that exits non-zero after
+HEAD moved (a `post-checkout` hook's status is `git switch`'s) reports the re-plan as it is
+(for example `resume` / `clean`) with `ok: false`.
 
 **Failure phases of a save.** Main is byte-identical for every path not yet restored, in every
-row. In rows (a)–(c) the WIP worktree is removed first, then the branch is deleted.
+row. In rows (a)–(c) the WIP worktree is removed first, then the branch is deleted. Every step
+of the save maps to exactly one row.
 
 | phase that fails | WIP worktree | WIP branch | result keys |
 |---|---|---|---|
-| (a) `git worktree add` | not created (any partial dir removed) | deleted if created (`git branch -d`, it has no commit) | `ok: false`, `error` |
-| (b) copy, `hash-object` or `update-index` in the WIP tree | removed (`git worktree remove --force` on the WIP tree only) | deleted (`git branch -d`, no commit yet) | `ok: false`, `error` |
+| (a) `git worktree add` exits non-zero | if the WIP path is registered (`git worktree list --porcelain`, e.g. a failing `post-checkout` hook, which runs after git registered the worktree), run `git worktree remove --force <wip_path>` first; then remove any remaining partial directory the verb just created | `git branch -d <wip>` if the branch exists (it has no commit) | `ok: false`, `error` carries git's stderr |
+| (b) copy, `git rm -f --`, `hash-object` or `update-index` in the WIP tree | removed (`git worktree remove --force` on the WIP tree only) | deleted (`git branch -d`, no commit yet) | `ok: false`, `error` |
 | (c) WIP commit (hook) | removed | deleted (`git branch -d`, no commit) | `ok: false`, `error` with the hook's stderr |
-| (d) blob/mode verify from the WIP commit | kept | kept (it holds the commit; `branch -D` is never run) | `ok: false`, `error`, `wip_branch`, `wip_path`, `wip_sha` |
+| (d) verify from the WIP commit: blob/mode mismatch, or `diff-tree` path set differs from the planned paths | kept | kept (it holds the commit; `branch -D` is never run) | `ok: false`, `error`, `wip_branch`, `wip_path`, `wip_sha` |
 | (e) per-path re-verify or restore of path k | kept | kept | `ok: false`, `error` naming path k, `wip_branch`, `wip_path`, `wip_sha`; paths before k are restored (their content is on the WIP commit), k and later are untouched |
+| (f) post-restore check: main not tracked-clean or the WIP commit missing | kept | kept | `ok: false`, `error` names the leftover paths, `wip_branch`, `wip_path`, `wip_sha` |
+
+If cleanup in (a)–(c) itself fails (for example `worktree remove --force` fails, so `branch -d`
+cannot run), keep what remains, return `ok: false` with an `error` naming both the original and
+the cleanup failure, and set `wip_*` only when a WIP commit exists.
 
 **Never run**, asserted on recorded argv; this list replaces SPEC-0548's (which banned
 `checkout`, `restore` and `switch` outright because the core never needed them): `reset`,
@@ -111,7 +145,9 @@ created.
 
 For `save_branch`, `branch_and_escalate` and `hold`, `recommended` in `plan_clear` becomes
 `["nw queue main-dirty-apply --root <R>"]` when `verb_refusal(root, plan)` is `None` (guards
-5–7); otherwise SPEC-0546's raw list stays. `resume` and `escalate` are unchanged.
+5–7); otherwise SPEC-0546's raw list stays. When guard 7's base check fails (option-shaped or
+invalid `base`, missing `refs/heads/<base>`), the raw `hold` list omits its `switch <base>`
+line, so it never contains an invalid base. `resume` and `escalate` are unchanged.
 
 ### Files the implementer may cherry-pick from `nw/IDEA-1159-20261110-02ed`
 
@@ -144,36 +180,62 @@ failure table, the WIP location, guard 7).
       `worktrees.root`) on branch `wip/main-dirty-*`. Without `.nw/project.yaml` or its
       `project:` key a save returns `error: no project config to place the WIP worktree` with no
       write, while `commit` still works; `project: ../x` returns `error: bad project name` with no
-      write; a malformed `worktrees` value returns `ok: false` JSON with no write.
+      write; a malformed `worktrees` value returns `ok: false` JSON with no write. The `bad
+      project name` cases are `../x`, `.`, `..`, a name with a backslash, a NUL, or surrounding
+      whitespace, and an empty string, each with no write. One fixture has `.gitattributes`
+      `* text=auto eol=crlf` and a CRLF-sensitive edited text file: the WIP blob equals the raw
+      worktree bytes (the `--no-filters` comparator) and the save succeeds.
 - [ ] AC2 (SPEC-0543 AC5) Ordering (recorded argv): the WIP commit and the blob check precede
-      every main `checkout HEAD --` / `rm -f --`; every main path call carries
-      `--literal-pathspecs` (the test fails if the flag is removed); the argv never contains an
+      every main `checkout HEAD --` / `rm -f --`; every path call, in main and in the WIP tree,
+      carries `--literal-pathspecs` (the test fails if the flag is removed from either); a
+      fixture with tracked paths `a*b`, `axb` and a deletion of `a*b` shows that, with the flag,
+      only `a*b` is removed and the WIP commit holds exactly the planned paths (without the
+      flag an extra path would appear and phase (d) would fire); the argv never contains an
       entry of the never-run list.
 - [ ] AC3 (SPEC-0543 AC6) One test per row of the failure-phase table, each forced by a fault
-      injected at that phase: (a) failed `worktree add`, (b) failed copy, (c) failing WIP-commit
-      hook, (d) a blob mismatch at verify, (e) a re-verify failure on the second of three paths.
-      Each asserts the table's WIP-worktree and WIP-branch state and result keys exactly, that
-      main is byte-identical for every not-yet-restored path, that (b) and (c) run
-      `worktree remove` before `branch -d`, that (c) carries the hook's stderr, and that (e) has
-      the first path restored and its content on `wip_sha`.
+      injected at that phase, with a real git fault where possible (pre-commit hook, unwritable
+      parent directory, colliding branch) and a monkeypatched helper otherwise, the method named
+      in the test: (a) failed `worktree add`, in two cases: an unwritable parent directory, and
+      a failing `post-checkout` hook (worktree registered, then non-zero), each asserting no
+      worktree entry (`git worktree list --porcelain`) and no `wip/main-dirty-*` branch remain;
+      (b) failed copy (monkeypatched helper); (c) failing WIP-commit pre-commit hook; (d) a
+      blob mismatch at verify (monkeypatched helper), and a second case where the WIP commit
+      holds an unplanned path; (e) a re-verify failure on the second of three paths; (f) a
+      post-restore check failure (a tracked file dirtied by a monkeypatched restore helper
+      after the last restore) asserting worktree and branch kept and `error` naming the leftover
+      path; plus a cleanup-failure case (`worktree remove --force` forced to fail in (c))
+      asserting `ok: false`, an `error` naming both failures, and no `wip_*`. Each asserts the
+      table's WIP-worktree and WIP-branch state and result keys exactly, that main is
+      byte-identical for every not-yet-restored path, that (b) and (c) run `worktree remove`
+      before `branch -d`, that (c) carries the hook's stderr, and that (e) has the first path
+      restored and its content on `wip_sha`.
 - [ ] AC4 (SPEC-0543 AC7) A name clash yields `-2`, then `-3`, for both branch and directory.
 - [ ] AC5 (SPEC-0543 AC9) `escalate` is asserted by a parametrised test over every (action,
       class) pair the plan can produce, success and refusal, plus the two no-plan returns
       (`action: "none"`): `true` exactly for `substantive` and `merge`.
 - [ ] AC6 (SPEC-0543 AC10) `hold`: substantive dirt off the base is saved,
-      `git switch --no-guess <base>` runs only when tracked-clean, `replanned` is returned and
-      `escalate` is true; a failed switch keeps `wip_*` and reports `replanned.action: hold`; a
-      failed save does not switch; an option-shaped or invalid `base`, a `base` with no
-      `refs/heads/<base>`, and a detached HEAD on no branch are refused before any write; a base
-      that is valid in the dirty `.nw/project.yaml` but option-shaped in HEAD's copy keeps the
-      save and runs no `switch`.
+      `git switch --no-guess <base>` runs only when tracked-clean, `ok: true`, `replanned` is
+      returned with exactly the keys `on_base`, `action`, `class` (after a successful switch
+      `{on_base: true, action: resume, class: clean}`) and `escalate` is true. A failed switch,
+      forced by an untracked file that collides with a base file, keeps `wip_*`, is `ok: false`
+      and reports `replanned.action: hold`; a non-zero switch whose HEAD did move (a failing
+      `post-checkout` hook) is `ok: false` with `replanned` reported as the re-plan is. A failed
+      save does not switch. An option-shaped or invalid `base`, a `base` with no
+      `refs/heads/<base>`, and a detached HEAD where `git for-each-ref --contains HEAD
+      refs/heads` is empty (`error: detached HEAD not on any branch`; a detached HEAD on a
+      branch tip is accepted) are refused before any write. A base that is valid in the dirty
+      `.nw/project.yaml` but option-shaped in HEAD's copy keeps the save and runs no `switch`.
+      A `hold` with no tracked dirt and no `.nw/project.yaml` switches, creates no worktree and
+      writes no `wip_*`.
 - [ ] AC7 (SPEC-0543 AC13) `recommended` is `["nw queue main-dirty-apply --root <R>"]` for
       `commit`, `save_branch`, `branch_and_escalate`, `hold` when `verb_refusal` is `None`; the
       raw list for a symlink, a typechange, a partially staged path, a gitlink, a path under a
       symlinked directory, and a save with no `.nw/project.yaml`; unchanged for `resume` /
-      `escalate`. SPEC-0546's AC5 run-the-list tests now run the verb command through the CLI
-      for the save actions and assert the same end state; the raw-list fixtures still run the
-      raw list.
+      `escalate`. SPEC-0546's AC5 save-action fixtures gain a committed `.nw/project.yaml`
+      (`project: Scratch`); the test asserts the new `recommended` is the verb command before it
+      runs it through the CLI and asserts the same end state; the raw-list fixtures still run
+      the raw list. Raw-list fixtures for an invalid (option-shaped) `base` and for a missing
+      `refs/heads/<base>` assert the raw `hold` list has no `switch <base>` line.
 
 ## Test plan
 
@@ -197,7 +259,14 @@ failure table, the WIP location, guard 7).
   branch `feature` with a config edit → `hold` saves and switches to `main`. Record the outputs in
   As shipped.
 
-## Out of scope
+## Goals / Non-goals
+
+**Goals**
+
+- A human or steward can save non-trivial main-checkout dirt to a WIP branch and restore main
+  without losing it.
+
+**Non-goals**
 
 - Symlink and typechange dirt (refused by SPEC-0548; raw list kept).
 - Removing the WIP worktree or branch after a successful save: left for the human.
