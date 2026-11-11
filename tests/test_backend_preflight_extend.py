@@ -28,7 +28,12 @@ pytestmark = pytest.mark.fast
 
 
 def _pi_ok_env(monkeypatch):
+    """Node and the SDK entry present, whatever the host has installed."""
+    real_rb = RP._resolve_binary
     monkeypatch.setattr(BP, "_sdk_on_walk", lambda script, environ=None: True)
+    monkeypatch.setattr(
+        RP, "_resolve_binary",
+        lambda name, environ=None: "/usr/bin/node" if name == "node" else real_rb(name, environ))
 
 
 def _pi_check_fail_openai(monkeypatch):
@@ -154,10 +159,24 @@ def test_do_spec_review_converts_startup_fault(tmp_path, monkeypatch):
             return RunResult(1, False, False, 0.1, True, None,
                              result_text="no credential for provider openai")
 
-    ctx.runner = PiRunnerStub()
-    ctx.runner_for = lambda st, kind=None: PiRunnerStub()
-    res = Q._do_spec_review(ctx, st, Q.Step("spec_review"), "002-x", req, 1.0)
-    assert res.interrupted and counters["spec_review_retries"] == 0
+    for n, text in enumerate(("no credential for provider openai",
+                              "pi-coding-agent is not installed (x)"), start=2):
+        class PiRunnerStub:
+            detachable = False
+
+            def run(self, req, hooks=None, _t=text):
+                return RunResult(1, False, False, None, True, None, result_text=_t)
+
+        ctx.runner = PiRunnerStub()
+        ctx.runner_for = lambda st, kind=None: PiRunnerStub()
+        res = Q._do_spec_review(ctx, st, Q.Step("spec_review"), f"00{n}-x", req, 1.0)
+        assert res.interrupted and res.run_result.cost_usd == 0.0
+        assert ctx.stop.is_set() is False
+        counters = {"spec_review_retries": 0}
+        row = Q._apply_spec_review(ctx, {**st, "counters": counters}, {}, counters, res, {}, [],
+                                   lambda *a, **k: ())
+        assert counters["spec_review_retries"] == 0
+        assert row["to"] == "SPEC_REVIEW" and row["reason"] == "interrupted"
     assert "openai" in (BP.env_fault(SimpleNamespace(
         is_error=True, interrupted=False, result_text="no credential for provider openai")) or "")
 
@@ -376,6 +395,43 @@ def test_pi_check_node_script_sdk_and_credential(tmp_path, monkeypatch):
               "ANTHROPIC_IDENTITY_TOKEN_FILE": "~/../../real_secret"}
     assert BP.check("pi", environ=escape, providers=["anthropic"]) == (
         "no credential for provider anthropic")
+    # google-vertex: credential files satisfy it, GEMINI_API_KEY alone does not
+    vhome = tmp_path / "vertex_home"
+    vhome.mkdir()
+    monkeypatch.setattr(BP, "_home", lambda environ: vhome)
+    venv = {"PATH": env2["PATH"], "HOME": str(vhome), "GEMINI_API_KEY": "g"}
+    assert BP.check("pi", environ=venv, providers=["google-vertex"]) == (
+        "no credential for provider google-vertex")
+    venv["GOOGLE_APPLICATION_CREDENTIALS"] = str(credf)
+    assert BP.check("pi", environ=venv, providers=["google-vertex"]) is None
+    venv.pop("GOOGLE_APPLICATION_CREDENTIALS")
+    vadc = vhome / ".config/gcloud/application_default_credentials.json"
+    vadc.parent.mkdir(parents=True)
+    vadc.write_text("{}")
+    assert BP.check("pi", environ=venv, providers=["google-vertex"]) is None
+    # whitespace-only env values are not credentials
+    ws = {"PATH": env2["PATH"], "HOME": str(bare_home), "OPENAI_API_KEY": "   \n",
+          "PI_CODING_AGENT_DIR": str(tmp_path / "no_agent")}
+    assert BP.check("pi", environ=ws, providers=["openai"]) == "no credential for provider openai"
+    # a top-level non-object auth.json is absent
+    list_agent = tmp_path / "list_agent"
+    list_agent.mkdir()
+    (list_agent / "auth.json").write_text(json.dumps([{"openai": {"type": "api"}}]))
+    ws["PI_CODING_AGENT_DIR"] = str(list_agent)
+    assert BP.check("pi", environ=ws, providers=["openai"]) == "no credential for provider openai"
+    # an unsafe current-version never reaches a path join
+    monkeypatch.setattr(BP, "_sdk_on_walk", lambda script, environ=None: False)
+    bad_agent = tmp_path / "bad_agent"
+    (bad_agent / "install").mkdir(parents=True)
+    evil = tmp_path / "evil" / "node_modules/@earendil-works/pi-coding-agent/dist"
+    evil.mkdir(parents=True)
+    (evil / "index.js").write_text("//")
+    (bad_agent / "install" / "releases").mkdir()
+    for bad in ("../x", "../../evil", ".hidden", ""):
+        (bad_agent / "install" / "current-version").write_text(bad + "\n")
+        assert BP.check("pi", environ={"PATH": env2["PATH"], "HOME": str(bare_home),
+                                       "PI_CODING_AGENT_DIR": str(bad_agent)}
+                        ) == "pi-coding-agent is not installed"
     assert not calls
 
 
@@ -778,6 +834,33 @@ def test_request_json_failure_still_retries(tmp_path, monkeypatch):
 
 def test_unknown_model_still_retries(tmp_path, monkeypatch):
     _spec_review_ordinary_failure_retries(tmp_path, monkeypatch, "unknown model openai/nope")
+
+
+def test_model_runtime_create_failure_still_retries(tmp_path, monkeypatch):
+    _spec_review_ordinary_failure_retries(tmp_path, monkeypatch, "ModelRuntime.create failed: boom")
+
+
+@pytest.mark.parametrize("text", ["unknown model openai/nope", "ModelRuntime.create failed: x",
+                                  "request.json write failed"])
+def test_do_persona_pi_ordinary_failures_are_not_env_faults(tmp_path, text):
+    BP.reset_noted()
+    cfg = {"data_dir": str(tmp_path / "d"), "agentic": {"runner": "pi"}}
+
+    class PiStub:
+        detachable = False
+
+        def run(self, req, hooks=None):
+            return RunResult(1, False, False, 0.1, True, None, result_text=text)
+
+    ctx = SimpleNamespace(cfg=cfg, runner=PiStub(), stop=threading.Event(),
+                          runner_for=lambda st, kind=None: PiStub())
+    req = SimpleNamespace(run_dir=tmp_path / "r", persona="implementer", runner=None,
+                          pi_provider=None)
+    st = {"id": "c1", "state": "REVIEWING", "repo": {"worktree": str(tmp_path)}}
+    res = Q._do_persona(ctx, st, Q.Step("triage", persona="triager"), "001-x", req, 1.0)
+    assert res.run_result.is_error and not res.run_result.interrupted
+    assert not res.interrupted and res.run_result.cost_usd is None
+    assert not [r for r in ESC.list_all(cfg, "open") if r.get("kind") == "backend_unavailable"]
 
 
 def test_fault_kind_pi_path():
@@ -1389,13 +1472,42 @@ def test_review_fanout_spawn_skip_prepare_hold_frees_persona_cap(tmp_path, monke
 
 
 def test_backend_fault_oserror_returns_none(tmp_path, monkeypatch):
+    seen: list[int] = []
+
     def boom(cfg, profile, **kw):
+        seen.append(1)
         raise OSError("nope")
 
     monkeypatch.setattr("nightwright.agentic.profiles.resolve_profile", boom)
+    monkeypatch.setattr(PJ, "project_config", lambda c, p: {"_root": str(tmp_path), "project": p})
     cfg = {"data_dir": str(tmp_path / "d"), "agentic": {"runner": "cursor"}}
     st = {"id": "c1", "state": "SPEC_REVIEW", "project": "Meta-Tools", "profile": "balanced"}
     assert PG.Gate(cfg, ["c1"]).backend_fault(st, ("spec_reviewer",)) is None
+    assert seen, "resolve_profile was never reached"
+
+
+def test_persona_less_backend_fault_swallows_unknown_model_set(tmp_path, monkeypatch):
+    _pi_ok_env(monkeypatch)
+    monkeypatch.setattr(PJ, "project_config", lambda c, p: {"_root": str(tmp_path), "project": p})
+    cfg = {"data_dir": str(tmp_path / "d"), "agentic": {"runner": "pi", "model_set": "nope"}}
+    st = {"id": "c1", "state": "IMPLEMENTING", "project": "Meta-Tools"}
+    assert PG.Gate(cfg, ["c1"]).backend_fault(st) is None
+
+
+def test_do_persona_closes_slot_hold_when_it_fails_before_dispatch(tmp_path):
+    r, w = os.pipe()
+    os.close(w)
+    ctx = SimpleNamespace(cfg={"data_dir": str(tmp_path / "d")}, runner=None,
+                          stop=threading.Event(),
+                          runner_for=lambda st, kind=None: (_ for _ in ()).throw(ValueError("x")))
+    req = SimpleNamespace(run_dir=tmp_path / "r", persona="implementer", runner=None,
+                          pi_provider=None)
+    st = {"id": "c1", "state": "IMPLEMENTING"}
+    res = Q._do_persona(ctx, st, Q.Step("implement", persona="implementer"), "001-x", req, 1.0,
+                        None, None, (object(), r, 0))
+    assert res.error == "x"
+    with pytest.raises(OSError):
+        os.fstat(r)          # the probe slot fd was closed, not leaked
 
 
 def test_writeback_rerun_pi_preflight_interrupts(tmp_path, monkeypatch):

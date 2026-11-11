@@ -374,7 +374,10 @@ class Gate:
             if kind == "cursor":
                 checks.append((kind, []))
             elif kind == "pi":
-                checks.append((kind, PM.probe_providers(self.cfg, campaigns=[state])))
+                try:
+                    checks.append((kind, PM.probe_providers(self.cfg, campaigns=[state])))
+                except (ValueError, OSError):      # e.g. an unknown model set
+                    return None
         fault = None
         for kind, providers in checks:
             key = (kind, tuple(providers or ()))

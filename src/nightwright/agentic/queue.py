@@ -2969,6 +2969,9 @@ def _do_persona(ctx: _Ctx, state: dict, step: Step, run_id: str, req, budget: fl
     run found open by a new runner (`exited_before_start`: its process ended before this
     runner's lease started, so a commit made but never recorded is recorded now)."""
     res = StepResult(state["id"], step, state["state"], run_id=run_id, budget=budget)
+    held_slots: dict = {}       # the probe slot fd handed in: `dispatch` consumes it, else closed below
+    if slot_hold is not None:
+        held_slots[(state["id"], step.persona or req.persona)] = slot_hold
     try:
         # SPEC-0344: a persona-capable worker may take the run (or holds an adopted one).
         # A tick context resolves the persona backend per campaign (SPEC-0436). A caller
@@ -2977,10 +2980,8 @@ def _do_persona(ctx: _Ctx, state: dict, step: Step, run_id: str, req, budget: fl
         local = _local_runner(ctx, state, req)
         if adopted is None:                       # SPEC-0484: never in place of a live run
             local = _preflight_hold(ctx, state, req, local)
-        reservations = getattr(ctx, "_slot_reservations", None)
-        if slot_hold is not None:
-            persona = step.persona or req.persona
-            reservations = {(state["id"], persona): slot_hold}
+        reservations = held_slots if slot_hold is not None else getattr(
+            ctx, "_slot_reservations", None)
         remote = RPS.dispatch(cfg, state, step.kind, req, adopted=adopted is not None,
                               local=local, reservations=reservations) if cfg is not None else None
         runner = remote or local
@@ -3045,6 +3046,7 @@ def _do_persona(ctx: _Ctx, state: dict, step: Step, run_id: str, req, budget: fl
     except (GitError, ValueError, OSError) as e:
         res.error = getattr(e, "tail", None) or str(e)
     finally:
+        RPS.release_reservations(held_slots)      # a hold `dispatch` never reached
         if hooks:
             hooks.done()
     return res

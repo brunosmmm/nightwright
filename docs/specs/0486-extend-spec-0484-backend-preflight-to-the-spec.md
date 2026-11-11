@@ -598,6 +598,21 @@ Deviations and additions to Design, recorded here because Design is frozen:
 `uv run pytest tests/test_backend_preflight_extend.py tests/test_runner_selfheal.py tests/test_remote_persona_limits.py -q` — 176 passed.
 `python3 tools/test_tiers.py --check` — ok. Full suite left to gating.
 
+### Test record (2026-11-10, loop 3 review fixes)
+
+`_pi_ok_env` now stubs `RP._resolve_binary("node")` so the project Pi map / model set hold tests
+no longer need a host `node`; `test_backend_fault_oserror_returns_none` mocks `project_config` and
+asserts `resolve_profile` ran. Spec-review startup faults (`no credential for provider`,
+`pi-coding-agent is not installed`) are checked for cost 0.0 and `_apply_spec_review`; the Pi
+credential matrix gained google-vertex files, GEMINI-only, whitespace env, list `auth.json`, and
+unsafe `current-version`; `ModelRuntime.create failed` / `unknown model` / `request.json` stay
+ordinary failures through spec review and `_do_persona`. Code: `_do_persona` closes a handed-in probe
+slot fd that `dispatch` never consumed; persona-less `Gate.backend_fault` returns None when
+`probe_providers` raises (unknown model set).
+`uv run pytest tests/test_backend_preflight_extend.py tests/test_runner_selfheal.py tests/test_remote_persona_limits.py -q` — 182 passed.
+`python3 tools/test_tiers.py --check` — ok. `python3 tools/spec_lint.py --write-ledger` — ok.
+Full suite left to gating.
+
 ## Rollout / migration
 
 Lands with the code. The next runner start (re-exec on merge) runs `startup_check` for Pi
