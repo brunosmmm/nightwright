@@ -9,6 +9,7 @@ parent: SPEC-0405
 source_idea: IDEA-1036
 tags: [tui, agentic, observability]
 depends_on: [SPEC-0407, SPEC-0476]
+updated: 2026-11-10
 ---
 
 ## Context
@@ -31,15 +32,21 @@ both tabs. The Runs pane they jump into is
 - Findings & decisions lists this campaign's history records and can filter
   them and jump to the run, the resolving decision, and the follow-up idea.
 - Mail lists this campaign's mail threads.
-- Answering an open escalation uses the same flow the mailbox tab already uses.
+- Answering or withdrawing an open escalation uses the same flow the mailbox
+  tab already uses.
 
 **Non-goals**
 
 - The desk-wide Findings tab (epic child 7). This pane is one campaign.
 - Overview phase maths. Overview stays the SPEC-0407 header.
 - New mail composition. The mailbox tab already sends mail. This pane reads
-  threads and answers an escalation that is already open.
-- Any write path other than `escalations.plan_answer` / `apply_answer`.
+  threads and answers or withdraws an escalation that is already open.
+- Any new writer. This spec adds no writer besides the SPEC-0250 answer and
+  withdraw flow (`escalations.plan_answer` / `apply_answer` and
+  `plan_withdraw` / `apply_withdraw`). `p`, `u`, `P`, and `A` stay the
+  SPEC-0407 queue actions on every tab.
+- New fields on `nw.history.record.v1`, and mailbox messages that history did
+  not attach to this campaign.
 
 ## Decision
 
@@ -48,12 +55,16 @@ both tabs. The Runs pane they jump into is
   newest first, plus a detail pane and a filter line.
 - A record whose `status` is `fixed` is labeled `not re-raised`.
 - `r` selects that record's run on the Runs tab. `d` selects the resolving
-  record. `i` shows the follow-up idea id in the detail.
-- Mail groups records with `kind: mail` by `links.thread`.
-- `MailboxView._escalation_flow` moves to
-  `tui/escalation_flow.py::answer_escalation`. The mailbox tab and this popup
-  both call it. On an open escalation record the popup binds `c`, `t`, and
-  `w`, the same keys the escalation inbox uses.
+  record. `i` appends the follow-up idea id and title to the detail.
+- Mail groups records with `kind: mail` by `links.thread`. Sender, recipient,
+  and message kind come from the mailbox line the history record points at,
+  not from the history record.
+- `MailboxView._escalation_flow` and `_parked_for_decision` move to
+  `tui/escalation_flow.py::answer_escalation(owner, cfg, row, action)`. `row`
+  is an `EscRow` whose `id` is the `ESC-…` id. The mailbox tab passes its
+  current `EscRow`; this popup loads an `EscRow` from `links.escalation`. On
+  an open escalation record the popup binds `c`, `t`, and `w`, the same keys
+  the escalation inbox uses.
 
 ## Design
 
@@ -62,11 +73,30 @@ both tabs. The Runs pane they jump into is
 `tab-records` keeps its id. The placeholder `Static` goes away.
 
 A filter `Input` (`#records-filter`) sits above a `DataTable`
-(`#campaign-records`). `/` focuses the filter. The filter tokens are
-`agent:`, `kind:`, `severity:`, and `status:`, plus a bare word that matches
-`title` and `text` case-insensitively. An empty filter shows every record.
-Tokens the parser does not know are ignored, and the input shows them as
-unmatched rather than applying them.
+(`#campaign-records`). `/` focuses the filter. A line `#records-filter-status`
+sits under the input.
+
+**Filter.** The filter applies on every change of `#records-filter`.
+Whitespace-separated tokens AND together. A token is split on the first colon
+only, so `agent:steward:Meta-Tools` matches agent `steward:Meta-Tools`.
+`agent:`, `kind:`, `severity:`, and `status:` match those record fields
+exactly, on the raw value: `status:fixed` matches status `fixed`, including a
+row whose cell reads `not re-raised`. A bare word is a case-insensitive
+substring of `title` or `text`. Any other key is not applied.
+`#records-filter-status` lists `unmatched: <token>` for each ignored token and
+is empty when every token applied. An empty filter shows every record and
+clears that line.
+
+**Keyboard.** While `#campaign-records` or `#campaign-mail` has focus, `j`,
+`k`, `up`, and `down` move that table's cursor. Those keys move the timeline
+cursor only on `tab-timeline`; the timeline bindings do not consume them on
+Findings or Mail (so the existing priority `up`/`down` bindings must not
+swallow the key when another tab is active). `g` and `G` stay timeline-only.
+Printable keys, including digits, type into `#records-filter`; the `1`–`5`
+tab bindings do not switch tabs while the input is focused. `escape` in
+`#records-filter` returns focus to `#campaign-records` and does not dismiss
+the popup. `enter` there also returns focus to the table. Digit keys `1`–`5`
+still switch tabs when a table has focus.
 
 Columns: time, agent, kind, severity, status, title. Sort is `ts` descending,
 then `id` ascending, so a reload does not reorder equal timestamps. The
@@ -75,50 +105,90 @@ status.
 
 The detail pane (`#record-detail`) shows title, text, status, `linked_by`,
 and the link ids (`run_id`, `resolved_by`, `followup_idea`, `escalation`,
-`thread`). Text from the record is Rich `Text`, never markup.
+`thread`), each labeled by its key. Text from the record is Rich `Text`,
+never markup.
 
 Keys, when the table has focus:
 
-- `r` switches to `tab-runs` and selects `links.run_id`, using the SPEC-0476
-  selection. If `run_id` is missing, notify `no run` and stay put.
+- `r` switches to `tab-runs` and selects that `run_id` on `#campaign-runs`,
+  the same selection SPEC-0476 uses for `focus={"tab": "runs", "run":
+  run_id}`. If `links.run_id` is absent or is not a `history.runs` row,
+  notify `no run` and stay on the Findings row.
 - `d` selects the row whose id is `links.resolved_by`. If that id is missing
   or not in the table, notify `no decision` and stay put.
-- `i` writes `links.followup_idea` into the detail. If it is missing, notify
-  `no follow-up`. The popup does not switch to the ideas desk.
+- `i` appends `follow-up: <id>` to `#record-detail`, and when the idea file
+  can be read, the idea title on the same line, as Rich `Text`. That line is
+  absent before the key. The links list keeps the label `followup_idea`. A
+  missing `links.followup_idea` notifies `no follow-up` and does not append.
+  The popup does not switch to the ideas desk.
 
-`resolve_focus` already returns `("records", record_id)` for a known record.
-The first paint selects that row. The text `placeholder: records` is not
-rendered. An unknown record id still opens Overview and notifies
-`not found: <id>`.
-
-Digit keys `1`–`5` still switch tabs.
+**Focus and reload.** `resolve_focus` already returns `("records",
+record_id)` for a known record; it moves the cursor only on the first paint.
+The text `placeholder: records` is not rendered. An unknown record id still
+opens Overview and notifies `not found: <id>`. A campaign that is not
+terminal polls and `reload()` repaints, and `reload()` also runs after a
+successful answer or withdraw. On reload the active tab stays,
+`#records-filter` keeps its text, `#campaign-records` stays on the same record
+id, and `#campaign-mail` stays on the same `links.thread`. If that id is gone,
+select the nearest remaining row under the same sort.
 
 ### Mail
 
-`tab-mail` keeps its id. Records with `kind` `mail` and this campaign are
-grouped by `links.thread`. One table row per thread (`#campaign-mail`):
-latest message time, who spoke (`from` of the latest message), status of the
-latest message, and the first line of the latest text. Newest thread first.
+`tab-mail` keeps its id. Group this campaign's `kind: mail` history records
+by `links.thread`. A null `links.thread` is its own row, keyed by the record
+id. Threads sort by the latest record `ts` descending, then thread id
+ascending. One table row per thread (`#campaign-mail`) shows that `ts`, the
+sender, the history `status` of the latest record (blank when null), and the
+first line of its `text`.
 
-The detail lists the thread's messages in time order: time, `from`, `to`,
-`kind`, and text, as Rich `Text`. A question record keeps the status the
-history layer set (`open` or `answered`).
+Sender, `to`, and message kind come from the mailbox line, not from the
+history record (whose `kind` is `mail` for every mailbox row, whose `agent`
+folds `from`, and which has no `to` or message kind). The record id is
+`mailbox:<stem>:<byte offset>`; the stem has no colons (`events._safe` turns
+colons into underscores, so `steward:Meta-Tools` is `steward_Meta-Tools`).
+Split the id on the first and last colon, seek to that byte offset in
+`mailbox/<stem>.jsonl`, and read one JSON object. The row's sender and the
+detail's `from`, `to`, and `kind` are that object's `from`, `to`, and `kind`
+(message kind is `question`, `answer`, `request`, or `info`). A missing or
+unparsable line shows the history `text`, uses `agent` as `from`, and leaves
+`to` and message kind blank; it does not raise. `links.thread` is a root
+message id that may itself contain colons; it is never parsed as a path.
+
+The detail lists the campaign's records that share the thread, `ts`
+ascending, as Rich `Text`: time, `from`, `to`, message `kind`, and `text`.
+Mailbox messages history did not attach to this campaign are not pulled in.
+Question status stays the history record's `open` or `answered`. No field is
+added to `nw.history.record.v1`.
 
 `placeholder: mail` is not rendered. `focus` of `{tab: mail}` still opens
 this tab, with the newest thread selected when there is one.
 
 ### Escalation answer
 
-Move the body of `MailboxView._escalation_flow` to
-`answer_escalation(screen, cfg, row, action)`. `action` stays `choose`,
-`text`, or `withdraw`. The mailbox method becomes a call to that function,
-and the mailbox tests keep calling it through `MailboxView`.
+Move `MailboxView._escalation_flow` and `_parked_for_decision` to
+`answer_escalation(owner, cfg, row, action)`. `row` is an `EscRow` whose `id`
+is the `ESC-…` id (not the findings row id `escalation:ESC-0001`).
+`action` is `choose`, `text`, or `withdraw`.
+
+- `choose` and `text` go through `plan_answer`, confirm, then `apply_answer`.
+- `withdraw` goes through `plan_withdraw`, confirm, then `apply_withdraw`.
+- On success, `owner.reload()` runs, and the withdraw notify keeps the
+  parked-campaign suffix ("; <campaign> is still PARKED (human_decision);
+  resume it from the queue tab (u)") produced by `_parked_for_decision`.
+- Cancel, empty text, and an empty withdraw reason write nothing.
+
+The mailbox method becomes a call to that function passing its current
+`EscRow`, and the mailbox tests keep driving it through `MailboxView`.
 
 When the selected Findings row is `kind: escalation` and `status: open`, the
-popup binds `c`, `t`, and `w` to that function with the same prompts the
-escalation inbox uses. A record that is not an open escalation notifies
-`not an open escalation` and does not plan an answer. The answer still goes
-through `plan_answer` then confirm then `apply_answer`. No other key writes.
+popup binds `c`, `t`, and `w`. It reads `links.escalation`, loads that
+`EscRow` (via `ESC.read`), and calls `answer_escalation` with it; it never
+passes the history record or the findings row. The popup uses the same busy
+flag and the same `_guarded` notifies as `MailboxView.start_escalation`:
+`ValueError` / `OSError` become an error notify, any other exception becomes
+`mailbox action failed: …`. `c` on an open escalation with no options
+notifies `<id> has no options` and does not plan. Any other findings row
+notifies `not an open escalation` and does not plan.
 
 ## Alternatives considered
 
@@ -130,72 +200,134 @@ through `plan_answer` then confirm then `apply_answer`. No other key writes.
   not bind them. The shipped escalation inbox uses `c`, `t`, and `w`. The
   popup uses those keys so the two surfaces match.
 - **Open the ideas tab on `i`.** The epic says the key shows the follow-up
-  idea. Showing the id in the detail keeps the popup in place and adds no
-  navigation path.
+  idea. Showing the id and title in the detail keeps the popup in place and
+  adds no navigation path.
+- **Add `from`/`to`/message kind to the history record.** It would change
+  `nw.history.record.v1` for every consumer; reading the one mailbox line at
+  the record's offset needs no schema change.
 
 ## Acceptance criteria
 
 - [ ] **AC1. Records table.** On a fixture campaign that has records, Findings
   & decisions shows one row per `history.records` entry, newest `ts` first.
-  A row with `status: fixed` shows `not re-raised`. The strings
-  `placeholder: records` and `placeholder: records (<id>)` are absent.
-- [ ] **AC2. Filter and focus.** `agent:conductor` hides rows whose agent is
-  not `conductor`. A bare word matches title and text. Clearing the filter
-  shows every row again. Opening with
-  `focus={"tab": "records", "record": id}` selects that record. An unknown
-  id opens Overview and notifies `not found: <id>`.
-- [ ] **AC3. Jumps.** On a record with `links.run_id`, `r` opens the Runs tab
-  with that run selected (SPEC-0476). On a record with `links.resolved_by`,
-  `d` selects that record. On a record with `links.followup_idea`, `i` shows
-  that id in the detail. Each missing link notifies `no run`, `no decision`,
-  or `no follow-up` and does not change the selection.
+  Two records with the same `ts` appear in `id` ascending order. A row with
+  `status: fixed` shows `not re-raised`. The strings `placeholder: records`
+  and `placeholder: records (<id>)` are absent.
+- [ ] **AC2. Filter, keys, and focus.** `agent:conductor` hides rows whose
+  agent is not `conductor`; `agent:steward:Meta-Tools` keeps rows whose agent
+  is `steward:Meta-Tools`. One `kind:` case and one `severity:` case each keep
+  only matching rows. `status:fixed` keeps a row whose cell reads
+  `not re-raised`. `bogus:x` leaves the rows unchanged and
+  `#records-filter-status` shows `unmatched: bogus:x`. A bare word matches
+  title and text case-insensitively. Clearing the input shows every row and
+  clears that line. With `#campaign-records` focused, `j` or `down` moves to
+  another findings row. Pressing `escape` in `#records-filter` returns focus
+  to the table with the popup still open. Opening with
+  `focus={"tab": "records", "record": id}` selects that record. An unknown id
+  opens Overview and notifies `not found: <id>`. A reload keeps the active
+  tab, the filter text, and the selected record id (and the selected thread on
+  Mail); if the id is gone the nearest remaining row is selected.
+- [ ] **AC3. Jumps.** On a record with `links.run_id` that is a
+  `history.runs` row, `r` opens the Runs tab with that run selected
+  (SPEC-0476). On a record with `links.resolved_by`, `d` selects that record.
+  On a record with `links.followup_idea`, the detail has no `follow-up:` line
+  before `i` and has `follow-up: <id>` after it, with the idea title on that
+  line when the idea file exists. Each missing link notifies `no run`,
+  `no decision`, or `no follow-up` and does not change the selection or append
+  a line; `r` with a `run_id` absent from `history.runs` notifies `no run` and
+  stays on the Findings row.
 - [ ] **AC4. Mail.** The Mail tab shows one row per `links.thread` among this
-  campaign's mail records, newest thread first, and the detail shows every
-  message in that thread in time order. `placeholder: mail` is absent.
-  Another campaign's mail is not listed.
-- [ ] **AC5. Escalation.** `c`, `t`, and `w` on an open escalation record call
-  `answer_escalation` and, after confirm, `apply_answer`. The same keys on a
-  finding notify `not an open escalation` and do not write. The mailbox tab's
-  existing choose, text, and withdraw tests still pass against
-  `answer_escalation`.
+  campaign's mail records (a null thread is its own row), sorted by latest
+  `ts` descending then thread id ascending, and the detail shows every one of
+  the campaign's records in that thread in `ts` ascending order.
+  For one fixture message the detail's `from`, `to`, and message `kind` equal
+  those of the `mailbox/<stem>.jsonl` line at the record id's byte offset. A
+  missing or unparsable line falls back to the history `text`, `agent` as
+  `from`, and blank `to` and kind without raising. `placeholder: mail` is
+  absent. Another campaign's mail is not listed.
+- [ ] **AC5. Escalation.** On an open escalation record, `c` and `t` call
+  `answer_escalation` with the `EscRow` loaded from `links.escalation` and,
+  after confirm, `apply_answer`; `w` calls it and, after confirm,
+  `apply_withdraw`, then `owner.reload()` runs and the withdraw notify keeps
+  the parked-campaign suffix. `c` on an open escalation with no options
+  notifies `<id> has no options` and plans nothing. The same keys on any
+  other finding notify `not an open escalation` and plan nothing. Cancel,
+  empty text, and an empty withdraw reason write nothing. Errors use the same
+  `_guarded` notifies as the mailbox tab. The mailbox tab's existing choose,
+  text, and withdraw tests still pass against `answer_escalation`.
 - [ ] **AC6. Literal text.** A record title or mail body that contains Rich
   markup characters is shown literally.
-- [ ] **AC7. No other writes.** Filtering, jumping, and opening Mail leave the
-  data dir byte-identical apart from the history cache. The only data-dir
-  write this pane can make is an escalation answer the user confirms.
+- [ ] **AC7. Writers.** This spec adds no writer besides the SPEC-0250 answer
+  and withdraw flow. `p`, `u`, `P`, and `A` still run the SPEC-0407 queue
+  actions on Findings and Mail. Filtering, jumping, opening Mail, and
+  dismissing a prompt leave the campaign directory byte-identical. A
+  confirmed `c` or `t` may change whatever `apply_answer` already changes
+  (escalation file, campaign state, ledger, mail). A confirmed `w` may change
+  whatever `apply_withdraw` already changes. The history cache under
+  `cache_dir` may change on a read.
 
 ## Test plan
 
 Automated, in `tests/test_tui_campaign_detail_ac.py` and a new
-`tests/test_tui_campaign_records.py`, on the fixture copy:
+`tests/test_tui_campaign_records.py`, on the fixture copy. The new module
+carries exactly one module-level marker, `pytestmark = pytest.mark.tui`
+(SPEC-0490: `test_tui_*`); extending the existing module adds no second tier.
+`python3 tools/test_tiers.py --check` exits 0 when `tools/test_tiers.py`
+exists.
 
-1. Open Findings and assert row count and order against `history.records`.
-   Assert a `fixed` row reads `not re-raised`. Replace the `placeholder:
-   records` and `placeholder: mail` assertions in the shell tests.
-2. Type `agent:` plus an agent that exists in the fixture and assert the
-   other agents disappear. Clear it and assert they return. Open with a
-   known record id and an unknown one.
+1. Open Findings and assert row count and order against `history.records`,
+   including two same-`ts` records in `id` ascending order. Assert a `fixed`
+   row reads `not re-raised`. Replace the `placeholder: records` and
+   `placeholder: mail` assertions in the shell tests.
+2. Filter: type `agent:` plus an agent in the fixture and assert the others
+   disappear; `agent:steward:Meta-Tools`; one `kind:` and one `severity:`
+   token; `status:fixed` keeps a `not re-raised` row; `bogus:x` leaves the
+   rows unchanged and `#records-filter-status` reads `unmatched: bogus:x`; a
+   bare word. Clear it and assert rows return and the status line is empty.
+   Focus `#campaign-records`, press `j` (or `down`) and assert the cursor
+   moves to another row; press `escape` in `#records-filter` and assert focus
+   is on the table and the popup is still open. Open with a known record id
+   and an unknown one.
 3. Pick a fixture record that has `run_id`, press `r`, and assert the Runs
-   table selection. Pick one with `resolved_by` and press `d`. Pick one with
-   `followup_idea` and press `i`. Repeat each on a record that lacks that
-   link and assert the notify and an unchanged cursor.
-4. Open Mail and assert one row per thread and the message order in the
-   detail. Assert a mail record whose campaign is different is absent.
-5. Drive `c` on an open escalation through confirm and assert the answer file
-   changes. Press `c` on a finding and assert no answer file is written.
-   The existing mailbox escalation tests still pass, now calling
-   `answer_escalation`.
+   table selection. Pick one whose `run_id` is not in `history.runs` and
+   assert `no run` and an unchanged Findings selection. Pick one with
+   `resolved_by` and press `d`. Pick one with `followup_idea`, assert no
+   `follow-up:` line in `#record-detail`, press `i`, assert `follow-up: <id>`
+   plus the idea title. Repeat each on a record that lacks that link and
+   assert the notify and an unchanged cursor.
+4. Open Mail and assert one row per thread (null thread its own row), the
+   sort, and the `ts` ascending message order in the detail. Assert `from`,
+   `to`, and message `kind` for one fixture message equal the mailbox line at
+   the record id's byte offset. Corrupt or remove that line and assert the
+   fallback without an exception. Assert a mail record whose campaign is
+   different is absent.
+5. Drive `c` on an open escalation through confirm and assert `apply_answer`
+   ran with the `EscRow` from `links.escalation`. Drive `w` through confirm
+   and assert `apply_withdraw` ran, `reload()` ran, and the notify has the
+   parked suffix. Press `t` as far as the text prompt. Press `c` on an
+   escalation with no options and assert `<id> has no options` and no plan.
+   Press `c` on a finding and assert `not an open escalation` and no answer
+   file written. Cancel, empty text, and an empty withdraw reason write
+   nothing. The existing mailbox escalation tests (choose, text, withdraw)
+   still pass, now calling `answer_escalation`.
 6. Put `[bold]` in a title and a mail body and assert the widget text
    contains those characters and no markup styling from them.
-7. Hash the campaign directory across a filter and a jump.
+7. Hash the campaign directory across a filter, a jump, and `c` then escape,
+   and assert it is unchanged. Press `p` (or `u`/`P`/`A`) on Findings and
+   assert the SPEC-0407 queue action still runs.
+8. Reload: set a filter and select a non-newest record and a non-newest
+   thread, trigger one `reload()`, and assert the active tab, the filter
+   text, the selected record id, and the selected thread survive. Remove the
+   selected record and assert the nearest row is selected.
 
 Manual: `nw tui`, open a campaign, press `4` and `5`, confirm the tables are
-not the placeholder lines, and press `r` on a finding that names a run.
+not the placeholder lines, move with `j`/`k`, and press `r` on a finding that
+names a run.
 
 ## Rollout
 
 Lands after SPEC-0476. No data migration. The mailbox tab changes only by
-calling the moved coroutine.
+calling the moved function.
 
 ## Definition of done
 
