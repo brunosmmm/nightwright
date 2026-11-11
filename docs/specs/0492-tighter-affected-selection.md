@@ -4,7 +4,7 @@ title: "Tighter affected selection for specs, hot modules and fixtures"
 status: in-progress
 owner: user
 created: 2026-11-09
-updated: 2026-11-09
+updated: 2026-11-10
 milestone: "M9: agentic workflow"
 kind: feature
 parent: SPEC-0489
@@ -201,6 +201,29 @@ new one, and record both median percentages of that commit's test files in *As s
   
   The full affected selection (60 files) was not run to completion. The regression-guard item of
   the Test plan is therefore not met, and the spec stays `in-progress` until a close gate runs it.
+
+**Close-out check (2026-11-10, docs-only, status stays `in-progress`).**
+
+- Selection on main (`python3 tools/affected_tests.py --changed <f> --guards`, measured now,
+  364 test files): the 0492 spec file selects 0 files plus 11 guards; `docs/LEDGER.md` selects 31;
+  `src/nightwright/agentic/queue.py` selects 154. In campaign gate logs since the merge, the first
+  `affected_tests:` line of a ledger-only change reads `affected: 44/362 test files` (12 %;
+  `IDEA-889-20261103-e217/gates/002-pytest-affected.log`, 2026-11-10 19:01). Across the 92 post-merge
+  nightwright `pytest-affected` logs the median selection is 46.7 % of test files, but those gates
+  carry multi-file diffs (up to 30 changed files, `+ --guards`), so it is not comparable with the
+  single-commit replay figure.
+- Tests: run together (`timeout 300`, 85 s), the two files gave 168 passed, 1 failed; all of
+  `tests/test_affected_tests.py` passed, but `tests/test_affected_tests_replay.py` does **not** pass on main today: 168 passed, 1 failed,
+  `test_recorded_fallback[SPEC-0338 tests/data/remote_gates_golden.json]` (`assert 32 <= 31`: the
+  case's `max_tests` of 31 is exceeded by one because the tree grew). The same failure is in the
+  box sentinel `cadence-integration` runs of 2026-11-10 08:12 and 18:58. The Test plan requires
+  that file to pass, so the regression-guard item is not met.
+- Regression evidence otherwise: `cadence-fast-full` of 2026-11-10 07:59 passed (5896 passed,
+  0 failed) and 83 post-merge nightwright campaign `pytest-affected` gates passed (27 other such
+  gates failed; their causes were not examined here).
+- To close: either raise that case's `max_tests` (or select tighter) so the replay test passes,
+  then run the affected set at a close gate. The 200-commit replay was not re-run here; its
+  recorded figures above stand as the implementer's.
 
 ## Rollout / migration
 

@@ -4,7 +4,7 @@ title: "An exclusive re-gate is advisory: it holds other campaigns' gates for at
 status: accepted
 owner: user
 created: 2026-11-09
-updated: 2026-11-09
+updated: 2026-11-10
 milestone: "M9: agentic workflow"
 kind: feature
 tags: [agentic, queue, gates, bug]
@@ -172,6 +172,30 @@ existing markers are judged by their `entered_at`.
 - [x] No regressions in the focused files.
 - [x] Spec body updated to match what shipped.
 - [x] `docs/LEDGER.md` updated (status + date).
+
+**Close-out check (2026-11-10, docs-only, status stays `accepted`).**
+
+- Tests: `uv run pytest -q tests/test_queue_exclusive_regate.py tests/test_disk_clean.py` passed
+  (23 passed, 4.6 s). The exclusive file is marked `fast` and ran in 89 green campaign gates after
+  the merge (first: `IDEA-1128-20261109-55b4/gates/002-pytest-affected`, 2026-11-09 23:35; last:
+  `SPEC-0476-20261109-ca46/gates/024-pytest-affected`, 2026-11-10 19:35) and in the box sentinel
+  `cadence-fast-full` gate of 2026-11-10 07:59 (5896 passed, 0 failed). No regression from this
+  change was seen.
+- Live behavior, `runner.jsonl` (`nw queue runner-log`): `gate_exclusive_lapsed` was journaled for
+  `SPEC-0476-20261109-ca46` at 23:10:32 (age 305 s, bound 300), 23:51:02 (301 s) on 2026-11-09 and
+  07:27:06 on 2026-11-10 (314 s); `gate_exclusive_expired` for `IDEA-1040-20261109-80cc` at
+  00:51:25 (waited 301 s). Each is one record per flight, not per tick. Across the runner re-exec
+  at 23:05:29 onto `3b4a7414` (contains this change) the hold ended within 305 s: tick 1 (23:05:35)
+  started ca46's gate, and tick 15 at 23:10:33, one second after the lapse record, started the
+  gates of `IDEA-1070-20261109-9d6c`, `IDEA-1040-20261109-80cc`, `IDEA-1020-20261108-0a27` and
+  `SPEC-0335-20261108-5cbb`. Before this change the same stall lasted about 95 minutes.
+- Why the live criterion stays unchecked: it says the six waiting campaigns start their gates at
+  the *first* tick after the re-exec. They did not. At tick 1 the campaigns were still PARKED
+  (config recovery), IDEA-1039 went to CLOSING (`close_deferred_for_exclusive`) and IDEA-1015 was
+  still implementing; ca46's gate had just started with a fresh marker, so the four GATING
+  campaigns started at the first tick after the 300 s bound, not at tick 1. The 300 s bound
+  itself is confirmed live; the criterion as worded is not true. Decide whether to reword it
+  (the stale 35-minute marker it assumed no longer existed after the re-exec) before marking done.
 
 ## Open questions
 

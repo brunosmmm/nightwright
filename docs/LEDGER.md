@@ -341,7 +341,7 @@ progress. This is the single place to see *what has been decided* and *what is i
 | [SPEC-0476](./specs/0476-campaign-detail-runs-pane.md) | Campaign detail Runs pane: run table, verdict, and stream tail | feature | accepted | — | 2026-11-08 |
 | [SPEC-0477](./specs/0477-campaign-detail-findings-and-mail.md) | Campaign detail Findings & decisions pane and Mail pane | feature | accepted | — | 2026-11-08 |
 | [SPEC-0489](./specs/0489-test-tiers-and-cadenced-heavy-runs.md) | Test tiers: campaign gates run the fast tier only; heavy tiers run on a per-project cadence | epic | accepted | M9: agentic workflow | 2026-11-09 |
-| [SPEC-0492](./specs/0492-tighter-affected-selection.md) | Tighter affected selection for specs, hot modules and fixtures | feature | in-progress | M9: agentic workflow | 2026-11-09 |
+| [SPEC-0492](./specs/0492-tighter-affected-selection.md) | Tighter affected selection for specs, hot modules and fixtures | feature | in-progress | M9: agentic workflow | 2026-11-10 |
 | [SPEC-0496](./specs/0496-subagent-worktree-commit-allowlist.md) | Sub-agents in a worktree can commit; allowed command forms are documented | feature | accepted | — | 2026-11-09 |
 | [SPEC-0501](./specs/0501-worker-execution-on-slurm.md) | Worker execution on Slurm: Slurm owns admission, placement, priorities and queues for gate and persona jobs | epic | accepted | M9: agentic workflow | 2026-11-09 |
 | [SPEC-0506](./specs/0506-worker-ledger-regen-applied-not-rerun.md) | Files a remote gate is allowed to write (the regenerated ledger) come back to the worktree; the run is not repeated locally | feature | in-progress | M9: agentic workflow | 2026-11-09 |
@@ -357,8 +357,7 @@ progress. This is the single place to see *what has been decided* and *what is i
 | [SPEC-0519](./specs/0519-retire-count-slots-and-gate-job-tokens.md) | Retire nw's own admission: count-based gate slots, persona slots and SPEC-0500 gate-job tokens give way to Slurm | feature | draft | M9: agentic workflow | 2026-11-09 |
 | [SPEC-0520](./specs/0520-retire-placement-cooldown-retry-drain-lost-paths.md) | Retire nw's placement, worker cooldown, cross-worker retry, drain internals, lease and lost-job kill paths, and the sync gate-job path | feature | draft | M9: agentic workflow | 2026-11-09 |
 | [SPEC-0521](./specs/0521-retire-pull-workers.md) | Retire pull workers: remove the coordinator job API, pull_jobs, pull_worker and nw serve --jobs | feature | draft | M9: agentic workflow | 2026-11-09 |
-| [SPEC-0523](./specs/0523-exclusive-regate-is-advisory-and-short.md) | An exclusive re-gate is advisory: it holds other campaigns' gates for at most 300 s | feature | accepted | M9: agentic workflow | 2026-11-09 |
-| [SPEC-0524](./specs/0524-disk-self-clean.md) | Finished work cleans up after itself: pytest tmp retention and an hourly disk sweep | feature | accepted | M9: agentic workflow | 2026-11-09 |
+| [SPEC-0523](./specs/0523-exclusive-regate-is-advisory-and-short.md) | An exclusive re-gate is advisory: it holds other campaigns' gates for at most 300 s | feature | accepted | M9: agentic workflow | 2026-11-10 |
 | [SPEC-0529](./specs/0529-federation-enrolment-and-the-signed-host-channel.md) | Federation enrolment and the signed host channel | feature | accepted | — | 2026-11-10 |
 | [SPEC-0530](./specs/0530-hub-event-relay-health-and-read-only-host-views.md) | Hub event relay, health, and read-only host views | feature | accepted | — | 2026-11-10 |
 | [SPEC-0532](./specs/0532-exactly-once-mail-between-hub-and-host.md) | Exactly-once mail between hub and host | feature | accepted | — | 2026-11-10 |
@@ -816,6 +815,7 @@ progress. This is the single place to see *what has been decided* and *what is i
 | [SPEC-0508](./specs/0508-worker-capacity-and-load-view.md) | Worker capacity and load: nw worker info reports cores, memory, load and per-job usage; nw workers list shows them | feature | done | M9: agentic workflow | 2026-11-09 |
 | [SPEC-0509](./specs/0509-gate-commands-size-from-their-allocation.md) | Gate commands size their parallelism from the job's allocation (NW_GATE_CPUS / NW_GATE_MEM_MB), with a config warning for nproc and -n auto | feature | done | M9: agentic workflow | 2026-11-10 |
 | [SPEC-0522](./specs/0522-remote-gate-attach-ends-and-exclusive-hold-is-bounded.md) | A finished remote gate job always ends its attach, and an exclusive gate step cannot hold other gates forever | feature | done | M9: agentic workflow | 2026-11-09 |
+| [SPEC-0524](./specs/0524-disk-self-clean.md) | Finished work cleans up after itself: pytest tmp retention and an hourly disk sweep | feature | done | M9: agentic workflow | 2026-11-10 |
 | [SPEC-0525](./specs/0525-implementer-and-spec-writer-prompts-must-say-new.md) | Implementer and spec-writer prompts require one speed-tier marker | feature | done | M9: agentic workflow | 2026-11-09 |
 | [SPEC-0526](./specs/0526-nw-campaign-run-id-run-crashes-with-a-rich-markup.md) | nw campaign run renders verdict text that contains brackets | feature | done | — | 2026-11-09 |
 | [SPEC-0528](./specs/0528-cli-signal-handlers-scoped-to-the-command.md) | CLI signal handlers scoped to the command: herdr watch, gate run, campaign tail restore the previous handler; bounded in-process watch loop | feature | done | M9: agentic workflow | 2026-11-10 |
