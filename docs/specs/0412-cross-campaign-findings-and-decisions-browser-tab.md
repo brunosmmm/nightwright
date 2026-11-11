@@ -1,7 +1,7 @@
 ---
 id: SPEC-0412
 title: "Findings record filter: parse_record_filter and a query adapter that matches nw campaign records over nw.history.record.v1"
-status: proposed
+status: in-progress
 owner: user
 created: 2026-11-03
 updated: 2026-11-10
@@ -318,6 +318,7 @@ unknown-kind and error cases are written through the history layer's test helper
 
 ### Test record (2026-11-10, loop 3)
 
+- Loop 6 (human ruling applied: AC9 deferred to IDEA-1077, no code change): `uv run pytest -q tests/test_findings_filter.py tests/test_findings_filter_cli.py`: 63 passed, 1 skipped; `test_tiers.py --check` 0; `spec_lint` 0. AC9 stays unticked (deferred, not met); the end-to-end perf test stays `xfail`. Full suite left to gating.
 - Loop 5 (no AC9 change possible inside this spec): `describe()` now quotes ':'-bearing terms so they re-parse as free text; added a rename guard for `history_cache._get_records_mem`. `uv run pytest -q tests/test_findings_filter.py tests/test_findings_filter_cli.py`: 63 passed, 1 skipped; `test_tiers.py --check` 0; `spec_lint` 0. AC9 stays unchecked and the spec stays `in-progress` pending the human decision in campaign note #304.
 - Loop 4 (date-only bounds no longer passed down; date-only cases moved out of the AC4 CLI group): `uv run pytest -q tests/test_findings_filter.py tests/test_findings_filter_cli.py`: 61 passed, 1 skipped; `test_tiers.py --check` 0; `spec_lint` 0. AC9 is unchanged (history-layer cost, see *As shipped*) and stays unchecked.
 - `uv run pytest -q tests/test_findings_filter.py tests/test_findings_filter_cli.py`: 60 passed, 1 skipped (the skipped one is the manual `NW_FINDINGS_REAL_DATA=1` real-data-dir comparison, not run here).
