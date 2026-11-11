@@ -1183,11 +1183,15 @@ def load_escalations(cfg) -> list[EscRow]:
     recs = ESC.list_all(cfg)
     recs.sort(key=lambda r: r.get("created") or "", reverse=True)
     recs.sort(key=lambda r: r.get("status") != "open")          # stable
-    return [EscRow(id=r["id"], status=str(r.get("status") or "?"), campaign=r.get("campaign"),
-                   spec_id=r.get("spec_id"), question=_first_line(r.get("question"))[:SUBJECT_W],
-                   recommendation=r.get("recommendation"), age_s=age_s(r.get("created")),
-                   options_n=len(r.get("options") or []))
-            for r in recs if r.get("id")]
+    return [esc_row(r) for r in recs if r.get("id")]
+
+
+def esc_row(r: dict) -> EscRow:
+    """The `EscRow` of one escalation record (`escalations.read` / `list_all`)."""
+    return EscRow(id=r["id"], status=str(r.get("status") or "?"), campaign=r.get("campaign"),
+                  spec_id=r.get("spec_id"), question=_first_line(r.get("question"))[:SUBJECT_W],
+                  recommendation=r.get("recommendation"), age_s=age_s(r.get("created")),
+                  options_n=len(r.get("options") or []))
 
 
 def _esc_campaign_line(cfg, t: Text, rec) -> None:

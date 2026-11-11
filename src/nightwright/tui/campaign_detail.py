@@ -1,7 +1,7 @@
 """Campaign detail popup (SPEC-0407): modal shell, history timeline, queue actions, polling.
 
-Replaces SPEC-0246's pushed `CampaignScreen` with a near-full modal and five tabs. Overview and
-Timeline and Runs are live; Findings & decisions and Mail are placeholders until follow-on specs.
+Replaces SPEC-0246's pushed `CampaignScreen` with a near-full modal and five tabs: Overview,
+Timeline, Runs (SPEC-0476), Findings & decisions and Mail (SPEC-0477).
 """
 import asyncio
 from collections import deque
@@ -17,12 +17,15 @@ from textual.containers import Vertical, VerticalScroll
 from textual.events import Click, Key
 from textual.message import Message
 from textual.screen import ModalScreen
-from textual.widgets import DataTable, Footer, Static, TabbedContent, TabPane
+from textual.widgets import DataTable, Footer, Input, Static, TabbedContent, TabPane
 
 from .. import report as R
+from ..agentic import escalations as ESC
 from ..agentic import store
 from . import agentic_model as AM
 from . import campaign_overview as CO
+from . import campaign_records as CR
+from .escalation_flow import answer_escalation, guarded
 from .queue_actions import QueueActions
 
 POLL_S = 2.0
@@ -62,6 +65,40 @@ class _TimelineTable(DataTable):
             screen.action_tab(pane)
             event.prevent_default()
             event.stop()
+
+
+class _RecordsTable(_TimelineTable):
+    """Findings & decisions table: the jump and escalation keys apply only while it has focus."""
+
+    BINDINGS = [
+        Binding("r", "jump_run", show=False),
+        Binding("d", "jump_decision", show=False),
+        Binding("i", "show_followup", show=False),
+        Binding("c", "escalation('choose')", show=False),
+        Binding("t", "escalation('text')", show=False),
+        Binding("w", "escalation('withdraw')", show=False),
+    ]
+
+    def action_jump_run(self) -> None:
+        self.screen.records_jump_run()
+
+    def action_jump_decision(self) -> None:
+        self.screen.records_jump_decision()
+
+    def action_show_followup(self) -> None:
+        self.screen.records_show_followup()
+
+    def action_escalation(self, action: str) -> None:
+        self.screen.records_escalation(action)
+
+
+class _FilterInput(Input):
+    """`escape` leaves the filter for the table instead of dismissing the popup."""
+
+    BINDINGS = [Binding("escape", "to_table", show=False)]
+
+    def action_to_table(self) -> None:
+        self.screen.focus_records_table()
 
 
 class OpenCampaign(Message):
@@ -148,7 +185,11 @@ class CampaignDetail(QueueActions, ModalScreen):
     #runs-pane { height: 1fr; layout: vertical; }
     #campaign-runs { height: 1fr; }
     #runs-detail { height: 40%; border-top: solid $primary; padding: 0 1; }
-    #placeholder-records, #placeholder-mail { padding: 1 2; color: $text-muted; }
+    #records-pane, #mail-pane { height: 1fr; layout: vertical; }
+    #records-filter { height: 3; }
+    #records-filter-status { height: auto; color: $text-muted; padding: 0 1; }
+    #campaign-records, #campaign-mail { height: 1fr; }
+    #records-detail, #mail-detail { height: 40%; border-top: solid $primary; padding: 0 1; }
     #load-error { padding: 1 2; }
     """
 
@@ -174,6 +215,7 @@ class CampaignDetail(QueueActions, ModalScreen):
                 priority=True),
         Binding("pageup,ctrl+k", "detail_scroll_up", "detail scroll", show=False,
                 priority=True),
+        Binding("slash", "focus_filter", "filter", show=False),
         Binding("escape", "close", "back"),
         Binding("q", "close", "back", show=False),
         Binding("p", "act('park')", "park"),
@@ -200,8 +242,14 @@ class CampaignDetail(QueueActions, ModalScreen):
         self._poll_timer = None
         self._focus_tab = "tab-overview"
         self._focus_extra: str | None = None
-        self._placeholder_records = "placeholder: records"
-        self._placeholder_mail = "placeholder: mail"
+        self._busy = False                      # an escalation flow is open
+        self._rec_rows: list = []               # Findings rows on screen (filtered, sorted)
+        self._selected_record_id: str | None = None
+        self._rec_index = 0
+        self._followup: tuple | None = None     # (record id, line) once `i` was pressed
+        self._mail_rows: list = []              # CR.MailThread, sorted
+        self._selected_thread: str | None = None
+        self._mail_index = 0
         self._runs_rows: list = []
         self._selected_run_id: str | None = None
         self._pending_run_select: str | None = None
@@ -243,9 +291,21 @@ class CampaignDetail(QueueActions, ModalScreen):
                         with VerticalScroll(id="runs-detail"):
                             yield Static("", id="runs-detail-text")
                 with TabPane("Findings & decisions", id="tab-records"):
-                    yield Static(self._placeholder_records, id="placeholder-records")
+                    with Vertical(id="records-pane"):
+                        yield _FilterInput(placeholder="filter: agent:… kind:… severity:… "
+                                           "status:… or words  (/ to focus)",
+                                           id="records-filter")
+                        yield Static("", id="records-filter-status")
+                        yield _RecordsTable(id="campaign-records", cursor_type="row",
+                                            zebra_stripes=False)
+                        with VerticalScroll(id="records-detail"):
+                            yield Static("", id="record-detail")
                 with TabPane("Mail", id="tab-mail"):
-                    yield Static(self._placeholder_mail, id="placeholder-mail")
+                    with Vertical(id="mail-pane"):
+                        yield _TimelineTable(id="campaign-mail", cursor_type="row",
+                                             zebra_stripes=False)
+                        with VerticalScroll(id="mail-detail"):
+                            yield Static("", id="mail-detail-text")
             yield Footer()
 
     @property
@@ -256,13 +316,23 @@ class CampaignDetail(QueueActions, ModalScreen):
     def runs_table(self) -> DataTable:
         return self.query_one("#campaign-runs", DataTable)
 
+    @property
+    def records_table(self) -> DataTable:
+        return self.query_one("#campaign-records", DataTable)
+
+    @property
+    def mail_table(self) -> DataTable:
+        return self.query_one("#campaign-mail", DataTable)
+
     def on_mount(self) -> None:
         self.query_one("#load-error", Static).update(
             Text(f"loading {self.campaign_id}…", style="dim"))
         self.table.add_columns("seq", "time", "phase", "by", "kind", "summary")
         self.runs_table.add_columns(*AM.RUNS_TABLE_COLUMNS)
-        self.query_one("#campaign-detail", VerticalScroll).can_focus = False
-        self.query_one("#runs-detail", VerticalScroll).can_focus = False
+        self.records_table.add_columns("time", "agent", "kind", "severity", "status", "title")
+        self.mail_table.add_columns("time", "from", "status", "text")
+        for pane in ("#campaign-detail", "#runs-detail", "#records-detail", "#mail-detail"):
+            self.query_one(pane, VerticalScroll).can_focus = False
         self.reload(initial=True)
 
     def on_key(self, event: Key) -> None:
@@ -361,8 +431,7 @@ class CampaignDetail(QueueActions, ModalScreen):
         elif self._focus_tab == "tab-runs" and extra:
             self._pending_run_select = extra
         elif self._focus_tab == "tab-records" and extra:
-            self._placeholder_records = f"placeholder: records ({extra})"
-            self.query_one("#placeholder-records", Static).update(Text(self._placeholder_records))
+            self._selected_record_id = extra    # the first paint selects it; later reloads keep
 
     def _worker_alive(self) -> bool:
         """May a worker's tail touch this screen's widgets? Not once the screen is unmounted,
@@ -456,6 +525,8 @@ class CampaignDetail(QueueActions, ModalScreen):
                 if self._worker_alive():
                     self._handle_paint_failure(e)
             self._refresh_runs_pane()
+            self._refresh_records_pane()
+            self._refresh_mail_pane()
             live = self.view is not None and not self.view.terminal
             if not live:
                 self._stop_poll()
@@ -914,6 +985,184 @@ class CampaignDetail(QueueActions, ModalScreen):
         if rid and rid != self._selected_run_id:
             self._select_run_row(rid)
 
+    # --- Findings & decisions (SPEC-0477) ---------------------------------------------------
+
+    def _filter_value(self) -> str:
+        return self.query_one("#records-filter", Input).value
+
+    def _refresh_records_pane(self) -> None:
+        """Rebuild the table from `history.records`; the selected id and the filter survive."""
+        if self.view is None:
+            return
+        keep_id, keep_i = self._selected_record_id, self._rec_index
+        rows, unmatched = CR.filter_records(
+            CR.sort_records(self.view.history.get("records")), self._filter_value())
+        self._rec_rows = rows
+        self.query_one("#records-filter-status", Static).update(
+            Text("  ".join(f"unmatched: {tok}" for tok in unmatched), style="yellow"))
+        table = self.records_table
+        table.clear()
+        for rec in rows:
+            table.add_row(
+                Text(_timeline_time(rec.get("ts") or "")), Text(AM._clean(rec.get("agent") or "")),
+                Text(AM._clean(rec.get("kind") or "")), Text(AM._clean(rec.get("severity") or "")),
+                Text(CR.status_cell(rec)), Text(AM._clean(rec.get("title") or "")),
+                key=str(rec["id"]))
+        i = CR.nearest_index(rows, keep_id, keep_i)
+        if i >= 0:
+            table.move_cursor(row=i)
+        self._select_record_index(i)
+
+    def _select_record_index(self, i: int) -> None:
+        rec = self._rec_rows[i] if 0 <= i < len(self._rec_rows) else None
+        new_id = str(rec["id"]) if rec else None
+        if new_id != self._selected_record_id:
+            self._followup = None
+        self._selected_record_id = new_id
+        self._rec_index = max(i, 0)
+        self._show_record_detail()
+
+    def _current_record(self) -> dict | None:
+        for rec in self._rec_rows:
+            if str(rec["id"]) == self._selected_record_id:
+                return rec
+        return None
+
+    def _show_record_detail(self) -> None:
+        pane = self.query_one("#record-detail", Static)
+        rec = self._current_record()
+        if rec is None:
+            pane.update(Text("no records", style="dim"))
+            return
+        t = CR.detail_text(rec)
+        if self._followup and self._followup[0] == self._selected_record_id:
+            t.append("\n")
+            t.append_text(self._followup[1])
+        pane.update(t)
+
+    @on(DataTable.RowHighlighted, "#campaign-records")
+    def _records_row_highlighted(self, event: DataTable.RowHighlighted) -> None:
+        if event.cursor_row != self.records_table.cursor_row:
+            return
+        self._select_record_index(event.cursor_row)
+
+    @on(Input.Changed, "#records-filter")
+    def _filter_changed(self, event: Input.Changed) -> None:
+        if self.view is not None:
+            self._refresh_records_pane()
+
+    @on(Input.Submitted, "#records-filter")
+    def _filter_submitted(self, event: Input.Submitted) -> None:
+        event.stop()
+        self.focus_records_table()
+
+    def focus_records_table(self) -> None:
+        self.records_table.can_focus = True
+        self.records_table.focus()
+
+    def action_focus_filter(self) -> None:
+        if self._active_tab() == "tab-records":
+            self.query_one("#records-filter", Input).focus()
+
+    def records_jump_run(self) -> None:
+        rec = self._current_record()
+        run_id = CR.record_links(rec).get("run_id") if rec else None
+        runs = (self.view.history.get("runs") or []) if self.view else []
+        if not run_id or not any(r.get("run_id") == run_id for r in runs):
+            self.notify("no run", markup=False)
+            return
+        self.select_run(run_id)
+
+    def records_jump_decision(self) -> None:
+        rec = self._current_record()
+        target = CR.record_links(rec).get("resolved_by") if rec else None
+        for i, row in enumerate(self._rec_rows):
+            if target and str(row["id"]) == str(target):
+                self.records_table.move_cursor(row=i, scroll=True)
+                self._select_record_index(i)
+                return
+        self.notify("no decision", markup=False)
+
+    def records_show_followup(self) -> None:
+        rec = self._current_record()
+        idea = CR.record_links(rec).get("followup_idea") if rec else None
+        if not idea:
+            self.notify("no follow-up", markup=False)
+            return
+        rid = self._selected_record_id
+
+        async def work() -> None:
+            title = await asyncio.to_thread(CR.idea_title, self.cfg, idea)
+            if not self._worker_alive() or self._selected_record_id != rid:
+                return
+            line = Text(f"follow-up: {idea}")
+            if title:
+                line.append(f"  {title}")
+            self._followup = (rid, line)
+            self._show_record_detail()
+
+        self.run_worker(work, name="campaign-followup", group="campaign-followup",
+                        exclusive=True)
+
+    def records_escalation(self, action: str) -> None:
+        rec = self._current_record()
+        esc_id = CR.record_links(rec).get("escalation") if rec else None
+        if (rec is None or rec.get("kind") != "escalation" or rec.get("status") != "open"
+                or not esc_id):
+            self.notify("not an open escalation", markup=False)
+            return
+        if self._busy:
+            return
+        self._busy = True
+        self.run_worker(guarded(self, self._escalation_popup_flow(str(esc_id), action)),
+                        name="escalation-act")
+
+    async def _escalation_popup_flow(self, esc_id: str, action: str) -> None:
+        raw = await asyncio.to_thread(ESC.read, self.cfg, esc_id)
+        row = AM.esc_row(raw)
+        if row.status != "open":
+            self.notify(f"{row.id} is {row.status}", severity="warning", markup=False)
+        elif action == "choose" and not row.options_n:
+            self.notify(f"{row.id} has no options", severity="warning", markup=False)
+        else:
+            await answer_escalation(self, self.cfg, row, action)
+
+    # --- Mail (SPEC-0477) ---------------------------------------------------------------------
+
+    def _refresh_mail_pane(self) -> None:
+        if self.view is None:
+            return
+        keep_key, keep_i = self._selected_thread, self._mail_index
+        threads = CR.mail_threads(self.view.history.get("records"))
+        self._mail_rows = threads
+        table = self.mail_table
+        table.clear()
+        for th in threads:
+            m = CR.mail_message(self.cfg, th.latest)
+            table.add_row(
+                Text(_timeline_time(th.latest.get("ts") or "")), Text(AM._clean(m.frm)),
+                Text(AM._clean(th.latest.get("status") or "")),
+                Text(AM._clean(AM._first_line(m.text))), key=th.key)
+        i = next((n for n, th in enumerate(threads) if th.key == keep_key), -1)
+        if i < 0 and threads:
+            i = max(0, min(keep_i, len(threads) - 1))
+        if i >= 0:
+            table.move_cursor(row=i)
+        self._select_thread_index(i)
+
+    def _select_thread_index(self, i: int) -> None:
+        th = self._mail_rows[i] if 0 <= i < len(self._mail_rows) else None
+        self._selected_thread = th.key if th else None
+        self._mail_index = max(i, 0)
+        pane = self.query_one("#mail-detail-text", Static)
+        pane.update(CR.thread_detail(self.cfg, th) if th else Text("no mail", style="dim"))
+
+    @on(DataTable.RowHighlighted, "#campaign-mail")
+    def _mail_row_highlighted(self, event: DataTable.RowHighlighted) -> None:
+        if event.cursor_row != self.mail_table.cursor_row:
+            return
+        self._select_thread_index(event.cursor_row)
+
     @on(DataTable.RowHighlighted, "#campaign-timeline")
     def _row_highlighted(self, event: DataTable.RowHighlighted) -> None:
         rows = self.shown
@@ -943,6 +1192,11 @@ class CampaignDetail(QueueActions, ModalScreen):
         on_runs = tab_id == "tab-runs"
         self.table.can_focus = on_timeline
         self.runs_table.can_focus = on_runs
+        self.records_table.can_focus = tab_id == "tab-records"
+        self.mail_table.can_focus = tab_id == "tab-mail"
+        for hidden, tid in ((self.records_table, "tab-records"), (self.mail_table, "tab-mail")):
+            if tab_id != tid:
+                hidden.blur()
         if not on_timeline:
             self.table.blur()
         if not on_runs:
@@ -962,9 +1216,9 @@ class CampaignDetail(QueueActions, ModalScreen):
             if self._run_detail_stale and self._selected_run_id:
                 self._load_run_detail(self._selected_run_id)
         elif tab_id == "tab-records":
-            self.query_one("#placeholder-records", Static).focus()
+            self.records_table.focus()
         elif tab_id == "tab-mail":
-            self.query_one("#placeholder-mail", Static).focus()
+            self.mail_table.focus()
         else:
             self.query_one("#detail-body", TabbedContent).focus()
 
@@ -1105,6 +1359,10 @@ class CampaignDetail(QueueActions, ModalScreen):
             here = self.runs_table.cursor_row
             if here < len(self._runs_rows) - 1:
                 self.runs_table.move_cursor(row=here + 1)
+        elif tab == "tab-records":
+            self.records_table.action_cursor_down()
+        elif tab == "tab-mail":
+            self.mail_table.action_cursor_down()
 
     def action_up(self) -> None:
         tab = self._active_tab()
@@ -1119,6 +1377,10 @@ class CampaignDetail(QueueActions, ModalScreen):
             here = self.runs_table.cursor_row
             if here > 0:
                 self.runs_table.move_cursor(row=here - 1)
+        elif tab == "tab-records":
+            self.records_table.action_cursor_up()
+        elif tab == "tab-mail":
+            self.mail_table.action_cursor_up()
 
     def action_close(self) -> None:
         self.dismiss(True)

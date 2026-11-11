@@ -171,8 +171,11 @@ def test_focus_run_record_and_unknown(tmp_path):
             await settle(app, pilot)
             app.open_campaign_detail(cid, focus={"tab": "records", "record": record_id})
             await settle(app, pilot)
-            assert f"placeholder: records ({record_id})" in str(
-                detail_screen(app).query_one("#placeholder-records").content)
+            d = detail_screen(app)
+            assert d.query_one("#detail-body", TabbedContent).active == "tab-records"
+            assert d._selected_record_id == record_id
+            rt = d.query_one("#campaign-records", DataTable)
+            assert str(rt.ordered_rows[rt.cursor_row].key.value) == record_id
             await press(app, pilot, ["escape"])
             app.open_campaign_detail(cid, focus={"tab": "records", "record": "nope-id"})
             await settle(app, pilot)
@@ -188,8 +191,7 @@ def test_focus_run_record_and_unknown(tmp_path):
             assert d.query_one("#detail-body", TabbedContent).active == "tab-overview"
             notes = [m for m, _ in app.notes]
             assert any(f"not found: {record_id}" in m for m in notes)
-            assert f"placeholder: records ({record_id})" not in str(
-                d.query_one("#placeholder-records").content)
+            assert d._selected_record_id != record_id     # the unknown focus did not select it
 
     _run(drive())
 
@@ -264,8 +266,11 @@ def test_popup_frame_and_pane_keys(tmp_path):
                 assert body.active == want
             assert s.query_one("#campaign-runs", DataTable).row_count == len(
                 s.view.history["runs"])
-            assert "placeholder: records" in str(s.query_one("#placeholder-records").content)
-            assert "placeholder: mail" in str(s.query_one("#placeholder-mail").content)
+            assert s.query_one("#campaign-records", DataTable).row_count == len(
+                s.view.history["records"])
+            assert s.query_one("#campaign-mail", DataTable).row_count == len(
+                {(r.get("links") or {}).get("thread") or r["id"]
+                 for r in s.view.history["records"] if r.get("kind") == "mail"})
             assert ids["ready"] in overview(app)
             assert "● QUEUED" in overview(app)      # SPEC-0498: cards, not header_lines
             assert "dominant:" not in overview(app) and "gaps:" not in overview(app)

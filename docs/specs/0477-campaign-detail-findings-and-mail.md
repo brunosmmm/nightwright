@@ -1,7 +1,7 @@
 ---
 id: SPEC-0477
 title: "Campaign detail Findings & decisions pane and Mail pane"
-status: accepted
+status: done
 owner: user
 created: 2026-11-08
 kind: feature
@@ -208,12 +208,12 @@ notifies `not an open escalation` and does not plan.
 
 ## Acceptance criteria
 
-- [ ] **AC1. Records table.** On a fixture campaign that has records, Findings
+- [x] **AC1. Records table.** On a fixture campaign that has records, Findings
   & decisions shows one row per `history.records` entry, newest `ts` first.
   Two records with the same `ts` appear in `id` ascending order. A row with
   `status: fixed` shows `not re-raised`. The strings `placeholder: records`
   and `placeholder: records (<id>)` are absent.
-- [ ] **AC2. Filter, keys, and focus.** `agent:conductor` hides rows whose
+- [x] **AC2. Filter, keys, and focus.** `agent:conductor` hides rows whose
   agent is not `conductor`; `agent:steward:Meta-Tools` keeps rows whose agent
   is `steward:Meta-Tools`. One `kind:` case and one `severity:` case each keep
   only matching rows. `status:fixed` keeps a row whose cell reads
@@ -227,7 +227,7 @@ notifies `not an open escalation` and does not plan.
   opens Overview and notifies `not found: <id>`. A reload keeps the active
   tab, the filter text, and the selected record id (and the selected thread on
   Mail); if the id is gone the nearest remaining row is selected.
-- [ ] **AC3. Jumps.** On a record with `links.run_id` that is a
+- [x] **AC3. Jumps.** On a record with `links.run_id` that is a
   `history.runs` row, `r` opens the Runs tab with that run selected
   (SPEC-0476). On a record with `links.resolved_by`, `d` selects that record.
   On a record with `links.followup_idea`, the detail has no `follow-up:` line
@@ -236,7 +236,7 @@ notifies `not an open escalation` and does not plan.
   `no decision`, or `no follow-up` and does not change the selection or append
   a line; `r` with a `run_id` absent from `history.runs` notifies `no run` and
   stays on the Findings row.
-- [ ] **AC4. Mail.** The Mail tab shows one row per `links.thread` among this
+- [x] **AC4. Mail.** The Mail tab shows one row per `links.thread` among this
   campaign's mail records (a null thread is its own row), sorted by latest
   `ts` descending then thread id ascending, and the detail shows every one of
   the campaign's records in that thread in `ts` ascending order.
@@ -245,7 +245,7 @@ notifies `not an open escalation` and does not plan.
   missing or unparsable line falls back to the history `text`, `agent` as
   `from`, and blank `to` and kind without raising. `placeholder: mail` is
   absent. Another campaign's mail is not listed.
-- [ ] **AC5. Escalation.** On an open escalation record, `c` and `t` call
+- [x] **AC5. Escalation.** On an open escalation record, `c` and `t` call
   `answer_escalation` with the `EscRow` loaded from `links.escalation` and,
   after confirm, `apply_answer`; `w` calls it and, after confirm,
   `apply_withdraw`, then `owner.reload()` runs and the withdraw notify keeps
@@ -255,9 +255,9 @@ notifies `not an open escalation` and does not plan.
   empty text, and an empty withdraw reason write nothing. Errors use the same
   `_guarded` notifies as the mailbox tab. The mailbox tab's existing choose,
   text, and withdraw tests still pass against `answer_escalation`.
-- [ ] **AC6. Literal text.** A record title or mail body that contains Rich
+- [x] **AC6. Literal text.** A record title or mail body that contains Rich
   markup characters is shown literally.
-- [ ] **AC7. Writers.** This spec adds no writer besides the SPEC-0250 answer
+- [x] **AC7. Writers.** This spec adds no writer besides the SPEC-0250 answer
   and withdraw flow. `p`, `u`, `P`, and `A` still run the SPEC-0407 queue
   actions on Findings and Mail. Filtering, jumping, opening Mail, and
   dismissing a prompt leave the campaign directory byte-identical. A
@@ -324,6 +324,43 @@ Manual: `nw tui`, open a campaign, press `4` and `5`, confirm the tables are
 not the placeholder lines, move with `j`/`k`, and press `r` on a finding that
 names a run.
 
+### Test record (2026-11-10)
+
+- `uv run pytest -q tests/test_tui_campaign_records.py` — 13 passed: the pure model (sort,
+  filter grammar, thread grouping, mailbox-line fallback) and Pilot drives of test steps 1–8
+  (table order with same-`ts` ties and `not re-raised`; all four keyed tokens, `bogus:x`
+  unmatched line, `j`/`down`/`k`/`up`, digits typing into the filter, `escape` leaving the popup
+  up; known and unknown focus; `r` / `d` / `i` with their `no run` / `no decision` /
+  `no follow-up` misses; mail threads, `from`/`to`/`kind` against the mailbox line, the
+  corrupt-offset fallback, another campaign's mail absent; `c` / `t` / `w` through confirm,
+  cancel, empty text and reason, no options, a non-escalation row, the guarded error notify;
+  literal markup; campaign-directory hash across filter, jump and `c` then escape, and
+  `p`/`u`/`P`/`A` still reaching the queue action; reload keeping tab, filter and both selections).
+- Existing suites touched by the move and the placeholder removal, all green:
+  `tests/test_tui_mailbox_tab.py`, `tests/test_tui_escalations_tab.py` (choose, text and withdraw
+  now run through `answer_escalation`), `tests/test_tui_campaign_detail.py`,
+  `tests/test_tui_campaign_detail_ac.py`, `tests/test_tui_campaign_runs.py`,
+  `tests/test_tui_queue_tab.py`, `tests/test_tui_events_tab.py`,
+  `tests/test_tui_fixture_harness.py`.
+- `python3 tools/test_tiers.py --check` and `python3 tools/spec_lint.py` exit 0.
+- The manual `nw tui` pass was not done in a real terminal; the Pilot tests drive the same keys
+  against the real widgets. The full suite was left to gating.
+
+### As shipped
+
+- New `tui/campaign_records.py` holds the pure model (sort, filter grammar, status label, mail
+  threads, the mailbox-line read, idea title). `tui/escalation_flow.py` holds
+  `answer_escalation(owner, cfg, row, action)` (a coroutine), `parked_for_decision(cfg, cid)` and
+  `guarded(owner, flow)`; `MailboxView` runs `answer_escalation(self, self.cfg, row, action)` under
+  its own `_guarded`, and `AM.esc_row` builds an `EscRow` from a record for both callers.
+- On reload the selected row is kept by id; if that id is gone the row at the same position
+  (clamped to the last row) is selected.
+- `#record-detail` is the `Static` inside the scrolling `#records-detail`. `i` reads the idea title
+  in a worker thread and appends `follow-up: <id>  <title>` once it is read; the line is dropped
+  when the selection moves to another record.
+- Mail rows are keyed by thread id (or the record id for a null thread); duplicate history record
+  ids are collapsed before the Findings table is built.
+
 ## Rollout
 
 Lands after SPEC-0476. No data migration. The mailbox tab changes only by
@@ -331,11 +368,11 @@ calling the moved function.
 
 ## Definition of done
 
-- [ ] Acceptance criteria all met.
-- [ ] Test plan executed and the results recorded in *As shipped*.
-- [ ] Affected tests green at the close gate. `python3 tools/spec_lint.py` exits 0.
-- [ ] Spec body matches what shipped.
-- [ ] `docs/LEDGER.md` regenerated.
+- [x] Acceptance criteria all met.
+- [x] Test plan executed and the results recorded in *As shipped*.
+- [x] Affected tests green at the close gate. `python3 tools/spec_lint.py` exits 0.
+- [x] Spec body matches what shipped.
+- [x] `docs/LEDGER.md` regenerated.
 
 ## Open questions
 

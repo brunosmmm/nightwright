@@ -24,6 +24,7 @@ from ..agentic import store
 from ..agentic.cli_queue import _ago
 from . import agentic_model as AM
 from .campaign_detail import OpenCampaign
+from .escalation_flow import answer_escalation
 
 POLL_S = 2.0
 NO_CAMPAIGN = "(none)"
@@ -386,65 +387,8 @@ class MailboxView(Horizontal):
             self.app.notify(f"{row.id} has no options", severity="warning")
         else:
             self._busy = True
-            self.run_worker(self._guarded(self._escalation_flow(row, action)),
+            self.run_worker(self._guarded(answer_escalation(self, self.cfg, row, action)),
                             name="escalation-act")
-
-    async def _escalation_flow(self, row: AM.EscRow, action) -> None:
-        from .app import BodyPrompt, ChoiceScreen, TextPrompt
-        cfg, eid = self.cfg, row.id
-        if action == "choose":
-            rec = await asyncio.to_thread(ESC.read, cfg, eid)
-            picks = {f"{o['n']}. {o['label']}": o["n"] for o in rec.get("options") or []}
-            rec_pick = next((k for k, n in picks.items() if n == rec.get("recommendation")), "")
-            pick = await self.app.push_screen_wait(
-                ChoiceScreen(f"answer {eid}", list(picks), rec_pick))
-            if pick is None:
-                return
-            plan = await asyncio.to_thread(ESC.plan_answer, cfg, eid, choose=picks[pick],
-                                           by=AM.HUMAN)
-            ans = plan["answer"]
-            title = f"answer {eid}: {ans['choice']}. {ans['label']}"
-        elif action == "text":
-            text = await self.app.push_screen_wait(BodyPrompt(f"answer {eid}"))
-            if text is None:
-                return
-            if not text.strip():
-                self.app.notify("empty answer", severity="warning")
-                return
-            plan = await asyncio.to_thread(ESC.plan_answer, cfg, eid, text=text, by=AM.HUMAN)
-            title = f'answer {eid}: "{AM._first_line(plan["answer"]["text"])}"'
-        else:
-            reason = await self.app.push_screen_wait(TextPrompt("withdraw reason"))
-            if reason is None:
-                return
-            if not reason.strip():
-                self.app.notify("empty reason", severity="warning")
-                return
-            plan = await asyncio.to_thread(ESC.plan_withdraw, cfg, eid, reason=reason.strip(),
-                                           by=AM.HUMAN)
-            title = f"withdraw {eid}: {plan['reason']}"
-        if await self.app.push_screen_wait(ChoiceScreen(escape(title), ["yes", "cancel"])) != "yes":
-            return
-        if action == "withdraw":
-            rec = await asyncio.to_thread(ESC.apply_withdraw, cfg, plan)
-            msg = f"{eid} withdrawn"
-            if rec.get("campaign") and rec.get("campaign_state") == "PARKED" \
-                    and await asyncio.to_thread(self._parked_for_decision, rec["campaign"]):
-                msg += (f"; {rec['campaign']} is still PARKED (human_decision); "
-                        f"resume it from the queue tab (u)")
-        else:
-            await asyncio.to_thread(ESC.apply_answer, cfg, plan)
-            msg = f"{eid} answered"
-        self.app.notify(escape(msg))
-        self.reload()
-
-    def _parked_for_decision(self, cid) -> bool:
-        """The CLI's hint condition: the campaign's park reason is still `human_decision`."""
-        try:
-            st = store.read_state(self.cfg, cid)
-        except (ValueError, OSError):
-            return False
-        return (st.get("park") or {}).get("reason") == "human_decision"
 
     # --- reply / new message -------------------------------------------------------------
 
