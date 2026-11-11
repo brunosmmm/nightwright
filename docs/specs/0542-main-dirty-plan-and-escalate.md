@@ -1,7 +1,7 @@
 ---
 id: SPEC-0542
 title: main_dirty is conductor-owned; plan the clear and escalate it
-status: accepted
+status: superseded
 owner: user
 created: 2026-11-11
 updated: 2026-11-11
@@ -9,7 +9,10 @@ kind: feature
 tags: [agentic, conductor, queue]
 supersedes: [SPEC-0537]
 source_idea: IDEA-1159
+superseded_by: SPEC-0546
 ---
+
+> **Superseded** (2026-11-11, spec review verdict `split`, size xl): split into [SPEC-0546](./0546-main-dirty-plan-classifier.md) (classifier and `nw queue main-dirty-plan`) and [SPEC-0547](./0547-main-dirty-conductor-owned-plan-and-escalate.md) (conductor ownership and the plan-and-escalate row); nothing below shipped.
 
 ## Context
 

@@ -360,9 +360,12 @@ progress. This is the single place to see *what has been decided* and *what is i
 | [SPEC-0530](./specs/0530-hub-event-relay-health-and-read-only-host-views.md) | Hub event relay, health, and read-only host views | feature | accepted | — | 2026-11-10 |
 | [SPEC-0532](./specs/0532-exactly-once-mail-between-hub-and-host.md) | Exactly-once mail between hub and host | feature | accepted | — | 2026-11-10 |
 | [SPEC-0533](./specs/0533-remote-park-and-resume.md) | Remote park and resume | feature | accepted | — | 2026-11-10 |
-| [SPEC-0542](./specs/0542-main-dirty-plan-and-escalate.md) | main_dirty is conductor-owned; plan the clear and escalate it | feature | accepted | — | 2026-11-11 |
-| [SPEC-0543](./specs/0543-main-dirty-apply-audited-verb.md) | nw queue main-dirty-apply, the audited main-checkout clear (human or steward run) | feature | accepted | — | 2026-11-11 |
-| [SPEC-0544](./specs/0544-conductor-runs-main-dirty-apply-for-trivial.md) | Conductor runs main-dirty-apply for the trivial class only | feature | accepted | — | 2026-11-11 |
+| [SPEC-0546](./specs/0546-main-dirty-plan-classifier.md) | nw queue main-dirty-plan, the read-only main_dirty classifier | feature | accepted | — | 2026-11-11 |
+| [SPEC-0547](./specs/0547-main-dirty-conductor-owned-plan-and-escalate.md) | main_dirty is conductor-owned; the skill row plans and escalates | feature | accepted | — | 2026-11-11 |
+| [SPEC-0548](./specs/0548-main-dirty-apply-core-commit.md) | nw queue main-dirty-apply core, guards and the trivial commit (human or steward run) | feature | accepted | — | 2026-11-11 |
+| [SPEC-0549](./specs/0549-main-dirty-apply-wip-save-and-hold.md) | main-dirty-apply saves non-trivial dirt to a WIP branch, restores main, and holds | feature | accepted | — | 2026-11-11 |
+| [SPEC-0550](./specs/0550-conductor-git-guard-hook.md) | Conductor git-guard, a cwd-aware PreToolUse hook that denies raw git writes in a main checkout | feature | accepted | — | 2026-11-11 |
+| [SPEC-0551](./specs/0551-conductor-runs-main-dirty-apply-trivial-only.md) | Conductor runs main-dirty-apply --trivial-only for the trivial class | feature | accepted | — | 2026-11-11 |
 
 ## Done
 
@@ -864,6 +867,9 @@ progress. This is the single place to see *what has been decided* and *what is i
 | [SPEC-0444](./specs/0444-conductor-follower-acks-before-advancing.md) | The conductor follower commits an event only after the session acks it | feature | superseded | — | 2026-11-08 |
 | [SPEC-0527](./specs/0527-federation-bounded-relay-mail-and-two-remote-verbs.md) | Federation, bounded: relay, mail and two remote verbs | feature | superseded | — | 2026-11-10 |
 | [SPEC-0537](./specs/0537-conductor-must-clear-main-dirty-itself-a-stray.md) | Conductor clears main_dirty itself | feature | superseded | — | 2026-11-11 |
+| [SPEC-0542](./specs/0542-main-dirty-plan-and-escalate.md) | main_dirty is conductor-owned; plan the clear and escalate it | feature | superseded | — | 2026-11-11 |
+| [SPEC-0543](./specs/0543-main-dirty-apply-audited-verb.md) | nw queue main-dirty-apply, the audited main-checkout clear (human or steward run) | feature | superseded | — | 2026-11-11 |
+| [SPEC-0544](./specs/0544-conductor-runs-main-dirty-apply-for-trivial.md) | Conductor runs main-dirty-apply for the trivial class only | feature | superseded | — | 2026-11-11 |
 
 <!-- specs:end -->
 

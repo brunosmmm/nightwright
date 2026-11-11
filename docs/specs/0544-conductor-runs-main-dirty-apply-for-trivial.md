@@ -1,7 +1,7 @@
 ---
 id: SPEC-0544
 title: Conductor runs main-dirty-apply for the trivial class only
-status: accepted
+status: superseded
 owner: user
 created: 2026-11-11
 updated: 2026-11-11
@@ -9,7 +9,10 @@ kind: feature
 tags: [agentic, conductor, launch]
 depends_on: [SPEC-0543]
 source_idea: IDEA-1159
+superseded_by: SPEC-0550
 ---
+
+> **Superseded** (2026-11-11, spec review verdict `split`, size xl): split into [SPEC-0550](./0550-conductor-git-guard-hook.md) (cwd-aware git-guard hook and install) and [SPEC-0551](./0551-conductor-runs-main-dirty-apply-trivial-only.md) (`--trivial-only` flag, static rules, skill rows); nothing below shipped.
 
 ## Context
 

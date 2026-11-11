@@ -1,7 +1,7 @@
 ---
 id: SPEC-0543
 title: nw queue main-dirty-apply, the audited main-checkout clear (human or steward run)
-status: accepted
+status: superseded
 owner: user
 created: 2026-11-11
 updated: 2026-11-11
@@ -9,7 +9,10 @@ kind: feature
 tags: [agentic, queue, git]
 depends_on: [SPEC-0542]
 source_idea: IDEA-1159
+superseded_by: SPEC-0548
 ---
+
+> **Superseded** (2026-11-11, spec review verdict `split`, size xl): split into [SPEC-0548](./0548-main-dirty-apply-core-commit.md) (verb core, guards, `commit`, conductor deny) and [SPEC-0549](./0549-main-dirty-apply-wip-save-and-hold.md) (WIP save, restore and `hold`); nothing below shipped.
 
 ## Context
 
