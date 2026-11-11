@@ -1583,10 +1583,14 @@ def attach(queue_group):
                   help="base branch; used only when --root has no .nw/project.yaml (default main)")
     @click.option("--plan", "plan_file", default=None,
                   help="a main-dirty-plan --json file; refused as stale when it differs from the live plan")
+    @click.option("--trivial-only", "trivial_only", is_flag=True,
+                  help="refuse (not trivial: <action>, nothing written) unless the live plan "
+                       "is a trivial commit; the only form the conductor may run")
     @click.option("--json", "as_json", is_flag=True, help="emit nw.main_dirty_apply.v1 JSON")
     @click.pass_context
-    def queue_main_dirty_apply(ctx, root, base, plan_file, as_json):
-        """Clear a dirty main checkout (SPEC-0548, SPEC-0549). Human or steward run.
+    def queue_main_dirty_apply(ctx, root, base, plan_file, trivial_only, as_json):
+        """Clear a dirty main checkout (SPEC-0548, SPEC-0549). Human or steward run; the
+        conductor runs only `--trivial-only` (SPEC-0551).
 
         Re-plans the live checkout, refuses an operation in progress, a stale --plan, unsafe
         paths, partial staging, a bad base and a missing project config without writing, then
@@ -1620,7 +1624,8 @@ def attach(queue_group):
                 R.warn(f"error: --plan {plan_file} is not a {MD.SCHEMA} plan "
                        "(needs a string action and a list of string paths)")
                 ctx.exit(2)
-        result = _printable(MD.apply_clear(root, plan=plan, base=base))
+        result = _printable(MD.apply_clear(root, plan=plan, base=base,
+                                           trivial_only=trivial_only))
         if as_json:
             _dump_json(result)
             return

@@ -14,6 +14,8 @@ from nightwright.agentic import launch as L
 from nightwright.agentic import runner as R
 from nightwright.cli import cli
 
+from _permission_rules import decide as rule_decide
+
 pytestmark = pytest.mark.fast
 
 PRICE = {"input": 3.0, "output": 15.0}
@@ -55,7 +57,7 @@ def _wire(cfg, monkeypatch, tmp_path):
 
 
 CONDUCTOR_ALLOW = L.DEFAULTS["allowed_tools"] + L.DEFAULTS["conductor_allowed_tools"]
-VERB_DENY = ["Bash(uv run nw queue main-dirty-apply*)", "Bash(nw queue main-dirty-apply*)"]
+VERB_DENY = L._verb_deny()     # SPEC-0551: anchored denies of every verb form but --trivial-only
 CONDUCTOR_DENY = L.DEFAULTS["disallowed_tools"] + ["AskUserQuestion", *VERB_DENY]
 
 
@@ -500,18 +502,126 @@ def _permitted(command, allow, deny):
     return hit(allow) and not hit(deny)
 
 
-def test_conductor_deny_anchored_verb(cfg):
-    """SPEC-0548: the verb is denied at the subcommand position only, so the conductor's
-    `escalate --fact '<verb command>'` still runs."""
+ESCALATE_FACT = ("uv run nw queue escalate --topic human_checkout --question q "
+                 "--fact {fact} --option a --yes")
+
+
+def test_conductor_verb_rules_permit_only_the_flagged_form(cfg):
+    """SPEC-0551 AC2: the verb is denied at the subcommand position in every form but
+    `--trivial-only`, so the conductor's `escalate --fact '<verb command>'` still runs."""
     allow, deny = _eff(cfg, "conductor")
-    assert not _permitted("uv run nw queue main-dirty-apply --root /x --json", allow, deny)
-    assert not _permitted("nw queue main-dirty-apply --root /x", allow, deny)
-    assert _permitted("uv run nw queue escalate --topic human_checkout --question q "
-                      "--fact 'nw queue main-dirty-apply --root /x' --yes", allow, deny)
-    assert _permitted("uv run nw queue main-dirty-plan --root /x --json", allow, deny)
+    assert rule_decide("uv run nw queue main-dirty-apply --trivial-only --root /r --json",
+                       allow, deny) == "allow"
+    for prefix in ("uv run nw", "nw"):
+        for cmd in (f"{prefix} queue main-dirty-apply --root /r --json",
+                    f"{prefix} queue main-dirty-apply", f"{prefix} queue main-dirty-apply --plan f",
+                    f"{prefix} queue main-dirty-apply --base x", f"{prefix} queue main-dirty-apply --json",
+                    f"{prefix} queue main-dirty-apply -h", f"{prefix} queue main-dirty-apply --help",
+                    f"{prefix} --split queue main-dirty-apply --root /r",
+                    f"{prefix} -h queue main-dirty-apply --root /r",
+                    f"{prefix} --help queue main-dirty-apply --root /r"):
+            assert rule_decide(cmd, allow, deny) == "deny", cmd
+    for fact in ("'nw queue main-dirty-apply --root /r'", "'main-dirty-apply: <error>'"):
+        assert rule_decide(ESCALATE_FACT.format(fact=fact), allow, deny) == "allow", fact
+    assert rule_decide("uv run nw queue main-dirty-plan --root /x --json", allow, deny) == "allow"
     s_allow, s_deny = _eff(cfg, "steward")
     assert not any("main-dirty-apply" in r for r in s_deny)
-    assert "Do not run `nw queue main-dirty-apply`." in L.CONDUCTOR_CURSOR_POLICY
+    assert "Bash(uv run nw queue main-dirty-apply --trivial-only *)" in allow
+
+
+def test_conductor_guarded_word_in_a_git_c_message_is_denied(cfg):
+    """SPEC-0551 AC2: the unchanged `_steward_guard` denies `-C` commands that contain a guarded
+    word, which the skill's permission-denial paragraph tells the conductor to avoid."""
+    allow, deny = _eff(cfg, "conductor")
+    assert rule_decide('git -C /w commit -m "feat: add x"', allow, deny) == "deny"
+    assert rule_decide('git -C /w commit -m "x"', allow, deny) == "allow"
+
+
+def _click_options(command, parent=None):
+    import click
+    # a context chain: the help option names (`-h`, `--help`) are inherited from the root group
+    params = command.get_params(click.Context(command, parent=parent, **command.context_settings)
+                                if parent is None else click.Context(command, parent=parent))
+    return {o for param in params for o in (*param.opts, *param.secondary_opts)}
+
+
+def test_verb_denies_cover_every_option_of_the_verb_and_the_root_group():
+    """SPEC-0551 AC2: a new option of `queue main-dirty-apply` needs a deny tail, a new option
+    of the root group needs a lead; otherwise this fails."""
+    import click
+    queue = cli.commands["queue"]
+    verb = queue.commands["main-dirty-apply"]
+    chain = click.Context(queue, parent=click.Context(cli, **cli.context_settings))
+    tails = {t.strip().rstrip("*") for t in L._VERB_TAILS}
+    assert _click_options(verb, chain) - {"--trivial-only"} == tails
+    leads = {lead.strip() for lead in L._VERB_LEADS} - {""}
+    assert _click_options(cli) == leads
+
+
+@pytest.fixture
+def conductor_hook(tmp_path, monkeypatch, capsys):
+    """A registered conductor session, a primary checkout `M`, and a runner of the real hook."""
+    import io
+    import subprocess
+    import sys
+    from nightwright.agentic import git_guard
+    reg = tmp_path / "hookdata" / "agentic" / "conductor"
+    reg.mkdir(parents=True)
+    (reg / "sessions.jsonl").write_text(
+        json.dumps({"reader": "conductor", "session_id": "cond-1"}) + "\n")
+    monkeypatch.setenv("NW_DATA_DIR", str(tmp_path / "hookdata"))
+    main = tmp_path / "primary"
+    subprocess.run(["git", "init", "-q", str(main)], check=True)
+
+    def run(command):
+        payload = {"session_id": "cond-1", "cwd": str(main),
+                   "tool_input": {"command": command.replace("M", str(main))}}
+        monkeypatch.setattr(sys, "stdin", io.StringIO(json.dumps(payload)))
+        git_guard.main()
+        out = capsys.readouterr().out
+        return json.loads(out)["hookSpecificOutput"]["permissionDecision"] if out.strip() else None
+    return run
+
+
+def test_hook_is_silent_for_the_flagged_verb_and_denies_the_rest(conductor_hook):
+    """SPEC-0551 AC2: the backstop agrees with the static rules on both sides."""
+    assert conductor_hook("uv run nw queue main-dirty-apply --trivial-only --root M") is None
+    assert conductor_hook(ESCALATE_FACT.format(fact="'nw queue main-dirty-apply --root M'")) is None
+    assert conductor_hook(ESCALATE_FACT.format(fact="'main-dirty-apply: <error>'")) is None
+    for cmd in ("uv run nw queue main-dirty-apply --root M",
+                "uv run nw --split queue main-dirty-apply --root M",
+                "uv run nw queue main-dirty-apply --root=M"):
+        assert conductor_hook(cmd) == "deny", cmd
+
+
+def test_verb_rules_snapshot_and_two_projects_launch_the_same_rules(cfg, tmp_path, monkeypatch):
+    """SPEC-0551 AC3: no conductor static rule names a project root or a base; the steward's
+    rules, `disallowed_tools` and `_CONDUCTOR_WIP_VERBS` equal a snapshot from before the spec."""
+    import hashlib
+    snap = hashlib.sha256(json.dumps([
+        L.DEFAULTS["allowed_tools"], L.DEFAULTS["steward_allowed_tools"],
+        L.DEFAULTS["disallowed_tools"], list(L._CONDUCTOR_WIP_VERBS), L.STEWARD_CURSOR_POLICY,
+    ]).encode()).hexdigest()[:16]
+    assert snap == "a7c908c1fafd7b35"
+    s_allow, s_deny = _eff(cfg, "steward")
+    assert rule_decide('git -C /w rm -f --ignore-unmatch -- f "x log y"', s_allow, s_deny) == "deny"
+    first = _eff(cfg, "conductor")
+    other = tmp_path / "elsewhere"
+    other.mkdir()
+    monkeypatch.setattr(rules, "projects_payload", lambda c: {"projects": [
+        {"name": "Meta-Tools", "research": {"root": str(other)}, "merge": {"base": "trunk"}},
+        {"name": "Foo", "research": {"root": str(other)}}]})
+    assert _eff(cfg, "conductor") == first
+    assert not any(str(tmp_path) in r or "trunk" in r for r in [*first[0], *first[1]])
+
+
+def test_conductor_cursor_policy_names_the_flagged_verb():
+    """SPEC-0551 AC4."""
+    policy = L.CONDUCTOR_CURSOR_POLICY
+    assert "main-dirty-apply --trivial-only" in policy
+    assert "Never write the main checkout with raw git" in policy
+    assert "in a worktree under `.nw-worktrees/` add and commit as usual" in policy
+    assert "Do not run `nw queue main-dirty-apply`." not in policy
 
 
 def _eff(cfg, role):

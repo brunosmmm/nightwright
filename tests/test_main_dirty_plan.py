@@ -1682,7 +1682,7 @@ def test_skill_main_dirty_row_phrases():                                        
                    "more paths", "'\\''"):
         assert phrase in row, phrase
     for phrase in ("is on <branch>", "git add", "git commit", "git checkout", "git rm",
-                   "git worktree add", "main-dirty-apply", "isolation"):
+                   "git worktree add", "isolation"):
         assert phrase not in row, phrase
     answered = _row("escalation_answered")
     assert "human_checkout" in answered and "parked.main_dirty" in answered
@@ -1692,14 +1692,48 @@ def test_skill_main_dirty_row_phrases():                                        
     assert "same as" not in _row("wt_broken")
 
 
-def test_skill_main_not_on_base_row_is_the_old_row_with_two_cells_edited():       # SPEC-0547 AC5
-    expect = OLD_COMBINED_ROW.replace("| `parked.main_dirty`, `parked.main_not_on_base` |",
-                                      "| `parked.main_not_on_base` |", 1) \
-                             .replace("| `parked` `main_dirty` / `main_not_on_base` |",
-                                      "| `parked` `main_not_on_base` |", 1)
-    assert expect != OLD_COMBINED_ROW
-    assert _row("parked.main_not_on_base") == expect
+def test_skill_main_not_on_base_row_escalates_and_the_human_resumes():           # SPEC-0551 AC5
+    """Was SPEC-0547's "the old row with two cells edited"; SPEC-0551 replaces the row's
+    procedure (the hook denies raw git writes in the main checkout)."""
+    row = _row("parked.main_not_on_base")
+    for phrase in ("human_checkout", "nw queue resume", "you do not", "main-dirty-plan"):
+        assert phrase in row, phrase
+    for phrase in ("git add", "git commit", "git checkout", "git rm", "git worktree add",
+                   "git switch", "sub-agent"):
+        assert phrase not in row, phrase
+    assert "git checkout -- <files>" not in SKILL_MD.read_text(encoding="utf-8")
     assert OLD_COMBINED_ROW not in SKILL_MD.read_text(encoding="utf-8")
+
+
+def test_skill_wt_broken_row_mails_the_steward():                                  # SPEC-0551 AC5
+    row = _row("wt_broken")
+    assert "steward" in row and "human_checkout" in row
+    for phrase in ("git add", "git commit", "git checkout", "git rm", "sub-agent"):
+        assert phrase not in row, phrase
+
+
+def test_skill_step_2b_runs_the_flagged_verb():                                    # SPEC-0551 AC5
+    row = _row("parked.main_dirty")
+    assert row.index("**2.**") < row.index("**2b.**") < row.index("**3.**")
+    step = row[row.index("**2b.**"):row.index("**3.**")]
+    for phrase in ("main-dirty-apply --trivial-only", "--from conductor", "steward:<Project>",
+                   "conduct-status", "--to human", "--to CLOSING", "nw escalations list --json",
+                   "cleared main (commit", "not trivial: resume", "escalations withdraw",
+                   "--rule parked.main_dirty", "--fact 'main-dirty-apply: <error>'",
+                   "(`root`, `base`)"):
+        assert phrase in step, phrase
+    text = SKILL_MD.read_text(encoding="utf-8")
+    assert not re.search(r"main-dirty-apply(?!:)(?! --trivial-only)", text)
+    for phrase in ("git add", "git commit", "git checkout", "git rm", "git worktree add"):
+        assert phrase not in row, phrase
+    para = text[text.index("**A sub-agent reporting a permission denial"):]
+    para = para[:para.index("\n")]
+    for phrase in ("git -C <worktree> add -- <paths>", "never in the main checkout",
+                   "`add`, `commit`, `fetch`, `rebase`, `restore`, `checkout`, `rm`, `hook`, "
+                   "`config`"):
+        assert phrase in para, phrase
+    assert "plain single commands" not in para
+    assert "`git add <paths>` then `git commit -m …`" in text      # the dispatch paragraph
 
 
 # AC6: the row's step-4 command, built and run the way the conductor's shell would parse it

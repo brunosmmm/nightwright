@@ -85,7 +85,7 @@ is an alias), `watch`, `run`, `tick`, `stop`, `restart`, `park` (needs `--reason
 `cost-policy`, `backend` (per-campaign pin, or `--host` / `--all`; the choice is
 `claude|cursor|pi|default`), `merge`, `gc`, `gates`, `gate-slots`, `sweep-prs`,
 `conductor-guard`, `main-dirty-plan` (read-only plan to clear a dirty base checkout), `main-dirty-apply`
-(human or steward run: commits a trivial dirty base checkout and saves non-trivial dirt to a `wip/main-dirty-*` branch in a worktree before restoring main; a `hold` then switches to the base; the conductor is denied it),
+(human or steward run: commits a trivial dirty base checkout and saves non-trivial dirt to a `wip/main-dirty-*` branch in a worktree before restoring main; a `hold` then switches to the base; the conductor is denied it except as `--trivial-only`, which refuses with `not trivial: <action>` and writes nothing unless the live plan is a trivial commit),
 `sentinel` (`run`, `clear`, `status`, `resume-fix`), plus the conductor
 tooling: `events`, `followers`, `wakeups`, `runner-log`, `decision` (needs a rationale
 argument), `decisions`, `escalate`, `conduct-status`, `conductor-brief`, `conductor-cost`,

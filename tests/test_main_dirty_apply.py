@@ -1083,7 +1083,9 @@ def test_skills_name_the_verb_for_the_steward_only():
     steward = (REPO_ROOT / "skills/nw-steward/SKILL.md").read_text(encoding="utf-8")
     conduct = (REPO_ROOT / "skills/nw-conduct/SKILL.md").read_text(encoding="utf-8")
     assert "nw queue main-dirty-apply --root" in steward
-    assert "main-dirty-apply" not in conduct
+    # SPEC-0551 AC5: every command naming the verb carries --trivial-only (the fact label
+    # `main-dirty-apply: <error>` is exempt)
+    assert not re.search(r"main-dirty-apply(?!:)(?! --trivial-only)", conduct)
 
 
 # ---- review loop 2: caught classes, interrupted commit, guard faults, bounded git calls -------
@@ -2602,3 +2604,104 @@ def test_reverify_path_branches(tmp_path):
     assert MD._reverify_path(root, "config/gone.json", "100644", oid) == "changed since the save"
     (repo / "link").symlink_to("config/a.json")
     assert MD._reverify_path(root, "link", "100644", oid) == "changed since the save"
+
+
+# ---- SPEC-0551: --trivial-only ----------------------------------------------------------------
+
+def _logic_edit(repo):
+    _put(repo, "src/x.py", "x = 2\n")
+
+
+# live action -> (repo builder, the class it escalates for)
+TRIVIAL_ONLY_CASES = {
+    "save_branch": _plain(_dirt_text),
+    "branch_and_escalate": _plain(_logic_edit),
+    "hold": _hold(_dirt_text),
+    "resume": _plain(lambda r: None),
+}
+
+
+def _bad_path(repo, mp):
+    live = MD.plan_clear(repo)
+    mp.setattr(MD, "plan_clear", lambda root, base=None: {**live, "paths": ["/etc/passwd"]})
+    return "bad path /etc/passwd"
+
+
+def _partially_staged(repo, mp):
+    rel = MD.plan_clear(repo)["paths"][0]
+    _put(repo, rel, "staged\n")
+    _git(repo, "add", rel)
+    _put(repo, rel, "staged\nand again\n")
+    return f"partially staged {rel}"
+
+
+def _no_project_config(repo, mp):
+    (repo / ".nw/project.yaml").unlink()
+    _git(repo, "add", "-A", ".nw")
+    _git(repo, "commit", "-qm", "drop config")
+    return "no project config to place the WIP worktree"
+
+
+@pytest.mark.parametrize("action", sorted(TRIVIAL_ONLY_CASES))
+def test_trivial_only_refuses_every_other_action_and_writes_nothing(tmp_path, action):
+    repo = TRIVIAL_ONLY_CASES[action](tmp_path)
+    live = MD.plan_clear(repo)
+    assert live["action"] == action, live
+    before = _snap(repo)
+    out = MD.apply_clear(repo, trivial_only=True)
+    assert (out["ok"], out["action"], out["error"]) == (False, action, f"not trivial: {action}")
+    assert out["escalate"] is (live["class"] in ("substantive", "merge"))
+    assert _snap(repo) == before and not (tmp_path / ".nw-worktrees").exists()
+
+
+@pytest.mark.parametrize("guard", [_bad_path, _partially_staged, _no_project_config],
+                         ids=["bad-path", "partially-staged", "no-config"])
+@pytest.mark.parametrize("action", ["save_branch", "branch_and_escalate", "hold"])
+def test_trivial_only_skips_guards_5_to_7_for_the_save_actions(tmp_path, monkeypatch, action, guard):
+    repo = TRIVIAL_ONLY_CASES[action](tmp_path)
+    why = guard(repo, monkeypatch)
+    plain = MD.apply_clear(repo)                    # without the flag the fixture does reach it
+    assert plain["ok"] is False and plain["error"] == why, plain
+    before = _snap(repo)
+    out = MD.apply_clear(repo, trivial_only=True)
+    assert out["ok"] is False and out["error"] == f"not trivial: {action}", out
+    assert _snap(repo) == before and not (tmp_path / ".nw-worktrees").exists()
+
+
+@pytest.mark.parametrize("trivial_only", [False, True])
+@pytest.mark.parametrize("op", sorted(OPS))
+def test_trivial_only_keeps_the_in_progress_refusal_first(tmp_path, op, trivial_only):
+    repo = _repo(tmp_path)
+    build, error = OPS[op]
+    build(repo)
+    if op != "real-conflict":
+        _edit_trivial(repo)
+    before = _snap(repo)
+    out = MD.apply_clear(repo, trivial_only=trivial_only)
+    assert (out["ok"], out["escalate"], out["error"]) == (False, True, error)
+    assert _snap(repo) == before
+
+
+def test_trivial_only_commits_a_trivial_diff_exactly_like_the_plain_verb(tmp_path):
+    flagged, plain = _repo(tmp_path, name="a"), _repo(tmp_path, name="b")
+    for repo in (flagged, plain):
+        _edit_trivial(repo)
+        assert MD.plan_clear(repo)["action"] == "commit"
+    out = MD.apply_clear(flagged, trivial_only=True)
+    ref = MD.apply_clear(plain)
+    assert out["ok"] is True and ref["ok"] is True
+    assert {k: v for k, v in out.items() if k not in ("root", "sha")} == \
+        {k: v for k, v in ref.items() if k not in ("root", "sha")}
+    assert _git(flagged, "log", "-1", "--format=%s").stdout.strip() == SUBJECT
+    assert _tracked_clean(flagged) and _git(flagged, "rev-parse", "HEAD").stdout.strip() == out["sha"]
+
+
+def test_cli_trivial_only_flag(tmp_path):
+    repo = _saveable(tmp_path)
+    _put(repo, "src/x.py", "x = 2\n")
+    r = _invoke("--root", str(repo), "--trivial-only", "--json")
+    assert r.exit_code == 0, r.output
+    doc = json.loads(r.output)
+    assert (doc["ok"], doc["error"], doc["escalate"]) == (False, "not trivial: branch_and_escalate", True)
+    r = _invoke("--root", str(repo), "--trivial-only")
+    assert r.exit_code == 1 and "not trivial: branch_and_escalate" in r.output

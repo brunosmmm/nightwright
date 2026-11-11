@@ -28,10 +28,13 @@ CONDUCTOR_CURSOR_POLICY = (
     "- Do not push to main or master; do not force-push except origin nw/* or origin wt/* "
     "with --force-with-lease.\n"
     "- Do not run `gh pr merge`.\n"
-    "- Do not run `nw queue main-dirty-apply`.\n"
     "- Do not edit the main checkout; write only under `.nw-worktrees/`.\n"
-    "- Git: read-only verbs, worktree add, switch --create, add -A, commit -m. "
-    "No reset --hard, clean, branch -D, switch -f.\n"
+    "- A main_dirty clear of the trivial class runs `uv run nw queue main-dirty-apply "
+    "--trivial-only`; never run it otherwise. Never write the main checkout with raw git (add, "
+    "commit, rm, checkout, switch, restore, merge, rebase, reset, mv, cherry-pick, revert, "
+    "stash, apply, am, hash-object, update-index, worktree add outside `.nw-worktrees/`) or cp; "
+    "in a worktree under `.nw-worktrees/` add and commit as usual. "
+    "No reset --hard, clean, branch -D, or push to the base.\n"
     "- You may Read/Grep/Glob, Edit/Write under `.nw-worktrees/`, and run `uv run nw`, "
     "`uv run pytest`, spec_lint.")
 STEWARD_CURSOR_POLICY = (
@@ -44,6 +47,21 @@ STEWARD_CURSOR_POLICY = (
     "No reset --hard, clean, branch -D.\n"
     "- You may Read/Grep/Glob, Edit/Write under `.nw-worktrees/`, and run `uv run nw`, "
     "`uv run pytest`, spec_lint.")
+
+# SPEC-0551: the conductor's verb deny. Anchored (no `*` between `nw` and `queue`): `*` matches
+# spaces, so `* queue main-dirty-apply` would also deny the conductor's own
+# `queue escalate --fact 'nw queue main-dirty-apply --root R'`. Every option of the verb but
+# `--trivial-only` gets a tail and every option of the root group a lead; any other spelling is
+# the git-guard hook's job (SPEC-0550 step 7). A launch test keeps these in step with click.
+_VERB_PREFIXES = ("uv run nw", "nw")
+_VERB_LEADS = ("", "--split ", "-h ", "--help ")
+_VERB_TAILS = (" --root*", " --plan*", " --base*", " --json*", " --help*", " -h*")
+
+
+def _verb_deny():
+    return [f"Bash({p} {lead}queue main-dirty-apply{tail})" for p in _VERB_PREFIXES
+            for lead in _VERB_LEADS for tail in ("", *_VERB_TAILS)]
+
 
 # Rule generators (SPEC-0353). `*` matches any characters, spaces included, so allow rules that end
 # in a wildcard are guarded by a deny rule for every argument that can follow the ref.
@@ -184,12 +202,9 @@ DEFAULTS = {"model": "claude-sonnet-5-5", "effort": "medium", "autocompact": "15
             # campaign worktrees, looking into stuck runs) from being refused
             # no `cp` in the allow-list below: under dontAsk it would overwrite the main checkout's
             # uncommitted files
-            # SPEC-0548: the verb token is anchored at the subcommand position (`*` matches
-            # spaces too, so `* main-dirty-apply*` would also deny an `escalate --fact` that
-            # quotes the verb); forms this misses are the git-guard hook's backstop (SPEC-0550)
-            "conductor_disallowed_tools": ["AskUserQuestion",
-                                           "Bash(uv run nw queue main-dirty-apply*)",
-                                           "Bash(nw queue main-dirty-apply*)"],
+            # SPEC-0548/0551: the verb is denied at the subcommand position only, in every form
+            # but `--trivial-only` (see `_verb_deny`)
+            "conductor_disallowed_tools": ["AskUserQuestion", *_verb_deny()],
             "conductor_permission_mode": "dontAsk",
             "conductor_allowed_tools": ["Read", "Grep", "Glob",
                                         f"Edit(//**/{WORKTREES_DIR}/**)",
@@ -197,6 +212,9 @@ DEFAULTS = {"model": "claude-sonnet-5-5", "effort": "medium", "autocompact": "15
                                         *[f"Bash({p} {v})" for p in _PREFIXES
                                           for v in (*_CONDUCTOR_GIT_VERBS, *_CONDUCTOR_WIP_VERBS)],
                                         "Bash(uv run pytest *)", "Bash(uv run nw *)",
+                                        # documentary: `uv run nw *` already allows it; what
+                                        # grants the flagged verb is the absence of a blanket deny
+                                        "Bash(uv run nw queue main-dirty-apply --trivial-only *)",
                                         "Bash(python3 tools/spec_lint.py*)",
                                         "Bash(mkdir *)", "Bash(ps *)", "Bash(tail *)"]}
 TOOL_FLAGS = {"allowed_tools": "--allowedTools", "disallowed_tools": "--disallowedTools"}

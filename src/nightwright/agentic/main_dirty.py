@@ -1117,10 +1117,12 @@ def _save_clear(out, root, live, arg_base) -> None:
         out["ok"] = True
 
 
-def apply_clear(root, plan=None, base=None) -> dict:
+def apply_clear(root, plan=None, base=None, *, trivial_only=False) -> dict:
     """Clear a dirty base checkout (SPEC-0548): re-plan live, refuse an operation in progress,
     a stale `plan` file, unsafe paths and partial staging, and only then run the live action.
-    `plan` (a plan file) is a check, never an input; `base` is the CLI's `--base`."""
+    `plan` (a plan file) is a check, never an input; `base` is the CLI's `--base`.
+    `trivial_only` (SPEC-0551, the conductor's flag): any live action but `commit` is refused
+    as `not trivial: <action>` right after the plan check, before the path and WIP guards."""
     out = {"schema": APPLY_SCHEMA, "root": os.path.abspath(root), "action": "none", "ok": False,
            "escalate": False}
     try:
@@ -1128,13 +1130,13 @@ def apply_clear(root, plan=None, base=None) -> dict:
             if not got:
                 out["error"] = "clear already in progress"
                 return out
-            return _apply_locked(out, Path(root), plan, base)
+            return _apply_locked(out, Path(root), plan, base, trivial_only)
     except (NotAWorktree, PlanError, OSError, ValueError, TypeError, AttributeError) as e:
         out.update({"ok": False, "error": str(e) or type(e).__name__})
         return out
 
 
-def _apply_locked(out, root, plan, base) -> dict:
+def _apply_locked(out, root, plan, base, trivial_only=False) -> dict:
     live = plan_clear(root, base=base)
     out["root"], out["action"] = live["root"], live["action"]
     out["escalate"] = live["class"] in ("substantive", "merge")
@@ -1145,6 +1147,9 @@ def _apply_locked(out, root, plan, base) -> dict:
     if plan is not None and (plan.get("action") != live["action"]
                              or sorted(plan.get("paths") or []) != sorted(live["paths"])):
         out["error"] = "plan is stale"
+        return out
+    if trivial_only and live["action"] != "commit":
+        out["error"] = f"not trivial: {live['action']}"
         return out
     refusal = verb_refusal(root, live)
     if refusal:

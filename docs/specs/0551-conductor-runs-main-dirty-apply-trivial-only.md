@@ -1,7 +1,7 @@
 ---
 id: SPEC-0551
 title: Conductor runs main-dirty-apply --trivial-only for the trivial class
-status: accepted
+status: done
 owner: user
 created: 2026-11-11
 updated: 2026-11-11
@@ -192,7 +192,7 @@ guards 5–7 and commits as SPEC-0548. Without the flag the verb is unchanged.
 "Permitted" means SPEC-0550's helper `tests/_permission_rules.py::decide` returns `allow` on the
 effective rules of `build_plan(cfg, "conductor")`.
 
-- [ ] AC1 (SPEC-0544 AC1) Guard order and refusals of `main-dirty-apply --trivial-only`, in the
+- [x] AC1 (SPEC-0544 AC1) Guard order and refusals of `main-dirty-apply --trivial-only`, in the
       stated order (guards 1–4, then the `not trivial` check, then guards 5–7):
       - For each live action `save_branch`, `branch_and_escalate`, `hold`, `resume`: `ok: false`,
         `error: not trivial: <action>` and SPEC-0548's `escalate` for the class; nothing is
@@ -206,7 +206,7 @@ effective rules of `build_plan(cfg, "conductor")`.
         `<in_progress> in progress`, `escalate: true`, no write, with and without
         `--trivial-only`. `escalate` is not in the `not trivial` list.
       - On a live `commit` (trivial diff) the flagged verb commits exactly as SPEC-0548 AC2.
-- [ ] AC2 (SPEC-0544 AC2) Static rules and hook, with the anchored deny set of Design / Launch:
+- [x] AC2 (SPEC-0544 AC2) Static rules and hook, with the anchored deny set of Design / Launch:
       - `decide` permits `uv run nw queue main-dirty-apply --trivial-only --root /r --json`, and
         denies `uv run nw queue main-dirty-apply --root /r --json`, the bare form, `--plan f`,
         `--base x`, `--json`, `-h`, the same forms through `nw`, and
@@ -226,15 +226,15 @@ effective rules of `build_plan(cfg, "conductor")`.
         **denies** `uv run nw queue main-dirty-apply --root M` (the same verb without
         `--trivial-only`), `uv run nw --split queue main-dirty-apply --root M`, and
         `uv run nw queue main-dirty-apply --root=M`.
-- [ ] AC3 (SPEC-0544 AC8) No conductor static rule contains a project root path or a base
+- [x] AC3 (SPEC-0544 AC8) No conductor static rule contains a project root path or a base
       branch name: a launch with two projects whose roots and bases differ yields identical rule
       lists. `DEFAULTS["disallowed_tools"]`, `_CONDUCTOR_WIP_VERBS`, and the steward's effective
       rules equal a snapshot taken before this spec. The steward still denies
       `git -C /w rm -f --ignore-unmatch -- f "x log y"`.
-- [ ] AC4 (SPEC-0544 AC9) `CONDUCTOR_CURSOR_POLICY` names `main-dirty-apply --trivial-only` and
+- [x] AC4 (SPEC-0544 AC9) `CONDUCTOR_CURSOR_POLICY` names `main-dirty-apply --trivial-only` and
       the main checkout write ban, says worktree add/commit is allowed, and no longer contains
       "Do not run `nw queue main-dirty-apply`."
-- [ ] AC5 (SPEC-0544 AC10) The `parked.main_dirty` row, extracted by rule id, contains a step
+- [x] AC5 (SPEC-0544 AC10) The `parked.main_dirty` row, extracted by rule id, contains a step
       `2b` between steps 2 and 3 with `main-dirty-apply --trivial-only`, `--from conductor`,
       `steward:<Project>`, `conduct-status`, `--to human`, `--to CLOSING`,
       `nw escalations list --json`, `cleared main (commit`, `not trivial: resume`,
@@ -249,7 +249,7 @@ effective rules of `build_plan(cfg, "conductor")`.
       `never in the main checkout` and the guarded-word list (`add`, `commit`, `fetch`,
       `rebase`, `restore`, `checkout`, `rm`, `hook`, `config`); the dispatch paragraph keeps its
       plain `git add <paths>` / `git commit -m` wording.
-- [ ] AC6 (SPEC-0544 AC11) Inherited assertions this spec edits, and only these: SPEC-0547 AC5's
+- [x] AC6 (SPEC-0544 AC11) Inherited assertions this spec edits, and only these: SPEC-0547 AC5's
       forbidden list loses `main-dirty-apply` (the row may name the `--trivial-only` form);
       SPEC-0548 AC7's two blanket deny rules are replaced by AC2's rule set (with the four named
       `tests/test_agentic_launch.py` sites updated to it) and its "`nw-conduct` never names
@@ -286,6 +286,57 @@ effective rules of `build_plan(cfg, "conductor")`.
   `uv run nw queue escalate … --fact 'nw queue main-dirty-apply --root <main>' … --yes` on the
   scratch queue (expect allowed). Record each result in As shipped.
 
+### Test record (2026-11-11)
+
+- `uv run pytest -q tests/test_agentic_launch.py tests/test_main_dirty_apply.py
+  tests/test_main_dirty_plan.py tests/test_skills.py tests/test_claude_settings_allowlist.py
+  tests/test_conductor_git_guard.py`: all pass. New cases: AC1 in `test_main_dirty_apply.py`
+  (`test_trivial_only_*`, `test_cli_trivial_only_flag`); AC2-AC4 in `test_agentic_launch.py`
+  (`test_conductor_verb_rules_permit_only_the_flagged_form`,
+  `test_conductor_guarded_word_in_a_git_c_message_is_denied`,
+  `test_verb_denies_cover_every_option_of_the_verb_and_the_root_group`,
+  `test_hook_is_silent_for_the_flagged_verb_and_denies_the_rest`,
+  `test_verb_rules_snapshot_and_two_projects_launch_the_same_rules`,
+  `test_conductor_cursor_policy_names_the_flagged_verb`); AC5/AC6 in `test_main_dirty_plan.py`
+  (`test_skill_step_2b_runs_the_flagged_verb`, the two row tests) and the regex in
+  `test_main_dirty_apply.py::test_skills_name_the_verb_for_the_steward_only`.
+- `python3 tools/test_tiers.py --check` exits 0; `python3 tools/spec_lint.py` exits 0.
+- Real binary (scratch repo under the campaign tmp dir, `claude -p` on the plan's
+  `--allowedTools` / `--disallowedTools`, `dontAsk`, `uv` shimmed to this worktree):
+  1. frontmatter edit, `uv run nw queue main-dirty-apply --root <m> --json`: DENIED by the
+     permission check; `--trivial-only --root <m> --json`: ran, `ok: true`, one commit
+     `chore: land stray trivial main-checkout edits`, tree clean.
+  2. logic edit in `src/x.py`, `--trivial-only`: ran, `ok: false`,
+     `error: not trivial: branch_and_escalate`, `escalate: true`, nothing changed.
+  3. `uv run nw queue escalate --topic human_checkout ... --fact 'nw queue main-dirty-apply
+     --root <m>' --yes` on the scratch queue: PERMITTED, `ESC-0001` opened.
+  4. With the SPEC-0550 hook installed through `--settings` and a registered conductor
+     session: the flagged verb on a fresh frontmatter edit was PERMITTED (`ok: true`, second
+     commit), and `git -C <m> add -A` was DENIED by the hook (`no raw git writes in the main
+     checkout`).
+- `python3 tools/affected_tests.py --exclude-marks=integration,tui,remote,perf --run uv run
+  pytest -q -x -n 3` (the queue gate's form): 3265 passed, 1 skipped. The unrestricted affected
+  run includes the TUI modules and exceeded the 10-minute tool limit, so it was left to gating,
+  as was the full suite.
+
+### As shipped (2026-11-11)
+
+- As designed: `apply_clear(..., trivial_only=)` and `--trivial-only` (the check sits after
+  guard 4, before guards 5-7); anchored verb denies (`_verb_deny()` in `launch.py`: 2 prefixes
+  x 4 leads x bare + 6 tails = 56 rules) and the documentary allow; the cursor policy; step
+  `2b` and the three other skill edits; docs (`operate.md`, `agentic.md`, `reference/index.md`).
+- Deviation: SPEC-0547 AC5's test `test_skill_main_not_on_base_row_is_the_old_row_with_two_cells_edited`
+  pinned the old `main_not_on_base` text; Decision item 5 rewrites that row, so the test was
+  replaced by `test_skill_main_not_on_base_row_escalates_and_the_human_resumes` (AC5). AC6's
+  list of edited inherited assertions did not name it.
+- The `Do not edit the main checkout; write only under .nw-worktrees/` bullet of the cursor
+  policy is kept; the old `Git: ... add -A, commit -m` bullet is folded into the new
+  sentence.
+- The snapshot of AC3 is a hash of `DEFAULTS` allow/steward-allow/disallow lists,
+  `_CONDUCTOR_WIP_VERBS` and `STEWARD_CURSOR_POLICY` taken before the edit (the steward's
+  effective rules derive only from those); the test also denies
+  `git -C /w rm -f --ignore-unmatch -- f "x log y"` for the steward.
+
 ## Rollout / migration
 
 Ships after SPEC-0550. A conductor launched after the deploy gets the new verb rules; a running
@@ -295,14 +346,14 @@ done. Queued under project Meta-Tools.
 
 ## Definition of done
 
-- [ ] Acceptance criteria all met.
-- [ ] Test plan executed, including the real-binary check; affected tests pass.
-- [ ] No regressions in launch, settings-allowlist, skills, git-guard and main-dirty tests.
-- [ ] `docs/product/loop/operate.md` and `docs/product/capabilities/agentic.md` say the
+- [x] Acceptance criteria all met.
+- [x] Test plan executed, including the real-binary check; affected tests pass.
+- [x] No regressions in launch, settings-allowlist, skills, git-guard and main-dirty tests.
+- [x] `docs/product/loop/operate.md` and `docs/product/capabilities/agentic.md` say the
       conductor clears the trivial class with `--trivial-only` and escalates the rest;
       `docs/product/reference/index.md` documents the `--trivial-only` flag on the verb.
-- [ ] Spec body updated to match what shipped.
-- [ ] `docs/LEDGER.md` regenerated; `python3 tools/spec_lint.py` exits 0.
+- [x] Spec body updated to match what shipped.
+- [x] `docs/LEDGER.md` regenerated; `python3 tools/spec_lint.py` exits 0.
 
 ## Open questions
 

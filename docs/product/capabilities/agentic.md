@@ -611,8 +611,10 @@ forces anything:
    was captured — else `main_not_on_base`, `main_dirty`, or (after two attempts)
    `base_moving`. A `main_dirty` park belongs to the conductor: it classifies the edit
    (`nw queue main-dirty-plan`) and escalates once per checkout with the exact commands.
-   For a trivial edit that is `nw queue main-dirty-apply` (human or steward run; the
-   conductor is denied it): it re-plans, refuses a merge in progress, a stale plan, unsafe
+   A trivial edit is cleared by the conductor itself with the one flagged command
+   `nw queue main-dirty-apply --trivial-only` (it refuses any other class with
+   `not trivial: <action>` and writes nothing, so the conductor escalates the rest; without
+   the flag the verb is for a human or steward and the conductor is denied it): it re-plans, refuses a merge in progress, a stale plan, unsafe
    paths and partial staging without writing, and commits the planned paths.
    Then `git merge --ff-only`, the configured `post_cmds`, and an optional
    push.
