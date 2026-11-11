@@ -28,7 +28,7 @@ _GLOBAL_OK = frozenset({"--literal-pathspecs", "--no-pager", "-P", "--no-replace
 _READ_ONLY = frozenset({"status", "log", "diff", "show", "rev-parse", "rev-list", "merge-base",
                         "ls-files", "ls-tree", "cat-file", "describe", "blame", "shortlog",
                         "show-ref", "for-each-ref", "grep", "version", "help",
-                        "fetch", "push"})
+                        "fetch"})
 _BRANCH_OK = frozenset({"--list", "-a", "-r", "-v", "-vv", "--show-current"})
 _CP_FLAGS = frozenset("aflnPpRrsuvx")
 

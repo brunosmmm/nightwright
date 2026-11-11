@@ -199,6 +199,13 @@ def test_ac3_silent(monkeypatch, capsys, tree, cwd, command):
     assert_silent(monkeypatch, capsys, tree, cwd, command)
 
 
+def test_push_is_denied_against_main_and_silent_in_a_linked_worktree(monkeypatch, capsys, tree):
+    # Steward review: `git push` from the main checkout can push a local branch state; only
+    # `fetch` stays allowed there.
+    assert_denied(monkeypatch, capsys, tree, "M", "git push origin main")
+    assert_silent(monkeypatch, capsys, tree, "W", "git push origin main")
+
+
 # ---- AC4 ---------------------------------------------------------------------------------
 
 @pytest.mark.parametrize("cwd,command", MAIN_DENIED)

@@ -561,3 +561,10 @@ Built as designed; no Design change. Notes and results:
   An export of a git environment variable in any segment (`export GIT_DIR=…; git add a`) is
   denied when the command has a `git` segment, beyond the `NAME=value` prefix the Design names.
   The launch check also reads a settings file it cannot parse as a missing entry.
+
+### As shipped, steward review fix (2026-11-11)
+
+`push` is **not** in the primary-worktree allow set: Design step 5 listed `fetch` and `push`,
+but a `git push` from the main checkout can push whatever the local branch holds, so the guard
+denies it there (a linked worktree stays silent, as for every other subcommand). `fetch` stays
+allowed. Covered by `test_push_is_denied_against_main_and_silent_in_a_linked_worktree`.
