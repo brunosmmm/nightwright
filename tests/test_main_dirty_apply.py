@@ -371,10 +371,13 @@ def test_commit_lands_but_main_dirty(tmp_path):
     repo = _repo(tmp_path)
     _edit_trivial(repo)
     _hook(repo, "post-commit", "echo extra >> docs/a.md\n")
+    index0 = _index_path(repo).read_bytes()
     out = MD.apply_clear(repo)
     head = _git(repo, "rev-parse", "HEAD").stdout.strip()
     assert (out["ok"], out["sha"], out["error"]) == (False, head, "main not tracked-clean after commit")
     assert not _tracked_clean(repo)
+    assert _index_path(repo).read_bytes() != index0                  # the pre-add index is not restored
+    assert _git(repo, "write-tree").stdout.strip() == _git(repo, "rev-parse", "HEAD^{tree}").stdout.strip()
 
 
 def test_staged_names_must_equal_the_planned_paths(tmp_path, monkeypatch):
@@ -781,11 +784,32 @@ def _assert_safe_argv(calls):
     verbs = _verbs(calls)
     banned = {"reset", "restore", "clean", "checkout", "stash", "push", "switch"}
     assert not banned & set(verbs)
-    assert not any(c[3:5] == ["branch", "-D"] or c[3:5] == ["rm", "-r"] for c in calls)
-    assert not any("commit" == v and "-a" in c for v, c in zip(verbs, calls))
     for v, c in zip(verbs, calls):
+        rest = c[c.index(v) + 1:]                                 # after the verb, `_lg` flags before it
+        assert not (v == "branch" and any(a.startswith("-D") or a == "--delete" for a in rest)), c
+        assert not (v == "rm" and any(a in ("-r", "-R") or (a.startswith("-") and "r" in a[1:])
+                                      for a in rest if not a.startswith("--"))), c
+        assert not (v == "rm" and "--recursive" in rest), c
+        assert not (v == "commit" and any(a == "--all" or (a.startswith("-") and not a.startswith("--")
+                                                           and "a" in a[1:]) for a in rest
+                                          if not a.startswith("-m"))), c
+        assert not (v == "add" and any(a in ("-A", "--all", ".", "-u", "--update") for a in rest)), c
         if v in {"add", "commit", "hash-object", "ls-files", "ls-tree", "diff"}:
             assert "--literal-pathspecs" in c, c
+
+
+@pytest.mark.parametrize("argv", [
+    ["git", "-C", "/r", "--literal-pathspecs", "rm", "-r", "--", "x"],
+    ["git", "-C", "/r", "--literal-pathspecs", "branch", "-D", "x"],
+    ["git", "-C", "/r", "--literal-pathspecs", "commit", "-am", "x"],
+    ["git", "-C", "/r", "--literal-pathspecs", "commit", "--all"],
+    ["git", "-C", "/r", "--literal-pathspecs", "add", "-A"],
+    ["git", "-C", "/r", "--literal-pathspecs", "add", "--", "."],
+    ["git", "-C", "/r", "--literal-pathspecs", "add", "--all"],
+])
+def test_assert_safe_argv_catches_banned_forms_behind_literal_pathspecs(argv):
+    with pytest.raises(AssertionError):
+        _assert_safe_argv([argv])
 
 
 def test_recorded_git_argv(tmp_path, monkeypatch):
@@ -1047,3 +1071,106 @@ def test_skills_name_the_verb_for_the_steward_only():
     conduct = (REPO_ROOT / "skills/nw-conduct/SKILL.md").read_text(encoding="utf-8")
     assert "nw queue main-dirty-apply --root" in steward
     assert "main-dirty-apply" not in conduct
+
+
+# ---- review loop 2: caught classes, interrupted commit, guard faults, bounded git calls -------
+
+@pytest.mark.parametrize("exc", [MD.PlanError("git broke"), OSError("disk"), ValueError("bad"),
+                                 TypeError("typed"), AttributeError("attr"), MD.NotAWorktree("nope")])
+def test_apply_clear_turns_each_caught_class_into_json(tmp_path, monkeypatch, exc):
+    repo = _repo(tmp_path)
+    _edit_trivial(repo)
+
+    def boom(*a, **kw):
+        raise exc
+
+    monkeypatch.setattr(MD, "plan_clear", boom)
+    out = MD.apply_clear(repo)
+    assert (out["ok"], out["action"], out["escalate"]) == (False, "none", False)
+    assert isinstance(out["error"], str) and out["error"]
+    assert out["schema"] == "nw.main_dirty_apply.v1"
+
+
+@pytest.mark.parametrize("plan", [5, "commit", ["a"]])
+def test_apply_clear_non_dict_plan_is_ok_false_not_a_traceback(tmp_path, plan):
+    repo = _repo(tmp_path)
+    _edit_trivial(repo)
+    head, index = _git(repo, "rev-parse", "HEAD").stdout, _index_path(repo).read_bytes()
+    out = MD.apply_clear(repo, plan=plan)
+    assert out["ok"] is False and out["error"]
+    assert _git(repo, "rev-parse", "HEAD").stdout == head and _index_path(repo).read_bytes() == index
+
+
+@pytest.mark.parametrize("exc", [ValueError("odd ls-files record"), KeyboardInterrupt()])
+def test_unexpected_exception_after_add_restores_the_index(tmp_path, monkeypatch, exc):
+    repo = _repo(tmp_path)
+    _edit_trivial(repo)
+    before = _snap(repo)
+
+    def boom(real, root, *args, check, **kw):             # raised from inside `git commit`
+        raise exc
+
+    _wrap_commit(monkeypatch, boom)
+    if isinstance(exc, KeyboardInterrupt):
+        with pytest.raises(KeyboardInterrupt):
+            MD.apply_clear(repo)
+    else:
+        out = MD.apply_clear(repo)
+        assert out["ok"] is False and "odd ls-files record" in out["error"]
+    assert _snap(repo) == before
+
+
+def test_value_error_between_add_and_commit_restores_the_index(tmp_path, monkeypatch):
+    repo = _repo(tmp_path)
+    _edit_trivial(repo)
+    before = _snap(repo)
+    real_stage = MD._stage
+
+    def stage_then_break(root, paths):
+        r = real_stage(root, paths)
+        monkeypatch.setattr(MD, "_index_map", lambda *a, **k: (_ for _ in ()).throw(ValueError("x y")))
+        return r
+
+    monkeypatch.setattr(MD, "_stage", stage_then_break)
+    out = MD.apply_clear(repo)
+    assert out["ok"] is False and out["error"] == "x y"
+    monkeypatch.undo()
+    assert _snap(repo) == before
+
+
+@pytest.mark.parametrize("exc", [MD.PlanError("git broke"), OSError("disk"), ValueError("bad")])
+def test_plan_clear_keeps_the_raw_list_when_the_guard_faults(tmp_path, monkeypatch, exc):
+    repo = _repo(tmp_path)
+    _edit_trivial(repo)
+
+    def boom(*a, **kw):
+        raise exc
+
+    monkeypatch.setattr(MD, "verb_refusal", boom)
+    p = MD.plan_clear(repo)
+    R = shlex.quote(str(repo))
+    assert p["action"] == "commit"
+    assert p["recommended"] == [f"git -C {R} --literal-pathspecs add -- docs/a.md",
+                                f"git -C {R} commit -m '{SUBJECT}'"]
+    r = CliRunner().invoke(cli, ["queue", "main-dirty-plan", "--root", str(repo), "--json"])
+    assert r.exit_code == 0 and json.loads(r.output)["recommended"] == p["recommended"]
+
+
+def test_large_trivial_plan_runs_a_bounded_number_of_git_calls(tmp_path, monkeypatch):
+    files = {f"docs/d{i % 20}/s{i % 7}/f{i}.md": f"# {i}\n" for i in range(200)}
+    repo = _repo(tmp_path, files=files)
+    for rel in files:
+        _put(repo, rel, f"# {rel}\n\nedited\n")
+    calls = _record(monkeypatch)
+    plan = MD.plan_clear(repo)
+    assert plan["action"] == "commit" and len(plan["paths"]) == 200
+    assert plan["recommended"] == [f"nw queue main-dirty-apply --root {shlex.quote(str(repo))}"]
+    guard = [v for v in _verbs(calls) if v in ("ls-tree", "ls-files", "hash-object")]
+    assert 0 < len(guard) <= 8, guard                      # the guard is not per path
+    calls.clear()
+    out = MD.apply_clear(repo)
+    assert out["ok"] is True and _tracked_clean(repo)
+    mine = [v for v in _verbs(calls) if v in ("ls-tree", "ls-files", "hash-object", "add", "commit")]
+    assert len(mine) <= 24, mine      # the classifier's own per-path `cat-file` (SPEC-0546) is not counted
+    assert len(_git(repo, "show", "--name-only", "--format=", "HEAD").stdout.split()) == 200
+    _assert_safe_argv(calls)

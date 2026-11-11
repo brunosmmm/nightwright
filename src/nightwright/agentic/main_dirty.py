@@ -563,7 +563,7 @@ def plan_clear(root, base=None) -> dict:
     try:
         refusal = (verb_refusal(root, {"action": action, "paths": paths})
                    if action == "commit" else "n/a")
-    except PlanError:                      # a git failure in the guard is a refusal, not a crash
+    except (PlanError, OSError, ValueError):   # a guard fault keeps the raw list, not a crash
         refusal = "guard failed"
     if refusal is None:
         # SPEC-0548: one audited command instead of raw git, only when the verb will not refuse
@@ -586,69 +586,112 @@ def _lg(root, *args, check=True, timeout=120):
     return _git(root, "--literal-pathspecs", *args, check=check, timeout=timeout)
 
 
-def _index_entries(root, path):
-    out = _lg(root, "ls-files", "-s", "-z", "--", path).stdout
-    ents = []
-    for rec in _dec(out).split("\0"):
-        if rec:
-            meta, _, _name = rec.partition("\t")
-            mode, oid, stage = meta.split()
-            ents.append((mode, oid, int(stage)))
+_BATCH = 400                                  # paths per git call: bounded calls, bounded argv
+
+
+def _batches(items):
+    items = list(items)
+    return [items[i:i + _BATCH] for i in range(0, len(items), _BATCH)]
+
+
+def _index_map(root, paths) -> dict[str, list]:
+    """`{path: [(mode, oid, stage), ...]}` for the index entries named exactly `paths`."""
+    want, ents = set(paths), {}
+    for ch in _batches(sorted(want)):
+        out = _lg(root, "ls-files", "-s", "-z", "--", *ch).stdout
+        for rec in _dec(out).split("\0"):
+            if rec:
+                meta, _, name = rec.partition("\t")
+                mode, oid, stage = meta.split()
+                if name in want:
+                    ents.setdefault(name, []).append((mode, oid, int(stage)))
     return ents
 
 
-def _head_mode_oid(root, path):
-    r = _lg(root, "ls-tree", "-z", "HEAD", "--", path, check=False)
-    rec = _dec(r.stdout).split("\0")[0] if r.returncode == 0 else ""
-    if not rec:
-        return None
-    meta, _, _name = rec.partition("\t")
-    mode, _typ, oid = meta.split()
-    return mode, oid
+def _head_map(root, names) -> dict[str, tuple]:
+    """`{name: (mode, oid)}` for the HEAD tree entries named exactly `names` (none if no HEAD)."""
+    want, found = set(names), {}
+    for ch in _batches(sorted(want)):
+        r = _lg(root, "ls-tree", "-z", "HEAD", "--", *ch, check=False)
+        if r.returncode != 0:
+            continue
+        for rec in _dec(r.stdout).split("\0"):
+            if rec:
+                meta, _, name = rec.partition("\t")
+                mode, _typ, oid = meta.split()
+                if name in want:
+                    found[name] = (mode, oid)
+    return found
 
 
-def _hash_wt(root, path):
-    """The blob id `git add` would record for the worktree file (nothing is written)."""
-    if not os.path.lexists(root / path):
-        return None
-    return _dec(_lg(root, "hash-object", "--", path).stdout).strip()
+def _hash_many(root, paths) -> dict[str, str | None]:
+    """The blob id `git add` would record for each worktree file (nothing is written); None when
+    the path does not exist."""
+    paths = list(dict.fromkeys(paths))
+    live = [p for p in paths if os.path.lexists(root / p)]
+    oids = {}
+    for ch in _batches(live):
+        out = _dec(_lg(root, "hash-object", "--", *ch).stdout).split()
+        oids.update(zip(ch, out))
+    return {p: oids.get(p) for p in paths}
 
 
-def _bad_path(root, path) -> bool:
+def _prefixes(path) -> list[str]:
     parts = posixpath.normpath(path).split("/") if path else []
-    if not path or path.startswith("/") or ".." in path.split("/") or not parts:
+    return ["/".join(parts[:i + 1]) for i in range(len(parts))]
+
+
+def _structurally_bad(path) -> bool:
+    return not path or path.startswith("/") or ".." in path.split("/") or not _prefixes(path)
+
+
+def _bad_in(root, path, head, ents) -> bool:
+    """`_bad_path` against precomputed HEAD entries and index entries (see `_lookups`)."""
+    if _structurally_bad(path):
         return True
-    prefixes = ["/".join(parts[:i + 1]) for i in range(len(parts))]
+    prefixes = _prefixes(path)
     if any((root / pre).is_symlink() for pre in prefixes):
         return True
     for pre in prefixes:                                     # a symlink in HEAD, here or above
-        head = _head_mode_oid(root, pre)
-        if head and (head[0] == "120000" or (pre == path and head[0] == "160000")):
+        h = head.get(pre)
+        if h and (h[0] == "120000" or (pre == path and h[0] == "160000")):
             return True
     full = root / path
     if full.is_dir():                                        # a directory, which a gitlink is
         return True
-    ents = _index_entries(root, path)
-    if any(m in ("120000", "160000") for m, _o, _s in ents):
+    es = ents.get(path, [])
+    if any(m in ("120000", "160000") for m, _o, _s in es):
         return True
-    return not (_head_mode_oid(root, path) or ents or os.path.lexists(full))
+    return not (head.get(path) or es or os.path.lexists(full))
+
+
+def _lookups(root, paths):
+    """HEAD entries (for every path and its parents) and index entries, in a bounded number of
+    git calls however many paths there are."""
+    ok = [p for p in paths if not _structurally_bad(p)]
+    names = {pre for p in ok for pre in _prefixes(p)}
+    return _head_map(root, names), _index_map(root, ok)
+
+
+def _bad_path(root, path) -> bool:
+    head, ents = _lookups(root, [path])
+    return _bad_in(root, path, head, ents)
 
 
 def verb_refusal(root, plan) -> str | None:
     """Guards 5 and 6 of `apply_clear`, read-only: the error text the verb would refuse with,
-    or None. `recommended` calls it too, so a human is never told to run a command that refuses."""
+    or None. `recommended` calls it too, so a human is never told to run a command that refuses.
+    A bounded number of git calls: one lookup each for HEAD, the index and the worktree hashes."""
     root = Path(root)
     paths = list(plan.get("paths") or [])
+    head, ents = _lookups(root, paths)
     for p in paths:
-        if _bad_path(root, p):
+        if _bad_in(root, p, head, ents):
             return f"bad path {p}"
-    for p in paths:
-        ents = _index_entries(root, p)
-        if not ents:
-            continue
-        head = _head_mode_oid(root, p)
-        idx = ents[0][1]
-        if idx != (head[1] if head else None) and idx != _hash_wt(root, p):
+    suspect = [p for p in paths if ents.get(p) and ents[p][0][1] != (head.get(p) or (0, None))[1]]
+    wt = _hash_many(root, suspect)
+    for p in suspect:
+        if ents[p][0][1] != wt[p]:
             return f"partially staged {p}"
     return None
 
@@ -716,7 +759,7 @@ def _commit_trivial(root, paths) -> dict:
     idx = idx if os.path.isabs(idx) else str(root / idx)
     data, mode = Path(idx).read_bytes(), os.stat(idx).st_mode & 0o777
     head0 = _head(root)
-    want = {p: _hash_wt(root, p) for p in paths}
+    want = _hash_many(root, paths)
 
     def fail(error, restore=True):
         head = _head(root)
@@ -736,8 +779,9 @@ def _commit_trivial(root, paths) -> dict:
                              ).stdout).split("\0")) - {""}
         for p in sorted(names ^ set(paths)):
             return fail(f"changed since plan {p}")
+        staged = _index_map(root, paths)
         for p in paths:
-            ents = _index_entries(root, p)
+            ents = staged.get(p, [])
             if len(ents) != 1 or ents[0][1] != want[p]:
                 return fail(f"changed since plan {p}")
         msgs = ["-m", _COMMIT_SUBJECT] + [x for p in paths for x in ("-m", p)]
@@ -755,6 +799,10 @@ def _commit_trivial(root, paths) -> dict:
         return {"ok": True, "sha": sha}
     except (PlanError, OSError) as e:
         return fail(str(e))
+    except BaseException:                  # ValueError, Ctrl-C, SIGTERM: put the index back, re-raise
+        with contextlib.suppress(Exception):
+            fail("interrupted")
+        raise
 
 
 def apply_clear(root, plan=None, base=None) -> dict:

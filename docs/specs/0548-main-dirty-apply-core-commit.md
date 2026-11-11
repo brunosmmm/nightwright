@@ -349,6 +349,16 @@ order, `escalate`, the index restore).
   `_restore_index` OS-error branch; paths with a space and non-ASCII; a commit in a linked
   worktree; non-UTF-8 hook output and path names through the CLI (the test fails without the
   printable-result step, run by hand). `python3 tools/test_tiers.py --check` exits 0.
+- Review loop 2: `tests/test_main_dirty_apply.py` grew to 142 cases: `_assert_safe_argv` scans the
+  whole argv for `rm -r`, `branch -D`, `commit -a*`/`--all` and `add -A|--all|.` (and a self-test
+  that it catches each form behind `--literal-pathspecs`); `test_commit_lands_but_main_dirty`
+  asserts the index is the landed commit's, not the pre-add bytes; each caught class
+  (`PlanError`, `OSError`, `ValueError`, `TypeError`, `AttributeError`, `NotAWorktree`) and a
+  non-dict `plan` give `ok: false` JSON; a `ValueError` and a `KeyboardInterrupt` after `git add`
+  leave the index byte-identical; a `verb_refusal` raising `PlanError`/`OSError`/`ValueError`
+  keeps the raw `recommended` and `main-dirty-plan` exits 0; a 200-path trivial plan runs a
+  bounded number of `ls-tree`/`ls-files`/`hash-object`/`add`/`commit` calls. `test_tiers.py
+  --check` and `spec_lint` exit 0.
 
 ### As shipped (2026-11-11)
 
@@ -379,8 +389,12 @@ order, `escalate`, the index restore).
 - AC5's wording "project config without `base`" for the `--base develop` case is not editable here
   (the spec's text is guarded); the shipped fixture is a repo with no `.nw/project.yaml`, checkout
   on `develop` (`test_cli_base_reaches_plan_clear`), as recorded above.
-- Not done: `verb_refusal` still spawns several git processes per planned path, and apply runs it
-  twice (once in `plan_clear` for `commit`, once as guard 5-6); batching them is a follow-up.
+- Review loop 2: `verb_refusal` and the commit's staged-blob check are batched (`_head_map`,
+  `_index_map`, `_hash_many`: one `ls-tree`, one `ls-files -s`, one `hash-object` per 400 paths), so
+  the guard's git calls no longer grow per path (apply still runs it twice). `_commit_trivial` also
+  restores the index on any other exception after `git add` (`ValueError`, `KeyboardInterrupt`,
+  `SystemExit`) and re-raises; `plan_clear` keeps the raw list on `PlanError`, `OSError` or
+  `ValueError` from the guard. SPEC-0546's classifier still reads each path's blob (`cat-file`).
 
 ## Goals / Non-goals
 
