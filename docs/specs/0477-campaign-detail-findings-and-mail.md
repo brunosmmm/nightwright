@@ -327,7 +327,7 @@ names a run.
 ### Test record (2026-11-10)
 
 - `uv run pytest -q tests/test_tui_campaign_records.py` — 13 passed: the pure model (sort,
-  filter grammar, thread grouping, mailbox-line fallback) and Pilot drives of test steps 1–8
+  filter grammar, status label, mailbox-line fallback) and Pilot drives of test steps 1–8
   (table order with same-`ts` ties and `not re-raised`; all four keyed tokens, `bogus:x`
   unmatched line, `j`/`down`/`k`/`up`, digits typing into the filter, `escape` leaving the popup
   up; known and unknown focus; `r` / `d` / `i` with their `no run` / `no decision` /
@@ -343,6 +343,15 @@ names a run.
   confirm to `apply_answer`; `i` on an unknown or unreadable idea; `j`/`down`/`k`/`up` on the Mail
   table, a vanished thread on reload, `enter` in the filter, and an empty filter with `r`/`d`/`i`;
   and `p`/`u`/`P`/`A` and the directory hash across a Mail visit.
+- Review loop 2 added five tests (23 passed): `CR.mail_threads` on hand-built mail records at distinct
+  `ts` in a shuffled input order (latest `ts` descending, equal latest `ts` by thread id ascending, a
+  null thread keyed by its record id, messages `ts` ascending where record-id order disagrees) and the
+  same data through the Mail pane (table keys and `#mail-detail-text` order; dropping `reverse=True`
+  in `mail_threads` fails them); `r` on a two-run campaign asserting the `#campaign-runs` cursor row and
+  key; letters `p u q j k r d i c t w g G P A` typed into `#records-filter` firing no binding, no
+  queue action, no notify, and an unchanged campaign directory, plus `/` and `g`/`G` doing nothing on
+  Mail; and `pagedown`/`pageup` scrolling `#records-detail` and `#mail-detail` (`_detail_scroll` now
+  covers `tab-records` and `tab-mail`).
 - Existing suites touched by the move and the placeholder removal, all green:
   `tests/test_tui_mailbox_tab.py`, `tests/test_tui_escalations_tab.py` (choose, text and withdraw
   now run through `answer_escalation`), `tests/test_tui_campaign_detail.py`,

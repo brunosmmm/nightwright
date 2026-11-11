@@ -1255,6 +1255,10 @@ class CampaignDetail(QueueActions, ModalScreen):
             scroller_id = "#campaign-detail"
         elif tab == "tab-runs":
             scroller_id = "#runs-detail"
+        elif tab == "tab-records":
+            scroller_id = "#records-detail"
+        elif tab == "tab-mail":
+            scroller_id = "#mail-detail"
         else:
             return
         try:

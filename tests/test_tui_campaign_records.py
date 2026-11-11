@@ -704,3 +704,134 @@ def test_mail_keyboard_reload_and_empty_filter(tmp_path, monkeypatch):
                                    "not an open escalation"]
         assert not errors(app) and dir_hash(cfg) == before
     drive_popup(cfg, body, tab="5")
+
+
+# --- review loop 2: ordering, `r` with two runs, typed letters, keyboard scroll ----------------
+
+
+def mail_rec(rid, ts, thread, text, agent="human"):
+    return rec(rid, ts=ts, kind="mail", agent=agent, text=text, thread=thread, status="answered")
+
+
+def ordered_mail_input():
+    """Hand-built mail records at distinct `ts`, deliberately not in the expected order."""
+    return [
+        mail_rec("mailbox:x:50", "2026-11-10T10:00:00-05:00", "T:b", "b-first-by-ts"),
+        mail_rec("mailbox:x:70", "2026-11-10T12:00:00-05:00", "thread-z", "tie z"),
+        mail_rec("mailbox:x:20", "2026-11-10T09:00:00-05:00", "T:old", "old thread"),
+        mail_rec("mailbox:x:10", "2026-11-10T11:00:00-05:00", "T:b", "b-last-by-ts"),
+        mail_rec("mailbox:x:60", "2026-11-10T12:00:00-05:00", "thread-a", "tie a"),
+        mail_rec("mailbox:x:99", "2026-11-10T13:00:00-05:00", None, "no thread"),
+    ]
+
+
+def test_mail_threads_order_model():
+    ths = CR.mail_threads(ordered_mail_input() + [rec("not-mail", ts="2030-01-01T00:00:00Z")])
+    # latest ts descending; equal latest ts by thread id ascending; a null thread keyed by id
+    assert [t.key for t in ths] == ["mailbox:x:99", "thread-a", "thread-z", "T:b", "T:old"]
+    assert [t.latest["id"] for t in ths][0] == "mailbox:x:99"
+    # ts ascending inside a thread, although ascending record ids say the opposite
+    b = next(t for t in ths if t.key == "T:b")
+    assert [r["id"] for r in b.records] == ["mailbox:x:50", "mailbox:x:10"]
+    assert b.latest["id"] == "mailbox:x:10"
+    assert CR.mail_threads([]) == [] and CR.mail_threads(None) == []
+
+
+def test_mail_pane_orders_by_ts_not_by_id(tmp_path, monkeypatch):
+    cfg = world_cfg(tmp_path)
+    patch_history(monkeypatch, lambda h: h["records"].__setitem__(
+        slice(None), [r for r in h["records"] if r["kind"] != "mail"] + ordered_mail_input()))
+
+    async def body(app, pilot, s):
+        assert table_keys(s.mail_table) == ["mailbox:x:99", "thread-a", "thread-z", "T:b", "T:old"]
+        await goto(pilot, s, "T:b", mail=True)
+        det = str(s.query_one("#mail-detail-text").content)
+        assert det.index("b-first-by-ts") < det.index("b-last-by-ts")
+        assert "tie a" not in det
+    drive_popup(cfg, body, tab="5")
+
+
+def test_r_selects_the_non_default_run_on_the_runs_table(tmp_path, monkeypatch):
+    cfg = world_cfg(tmp_path)
+    extra = [rec("r:one", run_id="001-implementer"), rec("r:two", run_id="002-reviewer")]
+
+    def mutate(h):
+        h["records"].extend(extra)
+        h["runs"].append({**h["runs"][0], "run_id": "002-reviewer", "persona": "reviewer"})
+
+    patch_history(monkeypatch, mutate)
+
+    async def body(app, pilot, s):
+        assert [r["run_id"] for r in s._runs_rows] == ["001-implementer", "002-reviewer"]
+        await goto(pilot, s, "r:two")
+        await press(app, pilot, ["r"])
+        await settle(app, pilot)
+        assert s._active_tab() == "tab-runs"
+        assert s.runs_table.cursor_row == 1
+        assert str(s.runs_table.ordered_rows[1].key.value) == "002-reviewer"
+        await press(app, pilot, ["4"])
+        await goto(pilot, s, "r:one")
+        await press(app, pilot, ["r"])
+        await settle(app, pilot)
+        assert s._active_tab() == "tab-runs" and s.runs_table.cursor_row == 0
+    drive_popup(cfg, body)
+
+
+def test_letters_type_into_the_filter_without_firing_bindings(tmp_path, monkeypatch):
+    cfg = world_cfg(tmp_path)
+    MB.send(cfg, to="conductor", frm="human", text="read only", kind="info", campaign=CID)
+    patch_history(monkeypatch, lambda h: h["records"].append(rec("l:1", title="plain")))
+    acts = []
+    monkeypatch.setattr(CD.CampaignDetail, "run_queue_action",
+                        lambda self, action, *a, **k: acts.append(action))
+
+    async def body(app, pilot, s):
+        before = dir_hash(cfg)
+        flt = s.query_one("#records-filter", Input)
+        await press(app, pilot, ["slash"])
+        assert app.focused is flt
+        letters = ["p", "u", "q", "j", "k", "r", "d", "i", "c", "t", "w", "g", "G", "P", "A"]
+        await press(app, pilot, letters)
+        assert flt.value == "puqjkrdictwgGPA"
+        assert isinstance(app.screen, CD.CampaignDetail) and s._active_tab() == "tab-records"
+        assert acts == [] and not errors(app) and notes(app) == []
+        assert dir_hash(cfg) == before
+        # `/` is ignored on Mail; `g`/`G` stay timeline-only on Findings and Mail
+        await press(app, pilot, ["escape", "5", "slash"])
+        assert app.focused is s.mail_table and s._active_tab() == "tab-mail"
+        await press(app, pilot, ["g", "G"])
+        assert app.focused is s.mail_table and s._active_tab() == "tab-mail"
+        assert acts == [] and dir_hash(cfg) == before
+    drive_popup(cfg, body)
+
+
+def test_findings_and_mail_details_scroll_from_the_keyboard(tmp_path, monkeypatch):
+    cfg = world_cfg(tmp_path)
+    long_text = "\n".join(f"body-line-{i}" for i in range(120))
+    mails = [mail_rec(f"mailbox:x:{n}", f"2026-11-10T10:0{n}:00-05:00", "T:long", long_text)
+             for n in range(3)]
+    patch_history(monkeypatch, lambda h: h["records"].__setitem__(
+        slice(None), [r for r in h["records"] if r["kind"] != "mail"] + mails
+        + [rec("s:long", text=long_text, ts="2030-01-01T00:00:00Z")]))
+
+    async def body(app, pilot, s):
+        await goto(pilot, s, "s:long")
+        rec_scroll = s.query_one("#records-detail")
+        assert rec_scroll.max_scroll_y > 0 and rec_scroll.scroll_y == 0
+        await press(app, pilot, ["pagedown"])
+        await settle(app, pilot)
+        assert rec_scroll.scroll_y > 0
+        mid = rec_scroll.scroll_y
+        await press(app, pilot, ["pageup"])
+        await settle(app, pilot)
+        assert rec_scroll.scroll_y < mid
+        cur = s._selected_record_id
+        await press(app, pilot, ["5"])
+        mail_scroll = s.query_one("#mail-detail")
+        assert mail_scroll.max_scroll_y > 0 and mail_scroll.scroll_y == 0
+        await press(app, pilot, ["pagedown"])
+        await settle(app, pilot)
+        assert mail_scroll.scroll_y > 0 and s._active_tab() == "tab-mail"
+        await press(app, pilot, ["4"])
+        assert s._selected_record_id == cur
+    drive_popup(cfg, body)
