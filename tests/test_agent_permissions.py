@@ -29,7 +29,7 @@ def test_install_creates_a_missing_file(tmp_path):
     added = AP.install(p)
     assert added == list(AP.ALLOW_RULES)
     assert _read(p) == {"permissions": {"allow": list(AP.ALLOW_RULES)},
-                        "hooks": {"PreToolUse": [AP.HOOK_ENTRY]}}
+                        "hooks": {"PreToolUse": [AP.HOOK_ENTRY, AP.GIT_GUARD_ENTRY]}}
 
 
 def test_install_merges_and_keeps_everything_else(tmp_path):
@@ -41,7 +41,8 @@ def test_install_merges_and_keeps_everything_else(tmp_path):
     added = AP.install(p)
     doc = _read(p)
     assert added == list(AP.ALLOW_RULES[1:])
-    assert doc["model"] == "opus" and doc["hooks"] == {"Stop": [], "PreToolUse": [AP.HOOK_ENTRY]}
+    assert doc["model"] == "opus" and doc["hooks"] == {"Stop": [], "PreToolUse": [AP.HOOK_ENTRY,
+                                                                    AP.GIT_GUARD_ENTRY]}
     assert doc["permissions"]["deny"] == ["Read(.env)"]
     assert doc["permissions"]["allow"][:2] == ["Bash(ls)", AP.ALLOW_RULES[0]]
     assert doc["permissions"]["allow"].count(AP.ALLOW_RULES[0]) == 1
@@ -112,11 +113,11 @@ def test_hook_installed_once_and_unrelated_hooks_kept(tmp_path):
     assert AP.hook_missing(p)
     assert AP.sync(p)["hook"] is True
     doc = _read(p)
-    assert doc["hooks"]["PreToolUse"] == [other, AP.HOOK_ENTRY]
+    assert doc["hooks"]["PreToolUse"] == [other, AP.HOOK_ENTRY, AP.GIT_GUARD_ENTRY]
     assert doc["hooks"]["Stop"] == [{"hooks": []}]
     before = p.read_text()
     res = AP.sync(p)
-    assert res == {"added": [], "removed": [], "hook": False}
+    assert res == {"added": [], "removed": [], "hook": False, "git_guard_hook": False}
     assert p.read_text() == before and not AP.hook_missing(p)
     assert _read(p)["hooks"]["PreToolUse"].count(AP.HOOK_ENTRY) == 1
 
@@ -125,7 +126,7 @@ def test_null_hooks_value_is_treated_as_empty(tmp_path):
     p = tmp_path / "settings.json"
     p.write_text(json.dumps({"hooks": None}))
     assert AP.sync(p)["hook"] is True
-    assert _read(p)["hooks"] == {"PreToolUse": [AP.HOOK_ENTRY]}
+    assert _read(p)["hooks"] == {"PreToolUse": [AP.HOOK_ENTRY, AP.GIT_GUARD_ENTRY]}
 
 
 def test_hook_added_when_rules_already_present(tmp_path):
@@ -143,7 +144,7 @@ def test_install_command_reports_hook_and_is_idempotent(tmp_path):
     assert r.exit_code == 0 and "conductor-guard hook" in r.output, r.output
     r = CliRunner().invoke(cli, args)
     assert r.exit_code == 0 and "up-to-date" in r.output
-    assert _read(p)["hooks"]["PreToolUse"] == [AP.HOOK_ENTRY]
+    assert _read(p)["hooks"]["PreToolUse"] == [AP.HOOK_ENTRY, AP.GIT_GUARD_ENTRY]
 
 
 def test_malformed_hooks_value_is_an_error_not_a_rewrite(tmp_path):
@@ -162,3 +163,56 @@ def test_non_dict_hooks_value_is_an_error_not_a_rewrite(tmp_path, bad):
     with pytest.raises(ValueError):
         AP.sync(p)
     assert _read(p) == {"hooks": bad}
+
+
+# SPEC-0550: the git-guard PreToolUse hook entry and `nw skills list`'s hooks line
+def test_git_guard_entry_is_the_bash_matcher_with_the_exact_command():
+    assert AP.GIT_GUARD_ENTRY == {"matcher": "Bash", "hooks": [
+        {"type": "command", "command": "nw-conductor-git-guard || true"}]}
+
+
+def test_git_guard_entry_added_once_beside_the_other_hooks(tmp_path):
+    p = tmp_path / "settings.json"
+    p.write_text(json.dumps({"model": "opus", "hooks": {"PreToolUse": [AP.HOOK_ENTRY]}}))
+    assert AP.git_guard_hook_missing(p) and not AP.hook_missing(p)
+    res = AP.sync(p)
+    assert res["git_guard_hook"] is True and res["hook"] is False
+    assert set(res) == {"added", "removed", "hook", "git_guard_hook"}
+    doc = _read(p)
+    assert doc["model"] == "opus"
+    assert doc["hooks"]["PreToolUse"] == [AP.HOOK_ENTRY, AP.GIT_GUARD_ENTRY]
+    before = p.read_text()
+    res = AP.sync(p)
+    assert res == {"added": [], "removed": [], "hook": False, "git_guard_hook": False}
+    assert p.read_text() == before and not AP.git_guard_hook_missing(p)
+
+
+def test_skills_install_reports_the_git_guard_hook(tmp_path):
+    p = tmp_path / "settings.json"
+    args = ["skills", "install", "--dest", str(tmp_path / "d"), "--settings", str(p)]
+    r = CliRunner().invoke(cli, args)
+    assert r.exit_code == 0 and "conductor-git-guard hook" in r.output, r.output
+
+
+@pytest.mark.parametrize("hooks,line", [
+    ([], "hooks  2 missing (run nw skills install)"),
+    ([AP.HOOK_ENTRY], "hooks  1 missing (run nw skills install)"),
+    ([AP.GIT_GUARD_ENTRY], "hooks  1 missing (run nw skills install)"),
+    ([AP.HOOK_ENTRY, AP.GIT_GUARD_ENTRY], "hooks  present")])
+def test_skills_list_reports_the_hooks_line(tmp_path, hooks, line):
+    p = tmp_path / "settings.json"
+    p.write_text(json.dumps({"hooks": {"PreToolUse": hooks}}))
+    r = CliRunner().invoke(cli, ["skills", "list", "--dest", str(tmp_path / "d"),
+                                 "--settings", str(p)])
+    assert r.exit_code == 0, r.output
+    assert line in r.output.splitlines(), r.output
+
+
+def test_git_guard_executable_resolves_on_the_given_path(tmp_path, monkeypatch):
+    monkeypatch.undo()          # the autouse fixture fakes it; test the real lookup
+    exe = tmp_path / "bin" / AP.GIT_GUARD_EXECUTABLE
+    exe.parent.mkdir()
+    exe.write_text("#!/bin/sh\n")
+    exe.chmod(0o755)
+    assert AP.git_guard_executable({"PATH": str(exe.parent)}) == str(exe)
+    assert AP.git_guard_executable({"PATH": str(tmp_path)}) is None

@@ -28,6 +28,26 @@ def _show(plan):
                   highlight=False, markup=False)
 
 
+def _git_guard_gap(plan) -> list:
+    """SPEC-0550: what is missing for the main-checkout git guard, for a conductor whose
+    RESOLVED runner (`plan["runner"]`: --runner, else the stored runner on --resume, else the
+    host default) is claude; None for any other plan (cursor has no hooks). Empty when the
+    settings entry is present and the script resolves on the launch PATH."""
+    from .. import agent_permissions as AP
+    if plan["role"] != "conductor" or plan.get("runner") != "claude":
+        return None
+    gap = []
+    target = AP.default_settings_path()
+    try:
+        if AP.git_guard_hook_missing(target):
+            gap.append(f"the {AP.GIT_GUARD_EXECUTABLE} hook entry is missing from {target}")
+    except ValueError as e:
+        gap.append(str(e))
+    if AP.git_guard_executable(L.exec_env(plan)) is None:
+        gap.append(f"the {AP.GIT_GUARD_EXECUTABLE} executable is not on PATH")
+    return gap
+
+
 def _go(cfg, role, project, dry_run, resume, as_json, runner=None):
     from . import queue as Q
     if as_json and not dry_run:
@@ -35,13 +55,24 @@ def _go(cfg, role, project, dry_run, resume, as_json, runner=None):
     plan = L.build_plan(cfg, role, project, resume=resume, runner=runner)
     if role == "conductor" and runner in ("claude", "cursor"):
         plan["host_backend"] = runner
+    gap = _git_guard_gap(plan)
+    if role == "conductor":
+        plan["git_guard_hook"] = None if gap is None else not gap
     if dry_run:
         if as_json:
             _dump_json(plan)
         else:
             _show(plan)
+            if gap:
+                console.print("warning: git guard not active (a launch would be refused): "
+                              + "; ".join(gap), highlight=False, markup=False)
         L.check_price(plan)
         return
+    if gap:
+        raise click.ClickException(
+            "refusing to launch a claude conductor without the git guard (SPEC-0550): "
+            + "; ".join(gap) + ". Run `nw skills install` (or reinstall nightwright so the "
+            "script is on PATH).")
     if role == "conductor" and runner in ("claude", "cursor"):
         Q.apply_host_backend(cfg, Q.plan_host_backend(cfg, runner))
     L.run(cfg, plan)

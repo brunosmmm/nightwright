@@ -33,6 +33,7 @@ cursor = ["cursor-sdk>=1.3.1"]
 
 [project.scripts]
 nw = "nightwright.cli:cli"
+nw-conductor-git-guard = "nightwright.agentic.git_guard:main"
 
 [dependency-groups]
 dev = [

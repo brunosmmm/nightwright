@@ -95,6 +95,7 @@ ALLOWED = {
     ("agentic/cli_dashboard.py", "status_cmd"): "JSON emitter (--json) (SPEC-0427)",
     ("agentic/cli_workers.py", "_add_pull"): "prints the bare enrol blob on stdout for scripts to capture; Rich would mangle it (SPEC-0334)",
     ("agentic/cli_workers.py", "workers_token"): "prints the bare enrol blob on stdout for scripts to capture; Rich would mangle it (SPEC-0334)",
+    ("agentic/git_guard.py", "_deny"): "PreToolUse hook decision: JSON on stdout for Claude Code, a light script that must not import rich (SPEC-0550)",
     ("agentic/pull_worker.py", "_log"): "pull-worker daemon log line on stderr, outside the render path (SPEC-0334)",
 }
 

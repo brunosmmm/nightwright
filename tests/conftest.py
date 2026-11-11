@@ -1,4 +1,5 @@
 """Shared fixtures."""
+import json
 import os
 import subprocess
 
@@ -47,6 +48,20 @@ def code_repo(tmp_path):
     root = tmp_path / "wtcode"
     root.mkdir()
     return CodeRepo(root)
+
+
+@pytest.fixture(autouse=True)
+def _git_guard_installed(monkeypatch, tmp_path_factory):
+    """SPEC-0550: `conductor-launch` refuses a claude conductor without the git-guard hook entry
+    in `~/.claude/settings.json` and the `nw-conductor-git-guard` script on PATH. No test may read
+    the real settings file or depend on the host's PATH, so every test starts with a tmp settings
+    file that already has the entry and a fake executable; the tests of the check override both."""
+    from nightwright import agent_permissions as AP
+    path = tmp_path_factory.mktemp("claude-home") / "settings.json"
+    path.write_text(json.dumps({"hooks": {"PreToolUse": [AP.GIT_GUARD_ENTRY]}}))
+    monkeypatch.setattr(AP, "default_settings_path", lambda: path)
+    monkeypatch.setattr(AP, "git_guard_executable",
+                        lambda env=None: "/fake/bin/nw-conductor-git-guard")
 
 
 @pytest.fixture(autouse=True)

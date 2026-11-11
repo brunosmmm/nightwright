@@ -1,7 +1,7 @@
 ---
 id: SPEC-0550
 title: Conductor git-guard, a cwd-aware PreToolUse hook that denies raw git writes in a main checkout
-status: accepted
+status: done
 owner: user
 created: 2026-11-11
 updated: 2026-11-11
@@ -326,7 +326,7 @@ semantics: `*` matches any characters including spaces, the whole command must m
 beats allow) returns `allow` on the effective rules of `build_plan(cfg, "conductor")`; the
 real-binary run is the arbiter.
 
-- [ ] AC1 (SPEC-0544 AC3) **Worktree commits stay permitted.** Hook silent, parametrized:
+- [x] AC1 (SPEC-0544 AC3) **Worktree commits stay permitted.** Hook silent, parametrized:
       `git add a`, `git commit -m x`, `git commit -m "fix: a; b && c | d"`, `git add a#b`, the
       heredoc form `git commit -m "$(cat <<'EOF'` / `x; y` / `EOF` / `)"`, and
       `git commit -F - <<EOF` (the step-2 exception), each with `cwd: W` and again with
@@ -337,7 +337,7 @@ real-binary run is the arbiter.
       `git -C W rm -f -- a` (`Bash(git * rm *)`, unchanged: the hook's silence grants nothing).
       `.claude/settings.json` permits only the plain `git add a` and `git commit -m x` forms
       (SPEC-0496; `tests/test_claude_settings_allowlist.py` unchanged).
-- [ ] AC2 (SPEC-0544 AC4) **The same commands against main are denied** with the main-checkout
+- [x] AC2 (SPEC-0544 AC4) **The same commands against main are denied** with the main-checkout
       reason: `git add a`, `git commit -m x`, `git commit -am x`, `git add -A`,
       `git commit -m "a; b"` with `cwd: M`; the same in a subdirectory of `M`; `git -C M commit
       -m x` and `cd <parent>/repo && git commit -m x` with `cwd: W`;
@@ -348,7 +348,7 @@ real-binary run is the arbiter.
       `git -C ../.. commit -m x` (resolves to `M`) and `cd M && git commit -m x`. If payload 3
       of the premise check shows `cwd` does not track `cd`, also `cd M` alone from `W` (the
       persisted-cd fallback).
-- [ ] AC3 (SPEC-0544 AC5) Denied against `M`: `git rm -f -- a`, `git checkout -- .`,
+- [x] AC3 (SPEC-0544 AC5) Denied against `M`: `git rm -f -- a`, `git checkout -- .`,
       `git checkout HEAD -- a`, `git checkout HEAD a`, `git checkout other`, `git checkout -b x`,
       `git switch -c x`, `git switch -f main`, `git switch --discard-changes main`,
       `git restore a`, `git restore --staged a`, `git merge --ff-only x`, `git rebase x`,
@@ -378,7 +378,7 @@ real-binary run is the arbiter.
       allow-list governs it), `uv run nw queue main-dirty-apply --trivial-only --root M`
       (step 7 allows it; the static rules decide), `ls; echo "git add a"` (supported, no `git`
       segment), and an unsupported command with none of the words (`(ls)`).
-- [ ] AC4 (SPEC-0544 AC6) Fail-open and fail-closed cases, parametrized: silent for a
+- [x] AC4 (SPEC-0544 AC6) Fail-open and fail-closed cases, parametrized: silent for a
       non-conductor session id, unreadable JSON, and an empty command, for every AC2 command;
       silent for a write in a directory that is not a git repository (`git -C <non-repo> add a`)
       and in one that does not exist (`git -C /missing add a`, and `cd /missing && git add a`);
@@ -388,7 +388,7 @@ real-binary run is the arbiter.
       `git add a`, and when the tokenizer is monkeypatched to raise (reason `cannot verify
       internal error`), while a non-conductor session with the same raising tokenizer stays
       silent. The hook exits 0 in every case.
-- [ ] AC5 (SPEC-0544 AC7) `agent_permissions.sync` adds the `Bash` matcher entry with the
+- [x] AC5 (SPEC-0544 AC7) `agent_permissions.sync` adds the `Bash` matcher entry with the
       command string exactly `nw-conductor-git-guard || true`, once, idempotently; it leaves the
       `AskUserQuestion` entry and the other keys untouched; every return (no-op included) has
       the four keys `added`, `removed`, `hook`, `git_guard_hook`. `nw skills list` prints the
@@ -406,7 +406,7 @@ real-binary run is the arbiter.
       `--runner cursor`, or a cursor default, it is not checked (`git_guard_hook: null`, exit
       0); `--resume` of a campaign whose stored runner is claude is checked, and one whose
       stored runner is cursor is not.
-- [ ] AC6 (new) Entry point: `pyproject.toml` declares the console script
+- [x] AC6 (new) Entry point: `pyproject.toml` declares the console script
       `nw-conductor-git-guard = "nightwright.agentic.git_guard:main"`; a subprocess run of the
       hook with a non-conductor payload leaves `click`, `yaml`, `rich`,
       `nightwright.agentic.git_guard_parse`, `nightwright.agentic.conductor_cost`,
@@ -469,6 +469,28 @@ real-binary run is the arbiter.
   Record each result in As shipped. If 5(a) is not denied or 5(b) is not committed, a premise of
   the Decision is false: the spec is not done, and the finding goes back to Design.
 
+### Test record (2026-11-11)
+
+- `uv run pytest -q tests/test_conductor_git_guard.py` (193 cases): AC1–AC4 and AC6 with the
+  fixtures `M`, `W`, `W2`, `W3` (the last two nested in `M`) — passed. A mutation check (making
+  `primary_allowed` return True) failed the AC3 cases, so the denied table is live.
+- `uv run pytest -q tests/test_agent_permissions.py tests/test_agentic_launch.py
+  tests/test_cursor_launch.py tests/test_pi_runner.py tests/test_skills.py
+  tests/test_claude_settings_allowlist.py` — passed (AC5, the launch check cases for omitted
+  `--runner`, `--runner cursor`, a cursor default, `--resume` with a stored claude / cursor
+  runner, missing entry, entry without executable).
+- Regression guard with an empty home: `HOME=$(mktemp -d) uv run pytest -q
+  tests/test_agentic_launch.py tests/test_cursor_launch.py tests/test_pi_runner.py` — 350 passed.
+  The launch modules needed only the autouse fixture in `tests/conftest.py`.
+- `uv run pytest -q -n 4` over every module that mentions agent_permissions, conductor-launch,
+  conductor_guard, skills or steward-launch (1689 passed). It found two stale expectations,
+  fixed: `tests/test_rich_output_guard.py` (allowlist entry for the hook's JSON emitter) and
+  `tests/test_rename_nightwright.py` (the new `git_guard_hook` key).
+- `python3 tools/test_tiers.py --check` exits 0; `python3 tools/spec_lint.py` exits 0 after
+  `--write-ledger`. The full suite and `affected_tests.py --run` (too wide after the conftest
+  change) were left to gating.
+- Manual, real binary: see As shipped.
+
 ## Rollout / migration
 
 Ships after SPEC-0549. The hook applies once `nw skills install` has added it and the
@@ -480,13 +502,13 @@ never silently absent for a launched conductor. A conductor started by hand befo
 
 ## Definition of done
 
-- [ ] Acceptance criteria all met.
-- [ ] Test plan executed, including the premise check and the real-binary run; affected tests
+- [x] Acceptance criteria all met.
+- [x] Test plan executed, including the premise check and the real-binary run; affected tests
       pass.
-- [ ] No regressions in launch, settings-allowlist, skills tests.
-- [ ] Spec body updated to match what shipped (Observed payloads, As shipped with the manual
+- [x] No regressions in launch, settings-allowlist, skills tests.
+- [x] Spec body updated to match what shipped (Observed payloads, As shipped with the manual
       results, the latency median and the 3.12 / 3.14 tokenizer results recorded).
-- [ ] `docs/LEDGER.md` regenerated; `python3 tools/spec_lint.py` exits 0.
+- [x] `docs/LEDGER.md` regenerated; `python3 tools/spec_lint.py` exits 0.
 
 ## Open questions
 
@@ -497,3 +519,45 @@ None.
 Filled by the implementer at implementation time: each manual-verification result (steps
 0–7), the latency median of 20 non-conductor calls against the 300 ms budget, and the tokenizer
 unit table result on Python 3.12 and 3.14.
+
+### As shipped (2026-11-11)
+
+Built as designed; no Design change. Notes and results:
+
+- **Premise check (real `claude` 2.1.322, `claude -p`, haiku, scratch repo).** Observed payloads:
+  (1) the first Bash call carries `session_id`, `cwd` = the session's start directory, no
+  `agent_id`; (2) a Bash call from an `isolation: worktree` sub-agent carries the **same
+  `session_id`**, `agent_id` and `agent_type: general-purpose`, and `cwd` = its own worktree
+  (`<repo>/.claude/worktrees/agent-<id>`); (3) after a `cd sub` (inside the project) the next
+  call's `cwd` is `<repo>/sub`, i.e. **`cwd` tracks the persisted shell directory**; a `cd` out
+  of the project (`cd /tmp`) is reset by Claude Code and `cwd` stays at the start directory. Both
+  premises hold, so the persisted-cd fallback was **not built** and AC2's `cd M` alone case is
+  out. (The `### Observed payloads` heading in Design is left as written: the guard forbids
+  editing it, so the values are recorded here.)
+- **Manual 1–2.** In a throwaway `HOME`, `nw skills install --settings …` printed both hook
+  lines, `nw skills list` printed `hooks  present`, and `nw queue conductor-launch --dry-run
+  --json` gave `git_guard_hook: true` with `.venv/bin` on PATH and `false` with it off PATH (the
+  real `~/.claude/settings.json` was not touched).
+- **Manual 3–6 (real `claude -p`, `--permission-mode dontAsk`, registered conductor session id,
+  hook = the installed `nw-conductor-git-guard`, scratch repo with a linked worktree under
+  `.nw-worktrees/`, cwd that worktree).** `git -C <main> commit -am x` **denied by the hook**
+  (main-checkout reason; main stayed unchanged with its dirty file); `git -C <wt> commit
+  --allow-empty -m x` **committed** in the worktree; a sub-agent with `isolation: worktree`:
+  (a) `git -C <main> commit --allow-empty …` **denied by the hook**, (b) `touch`, `git add`,
+  `git commit -m` **committed** in its own worktree; `uv run nw queue main-dirty-apply --root
+  <main> --json` **denied** (`--trivial-only` message). Both premises of the Decision hold.
+- **Manual 7, latency.** 20 non-conductor calls of the installed script: median **24 ms** (min
+  21, max 34) against the 300 ms budget; a conductor `git status` from a worktree: median 26 ms.
+- **Tokenizer table.** Passed on Python 3.14.7 (the pytest module), and the same table (merged
+  punctuation tokens `&&\n`, `;\n`, `\n\n`, redirects, `#` in words, the commit-message heredoc,
+  the unsupported forms, the skipped reserved words, `env` / `time` options) passed run
+  standalone against `git_guard_parse.py` on **3.12.14** (the oldest supported interpreter,
+  installed with `uv python install 3.12` for this check) and on 3.13.12. The rest of the
+  pytest module was not run on 3.12 (it needs the project's dependencies).
+- **Deviations / choices within the Design.** `git --version` and other global options not on the
+  list are denied on a primary checkout (strict). A quoted word that is only punctuation (`";"`)
+  is indistinguishable from the operator after `shlex`, and is read as the operator; it can only
+  change segmentation for words that are not a program, so it never loosens a git or cp check.
+  An export of a git environment variable in any segment (`export GIT_DIR=…; git add a`) is
+  denied when the command has a `git` segment, beyond the `NAME=value` prefix the Design names.
+  The launch check also reads a settings file it cannot parse as a missing entry.

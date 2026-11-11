@@ -1045,3 +1045,92 @@ def test_conduct_status_and_brief_show_stale_launch(cfg):
     assert [x["reader"] for x in b["launch"]] == ["steward:Foo"]
     text = B.render_text(b)
     assert "launch:\n- steward:Foo stale" in text and "nw queue steward-launch Foo --resume" in text
+
+
+# ---- SPEC-0550: the launch refuses a claude conductor without the git guard ----------------
+
+@pytest.fixture
+def guard(monkeypatch, tmp_path):
+    """Control the settings file and the executable lookup the launch check reads."""
+    from nightwright import agent_permissions as AP
+    state = {"path": tmp_path / "settings.json", "exe": "/fake/bin/nw-conductor-git-guard"}
+    monkeypatch.setattr(AP, "default_settings_path", lambda: state["path"])
+    monkeypatch.setattr(AP, "git_guard_executable", lambda env=None: state["exe"])
+
+    def entry(present):
+        state["path"].write_text(json.dumps(
+            {"hooks": {"PreToolUse": [AP.GIT_GUARD_ENTRY] if present else []}}))
+    state["entry"] = entry
+    entry(True)
+    return state
+
+
+def _dry_json(*args):
+    r = invoke("conductor-launch", "--dry-run", "--json", *args)
+    assert r.exit_code == 0, r.output
+    return json.loads(r.output)
+
+
+def test_git_guard_present_and_resolved_launches(cfg, ex, guard):
+    assert _dry_json()["git_guard_hook"] is True
+    assert invoke("conductor-launch").exit_code == 0 and ex.calls
+
+
+def test_git_guard_entry_missing_refuses(cfg, ex, guard):
+    guard["entry"](False)
+    assert _dry_json()["git_guard_hook"] is False
+    r = invoke("conductor-launch")
+    assert r.exit_code == 1 and "nw skills install" in r.output, r.output
+    assert not ex.calls and not sessions_lines(cfg)
+    text = invoke("conductor-launch", "--dry-run")
+    assert text.exit_code == 0 and "warning: git guard not active" in text.output
+
+
+def test_git_guard_entry_without_executable_refuses(cfg, ex, guard):
+    guard["exe"] = None
+    assert _dry_json()["git_guard_hook"] is False
+    r = invoke("conductor-launch")
+    assert r.exit_code == 1 and "nw-conductor-git-guard" in r.output, r.output
+    assert "executable" in r.output and not ex.calls
+
+
+def test_git_guard_lookup_uses_the_launch_env_path(cfg, ex, guard, monkeypatch):
+    from nightwright import agent_permissions as AP
+    seen = []
+    monkeypatch.setattr(AP, "git_guard_executable",
+                        lambda env=None: seen.append(env["PATH"]) or "/x")
+    monkeypatch.setenv("PATH", "/launch/path")
+    assert _dry_json()["git_guard_hook"] is True and seen == ["/launch/path"]
+
+
+def test_git_guard_not_checked_for_cursor_runner(cfg, guard, monkeypatch):
+    guard["entry"](False)
+    assert _dry_json("--runner", "cursor")["git_guard_hook"] is None
+    monkeypatch.setenv("NW_AGENTIC_RUNNER", "cursor")               # a cursor default
+    assert _dry_json()["git_guard_hook"] is None
+    monkeypatch.delenv("NW_AGENTIC_RUNNER")
+    assert _dry_json("--runner", "claude")["git_guard_hook"] is False   # explicit claude: checked
+
+
+def test_git_guard_follows_the_stored_runner_on_resume(cfg, ex, guard):
+    guard["entry"](False)
+    CC.record_session(cfg, "conductor", {}, source="launch", session_id="sid-claude",
+                      extra={"runner": "claude", "launch_hash": "x"})
+    d = Path(cfg["_root"]) / "-slug"
+    d.mkdir(parents=True)
+    (d / "sid-claude.jsonl").write_text("{}\n")
+    assert _dry_json("--resume")["git_guard_hook"] is False
+    assert invoke("conductor-launch", "--resume").exit_code == 1
+    assert not ex.calls
+
+
+def test_git_guard_not_checked_when_the_stored_runner_is_cursor(cfg, guard):
+    guard["entry"](False)
+    CC.record_session(cfg, "conductor", {}, source="launch", session_id="chat",
+                      extra={"runner": "cursor", "launch_hash": "x"})
+    assert _dry_json("--resume")["git_guard_hook"] is None
+
+
+def test_steward_launch_is_not_checked(cfg, ex, guard):
+    guard["entry"](False)
+    assert invoke("steward-launch", "Foo").exit_code == 0

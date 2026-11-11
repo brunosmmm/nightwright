@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import tempfile
 from pathlib import Path
 
@@ -40,6 +41,14 @@ HOOK_MATCHER = "AskUserQuestion"
 HOOK_COMMAND = "nw queue conductor-guard || true"
 HOOK_ENTRY = {"matcher": HOOK_MATCHER, "hooks": [{"type": "command", "command": HOOK_COMMAND}]}
 
+# SPEC-0550: the cwd-aware git guard, a light console script (not the click CLI: it runs on every
+# Bash call of every session). `|| true` for the same reason as above: only the hook's JSON
+# decision may block, and a shell exit 127 (script not on PATH) must not.
+GIT_GUARD_EXECUTABLE = "nw-conductor-git-guard"
+GIT_GUARD_COMMAND = f"{GIT_GUARD_EXECUTABLE} || true"
+GIT_GUARD_ENTRY = {"matcher": "Bash",
+                   "hooks": [{"type": "command", "command": GIT_GUARD_COMMAND}]}
+
 
 def default_settings_path() -> Path:
     return Path.home() / ".claude" / "settings.json"
@@ -66,11 +75,11 @@ def _load(path: Path) -> dict:
     return doc
 
 
-def _has_hook(doc) -> bool:
-    """True when some PreToolUse entry already runs HOOK_COMMAND."""
+def _has_hook(doc, command=HOOK_COMMAND) -> bool:
+    """True when some PreToolUse entry already runs `command`."""
     for entry in (doc.get("hooks") or {}).get(HOOK_EVENT, []):
         for h in (entry.get("hooks") or []) if isinstance(entry, dict) else []:
-            if isinstance(h, dict) and h.get("command") == HOOK_COMMAND:
+            if isinstance(h, dict) and h.get("command") == command:
                 return True
     return False
 
@@ -78,6 +87,19 @@ def _has_hook(doc) -> bool:
 def hook_missing(path=None) -> bool:
     """True when the conductor-guard hook is not yet in the settings file."""
     return not _has_hook(_load(Path(path or default_settings_path())))
+
+
+def git_guard_hook_missing(path=None) -> bool:
+    """True when the SPEC-0550 git-guard hook is not yet in the settings file."""
+    return not _has_hook(_load(Path(path or default_settings_path())), GIT_GUARD_COMMAND)
+
+
+def git_guard_executable(env=None):
+    """Path of the `nw-conductor-git-guard` console script on `env`'s PATH (default: the
+    process's), else None. The settings command ends in `|| true`, so a script that is not on
+    the PATH Claude Code runs hooks with would never run and never complain."""
+    path = (os.environ if env is None else env).get("PATH")
+    return shutil.which(GIT_GUARD_EXECUTABLE, path=path)
 
 
 def missing(path=None) -> list[str]:
@@ -102,7 +124,8 @@ def install(path=None) -> list[str]:
 def sync(path=None) -> dict:
     """Merge the missing ALLOW_RULES into `permissions.allow` and drop every LEGACY_RULES entry
     (SPEC-0330), and add the conductor-guard PreToolUse hook (SPEC-0382) unless present; returns
-    {"added": [...], "removed": [...], "hook": bool (added now)}. When there is nothing to do the
+    {"added": [...], "removed": [...], "hook": bool (added now), "git_guard_hook": bool (the
+    SPEC-0550 Bash git-guard entry, added now)}. When there is nothing to do the
     file is left untouched. Other keys and entries are kept as they are; the write is atomic."""
     path = Path(path or default_settings_path())
     doc = _load(path)
@@ -111,15 +134,17 @@ def sync(path=None) -> dict:
     current = list((doc.get("permissions") or {}).get("allow", []))
     removed = [r for r in current if r in legacy]
     hook = not _has_hook(doc)
-    if not added and not removed and not hook:
-        return {"added": [], "removed": [], "hook": False}
+    git_guard = not _has_hook(doc, GIT_GUARD_COMMAND)
+    if not added and not removed and not hook and not git_guard:
+        return {"added": [], "removed": [], "hook": False, "git_guard_hook": False}
     if added or removed:
         perms = doc.setdefault("permissions", {})
         perms["allow"] = [r for r in current if r not in legacy] + added
-    if hook:
-        if doc.get("hooks") is None:
-            doc["hooks"] = {}
-        doc["hooks"].setdefault(HOOK_EVENT, []).append(json.loads(json.dumps(HOOK_ENTRY)))
+    for wanted, entry in ((hook, HOOK_ENTRY), (git_guard, GIT_GUARD_ENTRY)):
+        if wanted:
+            if doc.get("hooks") is None:
+                doc["hooks"] = {}
+            doc["hooks"].setdefault(HOOK_EVENT, []).append(json.loads(json.dumps(entry)))
     path.parent.mkdir(parents=True, exist_ok=True)
     fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=".settings.", suffix=".json")
     try:
@@ -132,4 +157,4 @@ def sync(path=None) -> dict:
     except BaseException:
         Path(tmp).unlink(missing_ok=True)
         raise
-    return {"added": added, "removed": removed, "hook": hook}
+    return {"added": added, "removed": removed, "hook": hook, "git_guard_hook": git_guard}

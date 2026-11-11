@@ -2521,7 +2521,10 @@ def skills_install_cmd(link, dest, force, permissions, settings_path):
                 console.print(f"    [dim]{rule}[/]")
         if res["hook"]:
             console.print(f"[green]✓[/] conductor-guard hook  [dim]added to {target}[/]")
-        if not res["added"] and not res["removed"] and not res["hook"]:
+        if res["git_guard_hook"]:
+            console.print(f"[green]✓[/] conductor-git-guard hook  [dim]added to {target}[/]")
+        if (not res["added"] and not res["removed"] and not res["hook"]
+                and not res["git_guard_hook"]):
             console.print(f"[green]✓[/] allow rules and hook  [dim]up-to-date in {target}[/]")
 
 
@@ -2545,6 +2548,13 @@ def skills_list_cmd(dest, settings_path):
         raise click.ClickException(str(e))
     state = "present" if not gap else f"{len(gap)} missing (run nw skills install)"
     console.print(f"[white]allow rules[/]  [dim]{state}[/]")
+    target = settings_path or AP.default_settings_path()
+    try:        # SPEC-0550: two hooks, conductor-guard and conductor-git-guard
+        hooks_gap = int(AP.hook_missing(target)) + int(AP.git_guard_hook_missing(target))
+    except ValueError as e:
+        raise click.ClickException(str(e))
+    state = "present" if not hooks_gap else f"{hooks_gap} missing (run nw skills install)"
+    console.print(f"[white]hooks[/]  [dim]{state}[/]")
 
 
 @cli.command("migrate-from-wt")
