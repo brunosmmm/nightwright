@@ -103,11 +103,11 @@ def test_pending_in_slurm_past_slot_wait_then_starting_succeeds(src, tmp_path, w
 def test_pending_past_max_pending_fails_as_slurm_pending(src, tmp_path, wenv, fake):
     h, bundle = _job(src, tmp_path)
     cfg = _coordinator(tmp_path, slot_wait_s=1, max_pending_s=3)
-    t, out = _dispatch(_worker(tmp_path, wenv), h, bundle, cfg, tmp_path)
-    assert until(lambda: fake.ids())
+    t0 = time.monotonic()      # before the dispatch: the `max_pending_s` clock starts at the
+    t, out = _dispatch(_worker(tmp_path, wenv), h, bundle, cfg, tmp_path)   # first slot_wait frame,
+    assert until(lambda: fake.ids())      # which can land before `fake.pending` on a loaded host
     jid = fake.ids()[0]
     fake.pending(jid, "Resources")
-    t0 = time.monotonic()
     join(t)
     assert time.monotonic() - t0 >= 2.5          # not the 1 s `slot_wait_s`
     f = out["f"]
