@@ -408,6 +408,14 @@ order, `escalate`, the index restore).
   restores the index on any other exception after `git add` (`ValueError`, `KeyboardInterrupt`,
   `SystemExit`) and re-raises; `plan_clear` keeps the raw list on `PlanError`, `OSError` or
   `ValueError` from the guard. SPEC-0546's classifier still reads each path's blob (`cat-file`).
+- Review loop 3 code: `_commit_trivial` installs SIGTERM and SIGHUP handlers (raising
+  `SystemExit(128+signum)`) for the staging-to-commit window, so a killed `nw` unwinds and puts the
+  index back, then restores the previous handlers (skipped off the main thread); a SIGKILL cannot
+  be caught. `_restore_index` unlinks its lock on any exit that did not replace the index,
+  interrupts included. `fail()` treats a failing `rev-parse HEAD` as "HEAD did not move" and still
+  restores, and a `None` HEAD is no longer read as "a commit landed". `_head_map` raises
+  `PlanError` on a failed `ls-tree` unless HEAD is unborn, so guard 5's HEAD checks are never
+  silently skipped. The CLI catches `RecursionError` from `--plan` and exits 2.
 
 ## Goals / Non-goals
 
@@ -450,12 +458,3 @@ project Meta-Tools.
 ## Open questions
 
 None.
-
-- Review loop 3 code: `_commit_trivial` installs SIGTERM and SIGHUP handlers (raising
-  `SystemExit(128+signum)`) for the staging-to-commit window, so a killed `nw` unwinds and puts the
-  index back, then restores the previous handlers (skipped off the main thread); a SIGKILL cannot
-  be caught. `_restore_index` unlinks its lock on any exit that did not replace the index,
-  interrupts included. `fail()` treats a failing `rev-parse HEAD` as "HEAD did not move" and still
-  restores, and a `None` HEAD is no longer read as "a commit landed". `_head_map` raises
-  `PlanError` on a failed `ls-tree` unless HEAD is unborn, so guard 5's HEAD checks are never
-  silently skipped. The CLI catches `RecursionError` from `--plan` and exits 2.
