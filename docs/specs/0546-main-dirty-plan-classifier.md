@@ -525,6 +525,16 @@ optional source, never the contract: where the branch and this spec differ, this
   real AA/DU/UD/UU conflicts; the AC6 snapshot over merge, hold, staged, rename and gitlink; a
   no-wrap-on-a-terminal test. Mutation re-run: removing `--literal-pathspecs` fails 9 tests.
   `python3 tools/test_tiers.py --check` and `python3 tools/spec_lint.py` exit 0.
+- Review loop 3: `uv run pytest -q tests/test_main_dirty_plan.py` passes (354 tests). New false-`trivial`
+  guards: a staged delete (`git rm --cached`) whose same-name worktree file differs (code and docs twin),
+  newly added `A ` and `AM` files (an absent `old` is never empty), whole `recommended` lists and runs on a
+  `develop` base and on a `merge.base` / `base` from the config, a relative `--root`, the `-3` wip suffix,
+  non-ASCII paths with and without `core.quotePath`, frontmatter plus body edits and the EOF newline, a
+  dirty gitlink with a merge marker, EOF-newline-only and unknown-suffix edits, the extra hazards and a
+  non-UTF-8 path. Mutations re-run by hand: reading the worktree for a staged delete, hardcoding `main` in
+  `switch <base>`, and treating an absent `old` as empty each fail a test.
+  `python3 tools/test_tiers.py --check` and `python3 tools/spec_lint.py` exit 0. The full suite was left
+  to gating.
 - The full suite was left to gating.
 
 ### As shipped (2026-11-11)
@@ -550,6 +560,12 @@ optional source, never the contract: where the branch and this spec differ, this
   check, so `recommended` never holds `git -C .`; `OSError` while reading a worktree file or the
   project config becomes a `PlanError` (exit 3); text mode prints paths and commands with
   `soft_wrap=True` so a terminal never folds a pasteable line.
+- Review loop 3 hardening (again only toward `branch`): comment-only is false when the two sides differ
+  in the final newline (`_split` drops it) and for a suffix with no kinds table (so `x.json` or `x.txt`
+  is never `comment`); an unterminated Python triple-quoted string, a Ruby/Perl `__END__` / `__DATA__`
+  line, a `"""` in `.java` and a YAML block scalar header with indent/chomp indicators or a comment
+  (`|2`, `|  # x`) set `hazard`; `root` is `abspath` only when that has the same realpath, else
+  `realpath`; the command exits 3 before printing when a path is not valid UTF-8.
 - Code: `src/nightwright/agentic/main_dirty.py`, the `main-dirty-plan` command in `cli_queue.py`,
   the reference-index entry, `tests/test_main_dirty_plan.py`.
 

@@ -1026,3 +1026,265 @@ def test_reference_index_names_the_command():
     text = (REPO_ROOT / "docs/product/reference/index.md").read_text()
     section = text.split("### `nw queue …`", 1)[1].split("\n### ", 1)[0]
     assert "main-dirty-plan" in section
+
+
+# ---- review loop 3: false-`trivial` guards -----------------------------------------------------
+
+def _fc(p):
+    return {f["path"]: f["file_class"] for f in p["files"]}
+
+
+def test_staged_delete_with_the_file_still_in_the_worktree_is_a_delete(tmp_path):
+    """`git rm --cached`: `new` is absent even though a same-name worktree file differs only in comments."""
+    repo = _repo(tmp_path, {"src/x.py": "x = 1\n# a\n"})
+    _git(repo, "rm", "-q", "--cached", "src/x.py")
+    _put(repo, "src/x.py", "x = 1\n# b\n")
+    assert [ln[:2] for ln in _dirty(repo).splitlines()] == ["D "]
+    p = MD.plan_clear(repo)
+    assert (p["class"], p["action"]) == S and _fc(p) == {"src/x.py": "code"}
+    assert p["substantive_paths"] == ["src/x.py"]
+    assert p["recommended"] == _save_list(repo, p["recommended"][0].split()[-1], "substantive", [])
+
+
+def test_staged_delete_with_a_prose_copy_in_the_worktree_is_a_delete(tmp_path):
+    repo = _repo(tmp_path, {"docs/a.md": "# T\n\nprose\n"})
+    _git(repo, "rm", "-q", "--cached", "docs/a.md")
+    _put(repo, "docs/a.md", "# T\n\nprose 2\n")
+    assert [ln[:2] for ln in _dirty(repo).splitlines()] == ["D "]
+    p = MD.plan_clear(repo)
+    assert (p["class"], p["action"]) == B and _fc(p) == {"docs/a.md": "other"}
+
+
+@pytest.mark.parametrize("path,body,fclass,want", [
+    ("src/new.py", "# only a comment\n\n# another\n", "code", S),
+    ("src/new.py", "\n\n", "code", S),
+    ("src/new.py", "# no final newline", "code", S),
+    ("src/new.py", "", "code", S),
+    ("docs/new.md", "# T\n\nsome prose\n", "other", B),
+    ("docs/new.md", "---\nk: v\n---\n", "other", B),
+])
+def test_newly_added_tracked_file_has_no_old(tmp_path, path, body, fclass, want):
+    """An absent `old` is never an empty string: a new all-comment file is not comment-only."""
+    repo = _repo(tmp_path)
+    _put(repo, path, body)
+    _git(repo, "add", path)
+    assert [ln[:2] for ln in _dirty(repo).splitlines()] == ["A "]
+    p = MD.plan_clear(repo)
+    assert (p["class"], p["action"]) == want and _fc(p) == {path: fclass}
+
+
+@pytest.mark.parametrize("path,staged,edited,fclass,want", [
+    ("src/new.py", "# c\n", "# c\n# d\n", "code", S),
+    ("docs/new.md", "# T\n\nprose\n", "# T\n\nprose 2\n", "other", B),
+])
+def test_added_then_modified_file_has_no_old(tmp_path, path, staged, edited, fclass, want):
+    repo = _repo(tmp_path)
+    _put(repo, path, staged)
+    _git(repo, "add", path)
+    _put(repo, path, edited)
+    assert [ln[:2] for ln in _dirty(repo).splitlines()] == ["AM"]
+    p = MD.plan_clear(repo)
+    assert (p["class"], p["action"]) == want and _fc(p) == {path: fclass}
+    assert p["recommended"][1].endswith(f"add -- {path}")
+
+
+# ---- a non-main base reaches every list --------------------------------------------------------
+
+def _R(repo):
+    return shlex.quote(str(repo))
+
+
+def test_non_main_base_lists_use_the_computed_base(tmp_path):
+    repo = _repo(tmp_path, {"docs/a.md": "# T\n"}, base="develop")
+    _put(repo, "untracked.md", "u\n")
+    R = _R(repo)
+    _git(repo, "switch", "-qc", "feat")
+    assert MD.plan_clear(repo)["recommended"] == [f"git -C {R} switch develop"]        # hold, clean
+    _put(repo, "docs/a.md", "# T\n\nx\n")
+    p = MD.plan_clear(repo)
+    assert (p["class"], p["action"], p["base"]) == ("trivial", "hold", "develop")
+    wip = p["recommended"][0].split()[-1]
+    assert p["recommended"] == _save_list(repo, wip, "trivial", ["docs/a.md"], base="develop")
+    assert p["recommended"][-1] == f"git -C {R} switch develop"
+    _run_list(repo, p["recommended"])
+    _after_run_checks(repo)
+    assert _git(repo, "rev-parse", "--abbrev-ref", "HEAD").stdout.strip() == "develop"
+    assert _show(repo, wip, "docs/a.md") == "# T\n\nx\n"
+    assert (repo / "untracked.md").exists()
+
+
+@pytest.mark.parametrize("variant", ["save_branch", "branch_and_escalate"])
+def test_non_main_base_save_lists_run_and_end_on_the_base(tmp_path, variant):
+    path, old, new, want = {"save_branch": ("config/x.json", "{}\n", '{"a": 1}\n', B),
+                            "branch_and_escalate": ("src/x.py", "x = 1\n", "x = 2\n", S)}[variant]
+    repo = _repo(tmp_path, {path: old}, base="develop")
+    _put(repo, path, new)
+    _put(repo, "untracked.txt", "u\n")
+    p = MD.plan_clear(repo)
+    assert (p["class"], p["action"], p["base"], p["on_base"]) == (*want, "develop", True)
+    wip = p["recommended"][0].split()[-1]
+    assert p["recommended"] == _save_list(repo, wip, p["class"], [path], base="develop")
+    _run_list(repo, p["recommended"])
+    _after_run_checks(repo)
+    assert _git(repo, "rev-parse", "--abbrev-ref", "HEAD").stdout.strip() == "develop"
+    assert _show(repo, wip, path) == new
+    assert "untracked.txt" not in _tree(repo, wip) and (repo / "untracked.txt").exists()
+
+
+@pytest.mark.parametrize("key", ["merge", "base"])
+def test_base_from_the_project_config_reaches_the_lists(tmp_path, key):
+    repo = _repo(tmp_path, {"docs/a.md": "# T\n"}, base="release")
+    _cfg(repo, {"merge": {"base": "release"}} if key == "merge" else {"base": "release"})
+    _git(repo, "commit", "-qam", "cfg", "--allow-empty")
+    _git(repo, "switch", "-qc", "feat")
+    R = _R(repo)
+    p = MD.plan_clear(repo)
+    assert (p["base"], p["on_base"], p["action"], p["recommended"]) == (
+        "release", False, "hold", [f"git -C {R} switch release"])
+    _put(repo, "docs/a.md", "# T\n\nx\n")
+    p = MD.plan_clear(repo)
+    wip = p["recommended"][0].split()[-1]
+    assert p["recommended"] == _save_list(repo, wip, "trivial", ["docs/a.md"], base="release")
+    _run_list(repo, p["recommended"])
+    assert _git(repo, "rev-parse", "--abbrev-ref", "HEAD").stdout.strip() == "release"
+
+
+# ---- cheap minors ------------------------------------------------------------------------------
+
+def test_relative_root_gives_absolute_root_and_commands(tmp_path, monkeypatch):
+    repo = _repo(tmp_path, {"docs/a.md": "# T\n"})
+    _put(repo, "docs/a.md", "# T\n\nx\n")
+    monkeypatch.chdir(repo)
+    doc = json.loads(_cli("--root", ".", "--json").stdout)
+    assert os.path.isabs(doc["root"]) and os.path.realpath(doc["root"]) == os.path.realpath(repo)
+    assert doc["recommended"] and all(c.startswith(f"git -C {shlex.quote(doc['root'])} ")
+                                      for c in doc["recommended"])
+    assert not any(" -C . " in c for c in doc["recommended"])
+
+
+def test_root_through_a_symlink_dotdot_is_canonical(tmp_path):
+    repo = _repo(tmp_path)
+    elsewhere = tmp_path / "e" / "deep"
+    elsewhere.mkdir(parents=True)
+    (elsewhere / "lnk").symlink_to(repo)
+    p = MD.plan_clear(elsewhere / "lnk" / ".." / "r")      # lexically tmp/e/deep/r: not a repo
+    assert os.path.realpath(p["root"]) == os.path.realpath(repo)
+    assert os.path.exists(os.path.join(p["root"], ".git"))
+
+
+def test_wip_name_takes_the_third_suffix(tmp_path, monkeypatch):
+    import datetime
+    import types
+
+    class FixedDT(datetime.datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return cls(2026, 1, 1, tzinfo=tz)
+
+    monkeypatch.setattr(MD, "dt", types.SimpleNamespace(datetime=FixedDT, timezone=datetime.timezone))
+    repo = _repo(tmp_path, {"src/a.py": "x = 1\n"})
+    _put(repo, "src/a.py", "x = 2\n")
+    for b in ("wip/main-dirty-20260101T000000Z", "wip/main-dirty-20260101T000000Z-2"):
+        _git(repo, "branch", b)
+    assert MD.plan_clear(repo)["recommended"][0].endswith("wip/main-dirty-20260101T000000Z-3")
+
+
+@pytest.mark.parametrize("quote", ["true", "false"])
+def test_non_ascii_path_with_and_without_quotepath(tmp_path, quote):
+    repo = _repo(tmp_path, {"docs/café.md": "# T\n", "src/ü.py": "x = 1\n"})
+    _git(repo, "config", "core.quotePath", quote)
+    _put(repo, "docs/café.md", "# T\n\nx\n")
+    p = MD.plan_clear(repo)
+    assert (p["class"], p["paths"], p["recommended"][0].endswith("add -- " + shlex.quote("docs/café.md"))) == (
+        "trivial", ["docs/café.md"], True)
+    _put(repo, "src/ü.py", "x = 2\n")
+    p = MD.plan_clear(repo)
+    assert (p["class"], sorted(p["paths"]), _fc(p)["src/ü.py"]) == (
+        "substantive", ["docs/café.md", "src/ü.py"], "code")
+
+
+def test_frontmatter_and_body_edited_together_is_docs(tmp_path):
+    repo = _repo(tmp_path, {"docs/a.md": "---\nk: v\n---\n\nbody\n"})
+    _put(repo, "docs/a.md", "---\nk: w\n---\n\nbody 2\n")
+    p = MD.plan_clear(repo)
+    assert (p["class"], p["action"], _fc(p)) == ("trivial", "commit", {"docs/a.md": "docs"})
+
+
+@pytest.mark.parametrize("new", ["---\nk: w\n---\nbody", "---\nk: v\n---\nbody"])
+def test_frontmatter_eof_newline_after_the_closing_fence(tmp_path, new):
+    """A frontmatter edit that also drops the body's final newline is not `frontmatter`."""
+    repo = _repo(tmp_path, {"docs/a.md": "---\nk: v\n---\nbody\n"})
+    _put(repo, "docs/a.md", new)
+    p = MD.plan_clear(repo)
+    assert (p["class"], _fc(p)["docs/a.md"]) == ("trivial", "docs")
+
+
+def test_docs_prose_requires_a_visible_diff_and_keeps_the_eof_newline(tmp_path):
+    repo = _repo(tmp_path, {"docs/a.md": "# T\n\nprose\n"})
+    _git(repo, "update-index", "--refresh")
+    (repo / "docs/a.md").write_bytes(b"# T\n\nprose\n")             # touched, identical
+    assert MD.plan_clear(repo)["class"] == "clean"
+    _put(repo, "docs/a.md", "# T\n\nprose")                          # only the final newline went
+    p = MD.plan_clear(repo)
+    assert (p["class"], _fc(p)["docs/a.md"]) == ("trivial", "docs")
+
+
+def test_dirty_gitlink_with_a_merge_marker_is_merge(tmp_path):
+    sub = _repo(tmp_path, {"f.txt": "x\n"}, name="sub")
+    repo = _repo(tmp_path, {}, name="sup")
+    _git(repo, "-c", "protocol.file.allow=always", "submodule", "add", "-q", str(sub), "vendor/sub")
+    _git(repo, "commit", "-qm", "sub")
+    _put(repo / "vendor/sub", "f.txt", "changed\n")
+    marker = _git(repo, "rev-parse", "--git-path", "MERGE_HEAD").stdout.strip()
+    (repo / marker).write_text(_git(repo, "rev-parse", "HEAD").stdout)
+    p = MD.plan_clear(repo)
+    assert (p["class"], p["action"], p["in_progress"], p["recommended"]) == ("merge", "escalate", "merge", [])
+
+
+# ---- EOF newline, unknown suffix, extra hazards (adversarial review) ---------------------------
+
+@pytest.mark.parametrize("path,fclass", [("src/x.py", "code"), ("tests/fixtures/x.txt", "code"),
+                                         ("config/x.json", "other"), ("src/x.c", "code"),
+                                         ("docs/x.yml", "other")])
+@pytest.mark.parametrize("drop", [True, False])
+def test_eof_newline_only_edit_is_never_comment(tmp_path, path, fclass, drop):
+    old, new = ("a: 1\n", "a: 1") if drop else ("a: 1", "a: 1\n")
+    repo = _repo(tmp_path, {path: old})
+    _put(repo, path, new)
+    p = MD.plan_clear(repo)
+    assert _fc(p) == {path: fclass} and p["class"] != "trivial", p["files"]
+
+
+@pytest.mark.parametrize("path", ["config/x.json", "tests/fixtures/x.txt", "web/x.svg"])
+def test_unknown_suffix_is_never_comment_only(tmp_path, path):
+    assert MD._comment_only(path, b"a\nb\n", b"a\nb\n\n") is False
+    assert MD._comment_only(path, b"a\nb\n", b"a \nb\n") is False
+
+
+@pytest.mark.parametrize("path,old,new", [
+    ("src/x.rb", "x = 1\n__END__\ndata\n", "x = 1\n__END__\n# data\n"),
+    ("src/x.pl", "x();\n__DATA__\nd\n", "x();\n__DATA__\n# d\n"),
+    ("src/X.java", 's = """\nt\n""";\n', 's = """\n# t\n""";\n'),
+    (".github/ci.yml", "run: |  # note\n  a\n", "run: |  # note\n  a\n  # b\n"),
+    (".github/ci.yml", "run: |2\n  a\n", "run: |2\n  a\n  # b\n"),
+    ("src/x.py", 'x = 1\ns = """\nopen\n', 'x = 1\ns = """\nopen\n# more\n'),
+])
+def test_more_hazards_are_never_trivial(tmp_path, path, old, new):
+    repo = _repo(tmp_path, {path: old})
+    _put(repo, path, new)
+    assert MD.plan_clear(repo)["class"] != "trivial"
+
+
+def test_cli_non_utf8_path_exits_3_without_output(tmp_path):
+    repo = _repo(tmp_path)
+    bad = os.fsencode(str(repo)) + b"/docs/bad\xff.md"
+    os.makedirs(os.path.dirname(bad), exist_ok=True)
+    with open(bad, "wb") as f:
+        f.write(b"# T\n")
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-qm", "bad")
+    with open(bad, "wb") as f:
+        f.write(b"# T\n\nx\n")
+    for args in (("--root", str(repo)), ("--root", str(repo), "--json")):
+        r = _cli(*args)
+        assert r.exit_code == 3 and "error:" in r.stderr and r.stdout == "", (r.stderr, r.stdout)

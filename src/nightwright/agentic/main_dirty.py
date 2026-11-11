@@ -10,6 +10,7 @@ from __future__ import annotations
 import datetime as dt
 import os
 import posixpath
+import re
 import shlex
 import subprocess
 from pathlib import Path
@@ -37,6 +38,10 @@ _MD_SUFFIXES = frozenset({".md", ".html", ".xml"})
 # characters that end a line for CPython's tokenizer or for JavaScript (plus Unicode separators)
 _LINE_BREAKS = "\r\x0b\x0c\x1c\x1d\x1e\x85  "
 _SCALAR_ENDS = ("|", "|-", "|+", ">", ">-", ">+")
+# a YAML block scalar header: `|` or `>` with optional indent/chomp indicators and a comment
+_SCALAR_RE = re.compile(r"[|>][0-9+-]*\s*(#.*)?$")
+# files whose suffix has a kinds table; any other suffix has no comment lines
+_KNOWN_SUFFIXES = (_PY_SUFFIXES | _HASH_SUFFIXES | _CLIKE_SUFFIXES | _MD_SUFFIXES | frozenset({".css"}))
 # a trailing backslash splices the next line (preprocessor, shell, Python, Ruby, Perl)
 _SPLICE_SUFFIXES = frozenset({".py", ".pyi", ".sh", ".bash", ".rb", ".pl"}) | _CLIKE_SUFFIXES
 
@@ -212,8 +217,12 @@ def _scan(path: str, text: str):
             hazard = True
         if suf in (".sh", ".bash", ".rb", ".pl") and "<<" in ln:
             hazard = True
-        if suf in (".yml", ".yaml") and s.endswith(_SCALAR_ENDS):
+        if suf in (".rb", ".pl") and s in ("__END__", "__DATA__"):
+            hazard = True               # everything after is data
+        if suf in (".yml", ".yaml") and (s.endswith(_SCALAR_ENDS) or _SCALAR_RE.search(s)):
             hazard = True
+        if suf == ".java" and '"""' in ln:
+            hazard = True               # a text block
         if suf in _BACKTICK_SUFFIXES and "`" in ln:
             hazard = True
         if suf in _SPLICE_SUFFIXES and s.endswith("\\"):
@@ -280,6 +289,8 @@ def _scan(path: str, text: str):
         else:
             kind = "text"
         kinds.append(kind)
+    if tok is not None:
+        hazard = True                   # an unterminated triple-quoted string
     return lines, kinds, hazard
 
 
@@ -365,6 +376,10 @@ def _half_class(path, orig, *, code_side, renamed, flags, old, new) -> str:
 def _comment_only(path, old, new) -> bool:
     if old is None or new is None or old == new or b"\0" in old or b"\0" in new:
         return False
+    if _suffix(path) not in _KNOWN_SUFFIXES:
+        return False                    # no kinds table: every line is `text`, never a comment
+    if old.endswith(b"\n") != new.endswith(b"\n"):
+        return False                    # `_split` drops the final newline; it is still an edit
     ol, ok, oh = _scan(path, _dec(old))
     nl, nk, nh = _scan(path, _dec(new))
     if oh or nh:
@@ -461,7 +476,9 @@ def _recommended(root, action, klass, base, rows) -> list[str]:
 def plan_clear(root, base=None) -> dict:
     root = Path(root)
     _check_worktree(root)
-    root = Path(os.path.abspath(root))
+    absroot = os.path.abspath(root)
+    root = Path(absroot if os.path.realpath(absroot) == os.path.realpath(root)
+                else os.path.realpath(root))
     base = _base(root, base)
     rows = _status(root)
     xys = [r["xy"] for r in rows]

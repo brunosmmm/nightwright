@@ -1548,6 +1548,11 @@ def attach(queue_group):
         except (MD.PlanError, OSError) as e:
             R.warn(f"error: {e}")
             ctx.exit(3)
+        try:                     # a non-UTF-8 path name cannot be printed; fail before any output
+            json.dumps(plan, ensure_ascii=False).encode("utf-8")
+        except UnicodeEncodeError as e:
+            R.warn(f"error: a path in the plan is not valid UTF-8 and cannot be printed: {e}")
+            ctx.exit(3)
         if as_json:
             _dump_json(plan)
             return
