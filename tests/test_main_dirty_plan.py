@@ -678,7 +678,7 @@ def _show(repo, rev, path):
 
 
 def _wip_branches(repo):
-    return [b.strip() for b in _git(repo, "branch", "--list", "wip/main-dirty-*").stdout.splitlines()]
+    return _git(repo, "for-each-ref", "--format=%(refname:short)", "refs/heads/wip/").stdout.split()
 
 
 def _save_list(repo, wip, klass, upaths, base="main"):
@@ -728,7 +728,7 @@ SAVE_VARIANTS = {
 @pytest.mark.parametrize("variant", list(SAVE_VARIANTS))
 def test_recommended_save_list_runs(tmp_path, variant):
     files, edit, upaths = SAVE_VARIANTS[variant]
-    repo = _repo(tmp_path, files)
+    repo = _repo(tmp_path, files, project=False)
     edit(repo)
     _put(repo, "untracked.txt", "u\n")
     p = MD.plan_clear(repo)
@@ -760,7 +760,7 @@ def test_recommended_save_list_runs(tmp_path, variant):
 
 
 def test_recommended_branch_class_save_list(tmp_path):
-    repo = _repo(tmp_path, {"config/x.json": "{}\n"})
+    repo = _repo(tmp_path, {"config/x.json": "{}\n"}, project=False)
     _put(repo, "config/x.json", '{"a": 1}\n')
     _put(repo, "untracked.txt", "u\n")
     p = MD.plan_clear(repo)
@@ -776,7 +776,7 @@ def test_recommended_branch_class_save_list(tmp_path):
 @pytest.mark.parametrize("path,untracked,klass", [("a*b.md", "axb.md", "branch"),
                                                   ("src/a*b.py", "src/axb.py", "substantive")])
 def test_literal_pathspecs_protect_a_star_name(tmp_path, path, untracked, klass):
-    repo = _repo(tmp_path, {path: "x = 1\n"})
+    repo = _repo(tmp_path, {path: "x = 1\n"}, project=False)
     _put(repo, path, "x = 2\n")
     _put(repo, untracked, "u\n")
     p = MD.plan_clear(repo)
@@ -806,7 +806,7 @@ def test_literal_pathspecs_star_name_commit_list(tmp_path):
 
 def test_path_with_a_space_is_quoted(tmp_path):
     fenced = "# T\n\n```\ncode\n```\n"
-    repo = _repo(tmp_path, {"docs/a b.md": fenced})
+    repo = _repo(tmp_path, {"docs/a b.md": fenced}, project=False)
     _put(repo, "docs/a b.md", fenced.replace("code", "code2"))
     p = MD.plan_clear(repo)
     assert p["action"] == "save_branch"
@@ -814,7 +814,7 @@ def test_path_with_a_space_is_quoted(tmp_path):
 
 
 def test_hold_dirty_runs_and_ends_on_the_base(tmp_path):
-    repo = _repo(tmp_path, {"docs/a.md": "# T\n"})
+    repo = _repo(tmp_path, {"docs/a.md": "# T\n"}, project=False)
     _git(repo, "switch", "-qc", "feat")
     _git(repo, "commit", "-q", "--allow-empty", "-m", "feat work")
     _put(repo, "docs/a.md", "# T\n\nx\n")
@@ -837,7 +837,9 @@ def test_hold_clean_and_escalate_lists(tmp_path):
     _git(repo, "switch", "-qc", "feat")
     p = MD.plan_clear(repo)
     R = shlex.quote(str(repo))
-    assert (p["class"], p["action"], p["recommended"]) == ("clean", "hold", [f"git -C {R} switch main"])
+    # SPEC-0549: a hold with no dirt needs no project config; the verb switches
+    assert (p["class"], p["action"], p["recommended"]) == (
+        "clean", "hold", [f"nw queue main-dirty-apply --root {R}"])
     assert MD.plan_clear(_repo(tmp_path, name="z"))["recommended"] == []
 
 
@@ -851,7 +853,7 @@ def test_wip_name_takes_a_suffix_when_it_exists(tmp_path, monkeypatch):
             return cls(2026, 1, 1, tzinfo=tz)
 
     monkeypatch.setattr(MD, "dt", types.SimpleNamespace(datetime=FixedDT, timezone=datetime.timezone))
-    repo = _repo(tmp_path, {"src/a.py": "x = 1\n"})
+    repo = _repo(tmp_path, {"src/a.py": "x = 1\n"}, project=False)
     _put(repo, "src/a.py", "x = 2\n")
     assert MD.plan_clear(repo)["recommended"][0].endswith("wip/main-dirty-20260101T000000Z")
     _git(repo, "branch", "wip/main-dirty-20260101T000000Z")
@@ -1047,7 +1049,7 @@ def _fc(p):
 
 def test_staged_delete_with_the_file_still_in_the_worktree_is_a_delete(tmp_path):
     """`git rm --cached`: `new` is absent even though a same-name worktree file differs only in comments."""
-    repo = _repo(tmp_path, {"src/x.py": "x = 1\n# a\n"})
+    repo = _repo(tmp_path, {"src/x.py": "x = 1\n# a\n"}, project=False)
     _git(repo, "rm", "-q", "--cached", "src/x.py")
     _put(repo, "src/x.py", "x = 1\n# b\n")
     assert [ln[:2] for ln in _dirty(repo).splitlines()] == ["D "]
@@ -1105,19 +1107,27 @@ def _R(repo):
     return shlex.quote(str(repo))
 
 
+def _run_verb(repo, p, *, extra=()):
+    """`recommended` is exactly the verb command (SPEC-0549): assert that, run it through the CLI,
+    return the new WIP branches."""
+    assert p["recommended"] == [f"nw queue main-dirty-apply --root {_R(repo)}"]
+    r = CliRunner().invoke(cli, shlex.split(p["recommended"][0])[1:] + ["--json", *extra])
+    assert r.exit_code == 0, r.output
+    assert json.loads(r.output)["ok"] is True, r.output
+    return _wip_branches(repo)
+
+
 def test_non_main_base_lists_use_the_computed_base(tmp_path):
     repo = _repo(tmp_path, {"docs/a.md": "# T\n"}, base="develop")
     _put(repo, "untracked.md", "u\n")
-    R = _R(repo)
     _git(repo, "switch", "-qc", "feat")
-    assert MD.plan_clear(repo)["recommended"] == [f"git -C {R} switch develop"]        # hold, clean
+    p = MD.plan_clear(repo)
+    assert (p["class"], p["action"], p["base"]) == ("clean", "hold", "develop")        # hold, clean
+    assert p["recommended"] == [f"nw queue main-dirty-apply --root {_R(repo)}"]
     _put(repo, "docs/a.md", "# T\n\nx\n")
     p = MD.plan_clear(repo)
     assert (p["class"], p["action"], p["base"]) == ("trivial", "hold", "develop")
-    wip = p["recommended"][0].split()[-1]
-    assert p["recommended"] == _save_list(repo, wip, "trivial", ["docs/a.md"], base="develop")
-    assert p["recommended"][-1] == f"git -C {R} switch develop"
-    _run_list(repo, p["recommended"])
+    (wip,) = _run_verb(repo, p)
     _after_run_checks(repo)
     assert _git(repo, "rev-parse", "--abbrev-ref", "HEAD").stdout.strip() == "develop"
     assert _show(repo, wip, "docs/a.md") == "# T\n\nx\n"
@@ -1133,9 +1143,7 @@ def test_non_main_base_save_lists_run_and_end_on_the_base(tmp_path, variant):
     _put(repo, "untracked.txt", "u\n")
     p = MD.plan_clear(repo)
     assert (p["class"], p["action"], p["base"], p["on_base"]) == (*want, "develop", True)
-    wip = p["recommended"][0].split()[-1]
-    assert p["recommended"] == _save_list(repo, wip, p["class"], [path], base="develop")
-    _run_list(repo, p["recommended"])
+    (wip,) = _run_verb(repo, p)
     _after_run_checks(repo)
     assert _git(repo, "rev-parse", "--abbrev-ref", "HEAD").stdout.strip() == "develop"
     assert _show(repo, wip, path) == new
@@ -1148,16 +1156,93 @@ def test_base_from_the_project_config_reaches_the_lists(tmp_path, key):
     _cfg(repo, {"merge": {"base": "release"}} if key == "merge" else {"base": "release"})
     _git(repo, "commit", "-qam", "cfg", "--allow-empty")
     _git(repo, "switch", "-qc", "feat")
-    R = _R(repo)
     p = MD.plan_clear(repo)
     assert (p["base"], p["on_base"], p["action"], p["recommended"]) == (
-        "release", False, "hold", [f"git -C {R} switch release"])
+        "release", False, "hold", [f"nw queue main-dirty-apply --root {_R(repo)}"])
     _put(repo, "docs/a.md", "# T\n\nx\n")
     p = MD.plan_clear(repo)
-    wip = p["recommended"][0].split()[-1]
-    assert p["recommended"] == _save_list(repo, wip, "trivial", ["docs/a.md"], base="release")
-    _run_list(repo, p["recommended"])
+    _run_verb(repo, p)
     assert _git(repo, "rev-parse", "--abbrev-ref", "HEAD").stdout.strip() == "release"
+
+
+# ---- SPEC-0549 AC7: the verb for the save actions, the raw list when it would refuse -----------
+
+SAVE_VERB_CASES = {
+    "commit": lambda r: _put(r, "docs/a.md", "# T\n\nx\n"),
+    "save_branch": lambda r: _put(r, "config/x.json", '{"a": 1}\n'),
+    "branch_and_escalate": lambda r: _put(r, "src/x.py", "x = 2\n"),
+}
+
+
+@pytest.mark.parametrize("action", sorted(SAVE_VERB_CASES))
+def test_save_actions_recommend_the_verb_and_it_reaches_the_same_end_state(tmp_path, action):
+    repo = _repo(tmp_path, {"docs/a.md": "# T\n", "config/x.json": "{}\n", "src/x.py": "x = 1\n"})
+    SAVE_VERB_CASES[action](repo)
+    _put(repo, "untracked.txt", "u\n")
+    p = MD.plan_clear(repo)
+    assert p["action"] == action
+    wips = _run_verb(repo, p)
+    _after_run_checks(repo)
+    assert len(wips) == (0 if action == "commit" else 1)
+    assert (repo / "untracked.txt").exists()
+
+
+def test_dirty_hold_recommends_the_verb(tmp_path):
+    repo = _repo(tmp_path, {"src/x.py": "x = 1\n"})
+    _git(repo, "switch", "-qc", "feat")
+    _put(repo, "src/x.py", "x = 2\n")
+    p = MD.plan_clear(repo)
+    assert p["action"] == "hold"
+    (wip,) = _run_verb(repo, p)
+    assert _show(repo, wip, "src/x.py") == "x = 2\n"
+    assert _git(repo, "rev-parse", "--abbrev-ref", "HEAD").stdout.strip() == "main"
+
+
+def test_save_without_a_project_config_keeps_the_raw_list_and_runs_it(tmp_path):
+    repo = _repo(tmp_path, {"src/x.py": "x = 1\n"}, project=False)
+    _put(repo, "src/x.py", "x = 2\n")
+    p = MD.plan_clear(repo)
+    assert p["action"] == "branch_and_escalate" and not p["recommended"][0].startswith("nw ")
+    _run_list(repo, p["recommended"])
+    _after_run_checks(repo)
+
+
+@pytest.mark.parametrize("bad", ["a..b", "has space"])
+def test_raw_hold_list_never_names_an_invalid_base(tmp_path, bad):
+    repo = _repo(tmp_path, {"src/x.py": "x = 1\n"})
+    _cfg(repo, {"base": bad})
+    _git(repo, "commit", "-qam", "cfg")
+    _git(repo, "switch", "-qc", "feat")
+    _put(repo, "src/x.py", "x = 2\n")
+    p = MD.plan_clear(repo)
+    assert p["action"] == "hold" and p["recommended"]
+    assert not p["recommended"][0].startswith("nw ")
+    assert not any(" switch " in c and c.endswith(bad) for c in p["recommended"])
+    assert not any(bad in c for c in p["recommended"])
+
+
+def test_raw_hold_list_omits_an_option_shaped_base(tmp_path, monkeypatch):
+    repo = _repo(tmp_path, {"src/x.py": "x = 1\n"})
+    _git(repo, "switch", "-qc", "feat")
+    _put(repo, "src/x.py", "x = 2\n")
+    monkeypatch.setattr(MD, "_base", lambda root, base: "--detach")
+    p = MD.plan_clear(repo)
+    assert p["action"] == "hold" and p["recommended"]
+    assert not p["recommended"][0].startswith("nw ")
+    assert not any("--detach" in c for c in p["recommended"])
+
+
+def test_raw_hold_list_omits_a_base_with_no_branch(tmp_path):
+    repo = _repo(tmp_path, {"src/x.py": "x = 1\n"})
+    _cfg(repo, {"base": "ghost"})
+    _git(repo, "commit", "-qam", "cfg")
+    _git(repo, "switch", "-qc", "feat")
+    p = MD.plan_clear(repo)                                  # clean hold: only the base checks
+    assert p["action"] == "hold" and p["recommended"] == []
+    _put(repo, "src/x.py", "x = 2\n")
+    p = MD.plan_clear(repo)
+    assert not p["recommended"][0].startswith("nw ")
+    assert not any("ghost" in c for c in p["recommended"])
 
 
 # ---- cheap minors ------------------------------------------------------------------------------
@@ -1192,7 +1277,7 @@ def test_wip_name_takes_the_third_suffix(tmp_path, monkeypatch):
             return cls(2026, 1, 1, tzinfo=tz)
 
     monkeypatch.setattr(MD, "dt", types.SimpleNamespace(datetime=FixedDT, timezone=datetime.timezone))
-    repo = _repo(tmp_path, {"src/a.py": "x = 1\n"})
+    repo = _repo(tmp_path, {"src/a.py": "x = 1\n"}, project=False)
     _put(repo, "src/a.py", "x = 2\n")
     for b in ("wip/main-dirty-20260101T000000Z", "wip/main-dirty-20260101T000000Z-2"):
         _git(repo, "branch", b)

@@ -1586,11 +1586,13 @@ def attach(queue_group):
     @click.option("--json", "as_json", is_flag=True, help="emit nw.main_dirty_apply.v1 JSON")
     @click.pass_context
     def queue_main_dirty_apply(ctx, root, base, plan_file, as_json):
-        """Clear a dirty main checkout: commit trivial edits (SPEC-0548). Human or steward run.
+        """Clear a dirty main checkout (SPEC-0548, SPEC-0549). Human or steward run.
 
         Re-plans the live checkout, refuses an operation in progress, a stale --plan, unsafe
-        paths and partial staging without writing, then commits a trivial plan. Save actions
-        are not supported yet. With --json exit 0 whenever it ran; in text mode 1 on a refusal.
+        paths, partial staging, a bad base and a missing project config without writing, then
+        commits a trivial plan or saves non-trivial dirt to a wip/main-dirty-* branch in a
+        worktree, verifies it and restores main (a hold then switches to the base). With --json
+        exit 0 whenever it ran; in text mode 1 on a refusal.
         Exit 2 when --root is not the top of a git worktree or --plan is malformed, 3 on a
         git failure.
         """

@@ -14,6 +14,7 @@ import os
 import posixpath
 import re
 import shlex
+import shutil
 import signal
 import subprocess
 from pathlib import Path
@@ -25,6 +26,7 @@ APPLY_SCHEMA = "nw.main_dirty_apply.v1"
 _COMMIT_SUBJECT = "chore: land stray trivial main-checkout edits"
 _COMMIT_TIMEOUT = 1800                 # seconds; `git commit` runs the repo's hooks
 _WIP_SUBJECT = "WIP: stray main-checkout edits"
+_SAVE_ACTIONS = ("save_branch", "branch_and_escalate", "hold")
 _FC_RANK = {"code": 4, "other": 3, "comment": 2, "frontmatter": 1, "docs": 1}
 _UNMERGED = frozenset({"UU", "AA", "DD", "AU", "UA", "DU", "UD"})
 _MARKERS = (("MERGE_HEAD", "merge"), ("CHERRY_PICK_HEAD", "cherry-pick"),
@@ -508,11 +510,13 @@ def _recommended(root, action, klass, base, rows) -> list[str]:
         return []
     if action == "commit":
         return add + [cmd("commit", "-m", _COMMIT_SUBJECT)]
+    # SPEC-0549: an invalid base (option-shaped, bad ref name, no such branch) is never named
+    switch = [cmd("switch", base)] if _base_refusal(root, base) is None else []
     if not rows:                                           # hold, no tracked dirt
-        return [cmd("switch", base)]
+        return switch
     wip = _wip_name(root)
     return ([cmd("switch", "-c", wip)] + add
-            + [cmd("commit", "-m", f"{_WIP_SUBJECT} ({klass})"), cmd("switch", base)])
+            + [cmd("commit", "-m", f"{_WIP_SUBJECT} ({klass})")] + switch)
 
 
 def plan_clear(root, base=None) -> dict:
@@ -562,12 +566,12 @@ def plan_clear(root, base=None) -> dict:
             subst += names
     recommended = _recommended(root, action, klass, base, rows)
     try:
-        refusal = (verb_refusal(root, {"action": action, "paths": paths})
-                   if action == "commit" else "n/a")
+        refusal = (verb_refusal(root, {"action": action, "paths": paths, "base": base})
+                   if action == "commit" or action in _SAVE_ACTIONS else "n/a")
     except (PlanError, OSError, ValueError):   # a guard fault keeps the raw list, not a crash
         refusal = "guard failed"
     if refusal is None:
-        # SPEC-0548: one audited command instead of raw git, only when the verb will not refuse
+        # SPEC-0548/0549: one audited command instead of raw git, only when the verb will not refuse
         recommended = ["nw queue main-dirty-apply --root " + shlex.quote(str(root))
                        + (f" --base {shlex.quote(arg_base)}" if arg_base is not None else "")]
     return {
@@ -609,11 +613,11 @@ def _index_map(root, paths) -> dict[str, list]:
     return ents
 
 
-def _head_map(root, names) -> dict[str, tuple]:
-    """`{name: (mode, oid)}` for the HEAD tree entries named exactly `names` (none if no HEAD)."""
+def _head_map(root, names, rev="HEAD") -> dict[str, tuple]:
+    """`{name: (mode, oid)}` for the `rev` tree entries named exactly `names` (none if no HEAD)."""
     want, found = set(names), {}
     for ch in _batches(sorted(want)):
-        r = _lg(root, "ls-tree", "-z", "HEAD", "--", *ch, check=False)
+        r = _lg(root, "ls-tree", "-z", rev, "--", *ch, check=False)
         if r.returncode != 0:
             if _head(root) is None:                          # an unborn HEAD: no entries, no symlinks
                 return {}
@@ -698,7 +702,60 @@ def verb_refusal(root, plan) -> str | None:
     for p in suspect:
         if ents[p][0][1] != wt[p]:
             return f"partially staged {p}"
+    return _guard7(root, plan, paths)
+
+
+def _base_refusal(root, base) -> str | None:
+    """Guard 7's base check: a valid branch name that is not option-shaped and exists."""
+    if not isinstance(base, str) or not base or base.startswith("-"):
+        return f"bad base {base}"
+    if _git(root, "check-ref-format", "--branch", base, check=False).returncode != 0:
+        return f"bad base {base}"
+    if _git(root, "show-ref", "--verify", "--quiet", f"refs/heads/{base}", check=False).returncode:
+        return f"bad base {base}"
     return None
+
+
+def _guard7(root, plan, paths) -> str | None:
+    """SPEC-0549 guard 7, for the actions that save or switch: the base, a detached HEAD that is
+    on a branch and, only when there is tracked dirt to save, a place for the WIP worktree."""
+    if plan.get("action") not in _SAVE_ACTIONS:
+        return None
+    base = plan["base"] if "base" in plan else _base(root, None)
+    bad = _base_refusal(root, base)
+    if bad:
+        return bad
+    if _git(root, "symbolic-ref", "-q", "HEAD", check=False).returncode != 0:      # detached
+        out = _git(root, "for-each-ref", "--count=1", "--contains", "HEAD", "--format=%(refname)",
+                   "refs/heads").stdout
+        if not _dec(out).strip():
+            return "detached HEAD not on any branch"
+    if not paths:
+        return None
+    _doc, error = _wip_config(root)
+    return error
+
+
+def _wip_config(root):
+    """(`.nw/project.yaml` doc, error text): the config that places the WIP worktree."""
+    path = P.config_path(root)
+    doc = None
+    if path.is_file():
+        try:
+            doc = P.load_project_config(path)
+        except (ValueError, TypeError, OSError) as e:
+            return None, f"bad worktrees config: {e}"
+    project = (doc or {}).get("project")
+    if doc is None or project is None:
+        return None, "no project config to place the WIP worktree"
+    if (not isinstance(project, str) or not project or project in (".", "..")
+            or any(c in project for c in "/\\\0") or project != project.strip()):
+        return None, "bad project name"
+    try:
+        P.worktree_root(doc, root, project)
+    except (AttributeError, TypeError, ValueError, OSError):
+        return None, "bad worktrees config"
+    return doc, None
 
 
 @contextlib.contextmanager
@@ -832,6 +889,234 @@ def _stage_and_commit(root, paths, want, fail) -> dict:
     return {"ok": True, "sha": sha}
 
 
+# ---- save to a WIP branch (SPEC-0549) --------------------------------------------------
+
+def _raw_oids(root, paths) -> dict[str, str | None]:
+    """The blob id of each worktree file's raw bytes (`--no-filters`: no clean filter, no EOL
+    conversion); None when the path does not exist. Nothing is written."""
+    paths = list(dict.fromkeys(paths))
+    live = [p for p in paths if os.path.lexists(root / p)]
+    oids = {}
+    for ch in _batches(live):
+        out = _dec(_lg(root, "hash-object", "--no-filters", "--", *ch).stdout).split()
+        oids.update(zip(ch, out))
+    return {p: oids.get(p) for p in paths}
+
+
+def _file_mode(root, path) -> str:
+    return "100755" if os.stat(root / path).st_mode & 0o111 else "100644"
+
+
+def _allocate_wip_slot(root, parent) -> tuple[str, Path]:
+    """`wip/main-dirty-<ts>` and `<parent>/main-dirty-<ts>`, suffix -2, -3, ... when either exists."""
+    ts = dt.datetime.now(dt.timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    n = 1
+    while True:
+        sfx = "" if n == 1 else f"-{n}"
+        branch, path = f"wip/main-dirty-{ts}{sfx}", Path(parent) / f"main-dirty-{ts}{sfx}"
+        taken = _dec(_git(root, "branch", "--list", branch).stdout).strip()
+        if not taken and not os.path.lexists(path):
+            return branch, path
+        n += 1
+
+
+def _worktree_registered(root, path) -> bool:
+    out = _dec(_git(root, "worktree", "list", "--porcelain", check=False).stdout)
+    want = os.path.realpath(path)
+    return any(ln.startswith("worktree ") and os.path.realpath(ln[9:]) == want
+               for ln in out.splitlines())
+
+
+def _discard_wip(root, branch, path, error, created) -> dict:
+    """Rows (a)-(c): remove the WIP worktree first, then delete the branch (no commit on it).
+    A failing cleanup keeps what remains and names both failures."""
+    problems = []
+    if _worktree_registered(root, path):
+        r = _git(root, "worktree", "remove", "--force", str(path), check=False)
+        if r.returncode != 0:
+            problems.append(_dec(r.stderr or r.stdout).strip() or "worktree remove failed")
+    if not problems and created and os.path.lexists(path):
+        shutil.rmtree(path, ignore_errors=True)           # a partial directory the verb created
+    if not problems and _dec(_git(root, "branch", "--list", branch).stdout).strip():
+        r = _git(root, "branch", "-d", branch, check=False)
+        if r.returncode != 0:
+            problems.append(_dec(r.stderr or r.stdout).strip() or "branch -d failed")
+    if problems:
+        error = f"{error}; cleanup failed: {'; '.join(problems)}"
+    return {"ok": False, "error": error}
+
+
+def _copy_to_wip(root, wip, copies) -> None:
+    """Copy each non-deleted path's bytes and mode into the WIP tree."""
+    for p, mode in copies.items():
+        dst = Path(wip) / p
+        dst.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(root / p, dst)
+        os.chmod(dst, 0o755 if mode == "100755" else 0o644)
+
+
+def _stage_in_wip(wip, copies, deletions) -> None:
+    """Raw bytes into the index (`hash-object --no-filters`, `update-index --cacheinfo`: `git add`
+    would apply clean filters and EOL conversion); a deletion goes through `git rm -f`."""
+    for p, mode in copies.items():
+        oid = _dec(_lg(wip, "hash-object", "-w", "--no-filters", "--", p).stdout).strip()
+        _lg(wip, "update-index", "--add", "--cacheinfo", f"{mode},{oid},{p}")
+    for p in deletions:
+        _lg(wip, "rm", "-f", "--", p)
+
+
+def _wip_commit(wip, klass, paths):
+    msgs = ["-m", f"{_WIP_SUBJECT} ({klass})"] + [x for p in paths for x in ("-m", p)]
+    return _lg(wip, "commit", "--allow-empty", *msgs, check=False, timeout=_COMMIT_TIMEOUT)
+
+
+def _verify_wip(root, sha, paths, modes, head) -> str | None:
+    """From the WIP commit: each path's blob and mode equals the raw main file (absent for a
+    deletion), and the commit's changed paths are exactly the planned ones."""
+    want = _raw_oids(root, [p for p in paths if modes[p]])
+    got = _head_map(root, paths, rev=sha)
+    for p in paths:
+        if modes[p] is None:
+            if p in got:
+                return f"WIP commit still holds deleted {p}"
+        elif got.get(p) != (modes[p], want[p]):
+            return f"WIP blob or mode differs from main for {p}"
+    names = set(_dec(_git(root, "diff-tree", "-r", "--name-only", "--no-renames", "-z", "HEAD",
+                          sha).stdout).split("\0")) - {""}
+    expected = {p for p in paths
+                if (p in head if modes[p] is None else (modes[p], want[p]) != head.get(p))}
+    if names != expected:
+        return f"WIP commit paths differ from the plan: {sorted(names ^ expected)}"
+    return None
+
+
+def _reverify_path(root, p, mode, oid) -> str | None:
+    """Just before restoring `p`: main still holds exactly what the WIP commit holds."""
+    if mode is None:
+        return "changed since the save" if os.path.lexists(root / p) else None
+    if not os.path.isfile(root / p) or os.path.islink(root / p):
+        return "changed since the save"
+    if _file_mode(root, p) != mode or _raw_oids(root, [p])[p] != oid:
+        return "changed since the save"
+    return None
+
+
+def _restore_path(root, p, in_head) -> None:
+    if in_head:
+        _lg(root, "checkout", "HEAD", "--", p)
+    else:
+        _lg(root, "rm", "-f", "--", p)
+
+
+def _restore_main(root, paths, modes, oids, head):
+    """Restore main path by path, re-verifying each just before. None, or (path, error)."""
+    for p in paths:
+        try:
+            bad = _reverify_path(root, p, modes[p], oids.get(p))
+            if bad:
+                return p, bad
+            _restore_path(root, p, p in head)
+        except (PlanError, OSError) as e:
+            return p, str(e)
+    return None
+
+
+def _save_to_wip(root, live, doc) -> dict:
+    """Save the tracked dirt to a `wip/main-dirty-*` branch in a worktree, verify it from the WIP
+    commit, and only then restore main path by path. Result keys by failure phase: see SPEC-0549."""
+    paths = sorted(set(live["paths"]))
+    project = doc["project"]
+    parent = P.worktree_root(doc, root, project)
+    branch, wip = _allocate_wip_slot(root, parent)
+    head = _head_map(root, paths)
+    modes = {p: _file_mode(root, p) if os.path.lexists(root / p) else None for p in paths}
+    oids = _raw_oids(root, [p for p in paths if modes[p]])
+    copies = {p: m for p, m in modes.items() if m}
+    deletions = [p for p in paths if modes[p] is None and p in head]
+    created = not os.path.lexists(wip)
+    r = _git(root, "worktree", "add", "-b", branch, str(wip), "HEAD", check=False)         # (a)
+    if r.returncode != 0:
+        return _discard_wip(root, branch, wip, _dec(r.stderr or r.stdout).strip()
+                            or "git worktree add failed", created)
+    try:
+        _copy_to_wip(root, wip, copies)                                                    # (b)
+        _stage_in_wip(wip, copies, deletions)
+    except (PlanError, OSError) as e:
+        return _discard_wip(root, branch, wip, str(e), created)
+    try:
+        r = _wip_commit(wip, live["class"], paths)                                         # (c)
+    except PlanError as e:
+        return _discard_wip(root, branch, wip, str(e), created)
+    if r.returncode != 0:
+        return _discard_wip(root, branch, wip, _dec(r.stderr or r.stdout).strip()
+                            or "git commit failed", created)
+    sha = _head(wip)
+    keep = {"wip_branch": branch, "wip_path": str(wip), "wip_sha": sha}
+    try:
+        bad = _verify_wip(root, sha, paths, modes, head)                                   # (d)
+    except (PlanError, OSError) as e:
+        bad = str(e)
+    if bad:
+        return {"ok": False, "error": bad, **keep}
+    failed = _restore_main(root, paths, modes, oids, head)                                 # (e)
+    if failed:
+        return {"ok": False, "error": f"{failed[0]}: {failed[1]}", **keep}
+    try:
+        dirty = _dec(_git(root, "status", "--porcelain", "--untracked-files=no").stdout)   # (f)
+        tip = _dec(_git(root, "rev-parse", "--verify", "--quiet", f"refs/heads/{branch}",
+                        check=False).stdout).strip()
+    except (PlanError, OSError) as e:
+        return {"ok": False, "error": str(e), **keep}
+    if dirty.strip() or tip != sha:
+        left = [ln[3:] for ln in dirty.splitlines()] or ["the WIP commit is missing"]
+        return {"ok": False, "error": f"main not restored: {', '.join(left)}", **keep}
+    return {"ok": True, **keep}
+
+
+def _hold_switch(out, root, arg_base) -> None:
+    """`hold`: with main tracked-clean, switch to the base (read again after the restore: HEAD's
+    config may differ from the stray dirty one), then report the real re-plan."""
+    out["ok"] = False
+    try:
+        base = _base(root, arg_base)
+        bad = _base_refusal(root, base)
+        if bad:
+            out["error"] = bad
+            return
+        if not _tracked_clean(root):
+            out["error"] = "main not tracked-clean"
+            return
+        r = _git(root, "switch", "--no-guess", base, check=False)
+        err = _dec(r.stderr or r.stdout).strip()
+        live = plan_clear(root, base=arg_base)
+    except (PlanError, OSError, ValueError) as e:
+        out["error"] = str(e)
+        return
+    out["replanned"] = {"on_base": live["on_base"], "action": live["action"], "class": live["class"]}
+    if r.returncode != 0:
+        out["error"] = err or "git switch failed"
+    elif not live["on_base"] or not _tracked_clean(root):
+        out["error"] = "not on the base and tracked-clean after the switch"
+    else:
+        out["ok"] = True
+
+
+def _save_clear(out, root, live, arg_base) -> None:
+    """`save_branch`, `branch_and_escalate`, `hold` (SPEC-0549)."""
+    if live["paths"]:
+        doc, error = _wip_config(root)
+        if error:
+            out["error"] = error
+            return
+        out.update(_save_to_wip(root, live, doc))
+        if not out["ok"]:
+            return
+    if live["action"] == "hold":
+        _hold_switch(out, root, arg_base)
+    else:
+        out["ok"] = True
+
+
 def apply_clear(root, plan=None, base=None) -> dict:
     """Clear a dirty base checkout (SPEC-0548): re-plan live, refuse an operation in progress,
     a stale `plan` file, unsafe paths and partial staging, and only then run the live action.
@@ -872,8 +1157,8 @@ def _apply_locked(out, root, plan, base) -> dict:
             out["error"] = "main not tracked-clean"
     elif action == "commit":
         out.update(_commit_trivial(root, live["paths"]))
-    elif action in ("save_branch", "branch_and_escalate", "hold"):
-        out["error"] = f"save not supported yet: {action}"
+    elif action in _SAVE_ACTIONS:
+        _save_clear(out, root, live, base)
     else:
         out["error"] = f"nothing to apply: {action}"
     return out

@@ -1,7 +1,7 @@
 ---
 id: SPEC-0549
 title: main-dirty-apply saves non-trivial dirt to a WIP branch, restores main, and holds
-status: accepted
+status: done
 owner: user
 created: 2026-11-11
 updated: 2026-11-11
@@ -170,7 +170,7 @@ failure table, the WIP location, guard 7).
 
 ## Acceptance criteria
 
-- [ ] AC1 (SPEC-0543 AC4, + AC8's `worktrees` case) Save: for text, binary, deleted, newly
+- [x] AC1 (SPEC-0543 AC4, + AC8's `worktrees` case) Save: for text, binary, deleted, newly
       added, mode-only (`chmod +x` of a tracked file), a newly added executable file, and an
       executable file with a content edit, the WIP commit's subject is
       `WIP: stray main-checkout edits (<class>)`, each WIP blob and mode equals the pre-clear
@@ -185,14 +185,14 @@ failure table, the WIP location, guard 7).
       whitespace, and an empty string, each with no write. One fixture has `.gitattributes`
       `* text=auto eol=crlf` and a CRLF-sensitive edited text file: the WIP blob equals the raw
       worktree bytes (the `--no-filters` comparator) and the save succeeds.
-- [ ] AC2 (SPEC-0543 AC5) Ordering (recorded argv): the WIP commit and the blob check precede
+- [x] AC2 (SPEC-0543 AC5) Ordering (recorded argv): the WIP commit and the blob check precede
       every main `checkout HEAD --` / `rm -f --`; every path call, in main and in the WIP tree,
       carries `--literal-pathspecs` (the test fails if the flag is removed from either); a
       fixture with tracked paths `a*b`, `axb` and a deletion of `a*b` shows that, with the flag,
       only `a*b` is removed and the WIP commit holds exactly the planned paths (without the
       flag an extra path would appear and phase (d) would fire); the argv never contains an
       entry of the never-run list.
-- [ ] AC3 (SPEC-0543 AC6) One test per row of the failure-phase table, each forced by a fault
+- [x] AC3 (SPEC-0543 AC6) One test per row of the failure-phase table, each forced by a fault
       injected at that phase, with a real git fault where possible (pre-commit hook, unwritable
       parent directory, colliding branch) and a monkeypatched helper otherwise, the method named
       in the test: (a) failed `worktree add`, in two cases: an unwritable parent directory, and
@@ -209,11 +209,11 @@ failure table, the WIP location, guard 7).
       byte-identical for every not-yet-restored path, that (b) and (c) run `worktree remove`
       before `branch -d`, that (c) carries the hook's stderr, and that (e) has the first path
       restored and its content on `wip_sha`.
-- [ ] AC4 (SPEC-0543 AC7) A name clash yields `-2`, then `-3`, for both branch and directory.
-- [ ] AC5 (SPEC-0543 AC9) `escalate` is asserted by a parametrised test over every (action,
+- [x] AC4 (SPEC-0543 AC7) A name clash yields `-2`, then `-3`, for both branch and directory.
+- [x] AC5 (SPEC-0543 AC9) `escalate` is asserted by a parametrised test over every (action,
       class) pair the plan can produce, success and refusal, plus the two no-plan returns
       (`action: "none"`): `true` exactly for `substantive` and `merge`.
-- [ ] AC6 (SPEC-0543 AC10) `hold`: substantive dirt off the base is saved,
+- [x] AC6 (SPEC-0543 AC10) `hold`: substantive dirt off the base is saved,
       `git switch --no-guess <base>` runs only when tracked-clean, `ok: true`, `replanned` is
       returned with exactly the keys `on_base`, `action`, `class` (after a successful switch
       `{on_base: true, action: resume, class: clean}`) and `escalate` is true. A failed switch,
@@ -227,7 +227,7 @@ failure table, the WIP location, guard 7).
       `.nw/project.yaml` but option-shaped in HEAD's copy keeps the save and runs no `switch`.
       A `hold` with no tracked dirt and no `.nw/project.yaml` switches, creates no worktree and
       writes no `wip_*`.
-- [ ] AC7 (SPEC-0543 AC13) `recommended` is `["nw queue main-dirty-apply --root <R>"]` for
+- [x] AC7 (SPEC-0543 AC13) `recommended` is `["nw queue main-dirty-apply --root <R>"]` for
       `commit`, `save_branch`, `branch_and_escalate`, `hold` when `verb_refusal` is `None`; the
       raw list for a symlink, a typechange, a partially staged path, a gitlink, a path under a
       symlinked directory, and a save with no `.nw/project.yaml`; unchanged for `resume` /
@@ -259,6 +259,52 @@ failure table, the WIP location, guard 7).
   branch `feature` with a config edit → `hold` saves and switches to `main`. Record the outputs in
   As shipped.
 
+### Test record (2026-11-11)
+
+- `uv run pytest -q tests/test_main_dirty_apply.py tests/test_main_dirty_plan.py`: 224 + 465 passed
+  (the apply file gained the save, AC2 ordering, AC3 phase, AC4 clash, AC5 `escalate`, AC6 `hold`
+  tests; the plan file gained the AC7 verb / raw-list tests and runs the verb through the CLI).
+- Targeted: `uv run pytest -q -n 4` over `tests/test_main_dirty_apply.py`, `test_main_dirty_plan.py`,
+  `test_docs_product_reference.py`, `test_docs_product_guides.py`, `test_specs_dir.py`,
+  `test_test_tiers.py`, `test_guard_registry.py` and the spec-lint / conductor-guard modules: 729
+  passed. `python3 tools/test_tiers.py --check` exits 0; `python3 tools/spec_lint.py` exits 0 with
+  the ledger regenerated. The wide affected-tests run (a TUI / dashboard-heavy set) and the full
+  suite are left to gating.
+- Mutation (by hand, once): `_restore_path` switched from `_lg` to `_git` (no `--literal-pathspecs`
+  on the restore calls) made `test_save_orders_commit_and_check_before_any_restore_and_stays_literal`
+  fail; reverted.
+- Manual (scratch repo, `project: Scratch`): (1) `src/x.py` edit + a newly added file + `chmod +x` +
+  an untracked file on `main`, `nw queue main-dirty-apply --root <scratch> --json` returned
+  `ok: true`, `escalate: true`, `wip_branch`/`wip_path`/`wip_sha`; `git status --porcelain
+  --untracked-files=no` was empty, the untracked file remained, the WIP commit held the three paths.
+  (2) On branch `feature` with a `.nw/project.yaml` edit, `hold` returned `ok: true`,
+  `replanned: {on_base: true, action: resume, class: clean}`; `HEAD` was `main` afterwards.
+
+### As shipped (2026-11-11)
+
+Code in `src/nightwright/agentic/main_dirty.py` (written fresh on `main`'s base, not cherry-picked
+from the branch): `_guard7` / `_base_refusal` / `_wip_config` (in `verb_refusal`), `_save_to_wip`
+and its phase helpers (`_copy_to_wip`, `_stage_in_wip`, `_wip_commit`, `_verify_wip`,
+`_reverify_path`, `_restore_main`, `_discard_wip`), `_hold_switch`, `_save_clear`. Deviations and
+choices the Design left open:
+
+- **Expected path set.** The `diff-tree` check compares against the planned paths that really differ
+  from HEAD (a planned path whose bytes and mode equal HEAD, e.g. a staged edit reverted in the
+  worktree, or `AD`, leaves no change and is not expected). An empty WIP commit is allowed
+  (`commit --allow-empty`), so such a plan still restores main.
+- **Error text.** Guard 7 refusals are `bad base <base>`, `detached HEAD not on any branch`,
+  `no project config to place the WIP worktree`, `bad project name`, `bad worktrees config`.
+  Phase (e) is `<path>: <reason>`; phase (f) is `main not restored: <paths>`.
+- **Option-shaped base.** `plan_clear` already raised `PlanError` for an option-shaped base, so that
+  case is an `ok: false` JSON without a plan (no raw list); the raw `hold` list omits `switch
+  <base>` for an invalid ref name or a missing `refs/heads/<base>`, and for every list (not only
+  `hold`) the final `switch <base>` line is dropped when the base is invalid.
+- **post-checkout hook.** A failing `post-checkout` hook also fails `git checkout HEAD -- <p>` (its
+  status is the command's), so such a hook turns the restore into a phase (e) failure with the WIP
+  kept; the AC6 hook test therefore fails only on the branch-switch flag in main.
+- `_head_map` gained a `rev` argument (verify reads the WIP commit); `_assert_safe_argv` in the tests
+  now carries this spec's never-run list.
+
 ## Goals / Non-goals
 
 **Goals**
@@ -282,13 +328,13 @@ name the verb. Queued under project Meta-Tools.
 
 ## Definition of done
 
-- [ ] Acceptance criteria all met.
-- [ ] Test plan executed, including the scratch-repo check; affected tests pass.
-- [ ] No regressions.
-- [ ] `docs/product/reference/index.md` and `docs/product/loop/operate.md` say the verb saves
+- [x] Acceptance criteria all met.
+- [x] Test plan executed, including the scratch-repo check; affected tests pass.
+- [x] No regressions.
+- [x] `docs/product/reference/index.md` and `docs/product/loop/operate.md` say the verb saves
       non-trivial dirt to a `wip/main-dirty-*` branch.
-- [ ] Spec body updated to match what shipped; As shipped records the AC2 mutation run.
-- [ ] `docs/LEDGER.md` regenerated; `python3 tools/spec_lint.py` exits 0.
+- [x] Spec body updated to match what shipped; As shipped records the AC2 mutation run.
+- [x] `docs/LEDGER.md` regenerated; `python3 tools/spec_lint.py` exits 0.
 
 ## Open questions
 

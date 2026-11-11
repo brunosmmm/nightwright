@@ -4,6 +4,7 @@ from __future__ import annotations
 import fcntl
 import json
 import os
+import re
 import shlex
 import signal
 import stat
@@ -208,7 +209,7 @@ def test_plan_base_is_never_used(tmp_path, monkeypatch):
     plan = {"schema": MD.SCHEMA, "action": "hold", "paths": ["docs/a.md"], "base": "develop"}
     before = _snap(repo)
     out = MD.apply_clear(repo, plan=plan)
-    assert (out["ok"], out["error"]) == (False, "save not supported yet: hold")
+    assert (out["ok"], out["error"]) == (False, "bad base main")   # SPEC-0549 guard 7: no `main`
     assert _snap(repo) == before
     seen = []
     real = MD.plan_clear
@@ -562,7 +563,7 @@ def _patched(path):
 def _sc_deleted_star(tmp_path, mp):
     repo = _repo(tmp_path, {"docs/a*b.md": "# T\n"})
     (repo / "docs/a*b.md").unlink()
-    return repo, "save not supported yet: save_branch", False
+    return repo, None, False
 
 
 BAD_PATHS = {"symlink-target": _sc_symlink_target, "file-to-symlink": _sc_file_to_symlink,
@@ -599,10 +600,9 @@ def test_deleted_path_with_a_star_is_not_a_bad_path(tmp_path, monkeypatch):
     plan = MD.plan_clear(repo)
     assert (plan["action"], plan["paths"]) == ("save_branch", ["docs/a*b.md"])
     assert MD.verb_refusal(repo, plan) is None
-    before = _snap(repo)
-    out = MD.apply_clear(repo)
-    assert (out["ok"], out["error"], out["escalate"]) == (False, error, False)
-    assert _snap(repo) == before
+    out = MD.apply_clear(repo)                    # SPEC-0549: guards pass and the save runs
+    assert (out["ok"], out["escalate"], "error" in out) == (True, False, False)
+    assert _tracked_clean(repo)
 
 
 def _sc_partial(tmp_path, mp):
@@ -653,60 +653,50 @@ def _on_feature(repo):
     _git(repo, "switch", "-qc", "feat")
 
 
-def _sc_save_branch(tmp_path, mp):
+def _sc_save_no_config(tmp_path, mp):
     fenced = "# T\n\n```\ncode\n```\n"
-    repo = _repo(tmp_path, {"docs/f.md": fenced})
+    repo = _repo(tmp_path, {"docs/f.md": fenced}, project=False)
     _put(repo, "docs/f.md", fenced.replace("code", "code2"))
-    return repo, "save not supported yet: save_branch", False
+    return repo, "no project config to place the WIP worktree", False
 
 
-def _sc_branch_and_escalate(tmp_path, mp):
+def _sc_substantive_no_project_key(tmp_path, mp):
     repo = _repo(tmp_path, {"src/x.py": "x = 1\n"})
+    _put(repo, ".nw/project.yaml", yaml.safe_dump({"schema": "nw.project.v1"}))
     _put(repo, "src/x.py", "x = 2\n")
-    return repo, "save not supported yet: branch_and_escalate", True
+    return repo, "no project config to place the WIP worktree", True
 
 
-def _sc_hold_trivial(tmp_path, mp):
+def _sc_bad_project(tmp_path, mp):
+    repo = _repo(tmp_path, {"src/x.py": "x = 1\n"})
+    _put(repo, ".nw/project.yaml", yaml.safe_dump({"schema": "nw.project.v1", "project": "../x"}))
+    _put(repo, "src/x.py", "x = 2\n")
+    return repo, "bad project name", True
+
+
+def _sc_hold_bad_base(tmp_path, mp):
     repo = _repo(tmp_path)
     _on_feature(repo)
+    _put(repo, ".nw/project.yaml", yaml.safe_dump({"schema": "nw.project.v1", "project": "T",
+                                                   "base": "ghost"}))
     _edit_trivial(repo)
-    return repo, "save not supported yet: hold", False
+    return repo, "bad base ghost", False
 
 
-def _sc_hold_substantive(tmp_path, mp):
-    repo = _repo(tmp_path, {"src/x.py": "x = 1\n"})
-    _on_feature(repo)
-    _put(repo, "src/x.py", "x = 2\n")
-    return repo, "save not supported yet: hold", True
-
-
-def _sc_hold_branch(tmp_path, mp):
-    repo = _repo(tmp_path, {"skills/s.md": "a\n"})
-    _on_feature(repo)
-    _put(repo, "skills/s.md", "b\n")
-    return repo, "save not supported yet: hold", False
-
-
-def _sc_hold_clean(tmp_path, mp):
-    repo = _repo(tmp_path)
-    _on_feature(repo)
-    return repo, "save not supported yet: hold", False
-
-
-SAVES = {"save_branch": _sc_save_branch, "branch_and_escalate": _sc_branch_and_escalate,
-         "hold-trivial": _sc_hold_trivial, "hold-substantive": _sc_hold_substantive,
-         "hold-branch": _sc_hold_branch, "hold-clean": _sc_hold_clean}
+SAVES = {"save-no-config": _sc_save_no_config, "no-project-key": _sc_substantive_no_project_key,
+         "bad-project": _sc_bad_project, "hold-bad-base": _sc_hold_bad_base}
 
 
 @pytest.mark.parametrize("name", sorted(SAVES))
-def test_refusal_save_actions_not_supported(tmp_path, monkeypatch, name):
+def test_save_refusals_write_nothing(tmp_path, monkeypatch, name):
     repo, error, escalate = SAVES[name](tmp_path, monkeypatch)
     _put(repo, "untracked.txt", "u\n")
     before = _snap(repo)
     out = MD.apply_clear(repo)
     assert (out["ok"], out["error"], out["escalate"]) == (False, error, escalate)
-    assert out["action"] == error.rsplit(": ", 1)[1] and "sha" not in out
+    assert "sha" not in out and "wip_branch" not in out
     assert _snap(repo) == before
+    assert not (tmp_path / ".nw-worktrees").exists()
 
 
 def _sc_merge(tmp_path, mp):
@@ -735,7 +725,7 @@ def _sc_stale_plan(tmp_path, mp):
 
 
 REFUSALS = {**BAD_PATHS, **SAVES, "partial": _sc_partial, "merge": _sc_merge,
-            "deleted-star": _sc_deleted_star, "config": _sc_config, "lock": _sc_lock,
+            "config": _sc_config, "lock": _sc_lock,
             "stale-plan": _sc_stale_plan}
 
 
@@ -781,12 +771,16 @@ def _verbs(calls):
 
 
 def _assert_safe_argv(calls):
+    """SPEC-0549's never-run list: `reset`, `restore`, `clean`, `stash`, `push`, `checkout`
+    without `HEAD --`, `switch -f` / `--discard-changes` / `-C`, `branch -D`, `rm -r`, no `nw`."""
     assert calls and all(c[0] == "git" for c in calls)            # never `nw`
     verbs = _verbs(calls)
-    banned = {"reset", "restore", "clean", "checkout", "stash", "push", "switch"}
-    assert not banned & set(verbs)
+    assert not {"reset", "restore", "clean", "stash", "push"} & set(verbs)
     for v, c in zip(verbs, calls):
         rest = c[c.index(v) + 1:]                                 # after the verb, `_lg` flags before it
+        assert not (v == "checkout" and rest[:2] != ["HEAD", "--"]), c
+        assert not (v == "switch" and (rest[:1] != ["--no-guess"] or any(
+            a in ("-f", "--force", "--discard-changes", "-C", "--force-create") for a in rest))), c
         assert not (v == "branch" and any(a.startswith("-D") or a == "--delete" for a in rest)), c
         assert not (v == "rm" and any(a in ("-r", "-R") or (a.startswith("-") and "r" in a[1:])
                                       for a in rest if not a.startswith("--"))), c
@@ -795,9 +789,10 @@ def _assert_safe_argv(calls):
                                                            and "a" in a[1:]) for a in rest
                                           if not a.startswith("-m"))), c
         assert not (v == "add" and any(a in ("-A", "--all", ".", "-u", "--update") for a in rest)), c
-        if v in {"add", "commit", "hash-object", "ls-files", "ls-tree", "diff"}:
+        if v in {"add", "commit", "hash-object", "ls-files", "ls-tree", "diff", "rm", "checkout",
+                 "update-index"}:
             assert "--literal-pathspecs" in c, c
-        if v in {"add", "hash-object", "ls-files", "ls-tree"}:
+        if v in {"add", "hash-object", "ls-files", "ls-tree", "rm", "checkout"}:
             assert "--" in c[c.index(v) + 1:], c                  # paths only after `--`
 
 
@@ -811,6 +806,19 @@ def _assert_safe_argv(calls):
     ["git", "-C", "/r", "--literal-pathspecs", "add", "--all"],
     ["git", "-C", "/r", "--literal-pathspecs", "add", "x"],
     ["git", "-C", "/r", "--literal-pathspecs", "hash-object", "x"],
+    ["git", "-C", "/r", "--literal-pathspecs", "reset", "--hard"],
+    ["git", "-C", "/r", "--literal-pathspecs", "restore", "--", "x"],
+    ["git", "-C", "/r", "--literal-pathspecs", "clean", "-fd"],
+    ["git", "-C", "/r", "--literal-pathspecs", "stash"],
+    ["git", "-C", "/r", "--literal-pathspecs", "checkout", "--", "."],
+    ["git", "-C", "/r", "--literal-pathspecs", "checkout", "."],
+    ["git", "-C", "/r", "--literal-pathspecs", "checkout", "--", "x"],
+    ["git", "-C", "/r", "rm", "-f", "x"],                         # no `--literal-pathspecs`, no `--`
+    ["git", "-C", "/r", "switch", "-f", "main"],
+    ["git", "-C", "/r", "switch", "--no-guess", "--discard-changes", "main"],
+    ["git", "-C", "/r", "switch", "-C", "main"],
+    ["git", "-C", "/r", "switch", "main"],
+    ["git", "-C", "/r", "push"],
 ])
 def test_assert_safe_argv_catches_banned_forms_behind_literal_pathspecs(argv):
     with pytest.raises(AssertionError):
@@ -1012,7 +1020,7 @@ def test_cli_base_reaches_plan_clear(tmp_path):
     repo2 = _repo(tmp_path, base="develop", project=False, name="r2")
     _edit_trivial(repo2)
     doc = json.loads(_invoke("--root", str(repo2), "--json").output)
-    assert (doc["ok"], doc["error"]) == (False, "save not supported yet: hold")
+    assert (doc["ok"], doc["error"]) == (False, "bad base main")
 
 
 def test_cli_base_forwarded_to_plan_clear(tmp_path, monkeypatch):
@@ -1371,3 +1379,672 @@ def test_cli_deeply_nested_plan_exits_2_without_a_traceback(tmp_path):
     r = _invoke("--root", str(repo), "--plan", str(f), "--json")
     assert r.exit_code == 2 and not isinstance(r.exception, RecursionError)
     assert "traceback" not in r.output.lower() and len(r.output.strip().splitlines()) == 1
+
+
+# ---- SPEC-0549: save to a WIP branch ----------------------------------------------------------
+
+import datetime  # noqa: E402
+import types  # noqa: E402
+
+
+def _worktrees(repo):
+    out = _git(repo, "worktree", "list", "--porcelain").stdout
+    return [ln[9:] for ln in out.splitlines() if ln.startswith("worktree ")]
+
+
+def _wips(repo):
+    return _git(repo, "for-each-ref", "--format=%(refname:short)", "refs/heads/wip/").stdout.split()
+
+
+def _wip_root(tmp_path):
+    return tmp_path / ".nw-worktrees" / "T"
+
+
+def _freeze(monkeypatch):
+    class FixedDT(datetime.datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return cls(2026, 1, 1, tzinfo=tz)
+
+    monkeypatch.setattr(MD, "dt", types.SimpleNamespace(datetime=FixedDT, timezone=datetime.timezone))
+
+
+def _mode(repo, rel):
+    return "100755" if os.stat(Path(repo) / rel).st_mode & 0o111 else "100644"
+
+
+def _ls(repo, rev, rel):
+    out = _git(repo, "ls-tree", rev, "--", rel).stdout.split()
+    return (out[0], out[2]) if out else None
+
+
+def _blob_bytes(repo, rev, rel):
+    return subprocess.run(["git", "-C", str(repo), "cat-file", "blob", f"{rev}:{rel}"],
+                          capture_output=True, check=True).stdout
+
+
+def _saveable(tmp_path, files=None, name="r", **kw):
+    return _repo(tmp_path, {"src/x.py": "x = 1\n", "config/a.json": "{}\n", **(files or {})},
+                 name=name, **kw)
+
+
+def _dirt_text(repo):
+    _put(repo, "config/a.json", '{"a": 1}\n')
+
+
+def _dirt_binary(repo):
+    _put(repo, "bin/blob.dat", b"\x00\x01\xff" * 100)
+
+
+def _dirt_deleted(repo):
+    (repo / "config/a.json").unlink()
+
+
+def _dirt_new_file(repo):
+    _put(repo, "config/new.json", "{}\n")
+    _git(repo, "add", "config/new.json")
+
+
+def _dirt_mode_only(repo):
+    os.chmod(repo / "config/a.json", 0o755)
+
+
+def _dirt_new_exec(repo):
+    _put(repo, "tools/run.sh", "#!/bin/sh\necho hi\n")
+    os.chmod(repo / "tools/run.sh", 0o755)
+    _git(repo, "add", "tools/run.sh")
+
+
+def _dirt_exec_edit(repo):
+    os.chmod(repo / "config/a.json", 0o755)
+    _git(repo, "add", "config/a.json")
+    _git(repo, "commit", "-qm", "exec")
+    _put(repo, "config/a.json", '{"b": 2}\n')
+
+
+DIRT = {"text": _dirt_text, "binary": _dirt_binary, "deleted": _dirt_deleted,
+        "new": _dirt_new_file, "mode-only": _dirt_mode_only, "new-exec": _dirt_new_exec,
+        "exec-edit": _dirt_exec_edit}
+
+
+@pytest.mark.parametrize("kind", sorted(DIRT))
+def test_save_writes_a_wip_commit_and_restores_main(tmp_path, kind):
+    repo = _saveable(tmp_path, {"bin/seed.dat": b"\x00"})
+    DIRT[kind](repo)
+    if kind == "binary":                                     # tracked binary edit
+        _put(repo, "bin/seed.dat", b"\x00\x01\xfe" * 50)
+    _put(repo, "untracked.txt", "u\n")
+    head = _git(repo, "rev-parse", "HEAD").stdout
+    plan = MD.plan_clear(repo)
+    assert plan["action"] in ("save_branch", "branch_and_escalate")
+    want = {}
+    for p in plan["paths"]:
+        want[p] = (_mode(repo, p), (repo / p).read_bytes()) if (repo / p).exists() else None
+    out = MD.apply_clear(repo)
+    assert out["ok"] is True, out
+    assert out["escalate"] is (plan["class"] == "substantive") and out["action"] == plan["action"]
+    wip, path, sha = out["wip_branch"], Path(out["wip_path"]), out["wip_sha"]
+    assert re.fullmatch(r"wip/main-dirty-\d{8}T\d{6}Z", wip)
+    assert path.parent == _wip_root(tmp_path) and path.name == wip.split("/")[1]
+    assert _git(path, "rev-parse", "--abbrev-ref", "HEAD").stdout.strip() == wip
+    assert _git(repo, "rev-parse", wip).stdout.strip() == sha
+    assert _git(repo, "log", "-1", "--format=%s", sha).stdout.strip() == \
+        f"WIP: stray main-checkout edits ({plan['class']})"
+    for p, exp in want.items():
+        got = _ls(repo, sha, p)
+        if exp is None:
+            assert got is None, p
+        else:
+            assert got[0] == exp[0], p
+            assert _blob_bytes(repo, sha, p) == exp[1], p
+    assert _tracked_clean(repo) and _git(repo, "rev-parse", "HEAD").stdout == head
+    assert _git(repo, "rev-parse", f"{sha}^").stdout == head
+    assert (repo / "untracked.txt").read_bytes() == b"u\n"
+
+
+def test_save_under_a_custom_worktrees_root(tmp_path):
+    repo = _saveable(tmp_path)
+    custom = tmp_path / "elsewhere"
+    _put(repo, ".nw/project.yaml", yaml.safe_dump({"schema": "nw.project.v1", "project": "T",
+                                                   "worktrees": {"root": str(custom)}}))
+    _git(repo, "commit", "-qam", "cfg")
+    _dirt_text(repo)
+    out = MD.apply_clear(repo)
+    assert out["ok"] is True and Path(out["wip_path"]).parent == custom
+
+
+@pytest.mark.parametrize("project", ["../x", ".", "..", "a\\b", "a\0b", " x ", "a/b"])
+def test_bad_project_names_write_nothing(tmp_path, project):
+    repo = _saveable(tmp_path)
+    _put(repo, ".nw/project.yaml", yaml.safe_dump({"schema": "nw.project.v1", "project": project}))
+    _put(repo, "untracked.txt", "u\n")
+    before = _snap(repo)
+    out = MD.apply_clear(repo)
+    assert (out["ok"], out["error"]) == (False, "bad project name")
+    assert _snap(repo) == before and not (tmp_path / ".nw-worktrees").exists()
+
+
+def test_empty_project_name_writes_nothing(tmp_path):
+    repo = _saveable(tmp_path)
+    _put(repo, ".nw/project.yaml", yaml.safe_dump({"schema": "nw.project.v1", "project": ""}))
+    before = _snap(repo)
+    out = MD.apply_clear(repo)
+    assert out["ok"] is False and out["error"]
+    assert _snap(repo) == before and not (tmp_path / ".nw-worktrees").exists()
+
+
+@pytest.mark.parametrize("worktrees", [["x"], "x", 3])
+def test_malformed_worktrees_is_ok_false_json(tmp_path, worktrees):
+    repo = _saveable(tmp_path)
+    _put(repo, ".nw/project.yaml", yaml.safe_dump({"schema": "nw.project.v1", "project": "T",
+                                                   "worktrees": worktrees}))
+    _dirt_text(repo)
+    before = _snap(repo)
+    r = _invoke("--root", str(repo), "--json")
+    doc = json.loads(r.output)
+    assert (r.exit_code, doc["ok"]) == (0, False) and doc["error"]
+    assert _snap(repo) == before and not (tmp_path / ".nw-worktrees").exists()
+
+
+def test_commit_still_works_without_a_project_config(tmp_path):
+    repo = _repo(tmp_path, project=False)
+    _edit_trivial(repo)
+    assert MD.apply_clear(repo)["ok"] is True
+
+
+def test_save_under_eol_conversion_stores_the_raw_bytes(tmp_path):
+    repo = _repo(tmp_path, {".gitattributes": "* text=auto eol=crlf\n", "notes.txt": "a\r\nb\r\n"})
+    raw = b"a\r\nb\nc\r\n"
+    _put(repo, "notes.txt", raw)
+    plan = MD.plan_clear(repo)
+    assert plan["action"] == "save_branch"
+    out = MD.apply_clear(repo)
+    assert out["ok"] is True, out
+    assert _blob_bytes(repo, out["wip_sha"], "notes.txt") == raw
+    assert _tracked_clean(repo)
+
+
+# ---- ordering and argv ------------------------------------------------------------------------
+
+def _save_calls(tmp_path, monkeypatch, **kw):
+    repo = _saveable(tmp_path, {"a*b": "1\n", "axb": "1\n"})
+    (repo / "a*b").unlink()
+    _dirt_text(repo)
+    _put(repo, "src/x.py", "x = 2\n")
+    calls = _record(monkeypatch)
+    out = MD.apply_clear(repo)
+    return repo, out, calls
+
+
+def test_save_orders_commit_and_check_before_any_restore_and_stays_literal(tmp_path, monkeypatch):
+    repo, out, calls = _save_calls(tmp_path, monkeypatch)
+    assert out["ok"] is True, out
+    _assert_safe_argv(calls)
+    wip = out["wip_path"]
+    verbs = _verbs(calls)
+    main = str(repo)
+    commit_i = next(i for i, c in enumerate(calls) if verbs[i] == "commit" and c[2] == wip)
+    restores = [i for i, c in enumerate(calls) if c[2] == main and verbs[i] in ("checkout", "rm")]
+    assert restores and commit_i < min(restores)
+    check_i = [i for i, c in enumerate(calls) if verbs[i] in ("ls-tree", "diff-tree") and out["wip_sha"] in c]
+    assert {verbs[i] for i in check_i} == {"ls-tree", "diff-tree"} and max(check_i) < min(restores)
+    # every path call, in main and in the WIP tree, is literal
+    path_verbs = {"rm", "checkout", "hash-object", "update-index", "ls-tree", "ls-files", "commit"}
+    seen = {(c[2], verbs[i]) for i, c in enumerate(calls) if verbs[i] in path_verbs}
+    assert {(wip, "rm"), (wip, "update-index"), (wip, "hash-object"), (main, "checkout"),
+            (main, "hash-object"), (main, "ls-tree")} <= seen
+    assert all("--literal-pathspecs" in c for i, c in enumerate(calls) if verbs[i] in path_verbs)
+    assert [c for i, c in enumerate(calls) if verbs[i] == "checkout" and c[2] == main]
+
+
+def test_star_name_removes_only_itself_and_the_wip_commit_holds_the_planned_paths(tmp_path):
+    repo = _saveable(tmp_path, {"a*b": "1\n", "axb": "1\n"})
+    (repo / "a*b").unlink()
+    out = MD.apply_clear(repo)
+    assert out["ok"] is True, out
+    assert (repo / "axb").read_bytes() == b"1\n"
+    changed = _git(repo, "diff-tree", "-r", "--name-only", "--no-renames", "HEAD",
+                   out["wip_sha"]).stdout.split("\n")
+    assert [c for c in changed if c] == ["a*b"]
+    assert _ls(repo, out["wip_sha"], "axb") is not None and _ls(repo, out["wip_sha"], "a*b") is None
+    assert _tracked_clean(repo)
+
+
+def test_a_non_literal_wip_removal_would_fail_phase_d(tmp_path, monkeypatch):
+    """The mutation, in the test: without `--literal-pathspecs` in the WIP tree `rm -f -- a*b`
+    also removes `axb`, an unplanned path in the WIP commit (phase d)."""
+    repo = _saveable(tmp_path, {"a*b": "1\n", "axb": "1\n"})
+    (repo / "a*b").unlink()
+    monkeypatch.setattr(MD, "_lg", lambda root, *a, **kw: MD._git(root, *a, **kw))
+    out = MD.apply_clear(repo)
+    assert out["ok"] is False and "differ" in out["error"] and out["wip_sha"]
+    assert (repo / "axb").exists() and (repo / "docs").exists()
+    assert not _tracked_clean(repo)            # main untouched: still holds the deletion
+
+
+# ---- AC3: failure phases ----------------------------------------------------------------------
+
+def _state(repo):
+    return _worktrees(repo), _wips(repo)
+
+
+def _only_main(repo):
+    assert len(_worktrees(repo)) == 1
+    assert _wips(repo) == []
+
+
+def _wrap_run(monkeypatch, fn):
+    real = subprocess.run
+
+    def run(argv, *a, **kw):
+        fake = fn(list(argv))
+        return fake if fake is not None else real(argv, *a, **kw)
+
+    monkeypatch.setattr(MD.subprocess, "run", run)
+
+
+def test_row_a_unwritable_parent_leaves_no_worktree_or_branch(tmp_path):
+    if os.geteuid() == 0:
+        pytest.skip("root ignores directory modes")
+    repo = _saveable(tmp_path)
+    _dirt_text(repo)
+    locked = tmp_path / ".nw-worktrees"
+    locked.mkdir()
+    locked.chmod(0o500)
+    try:
+        before = _snap(repo)
+        out = MD.apply_clear(repo)                  # real git fault: unwritable parent directory
+    finally:
+        locked.chmod(0o700)
+    assert out["ok"] is False and out["error"] and not {"wip_branch", "wip_path", "wip_sha"} & set(out)
+    _only_main(repo)
+    assert list(locked.iterdir()) == []
+    after = _snap(repo)
+    assert after["files"] == before["files"] and after["head"] == before["head"]
+
+
+def test_row_a_failing_post_checkout_hook_removes_worktree_then_branch(tmp_path, monkeypatch):
+    repo = _saveable(tmp_path)
+    _dirt_text(repo)
+    _hook(repo, "post-checkout", "echo 'hook said no' >&2\nexit 1\n")     # real git fault
+    calls = _record(monkeypatch)
+    before = _snap(repo)
+    out = MD.apply_clear(repo)
+    assert out["ok"] is False and "hook said no" in out["error"]
+    assert not {"wip_branch", "wip_path", "wip_sha"} & set(out)
+    _only_main(repo)
+    assert not _wip_root(tmp_path).exists() or list(_wip_root(tmp_path).iterdir()) == []
+    assert _snap(repo)["files"] == before["files"]
+    verbs = [(v, c) for v, c in zip(_verbs(calls), calls)]
+    rm = next(i for i, (v, c) in enumerate(verbs) if v == "worktree" and "remove" in c)
+    br = next(i for i, (v, c) in enumerate(verbs) if v == "branch" and "-d" in c)
+    assert rm < br
+
+
+def test_row_b_failed_copy_removes_worktree_then_branch(tmp_path, monkeypatch):
+    repo = _saveable(tmp_path)
+    _dirt_text(repo)
+
+    def boom(*a, **kw):                                        # monkeypatched helper
+        raise OSError("disk full")
+
+    monkeypatch.setattr(MD, "_copy_to_wip", boom)
+    calls = _record(monkeypatch)
+    before = _snap(repo)
+    out = MD.apply_clear(repo)
+    assert out["ok"] is False and "disk full" in out["error"]
+    assert not {"wip_branch", "wip_path", "wip_sha"} & set(out)
+    _only_main(repo)
+    assert _snap(repo)["files"] == before["files"]
+    verbs = _verbs(calls)
+    assert verbs.index("worktree", verbs.index("worktree") + 1) < verbs.index("branch", verbs.index("worktree"))
+    assert not (_wip_root(tmp_path).exists() and list(_wip_root(tmp_path).iterdir()))
+
+
+def test_row_c_failing_pre_commit_hook(tmp_path, monkeypatch):
+    repo = _saveable(tmp_path)
+    _dirt_text(repo)
+    _hook(repo, "pre-commit", "echo 'lint says no' >&2\nexit 1\n")      # real git fault
+    calls = _record(monkeypatch)
+    out = MD.apply_clear(repo)
+    assert out["ok"] is False and "lint says no" in out["error"]
+    assert not {"wip_branch", "wip_path", "wip_sha"} & set(out)
+    _only_main(repo)
+    assert not _tracked_clean(repo)
+    verbs = [(v, c) for v, c in zip(_verbs(calls), calls)]
+    rm = next(i for i, (v, c) in enumerate(verbs) if v == "worktree" and "remove" in c)
+    br = next(i for i, (v, c) in enumerate(verbs) if v == "branch" and "-d" in c)
+    assert rm < br
+
+
+def test_row_c_cleanup_failure_names_both_and_keeps_what_remains(tmp_path, monkeypatch):
+    repo = _saveable(tmp_path)
+    _dirt_text(repo)
+    _hook(repo, "pre-commit", "echo 'lint says no' >&2\nexit 1\n")
+
+    def fail_remove(argv):
+        if "worktree" in argv and "remove" in argv:
+            return subprocess.CompletedProcess(argv, 1, b"", b"cannot remove it")
+
+    _wrap_run(monkeypatch, fail_remove)
+    calls = _record(monkeypatch)
+    out = MD.apply_clear(repo)
+    assert out["ok"] is False and "lint says no" in out["error"] and "cannot remove it" in out["error"]
+    assert not {"wip_branch", "wip_path", "wip_sha"} & set(out)
+    assert len(_worktrees(repo)) == 2 and len(_wips(repo)) == 1          # kept
+    assert not any(v == "branch" and ("-d" in c or "-D" in c) for v, c in zip(_verbs(calls), calls))
+
+
+def _hook_in_wip_tree(repo, body):
+    """A pre-commit hook that only acts inside the WIP worktree (a real fault between staging and
+    the check)."""
+    _hook(repo, "pre-commit", f'case "$PWD" in *main-dirty-*) {body};; esac\nexit 0\n')
+
+
+def _keeps(repo, out):
+    assert out["ok"] is False
+    assert out["wip_sha"] == _git(repo, "rev-parse", out["wip_branch"]).stdout.strip()
+    assert out["wip_branch"] in _wips(repo) and os.path.isdir(out["wip_path"])
+    assert len(_worktrees(repo)) == 2
+
+
+def test_row_d_blob_mismatch_keeps_worktree_and_branch(tmp_path, monkeypatch):
+    repo = _saveable(tmp_path)
+    _dirt_text(repo)
+    _hook_in_wip_tree(repo, 'o=$(echo tampered | git hash-object -w --stdin); '
+                            'git update-index --cacheinfo "100644,$o,config/a.json"')
+    calls = _record(monkeypatch)
+    before = _snap(repo)
+    out = MD.apply_clear(repo)
+    _keeps(repo, out)
+    assert "config/a.json" in out["error"]
+    assert _snap(repo)["files"] == before["files"] and not _tracked_clean(repo)
+    assert not any(v == "branch" and ("-d" in c or "-D" in c) for v, c in zip(_verbs(calls), calls))
+
+
+def test_row_d_unplanned_path_in_the_wip_commit(tmp_path):
+    repo = _saveable(tmp_path)
+    _dirt_text(repo)
+    _hook_in_wip_tree(repo, "echo x > extra.txt; git add extra.txt")
+    before = _snap(repo)
+    out = MD.apply_clear(repo)
+    _keeps(repo, out)
+    assert "extra.txt" in out["error"]
+    assert _snap(repo)["files"] == before["files"] and not _tracked_clean(repo)
+
+
+def _three(tmp_path):
+    repo = _saveable(tmp_path, {"config/b.json": "{}\n", "config/c.json": "{}\n"})
+    for n in "abc":
+        _put(repo, f"config/{n}.json", f'{{"{n}": 1}}\n')
+    return repo
+
+
+def test_row_e_reverify_failure_on_the_second_of_three_paths(tmp_path, monkeypatch):
+    repo = _three(tmp_path)
+    real = MD._reverify_path
+
+    def second_fails(root, p, mode, oid):                      # monkeypatched helper
+        return "changed since the save" if p == "config/b.json" else real(root, p, mode, oid)
+
+    monkeypatch.setattr(MD, "_reverify_path", second_fails)
+    out = MD.apply_clear(repo)
+    _keeps(repo, out)
+    assert "config/b.json" in out["error"]
+    status = _git(repo, "status", "--porcelain", "--untracked-files=no").stdout
+    assert "config/a.json" not in status and "config/b.json" in status and "config/c.json" in status
+    assert (repo / "config/a.json").read_bytes() == b"{}\n"                       # restored
+    assert (repo / "config/b.json").read_bytes() == b'{"b": 1}\n'                 # untouched
+    assert (repo / "config/c.json").read_bytes() == b'{"c": 1}\n'
+    for n in "abc":                                                               # all on the commit
+        assert _blob_bytes(repo, out["wip_sha"], f"config/{n}.json") == f'{{"{n}": 1}}\n'.encode()
+
+
+def test_row_e_real_edit_between_save_and_restore(tmp_path, monkeypatch):
+    repo = _three(tmp_path)
+    real = MD._restore_main
+
+    def edit_then_restore(root, paths, modes, oids, head):
+        _put(repo, "config/c.json", "someone else\n")
+        return real(root, paths, modes, oids, head)
+
+    monkeypatch.setattr(MD, "_restore_main", edit_then_restore)
+    out = MD.apply_clear(repo)
+    _keeps(repo, out)
+    assert "config/c.json" in out["error"] and (repo / "config/c.json").read_bytes() == b"someone else\n"
+
+
+def test_row_f_post_restore_check_keeps_everything(tmp_path, monkeypatch):
+    repo = _saveable(tmp_path)
+    _dirt_text(repo)
+    real = MD._restore_main
+
+    def restore_then_dirty(*a):                                # monkeypatched helper
+        res = real(*a)
+        _put(repo, "README.md", "dirtied meanwhile\n")
+        return res
+
+    monkeypatch.setattr(MD, "_restore_main", restore_then_dirty)
+    out = MD.apply_clear(repo)
+    _keeps(repo, out)
+    assert "README.md" in out["error"]
+
+
+# ---- AC4: name clash --------------------------------------------------------------------------
+
+def test_name_clash_gives_suffixes_for_branch_and_directory(tmp_path, monkeypatch):
+    _freeze(monkeypatch)
+    repo = _saveable(tmp_path)
+    base = "wip/main-dirty-20260101T000000Z"
+    names = []
+    for i in range(3):
+        _put(repo, "config/a.json", f'{{"n": {i}}}\n')
+        out = MD.apply_clear(repo)
+        assert out["ok"] is True, out
+        names.append((out["wip_branch"], Path(out["wip_path"]).name))
+    assert names == [(base, "main-dirty-20260101T000000Z"), (base + "-2", "main-dirty-20260101T000000Z-2"),
+                     (base + "-3", "main-dirty-20260101T000000Z-3")]
+
+
+def test_name_clash_on_the_directory_alone_moves_both(tmp_path, monkeypatch):
+    _freeze(monkeypatch)
+    repo = _saveable(tmp_path)
+    (_wip_root(tmp_path) / "main-dirty-20260101T000000Z").mkdir(parents=True)
+    _dirt_text(repo)
+    out = MD.apply_clear(repo)
+    assert out["wip_branch"].endswith("T000000Z-2") and out["wip_path"].endswith("T000000Z-2")
+
+
+# ---- AC5: escalate ----------------------------------------------------------------------------
+
+def _hold(builder):
+    def build(tmp_path):
+        repo = _saveable(tmp_path)
+        _on_feature(repo)
+        builder(repo)
+        return repo
+    return build
+
+
+def _plain(builder):
+    def build(tmp_path):
+        repo = _saveable(tmp_path, {"docs/a.md": "# T\n"})
+        builder(repo)
+        return repo
+    return build
+
+
+def _merge(repo):
+    _real_conflict(repo)
+
+
+def _gitlink(repo):
+    sub = repo / "sub"
+    sub.mkdir()
+    _git(sub, "init", "-q", "-b", "main")
+    _git(sub, "config", "user.email", "t@t")
+    _git(sub, "config", "user.name", "t")
+    _git(sub, "commit", "-q", "--allow-empty", "-m", "i")
+    _git(repo, "add", "sub")
+    _git(repo, "commit", "-qm", "sub")
+    _git(sub, "commit", "-q", "--allow-empty", "-m", "inner")
+
+
+ESCALATE_CASES = {
+    "resume-clean": _plain(lambda r: None), "commit-trivial": _plain(_edit_trivial),
+    "save-branch": _plain(_dirt_text), "save-substantive": _plain(lambda r: _put(r, "src/x.py", "x = 2\n")),
+    "hold-clean": _hold(lambda r: None), "hold-trivial": _hold(_edit_trivial),
+    "hold-branch": _hold(_dirt_text), "hold-substantive": _hold(lambda r: _put(r, "src/x.py", "x = 2\n")),
+    "merge": _plain(_merge), "gitlink-escalate": _plain(_gitlink),
+    "refusal-no-config-substantive": lambda t: _saveable(t, project=False),
+}
+
+
+@pytest.mark.parametrize("name", sorted(ESCALATE_CASES))
+def test_escalate_is_true_exactly_for_substantive_and_merge(tmp_path, name):
+    repo = ESCALATE_CASES[name](tmp_path)
+    if name == "refusal-no-config-substantive":
+        _put(repo, "src/x.py", "x = 2\n")
+    plan = MD.plan_clear(repo)
+    out = MD.apply_clear(repo)
+    assert out["escalate"] is (plan["class"] in ("substantive", "merge")), (plan["class"], out)
+    assert out["action"] == plan["action"]
+
+
+def test_escalate_on_the_two_no_plan_returns(tmp_path):
+    assert MD.apply_clear(tmp_path / "nope")["escalate"] is False and \
+        MD.apply_clear(tmp_path / "nope")["action"] == "none"
+    repo = _saveable(tmp_path)
+    _put(repo, "src/x.py", "x = 2\n")
+    gdir = _git(repo, "rev-parse", "--absolute-git-dir").stdout.strip()
+    with open(os.path.join(gdir, "nw-main-dirty.lock"), "w") as held:
+        fcntl.flock(held, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        out = MD.apply_clear(repo)
+    assert (out["action"], out["escalate"], out["error"]) == ("none", False, "clear already in progress")
+
+
+def test_an_error_after_a_substantive_save_keeps_escalate_true(tmp_path):
+    repo = _saveable(tmp_path)
+    _put(repo, "src/x.py", "x = 2\n")
+    _hook(repo, "pre-commit", "exit 1\n")
+    out = MD.apply_clear(repo)
+    assert (out["ok"], out["escalate"]) == (False, True)
+
+
+# ---- AC6: hold --------------------------------------------------------------------------------
+
+def _branch(repo):
+    return _git(repo, "rev-parse", "--abbrev-ref", "HEAD").stdout.strip()
+
+
+def test_hold_saves_then_switches_to_the_base(tmp_path, monkeypatch):
+    repo = _saveable(tmp_path)
+    _on_feature(repo)
+    _put(repo, "src/x.py", "x = 2\n")
+    _put(repo, "untracked.txt", "u\n")
+    calls = _record(monkeypatch)
+    out = MD.apply_clear(repo)
+    assert (out["ok"], out["escalate"], out["action"]) == (True, True, "hold"), out
+    assert out["replanned"] == {"on_base": True, "action": "resume", "class": "clean"}
+    assert _branch(repo) == "main" and _tracked_clean(repo)
+    assert _blob_bytes(repo, out["wip_sha"], "src/x.py") == b"x = 2\n"
+    _assert_safe_argv(calls)
+    verbs = _verbs(calls)
+    sw = [c for v, c in zip(verbs, calls) if v == "switch"]
+    assert len(sw) == 1 and sw[0][-2:] == ["--no-guess", "main"]
+    first_restore = next(i for i, v in enumerate(verbs) if v == "checkout")
+    assert verbs.index("switch") > first_restore
+    assert (repo / "untracked.txt").read_bytes() == b"u\n"
+
+
+def test_hold_failed_switch_keeps_the_wip_and_reports_hold(tmp_path):
+    repo = _saveable(tmp_path, {"collide.txt": "main's\n"})
+    _on_feature(repo)
+    _git(repo, "rm", "-q", "collide.txt")
+    _git(repo, "commit", "-qm", "drop")
+    _put(repo, "collide.txt", "untracked on feat\n")           # overwritten by the switch: it refuses
+    _put(repo, "src/x.py", "x = 2\n")
+    out = MD.apply_clear(repo)
+    assert out["ok"] is False and out["error"]
+    assert out["wip_branch"] in _wips(repo) and out["wip_sha"]
+    assert out["replanned"]["action"] == "hold" and set(out["replanned"]) == {"on_base", "action", "class"}
+    assert out["escalate"] is True and _branch(repo) == "feat"
+    assert (repo / "collide.txt").read_bytes() == b"untracked on feat\n"
+
+
+def test_hold_switch_that_fails_after_head_moved_reports_the_replan(tmp_path):
+    repo = _saveable(tmp_path)
+    _on_feature(repo)
+    _put(repo, "src/x.py", "x = 2\n")
+    real = os.path.realpath(repo)
+    _hook(repo, "post-checkout", f'[ "$PWD" = "{real}" ] && [ "$3" = 1 ] && exit 1\nexit 0\n')   # main, branch switch only
+    out = MD.apply_clear(repo)
+    assert out["ok"] is False and out["wip_branch"] in _wips(repo)
+    assert out["replanned"] == {"on_base": True, "action": "resume", "class": "clean"}
+    assert _branch(repo) == "main"
+
+
+def test_hold_with_a_failed_save_does_not_switch(tmp_path, monkeypatch):
+    repo = _saveable(tmp_path)
+    _on_feature(repo)
+    _put(repo, "src/x.py", "x = 2\n")
+    _hook(repo, "pre-commit", "exit 1\n")
+    calls = _record(monkeypatch)
+    out = MD.apply_clear(repo)
+    assert out["ok"] is False and "replanned" not in out and _branch(repo) == "feat"
+    assert "switch" not in _verbs(calls)
+
+
+@pytest.mark.parametrize("base", ["-x", "a..b", "ghost"])
+def test_hold_refuses_an_invalid_base_before_any_write(tmp_path, base):
+    repo = _saveable(tmp_path)
+    _on_feature(repo)
+    _put(repo, ".nw/project.yaml", yaml.safe_dump({"schema": "nw.project.v1", "project": "T",
+                                                   "base": base}))
+    _put(repo, "src/x.py", "x = 2\n")
+    before = _snap(repo)
+    out = MD.apply_clear(repo)
+    assert out["ok"] is False and out["error"]
+    assert _snap(repo) == before and not (tmp_path / ".nw-worktrees").exists()
+
+
+def test_hold_detached_head_not_on_a_branch_is_refused(tmp_path):
+    repo = _saveable(tmp_path)
+    _git(repo, "switch", "-q", "--detach")
+    _git(repo, "commit", "-q", "--allow-empty", "-m", "orphan")
+    _put(repo, "src/x.py", "x = 2\n")
+    before = _snap(repo)
+    out = MD.apply_clear(repo)
+    assert (out["ok"], out["error"]) == (False, "detached HEAD not on any branch")
+    assert _snap(repo) == before and not (tmp_path / ".nw-worktrees").exists()
+
+
+def test_hold_detached_head_at_a_branch_tip_is_accepted(tmp_path):
+    repo = _saveable(tmp_path)
+    _git(repo, "switch", "-q", "--detach")
+    _put(repo, "src/x.py", "x = 2\n")
+    out = MD.apply_clear(repo)
+    assert out["ok"] is True and _branch(repo) == "main", out
+
+
+def test_hold_reads_the_base_after_the_restore(tmp_path):
+    repo = _saveable(tmp_path)
+    _on_feature(repo)
+    _put(repo, ".nw/project.yaml", yaml.safe_dump({"schema": "nw.project.v1", "project": "T",
+                                                   "base": "-x"}))
+    _git(repo, "commit", "-qam", "bad base in HEAD")
+    _put(repo, ".nw/project.yaml", yaml.safe_dump({"schema": "nw.project.v1", "project": "T",
+                                                   "base": "main"}))          # the stray dirty copy
+    out = MD.apply_clear(repo)
+    assert out["ok"] is False and out["wip_branch"] in _wips(repo) and "replanned" not in out
+    assert _branch(repo) == "feat" and _tracked_clean(repo)
+
+
+def test_hold_without_dirt_needs_no_project_config(tmp_path):
+    repo = _repo(tmp_path, project=False)
+    _on_feature(repo)
+    out = MD.apply_clear(repo)
+    assert out["ok"] is True and _branch(repo) == "main", out
+    assert out["replanned"] == {"on_base": True, "action": "resume", "class": "clean"}
+    assert not ({"wip_branch", "wip_path", "wip_sha"} & set(out))
+    assert not (tmp_path / ".nw-worktrees").exists()
