@@ -304,6 +304,14 @@ Review fix: `exit.json` lands before `run.json` (the verdict), so the follow pol
 
 Ran `uv run pytest -q tests/test_tui_campaign_runs.py` (36 passed), `tests/test_tui_campaign_detail_ac.py tests/test_tui_campaign_detail.py tests/test_tui_campaign_detail_model.py` (54 passed), `python3 tools/test_tiers.py --check`, and `python3 tools/spec_lint.py`. New tests: `select_run(unknown)` from Overview and Timeline leaves the tab unchanged; the head and blocker rows appear when `run.json` lands after `exit.json` (stream run); a non-stream run that finishes while the tab is open refreshes its verdict and result. Full suite left to gating.
 
+### As shipped (loop 4)
+
+A terminal campaign's run that never wrote `exit.json` or `run.json` is settled on open: `load_run_pane_detail(..., settle=True)` treats it as ended, so the initial tail flushes a trailing no-newline JSON fragment and follow latches done (no tick will come). An ended stream's no-newline fragment was already flushed on open; a popup test now covers it.
+
+### Test record (2026-11-10, loop 4)
+
+Ran `uv run pytest -q tests/test_tui_campaign_runs.py` (38 tests; two new: ended stream with no trailing newline in the popup, terminal campaign with an un-ended run), `tests/test_tui_campaign_detail_ac.py -k runs`, `python3 tools/test_tiers.py --check`, and `python3 tools/spec_lint.py`. Full suite left to gating.
+
 ## Open questions
 
 None.

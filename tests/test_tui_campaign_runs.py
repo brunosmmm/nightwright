@@ -521,9 +521,9 @@ def test_load_run_detail_off_main_thread(tmp_path, monkeypatch):
     seen = []
     real = AM.load_run_pane_detail
 
-    def tracked(cfg, campaign_id, run_id):
+    def tracked(cfg, campaign_id, run_id, *extra):
         seen.append(threading.current_thread())
-        return real(cfg, campaign_id, run_id)
+        return real(cfg, campaign_id, run_id, *extra)
 
     monkeypatch.setattr(AM, "load_run_pane_detail", tracked)
     app = _desk(cfg, tab="queue")
@@ -1038,12 +1038,12 @@ def test_poll_does_not_cancel_slow_detail_load(tmp_path, monkeypatch):
     monkeypatch.setattr(TL, "_ended", fake_ended)
     real = AM.load_run_pane_detail
 
-    def slow(cfg, campaign_id, rid):
+    def slow(cfg, campaign_id, rid, *extra):
         rd = S.runs_dir(cfg, campaign_id) / rid
         with open(rd / "stream.jsonl", "a", encoding="utf-8") as f:
             f.write(slow_line)
         time.sleep(max(CD.POLL_S * 3, 0.2))
-        return real(cfg, campaign_id, rid)
+        return real(cfg, campaign_id, rid, *extra)
 
     monkeypatch.setattr(AM, "load_run_pane_detail", slow)
     app = _desk(cfg, tab="queue")
@@ -1079,15 +1079,15 @@ def test_stale_run_detail_dropped_on_switch(tmp_path, monkeypatch):
     slow_done = threading.Event()
     slow_started = threading.Event()
 
-    def slow(cfg, campaign_id, rid):
+    def slow(cfg, campaign_id, rid, *extra):
         if rid == slow_id:
             slow_started.set()
             time.sleep(max(CD.POLL_S * 3, 0.25))
             try:
-                return real(cfg, campaign_id, rid)
+                return real(cfg, campaign_id, rid, *extra)
             finally:
                 slow_done.set()
-        return real(cfg, campaign_id, rid)
+        return real(cfg, campaign_id, rid, *extra)
 
     monkeypatch.setattr(AM, "load_run_pane_detail", slow)
     app = _desk(cfg, tab="queue")
@@ -1481,5 +1481,85 @@ def test_terminal_reload_drains_followed_run_and_refreshes_head(tmp_path, monkey
                 s._active_tab(), s._run_renderer)
             assert s._run_follow_done
             assert runs_detail(app).startswith("head-refresh-0476")
+
+    _run(drive())
+
+
+def _frag_stream(run_dir: Path, text: str) -> None:
+    """Two complete lines then an object with no trailing newline."""
+    frag = json.dumps({"type": "result", "subtype": "success", "result": text})
+    (run_dir / "stream.jsonl").write_text(
+        _asst("complete-a-0476") + "\n" + _asst("complete-b-0476") + "\n" + frag, encoding="utf-8")
+
+
+def test_ended_stream_no_trailing_newline_opens_popup(tmp_path, monkeypatch):
+    """EOF on a finished run is the end: the partial last line is flushed, the worker returns."""
+    cfg = TH.fixture_cfg(tmp_path)
+    TH.prepare_queue_window(cfg)
+    cid2 = _copy_campaign(cfg, CID_STREAM, "ended-frag")
+    run_id = next(r["run_id"] for r in Hist.campaign_history(cfg, cid2)["runs"]
+                  if r.get("has_stream"))
+    run_dir = S.runs_dir(cfg, cid2) / run_id
+    _frag_stream(run_dir, "ended-frag-0476")
+    assert (run_dir / "run.json").is_file()
+    snap = AM.load_run_pane_detail(cfg, cid2, run_id)
+    assert snap.ended and snap.offset == (run_dir / "stream.jsonl").stat().st_size
+    app = _desk(cfg, tab="queue")
+
+    async def drive():
+        async with app.run_test(size=SIZE) as pilot:
+            await settle(app, pilot)
+            app.open_campaign_detail(cid2, focus={"tab": "runs", "run": run_id})
+            s = detail_screen(app)
+            assert await pilot_until(pilot, lambda: "■ result:" in runs_detail(app)), (
+                runs_detail(app))
+            assert "complete-b-0476" in runs_detail(app)
+            assert s._run_loaded_id == run_id and s._run_follow_done
+            assert not s.workers or all(
+                w.is_finished for w in s.workers if w.name == "campaign-run-detail")
+
+    _run(drive())
+
+
+def test_terminal_campaign_unended_run_is_settled(tmp_path, monkeypatch):
+    """A terminal campaign whose run never wrote exit.json/run.json is settled on open:
+    the fragment is flushed, follow latches done, and nothing waits for a tick that never
+    comes."""
+    monkeypatch.setattr(CD, "POLL_S", 0.05)
+    cfg = TH.fixture_cfg(tmp_path)
+    TH.prepare_queue_window(cfg)
+    cid2 = _copy_campaign(cfg, CID_STREAM, "term-unended")
+    run_id = next(r["run_id"] for r in Hist.campaign_history(cfg, cid2)["runs"]
+                  if r.get("has_stream"))
+    run_dir = S.runs_dir(cfg, cid2) / run_id
+    (run_dir / "exit.json").unlink(missing_ok=True)
+    (run_dir / "run.json").unlink(missing_ok=True)
+    _frag_stream(run_dir, "term-frag-0476")
+    monkeypatch.setattr(TL, "_ended", lambda rd: False)
+    # Un-settled the fragment stays unread (the run looks live)...
+    live = AM.load_run_pane_detail(cfg, cid2, run_id)
+    assert "■ result:" not in live.text.plain and not live.ended
+    # ...settled it is drained and the offset is at EOF.
+    done = AM.load_run_pane_detail(cfg, cid2, run_id, True)
+    assert "■ result:" in done.text.plain
+    assert done.offset == (run_dir / "stream.jsonl").stat().st_size
+    app = _desk(cfg, tab="queue")
+
+    async def drive():
+        async with app.run_test(size=SIZE) as pilot:
+            await settle(app, pilot)
+            app.open_campaign_detail(cid2, focus={"tab": "runs", "run": run_id})
+            s = detail_screen(app)
+            assert await pilot_until(pilot, lambda: s.view is not None and s.view.terminal)
+            assert await pilot_until(pilot, lambda: "■ result:" in runs_detail(app)), (
+                runs_detail(app))
+            assert s._run_follow_done and s._run_head_done
+            before = s._run_offset
+            with open(run_dir / "stream.jsonl", "a", encoding="utf-8") as f:
+                f.write(_asst("term-late-0476") + "\n")
+            # A terminal campaign has no follow timer: nothing to wait on, only to settle.
+            await pilot.pause(0.3)
+            assert "term-late-0476" not in runs_detail(app)
+            assert s._run_offset == before
 
     _run(drive())

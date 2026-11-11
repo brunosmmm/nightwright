@@ -1509,9 +1509,11 @@ def load_run_head(cfg, cid, run_id: str) -> tuple[Text, bool]:
     return _head_text(run_dir)[0], (run_dir / "run.json").is_file()
 
 
-def load_run_pane_detail(cfg, cid, run_id: str) -> RunPaneDetail:
+def load_run_pane_detail(cfg, cid, run_id: str, settle: bool = False) -> RunPaneDetail:
     """Verdict, blockers, stderr, and stream or pre-stream result for one run. Malformed
-    run.json shapes are tolerated; only an unexpected OS error escapes (the widget catches it)."""
+    run.json shapes are tolerated; only an unexpected OS error escapes (the widget catches it).
+    `settle` (the campaign is terminal) treats the run as ended even when it never wrote
+    exit.json, so a trailing no-newline fragment is flushed instead of left unread."""
     run_dir = _run_path(cfg, cid, run_id)
     if not run_dir.is_dir():
         return RunPaneDetail(Text("no run directory\n"), [], None, 0, False, run_id)
@@ -1519,7 +1521,7 @@ def load_run_pane_detail(cfg, cid, run_id: str) -> RunPaneDetail:
     has_rj = (run_dir / "run.json").is_file()
     head, run_json = _head_text(run_dir)
     if has_stream:
-        body, renderer, offset = _stream_initial_tail(cfg, run_dir, ended)
+        body, renderer, offset = _stream_initial_tail(cfg, run_dir, ended or settle)
         return RunPaneDetail(head, body, renderer, offset, True, run_id, ended, has_rj)
     return RunPaneDetail(head, _result_fallback_lines(run_dir, run_json), None, 0, False,
                          run_id, ended, has_rj)

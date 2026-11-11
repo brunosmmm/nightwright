@@ -769,8 +769,10 @@ class CampaignDetail(QueueActions, ModalScreen):
             # Held cursor keys cancel this worker here instead of starting a parse per row.
             await asyncio.sleep(_RUN_DETAIL_DEBOUNCE_S)
             try:
+                # A terminal campaign will not tick again: settle the run (flush its fragment).
+                extra = (True,) if self.view is not None and self.view.terminal else ()
                 snap = await asyncio.to_thread(AM.load_run_pane_detail, self.cfg, self.campaign_id,
-                                               run_id)
+                                               run_id, *extra)
             except Exception as e:
                 snap = AM.RunPaneDetail(
                     Text(f"(run detail unavailable: {AM._clean(e)})\n", style="red"),
