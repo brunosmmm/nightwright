@@ -1011,7 +1011,9 @@ class CampaignDetail(QueueActions, ModalScreen):
         i = CR.nearest_index(rows, keep_id, keep_i)
         if i >= 0:
             table.move_cursor(row=i)
-        self._select_record_index(i)
+            self._select_record_index(i)
+        else:                       # the filter matches nothing: remember the selection for later
+            self._show_record_detail()
 
     def _select_record_index(self, i: int) -> None:
         rec = self._rec_rows[i] if 0 <= i < len(self._rec_rows) else None
@@ -1095,9 +1097,9 @@ class CampaignDetail(QueueActions, ModalScreen):
             title = await asyncio.to_thread(CR.idea_title, self.cfg, idea)
             if not self._worker_alive() or self._selected_record_id != rid:
                 return
-            line = Text(f"follow-up: {idea}")
+            line = Text(f"follow-up: {AM._clean(idea)}")
             if title:
-                line.append(f"  {title}")
+                line.append(f"  {AM._clean(title)}")
             self._followup = (rid, line)
             self._show_record_detail()
 

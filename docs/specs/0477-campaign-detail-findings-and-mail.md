@@ -352,6 +352,14 @@ names a run.
   queue action, no notify, and an unchanged campaign directory, plus `/` and `g`/`G` doing nothing on
   Mail; and `pagedown`/`pageup` scrolling `#records-detail` and `#mail-detail` (`_detail_scroll` now
   covers `tab-records` and `tab-mail`).
+- Review loop 3 added six tests (29 passed in `tests/test_tui_campaign_records.py`): ESC/BEL stripped
+  from the Findings detail (title, text, status, follow-up line) and the Mail detail
+  (`_clean` now applied in `campaign_records`); same-`ts` mail records ordered by file order
+  (`mailbox:x:99` before `mailbox:x:100`, stem then numeric offset) with `latest` the last;
+  keyed tokens (`agent:`, `kind:`, `severity:`, `status:`) matching exactly, not by prefix or case;
+  the remembered selection surviving a filter that matches no rows (`agent:c`…`agent:conductor`);
+  the idea title asserted on the `follow-up:` line; and the `_busy` early return plus the
+  `<id> is answered` warning when the history record is open but the escalation file is settled.
 - Existing suites touched by the move and the placeholder removal, all green:
   `tests/test_tui_mailbox_tab.py`, `tests/test_tui_escalations_tab.py` (choose, text and withdraw
   now run through `answer_escalation`), `tests/test_tui_campaign_detail.py`,

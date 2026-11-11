@@ -695,7 +695,7 @@ def test_mail_keyboard_reload_and_empty_filter(tmp_path, monkeypatch):
         assert app.focused is s.records_table and isinstance(app.screen, CD.CampaignDetail)
         flt.value = "no-such-record-anywhere"
         await settle(app, pilot)
-        assert s.records_table.row_count == 0 and s._selected_record_id is None
+        assert s.records_table.row_count == 0 and s._current_record() is None
         assert str(s.query_one("#record-detail").content) == "no records"
         before = dir_hash(cfg)
         await press(app, pilot, ["r", "d", "i", "c"])
@@ -834,4 +834,117 @@ def test_findings_and_mail_details_scroll_from_the_keyboard(tmp_path, monkeypatc
         assert mail_scroll.scroll_y > 0 and s._active_tab() == "tab-mail"
         await press(app, pilot, ["4"])
         assert s._selected_record_id == cur
+    drive_popup(cfg, body)
+
+
+# --- review loop 3: control characters, file order, exact keyed match, selection, guards ----------
+
+
+def test_mail_threads_same_second_records_keep_file_order():
+    ts = "2026-11-10T10:00:00-05:00"
+    ths = CR.mail_threads([mail_rec("mailbox:x:100", ts, "T", "answer"),
+                           mail_rec("mailbox:x:99", ts, "T", "question")])
+    assert [r["id"] for r in ths[0].records] == ["mailbox:x:99", "mailbox:x:100"]
+    assert ths[0].latest["id"] == "mailbox:x:100"
+    # across inboxes the stem decides, then the numeric offset (not the string offset)
+    ths = CR.mail_threads([mail_rec("mailbox:human:1030", ts, "T", "c"),
+                           mail_rec("mailbox:human:262", ts, "T", "b"),
+                           mail_rec("mailbox:conductor:5", ts, "T", "a")])
+    assert [r["id"] for r in ths[0].records] == [
+        "mailbox:conductor:5", "mailbox:human:262", "mailbox:human:1030"]
+
+
+def test_keyed_filter_tokens_match_exactly():
+    items = [rec("x", agent="steward:Meta-Tools", kind="finding", severity="major",
+                 status="fixed"),
+             rec("y", agent="conductor", kind="mail", severity="minor", status="open")]
+    for tok in ("agent:steward", "agent:Conductor", "agent:conduct", "kind:find", "kind:Finding",
+                "severity:maj", "severity:MAJOR", "status:fix", "status:Fixed", "status:not"):
+        assert CR.filter_records(items, tok)[0] == [], tok
+    assert [r["id"] for r in CR.filter_records(items, "agent:conductor status:open")[0]] == ["y"]
+
+
+def test_control_characters_are_stripped_from_the_detail_panes(tmp_path, monkeypatch):
+    cfg = world_cfg(tmp_path)
+    MB.send(cfg, to="conductor", frm="human", text="body \x1b[2Jpasted \x07ok",
+            kind="question", campaign=CID)
+    patch_history(monkeypatch, lambda h: h["records"].append(
+        rec("c:1", title="t\x1b[31mred", text="x\x1b[2Jy", status="o\x1bk",
+            followup_idea="IDEA-\x1b9")))
+
+    async def body(app, pilot, s):
+        await goto(pilot, s, "c:1")
+        await press(app, pilot, ["i"])
+        await pilot_until(pilot, lambda: "follow-up:" in detail_plain(s))
+        content = s.query_one("#record-detail").content
+        assert "\x1b" not in content.plain and "t[31mred" in content.plain
+        assert "follow-up: IDEA-9" in content.plain
+        await press(app, pilot, ["5"])
+        await settle(app, pilot)
+        mail = s.query_one("#mail-detail-text").content
+        assert "\x1b" not in mail.plain and "[2Jpasted" in mail.plain and "\x07" not in mail.plain
+    drive_popup(cfg, body)
+
+
+def test_selection_survives_a_filter_that_matches_nothing(tmp_path, monkeypatch):
+    cfg = world_cfg(tmp_path)
+    patch_history(monkeypatch, lambda h: h["records"].extend(
+        [rec(f"s:{i}", ts=f"2026-11-1{i}T00:00:00Z", agent="conductor") for i in range(4)]
+         + [rec("s:other", ts="2026-11-15T00:00:00Z", agent="steward")]))
+
+    async def body(app, pilot, s):
+        await goto(pilot, s, "s:1")
+        flt = s.query_one("#records-filter", Input)
+        for value in ("agent:c", "agent:co", "agent:conductor"):
+            flt.value = value
+            await settle(app, pilot)
+        # the intermediate states matched nothing; the selection is still s:1
+        assert s._selected_record_id == "s:1"
+        assert table_keys(s.records_table)[s.records_table.cursor_row] == "s:1"
+        flt.value = "agent:nobody"
+        await settle(app, pilot)
+        assert s.records_table.row_count == 0 and s._selected_record_id == "s:1"
+        flt.value = ""
+        await settle(app, pilot)
+        assert table_keys(s.records_table)[s.records_table.cursor_row] == "s:1"
+    drive_popup(cfg, body)
+
+
+def test_followup_title_is_on_the_follow_up_line(tmp_path, monkeypatch):
+    cfg = world_cfg(tmp_path)
+    Path(cfg["org_ideas_file"]).write_text(
+        "* IDEA Remember the milk\n:PROPERTIES:\n:ID: IDEA-777\n:END:\n")
+    patch_history(monkeypatch, lambda h: h["records"].append(rec("f:1", followup_idea="IDEA-777")))
+
+    async def body(app, pilot, s):
+        await goto(pilot, s, "f:1")
+        await press(app, pilot, ["i"])
+        assert await pilot_until(pilot, lambda: "follow-up: IDEA-777" in detail_plain(s))
+        line = next(ln for ln in detail_plain(s).splitlines() if ln.startswith("follow-up:"))
+        assert "Remember the milk" in line
+    drive_popup(cfg, body)
+
+
+def test_busy_popup_ignores_an_escalation_key_and_a_settled_file_warns(tmp_path, monkeypatch):
+    cfg = world_cfg(tmp_path)
+    planned = []
+    monkeypatch.setattr(ESC, "plan_answer", lambda *a, **k: planned.append(1))
+    real_read = ESC.read
+
+    def settled(c, eid):
+        return {**real_read(c, eid), "status": "answered"}
+
+    async def body(app, pilot, s):
+        await goto(pilot, s, "escalation:ESC-0001")
+        s._busy = True
+        s.records_escalation("choose")
+        await settle(app, pilot)
+        assert not planned and s._busy
+        s._busy = False
+        # history says open, the escalation file is already answered: warn, plan nothing
+        monkeypatch.setattr(ESC, "read", settled)
+        s.records_escalation("choose")
+        await pilot_until(pilot, lambda: notes(app) and notes(app)[-1] == "ESC-0001 is answered"
+                          and not s._busy)
+        assert not planned
     drive_popup(cfg, body)

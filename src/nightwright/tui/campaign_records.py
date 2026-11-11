@@ -10,6 +10,7 @@ from rich.text import Text
 
 from ..agentic import history as H
 from ..agentic import store
+from .agentic_model import _clean
 
 KEYED = ("agent", "kind", "severity", "status")
 FIXED_LABEL = "not re-raised"
@@ -79,21 +80,21 @@ def record_links(rec: dict) -> dict:
 def detail_text(rec: dict) -> Text:
     """Title, text, status and the link ids, each labeled by its key; always literal."""
     t = Text()
-    t.append(str(rec.get("title") or ""), style="bold")
+    t.append(_clean(rec.get("title") or ""), style="bold")
     t.append("\n")
     if rec.get("text"):
-        t.append(str(rec["text"]))
+        t.append(_clean(rec["text"]))
         t.append("\n")
     t.append("\n")
     for key, val in (("status", rec.get("status")), ("linked_by", rec.get("linked_by"))):
         t.append(f"{key}: ", style="dim")
-        t.append("" if val is None else str(val))
+        t.append("" if val is None else _clean(val))
         t.append("\n")
     links = record_links(rec)
     for key in LINK_KEYS:
         if links.get(key) is not None:
             t.append(f"{key}: ", style="dim")
-            t.append(str(links[key]))
+            t.append(_clean(links[key]))
             t.append("\n")
     t.rstrip()
     return t
@@ -150,6 +151,13 @@ class MailThread:
     latest: dict
 
 
+def _id_order(rec_id) -> tuple[str, int, str]:
+    """File order of a `mailbox:<stem>:<byte offset>` id: stem, then numeric offset, so a
+    same-second reply sorts after its question (`99` before `100`)."""
+    head, _, offset = str(rec_id).rpartition(":")
+    return (head, int(offset), "") if offset.isdigit() else (str(rec_id), -1, "")
+
+
 def mail_threads(records) -> list[MailThread]:
     """One thread per `links.thread` among `kind: mail` records (a null thread is its own row),
     latest `ts` descending then thread id ascending."""
@@ -161,8 +169,7 @@ def mail_threads(records) -> list[MailThread]:
         groups.setdefault(str(key), []).append(rec)
     out = []
     for key, recs in groups.items():
-        recs = sorted(sorted(recs, key=lambda r: str(r["id"])),
-                      key=lambda r: H._time_key(r.get("ts")))
+        recs = sorted(recs, key=lambda r: (H._time_key(r.get("ts")), _id_order(r["id"])))
         out.append(MailThread(key, recs, recs[-1]))
     out.sort(key=lambda th: th.key)
     out.sort(key=lambda th: H._time_key(th.latest.get("ts")), reverse=True)
@@ -173,10 +180,10 @@ def thread_detail(cfg, thread: MailThread) -> Text:
     t = Text()
     for rec in thread.records:
         m = mail_message(cfg, rec)
-        t.append(f"{m.ts or ''}  ", style="dim")
-        t.append(f"from {m.frm or '-'} to {m.to or '-'}  ", style="bold")
-        t.append(f"{m.kind or '-'}\n", style="cyan")
-        t.append(m.text)
+        t.append(f"{_clean(m.ts or '')}  ", style="dim")
+        t.append(f"from {_clean(m.frm) or '-'} to {_clean(m.to) or '-'}  ", style="bold")
+        t.append(f"{_clean(m.kind) or '-'}\n", style="cyan")
+        t.append(_clean(m.text))
         t.append("\n\n")
     t.rstrip()
     return t
@@ -186,6 +193,7 @@ def idea_title(cfg, idea_id) -> str | None:
     """The heading of idea `idea_id` when its file can be read, else None."""
     try:
         from ..org import load_tasks
-        return next((t.heading for t in load_tasks(cfg) if t.id == idea_id), None)
+        heading = next((t.heading for t in load_tasks(cfg) if t.id == idea_id), None)
+        return _clean(heading) if heading is not None else None
     except Exception:
         return None
