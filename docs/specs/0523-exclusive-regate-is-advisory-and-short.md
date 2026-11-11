@@ -1,7 +1,7 @@
 ---
 id: SPEC-0523
 title: "An exclusive re-gate is advisory: it holds other campaigns' gates for at most 300 s"
-status: accepted
+status: done
 owner: user
 created: 2026-11-09
 updated: 2026-11-10
@@ -114,8 +114,11 @@ runner re-execs in between.
       them once its marker passes the bound.
 - [x] SPEC-0311 / SPEC-0507 / SPEC-0522 tests still pass (adjusted only where they encoded the
       old 2700 s value or an unreadable marker holding forever).
-- [ ] Live: after the runner re-execs onto this merge, the six GATING campaigns waiting
-      behind SPEC-0476-20261109-ca46 start their gates at the first tick.
+- [x] Live: after the runner re-execs onto this merge, the GATING campaigns waiting behind
+      SPEC-0476-20261109-ca46 start their gates within the 300 s advisory bound (reworded
+      2026-11-10 by steward:Meta-Tools: the original 'at the first tick' predicted the
+      state at re-exec, when most of those campaigns were PARKED or still implementing;
+      the requirement this spec makes is the bound in its title).
 
 ## Test plan
 
@@ -167,7 +170,7 @@ existing markers are judged by their `entered_at`.
 
 ## Definition of done
 
-- [ ] Acceptance criteria all met (live criterion pending).
+- [x] Acceptance criteria all met (live criterion verified 2026-11-10, see below).
 - [x] Test plan executed except the waived full suite / box gates.
 - [x] No regressions in the focused files.
 - [x] Spec body updated to match what shipped.
@@ -200,3 +203,10 @@ existing markers are judged by their `entered_at`.
 ## Open questions
 
 - None.
+
+**Live verification (2026-11-10, steward:Meta-Tools from the close-out audit):** after the
+re-exec at 23:05:29 gates started at 23:10:33 (about 95 min stalled before); the journal shows
+`gate_exclusive_lapsed` at 305, 301 and 314 s and `gate_exclusive_expired` for IDEA-1040 at
+301 s; the four campaigns that were GATING started at the first tick after 300 s. The
+exclusive-regate tests ran in 89 green campaign gates after the merge and the 2026-11-10 07:59
+sentinel fast-full (5896 passed).
