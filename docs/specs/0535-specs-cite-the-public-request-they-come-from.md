@@ -268,26 +268,14 @@ just wrote, releases the number, leaves the ref, and raises
 
 ### Org-write failure after cite
 
-`scaffold_from_idea` calls `W.set_property` and then `W.set_state` in one
-`try`. There is no inner `try` around `W.set_state`. One `except
-BaseException` calls `restore_cite_backlog_tip_or_bail` at most once and then
-`_rollback_scaffold_after_failed_org`. It does not call restore again after
-that rollback re-raises. A `set_state` failure after a successful cite takes
-this same path as a `set_property` failure. On a successful restore,
-`_rollback_scaffold_after_failed_org` still writes the pre-cite snapshot of
-`task.file` back.
-
 Same restore as publish, with these stderr lines:
 
 - Tip restored (or `update-ref -d` when the old tip was absent, which cite
   does not hit because the file already existed): `{spec_id} was not cited on {req_id}; restored refs/heads/nw-backlog`.
   Scaffold then deletes the spec file and releases the number. Org bytes are
-  unchanged. The error that escapes is this restored-tip line, including when
-  `W.set_state` fails after `W.set_property` stored `:SPEC:`.
+  unchanged.
 - Ref no longer points at the new commit: `{spec_id} was not cited on {req_id}; refs/heads/nw-backlog no longer points at {new}; left unchanged`.
-  The spec file stays. The number stays reserved. This line is a lost
-  compare-and-swap. It is not raised after a restore that already moved the
-  ref back to the old tip.
+  The spec file stays. The number stays reserved.
 - Restore command fails: `{spec_id} was not cited on {req_id}; refs/heads/nw-backlog restore failed; left unchanged`.
   The spec file stays.
 
@@ -417,12 +405,7 @@ Revise and amend do not call `cite_spec`.
       inside `org_write_lock` releases the number, writes no spec file, and
       commits nothing.
 - [x] If the org write fails after the cite commit, the org bytes are
-      unchanged and the Design's restore stderr is raised once.
-      `uv run pytest tests/test_spec_source_request.py::test_cite_org_write_failure_restores_the_tip -q`
-      covers `set_state` after `set_property` has stored `:SPEC:`: that case
-      raises `ValueError` matching `restored refs/heads/nw-backlog`, `:SPEC:`
-      is unset, `refs/heads/nw-backlog` is the pre-cite tip, the new spec
-      file is gone, and the reservation count is unchanged. A successful
+      unchanged and the Design's restore stderr is raised. A successful
       restore deletes the new spec file and releases the number. A lost
       compare-and-swap leaves the spec file and the ref.
 - [x] `plan_add_idea` and `apply_add_idea` raise the drift error and do not
@@ -491,12 +474,9 @@ Revise and amend do not call `cite_spec`.
     `--internal` writes `source_request` and does not change the foreign
     request blob. Outbound `promote_idea` does not call
     `load_agreed_request` (spy).
-  - `test_cite_org_write_failure_restores_the_tip` — the `set_state` case
-    raises `ValueError` matching `restored refs/heads/nw-backlog`, `:SPEC:`
-    is unset, `refs/heads/nw-backlog` is the pre-cite tip, the new spec file
-    is gone, and the reservation count is unchanged. A `set_property` failure
-    uses that same single restore. A lost compare-and-swap leaves the file
-    and the ref.
+  - `test_cite_org_write_failure_restores_the_tip` — restored case deletes
+    the spec file and releases the number; lost compare-and-swap leaves the
+    file and the ref.
   - `test_write_rules_and_front_matter_require_source_request` — calls
     `write_rules` and `_front_matter_problems` directly. Present, missing, and
     foreign `source_request`, plus the absent-key error when the idea has no
@@ -678,6 +658,24 @@ unknown key.
   failures do not restore a pre-cite snapshot.
 - `apply_add_idea` and `_prepare_spec_write` refuse when the public file already
   cites a spec.
+
+### As shipped (2026-11-10 implementer loop 1, org-write failure after cite)
+
+- `scaffold_from_idea` calls `W.set_property` and then `W.set_state` in one
+  `try` with no inner `try`. One `except BaseException` calls
+  `restore_cite_backlog_tip_or_bail` at most once, then
+  `_rollback_scaffold_after_failed_org`; restore is not called again after that
+  rollback re-raises. A `set_state` failure after a successful cite takes the
+  same path as a `set_property` failure.
+- On a successful restore, `_rollback_scaffold_after_failed_org` still writes
+  the pre-cite snapshot of `task.file` back, and the error that escapes is the
+  restored-tip line, including when `W.set_state` fails after `W.set_property`
+  stored `:SPEC:`. The "no longer points at" line is a lost compare-and-swap and
+  is not raised after a restore that already moved the ref back.
+- `tests/test_spec_source_request.py::test_cite_org_write_failure_restores_the_tip`
+  covers the `set_state` case: `ValueError` matching
+  `restored refs/heads/nw-backlog`, `:SPEC:` unset, the ref at the pre-cite tip,
+  the new spec file gone, and the reservation count unchanged.
 
 ## Open questions
 
