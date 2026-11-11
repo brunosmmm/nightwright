@@ -100,6 +100,18 @@ def test_later_valid_value_clears_impossible():
     assert not parse("kind:nope kind:finding").impossible
 
 
+def test_describe_quotes_colon_terms_so_they_reparse_as_free_text():
+    flt = parse('"kind:x" foo:bar', now=NOW)
+    assert flt.kind is None and flt.terms == ("kind:x", "foo:bar")
+    assert parse(flt.describe(), now=NOW) == flt
+
+
+def test_history_cache_private_reader_still_exists():
+    # `_total_records` reads this private helper and silently falls back if it moves; fail loudly
+    from nightwright.agentic import history_cache as HC
+    assert callable(HC._get_records_mem) and callable(HC._v1_root)
+
+
 def test_describe_is_canonical():
     flt = parse('severity:Major agent:steward "two words" kind:finding since:7d x', now=NOW)
     assert flt.describe() == 'agent:steward kind:finding severity:major since:7d "two words" x'

@@ -316,6 +316,7 @@ unknown-kind and error cases are written through the history layer's test helper
 
 ### Test record (2026-11-10, loop 3)
 
+- Loop 5 (no AC9 change possible inside this spec): `describe()` now quotes ':'-bearing terms so they re-parse as free text; added a rename guard for `history_cache._get_records_mem`. `uv run pytest -q tests/test_findings_filter.py tests/test_findings_filter_cli.py`: 63 passed, 1 skipped; `test_tiers.py --check` 0; `spec_lint` 0. AC9 stays unchecked and the spec stays `in-progress` pending the human decision in campaign note #304.
 - Loop 4 (date-only bounds no longer passed down; date-only cases moved out of the AC4 CLI group): `uv run pytest -q tests/test_findings_filter.py tests/test_findings_filter_cli.py`: 61 passed, 1 skipped; `test_tiers.py --check` 0; `spec_lint` 0. AC9 is unchanged (history-layer cost, see *As shipped*) and stays unchecked.
 - `uv run pytest -q tests/test_findings_filter.py tests/test_findings_filter_cli.py`: 60 passed, 1 skipped (the skipped one is the manual `NW_FINDINGS_REAL_DATA=1` real-data-dir comparison, not run here).
 - `uv run pytest -q tests/test_history_perf.py -k findings_filter` (500 campaigns, about 60 000 records): the adapter-share test passes (one history call per query); the end-to-end test is `xfail` (see *As shipped*).

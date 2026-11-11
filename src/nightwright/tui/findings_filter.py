@@ -102,7 +102,8 @@ class RecordFilter:
             ("agent", self.agent), ("kind", self.kind), ("project", self.project),
             ("severity", self.severity), ("status", self.status), ("campaign", self.campaign),
             ("since", self.since_text), ("until", self.until_text)) if value]
-        parts += [quote(term) for term in self.terms]
+        # a term containing ':' is quoted so re-parsing keeps it free text, never a key
+        parts += [f'"{term}"' if ":" in term else quote(term) for term in self.terms]
         return " ".join(parts)
 
 
