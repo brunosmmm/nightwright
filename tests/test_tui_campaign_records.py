@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 from pathlib import Path
 
 import pytest
@@ -311,6 +312,10 @@ def test_mail_threads_sort_detail_and_fallback(tmp_path, monkeypatch):
         assert not any("other campaign" in str(c) for k in keys
                        for c in s.mail_table.get_row(k))
         assert "placeholder" not in det
+        content = s.query_one("#mail-detail-text").content
+        assert isinstance(content, Text)
+        assert "[bold]ask[/bold] me" in content.plain
+        assert content.spans and all(sp.style in ("dim", "bold", "cyan") for sp in content.spans)
     drive_popup(cfg, body, tab="5")
 
 
@@ -429,6 +434,7 @@ def test_markup_in_a_title_and_text_is_literal(tmp_path, monkeypatch):
 def test_read_only_actions_leave_the_campaign_untouched_and_queue_keys_still_work(
         tmp_path, monkeypatch):
     cfg = world_cfg(tmp_path)
+    MB.send(cfg, to="conductor", frm="human", text="read only", kind="info", campaign=CID)
     extra = [rec("w:run", run_id="001-implementer"), rec("w:dec", resolved_by="w:target"),
              rec("w:target")]
     patch_history(monkeypatch, lambda h: h["records"].extend(extra))
@@ -451,9 +457,16 @@ def test_read_only_actions_leave_the_campaign_untouched_and_queue_keys_still_wor
         await goto(pilot, s, "escalation:ESC-0001")
         await press(app, pilot, ["c", "escape"])
         await settle(app, pilot)
+        await press(app, pilot, ["5"])                       # opening Mail writes nothing either
+        await settle(app, pilot)
+        assert s._active_tab() == "tab-mail" and s.mail_table.row_count
         assert dir_hash(cfg) == before
-        await press(app, pilot, ["p", "u", "P", "A"])
+        await press(app, pilot, ["p", "u", "P", "A"])        # the queue keys on Mail
         assert acts == ["park", "resume", "prioritize", "abandon"]
+        await press(app, pilot, ["4"])
+        await press(app, pilot, ["p", "u", "P", "A"])        # and on Findings
+        assert acts == ["park", "resume", "prioritize", "abandon"] * 2
+        assert dir_hash(cfg) == before
     drive_popup(cfg, body)
 
 
@@ -495,3 +508,199 @@ def test_reload_keeps_tab_filter_and_selections(tmp_path, monkeypatch):
         assert s._active_tab() == "tab-mail" and s._selected_thread == mail_keys[-1]
         assert s.mail_table.cursor_row == len(mail_keys) - 1
     drive_popup(cfg, body)
+
+
+# --- review follow-ups: byte offsets, popup guard, missing idea, Mail keyboard, empty filter ------
+
+
+def raw_line(cfg, rec_id):
+    """The mailbox line a `mailbox:<stem>:<byte offset>` id points at, read without CR."""
+    stem, offset = rec_id.split(":")[1], rec_id.rsplit(":", 1)[1]
+    with (S.agentic_dir(cfg) / "mailbox" / f"{stem}.jsonl").open("rb") as f:
+        f.seek(int(offset))
+        return json.loads(f.readline())
+
+
+def test_mail_second_message_is_read_at_its_byte_offset(tmp_path, monkeypatch):
+    cfg = world_cfg(tmp_path)
+    first = MB.send(cfg, to="conductor", frm="human", text="first line of mail", kind="info",
+                    campaign=CID)
+    second = MB.send(cfg, to="conductor", frm="human", text="second: in the same file", kind="request",
+                     campaign=CID)
+    MB.send(cfg, to="steward:Meta-Tools", frm="conductor", text="stem with underscore",
+            kind="question", campaign=CID)              # thread id `steward:Meta-Tools:1`
+    q = MB.send(cfg, to="conductor", frm="human", text="why a:b:c?", kind="question", campaign=CID)
+    MB.send(cfg, to="human", frm="conductor", text="because: colons", kind="answer",
+            campaign=CID, re=q["id"])
+
+    async def body(app, pilot, s):
+        recs = [r for r in s.view.history["records"] if r["kind"] == "mail"]
+        offsets = {r["id"]: int(r["id"].rsplit(":", 1)[1]) for r in recs}
+        assert any(o > 0 for o in offsets.values())
+        by_text = {raw_line(cfg, r["id"])["text"]: r for r in recs}
+        assert by_text["second: in the same file"]["id"].rsplit(":", 1)[1] != "0"
+        assert "steward_Meta-Tools" in by_text["stem with underscore"]["id"]
+        assert by_text["first line of mail"]["id"] != by_text["second: in the same file"]["id"]
+        for r in recs:                                       # every record, against the file
+            exp = raw_line(cfg, r["id"])
+            m = CR.mail_message(cfg, r)
+            assert (m.frm, m.to, m.kind, m.text) == (exp["from"], exp["to"], exp["kind"],
+                                                     exp["text"])
+        th = next(t for t in s._mail_rows
+                  if t.latest["id"] == by_text["second: in the same file"]["id"])
+        exp = raw_line(cfg, th.latest["id"])
+        assert (exp["from"], exp["to"], exp["kind"]) == ("human", "conductor", "request")
+        assert [c.plain for c in s.mail_table.get_row(th.key)][1] == exp["from"]
+        await goto(pilot, s, th.key, mail=True)
+        det = str(s.query_one("#mail-detail-text").content)
+        assert "from human to conductor  request" in det and exp["text"] in det
+        assert "first line of mail" not in det             # the other message in the file
+        thread2 = next(t for t in s._mail_rows if len(t.records) == 2)
+        assert int(thread2.records[0]["id"].rsplit(":", 1)[1]) > 0     # the question: offset > 0
+        await goto(pilot, s, thread2.key, mail=True)
+        det = str(s.query_one("#mail-detail-text").content)
+        for r in thread2.records:
+            e = raw_line(cfg, r["id"])
+            assert f"from {e['from']} to {e['to']}  {e['kind']}" in det and e["text"] in det
+    drive_popup(cfg, body, tab="5")
+
+
+def test_popup_guard_branches_and_refusals(tmp_path, monkeypatch):
+    cfg = world_cfg(tmp_path)
+    extra = [rec("escalation:ESC-0009", kind="escalation", status="answered", escalation="ESC-0009"),
+             rec("escalation:none", kind="escalation", status="open")]       # null links.escalation
+    patch_history(monkeypatch, lambda h: h["records"].extend(extra))
+    planned = []
+    state = {"exc": None}
+
+    def plan(*a, **k):
+        planned.append(1)
+        raise state["exc"]
+
+    monkeypatch.setattr(ESC, "plan_answer", plan)
+
+    async def body(app, pilot, s):
+        before = ESC.signature(cfg)
+        for rid in ("escalation:ESC-0009", "escalation:none"):
+            await goto(pilot, s, rid)
+            await press(app, pilot, ["c", "t", "w"])
+            assert notes(app)[-3:] == ["not an open escalation"] * 3 and not s._busy
+        assert not planned
+        await goto(pilot, s, "escalation:ESC-0001")
+        state["exc"] = RuntimeError("kaboom")
+        await press(app, pilot, ["c", "enter"])
+        await pilot_until(pilot, lambda: errors(app) and not s._busy)
+        assert errors(app)[-1].startswith("mailbox action failed: ") and "kaboom" in errors(app)[-1]
+        state["exc"] = OSError("disk gone")
+        await press(app, pilot, ["c", "enter"])
+        await pilot_until(pilot, lambda: len(errors(app)) == 2 and not s._busy)
+        assert errors(app)[-1] == "disk gone" and not s._busy
+        assert len(planned) == 2 and ESC.signature(cfg) == before
+        # the missing file is the natural generic failure: ESC.read itself raises
+        monkeypatch.undo()
+        real_read = ESC.read
+
+        def boom(c, eid):
+            raise RuntimeError("no such esc")
+
+        monkeypatch.setattr(ESC, "read", boom)
+        await press(app, pilot, ["w"])
+        await pilot_until(pilot, lambda: len(errors(app)) == 3 and not s._busy)
+        assert errors(app)[-1].startswith("mailbox action failed: ")
+        monkeypatch.setattr(ESC, "read", real_read)
+    drive_popup(cfg, body)
+
+
+def test_escalation_text_answer_runs_through_confirm(tmp_path, monkeypatch):
+    cfg = world_cfg(tmp_path)
+    applied = []
+    real_apply = ESC.apply_answer
+    monkeypatch.setattr(ESC, "apply_answer", lambda c, p: applied.append(p) or real_apply(c, p))
+
+    async def body(app, pilot, s):
+        await goto(pilot, s, "escalation:ESC-0001")
+        await press(app, pilot, ["t", *"fine", "ctrl+s", "enter"])
+        await pilot_until(pilot, lambda: applied and not s._busy)
+        assert applied[0]["answer"]["text"] == "fine"
+        assert ESC.read(cfg, "ESC-0001")["status"] == "answered"
+        assert notes(app)[-1] == "ESC-0001 answered"
+    drive_popup(cfg, body)
+
+
+def test_followup_without_a_readable_idea_still_shows_the_id(tmp_path, monkeypatch):
+    cfg = world_cfg(tmp_path)
+    Path(cfg["org_ideas_file"]).write_text(
+        "* IDEA Remember the milk\n:PROPERTIES:\n:ID: IDEA-777\n:END:\n")
+    extra = [rec("n:unknown", followup_idea="IDEA-404"), rec("n:broken", followup_idea="IDEA-777")]
+    patch_history(monkeypatch, lambda h: h["records"].extend(extra))
+    assert CR.idea_title(cfg, "IDEA-777") .endswith("Remember the milk")
+    assert CR.idea_title(cfg, "IDEA-404") is None
+
+    async def body(app, pilot, s):
+        await goto(pilot, s, "n:unknown")
+        assert "follow-up:" not in detail_plain(s)
+        await press(app, pilot, ["i"])
+        assert await pilot_until(pilot, lambda: "follow-up: IDEA-404" in detail_plain(s))
+        assert detail_plain(s).rstrip().endswith("follow-up: IDEA-404")
+        import nightwright.org as org
+
+        def unreadable(c):
+            raise OSError("unreadable")
+
+        monkeypatch.setattr(org, "load_tasks", unreadable)
+        assert CR.idea_title(cfg, "IDEA-777") is None
+        await goto(pilot, s, "n:broken")
+        await press(app, pilot, ["i"])
+        assert await pilot_until(pilot, lambda: "follow-up: IDEA-777" in detail_plain(s))
+        assert detail_plain(s).rstrip().endswith("follow-up: IDEA-777")
+        assert "milk" not in detail_plain(s)
+    drive_popup(cfg, body)
+
+
+def test_mail_keyboard_reload_and_empty_filter(tmp_path, monkeypatch):
+    cfg = world_cfg(tmp_path)
+    for n in range(3):
+        MB.send(cfg, to="conductor", frm="human", text=f"thread {n}", kind="info", campaign=CID)
+    gone = {"key": None}
+
+    def mutate(h):
+        h["records"][:] = [r for r in h["records"]
+                           if gone["key"] not in (r["id"], r["links"].get("thread"))]
+
+    patch_history(monkeypatch, mutate)
+
+    async def body(app, pilot, s):
+        keys = table_keys(s.mail_table)
+        assert len(keys) >= 3 and app.focused is s.mail_table
+        s.mail_table.move_cursor(row=0)
+        await pilot_until(pilot, lambda: s._selected_thread == keys[0])
+        for key, row in (("j", 1), ("down", 2), ("k", 1), ("up", 0)):
+            await press(app, pilot, [key])
+            assert s.mail_table.cursor_row == row and s._selected_thread == keys[row], key
+        # the selected thread vanishes on reload: the row at the same position is selected
+        await press(app, pilot, ["j"])
+        gone["key"] = keys[1]
+        s.reload()
+        await settle(app, pilot)
+        now = table_keys(s.mail_table)
+        assert keys[1] not in now and s._selected_thread == now[1] == keys[2]
+        assert s.mail_table.cursor_row == 1 and s._active_tab() == "tab-mail"
+        gone["key"] = None
+        # Findings: enter in the filter returns to the table; a filter matching nothing
+        await press(app, pilot, ["4"])
+        flt = s.query_one("#records-filter", Input)
+        await press(app, pilot, ["slash"])
+        assert app.focused is flt
+        await press(app, pilot, ["enter"])
+        assert app.focused is s.records_table and isinstance(app.screen, CD.CampaignDetail)
+        flt.value = "no-such-record-anywhere"
+        await settle(app, pilot)
+        assert s.records_table.row_count == 0 and s._selected_record_id is None
+        assert str(s.query_one("#record-detail").content) == "no records"
+        before = dir_hash(cfg)
+        await press(app, pilot, ["r", "d", "i", "c"])
+        await settle(app, pilot)
+        assert notes(app)[-4:] == ["no run", "no decision", "no follow-up",
+                                   "not an open escalation"]
+        assert not errors(app) and dir_hash(cfg) == before
+    drive_popup(cfg, body, tab="5")

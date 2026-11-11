@@ -336,6 +336,13 @@ names a run.
   cancel, empty text and reason, no options, a non-escalation row, the guarded error notify;
   literal markup; campaign-directory hash across filter, jump and `c` then escape, and
   `p`/`u`/`P`/`A` still reaching the queue action; reload keeping tab, filter and both selections).
+- Review loop 1 added five tests to `tests/test_tui_campaign_records.py` (18 passed): a second
+  mailbox message at a non-zero byte offset (and a `steward_Meta-Tools` stem) checked against the
+  raw jsonl line; the popup's `guarded()` RuntimeError and OSError notifies with `_busy` reset,
+  plus `not an open escalation` for an answered or null-link escalation record and `t` through
+  confirm to `apply_answer`; `i` on an unknown or unreadable idea; `j`/`down`/`k`/`up` on the Mail
+  table, a vanished thread on reload, `enter` in the filter, and an empty filter with `r`/`d`/`i`;
+  and `p`/`u`/`P`/`A` and the directory hash across a Mail visit.
 - Existing suites touched by the move and the placeholder removal, all green:
   `tests/test_tui_mailbox_tab.py`, `tests/test_tui_escalations_tab.py` (choose, text and withdraw
   now run through `answer_escalation`), `tests/test_tui_campaign_detail.py`,
