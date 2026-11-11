@@ -1664,3 +1664,224 @@ def _backlog_tip(repo: Path) -> str | None:
         capture_output=True, text=True,
     )
     return r.stdout.strip() if r.returncode == 0 else None
+
+
+# ---- SPEC-0541: a spec from a public request alone ---------------------------------------------
+
+from test_request_source import (BODY as REQ_BODY, PROJECT as REQ_PROJECT,  # noqa: E402
+                                 TITLE as REQ_TITLE, add_request, corrupt_org, linked_idea,
+                                 put_request)
+from nightwright import idea_link as IL  # noqa: E402
+from click.testing import CliRunner  # noqa: E402
+from nightwright.cli import cli  # noqa: E402
+
+
+def _backlog_subjects(repo):
+    return _git(repo, "log", "--format=%s", "refs/heads/nw-backlog").splitlines()
+
+
+def start_request(tmp_path, monkeypatch, entries, *, linked=False):
+    """A hand-built `request_only` campaign (SPEC-0541) opened into SPEC_WRITING. The queue has
+    no command for it yet: an idea campaign is the vehicle, its payload is then replaced."""
+    repo = make_project(tmp_path)
+    _git(repo, "config", "user.name", "Test User")
+    _git(repo, "config", "user.email", "test@example.com")
+    cfg = make_cfg(tmp_path, repo, script(tmp_path, []))
+    monkeypatch.setattr("nightwright.cli.load_config", lambda: cfg)
+    if linked:
+        task, req = linked_idea(cfg, monkeypatch)
+    else:
+        req = add_request(repo)
+    cid = add_idea_campaign(cfg, monkeypatch, capture(cfg, "Vehicle"))
+    with S.item_lock(cfg, cid):
+        st = S.read_state(cfg, cid)
+        st["idea"] = {"schema": "nw.idea.v1", "id": req, "state": "", "heading": REQ_TITLE,
+                      "tags": [], "kind": "idea", "summary": REQ_BODY, "questions": "",
+                      "question_items": [], "log": "", "project": REQ_PROJECT,
+                      "source_request": req, "request_only": True, "epic": None,
+                      "state_before": None}
+        S.write_state(cfg, cid, st)
+    Q.tick(cfg)
+    assert S.read_state(cfg, cid)["state"] == "SPEC_WRITING"
+    script(tmp_path, entries(req) if callable(entries) else entries)
+    return cfg, repo, req, cid
+
+
+def _req_spec(number, req, **kw):
+    return spec_written(number, None, slug="export-the-thing",
+                        fm={"source_request": req, **kw.pop("fm", {})}, **kw)
+
+
+def test_request_only_writer_uses_the_public_summary_and_cites(tmp_path, monkeypatch):
+    bad = lambda r: spec_written(2, "IDEA-001", slug="export-the-thing",       # noqa: E731
+                                 fm={"source_request": r})
+    cfg, repo, req, cid = start_request(tmp_path, monkeypatch,
+                                        lambda r: [bad(r), _req_spec(2, r),
+                                                    _req_spec(2, r, mode="revise",
+                                                              extra_body="Revised.")],
+                                        linked=True)
+    org = Path(cfg["org_ideas_file"])
+    org_before = org.read_bytes()
+    commits_before = _backlog_subjects(repo)
+    Q.tick(cfg)                                    # rejected: source_idea is present
+    st = S.read_state(cfg, cid)
+    assert st["state"] == "SPEC_WRITING" and st["counters"]["spec_write_retries"] == 1
+    assert _backlog_subjects(repo) == commits_before
+    assert any("source_idea must be absent (the campaign comes from a request alone)" in
+               f["detail"] for f in ledger(cfg, cid, "finding"))
+    Q.tick(cfg)
+    in_review(cfg, cid)
+    first = prompt(cfg, cid, 2)
+    idea_json = first[first.index("{"):]
+    assert REQ_BODY in idea_json and "`source_request: %s`" % req in first
+    assert "`source_idea:" not in first and "no `source_idea` key" in first
+    wt = wtree(cfg, cid)
+    assert subprocess.run([sys.executable, "tools/spec_lint.py"], cwd=wt,
+                          capture_output=True, text=True).returncode == 0
+    fm, _ = specmeta.split_frontmatter((wt / "docs/specs/0002-export-the-thing.md").read_text())
+    assert fm["source_request"] == req and "source_idea" not in fm
+    # one cite commit, `spec:` added, nothing else changed
+    assert _backlog_subjects(repo) == [f"cite {req} SPEC-0002", *commits_before]
+    tip_before = _git(repo, "rev-parse", "refs/heads/nw-backlog~1").strip()
+    old = _git(repo, "show", f"{tip_before}:{req}.md").splitlines()
+    new = _git(repo, "show", f"refs/heads/nw-backlog:{req}.md").splitlines()
+    assert [l for l in new if l not in old and not l.startswith(("updated:", "updated_by:"))] \
+        == ["spec: SPEC-0002"]
+    assert _git(repo, "diff", "--name-only", tip_before, "refs/heads/nw-backlog").split() \
+        == [f"{req}.md"]
+    assert org.read_bytes() == org_before                       # no :SPEC:, no SPECCED
+    assert not ledger(cfg, cid, "idea_link_failed")
+    # a second link for the same spec: None, no commit, no failure event
+    assert Q._link_idea(cfg, S.read_state(cfg, cid), "SPEC-0002") is None
+    assert _backlog_subjects(repo)[0] == f"cite {req} SPEC-0002" and \
+        len(_backlog_subjects(repo)) == len(commits_before) + 1
+    assert not ledger(cfg, cid, "idea_link_failed")
+    # a revise tick adds no commit, and the campaign's own cite is no drift
+    _revise(cfg, cid, BRIEF)
+    in_review(cfg, cid)
+    assert len(_backlog_subjects(repo)) == len(commits_before) + 1
+    assert "Revise mode" in prompt(cfg, cid, 3) and "keep its id, `source_request`" in \
+        prompt(cfg, cid, 3)
+    assert org.read_bytes() == org_before
+
+
+def test_request_only_front_matter_rules():
+    idea = {"id": "REQ-0ABCDEFG", "source_request": "REQ-0ABCDEFG", "request_only": True}
+    fm = {"id": "SPEC-0002", "status": "proposed", "source_request": "REQ-0ABCDEFG",
+          "owner": "user", "kind": "feature"}
+    assert SW._front_matter_problems(fm, "SPEC-0002", idea) == []
+    assert "source_idea must be absent (the campaign comes from a request alone), got " \
+        "'IDEA-001'" in "".join(SW._front_matter_problems(
+            {**fm, "source_idea": "IDEA-001"}, "SPEC-0002", idea))
+    assert "source_request must be 'REQ-0ABCDEFG'" in "".join(SW._front_matter_problems(
+        {k: v for k, v in fm.items() if k != "source_request"}, "SPEC-0002", idea))
+    assert "source_request must be" in "".join(SW._front_matter_problems(
+        {**fm, "source_request": "REQ-00000000"}, "SPEC-0002", idea))
+    plain = {"id": "IDEA-001"}                                  # SPEC-0535's check is kept
+    assert "source_idea must be 'IDEA-001'" in "".join(SW._front_matter_problems(
+        {k: v for k, v in fm.items() if k != "source_request"}, "SPEC-0002", plain))
+    rules = SW.write_rules("write", {"path": "docs/specs/0002-x.md", "number": 2}, idea, None)
+    assert "`source_request: REQ-0ABCDEFG`" in rules and "`source_idea:" not in rules
+    assert "only input" in rules
+
+
+def test_request_only_drift_before_write_parks(tmp_path, monkeypatch):
+    cfg, repo, req, cid = start_request(tmp_path, monkeypatch, [_req_spec(2, "x")], linked=True)
+    r = CliRunner().invoke(cli, ["idea", "summary", linked_id(cfg), "--set", "Changed privately."])
+    assert r.exit_code == 0, r.output
+    objects = _git(repo, "count-objects", "-v")
+    Q.tick(cfg)
+    assert "do not match :REQ_BASE:" in parked(cfg, cid)["detail"]
+    assert not list(wtree(cfg, cid).glob("docs/specs/0002-*"))
+    assert _git(repo, "count-objects", "-v") == objects          # no `hash-object`
+    assert not S.read_ledger(cfg, cid, types=["run.start"])
+
+
+def test_request_only_closed_before_write_parks(tmp_path, monkeypatch):
+    cfg, repo, req, cid = start_request(tmp_path, monkeypatch, [_req_spec(2, "x")])
+    put_request(repo, req, status="closed")
+    Q.tick(cfg)
+    assert parked(cfg, cid)["reason"] == "spec_write_failed"
+    assert f"{req} is closed" in parked(cfg, cid)["detail"]
+    assert not S.read_ledger(cfg, cid, types=["run.start"])
+
+
+def test_request_only_unreadable_org_file_before_write_parks(tmp_path, monkeypatch):
+    cfg, repo, req, cid = start_request(tmp_path, monkeypatch, [_req_spec(2, "x")])
+    corrupt_org(cfg, monkeypatch)
+    Q.tick(cfg)
+    assert "could not read the ideas file to check" in parked(cfg, cid)["detail"]
+    assert not list(wtree(cfg, cid).glob("docs/specs/0002-*"))
+
+
+def linked_id(cfg):
+    ORG_ids = [t for t in Q._ideas(cfg) if (t.properties.get("REQ") or "").strip()]
+    return ORG_ids[0].properties["ID"]
+
+
+@pytest.mark.parametrize("case", ["moved_tip", "other_spec", "drift", "org_unreadable"])
+def test_request_only_cite_failure_still_advances(tmp_path, monkeypatch, case):
+    cfg, repo, req, cid = start_request(tmp_path, monkeypatch, lambda r: [_req_spec(2, r)],
+                                        linked=case in ("drift",))
+    runner = None
+    if case == "moved_tip":
+        real = IL.cite_spec
+
+        def late(cfg_, agreed, spec_id, *, expected_backlog_tip=None):
+            put_request(repo, req, summary=REQ_BODY)             # the tip moves before the swap
+            return real(cfg_, agreed, spec_id, expected_backlog_tip=expected_backlog_tip)
+        monkeypatch.setattr(IL, "cite_spec", late)
+    else:
+        def after(_req):
+            if case == "other_spec":
+                put_request(repo, req, spec="SPEC-0042")
+            elif case == "drift":
+                CliRunner().invoke(cli, ["idea", "summary", linked_id(cfg), "--set", "Moved."])
+            else:
+                corrupt_org(cfg, monkeypatch)
+        runner = Hooked(tmp_path, after=after)
+    tip = _git(repo, "rev-parse", "refs/heads/nw-backlog").strip()
+    Q.tick(cfg, runner=runner) if runner else Q.tick(cfg)
+    in_review(cfg, cid)
+    (fail,) = ledger(cfg, cid, "idea_link_failed")
+    assert f"nw backlog edit {req} --spec SPEC-0002" in fail["error"]
+    if case == "other_spec":
+        assert _backlog_subjects(repo)[0].startswith("put")
+        assert "already cites SPEC-0042" in fail["error"]
+    elif case == "moved_tip":
+        assert "was not cited" in fail["error"]
+        assert _git(repo, "rev-list", "--count", f"{tip}..refs/heads/nw-backlog").strip() == "1"
+    else:
+        assert not [s for s in _backlog_subjects(repo) if s.startswith("cite")]
+    assert (wtree(cfg, cid) / "docs/specs/0002-export-the-thing.md").exists()
+
+
+def test_request_only_reset_refreshes_the_snapshot(tmp_path, monkeypatch):
+    cfg, repo, req, cid = start_request(tmp_path, monkeypatch, lambda r: [_req_spec(2, r)])
+    put_request(repo, req, status="closed")
+    Q.tick(cfg)
+    assert parked(cfg, cid)["reason"] == "spec_write_failed"
+    put_request(repo, req, title="A better title", summary="A brand new public summary.")
+    resume(cfg, cid)
+    st = S.read_state(cfg, cid)
+    assert st["idea"]["summary"] == "A brand new public summary."
+    assert st["idea"]["heading"] == "A better title" and st["idea"]["request_only"] is True
+    assert st["idea"]["id"] == req and st["counters"]["spec_write_retries"] == 0
+    # a removed file keeps the old snapshot
+    tip = _git(repo, "rev-parse", "refs/heads/nw-backlog").strip()
+    empty = _git(repo, "hash-object", "-t", "tree", "/dev/null").strip()
+    gone = _git(repo, "commit-tree", empty, "-p", tip, "-m", "remove").strip()
+    _git(repo, "update-ref", "refs/heads/nw-backlog", gone)
+    before = dict(st["idea"])
+    Q._reset_spec_write(cfg, st)
+    assert st["idea"] == before
+    # a campaign that already cited its own spec still resets
+    put_request(repo, req, title="Third title", summary="Third summary.", spec="SPEC-0002")
+    st["spec"] = {"id": "SPEC-0002", "rel_path": "docs/specs/0002-x.md", "internal": True}
+    st["spec_id"] = "SPEC-0002"
+    Q._reset_spec_write(cfg, st)
+    assert st["idea"]["summary"] == "Third summary." and st["idea"]["heading"] == "Third title"
+    # another spec's citation keeps the snapshot
+    st["spec"], st["spec_id"] = {"id": "SPEC-0003"}, "SPEC-0003"
+    Q._reset_spec_write(cfg, st)
+    assert st["idea"]["summary"] == "Third summary."

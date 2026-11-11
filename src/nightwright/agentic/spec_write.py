@@ -127,7 +127,11 @@ def _front_matter_problems(fm, spec_id, idea, must_depend_on=()) -> list:
         out.append(f"front matter: id must be {spec_id}, got {fm.get('id')!r}")
     if fm.get("status") != "proposed":
         out.append(f"front matter: status must be proposed, got {fm.get('status')!r}")
-    if fm.get("source_idea") != (idea or {}).get("id"):
+    if (idea or {}).get("request_only"):                # SPEC-0541: no org idea behind it
+        if "source_idea" in fm:
+            out.append("front matter: source_idea must be absent (the campaign comes from a "
+                       f"request alone), got {fm.get('source_idea')!r}")
+    elif fm.get("source_idea") != (idea or {}).get("id"):
         out.append(f"front matter: source_idea must be {(idea or {}).get('id')!r}, "
                    f"got {fm.get('source_idea')!r}")
     req = (idea or {}).get("source_request")
@@ -388,12 +392,14 @@ def write_rules(mode, spec_write, idea, brief) -> str:
     path = spec_write["path"]
     epic = ((idea or {}).get("epic") or "").strip()
     if mode == "write":
+        request_only = bool((idea or {}).get("request_only"))
         fm = [f"`id: {spec_id_of(spec_write['number'])}`", "`status: proposed`",
-              f"`source_idea: {(idea or {}).get('id')}`", "`owner: user`", "`kind: feature`",
-              "`title`", "`created` (today, YYYY-MM-DD)"]
+              "`owner: user`", "`kind: feature`", "`title`", "`created` (today, YYYY-MM-DD)"]
+        if not request_only:
+            fm.insert(2, f"`source_idea: {(idea or {}).get('id')}`")
         req = (idea or {}).get("source_request")
         if req:
-            fm.insert(3, f"`source_request: {req}`")
+            fm.insert(2 if request_only else 3, f"`source_request: {req}`")
         if epic:
             fm.append(f"`parent: {epic}`")
         must = _must_depend(spec_write.get("must_depend_on"))
@@ -401,7 +407,12 @@ def write_rules(mode, spec_write, idea, brief) -> str:
             fm.append("`depends_on` must include: " + ", ".join(
                 f"{sid} (prerequisite {ref})" if sid != ref else sid for sid, ref in must))
         summary_note = ""
-        if req:
+        if request_only:                                    # SPEC-0541
+            summary_note = (
+                " The front matter has no `source_idea` key. The Context section is the public "
+                "summary in the idea JSON `summary` field, which is the only input: no private "
+                "log or open questions exist.")
+        elif req:
             summary_note = (
                 " The Context section is the public summary in the idea JSON `summary` field "
                 "for that request, the text other people have seen; the private log and open "
@@ -436,9 +447,13 @@ def write_rules(mode, spec_write, idea, brief) -> str:
     if mode == "amend":
         return (f"Amend mode: edit only `{path}`; leave every front-matter key unchanged except "
                 "`updated`; address every finding in the brief.")
-    rules = (f"Revise mode: edit only `{path}`; keep its id, `source_idea` and "
-             "`status: proposed`; address every must_fix and major finding in the brief.")
-    if (idea or {}).get("source_request"):
+    if (idea or {}).get("request_only"):                    # SPEC-0541
+        rules = (f"Revise mode: edit only `{path}`; keep its id, `source_request` and "
+                 "`status: proposed`; address every must_fix and major finding in the brief.")
+    else:
+        rules = (f"Revise mode: edit only `{path}`; keep its id, `source_idea` and "
+                 "`status: proposed`; address every must_fix and major finding in the brief.")
+    if (idea or {}).get("source_request") and not (idea or {}).get("request_only"):
         rules += " Keep `source_request` when the idea has one."
     if (brief or {}).get("suggested_splits"):
         rules += (" The review suggests splitting: narrow the spec to the first suggested split "

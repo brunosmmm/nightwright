@@ -357,6 +357,7 @@ class AgreedRequest:
     spec: str | None
     raw_bytes: bytes
     backlog_tip: str
+    status_value: str = ""      # the parsed `status` (`status` holds the raw line text)
 
 
 def _idea_public_id(task: Task) -> str:
@@ -422,6 +423,28 @@ def load_agreed_request(cfg, task: Task) -> AgreedRequest | None:
         raise ValueError("project is required")
     repo = resolve_linked_repo(cfg, project)
 
+    agreed = _read_request_file(repo, req_id)
+    try:
+        priv_summary = idea_summary_text(cfg, task, strict=True)
+    except Exception as err:
+        raise ValueError(f"could not read Summary for {idea_id}: {err}") from err
+
+    priv_digest = req_base(task.heading, priv_summary)
+    pub_digest = req_base(agreed.title, agreed.summary)
+    if priv_digest != stored_base or pub_digest != stored_base:
+        raise ValueError(_drift_error(idea_id, req_id))
+    return agreed
+
+
+def load_public_request(cfg, project: str, req_id: str) -> AgreedRequest:
+    """Read and validate a public request with no private side: no `:REQ_BASE:` check (SPEC-0541)."""
+    if not _REQ_ID_RE.match(req_id or ""):
+        raise ValueError(f"invalid request id {req_id}")
+    return _read_request_file(resolve_linked_repo(cfg, project), req_id)
+
+
+def _read_request_file(repo: Path, req_id: str) -> AgreedRequest:
+    """`git show <tip>:{req_id}.md` through the canonical title and summary checks (SPEC-0535)."""
     rel = f"{req_id}.md"
     tip = _ref_tip(repo, _BACKLOG_REF)
     if tip is None:
@@ -488,16 +511,6 @@ def load_agreed_request(cfg, task: Task) -> AgreedRequest | None:
     if body != canon_summary:
         raise ValueError(f"{req_id} file summary is not canonical")
 
-    try:
-        priv_summary = idea_summary_text(cfg, task, strict=True)
-    except Exception as err:
-        raise ValueError(f"could not read Summary for {idea_id}: {err}") from err
-
-    priv_digest = req_base(task.heading, priv_summary)
-    pub_digest = req_base(pub_title, body)
-    if priv_digest != stored_base or pub_digest != stored_base:
-        raise ValueError(_drift_error(idea_id, req_id))
-
     return AgreedRequest(
         req_id=req_id,
         repo=repo,
@@ -511,6 +524,7 @@ def load_agreed_request(cfg, task: Task) -> AgreedRequest | None:
         spec=spec_out,
         raw_bytes=raw,
         backlog_tip=tip,
+        status_value=str(fm["status"]),
     )
 
 

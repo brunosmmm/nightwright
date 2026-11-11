@@ -1091,6 +1091,59 @@ def _idea_task(cfg, idea_id):
     return None
 
 
+def _is_request_only(st: dict) -> bool:
+    """SPEC-0541: a campaign whose only input is a public request (no org idea)."""
+    return bool((st.get("idea") or {}).get("request_only"))
+
+
+def _request_source(cfg, req_id: str, project: str, *, allow_spec: str | None = None):
+    """SPEC-0541: the one reader of the public request for a `request_only` campaign. Returns
+    `(agreed, linked_task_or_None)` or raises ValueError. An org idea whose `:REQ:` is `req_id`
+    is a drift gate (SPEC-0535's `load_agreed_request`), never a source of text. `allow_spec` is
+    the spec the calling campaign owns, so its own cite is not an "already cites" error."""
+    from .. import idea_link as IL
+    try:
+        ideas = _ideas(cfg)                 # not `_ideas_or_empty`: an unreadable file fails closed
+    except (OSError, ValueError) as e:
+        raise ValueError(f"could not read the ideas file to check {req_id}: "
+                         f"{e or type(e).__name__}") from e
+    linked = [t for t in ideas if (t.properties.get("REQ") or "").strip() == req_id]
+    if len(linked) > 1:
+        a, b = (IL._idea_public_id(t) for t in linked[:2])
+        raise ValueError(f"{req_id} is claimed by {a} and {b}")
+    task = linked[0] if linked else None
+    if task is not None:
+        agreed = IL.load_agreed_request(cfg, task)
+        iid = IL._idea_public_id(task)
+        owner = (task.properties.get("PROJECT") or "").strip()
+        if owner != project:
+            raise ValueError(f"{req_id} is linked to {iid} of project {owner}, not {project}")
+        spec = (task.properties.get("SPEC") or "").strip()
+        if spec:
+            raise ValueError(f"{iid} already has {spec}; queue that spec instead: "
+                             f"nw queue add {spec}")
+        if not idea_is_open(task):
+            raise ValueError(f"{iid} is {task.state}; only open ideas (IDEA, INCUBATE, or "
+                             f"SPECCED without a :SPEC:) are queued")
+    else:
+        agreed = IL.load_public_request(cfg, project, req_id)
+    if agreed.status_value not in ("open", "closed"):
+        raise ValueError(f"{req_id} file is not a request")
+    if agreed.status_value != "open":
+        raise ValueError(f"{req_id} is {agreed.status_value}; only open requests are queued")
+    if agreed.spec is not None and agreed.spec != allow_spec:
+        raise ValueError(f"{req_id} already cites {agreed.spec}")
+    return agreed, task
+
+
+def _request_source_for(cfg, state: dict):
+    """`_request_source` for a `request_only` campaign, with the campaign's own spec allowed."""
+    idea = state.get("idea") or {}
+    own = (state.get("spec") or {}).get("id") or state.get("spec_id") or None
+    return _request_source(cfg, idea.get("source_request") or idea.get("id"),
+                           state.get("project") or idea.get("project") or "", allow_spec=own)
+
+
 def _idea_id_of(st: dict) -> str | None:
     return (st.get("idea") or {}).get("id")
 
@@ -1190,6 +1243,12 @@ def backlog_readiness(cfg, state: dict) -> tuple[bool, list[str]]:
         return False, after_blocked
     if has_no_spec(state):
         iid = _idea_id_of(state)
+        if _is_request_only(state):                     # SPEC-0541: no org idea to find
+            try:
+                _request_source_for(cfg, state)
+            except ValueError as e:
+                return False, [f"request {iid}: {e}"]
+            return True, []
         task = _idea_task(cfg, iid)
         if task is None:
             return False, [f"idea {iid} not found"]
@@ -2545,7 +2604,15 @@ def _prepare_spec_write(ctx: _Ctx, state: dict) -> dict:
             mode, number, path = "revise", int(str(spec["id"])[5:]), spec["rel_path"]
         else:
             from .. import idea_link as IL
-            task = _idea_task(ctx.cfg, _idea_id_of(state))
+            if _is_request_only(state):                         # SPEC-0541: before allocating
+                agreed, _gate = _request_source_for(ctx.cfg, state)
+                idea = dict(state.get("idea") or {})
+                idea["summary"] = agreed.summary
+                idea["heading"] = agreed.title
+                state["idea"] = idea
+                task = None
+            else:
+                task = _idea_task(ctx.cfg, _idea_id_of(state))
             if task is not None:
                 agreed = IL.load_agreed_request(ctx.cfg, task)
                 if agreed:
@@ -4228,7 +4295,8 @@ def _reconcile_project_spec(cfg, state: dict, events: list, spec_id: str, outcom
     status = str(fm.get("status") or "").strip().lower()
     want_id = (str(fm.get("source_idea") or "").strip()
                or str((state.get("idea_link") or {}).get("id") or "").strip()
-               or str((state.get("idea") or {}).get("id") or "").strip()).upper()
+               or ("" if _is_request_only(state)             # SPEC-0541: `REQ-…` is no idea id
+                   else str((state.get("idea") or {}).get("id") or "").strip())).upper()
     if not want_id:
         finding("info", "idea reconcile: spec has no source_idea", f"{spec_id} ({ref})")
         return
@@ -4641,6 +4709,8 @@ def _apply_spec_write(ctx, state, counters, res, row, events, finish):
         # best-effort (SPEC-0256): the spec is committed; the link can be redone with `nw idea`
         events.append(("note", {"text": f"could not link idea to {spec_id}: {link_error}",
                                 "author": "queue"}))
+        if _is_request_only(state):
+            link_error += f"; repair: nw backlog edit {_idea_id_of(state)} --spec {spec_id}"
         events.append(("idea_link_failed", {"spec_id": spec_id, "idea": _idea_id_of(state),
                                             "error": link_error}))
     counters["spec_review_retries"] = 0
@@ -4878,6 +4948,8 @@ def _link_idea(cfg, state: dict, spec_id: str) -> str | None:
             OW.set_state(cfg, task, "SPECCED")
 
     sw = state.get("spec_write") or {}
+    if _is_request_only(state):                         # SPEC-0541: the public file only
+        return _cite_request(cfg, state, spec_id) if sw.get("mode") == "write" else None
     if sw.get("mode") != "write":
         try:
             task = _idea_task(cfg, _idea_id_of(state))
@@ -4937,6 +5009,25 @@ def _link_idea(cfg, state: dict, spec_id: str) -> str | None:
                 if property_written and not drift:
                     OW._atomic_replace_bytes(task.file, org_snapshot)
                 return str(org_err) or type(org_err).__name__
+    except (ValueError, OSError, subprocess.CalledProcessError) as e:
+        return str(e) or type(e).__name__
+    return None
+
+
+def _cite_request(cfg, state: dict, spec_id: str) -> str | None:
+    """SPEC-0541: write `spec:` on the public request of a `request_only` campaign with one
+    compare-and-swap commit. Returns the error text, or None on success and on a repeated call
+    (the file already cites `spec_id`). Never raises; touches no org file."""
+    from .. import idea_link as IL
+    idea = state.get("idea") or {}
+    req_id = idea.get("source_request") or idea.get("id")
+    try:
+        agreed, _gate = _request_source(cfg, req_id, state.get("project") or "",
+                                        allow_spec=spec_id)
+        if agreed.spec == spec_id:
+            return None
+        IL.preflight_cite(agreed.repo)
+        IL.cite_spec(cfg, agreed, spec_id, expected_backlog_tip=agreed.backlog_tip)
     except (ValueError, OSError, subprocess.CalledProcessError) as e:
         return str(e) or type(e).__name__
     return None
@@ -10639,6 +10730,13 @@ def _reset_spec_write(cfg, st: dict) -> None:
     _counters(st)["spec_write_retries"] = 0
     _counters(st)["spec_review_retries"] = 0
     old = st.get("idea") or {}
+    if old.get("request_only"):                         # SPEC-0541: refresh from the public file
+        try:
+            agreed, _gate = _request_source_for(cfg, st)
+        except ValueError:
+            return                                      # keep the old snapshot
+        st["idea"] = {**old, "summary": agreed.summary, "heading": agreed.title}
+        return
     task = _idea_task(cfg, old.get("id")) if st.get("kind") == "idea" else None
     if task is not None:
         from .. import explore as EX

@@ -1,7 +1,7 @@
 ---
 id: SPEC-0541
 title: Write a spec from a public request alone (request-only writer path)
-status: accepted
+status: done
 owner: user
 created: 2026-11-10
 updated: 2026-11-10
@@ -247,11 +247,11 @@ skips idea bookkeeping.
 
 ## Acceptance criteria
 
-- [ ] `load_public_request` returns an `AgreedRequest` for an open file with
+- [x] `load_public_request` returns an `AgreedRequest` for an open file with
       no private side and performs no `:REQ_BASE:` check;
       `load_agreed_request` raises the same text for every case in
       SPEC-0535's tests after the `_read_request_file` split.
-- [ ] `_request_source`: with no org file configured it returns the public
+- [x] `_request_source`: with no org file configured it returns the public
       request and `None`; with a linked idea it returns the public body (not
       the private Summary) and the idea when the pair agrees, and raises
       SPEC-0535's drift text on a drifted pair (private side, public file, or
@@ -262,25 +262,25 @@ skips idea bookkeeping.
       the same call with no org file configured succeeds. A call with
       `allow_spec` equal to the file's `spec:` returns; a different `spec:`
       still raises.
-- [ ] The readiness check of a `request_only` campaign does not call
+- [x] The readiness check of a `request_only` campaign does not call
       `_idea_task`; it is ready while `_request_source` succeeds and not
       ready with `request {req_id}: {error}` after the file is closed, cited
       by another spec, removed, drifted, or the org file made unreadable. It
       stays ready after the campaign's own spec was cited.
-- [ ] `_prepare_spec_write` of a `request_only` campaign re-reads the request
+- [x] `_prepare_spec_write` of a `request_only` campaign re-reads the request
       before allocating: on drift, closed, cited, missing, or an unreadable
       org file it parks `spec_write_failed`, creates no spec file, and runs no
       `hash-object`. On success `idea.summary` is the public body and
       `idea.heading` the public title. A campaign that is not `request_only`
       behaves as in SPEC-0535.
-- [ ] `write_rules` for a `request_only` write lists `source_request: REQ-…`,
+- [x] `write_rules` for a `request_only` write lists `source_request: REQ-…`,
       does not list `source_idea`, and names the public summary as the only
       input. `_front_matter_problems` rejects a missing or different
       `source_request` and any present `source_idea` for `request_only`; a
       non-`request_only` idea keeps SPEC-0535's checks (`source_idea` equal to
       the idea id). A spec with `source_request` and no `source_idea` passes
       `python3 tools/spec_lint.py`.
-- [ ] After a valid first write, `_link_idea` commits `cite {req_id}
+- [x] After a valid first write, `_link_idea` commits `cite {req_id}
       {spec_id}` on `agreed.repo`'s `refs/heads/nw-backlog` (`spec:` added,
       every other byte of the file and every other path unchanged, expected
       value the previous tip) and writes no `:SPEC:`, no `SPECCED`, and no
@@ -288,14 +288,14 @@ skips idea bookkeeping.
       write and cite). Calling `_link_idea` twice for the same spec id returns
       `None` both times, adds one commit in total, and records no
       `idea_link_failed` event. A revise tick adds no commit.
-- [ ] A different `spec:` on the file, drift, a moved tip, or an unreadable
+- [x] A different `spec:` on the file, drift, a moved tip, or an unreadable
       org file makes `_link_idea` return the error text and add no commit; the
       campaign still advances to spec review with an `idea_link_failed` event
       that contains `nw backlog edit {req_id} --spec {spec_id}`.
-- [ ] `_reset_spec_write` of a `request_only` campaign refreshes `summary` and
+- [x] `_reset_spec_write` of a `request_only` campaign refreshes `summary` and
       `heading` from the file, including after the campaign's own cite, and
       keeps the old snapshot when the read raises.
-- [ ] Nothing in the tree creates a `request_only` campaign (no CLI surface is
+- [x] Nothing in the tree creates a `request_only` campaign (no CLI surface is
       added); a campaign without `request_only` follows the unchanged paths,
       and an idea with no `:REQ:` still does not call `resolve_linked_repo`.
 
@@ -371,6 +371,58 @@ skips idea bookkeeping.
   `cite` commit. Edit a linked idea's Summary before the tick and expect
   `spec_write_failed` with `do not match :REQ_BASE:`.
 
+### Test record (2026-11-10)
+
+Ran (real git repos throughout; no fakes for the backlog or the cite):
+
+- `uv run pytest tests/test_request_source.py` — 11 passed: `load_public_request`,
+  `_request_source` (no org file, linked gate, drift both sides, two claimants, project, `:SPEC:`,
+  closed idea/request, cited request, `allow_spec`, quoted `status: "open"` queues and
+  `status: maybe` is refused, unreadable org file fails closed), readiness without
+  `_idea_task`, unchanged readiness and no `resolve_linked_repo` for non-request campaigns.
+- `uv run pytest tests/test_agentic_spec_writer.py -k request_only` — 9 passed: the writer prompt
+  carries the public body and `source_request` only, a `source_idea` is rejected, one
+  `cite REQ-… SPEC-NNNN` commit with org bytes unchanged, `spec_lint` exit 0 on the committed
+  spec, a second `_link_idea` returns `None` with no commit and no `idea_link_failed`, a revise
+  tick adds no commit, drift/closed/unreadable-org park before any `hash-object`, cite failures
+  (moved tip, other `spec:`, drift, unreadable org) still reach spec review with the
+  `nw backlog edit` repair hint, and `_reset_spec_write` refreshes (also after the own cite) and
+  keeps the snapshot on a removed file.
+- Regression: `tests/test_spec_source_request.py`, `tests/test_idea_link.py`, the existing
+  `tests/test_agentic_spec_writer.py` cases and every other test file that mentions
+  `backlog_readiness`, `_reset_spec_write`, `write_rules`, `_front_matter_problems`,
+  `_link_idea` or `load_agreed_request`: 760 passed.
+- `python3 tools/test_tiers.py --check` exits 0; `python3 tools/spec_lint.py` exits 0 after
+  `--write-ledger`.
+- Manual verification: the campaign tests above are the real-git run (a temporary repo with an
+  `nw-backlog` branch, a hand-built `request_only` campaign driven by `Q.tick`, `git show
+  refs/heads/nw-backlog:REQ-….md` and `git log` asserted); no separate scratch-repo session.
+- The full suite and `affected_tests.py --run` were left to the campaign gate (the latter did not
+  finish inside the agent's time box).
+
+### As shipped (2026-11-10)
+
+Shipped as designed, with these notes:
+
+- `AgreedRequest` gained a trailing field `status_value` (the parsed `fm["status"]`); `status`
+  still holds the raw line text. `_read_request_file(repo, req_id)` returns the `AgreedRequest`;
+  `load_agreed_request` and `load_public_request` both call it.
+- `queue._request_source_for(cfg, state)` is a small helper that passes the campaign's own spec
+  id as `allow_spec`; readiness, `_prepare_spec_write` and `_reset_spec_write` use it. The
+  `_prepare_spec_write` failure text is the bare `_request_source` error; only readiness adds the
+  `request {req_id}: ` prefix.
+- `_cite_request` also runs `IL.preflight_cite` (identity and nw-backlog-checked-out guards)
+  before `cite_spec`.
+- Close path: `_reconcile_project_spec` no longer falls back to the campaign's `idea.id` for a
+  `request_only` campaign (that id is `REQ-…`, not an idea), so it emits the existing informational
+  `idea reconcile: spec has no source_idea` finding instead of a minor `idea not found`. No test
+  closes a `request_only` campaign yet; the follow-up spec should add one.
+- Finding: requests written by `nw backlog add` render a blank line before the summary, which
+  `_read_request_file` (SPEC-0535's canonical-summary rule, unchanged here) refuses with
+  `summary is not canonical`. The tests therefore build request files with
+  `idea_link.render_request`. Part 2 (or a format spec) has to reconcile the two renderers before
+  `nw queue add REQ-…` can read a request made with `nw backlog add`.
+
 ## Rollout / migration
 
 No data move and no schema change: `source_request` exists after SPEC-0535
@@ -383,14 +435,14 @@ The first manual run is the real-binary check above.
 
 ## Definition of done
 
-- [ ] Acceptance criteria all met.
-- [ ] Test plan executed; the named tests pass (affected tests via
+- [x] Acceptance criteria all met.
+- [x] Test plan executed; the named tests pass (affected tests via
       `python3 tools/affected_tests.py --run uv run pytest -q`); the manual
       verification was performed and noted here.
-- [ ] No regressions in the SPEC-0535 tests; `python3 tools/test_tiers.py
+- [x] No regressions in the SPEC-0535 tests; `python3 tools/test_tiers.py
       --check` exits 0 when `tools/test_tiers.py` exists.
-- [ ] Spec body updated to match what shipped.
-- [ ] `docs/LEDGER.md` regenerated and `python3 tools/spec_lint.py` exits 0.
+- [x] Spec body updated to match what shipped.
+- [x] `docs/LEDGER.md` regenerated and `python3 tools/spec_lint.py` exits 0.
 
 ## Open questions
 
