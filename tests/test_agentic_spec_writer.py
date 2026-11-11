@@ -1765,6 +1765,32 @@ def test_request_only_writer_uses_the_public_summary_and_cites(tmp_path, monkeyp
     assert org.read_bytes() == org_before
 
 
+def test_request_only_prepare_overwrites_a_stale_snapshot(tmp_path, monkeypatch):
+    """`_prepare_spec_write` takes `summary` and `heading` from the public file, not from the
+    campaign's hand-built (stale) idea payload, and the spec slug follows the public title."""
+    new_title, new_body = "A better public title", "A fresher public summary."
+    cfg, repo, req, cid = start_request(
+        tmp_path, monkeypatch,
+        lambda r: [spec_written(2, None, slug="a-better-public-title",
+                                fm={"source_request": r})])
+    with S.item_lock(cfg, cid):
+        st = S.read_state(cfg, cid)
+        st["idea"]["summary"], st["idea"]["heading"] = "OLD summary", "Old title"
+        S.write_state(cfg, cid, st)
+    put_request(repo, req, title=new_title, summary=new_body)
+    Q.tick(cfg)
+    in_review(cfg, cid)
+    first = prompt(cfg, cid, 1)
+    idea_json = first[first.index("{"):]
+    assert new_body in idea_json and new_title in idea_json
+    assert "OLD summary" not in idea_json and "Old title" not in idea_json
+    idea = S.read_state(cfg, cid)["idea"]
+    assert idea["summary"] == new_body and idea["heading"] == new_title
+    assert idea["request_only"] is True and idea["id"] == req
+    assert "docs/specs/0002-a-better-public-title.md" in first
+    assert (wtree(cfg, cid) / "docs/specs/0002-a-better-public-title.md").exists()
+
+
 def test_request_only_front_matter_rules():
     idea = {"id": "REQ-0ABCDEFG", "source_request": "REQ-0ABCDEFG", "request_only": True}
     fm = {"id": "SPEC-0002", "status": "proposed", "source_request": "REQ-0ABCDEFG",
@@ -1791,6 +1817,7 @@ def test_request_only_drift_before_write_parks(tmp_path, monkeypatch):
     assert r.exit_code == 0, r.output
     objects = _git(repo, "count-objects", "-v")
     Q.tick(cfg)
+    assert parked(cfg, cid)["reason"] == "spec_write_failed"
     assert "do not match :REQ_BASE:" in parked(cfg, cid)["detail"]
     assert not list(wtree(cfg, cid).glob("docs/specs/0002-*"))
     assert _git(repo, "count-objects", "-v") == objects          # no `hash-object`
@@ -1810,8 +1837,35 @@ def test_request_only_unreadable_org_file_before_write_parks(tmp_path, monkeypat
     cfg, repo, req, cid = start_request(tmp_path, monkeypatch, [_req_spec(2, "x")])
     corrupt_org(cfg, monkeypatch)
     Q.tick(cfg)
+    assert parked(cfg, cid)["reason"] == "spec_write_failed"
     assert "could not read the ideas file to check" in parked(cfg, cid)["detail"]
     assert not list(wtree(cfg, cid).glob("docs/specs/0002-*"))
+
+
+def test_request_only_cited_before_write_parks(tmp_path, monkeypatch):
+    cfg, repo, req, cid = start_request(tmp_path, monkeypatch, [_req_spec(2, "x")])
+    put_request(repo, req, spec="SPEC-0042")
+    objects = _git(repo, "count-objects", "-v")
+    Q.tick(cfg)
+    assert parked(cfg, cid)["reason"] == "spec_write_failed"
+    assert f"{req} already cites SPEC-0042" in parked(cfg, cid)["detail"]
+    assert not list(wtree(cfg, cid).glob("docs/specs/0002-*"))
+    assert _git(repo, "count-objects", "-v") == objects
+    assert not S.read_ledger(cfg, cid, types=["run.start"])
+
+
+def test_request_only_missing_file_before_write_parks(tmp_path, monkeypatch):
+    cfg, repo, req, cid = start_request(tmp_path, monkeypatch, [_req_spec(2, "x")])
+    tip = _git(repo, "rev-parse", "refs/heads/nw-backlog").strip()
+    empty = _git(repo, "hash-object", "-t", "tree", "/dev/null").strip()
+    gone = _git(repo, "commit-tree", empty, "-p", tip, "-m", "remove").strip()
+    _git(repo, "update-ref", "refs/heads/nw-backlog", gone)
+    objects = _git(repo, "count-objects", "-v")
+    Q.tick(cfg)
+    assert parked(cfg, cid)["reason"] == "spec_write_failed"
+    assert not list(wtree(cfg, cid).glob("docs/specs/0002-*"))
+    assert _git(repo, "count-objects", "-v") == objects
+    assert not S.read_ledger(cfg, cid, types=["run.start"])
 
 
 def linked_id(cfg):
