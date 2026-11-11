@@ -16,6 +16,14 @@ from test_worker import _bundle_job, _gate, _no_finish_gc, src, wenv  # noqa: F4
 
 pytestmark = pytest.mark.integration
 
+
+@pytest.fixture(autouse=True)
+def _outside_a_slurm_job(monkeypatch):
+    """The cadence runs these on the worker box inside a Slurm job, where SPEC-0514 measures on the
+    job's cgroup (`rss_scope: job_cgroup_cumulative`, `rss_bound`); these tests pin the SPEC-0504
+    `wait4` numbers, so they run as if outside a job (test_gate_cgroup_measure.py covers the rest)."""
+    monkeypatch.delenv("SLURM_JOB_ID", raising=False)
+
 # ~0.5 s of CPU in the gate's own process, then ~100 MB held in a child it waits for
 BURN = (f"{sys.executable} -c \"import time; t=time.process_time()\n"
         f"while time.process_time() - t < 0.5: pass\" && "
