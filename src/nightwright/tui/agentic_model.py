@@ -1267,7 +1267,7 @@ RUNS_STREAM_LINES = 200
 RUNS_FOLLOW_MAX_LINES = 2000
 RUNS_TABLE_COLUMNS = ("run_id", "persona", "phase", "status", "verdict_status",
                       "duration_s", "cost_usd")
-_CTRL = re.compile(r"[\x00-\x08\x0b-\x1f\x7f]")
+_CTRL = re.compile(r"[\x00-\x08\x0b-\x1f\x7f-\x9f]")
 
 
 def _clean(value) -> str:
@@ -1284,6 +1284,7 @@ class RunPaneDetail:
     has_stream: bool
     run_id: str
     ended: bool = False
+    has_run_json: bool = False
 
     @property
     def text(self) -> Text:
@@ -1440,9 +1441,16 @@ def _fragment_lines(renderer, stream: Path, offset: int) -> list[str]:
     return []
 
 
+def _run_path(cfg, cid, run_id: str) -> Path:
+    """`runs/<run_id>`; a run id that is not one path component maps to a missing directory."""
+    if not run_id or run_id in (".", "..") or run_id != Path(run_id).name:
+        run_id = ".invalid-run-id"
+    return store.runs_dir(cfg, cid) / run_id
+
+
 def run_follow_state(cfg, campaign_id, run_id) -> tuple[bool, bool]:
     """(has stream.jsonl, run ended), read in a worker thread."""
-    run_dir = store.runs_dir(cfg, campaign_id) / run_id
+    run_dir = _run_path(cfg, campaign_id, run_id)
     has_stream = (run_dir / "stream.jsonl").is_file()
     try:
         ended = TL._ended(run_dir)
@@ -1492,32 +1500,34 @@ def _head_text(run_dir: Path) -> tuple[Text, dict | None]:
     return t, run_json if isinstance(run_json, dict) else None
 
 
-def load_run_head(cfg, cid, run_id: str) -> Text:
-    """Just the run.json / stderr.log part of the detail, re-read when a followed run ends."""
-    run_dir = store.runs_dir(cfg, cid) / run_id
+def load_run_head(cfg, cid, run_id: str) -> tuple[Text, bool]:
+    """Just the run.json / stderr.log part of the detail, re-read when a followed run ends,
+    plus whether run.json exists (the verdict is written after exit.json)."""
+    run_dir = _run_path(cfg, cid, run_id)
     if not run_dir.is_dir():
-        return Text("no run directory\n")
-    return _head_text(run_dir)[0]
+        return Text("no run directory\n"), True
+    return _head_text(run_dir)[0], (run_dir / "run.json").is_file()
 
 
 def load_run_pane_detail(cfg, cid, run_id: str) -> RunPaneDetail:
     """Verdict, blockers, stderr, and stream or pre-stream result for one run. Malformed
     run.json shapes are tolerated; only an unexpected OS error escapes (the widget catches it)."""
-    run_dir = store.runs_dir(cfg, cid) / run_id
+    run_dir = _run_path(cfg, cid, run_id)
     if not run_dir.is_dir():
         return RunPaneDetail(Text("no run directory\n"), [], None, 0, False, run_id)
     has_stream, ended = run_follow_state(cfg, cid, run_id)
+    has_rj = (run_dir / "run.json").is_file()
     head, run_json = _head_text(run_dir)
     if has_stream:
         body, renderer, offset = _stream_initial_tail(cfg, run_dir, ended)
-        return RunPaneDetail(head, body, renderer, offset, True, run_id, ended)
+        return RunPaneDetail(head, body, renderer, offset, True, run_id, ended, has_rj)
     return RunPaneDetail(head, _result_fallback_lines(run_dir, run_json), None, 0, False,
-                         run_id, ended)
+                         run_id, ended, has_rj)
 
 
 def stream_tail(cfg, campaign_id, run_id, offset, renderer) -> tuple[list[str], int]:
     """Append rendered stream lines from `offset`; returns plain lines and the next offset."""
-    run_dir = store.runs_dir(cfg, campaign_id) / run_id
+    run_dir = _run_path(cfg, campaign_id, run_id)
     lines, next_offset = TL.read_lines(run_dir / "stream.jsonl", offset)
     out: list[str] = []
     for line in lines:
@@ -1528,7 +1538,7 @@ def stream_tail(cfg, campaign_id, run_id, offset, renderer) -> tuple[list[str], 
 
 def stream_tail_drain(cfg, campaign_id, run_id, offset, renderer) -> tuple[list[str], int]:
     """One drain when the run ends: remaining lines and a trailing no-newline JSON fragment."""
-    run_dir = store.runs_dir(cfg, campaign_id) / run_id
+    run_dir = _run_path(cfg, campaign_id, run_id)
     stream = run_dir / "stream.jsonl"
     out, offset = stream_tail(cfg, campaign_id, run_id, offset, renderer)
     out.extend(_fragment_lines(renderer, stream, offset))

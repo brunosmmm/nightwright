@@ -296,6 +296,14 @@ Loop 2 (review fixes): the detail is a head (verdict line, blocking rows, stderr
 
 Ran `uv run pytest -q tests/test_tui_campaign_runs.py tests/test_tui_campaign_detail_ac.py tests/test_tui_campaign_detail.py tests/test_tui_campaign_detail_model.py`, `python3 tools/test_tiers.py --check`, and `python3 tools/spec_lint.py`. New tests cover verdict lead fallbacks, `must_fix` findings, excluded `changed_files`/`tests_run`, malformed shapes and control characters, error lines in the open popup, verdict-first scroll, A→B→A stale tails, off-main-thread `_ended`, and the terminal-reload final drain; live follow now seeds `stream.jsonl` and asserts one Renderer is fed on the initial paint and the poll; no-append checks wait on counted follow ticks instead of fixed pauses. Full suite left to gating.
 
+### As shipped (loop 3)
+
+Review fix: `exit.json` lands before `run.json` (the verdict), so the follow poll no longer treats the ended tick as the end of the head. `_run_head_done` stays false until `run.json` exists; while it is false and the run has ended (or the campaign is terminal), each poll re-reads the head (`AM.load_run_head` now returns `(head, has_run_json)`), and runs without `stream.jsonl` re-read their head and result body the same way. `_CTRL` also strips C1 controls (`\x80`-`\x9f`), table cells are cleaned, and a run id that is not one path component maps to a missing run directory.
+
+### Test record (2026-11-10, loop 3)
+
+Ran `uv run pytest -q tests/test_tui_campaign_runs.py` (36 passed), `tests/test_tui_campaign_detail_ac.py tests/test_tui_campaign_detail.py tests/test_tui_campaign_detail_model.py` (54 passed), `python3 tools/test_tiers.py --check`, and `python3 tools/spec_lint.py`. New tests: `select_run(unknown)` from Overview and Timeline leaves the tab unchanged; the head and blocker rows appear when `run.json` lands after `exit.json` (stream run); a non-stream run that finishes while the tab is open refreshes its verdict and result. Full suite left to gating.
+
 ## Open questions
 
 None.

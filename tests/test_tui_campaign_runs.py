@@ -192,6 +192,118 @@ def test_focus_select_run_and_unknown(tmp_path):
     _run(drive())
 
 
+def test_select_unknown_run_keeps_non_runs_tab(tmp_path):
+    cfg = TH.fixture_cfg(tmp_path)
+    TH.prepare_queue_window(cfg)
+    cid = CID_MULTI
+    app = IdeaDesk(cfg, tab="queue")
+    app.notes = []
+    app.notify = lambda msg, **k: app.notes.append((msg, k))
+
+    async def drive():
+        async with app.run_test(size=SIZE) as pilot:
+            await settle(app, pilot)
+            app.open_campaign_detail(cid)
+            await settle(app, pilot)
+            s = detail_screen(app)
+            body = s.query_one("#detail-body", TabbedContent)
+            assert body.active == "tab-overview"
+            s.select_run("missing-id")
+            await settle(app, pilot)
+            assert any("not found: missing-id" in m for m, _ in app.notes)
+            assert body.active == "tab-overview"
+            await press(app, pilot, ["2"])
+            await settle(app, pilot)
+            start = body.active
+            assert start != "tab-runs"
+            app.notes.clear()
+            s.select_run("missing-id-2")
+            await settle(app, pilot)
+            assert any("not found: missing-id-2" in m for m, _ in app.notes)
+            assert body.active == start
+
+    _run(drive())
+
+
+def _live_run_copy(tmp_path, monkeypatch, tag: str, *, stream: bool):
+    """A copied campaign whose run 002-implementer looks live: no exit.json or run.json,
+    `TL._ended` reads the returned flag dict."""
+    monkeypatch.setattr(CD, "POLL_S", 0.08)
+    _, cfg, ids = _fixture(tmp_path)
+    cid = ids["impl"]
+    camp = S.campaign_dir(cfg, cid)
+    dst = camp.parent / f"{cid}-{tag}"
+    shutil.copytree(camp, dst)
+    cid2 = dst.name
+    run_id = "002-implementer"
+    run_dir = S.runs_dir(cfg, cid2) / run_id
+    run_dir.mkdir(parents=True, exist_ok=True)
+    if stream:
+        (run_dir / "stream.jsonl").write_text(_asst("seed-head") + "\n", encoding="utf-8")
+    (run_dir / "request.json").write_text(json.dumps({"persona": "implementer"}), encoding="utf-8")
+    st = json.loads((S.campaign_dir(cfg, cid2) / "state.json").read_text(encoding="utf-8"))
+    st["state"] = "IMPLEMENTING"
+    (S.campaign_dir(cfg, cid2) / "state.json").write_text(json.dumps(st), encoding="utf-8")
+    for name in ("exit.json", "run.json", "result.json", "stderr.log"):
+        (run_dir / name).unlink(missing_ok=True)
+    ended = {"v": False}
+    monkeypatch.setattr(TL, "_ended", lambda rd: ended["v"])
+    return cfg, cid2, run_id, run_dir, ended
+
+
+_LATE_RUN_JSON = {"verdict": {"status": "late-verdict-0476", "blockers": ["late-blocker-0476"]}}
+
+
+def test_head_refreshes_when_run_json_lands_after_exit(tmp_path, monkeypatch):
+    polls = _spy_polls(monkeypatch)
+    cfg, cid2, run_id, run_dir, ended = _live_run_copy(tmp_path, monkeypatch, "late-head", stream=True)
+    app = _desk(cfg, tab="queue")
+
+    async def drive():
+        async with app.run_test(size=SIZE) as pilot:
+            await settle(app, pilot)
+            app.open_campaign_detail(cid2, focus={"tab": "runs", "run": run_id})
+            s = detail_screen(app)
+            assert await pilot_until(pilot, lambda: s._run_renderer is not None)
+            ended["v"] = True  # exit.json first: the run is over, the verdict is not there yet
+            assert await pilot_until(pilot, lambda: s._run_follow_done)
+            assert "late-verdict-0476" not in runs_detail(app)
+            assert not s._run_head_done
+            (run_dir / "run.json").write_text(json.dumps(_LATE_RUN_JSON), encoding="utf-8")
+            assert await pilot_until(pilot, lambda: "late-verdict-0476" in runs_detail(app))
+            assert "major: late-blocker-0476" in runs_detail(app)
+            assert await pilot_until(pilot, lambda: s._run_head_done)
+            await _after_ticks(pilot, polls)
+            assert "late-verdict-0476" in runs_detail(app)
+
+    _run(drive())
+
+
+def test_non_stream_run_head_and_result_refresh_when_it_finishes(tmp_path, monkeypatch):
+    cfg, cid2, run_id, run_dir, ended = _live_run_copy(tmp_path, monkeypatch, "late-nostream", stream=False)
+    app = _desk(cfg, tab="queue")
+
+    async def drive():
+        async with app.run_test(size=SIZE) as pilot:
+            await settle(app, pilot)
+            app.open_campaign_detail(cid2, focus={"tab": "runs", "run": run_id})
+            s = detail_screen(app)
+            assert await pilot_until(pilot, lambda: s._run_loaded_id == run_id)
+            assert "no result.json" in runs_detail(app)
+            assert not s._run_head_done
+            ended["v"] = True
+            (run_dir / "result.json").write_text(
+                json.dumps({"result": "final-result-0476"}), encoding="utf-8")
+            (run_dir / "run.json").write_text(json.dumps(_LATE_RUN_JSON), encoding="utf-8")
+            assert await pilot_until(pilot, lambda: "late-verdict-0476" in runs_detail(app))
+            assert "major: late-blocker-0476" in runs_detail(app)
+            assert await pilot_until(pilot, lambda: "final-result-0476" in runs_detail(app))
+            assert "no result.json" not in runs_detail(app)
+            assert s._run_head_done
+
+    _run(drive())
+
+
 def test_gate_and_reviewer_blockers_in_pane(tmp_path):
     cfg = TH.fixture_cfg(tmp_path)
     TH.prepare_queue_window(cfg)

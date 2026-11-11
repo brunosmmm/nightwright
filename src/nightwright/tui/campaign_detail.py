@@ -209,6 +209,7 @@ class CampaignDetail(QueueActions, ModalScreen):
         self._run_offset = 0
         self._run_has_stream = False
         self._run_follow_done = False
+        self._run_head_done = False
         self._run_tail_lock = asyncio.Lock()
         self._run_loaded_id: str | None = None
         self._run_detail_stale = False
@@ -698,11 +699,14 @@ class CampaignDetail(QueueActions, ModalScreen):
         self._select_run_row(self._selected_run_id, keep_detail=True)
         if self._active_tab() != "tab-runs":
             # A live run's detail went stale while hidden; reload it when the tab returns.
-            if self._run_loaded_id == self._selected_run_id and not self._run_follow_done:
+            if (self._run_loaded_id == self._selected_run_id
+                    and not (self._run_follow_done and self._run_head_done)):
                 self._run_detail_stale = True
-        elif (self.view.terminal and not self._run_follow_done
-              and self._run_renderer is not None):
-            # The campaign ended: no later poll tick will drain the followed run.
+        elif (self.view.terminal and self._run_loaded_id == self._selected_run_id
+              and (self._run_renderer is not None and not self._run_follow_done
+                   or not self._run_head_done)):
+            # The campaign ended: no later poll tick will drain the followed run or re-read
+            # its verdict.
             self.run_worker(self._runs_follow_poll(final=True), name="campaign-run-final",
                             group="campaign-run-final")
 
@@ -717,7 +721,7 @@ class CampaignDetail(QueueActions, ModalScreen):
         for row in rows:
             rid = row.get("run_id") or ""
             table.add_row(
-                *(Text(self._runs_cell(row, k)) for k in AM.RUNS_TABLE_COLUMNS),
+                *(Text(AM._clean(self._runs_cell(row, k))) for k in AM.RUNS_TABLE_COLUMNS),
                 key=rid)
         if rows and self._selected_run_id:
             for i, row in enumerate(rows):
@@ -745,6 +749,7 @@ class CampaignDetail(QueueActions, ModalScreen):
         self._run_offset = 0
         self._run_has_stream = False
         self._run_follow_done = False
+        self._run_head_done = False
         self._run_loaded_id = None
 
     def _load_run_detail(self, run_id: str) -> None:
@@ -774,6 +779,7 @@ class CampaignDetail(QueueActions, ModalScreen):
                 return
             if self._selected_run_id != run_id:
                 return
+            self._run_head_done = snap.has_run_json or self.view.terminal
             if self.view.terminal:
                 self._run_follow_done = True
             elif snap.has_stream:
@@ -821,43 +827,55 @@ class CampaignDetail(QueueActions, ModalScreen):
             return True
         return pane.scroll_y >= pane.max_scroll_y - 1
 
-    def _append_run_lines(self, lines: list[str]) -> None:
-        at_end = self._runs_detail_at_end()
-        self._run_body.extend(lines)
-        self._paint_runs_detail("end" if at_end else None)
-
     async def _runs_follow_poll(self, *, final: bool = False) -> None:
         if self.view is None or (self.view.terminal and not final):
             return
         if self._active_tab() != "tab-runs":
             return
         rid = self._selected_run_id
-        if rid is None or self._run_follow_done:
+        if rid is None or (self._run_follow_done and self._run_head_done):
             return
         async with self._run_tail_lock:
-            if rid != self._selected_run_id or self._run_follow_done:
+            if rid != self._selected_run_id or (self._run_follow_done and self._run_head_done):
                 return
             has_stream, ended = await asyncio.to_thread(
                 AM.run_follow_state, self.cfg, self.campaign_id, rid)
-            if not has_stream or rid != self._selected_run_id:
+            if rid != self._selected_run_id:
                 return
-            if not self._run_has_stream or self._run_renderer is None:
+            if has_stream and (not self._run_has_stream or self._run_renderer is None):
                 if (self._run_detail_loading_run_id != rid and not self.view.terminal):
                     self._load_run_detail(rid)
                 return
+            if self._run_loaded_id != rid:
+                return
+            terminal = self.view.terminal
+            stream_pending = has_stream and not self._run_follow_done
+            # exit.json lands before run.json (the verdict): keep re-reading the head until
+            # run.json exists, with or without a stream.
+            head_pending = not self._run_head_done and (ended or terminal)
+            if not stream_pending and not head_pending:
+                return
             renderer = self._run_renderer
             offset = self._run_offset
-            drain = ended or self.view.terminal
-            fn = AM.stream_tail_drain if drain else AM.stream_tail
-            head = None
+            drain = stream_pending and (ended or terminal)
+            lines: list[str] = []
+            head = body = None
+            head_done = self._run_head_done
             try:
-                lines, offset = await asyncio.to_thread(
-                    fn, self.cfg, self.campaign_id, rid, offset, renderer)
-                if drain:
-                    head = await asyncio.to_thread(AM.load_run_head, self.cfg,
-                                                   self.campaign_id, rid)
+                if stream_pending:
+                    fn = AM.stream_tail_drain if drain else AM.stream_tail
+                    lines, offset = await asyncio.to_thread(
+                        fn, self.cfg, self.campaign_id, rid, offset, renderer)
+                if has_stream and (drain or head_pending):
+                    head, head_done = await asyncio.to_thread(
+                        AM.load_run_head, self.cfg, self.campaign_id, rid)
+                elif head_pending:
+                    snap = await asyncio.to_thread(
+                        AM.load_run_pane_detail, self.cfg, self.campaign_id, rid)
+                    head, body, head_done = snap.head, snap.body, snap.has_run_json
             except Exception as e:
-                lines, offset, drain = [f"(follow stopped: {AM._clean(e)})"], self._run_offset, True
+                lines, offset = [f"(follow stopped: {AM._clean(e)})"], self._run_offset
+                drain, head_done = stream_pending, True
             # The row may have moved A->B->A while the thread ran: only the renderer this
             # call started with may advance the offset.
             if (not self._worker_alive() or self._selected_run_id != rid
@@ -866,8 +884,12 @@ class CampaignDetail(QueueActions, ModalScreen):
             self._run_offset = offset
             if drain:
                 self._run_follow_done = True
-                if head is not None:
-                    self._run_head = head
+            if head is not None:
+                self._run_head = head
+            if body is not None:
+                self._run_body = deque(body, maxlen=AM.RUNS_FOLLOW_MAX_LINES)
+            if head is not None or head_pending or terminal:
+                self._run_head_done = head_done or terminal
             if lines or head is not None:
                 at_end = self._runs_detail_at_end()
                 self._run_body.extend(lines)
