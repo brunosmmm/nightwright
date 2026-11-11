@@ -280,6 +280,18 @@ failure table, the WIP location, guard 7).
   (2) On branch `feature` with a `.nw/project.yaml` edit, `hold` returned `ok: true`,
   `replanned: {on_base: true, action: resume, class: clean}`; `HEAD` was `main` afterwards.
 
+- Review loop 1 (tests, plus text mode): `tests/test_main_dirty_apply.py` gained the AC2
+  `rm -f --` restore test (a newly added `a*b` beside a tracked `axb`; recorded argv carries
+  `--literal-pathspecs` and `--`; mutation of `_restore_path`'s `rm` branch to `_git` made it fail,
+  reverted), the AC7 raw-list-for-save-actions tests (symlink, typechange, symlink-to-file,
+  symlinked parent, gitlink, partial staging, all with a committed `.nw/project.yaml`),
+  `test_backslash_name_is_kept_and_saved` and a parametrised save over awkward names, the
+  planned-path-equals-HEAD / empty-WIP-commit tests, the tightened AC3 / AC4 / AC6 assertions and the
+  missing sub-branches of rows (d), (e), (f). The text mode of `nw queue main-dirty-apply` now also
+  prints `wip_branch`, `wip_path`, `wip_sha` and a one-line `replanned` (tested). Affected tests
+  (`test_main_dirty_apply.py`, `test_main_dirty_plan.py`) pass; `python3 tools/test_tiers.py --check`
+  and `python3 tools/spec_lint.py` exit 0; the full suite is left to gating.
+
 ### As shipped (2026-11-11)
 
 Code in `src/nightwright/agentic/main_dirty.py` (written fresh on `main`'s base, not cherry-picked

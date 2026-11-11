@@ -1626,7 +1626,11 @@ def attach(queue_group):
             return
         console.print(Text(f"main-dirty-apply {'ok' if result['ok'] else 'failed'}: "
                            f"{result['action']}"))
-        for key in ("sha", "error"):
+        replanned = result.get("replanned")
+        if isinstance(replanned, dict):                  # `hold`: the real re-plan, one line
+            result = {**result, "replanned": " ".join(f"{k}={replanned[k]}" for k in sorted(replanned))}
+        # `wip_*` matter most on a failure after the save: the edits live only on that branch
+        for key in ("sha", "wip_branch", "wip_path", "wip_sha", "replanned", "error"):
             if result.get(key):
                 # one line each: a control character (a newline in a path or hook output) must
                 # not forge lines
