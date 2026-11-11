@@ -22,6 +22,7 @@ from . import project as P
 SCHEMA = "nw.main_dirty_plan.v1"
 APPLY_SCHEMA = "nw.main_dirty_apply.v1"
 _COMMIT_SUBJECT = "chore: land stray trivial main-checkout edits"
+_COMMIT_TIMEOUT = 1800                 # seconds; `git commit` runs the repo's hooks
 _WIP_SUBJECT = "WIP: stray main-checkout edits"
 _FC_RANK = {"code": 4, "other": 3, "comment": 2, "frontmatter": 1, "docs": 1}
 _UNMERGED = frozenset({"UU", "AA", "DD", "AU", "UA", "DU", "UD"})
@@ -78,13 +79,13 @@ class PlanError(Exception):
 
 # ---- git -------------------------------------------------------------------------------
 
-def _git(root, *args, check=True):
+def _git(root, *args, check=True, timeout=120):
     env = {k: v for k, v in os.environ.items()
            if k not in ("GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE")}
     env.update({"LC_ALL": "C", "GIT_OPTIONAL_LOCKS": "0"})
     try:
         r = subprocess.run(["git", "-C", str(root), *args], capture_output=True, env=env,
-                           timeout=120)
+                           timeout=timeout)
     except (OSError, subprocess.TimeoutExpired) as e:
         raise PlanError(f"git {' '.join(args)}: {e}")
     if check and r.returncode != 0:
@@ -559,7 +560,12 @@ def plan_clear(root, base=None) -> dict:
         if r["file_class"] == "code":
             subst += names
     recommended = _recommended(root, action, klass, base, rows)
-    if action == "commit" and verb_refusal(root, {"action": action, "paths": paths}) is None:
+    try:
+        refusal = (verb_refusal(root, {"action": action, "paths": paths})
+                   if action == "commit" else "n/a")
+    except PlanError:                      # a git failure in the guard is a refusal, not a crash
+        refusal = "guard failed"
+    if refusal is None:
         # SPEC-0548: one audited command instead of raw git, only when the verb will not refuse
         recommended = ["nw queue main-dirty-apply --root " + shlex.quote(str(root))
                        + (f" --base {shlex.quote(arg_base)}" if arg_base is not None else "")]
@@ -575,9 +581,9 @@ def plan_clear(root, base=None) -> dict:
 
 # ---- apply (SPEC-0548) -----------------------------------------------------------------
 
-def _lg(root, *args, check=True):
+def _lg(root, *args, check=True, timeout=120):
     """`_git` with `--literal-pathspecs`: a path is never a glob or a magic pathspec."""
-    return _git(root, "--literal-pathspecs", *args, check=check)
+    return _git(root, "--literal-pathspecs", *args, check=check, timeout=timeout)
 
 
 def _index_entries(root, path):
@@ -712,16 +718,20 @@ def _commit_trivial(root, paths) -> dict:
     head0 = _head(root)
     want = {p: _hash_wt(root, p) for p in paths}
 
-    def fail(error):
+    def fail(error, restore=True):
         head = _head(root)
         if head != head0:                                    # a commit landed: leave the index
             return {"ok": False, "sha": head, "error": error}
+        if not restore:
+            return {"ok": False, "error": error}
         return {"ok": False, "error": _restore_index(idx, data, mode) or error}
 
     try:
         r = _stage(root, paths)
         if r.returncode != 0:
-            return fail(_dec(r.stderr).strip() or "git add failed")
+            # `git add` updates the index atomically, so a failed add changed nothing: nothing to
+            # restore, and restoring the bytes read before it could overwrite a concurrent write
+            return fail(_dec(r.stderr).strip() or "git add failed", restore=False)
         names = set(_dec(_lg(root, "diff", "--cached", "--no-renames", "--name-only", "-z"
                              ).stdout).split("\0")) - {""}
         for p in sorted(names ^ set(paths)):
@@ -731,7 +741,12 @@ def _commit_trivial(root, paths) -> dict:
             if len(ents) != 1 or ents[0][1] != want[p]:
                 return fail(f"changed since plan {p}")
         msgs = ["-m", _COMMIT_SUBJECT] + [x for p in paths for x in ("-m", p)]
-        r = _lg(root, "commit", *msgs, check=False)
+        try:
+            # hooks run inside `git commit`: a generous bound, and a kill (which leaves hook
+            # children possibly running) never restores the index under them
+            r = _lg(root, "commit", *msgs, check=False, timeout=_COMMIT_TIMEOUT)
+        except PlanError as e:
+            return fail(f"{e}; index not restored", restore=False)
         if r.returncode != 0:
             return fail(_dec(r.stderr or r.stdout).strip() or "git commit failed")
         sha = _head(root)
@@ -778,6 +793,8 @@ def _apply_locked(out, root, plan, base) -> dict:
     action = live["action"]
     if action == "resume":
         out["ok"] = _tracked_clean(root)
+        if not out["ok"]:
+            out["error"] = "main not tracked-clean"
     elif action == "commit":
         out.update(_commit_trivial(root, live["paths"]))
     elif action in ("save_branch", "branch_and_escalate", "hold"):

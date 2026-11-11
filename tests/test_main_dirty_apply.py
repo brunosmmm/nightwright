@@ -149,19 +149,46 @@ def test_every_unmerged_status_code_is_a_merge(tmp_path, monkeypatch, code):
     assert _snap(repo) == before
 
 
-def test_merge_in_a_linked_worktree(tmp_path):
+def _rename_rename(repo):
+    """a -> b on one side, a -> c on the other: git status shows `DD a` (plus `AU b`, `UA c`)."""
+    _git(repo, "switch", "-qc", "side")
+    _git(repo, "mv", "docs/a.md", "docs/b.md")
+    _git(repo, "commit", "-qm", "side")
+    _git(repo, "switch", "-q", "main")
+    _git(repo, "mv", "docs/a.md", "docs/c.md")
+    _git(repo, "commit", "-qm", "main")
+    assert _git(repo, "merge", "side", check=False).returncode != 0
+
+
+@pytest.mark.parametrize("claim", [None, "commit"])
+def test_real_dd_conflict_is_a_merge(tmp_path, claim):
+    repo = _repo(tmp_path)
+    _rename_rename(repo)
+    assert "DD docs/a.md" in _git(repo, "status", "--porcelain").stdout
+    _put(repo, "untracked.txt", "u\n")
+    before = _snap(repo)
+    plan = None if claim is None else {"schema": MD.SCHEMA, "action": claim, "paths": ["docs/a.md"]}
+    out = MD.apply_clear(repo, plan=plan)
+    assert (out["ok"], out["escalate"]) == (False, True) and out["error"].endswith("in progress")
+    assert out["error"] != "plan is stale"
+    assert _snap(repo) == before
+
+
+@pytest.mark.parametrize("claim", [None, "commit", "save_branch"])
+def test_merge_in_a_linked_worktree(tmp_path, claim):
     repo = _repo(tmp_path)
     linked = tmp_path / "linked"
     _git(repo, "worktree", "add", "-q", "-b", "lw", str(linked))
     _gitdir(linked, "MERGE_HEAD").write_text(_git(linked, "rev-parse", "HEAD").stdout)
     _edit_trivial(linked)
     before = _snap(linked)
-    out = MD.apply_clear(linked, plan={"schema": MD.SCHEMA, "action": "commit", "paths": ["docs/a.md"]})
+    plan = None if claim is None else {"schema": MD.SCHEMA, "action": claim, "paths": ["docs/a.md"]}
+    out = MD.apply_clear(linked, plan=plan)
     assert (out["ok"], out["escalate"], out["error"]) == (False, True, "merge in progress")
     assert _snap(linked) == before
 
 
-def test_stale_plan_writes_nothing_and_plan_base_is_ignored(tmp_path):
+def test_stale_plan_writes_nothing(tmp_path):
     repo = _repo(tmp_path)
     _edit_trivial(repo)
     before = _snap(repo)
@@ -171,9 +198,56 @@ def test_stale_plan_writes_nothing_and_plan_base_is_ignored(tmp_path):
         out = MD.apply_clear(repo, plan=plan)
         assert (out["ok"], out["error"]) == (False, "plan is stale")
         assert _snap(repo) == before
-    out = MD.apply_clear(repo, plan={"schema": MD.SCHEMA, "action": "commit", "paths": ["docs/a.md"],
-                                     "base": "develop"})
-    assert out["ok"] is True
+
+
+def test_plan_base_is_never_used(tmp_path, monkeypatch):
+    """No project config, checkout on `develop`: only a forwarded base could make this a commit."""
+    repo = _repo(tmp_path, base="develop", project=False)
+    _edit_trivial(repo)
+    plan = {"schema": MD.SCHEMA, "action": "hold", "paths": ["docs/a.md"], "base": "develop"}
+    before = _snap(repo)
+    out = MD.apply_clear(repo, plan=plan)
+    assert (out["ok"], out["error"]) == (False, "save not supported yet: hold")
+    assert _snap(repo) == before
+    seen = []
+    real = MD.plan_clear
+    monkeypatch.setattr(MD, "plan_clear",
+                        lambda root, base=None: (seen.append(base), real(root, base=base))[1])
+    MD.apply_clear(repo, plan=plan)
+    assert seen == [None]
+
+
+def test_plan_paths_order_does_not_matter(tmp_path):
+    repo = _repo(tmp_path, {"docs/b.md": "# b\n"})
+    _edit_trivial(repo)
+    _edit_trivial(repo, "docs/b.md")
+    plan = {"schema": MD.SCHEMA, "action": "commit", "paths": ["docs/b.md", "docs/a.md"]}
+    assert MD.plan_clear(repo)["paths"] == ["docs/a.md", "docs/b.md"]
+    assert MD.apply_clear(repo, plan=plan)["ok"] is True
+
+
+def test_guard_order_stale_then_bad_path_then_partial(tmp_path, monkeypatch):
+    repo = _repo(tmp_path)
+    _edit_trivial(repo)
+    live = MD.plan_clear(repo)
+    stale = {"schema": MD.SCHEMA, "action": "commit", "paths": ["docs/other.md"]}
+    # a stale plan and a bad live path: the stale plan wins
+    monkeypatch.setattr(MD, "plan_clear", lambda root, base=None: {**live, "paths": ["../x.md"]})
+    assert MD.apply_clear(repo, plan=stale)["error"] == "plan is stale"
+    assert MD.apply_clear(repo)["error"] == "bad path ../x.md"
+    monkeypatch.undo()
+    # a path that is a symlink and also partially staged: the bad path wins
+    repo2 = _repo(tmp_path, name="r2")
+    os.symlink("a.md", repo2 / "docs/link.md")
+    _git(repo2, "add", "-A")
+    _git(repo2, "commit", "-qm", "link")
+    (repo2 / "docs/link.md").unlink()
+    os.symlink("b.md", repo2 / "docs/link.md")
+    _git(repo2, "add", "docs/link.md")
+    (repo2 / "docs/link.md").unlink()
+    os.symlink("c.md", repo2 / "docs/link.md")
+    out = MD.apply_clear(repo2)
+    assert out["error"] == "bad path docs/link.md"
 
 
 # ---- AC2: the trivial commit ------------------------------------------------------------------
@@ -252,10 +326,10 @@ def test_file_modified_between_plan_and_add_is_refused(tmp_path, monkeypatch):
 def _wrap_commit(monkeypatch, wrapper):
     real = MD._lg
 
-    def lg(root, *args, check=True):
+    def lg(root, *args, check=True, **kw):
         if args and args[0] == "commit":
-            return wrapper(real, root, *args, check=check)
-        return real(root, *args, check=check)
+            return wrapper(real, root, *args, check=check, **kw)
+        return real(root, *args, check=check, **kw)
 
     monkeypatch.setattr(MD, "_lg", lg)
 
@@ -265,9 +339,9 @@ def test_restore_index_locked(tmp_path, monkeypatch):
     _edit_trivial(repo)
     lock = _index_path(repo).parent / "index.lock"
 
-    def holder(real, root, *args, check):             # a concurrent git process takes the lock
+    def holder(real, root, *args, check, **kw):       # a concurrent git process takes the lock
         lock.write_text("holder")
-        return real(root, *args, check=check)
+        return real(root, *args, check=check, **kw)
 
     _wrap_commit(monkeypatch, holder)
     out = MD.apply_clear(repo)
@@ -279,8 +353,8 @@ def test_restore_skipped_when_head_moved(tmp_path, monkeypatch):
     repo = _repo(tmp_path)
     _edit_trivial(repo)
 
-    def lands_then_fails(real, root, *args, check):
-        real(root, *args, check=check)
+    def lands_then_fails(real, root, *args, check, **kw):
+        real(root, *args, check=check, **kw)
         return subprocess.CompletedProcess(args, 1, b"", b"post-commit fault")
 
     _wrap_commit(monkeypatch, lands_then_fails)
@@ -301,6 +375,118 @@ def test_commit_lands_but_main_dirty(tmp_path):
     head = _git(repo, "rev-parse", "HEAD").stdout.strip()
     assert (out["ok"], out["sha"], out["error"]) == (False, head, "main not tracked-clean after commit")
     assert not _tracked_clean(repo)
+
+
+def test_staged_names_must_equal_the_planned_paths(tmp_path, monkeypatch):
+    repo = _repo(tmp_path)
+    _edit_trivial(repo)
+    real = MD._stage
+
+    def greedy(root, paths):                              # an unplanned file gets staged too
+        _put(repo, "docs/new.md", "# new\n")
+        _git(repo, "add", "docs/new.md")
+        return real(root, paths)
+
+    monkeypatch.setattr(MD, "_stage", greedy)
+    head = _git(repo, "rev-parse", "HEAD").stdout
+    index = _index_path(repo).read_bytes()
+    out = MD.apply_clear(repo)
+    assert (out["ok"], out["error"]) == (False, "changed since plan docs/new.md")
+    assert _git(repo, "rev-parse", "HEAD").stdout == head
+    assert _index_path(repo).read_bytes() == index
+
+
+def test_failed_git_add_reports_gits_error_and_restores_nothing(tmp_path, monkeypatch):
+    repo = _repo(tmp_path)
+    _edit_trivial(repo)
+    monkeypatch.setattr(MD, "_stage", lambda root, paths: subprocess.CompletedProcess(
+        paths, 1, b"", b"fatal: add exploded"))
+    restored = []
+    monkeypatch.setattr(MD, "_restore_index", lambda *a: restored.append(a))
+    out = MD.apply_clear(repo)
+    assert (out["ok"], out["error"]) == (False, "fatal: add exploded") and not restored
+
+
+def test_add_under_a_held_index_lock_shows_gits_error(tmp_path, monkeypatch):
+    repo = _repo(tmp_path)
+    _edit_trivial(repo)
+    lock = _index_path(repo).parent / "index.lock"
+    real = MD._stage
+
+    def holder(root, paths):                              # a concurrent git takes the lock first
+        lock.write_text("holder")
+        return real(root, paths)
+
+    monkeypatch.setattr(MD, "_stage", holder)
+    index = _index_path(repo).read_bytes()
+    out = MD.apply_clear(repo)
+    assert out["ok"] is False and "index.lock" in out["error"]
+    assert out["error"] != "index locked, not restored"
+    assert lock.read_text() == "holder" and _index_path(repo).read_bytes() == index
+
+
+def test_restore_index_os_error_branch(tmp_path):
+    err = MD._restore_index(str(tmp_path / "no-such-dir" / "index"), b"x", 0o644)
+    assert err and err.startswith("index not restored: ")
+    idx = tmp_path / "index"
+    idx.write_bytes(b"old")
+    assert MD._restore_index(str(idx), b"new", 0o640) is None
+    assert idx.read_bytes() == b"new" and stat.S_IMODE(idx.stat().st_mode) == 0o640
+    assert not (tmp_path / "index.lock").exists()
+
+
+def test_commit_timeout_does_not_restore_under_a_running_hook(tmp_path, monkeypatch):
+    repo = _repo(tmp_path)
+    _edit_trivial(repo)
+    seen = {}
+
+    def times_out(real, root, *args, check, timeout=None, **kw):
+        seen["timeout"] = timeout
+        raise MD.PlanError("git commit: timed out after 1800 seconds")
+
+    _wrap_commit(monkeypatch, times_out)
+    out = MD.apply_clear(repo)
+    assert out["ok"] is False and out["error"].endswith("; index not restored")
+    assert seen["timeout"] and seen["timeout"] > 120          # hooks get more than the 120 s default
+    assert "docs/a.md" in _git(repo, "diff", "--cached", "--name-only").stdout
+
+
+def test_resume_not_tracked_clean_says_why(tmp_path, monkeypatch):
+    repo = _repo(tmp_path)
+    monkeypatch.setattr(MD, "_tracked_clean", lambda root: False)
+    out = MD.apply_clear(repo)
+    assert (out["ok"], out["action"], out["error"]) == (False, "resume", "main not tracked-clean")
+
+
+def test_commit_paths_with_space_and_non_ascii(tmp_path):
+    repo = _repo(tmp_path, {"docs/my file.md": "# a\n", "docs/caf\u00e9.md": "# b\n"})
+    _put(repo, "docs/my file.md", "# a\n\nx\n")
+    _put(repo, "docs/caf\u00e9.md", "# b\n\nx\n")
+    out = MD.apply_clear(repo)
+    assert out["ok"] is True and _tracked_clean(repo)
+    names = _git(repo, "-c", "core.quotepath=off", "diff-tree", "--no-commit-id", "--name-only",
+                 "-r", "HEAD").stdout.split("\n")
+    assert {"docs/my file.md", "docs/caf\u00e9.md"} <= set(names)
+
+
+def test_commit_in_a_linked_worktree(tmp_path):
+    repo = _repo(tmp_path)
+    _git(repo, "switch", "-qc", "other")
+    linked = tmp_path / "linked"
+    _git(repo, "worktree", "add", "-q", str(linked), "main")
+    _edit_trivial(linked)
+    assert not (linked / ".git").is_dir()                      # `.git` is a file here
+    index = _index_path(linked)
+    assert ".git/index" not in str(index) or "worktrees" in str(index)
+    out = MD.apply_clear(linked)
+    head = _git(linked, "rev-parse", "HEAD").stdout.strip()
+    assert (out["ok"], out["sha"]) == (True, head) and _tracked_clean(linked)
+    # and a failed commit there restores that worktree's own index
+    _edit_trivial(linked, "README.md")
+    _hook(linked, "pre-commit", "exit 1\n")
+    before = _index_path(linked).read_bytes()
+    out = MD.apply_clear(linked)
+    assert out["ok"] is False and _index_path(linked).read_bytes() == before
 
 
 # ---- AC3: refusals with no write --------------------------------------------------------------
@@ -388,6 +574,20 @@ def test_refusal_bad_paths(tmp_path, monkeypatch, name):
     out = MD.apply_clear(repo)
     assert (out["ok"], out["error"], out["escalate"]) == (False, error, escalate)
     assert _snap(repo) == before
+
+
+def test_bad_path_symlinked_parent_in_head_only(tmp_path):
+    """`d` is a symlink in HEAD but a real directory in the worktree: `d/x.md` is still unsafe."""
+    repo = _repo(tmp_path)
+    os.symlink("docs", repo / "d")
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-qm", "d is a symlink")
+    (repo / "d").unlink()
+    (repo / "d").mkdir()
+    _put(repo, "d/x.md", "# x\n")
+    assert not (repo / "d").is_symlink()
+    assert MD._bad_path(repo, "d/x.md") is True
+    assert MD._bad_path(repo, "docs/a.md") is False
 
 
 def test_deleted_path_with_a_star_is_not_a_bad_path(tmp_path, monkeypatch):
@@ -511,27 +711,56 @@ def _sc_merge(tmp_path, mp):
     return repo, "merge in progress", True
 
 
-@pytest.mark.parametrize("name", sorted({**BAD_PATHS, **SAVES, "partial": _sc_partial,
-                                         "merge": _sc_merge}))
+def _sc_config(tmp_path, mp):
+    repo = _repo(tmp_path)
+    _edit_trivial(repo)
+    _put(repo, ".nw/project.yaml", "project: [unclosed\n")
+    return repo, None, False
+
+
+def _sc_lock(tmp_path, mp):
+    repo = _repo(tmp_path)
+    _edit_trivial(repo)
+    return repo, "clear already in progress", False
+
+
+def _sc_stale_plan(tmp_path, mp):
+    repo = _repo(tmp_path)
+    _edit_trivial(repo)
+    return repo, "plan is stale", False
+
+
+REFUSALS = {**BAD_PATHS, **SAVES, "partial": _sc_partial, "merge": _sc_merge,
+            "deleted-star": _sc_deleted_star, "config": _sc_config, "lock": _sc_lock,
+            "stale-plan": _sc_stale_plan}
+
+
+@pytest.mark.parametrize("name", sorted(REFUSALS))
 def test_refusals_leave_index_bytes(tmp_path, monkeypatch, name):
     """The guards run with GIT_OPTIONAL_LOCKS=0: a repo with stale stat data keeps its index."""
-    table = {**BAD_PATHS, **SAVES, "partial": _sc_partial, "merge": _sc_merge}
-    repo, error, _ = table[name](tmp_path, monkeypatch)
+    repo, error, _ = REFUSALS[name](tmp_path, monkeypatch)
     for f in ("README.md", "docs/a.md"):                       # stale stat data: git would refresh
         if (repo / f).is_file() and not (repo / f).is_symlink():
             os.utime(repo / f, (1_000_000_000, 1_000_000_000))
     index = _index_path(repo).read_bytes()
-    out = MD.apply_clear(repo)
+    plan = ({"schema": MD.SCHEMA, "action": "commit", "paths": ["docs/other.md"]}
+            if name == "stale-plan" else None)
+    if name == "lock":
+        gdir = _git(repo, "rev-parse", "--absolute-git-dir").stdout.strip()
+        with open(os.path.join(gdir, "nw-main-dirty.lock"), "w") as held:
+            fcntl.flock(held, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            out = MD.apply_clear(repo)
+    else:
+        out = MD.apply_clear(repo, plan=plan)
     assert out["ok"] is False
+    if error:
+        assert out["error"] == error
     assert _index_path(repo).read_bytes() == index
 
 
 # ---- AC4: argv, untracked bytes ---------------------------------------------------------------
 
-def test_recorded_git_argv(tmp_path, monkeypatch):
-    repo = _repo(tmp_path)
-    _edit_trivial(repo)
-    _put(repo, "untracked.txt", "u\n")
+def _record(monkeypatch):
     calls = []
     real = subprocess.run
 
@@ -540,18 +769,59 @@ def test_recorded_git_argv(tmp_path, monkeypatch):
         return real(argv, *a, **kw)
 
     monkeypatch.setattr(MD.subprocess, "run", rec)
-    out = MD.apply_clear(repo)
-    assert out["ok"] is True and (repo / "untracked.txt").read_bytes() == b"u\n"
+    return calls
+
+
+def _verbs(calls):
+    return [next(t for t in c[3:] if not t.startswith("-")) for c in calls]   # after `-C <root>`
+
+
+def _assert_safe_argv(calls):
     assert calls and all(c[0] == "git" for c in calls)            # never `nw`
-    verbs = [next(t for t in c[3:] if not t.startswith("-")) for c in calls]   # after `-C <root>`
+    verbs = _verbs(calls)
     banned = {"reset", "restore", "clean", "checkout", "stash", "push", "switch"}
     assert not banned & set(verbs)
     assert not any(c[3:5] == ["branch", "-D"] or c[3:5] == ["rm", "-r"] for c in calls)
     assert not any("commit" == v and "-a" in c for v, c in zip(verbs, calls))
-    assert {"add", "commit", "hash-object", "ls-files"} <= set(verbs)
     for v, c in zip(verbs, calls):
         if v in {"add", "commit", "hash-object", "ls-files", "ls-tree", "diff"}:
             assert "--literal-pathspecs" in c, c
+
+
+def test_recorded_git_argv(tmp_path, monkeypatch):
+    repo = _repo(tmp_path)
+    _edit_trivial(repo)
+    _put(repo, "untracked.txt", "u\n")
+    calls = _record(monkeypatch)
+    out = MD.apply_clear(repo)
+    assert out["ok"] is True and (repo / "untracked.txt").read_bytes() == b"u\n"
+    _assert_safe_argv(calls)
+    assert {"add", "commit", "hash-object", "ls-files"} <= set(_verbs(calls))
+
+
+@pytest.mark.parametrize("scenario", ["hook-failure", "resume", "refusal", "changed-since-plan"])
+def test_recorded_git_argv_on_other_paths(tmp_path, monkeypatch, scenario):
+    repo = _repo(tmp_path)
+    if scenario == "hook-failure":
+        _edit_trivial(repo)
+        _hook(repo, "pre-commit", "exit 1\n")
+    elif scenario == "refusal":
+        _real_conflict(repo)
+    elif scenario == "changed-since-plan":
+        _edit_trivial(repo)
+        real = MD._stage
+
+        def racing(root, paths):
+            _put(repo, "docs/a.md", "# T\n\nchanged\n")
+            return real(root, paths)
+
+        monkeypatch.setattr(MD, "_stage", racing)
+    calls = _record(monkeypatch)
+    out = MD.apply_clear(repo)
+    assert out["ok"] is (scenario == "resume")
+    _assert_safe_argv(calls)
+    if scenario in ("hook-failure", "changed-since-plan"):
+        assert "add" in _verbs(calls)           # it staged, so the restore path really ran
 
 
 # ---- AC5: the CLI -----------------------------------------------------------------------------
@@ -591,6 +861,8 @@ def _plan_file(tmp_path, content):
     {"schema": MD.SCHEMA, "action": "commit", "paths": 5},
     {"a": 1}, [None], '"just a string"', "{not json",
     {"schema": MD.SCHEMA, "action": "commit", "paths": [None]},
+    {"schema": MD.SCHEMA, "action": "commit", "paths": {"docs/a.md": 1}},
+    {"schema": MD.SCHEMA, "action": "commit", "paths": "docs/a.md"},
     {"schema": MD.SCHEMA, "action": 5, "paths": []},
     {"schema": "other.v1", "action": "commit", "paths": []},
 ])
@@ -601,6 +873,41 @@ def test_cli_malformed_plan_exits_2(tmp_path, plan):
     assert r.exit_code == 2 and r.output.startswith("error:") and "Traceback" not in r.output
     assert len(r.output.strip().splitlines()) == 1
     assert _snap(repo) == before
+
+
+def test_cli_non_utf8_hook_output_still_gives_a_verdict(tmp_path):
+    repo = _repo(tmp_path)
+    _edit_trivial(repo)
+    _hook(repo, "pre-commit", "printf 'lint \\351 bad\\n\\033[31mred\\n' >&2\nexit 1\n")
+    index = _index_path(repo).read_bytes()
+    r = _invoke("--root", str(repo), "--json")
+    assert r.exit_code == 0 and r.exception is None
+    doc = json.loads(r.output)
+    assert doc["ok"] is False and "lint \ufffd bad" in doc["error"]
+    assert _index_path(repo).read_bytes() == index
+    r = _invoke("--root", str(repo))                          # text mode: one line, no raw ESC/newline
+    assert r.exit_code == 1
+    assert "\x1b" not in r.output and "Traceback" not in r.output
+    assert r.output.splitlines()[0] == "main-dirty-apply failed: commit"
+    assert len(r.output.splitlines()) == 2
+
+
+def test_cli_non_utf8_path_gives_a_verdict(tmp_path):
+    repo = _repo(tmp_path)
+    bad = os.fsencode(repo) + b"/docs/bad\xe9.md"
+    with open(bad, "wb") as f:
+        f.write(b"# x\n")
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-qm", "non-utf8 name")
+    os.unlink(bad)
+    os.symlink("README.md", bad)                              # typechange: `bad path <p>`
+    r = _invoke("--root", str(repo), "--json")
+    assert r.exception is None
+    doc = json.loads(r.output)
+    assert doc["ok"] is False and doc["error"] == "bad path docs/bad\ufffd.md"
+    r = _invoke("--root", str(repo))
+    assert r.exit_code == 1
+    assert "bad path docs/bad\ufffd.md" in r.output
 
 
 def test_cli_missing_plan_file_exits_2(tmp_path):

@@ -338,6 +338,17 @@ order, `escalate`, the index restore).
   merge: `ok: false`, `error: merge in progress`, `escalate: true`, tree unchanged.
 - The full suite was left to gating; `tools/affected_tests.py --run` selected too many modules to
   finish in the run's time limit, so the related modules above were run instead.
+- Review loop 1: `tests/test_main_dirty_apply.py` grew to 119 cases: dict and string `paths` in
+  `--plan`; a plan `base` that could only matter with no project config; the staged-name-set
+  check and a failed `git add` (and one under a held `index.lock`); every 3a-3d refusal group,
+  including the config, held-lock, stale-plan and deleted-`a*b.md` cases, in
+  `test_refusals_leave_index_bytes` (removing `GIT_OPTIONAL_LOCKS=0` fails 15 of them, run by
+  hand); a real-git `DD` (rename/rename) merge; the linked-worktree merge with no plan, `commit`
+  and `save_branch`; guard order; reordered `--plan` paths; a HEAD-only symlinked parent; the
+  argv recorder on the hook-failure, `resume`, refusal and changed-since-plan paths; the
+  `_restore_index` OS-error branch; paths with a space and non-ASCII; a commit in a linked
+  worktree; non-UTF-8 hook output and path names through the CLI (the test fails without the
+  printable-result step, run by hand). `python3 tools/test_tiers.py --check` exits 0.
 
 ### As shipped (2026-11-11)
 
@@ -358,6 +369,18 @@ order, `escalate`, the index restore).
   `_run_list` runs a `nw ...` command through the CLI of this tree. SPEC-0547's docs assertion
   (`main-dirty-apply` absent from operate.md / agentic.md) is inverted, as this spec's Definition
   of done requires; the conductor skill still does not name the verb.
+- Review loop 1 code: a failed `git add` no longer restores the index (it is atomic, so nothing
+  changed and git's own error is shown); `git commit` runs with a 1800 s bound for its hooks, and
+  a timeout reports `...; index not restored` instead of restoring under running hook children;
+  `resume` on a dirty checkout says `main not tracked-clean`; a git failure inside `verb_refusal`
+  while `plan_clear` builds `recommended` keeps the raw list instead of failing the plan; the
+  CLI prints `main-dirty-apply` results with undecodable bytes as U+FFFD and control characters
+  escaped on one line.
+- AC5's wording "project config without `base`" for the `--base develop` case is not editable here
+  (the spec's text is guarded); the shipped fixture is a repo with no `.nw/project.yaml`, checkout
+  on `develop` (`test_cli_base_reaches_plan_clear`), as recorded above.
+- Not done: `verb_refusal` still spawns several git processes per planned path, and apply runs it
+  twice (once in `plan_clear` for `commit`, once as guard 5-6); batching them is a follow-up.
 
 ## Goals / Non-goals
 

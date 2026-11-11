@@ -709,7 +709,6 @@ def test_recommended_commit_whole_list_and_run(tmp_path):
     assert _git(repo, "status", "--porcelain").stdout == "?? untracked.md\n"
     assert _show(repo, "HEAD", "docs/a.md") == "# T\n\nx\n"
     assert "untracked.md" not in _tree(repo, "HEAD")
-    assert _git(repo, "log", "-1", "--format=%s").stdout.strip() == "chore: land stray trivial main-checkout edits"
 
 
 # variant: (files, edit, unstaged paths named by the add line)

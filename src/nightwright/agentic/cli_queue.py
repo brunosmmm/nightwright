@@ -1566,6 +1566,17 @@ def attach(queue_group):
             # soft_wrap: a terminal must never fold a path or a command a human pastes
             console.print(Text(line), soft_wrap=True)
 
+    def _printable(doc):
+        """Strings that came from git bytes (surrogateescape) cannot be encoded as UTF-8: swap
+        each undecodable byte for U+FFFD so the verdict is always printable."""
+        if isinstance(doc, str):
+            return "".join("\ufffd" if "\udc80" <= c <= "\udcff" else c for c in doc)
+        if isinstance(doc, dict):
+            return {k: _printable(v) for k, v in doc.items()}
+        if isinstance(doc, list):
+            return [_printable(v) for v in doc]
+        return doc
+
     @queue_group.command("main-dirty-apply")
     @click.option("--root", "root", required=True, help="the project's main checkout (top of a worktree)")
     @click.option("--base", default=None,
@@ -1606,7 +1617,7 @@ def attach(queue_group):
                 R.warn(f"error: --plan {plan_file} is not a {MD.SCHEMA} plan "
                        "(needs a string action and a list of string paths)")
                 ctx.exit(2)
-        result = MD.apply_clear(root, plan=plan, base=base)
+        result = _printable(MD.apply_clear(root, plan=plan, base=base))
         if as_json:
             _dump_json(result)
             return
@@ -1614,7 +1625,10 @@ def attach(queue_group):
                            f"{result['action']}"))
         for key in ("sha", "error"):
             if result.get(key):
-                console.print(Text(f"{key}: {result[key]}"), soft_wrap=True)
+                # one line each: a control character (a newline in a path or hook output) must
+                # not forge lines
+                text = "".join(c if c.isprintable() else repr(c)[1:-1] for c in str(result[key]))
+                console.print(Text(f"{key}: {text}"), soft_wrap=True)
         if not result["ok"]:
             ctx.exit(1)
 
