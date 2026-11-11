@@ -37,6 +37,8 @@ _MD_SUFFIXES = frozenset({".md", ".html", ".xml"})
 # characters that end a line for CPython's tokenizer or for JavaScript (plus Unicode separators)
 _LINE_BREAKS = "\r\x0b\x0c\x1c\x1d\x1e\x85  "
 _SCALAR_ENDS = ("|", "|-", "|+", ">", ">-", ">+")
+# a trailing backslash splices the next line (preprocessor, shell, Python, Ruby, Perl)
+_SPLICE_SUFFIXES = frozenset({".py", ".pyi", ".sh", ".bash", ".rb", ".pl"}) | _CLIKE_SUFFIXES
 
 
 class NotAWorktree(Exception):
@@ -86,11 +88,11 @@ def _base(root: Path, base) -> str:
     """The base `finish_close` compares: through `load_project_config` when the project has a
     config (`--base` is then ignored), else `--base`, else `main`."""
     path = P.config_path(root)
-    if path.is_file():
-        try:
+    try:
+        if path.is_file():
             return P.load_project_config(path)["merge"]["base"]
-        except ValueError as e:
-            raise PlanError(str(e))
+    except (ValueError, OSError) as e:
+        raise PlanError(str(e))
     return base or "main"
 
 
@@ -152,11 +154,14 @@ def _blob(root: Path, spec: str) -> bytes | None:
 
 def _wt(root: Path, path: str) -> bytes | None:
     full = root / path
-    if full.is_symlink():
-        return os.fsencode(os.readlink(full))
-    if not full.is_file():
-        return None
-    return full.read_bytes()
+    try:
+        if full.is_symlink():
+            return os.fsencode(os.readlink(full))
+        if not full.is_file():
+            return None
+        return full.read_bytes()
+    except OSError as e:
+        raise PlanError(f"cannot read {path}: {e}")
 
 
 # ---- line scan -------------------------------------------------------------------------
@@ -211,6 +216,8 @@ def _scan(path: str, text: str):
             hazard = True
         if suf in _BACKTICK_SUFFIXES and "`" in ln:
             hazard = True
+        if suf in _SPLICE_SUFFIXES and s.endswith("\\"):
+            hazard = True
         if suf in _PY_SUFFIXES:
             touched, tok = _triple(ln, tok)
             if touched:
@@ -229,7 +236,7 @@ def _scan(path: str, text: str):
                 kind = "comment"
                 if "*/" in ln:
                     in_block = False
-                    if not s.endswith("*/"):
+                    if not s.endswith("*/") or ln.count("*/") != 1:
                         hazard = True
             elif not s:
                 kind = "blank"
@@ -257,7 +264,7 @@ def _scan(path: str, text: str):
                 kind = "comment"
                 if "-->" in ln:
                     in_html = False
-                    if not s.endswith("-->"):
+                    if not s.endswith("-->") or ln.count("-->") != 1:
                         hazard = True
             elif not s:
                 kind = "blank"
@@ -454,6 +461,7 @@ def _recommended(root, action, klass, base, rows) -> list[str]:
 def plan_clear(root, base=None) -> dict:
     root = Path(root)
     _check_worktree(root)
+    root = Path(os.path.abspath(root))
     base = _base(root, base)
     rows = _status(root)
     xys = [r["xy"] for r in rows]

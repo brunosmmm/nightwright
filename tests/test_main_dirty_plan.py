@@ -108,6 +108,21 @@ CASES = {
     "S20": ({"src/x.py": ("x = 1\n", "x = 1\n# note\rimport os\n")}, S, "code"),
     "S21": ({"src/x.js": ("f();\n", "f();\n// note\x0cfoo();\n")}, S, "code"),
     "S22": ({"src/x.py": ("x = 1\n", "x = 1\n\x0c\n")}, T, "comment"),
+    "K01": ({"src/x.py": ("def f():\n    x = 1\n", "def f():\nx = 1\n")}, S, "code"),
+    "K02": ({"src/x.sh": ("if a; then\n  x\nfi\n", "if a; then\nx\nfi\n")}, S, "code"),
+    "K03": ({"src/x.py": ("a = 1\n\n# c\nb = 2\n", "\n# c\na = 1\nb = 2\n")}, T, "comment"),
+    "K04": ({"docs/a.md": ("# T\n\n<!-- x -->\n\nprose\n", "# T\n\n<!-- y -->\n\nprose\n")}, T, "comment"),
+    "K05": ({"site/x.html": ("<!-- a -->\n<p>x</p>\n", "<!-- b -->\n<p>x</p>\n")}, T, "comment"),
+    "K06": ({"docs/specs/x.md": ("---\ns: a\n```\n---\nbody\n", "---\ns: b\n```\n---\nbody\n")},
+            B, "other"),
+    "K07": ({"docs/specs/x.md": ("---\ns: a\n---\n\nx\n", "---\ns: a\n\nx\n")}, B, "other"),
+    "H01": ({"src/x.c": ("/*\n x\n*/\nint a;\n", "/*\n x\n*/ f(); /* y */\nint a;\n")}, S, "code"),
+    "H02": ({"site/x.html": ("<!--\nx\n-->\n<p>a</p>\n",
+                             "<!--\nx\n--> <script>x()</script> <!-- y -->\n<p>a</p>\n")}, B, "other"),
+    "H03": ({"src/x.c": ("// n\nfoo();\n", "// n \\\nfoo();\n")}, S, "code"),
+    "H04": ({"src/build.sh": ("cmd \\\n  --flag\n", "cmd \\\n# note\n  --flag\n")}, S, "code"),
+    "H05": ({"src/x.js": ("f();\n", "f();\n// n\u2028foo();\n")}, S, "code"),
+    "H06": ({"src/x.py": ("x = 1\n", "x = 1\n# n\x0bimport os\n")}, S, "code"),
     "S23a": ({"docs/a.md": ("# T\n\nprose\n", "# T\n\nprose \udcff\n")}, T, None),
     "S23b": ({"src/x.py": ("x = 1\n", "x = '\udcff'\n")}, S, None),
 }
@@ -126,7 +141,8 @@ def test_case_table(tmp_path, cid):
     edits, (klass, action), fclass = CASES[cid]
     repo = _repo(tmp_path, {rel: old for rel, (old, _n) in edits.items()})
     _apply(repo, edits)
-    assert _dirty(repo), "fixture produced no tracked dirt"
+    want = {(" D" if new is None else " M", rel) for rel, (_o, new) in edits.items()}
+    assert {(ln[:2], ln[3:]) for ln in _dirty(repo).splitlines()} == want, _dirty(repo)
     p = MD.plan_clear(repo)
     assert (p["class"], p["action"]) == (klass, action), p["files"]
     if fclass:
@@ -151,12 +167,13 @@ def test_c42_untracked_never_listed(tmp_path):
     assert p["paths"] == ["docs/a.md"] and [f["path"] for f in p["files"]] == ["docs/a.md"]
 
 
-@pytest.mark.parametrize("src,dst,expect", [("src/a.py", "docs/a.md", "C37"),
-                                            ("docs/a.md", "src/a.py", "C38")])
-def test_c37_c38_rename_across_code_boundary(tmp_path, src, dst, expect):
+@pytest.mark.parametrize("src,dst", [("src/a.py", "docs/a.md"),     # C37
+                                    ("docs/a.md", "src/a.py")])    # C38
+def test_c37_c38_rename_across_code_boundary(tmp_path, src, dst):
     repo = _repo(tmp_path, {src: "x = 1\n" if src.endswith("py") else "# T\n"})
     (repo / dst).parent.mkdir(exist_ok=True)
     _git(repo, "mv", src, dst)
+    assert _git(repo, "status", "--porcelain", "-z").stdout.split("\0")[0] == f"R  {dst}"
     p = MD.plan_clear(repo)
     assert (p["class"], p["action"]) == S
     assert set(p["paths"]) == {src, dst}
@@ -214,17 +231,54 @@ def test_s08_tilde_does_not_close_a_backtick_fence():
     assert _k("x.md", "```\n# x\n~~~\ny\n```\n")[0] == ["fenced"] * 5
 
 
-def test_s09_disqualifying_characters():
-    assert _k("x.py", "# note\rimport os\n")[1]
-    assert _k("x.js", "// note\x0cfoo();\n")[1]
+BREAKS = ["\r", "\x0b", "\x0c", "\x1c", "\x1d", "\x1e", "\x85", "\u2028", "\u2029"]
+
+
+def test_s09_blank_and_crlf_are_not_hazards():
     assert _k("x.py", "\x0c\n") == (["blank"], False)
     assert _k("x.py", "# x\r\n") == (["comment"], False)
 
 
-@pytest.mark.parametrize("path,text", [("x.sh", "cat <<EOF\n"), ("x.yml", "k: |\n"),
-                                       ("x.js", "const a = `x`;\n"), ("x.c", 'x = "a/*b";\n')])
+@pytest.mark.parametrize("ch", BREAKS)
+def test_s09_every_line_break_character_is_a_hazard(ch):
+    assert _k("x.py", f"# n{ch}import os\n")[1]
+    assert _k("x.js", f"// n{ch}foo();\n")[1]
+    assert MD._LINE_BREAKS == "".join(BREAKS)
+
+
+_JS = [".js", ".mjs", ".cjs", ".jsx", ".ts", ".tsx", ".go"]
+_CL = _JS + [".rs", ".c", ".h", ".cc", ".cpp", ".cxx", ".hpp", ".java", ".css"]
+HAZARDS = (
+    [(f"x{s}", "cat <<EOF\n") for s in (".sh", ".bash", ".rb", ".pl")]
+    + [(f"x{s}", f"k: {e}\n") for s in (".yml", ".yaml") for e in ("|", "|-", "|+", ">", ">-", ">+")]
+    + [(f"x{s}", "const a = `x`;\n") for s in _JS]
+    + [(f"x{s}", f'x = "a{c}b";\n') for s in _CL for c in ("/*", "*/")]
+    + [(f"x{s}", f"a {c} b\n") for s in (".md", ".html", ".xml") for c in ("<!--", "-->")]
+    + [(f"x{s}", "/*\nx */ code();\n") for s in _CL]                    # closer line not ending in */
+    + [(f"x{s}", "/*\nx\n*/ f(); /* y */\n") for s in _CL]             # two closers on one line
+    + [(f"x{s}", "<!--\nx --> text\n") for s in (".md", ".html", ".xml")]
+    + [(f"x{s}", "<!--\nx\n--> <b>y</b> <!-- z -->\n") for s in (".md", ".html", ".xml")]
+    + [(f"x{s}", "<!--\n```\n-->\n") for s in (".md", ".html", ".xml")]  # fence inside an open comment
+    + [(f"x{s}", "x = 1 \\\n") for s in (".py", ".pyi", ".sh", ".bash", ".rb", ".pl")]
+    + [(f"x{s}", "// n \\\n") for s in _CL if s != ".css"]            # backslash splice
+)
+
+
+@pytest.mark.parametrize("path,text", HAZARDS)
 def test_s10_hazards(path, text):
-    assert _k(path, text)[1]
+    assert _k(path, text)[1], (path, text)
+
+
+@pytest.mark.parametrize("path,text", [("x.json", "a \\\n"), ("x.md", "a \\\n"), ("x.py", "# c\n"),
+                                       ("x.c", "/* a */\n"), ("x.md", "<!-- a -->\n")])
+def test_non_hazards(path, text):
+    assert not _k(path, text)[1]
+
+
+@pytest.mark.parametrize("path", ["x.c", "x.js", "x.css"])
+def test_block_comment_then_code_on_one_line_is_text(path):
+    kinds, hz = _k(path, "/* a */ code();\n")
+    assert kinds == ["text"] and hz
 
 
 # ---- git states (S11-S19, S24-S27) -------------------------------------------------------------
@@ -331,7 +385,7 @@ def test_old_new_pairs_are_the_table_in_inputs(tmp_path, monkeypatch):
 def test_s24_user_diff_config_does_not_change_the_plan(tmp_path):
     def build(name, cfg):
         repo = _repo(tmp_path, {"docs/specs/0001-x.md": "---\ns: a\n---\n\nx\n", "src/a.py": "x = 1\n",
-                                "docs/a.md": FENCE}, name=name)
+                                "docs/a.md": FENCE, "docs/s26.md": "# T\n\nprose\n"}, name=name)
         _put(repo, ".gitattributes", "*.md diff=bad\n")
         if cfg:
             for k, v in (("diff.external", "false"), ("diff.bad.textconv", "false"),
@@ -343,12 +397,16 @@ def test_s24_user_diff_config_does_not_change_the_plan(tmp_path):
         _put(repo, "docs/a.md", FENCE.replace("prose", "prose2"))
         _git(repo, "add", "docs/a.md")
         _put(repo, "docs/a.md", FENCE.replace("prose", "prose3"))
+        _git(repo, "mv", "docs/s26.md", "docs/s26b.md")                # S26 under the same config
+        _put(repo, "docs/s26b.md", "# T\n\nprose 2\n")
         return MD.plan_clear(repo)
 
     plain, configured = build("p", False), build("c", True)
     strip = lambda p: (p["class"], p["action"], p["paths"], p["files"])
     assert strip(plain) == strip(configured)
     assert (plain["class"], plain["action"]) == S
+    assert {"path": "docs/s26b.md", "orig_path": "docs/s26.md", "status": "RM",
+            "file_class": "other"} in configured["files"]
 
 
 def test_s25_staged_git_mv_is_one_row(tmp_path):
@@ -446,6 +504,38 @@ def test_each_unmerged_code_is_a_conflict(tmp_path, monkeypatch, xy):
     assert (p["class"], p["action"], p["in_progress"]) == ("merge", "escalate", "conflict")
 
 
+def _real_unmerged(tmp_path, kind):
+    """A real `git merge side` conflict leaving `kind` (UU, AA, DU or UD) on one path."""
+    repo = _repo(tmp_path, {} if kind == "AA" else {"f.txt": "a\n"})
+    _git(repo, "switch", "-qc", "side")
+    if kind == "UD":
+        _git(repo, "rm", "-q", "f.txt")
+    else:
+        _put(repo, "f.txt", "side\n")
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-qm", "side")
+    _git(repo, "switch", "-q", "main")
+    if kind == "DU":
+        _git(repo, "rm", "-q", "f.txt")
+    else:
+        _put(repo, "f.txt", "main\n")
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-qm", "main")
+    _git(repo, "merge", "side", check=False)
+    return repo
+
+
+@pytest.mark.parametrize("kind", ["UU", "AA", "DU", "UD"])
+def test_real_unmerged_states(tmp_path, kind):
+    repo = _real_unmerged(tmp_path, kind)
+    p = MD.plan_clear(repo)
+    assert [f["status"] for f in p["files"]] == [kind]
+    assert (p["class"], p["action"], p["in_progress"], p["recommended"]) == ("merge", "escalate", "merge", [])
+    (repo / ".git/MERGE_HEAD").unlink()                 # no marker file: the codes alone decide
+    p = MD.plan_clear(repo)
+    assert (p["class"], p["action"], p["in_progress"]) == ("merge", "escalate", "conflict")
+
+
 def test_cherry_pick_no_commit_is_not_merge(tmp_path):
     repo = _repo(tmp_path, {"src/x.py": "x = 1\n"})
     _git(repo, "switch", "-qc", "side")
@@ -497,8 +587,23 @@ def test_b05_b06_no_config(tmp_path):
 def test_b07_b08_invalid_config_exits_3(tmp_path, body):
     repo = _repo(tmp_path)
     _put(repo, ".nw/project.yaml", body)
-    r = _cli("--root", str(repo))
-    assert r.exit_code == 3 and "error:" in r.output
+    with pytest.raises(ValueError) as ei:
+        P.load_project_config(repo / ".nw/project.yaml")
+    msg = str(ei.value).splitlines()[0]
+    assert msg
+    for args in (("--root", str(repo)), ("--root", str(repo), "--json")):
+        r = _cli(*args)
+        assert r.exit_code == 3 and msg in r.stderr and "error:" in r.stderr, r.stderr
+        assert r.stdout == ""
+
+
+def test_non_string_base_exits_3(tmp_path):
+    repo = _repo(tmp_path)
+    _cfg(repo, {"base": 5})
+    with pytest.raises(ValueError) as ei:
+        P.load_project_config(repo / ".nw/project.yaml")
+    r = _cli("--root", str(repo), "--json")
+    assert r.exit_code == 3 and str(ei.value).splitlines()[0] in r.stderr and r.stdout == ""
 
 
 def test_non_main_base_commit_hold_and_detached(tmp_path):
@@ -510,6 +615,32 @@ def test_non_main_base_commit_hold_and_detached(tmp_path):
     assert (p["class"], p["action"], p["on_base"]) == ("trivial", "hold", False)
     _git(repo, "switch", "-q", "--detach")
     assert (MD.plan_clear(repo)["on_base"], MD.plan_clear(repo)["action"]) == (False, "hold")
+
+
+@pytest.mark.parametrize("code_side", [False, True])
+def test_dirty_gitlink_escalates_with_no_commands(tmp_path, code_side):
+    sub = _repo(tmp_path, {"f.txt": "x\n"}, name="sub")
+    repo = _repo(tmp_path, {}, name="sup")
+    at = "src/sub" if code_side else "vendor/sub"
+    _git(repo, "-c", "protocol.file.allow=always", "submodule", "add", "-q", str(sub), at)
+    _git(repo, "commit", "-qm", "sub")
+    _put(repo / at, "f.txt", "changed\n")
+    p = MD.plan_clear(repo)
+    assert (p["class"], p["action"], p["recommended"]) == (
+        ("substantive" if code_side else "branch"), "escalate", [])
+    assert [f["file_class"] for f in p["files"]] == (["code"] if code_side else ["other"])
+    assert p["paths"] == [at]
+
+
+@pytest.mark.parametrize("path,klass,fclass", [("docs/a.md", "branch", "other"),
+                                               ("src/x.py", "substantive", "code")])
+def test_directory_replacing_a_file_is_never_trivial(tmp_path, path, klass, fclass):
+    repo = _repo(tmp_path, {path: "# T\n" if path.endswith("md") else "x = 1\n"})
+    (repo / path).unlink()
+    _put(repo, path + "/inner.txt", "i\n")
+    assert _dirty(repo).strip().startswith(("D ", " D", "T ", " T"))
+    p = MD.plan_clear(repo)
+    assert (p["class"], [f["file_class"] for f in p["files"]]) == (klass, [fclass])
 
 
 def test_dirty_gitlink_off_base_is_escalate(tmp_path):
@@ -534,6 +665,27 @@ def _after_run_checks(repo):
     assert _dirty(repo) == ""
 
 
+def _tree(repo, rev):
+    return set(_git(repo, "ls-tree", "-r", "--name-only", rev).stdout.splitlines())
+
+
+def _show(repo, rev, path):
+    return _git(repo, "show", f"{rev}:{path}").stdout
+
+
+def _wip_branches(repo):
+    return [b.strip() for b in _git(repo, "branch", "--list", "wip/main-dirty-*").stdout.splitlines()]
+
+
+def _save_list(repo, wip, klass, upaths, base="main"):
+    """The whole `save_branch` / `branch_and_escalate` / dirty-`hold` list from the Design table."""
+    pre = f"git -C {shlex.quote(str(repo))}"
+    add = ([f"{pre} --literal-pathspecs add -- " + " ".join(shlex.quote(u) for u in upaths)]
+           if upaths else [])
+    return ([f"{pre} switch -c {wip}"] + add
+            + [f"{pre} commit -m 'WIP: stray main-checkout edits ({klass})'", f"{pre} switch {base}"])
+
+
 def test_recommended_commit_whole_list_and_run(tmp_path):
     repo = _repo(tmp_path, {"docs/a.md": "# T\n"})
     _put(repo, "docs/a.md", "# T\n\nx\n")
@@ -545,64 +697,103 @@ def test_recommended_commit_whole_list_and_run(tmp_path):
     _run_list(repo, p["recommended"])
     _after_run_checks(repo)
     assert (repo / "untracked.md").exists()
-    assert "untracked.md" not in _git(repo, "show", "--name-only", "--format=", "HEAD").stdout
+    assert _git(repo, "status", "--porcelain").stdout == "?? untracked.md\n"
+    assert _show(repo, "HEAD", "docs/a.md") == "# T\n\nx\n"
+    assert "untracked.md" not in _tree(repo, "HEAD")
     assert _git(repo, "log", "-1", "--format=%s").stdout.strip() == "chore: land stray trivial main-checkout edits"
 
 
-def _wip_branches(repo):
-    return [b.strip() for b in _git(repo, "branch", "--list", "wip/main-dirty-*").stdout.splitlines()]
+# variant: (files, edit, unstaged paths named by the add line)
+SAVE_VARIANTS = {
+    "rm": ({"src/a.py": "x = 1\n", "src/b.py": "y = 1\n"}, lambda r: _git(r, "rm", "-q", "src/b.py"), []),
+    "mv": ({"src/a.py": "x = 1\n", "src/b.py": "y = 1\n"},
+           lambda r: _git(r, "mv", "src/a.py", "src/c.py"), []),
+    "unstaged_delete": ({"src/a.py": "x = 1\n", "src/b.py": "y = 1\n"},
+                        lambda r: (r / "src/b.py").unlink(), ["src/b.py"]),
+    "logic": ({"src/a.py": "x = 1\n", "src/b.py": "y = 1\n"},
+              lambda r: _put(r, "src/a.py", "x = 2\n"), ["src/a.py"]),
+    "mixed": ({"src/a.py": "x = 1\n", "src/b.py": "y = 1\n"},          # one staged-only, one unstaged
+              lambda r: (_git(r, "rm", "-q", "src/b.py"), _put(r, "src/a.py", "x = 2\n")), ["src/a.py"]),
+}
 
 
-@pytest.mark.parametrize("variant", ["rm", "mv", "unstaged_delete", "logic"])
+@pytest.mark.parametrize("variant", list(SAVE_VARIANTS))
 def test_recommended_save_list_runs(tmp_path, variant):
-    repo = _repo(tmp_path, {"src/a.py": "x = 1\n", "src/b.py": "y = 1\n"})
-    if variant == "rm":
-        _git(repo, "rm", "-q", "src/b.py")
-    elif variant == "mv":
-        _git(repo, "mv", "src/a.py", "src/c.py")
-    elif variant == "unstaged_delete":
-        (repo / "src/b.py").unlink()
-    else:
-        _put(repo, "src/a.py", "x = 2\n")
+    files, edit, upaths = SAVE_VARIANTS[variant]
+    repo = _repo(tmp_path, files)
+    edit(repo)
     _put(repo, "untracked.txt", "u\n")
     p = MD.plan_clear(repo)
     assert p["action"] == "branch_and_escalate"
     wip = p["recommended"][0].split()[-1]
     assert re.fullmatch(r"wip/main-dirty-\d{8}T\d{6}Z", wip)
-    R = shlex.quote(str(repo))
-    assert p["recommended"][-2:] == [f"git -C {R} commit -m 'WIP: stray main-checkout edits (substantive)'",
-                                     f"git -C {R} switch main"]
+    assert p["recommended"] == _save_list(repo, wip, "substantive", upaths)
     base_head = _git(repo, "rev-parse", "main").stdout
     _run_list(repo, p["recommended"])
     _after_run_checks(repo)
     assert _git(repo, "rev-parse", "--abbrev-ref", "HEAD").stdout.strip() == "main"
     assert _git(repo, "rev-parse", "main").stdout == base_head
     assert _wip_branches(repo) == [wip]
-    tree = _git(repo, "ls-tree", "-r", "--name-only", wip).stdout
+    assert _git(repo, "rev-parse", f"{wip}^").stdout == base_head
+    tree = _tree(repo, wip)
     assert "untracked.txt" not in tree
     assert (repo / "untracked.txt").exists()
+    assert _git(repo, "status", "--porcelain").stdout == "?? untracked.txt\n"
+    changes = set(_git(repo, "diff", "--name-status", "--no-renames", "main", wip).stdout.splitlines())
+    if variant in ("rm", "unstaged_delete"):
+        assert changes == {"D\tsrc/b.py"} and "src/b.py" not in tree
+    elif variant == "mv":
+        assert changes == {"D\tsrc/a.py", "A\tsrc/c.py"}
+        assert "src/c.py" in tree and "src/a.py" not in tree
+    elif variant == "logic":
+        assert changes == {"M\tsrc/a.py"} and _show(repo, wip, "src/a.py") == "x = 2\n"
+    else:
+        assert changes == {"D\tsrc/b.py", "M\tsrc/a.py"} and _show(repo, wip, "src/a.py") == "x = 2\n"
 
 
 def test_recommended_branch_class_save_list(tmp_path):
     repo = _repo(tmp_path, {"config/x.json": "{}\n"})
     _put(repo, "config/x.json", '{"a": 1}\n')
+    _put(repo, "untracked.txt", "u\n")
     p = MD.plan_clear(repo)
     assert (p["class"], p["action"]) == B
-    assert p["recommended"][2].endswith("'WIP: stray main-checkout edits (branch)'")
+    wip = p["recommended"][0].split()[-1]
+    assert p["recommended"] == _save_list(repo, wip, "branch", ["config/x.json"])
     _run_list(repo, p["recommended"])
     _after_run_checks(repo)
+    assert _show(repo, wip, "config/x.json") == '{"a": 1}\n'
+    assert "untracked.txt" not in _tree(repo, wip) and (repo / "untracked.txt").exists()
 
 
-def test_literal_pathspecs_protect_a_star_name(tmp_path):
-    repo = _repo(tmp_path, {"a*b.md": "# T\n"})
-    _put(repo, "a*b.md", "# T\n\nx\n")
-    _put(repo, "axb.md", "u\n")
+@pytest.mark.parametrize("path,untracked,klass", [("a*b.md", "axb.md", "branch"),
+                                                  ("src/a*b.py", "src/axb.py", "substantive")])
+def test_literal_pathspecs_protect_a_star_name(tmp_path, path, untracked, klass):
+    repo = _repo(tmp_path, {path: "x = 1\n"})
+    _put(repo, path, "x = 2\n")
+    _put(repo, untracked, "u\n")
     p = MD.plan_clear(repo)
-    assert all("--literal-pathspecs" in c for c in p["recommended"] if " add " in c)
-    assert "'a*b.md'" in p["recommended"][1]
+    assert p["class"] == klass
+    wip = p["recommended"][0].split()[-1]
+    assert p["recommended"] == _save_list(repo, wip, klass, [path])
+    assert "'" + path + "'" in p["recommended"][1]
     _run_list(repo, p["recommended"])
     _after_run_checks(repo)
-    assert "axb.md" not in _git(repo, "show", "--name-only", "--format=", "HEAD").stdout
+    tree = _tree(repo, wip)
+    assert path in tree and untracked not in tree
+    assert _show(repo, wip, path) == "x = 2\n"
+    assert (repo / untracked).exists()
+    assert f"?? {untracked}" in _git(repo, "status", "--porcelain").stdout.splitlines()
+
+
+def test_literal_pathspecs_star_name_commit_list(tmp_path):
+    repo = _repo(tmp_path, {"docs/a*b.md": "# T\n"})
+    _put(repo, "docs/a*b.md", "# T\n\nx\n")
+    _put(repo, "docs/axb.md", "u\n")
+    p = MD.plan_clear(repo)
+    assert p["action"] == "commit"
+    _run_list(repo, p["recommended"])
+    assert _show(repo, "HEAD", "docs/a*b.md") == "# T\n\nx\n"
+    assert "docs/axb.md" not in _tree(repo, "HEAD") and (repo / "docs/axb.md").exists()
 
 
 def test_path_with_a_space_is_quoted(tmp_path):
@@ -614,14 +805,20 @@ def test_path_with_a_space_is_quoted(tmp_path):
 def test_hold_dirty_runs_and_ends_on_the_base(tmp_path):
     repo = _repo(tmp_path, {"docs/a.md": "# T\n"})
     _git(repo, "switch", "-qc", "feat")
+    _git(repo, "commit", "-q", "--allow-empty", "-m", "feat work")
     _put(repo, "docs/a.md", "# T\n\nx\n")
     _put(repo, "untracked.md", "u\n")
     p = MD.plan_clear(repo)
-    assert p["action"] == "hold" and p["recommended"][-1].endswith("switch main")
+    assert (p["class"], p["action"]) == ("trivial", "hold")
+    wip = p["recommended"][0].split()[-1]
+    assert p["recommended"] == _save_list(repo, wip, "trivial", ["docs/a.md"])
     _run_list(repo, p["recommended"])
     _after_run_checks(repo)
     assert _git(repo, "rev-parse", "--abbrev-ref", "HEAD").stdout.strip() == "main"
-    assert (repo / "untracked.md").exists()
+    assert _git(repo, "merge-base", "--is-ancestor", "feat", wip, check=False).returncode == 0
+    assert _git(repo, "rev-parse", f"{wip}^").stdout == _git(repo, "rev-parse", "feat").stdout
+    assert _show(repo, wip, "docs/a.md") == "# T\n\nx\n"
+    assert "untracked.md" not in _tree(repo, wip) and (repo / "untracked.md").exists()
 
 
 def test_hold_clean_and_escalate_lists(tmp_path):
@@ -667,9 +864,52 @@ def _snapshot(repo):
             (repo / ".git/index").read_bytes(), files)
 
 
-@pytest.mark.parametrize("cid", ["C02", "C09", "C21", "C40"])
+def _state_merge(tmp_path):
+    repo = _repo(tmp_path)
+    _conflict(repo)
+    return repo
+
+
+def _state_hold(tmp_path):
+    repo = _repo(tmp_path, {"docs/a.md": "# T\n"})
+    _git(repo, "switch", "-qc", "feat")
+    _put(repo, "docs/a.md", "# T\n\nx\n")
+    return repo
+
+
+def _state_staged(tmp_path):
+    repo = _repo(tmp_path, {"src/x.py": "x = 1\n# c\n"})
+    _put(repo, "src/x.py", "x = 1\n# d\n")
+    _git(repo, "add", "src/x.py")
+    _put(repo, "src/x.py", "x = 2\n# d\n")
+    return repo
+
+
+def _state_rename(tmp_path):
+    repo = _repo(tmp_path, {"docs/a.md": "# T\n\nprose\n"})
+    _git(repo, "mv", "docs/a.md", "docs/b.md")
+    _put(repo, "docs/b.md", "# T\n\nprose 2\n")
+    return repo
+
+
+def _state_gitlink(tmp_path):
+    sub = _repo(tmp_path, {"f.txt": "x\n"}, name="sub")
+    repo = _repo(tmp_path, {}, name="sup")
+    _git(repo, "-c", "protocol.file.allow=always", "submodule", "add", "-q", str(sub), "vendor/sub")
+    _git(repo, "commit", "-qm", "sub")
+    _put(repo / "vendor/sub", "f.txt", "changed\n")
+    return repo
+
+
+STATES = {"merge": _state_merge, "hold": _state_hold, "staged": _state_staged,
+          "rename": _state_rename, "gitlink": _state_gitlink}
+
+
+@pytest.mark.parametrize("cid", ["C02", "C09", "C21", "C40"] + list(STATES))
 def test_plan_clear_writes_nothing(tmp_path, cid):
-    if cid == "C40":
+    if cid in STATES:
+        repo = STATES[cid](tmp_path)
+    elif cid == "C40":
         repo = _repo(tmp_path, {"docs/a.md": "# T\n"})
     else:
         edits = CASES[cid][0]
@@ -702,16 +942,24 @@ def test_cli_json_files_rows_and_base_reaches_the_plan(tmp_path):
     assert json.loads(_cli("--root", str(repo), "--base", "develop", "--json").output)["base"] == "develop"
 
 
-@pytest.mark.parametrize("cid", ["C02", "C08", "C21", "C40"])
-def test_cli_json_exits_0_on_each_class(tmp_path, cid):
-    if cid == "C40":
+@pytest.mark.parametrize("cid,klass", [("C02", "trivial"), ("C08", "branch"), ("C21", "substantive"),
+                                       ("C40", "clean"), ("MERGE", "merge")])
+def test_cli_json_exits_0_on_each_class(tmp_path, cid, klass):
+    if cid == "MERGE":
+        repo = _repo(tmp_path)
+        _conflict(repo)
+    elif cid == "C40":
         repo = _repo(tmp_path)
     else:
         edits = CASES[cid][0]
         repo = _repo(tmp_path, {rel: old for rel, (old, _n) in edits.items()})
         _apply(repo, edits)
     r = _cli("--root", str(repo), "--json")
-    assert r.exit_code == 0 and json.loads(r.output)["class"]
+    assert r.exit_code == 0 and r.stderr == ""
+    doc = json.loads(r.stdout)
+    assert doc["class"] == klass and doc["schema"] == "nw.main_dirty_plan.v1"
+    assert set(doc) == {"schema", "root", "base", "on_base", "class", "action", "in_progress", "paths",
+                        "substantive_paths", "files", "recommended"}
 
 
 def test_cli_text_mode(tmp_path):
@@ -723,6 +971,17 @@ def test_cli_text_mode(tmp_path):
     assert lines[2].startswith("git -C ") and len(lines) == 4
 
 
+def test_cli_text_mode_never_wraps_on_a_terminal(tmp_path, monkeypatch):
+    from nightwright import console as C
+    monkeypatch.setattr(C, "stdout_is_tty", lambda _c: True)      # a terminal folds at its width
+    repo = _repo(tmp_path, {"docs/a long directory name/a long file name.md": "# T\n"})
+    _put(repo, "docs/a long directory name/a long file name.md", "# T\n\nx\n")
+    p = MD.plan_clear(repo)
+    r = _cli("--root", str(repo), env={"COLUMNS": "40"})
+    assert r.exit_code == 0
+    assert r.stdout.splitlines()[1:] == [*p["paths"], *p["recommended"]]
+
+
 def test_cli_exit_2_for_non_worktrees(tmp_path):
     plain = tmp_path / "plain"
     plain.mkdir()
@@ -732,7 +991,11 @@ def test_cli_exit_2_for_non_worktrees(tmp_path):
     for root in (plain, bare, repo / "docs", repo / ".git"):
         for env in (None, {"GIT_DIR": str(repo / ".git")}):
             r = _cli("--root", str(root), env=env)
-            assert r.exit_code == 2 and "error:" in r.output, (root, env, r.output)
+            assert r.exit_code == 2 and "error:" in r.stderr and "worktree" in r.stderr, (root, env, r.output)
+            assert r.stdout == ""
+    for args in (("--root", str(tmp_path / "nope")), ("--root", str(tmp_path / "nope"), "--json")):
+        r = _cli(*args)
+        assert r.exit_code == 2 and "error:" in r.stderr and r.stdout == ""
 
 
 def test_cli_symlinked_root_and_trailing_slash(tmp_path):
@@ -742,6 +1005,11 @@ def test_cli_symlinked_root_and_trailing_slash(tmp_path):
     assert _cli("--root", str(link)).exit_code == 0
     assert _cli("--root", str(repo) + "/").exit_code == 0
     assert _cli("--root", str(repo) + "/", env={"GIT_DIR": str(tmp_path / "nope")}).exit_code == 0
+    stray = {"GIT_DIR": str(tmp_path / "nope"), "GIT_WORK_TREE": str(tmp_path / "elsewhere"),
+             "GIT_INDEX_FILE": str(tmp_path / "no-index")}
+    _put(repo, "README.md", "# hi\n\nmore\n")
+    r = _cli("--root", str(repo), "--json", env=stray)
+    assert r.exit_code == 0 and json.loads(r.stdout)["paths"] == ["README.md"]
 
 
 def test_cli_git_failure_exits_3(tmp_path):
@@ -750,8 +1018,8 @@ def test_cli_git_failure_exits_3(tmp_path):
     _git(repo, "init", "-q", "-b", "main")
     _put(repo, "a.txt", "x\n")
     _git(repo, "add", "a.txt")
-    r = _cli("--root", str(repo))
-    assert r.exit_code == 3 and "error:" in r.output
+    r = _cli("--root", str(repo), "--json")
+    assert r.exit_code == 3 and "error: git " in r.stderr and r.stdout == ""
 
 
 def test_reference_index_names_the_command():

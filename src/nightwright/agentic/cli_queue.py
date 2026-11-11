@@ -1545,7 +1545,7 @@ def attach(queue_group):
         except MD.NotAWorktree as e:
             R.warn(f"error: {e}")
             ctx.exit(2)
-        except MD.PlanError as e:
+        except (MD.PlanError, OSError) as e:
             R.warn(f"error: {e}")
             ctx.exit(3)
         if as_json:
@@ -1553,7 +1553,8 @@ def attach(queue_group):
             return
         console.print(Text(f"{plan['action']} {plan['class']} {len(plan['paths'])} paths"))
         for line in (*plan["paths"], *plan["recommended"]):
-            console.print(Text(line))
+            # soft_wrap: a terminal must never fold a path or a command a human pastes
+            console.print(Text(line), soft_wrap=True)
 
     # ---- SPEC-0176 -------------------------------------------------------------------------
 

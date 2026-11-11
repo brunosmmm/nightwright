@@ -514,6 +514,17 @@ optional source, never the contract: where the branch and this spec differ, this
   gave a clean tracked tree and one `chore: land stray trivial main-checkout edits` commit. A logic
   edit to `src/x.py` plus an untracked file → `substantive branch_and_escalate`; its lines left the
   checkout on `main`, tracked-clean, the edit on `wip/main-dirty-<ts>`, the untracked file still there.
+- Review loop 2: `uv run pytest -q tests/test_main_dirty_plan.py` passes (309 tests): whole-list `recommended`
+  assertions for commit, `save_branch`, `branch_and_escalate` (rm, mv, unstaged delete, logic and a mixed
+  staged-only plus unstaged set), hold dirty, hold clean, resume, merge and gitlink; each run list checks
+  the edits on `<wip>` or HEAD (`ls-tree`, `show`, `diff --name-status`), untracked files still untracked
+  and absent from the tree, and the wip branch descending from the feature branch for hold; parametrized
+  hazard table (every line-break character, every suffix hazard, closer and backslash hazards); file-level
+  indent, move-across-comments, docs/html comment-only, frontmatter-after-fence and unclosed-frontmatter
+  cases; stderr-separated CLI checks of the loader messages (B07, B08, non-string base), exit 2 and 3;
+  real AA/DU/UD/UU conflicts; the AC6 snapshot over merge, hold, staged, rename and gitlink; a
+  no-wrap-on-a-terminal test. Mutation re-run: removing `--literal-pathspecs` fails 9 tests.
+  `python3 tools/test_tiers.py --check` and `python3 tools/spec_lint.py` exit 0.
 - The full suite was left to gating.
 
 ### As shipped (2026-11-11)
@@ -531,6 +542,14 @@ optional source, never the contract: where the branch and this spec differ, this
   comment or another string literal. That only makes more lines `text` (stricter), except when a
   fake open string later swallows a real opener; that stays an accepted residual risk.
 - `plan_clear` returns the schema's keys only; a dirty gitlink is derived from the rows.
+- Review loop 2 hardening (all strictly toward `branch`, nothing in the spec-mandated lists removed):
+  a block-comment or HTML-comment closing line sets `hazard` unless it holds exactly one closer and
+  ends with it (`*/ f(); /* y */` is a hazard); a line ending in `\\` sets `hazard` for `.py .pyi
+  .sh .bash .rb .pl` and the C-like suffixes (a backslash splices the next line, so a comment or
+  blank edit beside it can change behaviour). `plan_clear` makes `root` absolute after the worktree
+  check, so `recommended` never holds `git -C .`; `OSError` while reading a worktree file or the
+  project config becomes a `PlanError` (exit 3); text mode prints paths and commands with
+  `soft_wrap=True` so a terminal never folds a pasteable line.
 - Code: `src/nightwright/agentic/main_dirty.py`, the `main-dirty-plan` command in `cli_queue.py`,
   the reference-index entry, `tests/test_main_dirty_plan.py`.
 
