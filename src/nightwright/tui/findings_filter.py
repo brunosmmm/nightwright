@@ -4,10 +4,8 @@ layer's `nw.history.record.v1` records (`agentic/history.py`, the same data as
 
 Pure and Textual-free: nothing here imports Textual, renders anything, or writes a file other
 than through the history layer's disposable `cache_dir` cache. `matches` is the authority for the
-grammar. `query_records` makes one unfiltered history call and applies `matches` to it, so no
-flag is passed down (a narrowed call plus a recount for `total_records` cost twice the history
-layer's warm-path time); the `history` rows of `GRAMMAR_ROWS` only say which `nw campaign records`
-flag has the same semantics.
+grammar. `query_records` passes the `history` rows of `GRAMMAR_ROWS` down to `history_records` as
+a narrowing and re-checks the result with `matches`; `tab` rows are never passed down.
 """
 from __future__ import annotations
 
@@ -27,8 +25,8 @@ STATUSES = frozenset({"open", "fixed", "waived", "filed", "carried", "answered",
 NONE = "none"
 
 # (token, where): each grammar row and who implements it, in the order of the spec's table.
-# `history` = the matching `nw campaign records` flag has the same semantics; `tab` = only `matches`
-# implements it. `query_records` itself applies every row through `matches`.
+# `history` = passed to `history_records` as the matching `nw campaign records` flag (a narrowing,
+# see `_history_kwargs`); `tab` = only `matches` implements it. `matches` re-checks every row.
 GRAMMAR_ROWS: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("agent:X", ("history", "tab")),            # history for a full agent id, else tab
     ("kind:X", ("history",)),
@@ -36,7 +34,7 @@ GRAMMAR_ROWS: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("severity:X", ("history", "tab")),         # history for a value, tab for `none`
     ("status:X", ("history", "tab")),           # history for a value, tab for `none`
     ("campaign:X", ("tab",)),
-    ("since:D / until:D", ("history",)),        # absolute --since / --until, relative resolved
+    ("since:D / until:D", ("history",)),        # passed down widened a day for date-only values
     ("anything else", ("history", "tab")),      # first term history (--query), the rest tab
 )
 
@@ -223,18 +221,64 @@ def _sort_key(rec):
     return (H._time_key(rec.get("ts")), str(rec.get("id") or ""))
 
 
+def _history_kwargs(flt: RecordFilter, now=None) -> dict:
+    """The `history` rows of `GRAMMAR_ROWS` as `history_records` keyword arguments. Only a
+    narrowing: `matches` re-checks every row, so each value here must keep every record `matches`
+    would accept. `tab` rows (`project`, `campaign`, `agent` prefix, `severity|status:none`, the
+    terms after the first) never appear."""
+    out: dict = {}
+    if flt.kind is not None:
+        out["kind"] = flt.kind
+    for key in ("severity", "status"):
+        want = getattr(flt, key)
+        if want is not None and want != NONE:
+            out[key] = want
+    if flt.agent is not None and ":" in flt.agent:            # a bare agent is a prefix: `tab`
+        out["agent"] = flt.agent
+    since, until = flt.bounds(now)
+    # The CLI's date-only bounds use the record's own UTC offset for the day, the grammar uses the
+    # local day: widen by a day each way (offsets are under 24 h) so history never drops a record
+    # that `matches` accepts. Relative bounds are instants, identical on both sides.
+    if since is not None:
+        out["since"] = (dt.date.fromisoformat(flt.since_text) - dt.timedelta(days=1)
+                        if _DATE.fullmatch(flt.since_text or "") else since)
+    if until is not None:
+        out["until"] = (dt.date.fromisoformat(flt.until_text) + dt.timedelta(days=1)
+                        if _DATE.fullmatch(flt.until_text or "") else until)
+    if flt.terms:
+        out["query"] = flt.terms[0]
+    return out
+
+
+def _total_records(cfg) -> int:
+    """All records, for the "of N" status. The warm path's validity check is the history layer's
+    main cost, so after a narrowed call read the length of the record cache it just loaded; with no
+    cache (or no loaded one) fall back to one unfiltered call."""
+    try:
+        from ..agentic import history_cache as HC
+        if HC.cache_enabled(cfg, None):
+            mem = HC._get_records_mem(HC._v1_root(cfg))
+            if mem is not None:
+                return len(mem["entries"])
+    except Exception:                                         # private layout moved: fall back
+        pass
+    everything = H.history_records(cfg)
+    if not isinstance(everything, list):
+        raise ValueError("history returned unexpected data")
+    return len(everything)
+
+
 def query_records(cfg, flt: RecordFilter, now=None) -> RecordQueryResult:
     """Records matching `flt`, newest first. Synchronous file I/O through the history layer; call
     it from a worker. A history-layer failure is returned in `error`, never raised."""
     if flt.impossible:
         return RecordQueryResult(problems=flt.problems)
     try:
-        # One unfiltered call: `total_records` is its length and `matches` does all the narrowing.
-        # A narrowed call plus a recount doubled the history layer's cost, which is the budget.
-        rows = H.history_records(cfg)
+        kwargs = _history_kwargs(flt, now)
+        rows = H.history_records(cfg, **kwargs)
         if not isinstance(rows, list) or not all(isinstance(r, dict) for r in rows):
             raise ValueError("history returned unexpected data")
-        total = len(rows)
+        total = _total_records(cfg) if kwargs else len(rows)
         keep = _matcher(flt, now)
         out = [rec for rec in rows if keep(rec)]
         out.sort(key=_sort_key, reverse=True)

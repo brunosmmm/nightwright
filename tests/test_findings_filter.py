@@ -219,16 +219,54 @@ def fake(monkeypatch):
     return install
 
 
-def test_one_unfiltered_history_call_whatever_the_filter(fake):
-    """No flag is passed down (so no `tab` row can reach history) and there is no recount."""
+# filter text -> the kwargs `history_records` must receive (AC6: `history` rows reach it, `tab` rows never)
+PASSED_DOWN = [
+    ("", {}),
+    ("kind:finding", {"kind": "finding"}),
+    ("severity:major", {"severity": "major"}),
+    ("status:open", {"status": "open"}),
+    ("agent:steward:Meta-Tools", {"agent": "steward:Meta-Tools"}),
+    ("alpha beta", {"query": "alpha"}),
+    ("since:7d", {"since": NOW - dt.timedelta(days=7)}),
+    ("since:2026-05-02 until:2026-05-04",
+     {"since": dt.date(2026, 5, 1), "until": dt.date(2026, 5, 5)}),
+    ("kind:finding severity:major status:open agent:conductor:x alpha",
+     {"kind": "finding", "severity": "major", "status": "open", "agent": "conductor:x",
+      "query": "alpha"}),
+    # `tab` rows: nothing reaches history
+    ("agent:steward", {}),
+    ("project:Meta-Tools", {}),
+    ("campaign:0179", {}),
+    ("campaign:none", {}),
+    ("severity:none", {}),
+    ("status:none", {}),
+    ("project:x campaign:0179 agent:steward severity:none status:none", {}),
+]
+
+
+@pytest.mark.parametrize("text,want", PASSED_DOWN)
+def test_history_rows_reach_history_and_tab_rows_never_do(fake, text, want):
     fh = fake(rows=[rec()])
+    F.query_records({}, parse(text, now=NOW), NOW)
+    assert fh.calls[0] == want
+    tab_only = {"project", "campaign"}
+    assert not tab_only & set(fh.calls[0])
+
+
+def test_every_tab_row_is_classified_tab_and_never_passed_down():
     assert {t for t, w in F.GRAMMAR_ROWS if "history" not in w} == {"project:X", "campaign:X"}
-    for text in ("", "project:x campaign:0179 agent:steward severity:none status:none alpha beta",
-                 "agent:steward:Meta-Tools kind:finding severity:major status:open since:7d "
-                 "until:2026-11-01 alpha beta"):
-        fh.calls.clear()
-        F.query_records({}, parse(text, now=NOW), NOW)
-        assert fh.calls == [{}], text
+    mixed = {t for t, w in F.GRAMMAR_ROWS if "history" in w and "tab" in w}
+    assert mixed == {"agent:X", "severity:X", "status:X", "anything else"}
+
+
+def test_total_records_falls_back_to_one_unfiltered_recount_without_a_cache(fake):
+    fh = fake(rows=[rec(id="a:1"), rec(id="a:2", kind="note")])
+    res = F.query_records({}, parse("kind:finding"), NOW)
+    assert (res.total_matching, res.total_records) == (1, 2)
+    assert fh.calls == [{"kind": "finding"}, {}]
+    fh.calls.clear()
+    F.query_records({}, parse("project:x"), NOW)              # nothing narrowed: one call only
+    assert fh.calls == [{}]
 
 
 def test_impossible_filter_never_calls_history(fake):
@@ -254,7 +292,7 @@ def test_query_orders_ts_desc_then_id_desc_and_counts(fake):
     assert [r["id"] for r in res.records] == ["a:4", "z:9"]        # campaign-less + unknown kind
     assert (res.total_matching, res.total_records) == (2, 5)
     res = F.query_records({}, parse("kind:finding"), NOW)
-    assert res.total_records == 5 and len(fh.calls) == 2            # one call per query_records
+    assert res.total_records == 5 and fh.calls[1:] == [{"kind": "finding"}, {}]   # narrowed + recount
 
 
 def test_history_is_rechecked_by_matches(fake):
@@ -309,3 +347,18 @@ def test_imports_with_textual_blocked():
     )
     out = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, timeout=60)
     assert out.returncode == 0, out.stderr
+
+
+def test_total_records_comes_from_the_loaded_cache_not_a_second_history_call(tmp_path, monkeypatch):
+    """With a cache, a narrowed query makes one history call and still reports the exact total."""
+    import history_scale as HS
+    data, cache = HS.copy_fixture(tmp_path / "data"), tmp_path / "cache"
+    cfg = {"data_dir": str(data), "cache_dir": str(cache),
+           "agentic": {"history": {"cache": True}}}
+    everything = F.query_records(cfg, parse(""))
+    calls = []
+    real = F.H.history_records
+    monkeypatch.setattr(F.H, "history_records", lambda c, **kw: (calls.append(kw), real(c, **kw))[1])
+    res = F.query_records(cfg, parse("kind:finding"))
+    assert res.error is None and res.total_records == everything.total_records
+    assert calls == [{"kind": "finding"}]
