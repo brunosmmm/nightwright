@@ -154,8 +154,14 @@ def test_request_source_linked_idea_gates_the_request(env, monkeypatch):
     assert r.exit_code == 0, r.output
     with pytest.raises(ValueError, match=f"{iid} and {req} do not match :REQ_BASE:"):
         Q._request_source(cfg, req, PROJECT)
+    # drift on both sides at once
+    put_request(repo, req, summary="Changed in public.")
+    with pytest.raises(ValueError, match=f"{iid} and {req} do not match :REQ_BASE:"):
+        Q._request_source(cfg, req, PROJECT)
+    put_request(repo, req)
     r = CliRunner().invoke(cli, ["idea", "summary", iid, "--set", BODY])
     assert r.exit_code == 0, r.output
+    assert Q._request_source(cfg, req, PROJECT)[0].summary == BODY
 
     # a cited request, and an idea with :SPEC:
     put_request(repo, req, spec="SPEC-0009")
@@ -246,10 +252,14 @@ def test_request_campaign_is_ready_without_an_idea(env, monkeypatch):
     state["spec_id"] = "SPEC-0042"
     state["kind"] = "idea"
     assert Q._request_source_for(cfg, state)[0].spec == "SPEC-0042"
+    # with `spec.id` set the campaign is no longer spec-less (the ordinary spec-file readiness
+    # applies); with only `spec_id` recorded the spec-less branch must allow the own spec
     state["spec"] = {}
+    assert Q._request_source_for(cfg, state)[0].spec == "SPEC-0042"
+    assert Q.backlog_readiness(cfg, state)[0] is True
     state["spec_id"] = None
-    ok, why = Q.backlog_readiness(cfg, {**state, "idea": {**state["idea"], "id": req}})
-    assert not ok
+    ok, why = Q.backlog_readiness(cfg, state)
+    assert not ok and why == [f"request {req}: {req} already cites SPEC-0042"]
     missing = request_only_state(cfg, "REQ-0ABCDEFG")
     ok, why = Q.backlog_readiness(cfg, missing)
     assert not ok and "is not on refs/heads/nw-backlog" in why[0]
@@ -260,6 +270,33 @@ def test_non_request_idea_campaign_readiness_is_unchanged(env, monkeypatch):
     state = request_only_state(cfg, "IDEA-001")
     state["idea"].pop("request_only")
     assert Q.backlog_readiness(cfg, state) == (False, ["idea IDEA-001 not found"])
+
+
+def test_request_only_close_reconcile_does_not_look_for_an_idea(env, monkeypatch):
+    """`_reconcile_project_spec` must not take the campaign's `REQ-…` id for an idea id: a spec with
+    no `source_idea` of a `request_only` campaign is an info finding, not `idea not found`."""
+    cfg, repo = env
+    req = add_request(repo)
+    monkeypatch.setattr(Q, "_project_spec_fm",
+                        lambda st: ({"id": "SPEC-0002", "status": "done",
+                                     "source_request": req}, "abc1234"))
+    monkeypatch.setattr(Q, "_ideas", lambda c: (_ for _ in ()).throw(
+        AssertionError("the org file must not be read")))
+
+    def run(state):
+        found = []
+        Q._reconcile_project_spec(cfg, state, [], "SPEC-0002", "MERGED",
+                                  lambda sev, title, detail: found.append((sev, title, detail)))
+        return found
+
+    state = request_only_state(cfg, req)
+    assert [(s, t) for s, t, _ in run(state)] == [("info", "idea reconcile: spec has no "
+                                                           "source_idea")]
+    # a plain idea campaign keeps looking the idea up (the id is not found here)
+    monkeypatch.setattr(Q, "_ideas", lambda c: [])
+    state["idea"].pop("request_only")
+    assert [(s, t, d) for s, t, d in run(state)] == [("minor", "project idea reconcile: idea "
+                                                               "not found", req.upper())]
 
 
 def test_unlinked_idea_still_does_not_resolve_the_repo(env, monkeypatch):

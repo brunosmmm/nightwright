@@ -397,6 +397,11 @@ Ran (real git repos throughout; no fakes for the backlog or the cite):
 - Manual verification: the campaign tests above are the real-git run (a temporary repo with an
   `nw-backlog` branch, a hand-built `request_only` campaign driven by `Q.tick`, `git show
   refs/heads/nw-backlog:REQ-….md` and `git log` asserted); no separate scratch-repo session.
+- Review round 2 additions: a direct `_reconcile_project_spec` test for a `request_only` state
+  (fails if the branch is reverted), `backlog_readiness` asserted ready with only `spec_id`
+  recorded (the spec-less branch's `allow_spec` path; with `spec.id` set the campaign takes the
+  ordinary spec-file readiness, so that case is asserted on `_request_source_for`), a
+  both-sides-drift case, and a two-way byte comparison of the cite commit. 30 request tests pass.
 - The full suite and `affected_tests.py --run` were left to the campaign gate (the latter did not
   finish inside the agent's time box).
 
@@ -413,10 +418,14 @@ Shipped as designed, with these notes:
   `request {req_id}: ` prefix.
 - `_cite_request` also runs `IL.preflight_cite` (identity and nw-backlog-checked-out guards)
   before `cite_spec`.
+- `_request_source` has one refusal the Design does not list: a file whose parsed `status` is
+  neither `open` nor `closed` raises `{req_id} file is not a request` (fails closed, before the
+  `only open requests are queued` text, which therefore covers `closed` only).
 - Close path: `_reconcile_project_spec` no longer falls back to the campaign's `idea.id` for a
   `request_only` campaign (that id is `REQ-…`, not an idea), so it emits the existing informational
-  `idea reconcile: spec has no source_idea` finding instead of a minor `idea not found`. No test
-  closes a `request_only` campaign yet; the follow-up spec should add one.
+  `idea reconcile: spec has no source_idea` finding instead of a minor `idea not found`. A direct unit test
+  (`test_request_only_close_reconcile_does_not_look_for_an_idea`) pins that branch; no test drives a
+  full close of a `request_only` campaign yet, and the follow-up spec should add one.
 - Finding: requests written by `nw backlog add` render a blank line before the summary, which
   `_read_request_file` (SPEC-0535's canonical-summary rule, unchanged here) refuses with
   `summary is not canonical`. The tests therefore build request files with

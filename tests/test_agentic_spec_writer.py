@@ -1745,8 +1745,10 @@ def test_request_only_writer_uses_the_public_summary_and_cites(tmp_path, monkeyp
     tip_before = _git(repo, "rev-parse", "refs/heads/nw-backlog~1").strip()
     old = _git(repo, "show", f"{tip_before}:{req}.md").splitlines()
     new = _git(repo, "show", f"refs/heads/nw-backlog:{req}.md").splitlines()
-    assert [l for l in new if l not in old and not l.startswith(("updated:", "updated_by:"))] \
-        == ["spec: SPEC-0002"]
+    def bare(lines):                  # the cite refreshes `updated*` and adds `spec:`; nothing else
+        return [l for l in lines if not l.startswith(("updated:", "updated_by:", "spec:"))]
+    assert bare(new) == bare(old) and len(new) == len(old) + 1 and "spec: SPEC-0002" in new
+    assert [l for l in old if l.startswith("spec:")] == []
     assert _git(repo, "diff", "--name-only", tip_before, "refs/heads/nw-backlog").split() \
         == [f"{req}.md"]
     assert org.read_bytes() == org_before                       # no :SPEC:, no SPECCED
