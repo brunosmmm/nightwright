@@ -429,6 +429,10 @@ its own. The runner still starts.
     `backend_unavailable` hold. A direct `backend_fault` call while `resolve_profile`
     raises `OSError` returns None and does not raise.
 - **Manual verification:** none. The live runner is not started.
+- **Regression guard:** `python3 tools/affected_tests.py --run uv run pytest -q` on the
+  touched files. `tests/test_runner_selfheal.py` (the SPEC-0484 cursor hold, spawn, and
+  startup tests) and `tests/test_remote_persona_limits.py::test_spec_review_is_neither_counted_nor_gated`
+  plus `test_an_ungated_spec_review_run_neither_starts_nor_resets_the_backoff` stay green.
 
 ### Test record (2026-11-09)
 
@@ -559,11 +563,6 @@ continues checking siblings rather than returning `None` immediately.
 
 A failed write rollback on an environment-fault interrupt parks from `res.write`
 (`rollback_detail`) via `_apply_spec_write` and does not respawn the spec writer.
-
-- **Regression guard:** `python3 tools/affected_tests.py --run uv run pytest -q` on the
-  touched files. `tests/test_runner_selfheal.py` (the SPEC-0484 cursor hold, spawn, and
-  startup tests) and `tests/test_remote_persona_limits.py::test_spec_review_is_neither_counted_nor_gated`
-  plus `test_an_ungated_spec_review_run_neither_starts_nor_resets_the_backoff` stay green.
 
 ### As shipped (2026-11-10, loop 1 review fixes)
 
