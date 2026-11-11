@@ -14,6 +14,7 @@ import os
 import posixpath
 import re
 import shlex
+import signal
 import subprocess
 from pathlib import Path
 
@@ -614,7 +615,11 @@ def _head_map(root, names) -> dict[str, tuple]:
     for ch in _batches(sorted(want)):
         r = _lg(root, "ls-tree", "-z", "HEAD", "--", *ch, check=False)
         if r.returncode != 0:
-            continue
+            if _head(root) is None:                          # an unborn HEAD: no entries, no symlinks
+                return {}
+            # a real git failure must not read as "no HEAD entries": that would skip guard 5's
+            # HEAD-mode checks for the whole batch
+            raise PlanError(f"git ls-tree exited {r.returncode}: {_dec(r.stderr).strip()}")
         for rec in _dec(r.stdout).split("\0"):
             if rec:
                 meta, _, name = rec.partition("\t")
@@ -740,15 +745,19 @@ def _restore_index(idx, data, mode) -> str | None:
         return "index locked, not restored"
     except OSError as e:
         return f"index not restored: {e}"
+    replaced = False
     try:
         with os.fdopen(fd, "wb") as f:
             f.write(data)
         os.chmod(lock, mode)
         os.replace(lock, idx)
+        replaced = True
     except OSError as e:
-        with contextlib.suppress(OSError):
-            os.unlink(lock)
         return f"index not restored: {e}"
+    finally:
+        if not replaced:                   # also on a second interrupt: never leave a stale lock
+            with contextlib.suppress(OSError):
+                os.unlink(lock)
     return None
 
 
@@ -762,47 +771,65 @@ def _commit_trivial(root, paths) -> dict:
     want = _hash_many(root, paths)
 
     def fail(error, restore=True):
-        head = _head(root)
-        if head != head0:                                    # a commit landed: leave the index
+        try:
+            head = _head(root)
+        except (PlanError, OSError):       # cannot tell: nothing of ours has moved HEAD, still restore
+            head = head0
+        if head not in (None, head0):                        # a commit landed: leave the index
             return {"ok": False, "sha": head, "error": error}
         if not restore:
             return {"ok": False, "error": error}
         return {"ok": False, "error": _restore_index(idx, data, mode) or error}
 
+    def on_signal(signum, _frame):         # SIGTERM / SIGHUP unwind like Ctrl-C, so the index is put back
+        raise SystemExit(128 + signum)
+
+    saved = {}
+    for sig in (signal.SIGTERM, signal.SIGHUP):
+        with contextlib.suppress(ValueError, OSError):       # not the main thread: no handler
+            saved[sig] = signal.signal(sig, on_signal)
     try:
-        r = _stage(root, paths)
-        if r.returncode != 0:
-            # `git add` updates the index atomically, so a failed add changed nothing: nothing to
-            # restore, and restoring the bytes read before it could overwrite a concurrent write
-            return fail(_dec(r.stderr).strip() or "git add failed", restore=False)
-        names = set(_dec(_lg(root, "diff", "--cached", "--no-renames", "--name-only", "-z"
-                             ).stdout).split("\0")) - {""}
-        for p in sorted(names ^ set(paths)):
-            return fail(f"changed since plan {p}")
-        staged = _index_map(root, paths)
-        for p in paths:
-            ents = staged.get(p, [])
-            if len(ents) != 1 or ents[0][1] != want[p]:
-                return fail(f"changed since plan {p}")
-        msgs = ["-m", _COMMIT_SUBJECT] + [x for p in paths for x in ("-m", p)]
-        try:
-            # hooks run inside `git commit`: a generous bound, and a kill (which leaves hook
-            # children possibly running) never restores the index under them
-            r = _lg(root, "commit", *msgs, check=False, timeout=_COMMIT_TIMEOUT)
-        except PlanError as e:
-            return fail(f"{e}; index not restored", restore=False)
-        if r.returncode != 0:
-            return fail(_dec(r.stderr or r.stdout).strip() or "git commit failed")
-        sha = _head(root)
-        if not _tracked_clean(root):
-            return {"ok": False, "sha": sha, "error": "main not tracked-clean after commit"}
-        return {"ok": True, "sha": sha}
+        return _stage_and_commit(root, paths, want, fail)
     except (PlanError, OSError) as e:
         return fail(str(e))
     except BaseException:                  # ValueError, Ctrl-C, SIGTERM: put the index back, re-raise
         with contextlib.suppress(Exception):
             fail("interrupted")
         raise
+    finally:
+        for sig, old in saved.items():
+            with contextlib.suppress(ValueError, OSError):
+                signal.signal(sig, old)
+
+
+def _stage_and_commit(root, paths, want, fail) -> dict:
+    r = _stage(root, paths)
+    if r.returncode != 0:
+        # `git add` updates the index atomically, so a failed add changed nothing: nothing to
+        # restore, and restoring the bytes read before it could overwrite a concurrent write
+        return fail(_dec(r.stderr).strip() or "git add failed", restore=False)
+    names = set(_dec(_lg(root, "diff", "--cached", "--no-renames", "--name-only", "-z"
+                         ).stdout).split("\0")) - {""}
+    for p in sorted(names ^ set(paths)):
+        return fail(f"changed since plan {p}")
+    staged = _index_map(root, paths)
+    for p in paths:
+        ents = staged.get(p, [])
+        if len(ents) != 1 or ents[0][1] != want[p]:
+            return fail(f"changed since plan {p}")
+    msgs = ["-m", _COMMIT_SUBJECT] + [x for p in paths for x in ("-m", p)]
+    try:
+        # hooks run inside `git commit`: a generous bound, and a kill (which leaves hook
+        # children possibly running) never restores the index under them
+        r = _lg(root, "commit", *msgs, check=False, timeout=_COMMIT_TIMEOUT)
+    except PlanError as e:
+        return fail(f"{e}; index not restored", restore=False)
+    if r.returncode != 0:
+        return fail(_dec(r.stderr or r.stdout).strip() or "git commit failed")
+    sha = _head(root)
+    if not _tracked_clean(root):
+        return {"ok": False, "sha": sha, "error": "main not tracked-clean after commit"}
+    return {"ok": True, "sha": sha}
 
 
 def apply_clear(root, plan=None, base=None) -> dict:

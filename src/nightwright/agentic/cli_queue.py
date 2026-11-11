@@ -1607,8 +1607,9 @@ def attach(queue_group):
         if plan_file is not None:
             try:
                 plan = json.loads(Path(plan_file).read_text(encoding="utf-8"))
-            except (OSError, ValueError) as e:
-                R.warn(f"error: --plan {plan_file} is unreadable or not JSON: {e}")
+            except (OSError, ValueError, RecursionError) as e:   # RecursionError: absurdly nested JSON
+                why = "nested too deeply" if isinstance(e, RecursionError) else e
+                R.warn(f"error: --plan {plan_file} is unreadable or not JSON: {why}")
                 ctx.exit(2)
             paths = plan.get("paths", []) if isinstance(plan, dict) else None
             if (not isinstance(plan, dict) or plan.get("schema") != MD.SCHEMA

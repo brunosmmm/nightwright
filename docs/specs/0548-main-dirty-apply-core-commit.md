@@ -360,6 +360,19 @@ order, `escalate`, the index restore).
   bounded number of `ls-tree`/`ls-files`/`hash-object`/`add`/`commit` calls. `test_tiers.py
   --check` and `spec_lint` exit 0.
 
+- Review loop 3: `tests/test_main_dirty_apply.py` grew to 154 cases: the `..` fixture is
+  `docs/../README.md` (an existing file, so only the `..` clause refuses it; removing the clause
+  fails it, run by hand); `_assert_safe_argv` asserts a `--` before the paths of `add`,
+  `hash-object`, `ls-files`, `ls-tree` (dropping it from `_stage` or `_hash_many` fails, run by
+  hand) and a `-notes.md` path is committed; `_BATCH=3` on a 10-path plan crosses chunk
+  boundaries (commit holds all ten, a bad path and a partially staged path in a later chunk are
+  found); a staged new file commits and its `AM` variant refuses as partially staged; `--base`
+  suffix with a project config and a base that needs `shlex.quote`; SIGTERM after `git add`
+  restores the index and the handler; a second interrupt inside `_restore_index` leaves no stale
+  lock; a failing `git rev-parse HEAD` inside `fail()` still restores; a real `ls-tree`
+  failure raises `PlanError` (an unborn HEAD still gives no entries); a 100000-`[` `--plan` exits
+  2 with one line. `test_tiers.py --check` and `spec_lint` exit 0.
+
 ### As shipped (2026-11-11)
 
 - Code: `apply_clear`, `verb_refusal`, `_commit_trivial`, `_restore_index` and the flock in
@@ -437,3 +450,12 @@ project Meta-Tools.
 ## Open questions
 
 None.
+
+- Review loop 3 code: `_commit_trivial` installs SIGTERM and SIGHUP handlers (raising
+  `SystemExit(128+signum)`) for the staging-to-commit window, so a killed `nw` unwinds and puts the
+  index back, then restores the previous handlers (skipped off the main thread); a SIGKILL cannot
+  be caught. `_restore_index` unlinks its lock on any exit that did not replace the index,
+  interrupts included. `fail()` treats a failing `rev-parse HEAD` as "HEAD did not move" and still
+  restores, and a `None` HEAD is no longer read as "a commit landed". `_head_map` raises
+  `PlanError` on a failed `ls-tree` unless HEAD is unborn, so guard 5's HEAD checks are never
+  silently skipped. The CLI catches `RecursionError` from `--plan` and exits 2.

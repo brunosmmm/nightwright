@@ -5,6 +5,7 @@ import fcntl
 import json
 import os
 import shlex
+import signal
 import stat
 import subprocess
 from pathlib import Path
@@ -567,7 +568,7 @@ def _sc_deleted_star(tmp_path, mp):
 BAD_PATHS = {"symlink-target": _sc_symlink_target, "file-to-symlink": _sc_file_to_symlink,
              "symlink-to-file": _sc_symlink_to_file, "symlinked-parent": _sc_symlinked_parent_real,
              "gitlink": _sc_gitlink, "absolute": _patched("/etc/passwd"),
-             "dotdot": _patched("../x.md"), "in-neither": _patched("docs/ghost.md")}
+             "dotdot": _patched("docs/../README.md"), "in-neither": _patched("docs/ghost.md")}
 
 
 @pytest.mark.parametrize("name", sorted(BAD_PATHS))
@@ -796,6 +797,8 @@ def _assert_safe_argv(calls):
         assert not (v == "add" and any(a in ("-A", "--all", ".", "-u", "--update") for a in rest)), c
         if v in {"add", "commit", "hash-object", "ls-files", "ls-tree", "diff"}:
             assert "--literal-pathspecs" in c, c
+        if v in {"add", "hash-object", "ls-files", "ls-tree"}:
+            assert "--" in c[c.index(v) + 1:], c                  # paths only after `--`
 
 
 @pytest.mark.parametrize("argv", [
@@ -806,6 +809,8 @@ def _assert_safe_argv(calls):
     ["git", "-C", "/r", "--literal-pathspecs", "add", "-A"],
     ["git", "-C", "/r", "--literal-pathspecs", "add", "--", "."],
     ["git", "-C", "/r", "--literal-pathspecs", "add", "--all"],
+    ["git", "-C", "/r", "--literal-pathspecs", "add", "x"],
+    ["git", "-C", "/r", "--literal-pathspecs", "hash-object", "x"],
 ])
 def test_assert_safe_argv_catches_banned_forms_behind_literal_pathspecs(argv):
     with pytest.raises(AssertionError):
@@ -1174,3 +1179,195 @@ def test_large_trivial_plan_runs_a_bounded_number_of_git_calls(tmp_path, monkeyp
     assert len(mine) <= 24, mine      # the classifier's own per-path `cat-file` (SPEC-0546) is not counted
     assert len(_git(repo, "show", "--name-only", "--format=", "HEAD").stdout.split()) == 200
     _assert_safe_argv(calls)
+
+
+# ---- review loop 3 ----------------------------------------------------------------------------
+
+def test_dotdot_fixture_reaches_an_existing_file(tmp_path, monkeypatch):
+    """Only the `..` rule can refuse it: the file exists, so the 'in neither' rule does not."""
+    repo, error, _ = _patched("docs/../README.md")(tmp_path, monkeypatch)
+    assert (repo / "docs/../README.md").exists() and error == "bad path docs/../README.md"
+    monkeypatch.setattr(MD, "_structurally_bad", lambda path: not path)
+    assert MD._bad_path(repo, "docs/../README.md") is False       # without the `..` clause it passes
+
+
+def test_commit_path_starting_with_a_dash(tmp_path, monkeypatch):
+    repo = _repo(tmp_path, {"-notes.md": "# n\n"})
+    _put(repo, "-notes.md", "# n\n\nmore\n")
+    monkeypatch.setattr(MD, "_classify", lambda root, row, raws: "docs")   # force `commit`
+    calls = _record(monkeypatch)
+    out = MD.apply_clear(repo)
+    assert out["ok"] is True and _tracked_clean(repo)
+    assert _git(repo, "show", "--name-only", "--format=", "HEAD").stdout.split() == ["-notes.md"]
+    _assert_safe_argv(calls)
+
+
+def test_batches_merge_across_chunks(tmp_path, monkeypatch):
+    files = {f"docs/b{i}.md": f"# {i}\n" for i in range(10)}
+    repo = _repo(tmp_path, files=files)
+    for rel in files:
+        _put(repo, rel, f"# {rel}\n\nedited\n")
+    monkeypatch.setattr(MD, "_BATCH", 3)
+    calls = _record(monkeypatch)
+    plan = MD.plan_clear(repo)
+    assert plan["action"] == "commit" and len(plan["paths"]) == 10
+    assert MD.verb_refusal(repo, plan) is None
+    assert _verbs(calls).count("hash-object") == 0                 # nothing suspect: all unstaged
+    # a bad path in the last chunk is still found
+    bad = {**plan, "paths": plan["paths"] + ["docs/ghost.md"]}
+    assert MD.verb_refusal(repo, bad) == "bad path docs/ghost.md"
+    calls.clear()
+    out = MD.apply_clear(repo)
+    assert out["ok"] is True and _tracked_clean(repo)
+    assert sorted(_git(repo, "show", "--name-only", "--format=", "HEAD").stdout.split()) == sorted(files)
+    assert _verbs(calls).count("ls-files") >= 8                    # chunks of 3, run more than once
+    _assert_safe_argv(calls)
+
+
+def test_batched_partial_staging_found_in_a_later_chunk(tmp_path, monkeypatch):
+    files = {f"docs/b{i}.md": f"# {i}\n" for i in range(7)}
+    repo = _repo(tmp_path, files=files)
+    for rel in files:
+        _put(repo, rel, f"# {rel}\n\nedited\n")
+    _git(repo, "add", "docs/b6.md")
+    _put(repo, "docs/b6.md", "# again\n")
+    monkeypatch.setattr(MD, "_BATCH", 2)
+    assert MD.verb_refusal(repo, MD.plan_clear(repo)) == "partially staged docs/b6.md"
+
+
+def test_staged_new_file_is_committed(tmp_path, monkeypatch):
+    repo = _repo(tmp_path)
+    _put(repo, "docs/new.md", "# new\n")
+    _git(repo, "add", "docs/new.md")
+    # a new file is never `trivial` for the classifier; force `commit` to reach the HEAD-absent branch
+    monkeypatch.setattr(MD, "_classify", lambda root, row, raws: "docs")
+    plan = MD.plan_clear(repo)
+    assert (plan["action"], plan["paths"]) == ("commit", ["docs/new.md"])
+    assert MD.verb_refusal(repo, plan) is None
+    out = MD.apply_clear(repo)
+    assert out["ok"] is True and _tracked_clean(repo)
+    assert _git(repo, "show", "--name-only", "--format=", "HEAD").stdout.split() == ["docs/new.md"]
+
+
+def test_staged_new_file_modified_again_is_partially_staged(tmp_path, monkeypatch):
+    repo = _repo(tmp_path)
+    _put(repo, "docs/new.md", "# new\n")
+    _git(repo, "add", "docs/new.md")
+    _put(repo, "docs/new.md", "# new\n\nmore\n")
+    # a new file is never `trivial` for the classifier; force `commit` to reach the HEAD-absent branch
+    monkeypatch.setattr(MD, "_classify", lambda root, row, raws: "docs")
+    plan = MD.plan_clear(repo)
+    assert (plan["action"], plan["paths"]) == ("commit", ["docs/new.md"])
+    assert MD.verb_refusal(repo, plan) == "partially staged docs/new.md"
+    before = _snap(repo)
+    out = MD.apply_clear(repo)
+    assert (out["ok"], out["error"]) == (False, "partially staged docs/new.md")
+    assert _snap(repo) == before
+
+
+def test_recommended_base_suffix_with_a_project_config_and_a_quoted_base(tmp_path):
+    repo = _repo(tmp_path, base="develop", name="proj repo")      # project.yaml names base develop
+    _edit_trivial(repo)
+    R = shlex.quote(str(repo))
+    assert MD.plan_clear(repo, base="develop")["recommended"] == [
+        f"nw queue main-dirty-apply --root {R} --base develop"]
+    assert MD.plan_clear(repo)["recommended"] == [f"nw queue main-dirty-apply --root {R}"]
+    odd = _repo(tmp_path, base="feat$x", project=False, name="odd repo")
+    _edit_trivial(odd)
+    cmd = MD.plan_clear(odd, base="feat$x")["recommended"][0]
+    assert cmd.endswith(" --base 'feat$x'")
+    assert shlex.split(cmd)[-2:] == ["--base", "feat$x"]
+
+
+def test_sigterm_after_add_restores_the_index_and_the_handler(tmp_path, monkeypatch):
+    repo = _repo(tmp_path)
+    _edit_trivial(repo)
+    before = _snap(repo)
+    real_stage = MD._stage
+    old = signal.getsignal(signal.SIGTERM)
+
+    def stage_then_term(root, paths):
+        r = real_stage(root, paths)
+        os.kill(os.getpid(), signal.SIGTERM)
+        return r
+
+    monkeypatch.setattr(MD, "_stage", stage_then_term)
+    with pytest.raises(SystemExit) as e:
+        MD.apply_clear(repo)
+    assert e.value.code == 128 + signal.SIGTERM
+    monkeypatch.undo()
+    assert signal.getsignal(signal.SIGTERM) == old
+    assert _snap(repo) == before
+    assert not Path(str(_index_path(repo)) + ".lock").exists()
+
+
+def test_a_second_interrupt_inside_the_restore_leaves_no_stale_lock(tmp_path, monkeypatch):
+    repo = _repo(tmp_path)
+    idx = str(_index_path(repo))
+
+    def interrupted(*a, **k):
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(MD.os, "replace", interrupted)
+    with pytest.raises(KeyboardInterrupt):
+        MD._restore_index(idx, b"x", 0o644)
+    assert not Path(idx + ".lock").exists()
+
+
+def test_failing_head_lookup_in_fail_still_restores_the_index(tmp_path, monkeypatch):
+    repo = _repo(tmp_path)
+    _edit_trivial(repo)
+    before = _snap(repo)
+    real_head, calls = MD._head, []
+
+    def head(root):
+        calls.append(1)
+        if len(calls) > 1:                                    # the pre-add call works, later ones fail
+            raise MD.PlanError("git rev-parse HEAD: timed out")
+        return real_head(root)
+
+    real_diff = MD._lg
+
+    def lg(root, *args, check=True, **kw):
+        if args and args[0] == "diff":                        # a PlanError after the add
+            raise MD.PlanError("git diff: timed out")
+        return real_diff(root, *args, check=check, **kw)
+
+    monkeypatch.setattr(MD, "_head", head)
+    monkeypatch.setattr(MD, "_lg", lg)
+    out = MD.apply_clear(repo)
+    monkeypatch.undo()
+    assert out["ok"] is False and "timed out" in out["error"]
+    assert _snap(repo) == before
+
+
+def test_a_real_ls_tree_failure_is_not_read_as_no_head_entries(tmp_path, monkeypatch):
+    repo = _repo(tmp_path)
+    real = MD._lg
+
+    def lg(root, *args, check=True, **kw):
+        if args and args[0] == "ls-tree":
+            return subprocess.CompletedProcess(args, 128, b"", b"fatal: boom")
+        return real(root, *args, check=check, **kw)
+
+    monkeypatch.setattr(MD, "_lg", lg)
+    with pytest.raises(MD.PlanError, match="ls-tree"):
+        MD._head_map(repo, ["docs/a.md"])
+    plan = {"action": "commit", "paths": ["docs/a.md"]}
+    with pytest.raises(MD.PlanError):
+        MD.verb_refusal(repo, plan)
+    monkeypatch.undo()
+    # an unborn HEAD is the one expected failure: no entries, no error
+    fresh = tmp_path / "fresh"
+    fresh.mkdir()
+    _git(fresh, "init", "-q", "-b", "main")
+    assert MD._head_map(fresh, ["a.md"]) == {}
+
+
+def test_cli_deeply_nested_plan_exits_2_without_a_traceback(tmp_path):
+    repo = _repo(tmp_path)
+    f = tmp_path / "deep.json"
+    f.write_text("[" * 100000)
+    r = _invoke("--root", str(repo), "--plan", str(f), "--json")
+    assert r.exit_code == 2 and not isinstance(r.exception, RecursionError)
+    assert "traceback" not in r.output.lower() and len(r.output.strip().splitlines()) == 1
