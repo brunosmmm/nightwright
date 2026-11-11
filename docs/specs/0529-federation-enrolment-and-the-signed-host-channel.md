@@ -535,6 +535,19 @@ any other writer).
 - Manual two-directory replay (below) re-run against the final code — `box ok`, then `box unreachable: HTTP 401`.
 - Full suite left to gating.
 
+### Test record (2026-11-10, security loop)
+
+- Tests only, no code change: added `test_request_mac_is_enforced` (wrong MAC, missing and empty
+  signature header, valid MAC over a tampered body / other path / other method each 401 with a
+  signed 401; correct MAC 200 and signed; after `unenrol` every one of those is an unsigned 401
+  with no `X-NW-Sig*` header). Overlap, cache and no-host checks stay in
+  `test_check_overlap_unreachable_and_disabled`.
+- `test_bind_and_serve_flags` no longer binds the real default port 8792 (it records the requested
+  bind and serves on an ephemeral port), so a host already listening on 8792 cannot fail it.
+- `uv run pytest tests/test_federation_channel.py tests/test_rich_output_guard.py -q` — 44 passed.
+- `python3 tools/test_tiers.py --check` — exit 0.
+- Full suite left to gating.
+
 ### As shipped (2026-11-10)
 
 Replay with two empty directory pairs (`HUB_*` and `HOST_*` below stand for the `NW_DATA_DIR` /

@@ -592,6 +592,62 @@ def test_enrolled_request_auth(tmp_path, monkeypatch):
     srv.shutdown()
 
 
+def test_request_mac_is_enforced(tmp_path, monkeypatch):
+    """Security: the request MAC alone decides entry once the bearer token is right."""
+    import time
+
+    monkeypatch.setattr(time, "time", lambda: NOW)
+    host = _cfg(tmp_path, "host")
+    F.write_federation(host, {"hub_name": "h", "host_name": "box", "token": "tok", "secret": "abc"})
+    srv, base = _serve(host)
+    secret, path = "abc", "/v1/status"
+
+    def go(method="GET", target=path, body=b"", drop=(), mutate=None, sign_for=None):
+        sign_method, sign_target, sign_body = sign_for or (method, target, body)
+        hdrs = {"Authorization": "Bearer tok",
+                **F.request_headers(secret, sign_method, sign_target, sign_body, now=NOW)}
+        if mutate:
+            hdrs = mutate(hdrs)
+        for k in drop:
+            hdrs.pop(k)
+        if body:
+            hdrs["Content-Length"] = str(len(body))
+        return _raw(method, base, target, "tok", secret, body, headers=hdrs)
+
+    # correct MAC: accepted, and the 200 is itself signed
+    st, h, raw = go()
+    assert st == 200
+    _resp_sig(secret, "GET", path, h, raw)
+
+    def flip(hdrs):
+        sig = hdrs["X-NW-Req-Sig"]
+        return {**hdrs, "X-NW-Req-Sig": ("0" if sig[0] != "0" else "1") + sig[1:]}
+
+    def wrong_secret(hdrs):
+        return {**hdrs, "X-NW-Req-Sig": F.sign("not-abc", "GET", path, b"", int(NOW))}
+
+    rejected = {
+        "wrong MAC (flipped)": go(mutate=flip),
+        "wrong MAC (other secret)": go(mutate=wrong_secret),
+        "missing signature header": go(drop=("X-NW-Req-Sig",)),
+        "empty signature header": go(mutate=lambda x: {**x, "X-NW-Req-Sig": ""}),
+        "valid header, tampered body": go(body=b"tampered", sign_for=("GET", path, b"original")),
+        "valid header, other path": go(sign_for=("GET", "/v1/other", b"")),
+        "valid header, other method": go(sign_for=("POST", path, b"")),
+    }
+    for label, (st, h, raw) in rejected.items():
+        assert st == 401, label
+        assert json.loads(raw) == {"error": "unauthorized"}, label
+        _resp_sig(secret, "GET", path, h, raw)  # enrolled: the 401 is signed
+
+    # not enrolled any more: the 401 carries no signature headers at all
+    F.federation_path(host).unlink()
+    for st, h, _ in (go(), go(drop=("X-NW-Req-Sig",)), go(mutate=flip)):
+        assert st == 401
+        assert not {k.lower() for k in h} & {"x-nw-sig", "x-nw-sig-ts"}
+    srv.shutdown()
+
+
 def test_handler_bad_request_target_no_traceback(tmp_path, monkeypatch):
     import time
 
@@ -804,7 +860,9 @@ def test_bind_and_serve_flags(tmp_path, monkeypatch):
 
     def capture_bind(cfg, bind, **kw):
         binds_used.append(bind)
-        return real_make2(cfg, bind, **kw)
+        # record the requested bind, but never take the real default port: a machine
+        # that already runs a federate server on 8792 must not fail this test
+        return real_make2(cfg, "127.0.0.1:0" if bind == FH.DEFAULT_BIND else bind, **kw)
 
     monkeypatch.setattr(FH, "make_federate_server", capture_bind)
     monkeypatch.setattr(FH.FederateServer, "serve_forever", puff)
