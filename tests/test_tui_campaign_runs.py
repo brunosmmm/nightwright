@@ -1563,3 +1563,306 @@ def test_terminal_campaign_unended_run_is_settled(tmp_path, monkeypatch):
             assert s._run_offset == before
 
     _run(drive())
+
+
+def runs_detail_content(app):
+    return detail_screen(app).query_one("#runs-detail-text").content
+
+
+def test_widget_paints_rich_text_not_markup(tmp_path):
+    cfg = TH.fixture_cfg(tmp_path)
+    TH.prepare_queue_window(cfg)
+    cid = CID_MULTI
+    mark = "[bold]tagged-widget[/bold]"
+    (S.runs_dir(cfg, cid) / "002-gate_triager" / "stderr.log").write_text(
+        "x\n" + mark, encoding="utf-8")
+    app = _desk(cfg, tab="queue")
+
+    async def drive():
+        async with app.run_test(size=SIZE) as pilot:
+            await open_screen(app, pilot, cid, "delivered", timeline=False)
+            s = detail_screen(app)
+            await press(app, pilot, ["3"])
+            s.select_run("002-gate_triager")
+            assert await pilot_until(pilot, lambda: mark in runs_detail(app))
+            content = runs_detail_content(app)
+            assert isinstance(content, Text)
+            assert mark in content.plain
+
+    _run(drive())
+
+
+def test_runs_tab_has_no_placeholder_widget(tmp_path):
+    cfg = TH.fixture_cfg(tmp_path)
+    TH.prepare_queue_window(cfg)
+    cid = CID_MULTI
+    run_id = Hist.campaign_history(cfg, cid)["runs"][0]["run_id"]
+    app = _desk(cfg, tab="queue")
+
+    async def drive():
+        async with app.run_test(size=SIZE) as pilot:
+            await open_screen(app, pilot, cid, "delivered", timeline=False)
+            s = detail_screen(app)
+            await press(app, pilot, ["3"])
+            s.select_run(run_id)
+            assert await pilot_until(pilot, lambda: runs_detail(app).strip())
+            pane = s.query_one("#tab-runs")
+            for w in pane.query("Static"):
+                text = str(w.content)
+                assert "placeholder: runs" not in text
+            assert not list(pane.query("#placeholder-text"))
+            assert not list(pane.query("#placeholder-runs"))
+            assert not list(s.query("#placeholder-text"))
+            assert "placeholder: runs" not in str(s.query_one("#overview-text").content)
+
+    _run(drive())
+
+
+def _pre_stream_copy(cfg, tag):
+    cid2 = _copy_campaign(cfg, CID_MULTI, tag)
+    run_id = "001-implementer"
+    run_dir = S.runs_dir(cfg, cid2) / run_id
+    (run_dir / "stream.jsonl").unlink(missing_ok=True)
+    rj = json.loads((run_dir / "run.json").read_text(encoding="utf-8"))
+    (rj.get("files") or {}).pop("raw", None)
+    (run_dir / "run.json").write_text(json.dumps(rj), encoding="utf-8")
+    return cid2, run_id, run_dir
+
+
+def test_pre_stream_result_fallback_branches(tmp_path):
+    cfg = TH.fixture_cfg(tmp_path)
+    TH.prepare_queue_window(cfg)
+    cid, run_id, run_dir = _pre_stream_copy(cfg, "fallback")
+    result = run_dir / "result.json"
+
+    # Object without a usable `result` string: the file's last 200 lines, not the whole file.
+    obj = {f"key{i:03d}": i for i in range(250)}
+    obj["structured_output"] = {"ok": True}
+    result.write_text(json.dumps(obj, indent=1), encoding="utf-8")
+    file_lines = result.read_text(encoding="utf-8").splitlines()
+    assert len(file_lines) > 250
+    plain = AM.load_run_pane_detail(cfg, cid, run_id).text.plain
+    assert file_lines[-200] in plain.splitlines()
+    assert file_lines[-201] not in plain.splitlines()
+    assert "key000" not in plain
+    assert file_lines[-1] in plain.splitlines()
+
+    # `result` string beside an object `structured_output`: still the file's lines.
+    result.write_text(json.dumps({"result": "str-result-0476", "structured_output": {"a": 1}},
+                                 indent=1), encoding="utf-8")
+    plain = AM.load_run_pane_detail(cfg, cid, run_id).text.plain
+    assert '"result": "str-result-0476"' in plain
+
+    # Not JSON: the file's last 200 lines.
+    result.write_text("\n".join(f"raw{i}" for i in range(300)), encoding="utf-8")
+    plain = AM.load_run_pane_detail(cfg, cid, run_id).text.plain
+    assert "raw99" not in plain.splitlines()
+    assert "raw100" in plain.splitlines()
+    assert "raw299" in plain.splitlines()
+
+    # Empty file: the missing-result line.
+    result.write_text("", encoding="utf-8")
+    assert "no result.json" in AM.load_run_pane_detail(cfg, cid, run_id).text.plain
+    result.write_text("  \n", encoding="utf-8")
+    assert "no result.json" in AM.load_run_pane_detail(cfg, cid, run_id).text.plain
+
+
+def test_follow_reads_run_off_main_thread(tmp_path, monkeypatch):
+    cfg, cid2, run_id, run_dir, ended = _live_run_copy(tmp_path, monkeypatch, "threads", stream=True)
+    main = threading.main_thread()
+    seen: dict[str, list] = {"stream_tail": [], "stream_tail_drain": [], "load_run_head": []}
+    for name in seen:
+        real = getattr(AM, name)
+
+        def wrap(*a, _real=real, _name=name, **k):
+            seen[_name].append(threading.current_thread())
+            return _real(*a, **k)
+
+        monkeypatch.setattr(AM, name, wrap)
+    app = _desk(cfg, tab="queue")
+
+    async def drive():
+        async with app.run_test(size=SIZE) as pilot:
+            await settle(app, pilot)
+            app.open_campaign_detail(cid2, focus={"tab": "runs", "run": run_id})
+            s = detail_screen(app)
+            assert await pilot_until(pilot, lambda: s._run_renderer is not None)
+            with open(run_dir / "stream.jsonl", "a", encoding="utf-8") as f:
+                f.write(_asst("thread-append-0476") + "\n")
+            assert await pilot_until(pilot, lambda: "thread-append-0476" in runs_detail(app))
+            ended["v"] = True
+            assert await pilot_until(pilot, lambda: s._run_follow_done)
+            assert await pilot_until(pilot, lambda: seen["load_run_head"])
+            for name, threads in seen.items():
+                assert threads, name
+                assert all(t is not main for t in threads), name
+
+    _run(drive())
+
+
+def test_ended_run_without_run_json_does_not_repaint(tmp_path, monkeypatch):
+    cfg, cid2, run_id, run_dir, ended = _live_run_copy(tmp_path, monkeypatch, "norj", stream=True)
+    ended["v"] = True  # exit.json present, run.json never written (a crashed run)
+    heads = []
+    real_head = AM.load_run_head
+
+    def head_spy(*a, **k):
+        heads.append(1)
+        return real_head(*a, **k)
+
+    monkeypatch.setattr(AM, "load_run_head", head_spy)
+    paints = []
+    real_paint = CD.CampaignDetail._paint_runs_detail
+
+    def paint_spy(self, scroll):
+        paints.append(1)
+        return real_paint(self, scroll)
+
+    monkeypatch.setattr(CD.CampaignDetail, "_paint_runs_detail", paint_spy)
+    app = _desk(cfg, tab="queue")
+
+    async def drive():
+        async with app.run_test(size=SIZE) as pilot:
+            await settle(app, pilot)
+            app.open_campaign_detail(cid2, focus={"tab": "runs", "run": run_id})
+            s = detail_screen(app)
+            assert await pilot_until(pilot, lambda: s._run_follow_done)
+            # The head is re-read every tick (run.json may still land) ...
+            assert await pilot_until(pilot, lambda: len(heads) >= 2)
+            await settle(app, pilot)
+            n_paints = len(paints)
+            n_heads = len(heads)
+            assert not s._run_head_done
+            assert await pilot_until(pilot, lambda: len(heads) >= n_heads + 3)
+            # ... but an unchanged head is not repainted.
+            assert len(paints) == n_paints
+
+    _run(drive())
+
+
+def test_follow_state_failure_does_not_kill_popup(tmp_path, monkeypatch):
+    polls = _spy_polls(monkeypatch)
+    cfg, cid2, run_id, run_dir, ended = _live_run_copy(tmp_path, monkeypatch, "fsfail", stream=True)
+    calls = []
+
+    def boom(*a, **k):
+        calls.append(1)
+        raise PermissionError("run dir unreadable")
+
+    app = _desk(cfg, tab="queue")
+
+    async def drive():
+        async with app.run_test(size=SIZE) as pilot:
+            await settle(app, pilot)
+            app.open_campaign_detail(cid2, focus={"tab": "runs", "run": run_id})
+            s = detail_screen(app)
+            assert await pilot_until(pilot, lambda: s._run_renderer is not None)
+            monkeypatch.setattr(AM, "run_follow_state", boom)  # after the initial paint
+            assert await pilot_until(pilot, lambda: len(calls) >= 2)
+            await _after_ticks(pilot, polls)
+            assert "seed-head" in runs_detail(app)
+            assert detail_screen(app) is s
+
+    _run(drive())
+
+
+def test_follow_resumes_after_returning_to_runs_tab(tmp_path, monkeypatch):
+    polls = _spy_polls(monkeypatch)
+    cfg, cid2, run_id, run_dir, ended = _live_run_copy(tmp_path, monkeypatch, "resume", stream=True)
+    app = _desk(cfg, tab="queue")
+
+    async def drive():
+        async with app.run_test(size=SIZE) as pilot:
+            await settle(app, pilot)
+            app.open_campaign_detail(cid2, focus={"tab": "runs", "run": run_id})
+            s = detail_screen(app)
+            assert await pilot_until(pilot, lambda: s._run_renderer is not None)
+            await press(app, pilot, ["2"])
+            await settle(app, pilot)
+            off0 = s._run_offset
+            with open(run_dir / "stream.jsonl", "a", encoding="utf-8") as f:
+                f.write(_asst("hidden-append-0476") + "\n")
+            await _after_ticks(pilot, polls)
+            assert s._run_offset == off0
+            assert "hidden-append-0476" not in runs_detail(app)
+            await press(app, pilot, ["3"])
+            assert await pilot_until(pilot, lambda: "hidden-append-0476" in runs_detail(app))
+            assert not s._run_follow_done
+            # Follow is armed again: a later append shows up on a poll.
+            with open(run_dir / "stream.jsonl", "a", encoding="utf-8") as f:
+                f.write(_asst("after-resume-0476") + "\n")
+            assert await pilot_until(pilot, lambda: "after-resume-0476" in runs_detail(app))
+            assert s._run_offset == (run_dir / "stream.jsonl").stat().st_size
+
+    _run(drive())
+
+
+def test_runs_pane_no_writes_live_follow_and_drain(tmp_path, monkeypatch):
+    monkeypatch.setattr(CD, "POLL_S", 0.05)
+    polls = _spy_polls(monkeypatch)
+    cfg = TH.fixture_cfg(tmp_path)
+    TH.prepare_queue_window(cfg)
+    cid2, run_id, run_dir, _ = _live_copy(cfg, CID_STREAM, "nowrite")
+    ended = {"v": False}
+    monkeypatch.setattr(TL, "_ended", lambda rd: ended["v"])
+    frag = json.dumps({"type": "result", "result": "frag-0476"})
+    with open(run_dir / "stream.jsonl", "ab") as f:
+        f.write(b"\n" + _asst("nw-extra").encode() + b"\n" + frag.encode())
+    root = S.campaign_dir(cfg, cid2)
+    before = _hashes(root)
+    app = _desk(cfg, tab="queue")
+
+    async def drive():
+        async with app.run_test(size=SIZE) as pilot:
+            await settle(app, pilot)
+            app.open_campaign_detail(cid2, focus={"tab": "runs", "run": run_id})
+            s = detail_screen(app)
+            assert await pilot_until(pilot, lambda: s._run_renderer is not None)
+            await _after_ticks(pilot, polls)
+            await press(app, pilot, ["j", "k", "down", "up"])
+            n_results = runs_detail(app).count("■ result:")
+            assert "nw-extra" in runs_detail(app)
+            ended["v"] = True
+            assert await pilot_until(pilot, lambda: s._run_follow_done)
+            # The trailing no-newline fragment is drained once the run ends.
+            assert await pilot_until(
+                pilot, lambda: runs_detail(app).count("■ result:") > n_results)
+            await _after_ticks(pilot, polls)
+
+    _run(drive())
+    # cache_dir is covered by test_runs_pane_no_writes: a live campaign's history index is
+    # refreshed by the history layer itself, not by this pane.
+    assert _hashes(root) == before
+
+
+def test_runs_pane_no_writes_terminal_reload_drain(tmp_path, monkeypatch):
+    monkeypatch.setattr(CD, "POLL_S", 0.05)
+    cfg = TH.fixture_cfg(tmp_path)
+    TH.prepare_queue_window(cfg)
+    cid2, run_id, run_dir, original = _live_copy(cfg, CID_STREAM, "nowrite-final")
+    monkeypatch.setattr(TL, "_ended", lambda rd: False)
+    root = S.campaign_dir(cfg, cid2)
+    app = _desk(cfg, tab="queue")
+    box = {}
+
+    async def drive():
+        async with app.run_test(size=SIZE) as pilot:
+            await settle(app, pilot)
+            app.open_campaign_detail(cid2, focus={"tab": "runs", "run": run_id})
+            s = detail_screen(app)
+            assert await pilot_until(pilot, lambda: s._run_renderer is not None)
+            with open(run_dir / "stream.jsonl", "ab") as f:
+                f.write(_asst("nw-final-0476").encode())
+            state_path = root / "state.json"
+            st = json.loads(state_path.read_text(encoding="utf-8"))
+            st["state"] = original
+            state_path.write_text(json.dumps(st), encoding="utf-8")
+            # Hash straight after the test's own writes, before any await.
+            box["before"] = _hashes(root)
+            assert await pilot_until(pilot, lambda: s.view is not None and s.view.terminal)
+            assert await pilot_until(pilot, lambda: "nw-final-0476" in runs_detail(app))
+            assert s._run_follow_done
+
+    _run(drive())
+    # cache_dir is not asserted here: the state change itself makes the history layer re-index.
+    assert _hashes(root) == box["before"]

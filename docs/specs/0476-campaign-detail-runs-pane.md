@@ -312,6 +312,14 @@ A terminal campaign's run that never wrote `exit.json` or `run.json` is settled 
 
 Ran `uv run pytest -q tests/test_tui_campaign_runs.py` (38 tests; two new: ended stream with no trailing newline in the popup, terminal campaign with an un-ended run), `tests/test_tui_campaign_detail_ac.py -k runs`, `python3 tools/test_tiers.py --check`, and `python3 tools/spec_lint.py`. Full suite left to gating.
 
+### As shipped (loop 5)
+
+Review fixes. Live follow when the campaign turns terminal on a reload: one final drain and head re-read run (`_runs_follow_poll(final=True)`), and no further ticks follow; this refines "follow only while not terminal" and is the one-shot terminal drain. The reads run in worker threads via `asyncio.to_thread` (the initial paint in the `load_detail` worker's sibling thread, follow reads in the poll's own thread hops), never on the event loop. The follow poll's `run_follow_state` hop is wrapped: an unreadable run directory skips the tick instead of ending the TUI. A re-read head that is unchanged (an ended run that never writes `run.json`) and a body with no change are not repainted.
+
+### Test record (2026-11-10, loop 5)
+
+Ran `uv run pytest -q tests/test_tui_campaign_runs.py` (47 passed), `tests/test_tui_campaign_detail_ac.py tests/test_tui_campaign_detail.py tests/test_tui_campaign_detail_model.py` (all passed), `python3 tools/test_tiers.py --check`, and `python3 tools/spec_lint.py`. New tests: follow-time `stream_tail`/`stream_tail_drain`/`load_run_head` off the main thread; the widget paints `Text`; no placeholder widget in `tab-runs`; all pre-SPEC-0362 result fallback branches (capped file lines, non-JSON, empty); no repaint for an unchanged head; `run_follow_state` failure keeps the popup alive; follow resumes after Timeline -> Runs; no campaign-directory writes during live follow, ended drain and terminal-reload drain. Full suite left to gating.
+
 ## Open questions
 
 None.

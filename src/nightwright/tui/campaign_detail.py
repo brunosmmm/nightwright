@@ -840,8 +840,12 @@ class CampaignDetail(QueueActions, ModalScreen):
         async with self._run_tail_lock:
             if rid != self._selected_run_id or (self._run_follow_done and self._run_head_done):
                 return
-            has_stream, ended = await asyncio.to_thread(
-                AM.run_follow_state, self.cfg, self.campaign_id, rid)
+            try:
+                has_stream, ended = await asyncio.to_thread(
+                    AM.run_follow_state, self.cfg, self.campaign_id, rid)
+            except Exception:
+                # An unreadable run directory: skip this tick; the next one retries.
+                return
             if rid != self._selected_run_id:
                 return
             if has_stream and (not self._run_has_stream or self._run_renderer is None):
@@ -886,13 +890,15 @@ class CampaignDetail(QueueActions, ModalScreen):
             self._run_offset = offset
             if drain:
                 self._run_follow_done = True
+            changed = head is not None and head.plain != self._run_head.plain
             if head is not None:
                 self._run_head = head
             if body is not None:
+                changed = changed or list(body) != list(self._run_body)
                 self._run_body = deque(body, maxlen=AM.RUNS_FOLLOW_MAX_LINES)
             if head is not None or head_pending or terminal:
                 self._run_head_done = head_done or terminal
-            if lines or head is not None:
+            if lines or changed:
                 at_end = self._runs_detail_at_end()
                 self._run_body.extend(lines)
                 self._paint_runs_detail("end" if at_end else None)
