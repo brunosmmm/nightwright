@@ -394,8 +394,10 @@ def test_notifications_once_per_event_are_silent(fake, tmp_path):
     _drive(cfg)
     w.run(once=True)
     notes = _notes(fake.calls())
+    # two conductor parks (cost_cap and, since SPEC-0547, main_dirty) notify; both say parked
     assert sorted(notes) == sorted([("nw: run failed", "none"), ("nw: parked", "none"),
-                                    ("nw: needs you", "none"), ("nw: merged", "none")])
+                                    ("nw: parked", "none"), ("nw: needs you", "none"),
+                                    ("nw: merged", "none")])
     before = len(fake.calls())
     HW.Watcher(cfg, H.Client(), interval_s=10).run(once=True)        # a restart
     assert _notes(fake.calls()[before:]) == []
@@ -414,6 +416,8 @@ def test_notification_policy():
     assert n({"type": "run_failed", "data": {"transient": True}}) is None
     assert n({"type": "parked", "data": {"reason": "human_decision"}}) is None
     assert n({"type": "parked", "data": {"reason": "gate_failed"}})[2] == "none"
+    assert n({"type": "parked", "data": {"reason": "main_dirty"}})[0] == "nw: parked"   # SPEC-0547
+    assert n({"type": "parked", "data": {"reason": "main_not_on_base"}}) is None
     assert n({"type": "admitted", "data": {}}) is None
     assert n({"type": "merged", "spec_id": "SPEC-1", "data": {"merged_sha": "abc"}}) == \
         ("nw: merged", "SPEC-1 abc", "none")

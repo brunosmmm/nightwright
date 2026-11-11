@@ -27,8 +27,6 @@ EFFECTS = {
 EFFECTS_WORKER_LOST = ("The queue applies this answer itself (SPEC-0342); the conductor is not "
                        "involved.")
 HOST_FIX = {
-    "main_dirty": "On the host: move the uncommitted changes in `<root>` off main (commit them "
-                  "on a branch), then `nw queue resume <cid>`.",
     "main_not_on_base": "On the host: move any work off the current branch of `<root>`, switch "
                         "it back to its base branch, then `nw queue resume <cid>`.",
     "awaiting_conductor": "Answered; the conductor applies it on its next wake "

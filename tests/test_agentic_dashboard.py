@@ -236,12 +236,12 @@ def test_dashboard_shows_size_tone_and_profile(tmp_path):                  # SPE
 
 
 def _park_fixture(tmp_path):
-    """A main_dirty park, a decided rebase_conflict, an overdue base_moving and a pending park
+    """A main_not_on_base park, a decided rebase_conflict, an overdue base_moving and a pending park
     request (SPEC-0222)."""
     repo = make_repo(tmp_path)
     cfg = make_cfg(tmp_path, repo, script(tmp_path, [impl_done()]))
     ids = {}
-    for key, reason, mins in (("dirty", "main_dirty", 20), ("rebase", "rebase_conflict", 15),
+    for key, reason, mins in (("dirty", "main_not_on_base", 20), ("rebase", "rebase_conflict", 15),
                               ("moving", "base_moving", 7)):
         cid = _campaign(cfg, repo, f"SPEC-0001-{key}", "PARKED",
                         park={"reason": reason, "detail": f"{reason} detail",
@@ -272,6 +272,23 @@ def test_park_split_lists_and_totals(tmp_path):
     assert {c["campaign"] for c in p["active"]} == {ids["req"]}
     assert t["by_project"]["Meta-Tools"]["needs_you"] == 1
     assert t["by_project"]["Meta-Tools"]["conductor"] == 3
+
+
+def test_main_dirty_park_is_conductor_handling_not_needs_you(tmp_path):      # SPEC-0547 AC2
+    repo, cfg, ids = _park_fixture(tmp_path)
+    md = _campaign(cfg, repo, "SPEC-0001-md", "PARKED",
+                   park={"reason": "main_dirty", "detail": "d", "resume_to": "CLOSING",
+                         "since": _iso(20)})
+    ev_at(cfg, md, "park", {"reason": "main_dirty"}, ago_s=20 * 60)
+    p = Q.dashboard_payload(cfg)
+    assert md not in [it["campaign"] for it in p["needs_you"]]
+    item = next(it for it in p["conductor_handling"] if it["campaign"] == md)
+    assert item["park"]["owner"] == "conductor" and item["park"]["overdue"] is True
+    ev_at(cfg, md, "note", {"text": "escalated ESC-0001", "author": "conductor"},
+          by="agent:conductor")
+    p = Q.dashboard_payload(cfg)
+    item = next(it for it in p["conductor_handling"] if it["campaign"] == md)
+    assert item["park"]["overdue"] is False and item["park"]["decided"] is True
 
 
 def test_park_split_rendering(tmp_path):

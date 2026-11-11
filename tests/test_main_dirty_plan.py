@@ -1529,3 +1529,186 @@ def test_cli_text_mode_with_a_control_character_in_a_path_exits_3(tmp_path):
     assert r.exit_code == 3 and "error:" in r.stderr and r.stdout == ""
     r = _cli("--root", str(repo), "--json")
     assert r.exit_code == 0 and json.loads(r.stdout)["paths"] == ["docs/a\nb.md"]
+
+
+# ---- SPEC-0547: the conductor's `parked.main_dirty` skill row -------------------------------------
+
+SKILL_MD = REPO_ROOT / "skills" / "nw-conduct" / "SKILL.md"
+# the pre-SPEC-0547 combined row, verbatim (first and second cells differ from the split rows)
+OLD_COMBINED_ROW = (
+    "| `parked.main_dirty`, `parked.main_not_on_base` | `parked` `main_dirty` / `main_not_on_base` | "
+    "someone edited the main checkout in place: dispatch a sub-agent to move the uncommitted work "
+    "intact onto a new branch in its own worktree (copy changed + untracked files, commit as WIP "
+    "there, verify the copy, then restore main with `git checkout -- <files>` / remove the moved "
+    "untracked files), notify the owner (steward) by mail where the work now lives, then resume "
+    "the campaign to `CLOSING`. Off-base main: switch it back to the base branch only if clean; "
+    "otherwise move the work first the same way |")
+
+
+def _skill_rows():
+    return [ln for ln in SKILL_MD.read_text(encoding="utf-8").splitlines() if ln.startswith("| `")]
+
+
+def _row(rule):
+    (row,) = [r for r in _skill_rows() if r.startswith(f"| `{rule}` |")]
+    return row
+
+
+def test_skill_main_dirty_row_phrases():                                           # SPEC-0547 AC5
+    row = _row("parked.main_dirty")
+    for phrase in ("main-dirty-plan", "--root '<root>'", "--base '<base>'", "nw queue list --json",
+                   "still PARKED", "nw campaign show <id> --json", "Cannot plan the main checkout",
+                   "human_checkout", "--yes", "--recommend 1", "recommended", "escalation_answered",
+                   "--to CLOSING", "--rule parked.main_dirty", "stop at the first error",
+                   "is not on <base>", "nw escalations list --json", "root: <root>",
+                   "nw queue decision", "--kind escalate", "--kind wait", "still dirty after",
+                   "more paths", "'\\''"):
+        assert phrase in row, phrase
+    for phrase in ("is on <branch>", "git add", "git commit", "git checkout", "git rm",
+                   "git worktree add", "main-dirty-apply", "isolation"):
+        assert phrase not in row, phrase
+    answered = _row("escalation_answered")
+    assert "human_checkout" in answered and "parked.main_dirty" in answered
+    text = SKILL_MD.read_text(encoding="utf-8")
+    bullet = text[text.index("- **Clear blockers yourself.**"):text.index("- **Human-decision route**")]
+    assert "parked.main_dirty" in bullet
+    assert "same as" not in _row("wt_broken")
+
+
+def test_skill_main_not_on_base_row_is_the_old_row_with_two_cells_edited():       # SPEC-0547 AC5
+    expect = OLD_COMBINED_ROW.replace("| `parked.main_dirty`, `parked.main_not_on_base` |",
+                                      "| `parked.main_not_on_base` |", 1) \
+                             .replace("| `parked` `main_dirty` / `main_not_on_base` |",
+                                      "| `parked` `main_not_on_base` |", 1)
+    assert expect != OLD_COMBINED_ROW
+    assert _row("parked.main_not_on_base") == expect
+    assert OLD_COMBINED_ROW not in SKILL_MD.read_text(encoding="utf-8")
+
+
+# AC6: the row's step-4 command, built and run the way the conductor's shell would parse it
+SAMPLE_ROOT = "/tmp/my repo's $HOME"
+SAMPLE_STDERR = "fatal: bad `rev` $X"
+IN_PROGRESS = "merge"
+BASE = "main"
+
+
+def _q(text):
+    """The quoting rule of the row: a single-quoted shell string, `'` written as `'\\''`."""
+    return text.replace("'", "'\\''")
+
+
+def _escalate_span(row):
+    m = re.search(r"`(nw queue escalate .*? --yes)`", row)
+    assert m, row
+    return m.group(1)
+
+
+def _questions(row):
+    qs = re.findall(r"`(Main checkout <root> [^`]*)`", row)
+    assert len(qs) == 3, qs
+    return dict(zip(("every", "hold", "merge"), qs))
+
+
+def _expand(span, *, question, facts, first_option=None, drop_plan_facts=False):
+    cmd = span.removesuffix(" --yes")
+    cmd = cmd.replace("--fact '<command>'", " ".join(f"--fact '{_q(f)}'" for f in facts))
+    cmd = cmd.replace("<question>", _q(question))
+    if first_option:
+        cmd = cmd.replace("'I ran the recommended commands'", f"'{_q(first_option)}'")
+    return cmd
+
+
+def _run_escalate(cfg, monkeypatch, cmd):
+    args = shlex.split(cmd)
+    assert args[:3] == ["nw", "queue", "escalate"]
+    monkeypatch.setattr("nightwright.cli.load_config", lambda: cfg)
+    r = CliRunner().invoke(cli, [*args[1:], "--json"])
+    assert r.exit_code == 0, r.output
+    d = json.loads(r.output)
+    assert (d["written"], d["topic"], d["campaign"], d["recommendation"]) == (
+        False, "human_checkout", None, 1)
+    return d
+
+
+def row_escalate_cmd(row, *, root, klass, action, question, facts, first_option=None):
+    """The step-4 command of the row, `--yes` dropped, for `root`/`klass`/`action`."""
+    span = _escalate_span(row).replace("<root>", _q(root)).replace("<class>", klass) \
+                              .replace("<action>", action)
+    return _expand(span, question=question, facts=facts, first_option=first_option)
+
+
+def _queue_cfg(tmp_path):
+    return {"data_dir": str(tmp_path / "data"), "config_dir": str(tmp_path / "config"),
+            "agentic": {"lease_ttl_s": 120}, "outbox_targets": {}, "specs_dir": str(tmp_path)}
+
+
+def test_skill_step4_command_round_trips_through_the_cli(tmp_path, monkeypatch):    # SPEC-0547 AC6
+    row = _row("parked.main_dirty")
+    qs = _questions(row)
+    cfg = _queue_cfg(tmp_path)
+    paths = ["src/a.py", "dir/$weird.txt", "sp ace's.txt", *(f"p{i}.txt" for i in range(4, 13))]
+    assert len(paths) == 12
+    rec = ["git add -- 'sp ace'\\''s.txt' && echo `x` $y", "git commit -m 'wip'"]
+
+    def question(tpl, klass):
+        return tpl.replace("<root>", SAMPLE_ROOT).replace("<class>", klass) \
+                  .replace("<base>", BASE).replace("<in_progress>", IN_PROGRESS)
+
+    # class: branch (the every-other-class question)
+    facts = [f"root: {SAMPLE_ROOT}", "class: branch, action: save_branch", *rec, *paths[:10],
+             "2 more paths (see nw queue main-dirty-plan)"]
+    cmd = row_escalate_cmd(row, root=SAMPLE_ROOT, klass="branch", action="save_branch",
+                           question=question(qs["every"], "branch"), facts=facts[2:])
+    d = _run_escalate(cfg, monkeypatch, cmd)
+    assert d["question"] == question(qs["every"], "branch")
+    assert [o["label"] for o in d["options"]] == ["I ran the recommended commands",
+                                                  "I cleared it another way"]
+    assert d["facts"] == facts[:2] + facts[2:]
+    assert d["facts"][0] == f"root: {SAMPLE_ROOT}" and "$" in d["facts"][0] and "'" in d["facts"][0]
+    assert rec[0] in d["facts"] and "dir/$weird.txt" in d["facts"] and "sp ace's.txt" in d["facts"]
+    assert "p11.txt" not in d["facts"] and "p12.txt" not in d["facts"]
+    assert d["facts"].count("2 more paths (see nw queue main-dirty-plan)") == 1
+
+    # class: clean, action: hold
+    facts = ["git switch main"]
+    cmd = row_escalate_cmd(row, root=SAMPLE_ROOT, klass="clean", action="hold",
+                           question=question(qs["hold"], "clean"), facts=facts)
+    d = _run_escalate(cfg, monkeypatch, cmd)
+    assert "is not on main" in d["question"] and d["question"] == question(qs["hold"], "clean")
+    assert len(d["options"]) == 2
+    assert d["facts"] == [f"root: {SAMPLE_ROOT}", "class: clean, action: hold", *facts]
+
+    # class: merge: no command facts, the first option changes
+    label = f"I will finish the {IN_PROGRESS} in the main checkout"
+    assert "I will finish the <in_progress> in the main checkout" in row
+    cmd = row_escalate_cmd(row, root=SAMPLE_ROOT, klass="merge", action="escalate",
+                           question=question(qs["merge"], "merge"), facts=[], first_option=label)
+    d = _run_escalate(cfg, monkeypatch, cmd)
+    assert f"has a {IN_PROGRESS} in progress" in d["question"]
+    assert [o["label"] for o in d["options"]] == [label, "I cleared it another way"]
+    assert d["facts"] == [f"root: {SAMPLE_ROOT}", "class: merge, action: escalate"]
+
+    # step 1's failure command, built from the same span
+    m = re.search(r"--question '(Cannot plan the main checkout <root>: <first stderr line>)'", row)
+    assert m
+    fail_q = m.group(1).replace("<root>", SAMPLE_ROOT).replace("<first stderr line>", SAMPLE_STDERR)
+    assert "I fixed it" in row and "`" in fail_q and "$" in fail_q
+    span = _escalate_span(row).replace("<root>", _q(SAMPLE_ROOT))
+    span = span.replace(" --fact 'class: <class>, action: <action>'", "") \
+               .replace(" --fact '<command>'", "").replace(" --recommend 1", "")
+    cmd = _expand(span, question=fail_q, facts=[], first_option="I fixed it")
+    args = shlex.split(cmd)
+    monkeypatch.setattr("nightwright.cli.load_config", lambda: cfg)
+    r = CliRunner().invoke(cli, [*args[1:], "--json"])
+    assert r.exit_code == 0, r.output
+    d = json.loads(r.output)
+    assert [o["label"] for o in d["options"]] == ["I fixed it", "I cleared it another way"]
+    assert d["facts"] == [f"root: {SAMPLE_ROOT}"] and d["question"] == fail_q
+
+
+def test_docs_say_the_conductor_classifies_and_escalates():                       # SPEC-0547 AC8
+    for rel in ("docs/product/loop/operate.md", "docs/product/capabilities/agentic.md"):
+        text = " ".join((REPO_ROOT / rel).read_text(encoding="utf-8").split())
+        assert "main-dirty-plan" in text, rel
+        assert "classifies" in text and "escalates" in text, rel
+        assert "main-dirty-apply" not in text, rel

@@ -48,11 +48,10 @@ def test_text_form_has_health_counts_spend_and_needs_you(tmp_path):
     lines = r.stdout.splitlines()
     assert lines[0].startswith("runner down") and "conductor down" in lines[0]
     assert lines[1] == ("active 1 · queued 0 · parked 3 · waiting 0 · backlog 0 · "
-                        "conductor-handling 0")
+                        "conductor-handling 1")             # SPEC-0547: main_dirty is the conductor's
     assert any(ln.startswith("spend today $") for ln in lines)
     assert "ESC-0001 SPEC-0902-20261103-bbbb ship it? [choose/text/override]" in lines
-    assert any(ln.startswith("SPEC-0903-20261103-cccc main_dirty needs_host: On the host: ")
-               for ln in lines)
+    assert not any(ln.startswith("SPEC-0903-20261103-cccc") for ln in lines)   # not a host fix
     assert any(ln.startswith("SPEC-0905-20261103-ffff main_not_on_base needs_host: On the host: ")
                for ln in lines)
     assert "ESC-0002" not in r.stdout and "ESC-0003" not in r.stdout
@@ -153,7 +152,7 @@ def test_text_inbox_lines_carry_forms_why_not_error_and_fix():
 
 
 def test_inbox_fixture_text_and_json_forms(tmp_path):
-    from fixtures.dashboard_data import DIRTY_ROOT, I_ANS, I_DIRTY, seed_inbox
+    from fixtures.dashboard_data import I_ANS, I_DIRTY, seed_inbox
     fx = seed_inbox(tmp_path)
     r = run_nw(fx)
     assert r.returncode == 0, r.stderr                 # with ESC-0005's corrupt state present
@@ -164,9 +163,7 @@ def test_inbox_fixture_text_and_json_forms(tmp_path):
     assert "ESC-0004 - Campaign-less one? [text]" in lines
     assert any(ln.startswith("ESC-0005 SPEC-0915-20261103-eeee Corrupt one? (error: "
                              "JSONDecodeError: ") for ln in lines)
-    assert (f"{I_DIRTY} main_dirty needs_host: On the host: move the uncommitted changes in "
-            f"`{DIRTY_ROOT}` off main (commit them on a branch), then "
-            f"`nw queue resume {I_DIRTY}`.") in lines
+    assert not any(ln.startswith(f"{I_DIRTY} ") for ln in lines)   # SPEC-0547: conductor-owned
     assert any(ln.startswith(f"{I_ANS} human_decision awaiting_conductor: Answered;")
                for ln in lines)
     r = run_nw(fx, "--json")

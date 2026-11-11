@@ -585,3 +585,20 @@ def test_parked_cost_cap_untouched_with_the_policy_off(opened):
     Q._park(cfg, S.read_state(cfg, cid), "cost_cap", "d", "IMPLEMENTING", auto_ok=False)
     report, resumed = _step0a(cfg)
     assert S.read_state(cfg, cid)["state"] == "PARKED" and not report.steps and not resumed
+
+
+def test_main_dirty_park_from_finish_close_wakes_the_conductor(tmp_path, monkeypatch):
+    """SPEC-0547 AC3: the real close → finish_close → `_park` main_dirty park is conductor-owned,
+    is in the ping fingerprint and is a `wake`."""
+    cfg, repo, cid, run_cli = _closing_world(tmp_path, monkeypatch)
+    _write(repo, "pyproject.toml", "[project]\nname='edited'\n")        # tracked, uncommitted
+    r = run_cli(cfg, monkeypatch, ["queue", "tick"])
+    assert r.exit_code == 0, r.output
+    st = S.read_state(cfg, cid)
+    assert st["state"] == "PARKED" and st["park"]["reason"] == "main_dirty"
+    assert st["park"]["resume_to"] == "CLOSING" and "auto" not in st["park"]
+    assert Q.park_owner(st["park"]["reason"]) == "conductor"
+    assert QT.ping_fingerprint(E.ping_digest(cfg)) == [["parked", cid]]
+    E.sync(cfg)
+    (ev,) = [e for e in E.read_since(cfg, 0) if e["type"] == "parked" and e["campaign"] == cid]
+    assert QT.classify(cfg, ev, QT.Ctx(cfg, "conductor")) == "wake"

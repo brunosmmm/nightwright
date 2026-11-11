@@ -351,15 +351,21 @@ def test_e5_pr_campaign(cfg, tmp_path):
     assert (c5["campaign"], c5["project"], c5["spec_id"], c5["pr_url"], c5["outcome"]) == (
         cid, "PR", "SPEC-0900", "https://gh/p/7", "MERGED")
     assert c5["touchpoints"] == [] and c5["status"] == "pass"
-    # a human-owned main_dirty park is a touchpoint that fails E5; so is an escalation's question
+    # SPEC-0547: a conductor-owned main_dirty park is no touchpoint (the accepted E5 blind
+    # spot); a human-owned main_not_on_base park is one, and so is an escalation's question
     S.append_event(cfg, cid, "park", {"reason": "main_dirty", "detail": "d",
+                                      "resume_to": "CLOSING"})
+    (c5,) = MVP.report(cfg, n=1)["e5_campaigns"]
+    assert c5["touchpoints"] == [] and c5["status"] == "pass"
+    S.append_event(cfg, cid, "park", {"reason": "main_not_on_base", "detail": "d",
                                       "resume_to": "CLOSING"})
     ESC._create(cfg, {"campaign": cid, "question": "scope?"})
     rep = MVP.report(cfg, n=1)
     (c5,) = rep["e5_campaigns"]
     assert crit(rep, "E5")["status"] == "fail" and c5["status"] == "fail"
     assert {"kind": "escalation", "id": "ESC-0001", "question": "scope?"} in c5["touchpoints"]
-    assert any(t["kind"] == "park" and t["reason"] == "main_dirty" for t in c5["touchpoints"])
+    assert any(t["kind"] == "park" and t["reason"] == "main_not_on_base" for t in c5["touchpoints"])
+    assert not any(t.get("reason") == "main_dirty" for t in c5["touchpoints"])
 
 
 def test_e5_human_decision_park_is_allowed_and_policy_matters(cfg, tmp_path):

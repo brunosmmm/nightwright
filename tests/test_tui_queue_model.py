@@ -21,7 +21,7 @@ def test_load_queue_groups_order_and_cells(tmp_path):
     _campaign(cfg, repo, "SPEC-0001-wait", "WAITING", waiting={"resume_to": "GATING",
                                                                "since": _iso(5)})
     _campaign(cfg, repo, "SPEC-0001-dirty", "PARKED",
-              park={"reason": "main_dirty", "detail": "main_dirty detail", "resume_to": "GATING"})
+              park={"reason": "main_not_on_base", "detail": "off base detail", "resume_to": "GATING"})
     _campaign(cfg, repo, "SPEC-0001-sized", "QUEUED",
               sizing={"size": "m", "tone": "high-end", "source": "flag", "reason": "x"})
     _campaign(cfg, repo, "SPEC-0001-pr", "MERGED", created_min=50, updated_min=4,

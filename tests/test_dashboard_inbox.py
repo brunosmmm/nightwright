@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from fixtures.dashboard_data import (DEC_QUESTION, DIRTY_ROOT, I_ANS, I_BAD, I_DEC, I_DIRTY,
+from fixtures.dashboard_data import (DEC_QUESTION, I_ANS, I_BAD, I_DEC, I_DIRTY,
                                      I_OFF, I_WD, LONG_DETAIL, UNMET_AC, seed_inbox)
 from test_dashboard_readonly import tree
 from nightwright.agentic import escalations as ESC
@@ -147,15 +147,13 @@ def test_parks_are_needs_you_rows_without_an_open_escalation(fx, inbox):
     dp = Q.dashboard_payload(fx["cfg"])
     rows = {r["campaign"]: r for r in dp["needs_you"]}
     parks = {p["campaign"]: p for p in inbox["parks"]}
-    assert set(rows) == {I_DEC, I_DIRTY, I_OFF, I_ANS, I_WD}
-    assert set(parks) == {I_DIRTY, I_OFF, I_ANS, I_WD}             # I_DEC has ESC-0001
+    assert set(rows) == {I_DEC, I_OFF, I_ANS, I_WD}      # SPEC-0547: I_DIRTY is the conductor's
+    assert set(parks) == {I_OFF, I_ANS, I_WD}                      # I_DEC has ESC-0001
+    assert I_DIRTY in {r["campaign"] for r in dp["conductor_handling"]}
+    assert "main_dirty" not in IB.HOST_FIX
     for cid, p in parks.items():
         assert set(p) == set(rows[cid]) | {"inbox_state", "fix"}
         assert SN._strip({k: p[k] for k in rows[cid]}) == SN._strip(rows[cid])
-    assert parks[I_DIRTY]["inbox_state"] == "needs_host"
-    assert parks[I_DIRTY]["fix"] == (
-        f"On the host: move the uncommitted changes in `{DIRTY_ROOT}` off main (commit them on "
-        f"a branch), then `nw queue resume {I_DIRTY}`.")
     assert parks[I_OFF]["inbox_state"] == "needs_host"
     assert parks[I_OFF]["fix"] == (
         "On the host: move any work off the current branch of `the project repo`, switch it "
@@ -222,3 +220,43 @@ def test_effects_match_nw_conduct_row():
     for word in ("--to REVIEWING", "`choose`", "`text`"):
         assert word in row, word
     assert re.search(r"SPEC-0342", IB.EFFECTS_WORKER_LOST)
+
+
+def test_campaignless_human_checkout_is_visible_until_withdrawn(tmp_path, monkeypatch):   # SPEC-0547 AC9
+    import json
+    import shlex
+    from click.testing import CliRunner
+    from nightwright.cli import cli
+    from test_main_dirty_plan import _escalate_span, _row
+    fx = seed_inbox(tmp_path)
+    cfg = fx["cfg"]
+    monkeypatch.setattr("nightwright.cli.load_config", lambda: cfg)
+
+    def nw(*args):
+        r = CliRunner().invoke(cli, list(args))
+        assert r.exit_code == 0, r.output
+        return r.output
+    root = "/srv/repos/meta-tools"
+    span = _escalate_span(_row("parked.main_dirty"))
+    span = span.replace("<root>", root).replace("<class>", "branch") \
+               .replace("<action>", "save_branch").replace("<question>", "dirty?") \
+               .replace("--fact '<command>'", "--fact 'git status'")
+    out = json.loads(nw(*shlex.split(span)[1:], "--json"))
+    assert out["written"] is True
+    esc_id = out["escalation"]["id"]
+
+    def listed():
+        return [e for e in json.loads(nw("escalations", "list", "--json"))["escalations"]
+                if e["id"] == esc_id]
+
+    def in_inbox():
+        return [e for e in SN.build(cfg)["inbox"]["escalations"] if e["id"] == esc_id]
+    (rec,) = listed()
+    assert rec["topic"] == "human_checkout" and rec["campaign"] is None
+    assert f"root: {root}" in rec["facts"]
+    (entry,) = in_inbox()
+    assert entry["campaign"] is None and entry["question"] == "dirty?"
+    nw("escalations", "withdraw", esc_id, "--reason", "cleaned", "--yes")
+    assert listed() == [] and in_inbox() == []
+    st = S.read_state(cfg, I_DIRTY)                     # a main_dirty campaign stays parked
+    assert st["state"] == "PARKED" and st["park"]["reason"] == "main_dirty"

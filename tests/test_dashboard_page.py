@@ -157,7 +157,7 @@ def test_page_over_real_http_with_a_ledger_change(stub):
     dp = Q.dashboard_payload(stub.fx["cfg"])
     out = run_node(stub, "full")
     assert out["spend"] == f"spend today ${dp['totals']['spend_today_usd']:.2f}"
-    assert "ESC-0001" in out["needs"] and "main_dirty" in out["needs"]
+    assert "ESC-0001" in out["needs"] and "main_not_on_base" in out["needs"]
     assert "$1.25 / $10.00" in out["active_before"]
     assert out["second_status"] == 304 and out["rebuilt_on_304"] is False
     assert out["after_change_status"] == 200

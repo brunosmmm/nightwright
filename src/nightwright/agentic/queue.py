@@ -109,9 +109,10 @@ PARK_REASONS = frozenset({
     "round_budget",                                    # SPEC-0468: cursor review rounds are spent
     "apply_error",                                     # SPEC-0484: applying a result raised
 })
-# SPEC-0222: who a park waits for. The human only for their own checkout and explicit
-# escalations (`human_decision`, SPEC-0232); everything else is the conductor's.
-PARK_OWNERS = {"main_dirty": "human", "main_not_on_base": "human", "human_decision": "human",
+# SPEC-0222: who a park waits for. The human only for an off-base main checkout and explicit
+# escalations (`human_decision`, SPEC-0232); everything else is the conductor's. SPEC-0547:
+# `main_dirty` is the conductor's (it plans and escalates; the human clears the checkout).
+PARK_OWNERS = {"main_not_on_base": "human", "human_decision": "human",
                "restart": "human"}            # SPEC-0375: only a crashed restart leaves one
 
 

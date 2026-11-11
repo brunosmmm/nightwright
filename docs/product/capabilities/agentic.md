@@ -609,7 +609,9 @@ forces anything:
 5. `merge` policy: the main checkout must be on the base branch and have no uncommitted
    tracked changes (untracked files are fine), and the base must not have moved since it
    was captured — else `main_not_on_base`, `main_dirty`, or (after two attempts)
-   `base_moving`. Then `git merge --ff-only`, the configured `post_cmds`, and an optional
+   `base_moving`. A `main_dirty` park belongs to the conductor: it classifies the edit
+   (`nw queue main-dirty-plan`) and escalates once per checkout with the exact commands.
+   Then `git merge --ff-only`, the configured `post_cmds`, and an optional
    push.
 6. `pr` / `draft-pr` policy: push the branch and `gh pr create` with a generated body (the
    spec's Decision, its acceptance checklist, the gate table, campaign cost). A failing `gh`

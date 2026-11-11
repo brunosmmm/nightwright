@@ -367,11 +367,11 @@ def test_list_needs_you_table_and_park_keys(tmp_path, monkeypatch):
     assert "PARKED:" not in r.output and "Needs you" not in r.output
     assert "PARKED !" in row, r.output                          # 600 s undecided: overdue
     dirty = _campaign(cfg, repo, "SPEC-0001-dir", "PARKED",
-                      park={"reason": "main_dirty", "detail": "uncommitted files",
+                      park={"reason": "main_not_on_base", "detail": "off base",
                             "resume_to": "CLOSING"})
-    ev_at(cfg, dirty, "park", {"reason": "main_dirty"}, ago_s=60)
+    ev_at(cfg, dirty, "park", {"reason": "main_not_on_base"}, ago_s=60)
     r = run_cli(cfg, monkeypatch, ["queue", "list"])
-    assert "Needs you (1)" in r.output and "uncommitted files" in r.output, r.output
+    assert "Needs you (1)" in r.output and "off base" in r.output, r.output
     r = run_cli(cfg, monkeypatch, ["queue", "list", "--json"])
     items = {i["campaign"]: i for i in json.loads(r.output)["items"]}
     reb = items[rebase]["park"]
@@ -388,7 +388,7 @@ def test_list_marks_overdue_and_colours_parks_by_owner(tmp_path, monkeypatch):
     from nightwright.agentic import queue as Q
     repo, cfg = _cfg(tmp_path)
     parks = (("old", "rebase_conflict", 600, False), ("young", "base_moving", 60, False),
-             ("decided", "rebase_conflict", 600, True), ("dirty", "main_dirty", 600, False))
+             ("decided", "rebase_conflict", 600, True), ("dirty", "main_not_on_base", 600, False))
     ids = {}
     for key, reason, ago, noted in parks:
         ids[key] = _campaign(cfg, repo, f"SPEC-0001-{key}", "PARKED",
@@ -406,7 +406,7 @@ def test_list_marks_overdue_and_colours_parks_by_owner(tmp_path, monkeypatch):
         assert "!" not in rows[k], rows[k]
     assert "\x1b[2mPARKED" in rows["old"] and "rebase_conflict" in rows["old"]   # dim: conductor's
     assert "\x1b[2mPARKED" in rows["young"] and "base_moving" in rows["young"]
-    assert "\x1b[33mPARKED" in rows["dirty"] and "main_dirty" in rows["dirty"]   # yellow: the human's
+    assert "\x1b[33mPARKED" in rows["dirty"] and "main_not_on_base" in rows["dirty"]   # yellow: the human's
 
 
 # ---- SPEC-0276: batch add ---------------------------------------------------------------------

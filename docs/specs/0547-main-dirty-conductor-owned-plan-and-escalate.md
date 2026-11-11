@@ -1,7 +1,7 @@
 ---
 id: SPEC-0547
 title: main_dirty is conductor-owned; the skill row plans and escalates
-status: accepted
+status: done
 owner: user
 created: 2026-11-11
 updated: 2026-11-11
@@ -166,21 +166,21 @@ An optional source (tip `61876af9`), never the contract:
 
 ## Acceptance criteria
 
-- [ ] AC1 (SPEC-0542 AC1) `park_owner("main_dirty") == "conductor"`; `main_not_on_base`,
+- [x] AC1 (SPEC-0542 AC1) `park_owner("main_dirty") == "conductor"`; `main_not_on_base`,
       `human_decision`, `restart` stay `human`.
-- [ ] AC2 (SPEC-0542 AC2) An undecided `main_dirty` park older than `park_decide_s` is overdue,
+- [x] AC2 (SPEC-0542 AC2) An undecided `main_dirty` park older than `park_decide_s` is overdue,
       is in Conductor handling and not in Needs you, and `events.sync` emits exactly one
       `park_undecided` for it; a decision note after the park clears the overdue flag and no
       second `park_undecided` fires.
-- [ ] AC3 (SPEC-0542 AC3) `quiet.ping_fingerprint` contains `["parked", <cid>]` for a real
+- [x] AC3 (SPEC-0542 AC3) `quiet.ping_fingerprint` contains `["parked", <cid>]` for a real
       `main_dirty` park written by `finish_close` (not a hand-built dict); `quiet.classify`
       returns `wake` for it.
-- [ ] AC4 (SPEC-0542 AC4) Herdr emits `nw: parked` for a `main_dirty` park; `HOST_FIX` has no
+- [x] AC4 (SPEC-0542 AC4) Herdr emits `nw: parked` for a `main_dirty` park; `HOST_FIX` has no
       `main_dirty` key; `mvp_report.e5` on a campaign that really parked `main_dirty` has no
       touchpoint for it, while a `main_not_on_base` park still is one. This is the accepted E5
       blind spot (Design): the campaign-less `human_checkout` record is not counted as a
       touchpoint until SPEC-0551.
-- [ ] AC5 (SPEC-0542 AC13) Skill: the `parked.main_dirty` row (extracted by its rule id)
+- [x] AC5 (SPEC-0542 AC13) Skill: the `parked.main_dirty` row (extracted by its rule id)
       contains the literal substrings `main-dirty-plan`, `--root '<root>'`, `--base '<base>'`,
       `nw queue list --json`, `still PARKED`, `nw campaign show <id> --json`,
       `Cannot plan the main checkout`, `human_checkout`, `--yes`, `--recommend 1`,
@@ -195,7 +195,7 @@ An optional source (tip `61876af9`), never the contract:
       the test (holding the pre-change combined row as a literal fixture) asserts that row
       equals the old row with only `` `parked.main_dirty`, `` removed from the first cell and
       `` `main_dirty` / `` removed from the second, so the body is byte-identical.
-- [ ] AC6 (SPEC-0542 AC14) The test takes the backticked span of the `parked.main_dirty` row that
+- [x] AC6 (SPEC-0542 AC14) The test takes the backticked span of the `parked.main_dirty` row that
       begins at `nw queue escalate` and ends at `--yes` (the single-line template of step 4),
       expands the `--fact '<command>'` clause itself (one `--fact` per sample `recommended` line,
       then one per sample path up to 10, then the `<m> more paths` fact), substitutes the
@@ -221,13 +221,13 @@ An optional source (tip `61876af9`), never the contract:
       `class:` fact, the `<command>` clause and `--recommend 1` are removed. It asserts two
       options (`I fixed it`, `I cleared it another way`), the `root: <root>` fact, and the
       question equal byte for byte to the sample text.
-- [ ] AC7 (SPEC-0542 AC15) `launch.py` and `tests/test_agentic_launch.py` are unchanged by this
+- [x] AC7 (SPEC-0542 AC15) `launch.py` and `tests/test_agentic_launch.py` are unchanged by this
       spec; `finish_close` still parks `main_dirty` with `resume_to: CLOSING` and still merges
       once the checkout is tracked-clean.
-- [ ] AC8 A grep test over `docs/product/loop/operate.md` and
+- [x] AC8 A grep test over `docs/product/loop/operate.md` and
       `docs/product/capabilities/agentic.md` finds wording that the conductor classifies and
       escalates a dirty main checkout, finds `main-dirty-plan`, and finds no `main-dirty-apply`.
-- [ ] AC9 With a campaign-less open `human_checkout` record (created through the row's step-4
+- [x] AC9 With a campaign-less open `human_checkout` record (created through the row's step-4
       command with `--yes` against a temp cfg), `nw escalations list --json` includes it and the
       dashboard inbox payload's `escalations` section includes it; after
       `nw escalations withdraw` it is gone from both, and the `main_dirty` campaigns stay
@@ -249,6 +249,38 @@ An optional source (tip `61876af9`), never the contract:
   park is under Conductor handling; run the row's step-4 command with `--json` and without
   `--yes` → a dry-run `human_checkout` record whose facts list the `recommended` lines. Record
   the output in As shipped.
+
+### Test record (2026-11-11)
+
+Ran: `uv run pytest -q -n0` over `tests/test_agentic_queue.py`, `test_agentic_events.py`,
+`test_agentic_dashboard.py`, `test_agentic_queue_cli.py`, `test_tui_queue_model.py`,
+`test_dashboard_cli.py`, `test_dashboard_inbox.py`, `test_dashboard_page.py`,
+`test_dashboard_snapshot.py`, `test_herdr.py`, `test_agentic_mvp_report.py`,
+`test_agentic_queue_autopark.py`, `test_main_dirty_plan.py`, `test_skills.py`, plus the close,
+launch, MVP integration, conductor guard, quiet, escalation and TUI queue files: all pass (1463 and
+260 tests). `python3 tools/affected_tests.py --run …` was started but exceeded the run's time
+limit (the skill and `queue.py` changes affect most modules) and was stopped; the full suite was
+left to gating. `python3 tools/test_tiers.py --check` exits 0 and `python3 tools/spec_lint.py`
+exits 0.
+Manual check: `uv run nw queue escalate --topic human_checkout --question … --option … --recommend 1
+--fact 'root: /tmp/s' --fact 'class: branch, action: save_branch' --json` without `--yes` →
+`written: false`, `topic: human_checkout`, `campaign: null`, `recommendation: 1`, the two facts listed.
+
+### As shipped (2026-11-11)
+
+- `PARK_OWNERS` and `HOST_FIX` changed as designed; `launch.py`, `close.py` untouched.
+- `skills/nw-conduct/SKILL.md`: the combined row is split (`parked.main_not_on_base` is the old row
+  with two cells edited), `parked.main_dirty` is one table row with steps 1 to 5 and the quoting
+  rule, `wt_broken` spells out the move procedure, the `escalation_answered` row starts with the
+  `human_checkout` sentence, and the "Clear blockers yourself" bullet names the exception.
+- Docs: `operate.md` (the `main_dirty` row) and `agentic.md` (close step 5) say the conductor
+  classifies and escalates and name only `main-dirty-plan`.
+- Tests: the human-owned `main_dirty` fixtures in the queue, events, dashboard, queue CLI, TUI model
+  and snapshot tests now use `main_not_on_base` or expect Conductor handling; new tests cover AC2
+  (`test_agentic_events.py`, `test_agentic_dashboard.py`), AC3 (`test_agentic_queue_autopark.py`,
+  a real tick through `finish_close`), AC4 (`test_herdr.py`, `test_agentic_mvp_report.py`),
+  AC5, AC6, AC8 (`test_main_dirty_plan.py`) and AC9 (`test_dashboard_inbox.py`). AC6's helper
+  `row_escalate_cmd` builds the step-4 command from the row span, so AC9 reuses it.
 
 ## Goals / Non-goals
 
@@ -276,13 +308,13 @@ open until SPEC-0551 is done. Queued under project Meta-Tools after SPEC-0546.
 
 ## Definition of done
 
-- [ ] Acceptance criteria all met.
-- [ ] Test plan executed, including the manual check; affected tests pass.
-- [ ] No regressions in close, dashboard, herdr, launch, E5 tests.
-- [ ] `docs/product/loop/operate.md` and `docs/product/capabilities/agentic.md` say the
+- [x] Acceptance criteria all met.
+- [x] Test plan executed, including the manual check; affected tests pass.
+- [x] No regressions in close, dashboard, herdr, launch, E5 tests.
+- [x] `docs/product/loop/operate.md` and `docs/product/capabilities/agentic.md` say the
       conductor classifies and escalates, and name only `main-dirty-plan` (AC8).
-- [ ] Spec body updated to match what shipped.
-- [ ] `docs/LEDGER.md` regenerated; `python3 tools/spec_lint.py` exits 0.
+- [x] Spec body updated to match what shipped.
+- [x] `docs/LEDGER.md` regenerated; `python3 tools/spec_lint.py` exits 0.
 
 ## Open questions
 

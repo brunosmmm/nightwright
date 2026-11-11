@@ -1440,12 +1440,13 @@ def test_first_implementer_prompt_has_findings_second_does_not(tmp_path, monkeyp
 # ---- SPEC-0222: park owner / decision / overdue --------------------------------------------
 
 def test_park_owner_table():
-    assert Q.PARK_OWNERS == {"main_dirty": "human", "main_not_on_base": "human",
-                             "human_decision": "human", "restart": "human"}   # SPEC-0375
+    assert Q.PARK_OWNERS == {"main_not_on_base": "human", "human_decision": "human",
+                             "restart": "human"}   # SPEC-0375; main_dirty is SPEC-0547
     for reason in Q.PARK_REASONS:
-        assert Q.park_owner(reason) == ("human" if reason in ("main_dirty", "main_not_on_base",
+        assert Q.park_owner(reason) == ("human" if reason in ("main_not_on_base",
                                                                "human_decision", "restart")
                                         else "conductor"), reason
+    assert Q.park_owner("main_dirty") == "conductor"                          # SPEC-0547 AC1
     assert Q.park_owner("human_decision") == "human"
     assert "human_decision" in Q.PARK_REASONS                                # SPEC-0232
     assert Q.park_owner(None) == "conductor" and Q.park_owner("whatever") == "conductor"
@@ -1497,7 +1498,7 @@ def test_queue_payload_park_keys_decision_rules(tmp_path):
     assert park[before]["decision"] is None and park[before]["decided"] is False
     assert park[repark]["decision"] is None and park[repark]["decided"] is False
     assert park[human]["decided"] is True and park[human]["overdue"] is False
-    assert park[dirty]["owner"] == "human" and park[dirty]["overdue"] is False
+    assert park[dirty]["owner"] == "conductor" and park[dirty]["decided"] is False
     assert park[undecided]["reason"] == "rebase_conflict"          # existing keys survive
     # non-parked items keep their (null) park
     assert all(i["park"] is None for i in Q.queue_payload(cfg)["items"]

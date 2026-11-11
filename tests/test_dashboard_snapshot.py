@@ -65,10 +65,11 @@ def test_build_has_every_section_and_matches_the_payload(fx):
             "why_not", "forms", "findings", "unmet_acs", "effects"} <= set(esc)
     assert esc["answerable"] is True and esc["forms"] == ["choose", "text", "override"]
     assert esc["unmet_acs"] == ["AC 4 output is sorted"] and esc["findings"]
-    # exactly the main_dirty / main_not_on_base parks: the human_decision park is left out
-    assert {r["campaign"] for r in doc["needs_you"]} == {DECISION, DIRTY, OFF_BASE}
+    # exactly the main_not_on_base park: the human_decision park is left out and main_dirty is
+    # the conductor's since SPEC-0547
+    assert {r["campaign"] for r in doc["needs_you"]} == {DECISION, OFF_BASE}
     assert sorted((p["campaign"], p["park"]["reason"]) for p in doc["inbox"]["parks"]) == [
-        (DIRTY, "main_dirty"), (OFF_BASE, "main_not_on_base")]
+        (OFF_BASE, "main_not_on_base")]
     assert [r["campaign"] for r in doc["active"]] == [ACTIVE]
     assert doc["health"]["runner"]["lease"]["held"] is False
     assert doc["health"]["conductor"] == {"pid": None, "lag": None, "cursor_age_s": None}

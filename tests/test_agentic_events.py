@@ -646,7 +646,7 @@ def test_park_undecided_fires_once_per_park_and_stops_on_a_note(tmp_path):
     cid = _campaign(cfg, "SPEC-0910-20261025-aaaa")
     dirty = _campaign(cfg, "SPEC-0911-20261025-aaaa")
     _park_at(cfg, cid, "rebase_conflict", 400)
-    _park_at(cfg, dirty, "main_dirty", 400)             # human-owned: never fires
+    _park_at(cfg, dirty, "main_not_on_base", 400)       # human-owned: never fires
     fired = _undecided(cfg)
     assert len(fired) == 1
     e = fired[0]
@@ -659,6 +659,25 @@ def test_park_undecided_fires_once_per_park_and_stops_on_a_note(tmp_path):
     _set_state(cfg, cid, state="IMPLEMENTING")           # resume ...
     _park_at(cfg, cid, "rebase_conflict", 400)           # ... and re-park: new seq fires again
     assert len(_undecided(cfg)) == 1
+
+
+def test_main_dirty_park_is_undecided_once_then_decided(tmp_path):                 # SPEC-0547 AC2
+    """`main_dirty` is conductor-owned: overdue, one `park_undecided`, cleared by a decision."""
+    from test_agentic_dashboard import ev_at
+    cfg = _cfg(tmp_path)
+    cid = _campaign(cfg, "SPEC-0918-20261025-aaaa")
+    _park_at(cfg, cid, "main_dirty", 400)
+    d = E.ping_digest(cfg)
+    (row,) = d["parked"]
+    assert row["owner"] == "conductor" and row["overdue"] is True
+    assert d["counts"]["needs_you"] == 0 and d["counts"]["undecided_parks"] == 1
+    fired = _undecided(cfg)
+    assert len(fired) == 1 and fired[0]["campaign"] == cid
+    assert fired[0]["data"]["reason"] == "main_dirty" and fired[0]["data"]["owner"] == "conductor"
+    assert _undecided(cfg) == []                         # a re-sync does not repeat it
+    ev_at(cfg, cid, "note", {"text": "escalated ESC-0001", "author": "conductor"})
+    assert E.ping_digest(cfg)["parked"][0]["overdue"] is False
+    assert _undecided(cfg) == []
 
 
 def test_park_undecided_never_fires_for_a_park_that_has_a_note(tmp_path):
@@ -711,7 +730,7 @@ def test_ping_digest_owner_overdue_and_counts(tmp_path):
     a = _campaign(cfg, "SPEC-0914-20261025-aaaa")
     b = _campaign(cfg, "SPEC-0915-20261025-aaaa")
     _park_at(cfg, a, "base_moving", 400)
-    _park_at(cfg, b, "main_dirty", 400)
+    _park_at(cfg, b, "main_not_on_base", 400)
     d = E.ping_digest(cfg)
     by = {p["campaign"]: p for p in d["parked"]}
     assert by[a]["owner"] == "conductor" and by[a]["overdue"] is True
