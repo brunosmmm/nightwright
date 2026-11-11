@@ -34,8 +34,29 @@ def hosts_group():
 def _update(cfg, fn):
     try:
         return H.update(cfg, fn)
-    except (OSError, ValueError) as e:
+    except (OSError, ValueError, TypeError, AttributeError, RecursionError) as e:
         raise click.ClickException(str(e))
+
+
+_CAMPAIGN_KEYS = ("campaign", "project", "state", "spec_id", "kind")
+_MAX_CAMPAIGNS = 1000
+_MAX_STR = 256
+
+
+def _clean_str(v):
+    """A host-supplied string that is safe to cache and echo, else None."""
+    if isinstance(v, str) and len(v) <= _MAX_STR and v.isprintable():
+        return v
+    return None
+
+
+def _clean_campaigns(raw) -> list[dict]:
+    """Only the five documented keys of dict items, as bounded printable strings or None."""
+    out = []
+    for item in raw[:_MAX_CAMPAIGNS] if isinstance(raw, list) else []:
+        if isinstance(item, dict):
+            out.append({k: _clean_str(item.get(k)) for k in _CAMPAIGN_KEYS})
+    return out
 
 
 @hosts_group.command("add")
@@ -152,8 +173,10 @@ def hosts_off(cfg, name):
 @hosts_group.command("check")
 @click.pass_obj
 def hosts_check(cfg):
-    from . import federation as Fed
-    recs = H.load(cfg)
+    try:
+        recs = H.read_strict(cfg)
+    except (OSError, ValueError) as e:
+        raise click.ClickException(f"{H.path(cfg)}: {e}")
     if not recs:
         return
     try:
@@ -172,7 +195,7 @@ def hosts_check(cfg):
             click.echo(f"{name} off")
             continue
         try:
-            client = Fed.HubClient(rec, cfg)
+            client = F.HubClient(rec, cfg)
             doc = client.get_json("/v1/status")
         except (ConnectionError, ValueError, OSError, http.client.HTTPException, RecursionError) as e:
             click.echo(f"{name} unreachable: {e}")
@@ -187,18 +210,18 @@ def hosts_check(cfg):
             click.echo(f"{name} unreachable: bad status document")
             exit_code = 1
             continue
-        projects = [p for p in raw_projects if isinstance(p, str)]
-        campaigns = doc.get("campaigns") if isinstance(doc.get("campaigns"), list) else []
+        projects = [p for p in map(_clean_str, raw_projects) if p]
+        campaigns = _clean_campaigns(doc.get("campaigns"))
 
         def store_cache(recs_):
             for r in recs_:
-                if r.get("name") == name:
+                if isinstance(r, dict) and r.get("name") == name:
                     r["status_cache"] = {"fetched_at": now_iso(), "projects": projects,
                                          "campaigns": campaigns}
 
         try:
             H.update(cfg, store_cache)
-        except (OSError, ValueError) as e:
+        except (OSError, ValueError, TypeError, AttributeError, RecursionError) as e:
             click.echo(f"{name} unreachable: {e}")
             exit_code = 1
             continue

@@ -375,7 +375,9 @@ def test_enrol_stdin_only_0600(tmp_path, monkeypatch):
     assert stat.S_IMODE(p.stat().st_mode) == 0o600
     assert json.loads(p.read_text()) == blob
     fail = [
-        (["hosts", "enrol", "x"], None),
+        (["hosts", "enrol", json.dumps({**blob, "token": "pos"})], None),
+        (["hosts", "enrol", json.dumps({**blob, "token": "pos"})], json.dumps(blob) + "\n"),
+        (["hosts", "enrol", "--blob", json.dumps({**blob, "token": "pos"})], None),
         (["hosts", "enrol"], "\n"),
         (["hosts", "enrol"], "[]\n"),
         (["hosts", "enrol"], json.dumps({"hub_name": "h"}) + "\n"),
@@ -390,6 +392,7 @@ def test_enrol_stdin_only_0600(tmp_path, monkeypatch):
     blob2 = {**blob, "token": "t2"}
     assert CliRunner().invoke(cli, ["hosts", "enrol"], input=json.dumps(blob2) + "\n", env=env).exit_code == 0
     assert json.loads(p.read_text()) == blob2
+    assert stat.S_IMODE(p.stat().st_mode) == 0o600
     assert CliRunner().invoke(cli, ["hosts", "unenrol"], env=env).exit_code == 0
     assert not p.exists()
     assert CliRunner().invoke(cli, ["hosts", "unenrol"], env=env).exit_code == 0
@@ -547,6 +550,31 @@ def test_enrolled_request_auth(tmp_path, monkeypatch):
     st, h, raw = req("POST", "/v1/status", body=b"?", headers=post_hdrs)
     assert st == 401
     _resp_sig(secret, "POST", "/v1/status", h, raw)
+    # The MAC binds the body on a route that reads one: a POST signed over its own body passes the
+    # MAC (then 405, the method is not allowed); signed over b"" but sent with a body it is a 401.
+    for sign_over, want in ((b"x", 405), (b"", 401), (b"y", 401)):
+        bh = {**F.request_headers(secret, "POST", "/v1/status", sign_over, now=NOW),
+              "Authorization": "Bearer tok", "Content-Length": "1"}
+        st, h, raw = req("POST", "/v1/status", body=b"x", headers=bh)
+        assert st == want, sign_over
+        _resp_sig(secret, "POST", "/v1/status", h, raw)
+    # A GET/HEAD with a body or a Transfer-Encoding, and a body over the cap, are signed 401s that
+    # never reach the status document.
+    big = str(FH.MAX_BODY_BYTES + 1)
+    refused = [
+        ("GET", {"Content-Length": "1"}, b"x"),
+        ("HEAD", {"Content-Length": "1"}, b"x"),
+        ("GET", {"Transfer-Encoding": "chunked"}, b""),
+        ("HEAD", {"Transfer-Encoding": "chunked"}, b""),
+        ("POST", {"Content-Length": big}, b""),
+    ]
+    for method, extra, rbody in refused:
+        rh = {**F.request_headers(secret, method, "/v1/status", rbody, now=NOW),
+              "Authorization": "Bearer tok", **extra}
+        st, h, raw = req(method, "/v1/status", body=rbody, headers=rh)
+        assert st == 401, (method, extra)
+        assert b"schema" not in raw
+        _resp_sig(secret, method, "/v1/status", h, b"" if method == "HEAD" else raw)
     post_hdrs = {**F.request_headers(secret, "POST", "/v1/status", b"", now=NOW), "Authorization": "Bearer tok"}
     st, h, raw = req("POST", "/v1/status", headers=post_hdrs)
     assert st == 405
@@ -958,7 +986,9 @@ def test_check_overlap_unreachable_and_disabled(tmp_path, monkeypatch):
     assert cache["projects"] == doc_a["projects"]
     assert cache["campaigns"] == doc_a["campaigns"]
     srv_a.shutdown()
+    srv_a.server_close()
     srv_b.shutdown()
+    srv_b.server_close()
 
     hub_disjoint = _cfg(tmp_path, "hub-disjoint")
     dis_root = tmp_path / "hub-disjoint-data"
@@ -1012,9 +1042,25 @@ def test_check_overlap_unreachable_and_disabled(tmp_path, monkeypatch):
         }
 
     H.update(hub_full, plant_disabled)
+    contacted = []
+    real_init = F.HubClient.__init__
+    real_req = F.HubClient.request
+
+    def spy_init(self, record, *a, **k):
+        contacted.append(record.get("name"))
+        return real_init(self, record, *a, **k)
+
+    def spy_req(self, *a, **k):
+        contacted.append(self.record.get("name"))
+        return real_req(self, *a, **k)
+
+    monkeypatch.setattr(F.HubClient, "__init__", spy_init)
+    monkeypatch.setattr(F.HubClient, "request", spy_req)
     r_off = _invoke(hub_full, monkeypatch, "check")
     assert r_off.exit_code == 0
     assert "zlast off" in r_off.output
+    assert "mfirst off" in r_off.output and "dead off" in r_off.output
+    assert contacted == []
 
 
 def test_hubclient_getaddrinfo_blocks_within_connect_budget(tmp_path, monkeypatch):
@@ -1139,6 +1185,11 @@ def test_hub_modules_do_not_import_queue():
     assert not _queue_import_violations(fh_text, federation_host_payload_only=True)
     assert _queue_import_violations("from . import queue as Q\n\ndef f():\n    Q.park()\n")
     assert _queue_import_violations("import nightwright.agentic.queue\n")
+    # payload-only mode (used for federation_host.py) flags any other queue call, allows payload
+    assert _queue_import_violations("from . import queue as Q\ndef f():\n    Q.park()\n",
+                                    federation_host_payload_only=True)
+    assert not _queue_import_violations("from . import queue as Q\ndef f(cfg):\n    Q.queue_payload(cfg)\n",
+                                        federation_host_payload_only=True)
     assert _queue_import_violations("from nightwright.agentic.queue import park\n")
     assert "subprocess" not in fh_text
 
@@ -1594,5 +1645,151 @@ def test_check_after_unenrol_reports_http_401(tmp_path, monkeypatch):
     r = _invoke(hub, monkeypatch, "check")
     assert r.exit_code == 1
     assert r.output.splitlines()[0] == "box unreachable: HTTP 401"
+    srv.shutdown()
+    srv.server_close()
+
+
+def _signed_reply(secret, *, ts_off=0, mac=None, body=None):
+    body = body or b'{"schema":"nw.federation.status.v1","projects":[],"campaigns":[]}'
+    ts = int(NOW) + ts_off
+    sig = mac or F.sign(secret, "GET", "/v1/status", body, ts)
+    head = (f"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {len(body)}\r\n"
+            f"X-NW-Sig-Ts: {ts}\r\nX-NW-Sig: {sig}\r\nConnection: close\r\n\r\n")
+    return head.encode() + body
+
+
+def test_check_signature_credential_and_cache_write_failures(tmp_path, monkeypatch):
+    import time
+
+    monkeypatch.setattr(time, "time", lambda: NOW)
+    hub = _cfg(tmp_path, "hub")
+    for name in ("badsig", "stale", "nocreds", "cachefail", "fresh"):
+        assert _invoke(hub, monkeypatch, "add", name, "--url", "http://127.0.0.1:9").exit_code == 0
+
+    def answering(reply):
+        def answer(conn):
+            try:
+                conn.recv(65536)
+                conn.sendall(reply)
+            finally:
+                conn.close()
+        return answer
+
+    stops = []
+    for name, reply in (
+        ("badsig", _signed_reply(F.read_host_secret(hub, "badsig"), mac="0" * 64)),
+        ("stale", _signed_reply(F.read_host_secret(hub, "stale"), ts_off=-121)),
+        ("cachefail", _signed_reply(F.read_host_secret(hub, "cachefail"))),
+        ("fresh", _signed_reply(F.read_host_secret(hub, "fresh"), ts_off=-120)),
+    ):
+        port, stop = _raw_listener(answering(reply))
+        stops.append(stop)
+        _point_hub(hub, name, f"http://127.0.0.1:{port}")
+    F.host_secret_path(hub, "nocreds").unlink()
+    # a record with no name between real hosts: reported, and the run continues
+    H.update(hub, lambda rs: rs.insert(1, {"url": "http://127.0.0.1:9", "enabled": True}))
+    before = {r["name"]: r["status_cache"] for r in H.load(hub) if "name" in r}
+
+    real_write = H._write_fsync
+    calls = []
+
+    def flaky_write(p, recs):
+        # the first cache write is `cachefail`'s (earlier hosts all fail before storing)
+        calls.append(1)
+        if len(calls) == 1:
+            raise OSError("disk full")
+        return real_write(p, recs)
+
+    # registry order: badsig, <malformed>, stale, nocreds, cachefail, fresh
+    assert [r.get("name") for r in H.load(hub)] == [
+        "badsig", None, "stale", "nocreds", "cachefail", "fresh"]
+    monkeypatch.setattr(H, "_write_fsync", flaky_write)
+    r = _invoke(hub, monkeypatch, "check")
+    for stop in stops:
+        stop()
+    assert r.exit_code == 1
+    assert "Traceback" not in r.output
+    assert r.output.splitlines() == [
+        "badsig unreachable: bad signature",
+        "? unreachable: malformed host record",
+        "stale unreachable: stale signature",
+        "nocreds unreachable: missing host credentials",
+        "cachefail unreachable: disk full",
+        "fresh ok",
+    ]
+    monkeypatch.setattr(H, "_write_fsync", real_write)
+    after = {r["name"]: r["status_cache"] for r in H.load(hub) if "name" in r}
+    for name in ("badsig", "stale", "nocreds", "cachefail"):
+        assert after[name] == before[name] is None
+    assert after["fresh"]["projects"] == []
+
+
+def test_check_caches_only_sanitised_campaigns(tmp_path, monkeypatch):
+    hub = _cfg(tmp_path, "hub")
+    assert _invoke(hub, monkeypatch, "add", "box", "--url", "http://127.0.0.1:9").exit_code == 0
+    deep: list = []
+    node = deep
+    for _ in range(5000):
+        nxt: list = []
+        node.append(nxt)
+        node = nxt
+    good = {"campaign": "C1", "project": "P", "state": "QUEUED", "spec_id": "SPEC-1",
+            "kind": "implement", "extra": "dropped"}
+    doc = {"schema": "nw.federation.status.v1",
+           "projects": ["P", "\x1b[31mevil", "x" * 1000, 7],
+           "campaigns": [good, deep, "str", {"campaign": "\x1b]0;t\x07", "project": deep}]}
+    monkeypatch.setattr(F.HubClient, "get_json", lambda self, path: doc)
+    r = _invoke(hub, monkeypatch, "check")
+    assert r.exit_code == 0, r.output
+    assert r.output.splitlines() == ["box ok"]
+    assert "\x1b" not in r.output
+    cache = H.find(H.load(hub), "box")["status_cache"]
+    assert cache["projects"] == ["P"]
+    assert cache["campaigns"] == [
+        {"campaign": "C1", "project": "P", "state": "QUEUED", "spec_id": "SPEC-1", "kind": "implement"},
+        {"campaign": None, "project": None, "state": None, "spec_id": None, "kind": None},
+    ]
+
+    big = {"schema": "nw.federation.status.v1", "projects": [],
+           "campaigns": [good] * 5000}
+    monkeypatch.setattr(F.HubClient, "get_json", lambda self, path: big)
+    assert _invoke(hub, monkeypatch, "check").exit_code == 0
+    assert len(H.find(H.load(hub), "box")["status_cache"]["campaigns"]) == cli_hosts._MAX_CAMPAIGNS
+
+
+def test_check_on_off_with_corrupt_registry_records(tmp_path, monkeypatch):
+    hub = _cfg(tmp_path, "hub")
+    host = _cfg(tmp_path, "host")
+    _add_and_enrol(host, hub, monkeypatch)
+    srv, url = _serve(host)
+    _point_hub(hub, "box", url)
+    good = H.find(H.load(hub), "box")
+    p = H.path(hub)
+
+    # unparseable and wrong-schema registries: check refuses, it does not report success
+    for text in ("{garbage", json.dumps({"schema": "other", "hosts": [good]}),
+                 json.dumps({"schema": H.SCHEMA, "hosts": "nope"})):
+        p.write_text(text)
+        r = _invoke(hub, monkeypatch, "check")
+        assert r.exit_code != 0 and isinstance(r.exception, SystemExit), text
+        assert "Traceback" not in r.output
+        assert p.read_text() == text
+
+    # a non-dict entry next to a valid host: no traceback, the valid host is still processed
+    p.write_text(json.dumps({"schema": H.SCHEMA, "hosts": ["junk", good]}))
+    r = _invoke(hub, monkeypatch, "check")
+    assert r.exit_code == 1 and isinstance(r.exception, SystemExit)
+    assert r.output.splitlines() == ["? unreachable: malformed host record", "box ok"]
+    assert json.loads(p.read_text())["hosts"][0] == "junk"
+    assert json.loads(p.read_text())["hosts"][1]["status_cache"]["projects"] == []
+    r = _invoke(hub, monkeypatch, "off", "box")
+    assert r.exit_code == 0 and r.exception is None, r.output
+    assert json.loads(p.read_text())["hosts"][1]["enabled"] is False
+    r = _invoke(hub, monkeypatch, "on", "box")
+    assert r.exit_code == 0 and json.loads(p.read_text())["hosts"][1]["enabled"] is True
+    for verb in ("on", "off"):
+        r = _invoke(hub, monkeypatch, verb, "ghost")
+        assert r.exit_code != 0 and isinstance(r.exception, SystemExit)
+        assert "Traceback" not in r.output
     srv.shutdown()
     srv.server_close()

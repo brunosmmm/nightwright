@@ -116,6 +116,6 @@ def update(cfg, fn) -> list[dict]:
 
 def find(records: list[dict], name: str) -> dict:
     for r in records:
-        if r.get("name") == name:
+        if isinstance(r, dict) and r.get("name") == name:
             return r
     raise ValueError(f"no host named {name!r}")

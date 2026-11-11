@@ -566,6 +566,22 @@ any other writer).
 - `uv run pytest tests/test_federation_channel.py tests/test_rich_output_guard.py -q` — 44 passed.
 - Full suite left to gating.
 
+### Test record (2026-11-11, review loop 6)
+
+- `nw hosts check` now reads the registry with `read_strict` (a corrupt or wrong-schema file is a
+  one-line error, exit non-zero); `hosts.find` and the cache writer skip non-dict records;
+  `on`, `off`, `check` turn `TypeError`/`AttributeError`/`RecursionError` into a one-line error or an
+  `unreachable` line. `status_cache` stores only the five documented campaign keys as bounded
+  (256 chars, at most 1000 items) printable strings, and drops non-printable project names.
+- Tests added: request-MAC body binding (signed POST body passes the MAC, signed over `b""` or
+  other bytes is a signed 401), HEAD/Transfer-Encoding/oversize-body refusals, positional-blob
+  rejection with a valid blob, 0600 after a second enrol, a spy proving a disabled host is never
+  contacted, the payload-only AST walker self-test, `check` reasons for bad and stale signature,
+  missing credentials, nameless record and cache write failure, sanitised campaigns, and a
+  registry with corrupt records for `check`/`on`/`off`.
+- `uv run pytest tests/test_federation_channel.py tests/test_rich_output_guard.py -q` — 47 passed.
+- Full suite left to gating.
+
 ### As shipped (2026-11-10)
 
 Replay with two empty directory pairs (`HUB_*` and `HOST_*` below stand for the `NW_DATA_DIR` /
