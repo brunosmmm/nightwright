@@ -610,7 +610,10 @@ forces anything:
    tracked changes (untracked files are fine), and the base must not have moved since it
    was captured — else `main_not_on_base`, `main_dirty`, or (after two attempts)
    `base_moving`. A `main_dirty` park belongs to the conductor: it classifies the edit
-   (`nw queue main-dirty-plan`) and escalates once per checkout with the exact commands.
+   (`nw queue main-dirty-plan`) and escalates once per checkout with the exact commands. For a trivial edit that is
+   `nw queue main-dirty-apply` (human or steward run; the conductor is denied it): it
+   re-plans, refuses a merge in progress, a stale plan, unsafe paths and partial staging
+   without writing, and commits the planned paths.
    Then `git merge --ff-only`, the configured `post_cmds`, and an optional
    push.
 6. `pr` / `draft-pr` policy: push the branch and `gh pr create` with a generated body (the

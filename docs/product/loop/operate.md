@@ -113,7 +113,7 @@ it would do.
 | `spec_writer_unavailable` | Legacy park of an idea campaign from before the spec writer shipped | Resume: it now runs the writer |
 | `rebase_conflict` | Main moved and the branch no longer rebases cleanly | Resolve on the branch, or resume to GATING after main settles. Generated-file conflicts are resolved automatically |
 | `base_moving` | Main changed while the close step was merging | Resume; it retries the close on the new main |
-| `main_dirty` | Someone left uncommitted changes in the main checkout | The conductor classifies the edit (`nw queue main-dirty-plan`) and escalates once with the exact commands; run them, then answer the escalation and it resumes the campaign. Never edit the main checkout while the loop runs |
+| `main_dirty` | Someone left uncommitted changes in the main checkout | The conductor classifies the edit (`nw queue main-dirty-plan`) and escalates once with the exact commands (for a trivial edit, the one command `nw queue main-dirty-apply --root <root>`, which you or a steward run; the conductor does not); run them, then answer the escalation and it resumes the campaign. Never edit the main checkout while the loop runs |
 | `main_not_on_base` | The main checkout isn't on the base branch | Switch it back, then resume |
 | `gates_failed` | A merge request (`nw queue merge`) failed its re-gate; its branch is left rebased onto main | Tell the requester; once the branch is fixed, resume |
 | `worktree_dirty` | A merge request's worktree has uncommitted or untracked changes (nothing is committed for the requester) | Commit or stash them, then resume |

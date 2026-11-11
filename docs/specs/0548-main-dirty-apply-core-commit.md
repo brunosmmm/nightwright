@@ -1,7 +1,7 @@
 ---
 id: SPEC-0548
 title: nw queue main-dirty-apply core, guards and the trivial commit (human or steward run)
-status: accepted
+status: done
 owner: user
 created: 2026-11-11
 updated: 2026-11-11
@@ -201,7 +201,7 @@ order, `escalate`, the index restore).
 
 ## Acceptance criteria
 
-- [ ] AC1 (SPEC-0543 AC1 + AC2) Merge or sequencer in progress (`MERGE_HEAD`, each of
+- [x] AC1 (SPEC-0543 AC1 + AC2) Merge or sequencer in progress (`MERGE_HEAD`, each of
       `UU AA DD AU UA DU UD` as a status code (one run is enough for the code→merge mapping, one
       for `DD`), `CHERRY_PICK_HEAD`, `REVERT_HEAD`, `rebase-merge/`, `rebase-apply/`, and a merge
       in a linked worktree), each run once with no `--plan` and once
@@ -210,7 +210,7 @@ order, `escalate`, the index restore).
       operation, never `plan is stale`. A `--plan` whose `action` or `paths` differ from the live
       plan returns `error: plan is stale` and writes nothing; a plan `base` different from the
       project's is ignored.
-- [ ] AC2 (SPEC-0543 AC3) `commit`: the new commit's subject is exactly
+- [x] AC2 (SPEC-0543 AC3) `commit`: the new commit's subject is exactly
       `chore: land stray trivial main-checkout edits`, its body lists each path on its own line,
       the returned `sha` equals `git rev-parse HEAD`, only the planned paths are in it, untracked
       files and an unplanned literal-`*` sibling are untouched, and main is tracked-clean. A
@@ -224,7 +224,7 @@ order, `escalate`, the index restore).
       `git rev-parse HEAD`, the index not rewritten; a commit that lands and a hook then
       rewrites a tracked file → `ok: false`, `sha` set, `error: main not tracked-clean after
       commit`. A restored index has the original file mode.
-- [ ] AC3 (SPEC-0543 AC8) Refusals with no write, in five lettered groups, each its own
+- [x] AC3 (SPEC-0543 AC8) Refusals with no write, in five lettered groups, each its own
       parametrized test (each case names its fixture and exact `error`/`verb_refusal`):
       - **3a bad paths:** a symlink path, a file→symlink and a symlink→file typechange, and a
         path under a symlinked directory (real repos) → `bad path <p>`; a directory (a
@@ -241,12 +241,12 @@ order, `escalate`, the index restore).
         `substantive` or `merge`, false for `trivial`, `branch` and `clean`).
       - **3e index bytes:** every refusal in 3a–3d leaves the index bytes identical on a repo
         with stale stat data (the guards run with `GIT_OPTIONAL_LOCKS=0`).
-- [ ] AC4 (SPEC-0543 AC11) Untracked files are byte-identical after every action. `resume` on a
+- [x] AC4 (SPEC-0543 AC11) Untracked files are byte-identical after every action. `resume` on a
       clean checkout is `ok: true` and writes nothing. The recorded argv never contains `reset`,
       `restore`, `clean`, `checkout`, `rm -r`, `stash`, `push`, `branch -D`, `switch`, and every
       subprocess is `git` (never `nw`). Every main path call carries `--literal-pathspecs` (the
       test fails if the flag is removed).
-- [ ] AC5 (SPEC-0543 AC12) CLI via `CliRunner`: `--json` exit 0 on success and on a refusal;
+- [x] AC5 (SPEC-0543 AC12) CLI via `CliRunner`: `--json` exit 0 on success and on a refusal;
       text mode exit 0 on success and exit 1 on a refusal, printing
       `main-dirty-apply ok|failed: <action>`; exit 2 with a one-line message (no traceback) on a
       non-git root, a subdirectory root, and a `--plan` that is not a plan: `paths` of `5`,
@@ -257,7 +257,7 @@ order, `escalate`, the index restore).
       without `base`, checkout on `develop`, trivial edit → `ok: true`); without `--base` the
       same checkout gives `ok: false`, `error: save not supported yet: hold`. A test fails if
       `base` is not forwarded to `plan_clear`.
-- [ ] AC6 (new) `recommended` for `commit` is `["nw queue main-dirty-apply --root <R>"]` when
+- [x] AC6 (new) `recommended` for `commit` is `["nw queue main-dirty-apply --root <R>"]` when
       `verb_refusal` is `None`, and SPEC-0546's raw list for a trivial fixture with a partially
       staged path (real git, guard 6) and one where `plan_clear`'s plan is monkeypatched to
       `action: commit` with a path under a symlinked directory (guard 5; a real symlink or
@@ -266,7 +266,7 @@ order, `escalate`, the index restore).
       root containing a space). Every other action's `recommended` equals SPEC-0546's
       list. SPEC-0546's AC5 run-the-list test for `commit` now runs the verb command through the
       CLI and asserts the same end state.
-- [ ] AC7 (SPEC-0543 AC14 + AC15) Conductor launch (`build_plan(cfg, "conductor")`) denies the
+- [x] AC7 (SPEC-0543 AC14 + AC15) Conductor launch (`build_plan(cfg, "conductor")`) denies the
       two verb rules and the steward launch does not. With `_permitted(cmd, allow, deny)` on the
       conductor plan, `uv run nw queue main-dirty-apply --root /x --json` and
       `nw queue main-dirty-apply --root /x` are denied, while `uv run nw queue escalate --topic
@@ -317,6 +317,48 @@ order, `escalate`, the index restore).
   false`, `save not supported yet: branch_and_escalate`, `escalate: true`, nothing changed.
   (3) Start a conflicting merge → `ok: false`, nothing changed. Record the outputs in As shipped.
 
+### Test record (2026-11-11)
+
+- `uv run pytest -q tests/test_main_dirty_apply.py` (new, `pytest.mark.fast`): 91 cases, all
+  pass. They cover AC1 (every operation marker, the seven `U` codes, a real conflict, a linked
+  worktree, `--plan` precedence), AC2 (message, body, untracked/sibling untouched, hook failure,
+  changed-since-plan, the three index-restore tests, file mode), AC3a-3e, AC4 (argv recorder),
+  AC5 (CLI, malformed `--plan` forms, locale, exit 3, `--base`) and AC6.
+- `tests/test_agentic_launch.py` (four named sites edited, `test_conductor_deny_anchored_verb`
+  added), `tests/test_main_dirty_plan.py` (commit `recommended`, run-the-list through the CLI,
+  and the docs assertion), plus the related launch, queue, dashboard, skills and rich-output
+  modules: 1453 passed, 2 skipped. `python3 tools/test_tiers.py --check` exits 0;
+  `python3 tools/spec_lint.py` exits 0.
+- Mutation (by hand, once): `--literal-pathspecs` removed from `_lg` (the verb's git wrapper);
+  `test_recorded_git_argv` and `test_commit_trivial` failed; restored.
+- Manual scratch repo (`.nw/project.yaml` `project: Scratch`, `base: main`): (1) frontmatter edit
+  plus an untracked file: `ok: true`, `sha` = HEAD, subject `chore: land stray trivial
+  main-checkout edits`, `untracked.txt` still there. (2) `src/x.py` logic edit: `ok: false`,
+  `save not supported yet: branch_and_escalate`, `escalate: true`, tree unchanged. (3) conflicting
+  merge: `ok: false`, `error: merge in progress`, `escalate: true`, tree unchanged.
+- The full suite was left to gating; `tools/affected_tests.py --run` selected too many modules to
+  finish in the run's time limit, so the related modules above were run instead.
+
+### As shipped (2026-11-11)
+
+- Code: `apply_clear`, `verb_refusal`, `_commit_trivial`, `_restore_index` and the flock in
+  `src/nightwright/agentic/main_dirty.py` (written fresh to Design, not cherry-picked from the
+  branch); `main-dirty-apply` in `cli_queue.py`; the anchored deny, cursor policy sentence in
+  `launch.py`; one steward-skill sentence; docs lines in `reference/index.md`, `loop/operate.md`
+  and `capabilities/agentic.md`.
+- The git calls go through `_git` (`LC_ALL=C`, `GIT_OPTIONAL_LOCKS=0`) and `_lg`, which adds
+  `--literal-pathspecs`. `plan_clear`'s own read-only calls keep SPEC-0546's argv.
+- `_stage` is the hook point for the changed-since-plan test (hashes are recorded just before it).
+- `--base` is forwarded as written, but `plan_clear` still ignores it when `--root` has a
+  `.nw/project.yaml` (SPEC-0546: the project's base wins). AC5's `--base develop` case therefore
+  uses a repo with no `.nw/project.yaml`; a config that lacks `base` still defaults to `main`.
+- A dirty gitlink gives action `escalate` with class `branch` or `substantive`: guard 5 refuses it
+  as `bad path`, so it never reaches the verb's fallback `nothing to apply: escalate`.
+- `tests/test_main_dirty_plan.py`: every commit `recommended` expectation is now the verb command;
+  `_run_list` runs a `nw ...` command through the CLI of this tree. SPEC-0547's docs assertion
+  (`main-dirty-apply` absent from operate.md / agentic.md) is inverted, as this spec's Definition
+  of done requires; the conductor skill still does not name the verb.
+
 ## Goals / Non-goals
 
 **Goals**
@@ -346,14 +388,14 @@ project Meta-Tools.
 
 ## Definition of done
 
-- [ ] Acceptance criteria all met.
-- [ ] Test plan executed, including the scratch-repo check; affected tests pass.
-- [ ] No regressions.
-- [ ] `docs/product/reference/index.md`, `docs/product/loop/operate.md` and
+- [x] Acceptance criteria all met.
+- [x] Test plan executed, including the scratch-repo check; affected tests pass.
+- [x] No regressions.
+- [x] `docs/product/reference/index.md`, `docs/product/loop/operate.md` and
       `docs/product/capabilities/agentic.md` name `nw queue main-dirty-apply` (human or steward
       run; the conductor does not run it).
-- [ ] Spec body updated to match what shipped; As shipped records the AC4 mutation run.
-- [ ] `docs/LEDGER.md` regenerated; `python3 tools/spec_lint.py` exits 0.
+- [x] Spec body updated to match what shipped; As shipped records the AC4 mutation run.
+- [x] `docs/LEDGER.md` regenerated; `python3 tools/spec_lint.py` exits 0.
 
 ## Open questions
 

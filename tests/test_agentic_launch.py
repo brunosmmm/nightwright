@@ -55,7 +55,8 @@ def _wire(cfg, monkeypatch, tmp_path):
 
 
 CONDUCTOR_ALLOW = L.DEFAULTS["allowed_tools"] + L.DEFAULTS["conductor_allowed_tools"]
-CONDUCTOR_DENY = L.DEFAULTS["disallowed_tools"] + ["AskUserQuestion"]
+VERB_DENY = ["Bash(uv run nw queue main-dirty-apply*)", "Bash(nw queue main-dirty-apply*)"]
+CONDUCTOR_DENY = L.DEFAULTS["disallowed_tools"] + ["AskUserQuestion", *VERB_DENY]
 
 
 def invoke(*args):
@@ -97,6 +98,7 @@ def test_default_plan_argv_and_env(cfg, tmp_path, monkeypatch):
                             "--allowedTools", *L.DEFAULTS["allowed_tools"],
                             *L.DEFAULTS["conductor_allowed_tools"],
                             "--disallowedTools", *L.DEFAULTS["disallowed_tools"], "AskUserQuestion",
+                            *VERB_DENY,
                             "--permission-mode", "dontAsk",
                             "--model", "claude-sonnet-5-5", "--effort", "medium",
                             "--autocompact", "150000",
@@ -455,7 +457,7 @@ def test_permission_config_replaces_defaults_and_steward_inherits(cfg):
                  else L.DEFAULTS["conductor_allowed_tools"])
         assert _perm_args(plan["argv"], "--allowedTools") == L._dedup(["Bash(ls *)", *extra])
         assert _perm_args(plan["argv"], "--disallowedTools") == (
-            ["Bash(rm *)"] if steward else ["Bash(rm *)", "AskUserQuestion"])
+            ["Bash(rm *)"] if steward else ["Bash(rm *)", "AskUserQuestion", *VERB_DENY])
 
 
 def test_empty_permission_lists_add_no_flags(cfg):
@@ -496,6 +498,20 @@ def _permitted(command, allow, deny):
                 return True
         return False
     return hit(allow) and not hit(deny)
+
+
+def test_conductor_deny_anchored_verb(cfg):
+    """SPEC-0548: the verb is denied at the subcommand position only, so the conductor's
+    `escalate --fact '<verb command>'` still runs."""
+    allow, deny = _eff(cfg, "conductor")
+    assert not _permitted("uv run nw queue main-dirty-apply --root /x --json", allow, deny)
+    assert not _permitted("nw queue main-dirty-apply --root /x", allow, deny)
+    assert _permitted("uv run nw queue escalate --topic human_checkout --question q "
+                      "--fact 'nw queue main-dirty-apply --root /x' --yes", allow, deny)
+    assert _permitted("uv run nw queue main-dirty-plan --root /x --json", allow, deny)
+    s_allow, s_deny = _eff(cfg, "steward")
+    assert not any("main-dirty-apply" in r for r in s_deny)
+    assert "Do not run `nw queue main-dirty-apply`." in L.CONDUCTOR_CURSOR_POLICY
 
 
 def _eff(cfg, role):
@@ -824,7 +840,7 @@ def test_conductor_guard_settings_override_and_bad_value(cfg):
         launch["conductor_permission_mode"] = bad
         assert L.settings(cfg)["conductor_permission_mode"] == "dontAsk"
     launch["conductor_disallowed_tools"] = "AskUserQuestion"   # not a list
-    assert L.settings(cfg)["conductor_disallowed_tools"] == ["AskUserQuestion"]
+    assert L.settings(cfg)["conductor_disallowed_tools"] == ["AskUserQuestion", *VERB_DENY]
 
 
 def test_launch_record_carries_the_deny(cfg, ex):

@@ -12,6 +12,7 @@ import os
 import socket
 import sys
 import time
+from pathlib import Path
 
 import click
 from rich import box
@@ -1564,6 +1565,58 @@ def attach(queue_group):
         for line in (*plan["paths"], *plan["recommended"]):
             # soft_wrap: a terminal must never fold a path or a command a human pastes
             console.print(Text(line), soft_wrap=True)
+
+    @queue_group.command("main-dirty-apply")
+    @click.option("--root", "root", required=True, help="the project's main checkout (top of a worktree)")
+    @click.option("--base", default=None,
+                  help="base branch; used only when --root has no .nw/project.yaml (default main)")
+    @click.option("--plan", "plan_file", default=None,
+                  help="a main-dirty-plan --json file; refused as stale when it differs from the live plan")
+    @click.option("--json", "as_json", is_flag=True, help="emit nw.main_dirty_apply.v1 JSON")
+    @click.pass_context
+    def queue_main_dirty_apply(ctx, root, base, plan_file, as_json):
+        """Clear a dirty main checkout: commit trivial edits (SPEC-0548). Human or steward run.
+
+        Re-plans the live checkout, refuses an operation in progress, a stale --plan, unsafe
+        paths and partial staging without writing, then commits a trivial plan. Save actions
+        are not supported yet. With --json exit 0 whenever it ran; in text mode 1 on a refusal.
+        Exit 2 when --root is not the top of a git worktree or --plan is malformed, 3 on a
+        git failure.
+        """
+        from . import main_dirty as MD
+        try:
+            MD._check_worktree(Path(root))
+        except MD.NotAWorktree as e:
+            R.warn(f"error: {e}")
+            ctx.exit(2)
+        except (MD.PlanError, OSError) as e:
+            R.warn(f"error: {e}")
+            ctx.exit(3)
+        plan = None
+        if plan_file is not None:
+            try:
+                plan = json.loads(Path(plan_file).read_text(encoding="utf-8"))
+            except (OSError, ValueError) as e:
+                R.warn(f"error: --plan {plan_file} is unreadable or not JSON: {e}")
+                ctx.exit(2)
+            paths = plan.get("paths", []) if isinstance(plan, dict) else None
+            if (not isinstance(plan, dict) or plan.get("schema") != MD.SCHEMA
+                    or not isinstance(plan.get("action"), str)
+                    or not isinstance(paths, list) or not all(isinstance(x, str) for x in paths)):
+                R.warn(f"error: --plan {plan_file} is not a {MD.SCHEMA} plan "
+                       "(needs a string action and a list of string paths)")
+                ctx.exit(2)
+        result = MD.apply_clear(root, plan=plan, base=base)
+        if as_json:
+            _dump_json(result)
+            return
+        console.print(Text(f"main-dirty-apply {'ok' if result['ok'] else 'failed'}: "
+                           f"{result['action']}"))
+        for key in ("sha", "error"):
+            if result.get(key):
+                console.print(Text(f"{key}: {result[key]}"), soft_wrap=True)
+        if not result["ok"]:
+            ctx.exit(1)
 
     # ---- SPEC-0176 -------------------------------------------------------------------------
 

@@ -28,6 +28,7 @@ CONDUCTOR_CURSOR_POLICY = (
     "- Do not push to main or master; do not force-push except origin nw/* or origin wt/* "
     "with --force-with-lease.\n"
     "- Do not run `gh pr merge`.\n"
+    "- Do not run `nw queue main-dirty-apply`.\n"
     "- Do not edit the main checkout; write only under `.nw-worktrees/`.\n"
     "- Git: read-only verbs, worktree add, switch --create, add -A, commit -m. "
     "No reset --hard, clean, branch -D, switch -f.\n"
@@ -183,7 +184,12 @@ DEFAULTS = {"model": "claude-sonnet-5-5", "effort": "medium", "autocompact": "15
             # campaign worktrees, looking into stuck runs) from being refused
             # no `cp` in the allow-list below: under dontAsk it would overwrite the main checkout's
             # uncommitted files
-            "conductor_disallowed_tools": ["AskUserQuestion"],
+            # SPEC-0548: the verb token is anchored at the subcommand position (`*` matches
+            # spaces too, so `* main-dirty-apply*` would also deny an `escalate --fact` that
+            # quotes the verb); forms this misses are the git-guard hook's backstop (SPEC-0550)
+            "conductor_disallowed_tools": ["AskUserQuestion",
+                                           "Bash(uv run nw queue main-dirty-apply*)",
+                                           "Bash(nw queue main-dirty-apply*)"],
             "conductor_permission_mode": "dontAsk",
             "conductor_allowed_tools": ["Read", "Grep", "Glob",
                                         f"Edit(//**/{WORKTREES_DIR}/**)",

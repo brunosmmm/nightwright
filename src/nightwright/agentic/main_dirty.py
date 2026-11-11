@@ -7,7 +7,9 @@ prefix, quoting and rename config cannot change what is read. Every rule errs to
 `branch`: a miss costs a branch, a false `trivial` lands unreviewed code on main."""
 from __future__ import annotations
 
+import contextlib
 import datetime as dt
+import fcntl
 import os
 import posixpath
 import re
@@ -18,6 +20,7 @@ from pathlib import Path
 from . import project as P
 
 SCHEMA = "nw.main_dirty_plan.v1"
+APPLY_SCHEMA = "nw.main_dirty_apply.v1"
 _COMMIT_SUBJECT = "chore: land stray trivial main-checkout edits"
 _WIP_SUBJECT = "WIP: stray main-checkout edits"
 _FC_RANK = {"code": 4, "other": 3, "comment": 2, "frontmatter": 1, "docs": 1}
@@ -516,6 +519,7 @@ def plan_clear(root, base=None) -> dict:
     absroot = os.path.abspath(root)
     root = Path(absroot if os.path.realpath(absroot) == os.path.realpath(root)
                 else os.path.realpath(root))
+    arg_base = base
     base = _base(root, base)
     rows = _status(root)
     xys = [r["xy"] for r in rows]
@@ -554,11 +558,230 @@ def plan_clear(root, base=None) -> dict:
         paths += names
         if r["file_class"] == "code":
             subst += names
+    recommended = _recommended(root, action, klass, base, rows)
+    if action == "commit" and verb_refusal(root, {"action": action, "paths": paths}) is None:
+        # SPEC-0548: one audited command instead of raw git, only when the verb will not refuse
+        recommended = ["nw queue main-dirty-apply --root " + shlex.quote(str(root))
+                       + (f" --base {shlex.quote(arg_base)}" if arg_base is not None else "")]
     return {
         "schema": SCHEMA, "root": str(root), "base": base, "on_base": on_base, "class": klass,
         "action": action, "in_progress": in_progress, "paths": paths,
         "substantive_paths": subst,
         "files": [{"path": r["path"], "orig_path": r["orig"], "status": r["xy"],
                    "file_class": r["file_class"]} for r in rows],
-        "recommended": _recommended(root, action, klass, base, rows),
+        "recommended": recommended,
     }
+
+
+# ---- apply (SPEC-0548) -----------------------------------------------------------------
+
+def _lg(root, *args, check=True):
+    """`_git` with `--literal-pathspecs`: a path is never a glob or a magic pathspec."""
+    return _git(root, "--literal-pathspecs", *args, check=check)
+
+
+def _index_entries(root, path):
+    out = _lg(root, "ls-files", "-s", "-z", "--", path).stdout
+    ents = []
+    for rec in _dec(out).split("\0"):
+        if rec:
+            meta, _, _name = rec.partition("\t")
+            mode, oid, stage = meta.split()
+            ents.append((mode, oid, int(stage)))
+    return ents
+
+
+def _head_mode_oid(root, path):
+    r = _lg(root, "ls-tree", "-z", "HEAD", "--", path, check=False)
+    rec = _dec(r.stdout).split("\0")[0] if r.returncode == 0 else ""
+    if not rec:
+        return None
+    meta, _, _name = rec.partition("\t")
+    mode, _typ, oid = meta.split()
+    return mode, oid
+
+
+def _hash_wt(root, path):
+    """The blob id `git add` would record for the worktree file (nothing is written)."""
+    if not os.path.lexists(root / path):
+        return None
+    return _dec(_lg(root, "hash-object", "--", path).stdout).strip()
+
+
+def _bad_path(root, path) -> bool:
+    parts = posixpath.normpath(path).split("/") if path else []
+    if not path or path.startswith("/") or ".." in path.split("/") or not parts:
+        return True
+    prefixes = ["/".join(parts[:i + 1]) for i in range(len(parts))]
+    if any((root / pre).is_symlink() for pre in prefixes):
+        return True
+    for pre in prefixes:                                     # a symlink in HEAD, here or above
+        head = _head_mode_oid(root, pre)
+        if head and (head[0] == "120000" or (pre == path and head[0] == "160000")):
+            return True
+    full = root / path
+    if full.is_dir():                                        # a directory, which a gitlink is
+        return True
+    ents = _index_entries(root, path)
+    if any(m in ("120000", "160000") for m, _o, _s in ents):
+        return True
+    return not (_head_mode_oid(root, path) or ents or os.path.lexists(full))
+
+
+def verb_refusal(root, plan) -> str | None:
+    """Guards 5 and 6 of `apply_clear`, read-only: the error text the verb would refuse with,
+    or None. `recommended` calls it too, so a human is never told to run a command that refuses."""
+    root = Path(root)
+    paths = list(plan.get("paths") or [])
+    for p in paths:
+        if _bad_path(root, p):
+            return f"bad path {p}"
+    for p in paths:
+        ents = _index_entries(root, p)
+        if not ents:
+            continue
+        head = _head_mode_oid(root, p)
+        idx = ents[0][1]
+        if idx != (head[1] if head else None) and idx != _hash_wt(root, p):
+            return f"partially staged {p}"
+    return None
+
+
+@contextlib.contextmanager
+def _clear_lock(root):
+    """One clear per checkout: a non-blocking flock in the git dir, released with the process
+    (a crashed clear leaves nothing stale)."""
+    gdir = _dec(_git(root, "rev-parse", "--absolute-git-dir").stdout).strip()
+    fd = os.open(os.path.join(gdir, "nw-main-dirty.lock"), os.O_CREAT | os.O_RDWR, 0o644)
+    try:
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError:
+            yield False
+            return
+        try:
+            yield True
+        finally:
+            fcntl.flock(fd, fcntl.LOCK_UN)
+    finally:
+        os.close(fd)
+
+
+def _tracked_clean(root) -> bool:
+    return not _dec(_git(root, "status", "--porcelain", "--untracked-files=no").stdout).strip()
+
+
+def _head(root):
+    r = _git(root, "rev-parse", "HEAD", check=False)
+    return _dec(r.stdout).strip() if r.returncode == 0 else None
+
+
+def _stage(root, paths):
+    """Stage exactly the planned paths (the hook point between the recorded hashes and the commit)."""
+    return _lg(root, "add", "--", *paths, check=False)
+
+
+def _restore_index(idx, data, mode) -> str | None:
+    """Put the saved index bytes back through git's own protocol: create `<index>.lock` with
+    O_EXCL, write, `os.replace` over the index. None on success, else the error text."""
+    lock = idx + ".lock"
+    try:
+        fd = os.open(lock, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    except FileExistsError:
+        return "index locked, not restored"
+    except OSError as e:
+        return f"index not restored: {e}"
+    try:
+        with os.fdopen(fd, "wb") as f:
+            f.write(data)
+        os.chmod(lock, mode)
+        os.replace(lock, idx)
+    except OSError as e:
+        with contextlib.suppress(OSError):
+            os.unlink(lock)
+        return f"index not restored: {e}"
+    return None
+
+
+def _commit_trivial(root, paths) -> dict:
+    """The `commit` action: stage the planned paths, check what is staged, commit. On any
+    failure before a commit lands the index is put back byte-identical (no reset, no restore)."""
+    idx = _dec(_git(root, "rev-parse", "--git-path", "index").stdout).strip()
+    idx = idx if os.path.isabs(idx) else str(root / idx)
+    data, mode = Path(idx).read_bytes(), os.stat(idx).st_mode & 0o777
+    head0 = _head(root)
+    want = {p: _hash_wt(root, p) for p in paths}
+
+    def fail(error):
+        head = _head(root)
+        if head != head0:                                    # a commit landed: leave the index
+            return {"ok": False, "sha": head, "error": error}
+        return {"ok": False, "error": _restore_index(idx, data, mode) or error}
+
+    try:
+        r = _stage(root, paths)
+        if r.returncode != 0:
+            return fail(_dec(r.stderr).strip() or "git add failed")
+        names = set(_dec(_lg(root, "diff", "--cached", "--no-renames", "--name-only", "-z"
+                             ).stdout).split("\0")) - {""}
+        for p in sorted(names ^ set(paths)):
+            return fail(f"changed since plan {p}")
+        for p in paths:
+            ents = _index_entries(root, p)
+            if len(ents) != 1 or ents[0][1] != want[p]:
+                return fail(f"changed since plan {p}")
+        msgs = ["-m", _COMMIT_SUBJECT] + [x for p in paths for x in ("-m", p)]
+        r = _lg(root, "commit", *msgs, check=False)
+        if r.returncode != 0:
+            return fail(_dec(r.stderr or r.stdout).strip() or "git commit failed")
+        sha = _head(root)
+        if not _tracked_clean(root):
+            return {"ok": False, "sha": sha, "error": "main not tracked-clean after commit"}
+        return {"ok": True, "sha": sha}
+    except (PlanError, OSError) as e:
+        return fail(str(e))
+
+
+def apply_clear(root, plan=None, base=None) -> dict:
+    """Clear a dirty base checkout (SPEC-0548): re-plan live, refuse an operation in progress,
+    a stale `plan` file, unsafe paths and partial staging, and only then run the live action.
+    `plan` (a plan file) is a check, never an input; `base` is the CLI's `--base`."""
+    out = {"schema": APPLY_SCHEMA, "root": os.path.abspath(root), "action": "none", "ok": False,
+           "escalate": False}
+    try:
+        with _clear_lock(Path(root)) as got:
+            if not got:
+                out["error"] = "clear already in progress"
+                return out
+            return _apply_locked(out, Path(root), plan, base)
+    except (NotAWorktree, PlanError, OSError, ValueError, TypeError, AttributeError) as e:
+        out.update({"ok": False, "error": str(e) or type(e).__name__})
+        return out
+
+
+def _apply_locked(out, root, plan, base) -> dict:
+    live = plan_clear(root, base=base)
+    out["root"], out["action"] = live["root"], live["action"]
+    out["escalate"] = live["class"] in ("substantive", "merge")
+    root = Path(live["root"])
+    if live["class"] == "merge":
+        out["error"] = f"{live['in_progress']} in progress"
+        return out
+    if plan is not None and (plan.get("action") != live["action"]
+                             or sorted(plan.get("paths") or []) != sorted(live["paths"])):
+        out["error"] = "plan is stale"
+        return out
+    refusal = verb_refusal(root, live)
+    if refusal:
+        out["error"] = refusal
+        return out
+    action = live["action"]
+    if action == "resume":
+        out["ok"] = _tracked_clean(root)
+    elif action == "commit":
+        out.update(_commit_trivial(root, live["paths"]))
+    elif action in ("save_branch", "branch_and_escalate", "hold"):
+        out["error"] = f"save not supported yet: {action}"
+    else:
+        out["error"] = f"nothing to apply: {action}"
+    return out

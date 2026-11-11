@@ -92,6 +92,9 @@ the `--resume` command it names, once; never relaunch or stop yourself.
    `nw escalations list` for the open ones. An answer the conductor auto-applied after the
    30-min timeout (`auto-applied` in the list, SPEC-0425) can be reversed the same way, once,
    when the human says so: `nw escalations answer <id> --choose <n> --by steward:<P> --yes`.
+   On the human's instruction, or to clear a `human_checkout` escalation the human hands
+   you, run `nw queue main-dirty-apply --root <root> --json` and report the result to the
+   human (the conductor is denied it; it commits trivial edits only, SPEC-0548).
 7. **Spec work is headless:** an unchanged internal `revise` needs no one: `nw queue add`
    amends the spec with the spec writer. An unchanged outbound `revise` is refused until
    the spec is edited. When your answer is "the spec is wrong", you may rework it (`/nw-rework`

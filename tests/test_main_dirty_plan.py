@@ -657,6 +657,10 @@ def test_dirty_gitlink_off_base_is_escalate(tmp_path):
 
 def _run_list(repo, cmds):
     for c in cmds:
+        if c.startswith("nw "):               # the audited verb (SPEC-0548): run this tree's CLI
+            r = CliRunner().invoke(cli, shlex.split(c)[1:])
+            assert r.exit_code == 0, (c, r.output)
+            continue
         r = subprocess.run(shlex.split(c), capture_output=True, text=True)
         assert r.returncode == 0, (c, r.stderr)
 
@@ -692,10 +696,15 @@ def test_recommended_commit_whole_list_and_run(tmp_path):
     _put(repo, "untracked.md", "u\n")
     p = MD.plan_clear(repo)
     R = shlex.quote(str(repo))
-    assert p["recommended"] == [f"git -C {R} --literal-pathspecs add -- docs/a.md",
-                                f"git -C {R} commit -m 'chore: land stray trivial main-checkout edits'"]
-    _run_list(repo, p["recommended"])
+    # SPEC-0548: the commit list is the one audited verb, run here through the CLI
+    assert p["recommended"] == [f"nw queue main-dirty-apply --root {R}"]
+    argv = shlex.split(p["recommended"][0])
+    r = CliRunner().invoke(cli, argv[1:] + ["--json"])
+    assert r.exit_code == 0, r.output
+    assert json.loads(r.output)["ok"] is True
     _after_run_checks(repo)
+    assert _git(repo, "log", "-1", "--format=%s").stdout.strip() == \
+        "chore: land stray trivial main-checkout edits"
     assert (repo / "untracked.md").exists()
     assert _git(repo, "status", "--porcelain").stdout == "?? untracked.md\n"
     assert _show(repo, "HEAD", "docs/a.md") == "# T\n\nx\n"
@@ -797,9 +806,12 @@ def test_literal_pathspecs_star_name_commit_list(tmp_path):
 
 
 def test_path_with_a_space_is_quoted(tmp_path):
-    repo = _repo(tmp_path, {"docs/a b.md": "# T\n"})
-    _put(repo, "docs/a b.md", "# T\n\nx\n")
-    assert "'docs/a b.md'" in MD.plan_clear(repo)["recommended"][0]
+    fenced = "# T\n\n```\ncode\n```\n"
+    repo = _repo(tmp_path, {"docs/a b.md": fenced})
+    _put(repo, "docs/a b.md", fenced.replace("code", "code2"))
+    p = MD.plan_clear(repo)
+    assert p["action"] == "save_branch"
+    assert "'docs/a b.md'" in p["recommended"][1]
 
 
 def test_hold_dirty_runs_and_ends_on_the_base(tmp_path):
@@ -968,7 +980,7 @@ def test_cli_text_mode(tmp_path):
     r = _cli("--root", str(repo))
     lines = r.output.splitlines()
     assert r.exit_code == 0 and lines[0] == "commit trivial 1 paths" and lines[1] == "docs/a.md"
-    assert lines[2].startswith("git -C ") and len(lines) == 4
+    assert lines[2].startswith("nw queue main-dirty-apply --root ") and len(lines) == 3
 
 
 def test_cli_text_mode_never_wraps_on_a_terminal(tmp_path, monkeypatch):
@@ -1157,9 +1169,8 @@ def test_relative_root_gives_absolute_root_and_commands(tmp_path, monkeypatch):
     monkeypatch.chdir(repo)
     doc = json.loads(_cli("--root", ".", "--json").stdout)
     assert os.path.isabs(doc["root"]) and os.path.realpath(doc["root"]) == os.path.realpath(repo)
-    assert doc["recommended"] and all(c.startswith(f"git -C {shlex.quote(doc['root'])} ")
-                                      for c in doc["recommended"])
-    assert not any(" -C . " in c for c in doc["recommended"])
+    assert doc["recommended"] == [f"nw queue main-dirty-apply --root {shlex.quote(doc['root'])}"]
+    assert not any(" --root . " in c or c.endswith(" --root .") for c in doc["recommended"])
 
 
 def test_root_through_a_symlink_dotdot_is_canonical(tmp_path):
@@ -1195,8 +1206,8 @@ def test_non_ascii_path_with_and_without_quotepath(tmp_path, quote):
     _git(repo, "config", "core.quotePath", quote)
     _put(repo, "docs/café.md", "# T\n\nx\n")
     p = MD.plan_clear(repo)
-    assert (p["class"], p["paths"], p["recommended"][0].endswith("add -- " + shlex.quote("docs/café.md"))) == (
-        "trivial", ["docs/café.md"], True)
+    assert (p["class"], p["paths"], p["recommended"]) == (
+        "trivial", ["docs/café.md"], [f"nw queue main-dirty-apply --root {shlex.quote(str(repo))}"])
     _put(repo, "src/ü.py", "x = 2\n")
     p = MD.plan_clear(repo)
     assert (p["class"], sorted(p["paths"]), _fc(p)["src/ü.py"]) == (
@@ -1711,4 +1722,6 @@ def test_docs_say_the_conductor_classifies_and_escalates():                     
         text = " ".join((REPO_ROOT / rel).read_text(encoding="utf-8").split())
         assert "main-dirty-plan" in text, rel
         assert "classifies" in text and "escalates" in text, rel
-        assert "main-dirty-apply" not in text, rel
+        # SPEC-0548: the verb is named, as a human or steward run the conductor is denied
+        assert "main-dirty-apply" in text and "conductor" in text, rel
+        assert "conductor runs" not in text and "conductor clears" not in text, rel
