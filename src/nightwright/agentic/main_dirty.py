@@ -1,0 +1,502 @@
+"""Classify tracked dirt on a project's base checkout (SPEC-0546).
+
+`plan_clear` is read-only: it runs git and reads bytes, never writes the checkout. No patch
+text is parsed: each dirty path is classified from the `old` and `new` bytes of the pair the
+spec names (combined, or staged and unstaged halves of a partially staged path), so diff
+prefix, quoting and rename config cannot change what is read. Every rule errs toward
+`branch`: a miss costs a branch, a false `trivial` lands unreviewed code on main."""
+from __future__ import annotations
+
+import datetime as dt
+import os
+import posixpath
+import shlex
+import subprocess
+from pathlib import Path
+
+from . import project as P
+
+SCHEMA = "nw.main_dirty_plan.v1"
+_COMMIT_SUBJECT = "chore: land stray trivial main-checkout edits"
+_WIP_SUBJECT = "WIP: stray main-checkout edits"
+_FC_RANK = {"code": 4, "other": 3, "comment": 2, "frontmatter": 1, "docs": 1}
+_UNMERGED = frozenset({"UU", "AA", "DD", "AU", "UA", "DU", "UD"})
+_MARKERS = (("MERGE_HEAD", "merge"), ("CHERRY_PICK_HEAD", "cherry-pick"),
+            ("REVERT_HEAD", "revert"), ("rebase-merge", "rebase"), ("rebase-apply", "rebase"))
+
+_CODE_SUFFIXES = frozenset({
+    ".py", ".pyi", ".sh", ".bash", ".js", ".mjs", ".cjs", ".jsx", ".ts", ".tsx", ".go", ".rs",
+    ".c", ".h", ".cc", ".cpp", ".cxx", ".hpp", ".rb", ".pl", ".java", ".sql", ".lua",
+})
+_PY_SUFFIXES = frozenset({".py", ".pyi", ".toml"})
+_HASH_SUFFIXES = frozenset({".sh", ".bash", ".yml", ".yaml", ".rb", ".pl"})
+_CLIKE_SUFFIXES = frozenset({".js", ".mjs", ".cjs", ".jsx", ".ts", ".tsx", ".go", ".rs", ".c", ".h",
+                             ".cc", ".cpp", ".cxx", ".hpp", ".java"})
+_BACKTICK_SUFFIXES = frozenset({".js", ".mjs", ".cjs", ".jsx", ".ts", ".tsx", ".go"})
+_MD_SUFFIXES = frozenset({".md", ".html", ".xml"})
+# characters that end a line for CPython's tokenizer or for JavaScript (plus Unicode separators)
+_LINE_BREAKS = "\r\x0b\x0c\x1c\x1d\x1e\x85  "
+_SCALAR_ENDS = ("|", "|-", "|+", ">", ">-", ">+")
+
+
+class NotAWorktree(Exception):
+    """`--root` is not the top of a git worktree (CLI exit 2)."""
+
+
+class PlanError(Exception):
+    """A git failure or an invalid project config (CLI exit 3)."""
+
+
+# ---- git -------------------------------------------------------------------------------
+
+def _git(root, *args, check=True):
+    env = {k: v for k, v in os.environ.items()
+           if k not in ("GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE")}
+    env.update({"LC_ALL": "C", "GIT_OPTIONAL_LOCKS": "0"})
+    try:
+        r = subprocess.run(["git", "-C", str(root), *args], capture_output=True, env=env,
+                           timeout=120)
+    except (OSError, subprocess.TimeoutExpired) as e:
+        raise PlanError(f"git {' '.join(args)}: {e}")
+    if check and r.returncode != 0:
+        msg = (r.stderr or b"").decode("utf-8", "replace").strip()
+        raise PlanError(f"git {' '.join(args)} exited {r.returncode}: {msg}")
+    return r
+
+
+def _dec(b: bytes) -> str:
+    return b.decode("utf-8", "surrogateescape")
+
+
+def _check_worktree(root: Path) -> None:
+    if not root.is_dir():
+        raise NotAWorktree(f"{root} is not a directory")
+    r = _git(root, "rev-parse", "--show-toplevel", check=False)
+    err = (r.stderr or b"").decode("utf-8", "replace")
+    if r.returncode != 0:
+        if "not a git repository" in err or "work tree" in err:
+            raise NotAWorktree(f"{root} is not a git worktree")
+        raise PlanError(f"git rev-parse --show-toplevel exited {r.returncode}: {err.strip()}")
+    top = _dec(r.stdout).strip()
+    if not top or os.path.realpath(top) != os.path.realpath(root):
+        raise NotAWorktree(f"{root} is not the top of a git worktree (top is {top or 'unknown'})")
+
+
+def _base(root: Path, base) -> str:
+    """The base `finish_close` compares: through `load_project_config` when the project has a
+    config (`--base` is then ignored), else `--base`, else `main`."""
+    path = P.config_path(root)
+    if path.is_file():
+        try:
+            return P.load_project_config(path)["merge"]["base"]
+        except ValueError as e:
+            raise PlanError(str(e))
+    return base or "main"
+
+
+def _in_progress(root: Path, xys) -> str | None:
+    for name, label in _MARKERS:
+        r = _git(root, "rev-parse", "--git-path", name, check=False)
+        out = _dec(r.stdout).strip()
+        if r.returncode == 0 and out and (root / out).exists():
+            return label
+    if any(xy in _UNMERGED for xy in xys):
+        return "conflict"
+    return None
+
+
+# ---- inputs ----------------------------------------------------------------------------
+
+def _status(root: Path) -> list[dict]:
+    out = _git(root, "status", "--porcelain=v1", "-z", "--renames", "--untracked-files=no").stdout
+    parts = _dec(out).split("\0")
+    rows, i = [], 0
+    while i < len(parts):
+        rec = parts[i]
+        i += 1
+        if not rec:
+            continue
+        xy, path, orig = rec[:2], rec[3:], None
+        if "R" in xy or "C" in xy:
+            orig = parts[i] if i < len(parts) else None
+            i += 1
+        rows.append({"xy": xy, "path": path,
+                     "orig": orig if "R" in xy else None})
+    return rows
+
+
+def _raw(root: Path, *cmd) -> dict:
+    """path -> (old_mode, new_mode, status) from `--raw --no-renames -z`. The plumbing
+    commands (`diff-index`, `diff-files`) are used because `git diff` refreshes and rewrites a
+    stale index even with `GIT_OPTIONAL_LOCKS=0`."""
+    out = _git(root, *cmd, "--raw", "--no-renames", "-z", "--no-ext-diff", "--no-textconv",
+               "--no-color").stdout
+    parts = _dec(out).split("\0")
+    res, i = {}, 0
+    while i < len(parts):
+        meta = parts[i]
+        i += 1
+        if not meta.startswith(":"):
+            continue
+        fields = meta[1:].split()
+        if i < len(parts) and len(fields) >= 5:
+            res[parts[i]] = (fields[0], fields[1], fields[4][:1])
+            i += 1
+    return res
+
+
+def _blob(root: Path, spec: str) -> bytes | None:
+    r = _git(root, "cat-file", "blob", spec, check=False)
+    return r.stdout if r.returncode == 0 else None
+
+
+def _wt(root: Path, path: str) -> bytes | None:
+    full = root / path
+    if full.is_symlink():
+        return os.fsencode(os.readlink(full))
+    if not full.is_file():
+        return None
+    return full.read_bytes()
+
+
+# ---- line scan -------------------------------------------------------------------------
+
+def _suffix(path: str) -> str:
+    i = path.rfind(".")
+    return path[i:].lower() if i > path.rfind("/") else ""
+
+
+def _split(text: str) -> list[str]:
+    lines = text.split("\n")
+    if lines and lines[-1] == "":
+        lines.pop()
+    return lines
+
+
+def _triple(ln: str, tok):
+    """(touched, open token) after scanning `ln` for Python triple-quoted strings."""
+    touched, i = tok is not None, 0
+    while True:
+        if tok is None:
+            hits = [(ln.find(t, i), t) for t in ('"""', "'''") if ln.find(t, i) >= 0]
+            if not hits:
+                return touched, None
+            j, tok = min(hits)
+            touched, i = True, j + 3
+        else:
+            j = ln.find(tok, i)
+            if j < 0:
+                return touched, tok
+            i, tok = j + 3, None
+
+
+def _scan(path: str, text: str):
+    """(lines, kinds, hazard): each line is `blank`, `comment`, `text` or (`.md .html .xml`)
+    `fenced`. State is carried top to bottom; `hazard` marks a side whose lines cannot be
+    trusted to be split by `\\n` alone, or that holds a heredoc, block scalar or template string."""
+    suf = _suffix(path)
+    lines = _split(text)
+    kinds, hazard = [], False
+    tok = None                       # open Python triple-quote token
+    in_block = in_fence = in_html = False
+    clike = suf in _CLIKE_SUFFIXES or suf == ".css"
+    for line in lines:
+        ln = line[:-1] if line.endswith("\r") else line
+        s = ln.strip()
+        if s and any(c in ln for c in _LINE_BREAKS):
+            hazard = True
+        if suf in (".sh", ".bash", ".rb", ".pl") and "<<" in ln:
+            hazard = True
+        if suf in (".yml", ".yaml") and s.endswith(_SCALAR_ENDS):
+            hazard = True
+        if suf in _BACKTICK_SUFFIXES and "`" in ln:
+            hazard = True
+        if suf in _PY_SUFFIXES:
+            touched, tok = _triple(ln, tok)
+            if touched:
+                kind = "text"
+            elif not s:
+                kind = "blank"
+            else:
+                kind = "comment" if s.startswith("#") and not s.startswith("#!") else "text"
+        elif suf in _HASH_SUFFIXES:
+            if not s:
+                kind = "blank"
+            else:
+                kind = "comment" if s.startswith("#") and not s.startswith("#!") else "text"
+        elif clike:
+            if in_block:
+                kind = "comment"
+                if "*/" in ln:
+                    in_block = False
+                    if not s.endswith("*/"):
+                        hazard = True
+            elif not s:
+                kind = "blank"
+            elif s.startswith("//") and suf != ".css":
+                kind = "comment"
+            elif s.startswith("/*"):
+                rest = s[2:]
+                if "*/" in rest:
+                    kind = "comment" if s.endswith("*/") and rest.count("*/") == 1 else "text"
+                else:
+                    kind, in_block = "comment", True
+            else:
+                kind = "text"
+            if kind == "text" and ("/*" in s or "*/" in s):
+                hazard = True
+        elif suf in _MD_SUFFIXES:
+            if s.startswith("```"):
+                if in_html:
+                    hazard = True
+                in_fence = not in_fence
+                kind = "fenced"
+            elif in_fence:
+                kind = "fenced"
+            elif in_html:
+                kind = "comment"
+                if "-->" in ln:
+                    in_html = False
+                    if not s.endswith("-->"):
+                        hazard = True
+            elif not s:
+                kind = "blank"
+            elif s.startswith("<!--"):
+                if "-->" in s:
+                    kind = "comment" if s.endswith("-->") and s.count("-->") == 1 else "text"
+                else:
+                    kind, in_html = "comment", True
+            else:
+                kind = "text"
+            if kind == "text" and ("<!--" in s or "-->" in s):
+                hazard = True
+        else:
+            kind = "text"
+        kinds.append(kind)
+    return lines, kinds, hazard
+
+
+def _line_kinds(path: str, text: str):
+    _, kinds, hazard = _scan(path, text)
+    return kinds, hazard
+
+
+# ---- file rules ------------------------------------------------------------------------
+
+def _is_code_path(path: str) -> bool:
+    p = posixpath.normpath(path)
+    return p.startswith(("src/", "tests/", "tools/")) or _suffix(p) in _CODE_SUFFIXES
+
+
+def _is_docs_path(path: str) -> bool:
+    p = posixpath.normpath(path)
+    if p == "docs/LEDGER.md":
+        return False
+    return p in ("README.md", "CHANGELOG.md") or (p.startswith("docs/") and p.endswith(".md"))
+
+
+def _seq(lines, kinds, *wanted):
+    return [ln for ln, k in zip(lines, kinds) if k in wanted]
+
+
+def _frontmatter_end(text: str):
+    """None: no leading `---`; -1: unclosed (or a fence first); else the offset after the closing line."""
+    lines = text.split("\n")
+    if not lines or lines[0].strip() != "---":
+        return None
+    off = len(lines[0]) + 1
+    for ln in lines[1:]:
+        if ln.strip().startswith("```"):
+            return -1
+        if ln.strip() == "---":
+            return off + len(ln) + 1
+        off += len(ln) + 1
+    return -1
+
+
+def _half_class(path, orig, *, code_side, renamed, flags, old, new) -> str:
+    """The file class of one (old, new) pair; `old`/`new` are bytes or None (absent)."""
+    # rule 1: no text lines to read
+    special = flags or any(b is not None and b"\0" in b for b in (old, new))
+    if special:
+        return "code" if code_side else "other"
+    p = posixpath.normpath(path)
+    deleted = new is None
+    # rule 2
+    if code_side:
+        if deleted or renamed:
+            return "code"
+        return "comment" if _comment_only(path, old, new) else "code"
+    # rule 3
+    if p.startswith("skills/") or p == "docs/LEDGER.md":
+        return "other"
+    # rule 4
+    if deleted or renamed:
+        return "other"
+    # rule 5
+    suf = _suffix(p)
+    docs = _is_docs_path(p)
+    if old is None:
+        return "other"
+    ot, nt = _dec(old), _dec(new)
+    if suf in _MD_SUFFIXES and (docs or suf != ".md"):
+        ol, ok, _ = _scan(p, ot)
+        nl, nk, _ = _scan(p, nt)
+        if _seq(ol, ok, "fenced") != _seq(nl, nk, "fenced"):
+            return "other"
+    if (suf != ".md" or docs) and _comment_only(p, old, new):
+        return "comment"
+    if docs:
+        oe, ne = _frontmatter_end(ot), _frontmatter_end(nt)
+        if oe not in (None, -1) and ne not in (None, -1) and ot[oe:] == nt[ne:]:
+            return "frontmatter"
+        if ot != nt and oe != -1 and ne != -1:
+            return "docs"
+    return "other"
+
+
+def _comment_only(path, old, new) -> bool:
+    if old is None or new is None or old == new or b"\0" in old or b"\0" in new:
+        return False
+    ol, ok, oh = _scan(path, _dec(old))
+    nl, nk, nh = _scan(path, _dec(new))
+    if oh or nh:
+        return False
+    return _seq(ol, ok, "text", "fenced") == _seq(nl, nk, "text", "fenced")
+
+
+# ---- plan ------------------------------------------------------------------------------
+
+def _specs(xy, path, orig):
+    """[(label, old spec, new spec, renamed)]; a spec is ('blob', rev:path) | ('wt', path)."""
+    staged_x, wt_y = xy[0] not in " ?", xy[1] not in " ?"
+    old_name = orig or path
+    if staged_x and wt_y and xy not in _UNMERGED:
+        return [("staged", ("blob", f"HEAD:{old_name}"), ("blob", f":{path}"), orig is not None),
+                ("unstaged", ("blob", f":{path}"), ("wt", path), False)]
+    new = None if xy[0] == "D" else ("wt", path)
+    return [("combined", ("blob", f"HEAD:{old_name}"), new, orig is not None)]
+
+
+def _flags(root, half, raw, path, orig) -> bool:
+    """True when the half has no text lines: symlink, gitlink, typechange, mode change, directory."""
+    ent_new = raw.get(path)
+    ent_old = raw.get(orig) if orig else ent_new
+    modes = {m for e in (ent_new, ent_old) if e for m in e[:2]}
+    if "120000" in modes or "160000" in modes:
+        return True
+    if any(e and e[2] == "T" for e in (ent_new, ent_old)):
+        return True
+    if ent_new and ent_old:
+        om, nm = ent_old[0], ent_new[1]
+        if om != "000000" and nm != "000000" and om != nm:
+            return True
+    full = root / path
+    return full.is_dir() and not full.is_symlink()
+
+
+def _is_gitlink(raws, path, orig) -> bool:
+    return any(r.get(n) and "160000" in r[n][:2] for r in raws for n in (path, orig) if n)
+
+
+def _spec_bytes(root, spec):
+    if spec is None:
+        return None
+    return _blob(root, spec[1]) if spec[0] == "blob" else _wt(root, spec[1])
+
+
+def _classify(root, row, raws) -> str:
+    path, orig, xy = row["path"], row["orig"], row["xy"]
+    code_side = _is_code_path(path) or (orig is not None and _is_code_path(orig))
+    best = None
+    for label, old_spec, new_spec, renamed in _specs(xy, path, orig):
+        raw = raws["unstaged" if label == "unstaged" else "staged" if label == "staged" else "head"]
+        flags = _flags(root, label, raw, path, orig if renamed else None)
+        old = new = None
+        if not flags:
+            old, new = _spec_bytes(root, old_spec), _spec_bytes(root, new_spec)
+        fc = _half_class(path, orig, code_side=code_side, renamed=renamed, flags=flags,
+                         old=old, new=new)
+        if best is None or _FC_RANK[fc] > _FC_RANK[best]:
+            best = fc
+    return best
+
+
+def _wip_name(root: Path) -> str:
+    base = "wip/main-dirty-" + dt.datetime.now(dt.timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    name, n = base, 1
+    while _dec(_git(root, "branch", "--list", name).stdout).strip():
+        n += 1
+        name = f"{base}-{n}"
+    return name
+
+
+def _recommended(root, action, klass, base, rows) -> list[str]:
+    R = str(root)
+
+    def cmd(*args, literal=False):
+        pre = ["git", "-C", R] + (["--literal-pathspecs"] if literal else [])
+        return " ".join(shlex.quote(a) for a in pre + list(args))
+
+    upaths = [r["path"] for r in rows if r["xy"][1] not in " ?"]
+    add = [cmd("add", "--", *upaths, literal=True)] if upaths else []
+    if action in ("resume", "escalate"):
+        return []
+    if action == "commit":
+        return add + [cmd("commit", "-m", _COMMIT_SUBJECT)]
+    if not rows:                                           # hold, no tracked dirt
+        return [cmd("switch", base)]
+    wip = _wip_name(root)
+    return ([cmd("switch", "-c", wip)] + add
+            + [cmd("commit", "-m", f"{_WIP_SUBJECT} ({klass})"), cmd("switch", base)])
+
+
+def plan_clear(root, base=None) -> dict:
+    root = Path(root)
+    _check_worktree(root)
+    base = _base(root, base)
+    rows = _status(root)
+    xys = [r["xy"] for r in rows]
+    partial = any(r["xy"][0] not in " ?" and r["xy"][1] not in " ?" and r["xy"] not in _UNMERGED
+                  for r in rows)
+    raws = {"head": _raw(root, "diff-index", "HEAD") if rows else {}}
+    raws["staged"] = _raw(root, "diff-index", "--cached", "HEAD") if partial else {}
+    raws["unstaged"] = _raw(root, "diff-files") if partial else {}
+    for r in rows:
+        r["file_class"] = _classify(root, r, raws)
+        r["gitlink"] = _is_gitlink(raws.values(), r["path"], r["orig"]) and r["xy"][1] not in " ?"
+    in_progress = _in_progress(root, xys)
+
+    if any(r["file_class"] == "code" for r in rows):
+        klass, action = "substantive", "branch_and_escalate"
+    elif any(r["file_class"] == "other" for r in rows):
+        klass, action = "branch", "save_branch"
+    elif rows:
+        klass, action = "trivial", "commit"
+    else:
+        klass, action = "clean", "resume"
+
+    br = _git(root, "symbolic-ref", "--short", "HEAD", check=False)
+    on_base = br.returncode == 0 and _dec(br.stdout).strip() == base
+    dirty_gitlinks = [r["path"] for r in rows if r["gitlink"]]
+    if in_progress:
+        klass, action = "merge", "escalate"
+    elif dirty_gitlinks:
+        action = "escalate"
+    elif not on_base:
+        action = "hold"
+
+    paths, subst = [], []
+    for r in rows:
+        names = [r["path"]] + ([r["orig"]] if r["orig"] else [])
+        paths += names
+        if r["file_class"] == "code":
+            subst += names
+    return {
+        "schema": SCHEMA, "root": str(root), "base": base, "on_base": on_base, "class": klass,
+        "action": action, "in_progress": in_progress, "paths": paths,
+        "substantive_paths": subst,
+        "files": [{"path": r["path"], "orig_path": r["orig"], "status": r["xy"],
+                   "file_class": r["file_class"]} for r in rows],
+        "recommended": _recommended(root, action, klass, base, rows),
+    }

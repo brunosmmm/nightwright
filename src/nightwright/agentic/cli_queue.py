@@ -1527,6 +1527,34 @@ def attach(queue_group):
                           Text(str(e.get("last_seen") or "")[:10]), Text(src))
         console.print(table)
 
+    @queue_group.command("main-dirty-plan")
+    @click.option("--root", "root", required=True, help="the project's main checkout (top of a worktree)")
+    @click.option("--base", default=None,
+                  help="base branch; used only when --root has no .nw/project.yaml (default main)")
+    @click.option("--json", "as_json", is_flag=True, help="emit nw.main_dirty_plan.v1 JSON")
+    @click.pass_context
+    def queue_main_dirty_plan(ctx, root, base, as_json):
+        """Classify tracked dirt on a base checkout and print the commands that clear it (SPEC-0546).
+
+        Read-only: runs git and reads files, never writes. Exit 2 when --root is not the top of
+        a git worktree, 3 on a git failure or an invalid .nw/project.yaml.
+        """
+        from . import main_dirty as MD
+        try:
+            plan = MD.plan_clear(root, base=base)
+        except MD.NotAWorktree as e:
+            R.warn(f"error: {e}")
+            ctx.exit(2)
+        except MD.PlanError as e:
+            R.warn(f"error: {e}")
+            ctx.exit(3)
+        if as_json:
+            _dump_json(plan)
+            return
+        console.print(Text(f"{plan['action']} {plan['class']} {len(plan['paths'])} paths"))
+        for line in (*plan["paths"], *plan["recommended"]):
+            console.print(Text(line))
+
     # ---- SPEC-0176 -------------------------------------------------------------------------
 
     @queue_group.command("add")

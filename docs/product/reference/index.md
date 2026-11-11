@@ -84,7 +84,8 @@ is an alias), `watch`, `run`, `tick`, `stop`, `restart`, `park` (needs `--reason
 `resume`, `abandon`, `prioritize`, `backlog`, `after`, `unqueued`, `graph`, `flaky`,
 `cost-policy`, `backend` (per-campaign pin, or `--host` / `--all`; the choice is
 `claude|cursor|pi|default`), `merge`, `gc`, `gates`, `gate-slots`, `sweep-prs`,
-`conductor-guard`, `sentinel` (`run`, `clear`, `status`, `resume-fix`), plus the conductor
+`conductor-guard`, `main-dirty-plan` (read-only plan to clear a dirty base checkout),
+`sentinel` (`run`, `clear`, `status`, `resume-fix`), plus the conductor
 tooling: `events`, `followers`, `wakeups`, `runner-log`, `decision` (needs a rationale
 argument), `decisions`, `escalate`, `conduct-status`, `conductor-brief`, `conductor-cost`,
 `conductor-session`, `conductor-launch` / `steward-launch` (`--runner claude|cursor`) and

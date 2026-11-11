@@ -1,7 +1,7 @@
 ---
 id: SPEC-0546
 title: nw queue main-dirty-plan, the read-only main_dirty classifier
-status: accepted
+status: done
 owner: user
 created: 2026-11-11
 updated: 2026-11-11
@@ -331,10 +331,10 @@ optional source, never the contract: where the branch and this spec differ, this
 
 ## Acceptance criteria
 
-- [ ] AC1 (SPEC-0542 AC5) Every row C01–C42 of the case table in the Test plan passes: one test
+- [x] AC1 (SPEC-0542 AC5) Every row C01–C42 of the case table in the Test plan passes: one test
       per row, each first asserting its fixture produced the named diff, and each ending on the
       row's class, action and, where named, `file_class`.
-- [ ] AC2 (SPEC-0542 AC6 + AC7) Every row S01–S27 of the case table passes. `_line_kinds` is
+- [x] AC2 (SPEC-0542 AC6 + AC7) Every row S01–S27 of the case table passes. `_line_kinds` is
       pinned by the parametrized rows S01–S10 (every suffix in the Kinds table, `#!`, `*x`,
       `* x`, `/*`, `*/`, `<!--`, `-->`, a Markdown `#` heading, a `.css` `//` line, a blank line
       in `.json`, and the disqualifying characters). The byte fixtures `+# note\rimport os` in a
@@ -343,12 +343,12 @@ optional source, never the contract: where the branch and this spec differ, this
       `diff.mnemonicPrefix=true`, `diff.renames=false` and `status.renames=false` configured
       classifies the same as without. The `old`/`new` bytes of the combined, staged and unstaged
       pairs are exactly the table in Inputs (asserted by S16–S19).
-- [ ] AC3 (SPEC-0542 AC8) Operation in progress: `MERGE_HEAD`, each of the seven unmerged
+- [x] AC3 (SPEC-0542 AC8) Operation in progress: `MERGE_HEAD`, each of the seven unmerged
       codes, `CHERRY_PICK_HEAD`, `REVERT_HEAD`, `rebase-merge/`, `rebase-apply/`, and a merge in
       a linked worktree each give `merge`/`escalate` with the matching `in_progress`, also when
       off the base; a `cherry-pick -n` with no `CHERRY_PICK_HEAD` is not `merge`; with both
       `MERGE_HEAD` and `rebase-merge/` present `in_progress` is `merge`.
-- [ ] AC4 (SPEC-0542 AC9) Base (rows B01–B08 of the table in the Test plan): `merge.base` wins
+- [x] AC4 (SPEC-0542 AC9) Base (rows B01–B08 of the table in the Test plan): `merge.base` wins
       over `base`, `base` over the default `main`; with a `.nw/project.yaml` that has neither,
       `--base develop` is ignored and base is `main`, so on `develop` `on_base` is false and
       `action` is `hold`, the same base `_close_cfg` returns for the same config and a state
@@ -358,7 +358,7 @@ optional source, never the contract: where the branch and this spec differ, this
       non-`main` base a trivial diff is `commit` on it and `hold` (class still `trivial`)
       elsewhere; detached HEAD gives `on_base: false` and `hold`. A dirty gitlink off the base is
       `escalate`, not `hold`.
-- [ ] AC5 (SPEC-0542 AC10) `recommended` matches the table exactly (asserted as whole lists) for
+- [x] AC5 (SPEC-0542 AC10) `recommended` matches the table exactly (asserted as whole lists) for
       `commit`, `save_branch`, `branch_and_escalate`, `hold` dirty, `hold` clean, `resume`,
       `escalate` (`merge`), and a dirty gitlink (`escalate`, `[]`); a path with a space or a
       literal `*` is quoted; the `<wip>` name takes `-2` when the branch exists; the `add` line
@@ -373,10 +373,10 @@ optional source, never the contract: where the branch and this spec differ, this
       (both rename sides and the deletes) are on the base commit or on `<wip>`, and every
       untracked file (`axb.md` included) is still untracked and absent from the new commit's
       tree. Removing `--literal-pathspecs` from the lists makes the `a*b.md` case fail.
-- [ ] AC6 (SPEC-0542 AC11) `plan_clear` writes nothing: HEAD, `git branch --list`, the index
+- [x] AC6 (SPEC-0542 AC11) `plan_clear` writes nothing: HEAD, `git branch --list`, the index
       file's bytes, and the worktree files are identical before and after, for every class, on a
       repo whose index has stale stat data.
-- [ ] AC7 (SPEC-0542 AC12) CLI (through `CliRunner`): `--json` prints `nw.main_dirty_plan.v1`
+- [x] AC7 (SPEC-0542 AC12) CLI (through `CliRunner`): `--json` prints `nw.main_dirty_plan.v1`
       and exits 0 on each class, with `files` rows `{path, orig_path, status, file_class}`
       matching the Design examples for a plain edit (` M`) and a staged rename (`R `);
       `--base` reaches `plan_clear`; a non-git `--root`, a bare repo and a subdirectory of a
@@ -498,6 +498,42 @@ optional source, never the contract: where the branch and this spec differ, this
   the base, tracked-clean, the edit on `wip/main-dirty-*`, the untracked file still there.
   Record the output in As shipped.
 
+### Test record (2026-11-11)
+
+- `uv run pytest -q tests/test_main_dirty_plan.py`: 141 passed. It holds one parametrized test
+  per case-table row (C01-C42, S01-S27, B01-B08), the AC3 sequencer / unmerged-code / two-marker /
+  linked-worktree cases, the AC5 whole-list assertions and runs, the AC6 stale-index snapshot test,
+  the AC7 CLI cases and the reference-index assertion.
+- `python3 tools/test_tiers.py --check`: exit 0. `python3 tools/spec_lint.py`: exit 0.
+- `python3 tools/affected_tests.py --run uv run pytest -q`: `--guards --exclude-marks integration,tui,remote,perf -n 3`: 1634 passed, 1 skipped (it first
+  caught `tests/test_rich_output_guard.py`: the command prints through `console`/`R.warn`, not `click.echo`).
+- Mutation check (by hand): removed `--literal-pathspecs` from `_recommended`;
+  `test_literal_pathspecs_protect_a_star_name` failed (the glob staged the untracked `axb.md`);
+  restored.
+- Manual scratch repo: frontmatter-only edit → `trivial commit`; pasting the `recommended` lines
+  gave a clean tracked tree and one `chore: land stray trivial main-checkout edits` commit. A logic
+  edit to `src/x.py` plus an untracked file → `substantive branch_and_escalate`; its lines left the
+  checkout on `main`, tracked-clean, the edit on `wip/main-dirty-<ts>`, the untracked file still there.
+- The full suite was left to gating.
+
+### As shipped (2026-11-11)
+
+- Deviation from Inputs: the `--raw` mode lookups use the plumbing commands `git diff-index HEAD`,
+  `git diff-index --cached HEAD` and `git diff-files` (same `-z` raw framing, same flags) instead of
+  `git diff … --raw`. `git diff` rewrote a stale index even with `GIT_OPTIONAL_LOCKS=0` (git 2.55),
+  which broke AC6; the plumbing commands write nothing.
+- A staged delete (`X` = `D`) is read with `new` absent, even if an untracked file of that name sits
+  in the worktree, so a delete is never classified as an edit.
+- Comment-only also requires `old != new`, so an identical pair is never `comment`.
+- A backtick fence line inside an open HTML comment (`.md .html .xml`) sets `hazard`: the two states
+  cannot be told apart from lines.
+- The Python triple-quote scan opens a string at the first triple quote on a line even inside a `#`
+  comment or another string literal. That only makes more lines `text` (stricter), except when a
+  fake open string later swallows a real opener; that stays an accepted residual risk.
+- `plan_clear` returns the schema's keys only; a dirty gitlink is derived from the rows.
+- Code: `src/nightwright/agentic/main_dirty.py`, the `main-dirty-plan` command in `cli_queue.py`,
+  the reference-index entry, `tests/test_main_dirty_plan.py`.
+
 ## Rollout / migration
 
 No data move, no caller yet: the command is additive. Queued under project Meta-Tools; next in
@@ -505,13 +541,13 @@ the chain is SPEC-0547.
 
 ## Definition of done
 
-- [ ] Acceptance criteria all met.
-- [ ] Test plan executed, including the scratch-repo check; affected tests pass.
-- [ ] No regressions.
-- [ ] `docs/product/reference/index.md` names `nw queue main-dirty-plan` (asserted by AC7).
-- [ ] As shipped records the AC5 `--literal-pathspecs` mutation run (flag removed, test fails).
-- [ ] Spec body updated to match what shipped.
-- [ ] `docs/LEDGER.md` regenerated; `python3 tools/spec_lint.py` exits 0.
+- [x] Acceptance criteria all met.
+- [x] Test plan executed, including the scratch-repo check; affected tests pass.
+- [x] No regressions.
+- [x] `docs/product/reference/index.md` names `nw queue main-dirty-plan` (asserted by AC7).
+- [x] As shipped records the AC5 `--literal-pathspecs` mutation run (flag removed, test fails).
+- [x] Spec body updated to match what shipped.
+- [x] `docs/LEDGER.md` regenerated; `python3 tools/spec_lint.py` exits 0.
 
 ## Open questions
 
