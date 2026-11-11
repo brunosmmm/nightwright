@@ -47,9 +47,10 @@ when no live plan exists, and text-mode exit 1.
 
 ## Decision
 
-`apply_clear(root, plan=None) -> dict` in `src/nightwright/agentic/main_dirty.py` and
+`apply_clear(root, plan=None, base=None) -> dict` in `src/nightwright/agentic/main_dirty.py` and
 `nw queue main-dirty-apply --root PATH [--base BRANCH] [--plan FILE] [--json]` in
-`cli_queue.py` (`--base` as in SPEC-0546's `main-dirty-plan`). It takes a
+`cli_queue.py` (`--base` as in SPEC-0546's `main-dirty-plan`; the CLI passes it through as
+`apply_clear(..., base=B)`, which forwards it to `plan_clear`). It takes a
 lock, re-plans with `plan_clear`, refuses an operation in progress before anything else, then a
 stale `--plan`, unsafe paths and partial staging, and only then performs the live plan's action.
 `commit`, `resume` and `escalate` are implemented; `save_branch`, `branch_and_escalate` and
@@ -66,10 +67,12 @@ always present), and when set `sha`, `error`. SPEC-0549 adds `wip_branch`, `wip_
 
 Exit codes: with `--json`, 0 whenever `apply_clear` ran (including `ok: false`); in text mode, 0
 when `ok` is true and 1 when it is false, so `… && next` stops on a refusal. Exit 2 when `--root`
-is not the top of a git worktree (real paths compared, as SPEC-0546), or `--plan` is not a
-`nw.main_dirty_plan.v1` object whose `paths` is a list of strings; exit 3 only when the CLI's own
+is not the top of a git worktree (real paths compared, as SPEC-0546), or `--plan` is
+unreadable (missing file), not JSON, not a `nw.main_dirty_plan.v1` object, lacks a string
+`action`, or has `paths` that is not a list of strings; exit 3 only when the CLI's own
 `git rev-parse --show-toplevel` of the root fails with something other than "not a git
-repository". Once `apply_clear` runs, every refusal or failed step is `ok: false` JSON, never a
+repository". Each exit-2 case prints a one-line message, never a traceback. The CLI runs its own
+git calls with `LC_ALL=C`, so the "not a git repository" test is locale-independent. Once `apply_clear` runs, every refusal or failed step is `ok: false` JSON, never a
 traceback (`GitError`, `OSError`, `ValueError`, `TypeError`, `AttributeError` are caught; a
 malformed `.nw/project.yaml` included).
 
@@ -85,8 +88,8 @@ change to HEAD, the index, the worktree or any ref.
 
 1. **Lock:** a non-blocking `flock` on `<git-dir>/nw-main-dirty.lock`; a second concurrent run
    returns `ok: false`, `error: clear already in progress`.
-2. **Re-plan:** `plan_clear(root)` on the live checkout (with the same `--base` if the CLI was
-   given one). Everything below uses the live plan; `base` never comes from a plan file.
+2. **Re-plan:** `plan_clear(root, base=base)` on the live checkout (the `base` argument is the
+   CLI's `--base`, `None` when not given). Everything below uses the live plan; `base` never comes from a plan file.
 3. **Operation in progress** (live `class: merge`): no write, `ok: false`, `escalate: true`,
    `error: <in_progress> in progress`. This runs before the `--plan` comparison, whatever the
    plan file says (a merge that started after the plan was written is the main reason the verb
@@ -114,12 +117,19 @@ Every git call passes `--literal-pathspecs` and puts paths after `--`.
   `git hash-object -- <p>` for each planned worktree path (no `-w`: writes nothing). Stage each
   planned path with `git add --literal-pathspecs -- <p>`. Before committing, check that
   `git diff --cached --name-only -z` equals the planned paths and that each staged blob
-  (`git ls-files -s -z -- <p>`) equals the recorded hash (absent for a deletion); on a mismatch,
+  (`git ls-files -s -z -- <p>`) equals the recorded hash (a trivial plan has no deletion: a
+  delete of a non-code path is `other`, so the action is `save_branch`); on a mismatch,
   restore the index and return `error: changed since plan <p>`. Commit with subject
   `chore: land stray trivial main-checkout edits` and one `-m` line per path; return `sha`. A
   failed commit (hook, identity) restores the index and returns git's stderr in `error`.
-  **Restoring the index** writes the saved bytes to a temp file beside it and `os.replace`s it
-  over the index, so the index is byte-identical to before; no `reset` or `restore` runs.
+  **Restoring the index** creates `<index>.lock` with `O_EXCL`, writes the saved bytes with the
+  index's mode (not `mkstemp`'s 0600), and `os.replace`s the lock over the index, so the index is
+  byte-identical to before; no `reset` or `restore` runs. If the lock exists (a concurrent git
+  process), return `ok: false`, `error: index locked, not restored`. The restore runs only when
+  `git rev-parse HEAD` equals the pre-add HEAD; if HEAD moved (a commit landed although `git
+  commit` exited non-zero), return `ok: false`, `sha` = the new HEAD, and leave the index alone.
+  A commit that lands but leaves main not tracked-clean (a hook rewrote a file) is `ok: false`
+  with `sha` and `error: main not tracked-clean after commit`; the index is not restored.
   Succeeds only when main is tracked-clean afterwards. Never `commit -a`, `add -A`.
 - **`resume`:** `ok: true` when tracked-clean, no write.
 - **`escalate`:** see guard 3.
@@ -137,6 +147,11 @@ SPEC-0546's raw list, so the human is never told to run a command that refuses. 
 action keeps SPEC-0546's list. SPEC-0547's escalation then tells the human to run that one
 command.
 
+Guard 5 cannot refuse a real `commit` plan (symlink, typechange and gitlink dirt is never
+`trivial`, so the action is never `commit`); only guard 6 can, so the real-fixture test is the
+partially staged path. Guard 5's refusals are reachable through the save actions, whose
+`recommended` stays raw in this spec, and through a monkeypatched plan.
+
 ### Callers and permissions
 
 - The steward already holds `Bash(nw *)` / `Bash(uv run nw *)`; `skills/nw-steward/SKILL.md`
@@ -144,9 +159,12 @@ command.
   human hands it, run `nw queue main-dirty-apply --root <root> --json` and report the result to
   the human.
 - The conductor gets **no** new permission: `DEFAULTS["conductor_disallowed_tools"]` becomes
-  `["AskUserQuestion", "Bash(uv run nw * main-dirty-apply*)", "Bash(nw * main-dirty-apply*)"]`
-  (`*` matches `queue`, so the two rules cover every form; conductor-only, the steward's list is
-  unchanged). `CONDUCTOR_CURSOR_POLICY` gains "Do not run `nw queue main-dirty-apply`."
+  `["AskUserQuestion", "Bash(uv run nw queue main-dirty-apply*)", "Bash(nw queue main-dirty-apply*)"]`
+  (conductor-only, the steward's list is unchanged). The verb token is anchored at the
+  subcommand position: the repo's matcher lets `*` match any characters including spaces, so an
+  unanchored `* main-dirty-apply*` would also deny SPEC-0547's `nw queue escalate … --fact 'nw
+  queue main-dirty-apply --root <R>' …` command. `nw` takes no global option before `queue`;
+  forms the anchored glob misses (a wrapper, a changed word order) are SPEC-0550's hook backstop. `CONDUCTOR_CURSOR_POLICY` gains "Do not run `nw queue main-dirty-apply`."
   `skills/nw-conduct/SKILL.md` is unchanged; SPEC-0551 adds the `--trivial-only` form.
 - Existing tests in `tests/test_agentic_launch.py` that encode the old conductor default change
   to the new list and nothing else: the module constant `CONDUCTOR_DENY`,
@@ -183,8 +201,10 @@ order, `escalate`, the index restore).
 
 ## Acceptance criteria
 
-- [ ] AC1 (SPEC-0543 AC1 + AC2) Merge or sequencer in progress (`MERGE_HEAD`, a `U` status,
-      `CHERRY_PICK_HEAD`, `REVERT_HEAD`, `rebase-merge/`), each run once with no `--plan` and once
+- [ ] AC1 (SPEC-0543 AC1 + AC2) Merge or sequencer in progress (`MERGE_HEAD`, each of
+      `UU AA DD AU UA DU UD` as a status code (one run is enough for the code→merge mapping, one
+      for `DD`), `CHERRY_PICK_HEAD`, `REVERT_HEAD`, `rebase-merge/`, `rebase-apply/`, and a merge
+      in a linked worktree), each run once with no `--plan` and once
       with a `--plan` claiming `commit` or `save_branch`: HEAD, index bytes, worktree bytes, and
       `git branch --list` are unchanged; `ok: false`, `escalate: true`, `error` names the
       operation, never `plan is stale`. A `--plan` whose `action` or `paths` differ from the live
@@ -197,17 +217,30 @@ order, `escalate`, the index restore).
       failing pre-commit hook leaves the index bytes as before, `ok: false`, and `error` includes
       the hook's stderr. A planned file modified between the re-plan and the `add`
       (monkeypatched hook point) returns `error: changed since plan <p>`, no commit, index bytes
-      as before.
-- [ ] AC3 (SPEC-0543 AC8) Refusals with no write, each naming its fixture and `error`: a symlink
-      path, a file→symlink and a symlink→file typechange, and a path under a symlinked directory
-      (real repos) → `bad path <p>`; a directory (a gitlink) → `bad path <p>`; absolute path,
-      `..`, and a path in neither HEAD, index nor worktree, by monkeypatching `plan_clear` to
-      return it → `bad path <p>`; a deleted tracked path with a literal `*` is accepted; a
-      partially staged path → `partially staged <p>`; an unparseable `.nw/project.yaml` →
-      `ok: false` JSON with `action: "none"`, `escalate: false`; a second concurrent run →
-      `clear already in progress`, `action: "none"`, `escalate: false`; `save_branch`,
-      `branch_and_escalate` and `hold` → `save not supported yet: <action>` with `escalate` per
-      class. Each refusal leaves the index bytes identical on a repo with stale stat data.
+      as before. Index-restore outcomes, one test each: a held `<index>.lock` when a failed
+      commit needs the restore → `ok: false`, `error: index locked, not restored`, the lock file
+      and its holder's bytes untouched; a `git commit` that lands a commit but exits non-zero
+      (post-commit-style fault, monkeypatched) → `ok: false`, `sha` equals the new
+      `git rev-parse HEAD`, the index not rewritten; a commit that lands and a hook then
+      rewrites a tracked file → `ok: false`, `sha` set, `error: main not tracked-clean after
+      commit`. A restored index has the original file mode.
+- [ ] AC3 (SPEC-0543 AC8) Refusals with no write, in five lettered groups, each its own
+      parametrized test (each case names its fixture and exact `error`/`verb_refusal`):
+      - **3a bad paths:** a symlink path, a file→symlink and a symlink→file typechange, and a
+        path under a symlinked directory (real repos) → `bad path <p>`; a directory (a
+        gitlink) → `bad path <p>`; absolute path, `..`, and a path in neither HEAD, index nor
+        worktree, by monkeypatching `plan_clear` to return it → `bad path <p>`; a deleted
+        tracked path named `a*b.md` passes guards 5–6 (`verb_refusal` is `None`) and
+        `apply_clear` returns `save not supported yet: save_branch`, not `bad path`.
+      - **3b partial staging:** a partially staged path → `partially staged <p>`.
+      - **3c config and lock:** an unparseable `.nw/project.yaml` → `ok: false` JSON with
+        `action: "none"`, `escalate: false`; a second concurrent run →
+        `error: clear already in progress`, `action: "none"`, `escalate: false`.
+      - **3d save refusals:** `save_branch`, `branch_and_escalate` and `hold` →
+        `save not supported yet: <action>` with `escalate` per the live class (true only for
+        `substantive` or `merge`, false for `trivial`, `branch` and `clean`).
+      - **3e index bytes:** every refusal in 3a–3d leaves the index bytes identical on a repo
+        with stale stat data (the guards run with `GIT_OPTIONAL_LOCKS=0`).
 - [ ] AC4 (SPEC-0543 AC11) Untracked files are byte-identical after every action. `resume` on a
       clean checkout is `ok: true` and writes nothing. The recorded argv never contains `reset`,
       `restore`, `clean`, `checkout`, `rm -r`, `stash`, `push`, `branch -D`, `switch`, and every
@@ -215,17 +248,30 @@ order, `escalate`, the index restore).
       test fails if the flag is removed).
 - [ ] AC5 (SPEC-0543 AC12) CLI via `CliRunner`: `--json` exit 0 on success and on a refusal;
       text mode exit 0 on success and exit 1 on a refusal, printing
-      `main-dirty-apply ok|failed: <action>`; exit 2 on a non-git root, a subdirectory root, and a
-      `--plan` that is not a plan (including `paths` of `5`, `{"a": 1}`, `[null]`, a string);
+      `main-dirty-apply ok|failed: <action>`; exit 2 with a one-line message (no traceback) on a
+      non-git root, a subdirectory root, and a `--plan` that is not a plan: `paths` of `5`,
+      `{"a": 1}`, `[null]`, a string; invalid JSON; a missing file; `{"action": 5, "paths": []}`;
       exit 3 when the root's `rev-parse --show-toplevel` fails for another reason
-      (monkeypatched).
+      (monkeypatched), and the non-git-root exit 2 holds with `LANG` set to a non-English locale
+      (the CLI's git calls use `LC_ALL=C`). `--base develop` reaches `plan_clear` (project config
+      without `base`, checkout on `develop`, trivial edit → `ok: true`); without `--base` the
+      same checkout gives `ok: false`, `error: save not supported yet: hold`. A test fails if
+      `base` is not forwarded to `plan_clear`.
 - [ ] AC6 (new) `recommended` for `commit` is `["nw queue main-dirty-apply --root <R>"]` when
       `verb_refusal` is `None`, and SPEC-0546's raw list for a trivial fixture with a partially
-      staged path and one with a gitlink; every other action's `recommended` equals SPEC-0546's
+      staged path (real git, guard 6) and one where `plan_clear`'s plan is monkeypatched to
+      `action: commit` with a path under a symlinked directory (guard 5; a real symlink or
+      gitlink fixture is never `commit`). `recommended` carries ` --base <B>` exactly when
+      `plan_clear` was called with `base`, and the root is quoted with `shlex.quote` (a fixture
+      root containing a space). Every other action's `recommended` equals SPEC-0546's
       list. SPEC-0546's AC5 run-the-list test for `commit` now runs the verb command through the
       CLI and asserts the same end state.
 - [ ] AC7 (SPEC-0543 AC14 + AC15) Conductor launch (`build_plan(cfg, "conductor")`) denies the
-      two verb rules and the steward launch does not; `CONDUCTOR_CURSOR_POLICY` contains the new
+      two verb rules and the steward launch does not. With `_permitted(cmd, allow, deny)` on the
+      conductor plan, `uv run nw queue main-dirty-apply --root /x --json` and
+      `nw queue main-dirty-apply --root /x` are denied, while `uv run nw queue escalate --topic
+      human_checkout --question q --fact 'nw queue main-dirty-apply --root /x' --yes` and
+      `uv run nw queue main-dirty-plan --root /x --json` are permitted. `CONDUCTOR_CURSOR_POLICY` contains the new
       sentence; only the four named `tests/test_agentic_launch.py` sites change and every other
       case passes unchanged. `skills/nw-steward/SKILL.md` has the one sentence naming
       `nw queue main-dirty-apply --root`; `skills/nw-conduct/SKILL.md` does not name
@@ -242,8 +288,21 @@ order, `escalate`, the index restore).
   `test_commit_failure_carries_git_stderr`, and the apply half of
   `test_cli_text_mode_plan_and_apply` / `test_cli_git_failures_have_messages_and_distinct_codes`
   / `test_root_must_be_checkout_top`. Tighten to the ACs: AC2 asserts the full message; new
-  tests for AC1's `--plan` precedence and `rebase-merge`/`REVERT_HEAD`, AC2's changed-since-plan
-  case, AC3's symlink, typechange and no-plan cases, AC5's text-mode exit 1, AC6.
+  tests for AC1's `--plan` precedence and each operation marker (including `rebase-apply/`, the
+  seven `U` codes and the linked worktree), AC2's changed-since-plan case and its three
+  index-restore tests (`test_restore_index_locked`, `test_restore_skipped_when_head_moved`,
+  `test_commit_lands_but_main_dirty`), AC5's text-mode exit 1, the malformed `--plan` forms, the
+  `LC_ALL=C` non-English-locale case and `test_cli_base_forwarded_to_plan_clear`, and AC6
+  (`test_recommended_base_suffix_and_quoting`, `test_recommended_raw_when_partially_staged`,
+  `test_recommended_raw_when_monkeypatched_symlink_parent`). AC3 is one parametrized test per
+  letter: `test_refusal_bad_paths` (3a), `test_refusal_partially_staged` (3b),
+  `test_refusal_config_and_lock` (3c), `test_refusal_save_actions_not_supported` (3d),
+  `test_refusals_leave_index_bytes` (3e).
+- **Conductor deny:** `tests/test_agentic_launch.py` adds `test_conductor_deny_anchored_verb`,
+  asserting the four `_permitted` outcomes of AC7.
+- **Speed tier:** `tests/test_main_dirty_apply.py` carries the module marker
+  `pytestmark = pytest.mark.fast` (no TUI, remote or `_e2e` name, so `fast`);
+  `python3 tools/test_tiers.py --check` exits 0.
 - **Existing modules:** `tests/test_agentic_launch.py` gains AC7 cases and edits the four named
   sites; `tests/test_main_dirty_plan.py` (SPEC-0546) updates its `commit` `recommended`
   expectation and its run-the-list test (AC6).
@@ -258,7 +317,15 @@ order, `escalate`, the index restore).
   false`, `save not supported yet: branch_and_escalate`, `escalate: true`, nothing changed.
   (3) Start a conflicting merge → `ok: false`, nothing changed. Record the outputs in As shipped.
 
-## Out of scope
+## Goals / Non-goals
+
+**Goals**
+
+- The human or a steward clears a trivial dirty main checkout with one audited command,
+  `nw queue main-dirty-apply`, whose guards refuse every unsafe case without writing.
+- The conductor cannot run that command, yet can still escalate with its text as a `--fact`.
+
+**Non-goals**
 
 - WIP save, restore, `hold`, guard 7 (base and WIP location) and the failure-phase table
   (SPEC-0549); `recommended` for the save actions stays SPEC-0546's raw list until then.
@@ -268,7 +335,9 @@ order, `escalate`, the index restore).
 
 ## Rollout / migration
 
-Ships after SPEC-0547. No data move. Existing escalations keep their raw commands; new trivial
+Ships after SPEC-0547. No data move. SPEC-0543 is superseded by this spec alone (its one
+`superseded_by`); SPEC-0549 lists only `depends_on: [SPEC-0548]` and names SPEC-0543 in its
+Context text, not in `supersedes`. Existing escalations keep their raw commands; new trivial
 ones name the verb. A running conductor keeps its old deny list until
 `nw queue conductor-launch` relaunches it (the rule change moves its `launch_hash`). A
 launch-settings override of `conductor_disallowed_tools` replaces the default list, this deny
