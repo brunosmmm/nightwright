@@ -568,3 +568,23 @@ Built as designed; no Design change. Notes and results:
 but a `git push` from the main checkout can push whatever the local branch holds, so the guard
 denies it there (a linked worktree stays silent, as for every other subcommand). `fetch` stays
 allowed. Covered by `test_push_is_denied_against_main_and_silent_in_a_linked_worktree`.
+
+### As shipped, review loop 2 fix (2026-11-11)
+
+Observed payloads are recorded under *As shipped (2026-11-11)* above, and `push` is not in the
+allow set (steward review fix above), so those two Design lines are superseded by As shipped.
+Hardening, within the Design's intent: `worktree add` options are scanned over every argument
+(git permutes them), so a trailing `-f -B main` or `--force` denies; every tokenized word,
+redirect targets included, is checked for a substitution, a newline and the unsupported words;
+an option after `command` / `exec` is unsupported (like `env` / `time`); a commit-message
+heredoc whose body has a line equal to its delimiter is unsupported (bash ends the heredoc
+there). Tests added to `tests/test_conductor_git_guard.py` for each step-2 exception condition
+(from `W` and `W2`, with the plain and `M` controls), the denied global options and env
+prefixes, the registry reader (bad line before a conductor row, steward reader, a directory in
+place of the file), the `cp` and `branch` minor rows and the JSON-on-stdout subprocess run.
+
+### Test record, review loop 2 (2026-11-11)
+
+`uv run pytest -q tests/test_conductor_git_guard.py` (278 cases) passed;
+`python3 tools/test_tiers.py --check` and `python3 tools/spec_lint.py` exit 0. The full suite
+was left to gating.

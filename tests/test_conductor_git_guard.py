@@ -154,6 +154,24 @@ AC3_DENIED = [
     ("M", "git update-index --add --cacheinfo 100644,0,a"), ("M", "git worktree add ../x"),
     ("M", "git worktree add -B x ../.nw-worktrees/P/y"),
     ("M", "git worktree add -f ../.nw-worktrees/P/y"),
+    ("M", "git worktree add ../.nw-worktrees/P/y -f -B main"),
+    ("M", "git worktree add ../.nw-worktrees/P/y -B x"),
+    ("M", "git worktree add ../.nw-worktrees/P/y --force"),
+    ("M", "git worktree add ../.nw-worktrees/P/y -b"),
+    ("M", "git worktree add ../.nw-worktrees/P/y main extra"),
+    ("W", "git -c core.worktree=@M@ add a"), ("W", "git --git-dir=@M@/.git add a"),
+    ("W", "git --bare add a"), ("W", "git --exec-path=x status"),
+    ("W", "git --version"), ("W", "git -C"),
+    ("W", "GIT_INDEX_FILE=x git add a"), ("W", "GIT_COMMON_DIR=x git add a"),
+    ("W", 'echo x > "$(git -C @M@ add .)"'), ("M", 'echo x > "$(git -C @M@ add .)"'),
+    ("M", "echo x > `git -C @M@ add .`"),
+    ("M", "command -p git add a"),
+    ("M", "git commit -m \"$(cat <<'EOF'\nx\nEOF\ny; git add .\nEOF\n)\""),
+    ("W", "cp --target-directory=@M@ a"), ("W", "cp -T a @M@/b"), ("W", "cp -- a @M@/b"),
+    ("W", "cp --parents a @M@/b"),
+    ("M", "git branch -D x"), ("M", "git branch x"),
+    ("W", "nw queue main-dirty-apply --root @M@ --trivial-only"),
+    ("M", "cd /missing && git add a; git add b"),
     ("W", "git --work-tree=@M@ add a"), ("W", "git --wo=@M@ add a"),
     ("W", "GIT_DIR=@M@/.git git add a"), ("W", "env GIT_WORK_TREE=@M@ git add a"),
     ("W", "export GIT_DIR=@M@/.git; git add a"),
@@ -189,7 +207,10 @@ AC3_SILENT = [
     "cp a @M@/.nw-worktrees/y/b", "cp a @M@/.claude/worktrees/w/b", "echo x > @M@/f",
     "uv run nw queue main-dirty-apply --trivial-only --root @M@",
     'ls; echo "git add a"', "(ls)", "git log --oneline | head", "git fetch origin",
-    "git branch -vv",
+    "git branch -vv", "git worktree add ../.nw-worktrees/P/y -b x main",
+    "git worktree add ../.nw-worktrees/P/y main", "git worktree add --detach ../.nw-worktrees/P/y",
+    "git --no-pager log", "git -P log", "git --literal-pathspecs log",
+    "git --no-replace-objects log", "git --no-optional-locks status",
 ]
 
 
@@ -204,6 +225,42 @@ def test_push_is_denied_against_main_and_silent_in_a_linked_worktree(monkeypatch
     # `fetch` stays allowed there.
     assert_denied(monkeypatch, capsys, tree, "M", "git push origin main")
     assert_silent(monkeypatch, capsys, tree, "W", "git push origin main")
+
+
+# ---- step 2: the linked-worktree exception ------------------------------------------------
+
+UNSUPPORTED_TAIL = "git commit -F - <<EOF\nx\nEOF"
+COARSE = ["cp a b", "pushd x", "git -c k=v status", "git --chdir=x status",
+          "git --git-dir=x status", "git --work-tree=x status", "git --wo=x status",
+          "git --exec-path=x status", "git config core.worktree x", "GIT_DIR=x env",
+          "GIT_WORK_TREE=x env", "GIT_INDEX_FILE=x env", "GIT_COMMON_DIR=x env", "cd x",
+          "git -C x status"]
+
+
+@pytest.mark.parametrize("cwd", ["W", "W2"])
+@pytest.mark.parametrize("marker", COARSE)
+def test_step2_exception_denies_each_coarse_marker(monkeypatch, capsys, tree, cwd, marker):
+    assert_denied(monkeypatch, capsys, tree, cwd, f"{marker}\n{UNSUPPORTED_TAIL}", "cannot verify")
+
+
+def test_step2_exception_controls(monkeypatch, capsys, tree):
+    assert_silent(monkeypatch, capsys, tree, "W", UNSUPPORTED_TAIL)
+    assert_denied(monkeypatch, capsys, tree, "M", UNSUPPORTED_TAIL, "cannot verify")
+
+
+def test_redirect_on_another_program_is_not_checked(monkeypatch, capsys, tree):
+    assert_silent(monkeypatch, capsys, tree, "W", "echo x > @M@/f")
+
+
+def test_a_deny_is_json_on_stdout_with_exit_zero(registry, tree):
+    r = subprocess.run([sys.executable, "-c", "from nightwright.agentic import git_guard; "
+                        "git_guard.main()"], capture_output=True, text=True,
+                       input=json.dumps({"session_id": CONDUCTOR, "cwd": tree["M"],
+                                         "tool_input": {"command": "git add a"}}),
+                       env={**__import__("os").environ, "NW_DATA_DIR": str(registry.parents[2])})
+    assert r.returncode == 0, r.stderr
+    out = json.loads(r.stdout)["hookSpecificOutput"]
+    assert out["permissionDecision"] == "deny"
 
 
 # ---- AC4 ---------------------------------------------------------------------------------
@@ -315,6 +372,27 @@ def test_ac6_registry_line_without_newline_is_skipped(monkeypatch, capsys, tree,
     assert call(monkeypatch, capsys, tree, "M", "git add a") is None
 
 
+def _row(**kw):
+    return json.dumps({"reader": "conductor", "session_id": CONDUCTOR, **kw}) + "\n"
+
+
+def test_ac6_a_bad_line_does_not_hide_a_later_conductor_row(monkeypatch, capsys, tree, registry):
+    registry.write_text("{bad\n[1]\n" + json.dumps({"reader": "conductor", "session_id": ""})
+                        + "\n" + _row())
+    assert_denied(monkeypatch, capsys, tree, "M", "git add a")
+
+
+def test_ac6_only_the_conductor_reader_counts(monkeypatch, capsys, tree, registry):
+    registry.write_text(_row(reader="steward:Foo"))
+    assert call(monkeypatch, capsys, tree, "M", "git add a") is None
+
+
+def test_ac6_registry_that_is_a_directory_is_silent(monkeypatch, capsys, tree, registry):
+    registry.unlink()
+    registry.mkdir()
+    assert call(monkeypatch, capsys, tree, "M", "git add a") is None
+
+
 # ---- tokenizer table ----------------------------------------------------------------------
 
 def _shape(command):
@@ -341,7 +419,8 @@ def test_tokenizer_redirects_and_hash():
     'git commit -m "x', "git add a\\\nb", "(ls)", "{ ls; }", "a & b", "a |& b", "a &> f",
     "a;; b", "git commit -F - <<EOF\nx\nEOF", "echo `x`", "echo $(x)", "pushd M", "popd",
     "case a in a) ;; esac", "select x in a; do :; done", "function f", "[[ -n x ]]", "a >",
-    "echo $(cat <<'EOF'\nx `y`\nEOF\n)"])
+    "echo $(cat <<'EOF'\nx `y`\nEOF\n)", "echo $(cat <<'EOF'\nx\nEOF\ny\nEOF\n)",
+    'echo x > "$(git status)"', "echo x > `y`", "echo x > {"])
 def test_tokenizer_unsupported(command):
     with pytest.raises(GP.Unsupported):
         segs = GP.tokenize(command)
@@ -365,7 +444,8 @@ def test_tokenizer_accepts_the_commit_message_heredoc():
     assert _shape(HEREDOC)[0][0][:3] == ["git", "commit", "-m"]
 
 
-@pytest.mark.parametrize("command", ["env -i git add a", "time -p git add a"])
+@pytest.mark.parametrize("command", ["env -i git add a", "time -p git add a",
+                                     "command -p git add a", "exec -a x git add a"])
 def test_option_after_env_or_time_is_unsupported(command):
     with pytest.raises(GP.Unsupported):
         GP.split_prefix(GP.tokenize(command)[0].words)

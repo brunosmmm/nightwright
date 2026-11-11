@@ -78,19 +78,22 @@ def tokenize(command: str) -> list[Segment]:
         for op in ops if ops is not None else [None]:
             seg = segs[-1]
             if op is None:
-                if pending is not None:
-                    seg.redirects.append((pending, tok))
-                    pending = None
-                    continue
+                # every word is checked, a redirect target included: the shell expands
+                # a substitution there whatever the program is
                 if tok in _UNSUPPORTED_WORDS:
                     raise Unsupported(f"the word {tok!r}")
                 if "`" in tok or "$(" in tok:
                     m = _HEREDOC_RE.match(tok)
-                    if not m or "`" in m.group(2) or "$(" in m.group(2):
+                    if (not m or "`" in m.group(2) or "$(" in m.group(2)
+                            or m.group(1) in m.group(2).split("\n")):
                         raise Unsupported("a command substitution")
                     tok = "<heredoc>"
                 elif "\n" in tok:
                     raise Unsupported("a newline inside a word")
+                if pending is not None:
+                    seg.redirects.append((pending, tok))
+                    pending = None
+                    continue
                 seg.words.append(tok)
             elif op in ("(", ")", "<<", "&"):
                 raise Unsupported(f"the operator {op!r}")
@@ -123,9 +126,9 @@ def split_prefix(words):
         elif w == "env":
             if i + 1 < len(words) and words[i + 1].startswith("-"):
                 raise Unsupported("an `env` option")
-        elif w == "time":
+        elif w in ("time", "command", "exec"):
             if i + 1 < len(words) and words[i + 1].startswith("-"):
-                raise Unsupported("a `time` option")
+                raise Unsupported(f"a `{w}` option")
         elif w not in _RESERVED:
             return assigns, i
         i += 1
@@ -296,17 +299,24 @@ class Guard:
         return False
 
     def worktree_add_ok(self, cur, rest) -> bool:
-        i = 0
-        while i < len(rest) and rest[i].startswith("-"):
-            if rest[i] == "-b" and i + 1 < len(rest):
-                i += 2
-            elif rest[i] in ("--detach", "--lock", "--no-checkout"):
-                i += 1
-            else:
+        # git permutes the arguments, so options count wherever they appear
+        target, positionals, skip = None, 0, False
+        for w in rest:
+            if skip:
+                skip = False
+            elif w == "-b":
+                skip = True
+            elif w in ("--detach", "--lock", "--no-checkout"):
+                pass
+            elif w.startswith("-"):
                 return False
-        if i >= len(rest):
+            else:
+                positionals += 1
+                if target is None:
+                    target = w
+        if skip or target is None or positionals > 2:
             return False
-        target = self.resolve(cur, rest[i])
+        target = self.resolve(cur, target)
         return target is not None and ".nw-worktrees" in target.split(os.sep)
 
     def do_cp(self, cur, args, seg):
