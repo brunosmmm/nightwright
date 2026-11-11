@@ -360,7 +360,7 @@ progress. This is the single place to see *what has been decided* and *what is i
 | [SPEC-0530](./specs/0530-hub-event-relay-health-and-read-only-host-views.md) | Hub event relay, health, and read-only host views | feature | accepted | — | 2026-11-10 |
 | [SPEC-0532](./specs/0532-exactly-once-mail-between-hub-and-host.md) | Exactly-once mail between hub and host | feature | accepted | — | 2026-11-10 |
 | [SPEC-0533](./specs/0533-remote-park-and-resume.md) | Remote park and resume | feature | accepted | — | 2026-11-10 |
-| [SPEC-0541](./specs/0541-queue-a-campaign-from-a-public-request-alone.md) | Write a spec from a public request alone (request-only writer path) | feature | proposed | — | 2026-11-10 |
+| [SPEC-0541](./specs/0541-queue-a-campaign-from-a-public-request-alone.md) | Write a spec from a public request alone (request-only writer path) | feature | accepted | — | 2026-11-10 |
 
 ## Done
 

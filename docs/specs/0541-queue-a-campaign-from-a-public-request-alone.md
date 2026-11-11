@@ -1,7 +1,7 @@
 ---
 id: SPEC-0541
 title: Write a spec from a public request alone (request-only writer path)
-status: proposed
+status: accepted
 owner: user
 created: 2026-11-10
 updated: 2026-11-10
