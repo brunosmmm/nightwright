@@ -39,12 +39,34 @@ This spec is the first of six, in queue order:
 
 Spec review found the classifier is where the abandoned branch churned most (form feed, `\r`,
 `~~~`, symlinks, staged paths), so it gets its own convergence budget. The CLI is usable on its
-own: a human can paste its `recommended` lines.
+own: a human can paste its `recommended` lines. Because SPEC-0551 may commit a `trivial` plan to
+main unattended, every rule below errs toward `branch`: a miss only costs a branch, a false
+`trivial` lands unreviewed code on main.
 
 **Carries SPEC-0542 AC5, AC6, AC7, AC8, AC9, AC10, AC11, AC12** (AC6 and AC7 merged into AC2
 below). It also folds in the SPEC-0542 review's classifier findings: the base rule now matches
-`finish_close` (`--base`), the git invocations are named, the suffix tables agree, blank lines
-no longer make non-comment files trivial, and `--root` compares real paths.
+`finish_close` (its `load_project_config` defaults), the git invocations are named, the suffix
+tables agree, blank lines no longer make non-comment files trivial, and `--root` compares real
+paths.
+
+## Goals / Non-goals
+
+**Goals**
+
+- A read-only classifier `plan_clear` and `nw queue main-dirty-plan` whose `recommended` lines a
+  human can paste.
+- No behaviour change anywhere else.
+
+**Non-goals**
+
+- Any change to `PARK_OWNERS`, the dashboard, herdr, E5, or `skills/nw-conduct/SKILL.md`
+  (SPEC-0547).
+- Any git write: the verb `nw queue main-dirty-apply` (SPEC-0548, SPEC-0549).
+- `launch.py`, `CONDUCTOR_CURSOR_POLICY` and every permission list (SPEC-0548, SPEC-0550,
+  SPEC-0551).
+- Untracked files: they never park `main_dirty` and are never listed.
+- `finish_close` is unchanged (including its `repo.base` fallback, which no registered project
+  can reach; see Base).
 
 ## Decision
 
@@ -56,32 +78,55 @@ Nothing calls it yet; SPEC-0547 wires it into the conductor.
 ## Design
 
 `plan_clear` writes nothing (no index refresh either: every git call runs with
-`GIT_OPTIONAL_LOCKS=0`). CLI: registered in `cli_queue.py` and named under `nw queue` in
-`docs/product/reference/index.md`. It takes no campaign id and looks none up. `--root` must be
-the top of a git worktree: `os.path.realpath(root)` equals `os.path.realpath` of
-`git -C root rev-parse --show-toplevel`; otherwise exit 2 with a stderr message. A git failure
-on a real worktree exits 3 with a stderr message. Every class exits 0, a clean tree included.
-Text mode: one line `<action> <class> <n> paths`, one path per line, then one line per
-`recommended` command.
+`GIT_OPTIONAL_LOCKS=0`). Every git child runs with `LC_ALL=C` and with `GIT_DIR`,
+`GIT_WORK_TREE` and `GIT_INDEX_FILE` removed from its environment. CLI: registered in
+`cli_queue.py` and named under `nw queue` in `docs/product/reference/index.md`. It takes no
+campaign id and looks none up. `--root` must be the top of a git worktree:
+`os.path.realpath(root)` equals `os.path.realpath` of `git -C root rev-parse --show-toplevel`;
+otherwise exit 2 with a stderr message. Exit 2 also covers a `rev-parse --show-toplevel` failure
+whose stderr says `not a git repository` or that the operation must run in a work tree (a bare
+repo or a `.git` dir). Every other failure exits 3 with a stderr message: any other git failure
+on a real worktree, and a `.nw/project.yaml` that `load_project_config` rejects (the loader's
+message is printed). Every class exits 0, a clean tree included. Text mode: one line
+`<action> <class> <n> paths`, one path per line, then one line per `recommended` command.
 
 ### Inputs
 
-Every diff call passes `--no-ext-diff --no-textconv --no-color`, so user config cannot change
-the lines read.
+Every `git diff` call passes `--no-ext-diff --no-textconv --no-color --no-renames`, and
+`git status` passes `--renames`, so user config (`diff.external`, textconv drivers,
+`diff.renames`, `status.renames`) cannot change what is read. No patch text is read or parsed:
+the file rules use only the `old` and `new` bytes below, so prefix and quoting config
+(`diff.noprefix`, `diff.mnemonicPrefix`, `diff.srcPrefix`, `core.quotePath`) cannot matter. `-z`
+is used only with `status --porcelain` and `diff --raw`, where it changes the framing.
 
-- Tracked dirt: `git status --porcelain=v1 -z --untracked-files=no`; its `XY` columns are kept
-  per path.
-- Modes and statuses: `git diff HEAD --raw --no-renames -z` (and `git diff --cached --raw` /
-  `git diff --raw` for a partially staged path). Mode `120000` is a symlink, `160000` a gitlink.
-- Hunks: `git diff HEAD -z` (staged and unstaged together).
-- Per path, `old` is `git show HEAD:<path>` when that blob exists, else absent; `new` is the
-  worktree bytes when the file is there, else absent (a deletion). A symlink is read as its
-  link target, never followed. A gitlink or a worktree directory is never read.
-- Bytes are decoded with `errors="surrogateescape"`, so a non-UTF-8 diff never raises. A NUL
-  byte on either side, or git's "Binary files … differ" marker, sets `binary`. Lines split on
-  `\n` only, never `splitlines()`, so a form feed or a bare `\r` does not hide a code line.
-- A rename classifies both the old and the new path, and both appear in `paths`. Paths are
-  repo-relative with forward slashes.
+- Tracked dirt: `git status --porcelain=v1 -z --renames --untracked-files=no`; its `XY` columns
+  are kept per path. A rename record is `XY new\0old\0`: the next NUL field after `new` is the
+  old name. A rename is detected from porcelain `R` only. An unstaged move (`mv` without `git
+  mv`) is a delete (` D`) plus an untracked file, so only the delete is listed.
+- Modes: `git diff HEAD --raw --no-renames -z` for a path that is not partially staged; for a
+  partially staged path `git diff --cached --raw --no-renames -z` (staged half) and `git diff
+  --raw --no-renames -z` (unstaged half). Modes are looked up per name, so a staged rename
+  appears as its `D` entry (old name) and its `A` entry (new name). Mode `120000` is a symlink,
+  `160000` a gitlink.
+- `old` and `new` bytes, per path. Blobs are read with `git cat-file blob <rev>:<path>` (no
+  filters, no textconv). A path is **partially staged** when both porcelain columns `X` and `Y`
+  are non-blank and it is not unmerged; any other path is classified once, as the **combined**
+  pair.
+
+  | classified as | `old` | `new` |
+  |---|---|---|
+  | combined (any path not partially staged; an unmerged path too) | `HEAD:<path>` | worktree bytes |
+  | staged half (partially staged) | `HEAD:<path>` | `:<path>` (the index blob) |
+  | unstaged half (partially staged) | `:<path>` | worktree bytes |
+
+  A side is absent when its blob is missing (a new file has no `old`; a deletion has no `new`).
+  A rename's `old` is read at the old name and its `new` at the new name. A symlink is read as
+  its link target, never followed. For a gitlink or a worktree directory no side is read: not
+  the HEAD blob, not the index blob, not the worktree.
+- Bytes are decoded with `errors="surrogateescape"`, so a non-UTF-8 file never raises. A NUL
+  byte on either side sets `binary`. Lines split on `\n` only, never `splitlines()`.
+- A rename classifies both names, and both appear in `paths`. Paths are repo-relative with
+  forward slashes.
 
 ### File rules
 
@@ -90,34 +135,63 @@ the lines read.
 Any source language not listed is not a code path; it can be `other`, never `substantive` (a
 conservative miss: `other` still goes to a branch, never to a trivial commit).
 
-**Comment line** for a path, by suffix (a suffix not in this table has **no** comment lines,
-blank ones included):
+**Docs path:** `README.md`, `CHANGELOG.md`, or a path under `docs/` ending `.md`; never
+`docs/LEDGER.md`. Any other `.md` (`.claude/agents/*.md`, `.claude/commands/*.md`,
+`AGENTS.md`, `CLAUDE.md`, `skills/**`) is not a docs path: it can carry tool permissions or
+prompt text, so frontmatter-only, docs-prose and the `.md` comment rules never apply to it and
+it falls to rule 6.
 
-| suffixes | comment when the stripped line |
+**Line scan.** Each side (`old`, `new`) is scanned once, top to bottom, with state carried
+between lines. Per line, one trailing `\r` is dropped and `s` is the rest stripped with Python
+`str.strip()`. A line gets a kind: `blank`, `comment`, `text` (anything else), and for `.md
+.html .xml` also `fenced`. The function is `_line_kinds(path, side_text) -> (kinds, hazard)`.
+
+*Hazard.* A line whose `s` is non-empty and which (after dropping one trailing `\r`) still
+contains any of `\r \x0b \x0c \x1c \x1d \x1e \x85    ` sets `hazard` for the whole
+side: such a character ends a line for CPython's tokenizer or for JavaScript, so a code line can
+hide behind a comment-looking prefix (`# note\rimport os`). A line that is blank after strip,
+`\x0c` alone included, is `blank`, not a hazard. These suffix hazards also set `hazard`:
+
+- `.sh .bash .rb .pl`: any line containing `<<` (a heredoc body is data, not comment).
+- `.yml .yaml`: any line whose `s` ends with `|`, `|-`, `|+`, `>`, `>-` or `>+` (a block scalar).
+- `.js .mjs .cjs .jsx .ts .tsx .go`: any backtick (a template or raw string).
+- C-like and `.css`: a `text` line containing `/*` or `*/`.
+- `.md .html .xml`: a `text` line containing `<!--` or `-->`.
+
+*Kinds by suffix.*
+
+| suffixes | kinds |
 |---|---|
-| `.py .pyi .sh .bash .yml .yaml .toml .rb .pl` | is empty, or starts with `#` and not with `#!` |
-| `.js .mjs .cjs .jsx .ts .tsx .go .rs .c .h .cc .cpp .cxx .hpp .java` | is empty; starts with `//`; or is `/*`, `*/` or `*`; or is `*` followed by whitespace (`* text`). `*out`, `*=`, `*ptr = 1;` are not |
-| `.css` | is empty; or is `/*`, `*/` or `*`; or is `*` followed by whitespace. `//` is not a comment |
-| `.md .html .xml` | is empty, starts with `<!--`, or is `-->` |
+| `.py .pyi .toml` | while inside a triple-quoted string every line is `text`. Strings open at the first `"""` or `'''` on a line and close at the next occurrence of the same token (that line is `text` too). Otherwise: `s` empty → `blank`; starts with `#` and not `#!` → `comment`; else `text` |
+| `.sh .bash .yml .yaml .rb .pl` | `s` empty → `blank`; starts with `#` and not `#!` → `comment`; else `text` |
+| `.js .mjs .cjs .jsx .ts .tsx .go .rs .c .h .cc .cpp .cxx .hpp .java` | in a block comment: `comment`. Otherwise `s` empty → `blank`; starts with `//` → `comment`; starts with `/*`: `comment` and, when it has no `*/`, enters a block comment; a `/*` line that has `*/` is `comment` only when `s` ends with that single `*/`, else `text`; anything else (`*ptr = 1;`, `*out`, `*=`, `* b;`, a lone `*/`) → `text`. A block comment ends at the first line containing `*/`; that line must end with it, else hazard |
+| `.css` | as the C-like row, with no `//` comment |
+| `.md .html .xml` | inside a backtick fence → `fenced`. A line whose `s` starts with three or more backticks toggles the fence and is itself `fenced` (a `~~~` line never toggles; an unclosed fence runs to end of file). Otherwise, in an HTML comment → `comment`, which ends at the first line containing `-->`, that line must end with it, else hazard. Else `s` empty → `blank`; a line whose `s` starts with `<!--` and ends with a single `-->` → `comment`; one starting `<!--` without `-->` → `comment` and enters an HTML comment; else `text` |
+| any other suffix | `blank` and `comment` do not exist: every line is `text` (a blank line in `x.json` is not a comment) |
 
-A Markdown `#` heading is not a comment line.
+A Markdown `#` heading is `text`. A line is a comment only in the position the scan puts it:
+`*`-led lines are comments only inside a block comment that this side's own scan opened, so a
+`* b;` that continues a multiplication stays `text`.
 
-**Comment-only:** not binary, status is not a delete or rename, at least one added or removed
-text line, and every added and removed line is a comment line.
+**Comment-only:** not binary, no `hazard` on either side, `old` and `new` both present, and the
+sequence of `text` and `fenced` lines of `old` equals that of `new` (exact text, in order). A
+changed, added or removed `text` line, any edit inside a string, a fence or a block
+scalar, and an indent change therefore all fail it. Edits to `blank` and `comment` lines pass it,
+as does moving a code line across them. Wrapping existing code in `/*` … `*/` or `<!--` …
+`-->` removes those lines from the new `text` sequence, so it fails.
 
-**Frontmatter-only:** the path ends with `.md` and is not `docs/LEDGER.md`; `old` and `new` are
-both present text; each begins with a `---` line and has a later line whose stripped text is
-`---` (the closing fence, required: an unclosed block is not frontmatter), found before any
-backtick fence; and the bytes after the closing fence are identical.
+**Fence edit** (`.md .html .xml`, no hazard needed): the sequence of `fenced` lines of `old`
+differs from that of `new`. Blank lines inside a fence are `fenced`, so a blank-line edit in a
+fence is a fence edit.
 
-**Fence edit** (`.md .html .xml`): fence state toggles only on a line whose stripped text starts
-with three or more backticks; a `~~~` line never toggles it (so it does not close a backtick
-fence). An unclosed fence runs to end of file. An added line whose number in `new`, or a removed
-line whose number in `old`, sits inside a fence is a fence edit, blank lines included.
+**Frontmatter-only:** a docs path; `old` and `new` are both present text; each begins with a
+`---` line and has a later line whose stripped text is `---` (the closing fence, required: an
+unclosed block is not frontmatter), found before any backtick fence; and the bytes after the
+closing fence are identical.
 
-**Docs-prose:** the path is `README.md` or `CHANGELOG.md`, or is under `docs/` and ends with
-`.md`, and is not `docs/LEDGER.md`; text on both sides, at least one added or removed line, and
-no fence edit.
+**Docs-prose:** a docs path; text on both sides; `old` and `new` differ; no fence edit; and
+neither side begins with a `---` line that has no closing `---` (a half-written frontmatter
+block is not prose).
 
 **File class**, decided per path in this order (first match wins). A path is on the **code
 side** when it, or for a rename either of its two names, is a code path:
@@ -130,14 +204,15 @@ side** when it, or for a rename either of its two names, is a code path:
    edit) → `code`.
 3. Any other path under `skills/`, or `docs/LEDGER.md` (even a blank line) → `other`.
 4. A delete or rename of a non-code path → `other`.
-5. A fence edit → `other`. Then comment-only → `comment`; frontmatter-only → `frontmatter`;
-   docs-prose → `docs`.
-6. Anything else (config, an unclosed frontmatter block, a blank-line edit in `x.json`) →
-   `other`.
+5. A fence edit (docs path `.md`, or `.html`/`.xml`) → `other`. Then, comment-only → `comment`
+   (an `.md` only when it is a docs path); frontmatter-only → `frontmatter`; docs-prose →
+   `docs`.
+6. Anything else (config, a non-docs `.md`, an unclosed frontmatter block, a blank-line edit in
+   `x.json`) → `other`.
 
-A partially staged path (index differs from both HEAD and the worktree) is classified on both
-the staged and the unstaged diff and takes the worse class (`code` > `other` > the trivial
-three).
+A partially staged path is classified on the staged half and on the unstaged half, each with its
+own `old`/`new` and its own raw mode, and takes the worse class (`code` > `other` > the trivial
+three). A rename's half uses the old name for `old` and the new name for `new`.
 
 ### Rollup, in progress, base
 
@@ -152,21 +227,48 @@ branch. The only merge rule: any of `MERGE_HEAD`, `CHERRY_PICK_HEAD`, `REVERT_HE
 `git rev-parse --git-path <name>`, so a linked worktree is covered), or any porcelain status is
 one of the seven unmerged codes `UU AA DD AU UA DU UD`. Key `in_progress` is `merge`,
 `cherry-pick`, `revert`, `rebase`, `conflict` (unmerged codes with no marker file) or `null`.
-File rows stay in `files`. A `cherry-pick -n` leaves no `CHERRY_PICK_HEAD`, so it is not an
-operation in progress.
+When more than one marker exists, `in_progress` is the first of that list in that order
+(`MERGE_HEAD` beats `rebase-merge/`). File rows stay in `files`. A `cherry-pick -n` leaves no
+`CHERRY_PICK_HEAD`, so it is not an operation in progress.
 
-**Base**, the value `finish_close` compares to the current branch (`_close_cfg` in
-`close.py`): `.nw/project.yaml` `merge.base` when it is a non-empty string, else the project
-`base`, else `--base` (the campaign's `repo.base`, passed by the caller), else `main`. A missing
-file, or a missing or scalar `merge`, falls back. `on_base` is true only when
+**Dirty gitlink → `action: escalate`, `recommended: []`**, `class` stays as computed. A gitlink
+path whose worktree column `Y` is non-blank may have dirty submodule content with an unchanged
+submodule HEAD; `git add -- <submodule>` then stages nothing, `git commit` exits 1 and the
+checkout stays dirty, so no command list can clear it. The escalation names the submodule path.
+A gitlink with a blank `Y` (a staged pointer change) is already in the index and takes the
+normal list.
+
+**Base**, the value `finish_close` compares to the current branch. `finish_close` receives
+`ctx.project(state)` (`queue.py`, `project`), which is `P.project_config(...)` and so ends in
+`P.load_project_config` / `_with_defaults`: there `base` defaults to `main` and `merge.base`
+defaults to the top-level `base`. So `_close_cfg` (`close.py`) yields, for every project that has
+a config, `merge.base`, else `base`, else `main`; its `repo.base` fallback is unreachable
+there. `plan_clear` applies the same loader: when `<root>/.nw/project.yaml` is a file, base is
+`P.load_project_config(path)["merge"]["base"]` (never the raw YAML, never `--base`); a
+`ValueError` from the loader (invalid YAML, scalar `merge`, a non-string `base`) exits 3 with
+its message, as `finish_close` parks `ProjectConfigError`. `plan_clear` skips only
+`project_config`'s project-name check, which does not affect the base. When there is no
+`.nw/project.yaml` (a scratch or unregistered repo) base is `--base`, else `main`. `--base` is
+documented as "used only when `--root` has no `.nw/project.yaml`". `on_base` is true only when
 `git symbolic-ref --short HEAD` equals the base; a detached HEAD is `on_base: false`. Off the
-base, `action` is `hold` and `class` stays as computed, unless `class` is `merge`.
+base, `action` is `hold` and `class` stays as computed, unless `class` is `merge`. Precedence of
+`action`: operation in progress, then dirty gitlink, then off-base `hold`, then the rollup.
 
 JSON schema `nw.main_dirty_plan.v1`, keys: `schema`, `root`, `base`, `on_base`, `class`
 (`clean|trivial|branch|substantive|merge`), `action`
 (`resume|commit|save_branch|branch_and_escalate|hold|escalate`), `in_progress`, `paths` (every
-tracked dirty path, both sides of a rename), `substantive_paths` (the `code` ones), `files`
-(`{path, status, file_class}`), `recommended` (list of strings).
+tracked dirty path, both names of a rename), `substantive_paths` (the paths of `code` files, both
+names of a rename), `files`, `recommended` (list of strings).
+
+`files` has one row per porcelain record: `{path, orig_path, status, file_class}`. `status` is
+the two-character porcelain `XY` string, kept verbatim (space included). `orig_path` is the old
+name for a rename (`path` is then the new name) and `null` otherwise; a rename is one row whose
+`file_class` is the rename's class. Examples:
+
+```json
+{"path": "docs/a.md", "orig_path": null, "status": " M", "file_class": "docs"}
+{"path": "docs/new.md", "orig_path": "src/old.py", "status": "R ", "file_class": "code"}
+```
 
 ### `recommended`
 
@@ -190,7 +292,7 @@ records the whole index, which holds only tracked dirt.
 | `save_branch`, `branch_and_escalate` | `git -C R switch -c <wip>`, `git -C R --literal-pathspecs add -- U…`, `git -C R commit -m 'WIP: stray main-checkout edits (<class>)'`, `git -C R switch <base>` |
 | `hold` with tracked dirt | the `save_branch` list (it ends on `git -C R switch <base>`) |
 | `hold`, no tracked dirt | `git -C R switch <base>` |
-| `escalate` (`merge`) | `[]`; the escalation option names the operation to finish |
+| `escalate` (`merge`, or a dirty gitlink) | `[]`; the escalation option names the operation to finish or the submodule path |
 
 None of these discards work: the dirt is committed, on the base or on `<wip>`. No `checkout --`,
 `reset`, `clean`, `stash drop`, `rm`, or push ever appears. SPEC-0548 and SPEC-0549 replace the
@@ -203,8 +305,9 @@ optional source, never the contract: where the branch and this spec differ, this
 
 - `src/nightwright/agentic/main_dirty.py`: the plan half, `_is_git_repo` … `_merge_state`,
   `plan_clear`, `NotAWorktree`. Not `apply_clear` or any `_wip_*` / `_commit_*` / `_restore_*`
-  helper. Add `in_progress`, the sequencer markers via `--git-path`, `--base`, the diff flags,
-  and `recommended`.
+  helper. Not its per-line `_is_comment_line` or its hunk walk: the Line scan above replaces
+  them. Add `in_progress`, the sequencer markers via `--git-path`, `--base`, the diff flags,
+  the loader-based base, the `old`/`new` table and `recommended`.
 - `src/nightwright/agentic/cli_queue.py`: the `main-dirty-plan` command only.
 - `docs/product/reference/index.md`: the `main-dirty-plan` entry only.
 
@@ -213,85 +316,176 @@ optional source, never the contract: where the branch and this spec differ, this
 - **Keep classifier and ownership in one spec** (SPEC-0542's rebuttal). Rejected on re-review:
   15 ACs, and the classifier needs its own convergence budget; the CLI is usable by a human
   without the conductor row.
-- **Read the base from `.nw/project.yaml` only.** A campaign queued with `--base develop` and no
-  project `base` would plan against `main` and tell the human to switch off a correct branch.
+- **Read `.nw/project.yaml` raw and let `--base` beat the defaults.** `finish_close` never does:
+  through `load_project_config` it always sees `main` or the project's own `base`. The plan would
+  say `on_base: true` on `develop` where `finish_close` compares `main`, and the conductor only
+  plans for a `main_dirty` park, which `finish_close` raises when the checkout is on its base.
+  The plan follows `finish_close`; `--base` serves repos with no project config.
+- **Classify hunk lines one by one.** A bare `/*`, `*/`, `<!--` or `-->` line, or a `#` or blank
+  line inside a triple-quoted string, heredoc or block scalar, would each look like a comment
+  while changing behaviour. Comparing the `text` sequence of the whole old and new file catches
+  all of them with one rule, and needs no hunk line numbers.
 - **Recommend `git stash push`** for non-trivial dirt. A stash is easy to lose and names no
   branch; a `wip/main-dirty-*` commit is visible in `git branch` and matches what the verb
   (SPEC-0549) produces.
 
 ## Acceptance criteria
 
-- [ ] AC1 (SPEC-0542 AC5) Classes on temp git repos, one test per row, each test first asserting
-      its fixture produced the named diff: frontmatter-only spec, docs prose outside fences,
-      `README.md`, `CHANGELOG.md`, comment-only `.py` → `trivial`/`commit`; `docs/LEDGER.md`
-      (even a blank line), a fence edit, a blank-line addition inside a backtick fence in
-      `docs/a.md`, an unclosed fence, a `~~~` line inside a backtick fence followed by an edit
-      (still a fence edit), a `---` block with no closing `---`, a blank-line edit in `x.json`,
-      `skills/x.md`, a doc delete, a binary outside code paths, a NUL in a `.md` →
-      `branch`/`save_branch`; a logic edit beside a docs edit, a `src/` delete, a binary under
-      `src/`, a root `.py`, a logic edit in `lib/x.rb`, `tests/`, `skills/x/run.py`, a rename
-      between `src/` and `docs/` in either direction (both names in `paths`) →
-      `substantive`/`branch_and_escalate`; `src/star_deref.c` with `*ptr = 1;` →
-      `substantive`; `src/star_comment.c` with ` * kept comment` → `trivial`; a shebang edit in
-      `.py` → not trivial; no tracked dirt → `clean`/`resume`; an untracked file never appears
-      in `paths`.
-- [ ] AC2 (SPEC-0542 AC6 + AC7) `_is_comment_line` is pinned by a parametrized table covering
-      every suffix in the comment-line table, `#!`, `*x`, `* x`, `/*`, `*/`, `<!--`, `-->`, a
-      Markdown `#` heading (not a comment), a `.css` `//` line (not a comment), and a blank line
-      in `.json` (not a comment). Mode-only (`chmod +x`) outside code paths, typechange, and a
-      symlink retarget outside code paths are `other`; `chmod +x` on `src/x.py` is `code`; a
-      dirty submodule (gitlink) path is `other` without raising; a staged-only comment edit is
-      `trivial`; a staged fence edit is `branch`; a staged comment edit plus an unstaged logic
-      edit on one path is `code`; a staged docs edit plus an unstaged fence edit is `branch`; a
-      code line hidden behind a form feed and one behind a bare `\r` are still `code`; a
-      non-UTF-8 diff is classified without raising; a repo with `diff.external` and a textconv
-      driver configured classifies the same as without.
+- [ ] AC1 (SPEC-0542 AC5) Every row C01–C42 of the case table in the Test plan passes: one test
+      per row, each first asserting its fixture produced the named diff, and each ending on the
+      row's class, action and, where named, `file_class`.
+- [ ] AC2 (SPEC-0542 AC6 + AC7) Every row S01–S27 of the case table passes. `_line_kinds` is
+      pinned by the parametrized rows S01–S10 (every suffix in the Kinds table, `#!`, `*x`,
+      `* x`, `/*`, `*/`, `<!--`, `-->`, a Markdown `#` heading, a `.css` `//` line, a blank line
+      in `.json`, and the disqualifying characters). The byte fixtures `+# note\rimport os` in a
+      `.py` and `+// note\x0cfoo();` in a `.js` are each `code`, and `+\x0c` alone is a blank
+      line. A repo with `diff.external`, a textconv driver, `diff.noprefix=true`,
+      `diff.mnemonicPrefix=true`, `diff.renames=false` and `status.renames=false` configured
+      classifies the same as without. The `old`/`new` bytes of the combined, staged and unstaged
+      pairs are exactly the table in Inputs (asserted by S16–S19).
 - [ ] AC3 (SPEC-0542 AC8) Operation in progress: `MERGE_HEAD`, each of the seven unmerged
       codes, `CHERRY_PICK_HEAD`, `REVERT_HEAD`, `rebase-merge/`, `rebase-apply/`, and a merge in
       a linked worktree each give `merge`/`escalate` with the matching `in_progress`, also when
-      off the base; a `cherry-pick -n` with no `CHERRY_PICK_HEAD` is not `merge`.
-- [ ] AC4 (SPEC-0542 AC9) Base: `merge.base` wins over `base`, `base` over `--base`, `--base`
-      over the default, a missing or scalar `merge` falls back, and no `.nw/project.yaml` means
-      `main`; a project config without `base` plus `--base develop` gives `on_base: true` on
-      `develop`. On a non-`main` base a trivial diff is `commit` on it and `hold` (class still
-      `trivial`) elsewhere; detached HEAD gives `on_base: false` and `hold`.
+      off the base; a `cherry-pick -n` with no `CHERRY_PICK_HEAD` is not `merge`; with both
+      `MERGE_HEAD` and `rebase-merge/` present `in_progress` is `merge`.
+- [ ] AC4 (SPEC-0542 AC9) Base (rows B01–B08 of the table in the Test plan): `merge.base` wins
+      over `base`, `base` over the default `main`; with a `.nw/project.yaml` that has neither,
+      `--base develop` is ignored and base is `main`, so on `develop` `on_base` is false and
+      `action` is `hold`, the same base `_close_cfg` returns for the same config and a state
+      whose `repo.base` is `develop` (asserted by calling `_close_cfg`); with no
+      `.nw/project.yaml`, `--base develop` gives `on_base: true` on `develop` and no flag gives
+      `main`; an invalid YAML file and a scalar `merge` exit 3 with the loader's message. On a
+      non-`main` base a trivial diff is `commit` on it and `hold` (class still `trivial`)
+      elsewhere; detached HEAD gives `on_base: false` and `hold`. A dirty gitlink off the base is
+      `escalate`, not `hold`.
 - [ ] AC5 (SPEC-0542 AC10) `recommended` matches the table exactly (asserted as whole lists) for
       `commit`, `save_branch`, `branch_and_escalate`, `hold` dirty, `hold` clean, `resume`,
-      `escalate`; a path with a space or a literal `*` is quoted; the `<wip>` name takes `-2`
-      when the branch exists; the `add` line names only the `U…` paths and is absent when there
-      are none. Each list is then run in its temp repo, which also holds an untracked file.
-      Fixtures: a trivial edit (`commit`); a staged `git rm`, a staged `git mv`, and an unstaged
-      delete (`substantive`, `save_branch` list); a dirty tracked `a*b.md` beside an untracked
-      `axb.md`. After each run every command exited 0,
-      `git status --porcelain --untracked-files=no` is empty, the edits (both rename sides and
-      the deletes) are on the base commit or on `<wip>`, and every untracked file (`axb.md`
-      included) is still untracked and absent from the new commit's tree. Removing
-      `--literal-pathspecs` from the lists makes the `a*b.md` case fail.
+      `escalate` (`merge`), and a dirty gitlink (`escalate`, `[]`); a path with a space or a
+      literal `*` is quoted; the `<wip>` name takes `-2` when the branch exists; the `add` line
+      names only the `U…` paths and is absent when there are none. The lists for `commit`,
+      `save_branch`, `branch_and_escalate` and `hold` dirty are then **run** in their temp repos,
+      each of which also holds an untracked file; `resume`, `hold` clean and `escalate` are
+      whole-list assertions only. Run fixtures: a trivial edit (`commit`); a staged `git rm`, a
+      staged `git mv`, and an unstaged delete (`substantive`, `save_branch` list and, with a
+      logic edit, `branch_and_escalate`); a dirty tracked `a*b.md` beside an untracked `axb.md`;
+      a trivial edit on a feature branch (`hold` dirty, ending back on the base). After each run
+      every command exited 0, `git status --porcelain --untracked-files=no` is empty, the edits
+      (both rename sides and the deletes) are on the base commit or on `<wip>`, and every
+      untracked file (`axb.md` included) is still untracked and absent from the new commit's
+      tree. Removing `--literal-pathspecs` from the lists makes the `a*b.md` case fail.
 - [ ] AC6 (SPEC-0542 AC11) `plan_clear` writes nothing: HEAD, `git branch --list`, the index
       file's bytes, and the worktree files are identical before and after, for every class, on a
       repo whose index has stale stat data.
 - [ ] AC7 (SPEC-0542 AC12) CLI (through `CliRunner`): `--json` prints `nw.main_dirty_plan.v1`
-      and exits 0 on each class; `--base` reaches `plan_clear`; a non-git `--root` and a
-      subdirectory of a checkout exit 2 with a message; a symlinked path to a checkout top and a
-      root with a trailing slash exit 0; a git failure exits 3; text mode prints the summary
-      line, the paths, and the commands.
+      and exits 0 on each class, with `files` rows `{path, orig_path, status, file_class}`
+      matching the Design examples for a plain edit (` M`) and a staged rename (`R `);
+      `--base` reaches `plan_clear`; a non-git `--root`, a bare repo and a subdirectory of a
+      checkout exit 2 with a message, also with `GIT_DIR` set in the environment; a symlinked
+      path to a checkout top and a root with a trailing slash exit 0; a git failure exits 3; text
+      mode prints the summary line, the paths, and the commands; and
+      `docs/product/reference/index.md` contains `main-dirty-plan` in its `nw queue` list, asserted
+      by one added test in `tests/test_main_dirty_plan.py` that fails when the entry is removed.
 
 ## Test plan
 
 - **Automated tests:** new `tests/test_main_dirty_plan.py`, one module marker
-  `pytestmark = pytest.mark.fast`, temp git repos. From the branch's
-  `tests/test_main_dirty_clear.py` (tip `61876af9`) take the plan tests: everything before
-  `test_apply_commit_trivial`, plus `test_is_comment_line_suffix_table`,
+  `pytestmark = pytest.mark.fast` (tier per SPEC-0490: no TUI, remote or `_e2e` name), temp git
+  repos. `python3 tools/test_tiers.py --check` exits 0 when `tools/test_tiers.py` exists. From
+  the branch's `tests/test_main_dirty_clear.py` (tip `61876af9`) take the plan tests: everything
+  before `test_apply_commit_trivial`, plus `test_is_comment_line_suffix_table` (re-pointed at
+  `_line_kinds`, rows S01–S10),
   `test_typechange_and_mode_only_are_other_not_trivial`,
   `test_docs_prose_requires_a_visible_diff`, `test_retargeted_symlink_is_not_trivial`,
-  `test_split_fm_keeps_eof_newline_and_star_tab_comment`,
+  `test_split_fm_keeps_eof_newline_and_star_tab_comment` (the star case re-pointed at C06),
   `test_cherry_pick_no_commit_not_merge` (unchanged), the plan half of
   `test_cli_text_mode_plan_and_apply` and `test_cli_git_failures_have_messages_and_distinct_codes`,
-  and the plan part of `test_root_must_be_checkout_top`. New: every AC1/AC2 case the branch lacks
-  (blank lines in a fence and in `.json`, `.css` `//`, `.rb`, gitlink, partial-staging pairs,
-  ext-diff config, `~~~` inside a fence, unclosed frontmatter, bare `\r`, rename `paths`), AC3
-  sequencer and linked-worktree cases, AC4 `--base`, AC5 whole-list cases and running them,
-  AC6 snapshot test, AC7 symlinked root.
+  and the plan part of `test_root_must_be_checkout_top`. New: every case-table row the branch
+  lacks, AC3 sequencer, two-marker and linked-worktree cases, AC4 rows B01–B08 plus the
+  `_close_cfg` parity assertion, AC5 whole-list cases and running them, the AC6 snapshot test,
+  AC7 symlinked root, bare repo, `GIT_DIR`, the JSON `files` rows and the reference-index
+  assertion.
+- **Case table (AC1, AC2, AC4).** Paths are repo-relative; each fixture is one commit on the
+  base plus the edit named. Expected is `class/action` unless a `file_class` is named.
+
+  | id | fixture | expected |
+  |---|---|---|
+  | C01 | frontmatter-only edit in `docs/specs/0001-x.md` | `trivial/commit`, `frontmatter` |
+  | C02 | prose edit outside fences in `docs/a.md` | `trivial/commit`, `docs` |
+  | C03 | prose edit in `README.md` | `trivial/commit` |
+  | C04 | prose edit in `CHANGELOG.md` | `trivial/commit` |
+  | C05 | `#` comment line changed in `src/x.py` | `trivial/commit`, `comment` |
+  | C06 | `src/star_comment.c`: `/*`, ` * old note`, ` */`, then code; the ` * old note` line changed to ` * kept comment` | `trivial/commit`, `comment` |
+  | C07 | blank line added between two functions in `src/x.py` | `trivial/commit`, `comment` |
+  | C08 | blank line added to `docs/LEDGER.md` | `branch/save_branch` |
+  | C09 | line changed inside a backtick fence in `docs/a.md` | `branch/save_branch` |
+  | C10 | blank line added inside a backtick fence in `docs/a.md` | `branch/save_branch` |
+  | C11 | `docs/a.md` with an unclosed fence; a line after it edited | `branch/save_branch` |
+  | C12 | `docs/a.md`: a `~~~` line inside a backtick fence, then an edit after it (still inside) | `branch/save_branch` |
+  | C13 | `docs/specs/x.md` with a `---` block and no closing `---`; a line in it edited | `branch/save_branch`, `other` |
+  | C14 | blank line added to `config/x.json` | `branch/save_branch` |
+  | C15 | prose edit in `skills/x.md` | `branch/save_branch` |
+  | C16 | `docs/a.md` deleted | `branch/save_branch` |
+  | C17 | binary (NUL) file `assets/x.bin` changed | `branch/save_branch` |
+  | C18 | a NUL byte added to `docs/a.md` | `branch/save_branch` |
+  | C19 | frontmatter edit in `.claude/agents/x.md` | `branch/save_branch`, `other` |
+  | C20 | blank line added to `AGENTS.md` | `branch/save_branch`, `other` |
+  | C21 | `src/x.c`: `+/*` added before an existing code line and `+*/` after it | `substantive/branch_and_escalate` (not `trivial`) |
+  | C22 | `web/x.css`: `+/*` added before existing rules and `+*/` after them | `branch/save_branch` |
+  | C23 | `site/x.html`: `+<!--` before existing markup and `+-->` after it | `branch/save_branch` |
+  | C24 | `src/x.py`: `+# x` added inside a `"""` docstring (rejected as trivial) | `substantive/branch_and_escalate` |
+  | C25 | `src/x.py`: blank line added inside a `"""` string | `substantive/branch_and_escalate` |
+  | C26 | `src/x.sh`: `# x` added inside a `<<EOF` body | `substantive/branch_and_escalate` |
+  | C27 | `.github/ci.yml`: `# x` added inside a `run: |` block scalar | `branch/save_branch` |
+  | C28 | `src/star_deref.c`: `*ptr = 1;` added | `substantive/branch_and_escalate` |
+  | C29 | `src/mul.c`: `    * b;` added under `x = a` | `substantive/branch_and_escalate` |
+  | C30 | logic edit in `src/x.py` plus prose edit in `docs/a.md` | `substantive/branch_and_escalate` |
+  | C31 | `src/x.py` deleted | `substantive/branch_and_escalate` |
+  | C32 | binary file `src/x.bin` changed | `substantive/branch_and_escalate` |
+  | C33 | logic edit in root `x.py` | `substantive/branch_and_escalate` |
+  | C34 | logic edit in `lib/x.rb` | `substantive/branch_and_escalate` |
+  | C35 | logic edit in `tests/test_x.py` | `substantive/branch_and_escalate` |
+  | C36 | logic edit in `skills/x/run.py` | `substantive/branch_and_escalate` |
+  | C37 | rename `src/a.py` → `docs/a.md`; both names in `paths` | `substantive/branch_and_escalate` |
+  | C38 | rename `docs/a.md` → `src/a.py`; both names in `paths` | `substantive/branch_and_escalate` |
+  | C39 | shebang line edited in `bin/x.py` | `substantive/branch_and_escalate` |
+  | C40 | no tracked dirt | `clean/resume` |
+  | C41 | an untracked file only | `clean/resume`; the file is not in `paths` |
+  | C42 | tracked edit plus an untracked file | the file is not in `paths` or `files` |
+  | S01 | `_line_kinds`, `.py .pyi .sh .bash .yml .yaml .toml .rb .pl`: `# c`, `#!/x`, `  ` | `comment`, `text`, `blank` |
+  | S02 | `_line_kinds`, every C-like suffix: `// c`, `*ptr = 1;`, `*out`, `*=`, `* b;`, `*/` in normal state | `comment`, then `text` ×5 |
+  | S03 | C-like `/*`, ` * x`, ` */` in sequence; the same with a code line between | `comment` ×3; the code line between is `comment` too (inside the block) and the `*/` after it is the closer |
+  | S04 | `_line_kinds`, `.css`: `// x`, `/* x */`, blank | `text`, `comment`, `blank` |
+  | S05 | `_line_kinds`, `.md`: `<!-- x -->`; `<!--`, `t`, `-->`; `# Heading` | `comment`; `comment` ×3; `text` |
+  | S06 | `_line_kinds`, `.json`: blank, `// x` | `text`, `text` |
+  | S07 | `.py`: `"""`, `# x`, ``, `"""`; `.toml`: `'''`, `# x`, `'''` | all `text` |
+  | S08 | `.md`: fence open, `# x`, `~~~`, `y`, fence close | all `fenced`; `~~~` does not close |
+  | S09 | `.py` `# note\rimport os`; `.js` `// note\x0cfoo();`; `.py` `\x0c` alone; `.py` `# x\r` (CRLF) | hazard; hazard; `blank`; `comment` |
+  | S10 | `.sh` with `<<EOF`; `.yml` with `k: |`; `.js` with a backtick; `.c` `x = "a/*b";` | hazard each |
+  | S11 | `chmod +x` on the non-code file `docs/tool.txt` | `branch/save_branch`, `other` |
+  | S12 | `chmod +x` on `src/x.py` | `substantive/branch_and_escalate`, `code` |
+  | S13 | typechange (file → symlink) on `docs/a.md` | `branch/save_branch` |
+  | S14 | symlink `docs/link` retargeted | `branch/save_branch` |
+  | S15 | dirty submodule (gitlink, content dirty, `Y` non-blank); also staged-only pointer bump | first: `branch/escalate`, `recommended == []`, no raise; second: `branch/save_branch` |
+  | S16 | staged-only comment edit in `src/x.py` (combined pair) | `trivial/commit` |
+  | S17 | staged fence edit in `docs/a.md` (staged half: `HEAD:` vs `:`) | `branch/save_branch` |
+  | S18 | `src/x.py`: staged comment edit plus unstaged logic edit | `substantive/branch_and_escalate` |
+  | S19 | `docs/a.md`: staged prose edit plus unstaged fence edit (unstaged half: `:` vs worktree) | `branch/save_branch` |
+  | S20 | `+# note\rimport os` added to `src/x.py` | `substantive/branch_and_escalate`, `code` |
+  | S21 | `+// note\x0cfoo();` added to `src/x.js` | `substantive/branch_and_escalate`, `code` |
+  | S22 | `+\x0c` alone added to `src/x.py` | `trivial/commit`, `comment` |
+  | S23 | non-UTF-8 byte in a `docs/a.md` prose edit; in a `src/x.py` code line | `trivial/commit`; `substantive/branch_and_escalate`; no raise |
+  | S24 | config `diff.external`, textconv driver on `*.md`, `diff.noprefix=true`, `diff.mnemonicPrefix=true`, `diff.renames=false`, `status.renames=false`; run C01, C37 and S26 | same `class`, `action`, `paths` and `files` as without |
+  | S25 | staged `git mv` of `docs/a.md` → `docs/b.md` | one `files` row, `status` `R `, `orig_path` `docs/a.md`; `paths` has both names |
+  | S26 | staged `git mv` plus an unstaged edit on the new name | row `status` `RM`; both halves classified; worse class wins |
+  | S27 | unstaged `mv docs/a.md docs/b.md` | only the delete (` D`) listed; `docs/b.md` untracked and absent |
+  | B01 | `merge.base: x`, `base: y` | base `x` |
+  | B02 | `base: y`, no `merge` | base `y` |
+  | B03 | config with neither, no `--base` | base `main` |
+  | B04 | config with neither, `--base develop`, checkout on `develop`, trivial edit | base `main`, `on_base: false`, `hold`, class `trivial`; equals `_close_cfg` with `repo.base: develop` |
+  | B05 | no `.nw/project.yaml`, `--base develop`, on `develop` | base `develop`, `on_base: true`, `commit` |
+  | B06 | no `.nw/project.yaml`, no flag | base `main` |
+  | B07 | invalid YAML in `.nw/project.yaml` | exit 3, loader message on stderr |
+  | B08 | `merge: not-a-mapping` | exit 3, loader message on stderr |
 - **Mutation check (by hand, once):** remove `--literal-pathspecs` from the lists; the AC5
   `a*b.md` case fails. Recorded in As shipped.
 - **Regression guard:** no existing module changes behaviour; `python3 tools/affected_tests.py
@@ -304,16 +498,6 @@ optional source, never the contract: where the branch and this spec differ, this
   the base, tracked-clean, the edit on `wip/main-dirty-*`, the untracked file still there.
   Record the output in As shipped.
 
-## Out of scope
-
-- Any change to `PARK_OWNERS`, the dashboard, herdr, E5, or `skills/nw-conduct/SKILL.md`
-  (SPEC-0547).
-- Any git write: the verb `nw queue main-dirty-apply` (SPEC-0548, SPEC-0549).
-- `launch.py`, `CONDUCTOR_CURSOR_POLICY` and every permission list (SPEC-0548, SPEC-0550,
-  SPEC-0551).
-- Untracked files: they never park `main_dirty` and are never listed.
-- `finish_close` is unchanged.
-
 ## Rollout / migration
 
 No data move, no caller yet: the command is additive. Queued under project Meta-Tools; next in
@@ -324,7 +508,7 @@ the chain is SPEC-0547.
 - [ ] Acceptance criteria all met.
 - [ ] Test plan executed, including the scratch-repo check; affected tests pass.
 - [ ] No regressions.
-- [ ] `docs/product/reference/index.md` names `nw queue main-dirty-plan`.
+- [ ] `docs/product/reference/index.md` names `nw queue main-dirty-plan` (asserted by AC7).
 - [ ] As shipped records the AC5 `--literal-pathspecs` mutation run (flag removed, test fails).
 - [ ] Spec body updated to match what shipped.
 - [ ] `docs/LEDGER.md` regenerated; `python3 tools/spec_lint.py` exits 0.
