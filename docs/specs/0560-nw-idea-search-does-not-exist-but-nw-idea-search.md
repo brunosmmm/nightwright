@@ -1,7 +1,7 @@
 ---
 id: SPEC-0560
 title: "nw idea search is a real subcommand; multi-word captures that start with a search/list verb are refused"
-status: accepted
+status: done
 kind: feature
 owner: user
 created: 2026-11-12
@@ -124,29 +124,29 @@ junk idea in the live file.
 
 ## Acceptance criteria
 
-- [ ] `nw idea search <words>` exits 0, prints the same hits as `nw ideas --query "<words>"`
+- [x] `nw idea search <words>` exits 0, prints the same hits as `nw ideas --query "<words>"`
       (open and closed ideas), and the ideas file is byte-identical afterwards.
-- [ ] `nw idea search a b --json` emits the same `nw.ideas.v1` document as
+- [x] `nw idea search a b --json` emits the same `nw.ideas.v1` document as
       `nw ideas --query "a b" --json`; `--limit N` caps the hits like `ideas --limit`.
-- [ ] `nw idea search` with no text and `nw idea search "   "` exit non-zero and create no idea.
-- [ ] `nw idea search <words>` with `NW_PERSONA_RUN=1` exits 0 (read-only path) and leaves the
+- [x] `nw idea search` with no text and `nw idea search "   "` exit non-zero and create no idea.
+- [x] `nw idea search <words>` with `NW_PERSONA_RUN=1` exits 0 (read-only path) and leaves the
       ideas file byte-identical.
-- [ ] `nw idea find x y`, `nw idea list the ideas`, `nw idea LS all`, `nw idea rm IDEA-1 now`,
+- [x] `nw idea find x y`, `nw idea list the ideas`, `nw idea LS all`, `nw idea rm IDEA-1 now`,
       `nw idea delete foo bar` and `nw idea del foo bar` each exit 1 with a refusal that names the
       verb and `--force`, and leave the ideas file byte-identical.
-- [ ] The quoted single-argument form refuses the same as the unquoted form
+- [x] The quoted single-argument form refuses the same as the unquoted form
       (`nw idea "list the ideas"` and `nw idea list the ideas` both exit 1, no capture), and an
       option on the line does not change that (`nw idea find x --tag foo` exits 1, no capture).
-- [ ] The `list`/`ls`/`find` refusals name `nw idea search TEXT` and `nw ideas`; the
+- [x] The `list`/`ls`/`find` refusals name `nw idea search TEXT` and `nw ideas`; the
       `rm`/`delete`/`del` refusals name `nw idea close` (with `--as drop`), and that command
       exists (`nw idea close --help` exits 0).
-- [ ] The same inputs with `--force` capture the full text as one new idea.
-- [ ] `nw idea refactor the parser`, `nw idea add retry to the queue`,
+- [x] The same inputs with `--force` capture the full text as one new idea.
+- [x] `nw idea refactor the parser`, `nw idea add retry to the queue`,
       `nw idea status page for the dashboard` and `nw idea capture search the ideas file faster`
       still capture normally.
-- [ ] The SPEC-0272 single-word behavior is unchanged (`nw idea list` refuses with the
+- [x] The SPEC-0272 single-word behavior is unchanged (`nw idea list` refuses with the
       `nw ideas` hint; `nw idea list --force` captures).
-- [ ] `nw idea --help` lists `search` and mentions `nw idea capture`.
+- [x] `nw idea --help` lists `search` and mentions `nw idea capture`.
 
 ## Test plan
 
@@ -188,6 +188,24 @@ junk idea in the live file.
   `tests/test_idea_capture_guard.py`, `tests/test_idea_search.py`, `tests/test_capture_routing.py`,
   `tests/test_ideas.py`; `python3 tools/spec_lint.py` exits 0.
 
+### Test record (2026-11-12)
+
+- `uv run pytest -q tests/test_idea_capture_guard.py tests/test_idea_search.py
+  tests/test_capture_routing.py tests/test_ideas.py`: all pass (the old
+  `test_multi_word_verb_text_captures` was replaced by the parametrized
+  `test_multiword_verb_capture_refused` + `test_multiword_verb_force_captures`).
+- `python3 tools/test_tiers.py --check` exits 0; `python3 tools/affected_tests.py --run uv run pytest -q`
+  run (`--exclude-marks=integration,tui,remote,perf -n 3`): 5783 passed, 5 skipped; full suite left to gating.
+- Manual: `nw idea --help` lists `search` and `nw idea capture`; `nw idea find queue lease`
+  refuses with the `nw idea search TEXT` / `nw ideas` hint (exit 1); `nw idea search …` prints
+  hits. `grep -c "nw idea search" skills/nw-related/SKILL.md` is 2.
+
+### As shipped
+
+As designed. Note: leading options before the first text word (`nw idea --tag foo find x`) are
+rejected by click's group parser (exit 2, no capture), a pre-existing property of `IdeaGroup`;
+options after the verb refuse via the guard as specified.
+
 ## Rollout / migration
 
 Ships with the code. No data migration. The already-created junk ideas (`IDEA-1177`,
@@ -196,12 +214,12 @@ edit the live ideas file.
 
 ## Definition of done
 
-- [ ] Acceptance criteria all met.
-- [ ] Test plan executed; affected tests pass; manual steps performed and noted.
-- [ ] `python3 tools/test_tiers.py --check` exits 0.
-- [ ] No regressions (queue close gate affected tests pass).
-- [ ] Spec body updated to match what shipped.
-- [ ] `docs/LEDGER.md` regenerated (`python3 tools/spec_lint.py --write-ledger`).
+- [x] Acceptance criteria all met.
+- [x] Test plan executed; affected tests pass; manual steps performed and noted.
+- [x] `python3 tools/test_tiers.py --check` exits 0.
+- [x] No regressions (queue close gate affected tests pass).
+- [x] Spec body updated to match what shipped.
+- [x] `docs/LEDGER.md` regenerated (`python3 tools/spec_lint.py --write-ledger`).
 
 ## Open questions
 

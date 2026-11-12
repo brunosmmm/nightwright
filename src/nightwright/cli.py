@@ -388,7 +388,28 @@ def idea_group():
     nw idea Investigate self-assessing AI usage          # capture
     nw idea log IDEA-011 --note "finding…"               # append Log
     nw idea show IDEA-011                                # read enrichment
+    nw idea search TEXT                                  # related-idea search (read-only)
+    nw idea capture search …                             # capture text that starts with a subcommand name
     """
+
+
+@idea_group.command("search")
+@click.argument("text", nargs=-1, required=True)
+@click.option("--limit", default=25, show_default=True, type=int,
+              help="max hits (0 = unlimited)")
+@click.option("--json", "as_json", is_flag=True,
+              help="emit nw.ideas.v1 JSON on stdout (no Rich table)")
+@click.option("--plain", is_flag=True, help="spell the kind out instead of using a glyph")
+@click.pass_obj
+def idea_search_cmd(cfg, text, limit, as_json, plain):
+    """Related-idea search over open+closed ideas (SPEC-0560); same as `nw ideas --query`.
+    Read-only. To capture text that starts with `search`, use `nw idea capture search …`."""
+    joined = " ".join(text)
+    if not joined.strip():
+        raise click.BadParameter("text must contain at least one token", param_hint="TEXT")
+    R.ideas(cfg, state=None, all_done=False, as_json=as_json, kind=None, plain=plain,
+            query=joined, limit=limit, tag=None, project=None, workstream=None,
+            priority=None, sort=None, desc=False, tree=False, epic=None)
 
 
 @idea_group.command("capture")
@@ -411,7 +432,8 @@ def idea_group():
               help="keep as idea even with --kind bug; suppress routing warn (SPEC-0091); "
                    "independent of --force")
 @click.option("--force", is_flag=True,
-              help="capture a lone command-like word (e.g. `list`) anyway (SPEC-0272); "
+              help="capture a lone command-like word (e.g. `list`) or text starting with a "
+                   "list/search/delete verb anyway (SPEC-0272/0560); "
                    "independent of --force-idea")
 @click.pass_obj
 def idea_capture_cmd(cfg, text, state, tags, priority, project, epic, key, kind, workstream,
@@ -442,9 +464,27 @@ def _capture_verbs():
     return _EXTRA_CAPTURE_VERBS | {c.casefold() for c in cli.commands}
 
 
+# First words that are a list/search/delete command even when more text follows (SPEC-0560).
+_MULTIWORD_VERBS = frozenset({"find", "list", "ls", "rm", "delete", "del"})
+_MULTIWORD_HINTS = {
+    "list": "`nw idea search TEXT` (related-idea search) or `nw ideas` (list)",
+    "rm": ('`nw idea close IDEA-NNN --as drop --reason "…"` (closes an idea; '
+           '`nw idea --help` lists the rest)'),
+}
+_MULTIWORD_HINTS["ls"] = _MULTIWORD_HINTS["find"] = _MULTIWORD_HINTS["list"]
+_MULTIWORD_HINTS["delete"] = _MULTIWORD_HINTS["del"] = _MULTIWORD_HINTS["rm"]
+
+
 def _refuse_verb_capture(joined):
     word = joined.strip()
-    if len(word.split()) != 1 or word.casefold() not in _capture_verbs():
+    tokens = word.split()
+    if len(tokens) >= 2 and tokens[0].casefold() in _MULTIWORD_VERBS:
+        verb = tokens[0].casefold()
+        raise click.ClickException(
+            f"refusing to capture '{word}' as an idea — it starts with the command-like "
+            f"word '{verb}'; did you mean {_MULTIWORD_HINTS[verb]}? "
+            f"(pass --force to capture it anyway)")
+    if len(tokens) != 1 or word.casefold() not in _capture_verbs():
         return
     hint = "nw ideas" if word.casefold() in ("list", "ls") else "nw idea --help"
     raise click.ClickException(

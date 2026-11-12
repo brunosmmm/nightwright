@@ -15,7 +15,8 @@ eyeballing `nw ideas` or shelling `nw idea show` in a loop.
 ## Procedure
 
 1. Distill 2–6 distinctive tokens from the thought (project jargon, verbs, nouns — not filler).
-2. Search: `nw ideas --query "…" --json`. Exact flags (`--limit`, `--state`, `--kind`):
+2. Search: `nw ideas --query "…" --json` (equivalently `nw idea search "…" --json`; the
+   read-only `nw idea search` never captures). Exact flags (`--limit`, `--state`, `--kind`):
    `nw ideas --help`. `--query` already searches the full idea corpus (open + closed).
 3. Read hits (`id`, `state`, `score`, `snippet`, `heading`). For anything close, open it with
    `nw idea show <id>` (or `--json`).

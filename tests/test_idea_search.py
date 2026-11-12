@@ -162,3 +162,67 @@ def test_resolve_selector_still_ambiguous(tmp_path, monkeypatch):
     r2 = CliRunner().invoke(cli, ["ideas", "--query", "related", "--json"])
     assert r2.exit_code == 0
     assert len(json.loads(r2.output)["ideas"]) == 2
+
+
+def _ideas_bytes(cfg):
+    import os
+    p = cfg["org_ideas_file"]
+    return open(p, "rb").read() if os.path.exists(p) else None
+
+
+def _seed_search(cfg):
+    W.add_idea(cfg, "Unified SpecRef resolver")
+    _, _, pid = W.add_idea(cfg, "shipped SpecRef generate footgun")
+    task = next(t for t in load_tasks(cfg) if t.properties.get("ID") == pid)
+    W.set_state(cfg, task, "PROMOTED")
+    W.add_idea(cfg, "SpecRef resolver cache")
+    W.add_idea(cfg, "unrelated clocks")
+
+
+def test_idea_search_matches_ideas_query(tmp_path, monkeypatch):
+    cfg = _cfg(tmp_path)
+    _patch(monkeypatch, cfg)
+    _seed_search(cfg)
+    before = _ideas_bytes(cfg)
+    a = CliRunner().invoke(cli, ["idea", "search", "specref", "resolver"])
+    b = CliRunner().invoke(cli, ["ideas", "--query", "specref resolver"])
+    assert a.exit_code == 0 and a.output == b.output
+    assert "clocks" not in a.output
+    a = CliRunner().invoke(cli, ["idea", "search", "specref", "--json"])
+    b = CliRunner().invoke(cli, ["ideas", "--query", "specref", "--json"])
+    assert a.exit_code == 0 and json.loads(a.output) == json.loads(b.output)
+    assert len(json.loads(a.output)["ideas"]) == 3          # includes the PROMOTED one
+    assert _ideas_bytes(cfg) == before
+
+
+def test_idea_search_is_read_only(tmp_path, monkeypatch):
+    cfg = _cfg(tmp_path)
+    _patch(monkeypatch, cfg)
+    _seed_search(cfg)
+    before = _ideas_bytes(cfg)
+    for persona in (None, "1"):
+        if persona:
+            monkeypatch.setenv("NW_PERSONA_RUN", persona)
+        r = CliRunner().invoke(cli, ["idea", "search", "specref"])
+        assert r.exit_code == 0, r.output
+        assert _ideas_bytes(cfg) == before
+
+
+def test_idea_search_limit(tmp_path, monkeypatch):
+    cfg = _cfg(tmp_path)
+    _patch(monkeypatch, cfg)
+    _seed_search(cfg)
+    r = CliRunner().invoke(cli, ["idea", "search", "specref", "--limit", "1", "--json"])
+    assert r.exit_code == 0 and len(json.loads(r.output)["ideas"]) == 1
+    r = CliRunner().invoke(cli, ["idea", "search", "specref", "--limit", "0", "--json"])
+    assert len(json.loads(r.output)["ideas"]) == 3
+
+
+def test_idea_search_requires_text(tmp_path, monkeypatch):
+    cfg = _cfg(tmp_path)
+    _patch(monkeypatch, cfg)
+    W.add_idea(cfg, "seed")
+    before = _ideas_bytes(cfg)
+    for args in (["idea", "search"], ["idea", "search", "   "]):
+        assert CliRunner().invoke(cli, args).exit_code != 0
+    assert _ideas_bytes(cfg) == before

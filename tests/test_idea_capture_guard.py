@@ -84,9 +84,88 @@ def test_force_and_real_word_capture(env):
     assert "list" in heads and "refactor" in heads
 
 
-def test_multi_word_verb_text_captures(env):
-    assert _run("idea", "list", "all", "the", "things").exit_code == 0
-    assert [t.heading for t in load_tasks(env)] == ["list all the things"]
+_MULTIWORD_REFUSED = [
+    (["find", "x", "y"], "find"),
+    (["list", "the", "ideas"], "list"),
+    (["LS", "all"], "ls"),
+    (["rm", "IDEA-1", "now"], "rm"),
+    (["delete", "foo", "bar"], "delete"),
+    (["del", "foo", "bar"], "del"),
+    (["list the ideas"], "list"),            # one quoted argument
+    (["find", "x", "--tag", "foo"], "find"),  # option on the line
+]
+
+
+@pytest.mark.parametrize("argv,verb", _MULTIWORD_REFUSED)
+def test_multiword_verb_capture_refused(env, argv, verb):
+    OW.add_idea(env, "seed idea")
+    before = _ideas_bytes(env)
+    r = _run("idea", *argv)
+    assert r.exit_code == 1, r.output
+    assert f"'{verb}'" in r.output and "--force" in r.output
+    assert _ideas_bytes(env) == before
+
+
+def test_multiword_verb_quoted_and_with_options_refused(env):
+    before = _ideas_bytes(env)
+    for argv in (["idea", "list the ideas"], ["idea", "list", "the", "ideas"],
+                 ["idea", "find", "x", "--tag", "foo"], ["idea", "find", "--tag", "foo", "x"]):
+        r = _run(*argv)
+        assert r.exit_code == 1, (argv, r.output)
+    assert _ideas_bytes(env) == before
+
+
+def test_multiword_verb_hints(env):
+    for verb in ("list", "ls", "find"):
+        out = _run("idea", verb, "some", "text").output
+        assert "`nw idea search TEXT`" in out and "`nw ideas`" in out
+    for verb in ("rm", "delete", "del"):
+        out = _run("idea", verb, "some", "text").output
+        assert "nw idea close" in out and "--as drop" in out
+    assert _run("idea", "close", "--help").exit_code == 0
+
+
+@pytest.mark.parametrize("argv", [["find", "x", "y"], ["list", "all", "the", "things"],
+                                  ["rm", "IDEA-1", "now"]])
+def test_multiword_verb_force_captures(env, argv):
+    assert _run("idea", *argv, "--force").exit_code == 0
+    assert [t.heading for t in load_tasks(env)] == [" ".join(argv)]
+
+
+@pytest.mark.parametrize("argv", [
+    ["refactor", "the", "parser"], ["add", "retry", "to", "the", "queue"],
+    ["status", "page", "for", "the", "dashboard"], ["listing", "of", "the", "queue"],
+    ["delegate", "the", "lease"], ["capture", "search", "the", "ideas", "file", "faster"]])
+def test_ordinary_multiword_captures_unchanged(env, argv):
+    assert _run("idea", *argv).exit_code == 0
+    heads = [t.heading for t in load_tasks(env)]
+    assert heads == [" ".join(a for a in argv if a != "capture") if argv[0] == "capture"
+                     else " ".join(argv)]
+
+
+def test_single_word_guard_unchanged(env):
+    r = _run("idea", "list")
+    assert r.exit_code == 1 and "`nw ideas`" in r.output
+    assert _run("idea", "list", "--force").exit_code == 0
+    assert [t.heading for t in load_tasks(env)] == ["list"]
+
+
+def test_search_led_text_no_longer_captures(env):
+    OW.add_idea(env, "seed idea")
+    before = _ideas_bytes(env)
+    r = _run("idea", "search", "the", "ideas", "file", "faster")
+    assert r.exit_code == 0
+    assert _ideas_bytes(env) == before
+
+
+def test_idea_search_read_only_under_persona(env, monkeypatch):
+    OW.add_idea(env, "seed queue idea")
+    monkeypatch.setenv("NW_PERSONA_RUN", "1")
+    before = _snapshot(env)
+    r = _run("idea", "search", "queue")
+    assert r.exit_code == 0, r.output
+    assert "seed queue idea" in r.output
+    assert _snapshot(env) == before
 
 
 def test_persona_run_refuses_org_writes(env, monkeypatch):
