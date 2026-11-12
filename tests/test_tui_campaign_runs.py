@@ -1185,6 +1185,11 @@ def test_poll_does_not_cancel_slow_detail_load(tmp_path, monkeypatch):
 
 
 def test_stale_run_detail_dropped_on_switch(tmp_path, monkeypatch):
+    """Pins the end state after run A's slow load finishes while run B is selected: stored
+    run id, renderer, offset, head, body, and no repaint of A. A's worker is normally
+    cancelled at the `to_thread` await, so A's late snapshot never reaches the token check or
+    the selection check; this test does not show either guard is needed. That is
+    `test_late_load_token_guard` and `test_late_load_selection_guard`."""
     monkeypatch.setattr(CD, "POLL_S", 0.05)
     cfg = TH.fixture_cfg(tmp_path)
     TH.prepare_queue_window(cfg)
@@ -1572,6 +1577,55 @@ def test_verdict_line_lead_fallbacks(tmp_path):
         assert first.startswith(str(lead))
         row = next(r for r in Hist.campaign_history(cfg, cid)["runs"] if r["run_id"] == rid)
         assert row["verdict_status"] == lead
+
+
+def test_detail_first_line_falls_back_to_body(tmp_path):
+    """Last step of the first-line chain: verdict line, blocking row, stderr line, body line.
+    The body line leads only when stderr.log exists and is empty (a missing one adds `no stderr`)."""
+    cfg = TH.fixture_cfg(tmp_path)
+    TH.prepare_queue_window(cfg)
+
+    def first(cid, rid):
+        return AM.load_run_pane_detail(cfg, cid, rid)
+
+    def set_verdict(cid, rid, verdict):
+        def fn(rj):
+            rj["verdict"] = verdict
+        _edit_run_json(cfg, cid, rid, fn)
+
+    # Stream run: the first body line is the first rendered stream line.
+    cid, rid, run_dir = _stream_copy(cfg, "body0584")
+    (run_dir / "stderr.log").write_text("", encoding="utf-8")
+    set_verdict(cid, rid, {})
+    (run_dir / "stream.jsonl").write_text(
+        "".join(_tool_result_event(f"tool-out-{i:04d}") + "\n" for i in range(3)),
+        encoding="utf-8")
+    snap = first(cid, rid)
+    assert snap.head.plain == ""
+    assert snap.body and snap.body[0] == _tool_out(0)
+    assert snap.text.plain.splitlines()[0] == _tool_out(0) == snap.body[0]
+
+    # Earlier steps beat the body line, in order.
+    set_verdict(cid, rid, {"blockers": ["blk-0584"]})
+    assert first(cid, rid).text.plain.splitlines()[0] == "major: blk-0584"
+    set_verdict(cid, rid, {})
+    (run_dir / "stderr.log").write_text("stderr-line-0584\n", encoding="utf-8")
+    assert first(cid, rid).text.plain.splitlines()[0] == "stderr-line-0584"
+    (run_dir / "stderr.log").unlink()
+    assert first(cid, rid).text.plain.splitlines()[0] == "no stderr"
+
+    # Result-fallback run (no stream.jsonl): the first line of the pre-stream result.
+    cid = _copy_campaign(cfg, CID_MULTI, "body0584")
+    rid = "001-implementer"
+    run_dir = S.runs_dir(cfg, cid) / rid
+    assert not (run_dir / "stream.jsonl").exists()
+    (run_dir / "stderr.log").write_text("", encoding="utf-8")
+    set_verdict(cid, rid, {})
+    snap = first(cid, rid)
+    assert snap.head.plain == ""
+    assert not snap.has_stream
+    assert snap.body and snap.body[0].strip()
+    assert snap.text.plain.splitlines()[0] == snap.body[0]
 
 
 def test_verdict_line_composition(tmp_path):
