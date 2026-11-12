@@ -21,7 +21,7 @@ from nightwright.agentic import schemas as SC
 from nightwright.agentic import store
 import history_scale
 
-pytestmark = pytest.mark.fast
+pytestmark = [pytest.mark.fast, pytest.mark.tree_guard]
 
 FIXTURE = Path(__file__).parent / "fixtures" / "agentic_history"
 UTC = dt.timezone.utc
