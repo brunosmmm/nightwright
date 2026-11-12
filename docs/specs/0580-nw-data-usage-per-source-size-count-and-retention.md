@@ -92,16 +92,30 @@ document with `--json`.
   and increments `skipped`.
 - `oldest` / `newest` are the minimum and maximum file `mtime` of the source, as UTC ISO-8601 with
   a `Z` suffix, or `null` for an empty source.
-- Classification is by path relative to the agentic dir, first match wins; every file is assigned
-  to exactly one source:
+- Classification is by the file's path relative to the agentic dir, split into parts, and every
+  file is assigned to exactly one source. The first matching rule wins, tested in this order:
+  1. `campaigns/<id>/gates/**` is `gates`; `campaigns/<id>/tmp/**` is `campaign-tmp`. These two
+     are tested before the `campaigns` row, which is defined as "everything else in an id dir".
+  2. `streams` is exactly `campaigns/<id>/runs/<run>/stream.jsonl` (4 parts below `campaigns`).
+     A `stream.jsonl` at any other depth (for example `runs/<run>/sub/stream.jsonl`) is not a
+     stream: like every other file under `campaigns/<id>/runs/`, it is `runs`.
+  3. Any file directly under `campaigns/` (not inside an id dir), for example `campaigns/x.txt`,
+     is `other`. A loose file directly under `campaigns/<id>/runs/` is `runs` (rule 2).
+  4. The remaining table rows by their first path part (or exact file name); anything unmatched
+     is `other`.
 
-| source id | paths | `count` unit |
+  The table below is the stable listing order of `sources` (not the matching order). Its `paths`
+  column holds the glob patterns, relative to `root`, that are emitted verbatim as each row's
+  `path` list; the exclusions in the `campaigns` row are enforced by the rules above, not by the
+  glob.
+
+| source id | paths (emitted as `path`) | `count` unit |
 |---|---|---|
-| `campaigns` | `campaigns/<id>/` files except those under `runs/`, `gates/`, `tmp/` | campaign dirs with a `state.json`, plus `by_state` |
-| `runs` | `campaigns/<id>/runs/<run>/` files except `stream.jsonl` | run dirs |
-| `streams` | `campaigns/<id>/runs/<run>/stream.jsonl` | stream files |
-| `gates` | `campaigns/<id>/gates/**` | gate record files |
-| `campaign-tmp` | `campaigns/<id>/tmp/**` | campaigns that have a `tmp/` |
+| `campaigns` | `campaigns/*/*` (files in an id dir, and below it except under `runs/`, `gates/`, `tmp/`) | campaign dirs with a `state.json`, plus `by_state` |
+| `runs` | `campaigns/*/runs/**` except the streams | run dirs (`campaigns/*/runs/<run>/`) |
+| `streams` | `campaigns/*/runs/*/stream.jsonl` | stream files |
+| `gates` | `campaigns/*/gates/**` | gate record files |
+| `campaign-tmp` | `campaigns/*/tmp/**` | campaigns that have a `tmp/` |
 | `sentinel` | `sentinel/**` | files under `sentinel/*.logs/` (the sweepable ones) |
 | `gatejobs` | `gatejobs/**` | job dirs |
 | `remote-jobs` | `remote-jobs/**`, `job-queue/**`, `job-uploads/**`, `job-frames/**` | `remote-jobs/*.json` records |
@@ -111,8 +125,10 @@ document with `--json`.
 | `runner-logs` | `runner.jsonl`, `runner.log` | files |
 | `decisions` | `conductor/**` | files |
 | `mailbox` | `mailbox/**` | inbox files |
-| `other` | everything else (locks, `workers.json`, `cost_stats.json`, `escalations/`, ...) | files |
+| `other` | everything else (locks, `workers.json`, `cost_stats.json`, `escalations/`, a loose `campaigns/x.txt`, ...) | files |
 
+  The `sentinel` row has two counters on purpose: `files` counts every file under `sentinel/**`
+  (and `bytes` sizes them all), while `count` counts only the files under `sentinel/*.logs/`.
   `count` is always an integer and each row also carries `files` (the number of counted regular
   files) so the unit is never ambiguous. Line counts are deliberately not computed: they would
   mean reading the 100 MiB logs.
@@ -153,7 +169,7 @@ gets its true rule instead.
   "skipped": 0,
   "total": {"bytes": 1234, "files": 56},
   "sources": [
-    {"id": "streams", "path": "campaigns/*/runs/*/stream.jsonl",
+    {"id": "streams", "path": ["campaigns/*/runs/*/stream.jsonl"],
      "bytes": 110000000, "files": 412, "count": 412, "count_unit": "stream files",
      "oldest": "2026-10-30T08:00:00Z", "newest": "2026-11-12T09:58:00Z",
      "retention": {"rule": "age", "setting": "agentic.disk_clean.run_days",
@@ -161,6 +177,10 @@ gets its true rule instead.
   ]
 }
 ```
+
+`path` is a list of strings: the glob patterns from the classification table's `paths` column,
+relative to `root`, e.g. `["remote-jobs/**","job-queue/**","job-uploads/**","job-frames/**"]`
+for `remote-jobs`; it is never empty and a single-pattern row is a one-element list.
 
 `sources` is always the full table in the order above (stable for consumers); the text form is the
 one that sorts. `campaigns` has the extra `by_state` key. `total.bytes` equals the sum of
@@ -179,21 +199,21 @@ one that sorts. `campaigns` has the extra `by_state` key. `total.bytes` equals t
 
 ## Acceptance criteria
 
-- [ ] `nw data usage` exists, is read-only, and exits 0 including when the agentic dir is missing
-  (all rows zero, `total.bytes` 0).
-- [ ] Running it creates, modifies or touches no file under the data dir (including the
-  `.disk-clean` stamp).
+- [ ] `nw data usage` exists and is read-only: it creates, modifies or touches no file under the
+  data dir (including the `.disk-clean` stamp) and exits 0, including when the agentic dir is
+  missing (all rows zero, `total.bytes` 0).
 - [ ] `--json` emits one JSON document with `schema: "nw.data.usage.v1"`, `root`, `generated_at`,
   `skipped`, `total` and a `sources` list holding every source id of the Design table in that
-  order, each row with `id`, `path`, `bytes`, `files`, `count`, `count_unit`, `oldest`, `newest`
-  and `retention{rule,setting,text}`.
-- [ ] Every regular file under the agentic dir is counted in exactly one source: `total.bytes`
-  equals the sum of source bytes, and equals the bytes found by an independent walk of the
-  fixture.
-- [ ] Symlinks are not followed or counted; a file deleted during the walk does not fail the
-  command and increments `skipped`.
-- [ ] `streams` holds only `campaigns/*/runs/*/stream.jsonl`; `runs` excludes them; `gates` and
-  `campaign-tmp` are separate from `campaigns`.
+  order, each row with `id`, `path` (a non-empty list of strings, the table's glob patterns),
+  `bytes`, `files`, `count`, `count_unit`, `oldest`, `newest` and `retention{rule,setting,text}`.
+- [ ] Every regular file under the agentic dir is counted in exactly one source, and
+  `total.bytes` equals both the sum of source bytes and the bytes of an independent walk of the
+  fixture. Symlinks (to files or dirs) are neither followed nor counted; a file that vanishes
+  during the walk does not fail the command and increments `skipped`. The scope rules hold:
+  `streams` is exactly `campaigns/<id>/runs/<run>/stream.jsonl`; a nested
+  `runs/<run>/sub/stream.jsonl` and a loose file under `campaigns/<id>/runs/` are `runs`;
+  `gates/` and `tmp/` files are `gates` / `campaign-tmp`, never `campaigns`; a loose
+  `campaigns/x.txt` is `other`.
 - [ ] `campaigns.count` equals the number of campaign dirs with a `state.json`, and `by_state` counts
   sum to it, with an unreadable `state.json` bucketed as `UNKNOWN`.
 - [ ] `oldest`/`newest` are the min/max file mtime of the source in UTC `Z` ISO-8601, `null` when
@@ -205,10 +225,9 @@ one that sorts. `campaigns` has the extra `by_state` key. `total.bytes` equals t
 - [ ] `forever` is reported for the campaign records, `gates`, events, runner logs, decisions,
   mailbox and spec reviews, and each `forever` claim is backed by the implementer's grep recorded
   in the spec's "As shipped".
-- [ ] The text form is a table sorted by bytes descending with a total line and IEC units.
-- [ ] `nw data --help` and `nw data usage --help` describe the command, and `nw data` appears in
+- [ ] The text form is a table sorted by bytes descending with a total line and IEC units;
+  `nw data --help` and `nw data usage --help` describe the command, and `nw data` appears in
   the root command list.
-- [ ] Against a fixture of 200 campaigns with 5 runs each, `usage()` completes in under 5 s.
 
 ## Test plan
 
@@ -218,11 +237,16 @@ one that sorts. `campaigns` has the extra `by_state` key. `total.bytes` equals t
   with `cfg = {"data_dir": str(tmp_path)}` (as `tests/test_disk_clean.py` does) containing live
   and terminal campaigns with runs, streams, gates and `tmp/`, a sentinel dir with `.logs`, gatejobs,
   remote-jobs, reviews, events, runner logs, conductor decisions, mailbox inboxes and a stray
-  file. Tests:
+  file. The fixture also holds the ambiguous shapes: a loose `campaigns/x.txt`, a loose
+  `campaigns/<id>/runs/note.txt`, and a nested `campaigns/<id>/runs/<run>/sub/stream.jsonl`.
+  Tests:
   - `test_partition_total`: `total.bytes` and `total.files` equal an independent `os.walk` sum
     and the sum of rows; the stray file lands in `other`.
   - `test_each_source_scope`: bytes/files/count per source for the fixture, including
-    `streams` vs `runs` and `gates`/`campaign-tmp` separation.
+    `streams` vs `runs` and `gates`/`campaign-tmp` separation, and the named expectations
+    `campaigns/x.txt` -> `other`, `runs/note.txt` -> `runs`, nested `sub/stream.jsonl` -> `runs`
+    (not `streams`), `gates/*` -> `gates` and `tmp/*` -> `campaign-tmp` (not `campaigns`), and the
+    `sentinel` row's `files` (all of `sentinel/**`) versus `count` (only `sentinel/*.logs/*`).
   - `test_by_state`: counts per state sum to `campaigns.count`; a corrupt `state.json` is `UNKNOWN`.
   - `test_oldest_newest`: `os.utime` set files, rows match; empty source is `null`.
   - `test_symlinks_and_vanishing`: a symlinked file/dir is not counted; a monkeypatched `stat`
@@ -232,9 +256,12 @@ one that sorts. `campaigns` has the extra `by_state` key. `total.bytes` equals t
   - `test_read_only`: a snapshot of every path's `(mtime_ns, size)` before and after is equal
     and no `.disk-clean` stamp appears.
   - `test_cli_json_and_table` (Click `CliRunner`): `nw data usage --json` parses with the full key
-    set and order; the plain form exits 0, shows every non-empty source, sorted descending, with
+    set and order, and every row's `path` is a non-empty list of strings (`remote-jobs` carries its
+    four patterns, `streams` carries `["campaigns/*/runs/*/stream.jsonl"]`); the plain form exits 0, shows every non-empty source, sorted descending, with
     a total line; `nw data --help` lists `usage`; the root `nw --help` lists `data`.
-  - `test_scale`: 200 campaigns x 5 runs finishes under 5 s.
+  - `test_scale` (non-gating, not an acceptance criterion): 200 campaigns x 5 runs; records the
+    elapsed time (target well under 5 s) and fails only on a loose 30 s bound, so a busy CI box
+    does not flake.
 - **Marker check:** `python3 tools/test_tiers.py --check` exits 0 (the new module has exactly one
   tier marker).
 - **Manual verification:** on the maintainer's box run `nw data usage` and `nw data usage --json |
