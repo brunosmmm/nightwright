@@ -948,3 +948,90 @@ def test_busy_popup_ignores_an_escalation_key_and_a_settled_file_warns(tmp_path,
                           and not s._busy)
         assert not planned
     drive_popup(cfg, body)
+
+
+# --- SPEC-0563: SPEC-0477 follow-up fixes ---------------------------------------------------
+
+
+def test_malformed_mailbox_ids_fail_soft(tmp_path):
+    cfg = world_cfg(tmp_path)
+    MB.send(cfg, to="conductor", frm="human", text="hi", kind="info", campaign=CID)
+    for bad in ("mailbox:conductor:99999999999999999999999999", "mailbox:conductor:²",
+                "mailbox:conductor:-1", "mailbox:nope:0"):
+        assert CR.mailbox_line(cfg, bad) is None, bad
+    for bad in ("mailbox:x:²", "mailbox:x:99999999999999999999", "mailbox:x:" + "9" * 5000):
+        assert isinstance(CR._id_order(bad), tuple), bad
+    assert CR._id_order("mailbox:x:99") < CR._id_order("mailbox:x:100")
+
+
+def test_popup_with_a_corrupt_mail_id_still_renders(tmp_path, monkeypatch):
+    cfg = world_cfg(tmp_path)
+    bad = rec("mailbox:conductor:99999999999999999999999999", kind="mail", agent="human",
+              status="open", text="from history")
+    patch_history(monkeypatch, lambda h: h["records"].append(bad))
+
+    async def body(app, pilot, s):
+        assert s._load_error is None and s.view is not None
+        assert [c.plain for c in s.mail_table.get_row(bad["id"])][1:] == [
+            "human", "open", "from history"]
+        await goto(pilot, s, bad["id"], mail=True)
+        assert "from human to -" in str(s.query_one("#mail-detail-text").content)
+    drive_popup(cfg, body, tab="5")
+
+
+def test_time_cells_are_control_character_cleaned(tmp_path, monkeypatch):
+    cfg = world_cfg(tmp_path)
+    f = rec("f:1", ts="\x1b[31mnow", title="dirty time")
+    m = rec("m:1", ts="\x1b[31mnow", kind="mail", agent="human", text="dirty mail time")
+    patch_history(monkeypatch, lambda h: h["records"].extend([f, m]))
+
+    async def body(app, pilot, s):
+        assert "\x1b" not in s.records_table.get_row("f:1")[0].plain
+        assert "\x1b" not in s.mail_table.get_row("m:1")[0].plain
+    drive_popup(cfg, body)
+    assert CD._timeline_time(TS) == CD._timeline_time(TS) and "\x1b" not in CD._timeline_time("a\x1bb")
+
+
+def test_a_null_field_never_matches_a_keyed_token():
+    items = [rec("n"), rec("s", severity="None", status="None"),
+             rec("h", severity="high", status="fixed")]
+    for tok in ("severity:None", "status:None"):
+        kept, unmatched = CR.filter_records(items, tok)
+        assert [r["id"] for r in kept] == ["s"] and unmatched == [], tok
+    assert [r["id"] for r in CR.filter_records(items, "severity:high status:fixed")[0]] == ["h"]
+
+
+class _Owner:
+    def __init__(self):
+        self.notes: list[tuple[str, str]] = []
+        self._busy = True
+        self.app = self
+
+    def notify(self, msg, severity="information"):
+        self.notes.append((msg, severity))
+
+
+@pytest.mark.parametrize("exc", [ValueError("bad"), OSError("gone"), RuntimeError("kaboom")])
+def test_mailbox_tab_and_popup_share_one_guard(exc):
+    import asyncio
+
+    from nightwright.tui import escalation_flow as EF
+    from nightwright.tui import mailbox_tab as MT
+
+    async def flow():
+        raise exc
+
+    results = []
+    for guard in (EF.guarded, MT.MailboxView._guarded):
+        owner = _Owner()
+        asyncio.run(guard(owner, flow()))
+        assert owner._busy is False
+        results.append(owner.notes)
+    assert results[0] == results[1] and len(results[0]) == 1 and results[0][0][1] == "error"
+    src = Path(MT.__file__).read_text()
+    assert "mailbox action failed" not in src
+    assert "mailbox action failed" in Path(EF.__file__).read_text()
+
+
+def test_campaign_detail_docstring_has_no_placeholder():
+    assert "placeholder" not in CD.CampaignDetail.__doc__

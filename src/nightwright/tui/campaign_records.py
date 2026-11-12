@@ -52,8 +52,10 @@ def match_record(rec: dict, applied) -> bool:
             if low not in str(rec.get("title") or "").lower() \
                     and low not in str(rec.get("text") or "").lower():
                 return False
-        elif str(rec.get(key)) != value:
-            return False
+        else:
+            have = rec.get(key)
+            if have is None or str(have) != value:    # a null has no value to match
+                return False
     return True
 
 
@@ -116,7 +118,7 @@ def mailbox_line(cfg, rec_id) -> dict | None:
             f.seek(int(offset))
             value = json.loads(f.readline().decode("utf-8"))
         return value if isinstance(value, dict) else None
-    except (OSError, ValueError, UnicodeError):
+    except (OSError, ValueError, UnicodeError, OverflowError):
         return None
 
 
@@ -155,7 +157,12 @@ def _id_order(rec_id) -> tuple[str, int, str]:
     """File order of a `mailbox:<stem>:<byte offset>` id: stem, then numeric offset, so a
     same-second reply sorts after its question (`99` before `100`)."""
     head, _, offset = str(rec_id).rpartition(":")
-    return (head, int(offset), "") if offset.isdigit() else (str(rec_id), -1, "")
+    if offset.isascii() and offset.isdigit():
+        try:
+            return (head, int(offset), "")
+        except ValueError:      # e.g. a digit run past the int-conversion limit
+            pass
+    return (str(rec_id), -1, "")
 
 
 def mail_threads(records) -> list[MailThread]:

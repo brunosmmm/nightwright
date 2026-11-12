@@ -115,7 +115,7 @@ def _timeline_time(ts: str) -> str:
     try:
         return datetime.fromisoformat(ts).astimezone().strftime("%m-%d %H:%M:%S")
     except Exception:
-        return str(ts)
+        return AM._clean(str(ts))
 
 
 class DetailOpener:
@@ -161,7 +161,7 @@ class DetailOpener:
 
 
 class CampaignDetail(QueueActions, ModalScreen):
-    """96% × 94% modal over the desk: overview, timeline, and three placeholder panes."""
+    """96% × 94% modal over the desk: overview, timeline, runs, findings & decisions, and mail."""
 
     DEFAULT_CSS = """
     CampaignDetail {

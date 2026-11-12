@@ -24,6 +24,7 @@ from ..agentic import store
 from ..agentic.cli_queue import _ago
 from . import agentic_model as AM
 from .campaign_detail import OpenCampaign
+from . import escalation_flow
 from .escalation_flow import answer_escalation
 
 POLL_S = 2.0
@@ -404,14 +405,7 @@ class MailboxView(Horizontal):
             self.run_worker(self._guarded(self._new_flow()), name="mailbox-send")
 
     async def _guarded(self, flow) -> None:
-        try:
-            await flow
-        except (ValueError, OSError) as e:
-            self.app.notify(escape(str(e)), severity="error")
-        except Exception as e:      # an unexpected error must not end the app
-            self.app.notify(f"mailbox action failed: {escape(repr(e))}", severity="error")
-        finally:
-            self._busy = False
+        await escalation_flow.guarded(self, flow)
 
     async def _reply_flow(self, row: AM.ThreadRow) -> None:
         from .app import BodyPrompt, ChoiceScreen

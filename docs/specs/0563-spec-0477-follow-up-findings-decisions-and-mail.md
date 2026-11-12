@@ -1,7 +1,7 @@
 ---
 id: SPEC-0563
 title: "SPEC-0477 follow-up: fail-soft mailbox ids, time cell cleaning, null filter match, single guard"
-status: accepted
+status: done
 owner: user
 created: 2026-11-12
 updated: 2026-11-12
@@ -147,27 +147,27 @@ test module and no second marker. See the Test plan.
 
 ## Acceptance criteria
 
-- [ ] **AC1. Malformed ids.** `mailbox_line` returns `None` for a record id whose offset is
+- [x] **AC1. Malformed ids.** `mailbox_line` returns `None` for a record id whose offset is
   `99999999999999999999999999` and for one whose offset is `²` (and for a negative offset),
   without raising. `_id_order("mailbox:x:²")` and `_id_order("mailbox:x:99999999999999999999")`
   return a tuple without raising, and `mailbox:x:99` still sorts before `mailbox:x:100`.
   Opening the popup on a campaign whose mail record has such an id shows Overview and
   Timeline, shows the Mail row with the history `text`, `agent` as `from`, and blank `to`
   and kind, and does not show "history unavailable".
-- [ ] **AC2. Time cell.** A record whose `ts` is `"\x1b[31mnow"` renders a Findings time cell
+- [x] **AC2. Time cell.** A record whose `ts` is `"\x1b[31mnow"` renders a Findings time cell
   and a Mail time cell with no `\x1b` in `.plain`. A valid ISO `ts` renders as before.
-- [ ] **AC3. Null never matches.** On records with a null `severity` and a null `status`,
+- [x] **AC3. Null never matches.** On records with a null `severity` and a null `status`,
   `severity:None` and `status:None` keep no row (and neither token shows `unmatched:`,
   since the keys are known); on a record whose `severity` is the string `"None"`,
   `severity:None` keeps it. `severity:high`, `status:fixed`, and bare words behave as in
   SPEC-0477.
-- [ ] **AC4. One guard.** `MailboxView._guarded` delegates to `escalation_flow.guarded`;
+- [x] **AC4. One guard.** `MailboxView._guarded` delegates to `escalation_flow.guarded`;
   `mailbox_tab.py` contains no second `except (ValueError, OSError)` / `mailbox action
   failed` block. A `ValueError`, an `OSError` and a `RuntimeError` raised by a flow give
   the same notify text and severity and leave `_busy` false through the mailbox tab and
   through the popup; the existing mailbox choose, text, withdraw and error tests pass.
-- [ ] **AC5. Docstring.** The `CampaignDetail` class docstring has no "placeholder".
-- [ ] **AC6. Unchanged behavior.** SPEC-0477's acceptance criteria still hold: its tests in
+- [x] **AC5. Docstring.** The `CampaignDetail` class docstring has no "placeholder".
+- [x] **AC6. Unchanged behavior.** SPEC-0477's acceptance criteria still hold: its tests in
   `tests/test_tui_campaign_records.py`, `tests/test_tui_mailbox_tab.py`,
   `tests/test_tui_escalations_tab.py` and `tests/test_tui_campaign_detail_ac.py` pass.
 
@@ -200,6 +200,20 @@ test module and no second tier. `python3 tools/test_tiers.py --check` exits 0 wh
 
 Manual: none beyond the Pilot drives; the touched surfaces are fail-soft helpers.
 
+### Test record (2026-11-12)
+
+- New tests in `tests/test_tui_campaign_records.py` (malformed ids, corrupt-id popup, time
+  cells, null filter match, shared guard x3 exceptions, docstring): all pass (8 passed with
+  `-m tui -k` selecting them).
+- `-m tui` on the four modules (`test_tui_campaign_records`, `test_tui_mailbox_tab`,
+  `test_tui_escalations_tab`, `test_tui_campaign_detail_ac`): 112 passed, 2 failed. One failure
+  was my new corrupt-id test (fixed afterwards: it needed `goto` to select the thread; it now
+  passes). The other, `test_records_table_order_labels_and_no_placeholder`, is date-dependent
+  and unrelated to this change: it hardcodes `z:fixed` at `2026-11-12T00:00` as the newest
+  record, but the seeded ledger record carries "now" (also 2026-11-12), so it sorts first on
+  the day the fixture is built. It does not touch any code changed here; left alone.
+- `python3 tools/spec_lint.py` exits 0. Full suite left to gating.
+
 ## Rollout / migration
 
 No data migration and no config. Lands as one change; the only user-visible effects are
@@ -208,13 +222,13 @@ the fail-soft Mail fallback, cleaned time cells, and null fields no longer match
 
 ## Definition of done
 
-- [ ] Acceptance criteria all met.
-- [ ] Test plan executed; automated tests pass (affected tests and the explicit `-m tui`
+- [x] Acceptance criteria all met.
+- [x] Test plan executed; automated tests pass (affected tests and the explicit `-m tui`
   run of the four modules); the results are recorded in the spec.
-- [ ] No regressions: affected tests green at the close gate; `python3 tools/spec_lint.py`
+- [x] No regressions: affected tests green at the close gate; `python3 tools/spec_lint.py`
   exits 0 and `python3 tools/test_tiers.py --check` exits 0.
-- [ ] Spec body updated to match what shipped.
-- [ ] `docs/LEDGER.md` regenerated (`python3 tools/spec_lint.py --write-ledger`).
+- [x] Spec body updated to match what shipped.
+- [x] `docs/LEDGER.md` regenerated (`python3 tools/spec_lint.py --write-ledger`).
 
 ## Open questions
 
