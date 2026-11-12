@@ -96,6 +96,7 @@ ALLOWED = {
     ("agentic/cli_dashboard.py", "_sh"): "echoes the systemctl command and its output verbatim (SPEC-0427)",
     ("agentic/cli_dashboard.py", "_print_status"): "dashboard status: plain text for scripts and ssh callers (SPEC-0427)",
     ("agentic/cli_dashboard.py", "status_cmd"): "JSON emitter (--json) (SPEC-0427)",
+    ("agentic/cli_data.py", "data_usage_cmd"): "nw data usage --json: machine-readable JSON document (SPEC-0580)",
     ("agentic/cli_workers.py", "_add_pull"): "prints the bare enrol blob on stdout for scripts to capture; Rich would mangle it (SPEC-0334)",
     ("agentic/cli_workers.py", "workers_token"): "prints the bare enrol blob on stdout for scripts to capture; Rich would mangle it (SPEC-0334)",
     ("agentic/git_guard.py", "_deny"): "PreToolUse hook decision: JSON on stdout for Claude Code, a light script that must not import rich (SPEC-0550)",
