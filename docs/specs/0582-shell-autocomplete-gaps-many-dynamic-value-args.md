@@ -1,9 +1,10 @@
 ---
 id: SPEC-0582
 title: Make the SPEC-0039 shell-completion guard live with default-deny and an exemption ratchet
-status: proposed
+status: accepted
 owner: user
 created: 2026-11-12
+updated: 2026-11-12
 kind: feature
 source_idea: IDEA-605
 tags: [cli, completion]
