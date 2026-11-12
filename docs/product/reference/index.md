@@ -106,6 +106,48 @@ the user systemd unit. `status [--json]` reports whether that unit is running. F
 
 Subcommands via `nw <group> --help`.
 
+### Federation host channel wire MAC (`nw serve --federate`)
+
+Every request and every enrolled response is signed with HMAC-SHA256, keyed with the secret's UTF-8
+bytes, over an ASCII line (fields joined by `|`, no trailing newline); the MAC is lowercase hex.
+The direction tag keeps a request MAC and a response MAC from ever verifying in each other's place.
+
+- Request line: `nw-req|METHOD|PATH|BODYSHA|TS`
+- Response line: `nw-resp|STATUS|METHOD|PATH|BODYSHA|TS`
+
+| Field | Definition |
+|---|---|
+| METHOD | The request method, uppercase. On a response, the method of the request being answered. |
+| PATH | The request target exactly as sent (path plus `?query` if any, including any hub URL path prefix). On a response, the target of the request being answered. |
+| BODYSHA | Lowercase hex SHA-256 of the raw body bytes: the request body for a request, the response body as sent for a response. HEAD responses sign the empty body. |
+| TS | Decimal unix seconds; the skew window is 120 s. |
+| STATUS | The response's decimal HTTP status code, e.g. `200`, `401`, `405`. |
+
+Headers: a request carries `Authorization: Bearer TOKEN`, `X-NW-Req-Ts`, `X-NW-Req-Sig` and
+`X-NW-Sig-V: 2`; a signed response carries `X-NW-Sig-Ts`, `X-NW-Sig` and `X-NW-Sig-V: 2` (names are
+case-insensitive, the version must be exactly `2`). The host's unenrolled `401 unauthorized` is
+unsigned and carries none of them. There is no dual-version acceptance.
+
+Test vectors (secret `abc`, `GET /v1/status`, empty body, ts `1700000000`; BODYSHA is
+`e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855`):
+
+- `nw-req|GET|/v1/status|e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855|1700000000`
+  gives `a4879c456e4e8357b2b486928f5d4ed18b6a92754b581fc173ba3e787f56f61b`
+- `nw-resp|200|GET|/v1/status|e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855|1700000000`
+  gives `9a6a671ded7c7fdcd11b3b6fd50c812a6f0a8b73724caa3ae8b8106ee9e8b8dd`
+
+Host check order: unenrolled (no `federation.json`) gives an unsigned `401 unauthorized`; bad bearer
+token gives a signed `401 unauthorized`; missing or non-`2` `X-NW-Sig-V` gives a signed
+`401 {"error":"sig_version"}`; a GET or HEAD that carries a body, a bad timestamp, an unreadable
+body, or a bad or stale request MAC each give a signed `401 unauthorized`; then routing (`404`,
+`405`, `200`). Every signed reply, errors included, carries `X-NW-Sig-V: 2`.
+
+`HubClient` check order for every response: (1) a `401 {"error":"unauthorized"}` with no
+`X-NW-Sig` headers raises `host not enrolled`; (2) a missing or non-`2` marker raises `host uses an
+old signature version`; (3) missing signature headers, a bad timestamp or a bad MAC raises
+`missing response signature`, `stale signature` or `bad signature` (never a terminal outcome);
+(4) a verified non-200 raises `HTTP <n>`; (5) a verified 200 returns.
+
 ## Date scopes
 
 Shared by `report`, `agenda`, and `digest`. `review` has `--week` / `-w` and a date, and

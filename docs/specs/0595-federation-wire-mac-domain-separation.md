@@ -1,7 +1,7 @@
 ---
 id: SPEC-0595
 title: "Federation wire MAC: domain-separate request and response signatures"
-status: accepted
+status: done
 owner: user
 created: 2026-11-12
 kind: feature
@@ -145,20 +145,20 @@ The GET/HEAD-with-body refusal from 0529 stays as defence in depth.
 
 ## Acceptance criteria
 
-- [ ] Requests and responses are signed with the tagged formulas above. Tests pin the two
+- [x] Requests and responses are signed with the tagged formulas above. Tests pin the two
       vectors given in Design. A client built only from the documented formula gets 200.
-- [ ] A signed response replayed as a request fails verification. This is tested for a GET (the
+- [x] A signed response replayed as a request fails verification. This is tested for a GET (the
       0529 case), for a bodied POST to the test-only route, and for a signed 401.
-- [ ] A response MAC for status S does not verify for status T ≠ S, and a signed 401 whose status
+- [x] A response MAC for status S does not verify for status T ≠ S, and a signed 401 whose status
       is changed to 200 fails in `HubClient`.
-- [ ] The host keeps 0529's check order, plus the marker check. A missing or wrong marker gets
+- [x] The host keeps 0529's check order, plus the marker check. A missing or wrong marker gets
       the signed `sig_version` 401. A v2-marked request with an old four-field MAC gets
       `401 unauthorized`. Every signed reply, error replies included, carries the marker.
-- [ ] `HubClient` applies its check order as listed, so a forged or unsigned 4xx raises a
+- [x] `HubClient` applies its check order as listed, so a forged or unsigned 4xx raises a
       signature error, never `HTTP 4xx`.
-- [ ] `sign` and `verify` reject a missing direction (`TypeError`), a bad direction or bad
+- [x] `sign` and `verify` reject a missing direction (`TypeError`), a bad direction or bad
       `status` usage (`ValueError`). The AST test finds no call site without `direction=`.
-- [ ] The 0529 tests still pass, apart from tests whose expected messages change under the new
+- [x] The 0529 tests still pass, apart from tests whose expected messages change under the new
       `HubClient` order and the replaced formula and vector tests. Those are updated, and As
       shipped lists each one. The reference docs show the field table, both formulas, both vectors
       and both check orders.
@@ -170,6 +170,20 @@ The GET/HEAD-with-body refusal from 0529 stays as defence in depth.
   Run the touched tests and the docs tests.
 - **Gate:** the campaign's close gate on the box.
 - **Manual:** none. Everything is checkable from the worktree.
+
+### Test record (2026-11-12)
+
+- `uv run pytest -q tests/test_federation_channel.py`: 55 passed.
+- `uv run pytest -q tests/test_docs_product_reference.py tests/test_docs_product_ia.py tests/test_gate_docs.py`: 9 passed.
+- `python3 tools/affected_tests.py --run uv run pytest -q`: 1307 passed, 1 skipped.
+- `python3 tools/test_tiers.py --check`: exit 0. The full suite is left to gating.
+- New tests: `test_wire_mac_is_the_documented_tagged_formula` (hand-built client gets 200; old
+  four-field MAC is a bad MAC), `test_hmac_test_vector` (both pinned vectors),
+  `test_sign_and_verify_demand_a_direction_and_valid_status`,
+  `test_every_federation_sign_verify_call_passes_direction` (AST test),
+  `test_signed_response_replayed_as_request_fails` (GET, bodied POST to the test route, signed 401),
+  `test_response_mac_binds_the_status`, `test_host_demands_the_sig_version_marker`,
+  `test_hubclient_check_order` (including a signed 401 relabelled 200).
 
 ## Rollout / migration
 
@@ -188,3 +202,31 @@ None.
 ## As shipped
 
 _To be filled in by the implementing campaign._
+
+### As shipped (2026-11-12)
+
+Shipped as designed. Details:
+
+- **Test seam:** a private `FederateServer.extra_routes` dict, `{(METHOD, route): fn(body) -> bytes}`,
+  defaulting to empty. A matching route is served after the MAC check as a signed 200. Tests register
+  `("POST", "/v1/_test_echo")`; no route ships.
+- **Marker constants:** `federation.SIG_V_HEADER` / `SIG_VERSION`; `request_headers` and
+  `response_headers` add the marker, so `HubClient` and the host send it without extra code.
+  `response_headers` now requires `status`.
+- **`HubClient` step 1** treats "no `X-NW-Sig` headers" as neither `X-NW-Sig` nor `X-NW-Sig-Ts`
+  present, with the exact body `{"error":"unauthorized"}`.
+- **Reference docs:** a new "Federation host channel wire MAC" section in
+  `docs/product/reference/index.md` carries the field table, both lines, both vectors and both
+  check orders.
+- **0529 tests changed:**
+  - `test_wire_mac_is_the_documented_four_field_formula` replaced by
+    `test_wire_mac_is_the_documented_tagged_formula`.
+  - `test_hmac_test_vector` now pins the two new vectors.
+  - `test_reflected_signed_response_is_not_a_request` replaced by
+    `test_signed_response_replayed_as_request_fails`.
+  - `test_check_after_unenrol_reports_http_401`: the message is now `box unreachable: host not
+    enrolled`.
+  - `test_check_output_order_reasons_and_bad_documents`: an unsigned 200 now reports `host uses an
+    old signature version` instead of `missing response signature`.
+  - Helpers (`_resp_sig`, `_signed_reply`, `test_hubclient_rejects_bad_responses`,
+    `test_request_mac_is_enforced`) pass `direction`/`status` and the marker.

@@ -21,6 +21,9 @@ FEDERATION_REF = "secrets/federation.json"
 EMPTY_BODY_SHA = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
 SKEW_S = 120
 MAX_RESPONSE_BYTES = PJ.MAX_FRAMES_BYTES
+SIG_V_HEADER = "X-NW-Sig-V"
+SIG_VERSION = "2"
+UNAUTHORIZED_BODY = b'{"error":"unauthorized"}'
 
 
 def federation_path(cfg) -> Path:
@@ -139,20 +142,37 @@ def _body_sha(body: bytes) -> str:
     return hashlib.sha256(body).hexdigest() if body else EMPTY_BODY_SHA
 
 
-def sign(secret: str, method: str, path: str, body: bytes, ts: int) -> str:
-    """Lowercase hex HMAC-SHA256 over `METHOD|PATH|BODYSHA|TS` (the Design's four fields). Requests
-    and enrolled responses use this one construction."""
-    line = f"{method.upper()}|{path}|{_body_sha(body)}|{ts}"
+def _mac_line(method: str, path: str, body: bytes, ts: int, *, direction: str,
+              status: int | None) -> str:
+    """The signed ASCII line (SPEC-0595): a direction tag, then the fields joined by `|`."""
+    if direction == "req":
+        if status is not None:
+            raise ValueError("status is only for direction='resp'")
+        return f"nw-req|{method.upper()}|{path}|{_body_sha(body)}|{ts}"
+    if direction == "resp":
+        if (not isinstance(status, int) or isinstance(status, bool)
+                or not 100 <= status <= 599):
+            raise ValueError("direction='resp' needs a status from 100 to 599")
+        return f"nw-resp|{status}|{method.upper()}|{path}|{_body_sha(body)}|{ts}"
+    raise ValueError("direction must be 'req' or 'resp'")
+
+
+def sign(secret: str, method: str, path: str, body: bytes, ts: int, *, direction: str,
+         status: int | None = None) -> str:
+    """Lowercase hex HMAC-SHA256 over `nw-req|METHOD|PATH|BODYSHA|TS` (a request) or
+    `nw-resp|STATUS|METHOD|PATH|BODYSHA|TS` (a response). `direction` is required; `status` goes
+    with `"resp"` only, so neither MAC can verify in the other's place."""
+    line = _mac_line(method, path, body, ts, direction=direction, status=status)
     return hmac.new(secret.encode("utf-8"), line.encode(), hashlib.sha256).hexdigest()
 
 
 def verify(secret: str, method: str, path: str, body: bytes, mac: str, ts: int,
-           *, now: float | None = None) -> str | None:
+           *, direction: str, status: int | None = None, now: float | None = None) -> str | None:
     """Why the MAC is invalid, else None."""
     now = time.time() if now is None else now
     if abs(int(now) - int(ts)) > SKEW_S:
         return "stale signature"
-    want = sign(secret, method, path, body, ts)
+    want = sign(secret, method, path, body, ts, direction=direction, status=status)
     try:
         good = isinstance(mac, str) and hmac.compare_digest(mac, want)
     except (TypeError, ValueError):
@@ -165,13 +185,17 @@ def verify(secret: str, method: str, path: str, body: bytes, mac: str, ts: int,
 def request_headers(secret: str, method: str, path: str, body: bytes, *,
                     now: float | None = None) -> dict[str, str]:
     ts = int(now if now is not None else time.time())
-    return {"X-NW-Req-Ts": str(ts), "X-NW-Req-Sig": sign(secret, method, path, body, ts)}
+    return {"X-NW-Req-Ts": str(ts),
+            "X-NW-Req-Sig": sign(secret, method, path, body, ts, direction="req"),
+            SIG_V_HEADER: SIG_VERSION}
 
 
-def response_headers(secret: str, method: str, path: str, body: bytes, *,
+def response_headers(secret: str, method: str, path: str, body: bytes, *, status: int,
                      now: float | None = None) -> dict[str, str]:
     ts = int(now if now is not None else time.time())
-    return {"X-NW-Sig-Ts": str(ts), "X-NW-Sig": sign(secret, method, path, body, ts)}
+    return {"X-NW-Sig-Ts": str(ts),
+            "X-NW-Sig": sign(secret, method, path, body, ts, direction="resp", status=status),
+            SIG_V_HEADER: SIG_VERSION}
 
 
 class HubClient:
@@ -385,17 +409,21 @@ class HubClient:
                 sock.close()
         if len(raw) > MAX_RESPONSE_BYTES:
             raise ConnectionError("response too large")
-        if status != 200:
-            raise ConnectionError(f"HTTP {status}")
         ts_raw = self._header(hdrs, "X-NW-Sig-Ts")
         mac = self._header(hdrs, "X-NW-Sig")
+        if status == 401 and ts_raw is None and mac is None and raw == UNAUTHORIZED_BODY:
+            raise ConnectionError("host not enrolled")
+        if self._header(hdrs, SIG_V_HEADER) != SIG_VERSION:
+            raise ConnectionError("host uses an old signature version")
         if (not ts_raw or not str(ts_raw).isascii() or not str(ts_raw).isdigit()
                 or not mac):
             raise ConnectionError("missing response signature")
         why = verify(self.secret, method, target, raw, mac, int(ts_raw),
-                     now=self._now)
+                     direction="resp", status=status, now=self._now)
         if why:
             raise ConnectionError(why)
+        if status != 200:
+            raise ConnectionError(f"HTTP {status}")
         return status, raw, hdrs
 
     def get_json(self, path: str) -> dict:

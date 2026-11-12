@@ -223,7 +223,7 @@ progress. This is the single place to see *what has been decided* and *what is i
   - [x] [SPEC-0325](./specs/0325-steward-campaign-notices-project-idea-reconcile-remote-open.md) Stewards get campaign notices; a second-project merge reconciles its idea; pr campaigns branch from the remote — done
   - [x] [SPEC-0327](./specs/0327-cross-project-spec-id-collision-the-comfort.md) Spec ids are per project: a second project's SPEC-NNNN never resolves against wt's own specs — done
   - [x] [SPEC-0393](./specs/0393-wtfug-spec-0304-20261030-7a4f-spec-0304-review.md) SPEC-0304 review follow-ups: mvp-report edge cases in E4, E5 and E6, and the tests that pin them — done
-- **[SPEC-0310](./specs/0310-remote-workers-run-gates-persona-runs-and.md) — Remote workers: run gates, persona runs and campaigns on other machines** · accepted · (18/22 done)
+- **[SPEC-0310](./specs/0310-remote-workers-run-gates-persona-runs-and.md) — Remote workers: run gates, persona runs and campaigns on other machines** · accepted · (19/22 done)
   - [x] [SPEC-0331](./specs/0331-remote-gates-over-ssh-on-one-worker-host.md) Remote gates over SSH on one worker host — superseded
   - [x] [SPEC-0332](./specs/0332-worker-owned-async-jobs.md) Worker-owned async jobs — superseded
   - [x] [SPEC-0333](./specs/0333-remote-persona-runs-with-bundle-write-back.md) Remote persona runs with bundle write-back — superseded
@@ -245,7 +245,7 @@ progress. This is the single place to see *what has been decided* and *what is i
   - [ ] [SPEC-0530](./specs/0530-hub-event-relay-health-and-read-only-host-views.md) Hub event relay, health, and read-only host views — accepted
   - [ ] [SPEC-0532](./specs/0532-exactly-once-mail-between-hub-and-host.md) Exactly-once mail between hub and host — accepted
   - [ ] [SPEC-0533](./specs/0533-remote-park-and-resume.md) Remote park and resume — accepted
-  - [ ] [SPEC-0595](./specs/0595-federation-wire-mac-domain-separation.md) Federation wire MAC: domain-separate request and response signatures — accepted
+  - [x] [SPEC-0595](./specs/0595-federation-wire-mac-domain-separation.md) Federation wire MAC: domain-separate request and response signatures — done
 - **[SPEC-0348](./specs/0348-declarative-per-project-agentic-pipeline.md) — Declarative per-project agentic pipeline: steps, personas and routing as data, with a lean fast-track lane** · accepted · (3/3 done)
   - [x] [SPEC-0370](./specs/0370-pipeline-a1-persona-registry-as-data.md) Pipeline A1: persona registry as data (persona_defs/*.yaml, layered loader, nw personas list|show) — done
   - [x] [SPEC-0371](./specs/0371-pipeline-a2-role-limited-custom-personas.md) Pipeline A2a: role-limited custom personas (user/project definitions, role schemas, validator, nw personas validate) — done
@@ -371,7 +371,6 @@ progress. This is the single place to see *what has been decided* and *what is i
 | [SPEC-0552](./specs/0552-leaner-agentic-campaign-loop.md) | Leaner agentic campaign loop (role tiers, review packet, findings collator, resumable sessions) | epic | accepted | — | 2026-11-11 |
 | [SPEC-0556](./specs/0556-resumable-implementer-and-reviewer-sessions.md) | Resumable implementer and reviewer sessions per backend, with a fresh-session fallback | feature | in-progress | — | 2026-11-11 |
 | [SPEC-0572](./specs/0572-lean-spec-phase-sessions.md) | Lean spec phase — resumable spec writer and delta spec re-review (`spec_sessions`) | feature | accepted | — | 2026-11-12 |
-| [SPEC-0595](./specs/0595-federation-wire-mac-domain-separation.md) | Federation wire MAC: domain-separate request and response signatures | feature | accepted | — | 2026-11-12 |
 
 ## Done
 
@@ -888,6 +887,7 @@ progress. This is the single place to see *what has been decided* and *what is i
 | [SPEC-0592](./specs/0592-spec-0539-follow-up-advisory-out-of-its-scope.md) | Backlog readiness spec reader hardening — dependency id check, pathological spec files, real-checkout early-return tests | feature | done | M9: agentic workflow | 2026-11-12 |
 | [SPEC-0593](./specs/0593-launch-permission-modes-accepts-default-which.md) | Validate launch permission modes against the current claude CLI choices (add manual, retire default) | feature | done | — | 2026-11-12 |
 | [SPEC-0594](./specs/0594-launch-py-8-spec-0353-push-deny-rules-bash-git.md) | launch.py: the 8 SPEC-0353 `nw/x:<dst>` push deny rules must not end in the legacy `:*` prefix form | feature | done | — | 2026-11-12 |
+| [SPEC-0595](./specs/0595-federation-wire-mac-domain-separation.md) | Federation wire MAC: domain-separate request and response signatures | feature | done | — | 2026-11-12 |
 
 ## Superseded / rejected
 

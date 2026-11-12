@@ -60,6 +60,9 @@ class FederateServer(http.server.ThreadingHTTPServer):
     def __init__(self, cfg, addr):
         self.cfg = cfg
         self.stopping = threading.Event()
+        # Private test seam (SPEC-0595): {(METHOD, route): fn(body) -> bytes} signed-200 routes.
+        # The host serves none; tests register e.g. ("POST", "/v1/_test_echo").
+        self.extra_routes: dict = {}
         if ":" in addr[0]:
             self.address_family = socket.AF_INET6
         super().__init__(addr, _Handler)
@@ -142,9 +145,9 @@ class _Handler(http.server.BaseHTTPRequestHandler):
         if wire:
             self.send_header("Content-Type", "application/json")
         if signed and secret:
-            hdrs = F.response_headers(secret, method, path, wire, now=now)
-            self.send_header("X-NW-Sig-Ts", hdrs["X-NW-Sig-Ts"])
-            self.send_header("X-NW-Sig", hdrs["X-NW-Sig"])
+            hdrs = F.response_headers(secret, method, path, wire, status=status, now=now)
+            for k in ("X-NW-Sig-Ts", "X-NW-Sig", F.SIG_V_HEADER):
+                self.send_header(k, hdrs[k])
         self.send_header("Content-Length", str(len(wire)))
         self.send_header("Connection", "close")
         self.end_headers()
@@ -181,9 +184,14 @@ class _Handler(http.server.BaseHTTPRequestHandler):
             self._json_error(401, "unauthorized", signed=True, method=method, path=path,
                              secret=secret_key)
             return
-        # Responses are signed with the request construction, so a signed error body replayed as the
-        # body of a GET would verify as a request MAC. Every data route is bodyless: refuse a
-        # GET/HEAD that carries a body before the MAC check.
+        # SPEC-0595: every authenticated request carries the signature-version marker; an old
+        # client's four-field MAC would fail the MAC check below anyway.
+        if self.headers.get(F.SIG_V_HEADER) != F.SIG_VERSION:
+            self._json_error(401, "sig_version", signed=True, method=method, path=path,
+                             secret=secret_key)
+            return
+        # Defence in depth (responses are domain-separated from requests since SPEC-0595): every
+        # data route is bodyless, so refuse a GET/HEAD that carries a body before the MAC check.
         if method in ("GET", "HEAD") and (
                 self.headers.get("Transfer-Encoding") is not None
                 or (clen and str(clen).isascii() and str(clen).isdigit() and int(clen) > 0)):
@@ -202,7 +210,7 @@ class _Handler(http.server.BaseHTTPRequestHandler):
                              secret=secret_key)
             return
         mac = self.headers.get("X-NW-Req-Sig") or self.headers.get("x-nw-req-sig")
-        if F.verify(secret_key, method, path, body, mac or "", int(ts_s)):
+        if F.verify(secret_key, method, path, body, mac or "", int(ts_s), direction="req"):
             self._json_error(401, "unauthorized", signed=True, method=method, path=path,
                              secret=secret_key)
             return
@@ -210,6 +218,11 @@ class _Handler(http.server.BaseHTTPRequestHandler):
             route = urlsplit(self.path).path
         except ValueError:
             raise ValueError("bad request target") from None
+        extra = self.server.extra_routes.get((method, route))
+        if extra is not None:
+            self._write(200, extra(body), signed=True, method=method, path=path,
+                        secret=secret_key)
+            return
         if route == "/v1/status" and method == "GET":
             try:
                 doc = status_document(self.server.cfg)

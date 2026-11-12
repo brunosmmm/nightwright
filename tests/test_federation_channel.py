@@ -89,11 +89,13 @@ def _raw(method, url, path, token, secret, body=b"", *, now=NOW, headers=None):
     return resp.status, dict(resp.getheaders()), raw
 
 
-def _resp_sig(secret, method, path, hdrs, raw, status=None):
+def _resp_sig(secret, method, path, hdrs, raw, status):
     ts = hdrs.get("X-NW-Sig-Ts") or hdrs.get("x-nw-sig-ts")
     mac = hdrs.get("X-NW-Sig") or hdrs.get("x-nw-sig")
     assert ts and mac
-    assert F.verify(secret, method, path, raw, mac, int(ts), now=NOW) is None
+    assert (hdrs.get(F.SIG_V_HEADER) or hdrs.get(F.SIG_V_HEADER.lower())) == F.SIG_VERSION
+    assert F.verify(secret, method, path, raw, mac, int(ts), direction="resp", status=status,
+                    now=NOW) is None
 
 
 def _lease_checker_threads():
@@ -457,10 +459,9 @@ def test_unenrol_running_server_returns_unsigned_401(tmp_path, monkeypatch):
     srv.shutdown()
 
 
-def test_wire_mac_is_the_documented_four_field_formula(tmp_path, monkeypatch):
-    """Requests and enrolled responses use the Design's one construction, HMAC-SHA256 over
-    `METHOD|PATH|BODYSHA|TS`: a client built from that formula alone is accepted (200) exactly like
-    one built through `federation.request_headers`, and the response verifies by the formula."""
+def test_wire_mac_is_the_documented_tagged_formula(tmp_path, monkeypatch):
+    """A client hand-built from the documented formulas alone (no `federation` helpers) gets 200,
+    and the response verifies by the documented response formula."""
     import hashlib
     import hmac
     import time
@@ -471,53 +472,102 @@ def test_wire_mac_is_the_documented_four_field_formula(tmp_path, monkeypatch):
     F.write_federation(host, {"hub_name": "h", "host_name": "box", "token": "tok", "secret": secret})
     srv, base = _serve(host)
 
-    def formula(method, path, body, ts):
-        line = f"{method}|{path}|{hashlib.sha256(body).hexdigest()}|{ts}"
+    def mac(line):
         return hmac.new(secret.encode(), line.encode(), hashlib.sha256).hexdigest()
 
-    assert F.sign(secret, "GET", path, b"", ts) == formula("GET", path, b"", ts)
-    via_helper = {"Authorization": "Bearer tok", **F.request_headers(secret, "GET", path, b"", now=NOW)}
+    def sha(b):
+        return hashlib.sha256(b).hexdigest()
+
+    req_line = f"nw-req|GET|{path}|{sha(b'')}|{ts}"
+    assert F.sign(secret, "GET", path, b"", ts, direction="req") == mac(req_line)
     by_hand = {"Authorization": "Bearer tok", "X-NW-Req-Ts": str(ts),
-               "X-NW-Req-Sig": formula("GET", path, b"", ts)}
-    assert by_hand["X-NW-Req-Sig"] == via_helper["X-NW-Req-Sig"]
-    for hdrs in (via_helper, by_hand):
-        st, h, raw = _raw("GET", base, path, "tok", secret, headers=hdrs)
-        assert st == 200
-        assert h["X-NW-Sig"] == formula("GET", path, raw, int(h["X-NW-Sig-Ts"]))
-    # the vector is the wire construction, with no direction tag
-    assert formula("GET", path, b"", ts) == F.sign(secret, "GET", path, b"", ts)
+               "X-NW-Req-Sig": mac(req_line), "X-NW-Sig-V": "2"}
+    st, h, raw = _raw("GET", base, path, "tok", secret, headers=by_hand)
+    assert st == 200 and h["X-NW-Sig-V"] == "2"
+    resp_line = f"nw-resp|200|GET|{path}|{sha(raw)}|{h['X-NW-Sig-Ts']}"
+    assert h["X-NW-Sig"] == mac(resp_line)
+    # the old four-field construction is no longer a request MAC
+    old = mac(f"GET|{path}|{sha(b'')}|{ts}")
+    st, h, raw = _raw("GET", base, path, "tok", secret, headers={**by_hand, "X-NW-Req-Sig": old})
+    assert st == 401 and json.loads(raw) == {"error": "unauthorized"}
+    _resp_sig(secret, "GET", path, h, raw, 401)
     srv.shutdown()
 
 
-def test_reflected_signed_response_is_not_a_request(tmp_path, monkeypatch):
-    """Responses share the request construction, so a signed 401 body replayed as the body of a
-    GET must not verify as a request: the host refuses a bodied GET/HEAD before the MAC check."""
-    import time
+def test_sign_and_verify_demand_a_direction_and_valid_status():
+    args = ("abc", "GET", "/v1/status", b"", 1700000000)
+    with pytest.raises(TypeError):
+        F.sign(*args)
+    with pytest.raises(TypeError):
+        F.verify(*args[:4], "00", args[4], now=NOW)
+    for bad in ("request", "", None, "REQ"):
+        with pytest.raises(ValueError):
+            F.sign(*args, direction=bad)
+    with pytest.raises(ValueError):
+        F.sign(*args, direction="resp")
+    for bad in (99, 600, "200", 200.0, True, None):
+        with pytest.raises(ValueError):
+            F.sign(*args, direction="resp", status=bad)
+    with pytest.raises(ValueError):
+        F.sign(*args, direction="req", status=200)
+    with pytest.raises(ValueError):
+        F.verify(*args[:4], "00", args[4], direction="req", status=200, now=NOW)
+    for st in (100, 200, 401, 599):
+        assert F.sign(*args, direction="resp", status=st) != F.sign(*args, direction="req")
 
-    monkeypatch.setattr(time, "time", lambda: NOW)
-    host = _cfg(tmp_path, "host")
-    secret, path = "abc", "/v1/status"
-    F.write_federation(host, {"hub_name": "h", "host_name": "box", "token": "tok", "secret": secret})
-    srv, base = _serve(host)
-    st, h, raw401 = _raw("GET", base, path, "wrong", secret)
-    assert st == 401
-    _resp_sig(secret, "GET", path, h, raw401)
-    replay = {"Authorization": "Bearer tok", "X-NW-Req-Ts": h["X-NW-Sig-Ts"],
-              "X-NW-Req-Sig": h["X-NW-Sig"], "Content-Length": str(len(raw401))}
-    st, h2, raw2 = _raw("GET", base, path, "tok", secret, raw401, now=NOW, headers=replay)
-    assert st == 401 and b"schema" not in raw2
-    _resp_sig(secret, "GET", path, h2, raw2)
-    # a signed 401 over an empty HEAD body is no status document either
-    st, h3, _ = _raw("HEAD", base, path, "tok", secret, headers={
-        "Authorization": "Bearer tok", "X-NW-Req-Ts": h["X-NW-Sig-Ts"], "X-NW-Req-Sig": h["X-NW-Sig"]})
-    assert st in (401, 405)
-    srv.shutdown()
+
+def _federation_sign_verify_violations(source: str, *, in_federation: bool) -> list[str]:
+    """Calls to federation's `sign`/`verify` in `source` that lack a `direction=` keyword."""
+    tree = ast.parse(source)
+    mods, names = set(), set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ImportFrom):
+            if node.module == "nightwright.agentic" or (node.level and node.module is None):
+                mods |= {a.asname or a.name for a in node.names if a.name == "federation"}
+            if node.module and node.module.split(".")[-1] == "federation":
+                names |= {a.asname or a.name for a in node.names if a.name in ("sign", "verify")}
+        elif isinstance(node, ast.Import):
+            mods |= {a.asname for a in node.names
+                     if a.name == "nightwright.agentic.federation" and a.asname}
+    bad = []
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        f = node.func
+        hit = ((isinstance(f, ast.Name) and f.id in ({"sign", "verify"} if in_federation else set())
+                | names)
+               or (isinstance(f, ast.Attribute) and f.attr in ("sign", "verify")
+                   and isinstance(f.value, ast.Name) and f.value.id in mods | {"federation"}))
+        if hit and not any(k.arg == "direction" for k in node.keywords):
+            bad.append(f"line {node.lineno}")
+    return bad
+
+
+def test_every_federation_sign_verify_call_passes_direction():
+    root = Path(__file__).resolve().parent.parent / "src" / "nightwright"
+    seen_fed = False
+    for py in sorted(root.rglob("*.py")):
+        in_fed = py.name == "federation.py" and py.parent.name == "agentic"
+        seen_fed = seen_fed or in_fed
+        assert _federation_sign_verify_violations(py.read_text(encoding="utf-8"),
+                                                  in_federation=in_fed) == [], py
+    assert seen_fed
+    # the checker itself: it flags a missing keyword and ignores look-alikes
+    assert _federation_sign_verify_violations(
+        "from nightwright.agentic import federation as F\nF.sign(1)\nF.verify(1, direction='req')\n"
+        "import hmac\nhmac.verify(1)\n", in_federation=False) == ["line 2"]
+    assert _federation_sign_verify_violations("sign(1)\nverify(2)\n", in_federation=True) == [
+        "line 1", "line 2"]
+    assert _federation_sign_verify_violations("sign(1)\n", in_federation=False) == []
 
 
 def test_hmac_test_vector(tmp_path):
-    assert F.sign("abc", "GET", "/v1/status", b"", 1700000000) == (
-        "53f715f892cd9e350af654bcacaca46fd6dcedb104c690ffaa9060fac03a49b5")
-    assert F.verify("abc", "GET", "/v1/status", b"", None, 1700000000, now=NOW) == "bad signature"
+    assert F.sign("abc", "GET", "/v1/status", b"", 1700000000, direction="req") == (
+        "a4879c456e4e8357b2b486928f5d4ed18b6a92754b581fc173ba3e787f56f61b")
+    assert F.sign("abc", "GET", "/v1/status", b"", 1700000000, direction="resp", status=200) == (
+        "9a6a671ded7c7fdcd11b3b6fd50c812a6f0a8b73724caa3ae8b8106ee9e8b8dd")
+    assert F.verify("abc", "GET", "/v1/status", b"", None, 1700000000, direction="req",
+                    now=NOW) == "bad signature"
     cfg = _cfg(tmp_path)
     sec_p = F.host_secret_path(cfg, "_nosuch")
     sec_p.parent.mkdir(parents=True, exist_ok=True)
@@ -721,7 +771,8 @@ def test_request_mac_is_enforced(tmp_path, monkeypatch):
         return {**hdrs, "X-NW-Req-Sig": ("0" if sig[0] != "0" else "1") + sig[1:]}
 
     def wrong_secret(hdrs):
-        return {**hdrs, "X-NW-Req-Sig": F.sign("not-abc", "GET", path, b"", int(NOW))}
+        return {**hdrs, "X-NW-Req-Sig": F.sign("not-abc", "GET", path, b"", int(NOW),
+                                                direction="req")}
 
     rejected = {
         "wrong MAC (flipped)": go(mutate=flip),
@@ -817,14 +868,14 @@ def test_hubclient_rejects_bad_responses(tmp_path, monkeypatch):
             self.send_response(200)
             self.send_header("Content-Type", "application/json")
             if bad_mode[0] == "tampered":
-                hdrs = F.response_headers(secret, "GET", "/v1/status", body, now=NOW)
-                self.send_header("X-NW-Sig-Ts", hdrs["X-NW-Sig-Ts"])
-                self.send_header("X-NW-Sig", hdrs["X-NW-Sig"])
+                hdrs = F.response_headers(secret, "GET", "/v1/status", body, status=200, now=NOW)
+                for k, v in hdrs.items():
+                    self.send_header(k, v)
                 body = body[:20] + bytes([body[20] ^ 0x01]) + body[21:]
             elif bad_mode[0] == "skew121":
-                hdrs = F.response_headers(secret, "GET", "/v1/status", body, now=NOW)
-                self.send_header("X-NW-Sig-Ts", hdrs["X-NW-Sig-Ts"])
-                self.send_header("X-NW-Sig", hdrs["X-NW-Sig"])
+                hdrs = F.response_headers(secret, "GET", "/v1/status", body, status=200, now=NOW)
+                for k, v in hdrs.items():
+                    self.send_header(k, v)
             self.send_header("Content-Length", str(len(body)))
             self.end_headers()
             self.wfile.write(body)
@@ -1682,7 +1733,7 @@ def test_check_output_order_reasons_and_bad_documents(tmp_path, monkeypatch):
         "badproj unreachable: bad status document",
         "badschema unreachable: bad schema",
         "mfirst ok",
-        "unsigned unreachable: missing response signature",
+        "unsigned unreachable: host uses an old signature version",
     ]
     assert lines[5:] == ["project Z on mfirst and zlast"]
     # the failed hosts' caches stay null, the ok ones are stored
@@ -1703,7 +1754,7 @@ def test_check_after_unenrol_reports_http_401(tmp_path, monkeypatch):
     F.federation_path(host).unlink()
     r = _invoke(hub, monkeypatch, "check")
     assert r.exit_code == 1
-    assert r.output.splitlines()[0] == "box unreachable: HTTP 401"
+    assert r.output.splitlines()[0] == "box unreachable: host not enrolled"
     srv.shutdown()
     srv.server_close()
 
@@ -1711,9 +1762,9 @@ def test_check_after_unenrol_reports_http_401(tmp_path, monkeypatch):
 def _signed_reply(secret, *, ts_off=0, mac=None, body=None):
     body = body or b'{"schema":"nw.federation.status.v1","projects":[],"campaigns":[]}'
     ts = int(NOW) + ts_off
-    sig = mac or F.sign(secret, "GET", "/v1/status", body, ts)
+    sig = mac or F.sign(secret, "GET", "/v1/status", body, ts, direction="resp", status=200)
     head = (f"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {len(body)}\r\n"
-            f"X-NW-Sig-Ts: {ts}\r\nX-NW-Sig: {sig}\r\nConnection: close\r\n\r\n")
+            f"X-NW-Sig-Ts: {ts}\r\nX-NW-Sig: {sig}\r\nX-NW-Sig-V: 2\r\nConnection: close\r\n\r\n")
     return head.encode() + body
 
 
@@ -1921,3 +1972,196 @@ def test_hubclient_closes_losing_sockets_of_a_multi_address_connect(tmp_path, mo
     assert len(made) >= 3 and all(s.fileno() == -1 for s in made)
     srv.shutdown()
     srv.server_close()
+
+
+def _replay_as_request(h, body=b""):
+    """A signed response's own headers presented as the request's signature headers."""
+    hdrs = {"Authorization": "Bearer tok", "X-NW-Req-Ts": h["X-NW-Sig-Ts"],
+            "X-NW-Req-Sig": h["X-NW-Sig"], "X-NW-Sig-V": "2"}
+    if body:
+        hdrs["Content-Length"] = str(len(body))
+    return hdrs
+
+
+def test_signed_response_replayed_as_request_fails(tmp_path, monkeypatch):
+    """SPEC-0595: a response MAC never verifies as a request MAC (GET, bodied POST, signed 401)."""
+    import time
+
+    monkeypatch.setattr(time, "time", lambda: NOW)
+    host = _cfg(tmp_path, "host")
+    secret, path, echo = "abc", "/v1/status", "/v1/_test_echo"
+    F.write_federation(host, {"hub_name": "h", "host_name": "box", "token": "tok", "secret": secret})
+    srv, base = _serve(host)
+    srv.extra_routes[("POST", echo)] = lambda body: json.dumps({"echo": body.decode()}).encode()
+    unrouted = FH.FederateServer(host, ("127.0.0.1", 0))
+    assert unrouted.extra_routes == {}  # the seam ships no route
+    unrouted.server_close()
+
+    # GET (the 0529 case): the signed 200 replayed against the same bodyless request
+    st, h, raw200 = _raw("GET", base, path, "tok", secret)
+    assert st == 200
+    _resp_sig(secret, "GET", path, h, raw200, st)
+    assert F.verify(secret, "GET", path, raw200, h["X-NW-Sig"], int(h["X-NW-Sig-Ts"]),
+                    direction="req", now=NOW) == "bad signature"
+    st, h2, raw2 = _raw("GET", base, path, "tok", secret, headers=_replay_as_request(h))
+    assert st == 401 and json.loads(raw2) == {"error": "unauthorized"}
+    _resp_sig(secret, "GET", path, h2, raw2, st)
+    # ... and with the signed body riding along (refused before the MAC check)
+    st, _, _ = _raw("GET", base, path, "tok", secret, raw200, headers=_replay_as_request(h, raw200))
+    assert st == 401
+
+    # bodied POST to the test-only route: the signed 200 body R replayed as `POST echo` with body R
+    body = b'{"hello":"world"}'
+    st, h, raw_r = _raw("POST", base, echo, "tok", secret, body, headers={
+        "Authorization": "Bearer tok", **F.request_headers(secret, "POST", echo, body, now=NOW),
+        "Content-Length": str(len(body))})
+    assert st == 200 and json.loads(raw_r) == {"echo": body.decode()}
+    _resp_sig(secret, "POST", echo, h, raw_r, st)
+    assert F.verify(secret, "POST", echo, raw_r, h["X-NW-Sig"], int(h["X-NW-Sig-Ts"]),
+                    direction="req", now=NOW) == "bad signature"
+    st, h3, raw3 = _raw("POST", base, echo, "tok", secret, raw_r, headers=_replay_as_request(h, raw_r))
+    assert st == 401 and json.loads(raw3) == {"error": "unauthorized"}
+    _resp_sig(secret, "POST", echo, h3, raw3, st)
+
+    # a signed 401 (bad token) replayed as a bodied POST request
+    st, h4, raw401 = _raw("POST", base, echo, "wrong", secret, body)
+    assert st == 401
+    _resp_sig(secret, "POST", echo, h4, raw401, st)
+    st, h5, raw5 = _raw("POST", base, echo, "tok", secret, raw401,
+                        headers=_replay_as_request(h4, raw401))
+    assert st == 401 and json.loads(raw5) == {"error": "unauthorized"}
+    assert F.verify(secret, "POST", echo, raw401, h4["X-NW-Sig"], int(h4["X-NW-Sig-Ts"]),
+                    direction="req", now=NOW) == "bad signature"
+    # the reverse: a request MAC is no response MAC
+    rq = F.request_headers(secret, "GET", path, b"", now=NOW)
+    assert F.verify(secret, "GET", path, b"", rq["X-NW-Req-Sig"], int(rq["X-NW-Req-Ts"]),
+                    direction="resp", status=200, now=NOW) == "bad signature"
+    srv.shutdown()
+
+
+def test_response_mac_binds_the_status():
+    ts = 1700000000
+    for s_ in (200, 401, 404, 503):
+        mac = F.sign("abc", "GET", "/v1/status", b"x", ts, direction="resp", status=s_)
+        assert F.verify("abc", "GET", "/v1/status", b"x", mac, ts, direction="resp", status=s_,
+                        now=NOW) is None
+        for t_ in (200, 401, 404, 503):
+            if t_ != s_:
+                assert F.verify("abc", "GET", "/v1/status", b"x", mac, ts, direction="resp",
+                                status=t_, now=NOW) == "bad signature"
+
+
+def test_host_demands_the_sig_version_marker(tmp_path, monkeypatch):
+    import time
+
+    monkeypatch.setattr(time, "time", lambda: NOW)
+    host = _cfg(tmp_path, "host")
+    secret, path = "abc", "/v1/status"
+    F.write_federation(host, {"hub_name": "h", "host_name": "box", "token": "tok", "secret": secret})
+    srv, base = _serve(host)
+    good = {"Authorization": "Bearer tok", **F.request_headers(secret, "GET", path, b"", now=NOW)}
+    for label, hdrs in {
+        "missing": {k: v for k, v in good.items() if k != "X-NW-Sig-V"},
+        "v1": {**good, "X-NW-Sig-V": "1"},
+        "empty": {**good, "X-NW-Sig-V": ""},
+        "padded": {**good, "X-NW-Sig-V": "02"},
+    }.items():
+        st, h, raw = _raw("GET", base, path, "tok", secret, headers=hdrs)
+        assert st == 401 and json.loads(raw) == {"error": "sig_version"}, label
+        _resp_sig(secret, "GET", path, h, raw, st)
+    # the bearer-token check still comes first
+    st, h, raw = _raw("GET", base, path, "wrong", secret,
+                      headers={**good, "Authorization": "Bearer wrong", "X-NW-Sig-V": "1"})
+    assert st == 401 and json.loads(raw) == {"error": "unauthorized"}
+    # a lower-case header name is accepted
+    low = {k.lower() if k == "X-NW-Sig-V" else k: v for k, v in good.items()}
+    st, _, _ = _raw("GET", base, path, "tok", secret, headers=low)
+    assert st == 200
+    # the marker alone is not auth: an old four-field MAC under a v2 marker is a bad MAC
+    import hashlib
+    import hmac as _hmac
+    ts = int(NOW)
+    old = _hmac.new(secret.encode(), f"GET|{path}|{F.EMPTY_BODY_SHA}|{ts}".encode(),
+                    hashlib.sha256).hexdigest()
+    st, h, raw = _raw("GET", base, path, "tok", secret, headers={**good, "X-NW-Req-Sig": old})
+    assert st == 401 and json.loads(raw) == {"error": "unauthorized"}
+    _resp_sig(secret, "GET", path, h, raw, st)
+    srv.shutdown()
+
+
+def _scripted_host(monkeypatch, tmp_path):
+    """A hub whose one host `box` is a raw listener that replies whatever `reply[0]` holds;
+    returns (client, secret, reply, stop)."""
+    hub = _cfg(tmp_path, "hub")
+    host = _cfg(tmp_path, "host")
+    blob = _add_and_enrol(host, hub, monkeypatch)
+    reply = [b""]
+
+    def answer(conn):
+        try:
+            conn.recv(65536)
+            conn.sendall(reply[0])
+        finally:
+            conn.close()
+
+    port, stop = _raw_listener(answer)
+    _point_hub(hub, "box", f"http://127.0.0.1:{port}")
+    return F.HubClient(H.find(H.load(hub), "box"), hub, now=NOW), blob["secret"], reply, stop
+
+
+def _wire(status, body, *, extra=()):
+    head = f"HTTP/1.1 {status} X\r\nContent-Length: {len(body)}\r\nConnection: close\r\n"
+    head += "".join(f"{k}: {v}\r\n" for k, v in extra)
+    return head.encode() + b"\r\n" + body
+
+
+def _signed(secret, status, body, *, sign_status=None, marker="2", ts_off=0, mac=None):
+    ts = int(NOW) + ts_off
+    sig = mac or F.sign(secret, "GET", "/v1/status", body, ts, direction="resp",
+                        status=status if sign_status is None else sign_status)
+    extra = [("X-NW-Sig-Ts", ts), ("X-NW-Sig", sig)]
+    if marker is not None:
+        extra.append(("X-NW-Sig-V", marker))
+    return _wire(status, body, extra=extra)
+
+
+def test_hubclient_check_order(tmp_path, monkeypatch):
+    client, secret, reply, stop = _scripted_host(monkeypatch, tmp_path)
+    unauth = b'{"error":"unauthorized"}'
+    doc = b'{"schema":"nw.federation.status.v1","projects":[],"campaigns":[]}'
+
+    def err(wire):
+        reply[0] = wire
+        with pytest.raises(ConnectionError) as ei:
+            client.request("GET", "/v1/status")
+        return str(ei.value)
+
+    # 1. the unenrolled host's unsigned 401
+    assert err(_wire(401, unauth)) == "host not enrolled"
+    # 2. no marker / wrong marker, whatever the status
+    assert err(_wire(401, b'{"error":"other"}')) == "host uses an old signature version"
+    assert err(_wire(404, b"{}")) == "host uses an old signature version"
+    assert err(_signed(secret, 200, doc, marker=None)) == "host uses an old signature version"
+    assert err(_signed(secret, 200, doc, marker="1")) == "host uses an old signature version"
+    assert err(_signed(secret, 401, unauth, marker="1")) == "host uses an old signature version"
+    # 3. signature failures, never a terminal HTTP 4xx
+    assert err(_wire(404, b"{}", extra=[("X-NW-Sig-V", "2")])) == "missing response signature"
+    assert err(_wire(403, unauth, extra=[("X-NW-Sig-V", "2")])) == "missing response signature"
+    assert err(_signed(secret, 404, b"{}", mac="0" * 64)) == "bad signature"
+    assert err(_signed(secret, 404, b"{}", ts_off=-500)) == "stale signature"
+    assert err(_signed(secret, 200, doc, mac="0" * 64)) == "bad signature"
+    # a signed 401 relabelled as 200 (and the reverse) fails the MAC
+    assert err(_signed(secret, 200, unauth, sign_status=401)) == "bad signature"
+    assert err(_signed(secret, 401, doc, sign_status=200)) == "bad signature"
+    # a request-direction MAC on a reply is no response MAC
+    req_mac = F.sign(secret, "GET", "/v1/status", doc, int(NOW), direction="req")
+    assert err(_signed(secret, 200, doc, mac=req_mac)) == "bad signature"
+    # 4. a verified non-200
+    assert err(_signed(secret, 404, b"{}")) == "HTTP 404"
+    assert err(_signed(secret, 401, b'{"error":"sig_version"}')) == "HTTP 401"
+    assert err(_signed(secret, 401, unauth)) == "HTTP 401"
+    # 5. a verified 200
+    reply[0] = _signed(secret, 200, doc)
+    st, raw, hdrs = client.request("GET", "/v1/status")
+    assert st == 200 and raw == doc
+    stop()
