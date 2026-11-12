@@ -760,15 +760,18 @@ def test_check_is_independent_of_the_running_user():
     """`--check` of the committed fixture must not depend on $USER or $HOME (gate workers differ).
     The four runs go in parallel (SPEC-0574: the module's test time is budgeted)."""
     procs = []
-    for user, home in [("nw", "/home/nw"), ("agentic", "/home/agentic"),
-                       ("campaigns", "/home/campaigns"), ("bruno", "/home/bruno")]:
-        e = dict(os.environ, USER=user, HOME=home)
-        e.pop("NW_DATA_DIR", None)
-        procs.append((user, subprocess.Popen([sys.executable, str(TOOL), "--check"], env=e,
-                                             stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)))
-    for user, proc in procs:
-        _, err = proc.communicate()
-        assert proc.returncode == 0, (user, err)
+    try:                                                      # an early failure must not leave children (SPEC-0585)
+        for user, home in [("nw", "/home/nw"), ("agentic", "/home/agentic"),
+                           ("campaigns", "/home/campaigns"), ("bruno", "/home/bruno")]:
+            e = dict(os.environ, USER=user, HOME=home)
+            e.pop("NW_DATA_DIR", None)
+            procs.append((user, subprocess.Popen([sys.executable, str(TOOL), "--check"], env=e,
+                                                 stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)))
+        for user, proc in procs:
+            _, err = proc.communicate()
+            assert proc.returncode == 0, (user, err)
+    finally:
+        reap_all([p for _, p in procs])
 
 
 def test_scan_user_segments_only_when_given(tool, tmp_path):
@@ -1305,7 +1308,7 @@ def test_capture_with_dictionary_word_user_keeps_prose(tool, tmp_path):
 
 @pytest.mark.parametrize("field", ["spec_id", "project"])
 @pytest.mark.parametrize("bad", ["../../etc", "/abs", "a/../../b", "..", "", "../x", "{tmp}", "SPEC-0001\n"])
-def test_unsafe_spec_id_and_project_are_skipped(tool, tmp_path, field, bad):
+def test_unsafe_spec_id_and_project_are_skipped(tool, tmp_path, monkeypatch, field, bad):
     src = build_source(tmp_path / "src")
     ag = src / "agentic"
     bad = bad.replace("{tmp}", str(tmp_path / "abs"))
@@ -1316,18 +1319,28 @@ def test_unsafe_spec_id_and_project_are_skipped(tool, tmp_path, field, bad):
     # a decoy wherever the traversal would land
     where = (os.path.normpath(ag / "reviews" / bad) if field == "spec_id"
              else os.path.normpath(ag / "sentinel" / f"{bad}.last.json"))
+    decoys = []                                               # the exact files planted
     if Path(where).is_relative_to(tmp_path):                  # never plant a decoy outside tmp_path
         if field == "spec_id":
             Path(where).mkdir(parents=True, exist_ok=True)
             Path(where, "d.json").write_text("DECOY-TEXT\n")
+            decoys.append(os.path.normpath(Path(where, "d.json")))
         else:
             Path(where).parent.mkdir(parents=True, exist_ok=True)
             Path(where).write_text("DECOY-TEXT\n")
-    elif bad == "/abs":
-        assert not Path(where).exists()                       # nothing was planted at /abs
+            decoys.append(where)
     notes = []
     chosen = [tool.Camp(ag / "campaigns" / c) for c in (MULTI, ABANDONED)]
-    files, _, _ = tool.collect_records(ag, chosen, {}, notes.append)
+    with monkeypatch.context() as mp:
+        reads = record_reads(mp)
+        files, _, _ = tool.collect_records(ag, chosen, {}, notes.append)
+    # the tool's own reads are seen (the spy is not vacuous) but never the decoy: for `..` and `""` `where`
+    # is a directory the tool legitimately reads other files from, so compare against the planted files
+    assert os.path.normpath(ag / "reviews" / MULTI[:9] / "r.json") in reads
+    if decoys:
+        assert not [r for r in reads if r in decoys], reads
+    else:                                                     # unplanted (`/abs`): nothing at or under it
+        assert not [r for r in reads if r == where or r.startswith(where + os.sep)], reads
     assert not [k for k, v in files.items() if b"DECOY-TEXT" in v]
     assert any(repr(bad) in n and "skipped" in n for n in notes), notes
     assert f"reviews/{MULTI[:9]}/r.json" in files and "sentinel/Meta-Tools.last.json" in files
@@ -1366,6 +1379,55 @@ def _collect(tool, src, notes):
     ag = src / "agentic"
     chosen = [tool.Camp(ag / "campaigns" / c) for c in (MULTI, ABANDONED)]
     return tool.collect_records(ag, chosen, {}, notes.append)[0]
+
+
+def reap_all(procs):
+    """Kill and drain every child that has not exited, so a failed assertion leaves none behind (SPEC-0585)."""
+    for p in procs:
+        if p.poll() is None:
+            p.kill()
+            p.communicate()
+
+
+def record_reads(monkeypatch):
+    """Patch the file-reading entry points to append the normalised path they open to the returned list."""
+    reads = []
+
+    def note(path):
+        try:
+            reads.append(os.path.normpath(os.fspath(path)))
+        except TypeError:                                     # a file descriptor
+            pass
+
+    orig = {n: getattr(Path, n) for n in ("read_bytes", "read_text", "open")}
+    orig_open = builtins.open
+
+    def wrap(name):
+        def f(self, *a, **kw):
+            note(self)
+            return orig[name](self, *a, **kw)
+        return f
+
+    def bopen(file, *a, **kw):
+        note(file)
+        return orig_open(file, *a, **kw)
+
+    for n in orig:
+        monkeypatch.setattr(Path, n, wrap(n))
+    monkeypatch.setattr(builtins, "open", bopen)
+    return reads
+
+
+def resolve_raises(monkeypatch, exc, name_suffix):
+    """`Path.resolve` raises `exc` for the one path whose name ends with `name_suffix`; every other call delegates."""
+    orig = Path.resolve
+
+    def resolve(self, *a, **kw):
+        if self.name.endswith(name_suffix):
+            raise exc("simulated")
+        return orig(self, *a, **kw)
+
+    monkeypatch.setattr(Path, "resolve", resolve)
 
 
 def test_sentinel_symlink_escaping_source_is_not_read(tool, tmp_path):
@@ -1519,11 +1581,16 @@ def test_non_string_ids_are_skipped_not_fatal(tool, tmp_path, field, bad):
     assert f"reviews/{MULTI[:9]}/r.json" in files and "sentinel/Meta-Tools.last.json" in files
     assert not [k for k in files if k.startswith("reviews/") and k != f"reviews/{MULTI[:9]}/r.json"]
     assert [k for k in files if k.startswith("sentinel/")] == ["sentinel/Meta-Tools.last.json"]
-    if (field, bad) != ("spec_id", ["a"]):                    # one full capture is enough
-        return
-    out = tmp_path / "out"
+    out = tmp_path / "out"                                    # a full capture for every combination (SPEC-0585)
     r = run_tool("--src", str(src), "--out", str(out), home=tmp_path)
     assert r.returncode == 0, r.stderr
+    assert "Traceback" not in r.stderr + r.stdout
+    assert (out / "agentic/reviews" / MULTI[:9] / "r.json").is_file()
+    if (field, bad) == ("spec_id", ["a"]):                    # and once as a real subprocess: the CLI contract
+        out2 = tmp_path / "out2"
+        r = run_tool_cli("--src", str(src), "--out", str(out2), home=tmp_path)
+        assert r.returncode == 0, r.stderr
+        assert "Traceback" not in r.stderr
 
 
 def test_review_symlink_to_unselected_agentic_data_is_not_read(tool, tmp_path):
@@ -1567,6 +1634,128 @@ def test_review_symlink_to_unselected_agentic_data_is_not_read(tool, tmp_path):
     assert _collect(tool, src, [])["sentinel/Meta-Tools.last.json"] == b"REGULAR\n"
 
 
+def _in_root_dangling(root: Path, name="dangling.json"):
+    link = root / name
+    link.symlink_to(root / "missing.json")                    # a missing file *inside* the root
+    return link
+
+
+def _inside_cases(tmp_path):
+    """name -> (path, expected) for `_inside(path, root)`, root = tmp_path.resolve() / "root"."""
+    root = tmp_path.resolve() / "root"
+    root.mkdir()
+    out = tmp_path.resolve() / "outside.txt"
+    out.write_text("x\n")
+    (root / "real.txt").write_text("x\n")
+    (root / "to_in.txt").symlink_to(root / "real.txt")
+    (root / "to_out.txt").symlink_to(out)
+    (root / "dangling_out.json").symlink_to(tmp_path.resolve() / "outside_missing.json")
+    (root / "loop").symlink_to(root / "loop")
+    return root, {
+        "dangling_in_root": (_in_root_dangling(root), False),  # only strict resolve makes this outside
+        "dangling_outside": (root / "dangling_out.json", False),
+        "loop": (root / "loop", False),
+        "link_outside": (root / "to_out.txt", False),
+        "link_inside": (root / "to_in.txt", True),
+        "missing_plain": (root / "plain", True),
+    }
+
+
+@pytest.mark.parametrize("case", ["dangling_in_root", "dangling_outside", "loop", "link_outside",
+                                  "link_inside", "missing_plain"])
+def test_inside_link_shapes(tool, tmp_path, case):
+    root, cases = _inside_cases(tmp_path)
+    path, expected = cases[case]
+    assert tool._inside(path, root) is expected
+
+
+@pytest.mark.parametrize("exc", [PermissionError, RuntimeError])
+def test_inside_when_resolve_raises_is_outside(tool, tmp_path, monkeypatch, exc):
+    root = tmp_path.resolve() / "root"
+    root.mkdir()
+    (root / "f.txt").write_text("x\n")
+    resolve_raises(monkeypatch, exc, "f.txt")
+    assert tool._inside(root / "f.txt", root) is False
+    assert tool._inside(root / "g.txt", root) is True         # every other path still resolves
+
+
+def test_review_dangling_link_is_noted_and_skipped(tool, tmp_path):
+    src = build_source(tmp_path / "src")
+    rv = src / "agentic" / "reviews" / MULTI[:9]
+    _in_root_dangling(rv)                                     # dangling.json -> missing.json beside it
+    notes = []
+    files = _collect(tool, src, notes)
+    assert any("dangling.json" in n and "resolves outside" in n for n in notes), notes
+    assert f"reviews/{MULTI[:9]}/dangling.json" not in files
+    assert f"reviews/{MULTI[:9]}/r.json" in files
+
+
+@pytest.mark.parametrize("exc", [PermissionError, RuntimeError])
+def test_review_file_whose_resolve_raises_is_noted_and_skipped(tool, tmp_path, monkeypatch, exc):
+    src = build_source(tmp_path / "src")
+    rv = src / "agentic" / "reviews" / MULTI[:9]
+    (rv / "unreadable.json").write_text("UNREADABLE-TEXT\n")
+    resolve_raises(monkeypatch, exc, "unreadable.json")
+    notes = []
+    files = _collect(tool, src, notes)
+    assert any("unreadable.json" in n and "resolves outside" in n for n in notes), notes
+    assert not [k for k, v in files.items() if b"UNREADABLE-TEXT" in v]
+    assert f"reviews/{MULTI[:9]}/r.json" in files
+
+
+@pytest.mark.parametrize("shape", ["dangling", "loop", "resolve_permission", "resolve_runtime"])
+def test_sentinel_dangling_loop_and_unreadable_links(tool, tmp_path, monkeypatch, shape):
+    src = build_source(tmp_path / "src")
+    link = src / "agentic" / "sentinel" / "Meta-Tools.last.json"
+    link.unlink()
+    if shape == "dangling":
+        link.symlink_to(link.parent / "missing.json")
+    elif shape == "loop":
+        link.symlink_to(link)
+    else:
+        link.write_text("SENTINEL-UNREADABLE\n")
+        resolve_raises(monkeypatch, PermissionError if shape == "resolve_permission" else RuntimeError,
+                       "Meta-Tools.last.json")
+    notes = []
+    files = _collect(tool, src, notes)                        # never raises
+    assert "sentinel/Meta-Tools.last.json" not in files
+    assert not [k for k, v in files.items() if b"SENTINEL-UNREADABLE" in v]
+    if shape != "loop":                                       # a 3.13+ non-strict loop resolves to itself: no note
+        assert any("Meta-Tools.last.json" in n and "does not resolve to itself: skipped" in n
+                   for n in notes), notes
+    assert f"reviews/{MULTI[:9]}/r.json" in files
+
+
+def test_reap_all_kills_running_children():
+    p = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"],
+                         stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    done = subprocess.Popen([sys.executable, "-c", "pass"], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    done.communicate()
+    try:
+        assert p.poll() is None
+        reap_all([p, done])
+        assert p.returncode is not None and p.returncode < 0
+        assert done.returncode == 0                           # an exited child is left alone
+    finally:
+        if p.poll() is None:
+            p.kill()
+            p.communicate()
+
+
+def test_spec_reviews_rows_with_non_string_ids_are_skipped(tool, tmp_path):
+    src = build_source(tmp_path / "src")
+    valid = {"spec_id": MULTI[:9], "kind": "end"}
+    rows = [{"spec_id": ["SPEC-0001"]}, {"spec_id": {"a": 1}}, {"spec_id": 5}, {"spec_id": None},
+            {"kind": "no-spec-id"}, [1], "SPEC-0001", valid, {"spec_id": "SPEC-9999"}]
+    (src / "agentic" / "spec-reviews.jsonl").write_text("".join(json.dumps(r) + "\n" for r in rows))
+    files = _collect(tool, src, [])                           # must not raise TypeError
+    assert read_jsonl_text(files["spec-reviews.jsonl"]) == [valid]
+
+
+def read_jsonl_text(b: bytes):
+    return [json.loads(x) for x in b.decode().splitlines() if x.strip()]
+
+
 COMMON_WORD_ROWS = [
     ({"runner"}, "runner@localhost", "user@localhost"),
     ({"runner"}, "USER=runner", "USER=user"),
@@ -1584,7 +1773,43 @@ COMMON_WORD_ROWS = [
     ({"build"}, "--target=build", "--target=build"),
     ({"ci"}, "env=ci", "env=ci"),
     ({"runner", "alice"}, "alice@x runner@x /runner/a alice runner", "user@x user@x /user/a user runner"),
+    ({"runner"}, "export USER=runner", "export USER=user"),
+    ({"runner"}, "XUSER=runner", "XUSER=runner"),
+    ({"runner"}, "MY_USER=runner", "MY_USER=runner"),
+    ({"runner"}, "User=runner", "User=runner"),
+    ({"runner"}, "xrunner@localhost", "xrunner@localhost"),
+    ({"runner"}, ".runner@localhost", ".runner@localhost"),
+    ({"runner"}, "-runner@localhost", "-runner@localhost"),
+    ({"runner"}, "Runner@localhost", "Runner@localhost"),
+    ({"runner"}, "RUNNER@localhost", "RUNNER@localhost"),
+    ({"runner"}, "USER=runnerx", "USER=runnerx"),
+    ({"runner"}, "USER=runner-x", "USER=runner-x"),
+    ({"runner"}, "USER=runner_x", "USER=runner_x"),
+    ({"runner"}, "USER=runner,", "USER=user,"),
+    ({"runner"}, "/runner/a runner@x", "/user/a user@x"),
 ]
+
+
+COUNT_ROWS = [
+    ({"runner"}, "runner@localhost and USER=runner", 2),
+    ({"runner"}, "/runner/a runner@x USER=runner LOGNAME=runner", 4),
+    ({"runner"}, "the runner log XUSER=runner", 0),
+    ({"runner", "alice"}, "alice@x runner@x /runner/a alice runner", 4),
+]
+
+
+@pytest.mark.parametrize("users,text,n", COUNT_ROWS)
+def test_common_word_user_counts_are_per_substitution(tool, users, text, n):
+    san = tool.Sanitizer(users=users)
+    san.text(text)
+    assert san.counts["user_name"] == n
+    assert [san.counts[r] for r in ("home_path", "email", "secret", "host", "ipv4", "pr_url_host", "env")] == [0] * 7
+
+
+def test_common_word_user_home_path_is_not_double_counted(tool):
+    san = tool.Sanitizer(users={"runner"})
+    assert san.text("/home/runner/x") == "/home/user/x"
+    assert san.counts["home_path"] == 1 and san.counts["user_name"] == 0
 
 
 @pytest.mark.parametrize("users,text,expected", COMMON_WORD_ROWS)

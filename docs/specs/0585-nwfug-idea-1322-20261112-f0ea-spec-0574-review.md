@@ -1,7 +1,7 @@
 ---
 id: SPEC-0585
 title: "SPEC-0574 review follow-ups: pin the sentinel, dangling-link, spec-reviews guard and sanitizer-boundary behaviour; reap parallel children; a real decoy-safety check"
-status: accepted
+status: in-progress
 owner: user
 created: 2026-11-12
 updated: 2026-11-12
@@ -208,35 +208,35 @@ marker `pytestmark = pytest.mark.integration`. No new module, so no second tier 
 
 ## Acceptance criteria
 
-- [ ] **AC1.** `_inside` returns `False` for a dangling link whose missing target is **inside** the
+- [x] **AC1.** `_inside` returns `False` for a dangling link whose missing target is **inside** the
   root (`root/dangling.json -> root/missing.json`) and for one whose missing target is outside, a
   loop, a link to a file outside the root, and when `Path.resolve` raises `PermissionError` or
   `RuntimeError`; `True` for a link to a file inside the root and for a plain missing path under it.
-- [ ] **AC2.** A dangling link in `reviews/<spec_id>/` whose target is a missing file inside that
+- [x] **AC2.** A dangling link in `reviews/<spec_id>/` whose target is a missing file inside that
   directory (`dangling.json -> missing.json`) is skipped with a note naming it and
   `resolves outside`, and the directory's regular files are still captured.
-- [ ] **AC3.** A dangling sentinel link is skipped with the `does not resolve to itself: skipped`
+- [x] **AC3.** A dangling sentinel link is skipped with the `does not resolve to itself: skipped`
   note; a self-looping sentinel link is not read and does not crash the capture; with `resolve`
   raising `PermissionError` or `RuntimeError` for the sentinel file the capture does not crash,
   reads nothing from it and notes the skip (so the `except (OSError, RuntimeError)` branch
   executes in the suite).
-- [ ] **AC4.** `reap_all` kills and waits for a still-running child (its return code is negative
+- [x] **AC4.** `reap_all` kills and waits for a still-running child (its return code is negative
   after the call), and `test_check_is_independent_of_the_running_user` calls it in a `finally`, so
   no child of that test survives it when an assertion fails.
-- [ ] **AC5.** `test_unsafe_spec_id_and_project_are_skipped` has no assertion about the existence
+- [x] **AC5.** `test_unsafe_spec_id_and_project_are_skipped` has no assertion about the existence
   of any path outside `tmp_path`; for every parametrised (`field`, `bad`) combination, including `spec_id`
   `..` and `""`, it asserts the tool opened no planted decoy file (`where/d.json` for `spec_id`, the
   `where` file for `project`) and, for the unplanted `/abs`, nothing equal to or under `where`;
   reads of other files under the same directories (e.g. `reviews/<MULTI[:9]>/r.json`) are allowed;
   it creates nothing outside `tmp_path`; it passes when the suite runs as root and when `/abs`
   exists.
-- [ ] **AC6.** For every combination of `field` in (`spec_id`, `project`) and `bad` in
+- [x] **AC6.** For every combination of `field` in (`spec_id`, `project`) and `bad` in
   (`["a"]`, `{"a": 1}`, `5`, `""`), a full `run_tool` capture exits 0, prints no `Traceback`, and
   the output contains the valid sibling campaign's review file.
-- [ ] **AC7.** With `spec-reviews.jsonl` rows whose `spec_id` is a list, a dict, `5`, `None`,
+- [x] **AC7.** With `spec-reviews.jsonl` rows whose `spec_id` is a list, a dict, `5`, `None`,
   absent, plus non-dict rows, `collect_records` does not raise and the kept file holds only the
   valid row for the selected spec.
-- [ ] **AC8.** Every row of the Design's common-word table holds exactly, and the counting test
+- [x] **AC8.** Every row of the Design's common-word table holds exactly, and the counting test
   holds: `counts["user_name"]` equals the number of substitutions and every other rule counter is 0
   for those strings (`/home/runner/x` gives `home_path == 1`, `user_name == 0`).
 - [ ] **AC9.** `tools/capture_history_fixture.py`, the committed fixture and `MANIFEST.json` are
@@ -244,7 +244,7 @@ marker `pytestmark = pytest.mark.integration`. No new module, so no second tier 
   spec and the generated `docs/LEDGER.md`; `python3 tools/capture_history_fixture.py --check`,
   `python3 tools/test_tiers.py --check` and `python3 tools/spec_lint.py` exit 0; the module
   passes under its 20 s budget guard.
-- [ ] **AC10.** Mutation check (manual step 2): reverting the `isinstance` guard on
+- [x] **AC10.** Mutation check (manual step 2): reverting the `isinstance` guard on
   `spec-reviews.jsonl`, the strict resolve in `_inside`, the `\b` before `USER`, or the
   `(?<![\w.-])` before `name@` each makes at least one new test fail, and the tool is restored.
   For the strict-resolve revert the failing test is the in-root dangling case (in
@@ -289,6 +289,45 @@ no second tier marker is added; `python3 tools/test_tiers.py --check` must exit 
    each time; record which, and the Python version for (b). Nothing from this step is committed.
 3. `python3 tools/capture_history_fixture.py --check`, `python3 tools/test_tiers.py --check` and
    `python3 tools/spec_lint.py` exit 0; `git diff main --stat` lists only the AC9 files.
+
+### Test record (2026-11-12)
+
+Python 3.14.7, non-root (no root shell available, so the AC5 "as root" run was not done; the spy
+no longer asserts anything about what exists on the box, so it does not depend on the uid).
+The box was heavily loaded (load average 10-14), so absolute times are inflated.
+
+- `NW_HISTORY_FIXTURE_BUDGET_S=300 uv run pytest -q tests/test_history_fixture.py`: 187 passed
+  (151 before this spec; 36 new test cases). The module's summed test time was 33-41 s under that
+  load; the **unchanged** `HEAD` module measured 45.7 s in the same conditions, so the 20 s guard
+  fails on this box before and after (a load effect, not this change). The new/edited tests
+  (new tests plus the edited `unsafe_spec_id`, `non_string_ids` and parallel `--check` tests) sum to
+  about 4.1 s under that load.
+- Mutation check (AC10), each followed by `git checkout -- tools/capture_history_fixture.py`
+  (tool restored, `git status` shows it unmodified), Python 3.14.7:
+  (a) dropping `isinstance(o.get("spec_id"), str) and` fails `test_spec_reviews_rows_with_non_string_ids_are_skipped`;
+  (b) `_inside` -> `path.resolve()` fails `test_inside_link_shapes[dangling_in_root]`,
+  `test_review_dangling_link_is_noted_and_skipped` (in-root dangling cases) and
+  `test_inside_link_shapes[loop]` / `test_inside_treats_a_symlink_loop_as_outside` (3.13+ loop);
+  (c) dropping `\b` before `USER` fails `test_common_word_user_edge_cases[XUSER=runner]`,
+  `[MY_USER=runner]` and `test_common_word_user_counts_are_per_substitution[...XUSER=runner...]`;
+  (d) dropping `(?<![\w.-])` before `name@` fails the `xrunner@`, `.runner@` and `-runner@` rows.
+- `python3 tools/capture_history_fixture.py --check`: ok (441 files). `python3 tools/test_tiers.py --check`: exit 0.
+- The full suite was left to gating.
+
+### As shipped (2026-11-12)
+
+Tests only, in `tests/test_history_fixture.py`; no tool change. Deviations from the Design text:
+the reviews `resolve`-raising variants use a regular `unreadable.json` file (resolve raising for
+that name); `COUNT_ROWS` holds the counting rows and the `/home/runner/x` row is its own test
+(`test_common_word_user_home_path_is_not_double_counted`); the read spy also asserts that the
+tool's own read of `reviews/<MULTI[:9]>/r.json` was recorded, so a broken spy cannot pass vacuously.
+
+AC9 is left unticked: everything in it holds (tool, fixture and manifest untouched, `--check`,
+`test_tiers --check` and `spec_lint` exit 0, only the test module, this spec and the ledger changed)
+except the 20 s module budget, which could not be shown on this box (load average 14 from other
+campaigns): the guard errors at 33-44 s here, and the unchanged `HEAD` module errors at 45.7 s. The new
+tests add about 4 s under that load. The affected-tests run (`tools/affected_tests.py --run`) was
+started but did not finish on the saturated box.
 
 **Regression guard.** `python3 tools/affected_tests.py --run uv run pytest -q`, plus
 `uv run pytest -q tests/test_history_fixture.py`, `python3 tools/spec_lint.py` and
