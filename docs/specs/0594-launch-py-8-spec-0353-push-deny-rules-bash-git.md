@@ -1,9 +1,10 @@
 ---
 id: SPEC-0594
 title: "launch.py: the 8 SPEC-0353 `nw/x:<dst>` push deny rules must not end in the legacy `:*` prefix form"
-status: proposed
+status: accepted
 owner: user
 created: 2026-11-12
+updated: 2026-11-12
 kind: feature
 source_idea: IDEA-944
 tags: [agentic, conductor, steward, permissions]

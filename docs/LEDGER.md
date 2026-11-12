@@ -371,7 +371,7 @@ progress. This is the single place to see *what has been decided* and *what is i
 | [SPEC-0552](./specs/0552-leaner-agentic-campaign-loop.md) | Leaner agentic campaign loop (role tiers, review packet, findings collator, resumable sessions) | epic | accepted | — | 2026-11-11 |
 | [SPEC-0556](./specs/0556-resumable-implementer-and-reviewer-sessions.md) | Resumable implementer and reviewer sessions per backend, with a fresh-session fallback | feature | in-progress | — | 2026-11-11 |
 | [SPEC-0572](./specs/0572-lean-spec-phase-sessions.md) | Lean spec phase — resumable spec writer and delta spec re-review (`spec_sessions`) | feature | accepted | — | 2026-11-12 |
-| [SPEC-0594](./specs/0594-launch-py-8-spec-0353-push-deny-rules-bash-git.md) | launch.py: the 8 SPEC-0353 `nw/x:<dst>` push deny rules must not end in the legacy `:*` prefix form | feature | proposed | — | 2026-11-12 |
+| [SPEC-0594](./specs/0594-launch-py-8-spec-0353-push-deny-rules-bash-git.md) | launch.py: the 8 SPEC-0353 `nw/x:<dst>` push deny rules must not end in the legacy `:*` prefix form | feature | accepted | — | 2026-11-12 |
 
 ## Done
 
