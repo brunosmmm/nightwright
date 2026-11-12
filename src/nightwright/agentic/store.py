@@ -551,6 +551,13 @@ def resolve_campaign_ref(cfg, ref: str) -> tuple[str, bool]:
     spans more than one project (spec ids are per project, SPEC-0327)."""
     if campaign_state(cfg, ref) is not None:
         return ref, False
+    d = _contained_campaign_dir(cfg, ref)
+    if d is not None and (d / "state.json").is_file():     # a real campaign, unreadable state:
+        try:                                               # report the read error, not "no campaign"
+            read_state(cfg, ref)
+        except (ValueError, OSError) as e:
+            raise ValueError(f"campaign {ref!r} has an unreadable state.json: {e}")
+        raise ValueError(f"campaign {ref!r} has an unreadable state.json (not a JSON object)")
     rows = list_campaigns(cfg, include_terminal=True, spec_id=ref) if isinstance(ref, str) else []
     if not rows:
         raise ValueError(f"no campaign {ref!r} (not a campaign id, and no campaign has that spec id)")

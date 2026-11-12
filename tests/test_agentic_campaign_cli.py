@@ -387,8 +387,8 @@ def test_cli_ambiguous_and_unknown_exit_codes(tmp_path, monkeypatch):
     cfg = _cfg(tmp_path)
     _mk(cfg, "SPEC-0300-20261001-0001", "SPEC-0300", "GATING", "2026-10-01T10:00:00-04:00")
     _mk(cfg, "SPEC-0300-20261002-0002", "SPEC-0300", "GATING", "2026-10-02T10:00:00-04:00", "Other")
-    for cmd in (["runs"], ["log"], ["show"], ["tail"]):
-        r = _run(cfg, monkeypatch, ["campaign", cmd[0], "SPEC-0300"])
+    for cmd in (["runs"], ["log"], ["show"], ["tail"], ["run", "001"]):
+        r = _run(cfg, monkeypatch, ["campaign", cmd[0], "SPEC-0300", *cmd[1:]])
         assert r.exit_code != 0
         assert "SPEC-0300-20261001-0001" in r.stderr and "SPEC-0300-20261002-0002" in r.stderr
     r = _run(cfg, monkeypatch, ["campaign", "runs", "SPEC-4242"])
@@ -406,9 +406,43 @@ def test_cli_tail_follow_campaign_gets_resolved_id(tmp_path, monkeypatch):
     assert seen == ["SPEC-0170-20261025-aaaa"]
 
 
-def test_cli_history_and_note_do_not_resolve_spec_ids(tmp_path, monkeypatch):
+def test_cli_history_note_records_export_do_not_resolve_spec_ids(tmp_path, monkeypatch):
     cfg = _cfg(tmp_path)
     _seed(cfg)
+    cid = "SPEC-0170-20261025-aaaa"
+    before = len(S.read_ledger(cfg, cid))
     r = _run(cfg, monkeypatch, ["campaign", "history", "SPEC-0170"])
     assert r.exit_code != 0
     assert "newest open campaign" not in r.stderr
+    r = _run(cfg, monkeypatch, ["campaign", "note", "SPEC-0170", "x extra"])
+    assert r.exit_code != 0 and "newest open campaign" not in r.stderr
+    assert len(S.read_ledger(cfg, cid)) == before          # nothing appended to the resolved one
+    r = _run(cfg, monkeypatch, ["campaign", "records", "--campaign", "SPEC-0170", "--json"])
+    assert "newest open campaign" not in r.stderr and cid not in r.stderr
+    r = _run(cfg, monkeypatch, ["campaign", "export", "SPEC-0170", "--out", str(tmp_path / "ex")])
+    assert r.exit_code != 0 and "newest open campaign" not in r.stderr
+    assert not (tmp_path / "ex").exists()
+
+
+def test_resolve_ref_several_open_picks_newest(tmp_path):
+    cfg = _cfg(tmp_path)
+    _mk(cfg, "SPEC-0400-20261001-0001", "SPEC-0400", "GATING", "2026-10-01T10:00:00-04:00")
+    _mk(cfg, "SPEC-0400-20261003-0003", "SPEC-0400", "OPENING", "2026-10-03T10:00:00-04:00")
+    _mk(cfg, "SPEC-0400-20261002-0002", "SPEC-0400", "GATING", "2026-10-02T10:00:00-04:00")
+    assert S.resolve_campaign_ref(cfg, "SPEC-0400") == ("SPEC-0400-20261003-0003", True)
+
+
+def test_resolve_ref_corrupt_real_campaign_reports_read_error(tmp_path):
+    cfg = _cfg(tmp_path)
+    _seed(cfg)
+    cid = "SPEC-0170-20261025-aaaa"
+    (S.campaign_dir(cfg, cid) / "state.json").write_text("{not json")
+    with pytest.raises(ValueError, match="unreadable state.json"):
+        S.resolve_campaign_ref(cfg, cid)
+
+
+@pytest.mark.parametrize("cmd", ["tail", "run", "runs", "log", "show"])
+def test_cli_campaign_argument_help_mentions_spec_id(tmp_path, monkeypatch, cmd):
+    cfg = _cfg(tmp_path)
+    r = _run(cfg, monkeypatch, ["campaign", cmd, "--help"])
+    assert r.exit_code == 0 and "spec id" in " ".join(r.stdout.split())

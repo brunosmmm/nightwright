@@ -141,14 +141,17 @@ its existing `campaign` / `id` field.
 
 ### Test record (2026-11-12)
 
-- `uv run pytest -q tests/test_agentic_campaign_cli.py`: 23 passed (11 new SPEC-0577 tests:
+- `uv run pytest -q tests/test_agentic_campaign_cli.py tests/test_rich_output_guard.py`: 33 passed
+  (loop 1 added: several-open ordering, `run` ambiguity, per-command `--help` mentions spec ids,
+  `history`/`note`/`records`/`export` do not resolve, corrupt real-campaign state reports the read
+  error; earlier, 11 SPEC-0577 tests:
   resolver cases incl. two-project ambiguity and `../x` never opened; CLI `runs`/`log`/`show`/
   `run`/`tail` with a spec id equal to the full-id output, both stderr note variants, real id
   prints no note, ambiguity/unknown exit codes, `--follow-campaign` receives the resolved id,
   `history` does not resolve). Stdout/stderr asserted via `r.stdout` / `r.stderr` (Click 8.4
   keeps them separate).
 - `python3 tools/test_tiers.py --check` exit 0; `python3 tools/spec_lint.py` OK.
-- Affected tests (`python3 tools/affected_tests.py --run uv run pytest -q`) run; full suite left
+- Affected tests (`python3 tools/affected_tests.py --exclude-marks=integration,tui,remote,perf --run uv run pytest -q`): 1809 passed, 3 skipped; full suite left
   to gating.
 - Manual, real data dir: `nw campaign runs SPEC-0577 --json` printed `campaign
   IDEA-657-20261112-6e90 (newest open campaign for SPEC-0577)` on stderr and `.campaign` equal to
@@ -156,6 +159,8 @@ its existing `campaign` / `id` field.
 
 ### As shipped
 
+- A real campaign directory with an unreadable `state.json` raises `campaign '<id>' has an
+  unreadable state.json: <error>` instead of falling through to the spec lookup.
 - The unknown-ref message reads `no campaign '<ref>' (not a campaign id, and no campaign has
   that spec id)`, keeping the `no campaign '<ref>'` prefix existing tests and callers match.
 - For `--follow-campaign` the stderr note is written before following starts and may be wiped
