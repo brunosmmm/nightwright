@@ -41,6 +41,7 @@ class BadOffset(ValueError):
 
 
 _INT_RE = re.compile(r"-?[0-9]{1,18}")
+_MAX_FIRST_LINE = F.MAX_RESPONSE_BYTES // 2   # a first line past this cannot come back in one response
 
 
 def read_events_page(path, offset: int, limit: int) -> tuple[list[dict], int]:
@@ -48,7 +49,8 @@ def read_events_page(path, offset: int, limit: int) -> tuple[list[dict], int]:
     and the offset after the lines consumed. Only the byte before `offset` is read ahead of it;
     a trailing partial line is neither returned nor consumed; a line that is not one JSON object
     is consumed and omitted. The first line is returned even when it alone exceeds
-    `F.EVENTS_MAX_BYTES`, so a cursor can always pass it."""
+    `F.EVENTS_MAX_BYTES`, so a cursor can always pass it; one too large for the hub's response cap
+    is consumed unread and omitted. Memory use is bounded by one capped line."""
     try:
         f = open(path, "rb")
     except FileNotFoundError:
@@ -68,7 +70,22 @@ def read_events_page(path, offset: int, limit: int) -> tuple[list[dict], int]:
         out: list[dict] = []
         consumed = lines = 0
         while lines < limit and consumed < remaining:
-            raw = f.readline(remaining - consumed)
+            first = lines == 0
+            # Never hold more than one capped line: the first line may exceed EVENTS_MAX_BYTES
+            # (so a cursor can pass it) up to what the hub can read back; later lines stop at the cap.
+            cap = _MAX_FIRST_LINE if first else F.EVENTS_MAX_BYTES - consumed
+            raw = f.readline(min(remaining - consumed, cap + 1))
+            if first and len(raw) > cap:
+                # Too large for the hub to read in one response: consume it unread, omit it.
+                skipped = len(raw)
+                while not raw.endswith(b"\n") and consumed + skipped < remaining:
+                    raw = f.readline(min(remaining - consumed - skipped, 65536))
+                    skipped += len(raw)
+                if not raw.endswith(b"\n"):
+                    break
+                consumed += skipped
+                lines += 1
+                continue
             if not raw.endswith(b"\n"):
                 break
             if lines and consumed + len(raw) > F.EVENTS_MAX_BYTES:

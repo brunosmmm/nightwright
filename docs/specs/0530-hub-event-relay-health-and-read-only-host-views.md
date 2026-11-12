@@ -604,6 +604,13 @@ filters ideas only. `nw hub --json` prints the key because it prints `hub_payloa
   tier/wait guards, TUI queue parity/hub, skills): 576 passed. `test_agentic_queue`,
   `test_agentic_e2e`, `test_agentic_ping`, docs capability/guide/capture and guard-registry
   files: 274 passed. `python3 tools/test_tiers.py --check` exits 0.
+- Review round (2026-11-12): `tests/test_federation_relay.py` now 29 tests, all passing: a seeded
+  local campaign pins `host: null`/`stale: false` and the narrow-width host column; health-append
+  crash windows (unreachable and reachable), a missing cursor with existing health, an unparseable
+  `last_ok`, a hostile status body, a forged unsigned 409, partial failures, a lost page checkpoint
+  followed by a health event, a relayed `host_*` event with an origin, a disabled-host view,
+  brief truncation order, and an oversized first line. Overlap is proved with a barrier and the
+  late-result check joins the pool thread instead of sleeping.
 - The full suite and the whole affected set (211 files) were left to the close gate.
 - Manual run (hub and host in separate `NW_DATA_DIR`/`NW_CONFIG_DIR`, host on
   `127.0.0.1:18792` because 8792 was taken): see As shipped.
@@ -623,10 +630,25 @@ Built to Design. Deviations and choices:
 - If a host's page or reset failed to checkpoint in a tick, that tick's health update does
   not advance `hub_events_offset`, so the next rescan still covers the page.
 - `queue.tick` runs the relay through `queue._relay_hosts`, which imports `federation`
-  inside the function and journals `federation_relay_failed` on an exception.
+  inside the function, logs nothing itself and journals `federation_relay_failed` on an
+  exception (a journal entry in addition to not failing the tick).
 - The status cache keeps only the five documented campaign keys as bounded printable
   strings (the `hosts check` sanitizer, moved to `federation.clean_str` /
   `clean_campaigns`).
+- Review hardening (loop 2): a page or reset checkpoint keeps `hub_events_offset` where it is
+  while the rescan tail holds this hub's own `host_unreachable`/`host_reachable` for the host
+  (its flag checkpoint may be lost), and a health checkpoint does not move the offset while the
+  tail holds copied records past `events_origin_id` (a page whose checkpoint failed in an earlier
+  tick). A reached host with the flag false still appends `host_reachable` when the tail shows an
+  open outage whose flag checkpoint was lost. Health dedupe (`host_unreachable`,
+  `host_reachable`, `host_cursor_reset`) counts only records with no `origin`, so a `host_*`
+  event relayed from a peer hub never suppresses this hub's own.
+- `read_events_page` reads at most one capped line at a time. A first line over half of
+  `MAX_RESPONSE_BYTES` (2 MiB; the hub could not read it back, which would stall the cursor)
+  is consumed unread and omitted; a first line up to that size is still returned alone.
+- The status cache's sanitiser is pinned by `test_hostile_status_body_is_sanitised_in_the_cache`:
+  `projects` keeps only bounded printable strings, each campaign only its five keys, at most
+  `MAX_CAMPAIGNS` entries, non-dict campaign entries dropped.
 - `nw queue status --all-hosts` text: remote rows are listed in the Active table with a
   fixed `host` column (empty for local rows); the other tables are local only.
 

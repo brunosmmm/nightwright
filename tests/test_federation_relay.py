@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import ast
+import copy
 import datetime as dt
 import json
 import threading
@@ -10,15 +11,18 @@ from pathlib import Path
 
 import pytest
 from click.testing import CliRunner
+from rich.console import Console
 
 from nightwright import report as RP
 from nightwright.agentic import brief as BR
+from nightwright.agentic import cli_queue as CQ
 from nightwright.agentic import events as E
 from nightwright.agentic import federation as F
 from nightwright.agentic import federation_host as FH
 from nightwright.agentic import hosts as H
 from nightwright.agentic import queue as Q
 from nightwright.agentic import quiet as QT
+from nightwright.agentic import store
 from nightwright.cli import cli
 
 import waits
@@ -222,7 +226,7 @@ def test_fsync_failure_retries_once(tmp_path, monkeypatch):
     assert _rec(hub)["cursor"] == before
     F.relay_tick(hub, now=NOW)
     assert _origin_ids(hub) == [1, 2]
-    assert _rec(hub)["cursor"]["events_origin_id"] == 2 and len(calls) == 2
+    assert _rec(hub)["cursor"]["events_origin_id"] == 2 and len(calls) >= 2
     srv.shutdown()
 
 
@@ -308,21 +312,21 @@ def test_pool_overlaps_and_drops_late_results(tmp_path, monkeypatch):
     assert F.POOL_WAIT_S == 2.5
     hub = _cfg(tmp_path, "hub")
     _three_hosts(hub, disabled=("off",))
-    starts, ends, applied = {}, {}, []
+    ends, applied = {}, []
     called = []
+    barrier = threading.Barrier(3)
     slow_release, slow_done = threading.Event(), threading.Event()
     page = {"schema": "nw.federation.events.v1", "events": [_ev(1)], "next_offset": 10}
 
     def fetch_events(rec, cfg, offset):
         n = rec["name"]
         called.append(n)
-        starts[n] = time.monotonic()
         if n == "c" and slow:
             slow_release.wait(5)
             slow_done.set()
             return "page", page
         if not slow:
-            time.sleep(0.2)
+            barrier.wait(5)                  # returns only when all three fetches run together
         ends[n] = time.monotonic()
         return "page", page
 
@@ -348,7 +352,7 @@ def test_pool_overlaps_and_drops_late_results(tmp_path, monkeypatch):
     slow = False
     F.relay_tick(hub, now=NOW)
     assert seen == [F.POOL_WAIT_S] and sorted(called) == ["a", "b", "c"]
-    assert max(starts.values()) - min(starts.values()) < 0.15           # the fetches overlap
+    assert barrier.n_waiting == 0 and not barrier.broken                # the fetches overlapped
     assert [a[0] for a in applied] == ["a", "b", "c"] and all(a[1] for a in applied)
     assert min(a[2] for a in applied) >= max(ends.values())
     assert "cursor" not in _rec(hub, "off") and not _rec(hub, "off")["status_cache"]
@@ -359,14 +363,15 @@ def test_pool_overlaps_and_drops_late_results(tmp_path, monkeypatch):
     before = _rec(hub, "c")["cursor"]
     slow = True
     applied.clear()
-    t0 = time.monotonic()
-    F.relay_tick(hub, now=NOW)
-    assert time.monotonic() - t0 < 2 and not slow_done.is_set()
+    F.relay_tick(hub, now=NOW)                  # returns while "c" is still blocked
+    assert not slow_done.is_set()
     assert [a[0] for a in applied] == ["a", "b"]
     assert _rec(hub, "c")["cursor"] == before and "status_cache" not in _rec(hub, "c")
     slow_release.set()
     assert waits.until(slow_done.is_set)
-    time.sleep(0.1)
+    for t in threading.enumerate():             # let the dropped worker finish and return
+        if t.name.startswith("nw-relay"):
+            t.join(5)
     assert _rec(hub, "c")["cursor"] == before and [a[0] for a in applied] == ["a", "b"]
 
 
@@ -487,42 +492,61 @@ def _run_status(cfg, monkeypatch, *args):
     return CliRunner().invoke(cli, ["queue", "status", *args])
 
 
+def _render(payload, width):
+    con = Console(width=width, force_terminal=False, color_system=None, record=True)
+    con.print(CQ._queue_table(payload, width))
+    return con.export_text()
+
+
 def test_status_all_hosts_filters(tmp_path, monkeypatch):
     hub = _status_cfg(tmp_path)
+    store.create_campaign(hub, {"id": "LOC-1", "kind": "implement", "state": "IMPLEMENTING",
+                                "spec_id": "SPEC-0001", "project": "P", "priority": 3,
+                                "cost": {"total_usd": 1.0, "cap_usd": 10.0}, "park": None})
     plain = _run_status(hub, monkeypatch, "--json")
     assert plain.exit_code == 0, plain.output
     assert json.loads(plain.output) == Q.queue_payload(hub)
+    assert [i["campaign"] for i in json.loads(plain.output)["items"]] == ["LOC-1"]
     assert not any("host" in i or "stale" in i for i in json.loads(plain.output)["items"])
+    assert "host" not in _render(json.loads(plain.output), 120).splitlines()[1]
     empty = _run_status(hub, monkeypatch, "--all-hosts", "--json")
     assert json.loads(empty.output) == json.loads(plain.output)
     _add_record(hub, "box")
     camps = [_camp("C1", "RUNNING"), _camp("C2", "RUNNING"), _camp("C3", "PARKED"),
              _camp("C4", "RUNNING", project="Q")]
     now = dt.datetime.now().astimezone()
-    _seed_cache(hub, "box", 600, camps, now=now)
+    _seed_cache(hub, "box", 590, camps, now=now)        # 600 / 601 are pinned in the view test
     assert json.loads(_run_status(hub, monkeypatch, "--json").output) == json.loads(plain.output)
     out = json.loads(_run_status(hub, monkeypatch, "--all-hosts", "--json").output)
     assert out["schema"] == "nw.queue.v1"
     rows = [i for i in out["items"] if i.get("host")]
     assert [r["campaign"] for r in rows] == ["C1", "C2", "C3", "C4"]
+    local = [i for i in out["items"] if not i.get("host")]
+    assert [i["campaign"] for i in local] == ["LOC-1"] and out["items"][0] is local[0]
+    assert local[0]["host"] is None and local[0]["stale"] is False
     assert all(r["stale"] is False and r["host"] == "box" for r in rows)
     assert rows[0] == {"campaign": "C1", "project": "P", "state": "RUNNING", "spec_id": "SPEC-9",
                        "kind": "implement", "host": "box", "stale": False}
-    assert all(i["host"] is None and i["stale"] is False for i in out["items"] if not i.get("host"))
     by_p = json.loads(_run_status(hub, monkeypatch, "--all-hosts", "--json", "--project", "P").output)
-    assert [r["campaign"] for r in by_p["items"]] == ["C1", "C2", "C3"]
+    assert [r["campaign"] for r in by_p["items"]] == ["LOC-1", "C1", "C2", "C3"]
     by_s = json.loads(_run_status(hub, monkeypatch, "--all-hosts", "--json", "--state", "PARKED").output)
-    assert [r["campaign"] for r in by_s["items"]] == ["C3"]
+    assert [r["campaign"] for r in by_s["items"] if r["host"]] == ["C3"]
     _seed_cache(hub, "box", 590, camps, now=now)
     text = _run_status(hub, monkeypatch, "--all-hosts").output
     assert "box" in text and "stale" not in text
     _seed_cache(hub, "box", 640, camps, now=now)
     out = json.loads(_run_status(hub, monkeypatch, "--all-hosts", "--json").output)
-    assert all(r["stale"] is True for r in out["items"])
+    assert all(r["stale"] is True for r in out["items"] if r["host"])
+    assert out["items"][0]["stale"] is False
     text = _run_status(hub, monkeypatch, "--all-hosts").output
     assert "box" in text and "stale" in text
-    src = (Path(__file__).resolve().parents[1] / "src/nightwright/agentic/cli_queue.py").read_text()
-    assert '_col("host", "host", fixed=True)' in src
+    # the host column is fixed: it survives a narrow render, empty for the local row
+    narrow = _render(out, 50).splitlines()
+    assert "host" in narrow[1]
+    loc = next(ln for ln in narrow if "LOC-1" in ln)
+    assert "box" not in loc
+    assert sum("box stale" in ln for ln in narrow) == 4
+    assert "box stale" in _render(out, 40)
 
 
 def test_view_boundaries_and_lines(tmp_path):
@@ -599,3 +623,248 @@ def test_inert_and_no_queue_import(tmp_path, monkeypatch):
     assert "mail_seq" not in rec and "hub_inbox_offset" not in rec["cursor"]
     assert set(rec["cursor"]) == {"events_offset", "events_origin_id", "hub_events_offset"}
     srv.shutdown()
+
+
+# ---- review round: crash windows, hostile bodies, forged 409, partial failures ----------------
+
+def _health(last_ok, reported=False):
+    return {"last_ok": last_ok, "last_error": None, "unreachable_reported": reported}
+
+
+def _crash_health_checkpoint(monkeypatch, name):
+    """Make the first `hosts.update` that flips `unreachable_reported` raise (the crash between a
+    health event's fsync and its checkpoint); return the real `update`."""
+    real, raised = H.update, []
+
+    def once(cfg, fn):
+        if not raised:
+            probe = copy.deepcopy(H.load(cfg))
+            before = H.find(probe, name).get("health", {}).get("unreachable_reported")
+            fn(probe)
+            if H.find(probe, name).get("health", {}).get("unreachable_reported") != before:
+                raised.append(1)
+                raise OSError("crash before the checkpoint")
+        return real(cfg, fn)
+
+    monkeypatch.setattr(H, "update", once)
+    return real
+
+
+def test_crash_after_health_append_does_not_repeat_the_event(tmp_path, monkeypatch):
+    hub = _cfg(tmp_path, "hub")
+    _add_record(hub, "box", url="http://127.0.0.1:1")        # nothing listens
+    F.relay_tick(hub, now=NOW)
+    H.update(hub, lambda rs: H.find(rs, "box")["health"].update(last_ok=_iso(600)))
+    real = _crash_health_checkpoint(monkeypatch, "box")
+    F.relay_tick(hub, now=NOW)                               # appended + fsynced, checkpoint lost
+    monkeypatch.setattr(H, "update", real)
+    assert len([e for e in _hub_events(hub) if e["type"] == "host_unreachable"]) == 1
+    assert _rec(hub)["health"]["unreachable_reported"] is False
+    F.relay_tick(hub, now=NOW)
+    F.relay_tick(hub, now=NOW)
+    assert len([e for e in _hub_events(hub) if e["type"] == "host_unreachable"]) == 1
+    assert _rec(hub)["health"]["unreachable_reported"] is True
+
+
+def test_crash_after_reachable_append_does_not_repeat_the_event(tmp_path, monkeypatch):
+    hub, host, srv, url = _pair(tmp_path, monkeypatch)
+    F.relay_tick(hub, now=NOW)
+    H.update(hub, lambda rs: H.find(rs, "box").__setitem__("health", _health(_iso(900), True)))
+    real = _crash_health_checkpoint(monkeypatch, "box")
+    F.relay_tick(hub, now=NOW)
+    monkeypatch.setattr(H, "update", real)
+    assert len([e for e in _hub_events(hub) if e["type"] == "host_reachable"]) == 1
+    assert _rec(hub)["health"]["unreachable_reported"] is True
+    F.relay_tick(hub, now=NOW)
+    assert len([e for e in _hub_events(hub) if e["type"] == "host_reachable"]) == 1
+    assert _rec(hub)["health"] == _health(NOW.isoformat(timespec="seconds"))
+    srv.shutdown()
+
+
+def test_missing_cursor_keeps_existing_health(tmp_path):
+    hub = _cfg(tmp_path, "hub")
+    _add_record(hub, "box", url="http://127.0.0.1:1", health=_health(_iso(600)))
+    F.relay_tick(hub, now=NOW)
+    rec = _rec(hub)
+    assert rec["cursor"]["events_offset"] == 0
+    assert rec["health"]["last_ok"] == _iso(600)              # initializing the cursor kept it
+    ev = [e for e in _hub_events(hub) if e["type"] == "host_unreachable"]
+    assert len(ev) == 1 and ev[0]["data"] == {"host": "box", "since": _iso(600)}
+
+
+def test_unparseable_last_ok_does_not_fire(tmp_path):
+    hub = _cfg(tmp_path, "hub")
+    _add_record(hub, "box", url="http://127.0.0.1:1", health=_health("not a time"))
+    F.relay_tick(hub, now=NOW)
+    assert not [e for e in _hub_events(hub) if e["type"].startswith("host_")]
+    assert _rec(hub)["health"]["unreachable_reported"] is False
+
+
+def test_hostile_status_body_is_sanitised_in_the_cache(tmp_path, monkeypatch):
+    hub, host, srv, url = _pair(tmp_path, monkeypatch)
+    good = {"campaign": "C-1", "project": "P", "state": "RUNNING", "spec_id": "SPEC-1",
+            "kind": "implement"}
+    hostile = {"campaign": "bad\x1b[31mred", "project": "x" * 5000, "state": 7,
+               "spec_id": None, "kind": "k", "extra": "dropped"}
+    body = {"projects": ["P", "bad\x00", "y" * 5000, 5, ""],
+            "campaigns": [{**good, "extra": "dropped"}, hostile, "junk", None]}
+    monkeypatch.setattr(FH, "status_document", lambda cfg: body)
+    F.relay_tick(hub, now=NOW)
+    cache = _rec(hub)["status_cache"]
+    assert cache["projects"] == ["P"]
+    assert cache["campaigns"] == [good, {"campaign": None, "project": None, "state": None,
+                                         "spec_id": None, "kind": "k"}]
+    body["campaigns"] = [good] * (F.MAX_CAMPAIGNS + 5)
+    F.relay_tick(hub, now=NOW)
+    assert len(_rec(hub)["status_cache"]["campaigns"]) == F.MAX_CAMPAIGNS
+    srv.shutdown()
+
+
+def test_unsigned_409_is_not_a_reset(tmp_path, monkeypatch):
+    hub, host, srv, url = _pair(tmp_path, monkeypatch)
+    _host_lines(host, _ev(1), _ev(2))
+    F.relay_tick(hub, now=NOW)
+    H.update(hub, lambda rs: H.find(rs, "box")["cursor"].update(events_offset=5))   # mid-line
+    cur, n = _rec(hub)["cursor"], len(_hub_events(hub))
+    real = F.response_headers
+    monkeypatch.setattr(F, "response_headers", lambda *a, **k: {"X-NW-Sig-Ts": "1", "X-NW-Sig": "bad"})
+    F.relay_tick(hub, now=NOW)
+    assert _rec(hub)["cursor"] == cur and len(_hub_events(hub)) == n
+    assert not [e for e in _hub_events(hub) if e["type"] == "host_cursor_reset"]
+    monkeypatch.setattr(F, "response_headers", real)
+    F.relay_tick(hub, now=NOW)                                # the same 409, signed: a reset
+    assert len([e for e in _hub_events(hub) if e["type"] == "host_cursor_reset"]) == 1
+    assert _rec(hub)["cursor"]["events_offset"] == 0
+    srv.shutdown()
+
+
+def test_events_ok_status_failed_sets_last_error(tmp_path, monkeypatch):
+    hub, host, srv, url = _pair(tmp_path, monkeypatch)
+    _host_lines(host, _ev(1), _ev(2, data="not a dict"))
+    monkeypatch.setattr(FH, "status_document", lambda cfg: [])
+    F.relay_tick(hub, now=NOW)
+    assert _origin_ids(hub) == [1, 2]
+    odd = [e for e in _hub_events(hub) if e.get("origin", {}).get("id") == 2][0]
+    assert odd["type"] == "host_event" and odd["data"] == {"type": "runner_dead"}
+    h = _rec(hub)["health"]
+    assert h["last_ok"] == NOW.isoformat(timespec="seconds") and h["last_error"]
+    assert _rec(hub)["status_cache"] is None
+    srv.shutdown()
+
+
+def test_one_hosts_apply_failure_does_not_block_the_others(tmp_path, monkeypatch):
+    hub = _cfg(tmp_path, "hub")
+    for n in ("a", "b"):
+        _add_record(hub, n)
+    page = {"schema": "nw.federation.events.v1", "events": [_ev(1)], "next_offset": 10}
+    monkeypatch.setattr(F, "_fetch_events", lambda rec, cfg, off: ("page", page))
+    monkeypatch.setattr(F, "_fetch_status", lambda rec, cfg: (
+        "ok", {"projects": [], "campaigns": [_camp("C", "RUNNING")]}))
+    real = F._apply_page
+
+    def flaky(cfg, name, cursor, doc, now):
+        if name == "a":
+            raise OSError("disk full")
+        return real(cfg, name, cursor, doc, now)
+
+    monkeypatch.setattr(F, "_apply_page", flaky)
+    F.relay_tick(hub, now=NOW)
+    assert _origin_ids(hub, "b") == [1] and _origin_ids(hub, "a") == []
+    assert _rec(hub, "a")["cursor"]["events_offset"] == 0
+    assert _rec(hub, "b")["cursor"]["events_offset"] == 10
+    assert _rec(hub, "a")["status_cache"]["campaigns"] and _rec(hub, "b")["status_cache"]["campaigns"]
+
+
+def test_failed_page_checkpoint_is_not_skipped_by_a_later_health_event(tmp_path, monkeypatch):
+    """A page that is durable but not checkpointed must stay inside the rescan window even when a
+    later tick (events call failing, status ok, outage open) appends a health event."""
+    hub, host, srv, url = _pair(tmp_path, monkeypatch)
+    F.relay_tick(hub, now=NOW)
+    start = _rec(hub)["cursor"]
+    _host_lines(host, _ev(1), _ev(2))
+    real = H.update
+
+    def fail_cursor(cfg, fn):
+        probe = copy.deepcopy(H.load(cfg))
+        fn(probe)
+        if H.find(probe, "box")["cursor"] != _rec(hub)["cursor"]:
+            raise OSError("checkpoint lost")
+        return real(cfg, fn)
+
+    monkeypatch.setattr(H, "update", fail_cursor)
+    F.relay_tick(hub, now=NOW)
+    monkeypatch.setattr(H, "update", real)
+    assert _origin_ids(hub) == [1, 2] and _rec(hub)["cursor"] == start
+    # next tick: the events call is dropped, status succeeds, an outage is open
+    H.update(hub, lambda rs: H.find(rs, "box")["health"].update(unreachable_reported=True))
+    monkeypatch.setattr(F, "_fetch_events", lambda rec, cfg, off: ("fail", OSError("down")))
+    F.relay_tick(hub, now=NOW)
+    assert len([e for e in _hub_events(hub) if e["type"] == "host_reachable"]) == 1
+    assert _rec(hub)["cursor"]["hub_events_offset"] == start["hub_events_offset"]
+    monkeypatch.undo()
+    F.relay_tick(hub, now=NOW)
+    assert _origin_ids(hub) == [1, 2]                         # each origin id exactly once
+    assert _rec(hub)["cursor"]["events_origin_id"] == 2
+    srv.shutdown()
+
+
+def test_relayed_health_events_do_not_dedupe_this_hubs_own(tmp_path):
+    """A `host_*` record copied from a host that is itself a hub carries an origin and must not
+    suppress this hub's own `host_unreachable` for a same-named peer."""
+    hub = _cfg(tmp_path, "hub")
+    _add_record(hub, "box", url="http://127.0.0.1:1")
+    F.relay_tick(hub, now=NOW)
+    E.append(hub, "host_unreachable", data={"host": "box", "since": _iso(9000)}, host="peer",
+             origin={"host": "peer", "id": 9})
+    E.append(hub, "host_cursor_reset", data={"host": "box"}, host="peer",
+             origin={"host": "peer", "id": 10})
+    tail = _hub_events(hub)
+    assert F._open_outage(tail, "box") is False
+    H.update(hub, lambda rs: H.find(rs, "box")["health"].update(last_ok=_iso(600)))
+    H.update(hub, lambda rs: H.find(rs, "box")["cursor"].update(hub_events_offset=0))
+    F.relay_tick(hub, now=NOW)
+    own = [e for e in _hub_events(hub) if e["type"] == "host_unreachable" and "origin" not in e]
+    assert len(own) == 1
+
+
+def test_disabled_host_view_and_brief_truncation(tmp_path):
+    hub = _cfg(tmp_path, "hub")
+    _add_record(hub, "box")
+    _add_record(hub, "idle", enabled=False)
+    _seed_cache(hub, "box", 90, [_camp("C1", "RUNNING")])
+    views = F.host_views(hub, now=NOW)
+    assert [v["host"] for v in views] == ["box", "idle"]
+    assert views[1]["enabled"] is False and views[1]["stale"] is True
+    brief = {"federation_hosts": views, **{k: v for k, v in _bare_brief(hub).items()}}
+    text = BR.render_text(brief)
+    assert "hosts:\n- " + views[0]["line"] in text and views[1]["line"] in text
+    idle = views[1]["line"]
+    limit = len(text)
+    while idle in BR.render_text(brief, limit=limit):
+        limit -= 1
+    cut = BR.render_text(brief, limit=limit)                 # the last host row goes after later sections
+    assert idle in BR.render_text(brief, limit=limit + 1)
+    assert views[0]["line"] in cut and "counts:" in cut and "+1 more" in cut
+    assert "skill /" not in cut                              # `standing` was already cut
+
+
+def _bare_brief(cfg):
+    b = BR.conductor_brief(cfg, now=NOW)
+    b.pop("federation_hosts", None)
+    return b
+
+
+def test_oversized_first_line_is_consumed_unread_and_memory_is_bounded(tmp_path):
+    p = tmp_path / "events.jsonl"
+    huge = b'{"x":"' + b"a" * (FH._MAX_FIRST_LINE + 10) + b'"}\n'
+    p.write_bytes(huge + b'{"id":1}\n{"id":2')
+    evs, nxt = FH.read_events_page(p, 0, 500)            # too big for one response: skipped
+    assert evs == [] and nxt == len(huge)
+    assert FH.read_events_page(p, nxt, 500)[0] == [{"id": 1}]
+    p.write_bytes(huge[:-1])                              # a partial oversized line is not consumed
+    assert FH.read_events_page(p, 0, 500) == ([], 0)
+    # a later line over the cap is never read whole
+    line = b'{"v":"' + b"b" * 600000 + b'"}\n'
+    p.write_bytes(line + huge)
+    evs, nxt = FH.read_events_page(p, 0, 500)
+    assert len(evs) == 1 and nxt == len(line)

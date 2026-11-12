@@ -561,12 +561,31 @@ def _data_host(ev: dict):
     return d.get("host") if isinstance(d, dict) else None
 
 
+def _own_health(ev: dict, name: str, type_: str | None = None) -> bool:
+    """A health event this hub wrote for `name`: no `origin`, so a `host_*` record relayed from a
+    host that is itself a hub (it has an `origin`) is never mistaken for one."""
+    t = ev.get("type")
+    return (ev.get("origin") is None and isinstance(t, str) and t.startswith("host_")
+            and (type_ is None or t == type_) and _data_host(ev) == name)
+
+
 def _mine(ev: dict, name: str) -> bool:
     """A record in the rescan tail that this host's relay wrote (it may not be durable yet)."""
     o = ev.get("origin")
-    return (isinstance(o, dict) and o.get("host") == name) or (
-        isinstance(ev.get("type"), str) and ev["type"].startswith("host_")
-        and _data_host(ev) == name)
+    return (isinstance(o, dict) and o.get("host") == name) or _own_health(ev, name)
+
+
+def _pins_offset(tail: list[dict], name: str) -> bool:
+    """The tail holds a `host_unreachable`/`host_reachable` this hub wrote for `name`. Its checkpoint
+    may not have landed (a landed one moves `hub_events_offset` past it), so a page checkpoint keeps
+    the rescan offset where it is: the health append stays visible to its dedupe."""
+    return any(_own_health(ev, name, t) for ev in tail for t in ("host_unreachable", "host_reachable"))
+
+
+def _uncheckpointed(tail: list[dict], name: str, cursor: dict) -> bool:
+    """The tail holds copied records of this host beyond `events_origin_id`: a page was appended but
+    its checkpoint is lost, so a health checkpoint must not move the rescan offset past them."""
+    return _tail_origin_max(tail, name) > (cursor.get("events_origin_id") or 0)
 
 
 def _locked_append(cfg, name: str, offset, fn):
@@ -631,21 +650,23 @@ def _apply_page(cfg, name: str, cursor: dict, doc: dict, now) -> None:
                 continue
             seen.add(obj["id"])
             kws.append(_host_record(obj, name, now))
-        return kws, top
+        return kws, (top, _pins_offset(tail, name))
 
-    size, top = _locked_append(cfg, name, cursor.get("hub_events_offset"), build)
+    size, (top, pin) = _locked_append(cfg, name, cursor.get("hub_events_offset"), build)
     _set_cursor(cfg, name, events_offset=doc["next_offset"], events_origin_id=top,
-                hub_events_offset=size)
+                hub_events_offset=cursor.get("hub_events_offset") if pin else size)
 
 
 def _apply_reset(cfg, name: str, cursor: dict, now) -> None:
     def build(tail):
         eff = max(cursor.get("events_origin_id") or 0, _tail_origin_max(tail, name))
-        have = any(ev.get("type") == "host_cursor_reset" and _data_host(ev) == name for ev in tail)
-        return ([] if have else [_health_event("host_cursor_reset", name, now)]), eff
+        have = any(_own_health(ev, name, "host_cursor_reset") for ev in tail)
+        return ([] if have else [_health_event("host_cursor_reset", name, now)]), \
+            (eff, _pins_offset(tail, name))
 
-    size, eff = _locked_append(cfg, name, cursor.get("hub_events_offset"), build)
-    _set_cursor(cfg, name, events_offset=0, events_origin_id=eff, hub_events_offset=size)
+    size, (eff, pin) = _locked_append(cfg, name, cursor.get("hub_events_offset"), build)
+    _set_cursor(cfg, name, events_offset=0, events_origin_id=eff,
+                hub_events_offset=cursor.get("hub_events_offset") if pin else size)
 
 
 def _apply_status(cfg, name: str, doc: dict, now) -> None:
@@ -678,9 +699,10 @@ def _apply_health(cfg, rec: dict, ev, st, now, moved: bool) -> None:
         update["last_error"] = _failure_text(fails[0]) if fails else None
         if health.get("unreachable_reported"):
             event = ("host_reachable", lambda tail: not any(
-                ev_.get("type") == "host_reachable" and _data_host(ev_) == name
-                for ev_ in tail), {})
+                _own_health(ev_, name, "host_reachable") for ev_ in tail), {})
             update["unreachable_reported"] = False
+        else:                       # an outage event whose flag checkpoint was lost is still closed
+            event = ("host_reachable", lambda tail: _open_outage(tail, name), {})
     else:
         if fails:
             update["last_error"] = _failure_text(fails[0])
@@ -698,10 +720,11 @@ def _apply_health(cfg, rec: dict, ev, st, now, moved: bool) -> None:
         type_, want, extra = event
 
         def build(tail):
-            return ([_health_event(type_, name, now, **extra)] if want(tail) else []), None
+            return ([_health_event(type_, name, now, **extra)] if want(tail) else []), \
+                _uncheckpointed(tail, name, cursor)
 
-        size, _ = _locked_append(cfg, name, cursor.get("hub_events_offset"), build)
-        if moved:
+        size, pending = _locked_append(cfg, name, cursor.get("hub_events_offset"), build)
+        if moved and not pending:                           # else a page's records stay in the rescan
             fields["hub_events_offset"] = size
 
     def fn(recs):
@@ -716,11 +739,9 @@ def _open_outage(tail: list[dict], name: str) -> bool:
     """The tail holds a `host_unreachable` for this host with no later `host_reachable`."""
     open_ = False
     for ev in tail:
-        if _data_host(ev) != name:
-            continue
-        if ev.get("type") == "host_unreachable":
+        if _own_health(ev, name, "host_unreachable"):
             open_ = True
-        elif ev.get("type") == "host_reachable":
+        elif _own_health(ev, name, "host_reachable"):
             open_ = False
     return open_
 
