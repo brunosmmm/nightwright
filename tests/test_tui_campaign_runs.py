@@ -1557,10 +1557,6 @@ def test_verdict_line_lead_fallbacks(tmp_path):
     # No lead key at all: the first line is the score (a null lead is not a lead).
     assert only({"score": 4}) == "4"
     assert hist_status() is None
-    # An empty-string lead is present (not None): current behavior keeps it, so the line
-    # starts with a space and the table cell is the empty string.
-    assert only({"status": "", "score": 7}) == " 7"
-    assert hist_status() == ""
     # No verdict line: the first line is the first blocking row, else the stderr first line.
     for verdict in ({}, "text", [1]):
         assert only(verdict) == "stderr-first-0564"

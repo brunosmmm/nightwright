@@ -1,7 +1,7 @@
 ---
 id: SPEC-0564
 title: "SPEC-0476 follow-up: close the Runs pane test-strength gaps"
-status: in-progress
+status: done
 owner: user
 created: 2026-11-12
 updated: 2026-11-12
@@ -249,36 +249,36 @@ On a copy whose `stream.jsonl` holds one rendered line per event (the existing
 
 ## Acceptance criteria
 
-- [ ] **AC1. `must_fix` display.** A test with the mixed verdict of Design 1 asserts the
+- [x] **AC1. `must_fix` display.** A test with the mixed verdict of Design 1 asserts the
   exact ordered blocking rows and labels (`must_fix`, `major`), that unknown, differently
   cased, bare-string, and non-string items are absent, and asserts the `must_fix` row again
   through the popup widget text.
-- [ ] **AC2. Lead fallback.** The Design 2 table asserts the exact first line for each
+- [x] **AC2. Lead fallback.** The Design 2 table asserts the exact first line for each
   verdict, the no-lead and no-verdict cases, and that the history `verdict_status` equals the
   pane's lead.
-- [ ] **AC3. Late load.** Case 3a asserts the widget's stored run id, offset, renderer,
+- [x] **AC3. Late load.** Case 3a asserts the widget's stored run id, offset, renderer,
   head, and body belong to the selected run after a stale load lands and that no repaint
   follows. Case 3b (stale token, same selection) and case 3c (changed selection, current
   token, Timeline tab) each assert the unchanged state and paint count; case 3d asserts the
   accepted load with the scroll skipped. The mutation check shows 3b fails when only the
   token check is removed and 3c fails when only the `_selected_run_id` check is removed.
-- [ ] **AC4. Cursor follows detail.** The `j` / `k` test asserts, after every key over the whole
+- [x] **AC4. Cursor follows detail.** The `j` / `k` test asserts, after every key over the whole
   table, once `pilot_until` sees the cursor at the expected row and that run's marker in the
   detail, that no other run's marker is present, and that `k` at the first row and `j` at the
   last row change nothing after `settle`. It has no conditional assertion and no fixed sleep.
-- [ ] **AC5. Composition.** The Design 5 cases assert exact first-line equality, a shown zero
+- [x] **AC5. Composition.** The Design 5 cases assert exact first-line equality, a shown zero
   score, an omitted empty summary, literal markup, stripped control characters, and the line
   order (verdict line, blocking rows, stderr).
-- [ ] **AC6. `files.raw`.** Every hostile value in Design 6 (including an absolute path to a
+- [x] **AC6. `files.raw`.** Every hostile value in Design 6 (including an absolute path to a
   file inside the run directory) shows `result.json` content and never the outside or
   `ALT-0564` sentinel, every allowed value shows its file, a missing allowed file shows
   `no result.json`, and a missing `run.json` reads `result.json`.
-- [ ] **AC7. 200-line bound.** The Design 7 tests assert `len(body)` for 199, 200, 201, and 250
+- [x] **AC7. 200-line bound.** The Design 7 tests assert `len(body)` for 199, 200, 201, and 250
   events, the first and last shown lines, offset at end of file, the rendered-line bound for a
   multi-line event, and the popup text including the uncapped stderr tail and verdict line.
-- [ ] **AC8. No product change by default.** The diff outside `tests/` and this spec is empty,
+- [x] **AC8. No product change by default.** The diff outside `tests/` and this spec is empty,
   or each production change is a bug fix listed in *As shipped* with the test that exposed it.
-- [ ] **AC9. Tier and waits.** `tests/test_tui_campaign_runs.py` still has exactly one
+- [x] **AC9. Tier and waits.** `tests/test_tui_campaign_runs.py` still has exactly one
   module-level `pytestmark = pytest.mark.tui`, adds no fixed sleep before a positive
   assertion, and `python3 tools/test_tiers.py --check` exits 0.
 
@@ -311,18 +311,66 @@ On a copy whose `stream.jsonl` holds one rendered line per event (the existing
   `tests/test_tui_campaign_detail_model.py` stay green;
   `python3 tools/test_tiers.py --check` exits 0; `python3 tools/spec_lint.py` exits 0.
 
+### As shipped (2026-11-12)
+
+Tests only: no production code changed (`git diff main...HEAD -- src` is empty), so AC8 holds
+with no bug fix to list. All new and tightened tests are in `tests/test_tui_campaign_runs.py`,
+which keeps its one module-level `pytestmark = pytest.mark.tui` and adds no fixed sleep.
+
+**Mutation check (one-time).** Each mutation was applied alone to a scratch copy of the tree
+(`/tmp`, `rsync` of the worktree without `.git`/`.venv`, one `uv run pytest -q -n 3
+tests/test_tui_campaign_runs.py` per mutation) and reverted before the next. Failing tests
+are the whole set that failed in that run.
+
+| # | AC | Mutation | Failing tests |
+|---|----|----------|---------------|
+| 1 | AC1 | `verdict.must_fix` objects labelled `major` instead of `must_fix` | `test_findings_must_fix_severity_and_excluded_keys`, `test_gate_and_reviewer_blockers_in_pane` |
+| 2 | AC2 | lead key order `disposition, status, verdict` | `test_verdict_line_lead_fallbacks`, `test_verdict_line_lead_priority` |
+| 3 | AC3 | remove only `token != self._run_detail_token` | `test_late_load_token_guard` (see note) |
+| 4 | AC3 | remove only `self._selected_run_id != run_id` | `test_late_load_selection_guard` (see note) |
+| 5 | AC4 | `_select_run_row` skips `_load_run_detail` | `test_runs_cursor_jk_and_arrows` plus 17 other detail-loading tests |
+| 6 | AC5 | join verdict parts with `", "` | `test_verdict_line_composition`, `test_verdict_line_lead_fallbacks`, `test_stream_initial_paint_cap_in_popup` |
+| 7 | AC5 | drop a zero score (`if verdict.get("score"):`) | `test_verdict_line_composition` |
+| 8 | AC6 | `is_relative_to` replaced by a string-prefix test | `test_string_result_and_files_raw` |
+| 9 | AC6 | drop the `Path(raw).is_absolute()` check | `test_string_result_and_files_raw`, `test_malformed_shapes_and_control_chars` |
+| 10 | AC7 | `RUNS_STREAM_LINES = 199` | `test_stream_initial_paint_caps_rendered_lines`, `test_stream_initial_paint_cap_in_popup` |
+| 11 | AC7 | `RUNS_STREAM_LINES = 201` | same two (see note) |
+| 12 | AC7 | event-count bound (`lines[-200:]`, unbounded deque) | `test_stream_initial_paint_caps_rendered_lines` |
+
+Note on rows 3, 4 and 11: in the whole-file runs the pre-existing
+`test_poll_does_not_cancel_slow_stream_tail` also failed. It passes alone under each of those
+three mutations (and in the unmutated whole-file run), so it is a timing flake under `-n 3`
+load, not a result of the mutation. Re-running only the late-load tests per mutation gives the
+clean result the plan asks for: with the token check removed, `1 failed, 3 passed`
+(only `test_late_load_token_guard` fails; `test_stale_run_detail_dropped_on_switch`,
+`test_late_load_selection_guard` and `test_late_load_accepted_on_timeline_tab` stay green);
+with only the `_selected_run_id` check removed, `1 failed, 3 passed` (only
+`test_late_load_selection_guard` fails; the other three, including 3b, stay green).
+
+The empty-string-lead assertion (`{"status": "", ...} == " 7"`) that Design 2 never asked for
+was dropped from `test_verdict_line_lead_fallbacks`: it pinned an incidental behavior.
+
+### Test record (2026-11-12)
+
+- `uv run pytest -q -n 3 tests/test_tui_campaign_runs.py tests/test_tui_campaign_detail_ac.py
+  tests/test_tui_campaign_detail.py tests/test_tui_campaign_detail_model.py`: 106 passed.
+- Mutation check above: every mutation fails its named test.
+- `python3 tools/test_tiers.py --check` exits 0; `python3 tools/spec_lint.py` exits 0 after
+  `--write-ledger`.
+- The full suite was left to the queue's gating.
+
 ## Rollout / migration
 
 Tests only; no migration. Lands on main through the normal queue. Nothing depends on it.
 
 ## Definition of done
 
-- [ ] Acceptance criteria all met.
-- [ ] Test plan executed (affected tests pass, mutation check recorded); manual steps: none.
-- [ ] No regressions: affected tests green at the close gate; `python3 tools/test_tiers.py
+- [x] Acceptance criteria all met.
+- [x] Test plan executed (affected tests pass, mutation check recorded); manual steps: none.
+- [x] No regressions: affected tests green at the close gate; `python3 tools/test_tiers.py
   --check` and `python3 tools/spec_lint.py` exit 0.
-- [ ] Spec body updated to match what shipped (*As shipped* lists any bug fix).
-- [ ] `docs/LEDGER.md` regenerated.
+- [x] Spec body updated to match what shipped (*As shipped* lists any bug fix).
+- [x] `docs/LEDGER.md` regenerated.
 
 ## Open questions
 
