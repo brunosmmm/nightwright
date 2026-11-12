@@ -966,11 +966,22 @@ def _enrich_records(records, headers):
 
 
 def _campaign_dir_names(cfg) -> list[str]:
-    """Sorted real (non-symlink) campaign dirs; matches history_cache._live_campaign_ids."""
+    """Sorted real (non-symlink) campaign dirs; matches history_cache._live_campaign_ids.
+
+    A symlink is never a campaign in history, whatever it resolves to, and open-by-id
+    (`_campaign_dir`) obeys the same rule."""
     root = store.campaigns_dir(cfg)
     if not root.is_dir():
         return []
     return sorted(p.name for p in root.iterdir() if p.is_dir() and not p.is_symlink())
+
+
+def _campaign_dir(cfg, cid) -> Path | None:
+    """The contained campaign dir for `cid`, or None when it is not a real (non-symlink) dir."""
+    root = store._contained_campaign_dir(cfg, cid)
+    if root is None or (store.campaigns_dir(cfg) / cid).is_symlink():
+        return None
+    return root
 
 
 def _records_all(cfg, headers=None, gaps=None):
@@ -1126,7 +1137,7 @@ def _timeline(events, visits, records):
 
 
 def _campaign_history(cfg, cid, now, conductor_shares, *, shared_global=None, runner_down=None):
-    root = store._contained_campaign_dir(cfg, cid)
+    root = _campaign_dir(cfg, cid)
     if root is None or not root.is_dir():
         raise ValueError(f"campaign {cid} not found")
     gaps = []

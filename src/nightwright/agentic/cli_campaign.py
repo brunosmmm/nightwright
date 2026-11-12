@@ -528,7 +528,8 @@ def attach(campaign_group):
             doc = H.campaign_history(cfg, campaign)
             _history_cache_unwritable_warn(cfg)
         except ValueError as exc:
-            if campaign and not _campaign_dir_exists(cfg, campaign):
+            if campaign and (not _campaign_dir_exists(cfg, campaign)
+                             or H._campaign_dir(cfg, campaign) is None):
                 raise click.ClickException(f"campaign {campaign} not found")
             raise click.UsageError(str(exc))
         if as_json:

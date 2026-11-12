@@ -1096,6 +1096,20 @@ def test_campaign_history_confines_ids(tmp_path, monkeypatch, cache):
         wrap_func(owner, name)
     for name in ("open", "read_text", "read_bytes"):
         wrap_method(name)
+    # The spies must fire on a valid-id call (a spy that records nothing passes vacuously).
+    roots = [campaigns.resolve()] + ([Path(cfg["cache_dir"]).resolve()] if cache else [])
+    H.campaign_history(cfg, "SPEC-0394-20261102-ae5b", now=HISTORY_NOW, cache=cache)
+    assert touched
+    assert any(r in p.resolve().parents for p in touched for r in roots)
+    touched.clear()
+    opened.clear()
+    # Control: the final predicate must be able to match a read of an outside path.
+    (outside / "state.json").read_text()
+    with open(outside / "state.json"):
+        pass
+    assert [p for p in touched if p.resolve() == (outside / "state.json").resolve()]
+    assert len([p for p in touched if outside.resolve() in p.resolve().parents]) >= 2
+    touched.clear()
     ids = [str(outside), os.path.relpath(outside, campaigns), "../outside", "a/b", ".", "..",
            "escape-link", "x/../../outside", "", "SPEC-0394-20261102-ae5b/", "a/"]
     for cid in ids:
@@ -1107,6 +1121,24 @@ def test_campaign_history_confines_ids(tmp_path, monkeypatch, cache):
     monkeypatch.undo()
     good = H.campaign_history(cfg, "SPEC-0394-20261102-ae5b", now=HISTORY_NOW, cache=cache)
     assert good["header"]["campaign"] == "SPEC-0394-20261102-ae5b"
+
+
+@pytest.mark.parametrize("cache", [False, True])
+def test_history_in_root_symlink_is_not_a_campaign(tmp_path, cache):
+    cfg = history_cfg(tmp_path)
+    cfg["cache_dir"] = str(tmp_path / "cache")
+    real = "SPEC-0394-20261102-ae5b"
+    before = {r["campaign"] for r in H.history_index(cfg, now=HISTORY_NOW, cache=cache)}
+    assert real in before
+    campaigns = S.campaigns_dir(cfg)
+    (campaigns / "alias-link").symlink_to(campaigns / real, target_is_directory=True)
+    for mode in (cache, not cache):
+        ids = {r["campaign"] for r in H.history_index(cfg, now=HISTORY_NOW, cache=mode)}
+        assert "alias-link" not in ids
+        assert ids == before
+    with pytest.raises(ValueError, match=r"^campaign alias-link not found$"):
+        H.campaign_history(cfg, "alias-link", now=HISTORY_NOW, cache=cache)
+    assert H.campaign_history(cfg, real, now=HISTORY_NOW, cache=cache)["campaign"] == real
 
 
 @pytest.mark.parametrize("cache", [False, True])

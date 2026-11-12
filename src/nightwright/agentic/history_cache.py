@@ -3246,7 +3246,7 @@ def _refresh_live(cfg, root: Path, now, index_rows: list[dict], records: list[di
 
 def campaign_history(cfg, cid, *, now=None, cache=None) -> dict:
     H = _lazy_history()
-    if store._contained_campaign_dir(cfg, cid) is None:
+    if H._campaign_dir(cfg, cid) is None:
         raise ValueError(f"campaign {cid} not found")
     now = H._aware(now or dt.datetime.now().astimezone())
     root = _writable_root(cfg, cache)

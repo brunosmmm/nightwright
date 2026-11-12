@@ -168,6 +168,26 @@ def test_history_list_skips_symlinked_campaign_dir(invoke):
     assert "escape-link" not in plain.stdout
 
 
+def test_history_in_root_symlink_is_not_a_campaign_cli(invoke):
+    campaigns = invoke.root / "agentic" / "campaigns"
+    real = next(p.name for p in campaigns.iterdir() if p.is_dir() and not p.is_symlink())
+    (campaigns / "alias-link").symlink_to(campaigns / real, target_is_directory=True)
+    result = invoke("history", "alias-link")
+    assert result.exit_code == 1, result.output
+    assert "campaign alias-link not found" in result.stderr
+    assert "schema" not in result.stdout
+    assert invoke("history", "alias-link", "--json").stdout.strip() == ""
+    listed = invoke("history", "--list", "--json")
+    assert listed.exit_code == 0, listed.output
+    ids = {row["campaign"] for row in json.loads(listed.output)["rows"]}
+    assert "alias-link" not in ids
+    assert ids == {p.name for p in campaigns.iterdir() if not p.is_symlink()}
+    plain = invoke("history", "--list")
+    assert plain.exit_code == 0, plain.output
+    assert "alias-link" not in plain.stdout
+    assert invoke("history", real).exit_code == 0
+
+
 def test_note_positional_probe_ignores_absolute_paths(invoke, monkeypatch):
     monkeypatch.delenv("NW_CAMPAIGN", raising=False)
     outside = invoke.tmp / "outside"
