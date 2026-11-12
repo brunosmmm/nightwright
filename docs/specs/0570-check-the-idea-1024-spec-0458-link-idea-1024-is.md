@@ -1,7 +1,7 @@
 ---
 id: SPEC-0570
 title: Repair the IDEA-1024 / SPEC-0458 provenance link
-status: accepted
+status: in-progress
 owner: user
 created: 2026-11-12
 updated: 2026-11-12
@@ -69,12 +69,12 @@ Fix both sides, because both carry the same stale value. In the repo, delete the
 
 ## Acceptance criteria
 
-- [ ] `docs/specs/0458-tail-renders-triage-and-implementer-cards.md` has no `source_idea` key, and `git diff` against its previous content shows only that one removed line.
-- [ ] `docs/specs/0463-periodic-deterministic-resolution-of-queue.md` is unchanged and still has `source_idea: IDEA-1024`.
+- [x] `docs/specs/0458-tail-renders-triage-and-implementer-cards.md` has no `source_idea` key, and `git diff` against its previous content shows only that one removed line.
+- [x] `docs/specs/0463-periodic-deterministic-resolution-of-queue.md` is unchanged and still has `source_idea: IDEA-1024`.
 - [ ] `nw idea show IDEA-1024` reports `spec: SPEC-0463`.
-- [ ] `tests/test_spec_source_idea_links.py` exists, has exactly one module-level `pytestmark = pytest.mark.fast`, and passes.
-- [ ] `python3 tools/spec_lint.py` exits 0 and `docs/LEDGER.md` is current.
-- [ ] `python3 tools/test_tiers.py --check` exits 0 when `tools/test_tiers.py` exists.
+- [x] `tests/test_spec_source_idea_links.py` exists, has exactly one module-level `pytestmark = pytest.mark.fast`, and passes.
+- [x] `python3 tools/spec_lint.py` exits 0 and `docs/LEDGER.md` is current.
+- [x] `python3 tools/test_tiers.py --check` exits 0 when `tools/test_tiers.py` exists.
 
 ## Test plan
 
@@ -90,6 +90,16 @@ Fix both sides, because both carry the same stale value. In the repo, delete the
   4. `nw idea show IDEA-1024` now shows `spec: SPEC-0463`.
   5. `python3 tools/spec_lint.py --check-source-ideas` lists no problem for SPEC-0458 or SPEC-0463.
 - **Regression guard:** `python3 tools/spec_lint.py` exits 0 (frontmatter valid, ledger current); the affected tests pass at the close gate. `git diff main -- docs/specs/0458-*.md docs/specs/0463-*.md` shows only the removed `source_idea` line in SPEC-0458.
+
+### Test record (2026-11-12)
+
+- `uv run pytest -q tests/test_spec_source_idea_links.py`: 2 passed. `python3 tools/test_tiers.py --check`: exit 0. `python3 tools/spec_lint.py`: exit 0, ledger current. Full suite left to gating.
+- `git diff main -- docs/specs/0458-*.md docs/specs/0463-*.md` shows only the removed `source_idea: IDEA-1024` line in SPEC-0458.
+- Manual: `nw idea spec-link IDEA-1024 SPEC-0463` dry run showed `:SPEC: SPEC-0458 -> SPEC-0463` with no identity refusal. The write was refused for the campaign agent (`NW_PERSONA_RUN=1`: "refusing to write the org from a campaign agent"), so `nw idea show IDEA-1024` still reports `spec: SPEC-0458`.
+
+### As shipped (2026-11-12)
+
+Repo side shipped (SPEC-0458 line removed, regression test, ledger). The ideas-file write is a pending operator step: run `nw idea spec-link IDEA-1024 SPEC-0463 --yes --heading "Periodic deterministic"` on the ideas machine, then `nw idea show IDEA-1024`. The spec stays `in-progress` until then.
 
 ## Rollout / migration
 
