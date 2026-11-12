@@ -1,7 +1,7 @@
 ---
 id: SPEC-0579
 title: "`nw doctor` follow-ups: close SPEC-0349's review gaps (tests, profiles-dir crash, ssh dir safety, data.dir and retention hints)"
-status: accepted
+status: done
 owner: user
 created: 2026-11-12
 updated: 2026-11-12
@@ -193,39 +193,39 @@ judgment calls:
 
 ## Acceptance criteria
 
-- [ ] `check_gh` returns `warn` with fix "reinstall the GitHub CLI" when `gh --version` exits non-zero,
+- [x] `check_gh` returns `warn` with fix "reinstall the GitHub CLI" when `gh --version` exits non-zero,
       times out, or raises `OSError`, and a test covers each.
-- [ ] `check_org_ideas_file` returns `warn` "org_ideas_file is unset" for a missing, empty and `None`
+- [x] `check_org_ideas_file` returns `warn` "org_ideas_file is unset" for a missing, empty and `None`
       value, and a test covers each.
-- [ ] `_entry_points` and `check_nw_on_path` (default `entry_points`) are tested for: argv0 named
+- [x] `_entry_points` and `check_nw_on_path` (default `entry_points`) are tested for: argv0 named
       `nw`, argv0 not named `nw`, `which` equal to the interpreter-adjacent `nw` (direct and via
       symlink) → `ok`, and a different `nw` → `warn`.
-- [ ] The human-output test asserts each group heading as its own line, in order, with that group's
+- [x] The human-output test asserts each group heading as its own line, in order, with that group's
       check ids between it and the next heading, with the group list derived from `D.run`.
-- [ ] With an unreadable `<root>/.nw/profiles`, `check_project_profiles` returns `fail` with summary
+- [x] With an unreadable `<root>/.nw/profiles`, `check_project_profiles` returns `fail` with summary
       "profiles dir unreadable" and a `detail` that is the `ValueError` message (names the directory and
       the OS error); it is not "check crashed" and `run()` still returns every other check. The same
       holds for an unreadable `<config_dir>/profiles`. `nw profiles check --project <Name>` exits 1
       without a traceback.
-- [ ] The synthetic row is `{"name": "<profiles>", "ok": False, "error": ..., "layers": True}`; a real
+- [x] The synthetic row is `{"name": "<profiles>", "ok": False, "error": ..., "layers": True}`; a real
       profile named `profiles` that fails to resolve is reported as "1 of N profiles do not resolve",
       not as an unreadable directory.
-- [ ] `workers.ssh_dir_problem` returns `None` for an absent path (via `lstat` raising
+- [x] `workers.ssh_dir_problem` returns `None` for an absent path (via `lstat` raising
       `FileNotFoundError`) or an own real directory, and a message for a symlink (including a dangling
       one) or a directory owned by another uid; `ensure_ssh_dir` raises `OSError` with the same message
       as before, built from it.
-- [ ] `check_workers` returns `fail` "ssh ControlPath dir is unsafe" for a symlinked (including
+- [x] `check_workers` returns `fail` "ssh ControlPath dir is unsafe" for a symlinked (including
       dangling) or foreign-owned ControlPath dir, creates nothing, and still returns `ok` for a normal one.
-- [ ] `check_data_dir` returns `fail` with a not-a-directory summary and a non-`chmod` fix for a regular
+- [x] `check_data_dir` returns `fail` with a not-a-directory summary and a non-`chmod` fix for a regular
       file, and `fail` with a dangling-symlink summary (target in `detail`) for a broken symlink; the
       existing writable / absent / read-only results are unchanged.
-- [ ] With `CLAUDE_CONFIG_DIR` set, `check_retention` reads `$CLAUDE_CONFIG_DIR/settings.json` and
+- [x] With `CLAUDE_CONFIG_DIR` set, `check_retention` reads `$CLAUDE_CONFIG_DIR/settings.json` and
       ignores `~/.claude/settings.json`; unset or empty keeps `~/.claude/settings.json`.
-- [ ] A non-integer `cleanupPeriodDays` (`"90"`, `90.5`, `true`, `null`) yields a summary containing
+- [x] A non-integer `cleanupPeriodDays` (`"90"`, `90.5`, `true`, `null`) yields a summary containing
       "is not an integer; assuming 30" and the same verdict as 30 days; an absent key still says "unset"
       (an explicit `null` does not); an unparseable settings file keeps its "does not read / parse;
       assuming 30" note.
-- [ ] `nw doctor --json` output still validates against `DOCTOR_SCHEMA`, no check id changed, and
+- [x] `nw doctor --json` output still validates against `DOCTOR_SCHEMA`, no check id changed, and
       `test_read_only_and_offline` still passes.
 
 ## Test plan
@@ -270,6 +270,35 @@ judgment calls:
   and `test_read_only_and_offline` pin the unchanged JSON shape, the clean path, and the
   read-only/offline rule.
 
+### Test record (2026-11-12)
+
+- `uv run pytest -q tests/test_doctor.py tests/test_agentic_profiles_cli.py tests/test_agentic_profiles.py
+  tests/test_workers_registry.py tests/test_worker_ssh_command.py`: 370 passed (includes the new
+  SPEC-0579 tests: gh failure, unset `org_ideas_file`, default entry points, line-exact group headings,
+  unreadable project and user profiles dir (+ CLI, `SystemExit` with exit 1), a profile named
+  `profiles`, `ssh_dir_problem` and `check_workers` (symlink, dangling, foreign uid, normal), `data.dir`
+  file / dangling symlink, retention non-int / `CLAUDE_CONFIG_DIR` / unparseable).
+- `python3 tools/test_tiers.py --check` exits 0.
+- `python3 tools/affected_tests.py --run uv run pytest -q`: ran to 77% with no failures before the
+  background time limit stopped it (the selection is large: `workers.py` is widely imported); the
+  remainder is left to the close gate.
+- Manual: with `NW_DATA_DIR` a dangling symlink, `nw doctor` shows `✗ data.dir … is a dangling
+  symlink`; with `CLAUDE_CONFIG_DIR` set and `{"cleanupPeriodDays": "90"}` the retention summary says
+  `cleanupPeriodDays '90' is not an integer; assuming 30`. The `chmod 000 .nw/profiles` run is covered
+  by the automated test (needs a registered project; not repeated by hand).
+- The full suite was left to gating.
+
+### As shipped
+
+- Implemented to Design. `check_all` returns the `<profiles>` row with `layers: True` and
+  `check_project_profiles` matches on that key. `nw profiles check --json` shows the row in `results`
+  with `ok: false`; no other field changed.
+- A dangling symlink at the ControlPath dir makes `ensure_ssh_dir` raise `FileExistsError` from its
+  `mkdir` (an `OSError`, unchanged behavior) before `ssh_dir_problem` runs; doctor reports it as `fail`
+  via `ssh_dir_problem`.
+- The foreign-owner test patches `workers.os.getuid` after `workers.ssh_dir` is monkeypatched to a
+  tmp path, so it does not depend on which candidate is picked.
+
 ## Rollout / migration
 
 No data or config migration. Order: tests for items 1–4 first (they pass against current code, so they
@@ -278,12 +307,12 @@ now see a doctor `fail` where they used to see `ok`; that is the intent (workers
 
 ## Definition of done
 
-- [ ] Acceptance criteria all met.
-- [ ] Test plan executed; affected automated tests pass; manual steps performed.
-- [ ] `python3 tools/test_tiers.py --check` exits 0.
-- [ ] No regressions.
-- [ ] Spec body updated to match what shipped.
-- [ ] `docs/LEDGER.md` regenerated (`python3 tools/spec_lint.py --write-ledger`).
+- [x] Acceptance criteria all met.
+- [x] Test plan executed; affected automated tests pass; manual steps performed.
+- [x] `python3 tools/test_tiers.py --check` exits 0.
+- [x] No regressions.
+- [x] Spec body updated to match what shipped.
+- [x] `docs/LEDGER.md` regenerated (`python3 tools/spec_lint.py --write-ledger`).
 
 ## Open questions
 

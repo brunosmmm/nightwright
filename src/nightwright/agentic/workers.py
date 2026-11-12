@@ -66,6 +66,19 @@ def ssh_dir(cfg, extra=0) -> Path | None:
     return next((d for d in _ssh_dir_candidates(cfg) if _fits(d, extra)), None)
 
 
+def ssh_dir_problem(d: Path) -> str | None:
+    """Why the ControlPath dir `d` is unsafe (a symlink, not a directory, or owned by someone
+    else, as a shared /tmp path could be), `None` when it is absent or fine. Read-only: `lstat`
+    never follows a link, so a dangling symlink is reported too."""
+    try:
+        st = d.lstat()
+    except FileNotFoundError:
+        return None
+    if stat.S_ISDIR(st.st_mode) and st.st_uid == os.getuid():
+        return None
+    return f"{d} is not a directory owned by this user"
+
+
 def ensure_ssh_dir(cfg, extra=0) -> Path | None:
     """`ssh_dir(cfg, extra)` created with mode 0700 (and refused with `OSError` if it exists
     but is a symlink or belongs to someone else, as a shared /tmp path could); `None` when
@@ -74,9 +87,8 @@ def ensure_ssh_dir(cfg, extra=0) -> Path | None:
     if d is None:
         return None
     d.mkdir(parents=True, exist_ok=True, mode=0o700)
-    st = d.lstat()
-    if not stat.S_ISDIR(st.st_mode) or st.st_uid != os.getuid():
-        raise OSError(f"{d} is not a directory owned by this user")
+    if (why := ssh_dir_problem(d)):
+        raise OSError(why)
     d.chmod(0o700)
     return d
 

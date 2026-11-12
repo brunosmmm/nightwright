@@ -583,7 +583,10 @@ def check_all(cfg, *, project_root=None) -> list:
     """`[{name, ok, error}]` for every profile visible from `project_root` plus
     `agentic.default_profile` (appended when no layer defines it), each resolved in turn.
     `nw profiles check` and `nw doctor` (SPEC-0349) both report these."""
-    layers = load_layers(cfg, project_root=project_root)
+    try:
+        layers = load_layers(cfg, project_root=project_root)
+    except ValueError as e:     # an unreadable profiles dir: report it, do not crash
+        return [{"name": "<profiles>", "ok": False, "error": str(e), "layers": True}]
     names = _known(layers)
     default = _agentic(cfg).get("default_profile") or "balanced"
     if default not in names:

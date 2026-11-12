@@ -681,8 +681,21 @@ def test_human_output_groups_fix_hints_and_counts(home, tmp_path):
     write_config(home, timezone=False)
     r = CliRunner().invoke(cli, ["doctor"], env={"COLUMNS": "200"})
     out = r.output
-    for group in ("tools", "install", "config", "data", "agentic", "legacy", "retention"):
-        assert f"\n{group}" in "\n" + out
+    checks = D.run(load_config(), which=Tools().which, run_cmd=Tools().run)
+    groups = list(dict.fromkeys(c["group"] for c in checks))      # first-appearance order
+    lines = out.splitlines()
+    heads = []
+    for g in groups:
+        at = [i for i, ln in enumerate(lines) if ln.strip() == g]
+        assert len(at) == 1, f"group heading {g!r} is not exactly one line of its own"
+        heads.append(at[0])
+    assert heads == sorted(heads)                                  # headings in run order
+    bounds = heads + [len(lines)]
+    for g, lo, hi in zip(groups, bounds, bounds[1:]):
+        body = "\n".join(lines[lo + 1:hi])
+        for c in checks:
+            if c["group"] == g:
+                assert c["id"] in body, f"{c['id']} not under its {g!r} heading"
     assert "config.timezone" in out and "fix:" not in out
     last = out.strip().splitlines()[-1]
     assert last.endswith("skip") and " ok · " in last and " warn · " in last
@@ -735,3 +748,235 @@ def test_launch_fresh_warn_then_ok(tmp_path, monkeypatch):
     assert c["status"] == "ok" and c["fix"] is None
     assert any(x["id"] == "agentic.launch_fresh" for x in D.run(cfg, which=lambda n: None,
                                                                   run_cmd=lambda *a, **k: None))
+
+
+# ---- SPEC-0579: review follow-ups ----------------------------------------------------------
+
+def test_gh_version_failure_is_warn():
+    which = lambda n: "/x/gh"
+    c = D.check_gh(which=which, run_cmd=lambda cmd, **k: _proc(cmd, 2))
+    assert c["status"] == "warn" and "exited 2" in c["summary"]
+    assert c["fix"] == "reinstall the GitHub CLI" and c["detail"] == "/x/gh"
+
+    def hang(cmd, **k):
+        raise subprocess.TimeoutExpired(cmd, 5)
+
+    def boom(cmd, **k):
+        raise OSError("exec format error")
+    c = D.check_gh(which=which, run_cmd=hang)
+    assert c["status"] == "warn" and "over 5 s" in c["summary"]
+    assert c["fix"] == "reinstall the GitHub CLI"
+    c = D.check_gh(which=which, run_cmd=boom)
+    assert c["status"] == "warn" and "could not run" in c["summary"]
+    assert c["fix"] == "reinstall the GitHub CLI"
+
+
+@pytest.mark.parametrize("cfg", [{}, {"org_ideas_file": ""}, {"org_ideas_file": None}])
+def test_org_ideas_file_unset_is_warn(cfg):
+    c = D.check_org_ideas_file(cfg)
+    assert c["status"] == "warn" and c["summary"] == "org_ideas_file is unset"
+    assert "org_ideas_file:" in c["fix"]
+
+
+def test_org_ideas_file_unset_shows_in_run(home):
+    cfg = write_config(home)
+    cfg.pop("org_ideas_file", None)
+    t = Tools()
+    c = by_id(D.run(cfg, which=t.which, run_cmd=t.run))["config.org_ideas_file"]
+    assert c["status"] == "warn" and c["summary"] == "org_ideas_file is unset"
+
+
+@pytest.fixture
+def venv(tmp_path, monkeypatch):
+    b = tmp_path / "venv" / "bin"
+    b.mkdir(parents=True)
+    (b / "python").write_text("")
+    (b / "nw").write_text("")
+    monkeypatch.setattr(D.sys, "executable", str(b / "python"))
+    return b
+
+
+def test_entry_points_default_detection(venv, tmp_path):
+    script = tmp_path / "elsewhere" / "nw"
+    script.parent.mkdir()
+    script.write_text("")
+    assert D._entry_points(argv0=str(script)) == {script.resolve(), (venv / "nw").resolve()}
+    for argv0 in ("pytest", "python -m nightwright", ""):
+        assert D._entry_points(argv0=argv0) == {(venv / "nw").resolve()}
+
+
+def test_nw_on_path_default_entry_points(venv, tmp_path, monkeypatch):
+    monkeypatch.setattr(D.sys, "argv", ["pytest"])
+    assert D.check_nw_on_path(which=lambda n: str(venv / "nw"))["status"] == "ok"
+    link = tmp_path / "link-nw"
+    link.symlink_to(venv / "nw")
+    assert D.check_nw_on_path(which=lambda n: str(link))["status"] == "ok"
+    other = tmp_path / "other-nw"
+    other.write_text("")
+    c = D.check_nw_on_path(which=lambda n: str(other))
+    assert c["status"] == "warn" and str(other) in c["detail"] and str(venv / "nw") in c["detail"]
+
+
+@pytest.mark.skipif(os.geteuid() == 0, reason="root reads chmod 000 dirs")
+@pytest.mark.parametrize("where", ["project", "user"])
+def test_project_unreadable_profiles_dir_fails_not_crashes(home, tmp_path, where):
+    repo = tmp_path / "foo"
+    (repo / ".nw" / "profiles").mkdir(parents=True)
+    (repo / ".nw" / "project.yaml").write_text(project_yaml("Foo"))
+    cfg = write_config(home, f"outbox_targets:\n  Foo: {{repo_path: {repo}}}\n")
+    if where == "project":
+        bad = repo / ".nw" / "profiles"
+    else:
+        bad = Path(cfg["config_dir"]) / "profiles"
+        bad.mkdir()
+    bad.chmod(0)
+    try:
+        rows = PR.check_all(cfg, project_root=repo)
+        assert len(rows) == 1 and rows[0]["name"] == "<profiles>" and rows[0]["layers"] is True
+        assert rows[0]["ok"] is False and str(bad) in rows[0]["error"]
+        c = D.check_project_profiles(cfg, "Foo", repo)
+        assert c["status"] == "fail" and c["summary"] == "profiles dir unreadable"
+        assert c["detail"] == rows[0]["error"] and "crashed" not in c["summary"]
+        assert "nw profiles check --project Foo" in c["fix"]
+        t = Tools()
+        checks = by_id(D.run(cfg, which=t.which, run_cmd=t.run, project="Foo"))
+        assert checks["project.Foo.profiles"]["summary"] == "profiles dir unreadable"
+        assert "project.Foo.config" in checks and "tools.uv" in checks
+        r = CliRunner().invoke(cli, ["profiles", "check", "--project", "Foo"],
+                               env={"COLUMNS": "200"})
+        assert isinstance(r.exception, SystemExit) and r.exit_code == 1
+        assert str(bad) in r.output.replace("\n", "") and "✗" in r.output
+    finally:
+        bad.chmod(0o755)
+
+
+def test_profiles_named_profiles_not_misreported(home, tmp_path):
+    repo = tmp_path / "foo"
+    (repo / ".nw" / "profiles").mkdir(parents=True)
+    (repo / ".nw" / "project.yaml").write_text(project_yaml("Foo"))
+    (repo / ".nw" / "profiles" / "profiles.yaml").write_text("schema: nw.profile.v1\nbogus: 1\n")
+    cfg = write_config(home, f"outbox_targets:\n  Foo: {{repo_path: {repo}}}\n")
+    c = D.check_project_profiles(cfg, "Foo", repo)
+    assert c["status"] == "fail" and "1 of " in c["summary"]
+    assert c["summary"].endswith("profiles do not resolve")
+
+
+def _workers_cfg(tmp_path):
+    cfg = _acfg(tmp_path)
+    p = tmp_path / "data" / "agentic" / "workers.json"
+    p.parent.mkdir(parents=True)
+    p.write_text(json.dumps({"schema": "nw.workers.v1", "workers": [{"name": "b", "ssh": "b"}]}))
+    return cfg
+
+
+def test_workers_ssh_dir_problem(tmp_path):
+    from nightwright.agentic import workers as W
+    assert W.ssh_dir_problem(tmp_path / "absent") is None
+    d = tmp_path / "d"
+    d.mkdir()
+    assert W.ssh_dir_problem(d) is None
+    link = tmp_path / "link"
+    link.symlink_to(d)
+    assert W.ssh_dir_problem(link) == f"{link} is not a directory owned by this user"
+    dangling = tmp_path / "dangling"
+    dangling.symlink_to(tmp_path / "nowhere")
+    assert not dangling.exists() and W.ssh_dir_problem(dangling)
+    f = tmp_path / "file"
+    f.write_text("")
+    assert W.ssh_dir_problem(f)
+
+
+@pytest.mark.parametrize("kind", ["symlink", "dangling", "foreign"])
+def test_workers_unsafe_ssh_dir_fails(tmp_path, monkeypatch, kind):
+    from nightwright.agentic import workers as W
+    cfg = _workers_cfg(tmp_path)
+    d = tmp_path / "ssh"
+    monkeypatch.setattr(W, "ssh_dir", lambda c, extra=0: d)
+    assert D.check_workers(cfg)["status"] == "ok"                 # absent: nothing created
+    assert not d.exists()
+    if kind == "symlink":
+        (tmp_path / "real").mkdir()
+        d.symlink_to(tmp_path / "real")
+    elif kind == "dangling":
+        d.symlink_to(tmp_path / "nowhere")
+    else:
+        d.mkdir(mode=0o755)
+        monkeypatch.setattr(W.os, "getuid", lambda uid=os.getuid(): uid + 1)
+    before = (d.lstat().st_mode, sorted(tmp_path.iterdir()))
+    c = D.check_workers(cfg)
+    assert c["status"] == "fail" and c["summary"] == "ssh ControlPath dir is unsafe"
+    assert str(d) in c["detail"] and str(d) in c["fix"]
+    assert (d.lstat().st_mode, sorted(tmp_path.iterdir())) == before   # read-only
+    # a dangling link never reaches ssh_dir_problem: mkdir(exist_ok) raises FileExistsError first
+    msg = "File exists" if kind == "dangling" else "is not a directory owned by this user"
+    with pytest.raises(OSError, match=msg):
+        W.ensure_ssh_dir(cfg)
+
+
+def test_workers_normal_ssh_dir_stays_ok(tmp_path, monkeypatch):
+    from nightwright.agentic import workers as W
+    cfg = _workers_cfg(tmp_path)
+    d = tmp_path / "ssh"
+    d.mkdir()
+    monkeypatch.setattr(W, "ssh_dir", lambda c, extra=0: d)
+    assert D.check_workers(cfg)["status"] == "ok"
+    assert W.ensure_ssh_dir(cfg) == d
+
+
+def test_data_dir_file_and_dangling_symlink(tmp_path):
+    f = tmp_path / "afile"
+    f.write_text("")
+    c = D.check_data_dir(f)
+    assert c["status"] == "fail" and c["summary"] == f"{f} is not a directory"
+    assert "chmod" not in c["fix"] and "NW_DATA_DIR" in c["fix"]
+    link = tmp_path / "link"
+    link.symlink_to(tmp_path / "gone")
+    c = D.check_data_dir(link)
+    assert c["status"] == "fail" and c["summary"] == f"{link} is a dangling symlink"
+    assert c["detail"] == str(tmp_path / "gone") and "chmod" not in c["fix"]
+    ok = tmp_path / "dir"
+    ok.mkdir()
+    assert D.check_data_dir(ok)["status"] == "ok"
+    assert D.check_data_dir(tmp_path / "new")["status"] == "warn"
+
+
+def _retention(tmp_path, monkeypatch, body, *, cc="set"):
+    cc_dir = tmp_path / "cc"
+    cc_dir.mkdir(exist_ok=True)
+    (cc_dir / "settings.json").write_text(body)
+    if cc == "set":
+        monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(cc_dir))
+    elif cc == "empty":
+        monkeypatch.setenv("CLAUDE_CONFIG_DIR", "")
+    else:
+        monkeypatch.delenv("CLAUDE_CONFIG_DIR", raising=False)
+    return D.check_retention(tmp_path / "none.jsonl", today=dt.date(2026, 11, 1))
+
+
+@pytest.mark.parametrize("val", ['"90"', "90.5", "true", "null"])
+def test_retention_non_int_is_named(home, tmp_path, monkeypatch, val):
+    c = _retention(tmp_path, monkeypatch, f'{{"cleanupPeriodDays": {val}}}')
+    assert c["status"] == "warn" and "is not an integer; assuming 30" in c["summary"]
+    assert repr(json.loads(val)) in c["summary"]                  # same verdict as 30 days
+
+
+def test_retention_absent_key_says_unset(home, tmp_path, monkeypatch):
+    c = _retention(tmp_path, monkeypatch, "{}")
+    assert "unset" in c["summary"] and "not an integer" not in c["summary"]
+
+
+def test_retention_claude_config_dir(home, tmp_path, monkeypatch):
+    (home / ".claude").mkdir(exist_ok=True)
+    (home / ".claude" / "settings.json").write_text('{"cleanupPeriodDays": 365}')
+    c = _retention(tmp_path, monkeypatch, '{"cleanupPeriodDays": 7}', cc="set")
+    assert "cleanupPeriodDays 7" in c["summary"] and str(tmp_path / "cc") in c["fix"]
+    for cc in ("empty", "unset"):
+        c = _retention(tmp_path, monkeypatch, '{"cleanupPeriodDays": 7}', cc=cc)
+        assert c["status"] == "ok" and "cleanupPeriodDays 365" in c["summary"]
+
+
+def test_retention_unparseable_settings_keeps_note(home, tmp_path, monkeypatch):
+    for body in ("{not json", "[1, 2]"):
+        c = _retention(tmp_path, monkeypatch, body)
+        assert c["status"] == "warn" and "does not read / parse; assuming 30" in c["summary"]
+        assert "not an integer" not in c["summary"]

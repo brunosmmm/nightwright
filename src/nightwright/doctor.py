@@ -265,8 +265,15 @@ def check_org_ideas_file(cfg) -> dict:
 def check_data_dir(data_dir) -> dict:
     """`data.dir`: the data dir is writable (or can be created under a writable parent)."""
     p = Path(data_dir)
+    if p.is_symlink() and not p.exists():
+        return check("data.dir", "fail", f"{p} is a dangling symlink", detail=os.readlink(p),
+                     fix="remove the symlink or recreate its target, or set NW_DATA_DIR to a "
+                         "writable directory")
     if p.exists():
-        if p.is_dir() and _writable(p):
+        if not p.is_dir():
+            return check("data.dir", "fail", f"{p} is not a directory",
+                         fix=f"move {p} aside, or set NW_DATA_DIR to a writable directory")
+        if _writable(p):
             return check("data.dir", "ok", str(p))
         return check("data.dir", "fail", f"{p} is not writable", fix=f"chmod u+w {p}")
     parent = _nearest_existing(p)
@@ -566,6 +573,11 @@ def check_workers(cfg) -> dict:
     enabled = sum(1 for r in recs if r.get("enabled") is not False)
     counts = f"{enabled}/{len(recs)} workers enabled"
     d = workers.ssh_dir(cfg)
+    why = workers.ssh_dir_problem(d) if d is not None else None
+    if why:
+        return check(id, "fail", "ssh ControlPath dir is unsafe", detail=why,
+                     fix=f"remove {d} (a symlink or another user's directory) and let nw "
+                         "recreate it, or set XDG_RUNTIME_DIR to a private directory")
     near = _nearest_existing(d) if d is not None else None
     if d is None or near is None or not near.is_dir() or not _writable(near):
         return check(id, "warn", f"{counts}; no usable ssh ControlPath dir",
@@ -672,6 +684,10 @@ def check_project_profiles(cfg, name, root) -> dict:
         return check(id, "skip", "no .nw/project.yaml")
     results = profiles.check_all(cfg, project_root=Path(root))
     bad = [r for r in results if not r["ok"]]
+    if len(results) == 1 and results[0].get("layers"):     # load_layers could not read a dir
+        return check(id, "fail", "profiles dir unreadable", detail=results[0]["error"],
+                     fix="fix the permissions of the directory named in the detail, then run "
+                         f"nw profiles check --project {name}")
     if bad:
         return check(id, "fail", f"{len(bad)} of {len(results)} profiles do not resolve",
                      detail="; ".join(r["error"] for r in bad),
@@ -706,18 +722,33 @@ def _newest_history_day(history_file):
     return newest
 
 
+def claude_settings_path() -> Path:
+    """Claude Code's settings file: `$CLAUDE_CONFIG_DIR/settings.json` when that variable is
+    non-empty, else `~/.claude/settings.json`."""
+    cfg_dir = os.environ.get("CLAUDE_CONFIG_DIR")
+    if cfg_dir:
+        return Path(os.path.expanduser(cfg_dir)) / "settings.json"
+    return Path.home() / ".claude" / "settings.json"
+
+
 def check_retention(history_file, *, settings_path=None, today=None) -> dict:
     """`retention.cleanup_period`: Claude Code keeps transcripts long enough for `nw snapshot`."""
     id = "retention.cleanup_period"
-    settings_path = Path(settings_path or Path.home() / ".claude" / "settings.json")
+    settings_path = Path(settings_path or claude_settings_path())
     days, note = CLAUDE_DEFAULT_CLEANUP_DAYS, "cleanupPeriodDays unset (Claude default 30)"
     if settings_path.is_file():
         try:
-            raw = json.loads(settings_path.read_text(encoding="utf-8")).get("cleanupPeriodDays")
-        except (ValueError, AttributeError, OSError):     # OSError: e.g. chmod 000
-            raw, note = None, f"{settings_path} does not read / parse; assuming 30"
-        if isinstance(raw, int) and not isinstance(raw, bool):
-            days, note = raw, f"cleanupPeriodDays {raw}"
+            doc = json.loads(settings_path.read_text(encoding="utf-8"))
+            present = "cleanupPeriodDays" in doc          # `.get` cannot tell absent from null
+            raw = doc.get("cleanupPeriodDays")
+        except (ValueError, AttributeError, TypeError, OSError):    # OSError: e.g. chmod 000
+            present, raw = False, None
+            note = f"{settings_path} does not read / parse; assuming 30"
+        if present:
+            if isinstance(raw, int) and not isinstance(raw, bool):
+                days, note = raw, f"cleanupPeriodDays {raw}"
+            else:
+                note = f"cleanupPeriodDays {raw!r} is not an integer; assuming 30"
     if days >= RETENTION_SAFE_DAYS:
         return check(id, "ok", note)
     today = today or dt.date.today()
