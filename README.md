@@ -26,8 +26,7 @@ nw idea   nw spec new    nw queue add → one campaign per spec or idea
    append-only ledger under `<data_dir>/agentic/campaigns/`. Each judgment step is a fresh
    headless persona run (`spec_writer`, `spec_reviewer`, `implementer`, `gate_triager`,
    `conformance_reviewer`, `test_reviewer`, `adversarial_reviewer`, `review_triager`,
-   `conflict_resolver`, `review_marshal` with `agentic.lean.packet`, `findings_collator` with
-   `agentic.lean.collator`). Plain code picks the next state.
+   `conflict_resolver`, plus the lean-loop `review_marshal` and `findings_collator`). Plain code picks the next state.
 4. **Gates** are the project's own commands from `<repo>/.nw/project.yaml`, run in the
    worktree under a host-wide gate-slot pool. **Close** rebases, re-gates, checks the spec's
    Definition of Done, then fast-forward merges or opens a PR (`merge.policy`).
