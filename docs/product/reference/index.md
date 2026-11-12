@@ -18,6 +18,7 @@ Claude-generating vs your-turn diagnostic.
 | `campaign` | Campaign state, ledger and notes (agentic loop) | [Agentic loop](../capabilities/agentic.md) |
 | `completion` | Generate / install shell completion | [Completion](../capabilities/completion.md) |
 | `dashboard` | Agentic dashboard: `snapshot [--json]` prints the read-only `nw.dashboard.v1` document and writes nothing. `install` writes `~/.config/systemd/user/nw-dashboard.service` and enables it. `status [--json]` (`nw.dashboard.status.v1`). `uninstall` removes the unit | [Agentic loop](../capabilities/agentic.md) |
+| `data` | Agentic data dir report: `usage [--json]` prints a read-only per-source size, file count, source-specific count, oldest/newest mtime and retention rule (with the effective configured value) for every source under `<data_dir>/agentic`; rows partition the dir so they add up to its total; `--json` emits `nw.data.usage.v1`; writes, touches and locks nothing. Cleanup stays with `nw queue disk-clean` (SPEC-0580) | [Agentic loop](../capabilities/agentic.md) |
 | `doctor` | Read-only, offline install health check: tools, config, skills, completion, agentic queue, projects; `--fix-hints`, `--json` (`nw.doctor.v1`), `--project NAME`; exit 1 on any fail | [Getting started](../guides/getting-started.md) |
 | `digest` | Hours joined to org tasks by JIRA key | [Report](../capabilities/report.md) |
 | `done` | Mark a task done | [Tasks](../capabilities/tasks-agenda.md) |
