@@ -1,6 +1,6 @@
 ---
 id: SPEC-0563
-title: "SPEC-0477 follow-up: Findings & decisions and Mail panes, minor review findings"
+title: "SPEC-0477 follow-up: fail-soft mailbox ids, time cell cleaning, null filter match, single guard"
 status: proposed
 owner: user
 created: 2026-11-12
@@ -15,10 +15,12 @@ depends_on: [SPEC-0477]
 [SPEC-0477](./0477-campaign-detail-findings-and-mail.md) shipped the Findings & decisions
 pane, the Mail pane and `answer_escalation` in campaign SPEC-0477-20261109-e461. Its
 loop-3 review ended at score 72 with 0 majors, and the loop closed with minor findings
-and nits left unfixed (some waived by the triager, some carried as advisory). This spec
-collects the ones that are still true in the code at `main` and fixes them. None changes
-what SPEC-0477 promised; each makes the shipped behavior match the SPEC-0477 text more
-closely or covers a promise that has no test.
+and nits left unfixed (some waived by the triager, some carried as advisory). The leftovers
+fall into two independent pieces of work: five small production fixes in four modules, and a
+large batch of test-only gap coverage. This spec is the first piece, the production fixes
+with their direct tests. The test-gap coverage is a separate follow-up spec that depends on
+this one (see Non-goals). None of the fixes changes what SPEC-0477 promised; each makes the
+shipped behavior match the SPEC-0477 text more closely.
 
 What is still true, from reading `src/nightwright/tui/campaign_records.py`,
 `campaign_detail.py`, `escalation_flow.py` and `mailbox_tab.py`:
@@ -43,15 +45,6 @@ What is still true, from reading `src/nightwright/tui/campaign_records.py`,
 5. **A stale docstring.** The `CampaignDetail` class docstring still says "three
    placeholder panes" (`campaign_detail.py`, the class docstring); no placeholder pane is
    left.
-6. **Test gaps.** Reviewers named paths with no test: `focus={"tab": "mail"}` selecting the
-   newest thread; the Mail row's blank-status cell and the literal-markup check on the table's
-   first-line cell; reload clamping to the last row (Findings and Mail) and the all-rows-gone
-   `no mail` state; `d` when the resolving record exists but the filter hides it; `i` pressed
-   twice and a reload while the follow-up line is shown; the popup's confirm-stage cancel and
-   the `EscRow` handed to `apply_withdraw`; a direct `answer_escalation` call with a stub
-   owner; the read-only test's "filter" step, which types `w:` and so filters nothing; and
-   the placeholder-absence loop, which reads `content` from `DataTable` widgets that
-   have none.
 
 ## Goals / Non-goals
 
@@ -62,10 +55,21 @@ What is still true, from reading `src/nightwright/tui/campaign_records.py`,
 - Clean control characters from the time cells in both tables.
 - Make a null field never match a keyed filter token.
 - Keep one copy of the escalation error guard.
-- Close the test gaps listed under Context.
+- Correct the stale `CampaignDetail` docstring.
 
 **Non-goals**
 
+- **Test-gap coverage, split to a separate follow-up spec** ("SPEC-0477 follow-up: Findings
+  & decisions and Mail test-gap coverage", depending on this spec). It adds test-only
+  coverage to `tests/test_tui_campaign_records.py` for: `focus={"tab": "mail"}` selecting the
+  newest thread; the Mail row's blank-status cell and literal-markup first-line cell; reload
+  clamping to the last row (Findings and Mail) and the all-rows-gone `no mail` state; `d`
+  when the resolving record exists but the filter hides it; `i` pressed twice and a reload
+  while the follow-up line is shown; the popup's confirm-stage cancel and the `EscRow` handed
+  to `apply_withdraw`; a direct `answer_escalation` call with a stub owner; the read-only
+  test's "filter" step (it types `w:` and so filters nothing); and the placeholder-absence
+  loop that reads `content` from `DataTable` widgets that have none. Nothing here depends on
+  or blocks those tests beyond this spec landing first.
 - Moving mailbox reads off the event loop. The triager waived this in loops 2 and 3: the
   reads are one seek and `readline` per thread on a local file, and the Findings `i` path
   already uses a thread only because it opens an idea file. Revisit only if a measured stall
@@ -78,7 +82,7 @@ What is still true, from reading `src/nightwright/tui/campaign_records.py`,
 
 ## Decision
 
-Fix items 1 to 5 in place, with the smallest edit each, and add tests for item 6. No
+Fix items 1 to 5 in place, with the smallest edit each, and add a direct test for each. No
 schema, key binding, or visible label changes, except that a time cell that is not an ISO
 timestamp now shows with control characters stripped, and `severity:None` / `status:None`
 stop matching records whose field is null.
@@ -136,6 +140,9 @@ test module and no second marker. See the Test plan.
   untouched.
 - **Move mailbox reads to `asyncio.to_thread` now.** Waived by the triager and larger than
   a minor fix; see Non-goals.
+- **Ship the test-gap coverage in this spec.** It has six more independent acceptance
+  criteria over six unrelated surfaces and pushes the spec past the single-campaign size
+  limit; it is split out and depends on this spec.
 
 ## Acceptance criteria
 
@@ -159,31 +166,7 @@ test module and no second marker. See the Test plan.
   the same notify text and severity and leave `_busy` false through the mailbox tab and
   through the popup; the existing mailbox choose, text, withdraw and error tests pass.
 - [ ] **AC5. Docstring.** The `CampaignDetail` class docstring has no "placeholder".
-- [ ] **AC6. Focus on Mail.** Opening the popup with `focus={"tab": "mail"}` makes
-  `tab-mail` active with the newest thread's row selected and its messages in the detail.
-- [ ] **AC7. Mail cells.** A Mail row whose latest record has a null `status` has a blank
-  status cell; a mail body containing `[bold]` shows those characters literally in the
-  table's first-line cell, as `Text` with no style spans from the markup.
-- [ ] **AC8. Reload clamp.** Removing the last Findings row, and removing the last Mail
-  thread, then reloading, selects the new last row; removing every Mail thread shows the
-  `no mail` state without an exception.
-- [ ] **AC9. `d` and `i` edges.** `d` when `links.resolved_by` names a record the active
-  filter hides notifies `no decision` and leaves the selection. `i` pressed twice on one
-  record leaves exactly one `follow-up:` line. A `reload()` while the line is shown keeps
-  the line on the same selected record. The `i` worker finishing after the selection moved
-  appends nothing.
-- [ ] **AC10. Escalation confirm.** In the popup, choosing `cancel` at the final confirm
-  for `c`, `t` and `w` writes nothing and plans once; a confirmed `w` passes `apply_withdraw`
-  a plan built from the `EscRow` whose `id` is `links.escalation`. A direct
-  `await answer_escalation(stub_owner, cfg, row, action)` with a stub owner (`.app`,
-  `.reload`) for `choose`, `text` and `withdraw` calls `reload` once on success and not on
-  cancel, and `withdraw` appends the parked suffix only when the campaign is `PARKED` with
-  park reason `human_decision`.
-- [ ] **AC11. Test hygiene.** The read-only test's filter step uses a token that filters
-  rows (it changes the visible row count). The placeholder-absence check asserts the
-  `#campaign-records` and `#campaign-mail` tables have the expected row count and that the
-  detail widgets' text lacks `placeholder:`; it does not read `content` from a `DataTable`.
-- [ ] **AC12. Unchanged behavior.** SPEC-0477's acceptance criteria still hold: its tests in
+- [ ] **AC6. Unchanged behavior.** SPEC-0477's acceptance criteria still hold: its tests in
   `tests/test_tui_campaign_records.py`, `tests/test_tui_mailbox_tab.py`,
   `tests/test_tui_escalations_tab.py` and `tests/test_tui_campaign_detail_ac.py` pass.
 
@@ -197,31 +180,16 @@ test module and no second tier. `python3 tools/test_tiers.py --check` exits 0 wh
 1. **Model (AC1, AC3):** `CR.mailbox_line` with the oversized, `²` and negative offsets and
    a nonexistent stem returns `None`; `CR._id_order` on the same ids does not raise and
    keeps `99` before `100`; `CR.match_record` with null and `"None"` severity/status.
-2. **Pane (AC1, AC2, AC7):** write a mail record with a huge-offset id into the fixture
+2. **Pane (AC1, AC2):** write a mail record with a huge-offset id into the fixture
    history, open the popup and assert Overview and Timeline render, the Mail row shows the
    fallback, and no "history unavailable". Put `\x1b[31mnow` in a record `ts` and assert no
-   `\x1b` in the Findings and Mail time cells. Assert the blank status cell and the literal
-   `[bold]` first-line cell on a Mail row.
+   `\x1b` in the Findings and Mail time cells; a valid ISO `ts` renders as before.
 3. **Guard (AC4, AC5):** parametrize over `ValueError`, `OSError` and `RuntimeError` for the
    mailbox tab and the popup and assert identical notify text and severity and `_busy`
    false; assert the source of `mailbox_tab.py` does not contain `mailbox action failed`
    (it lives only in `escalation_flow.py`); assert the `CampaignDetail` docstring
    has no "placeholder".
-4. **Focus and reload (AC6, AC8):** open with `focus={"tab": "mail"}` and assert the active
-   tab, selected thread and detail. Remove the last Findings row and the last Mail thread,
-   `reload()`, assert the new last row is selected; remove all Mail threads and assert the
-   `no mail` state.
-5. **Edges (AC9):** hide the `resolved_by` row with a filter and press `d`; press `i`
-   twice and count `follow-up:` lines; `reload()` with the line shown; move the selection
-   before the `i` worker finishes (patch `CR.idea_title` to wait on an event) and assert no
-   line is appended.
-6. **Escalation (AC10):** drive `c`, `t` and `w` to the final confirm and choose `cancel`,
-   assert no apply and no answer file; assert the plan passed to `apply_withdraw` carries the
-   `links.escalation` id; call `answer_escalation` directly with a stub owner for the three
-   actions, a cancelled confirm, and a `PARKED` / `human_decision` and a non-parked campaign.
-7. **Hygiene (AC11):** change the read-only test's filter to `kind:<fixture kind>` and assert
-   the row count changes and the directory hash is unchanged; rewrite the placeholder loop.
-8. **Regression (AC12):** run the affected tests
+4. **Regression (AC6):** run the affected tests
    (`python3 tools/affected_tests.py --run uv run pytest -q`) plus
    `tests/test_tui_campaign_records.py`, `tests/test_tui_mailbox_tab.py`,
    `tests/test_tui_escalations_tab.py`, `tests/test_tui_campaign_detail_ac.py`. The gate
@@ -229,7 +197,7 @@ test module and no second tier. `python3 tools/test_tiers.py --check` exits 0 wh
    the `tui` tests of these modules explicitly with `-m tui` and records the counts.
    `python3 tools/spec_lint.py` exits 0.
 
-Manual: none beyond the Pilot drives; the touched surfaces are fail-soft helpers and tests.
+Manual: none beyond the Pilot drives; the touched surfaces are fail-soft helpers.
 
 ## Rollout / migration
 
