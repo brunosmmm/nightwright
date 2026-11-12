@@ -552,7 +552,11 @@ def _safe_name(v) -> bool:
 
 
 def _inside(path: Path, root: Path) -> bool:
-    return path.resolve().is_relative_to(root.resolve())
+    """`path` resolves (symlinks followed) inside `root`; a symlink loop or unreadable link is outside."""
+    try:
+        return path.resolve().is_relative_to(root.resolve())
+    except (OSError, RuntimeError):
+        return False
 
 
 def collect_records(agentic: Path, chosen: list[Camp], esc: dict, note) -> tuple[dict, dict, dict]:
@@ -660,7 +664,9 @@ def collect_records(agentic: Path, chosen: list[Camp], esc: dict, note) -> tuple
                 note(f"unsafe project {proj!r}: skipped")
                 continue
             f = sd / f"{proj}.last.json"
-            if _inside(f, agentic) and f.is_file():
+            if not _inside(f, agentic):
+                note(f"sentinel/{proj}.last.json resolves outside agentic/: skipped")
+            elif f.is_file():
                 files[f"sentinel/{proj}.last.json"] = f.read_bytes()
     return files, sources, counts
 

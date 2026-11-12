@@ -13,6 +13,8 @@ import hashlib
 import importlib.util
 import json
 import os
+import random
+import re
 import shutil
 import subprocess
 import sys
@@ -79,6 +81,7 @@ def _time_each_test():
 @pytest.fixture(scope="module", autouse=True)
 def _enforce_budget():
     yield
+    assert _SPENT[0] > 0, "the budget timers are not wired: no test time was recorded"
     check_budget(_SPENT[0])
 
 
@@ -1206,6 +1209,103 @@ def test_review_symlink_escaping_source_is_not_read(tool, tmp_path):
     assert "link.txt" in r.stdout and "skipped" in r.stdout
     assert b"OUTSIDE-SECRET-TEXT" not in b"".join(p.read_bytes() for p in out.rglob("*") if p.is_file())
     assert (out / "agentic/reviews" / MULTI[:9] / "r.json").is_file()
+
+
+def test_budget_timers_record_time(captured):
+    assert _SPENT[0] > 0                                      # the capture fixture adds its own time
+
+
+def _collect(tool, src, notes):
+    ag = src / "agentic"
+    chosen = [tool.Camp(ag / "campaigns" / c) for c in (MULTI, ABANDONED)]
+    return tool.collect_records(ag, chosen, {}, notes.append)[0]
+
+
+def test_sentinel_symlink_escaping_source_is_not_read(tool, tmp_path):
+    src = build_source(tmp_path / "src")
+    outside = tmp_path / "outside.json"
+    outside.write_text("OUTSIDE-SECRET-TEXT\n")
+    link = src / "agentic" / "sentinel" / "Meta-Tools.last.json"
+    link.unlink()
+    link.symlink_to(outside)
+    notes = []
+    files = _collect(tool, src, notes)
+    assert "sentinel/Meta-Tools.last.json" not in files
+    assert not [k for k, v in files.items() if b"OUTSIDE-SECRET-TEXT" in v]
+    assert any("Meta-Tools.last.json" in n and "outside" in n for n in notes), notes
+
+
+@pytest.mark.parametrize("kind", ["dir_link", "spec_dir_link", "loop"])
+def test_review_dir_symlinks_and_loops_are_skipped(tool, tmp_path, kind):
+    src = build_source(tmp_path / "src")
+    rv = src / "agentic" / "reviews" / MULTI[:9]
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "x.json").write_text("OUTSIDE-SECRET-TEXT\n")
+    if kind == "dir_link":
+        (rv / "sub").symlink_to(outside, target_is_directory=True)
+    elif kind == "spec_dir_link":
+        for f in rv.iterdir():
+            f.unlink()
+        rv.rmdir()
+        rv.symlink_to(outside, target_is_directory=True)
+    else:
+        (rv / "a").symlink_to(rv / "a")
+    notes = []
+    files = _collect(tool, src, notes)                        # a loop must not crash the capture
+    assert not [k for k, v in files.items() if b"OUTSIDE-SECRET-TEXT" in v]
+    if kind == "spec_dir_link":
+        assert not [k for k in files if k.startswith("reviews/")]
+    else:
+        assert f"reviews/{MULTI[:9]}/r.json" in files
+        assert any("skipped" in n for n in notes), notes
+
+
+def test_inside_treats_a_symlink_loop_as_outside(tool, tmp_path):
+    (tmp_path / "root").mkdir()
+    loop = tmp_path / "root" / "loop"
+    loop.symlink_to(loop)
+    assert tool._inside(loop, tmp_path / "root") is False
+    assert tool._inside(tmp_path / "root" / "plain", tmp_path / "root") is True
+
+
+def _email_corpus(n, seed, alphabet="abz09.%+-@_ \n"):
+    rnd = random.Random(seed)
+    return ["".join(rnd.choice(alphabet) for _ in range(rnd.randint(0, 14))) for _ in range(n)]
+
+
+EMAIL_EDGES = ["a@b.co c@d.co", "a@b.co@d.co", "@d.co", "x @d.co", "a@b.co.", "a@b.co\n", "a@", "@",
+               "a.b@c-d.e.f", "a@b", "a@b.", "..@x.yz", "a@b.co\nc@d.co\n", "ab@cd.ef@gh.ij", "é@b.co"]
+
+
+@pytest.mark.parametrize("s", EMAIL_EDGES)
+def test_sub_emails_matches_the_regex_on_edge_cases(tool, s):
+    f = lambda m: f"<{m.group(0)}>"
+    assert tool.sub_emails(f, s) == tool.EMAIL_RE.sub(f, s)
+
+
+def test_sub_emails_matches_the_regex_on_a_seeded_corpus(tool):
+    f = lambda m: f"<{m.group(0)}>"
+    for s in _email_corpus(20000, 1):
+        assert tool.sub_emails(f, s) == tool.EMAIL_RE.sub(f, s), repr(s)
+
+
+def _old_trim_cut(tool, s):
+    s = re.sub(r"[\w.%+-]*@[\w.-]*$", "", s)                  # the pre-SPEC-0568 TAIL_EMAIL_RE
+    m = tool.TAIL_PATH_RE.search(s)
+    if m and m.group(0) != "/home/user":
+        s = s[:m.start()]
+    return s
+
+
+@pytest.mark.parametrize("s", EMAIL_EDGES + ["see a@b", "see a@b.c\n", "/home/al", "/home/user", "x/Users/"])
+def test_trim_cut_matches_the_old_regex_on_edge_cases(tool, s):
+    assert tool.trim_cut(s) == _old_trim_cut(tool, s)
+
+
+def test_trim_cut_matches_the_old_regex_on_a_seeded_corpus(tool):
+    for s in _email_corpus(20000, 2, "abz09.%+-@_ \n/hmUsr"):
+        assert tool.trim_cut(s) == _old_trim_cut(tool, s), repr(s)
 
 
 def test_check_budget(monkeypatch):
