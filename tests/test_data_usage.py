@@ -3,6 +3,7 @@ partitions the agentic dir."""
 import json
 import os
 import time
+import types
 
 import pytest
 from click.testing import CliRunner
@@ -300,7 +301,15 @@ def test_wild_mtime_and_markup_do_not_crash(tmp_path, monkeypatch):
     cfg = {"data_dir": str(tmp_path / "[/x]data")}
     a = store.agentic_dir(cfg)
     _w(a / "runner.log", 5)
-    os.utime(a / "runner.log", (1, 4_000_000_000_000))
+    real = DU._stat
+
+    def wild(entry):                        # the filesystem would clamp a huge utime
+        st = real(entry)
+        if entry.name == "runner.log":
+            return types.SimpleNamespace(st_size=st.st_size, st_mtime=4_000_000_000_000)
+        return st
+
+    monkeypatch.setattr(DU, "_stat", wild)
     _w(a / "campaigns" / "C-1" / "state.json", 0, json.dumps({"state": "[/oops]"}))
     doc = DU.usage(cfg)
     assert _rows(doc)["runner-logs"]["newest"] == "9999-12-31T23:59:59Z"
@@ -308,3 +317,9 @@ def test_wild_mtime_and_markup_do_not_crash(tmp_path, monkeypatch):
     r = CliRunner().invoke(cli, ["data", "usage"])
     assert r.exit_code == 0, r.output
     assert "[/oops] 1" in r.output and "[/x]data" in r.output
+
+
+def test_iso_clamps_out_of_range():
+    assert DU._iso(4_000_000_000_000) == "9999-12-31T23:59:59Z"
+    assert DU._iso(-1e13) == "0001-01-01T00:00:00Z"
+    assert DU._iso(None) is None
