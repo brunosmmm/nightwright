@@ -1,7 +1,7 @@
 ---
 id: SPEC-0557
 title: Effort ceiling — no xhigh/max persona run on any backend
-status: accepted
+status: done
 owner: user
 created: 2026-11-11
 parent: SPEC-0552
@@ -73,14 +73,14 @@ spec-level or relayed raise. `null` turns it off.
 
 ## Acceptance criteria
 
-- [ ] With the default config, no persona run on claude, cursor or pi is sent an effort
+- [x] With the default config, no persona run on claude, cursor or pi is sent an effort
       above `high`, for every built-in profile and the user's `cursor` / `balanced` /
       `thorough` profiles as configured.
-- [ ] An explicit `cursor_model: grok-4.7-xhigh` (or any `*-xhigh` / `max` id) runs as the
+- [x] An explicit `cursor_model: grok-4.7-xhigh` (or any `*-xhigh` / `max` id) runs as the
       `high` variant.
-- [ ] A lowered run's record carries `effort_clamped_from`; the export shows it.
-- [ ] `agentic.effort_ceiling: null` restores today's behaviour exactly (identity test).
-- [ ] One real call per backend that has credentials confirms the lowered id/effort is
+- [x] A lowered run's record carries `effort_clamped_from`; the export shows it.
+- [x] `agentic.effort_ceiling: null` restores today's behaviour exactly (identity test).
+- [x] One real call per backend that has credentials confirms the lowered id/effort is
       accepted (claude required; cursor/pi noted if credentials are unavailable).
 
 ## Test plan
@@ -102,6 +102,44 @@ state migration.
 ## Definition of done
 
 Per AGENTS.md.
+
+## As shipped
+
+- **Module** `src/nightwright/agentic/effort_ceiling.py`: `ceiling(cfg)`, `clamp_effort(effort,
+  limit) -> (effort, clamped_from|None)`, `clamp_cursor_id(id, limit)` and `apply(...)`.
+  `agentic.effort_ceiling` is in `DEFAULT_CONFIG` as `high`; a cfg with no key also reads as
+  `high`, an explicit `null` is off (every function then returns its input unchanged). An
+  unknown value raises `ValueError`.
+- **Clamp points (decided).** The effort is clamped in two places, both through the one helper
+  and both in the two resolvers that build a `RunRequest` (`personas.build_request`,
+  `spec_review`): (1) the profile effort right after `persona_settings`, before any backend
+  mapping, so the `cursor_map` / `pi_map` alias lookup, `model_sets.bind` and the tier overlay
+  all see the lowered effort; (2) one final `apply` pass after the tier overlay, which clamps
+  the effort again (a tier row can carry `xhigh`), rewrites a Cursor id whose trailing word is
+  above the ceiling (`grok-4.7-xhigh` -> `grok-4.7-high`, `gpt-5.6-sol-xhigh` ->
+  `gpt-5.6-sol-high`, `-max`, `-extra-high`, and `-xhigh-fast` keeps `-fast`; this covers
+  explicit `cursor_model`, model-set ids and tier ids alike) and clamps `pi_thinking`.
+  `cursor_map.map_model` and `pi_map.map_pi_model` are untouched. The Cursor SDK effort
+  parameter is derived from the id suffix (`sdk_selection`), so it is lowered with the id;
+  every catalog id with an xhigh/max variant also lists `high` (tested).
+- **Record.** `RunRequest.effort_clamped_from` (the first lowered value, e.g. `xhigh`) is
+  written to `run.json`, `request.json`, the remote job doc and the `run.start` ledger event,
+  only when set, and read back by `rebuild_request` / `request_from_job`. The campaign export
+  has an `effort_clamped_from` run column (from `run.start`). The spec-review run record
+  carries it too.
+- **Tests** `tests/test_agentic_effort_ceiling.py` (47): helper; every persona x {claude,
+  cursor, pi, model sets claude/grok/gpt/mixed} x all profiles (built-in plus the copied
+  user shape: `cursor` profile file and `balanced` / `thorough` overrides with
+  `cursor_model: grok-4.7-xhigh`, `spec_reviewer` `sonnet`/`xhigh`) x tiers on/off; a guard
+  that the unclamped baseline does contain `xhigh`; explicit ids; tier overlay; Pi map
+  `xhigh`; `null` identity against `mapped_model` / `map_pi_model` with the raw effort;
+  record, request round-trip, `run.start` and export through a FakeRunner queue.
+- **Manual.** One real call, `claude -p --model claude-sonnet-5-5 --effort high` with a
+  one-line prompt (what a clamped `sonnet`/`xhigh` reviewer is now sent): accepted, ended
+  `end_turn`, cost $0.053. Cursor and Pi: **unverified**; `CURSOR_API_KEY` resolves only
+  through `pass:cursor/sdk` (pinentry) and no Pi provider key is in the environment. Their
+  lowered ids are covered by the catalog test (`grok-4.7-high` and `gpt-5.6-sol-high` are
+  legal catalog efforts) and the Pi map already has `high` rows.
 
 ## Open questions
 

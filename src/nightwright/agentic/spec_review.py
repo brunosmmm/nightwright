@@ -544,7 +544,8 @@ def run_spec_review(cfg, spec_path, spec_id, *, profile=None, idea_text=None,
     from .model_sets import bind, resolve_model_set
     from .runner import mapped_model
     alias = str(settings.get("model") or "sonnet")
-    effort = settings.get("effort")
+    from . import effort_ceiling as EC
+    effort, clamped_from = EC.clamp_effort(settings.get("effort"), EC.ceiling(cfg))  # SPEC-0557
     chosen = resolve_model_set(cfg, project_root=str(root) if root else None)
     if chosen is not None:
         bound = bind(chosen, PERSONA, alias, effort)
@@ -563,6 +564,10 @@ def run_spec_review(cfg, spec_path, spec_id, *, profile=None, idea_text=None,
         row = map_pi_model(alias, effort, cfg, project_root=str(root) if root else None)
         pi_provider, pi_id, pi_thinking = row["provider"], row["id"], row["thinking"]
     kind = os.environ.get("NW_AGENTIC_RUNNER") or spawn_runner or resolve_runner(cfg)
+    fin = EC.apply(cfg, effort=effort, model=model, pi_thinking=pi_thinking,
+                   runner=spawn_runner or resolve_runner(cfg), clamped_from=clamped_from)
+    effort, model, pi_thinking, clamped_from = (
+        fin["effort"], fin["model"], fin["pi_thinking"], fin["clamped_from"])
     if kind == "cursor" and not (os.environ.get("CURSOR_API_KEY") or "").strip():
         raise ValueError(_no_key_text(cfg))             # SPEC-0487: before journal / spawn
     req = PS.RunRequest(
@@ -590,6 +595,7 @@ def run_spec_review(cfg, spec_path, spec_id, *, profile=None, idea_text=None,
         pi_id=pi_id,
         pi_thinking=pi_thinking,
         runner=spawn_runner,
+        effort_clamped_from=clamped_from,
     )
     journal_start(cfg, run_id, spec_id, req.timeout_s, req.run_dir,
                   reviewer_profile=prof.get("name"), model=req.model)

@@ -102,6 +102,8 @@ DEFAULT_CONFIG = {
         # campaign pins the effective flags at open (`state.lean`) and never re-reads them.
         "lean": {"tiers": False, "packet": False, "collator": False, "sessions": False},
         "project_lean": {},
+        # SPEC-0557: no persona run is sent above this effort on any backend. null = off.
+        "effort_ceiling": "high",
     },
 }
 

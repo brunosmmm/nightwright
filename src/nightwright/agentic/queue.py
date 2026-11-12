@@ -2664,6 +2664,8 @@ def _prepare_run(ctx: _Ctx, state: dict, persona: str, step: Step | None = None)
                      "personas": list(step.personas) if step else []},
             "profile": req.profile,                                    # SPEC-0238
             **({"tier": req.tier} if req.tier else {}),                # SPEC-0553
+            **({"effort_clamped_from": req.effort_clamped_from}        # SPEC-0557
+               if req.effort_clamped_from else {}),
             **PK.run_marks(state, persona, step.kind if step else None),  # SPEC-0554
         })
         counters["runs"] = run_no

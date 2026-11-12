@@ -176,7 +176,7 @@ def test_columns_and_key_order(cfg):
         "max_budget_usd", "timeout_s", "started_at", "duration_s", "cost_usd", "charged_usd",
         "budget_frac", "exit_code", "is_error", "timed_out", "interrupted", "transient",
         "verdict_status", "status", "input_tokens", "output_tokens", "cache_read_tokens",
-        "worker", "tier", "loop", "packet"]
+        "worker", "tier", "loop", "packet", "effort_clamped_from"]
     assert [n for n, _ in CE.FINDING_COLUMNS] == [
         "campaign", "spec_id", "seq", "ts", "state_at", "persona", "severity", "gate", "ac",
         "title", "detail", "files"]
@@ -229,7 +229,8 @@ def test_column_types_pinned():
         ("status", "str"),
         ("input_tokens", "int"), ("output_tokens", "int"), ("cache_read_tokens", "int"),
         ("worker", "str"), ("tier", "str"),                                   # SPEC-0553
-        ("loop", "int"), ("packet", "bool"))                                  # SPEC-0554
+        ("loop", "int"), ("packet", "bool"),                                  # SPEC-0554
+        ("effort_clamped_from", "str"))                                       # SPEC-0557
     assert CE.FINDING_COLUMNS == (
         ("campaign", "str"), ("spec_id", "str"),
         ("seq", "int"), ("ts", "str"), ("state_at", "str"),

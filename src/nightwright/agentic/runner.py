@@ -56,6 +56,7 @@ class RunRequest:
     pi_thinking: str | None = None
     runner: str | None = None                   # model-set backend; None keeps the host runner
     tier: str | None = None                     # SPEC-0553: role tier when `lean.tiers` is pinned
+    effort_clamped_from: str | None = None      # SPEC-0557: the effort before the ceiling lowered it
 
 
 @dataclass(frozen=True)
@@ -459,6 +460,8 @@ def write_run_record(req: RunRequest, result: RunResult, started_at: str) -> Run
     }
     if req.tier:                                                 # SPEC-0553
         rec["tier"] = req.tier
+    if req.effort_clamped_from:                                  # SPEC-0557
+        rec["effort_clamped_from"] = req.effort_clamped_from
     if result.writeback_failed or result.saved_refs:
         rec["writeback_failed"] = result.writeback_failed
         rec["saved_refs"] = list(result.saved_refs)
@@ -529,6 +532,8 @@ def _request_doc(req: RunRequest, started_at: str) -> dict:
         doc["runner"] = req.runner
     if req.tier:                                                 # SPEC-0553
         doc["tier"] = req.tier
+    if req.effort_clamped_from:                                  # SPEC-0557
+        doc["effort_clamped_from"] = req.effort_clamped_from
     return doc
 
 
@@ -551,7 +556,8 @@ def rebuild_request(run_dir, *, budget: float | None = None) -> RunRequest:
         permission_mode=doc.get("permission_mode") or "", read_only=bool(doc.get("read_only")),
         allowed_tools=(), add_dirs=(), json_schema=doc.get("json_schema") or {}, env={},
         run_dir=run_dir, pi_provider=doc.get("pi_provider"), pi_id=doc.get("pi_id"),
-        pi_thinking=doc.get("pi_thinking"), runner=doc.get("runner"), tier=doc.get("tier"))
+        pi_thinking=doc.get("pi_thinking"), runner=doc.get("runner"), tier=doc.get("tier"),
+        effort_clamped_from=doc.get("effort_clamped_from"))
 
 
 def _read_text(path) -> str:
@@ -935,6 +941,8 @@ def request_to_job(req: RunRequest, worktree) -> dict:
         doc["pi_thinking"] = req.pi_thinking
     if req.tier:                                                 # SPEC-0553
         doc["tier"] = req.tier
+    if req.effort_clamped_from:                                  # SPEC-0557
+        doc["effort_clamped_from"] = req.effort_clamped_from
     return doc
 
 
@@ -968,7 +976,8 @@ def request_from_job(doc: dict, tree, run_dir, env: dict | None = None) -> RunRe
         profile_sources=tuple(doc.get("profile_sources") or ()),
         model_alias=doc.get("model_alias"),
         pi_provider=doc.get("pi_provider"), pi_id=doc.get("pi_id"),
-        pi_thinking=doc.get("pi_thinking"), tier=doc.get("tier"))
+        pi_thinking=doc.get("pi_thinking"), tier=doc.get("tier"),
+        effort_clamped_from=doc.get("effort_clamped_from"))
 
 
 class RemoteRunner:

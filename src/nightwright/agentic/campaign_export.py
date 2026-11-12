@@ -67,6 +67,7 @@ RUN_COLUMNS = (
     ("worker", "str"),                                                     # SPEC-0346
     ("tier", "str"),                                                       # SPEC-0553
     ("loop", "int"), ("packet", "bool"),                                   # SPEC-0554
+    ("effort_clamped_from", "str"),                                        # SPEC-0557
 )
 FINDING_COLUMNS = (
     ("campaign", "str"), ("spec_id", "str"),
@@ -380,6 +381,8 @@ def run_rows(cfg, crow: dict, events=None) -> list[dict]:
         row = {**{k: crow.get(k) for k in ("campaign", "spec_id", "profile", "size", "tone")},
                **r, "budget_frac": _frac(r.get("charged_usd"), r.get("max_budget_usd")),
                "tier": tiers.get(r.get("run_id")),
+               "effort_clamped_from": (starts.get(r.get("run_id")) or {})
+               .get("effort_clamped_from"),                                 # SPEC-0557
                "loop": (starts.get(r.get("run_id")) or {}).get("loop"),     # SPEC-0554
                "packet": bool((starts.get(r.get("run_id")) or {}).get("packet")),
                "input_tokens": usage.get("input_tokens"),

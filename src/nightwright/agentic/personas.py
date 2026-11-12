@@ -1074,7 +1074,8 @@ def build_request(cfg, profile, project_cfg, state, persona, *, run_dir,
     if persona == "conflict_resolver":
         env["NW_REBASE_TARGET"] = str(ctx.get("rebase_target") or "")
     alias = str(settings.get("model") or "sonnet")
-    effort = settings.get("effort")
+    from . import effort_ceiling as _EC
+    effort, clamped_from = _EC.clamp_effort(settings.get("effort"), _EC.ceiling(cfg))  # SPEC-0557
     from .model_sets import bind, resolve_model_set
     from . import runner as _R
     chosen = resolve_model_set(cfg, project_root=project_root)
@@ -1119,6 +1120,12 @@ def build_request(cfg, profile, project_cfg, state, persona, *, run_dir,
                 model, model_alias = row["model"], None
         if persona == "spec_writer":
             prompt += "\n\n" + LEAN_SPEC_WRITER_NOTE
+    fin = _EC.apply(cfg, effort=effort, model=model, pi_thinking=pi_thinking,
+                    runner=spawn_runner or _R.resolve_runner(
+                        cfg, campaign=state, project=state.get("project")),
+                    clamped_from=clamped_from)              # SPEC-0557: the one final pass
+    effort, model, pi_thinking, clamped_from = (
+        fin["effort"], fin["model"], fin["pi_thinking"], fin["clamped_from"])
     return RunRequest(
         persona=persona,
         prompt=prompt,
@@ -1143,4 +1150,5 @@ def build_request(cfg, profile, project_cfg, state, persona, *, run_dir,
         pi_thinking=pi_thinking,
         runner=spawn_runner,
         tier=tier,
+        effort_clamped_from=clamped_from,
     )
