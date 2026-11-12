@@ -107,14 +107,12 @@ its existing `campaign` / `id` field.
 - [ ] Given an unknown id, a path-like string (`../x`) or an unknown spec id, it raises
       `ValueError` and no directory outside the campaigns root is read.
 - [ ] `nw campaign tail SPEC-N`, `run SPEC-N <run>`, `runs SPEC-N`, `log SPEC-N` and
-      `show SPEC-N` behave exactly as with the resolved campaign id, and exit non-zero with the
-      resolver's message when it raises.
-- [ ] When resolved from a spec id the command writes the resolved campaign id to stderr and
-      nothing extra to stdout; `--json` stdout still parses as the same schema.
-- [ ] Passing a real campaign id prints no resolution note.
+      `show SPEC-N` behave exactly as with the resolved campaign id, exit non-zero with the
+      resolver's message when it raises, and their `campaign` argument help mentions spec ids.
+- [ ] A spec id prints the resolution note on stderr only (stdout and `--json` unchanged,
+      same schema); a real campaign id prints no note.
 - [ ] `nw campaign tail --follow-campaign SPEC-N` follows the resolved campaign.
 - [ ] `nw campaign history`, `records`, `export` and `note` are unchanged.
-- [ ] The `campaign` argument help of the five commands mentions spec ids.
 
 ## Test plan
 
