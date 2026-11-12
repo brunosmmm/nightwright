@@ -269,6 +269,10 @@ Fish/bash/zsh scripts are **live** (SPEC-0022) — new subcommands show up witho
 completion files. New closed-set options/arguments still need `shell_complete=…` in
 `cli.py` (e.g. idea `selector` → `complete_idea_id`). See README “Shell completion” and
 `REQUIRED_SHELL_COMPLETE_NAMES` in `src/nightwright/completion.py` (enforced by pytest, SPEC-0039).
+The guard is default-deny (SPEC-0582): every string-valued, non-flag param needs a completer,
+a name in `FREE_TEXT_NAMES` (genuine free text), or an `UNCOMPLETED_EXEMPT` entry with a reason.
+`UNCOMPLETED_EXEMPT` is a ratchet: remove entries as you wire completers (`stale_exemptions()`
+fails on leftovers); never add one to hide a new dynamic param.
 
 ## Remote gate worker
 

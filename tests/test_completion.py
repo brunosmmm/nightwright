@@ -5,6 +5,7 @@ Install tests use a tmp --dest / tmp HOME+XDG — never the real fish/bash/zsh d
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
+import click
 import pytest
 import yaml
 from click.core import Context
@@ -245,6 +246,123 @@ def test_required_shell_complete_names_wired():
         + "\n  - ".join(missing)
         + "\nOr remove the name from REQUIRED_SHELL_COMPLETE_NAMES if free-text is intentional."
     )
+
+
+def _fixture_group(**opts):
+    """Tiny Click tree: `grp sub` with the given params list in opts['params']."""
+    @click.group()
+    def grp():
+        pass
+
+    sub = click.Command("sub", params=opts["params"], callback=lambda **kw: None)
+    grp.add_command(sub)
+    return grp
+
+
+def _stub_complete(ctx, param, incomplete):
+    return []
+
+
+def test_guard_detects_missing_custom_completer():
+    """Regression: `Parameter.shell_complete` is always a method; `_custom_shell_complete` counts."""
+    grp = _fixture_group(params=[
+        click.Argument(["project"]),
+        click.Argument(["other"], shell_complete=_stub_complete),
+    ])
+    assert C.has_completer(grp.commands["sub"].params[1])
+    assert not C.has_completer(grp.commands["sub"].params[0])
+    assert C.missing_required_shell_completes(grp) == ["sub:project"]
+    grp2 = _fixture_group(params=[click.Argument(["project"], shell_complete=_stub_complete)])
+    assert C.missing_required_shell_completes(grp2) == []
+
+
+def test_default_deny_flags_unknown_string_param(monkeypatch):
+    monkeypatch.setattr(C, "UNCOMPLETED_EXEMPT", {})
+    grp = _fixture_group(params=[click.Option(["--widget"])])
+    assert C.missing_dynamic_completes(grp) == ["sub:widget"]
+    # multiple=True and nargs=-1 string params are still string params
+    grp = _fixture_group(params=[click.Option(["--widget"], multiple=True),
+                                 click.Argument(["gadget"], nargs=-1)])
+    assert C.missing_dynamic_completes(grp) == ["sub:widget", "sub:gadget"]
+    grp = _fixture_group(params=[click.Option(["--widget"], shell_complete=_stub_complete)])
+    assert C.missing_dynamic_completes(grp) == []
+
+
+def test_default_deny_accepts_free_text_and_exempt(monkeypatch):
+    grp = _fixture_group(params=[click.Option(["--widget"]), click.Option(["--blurb"])])
+    monkeypatch.setattr(C, "UNCOMPLETED_EXEMPT", {})
+    monkeypatch.setattr(C, "FREE_TEXT_NAMES", frozenset({"blurb"}))
+    assert C.missing_dynamic_completes(grp) == ["sub:widget"]
+    monkeypatch.setattr(C, "UNCOMPLETED_EXEMPT", {"sub:widget": "reason"})
+    assert C.missing_dynamic_completes(grp) == []
+    # exemptions also silence the required-name check
+    grp = _fixture_group(params=[click.Argument(["project"])])
+    assert C.missing_required_shell_completes(grp) == ["sub:project"]
+    monkeypatch.setattr(C, "UNCOMPLETED_EXEMPT", {"sub:project": "reason"})
+    assert C.missing_required_shell_completes(grp) == []
+
+
+def test_default_deny_ignores_non_string_params(monkeypatch):
+    monkeypatch.setattr(C, "UNCOMPLETED_EXEMPT", {})
+    grp = _fixture_group(params=[
+        click.Option(["--flag"], is_flag=True),
+        click.Option(["--path"], type=click.Path()),
+        click.Option(["--choice"], type=click.Choice(["a", "b"])),
+        click.Option(["--num"], type=click.INT),
+        click.Option(["--ratio"], type=click.FLOAT),
+        click.Option(["--yes-no"], type=click.BOOL),
+        click.Option(["--when"], type=click.DateTime()),
+        click.Option(["--blob"], type=click.File()),
+        click.Option(["--uid"], type=click.UUID),
+        click.Option(["--pair"], type=click.Tuple([int, int])),
+    ])
+    assert C.missing_dynamic_completes(grp) == []
+
+
+def test_required_and_dynamic_guards_clean_on_real_cli():
+    assert C.missing_required_shell_completes() == []
+    assert C.missing_dynamic_completes() == []
+
+
+def test_uncompleted_exempt_has_no_stale_entries():
+    assert C.stale_exemptions() == [], "wired/vanished params: delete these UNCOMPLETED_EXEMPT keys"
+
+
+def test_uncompleted_exempt_has_reasons():
+    assert C.UNCOMPLETED_EXEMPT
+    for key, reason in C.UNCOMPLETED_EXEMPT.items():
+        assert isinstance(reason, str) and reason.strip(), key
+
+
+def test_stale_exemptions_detects_wired_and_missing(monkeypatch):
+    grp = _fixture_group(params=[
+        click.Option(["--widget"], shell_complete=_stub_complete),
+        click.Option(["--gadget"]),
+    ])
+    monkeypatch.setattr(C, "UNCOMPLETED_EXEMPT", {
+        "sub:widget": "now wired",
+        "sub:gadget": "still pending",
+        "gone cmd:thing": "command removed",
+    })
+    assert C.stale_exemptions(grp) == ["gone cmd:thing", "sub:widget"]
+
+
+def test_exempt_covers_context_cases(monkeypatch):
+    """With the seed emptied the real tree reports the SPEC-0582 Context cases (guard is live)."""
+    monkeypatch.setattr(C, "UNCOMPLETED_EXEMPT", {})
+    found = set(C.missing_required_shell_completes()) | set(C.missing_dynamic_completes())
+    expected = {
+        "queue steward-launch:project", "queue mvp-report:project", "sheet plan:project",
+        "sheet record:project", "idea project:project", "spec lint:project",
+        "gate run:project", "gate stats:project", "gate cadence run:project",
+        "gate cadence status:project", "campaign history:project", "campaign records:project",
+        "queue stop:by", "gate run:by", "escalations answer:by",
+        "queue events:campaign", "queue decisions:campaign", "campaign records:campaign",
+        "ideas list:epic", "ideas export:epic", "projects add:scheme",
+        "backlog add:spec_id", "backlog edit:spec_id", "campaign history:spec_id",
+        "add:key", "idea capture:key", "spec generate:key",
+    }
+    assert expected <= found, sorted(expected - found)
 
 
 def test_required_shell_complete_registry_nonempty():

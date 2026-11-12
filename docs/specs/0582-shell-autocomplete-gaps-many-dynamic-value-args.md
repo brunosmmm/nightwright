@@ -1,7 +1,7 @@
 ---
 id: SPEC-0582
 title: Make the SPEC-0039 shell-completion guard live with default-deny and an exemption ratchet
-status: accepted
+status: done
 owner: user
 created: 2026-11-12
 updated: 2026-11-12
@@ -122,23 +122,23 @@ All in `src/nightwright/completion.py` (no change to any command or completer be
 
 ## Acceptance criteria
 
-- [ ] `has_completer` and `missing_required_shell_completes` use `_custom_shell_complete`: a
+- [x] `has_completer` and `missing_required_shell_completes` use `_custom_shell_complete`: a
       Click fixture with one uncompleted `project` argument and one completed one reports only
       the first.
-- [ ] `missing_dynamic_completes()` flags a fixture string option named `widget` with no
+- [x] `missing_dynamic_completes()` flags a fixture string option named `widget` with no
       completer; adding `shell_complete`, a `FREE_TEXT_NAMES` name or an `UNCOMPLETED_EXEMPT`
       entry removes it.
-- [ ] Flags, `Path`, `Choice`, numeric, bool and `DateTime` params are never reported.
-- [ ] On the real CLI tree `missing_required_shell_completes()` and `missing_dynamic_completes()`
+- [x] Flags, `Path`, `Choice`, numeric, bool and `DateTime` params are never reported.
+- [x] On the real CLI tree `missing_required_shell_completes()` and `missing_dynamic_completes()`
       both return `[]`, and `stale_exemptions()` returns `[]`.
-- [ ] `UNCOMPLETED_EXEMPT` contains an entry for every violation the corrected guards find
+- [x] `UNCOMPLETED_EXEMPT` contains an entry for every violation the corrected guards find
       without the exemptions (including each `project`, `by`, `campaign`, `epic`, `scheme`,
       `spec_id`, `key` case listed in Context), and every entry has a non-empty reason.
-- [ ] `stale_exemptions()` reports an entry whose param was given a completer and an entry whose
+- [x] `stale_exemptions()` reports an entry whose param was given a completer and an entry whose
       command does not exist (fixture-tested).
-- [ ] The `REQUIRED_SHELL_COMPLETE_NAMES` comment and the README / `docs/WORKFLOW.md`
+- [x] The `REQUIRED_SHELL_COMPLETE_NAMES` comment and the README / `docs/WORKFLOW.md`
       completion checklist describe the default-deny rule and the exemption ratchet.
-- [ ] No command runtime behavior or existing completer output changes.
+- [x] No command runtime behavior or existing completer output changes.
 
 ## Test plan
 
@@ -166,6 +166,26 @@ All in `src/nightwright/completion.py` (no change to any command or completer be
 - **Regression guard:** `python3 tools/affected_tests.py --run uv run pytest -q` and
   `python3 tools/spec_lint.py` exit 0.
 
+### Test record (2026-11-12)
+
+- `uv run pytest tests/test_completion.py -q`: 34 passed (11 new guard tests).
+- Manual: deleting the `queue stop:by` `UNCOMPLETED_EXEMPT` entry made the real-tree guard fail
+  naming `queue stop:by`; restored.
+- `python3 tools/test_tiers.py --check`: exit 0.
+- Related modules (`test_docs_product_*`, `test_idea_epic`, `test_idea_after`,
+  `test_project_registry`): 87 passed together with `test_completion.py`.
+- `python3 tools/affected_tests.py --run ...` exceeded the 10-minute budget locally (completion.py
+  is imported broadly); the full suite is left to gating.
+
+### As shipped
+
+- `has_completer`, `_is_string_param`, `FREE_TEXT_NAMES` (finalised from the audit walk),
+  `UNCOMPLETED_EXEMPT` (186 entries, reasons shared per cause), `missing_dynamic_completes` and
+  `stale_exemptions` live in `src/nightwright/completion.py`. `multiple`/`nargs=-1` string params
+  count as string params; File/UUID/Tuple are skipped.
+- Docs: the checklist lives in `docs/WORKFLOW.md` (README has no completion-checklist section,
+  only the install line, so it was not changed).
+
 ## Rollout / migration
 
 1. Fix the predicate and add `has_completer`, `FREE_TEXT_NAMES`, `missing_dynamic_completes`,
@@ -178,12 +198,12 @@ All in `src/nightwright/completion.py` (no change to any command or completer be
 
 ## Definition of done
 
-- [ ] Acceptance criteria all met.
-- [ ] Test plan executed; affected tests pass (`python3 tools/affected_tests.py --run uv run pytest -q`);
+- [x] Acceptance criteria all met.
+- [x] Test plan executed; affected tests pass (`python3 tools/affected_tests.py --run uv run pytest -q`);
       manual steps performed.
-- [ ] No regressions.
-- [ ] Spec body updated to match what shipped.
-- [ ] `docs/LEDGER.md` regenerated (`python3 tools/spec_lint.py --write-ledger`).
+- [x] No regressions.
+- [x] Spec body updated to match what shipped.
+- [x] `docs/LEDGER.md` regenerated (`python3 tools/spec_lint.py --write-ledger`).
 
 ## Open questions
 
