@@ -144,7 +144,7 @@ Per AGENTS.md.
   legal catalog efforts) and the Pi map already has `high` rows.
 - **Gate.** The first close gate (GATEJOB-2451) failed on one test that pinned an explicit
   `effort: max` (`test_agentic_persona_run_settings.py`); its expectation is now `high`. After rebasing onto main (62937eb6) the close gate
-  GATEJOB-2463 passed (spec-lint, docs-tests, pytest).
+  GATEJOB-2463 passed (spec-lint, docs-tests, pytest); after the review fix GATEJOB-2471 passed.
 - **Review fix.** The clamp now sets `effort_clamped_from` when it rewrites an explicit Cursor
   id although the effort was not lowered (the user's `cursor_model: grok-4.7-xhigh`
   reviewers); tested for effort medium and high, on the request doc and the export row.
