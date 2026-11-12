@@ -225,7 +225,7 @@ Per AGENTS.md.
   children without the opt-in, so they followed the live config. It now passes the parent's
   `lean_request` / `cohort` to `plan_add_batch`; `tests/test_agentic_split_queue.py::
   test_split_children_inherit_the_lean_opt_in` (with and without an opt-in) fails without
-  the fix and passes with it.
+  the fix and passes with it. Close gate GATEJOB-2578 (commit e7fdab8a) passed.
 - **Real-config table.** Computed as in Design (scratch script around
   `personas.build_request`); identical to the table the test pins for the copied profile
   shape.
