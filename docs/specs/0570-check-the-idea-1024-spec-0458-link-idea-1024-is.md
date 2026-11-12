@@ -1,7 +1,7 @@
 ---
 id: SPEC-0570
 title: Repair the IDEA-1024 / SPEC-0458 provenance link
-status: in-progress
+status: done
 owner: user
 created: 2026-11-12
 updated: 2026-11-12
@@ -71,7 +71,7 @@ Fix both sides, because both carry the same stale value. In the repo, delete the
 
 - [x] `docs/specs/0458-tail-renders-triage-and-implementer-cards.md` has no `source_idea` key, and `git diff` against its previous content shows only that one removed line.
 - [x] `docs/specs/0463-periodic-deterministic-resolution-of-queue.md` is unchanged and still has `source_idea: IDEA-1024`.
-- [ ] `nw idea show IDEA-1024` reports `spec: SPEC-0463`.
+- [x] `nw idea show IDEA-1024` reports `spec: SPEC-0463`.
 - [x] `tests/test_spec_source_idea_links.py` exists, has exactly one module-level `pytestmark = pytest.mark.fast`, and passes.
 - [x] `python3 tools/spec_lint.py` exits 0 and `docs/LEDGER.md` is current.
 - [x] `python3 tools/test_tiers.py --check` exits 0 when `tools/test_tiers.py` exists.
@@ -101,6 +101,8 @@ Fix both sides, because both carry the same stale value. In the repo, delete the
 
 Repo side shipped (SPEC-0458 line removed, regression test, ledger). The ideas-file write is a pending operator step: run `nw idea spec-link IDEA-1024 SPEC-0463 --yes --heading "Periodic deterministic"` on the ideas machine, then `nw idea show IDEA-1024`. The spec stays `in-progress` until then.
 
+**Update (2026-11-12): AC waived as verified, not executed from the worktree.** The ideas file is machine-local, so `nw idea show IDEA-1024` cannot be run from the campaign worktree. Evidence: the Meta-Tools steward ran `nw idea spec-link IDEA-1024 SPEC-0463 --yes --heading "Periodic deterministic"` in the ideas checkout on 2026-11-12 at 09:46, and `nw idea show IDEA-1024` then printed `spec: SPEC-0463`; the conductor re-confirmed it; the human waived the AC through escalation ESC-0070 (choice 1, event 13016). Definition of done: all items are ticked; "No regressions" rests on the affected tests recorded as passing in the Test record above (the full suite is left to the queue close gate and the main sentinel).
+
 ## Rollout / migration
 
 1. Land the SPEC-0458 frontmatter edit, the new test and the regenerated ledger together.
@@ -109,11 +111,11 @@ Repo side shipped (SPEC-0458 line removed, regression test, ledger). The ideas-f
 
 ## Definition of done
 
-- [ ] Acceptance criteria all met.
-- [ ] Test plan executed; affected tests pass; manual steps performed.
-- [ ] No regressions.
-- [ ] Spec body updated to match what shipped.
-- [ ] `docs/LEDGER.md` updated (status + date).
+- [x] Acceptance criteria all met.
+- [x] Test plan executed; affected tests pass; manual steps performed.
+- [x] No regressions.
+- [x] Spec body updated to match what shipped.
+- [x] `docs/LEDGER.md` updated (status + date).
 
 ## Open questions
 
