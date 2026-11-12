@@ -73,6 +73,7 @@ def _stat(entry: os.DirEntry):
 def _iso(ts: float | None) -> str | None:
     if ts is None:
         return None
+    ts = min(max(ts, -62135596800), 253402300799)     # a wild mtime clamps to year 1 / 9999
     return datetime.fromtimestamp(ts, timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 

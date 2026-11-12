@@ -182,6 +182,18 @@ def test_missing_dir(cfg):
 
 def test_retention_follows_config(cfg):
     r = _rows(DU.usage(cfg))
+    rt = {k: v["retention"] for k, v in r.items()}
+    assert (rt["streams"]["rule"], rt["streams"]["setting"]) == ("age", "agentic.disk_clean.run_days")
+    assert (rt["sentinel"]["rule"], rt["sentinel"]["setting"]) == ("age",
+                                                                    "agentic.disk_clean.log_days")
+    assert (rt["gatejobs"]["rule"], rt["gatejobs"]["setting"]) == (
+        "age", "agentic.gate_jobs.retention_days")
+    assert (rt["campaign-tmp"]["rule"], rt["campaign-tmp"]["setting"]) == (
+        "on-terminal", "agentic.disk_clean")
+    assert rt["runner-jobs"]["setting"] is None and "after 7 d" in rt["runner-jobs"]["text"]
+    assert "final records" in rt["remote-jobs"]["text"] and "queued ones kept" in rt["remote-jobs"]["text"]
+    assert rt["remote-jobs"]["setting"] == "remote_jobs.prune"
+    assert all(rt[k]["setting"] is None for k in ("campaigns", "other"))
     assert "older than 14 d" in r["streams"]["retention"]["text"]
     assert "older than 14 d" in r["sentinel"]["retention"]["text"]
     assert "newest 40 per dir" in r["sentinel"]["retention"]["text"]
@@ -270,3 +282,29 @@ def test_scale(cfg):
     assert time.monotonic() - t0 < 30
     r = _rows(doc)
     assert r["runs"]["count"] == 1000 and r["streams"]["files"] == 1000
+
+
+def test_cli_missing_dir(cfg, monkeypatch):
+    monkeypatch.setattr("nightwright.cli.load_config", lambda: cfg)
+    r = CliRunner().invoke(cli, ["data", "usage", "--json"])
+    assert r.exit_code == 0, r.output
+    doc = json.loads(r.output)
+    assert doc["total"] == {"bytes": 0, "files": 0}
+    r = CliRunner().invoke(cli, ["data", "usage"])
+    assert r.exit_code == 0, r.output
+    assert any(ln.startswith("total") and "0 files" in ln for ln in r.output.splitlines())
+    assert not store.agentic_dir(cfg).exists()
+
+
+def test_wild_mtime_and_markup_do_not_crash(tmp_path, monkeypatch):
+    cfg = {"data_dir": str(tmp_path / "[/x]data")}
+    a = store.agentic_dir(cfg)
+    _w(a / "runner.log", 5)
+    os.utime(a / "runner.log", (1, 4_000_000_000_000))
+    _w(a / "campaigns" / "C-1" / "state.json", 0, json.dumps({"state": "[/oops]"}))
+    doc = DU.usage(cfg)
+    assert _rows(doc)["runner-logs"]["newest"] == "9999-12-31T23:59:59Z"
+    monkeypatch.setattr("nightwright.cli.load_config", lambda: cfg)
+    r = CliRunner().invoke(cli, ["data", "usage"])
+    assert r.exit_code == 0, r.output
+    assert "[/oops] 1" in r.output and "[/x]data" in r.output

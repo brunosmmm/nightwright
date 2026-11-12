@@ -314,6 +314,12 @@ one that sorts. `campaigns` has the extra `by_state` key. `total.bytes` equals t
   Per the spec's own rule the row reports its true rule: `age`, `setting` null, "finished or
   cancelled jobs removed after 7 d". The Design table's `forever` for `runner-jobs` is superseded
   by this.
+  The Retention table in Design is guarded and left as written; this subsection is the
+  authoritative rule for `runner-jobs` (`tests/test_data_usage.py::test_retention_follows_config`
+  asserts `age`, `setting` null, "after 7 d").
+- Loop-2 review fixes: `_iso` clamps a wild mtime to year 1 / 9999 instead of raising; the text
+  form escapes Rich markup in the root path, state names and retention text; added
+  `test_cli_missing_dir` and `test_wild_mtime_and_markup_do_not_crash`.
 - `forever` grep result for the other rows (no `unlink`/`rmtree` of the path anywhere in
   `src/nightwright`): `campaigns` records, `gates` (only `gates.py` drops a lost-retry attempt's
   own `NNN-*` files, not retention), `events` (`events.jsonl`, `.lock`, `.projector.json`,

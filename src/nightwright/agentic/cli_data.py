@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 
 import click
+from rich.markup import escape
 from rich.table import Table
 
 from ..console import console, stdout_is_tty
@@ -40,15 +41,15 @@ def data_usage_cmd(cfg, as_json):
     table.add_column("newest", no_wrap=True)
     table.add_column("retention")
     for r in DU.render_rows(doc):
-        table.add_row(r["id"], DU.human_size(r["bytes"]), str(r["files"]),
+        table.add_row(escape(r["id"]), DU.human_size(r["bytes"]), str(r["files"]),
                       f"{r['count']} {r['count_unit']}", (r["oldest"] or "-")[:10],
-                      (r["newest"] or "-")[:10], r["retention"]["text"])
+                      (r["newest"] or "-")[:10], escape(r["retention"]["text"]))
     # piped output stays one row per line (the retention text is the long column)
     console.print(table, width=None if stdout_is_tty(console) else 220)
     camp = next(r for r in doc["sources"] if r["id"] == "campaigns")
     if camp["by_state"]:
         console.print("campaigns by state: " + ", ".join(
-            f"{k} {v['count']}" for k, v in camp["by_state"].items()), highlight=False)
+            f"{escape(k)} {v['count']}" for k, v in camp["by_state"].items()), highlight=False)
     console.print(f"total  {DU.human_size(doc['total']['bytes'])}  {doc['total']['files']} files"
-                  f"  in {doc['root']}" + (f"  ({doc['skipped']} skipped)" if doc["skipped"] else ""),
+                  f"  in {escape(doc['root'])}" + (f"  ({doc['skipped']} skipped)" if doc["skipped"] else ""),
                   highlight=False)
