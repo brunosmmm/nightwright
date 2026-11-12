@@ -113,6 +113,8 @@ def main(argv=None) -> int:
     ap.add_argument("--match", default="", help="regex a pass-finding's title/detail matches")
     ap.add_argument("--reviewer-model", default="",
                     help="override the reviewers' model (e.g. claude-sonnet-5-5, the judge tier)")
+    ap.add_argument("--reviewer-effort", default="",
+                    help="override the reviewers' effort (e.g. medium)")
     ap.add_argument("--dry-run", action="store_true",
                     help="no model calls; also write each reviewer's flag-off prompt "
                          "(prompt.flagoff.md) and its packet prompt (prompt.packet.md) to compare with the original run's prompt.md")
@@ -200,6 +202,8 @@ def main(argv=None) -> int:
         req = request(persona)
         if a.reviewer_model:
             req = dataclasses.replace(req, model=a.reviewer_model, model_alias=None)
+        if a.reviewer_effort:
+            req = dataclasses.replace(req, effort=a.reviewer_effort)
         if a.dry_run:
             (req.run_dir / "prompt.packet.md").write_text(req.prompt)
             off = {**st, "lean": None}
