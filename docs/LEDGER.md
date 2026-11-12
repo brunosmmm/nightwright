@@ -369,6 +369,7 @@ progress. This is the single place to see *what has been decided* and *what is i
 | [SPEC-0533](./specs/0533-remote-park-and-resume.md) | Remote park and resume | feature | accepted | — | 2026-11-10 |
 | [SPEC-0552](./specs/0552-leaner-agentic-campaign-loop.md) | Leaner agentic campaign loop (role tiers, review packet, findings collator, resumable sessions) | epic | accepted | — | 2026-11-11 |
 | [SPEC-0556](./specs/0556-resumable-implementer-and-reviewer-sessions.md) | Resumable implementer and reviewer sessions per backend, with a fresh-session fallback | feature | in-progress | — | 2026-11-11 |
+| [SPEC-0576](./specs/0576-wt-spec-seed-children-an-existing-idea-nnn.md) | seed-children: match an 'existing IDEA-NNN' Breakdown bullet by id across all ideas files | feature | proposed | — | 2026-11-12 |
 
 ## Done
 
