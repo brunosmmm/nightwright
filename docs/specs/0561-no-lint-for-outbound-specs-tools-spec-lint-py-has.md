@@ -21,7 +21,13 @@ duplicate ids). Outbound specs have nothing equivalent:
 - `nw spec` has no `lint` subcommand (`src/nightwright/cli.py`, `spec_group`), although the
   `tools/spec_lint.py` docstring says it is "also exposed as `nw spec lint`". `nw spec verify`
   refuses outbound ids (`verify_spec`, `src/nightwright/verify.py`).
-- The only outbound validation is inside `export_spec` (`src/nightwright/export.py`): the
+- `specs.validate_outbound(paths)` (`src/nightwright/specs.py`) is a light presence check
+  (`OUTBOUND_REQUIRED_FRONTMATTER`: id, title, status, owner, created, target_project,
+  target_repo; `OUTBOUND_REQUIRED_SECTIONS`: Context, Decision, Acceptance criteria, Test plan).
+  It has no `src/` callers and no CLI surface; only `tests/test_export.py` exercises it
+  (SPEC-0015 introduced it for scaffold-time checks). It checks no ids, kinds, statuses,
+  placeholders or duplicates, and is not what `nw spec export` runs.
+- The only outbound validation on the export path is inside `export_spec` (`src/nightwright/export.py`): the
   export scheme's `validate` (for nw-native: id, title, Context, Decision, Acceptance criteria,
   Test plan non-empty) plus a product-fit outcome warning. It runs at export time, so a
   malformed spec (for example JEROME-0022: no `kind`, `status: shipped`, a frozen
@@ -39,8 +45,8 @@ export?" without running the export.
   on one project directory, or on the whole outbox.
 - Reach it both ways the idea names: a `nw spec lint` subcommand and a `--outbox` mode of
   `tools/spec_lint.py`, backed by the same code so the two cannot disagree.
-- Never pass a spec that `nw spec export` would reject for validation reasons: the export
-  scheme's own `validate` is part of the lint.
+- Never pass a spec that `nw spec export` would reject for validation reasons (without
+  `--force`): the resolved scheme's own `validate` is part of the lint.
 - Machine-readable output (`--json`) so skills and agents can gate on it.
 
 **Non-goals**
@@ -51,6 +57,8 @@ export?" without running the export.
   legitimately carry extra keys (`target_project`, `target_repo`, `target_spec_path`, `outcome`,
   `scope_paths`, and scheme-specific ones).
 - Editing outbound spec files or the outbox `INDEX.md` / `PROVENANCE.md`; lint is read-only.
+- Removing or changing `specs.validate_outbound` (kept as is; see Design, "Relation to
+  `specs.validate_outbound`").
 
 ## Decision
 
@@ -72,10 +80,34 @@ unless `--strict`. Export behavior is untouched.
 - `root` may be the outbox root (`<root>/<project>/<PROJ>-NNNN-*.md`), one project directory,
   or one spec file. Only files whose name matches `^[A-Za-z0-9]+-\d{4}-.+\.md$` are linted, so
   `INDEX.md`, `PROVENANCE.md` and `*.contract.md` are skipped. `cfg` is the nw config; when
-  given, the project's configured export scheme is resolved (`export.resolve_scheme`) and its
-  `validate` run; without `cfg` (the `tools/` mode) the default nw-native `validate` runs.
+  given, the scheme is resolved exactly as export does:
+  `export.resolve_scheme(cfg['outbox_targets'].get(fm['target_project'], {}), None)` (the key is
+  the spec's `target_project` frontmatter value, not the directory name; no explicit
+  `--scheme` is applied), and its `validate` run. Without `cfg` (the `tools/` mode) only the
+  nw-native `validate` runs.
 - The module reuses `export._find_outbound_spec` for id lookup and `specs.outbox_dir(cfg)` for
   the default root rather than re-implementing them.
+
+### Relation to `specs.validate_outbound`
+
+`specs.validate_outbound` is **kept, behavior unchanged**; `outbox_lint` does not wrap or replace it.
+Reasons: it is a stable scaffold-time helper covered by `tests/test_export.py`, with no
+callers to migrate, and the spec must not change export or scaffolding behavior. The two are
+reconciled as follows, and the difference is deliberate:
+
+- Rule 2 omits `target_repo`: export never reads it (the destination comes from
+  `outbox_targets[project].repo_path` / `--to`, `export_spec`), and real specs such as
+  JEROME-0022 do not carry it, so requiring it would be a false positive. Rule 2 instead
+  requires `target_project`, which export does need.
+- Rule 5 adds Definition of done: `validate_outbound` predates the repo's DoD contract
+  (AGENTS.md); lint enforces it so portable specs carry the loop-closure checklist. Context,
+  Decision, Acceptance criteria and Test plan are required by both.
+- Everything else (ids, kinds, statuses, placeholders, duplicates, scheme) is lint-only.
+
+Consequence: a spec that fails `validate_outbound` only for a missing `target_repo` is not a
+lint error; any other `validate_outbound` problem (missing frontmatter, missing required
+section) is also a lint error (`frontmatter`, `required-keys` or `sections`). The module
+docstring of `validate_outbound` gains a pointer to `outbox_lint` as the full validator.
 
 ### Rules
 
@@ -101,12 +133,19 @@ Errors:
 9. `duplicate`: no two files in the outbox share an id or a `PROJ-NNNN` prefix within a project.
 10. `target-spec-path`: when `target_spec_path` is set, its basename equals the spec's filename.
 11. `scheme`: every problem returned by the resolved scheme's `validate(canonical)`
-    (`export_schemes.canonical.parse_canonical`) is reported, so lint is never more permissive
-    than export. A scheme that cannot be resolved is a `scheme` error naming the project.
+    (`export_schemes.canonical.parse_canonical`; scheme resolved as described under the
+    module, `export.resolve_scheme(cfg['outbox_targets'].get(fm['target_project'], {}), None)`)
+    is reported as an error, except a problem containing "product-fit outcome": export drops
+    those under `--force`, so they are reported as the rule-12 `outcome` warning, never as a
+    `scheme` error. Lint is therefore never more permissive than a non-forced
+    `nw spec export` of the same spec. A scheme name that cannot be resolved is a `scheme`
+    error naming the project and scheme. Without a cfg (`tools/spec_lint.py --outbox`) only
+    nw-native is checked, so per-project strict schemes are not covered in that mode.
 
 Warnings:
-12. `outcome`: no product-fit outcome signal (`canonical.has_outcome_signal`), mirroring the
-    export-time warning.
+12. `outcome`: no product-fit outcome signal (`canonical.has_outcome_signal`), or the resolved
+    scheme returned a "product-fit outcome" problem (rule 11); one warning per spec, mirroring
+    the export-time warning.
 13. `reference`: an id in `depends_on` / `supersedes` / `superseded_by` that has the outbound
     shape `PROJ-NNNN` but names no spec in the same project directory (SPEC-NNNN ids are
     internal and not resolved).
@@ -124,7 +163,7 @@ Warnings:
   there are no errors (and no warnings under `--strict`), 1 otherwise.
 - `tools/spec_lint.py --outbox PATH` imports `nightwright.outbox_lint` lazily (like
   `--check-source-ideas`, run via `uv run`), lints `PATH` (outbox root, project dir or file)
-  without a cfg, and exits with the same codes. The default `tools/spec_lint.py` run, the
+  without a cfg (nw-native `validate` only, see rule 11), and exits with the same codes. The default `tools/spec_lint.py` run, the
   ledger generation and `load_specs` are untouched. The module docstring is corrected to say
   `nw spec lint` covers outbound specs only.
 
@@ -156,16 +195,25 @@ Warnings:
 - [ ] Each error rule (1 to 11) is reported with its code for a spec that violates exactly that
       rule, and not for a spec that satisfies it; each warning rule (12 to 14) likewise, without
       failing the exit code.
-- [ ] Any spec for which the nw-native `validate` returns problems gets a `scheme` error
-      containing each of those problems, so lint never passes a spec export rejects.
+- [ ] For a project whose `outbox_targets[target_project]` is absent or nw-native, any spec for
+      which `NwNativeScheme.validate` returns problems gets a `scheme` error containing each of
+      those problems. For a project configured with a strict scheme in cfg, the scheme is
+      resolved by `target_project` and its problems surface the same way, except a "product-fit
+      outcome" problem, which becomes the `outcome` warning (exit code unaffected). So lint
+      never passes a spec that a non-forced `nw spec export` rejects.
+- [ ] `specs.validate_outbound` behavior is unchanged (docstring pointer only) and its tests pass; a spec lacking only
+      `target_repo` produces no lint error, and a spec missing a section `validate_outbound`
+      requires also gets a lint `sections` error.
 - [ ] `INDEX.md`, `PROVENANCE.md` and `*.contract.md` in the outbox are not linted.
 - [ ] `nw spec lint JEROME-0022` (and with other outbound ids) lints one spec; `nw spec lint`
       lints every spec in the outbox; `--project` narrows it; the exit code is 0 for no errors,
       1 for errors (or warnings with `--strict`), 2 for an unknown/ambiguous outbound id or an
       internal `SPEC-NNNN` id.
 - [ ] `nw spec lint --json` prints the documented object and nothing else on stdout.
-- [ ] `python3 tools/spec_lint.py --outbox PATH` produces the same problems and exit code as
-      `nw spec lint` for the same files; `python3 tools/spec_lint.py` with no flags behaves
+- [ ] For an nw-native or unconfigured project, `python3 tools/spec_lint.py --outbox PATH`
+      produces the same problems and exit code as `nw spec lint` for the same files (the
+      cfg-less mode checks nw-native only, so parity is not claimed for strict-scheme
+      projects); `python3 tools/spec_lint.py` with no flags behaves
       exactly as before (existing lint tests pass unchanged).
 - [ ] The lint never writes: file contents and mtimes under the outbox are identical after a run.
 - [ ] `SCHEMA.md` documents outbound specs and `nw spec lint`; the `nw-export` skill names the
@@ -182,6 +230,14 @@ Warnings:
     `test_placeholder_only_for_accepted_plus`;
   - `test_scheme_problems_surface` using a spec missing Decision and checking the `scheme`
     error text equals what `NwNativeScheme.validate` returns (acceptance 4);
+  - `test_scheme_resolved_by_target_project` with a cfg whose `outbox_targets` keys a strict
+    scheme under `target_project` (a name differing from the directory name) and asserting that
+    scheme's problems surface; `test_product_fit_problem_is_warning` with a strict scheme
+    returning a "product-fit outcome" problem: asserted as an `outcome` warning, no `scheme`
+    error; `test_unknown_scheme_is_error`;
+  - `test_validate_outbound_reconciled`: missing `target_repo` only -> `validate_outbound`
+    reports it, lint does not; missing Test plan -> both report it; no Definition of done ->
+    lint `sections` error only;
   - `test_non_spec_files_skipped` (INDEX.md, PROVENANCE.md, `.contract.md`);
   - `test_duplicate_ids_across_files`;
   - `test_lint_is_read_only` (bytes and mtimes unchanged);
@@ -190,10 +246,13 @@ Warnings:
     internal id), `test_cli_json_shape`;
   - `test_tools_outbox_mode_matches_cli` loading `tools/spec_lint.py` with `importlib` (as
     `tests/test_spec_lint_duplicates.py` does) and running `main` with `--outbox` against the
-    same tree, comparing problems and exit code to the CLI;
+    same tree, comparing problems and exit code to the CLI; the cfg used has no
+    `outbox_targets` entry (or an nw-native one) for the project, the only case where parity
+    is claimed; `test_tools_mode_checks_nw_native_only` documents the strict-scheme gap;
   - `test_module_has_no_jsonschema_import` (AST check of `outbox_lint.py`).
 - **Existing tests kept green:** `tests/test_spec_lint_duplicates.py`, `tests/test_export.py`,
-  `tests/test_export_schemes.py`, and the repo-wide spec test that runs `tools/spec_lint.py`,
+  `tests/test_export_schemes.py` (including the `validate_outbound` tests in
+  `tests/test_export.py`), and the repo-wide spec test that runs `tools/spec_lint.py`,
   run as affected tests with `python3 tools/affected_tests.py --run uv run pytest -q`.
 - **Tier check:** `python3 tools/test_tiers.py --check` exits 0 (the new module carries its one
   module-level `pytestmark = pytest.mark.fast`).
