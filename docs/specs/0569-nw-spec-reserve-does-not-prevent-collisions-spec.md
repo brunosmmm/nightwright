@@ -1,9 +1,10 @@
 ---
 id: SPEC-0569
 title: "Spec-number collisions: a guard for numbers that bypass nw spec reserve, remote refs in the scan, and a re-reserve on collision"
-status: proposed
+status: accepted
 owner: user
 created: 2026-11-12
+updated: 2026-11-12
 kind: feature
 source_idea: IDEA-1074
 tags: [specs, agentic, concurrency]
