@@ -55,8 +55,9 @@ behavior gaps in checks that already exist:
 **Goals**
 - Items 1–4: add the missing tests and tighten the group-heading assertion in
   `tests/test_doctor.py`; no production change for these.
-- Item 5: an unreadable `.nw/profiles` dir is reported as `fail` on `project.<Name>.profiles`
-  naming the directory and its OS error, with a fix; `nw profiles check` reports the same error as
+- Item 5: an unreadable profiles directory (project `.nw/profiles`, or the user-level
+  `<config_dir>/profiles` or the builtin dir, which fail the same way) is reported as `fail` on
+  `project.<Name>.profiles` with the directory and its OS error taken from the `ValueError` message; `nw profiles check` reports the same error as
   a failed result instead of a traceback.
 - Item 6: `agentic.workers` reports a symlinked or foreign-owned ControlPath dir, through one read-only
   predicate shared with `ensure_ssh_dir` (no copied rule).
@@ -80,7 +81,8 @@ functions (and one shared helper in `workers.py` and a `try` in `profiles.check_
 judgment calls:
 
 - **Item 5:** `profiles.check_all` catches the `ValueError` from `load_layers` and returns a single
-  failed result `{"name": "<profiles>", "ok": False, "error": <message>}` instead of raising.
+  failed result `{"name": "<profiles>", "ok": False, "error": <message>, "layers": True}` instead of
+  raising.
   `nw profiles check` and doctor both go through it, so both report the problem. (`profiles.py` already
   documents that `ValueError` as the unreadable-directory signal.)
 - **Item 6:** the symlink/ownership rule moves out of `ensure_ssh_dir` into
@@ -92,7 +94,7 @@ judgment calls:
 - **Item 8:** `CLAUDE_CONFIG_DIR` set to a non-empty value selects `<it>/settings.json`; unset or
   empty keeps `~/.claude/settings.json`. A non-integer `cleanupPeriodDays` keeps the safe assumption
   (30 days, so the verdict is unchanged) but the summary says "cleanupPeriodDays <repr> is not an
-  integer; assuming 30".
+  integer; assuming 30" (only when the file parsed; the existing read/parse-failure note is kept).
 
 ## Design
 
@@ -123,16 +125,29 @@ judgment calls:
 
 - **`profiles.check_all`** (`src/nightwright/agentic/profiles.py`): wrap `load_layers(...)` in
   `try/except ValueError as e` and return
-  `[{"name": "profiles", "ok": False, "error": str(e)}]`. Callers keep their current handling
-  (`bad = [r for r in results if not r["ok"]]`); `check_project_profiles` then reports "1 of 1
-  profiles do not resolve" with the OS error in `detail` and the existing fix
-  `nw profiles check --project <Name>`. Because `<name>` of the synthetic row is not a profile,
-  `check_project_profiles` special-cases it: summary "profiles dir <path> is unreadable" when the
-  sole result is that row. The `nw profiles check` renderer prints the row like any failed profile
-  and exits 1 as before; its output for healthy projects is unchanged.
-- **`workers.ssh_dir_problem(d)`** (`src/nightwright/agentic/workers.py`): `None` when `d` does not
-  exist, or `d.lstat()` is a real directory (`stat.S_ISDIR`) owned by `os.getuid()`; otherwise the
-  string `f"{d} is not a directory owned by this user"`. `ensure_ssh_dir` becomes `mkdir`, then
+  `[{"name": "<profiles>", "ok": False, "error": str(e), "layers": True}]`. `load_layers` raises
+  `ValueError` only from `_read_dir` on one of three directories (builtin, `<config_dir>/profiles`,
+  `<root>/.nw/profiles`), via `_read_dir_uncached`, whose message is `<origin>: <dir>: <strerror>`
+  and already names the directory. Callers keep their current handling
+  (`bad = [r for r in results if not r["ok"]]`). The row's name `<profiles>` fails `NAME_RE`, so it
+  cannot be a real profile name; `check_project_profiles` recognises the row by its `layers` key
+  (`len(results) == 1 and results[0].get("layers")`), never by name, so a real profile called
+  `profiles` that fails is still reported as an ordinary failed profile.
+  - In that case `check_project_profiles` returns `fail`, summary `"profiles dir unreadable"`
+    (no path in the summary: the path comes from the error string, which goes in `detail`, e.g.
+    `/p/.nw/profiles: <dir>: Permission denied`), fix
+    `"fix the permissions of the directory named in the detail, then run nw profiles check --project <Name>"`.
+    Other failures keep "N of M profiles do not resolve" and `nw profiles check --project <Name>`.
+  - A user-level `<config_dir>/profiles` failure takes the same route and is reported the same way
+    on every project's check (the error string says which directory); this is intended, since every
+    project resolution would fail with it. It is covered by a test, not declared out of scope.
+  - The `nw profiles check` renderer prints the row like any failed profile (`<profiles>` plus the
+    error) and exits 1 as before; its output for healthy projects is unchanged.
+- **`workers.ssh_dir_problem(d)`** (`src/nightwright/agentic/workers.py`): `try: st = d.lstat()`
+  (never `Path.exists()`, which is False for a dangling symlink); on `FileNotFoundError` return `None`;
+  otherwise return `None` when `stat.S_ISDIR(st.st_mode)` and `st.st_uid == os.getuid()`, else the
+  string `f"{d} is not a directory owned by this user"`. `lstat` does not follow links, so a symlink,
+  including a dangling one, is reported. `ensure_ssh_dir` becomes `mkdir`, then
   `if (why := ssh_dir_problem(d)): raise OSError(why)`, then `chmod`. Message text is unchanged.
 - **`check_workers`** (`doctor.py`): after resolving `d = workers.ssh_dir(cfg)` and before the
   writable-parent test, `why = workers.ssh_dir_problem(d)`; when set, return `fail`
@@ -149,11 +164,18 @@ judgment calls:
   branches are unchanged.
 - **`check_retention`** (`doctor.py`): new helper `claude_settings_path()` returns
   `Path(os.environ["CLAUDE_CONFIG_DIR"]) / "settings.json"` (after `expanduser`) when that variable
-  is non-empty, else `~/.claude/settings.json`; used when `settings_path` is not passed. When the
-  file parses and `cleanupPeriodDays` is present but not an `int` (a `bool` counts as not an int),
-  `note = f"cleanupPeriodDays {raw!r} is not an integer; assuming 30"`, `days` stays 30. When the key
-  is absent the note stays "cleanupPeriodDays unset (Claude default 30)". Every other branch and the
-  fix text are unchanged; the fix text names the actual `settings_path`.
+  is non-empty, else `~/.claude/settings.json`; used when `settings_path` is not passed. Parsing
+  stays in the existing `try`: the file is parsed into `doc` (`json.loads`), and `raw = doc.get(...)`
+  is replaced by key-presence logic, because `.get` returns `None` for both an absent key and an
+  explicit `null`:
+  - `"cleanupPeriodDays" not in doc` → note stays "cleanupPeriodDays unset (Claude default 30)";
+  - key present with an `int` that is not a `bool` → `days = raw`, note `cleanupPeriodDays {raw}` (as today);
+  - key present with anything else (`"90"`, `90.5`, `true`, `null`) →
+    `note = f"cleanupPeriodDays {raw!r} is not an integer; assuming 30"`, `days` stays 30.
+  - The not-an-integer note applies only when the file parsed. The existing `except` branch
+    (unreadable / unparseable / not an object: note "… does not read / parse; assuming 30") is kept
+    and is never overwritten by the not-an-integer note.
+  Every other branch is unchanged; the fix text names the actual `settings_path`.
 
 ## Alternatives considered
 
@@ -179,21 +201,29 @@ judgment calls:
       symlink) → `ok`, and a different `nw` → `warn`.
 - [ ] The human-output test asserts each group heading as its own line, in order, with that group's
       check ids between it and the next heading, with the group list derived from `D.run`.
-- [ ] With an unreadable `<root>/.nw/profiles`, `check_project_profiles` returns `fail` whose summary
-      names the directory and whose detail carries the OS error; it is not "check crashed" and `run()`
-      still returns every other check. `nw profiles check --project <Name>` exits 1 without a traceback.
-- [ ] `workers.ssh_dir_problem` returns `None` for an absent or own real directory and a message for a
-      symlink or a directory owned by another uid; `ensure_ssh_dir` raises `OSError` with the same message
+- [ ] With an unreadable `<root>/.nw/profiles`, `check_project_profiles` returns `fail` with summary
+      "profiles dir unreadable" and a `detail` that is the `ValueError` message (names the directory and
+      the OS error); it is not "check crashed" and `run()` still returns every other check. The same
+      holds for an unreadable `<config_dir>/profiles`. `nw profiles check --project <Name>` exits 1
+      without a traceback.
+- [ ] The synthetic row is `{"name": "<profiles>", "ok": False, "error": ..., "layers": True}`; a real
+      profile named `profiles` that fails to resolve is reported as "1 of N profiles do not resolve",
+      not as an unreadable directory.
+- [ ] `workers.ssh_dir_problem` returns `None` for an absent path (via `lstat` raising
+      `FileNotFoundError`) or an own real directory, and a message for a symlink (including a dangling
+      one) or a directory owned by another uid; `ensure_ssh_dir` raises `OSError` with the same message
       as before, built from it.
-- [ ] `check_workers` returns `fail` "ssh ControlPath dir is unsafe" for a symlinked or foreign-owned
-      ControlPath dir, creates nothing, and still returns `ok` for a normal one.
+- [ ] `check_workers` returns `fail` "ssh ControlPath dir is unsafe" for a symlinked (including
+      dangling) or foreign-owned ControlPath dir, creates nothing, and still returns `ok` for a normal one.
 - [ ] `check_data_dir` returns `fail` with a not-a-directory summary and a non-`chmod` fix for a regular
       file, and `fail` with a dangling-symlink summary (target in `detail`) for a broken symlink; the
       existing writable / absent / read-only results are unchanged.
 - [ ] With `CLAUDE_CONFIG_DIR` set, `check_retention` reads `$CLAUDE_CONFIG_DIR/settings.json` and
       ignores `~/.claude/settings.json`; unset or empty keeps `~/.claude/settings.json`.
 - [ ] A non-integer `cleanupPeriodDays` (`"90"`, `90.5`, `true`, `null`) yields a summary containing
-      "is not an integer; assuming 30" and the same verdict as 30 days; an absent key still says "unset".
+      "is not an integer; assuming 30" and the same verdict as 30 days; an absent key still says "unset"
+      (an explicit `null` does not); an unparseable settings file keeps its "does not read / parse;
+      assuming 30" note.
 - [ ] `nw doctor --json` output still validates against `DOCTOR_SCHEMA`, no check id changed, and
       `test_read_only_and_offline` still passes.
 
@@ -208,16 +238,24 @@ judgment calls:
   - Tighten `test_human_output_groups_fix_hints_and_counts` to line-exact, ordered headings derived
     from `D.run` — item 4.
   - `test_project_unreadable_profiles_dir_fails_not_crashes` (chmod 0 on `.nw/profiles`, skipped as
-    root like the other permission tests): asserts the summary/detail, that no other check in `run()`
-    is affected, and that `PR.check_all` returns the one failed row instead of raising — item 5; plus
+    root like the other permission tests): asserts summary "profiles dir unreadable", detail equal to
+    the `ValueError` message, that no other check in `run()` is affected, and that `PR.check_all`
+    returns the one `<profiles>` row (with `layers: True`) instead of raising; a variant with chmod 0
+    on `<config_dir>/profiles` gives the same result — item 5. `test_profiles_named_profiles_not_misreported`:
+    a project profile literally named `profiles` that fails to resolve yields "1 of N profiles do not
+    resolve", not the unreadable-dir summary — item 5. Plus
     a CLI case: `CliRunner().invoke(cli, ["profiles", "check", "--project", "Foo"])` exits 1 with no
     traceback (add to `tests/test_doctor.py`, since it exercises the same shared function).
   - `test_workers_ssh_dir_problem` and `test_workers_unsafe_ssh_dir_fails`: symlinked dir, normal dir
-    (`ok`), foreign owner via `monkeypatch.setattr(os, "getuid", …)`; assert nothing is created or
+    (`ok`), foreign owner via `monkeypatch.setattr(os, "getuid", …)`, and a dangling symlink at the dir
+    (`ssh_dir_problem` non-None, `check_workers` `fail`; `Path.exists()` would be False there); assert nothing is created or
     chmodded and that `ensure_ssh_dir` still raises the same `OSError` — item 6.
   - `test_data_dir_file_and_dangling_symlink` — item 7.
-  - `test_retention_claude_config_dir_and_non_int` (parametrized `"90"`, `90.5`, `True`, `None`, and
-    `CLAUDE_CONFIG_DIR` set / empty / unset with distinct values in the two settings files) — item 8.
+  - `test_retention_claude_config_dir_and_non_int` (parametrized `"90"`, `90.5`, `True`, `None` as an
+    explicit `null`, an absent key (note stays "unset"), and `CLAUDE_CONFIG_DIR` set / empty / unset with
+    distinct values in the two settings files) — item 8. `test_retention_unparseable_settings_keeps_note`:
+    a non-JSON `settings.json` under `CLAUDE_CONFIG_DIR` keeps "does not read / parse; assuming 30" —
+    item 8.
 - **Speed tier:** `tests/test_doctor.py` stays `fast` (SPEC-0490 taxonomy: no TUI/remote/e2e imports).
   `python3 tools/test_tiers.py --check` exits 0.
 - **Manual verification:** in a scratch HOME, `chmod 000 <project>/.nw/profiles` and run
