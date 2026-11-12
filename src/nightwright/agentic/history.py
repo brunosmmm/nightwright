@@ -946,7 +946,7 @@ def _global_records(cfg, campaigns, gaps, *, log_offsets: dict[str, int] | None 
     for rec in out:
         kind = _campaign_text_link(rec, campaigns)
         if kind:
-            rec["linked_by"] = kind
+            rec["linked_by"] = max((rec["linked_by"], kind), key=lambda k: _LINK_RANK[k])
     return out
 
 
@@ -1120,8 +1120,8 @@ def _timeline(events, visits, records):
 
 
 def _campaign_history(cfg, cid, now, conductor_shares, *, shared_global=None, runner_down=None):
-    root = store.campaign_dir(cfg, cid)
-    if not root.is_dir():
+    root = store._contained_campaign_dir(cfg, cid)
+    if root is None or not root.is_dir():
         raise ValueError(f"campaign {cid} not found")
     gaps = []
     state = _json(root / "state.json")

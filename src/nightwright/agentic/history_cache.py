@@ -2385,7 +2385,8 @@ def _decision_records(H, cfg, cids: list[str], path: Path, gaps: list[str],
                     rec["linked_by"] = linked_by
                 kind = H._campaign_text_link(rec, cids)
                 if kind:
-                    rec["linked_by"] = kind
+                    rec["linked_by"] = max((rec["linked_by"], kind),
+                                           key=lambda k: H._LINK_RANK[k])
                 out.append(rec)
     except OSError:
         gaps.append("decisions.jsonl: missing")

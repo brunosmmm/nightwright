@@ -179,6 +179,13 @@ def tree_hashes(root: Path) -> dict:
             for p in sorted(root.rglob("*")) if p.is_file()}
 
 
+def whole_tree(root: Path) -> dict:
+    """Every file (content hash) and directory under `root` (SPEC-0566)."""
+    return {p.relative_to(root).as_posix(): ("dir" if p.is_dir() else
+                                             hashlib.sha256(p.read_bytes()).hexdigest())
+            for p in sorted(root.rglob("*"))}
+
+
 def read_jsonl(p: Path):
     return [json.loads(x) for x in p.read_text().splitlines() if x.strip()]
 
@@ -911,6 +918,7 @@ def test_history_fixture_reads_are_pure_and_import_is_ui_independent(tmp_path):
     cfg = history_cfg(tmp_path)
     root = Path(cfg["data_dir"])
     before = tree_hashes(root)
+    tmp_before = whole_tree(tmp_path)
     cids = [row["campaign"] for row in H.history_index(cfg, now=HISTORY_NOW)]
     for cid in cids:
         H.campaign_history(cfg, cid, now=HISTORY_NOW)
@@ -927,7 +935,7 @@ def test_history_fixture_reads_are_pure_and_import_is_ui_independent(tmp_path):
     H.filter_index(H.history_index(cfg, now=HISTORY_NOW), project=None, state="all", spec=None,
                    since=None, until=None, min_cost=None)
     assert tree_hashes(root) == before
-    assert {path.name for path in tmp_path.iterdir()} == {"history-data"}
+    assert whole_tree(tmp_path) == tmp_before
     code = (
         "import sys; import nightwright.agentic.history; "
         "assert 'textual' not in sys.modules; "
@@ -936,6 +944,66 @@ def test_history_fixture_reads_are_pure_and_import_is_ui_independent(tmp_path):
         "assert not any('dashboard' in x for x in sys.modules)"
     )
     subprocess.run([sys.executable, "-c", code], check=True, env=os.environ.copy())
+
+
+def _outside_campaign(tmp_path):
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "state.json").write_text(json.dumps({"id": "outside", "state": "merged"}))
+    (outside / "ledger.jsonl").write_text("")
+    return outside
+
+
+@pytest.mark.parametrize("cache", [False, True])
+def test_campaign_history_confines_ids(tmp_path, monkeypatch, cache):
+    cfg = history_cfg(tmp_path)
+    cfg["cache_dir"] = str(tmp_path / "cache")
+    outside = _outside_campaign(tmp_path)
+    campaigns = S.campaigns_dir(cfg)
+    link = campaigns / "escape-link"
+    link.symlink_to(outside, target_is_directory=True)
+    real_json = H._json
+    opened = []
+
+    def spy(path, *args, **kwargs):
+        opened.append(Path(path))
+        return real_json(path, *args, **kwargs)
+    monkeypatch.setattr(H, "_json", spy)
+    ids = [str(outside), os.path.relpath(outside, campaigns), "../outside", "a/b", ".", "..",
+           "escape-link", "x/../../outside"]
+    for cid in ids:
+        with pytest.raises(ValueError, match="not found"):
+            H.campaign_history(cfg, cid, now=HISTORY_NOW, cache=cache)
+    assert not [p for p in opened if outside in p.resolve().parents or p.resolve() == outside]
+    good = H.campaign_history(cfg, "SPEC-0394-20261102-ae5b", now=HISTORY_NOW, cache=cache)
+    assert good["header"]["campaign"] == "SPEC-0394-20261102-ae5b"
+
+
+def _decision_row(cid, **extra):
+    return {"schema": "nw.conductor.decision.v1", "seq": 99001, "ts": "2026-11-03T00:00:00+00:00",
+            "by": "conductor", "campaign": cid, "spec_id": "SPEC-0394", "rule": "test",
+            "kind": "resume", "action": None, "rationale": "r", **extra}
+
+
+@pytest.mark.parametrize("cache", [False, True])
+def test_decision_link_provenance_keeps_text(tmp_path, cache):
+    cfg = history_cfg(tmp_path)
+    cfg["cache_dir"] = str(tmp_path / "cache")
+    cid = "SPEC-0394-20261102-ae5b"
+    dec = Path(cfg["data_dir"]) / "agentic" / "conductor" / "decisions.jsonl"
+    if cache:
+        H.history_index(cfg, now=HISTORY_NOW, cache=True)   # warm, so the new rows read incrementally
+    with dec.open("a") as stream:
+        for ev, extra in (
+            ("prov-text", {"rationale": "waiting on ESC-0001"}),
+            ("prov-field", {"escalation": "ESC-0001"}),
+        ):
+            stream.write(json.dumps(_decision_row(cid, event_id=ev, **extra)) + "\n")
+    recs = {r["id"]: r for r in H.history_records(cfg, campaign=cid, cache=cache)
+            if r.get("source") == "decisions"}
+    assert recs["decisions:prov-text"]["links"]["escalation"] == "ESC-0001"
+    assert recs["decisions:prov-text"]["linked_by"] == "text"
+    assert recs["decisions:prov-field"]["linked_by"] == "field"
 
 
 def test_history_bad_inputs_become_gaps(tmp_path):

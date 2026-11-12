@@ -26,6 +26,12 @@ from . import store
 from . import timeline as TL
 
 
+def _campaign_dir_exists(cfg, campaign) -> bool:
+    """True only for a single-name campaign directory under the campaigns root (SPEC-0566)."""
+    root = store._contained_campaign_dir(cfg, campaign)
+    return root is not None and root.is_dir()
+
+
 def _history_cache_unwritable_warn(cfg) -> None:
     from . import history_cache as HC
     if not HC.cache_wanted(cfg, None):
@@ -503,7 +509,7 @@ def attach(campaign_group):
             doc = H.campaign_history(cfg, campaign)
             _history_cache_unwritable_warn(cfg)
         except ValueError as exc:
-            if campaign and not store.campaign_dir(cfg, campaign).is_dir():
+            if campaign and not _campaign_dir_exists(cfg, campaign):
                 raise click.ClickException(f"campaign {campaign} not found")
             raise click.UsageError(str(exc))
         if as_json:
@@ -668,7 +674,7 @@ def attach(campaign_group):
         """
         env_id = os.environ.get("NW_CAMPAIGN")
         args = list(args)
-        if len(args) >= 2 and store.campaign_dir(cfg, args[0]).is_dir():
+        if len(args) >= 2 and _campaign_dir_exists(cfg, args[0]):
             campaign, text = args[0], " ".join(args[1:])
         elif env_id:
             campaign, text = env_id, " ".join(args)

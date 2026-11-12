@@ -1,6 +1,7 @@
 """SPEC-0406 history and records CLI."""
 import json
 import hashlib
+import os
 import shutil
 from pathlib import Path
 
@@ -26,6 +27,7 @@ def invoke(tmp_path, monkeypatch):
     def run(*args):
         return CliRunner().invoke(cli, ["campaign", *args])
     run.root = root
+    run.tmp = tmp_path
     return run
 
 
@@ -98,15 +100,57 @@ def test_records_json_repeated_filters_query_limit_and_literal_text(invoke):
     assert literal.exit_code == 0 and "[bold]x[/]" in literal.output
 
 
+def snapshot(root):
+    """Every file (content hash) and directory under `root` (SPEC-0566)."""
+    return {path.relative_to(root).as_posix(): (
+        "dir" if path.is_dir() else hashlib.sha256(path.read_bytes()).hexdigest())
+        for path in sorted(root.rglob("*"))}
+
+
 def test_history_clis_do_not_write(invoke):
-    def hashes():
-        return {str(path.relative_to(invoke.root)): hashlib.sha256(path.read_bytes()).hexdigest()
-                for path in invoke.root.rglob("*") if path.is_file()}
-    before = hashes()
+    before = snapshot(invoke.tmp)
     assert invoke("history", "SPEC-0394-20261102-ae5b", "--json").exit_code == 0
     assert invoke("history", "--list", "--json").exit_code == 0
     assert invoke("records", "--json").exit_code == 0
-    assert hashes() == before
+    assert snapshot(invoke.tmp) == before
+
+
+def test_snapshot_detects_writes_anywhere_under_tmp(invoke):
+    before = snapshot(invoke.tmp)
+    (invoke.tmp / "stray.txt").write_text("x")
+    assert snapshot(invoke.tmp) != before
+    (invoke.tmp / "stray.txt").unlink()
+    assert snapshot(invoke.tmp) == before
+    (invoke.tmp / "empty-dir").mkdir()
+    assert snapshot(invoke.tmp) != before
+    (invoke.tmp / "empty-dir").rmdir()
+    changed = next(invoke.root.rglob("state.json"))
+    changed.write_text(changed.read_text() + " ")
+    assert snapshot(invoke.tmp) != before
+
+
+def test_history_rejects_escaping_campaign_ids(invoke):
+    outside = invoke.tmp / "outside"
+    outside.mkdir()
+    (outside / "state.json").write_text(json.dumps({"id": "outside", "state": "merged"}))
+    (outside / "ledger.jsonl").write_text("")
+    campaigns = invoke.root / "agentic" / "campaigns"
+    relative = os.path.relpath(outside, campaigns)
+    assert relative.startswith("..")
+    for cid in (str(outside), relative):
+        result = invoke("history", cid)
+        assert result.exit_code == 1, result.output
+        assert f"campaign {cid} not found" in result.stderr
+        assert "schema" not in result.stdout
+        assert invoke("history", cid, "--json").stdout.strip() == ""
+
+
+def test_note_positional_probe_ignores_absolute_paths(invoke):
+    outside = invoke.tmp / "outside"
+    outside.mkdir()
+    result = invoke("note", str(outside), "hello")
+    assert result.exit_code != 0
+    assert not (outside / "notes.jsonl").exists()
 
 
 def test_each_records_filter_and_or_group_is_non_vacuous(invoke):
