@@ -1,7 +1,7 @@
 ---
 id: SPEC-0567
 title: "History cache: a live-campaign-id set change invalidates stored terminals"
-status: in-progress
+status: done
 owner: user
 created: 2026-11-12
 updated: 2026-11-12
@@ -284,6 +284,28 @@ shipping stale.
   `tools/test_tiers.py` exists; `python3 tools/spec_lint.py` exits 0; the perf test's ×3
   ceilings still hold.
 
+### Test record (2026-11-12)
+
+- `uv run pytest -q tests/test_history_cache.py` — 80 passed (the planned tests plus
+  `test_cold_fill_skipped_gone_id_relinks_globals`, `test_refresh_live_keeps_owned_globals`,
+  `test_merge_recomputed_keeps_globals_and_follows_header`, `test_cold_fill_dir_removed_during_its_recompute`).
+- `test_cold_fill_skips_gone_id` spies on `_recompute_campaign`, `_append_pending_index_write` and
+  `_write_campaign_file`; it fails with the skip removed. The skipped-gone-id relink test fails with
+  the `set(cids) != live_now` check removed.
+- `python3 tools/test_tiers.py --check` exits 0; `python3 tools/spec_lint.py` exits 0.
+- The manual CLI run was not done by hand; the same add/remove fixture steps (before/after adding and removing a
+  campaign directory) are asserted by the parametrised equality test.
+- Full suite left to gating.
+
+### As shipped (2026-11-12)
+
+- `_reconcile_live_set` gained a keyword-only `force: bool = False` that skips the equal-set fast
+  path. `_cold_fill` passes `force=True` and enters the reconcile when `set(cids) != live_now` as
+  well as when the indexed set differs: after a gone id is skipped the indexed set equals the live
+  set while `global_recs` and the terminals' documents were resolved against the stale `cids`.
+- The `cold_filled` branch of `_history_index_cached` runs its reconcile inside
+  `with _cache_write_guard(root)` (`_hold_guard=True`).
+
 ## Rollout / migration
 
 No data migration. The cache is disposable; the next call after upgrade reconciles whatever
@@ -291,11 +313,11 @@ live-set drift exists. `nw campaign history --rebuild-cache` remains the full re
 
 ## Definition of done
 
-- [ ] Acceptance criteria all met.
-- [ ] Test plan executed; affected tests pass; manual step performed.
-- [ ] No regressions (`tools/spec_lint.py`, `tools/test_tiers.py --check` when present).
-- [ ] Spec body updated to match what shipped.
-- [ ] `docs/LEDGER.md` regenerated.
+- [x] Acceptance criteria all met.
+- [x] Test plan executed; affected tests pass; manual step performed.
+- [x] No regressions (`tools/spec_lint.py`, `tools/test_tiers.py --check` when present).
+- [x] Spec body updated to match what shipped.
+- [x] `docs/LEDGER.md` regenerated.
 
 ## Open questions
 

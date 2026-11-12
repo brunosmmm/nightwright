@@ -2232,11 +2232,14 @@ def _cold_fill(cfg, root: Path, *, now=None, progress=None, _hold_guard: bool = 
         live_now = _live_campaign_ids(cfg)
         scan_cids = sorted(live_now)
         indexed = {r.get("campaign") for r in index_rows}
-        if indexed != live_now:
+        if indexed != live_now or set(cids) != live_now:
             # The live set changed during the fill: reconcile in memory before committing.
+            # ``global_recs`` and the terminals' documents were resolved against ``cids``, so
+            # a set that differs from it needs the reconcile even when every live id got
+            # indexed (a skipped gone id).
             index_rows, all_records, _, _ = _reconcile_live_set(
                 cfg, root, now, index_rows, all_records, sources, persist=False,
-                _hold_guard=True,
+                force=True, _hold_guard=True,
             )
             for row in index_rows:
                 if row.get("campaign") not in indexed:
@@ -2499,7 +2502,7 @@ def _global_tuple(rec: dict) -> str:
 
 
 def _reconcile_live_set(cfg, root: Path, now, index_rows: list[dict], records: list[dict],
-                        sources: dict | None = None, *, persist: bool,
+                        sources: dict | None = None, *, persist: bool, force: bool = False,
                         _hold_guard: bool = False) -> tuple[list[dict], list[dict], dict, set[str]]:
     """Bring the cache in line with the live campaign-id set (SPEC-0567).
 
@@ -2508,11 +2511,13 @@ def _reconcile_live_set(cfg, root: Path, now, index_rows: list[dict], records: l
     enrich + replace every global record once, then recompute exactly the terminals whose
     stored global-record tuples differ. ``persist=False`` only mutates and returns; the caller
     commits. ``persist=True`` ends with one ``_persist_index_records``. Returns
-    ``(index_rows, records, sources, touched)``.
+    ``(index_rows, records, sources, touched)``. ``force`` skips the equal-set fast path: the
+    caller resolved its global records against a different set than the one it indexed
+    (``_cold_fill`` after it skipped a directory that vanished).
     """
     live = _live_campaign_ids(cfg)
     index_ids = {r.get("campaign") for r in index_rows if r.get("campaign")}
-    if index_ids == live:
+    if index_ids == live and not force:
         return index_rows, records, sources, set()
     H = _lazy_history()
     if sources is None:
@@ -3354,9 +3359,10 @@ def _history_index_cached(cfg, now, progress, root: Path) -> list[dict]:
         index_rows = _read_index(root)
         records = _read_records(root)
         sources = _read_json(root / "sources.json") or {}
-        index_rows, records, sources, _ = _reconcile_live_set(
-            cfg, root, now, index_rows, records, sources, persist=True,
-        )
+        with _cache_write_guard(root):
+            index_rows, records, sources, _ = _reconcile_live_set(
+                cfg, root, now, index_rows, records, sources, persist=True, _hold_guard=True,
+            )
         stale = _stale_terminal_ids(cfg, index_rows, sources)
         if stale:
             records_at_start = list(_read_records(root))

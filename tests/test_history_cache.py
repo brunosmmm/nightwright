@@ -1638,6 +1638,51 @@ def test_moved_global_record_not_dropped(data_dir, cache_dir):
     assert _global_pairs(HC._read_records(_v1(cache_dir))) == _global_pairs(
         H.history_records(c, cache=False))
     assert H.history_records(c, cache=True) == H.history_records(c, cache=False)
+    src_root = Path(HC.__file__).resolve().parent.parent
+    assert not [p for p in src_root.rglob("*.py") if "drop_campaign_all" in p.read_text()]
+
+
+def _owned_globals(records, cid):
+    return sorted(
+        (r["id"], r.get("campaign"), r.get("spec_id"), r.get("project"))
+        for r in records if r.get("source") not in HC._LOCAL_SOURCES and r.get("campaign") == cid
+    )
+
+
+def test_refresh_live_keeps_owned_globals(data_dir, cache_dir):
+    """A refreshed campaign that owns a text-linked global keeps it exactly once."""
+    c = cfg(data_dir, cache_dir)
+    _add_mail(data_dir, f"live-set-marker {_X}")
+    _install_live_campaign(data_dir, _X)
+    H.history_index(c, now=NOW, cache=True)
+    root = _v1(cache_dir)
+    pure = H.history_records(c, cache=False)
+    assert _owned_globals(pure, _X)
+    assert _owned_globals(HC._read_records(root), _X) == _owned_globals(pure, _X)
+    ledger = data_dir / "agentic" / "campaigns" / _X / "ledger.jsonl"
+    with ledger.open("a") as stream:
+        stream.write(json.dumps({"ts": store.now_iso(NOW), "type": "note", "campaign": _X}) + "\n")
+    HC._refresh_live(c, root, NOW, HC._read_index(root), HC._read_records(root))
+    recs = HC._read_records(root)
+    assert _owned_globals(recs, _X) == _owned_globals(pure, _X)
+    assert [r["id"] for r in recs].count(_mail_rid(c)) == 1
+    assert H.history_records(c, cache=True) == H.history_records(c, cache=False)
+
+
+def test_merge_recomputed_keeps_globals_and_follows_header():
+    glob = {"id": "g1", "source": "mailbox", "campaign": "C1", "links": {"campaign": "C1"},
+            "linked_by": "text", "spec_id": "OLD", "project": "old"}
+    local = {"id": "l-old", "source": next(iter(HC._LOCAL_SOURCES)), "campaign": "C1"}
+    other = {"id": "g2", "source": "mailbox", "campaign": "C2", "spec_id": "S2", "project": "p2"}
+    new_local = {"id": "l-new", "source": local["source"], "campaign": "C1"}
+    doc = {"header": {"spec_id": "SPEC-9", "project": "proj"}, "records": [new_local]}
+    start = [glob, local, other]
+    out = HC._merge_recomputed(start, doc, "C1")
+    assert sorted(r["id"] for r in out) == ["g1", "g2", "l-new"]
+    g1 = next(r for r in out if r["id"] == "g1")
+    assert (g1["spec_id"], g1["project"]) == ("SPEC-9", "proj")
+    assert next(r for r in out if r["id"] == "g2")["spec_id"] == "S2"
+    assert glob["spec_id"] == "OLD"  # the input snapshot's dicts are not mutated
 
 
 def test_refresh_live_leaves_globals_equal_pure(data_dir, cache_dir):
@@ -1671,7 +1716,7 @@ def test_recompute_touches_only_differing_terminals(data_dir, cache_dir):
 
     with mock.patch.object(H, "_campaign_history", spy):
         H.history_index(c, now=NOW, cache=True)
-    assert _A in calls
+    assert calls.count(_A) == 1
     untouched = [cid for cid in calls if cid not in (_A, _X)]
     assert untouched == []
     for name, mtime in mtimes.items():
@@ -1733,16 +1778,51 @@ def _delete_on_first_recompute(data_dir, pick, *, after: bool):
     return wrapper, state
 
 
+def _spy_cold_fill_writes():
+    calls = {"recompute": [], "pending": [], "file": []}
+    real_re, real_pending, real_file = (
+        HC._recompute_campaign, HC._append_pending_index_write, HC._write_campaign_file)
+
+    def recompute(cfg_, cid, *a, **kw):
+        calls["recompute"].append(cid)
+        return real_re(cfg_, cid, *a, **kw)
+
+    def pending(root, row):
+        calls["pending"].append(row.get("campaign"))
+        return real_pending(root, row)
+
+    def wfile(root, cid, doc):
+        calls["file"].append(cid)
+        return real_file(root, cid, doc)
+
+    return calls, (recompute, pending, wfile)
+
+
 def test_cold_fill_skips_gone_id(data_dir, cache_dir):
     c = cfg(data_dir, cache_dir)
     ids = HC._campaign_ids(c)
-    wrapper, state = _delete_on_first_recompute(data_dir, lambda cid: ids[1], after=False)
+    victim = ids[1]
+    removed = {"done": False}
+    calls, (recompute, pending, wfile) = _spy_cold_fill_writes()
+
+    def deleting(cfg_, cid, *a, **kw):
+        if not removed["done"]:
+            removed["done"] = True
+            shutil.rmtree(data_dir / "agentic" / "campaigns" / victim)
+        return recompute(cfg_, cid, *a, **kw)
+
     seen: list[tuple[int, int]] = []
-    with mock.patch.object(HC, "_recompute_campaign", wrapper):
+    with mock.patch.object(HC, "_recompute_campaign", deleting), \
+            mock.patch.object(HC, "_append_pending_index_write", pending), \
+            mock.patch.object(HC, "_write_campaign_file", wfile):
         HC.rebuild_cache(c, now=NOW, progress=lambda d, t: seen.append((d, t)))
-    victim = state["victim"]
     v1 = _v1(cache_dir)
     assert seen[-1][0] == seen[-1][1] == len(ids)
+    # the skip itself: the gone id never reaches a recompute, a pending write or a file write
+    assert victim not in calls["recompute"]
+    assert victim not in calls["pending"]
+    assert victim not in calls["file"]
+    assert sorted(calls["recompute"]) == sorted(set(ids) - {victim})
     assert not (v1 / "campaigns" / f"{victim}.json").exists()
     assert not (v1 / "index.writes.jsonl").exists()
     assert all(r["campaign"] != victim for r in HC._read_index(v1))
@@ -1750,6 +1830,31 @@ def test_cold_fill_skips_gone_id(data_dir, cache_dir):
                for r in HC._read_records(v1))
     assert victim not in json.loads((v1 / "sources.json").read_text())["campaign_files"]
     assert H.history_records(c, cache=True) == H.history_records(c, cache=False)
+
+
+def test_cold_fill_skipped_gone_id_relinks_globals(data_dir, cache_dir):
+    """A skipped gone id still changes the live set the globals were resolved with."""
+    c = cfg(data_dir, cache_dir)
+    gone = "SPEC-9999-20261112-zzzz"
+    _install_terminal_campaign(data_dir, gone)
+    _add_mail(data_dir, f"live-set-marker {_A} {gone}")
+    assert HC._campaign_ids(c)[-1] == gone
+    removed = {"done": False}
+    real = HC._recompute_campaign
+
+    def deleting(cfg_, cid, *a, **kw):
+        if not removed["done"]:
+            removed["done"] = True
+            shutil.rmtree(data_dir / "agentic" / "campaigns" / gone)
+        return real(cfg_, cid, *a, **kw)
+
+    with mock.patch.object(HC, "_recompute_campaign", deleting):
+        HC.rebuild_cache(c, now=NOW)
+    assert _mail_campaign(c, False) == _A
+    _assert_cache_equals_pure(c, cache_dir)
+    assert _mail_campaign(c, True) == _A
+    assert any(r["id"] == _mail_rid(c) for r in json.loads(
+        (_v1(cache_dir) / "campaigns" / f"{_A}.json").read_text())["records"])
 
 
 def test_cold_fill_dir_removed_during_its_recompute(data_dir, cache_dir):
@@ -1803,9 +1908,14 @@ def test_unchanged_live_set_skips_reconcile(data_dir, cache_dir):
     H.history_index(c, now=NOW, cache=True)
     v1 = _v1(cache_dir)
     idx, recs = HC._read_index(v1), HC._read_records(v1)
-    with mock.patch.object(H, "_global_records") as gl:
+    names = ("index.jsonl", "records.jsonl", "sources.json")
+    before = {n: (v1 / n).read_bytes() for n in names}
+    with mock.patch.object(H, "_global_records") as gl, \
+            mock.patch.object(HC, "_persist_index_records") as persist:
         out = HC._reconcile_live_set(c, v1, NOW, idx, recs, None, persist=True)
     gl.assert_not_called()
+    persist.assert_not_called()
+    assert {n: (v1 / n).read_bytes() for n in names} == before
     assert out[0] is idx and out[1] is recs and out[3] == set()
     seen: list[str] = []
     real_ch = H._campaign_history

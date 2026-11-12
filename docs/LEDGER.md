@@ -369,7 +369,6 @@ progress. This is the single place to see *what has been decided* and *what is i
 | [SPEC-0533](./specs/0533-remote-park-and-resume.md) | Remote park and resume | feature | accepted | — | 2026-11-10 |
 | [SPEC-0552](./specs/0552-leaner-agentic-campaign-loop.md) | Leaner agentic campaign loop (role tiers, review packet, findings collator, resumable sessions) | epic | accepted | — | 2026-11-11 |
 | [SPEC-0556](./specs/0556-resumable-implementer-and-reviewer-sessions.md) | Resumable implementer and reviewer sessions per backend, with a fresh-session fallback | feature | in-progress | — | 2026-11-11 |
-| [SPEC-0567](./specs/0567-spec-0472-leftovers-history-cache-treat-live.md) | History cache: a live-campaign-id set change invalidates stored terminals | feature | accepted | — | 2026-11-12 |
 
 ## Done
 
@@ -857,6 +856,7 @@ progress. This is the single place to see *what has been decided* and *what is i
 | [SPEC-0563](./specs/0563-spec-0477-follow-up-findings-decisions-and-mail.md) | SPEC-0477 follow-up: fail-soft mailbox ids, time cell cleaning, null filter match, single guard | feature | done | — | 2026-11-12 |
 | [SPEC-0565](./specs/0565-nwfug-idea-1128-20261109-55b4-spec-0526-review.md) | nw campaign run: print fields verbatim and test the styling (SPEC-0526 review follow-ups) | feature | done | — | 2026-11-12 |
 | [SPEC-0566](./specs/0566-nwfug-idea-884-20261103-d974-spec-0406-review.md) | SPEC-0406 review follow-ups: confine history campaign ids, keep the weaker link provenance, and make the CLI purity test snapshot the whole tmp tree | feature | done | — | 2026-11-12 |
+| [SPEC-0567](./specs/0567-spec-0472-leftovers-history-cache-treat-live.md) | History cache: a live-campaign-id set change invalidates stored terminals | feature | done | — | 2026-11-12 |
 | [SPEC-0568](./specs/0568-nwfug-idea-909-20261104-2f87-spec-0415-review.md) | SPEC-0415 review follow-ups: capture-tool name rewriting, path containment, enforced test budget, no shared-source mutation | feature | done | — | 2026-11-12 |
 
 ## Superseded / rejected
