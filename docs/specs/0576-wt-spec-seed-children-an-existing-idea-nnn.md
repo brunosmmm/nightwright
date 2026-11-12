@@ -1,9 +1,10 @@
 ---
 id: SPEC-0576
 title: "seed-children: match an 'existing IDEA-NNN' Breakdown bullet by id across all ideas files"
-status: proposed
+status: accepted
 owner: user
 created: 2026-11-12
+updated: 2026-11-12
 kind: feature
 source_idea: IDEA-548
 depends_on: [SPEC-0043, SPEC-0097, SPEC-0423]
