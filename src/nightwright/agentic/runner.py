@@ -57,6 +57,20 @@ class RunRequest:
     runner: str | None = None                   # model-set backend; None keeps the host runner
     tier: str | None = None                     # SPEC-0553: role tier when `lean.tiers` is pinned
     effort_clamped_from: str | None = None      # SPEC-0557: the effort before the ceiling lowered it
+    # SPEC-0556 (`lean.sessions` only; all unset otherwise, so argv and SDK calls are unchanged)
+    persist_session: bool = False               # keep the backend session so a later run resumes it
+    resume_session: str | None = None           # the session this run continues
+    session_host: str | None = None             # where that session lives (`local` or a worker)
+    resume_cost_base: float | None = None       # claude: the session's cumulative cost so far
+    fresh_prompt: str | None = None             # the fresh-session prompt a failed resume falls back to
+    session_dir: str | None = None              # pi: the campaign's session directory
+    session_backend: str | None = None          # the backend the session belongs to
+
+
+# SPEC-0556: backends whose persona sessions may be resumed, each only after a real resume was
+# checked (recorded in the spec). An unconfirmed backend runs the same flow in fresh sessions:
+# cursor's `Agent.resume` path is built but its real call is not checked yet.
+SESSION_RESUME = {"claude": True, "cursor": False, "pi": True, "fake": True}
 
 
 @dataclass(frozen=True)
@@ -76,6 +90,7 @@ class RunResult:
     worker: str | None = None                   # SPEC-0344: the worker of a remote run
     writeback_failed: bool = False              # SPEC-0344: its write-back failed
     saved_refs: tuple = ()                      # SPEC-0344: the refs a failed write-back kept
+    session_cost_usd: float | None = None       # SPEC-0556: a resumed claude session's cumulative cost
 
 
 class _Detached:
@@ -187,8 +202,11 @@ def build_argv(req: RunRequest, stream: bool = True) -> list[str]:
         argv += ["--effort", req.effort]
     argv += ["--max-budget-usd", f"{req.max_budget_usd:g}",
              "--permission-mode", req.permission_mode,
-             "--permission-prompts", "none",
-             "--no-session-persistence"]
+             "--permission-prompts", "none"]
+    if req.resume_session:                      # SPEC-0556: continue the persona's session
+        argv += ["--resume", req.resume_session]
+    elif not req.persist_session:
+        argv.append("--no-session-persistence")
     for d in req.add_dirs:
         argv += ["--add-dir", str(d)]
     argv += ["--append-system-prompt", req.system_append]
@@ -351,6 +369,8 @@ def build_cursor_argv(req: RunRequest) -> list[str]:
         argv.append("--read-only")
     for d in req.add_dirs:
         argv += ["--add-dir", str(d)]
+    if req.resume_session:                      # SPEC-0556: `Agent.resume` instead of `create`
+        argv += ["--resume", req.resume_session]
     return argv
 
 
@@ -433,6 +453,45 @@ def _save_inputs(req: RunRequest, text: str | None = None) -> None:
     req.run_dir.mkdir(parents=True, exist_ok=True)
     (req.run_dir / "prompt.md").write_text(text if text is not None else req.prompt,
                                            encoding="utf-8")
+    if req.fresh_prompt is not None:            # SPEC-0556: an adopted resume can still fall back
+        (req.run_dir / FRESH_PROMPT).write_text(req.fresh_prompt, encoding="utf-8")
+
+
+FRESH_PROMPT = "prompt.fresh.md"
+SESSION_KEYS = ("persist_session", "resume_session", "session_host", "resume_cost_base",
+                "session_dir", "session_backend")
+
+
+def session_doc(req: RunRequest) -> dict:
+    """SPEC-0556: the session fields of `req` that are set (none without `lean.sessions`, so a
+    flag-off request doc is unchanged)."""
+    return {k: getattr(req, k) for k in SESSION_KEYS if getattr(req, k) not in (None, False)}
+
+
+def session_fields(doc: dict) -> dict:
+    """The `RunRequest` session fields back from `session_doc`'s keys in `doc`."""
+    out = {}
+    if doc.get("persist_session") is True:
+        out["persist_session"] = True
+    for k in ("resume_session", "session_host", "session_dir", "session_backend"):
+        if isinstance(doc.get(k), str) and doc[k]:
+            out[k] = doc[k]
+    base = doc.get("resume_cost_base")
+    if isinstance(base, (int, float)) and not isinstance(base, bool):
+        out["resume_cost_base"] = float(base)
+    return out
+
+
+def session_cost(req: RunRequest, parsed: dict) -> dict:
+    """SPEC-0556: a resumed claude run reports the session's cumulative `total_cost_usd`
+    (checked against the real binary): its own cost is that minus the cost the session had
+    before (`resume_cost_base`); the cumulative figure is kept as `session_cost_usd`."""
+    if req.resume_session and req.resume_cost_base is not None \
+            and parsed.get("cost_usd") is not None:
+        total = float(parsed["cost_usd"])
+        parsed["session_cost_usd"] = total
+        parsed["cost_usd"] = round(max(0.0, total - float(req.resume_cost_base)), 8)
+    return parsed
 
 
 def _now_iso() -> str:
@@ -462,6 +521,10 @@ def write_run_record(req: RunRequest, result: RunResult, started_at: str) -> Run
         rec["tier"] = req.tier
     if req.effort_clamped_from:                                  # SPEC-0557
         rec["effort_clamped_from"] = req.effort_clamped_from
+    if req.resume_session or req.persist_session:                # SPEC-0556
+        rec["resumed"] = bool(req.resume_session)
+        if result.session_cost_usd is not None:
+            rec["session_cost_usd"] = result.session_cost_usd
     if result.writeback_failed or result.saved_refs:
         rec["writeback_failed"] = result.writeback_failed
         rec["saved_refs"] = list(result.saved_refs)
@@ -534,6 +597,7 @@ def _request_doc(req: RunRequest, started_at: str) -> dict:
         doc["tier"] = req.tier
     if req.effort_clamped_from:                                  # SPEC-0557
         doc["effort_clamped_from"] = req.effort_clamped_from
+    doc.update(session_doc(req))                                 # SPEC-0556
     return doc
 
 
@@ -557,7 +621,15 @@ def rebuild_request(run_dir, *, budget: float | None = None) -> RunRequest:
         allowed_tools=(), add_dirs=(), json_schema=doc.get("json_schema") or {}, env={},
         run_dir=run_dir, pi_provider=doc.get("pi_provider"), pi_id=doc.get("pi_id"),
         pi_thinking=doc.get("pi_thinking"), runner=doc.get("runner"), tier=doc.get("tier"),
-        effort_clamped_from=doc.get("effort_clamped_from"))
+        effort_clamped_from=doc.get("effort_clamped_from"),
+        fresh_prompt=_fresh_prompt(run_dir), **session_fields(doc))
+
+
+def _fresh_prompt(run_dir: Path) -> str | None:
+    try:
+        return (run_dir / FRESH_PROMPT).read_text(encoding="utf-8")
+    except OSError:
+        return None
 
 
 def _read_text(path) -> str:
@@ -599,7 +671,8 @@ def collect(req: RunRequest) -> RunResult:
             parsed["result_text"] = _tail(str(ex["error"]))
     return write_run_record(req, RunResult(
         exit_code=code, timed_out=timed_out, interrupted=interrupted,
-        duration_s=round(duration, 3), raw_path=run_dir / "result.json", **parsed), started_at)
+        duration_s=round(duration, 3), raw_path=run_dir / "result.json",
+        **session_cost(req, parsed)), started_at)
 
 
 def _error_result(req: RunRequest, text: str, started_at: str, duration: float) -> RunResult:
@@ -943,6 +1016,9 @@ def request_to_job(req: RunRequest, worktree) -> dict:
         doc["tier"] = req.tier
     if req.effort_clamped_from:                                  # SPEC-0557
         doc["effort_clamped_from"] = req.effort_clamped_from
+    sess = session_doc(req)                                      # SPEC-0556
+    sess.pop("session_dir", None)            # a coordinator path: pi sessions stay local
+    doc.update(sess)
     return doc
 
 
@@ -977,7 +1053,8 @@ def request_from_job(doc: dict, tree, run_dir, env: dict | None = None) -> RunRe
         model_alias=doc.get("model_alias"),
         pi_provider=doc.get("pi_provider"), pi_id=doc.get("pi_id"),
         pi_thinking=doc.get("pi_thinking"), tier=doc.get("tier"),
-        effort_clamped_from=doc.get("effort_clamped_from"))
+        effort_clamped_from=doc.get("effort_clamped_from"),
+        **{k: v for k, v in session_fields(doc).items() if k != "session_dir"})
 
 
 class RemoteRunner:
@@ -1007,10 +1084,14 @@ class RemoteRunner:
 class FakeRunner:
     """Replay a JSON script: a list of entries consumed in order, each
     `{persona, edits: [{path, write|append|delete}], verdict, cost_usd, exit_code?, timed_out?,
-    malformed?, sleep_s?, pre_shell?, shell?, transcript?}`. Edits apply relative to `req.cwd`; `pre_shell`
+    malformed?, sleep_s?, pre_shell?, shell?, transcript?, resume_error?}`. Edits apply relative to `req.cwd`; `pre_shell`
     / `shell` are command lists run in `req.cwd` with `req.env` before / after the edits. A persona mismatch raises so a
     test never silently runs the wrong step. The cursor lives in a file next to the campaign's
-    runs dir so the script advances across separate `nw` processes."""
+    runs dir so the script advances across separate `nw` processes.
+
+    SPEC-0556: a resumed request keeps its session id and reports `cost_usd` plus the session's
+    `resume_cost_base` (claude's cumulative cost); `resume_error` makes a resumed run fail before
+    its first turn (no edits, no verdict), as a missing session does."""
 
     CURSOR_NAME = ".fake-cursor"
     detachable = False
@@ -1071,9 +1152,11 @@ class FakeRunner:
             (req.run_dir / "stream.jsonl").write_text(str(entry["transcript"]), encoding="utf-8")
         if entry.get("sleep_s"):
             time.sleep(float(entry["sleep_s"]))
-        self._shell(req, entry.get("pre_shell"))
-        self._apply_edits(req.cwd, entry.get("edits"))
-        self._shell(req, entry.get("shell"))
+        gone = bool(req.resume_session and entry.get("resume_error"))     # SPEC-0556
+        if not gone:
+            self._shell(req, entry.get("pre_shell"))
+            self._apply_edits(req.cwd, entry.get("edits"))
+            self._shell(req, entry.get("shell"))
         verdict = entry.get("verdict")
         if entry.get("malformed"):
             verdict = {"garbage": True}
@@ -1081,9 +1164,19 @@ class FakeRunner:
         timed_out = bool(entry.get("timed_out", False))
         cost = entry.get("cost_usd", 0.0)
         cost = float(cost) if cost is not None else None
+        session_id = f"fake-{req.persona}"
+        if req.resume_session:                  # SPEC-0556: claude's semantics, offline
+            session_id = req.resume_session
+            if cost is not None and req.resume_cost_base is not None:
+                cost += float(req.resume_cost_base)     # a resumed session reports its total
+            if gone:                            # the session is gone: no turn, an error
+                verdict, exit_code = None, 1
+                cost = float(req.resume_cost_base or 0.0)
+        elif req.persist_session:
+            session_id = f"fake-{req.persona}-{req.run_dir.name}"
         synthetic = {"type": "result", "subtype": "fake", "is_error": exit_code != 0,
                      "structured_output": verdict, "total_cost_usd": cost,
-                     "usage": entry.get("usage") or {}, "session_id": f"fake-{req.persona}",
+                     "usage": entry.get("usage") or {}, "session_id": session_id,
                      "result": json.dumps(verdict) if verdict is not None else ""}
         api_error = entry.get("api_error")
         if isinstance(api_error, dict):     # SPEC-0345: an API error result (`status`, `message`)
@@ -1093,7 +1186,8 @@ class FakeRunner:
         raw_path = req.run_dir / "result.json"
         raw_path.write_text(json.dumps(synthetic, indent=2), encoding="utf-8")
         (req.run_dir / "stderr.log").write_text("", encoding="utf-8")
-        parsed = parse_result(json.dumps(synthetic), req.json_schema, exit_code=exit_code)
+        parsed = session_cost(req, parse_result(json.dumps(synthetic), req.json_schema,
+                                                exit_code=exit_code))
         if timed_out:
             parsed["is_error"] = True
             parsed["verdict"], parsed["verdict_ok"] = None, False

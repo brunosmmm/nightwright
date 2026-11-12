@@ -1,6 +1,7 @@
 """Local Cursor SDK persona child (SPEC-0442).
 
-``python -m nightwright.agentic.cursor_exec <run_dir> [--read-only] [--add-dir DIR]``
+``python -m nightwright.agentic.cursor_exec <run_dir> [--read-only] [--add-dir DIR]
+[--resume AGENT_ID]``
 is the process ``runproc`` supervises when a persona spawn resolves to Cursor.
 It reads ``request.json`` and ``prompt.md``, runs one local agent, and writes
 SDK messages to stdout plus a ``type: result`` line so ``extract_result`` and
@@ -16,6 +17,9 @@ import sys
 from pathlib import Path
 
 from .cursor_map import sdk_selection
+
+# SPEC-0556: `--resume <agent id>` continues that agent (`Agent.resume`) instead of creating one.
+# The result's `session_id` is the agent id either way.
 
 # SPEC-0456 / SPEC-0457. An empty list is "no built-in tools" in the SDK, which
 # is how read-only reviewers lost file access. The API accepts the lowercase
@@ -287,9 +291,10 @@ def _result_event(agent, result, cost, cost_error) -> dict:
     return ev
 
 
-def _flags(argv) -> tuple[bool, list[str]]:
+def _flags(argv) -> tuple[bool, list[str], str | None]:
     read_only = False
     dirs: list[str] = []
+    resume = None
     rest = list(argv or [])
     while rest:
         token = rest.pop(0)
@@ -299,29 +304,44 @@ def _flags(argv) -> tuple[bool, list[str]]:
             if not rest:
                 raise ValueError("--add-dir needs a path")
             dirs.append(rest.pop(0))
+        elif token == "--resume":                # SPEC-0556
+            if not rest or not rest[0].strip():
+                raise ValueError("--resume needs an agent id")
+            resume = rest.pop(0)
         else:
             raise ValueError(f"unknown argument {token}")
-    return read_only, dirs
+    return read_only, dirs, resume
 
 
-def _default_create(options):
-    from cursor_sdk import Agent, AgentOptions, LocalAgentOptions
+def _agent_options(options):
+    from cursor_sdk import AgentOptions, LocalAgentOptions
     local = LocalAgentOptions(
         cwd=options["cwd"],
         dirs=options["dirs"] or None,
         setting_sources=list(options["setting_sources"]),
     )
-    return Agent.create(AgentOptions(
+    return AgentOptions(
         model=options["model"],
         api_key=options["api_key"],
         name=options.get("name") or None,
         local=local,
         tools=agent_tools(options["read_only"]),
-    ))
+    )
+
+
+def _default_create(options):
+    from cursor_sdk import Agent
+    return Agent.create(_agent_options(options))
+
+
+def _default_resume(agent_id, options):
+    """SPEC-0556: the SDK's `Agent.resume(agent_id, options)`."""
+    from cursor_sdk import Agent
+    return Agent.resume(agent_id, _agent_options(options))
 
 
 def execute(run_dir, *, argv=None, environ=None, out=None, err=None,
-            agent_create=None, holder=None) -> int:
+            agent_create=None, holder=None, agent_resume=None) -> int:
     """Run one local agent for ``run_dir``. Returns 0 when the run finished."""
     run_dir = Path(run_dir)
     out = sys.stdout if out is None else out
@@ -329,7 +349,7 @@ def execute(run_dir, *, argv=None, environ=None, out=None, err=None,
     env = os.environ if environ is None else environ
     key = (env.get("CURSOR_API_KEY") or "").strip()
     try:
-        flag_read_only, dirs = _flags(argv)
+        flag_read_only, dirs, resume = _flags(argv)
     except ValueError as e:
         return _fail(out, err, str(e), code="startup")
     try:
@@ -347,12 +367,13 @@ def execute(run_dir, *, argv=None, environ=None, out=None, err=None,
         return _fail(out, err, "prompt.md is missing", code="startup")
     if not key:
         return _fail(out, err, "CURSOR_API_KEY is not set", code="startup")
-    if agent_create is None:
+    if agent_create is None or (resume and agent_resume is None):
         try:
             import cursor_sdk  # noqa: F401
         except ImportError as e:
             return _fail(out, err, f"cursor-sdk is not installed ({e})", code="startup")
-        agent_create = _default_create
+        agent_create = agent_create or _default_create
+        agent_resume = agent_resume or _default_resume
     persona = req.get("persona") or ""
     options = {
         "model": sdk_selection(model),
@@ -366,7 +387,7 @@ def execute(run_dir, *, argv=None, environ=None, out=None, err=None,
     agent = None
     wrote = False
     try:
-        agent = agent_create(options)
+        agent = agent_resume(resume, options) if resume else agent_create(options)
         run = agent.send(prompt)
         if holder is not None:
             holder["run"] = run
@@ -396,7 +417,7 @@ def main(argv=None) -> int:
     if not args or args[0].startswith("-"):
         # Same shape as runproc's diagnostics: stderr of a supervised child, not a TTY render.
         os.write(2, b"usage: python -m nightwright.agentic.cursor_exec RUN_DIR "
-                 b"[--read-only] [--add-dir DIR]\n")
+                 b"[--read-only] [--add-dir DIR] [--resume AGENT_ID]\n")
         return 2
     holder: dict = {}
 

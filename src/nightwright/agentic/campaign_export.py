@@ -69,6 +69,7 @@ RUN_COLUMNS = (
     ("tier", "str"),                                                       # SPEC-0553
     ("loop", "int"), ("packet", "bool"),                                   # SPEC-0554
     ("effort_clamped_from", "str"),                                        # SPEC-0557
+    ("resumed", "bool"), ("session_fallback", "bool"),                     # SPEC-0556
 )
 FINDING_COLUMNS = (
     ("campaign", "str"), ("spec_id", "str"),
@@ -391,6 +392,8 @@ def run_rows(cfg, crow: dict, events=None) -> list[dict]:
     starts = {e.get("run_id"): e for e in events
               if e.get("type") == "run.start" and e.get("run_id")}
     tiers = {k: e.get("tier") for k, e in starts.items()}                # SPEC-0553
+    ends = {e.get("run_id"): e for e in events
+            if e.get("type") == "run.end" and e.get("run_id")}
     out = []
     for r in RN.campaign_runs(cfg, crow["campaign"], events):
         usage = r.get("usage") if isinstance(r.get("usage"), dict) else {}
@@ -401,6 +404,9 @@ def run_rows(cfg, crow: dict, events=None) -> list[dict]:
                .get("effort_clamped_from"),                                 # SPEC-0557
                "loop": (starts.get(r.get("run_id")) or {}).get("loop"),     # SPEC-0554
                "packet": bool((starts.get(r.get("run_id")) or {}).get("packet")),
+               "resumed": bool(ends.get(r.get("run_id"), {}).get("resumed")),   # SPEC-0556
+               "session_fallback": bool((starts.get(r.get("run_id")) or {})
+                                        .get("session_fallback")),
                "input_tokens": usage.get("input_tokens"),
                "output_tokens": usage.get("output_tokens"),
                "cache_read_tokens": usage.get("cache_read_input_tokens"),

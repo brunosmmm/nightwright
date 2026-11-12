@@ -396,3 +396,55 @@ def test_main_usage_without_a_run_dir():
         assert CE.main([]) == 2
     finally:
         signal.signal(signal.SIGTERM, prev)
+
+
+# ---- SPEC-0556: resume an agent -------------------------------------------------------------
+
+def _run_resume(tmp_path, argv):
+    d = _layout(tmp_path)
+    calls = []
+
+    def create(options):
+        calls.append(("create", None, options))
+        return _Agent(options)
+
+    def resume(agent_id, options):
+        calls.append(("resume", agent_id, options))
+        return _Agent(options)
+
+    out = StringIO()
+    code = CE.execute(d, argv=argv, environ={"CURSOR_API_KEY": KEY}, out=out, err=StringIO(),
+                      agent_create=create, agent_resume=resume)
+    return code, out.getvalue(), calls
+
+
+def test_resume_flag_uses_agent_resume(tmp_path):
+    code, out, calls = _run_resume(tmp_path, ["--resume", "agent-1"])
+    assert code == 0
+    [(kind, agent_id, options)] = calls
+    assert (kind, agent_id) == ("resume", "agent-1")
+    assert options["model"] and options["api_key"] == KEY       # the same options as a create
+    result = json.loads(out.strip().splitlines()[-1])
+    assert result["session_id"] == "agent-1" and not result["is_error"]
+
+
+def test_without_resume_flag_agent_create_is_called(tmp_path):
+    code, _out, calls = _run_resume(tmp_path, [])
+    assert code == 0 and [c[0] for c in calls] == ["create"]
+
+
+def test_resume_flag_needs_an_id(tmp_path):
+    code, out, calls = _run_resume(tmp_path, ["--resume"])
+    assert code == 1 and calls == []
+    assert "--resume needs an agent id" in out
+
+
+def test_cursor_argv_carries_resume_only_when_set(tmp_path):
+    from pathlib import Path
+    base = dict(persona="implementer", prompt="p", system_append="", cwd=Path(tmp_path),
+                model="m", effort=None, max_budget_usd=1.0, timeout_s=60,
+                permission_mode="dontAsk", read_only=False, allowed_tools=(), add_dirs=(),
+                json_schema={}, env={}, run_dir=Path(tmp_path) / "r")
+    assert "--resume" not in R.build_cursor_argv(R.RunRequest(**base))
+    argv = R.build_cursor_argv(R.RunRequest(**base, resume_session="agent-9"))
+    assert argv[-2:] == ["--resume", "agent-9"]

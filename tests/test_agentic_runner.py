@@ -285,3 +285,96 @@ def test_fake_runner_pre_shell_and_shell_run_in_cwd_with_env(tmp_path):      # S
     r = R.FakeRunner(script).run(_req(tmp_path))
     assert r.verdict_ok
     assert (tmp_path / "nw" / "order.txt").read_text().split() == ["pre-main", "post", "saw-edit"]
+
+
+# ---- SPEC-0556: persisted / resumed sessions --------------------------------------------------
+
+def test_build_argv_flag_off_snapshot_unchanged(tmp_path):
+    """No session field set (flag off): the argv is today's, `--no-session-persistence` last of
+    the permission flags and no `--resume`."""
+    argv = R.build_argv(_req(tmp_path))
+    i = argv.index("--permission-prompts")
+    assert argv[i:i + 3] == ["--permission-prompts", "none", "--no-session-persistence"]
+    assert "--resume" not in argv
+    assert argv == R.build_argv(_req(tmp_path, persist_session=False, resume_session=None))
+
+
+def test_build_argv_persist_and_resume(tmp_path):
+    kept = R.build_argv(_req(tmp_path, persist_session=True))
+    assert "--no-session-persistence" not in kept and "--resume" not in kept
+    resumed = R.build_argv(_req(tmp_path, persist_session=True, resume_session="sess-1"))
+    assert "--no-session-persistence" not in resumed
+    i = resumed.index("--resume")
+    assert resumed[i + 1] == "sess-1" and "--fork-session" not in resumed
+    # a resumed run keeps its own budget and the same timeout as a fresh one
+    assert resumed[resumed.index("--max-budget-usd") + 1] == "4"
+
+
+def test_resumed_claude_run_charges_only_its_own_cost(tmp_path, monkeypatch):
+    """claude reports a resumed session's cumulative `total_cost_usd`: the run is charged the
+    difference, the cumulative figure is kept as `session_cost_usd`."""
+    _capture_run(monkeypatch, tmp_path, stdout=_result_json(total_cost_usd=0.0149,
+                                                            session_id="sess-1"))
+    rr = R.ClaudeRunner().run(_req(tmp_path, persist_session=True, resume_session="sess-1",
+                                   resume_cost_base=0.0124))
+    assert rr.cost_usd == pytest.approx(0.0025) and rr.session_cost_usd == pytest.approx(0.0149)
+    rec = json.loads((tmp_path / "runs" / "001-implementer" / "run.json").read_text())
+    assert rec["resumed"] is True and rec["session_cost_usd"] == pytest.approx(0.0149)
+
+
+def test_flag_off_run_record_and_request_doc_have_no_session_keys(tmp_path, monkeypatch):
+    _capture_run(monkeypatch, tmp_path, stdout=_result_json())
+    rr = R.ClaudeRunner().run(_req(tmp_path))
+    assert rr.cost_usd == 0.0421 and rr.session_cost_usd is None
+    d = tmp_path / "runs" / "001-implementer"
+    rec, doc = json.loads((d / "run.json").read_text()), json.loads((d / "request.json").read_text())
+    assert "resumed" not in rec and "session_cost_usd" not in rec
+    assert not set(R.SESSION_KEYS) & set(doc)
+    assert not (d / R.FRESH_PROMPT).exists()
+
+
+def test_rebuild_request_restores_the_session_and_fresh_prompt(tmp_path, monkeypatch):
+    _capture_run(monkeypatch, tmp_path, stdout=_result_json(session_id="s-1"))
+    req = _req(tmp_path, persist_session=True, resume_session="s-1", session_host="local",
+               resume_cost_base=0.5, fresh_prompt="the whole template", session_backend="claude")
+    R.ClaudeRunner().run(req)
+    back = R.rebuild_request(req.run_dir)
+    assert (back.persist_session, back.resume_session, back.session_host, back.resume_cost_base,
+            back.fresh_prompt, back.session_backend) == (
+        True, "s-1", "local", 0.5, "the whole template", "claude")
+
+
+def test_request_to_job_carries_the_session_but_not_a_pi_session_dir(tmp_path):
+    wt = tmp_path / "nw"
+    req = _req(tmp_path, env={"NW_CAMPAIGN": "C-1"}, persist_session=True, resume_session="s-1",
+               session_host="box", resume_cost_base=0.25, session_dir=str(tmp_path / "sessions"),
+               fresh_prompt="full", session_backend="claude")
+    doc = R.request_to_job(req, wt)
+    assert (doc["resume_session"], doc["persist_session"], doc["session_host"],
+            doc["resume_cost_base"]) == ("s-1", True, "box", 0.25)
+    assert "session_dir" not in doc and "fresh_prompt" not in doc
+    back = R.request_from_job(doc, tmp_path / "tree", tmp_path / "run")
+    assert (back.resume_session, back.persist_session, back.resume_cost_base) == ("s-1", True, 0.25)
+    assert back.session_dir is None
+    plain = R.request_to_job(_req(tmp_path, env={"NW_CAMPAIGN": "C-1"}), wt)
+    assert not set(R.SESSION_KEYS) & set(plain)
+
+
+def test_fake_runner_resume_semantics(tmp_path):
+    script = _script(tmp_path, [
+        {"persona": "implementer", "verdict": {"status": "done", "summary": "a"}, "cost_usd": 0.5},
+        {"persona": "implementer", "verdict": {"status": "done", "summary": "b"}, "cost_usd": 0.5},
+        {"persona": "implementer", "resume_error": True, "edits": [{"path": "x", "write": "1"}],
+         "verdict": {"status": "done", "summary": "c"}, "cost_usd": 0.5}])
+    first = R.FakeRunner(script).run(_req(tmp_path, persist_session=True))
+    assert first.session_id == "fake-implementer-001-implementer"
+    second = R.FakeRunner(script).run(_req(
+        tmp_path, persist_session=True, resume_session=first.session_id, resume_cost_base=0.5,
+        run_dir=tmp_path / "runs" / "002-implementer"))
+    assert second.session_id == first.session_id and second.cost_usd == 0.5
+    assert second.session_cost_usd == 1.0
+    gone = R.FakeRunner(script).run(_req(
+        tmp_path, persist_session=True, resume_session="lost", resume_cost_base=1.0,
+        run_dir=tmp_path / "runs" / "003-implementer"))
+    assert gone.is_error and not gone.verdict_ok and gone.cost_usd == 0.0
+    assert not (tmp_path / "nw" / "x").exists()

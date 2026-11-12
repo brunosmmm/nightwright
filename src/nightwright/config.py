@@ -102,6 +102,9 @@ DEFAULT_CONFIG = {
         # campaign pins the effective flags at open (`state.lean`) and never re-reads them.
         "lean": {"tiers": False, "packet": False, "collator": False, "sessions": False},
         "project_lean": {},
+        # SPEC-0556: a persona session whose last run ended above this context (input + cache
+        # read tokens) is not resumed; the next run starts fresh with the packet and history.
+        "lean_session_max_tokens": 400000,
         # SPEC-0557: no persona run is sent above this effort on any backend. null = off.
         "effort_ceiling": "high",
     },

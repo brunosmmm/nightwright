@@ -714,8 +714,32 @@ export async function execute(runDir, deps = {}) {
       appendSystemPrompt: req.system_append ? [req.system_append] : [],
     });
 
-  const sessionManager =
-    deps.sessionManager ?? pi.SessionManager.inMemory(cwd);
+  // SPEC-0556: a persisted run keeps its session file under `session_dir` (the campaign's
+  // sessions/pi); a resumed run opens the file named by `resume_session`. Otherwise in memory.
+  const resumePath = typeof req.resume_session === "string" ? req.resume_session : "";
+  const persistDir =
+    req.persist_session === true && typeof req.session_dir === "string" ? req.session_dir : "";
+  const exists = deps.existsSync ?? fs.existsSync;
+  if (resumePath && !exists(resumePath)) {
+    failResult(out, err, `session not found: ${resumePath}`, { code: "resume_missing" });
+    removeAgentDir();
+    return 1;
+  }
+  let sessionManager;
+  try {
+    sessionManager =
+      deps.sessionManager ??
+      (resumePath
+        ? pi.SessionManager.open(resumePath, undefined, cwd)
+        : persistDir
+          ? pi.SessionManager.create(cwd, persistDir)
+          : pi.SessionManager.inMemory(cwd));
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    failResult(out, err, `session open failed (${msg})`, { code: "resume_failed", secrets });
+    removeAgentDir();
+    return 1;
+  }
 
   let session;
   let exitCode = 1;
@@ -798,11 +822,14 @@ export async function execute(runDir, deps = {}) {
       });
     }
 
+    // SPEC-0556: a resumed session's state holds every earlier turn; usage and cost are this
+    // run's own messages only
+    const before = resumePath ? (session.state?.messages ?? []).length : 0;
     await session.prompt(userMessage);
     await streamWriteChain;
     unsub?.();
 
-    const messages = session.state?.messages ?? [];
+    const messages = (session.state?.messages ?? []).slice(before);
     const assistants = messages.filter((m) => m.role === "assistant");
     const last = assistants[assistants.length - 1];
     const failed = !last || last.stopReason === "error" || last.stopReason === "aborted";
@@ -822,7 +849,10 @@ export async function execute(runDir, deps = {}) {
     }
     const usage = usageFromAssistant(assistants);
     const totalCost = sumCostUsd(assistants, model);
-    const sessionId = sessionManager.getHeader?.()?.id ?? session.sessionId ?? null;
+    const sessionId =
+      resumePath || persistDir
+        ? (sessionManager.getSessionFile?.() ?? resumePath) || null
+        : (sessionManager.getHeader?.()?.id ?? session.sessionId ?? null);
 
     writeLine(
       out,

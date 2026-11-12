@@ -126,6 +126,8 @@ EVENT_KEYS: dict[str, tuple[str, ...]] = {
     # and the loop routed every finding, as before
     "findings_collated": ("loop", "status", "findings", "out", "scopes"),
     "collator_failed": ("loop", "error", "run_id"),
+    # SPEC-0556: a resumed run failed as a resume; `retry_run_id` reran it in a fresh session
+    "session_fallback": ("persona", "run_id", "retry_run_id"),
     "flaky_recorded": ("ids", "source"),                        # SPEC-0293
     "resume": ("to", "note", "cap_usd", "loops_reset"),
     "close": ("mode",),

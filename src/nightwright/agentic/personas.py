@@ -1131,6 +1131,14 @@ def build_request(cfg, profile, project_cfg, state, persona, *, run_dir,
                     clamped_from=clamped_from)              # SPEC-0557: the one final pass
     effort, model, pi_thinking, clamped_from = (
         fin["effort"], fin["model"], fin["pi_thinking"], fin["clamped_from"])
+    sess = {}
+    from . import sessions as _SS
+    if _SS.managed(state, persona):                         # SPEC-0556: pinned at open
+        sess = _SS.shape(cfg, state, persona, ctx, prompt,
+                         backend=spawn_runner or _R.resolve_runner(
+                             cfg, campaign=state, project=state.get("project")),
+                         model=model, tier=tier)
+        prompt = sess.pop("prompt", prompt)
     return RunRequest(
         persona=persona,
         prompt=prompt,
@@ -1156,4 +1164,5 @@ def build_request(cfg, profile, project_cfg, state, persona, *, run_dir,
         runner=spawn_runner,
         tier=tier,
         effort_clamped_from=clamped_from,
+        **sess,
     )

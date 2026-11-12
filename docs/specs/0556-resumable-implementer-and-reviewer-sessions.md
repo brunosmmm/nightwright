@@ -1,7 +1,7 @@
 ---
 id: SPEC-0556
 title: Resumable implementer and reviewer sessions per backend, with a fresh-session fallback
-status: accepted
+status: in-progress
 owner: user
 created: 2026-11-11
 parent: SPEC-0552
@@ -92,6 +92,84 @@ findings history. Any resume failure retries once as a fresh session in the same
 
 Flag: `state.lean.sessions` (requires `packet` and `collator`; pinned at open, SPEC-0553).
 
+### Design as built (where it differs from the above)
+
+- **Module.** `agentic/sessions.py` holds the flag (`on`: `sessions`, `packet` and `collator`
+  all pinned), the managed personas (`implementer` and the three builtin code reviewers; the
+  deep close pass is not managed and leaves the registry alone), validity (`check`), the
+  prompts (`continuation`, `history_note`), `shape` (called at the end of
+  `personas.build_request`, after tiers and the effort ceiling picked the model), `place`,
+  `as_fresh`, `resume_failed` and `record` (called first thing in `queue._record_run`).
+- **Capability.** `runner.SESSION_RESUME = {"claude": True, "cursor": False, "pi": True,
+  "fake": True}`: Cursor stays off until its real call is checked (see As shipped); a
+  non-resumable backend runs the same flow fresh (no `persist_session`), with the findings
+  history. `RunRequest` gains `persist_session`, `resume_session`, `session_host`,
+  `resume_cost_base`, `fresh_prompt`, `session_dir` (pi) and `session_backend`; all unset
+  with the flag off, and `request.json` / `run.json` / the remote job doc carry them only when
+  set (`runner.session_doc`), so flag-off docs are byte-identical.
+- **Claude.** `build_argv`: `--resume <id>` when resuming (no `--fork-session`; the resumed run
+  keeps the same session id), `--no-session-persistence` dropped only when persisting or
+  resuming. Checked against claude 2.1.322: a resumed `-p` run reports the session's
+  **cumulative** `total_cost_usd` (and `modelUsage`), while `usage` is the run's own; so the
+  registry keeps the session's cumulative cost and a resumed run is charged `total − base`
+  (`runner.session_cost`, applied in `collect`, the remote `_applied` path and FakeRunner;
+  the cumulative figure is kept as `session_cost_usd` in `run.json`). `--max-budget-usd` is per
+  invocation (a resumed run whose session already cost more than its budget still ran), so the
+  per-run budget and `timeout_s` cap a resumed run exactly as a fresh one. `--resume <id>`
+  finds the session from any cwd of the same HOME (checked), so a worker's per-job tree is
+  not a problem; a missing session ends `is_error`, `num_turns: 0`, cost 0 ("No conversation
+  found").
+- **Cursor.** `cursor_exec` takes `--resume <agent id>` (added by `build_cursor_argv`) and calls
+  `Agent.resume(agent_id, options)` with the same `AgentOptions` as a create (`agent_resume`
+  injectable); unverified against the real SDK, so not enabled.
+- **Pi.** `pi_exec.mjs`: `SessionManager.create(cwd, session_dir)` for a persisted run
+  (`session_dir` = `<campaign_dir>/sessions/pi`, set by the queue), `SessionManager.open(path,
+  undefined, cwd)` to resume (`session_id` = the session file path); a missing file fails
+  before any turn (`error_code: resume_missing`). A resumed session's state holds every earlier
+  turn, so usage and cost count only the messages after the resume point. Pi and Cursor
+  sessions stay on the coordinator: `place` turns a remote pi/cursor run into a fresh,
+  non-persisted one (and its record drops the entry); the session dir never travels in a job.
+- **Registry.** `state.sessions[persona] = {backend, session_id, host, model, tier, worktree,
+  campaign, first_loop, last_loop, context_tokens, session_cost_usd, run_id}` (copied by the
+  apply's `finish` like the other lean keys). Valid when backend, model, tier, worktree and
+  campaign match, the backend is resumable and `context_tokens` is under
+  `agentic.lean_session_max_tokens` (400000, in the nightwright config defaults). The host is
+  checked at placement. `context_tokens` = the last model call's input + cache read + cache
+  creation when the usage lists calls (claude's `iterations`), else the run's summed input +
+  cache read (an upper bound). A run that ends without a conforming verdict (error, timeout,
+  interrupt, a different session id) drops the entry; a successful one replaces it.
+- **When to resume.** The implementer resumes on any later run with a valid entry (a review
+  fix or a gate fix). A reviewer resumes only in a delta review (SPEC-0554 `review_mode:
+  delta`); in a full review it runs fresh and its new session replaces the entry.
+- **Prompts.** No template changed. A resumed implementer gets `IMPLEMENTER_CONTINUATION`
+  (loop, worktree, spec path, the packet and latest `findings-loop-N.json` paths, the
+  `pending_brief`, which with the collator holds only in-scope findings with their ties, the
+  gate results and human overrides); a resumed reviewer gets `REVIEWER_CONTINUATION` (head
+  change warning, the delta, then SPEC-0554's delta packet note with its own open findings).
+  A fresh run once a review was collated (loop ≥ 2) gets today's prompt plus `history_note`:
+  the latest packet path and each `findings-loop-N.json` with its in-scope records (severity,
+  tie, title; 30 per file). The fresh prompt is kept on a resumed request (`fresh_prompt`,
+  `prompt.fresh.md` in the run dir so an adopted run keeps it).
+- **Remote runs.** `queue._do_persona` calls `sessions.place(req, worker or "local")` after
+  `remote_personas.dispatch` picked the host: a resume whose `session_host` differs becomes the
+  fresh request before it starts (no failure, no event). Dispatch order is unchanged (the
+  campaign's affine worker comes first, so a campaign usually stays on its worker).
+  `request_to_job` carries `resume_session` / `persist_session` / `resume_cost_base`; an older
+  worker that ignores them runs the continuation fresh with another session id, which
+  `resume_failed` treats as a failed resume (fallback).
+- **Fallback.** `sessions.resume_failed`: a resumed run that ended without a conforming verdict
+  or with another session id, not timed out or interrupted, not an environment fault or a
+  usage-limit stop. `_do_persona` then reuses `_rerun_locally(..., fallback=True)`: the failed
+  run's `run.end` and cost are recorded (its entry dropped), a `session_fallback` event
+  (`persona`, `run_id`, `retry_run_id`, `session_id`, `worker`, `error`) and the new run's
+  `run.start` (`retry_of`, `session_fallback: true`) are appended, and the fresh request runs
+  locally under the new run id in the same step. The fallback is never a resume, so it cannot
+  loop. An adopted resumed run (only a stripped request is left) that failed is marked
+  interrupted instead: no retry is spent, the entry is dropped, and the next tick prepares the
+  step fresh. Neither path parks.
+- **Export.** `runs.resumed` from the run's `run.end` (`resumed`, written only for a session
+  run), `runs.session_fallback` from its `run.start`.
+
 ## Alternatives considered
 
 - **Resume only on Claude** — rejected: the human asked for every backend through the same
@@ -102,20 +180,20 @@ Flag: `state.lean.sessions` (requires `packet` and `collator`; pinned at open, S
 
 ## Acceptance criteria
 
-- [ ] With `lean.sessions` on, a claude campaign's loop-2 implementer and each loop-2
+- [x] With `lean.sessions` on, a claude campaign's loop-2 implementer and each loop-2
       reviewer run with `--resume <their loop-1 session id>` and a continuation prompt that
       holds only the delta and the collated in-scope (implementer) or own prior (reviewer)
       findings.
 - [ ] The cursor runner resumes via `Agent.resume` and the pi runner via a file-backed
       `SessionManager`, each proven by one real call recorded in the spec.
-- [ ] A registry entry is not reused when backend, model, tier or host differ or its context
+- [x] A registry entry is not reused when backend, model, tier or host differ or its context
       exceeds the threshold; the run starts fresh with the packet and findings history.
-- [ ] A failed resume falls back once to a fresh run in the same step, records
+- [x] A failed resume falls back once to a fresh run in the same step, records
       `session_fallback`, and never parks the campaign.
-- [ ] Triagers, marshal, collator, spec personas and the close-time deep pass never resume.
-- [ ] With the flag off, argv and SDK calls are identical to today (incl.
+- [x] Triagers, marshal, collator, spec personas and the close-time deep pass never resume.
+- [x] With the flag off, argv and SDK calls are identical to today (incl.
       `--no-session-persistence`).
-- [ ] Runs export `resumed` and `session_fallback`.
+- [x] Runs export `resumed` and `session_fallback`.
 
 ## Test plan
 
@@ -166,6 +244,91 @@ own session files follow Claude's retention.
 - [ ] No regressions.
 - [ ] Spec body updated to match what shipped.
 - [ ] `docs/LEDGER.md` updated.
+
+## As shipped
+
+Built 2026-11-12 behind `agentic.lean.sessions` (default **off**, already in
+`config.DEFAULT_CONFIG` from SPEC-0553; needs `packet` and `collator`; pinned per campaign at
+creation). New config default `agentic.lean_session_max_tokens: 400000`. Status stays
+**in-progress**: the Cursor real call is not done (AC2) and the manual two-loop campaigns and
+the measurement need live campaigns after the merge.
+
+**Flag off, or a campaign pinned without `sessions: true`** (whatever the live config says
+after the open): no session field on any `RunRequest`, `build_argv` unchanged with
+`--no-session-persistence`, Cursor gets no `--resume` and calls `Agent.create`, Pi stays
+`SessionManager.inMemory` with today's usage/cost counting, `request.json` / `run.json` / job
+docs carry no session key, no `prompt.fresh.md`, no `state.sessions`, no `resumed` on
+`run.end`, no `session_fallback` event, today's prompts. Asserted on the FakeRunner queue path
+with `lean` absent, `{packet, collator}` and `{tiers, packet, collator}` pinned and the live
+config flipped to all four after the open, and with `sessions.shape` / `place` patched to
+raise. A campaign opened before this merge with `sessions: true` already pinned (possible since
+SPEC-0553, which pinned all four flags) starts keeping sessions from its next run; the live
+config has no `sessions: true`.
+
+**Modules.** `agentic/sessions.py` (new); `runner.py` (`SESSION_RESUME`, session fields,
+`build_argv` / `build_cursor_argv`, `session_doc` / `session_fields` / `session_cost`,
+`prompt.fresh.md`, `rebuild_request`, `request_to_job` / `request_from_job`, FakeRunner
+`resume_error` and cumulative cost); `cursor_exec.py` (`--resume`, `Agent.resume`);
+`pi_exec.mjs` (file-backed `SessionManager.create` / `open`, own-turn usage on resume);
+`personas.build_request` (`sessions.shape`); `queue.py` (`_record_run` → `sessions.record`
+and `run.end.resumed`, `_do_persona` placement and fallback, `_rerun_locally(fallback=True)`,
+`finish` copies `sessions`); `remote_personas.py` (`session_cost_usd` in the result doc, cost
+on the `_applied` path); `schemas.py` (`session_fallback` event); `campaign_export.py`
+(`runs.resumed`, `runs.session_fallback`); `config.py`; docs (capabilities, README).
+
+**Tests.** New `tests/test_agentic_sessions.py`: validity per backend / model / tier /
+worktree / campaign / threshold and no cross-persona reuse; `context_tokens`; personas that
+never keep a session (triagers, marshal, collator, spec writer / reviewer, resolver) and the
+deep close pass; `place` / `resume_failed` / `record`; FakeRunner queue runs: two loops with the
+loop-2 implementer and both reviewers resumed (`--resume` ids, continuation prompts with only
+the delta and the in-scope / own findings, the fresh prompt kept, resumed runs charged their own
+cost, export columns), a non-resumable backend running the same flow fresh with the packet and
+findings history, a failed resume falling back once in the same step (`session_fallback`, no
+park, the fallback's fresh session recorded), remote placement (`box`→`box` resumes,
+`box`→local and `box`→`other` run fresh), the remote result doc, flag off / pinned before the
+flag. Extended: `tests/test_agentic_runner.py` (argv snapshot, persist / resume argv, cumulative
+cost, docs without session keys, adoption rebuild, job doc round trip, FakeRunner semantics),
+`tests/test_cursor_sdk_exec.py` (`Agent.resume` with `--resume`, `Agent.create` otherwise,
+argv), `tests/js/pi_exec.test.js` via `tests/test_pi_exec_js.py` (create in `session_dir`,
+open + own-turn cost, missing file), `tests/test_agentic_campaign_export.py` (pinned columns).
+The remote placement test sits in `test_agentic_sessions.py` (a stand-in for the dispatched
+worker) rather than `test_remote_personas.py`.
+
+**Real calls.** Claude (`claude` 2.1.322, `claude-haiku-5-5`, effort `medium`), through
+`runner.ClaudeRunner` (the real `build_argv`, wrapper, `collect`, `session_cost`) on a scratch
+clone, a read-only reviewer-shaped run (review `sessions.py` + its call sites, up to 3
+findings), then a one-line change committed, then loop 2 two ways:
+
+| Run | Cost | Input | Cache create | Cache read | Output | Time |
+|---|---|---|---|---|---|---|
+| loop 1 (persisted) | $0.0131 | 12 | 47,268 | 170,764 | 3,920 | 21.6 s |
+| loop 2 resumed (`--resume`, continuation: delta + prior findings) | **$0.0025** (session total $0.0156 − $0.0131) | 4 | 5,272 | 96,611 | 982 | 6.4 s |
+| loop 2 fresh (full prompt + delta + prior findings) | $0.0081 | 8 | 27,895 | 97,095 | 3,044 | 15.9 s |
+| resume of a missing session id | $0.00 | 0 | 0 | 0 | 0 | 0.8 s, `is_error`, 0 turns |
+
+The resumed turn cost 69% less than the fresh one (cache writes 5.3k vs 27.9k, output 1.0k vs
+3.0k, 2.5× faster) and kept the session id. An earlier CLI-only pair (Haiku, effort `low`, a
+Q&A over `packet.py`) gave the same picture: resumed $0.0014 (cache create 782, read 89,701)
+vs fresh $0.0066 (cache create 26,357, read 77,717), and showed the cumulative
+`total_cost_usd` the runner now subtracts. Total real-call spend about $0.08.
+
+Pi (`pi-coding-agent` 1.5.0, `anthropic/claude-haiku-4-5`, thinking `low`, stored OAuth
+credentials) through `runner.PiRunner` / the real `pi_exec.mjs`: a persisted run wrote
+`<session_dir>/<ts>_<uuid>.jsonl` ($0.0169, input 4,070, cache write 8,359); the resumed run
+opened that file and answered a question about the first turn from memory ($0.0119, input 10,
+cache write 8,424, own-turn usage only); the fresh equivalent cost $0.0172 (input 4,086); a
+missing session file failed before any turn (`session not found`). Pi shows no cache reads
+across processes (`cacheWarming: off`), so its saving is the re-read input, not the cache.
+
+Cursor: **unverified** (the API key sits behind pass/pinentry and was not available
+non-interactively). The `Agent.resume` path is built and unit-tested with injected fakes only;
+`SESSION_RESUME["cursor"]` stays false, so Cursor campaigns run the same flow fresh with the
+packet and findings history until one real resume is recorded here.
+
+**Post-merge.** Manual verification (one real two-loop campaign per backend: claude, pi) and
+the measurement (≥ 10 Meta-Tools campaigns with all four flags vs three: median tokens per loop
+for the implementer and reviewers, loops 2+, `resumed`; cost per campaign) need live campaigns
+with the flag on (`agentic.project_lean.Meta-Tools.sessions: true`).
 
 ## Open questions
 

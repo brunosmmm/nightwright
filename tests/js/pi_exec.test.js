@@ -2104,3 +2104,76 @@ test("execute: SIGTERM handler kills detached children and aborts", async () => 
     process.on = origOn;
   }
 });
+
+// ---- SPEC-0556: file-backed sessions ----------------------------------------------------------
+
+function stubPiSessions(over = {}) {
+  const base = stubPi(over);
+  base.pi.SessionManager.create = (cwd, dir) => {
+    over.createCall = { cwd, dir };
+    return { getSessionFile: () => path.join(dir, "s-new.jsonl"), getHeader: () => ({ id: "h" }) };
+  };
+  base.pi.SessionManager.open = (file, dir, cwd) => {
+    over.openCall = { file, dir, cwd };
+    return { getSessionFile: () => file, getHeader: () => ({ id: "h" }) };
+  };
+  return base;
+}
+
+test("execute: a persisted run uses SessionManager.create in session_dir", async () => {
+  const execute = await loadExecute();
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-sess-"));
+  const runDir = layout({ persist_session: true, session_dir: dir });
+  const out = { chunks: [], write(s) { this.chunks.push(s); } };
+  const { pi, over } = stubPiSessions();
+  const code = await execute(runDir, { out, err: { write() {} }, importPi: async () => pi,
+    modelRuntime: await pi.ModelRuntime.create() });
+  assert.equal(code, 0);
+  assert.equal(over.createCall.dir, dir);
+  assert.equal(over.createCall.cwd, worktreeCwd(runDir));
+  assert.equal(over.sessionCwd, undefined);              // not in memory
+  const last = chunksToLines(out.chunks).at(-1);
+  assert.equal(last.session_id, path.join(dir, "s-new.jsonl"));
+});
+
+test("execute: a resumed run opens the session file and counts only its own turn", async () => {
+  const execute = await loadExecute();
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-sess-"));
+  const file = path.join(dir, "s-old.jsonl");
+  fs.writeFileSync(file, "{}\n");
+  const runDir = layout({ persist_session: true, session_dir: dir, resume_session: file });
+  const out = { chunks: [], write(s) { this.chunks.push(s); } };
+  const messages = [{ role: "assistant", stopReason: "stop",
+    content: [{ type: "text", text: '{"status":"done"}' }],
+    usage: { input: 900, output: 90, cost: { total: 0.5 } } }];
+  const over = {
+    messages,
+    promptHook: () => messages.push({ role: "assistant", stopReason: "stop",
+      content: [{ type: "text", text: '{"status":"done","summary":"again"}' }],
+      usage: { input: 10, output: 5, cost: { total: 0.02 } } }),
+  };
+  const { pi } = stubPiSessions(over);
+  const code = await execute(runDir, { out, err: { write() {} }, importPi: async () => pi,
+    modelRuntime: await pi.ModelRuntime.create() });
+  assert.equal(code, 0);
+  assert.deepEqual(over.openCall, { file, dir: undefined, cwd: worktreeCwd(runDir) });
+  assert.equal(over.createCall, undefined);
+  const last = chunksToLines(out.chunks).at(-1);
+  assert.equal(last.session_id, file);
+  assert.equal(last.total_cost_usd, 0.02);
+  assert.equal(last.result, '{"status":"done","summary":"again"}');
+});
+
+test("execute: a resumed run whose session file is gone fails before any turn", async () => {
+  const execute = await loadExecute();
+  const runDir = layout({ persist_session: true, resume_session: "/nonexistent/s.jsonl" });
+  const out = { chunks: [], write(s) { this.chunks.push(s); } };
+  const { pi, over } = stubPiSessions();
+  const code = await execute(runDir, { out, err: { write() {} }, importPi: async () => pi,
+    modelRuntime: await pi.ModelRuntime.create() });
+  assert.equal(code, 1);
+  assert.equal(over.promptCalls, undefined);
+  const last = chunksToLines(out.chunks).at(-1);
+  assert.equal(last.is_error, true);
+  assert.equal(last.error_code, "resume_missing");
+});

@@ -45,6 +45,7 @@ from . import runner_jobs as RNJ
 from . import cadence as CAD
 from . import close as CL
 from . import collator as CO
+from . import sessions as SS
 from . import cost_policy as CP
 from . import decisions as DEC
 from . import divergence as DV
@@ -1818,6 +1819,7 @@ def _record_run(state: dict, persona: str, run_id: str, result, budget: float, *
     A missing cost is not spend (SPEC-0461). The budget is recorded on `estimated_usd` and
     is not added to the total the cap checks."""
     interrupted = bool(interrupted or result.interrupted)
+    session_marks = SS.record(state, persona, run_id, result, interrupted=interrupted)  # SPEC-0556
     cost = _cost(state)
     _separate_estimate(cost)
     estimated = result.cost_usd is None
@@ -1840,6 +1842,7 @@ def _record_run(state: dict, persona: str, run_id: str, result, budget: float, *
         **({"worker": result.worker} if getattr(result, "worker", None) else {}),
         **({"writeback_failed": True, "saved_refs": list(result.saved_refs)}
            if getattr(result, "writeback_failed", False) else {}),
+        **session_marks,
     }), ("cost", {"persona": persona, "delta_usd": charged, "total_usd": cost["total_usd"],
                   "cap_usd": cost.get("cap_usd"), "estimated": estimated})]
     if estimated:
@@ -3195,6 +3198,9 @@ def _do_persona(ctx: _Ctx, state: dict, step: Step, run_id: str, req, budget: fl
         remote = RPS.dispatch(cfg, state, step.kind, req, adopted=adopted is not None,
                               local=local, reservations=reservations) if cfg is not None else None
         runner = remote or local
+        if adopted is None and SS.on(state):      # SPEC-0556: a session lives where it ran
+            req = SS.place(req, (getattr(remote, "worker", None) or {}).get("name"),
+                           getattr(req, "session_backend", None))
         detachable = bool(getattr(runner, "detachable", False))
         started = time.time() if adopted is None else None     # SPEC-0345: an adopted run's is unknown
         outcome = runner.run(req, hooks=hooks) if (hooks and detachable) else runner.run(req)
@@ -3219,6 +3225,26 @@ def _do_persona(ctx: _Ctx, state: dict, step: Step, run_id: str, req, budget: fl
                 return res
             # a re-run the backoff held never ran: interrupted, whatever the local runner
             detachable = detachable or bool(outcome.interrupted)
+        if SS.resume_failed(req, outcome) and BP.env_fault(outcome) is None \
+                and not PG.is_usage_exhausted(outcome) and not ctx.stop.is_set():
+            if adopted is None:
+                # SPEC-0556: once more in the same step, in a fresh session from the packet and
+                # the findings history; the fallback run is never resumed, so this cannot loop
+                _note_rate_limit(ctx, state, outcome, started, _run_persona(req, step))
+                started = time.time()
+                run_id, req, outcome = _rerun_locally(ctx, state, step, run_id, req, budget,
+                                                      outcome, hooks, fallback=True)
+                res.run_id = run_id
+                detachable = bool(getattr(_local_runner(ctx, state, req), "detachable", False))
+                if outcome is DETACHED:
+                    res.detached = True
+                    return res
+                detachable = detachable or bool(outcome.interrupted)
+            else:
+                # an adopted resume keeps only a stripped request: no retry is spent, the entry
+                # is dropped when it is recorded and the step is prepared again, fresh
+                outcome = replace(outcome, interrupted=True)
+                detachable = True
         _note_rate_limit(ctx, state, outcome, started, _run_persona(req, step))     # SPEC-0345
         fault = BP.env_fault(outcome)
         if fault is not None:
@@ -3342,7 +3368,7 @@ def _note_rate_limit(ctx: _Ctx, state: dict, outcome, started, persona=None) -> 
 
 
 def _rerun_locally(ctx: _Ctx, state: dict, step: Step, run_id: str, req, budget: float, failed,
-                   hooks: RunHooks | None = None):
+                   hooks: RunHooks | None = None, *, fallback: bool = False):
     """SPEC-0344: a remote run whose write-back failed. Its `run.end` (`writeback_failed`,
     `result_tail: "write-back: <reason>"`) and cost go on the ledger now, the worker joins the
     step's `remote_excluded`, and the step runs once more, in-process on the local runner,
@@ -3351,7 +3377,11 @@ def _rerun_locally(ctx: _Ctx, state: dict, step: Step, run_id: str, req, budget:
     the re-run like any local run (the result is then `DETACHED`; the next runner adopts the
     new run). While the account's rate-limit backoff runs (SPEC-0345) the re-run is not
     started: it ends interrupted and the tick's dispatch gate holds the step. Returns
-    (run_id, req, result)."""
+    (run_id, req, result).
+
+    SPEC-0556 `fallback`: the failed run is a resume that failed. The re-run is the fresh-session
+    request (`sessions.as_fresh`), a `session_fallback` event names both runs, the run's
+    `run.start` carries `session_fallback: true`, and no worker is excluded."""
     cfg, cid = ctx.cfg, state["id"]
     persona = req.persona
     with store.item_lock(cfg, cid):
@@ -3372,12 +3402,19 @@ def _rerun_locally(ctx: _Ctx, state: dict, step: Step, run_id: str, req, budget:
             # the step fails with the failed run already closed.
             tmp_env = G.tmp_env(store.child_tmp(cfg, cid, f"run-{new_id}", create=True))
         excluded = list(state.get("remote_excluded") or [])
-        if failed.worker and failed.worker not in excluded:
+        if failed.worker and failed.worker not in excluded and not fallback:
             excluded.append(failed.worker)
         payload = {k: v for k, v in start.items()
                    if k not in ("id", "seq", "ts", "type", "campaign", "run_id")}
         payload.update(persona=persona, run_id=new_id, retry_of=run_id,
                        remote_excluded=excluded)
+        if fallback:                                                    # SPEC-0556
+            fresh = SS.as_fresh(req)
+            payload.update(session_fallback=True, prompt_sha256=PS.prompt_sha256(fresh.prompt))
+            store.append_event(cfg, cid, "session_fallback", {
+                "persona": persona, "run_id": run_id, "retry_run_id": new_id,
+                "session_id": req.resume_session, "worker": failed.worker,
+                "error": (failed.result_text or "")[-300:]})
         store.append_event(cfg, cid, "run.start", payload)
         counters["runs"] = run_no
         state["remote_excluded"] = excluded
@@ -3388,14 +3425,16 @@ def _rerun_locally(ctx: _Ctx, state: dict, step: Step, run_id: str, req, budget:
         # a re-run that completes adds only its own charge.
         current["cost"] = copy.deepcopy(state["cost"])
         store.write_state(cfg, cid, current)
-    new_req = replace(req, run_dir=store.runs_dir(cfg, cid) / new_id)
+    new_req = replace(SS.as_fresh(req) if fallback else req,
+                      run_dir=store.runs_dir(cfg, cid) / new_id)
     if tmp_env is not None:
         new_req = replace(new_req, env={**env, **tmp_env})
     if PG.backoff_until(cfg) is not None:
         from .runner import _save_inputs, _synthetic, mark_held
         _save_inputs(new_req)
         mark_held(new_req)
-        return new_id, new_req, _synthetic(new_req, "the write-back re-run was not started "
+        what = "session fallback" if fallback else "write-back re-run"
+        return new_id, new_req, _synthetic(new_req, f"the {what} was not started "
                                                     "during the rate-limit backoff", cost_usd=0.0)
     local = _preflight_hold(ctx, state, new_req, _local_runner(ctx, state, new_req))
     if hooks is not None and getattr(local, "detachable", False):
@@ -3812,7 +3851,8 @@ def _apply_step(ctx: _Ctx, state: dict, res: StepResult) -> dict:
                       "divergence", "conflict_mail",
                       "mem_boost", "gate_local",             # SPEC-0515
                       "raised", "deep_close", "cap_ignored",    # SPEC-0553 (lean only)
-                      "packet", "packet_prev", "review_heads"):  # SPEC-0554 (lean only)
+                      "packet", "packet_prev", "review_heads",   # SPEC-0554 (lean only)
+                      "sessions"):                               # SPEC-0556 (lean only)
                 if k in state:
                     current[k] = state[k]
             for k in state.pop("_lean_copy", ()):            # SPEC-0553: the open's re-pick

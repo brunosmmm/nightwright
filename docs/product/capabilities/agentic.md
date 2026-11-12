@@ -165,6 +165,25 @@ malformed or cost-capped collator routes every finding as before and records
 `collator_failed`; it never parks. Campaigns export `out_of_scope_findings` and
 `collator_fallbacks`; findings export `scope` and `tie`.
 
+### Resumable implementer and reviewer sessions (`agentic.lean.sessions`)
+
+Off by default; needs `packet` and `collator`; pinned per campaign like `tiers`. With it on,
+the `implementer` and the three builtin code reviewers keep one backend session per campaign
+and persona (`state.sessions`: backend, session id, host, model, tier, context tokens). A
+later run resumes it with a short continuation prompt (the implementer: the in-scope brief,
+the gate results and the packet / `findings-loop-N.json` paths; a reviewer in a delta review:
+the delta, the packet note and its own open findings) when backend, model, tier, worktree and
+host still match and the last run's context is under `agentic.lean_session_max_tokens`
+(400k). Otherwise the run is fresh: today's prompt plus a findings history (the latest packet
+and each loop's in-scope findings). A resume that fails (missing or expired session, backend
+error, another session id) runs once more in the same step in a fresh session
+(`session_fallback`); it never parks. Resumable backends: `claude` (`--resume`; a resumed run
+is charged its cumulative `total_cost_usd` minus the session's cost before it) and `pi`
+(file-backed sessions under `<campaign_dir>/sessions/pi`, local runs only); `cursor`
+(`Agent.resume`) is built but not enabled until its real call is checked. A remote claude run
+resumes only on the worker that holds the session. Triagers, the marshal, the collator, spec
+personas and the deep close pass never resume. Runs export `resumed` and `session_fallback`.
+
 ### Profile files and layers
 
 Four layers define profiles; a higher layer wins, key by key:

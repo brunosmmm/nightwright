@@ -94,7 +94,9 @@ def _result_doc(rr: R.RunResult) -> dict:
     return {"exit_code": rr.exit_code, "timed_out": rr.timed_out, "interrupted": rr.interrupted,
             "duration_s": rr.duration_s, "is_error": rr.is_error, "cost_usd": rr.cost_usd,
             "usage": rr.usage, "session_id": rr.session_id, "verdict": rr.verdict,
-            "verdict_ok": rr.verdict_ok, "result_text": rr.result_text}
+            "verdict_ok": rr.verdict_ok, "result_text": rr.result_text,
+            **({"session_cost_usd": rr.session_cost_usd}                 # SPEC-0556
+               if rr.session_cost_usd is not None else {})}
 
 
 def _tree_git(tree: Path, *args) -> str:
@@ -884,7 +886,8 @@ def _applied(rr: R.RemoteRunner, req, hooks, job_id: str):
         return R.DETACHED
     cur = RJ.read(rr.cfg, job_id) or {}
     run_dir = Path(req.run_dir)
-    parsed = R.parse_result(RP.run_output(run_dir), req.json_schema, exit_code=0)
+    parsed = R.session_cost(req, R.parse_result(RP.run_output(run_dir), req.json_schema,
+                                                exit_code=0))
     result = R.write_run_record(req, R.RunResult(
         exit_code=0, timed_out=False, interrupted=False, duration_s=0.0,
         raw_path=run_dir / "result.json", worker=rr.worker["name"], **parsed),
@@ -936,7 +939,9 @@ def _finish(rr: R.RemoteRunner, req, hooks, rec: dict, frame: dict):
         usage=res.get("usage") if isinstance(res.get("usage"), dict) else {},
         session_id=res.get("session_id"), verdict=res.get("verdict"),
         verdict_ok=bool(res.get("verdict_ok")), result_text=str(res.get("result_text") or ""),
-        raw_path=run_dir / "result.json", worker=rr.worker["name"])
+        raw_path=run_dir / "result.json", worker=rr.worker["name"],
+        session_cost_usd=_num(res["session_cost_usd"], float, None)      # SPEC-0556
+        if res.get("session_cost_usd") is not None else None)
     cur = RJ.read(cfg, job_id) or rec
     if not cur.get("read_only") and not cut and cur.get("writeback") != "applied":
         ok, reason, saved = write_back(cfg, rr.state["repo"]["worktree"], job_id,
