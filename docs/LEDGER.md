@@ -369,7 +369,7 @@ progress. This is the single place to see *what has been decided* and *what is i
 | [SPEC-0533](./specs/0533-remote-park-and-resume.md) | Remote park and resume | feature | accepted | — | 2026-11-10 |
 | [SPEC-0552](./specs/0552-leaner-agentic-campaign-loop.md) | Leaner agentic campaign loop (role tiers, review packet, findings collator, resumable sessions) | epic | accepted | — | 2026-11-11 |
 | [SPEC-0556](./specs/0556-resumable-implementer-and-reviewer-sessions.md) | Resumable implementer and reviewer sessions per backend, with a fresh-session fallback | feature | in-progress | — | 2026-11-11 |
-| [SPEC-0566](./specs/0566-nwfug-idea-884-20261103-d974-spec-0406-review.md) | SPEC-0406 review follow-ups: confine history campaign ids, keep the weaker link provenance, and make the CLI purity test snapshot the whole tmp tree | feature | proposed | — | 2026-11-12 |
+| [SPEC-0566](./specs/0566-nwfug-idea-884-20261103-d974-spec-0406-review.md) | SPEC-0406 review follow-ups: confine history campaign ids, keep the weaker link provenance, and make the CLI purity test snapshot the whole tmp tree | feature | accepted | — | 2026-11-12 |
 
 ## Done
 
