@@ -1675,7 +1675,8 @@ def attach(queue_group):
                   help="pin this campaign to claude, cursor, or pi (omit = follow host/project)")
     @click.option("--lean", "lean", is_flag=True,
                   help="SPEC-0558: run this campaign with every lean flag on (tiers, packet, "
-                       "collator, sessions), whatever the config says; cohort `lean`")
+                       "collator, sessions, spec_sessions), whatever the config says; cohort "
+                       "`lean`")
     @click.option("--lean-flags", "lean_flags", default=None, metavar="A,B",
                   help="SPEC-0558: only these lean flags on for this campaign (comma list of "
                        "tiers, packet, collator, sessions; unmet dependencies switch off)")

@@ -2965,6 +2965,12 @@ def _do_write_spec(ctx: _Ctx, state: dict, step: Step, run_id: str, req,
     try:
         started = time.time()
         res.run_result = rr = _gated_runner(ctx, req, state).run(req)
+        if _spec_resume_failed(ctx, req, rr):                          # SPEC-0572
+            roll_back()                 # what the failed resume left, before the fresh run
+            res.run_id, req, rr = _spec_session_fallback(ctx, state, step, run_id, req, budget,
+                                                         rr, started)
+            res.run_result = rr
+            started = time.time()
         fault = BP.env_fault(rr)
         if fault is not None:
             rr = replace(rr, interrupted=True,
@@ -3116,7 +3122,13 @@ def _do_spec_review(ctx: _Ctx, state: dict, step: Step, run_id: str, req,
         head = git.rev_parse(worktree)
         try:
             local = _preflight_hold(ctx, state, req, _local_runner(ctx, state, req))
+            started = time.time()
             res.run_result = local.run(req)
+            if _spec_resume_failed(ctx, req, res.run_result) \
+                    and git.rev_parse(worktree) == head and _spec_sha(spec_file) == sr["sha"] \
+                    and git.is_clean(worktree, untracked=False):                # SPEC-0572
+                res.run_id, req, res.run_result = _spec_session_fallback(
+                    ctx, state, step, run_id, req, budget, res.run_result, started)
         except Exception as e:                  # the reset below must still run
             res.error = getattr(e, "tail", None) or str(e)
             if not isinstance(e, (GitError, ValueError, OSError)):
@@ -3157,6 +3169,23 @@ def _do_spec_review(ctx: _Ctx, state: dict, step: Step, run_id: str, req,
         if not env_interrupt:
             res.error = getattr(e, "tail", None) or str(e)
     return res
+
+
+def _spec_resume_failed(ctx: _Ctx, req, rr) -> bool:
+    """SPEC-0572: a resumed spec writer / reviewer run that failed as a resume (as
+    `_do_persona` decides it for the code personas, SPEC-0556)."""
+    return (getattr(ctx, "cfg", None) is not None and SS.resume_failed(req, rr)
+            and BP.env_fault(rr) is None and not PG.is_usage_exhausted(rr)
+            and not ctx.stop.is_set())
+
+
+def _spec_session_fallback(ctx: _Ctx, state: dict, step: Step, run_id: str, req, budget: float,
+                           failed, started: float):
+    """SPEC-0572: the failed resume is recorded and the step runs once more, in the same step,
+    as today's fresh run (`_rerun_locally(fallback=True)`: a `session_fallback` event, a new run
+    id). The fallback is never a resume, so it cannot loop. Returns (run_id, req, result)."""
+    _note_rate_limit(ctx, state, failed, started, _run_persona(req, step))
+    return _rerun_locally(ctx, state, step, run_id, req, budget, failed, None, fallback=True)
 
 
 def _save_worktree_changes(worktree, cid: str, run_id: str, head: str) -> list[str]:

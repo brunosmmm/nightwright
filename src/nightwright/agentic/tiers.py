@@ -17,7 +17,13 @@ names an explicit model for it (`explicit_model`).
 **Per-campaign opt-in (SPEC-0558).** `nw queue add --lean` / `--lean-flags a,b` stores
 `lean_request` (and a `cohort` tag) on the queued campaign; `create_campaign` pins
 `effective_lean(..., request=)` from it, which replaces the config/project flags for that
-campaign only."""
+campaign only.
+
+**Spec-phase sessions (SPEC-0572).** `spec_sessions` resumes the spec writer's and the spec
+reviewer's sessions inside a campaign (`sessions.py`). It needs no other flag (its fallback is
+today's fresh prompt) and is listed in a pinned `state.lean` only when it is on
+(`PIN_WHEN_ON`), so a campaign that does not ask for it pins exactly the dict it pinned
+before."""
 from __future__ import annotations
 
 import re
@@ -28,8 +34,9 @@ import yaml
 from .persona_registry import TIERS
 from .profiles import EFFORTS, MODEL_ALIASES, MODEL_RE, deep_merge
 
-LEAN_FLAGS = ("tiers", "packet", "collator", "sessions")
+LEAN_FLAGS = ("tiers", "packet", "collator", "sessions", "spec_sessions")
 LEAN_REQUIRES = {"collator": ("packet",), "sessions": ("packet", "collator")}
+PIN_WHEN_ON = ("spec_sessions",)        # SPEC-0572: absent from the flags unless on
 
 SCHEMA_ID = "nw.tier_map.v1"
 MAP_FILENAME = "tier_map.yaml"
@@ -73,6 +80,9 @@ def effective_lean(cfg, project=None, *, request=None) -> tuple[dict, list]:
         if flags[flag] and missing:
             flags[flag] = False
             reasons.append(f"{flag} off: needs {' and '.join(missing)}")
+    for flag in PIN_WHEN_ON:
+        if not flags[flag]:
+            del flags[flag]
     return flags, reasons
 
 

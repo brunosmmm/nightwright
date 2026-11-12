@@ -182,12 +182,28 @@ is charged its cumulative `total_cost_usd` minus the session's cost before it) a
 (file-backed sessions under `<campaign_dir>/sessions/pi`, local runs only); `cursor`
 (`Agent.resume`) is built but not enabled until its real call is checked. A remote claude run
 resumes only on the worker that holds the session. Triagers, the marshal, the collator, spec
-personas and the deep close pass never resume. Runs export `resumed` and `session_fallback`.
+personas (unless `spec_sessions` is on, below) and the deep close pass never resume. Runs export
+`resumed` and `session_fallback`.
+
+### Spec-phase sessions (`agentic.lean.spec_sessions`)
+
+Off by default; needs no other flag; pinned per campaign (and listed in `state.lean` only when
+on). With it on, an idea campaign's `spec_writer` and `spec_reviewer` keep a session the same
+way (not in a split campaign). A later writer run (the revise after the review, a retry after
+rejected problems, a resume after a park) resumes with a short continuation: the write rules
+of this attempt, the problems and the pending brief (the reviewer's findings), without the
+idea, the template or the schema again. A second spec review of a changed spec in the same
+campaign (rare: one review per campaign, SPEC-0230) resumes with the spec diff since the
+reviewed text and its prior findings, each marked `section changed` or `section unchanged`;
+without that text in the spec's recent history, or for a diff over 400 lines, it runs fresh.
+The fresh prompt of both is today's and is the fallback of a resume that fails (once, in the
+same step, `session_fallback`; never a park). `nw queue add --lean` turns it on with the four
+flags above.
 
 ### Per-campaign lean opt-in (`nw queue add --lean`)
 
-The four flags above can also be chosen for one campaign, so lean and normal campaigns run
-side by side as an A/B test. `nw queue add SPEC-NNNN --lean --yes` turns all four on for that
+The lean flags above can also be chosen for one campaign, so lean and normal campaigns run
+side by side as an A/B test. `nw queue add SPEC-NNNN --lean --yes` turns all of them on for that
 campaign; `--lean-flags tiers,packet` turns on only the named ones (unmet dependencies switch
 off with a reason, as above). The choice replaces `agentic.lean` / `agentic.project_lean` for
 that campaign only and is pinned into `state.lean` when it is created (`state.lean_request`

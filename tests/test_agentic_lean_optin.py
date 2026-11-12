@@ -23,8 +23,10 @@ from nightwright.agentic.profiles import resolve_profile
 pytestmark = pytest.mark.integration
 
 CONF, ADV = "conformance_reviewer", "adversarial_reviewer"
-ALL_ON = {"tiers": True, "packet": True, "collator": True, "sessions": True}
-ALL_OFF = {f: False for f in T.LEAN_FLAGS}
+# SPEC-0572: `--lean` also turns `spec_sessions` on; an off `spec_sessions` is not pinned
+ALL_ON = {"tiers": True, "packet": True, "collator": True, "sessions": True,
+          "spec_sessions": True}
+ALL_OFF = {f: False for f in T.LEAN_FLAGS if f not in T.PIN_WHEN_ON}
 NEW_KEYS = {"lean", "lean_request", "cohort"}
 
 

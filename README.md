@@ -24,7 +24,7 @@ nw idea   nw spec new    nw queue add → one campaign per spec or idea
    accepted → in-progress → done`) and a generated index, [`docs/LEDGER.md`](docs/LEDGER.md).
 3. **The queue** turns each queued item into a **campaign** with its own git worktree and an
    append-only ledger under `<data_dir>/agentic/campaigns/`. Each judgment step is a fresh (or,
-   with `lean.sessions`, resumed) headless persona run (`spec_writer`, `spec_reviewer`, `implementer`, `gate_triager`,
+   with `lean.sessions` / `lean.spec_sessions`, resumed) headless persona run (`spec_writer`, `spec_reviewer`, `implementer`, `gate_triager`,
    `conformance_reviewer`, `test_reviewer`, `adversarial_reviewer`, `review_triager`,
    `conflict_resolver`, plus the lean-loop `review_marshal` and `findings_collator`). Plain code picks the next state.
 4. **Gates** are the project's own commands from `<repo>/.nw/project.yaml`, run in the

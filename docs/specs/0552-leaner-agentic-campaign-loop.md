@@ -226,6 +226,9 @@ dip elsewhere at default is accepted (human decision).
   `--lean-flags a,b`) and a `--cohort` tag exported per campaign, so lean campaigns run
   alongside normal ones as an A/B (human decision 2026-11-12). Measure: cost and loops per
   campaign by cohort.
+- [ ] SPEC-0572 (project: Meta-Tools) — Lean spec phase: resumable spec writer and delta spec
+  re-review behind `agentic.lean.spec_sessions`, which `--lean` turns on (human decision
+  2026-11-12; depends_on SPEC-0556, SPEC-0558). Measure: spec-phase cost per campaign.
 
 Sequencing / dependencies: linear. Tiers first because every later persona (marshal,
 collator) needs a tier; the packet before the collator because the collator ties findings

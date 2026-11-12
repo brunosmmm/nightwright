@@ -100,7 +100,8 @@ DEFAULT_CONFIG = {
         # SPEC-0552/0553: the leaner campaign loop, one flag per phase, all off by default.
         # `project_lean` overlays per project (`{Meta-Tools: {tiers: true}}`) for A/B. A
         # campaign pins the effective flags at open (`state.lean`) and never re-reads them.
-        "lean": {"tiers": False, "packet": False, "collator": False, "sessions": False},
+        "lean": {"tiers": False, "packet": False, "collator": False, "sessions": False,
+                 "spec_sessions": False},                               # SPEC-0572
         "project_lean": {},
         # SPEC-0556: a persona session whose last run ended above this context (input + cache
         # read tokens) is not resumed; the next run starts fresh with the packet and history.

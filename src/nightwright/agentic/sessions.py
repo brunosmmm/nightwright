@@ -20,8 +20,18 @@ once more in the same step from that prompt, in a fresh session (`queue._rerun_l
 `session_fallback` event); it never parks. A request placed on a host other than its
 session's is turned into that fresh request before it starts (`place`).
 
-Never resumed: triagers, the marshal, the collator, spec personas, the conflict resolver and
-the hand-raised deep close pass (SPEC-0553), which also leaves the registry alone."""
+Never resumed: triagers, the marshal, the collator, the conflict resolver and the hand-raised
+deep close pass (SPEC-0553), which also leaves the registry alone.
+
+**Spec phase (SPEC-0572).** With `state.lean.spec_sessions` pinned on (no other flag needed),
+the `spec_writer` and the in-campaign `spec_reviewer` keep a session the same way (not in a
+split campaign). A later writer run (a revise after the review, a retry after rejected
+problems, a resume after a park) resumes with `SPEC_WRITER_CONTINUATION`: the write rules of
+this attempt, the problems and the pending brief, and nothing it already read (idea, template,
+schema). A second review of a changed spec in the same campaign resumes with
+`SPEC_REVIEWER_CONTINUATION`: the spec diff since the text of the last `spec_review` event and
+the prior findings, each with whether its section changed. The fresh prompt of both is
+today's, unchanged; it is the fallback of a failed resume."""
 from __future__ import annotations
 
 import json
@@ -32,6 +42,10 @@ from . import store
 
 PERSONAS = ("implementer", "conformance_reviewer", "test_reviewer", "adversarial_reviewer")
 REVIEWERS = PERSONAS[1:]
+SPEC_PERSONAS = ("spec_writer", "spec_reviewer")        # SPEC-0572
+SPEC_FLAG = "spec_sessions"
+_SPEC_DIFF_MAX_LINES = 400         # a larger rewrite of the spec is re-read in a fresh session
+_SPEC_BASE_SCAN = 50               # commits of the spec file searched for the reviewed text
 LOCAL = "local"
 DEFAULT_MAX_TOKENS = 400_000
 _HISTORY_MAX = 30                  # in-scope records listed per findings file
@@ -47,6 +61,19 @@ def on(state) -> bool:
     return all(lean.get(f) is True for f in ("sessions", "packet", "collator"))
 
 
+def spec_on(state) -> bool:
+    """SPEC-0572: `spec_sessions` pinned on (it has no dependency)."""
+    from . import tiers as T
+    return T.pinned(state).get(SPEC_FLAG) is True
+
+
+def _keeps(state, persona) -> bool:
+    """This persona's runs may carry a session in this campaign (the registry side)."""
+    if persona in SPEC_PERSONAS:
+        return spec_on(state)
+    return on(state) and persona in PERSONAS
+
+
 def max_tokens(cfg) -> int:
     v = ((cfg or {}).get("agentic") or {}).get("lean_session_max_tokens")
     return v if isinstance(v, int) and not isinstance(v, bool) and v > 0 else DEFAULT_MAX_TOKENS
@@ -55,6 +82,8 @@ def max_tokens(cfg) -> int:
 def managed(state, persona) -> bool:
     """This persona's runs keep a session in this campaign (the deep close pass never does)."""
     from . import tiers as T
+    if persona in SPEC_PERSONAS:                            # SPEC-0572
+        return spec_on(state) and (state or {}).get("kind") != "split"
     if not on(state) or persona not in PERSONAS:
         return False
     return not (persona == T.DEEP_PERSONA and T.deep_pass_pending(state))
@@ -218,6 +247,9 @@ def shape(cfg, state, persona, ctx, prompt, *, backend, model, tier) -> dict:
     A reviewer resumes only in a delta review (SPEC-0554 `review_mode: delta`)."""
     if not managed(state, persona):
         return {}
+    if persona in SPEC_PERSONAS:                            # SPEC-0572
+        return _shape_spec(cfg, state, persona, ctx, prompt, backend=backend, model=model,
+                           tier=tier)
     history = history_note(cfg, state)
     fresh = prompt.rstrip("\n") + "\n\n" + history + "\n" if history else prompt
     out: dict = {"prompt": fresh}
@@ -235,6 +267,166 @@ def shape(cfg, state, persona, ctx, prompt, *, backend, model, tier) -> dict:
     if backend in ("claude", "fake") and entry.get("session_cost_usd") is not None:
         out["resume_cost_base"] = float(entry["session_cost_usd"])
     return out
+
+
+# ---- the spec phase (SPEC-0572) -------------------------------------------------------------
+
+SPEC_WRITER_CONTINUATION = """\
+# Continue: spec writer — campaign {{campaign}}
+
+This continues your earlier session in this campaign. The worktree is `{{worktree}}`; the spec
+is `{{spec_id}}` at `{{spec_rel_path}}`. The source idea, the template, the schema and the rules
+of your first message still hold; do not re-read them. Read the spec file as it is on disk now:
+nightwright committed your last accepted attempt, and rolled back any attempt it rejected (the
+file may then be missing, and you write it again in full).
+
+{{write_problems}}
+
+## Your task now
+
+{{write_rules}}
+
+## Pending brief (problems, review findings, human notes)
+
+{{pending_brief}}
+
+Edit no other file. Finish with ONE JSON object matching your output schema, as before
+(`status`, `spec_path`, `title`, `summary`, `blockers`)."""
+
+SPEC_REVIEWER_CONTINUATION = """\
+# Continue: spec reviewer — {{spec_id}}, review round {{spec_round}}
+
+This continues your review session of this spec. The spec changed since your round
+{{prior_round}} review (verdict `{{prior_verdict}}`): re-check every prior finding against the
+spec file `{{spec_rel_path}}` as it is now, not against what you remember. The schema, the
+source idea and the rules of your first message still hold; do not re-read them.
+
+## Spec diff since the text you reviewed
+
+```diff
+{{spec_diff}}
+```
+
+## Your prior findings
+
+{{prior_findings}}
+
+List again every prior finding that still applies (keep its severity unless the change
+altered it) and drop the ones the diff fixed. Raise a new finding only for text the diff
+changed, or for a must_fix you missed before. Judge size and tone from the spec as it is now.
+Finish with ONE JSON object matching your output schema, as before (`verdict`, `size`, `tone`,
+`rationale`, `findings`, `suggested_splits`)."""
+
+
+def _shape_spec(cfg, state, persona, ctx, prompt, *, backend, model, tier) -> dict:
+    """The session fields of a spec writer / reviewer run: today's prompt on a fresh run (and
+    as the fallback of a resumed one), the continuation when the entry is valid."""
+    out: dict = {"prompt": prompt}
+    if not resumable(backend):
+        return out
+    out.update(persist_session=True, session_backend=backend)
+    if backend == "pi":
+        out["session_dir"] = str(store.campaign_dir(cfg, state["id"]) / "sessions" / "pi")
+    entry, _why = check(cfg, state, persona, backend=backend, model=model, tier=tier)
+    if entry is None:
+        return out
+    from .personas import render
+    if persona == "spec_writer":
+        cont = render(SPEC_WRITER_CONTINUATION, ctx) + "\n"
+    else:
+        vals = spec_review_delta(cfg, state)
+        if vals is None:
+            return out
+        cont = render(SPEC_REVIEWER_CONTINUATION, {**ctx, **vals}) + "\n"
+    out.update(prompt=cont, fresh_prompt=prompt, resume_session=str(entry["session_id"]),
+               session_host=str(entry.get("host") or LOCAL))
+    if backend in ("claude", "fake") and entry.get("session_cost_usd") is not None:
+        out["resume_cost_base"] = float(entry["session_cost_usd"])
+    return out
+
+
+def _git_bytes(worktree, *args) -> bytes | None:
+    import subprocess
+    try:
+        r = subprocess.run(["git", "-C", str(worktree), *args], capture_output=True, check=False)
+    except OSError:
+        return None
+    return r.stdout if r.returncode == 0 else None
+
+
+def _base_commit(worktree, rel, sha256) -> str | None:
+    """The newest commit of the last `_SPEC_BASE_SCAN` that touched `rel` whose `rel` has the
+    content hash `sha256` (the `spec_review` event's), or None."""
+    import hashlib
+    log = _git_bytes(worktree, "log", f"-{_SPEC_BASE_SCAN}", "--format=%H", "--", rel)
+    for c in (log or b"").decode().split():
+        blob = _git_bytes(worktree, "show", f"{c}:{rel}")
+        if blob is not None and hashlib.sha256(blob).hexdigest() == sha256:
+            return c
+    return None
+
+
+def _sections(text: str) -> dict:
+    """`{heading (lower case): body}` of the `##`/`###` sections of a spec text."""
+    out, head, body = {}, "", []
+    for line in (text or "").splitlines():
+        if line.startswith("## ") or line.startswith("### "):
+            out[head] = "\n".join(body)
+            head, body = line.lstrip("#").strip().lower(), []
+        else:
+            body.append(line)
+    out[head] = "\n".join(body)
+    return out
+
+
+def finding_status(finding, old: dict, new: dict) -> str:
+    """`section changed` / `section unchanged` for a prior finding whose `section` names a
+    heading of the spec (either way round as a substring), else `section not found`."""
+    sec = str((finding or {}).get("section") or "").strip().lower()
+    heads = [h for h in set(old) | set(new) if h and sec and (sec in h or h in sec)]
+    if not heads:
+        return "section not found"
+    return ("section changed" if any(old.get(h) != new.get(h) for h in heads)
+            else "section unchanged")
+
+
+def spec_review_delta(cfg, state) -> dict | None:
+    """The values of a resumed spec review: the round, the last review's verdict, the spec diff
+    since the text it reviewed, and its findings with their section status. None (the review
+    runs fresh) without a stored prior review of this campaign, when that text is not found in
+    the spec's recent history, when the spec is unchanged, or when the diff is larger than
+    `_SPEC_DIFF_MAX_LINES`."""
+    from . import spec_review as SR
+    evs = [e for e in store.read_ledger(cfg, state["id"], types=["spec_review"])
+           if e.get("spec_sha256")]
+    spec = state.get("spec") or {}
+    worktree, rel = (state.get("repo") or {}).get("worktree"), spec.get("rel_path")
+    if not evs or not worktree or not rel or not spec.get("id"):
+        return None
+    last = evs[-1]
+    prior = SR.load_review(cfg, spec["id"], last["spec_sha256"])
+    base = _base_commit(worktree, rel, last["spec_sha256"])
+    if prior is None or base is None:
+        return None
+    diff = (_git_bytes(worktree, "diff", "--no-color", base, "--", rel) or b"").decode(
+        "utf-8", "replace").rstrip("\n")
+    if not diff or diff.count("\n") + 1 > _SPEC_DIFF_MAX_LINES:
+        return None
+    old = _sections((_git_bytes(worktree, "show", f"{base}:{rel}") or b"").decode(
+        "utf-8", "replace"))
+    try:
+        new = _sections((Path(worktree) / rel).read_text(encoding="utf-8"))
+    except OSError:
+        return None
+    lines = []
+    for f in prior.get("findings") or []:
+        if isinstance(f, dict):
+            where = f" ({f['section']})" if f.get("section") else ""
+            lines.append(f"- [{f.get('severity')}]{where} {f.get('title')} — "
+                         f"{finding_status(f, old, new)}. Fix asked: {f.get('suggested_fix')}")
+    rnd = int(last.get("round") or len(evs))
+    return {"spec_round": rnd + 1, "prior_round": rnd, "prior_verdict": prior.get("verdict"),
+            "spec_diff": diff, "prior_findings": "\n".join(lines) or "(none)"}
 
 
 def as_fresh(req):
@@ -292,7 +484,7 @@ def record(state, persona, run_id, result, *, interrupted=False) -> dict:
     """Update `state.sessions` for a finished run of a managed persona and return the marks for
     its `run.end` (`resumed`). A run that kept no session changes nothing; one that ended
     without a conforming verdict drops the persona's entry."""
-    if not on(state) or persona not in PERSONAS or result is None:
+    if result is None or not _keeps(state, persona):
         return {}
     doc = _request_doc(result)
     if not (doc.get("persist_session") or doc.get("resume_session") or doc.get("session_backend")):
