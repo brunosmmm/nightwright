@@ -8,3 +8,4 @@ order: 70
 output_schema: spec_writer
 read_only: false
 invariant: spec_writer
+tier: judge

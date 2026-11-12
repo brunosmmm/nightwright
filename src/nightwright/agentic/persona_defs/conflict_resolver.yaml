@@ -8,3 +8,4 @@ order: 90
 output_schema: conflict_resolver
 read_only: false
 invariant: resolver
+tier: judge

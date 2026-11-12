@@ -25,7 +25,11 @@ _DEFS_DIR = Path(__file__).resolve().parent / "persona_defs"
 _TEMPLATES_DIR = Path(__file__).resolve().parent / "personas"
 _PLACEHOLDER_RE = re.compile(r"\{\{(\w+)\}\}")
 
-_COMMON = ("schema", "name", "role", "template", "description", "category")
+_COMMON = ("schema", "name", "role", "template", "description", "category", "tier")
+# SPEC-0553: the role tier a persona's model comes from when `agentic.lean.tiers` is pinned on.
+# Required in a builtin definition; a declared (user/project) one defaults to `judge`.
+TIERS = ("marshal", "judge", "deep")
+DECLARED_DEFAULT_TIER = "judge"
 _BUILTIN_ONLY = ("order", "output_schema", "invariant", "read_only", "adopt")
 # SPEC-0394: run defaults (any custom role) and review-set routing metadata (reviewer role only),
 # allowed only in a user or project definition. Builtin run settings stay the profiles' job.
@@ -52,6 +56,7 @@ class PersonaDef:
     scope: str
     origin: str
     path: object           # the YAML file's Path
+    tier: str = DECLARED_DEFAULT_TIER     # SPEC-0553
 
     @property
     def template_path(self) -> Path:
@@ -145,11 +150,23 @@ def validate_persona_doc(doc, *, origin, layer, stem, known, directory=None) -> 
             isinstance(c, str) and c.strip() for c in cat)):
         bad("category", "must be a list of non-empty strings")
     _check_template(doc.get("template"), builtin, directory, known, bad)
+    check_tier(doc, bad, required=builtin)
     if builtin:
         _check_builtin_keys(doc, role, known, bad)
     else:
         check_declared_keys(doc, role, bad)
     return errs
+
+
+def check_tier(doc, bad, *, required: bool) -> None:
+    """SPEC-0553: `tier` must be one of `TIERS`; `required` (a builtin definition) makes a
+    missing one a problem too. Problems go to `bad(key, msg)`."""
+    if "tier" not in doc:
+        if required:
+            bad("tier", f"required, one of: {', '.join(TIERS)}")
+        return
+    if doc["tier"] not in TIERS:
+        bad("tier", f"must be one of {', '.join(TIERS)}, got {doc['tier']!r}")
 
 
 def _is_num(v) -> bool:
@@ -274,7 +291,8 @@ def _make_def(doc, scope, origin, path) -> PersonaDef:
         invariant=doc.get("invariant", "default") if scope == "builtin" else None,
         read_only=_derive_read_only(doc),
         adopt=(adopt["step"], tuple(adopt["personas"])) if adopt else None,
-        scope=scope, origin=origin, path=path)
+        scope=scope, origin=origin, path=path,
+        tier=doc.get("tier", DECLARED_DEFAULT_TIER))
 
 
 # ---- layers ----------------------------------------------------------------------------------

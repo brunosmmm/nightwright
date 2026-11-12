@@ -65,6 +65,7 @@ from . import spec_write as SW
 from . import schemas as SC
 from . import disk_clean
 from . import store
+from . import tiers as TR
 from . import workers
 from .codewatch import (_CODE_PATHS, _changed_paths, _git_out, code_changes,  # noqa: F401
                         code_checkout)
@@ -2371,6 +2372,76 @@ def _do_open_unwrapped(ctx: _Ctx, state: dict) -> StepResult:
     return res
 
 
+def _spec_hand(cfg, state: dict, *, worktree: bool = False) -> dict | None:
+    """SPEC-0553: the hand-written `{size, tone}` of the campaign's spec — from the snapshot
+    taken at open (the spec as committed on the base branch), or with `worktree` from the
+    campaign worktree as it is now. None when the spec has neither key or cannot be read."""
+    from .profiles import hand_sizing
+    rel = (state.get("spec") or {}).get("rel_path")
+    if worktree:
+        wt = (state.get("repo") or {}).get("worktree")
+        path = Path(wt) / rel if wt and rel else None
+    else:
+        path = store.campaign_dir(cfg, state["id"]) / CL.SPEC_AT_OPEN
+    if path is None or not path.is_file():
+        return None
+    try:
+        fm, _ = split_frontmatter(path.read_text(encoding="utf-8"))
+    except Exception:                  # noqa: BLE001 — unreadable / bad YAML: no hand values
+        return None
+    return hand_sizing(fm or {})
+
+
+def _lean_open(ctx: _Ctx, state: dict, events: list) -> None:
+    """SPEC-0553, at open with `lean.tiers` pinned: re-apply the cap with the size/tone the
+    human wrote into the spec on the base branch (the `spec_at_open` snapshot). A changed pick
+    re-resolves the profile (name, sources, sha, cost cap); `raised` marks a campaign above
+    the default (it gets the deep close pass). Once per campaign (`sizing.hand` is the mark)."""
+    if not TR.tiers_on(state):
+        return
+    sizing = state.get("sizing") if isinstance(state.get("sizing"), dict) else {}
+    if "hand" in sizing:
+        return
+    hand = _spec_hand(ctx.cfg, state)
+    root = (state.get("repo") or {}).get("root")
+    review = ({"size": sizing["size"], "tone": sizing["tone"], "verdict": "approve"}
+              if sizing.get("size") and sizing.get("tone") else None)
+    pick = select_profile(ctx.cfg, flag=sizing.get("flag"), review=review, project_root=root,
+                          hand=hand, lean=True)
+    sizing = dict(sizing, hand=hand)
+    copy = ["sizing"]
+    if hand or pick["profile"] != state.get("profile"):
+        prof = resolve_profile(ctx.cfg, pick["profile"], project_root=root)
+        state["profile"] = prof["name"]
+        state["profile_sources"] = list(prof.get("sources") or ())
+        state["profile_sha256"] = profile_sha256(prof)
+        state.setdefault("cost", {})["cap_usd"] = prof.get("campaign_cap_usd")
+        sizing.update(source=pick["source"], reason=pick["reason"], size=pick["size"],
+                      tone=pick["tone"])
+        copy += ["profile", "profile_sources", "profile_sha256"]
+    state["sizing"] = sizing
+    state["raised"] = bool(pick.get("raised"))
+    state["_lean_copy"] = tuple(copy)
+    events.append(("lean_sizing", {"hand": hand, "profile": state.get("profile"),
+                                   "source": sizing.get("source"),
+                                   "reason": sizing.get("reason"),
+                                   "raised": state["raised"]}))
+
+
+def _lean_cap_check(cfg, state: dict, events: list, step: str) -> None:
+    """SPEC-0553: a `size`/`tone` added or changed in the spec inside the campaign (the
+    writer's or the implementer's commit) never sizes it; report it once per value as a
+    `cap_ignored` event."""
+    now = _spec_hand(cfg, state, worktree=True)
+    hand = (state.get("sizing") or {}).get("hand")
+    if (now or None) == (hand or None) or state.get("cap_ignored") == now:
+        return
+    state["cap_ignored"] = now
+    events.append(("cap_ignored", {"spec": now, "hand": hand, "step": step,
+                                   "text": "size/tone written inside the campaign is ignored "
+                                           "for sizing; only the spec on base at open counts"}))
+
+
 def _open_start(root: Path, pcfg: dict, base: str) -> str:
     """The ref a new campaign branch starts from (SPEC-0325). `merge` policy: the local `base`
     (nightwright merges into it locally). `pr` / `draft-pr`: `git fetch <remote> <base>`, then
@@ -2568,6 +2639,7 @@ def _prepare_run(ctx: _Ctx, state: dict, persona: str, step: Step | None = None)
             "step": {"kind": step.kind if step else _KIND_OF_PERSONA.get(persona, "implement"),
                      "personas": list(step.personas) if step else []},
             "profile": req.profile,                                    # SPEC-0238
+            **({"tier": req.tier} if req.tier else {}),                # SPEC-0553
         })
         counters["runs"] = run_no
         try:
@@ -3646,6 +3718,8 @@ def _apply_step(ctx: _Ctx, state: dict, res: StepResult) -> dict:
     counters = _counters(state)
 
     def finish(to, reason, *, park=None):
+        if res.step.kind in ("implement", "write_spec") and TR.tiers_on(state):
+            _lean_cap_check(cfg, state, events, res.step.kind)       # SPEC-0553
         # SPEC-0254: read, decision and write-back are one critical section; `_park` and
         # `_transition` re-take the (reentrant) lock for their own write.
         with store.item_lock(cfg, cid):
@@ -3666,9 +3740,12 @@ def _apply_step(ctx: _Ctx, state: dict, res: StepResult) -> dict:
                       "merge", "admission", "spec_review", "split",   # SPEC-0279: amend flips it
                       "gate_exclusive", "last_green_loop", "close_red", "gate_retry_pending",
                       "divergence", "conflict_mail",
-                      "mem_boost", "gate_local"):            # SPEC-0515
+                      "mem_boost", "gate_local",             # SPEC-0515
+                      "raised", "deep_close", "cap_ignored"):   # SPEC-0553 (lean only)
                 if k in state:
                     current[k] = state[k]
+            for k in state.pop("_lean_copy", ()):            # SPEC-0553: the open's re-pick
+                current[k] = state[k]
             requested = current.get("park_requested")
             escalating = bool(requested) and requested.get("reason") == "human_decision"
             if requested and park is None and to not in TERMINAL_STATES:
@@ -3770,6 +3847,7 @@ def _apply_step(ctx: _Ctx, state: dict, res: StepResult) -> dict:
             return finish("CLOSING", "opened")
         if state.get("kind") == "split":                               # SPEC-0290
             return finish("SPEC_WRITING", "opened")
+        _lean_open(ctx, state, events)                                 # SPEC-0553
         if res.resumed_to:
             events.append(("note", {"text": f"resumed into existing worktree → {res.resumed_to}",
                                     "author": "queue"}))
@@ -5322,6 +5400,7 @@ def _apply_reviews(ctx, state, profile, counters, res, row, events, finish):
             "reason": "config_invalid", "detail": f"project config: {bad.error}",
             "resume_to": "REVIEWING"})
     _store_verdicts(state, profile, counters, res.reviews)
+    _note_deep_close(state, profile, res, events)                      # SPEC-0553
     if res.step.held:
         # SPEC-0345: the persona cap held part of the fan-out; no routing until every reviewer
         # ran. A dispatched member without a valid verdict (its run failed, or it never started)
@@ -5352,6 +5431,46 @@ def _apply_reviews(ctx, state, profile, counters, res, row, events, finish):
             pass
         return finish("REVIEWING", "usage_paused")
     return _route_reviews(ctx, state, profile, counters, row, events, finish)
+
+
+def _deep_close_due(state: dict, profile: dict) -> bool:
+    """SPEC-0553: a hand-raised campaign (`raised`, `lean.tiers` pinned) gets one fresh
+    deep-tier adversarial pass before it closes; once per campaign, and only when the
+    profile's reviewers include the adversarial reviewer."""
+    return (TR.tiers_on(state) and state.get("raised") is True
+            and not state.get("deep_close")
+            and TR.DEEP_PERSONA in reviewers_of(profile))
+
+
+def _start_deep_close(state: dict, counters: dict, events: list, finish):
+    """The review passed: drop the adversarial verdict of this loop so the next review step
+    re-runs that reviewer alone, at tier deep (`tiers.persona_tier`). Its verdict then routes
+    like any review: a fix is a normal review fix (it counts against `loop_max`)."""
+    lr = state.get("last_review") if isinstance(state.get("last_review"), dict) else {}
+    verdicts = dict(lr.get("verdicts") or {})
+    verdicts.pop(TR.DEEP_PERSONA, None)
+    lr["verdicts"] = verdicts
+    lr["triage"] = None                 # the new verdict set may need the triager again
+    state["last_review"] = lr
+    loop = int(counters.get("loops") or 0)
+    state["deep_close"] = {"status": "pending", "loop": loop}
+    events.append(("deep_close", {"status": "pending", "loop": loop,
+                                  "persona": TR.DEEP_PERSONA, "tier": "deep"}))
+    return finish("REVIEWING", "deep_close_pass")
+
+
+def _note_deep_close(state: dict, profile: dict, res, events: list) -> None:
+    """Mark the deep close pass done once its adversarial run left a valid verdict."""
+    dc = state.get("deep_close")
+    if not (isinstance(dc, dict) and dc.get("status") == "pending"):
+        return
+    if TR.DEEP_PERSONA not in _valid_verdicts(state, profile):
+        return
+    run = next((r.run_id for r in res.reviews if r.step.persona == TR.DEEP_PERSONA), None)
+    dc.update(status="done", run=run)
+    verdict = ((state.get("last_review") or {}).get("verdicts") or {}).get(TR.DEEP_PERSONA) or {}
+    events.append(("deep_close", {"status": "done", "loop": dc.get("loop"), "run": run,
+                                  "verdict": verdict.get("verdict")}))
 
 
 def _route_reviews(ctx, state, profile, counters, row, events, finish):
@@ -5429,6 +5548,8 @@ def _route_reviews(ctx, state, profile, counters, row, events, finish):
     counters["review_retries"] = 0
     counters.pop("review_retries_by_persona", None)
     if decision.kind == "close":
+        if _deep_close_due(state, profile):                           # SPEC-0553
+            return _start_deep_close(state, counters, events, finish)
         return finish("CLOSING", "review_pass")
     # fix
     if _cursor_campaign(ctx, state) and review_rounds_spent(counters, profile):
@@ -9658,8 +9779,9 @@ def plan_add(cfg, spec_id, *, project=None, profile=None, base=None, force=False
                             "scope": str(p.get("scope") or "")}
                            for i, p in enumerate(review_doc.get("suggested_splits") or [], 1)]}
         review_doc = None       # the review sizes the unsplit work, not writing the parts
+    lean, lean_off = TR.effective_lean(cfg, project)                   # SPEC-0553
     pick = select_profile(cfg, flag=profile, review=review_doc,         # SPEC-0219
-                          project_root=root)
+                          project_root=root, **({"lean": True} if lean["tiers"] else {}))
     prof = resolve_profile(cfg, pick["profile"], project_root=root)
     base = base or (pcfg.get("merge") or {}).get("base") or pcfg.get("base") or "main"
     cid = store.new_campaign_id(cfg, spec_id)
@@ -9684,6 +9806,11 @@ def plan_add(cfg, spec_id, *, project=None, profile=None, base=None, force=False
                     "created": str(fm.get("created") or "")},
         "split": split, "split_origin": origin["id"] if origin else None,
         **_campaign_runner_pin(runner),
+        # SPEC-0553: the flags this campaign pins, and the `--profile` asked for (the open
+        # re-applies the cap with the spec's hand-written size/tone)
+        **({"lean": lean, "lean_off": lean_off} if any(lean.values()) or lean_off else {}),
+        **({"profile_flag": profile, "profile_capped_from": pick.get("capped_from")}
+           if lean["tiers"] else {}),
     }
 
 
@@ -9715,6 +9842,10 @@ def apply_add(cfg, plan: dict, *, by="human") -> dict:
     }
     if plan.get("runner"):                                             # SPEC-0436
         state["runner"] = plan["runner"]
+    if "profile_flag" in plan:                                         # SPEC-0553
+        state["sizing"]["flag"] = plan["profile_flag"]
+        if plan.get("profile_capped_from"):
+            state["sizing"]["capped_from"] = plan["profile_capped_from"]
     if plan.get("after"):
         state["after"] = list(plan["after"])                           # SPEC-0423
     if plan.get("split_origin"):

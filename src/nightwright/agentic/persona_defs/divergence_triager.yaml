@@ -11,3 +11,4 @@ invariant: default
 adopt:
   step: divergence
   personas: [divergence_triager]
+tier: judge

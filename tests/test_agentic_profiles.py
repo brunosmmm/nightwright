@@ -845,3 +845,87 @@ def test_profile_sha256_stable_ignores_sources_and_tracks_fields():     # SPEC-0
     c["name"] = "renamed"
     assert P.profile_sha256(c) != h
     assert P.profile_sha256(P.resolve_profile(cfg, "frugal")) != h
+
+
+# ---- SPEC-0553: the size/tone cap -------------------------------------------------------------
+
+def _rv(size, tone, verdict="approve"):
+    return {"verdict": verdict, "size": size, "tone": tone}
+
+
+@pytest.mark.parametrize("default", ["frugal", "balanced", "thorough"])
+@pytest.mark.parametrize("tone", P.TONES)
+@pytest.mark.parametrize("size", ("xs", "s", "m", "l"))
+def test_review_pick_never_ranks_above_the_default(size, tone, default):
+    cfg = _cfg(default_profile=default)
+    free = P.select_profile(cfg, review=_rv(size, tone))
+    capped = P.select_profile(cfg, review=_rv(size, tone), lean=True)
+    rank = P.PROFILE_RANK
+    assert rank[capped["profile"]] == min(rank[free["profile"]], rank[default])
+    assert capped["raised"] is False and capped["source"] == "review"
+    if rank[free["profile"]] > rank[default]:
+        assert capped["capped_from"] == free["profile"]
+        assert capped["reason"].endswith(f"(capped at {default})")
+    else:
+        assert capped == dict(free, raised=False)
+
+
+def test_flag_is_capped_too_unless_the_hand_raises():
+    cfg = _cfg()
+    flag = P.select_profile(cfg, flag="thorough", lean=True)
+    assert (flag["profile"], flag["source"], flag["raised"]) == ("balanced", "flag", False)
+    assert flag["reason"] == "--profile thorough (capped at balanced)"
+    low = P.select_profile(cfg, flag="frugal", lean=True)
+    assert (low["profile"], low["raised"]) == ("frugal", False)              # lowering is free
+    hand = P.select_profile(cfg, flag="thorough", hand={"tone": "critical"}, lean=True)
+    assert (hand["profile"], hand["source"], hand["raised"]) == ("thorough", "hand", True)
+    # the hand cell is balanced: the flag stays capped at the default
+    mild = P.select_profile(cfg, flag="thorough", hand={"tone": "high-end", "size": "s"},
+                            lean=True)
+    assert (mild["profile"], mild["raised"]) == ("balanced", False)
+    lower = P.select_profile(cfg, flag="frugal", hand={"tone": "critical"}, lean=True)
+    assert lower["profile"] == "frugal"
+
+
+def test_hand_values_pick_their_cell_uncapped():
+    cfg = _cfg()
+    pick = P.select_profile(cfg, review=_rv("s", "cost-effective"), hand={"tone": "critical"},
+                            lean=True)
+    assert pick == {"profile": "thorough", "source": "hand", "size": "s", "tone": "critical",
+                    "reason": "hand-written size s, tone critical → thorough", "raised": True}
+    big = P.select_profile(cfg, review=None, hand={"size": "l"}, lean=True)   # tone: high-end
+    assert (big["profile"], big["tone"], big["raised"]) == ("thorough", "high-end", True)
+    small = P.select_profile(cfg, review=_rv("l", "critical"),
+                             hand={"size": "xs", "tone": "cost-effective"}, lean=True)
+    assert (small["profile"], small["raised"]) == ("frugal", False)
+
+
+def test_hand_is_ignored_without_lean():
+    cfg = _cfg()
+    assert P.select_profile(cfg, review=_rv("s", "cost-effective"), hand={"tone": "critical"}) \
+        == P.select_profile(cfg, review=_rv("s", "cost-effective"))
+
+
+def test_hand_sizing_reads_only_valid_keys():
+    assert P.hand_sizing({"size": "m", "tone": "critical", "status": "accepted"}) == {
+        "size": "m", "tone": "critical"}
+    assert P.hand_sizing({"size": "xl", "tone": "loud"}) is None
+    assert P.hand_sizing({"tone": "high-end"}) == {"tone": "high-end"}
+    assert P.hand_sizing(None) is None
+
+
+def test_profile_rank_follows_extends(tmp_path):
+    cfg = _cfg(config_dir=None, profiles={"cheap": {"extends": "frugal"}, "newname": {}})
+    cfg["config_dir"] = str(tmp_path)
+    (tmp_path / "profiles").mkdir()
+    (tmp_path / "profiles" / "big.yaml").write_text(
+        "schema: nw.profile.v1\nextends: thorough\ndescription: x\n")
+    (tmp_path / "profiles" / "bigger.yaml").write_text(
+        "schema: nw.profile.v1\nextends: big\ndescription: x\n")
+    rank = lambda n: P.profile_rank(cfg, n)                                  # noqa: E731
+    assert [rank(n) for n in ("frugal", "balanced", "thorough")] == [0, 1, 2]
+    assert (rank("cheap"), rank("big"), rank("bigger"), rank("newname")) == (0, 2, 2, 1)
+    assert rank("unknown") == 1                                              # = the default
+    capped = P.select_profile(cfg, flag="bigger", lean=True)
+    assert (capped["profile"], capped["capped_from"]) == ("balanced", "bigger")
+    assert P.select_profile(cfg, flag="cheap", lean=True)["profile"] == "cheap"

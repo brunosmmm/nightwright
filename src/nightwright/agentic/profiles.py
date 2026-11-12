@@ -423,11 +423,107 @@ def profile_matrix(cfg, *, project_root=None):
     return matrix
 
 
-def select_profile(cfg, *, flag=None, review=None, project_root=None) -> dict:
+# SPEC-0553: hand-written spec frontmatter sizes (`xl` is never a campaign) and profile strength.
+HAND_SIZES = ("xs", "s", "m", "l")
+PROFILE_RANK = {"frugal": 0, "balanced": 1, "thorough": 2}
+
+
+def profile_rank(cfg, name, *, project_root=None) -> int:
+    """The strength of profile `name` (SPEC-0553): `frugal < balanced < thorough`; any other
+    profile ranks as the builtin it `extends` (transitively; a config-only new name sits over
+    balanced); a profile with no builtin ancestor ranks as `agentic.default_profile`."""
+    default = _agentic(cfg).get("default_profile") or "balanced"
+    try:
+        layers = load_layers(cfg, project_root=project_root)
+    except ValueError:
+        layers = []
+
+    def ancestor(n, seen=()):
+        if n in PROFILE_RANK:
+            return n
+        if n in seen:
+            return None
+        defs = [layer for layer in layers if n in layer.defs]
+        for layer in reversed(defs):
+            ext = layer.defs[n].doc.get("extends")
+            if isinstance(ext, str) and ext and ext != n:
+                return ancestor(ext, seen + (n,))
+        if defs and all(layer.scope == "config" for layer in defs):
+            return "balanced"
+        return None
+
+    found = ancestor(name)
+    if found is None:
+        found = ancestor(default) if default != name else None
+    return PROFILE_RANK.get(found, PROFILE_RANK["balanced"])
+
+
+def hand_sizing(fm) -> dict | None:
+    """`{size, tone}` written by hand in a spec's frontmatter (SPEC-0553), only the valid
+    keys; None when it carries neither."""
+    if not isinstance(fm, dict):
+        return None
+    out = {}
+    if fm.get("size") in HAND_SIZES:
+        out["size"] = fm["size"]
+    if fm.get("tone") in TONES:
+        out["tone"] = fm["tone"]
+    return out or None
+
+
+def _lean_pick(cfg, base: dict, *, flag, review, hand, project_root) -> dict:
+    """SPEC-0553 cap over `select_profile`'s uncapped pick `base`: a review or `--profile`
+    pick never ranks above `agentic.default_profile`; a hand-written size/tone (from the spec
+    on the base branch at open) picks its matrix cell uncapped and lifts the flag's cap to that
+    cell. `raised` is true when the result ranks above the default."""
+    default = _agentic(cfg).get("default_profile") or "balanced"
+
+    def rank(n):
+        return profile_rank(cfg, n, project_root=project_root)
+
+    out = dict(base)
+    if hand:
+        matrix = profile_matrix(cfg, project_root=project_root)
+        review = review or {}
+        size = hand.get("size") or (review.get("size") if review.get("size") in HAND_SIZES
+                                    else "m")
+        tone = hand.get("tone") or (review.get("tone") if review.get("tone") in TONES
+                                    else "high-end")
+        cell = matrix[tone][size]
+        name, why = cell, f"hand-written size {size}, tone {tone} → {cell}"
+        if flag and rank(flag) > rank(cell):
+            ceiling = cell if rank(cell) >= rank(default) else default
+            name = flag if rank(flag) <= rank(ceiling) else ceiling
+            why = f"--profile {flag}" + ("" if name == flag else f" (capped at {name})")
+        elif flag:
+            name, why = flag, f"--profile {flag}"
+        out.update(profile=name, source="hand", reason=why, size=size, tone=tone)
+    elif rank(out["profile"]) > rank(default):
+        out["capped_from"] = out["profile"]
+        out["reason"] = f"{out['reason']} (capped at {default})"
+        out["profile"] = default
+    out["raised"] = rank(out["profile"]) > rank(default)
+    return out
+
+
+def select_profile(cfg, *, flag=None, review=None, project_root=None, hand=None,
+                   lean=False) -> dict:
     """Pick the campaign profile: `--profile` flag > the approve or revise review's size and
     tone via the matrix > `agentic.default_profile`. Pure (no I/O beyond `cfg`). Returns
     `{profile, source: flag|review|default, reason, size, tone}`; size and tone are recorded
-    whenever the review has valid ones, even when the flag wins."""
+    whenever the review has valid ones, even when the flag wins.
+
+    SPEC-0553: with `lean` (the campaign's pinned `lean.tiers`) the pick is capped at the
+    default profile unless `hand` (`hand_sizing` of the spec on base at open) raises it; the
+    result then also carries `raised` (and `capped_from` when the cap applied)."""
+    base = _select_profile(cfg, flag=flag, review=review, project_root=project_root)
+    if not lean:
+        return base
+    return _lean_pick(cfg, base, flag=flag, review=review, hand=hand,
+                      project_root=project_root)
+
+
+def _select_profile(cfg, *, flag=None, review=None, project_root=None) -> dict:
     matrix = profile_matrix(cfg, project_root=project_root)
     review = review or {}
     size, tone = review.get("size"), review.get("tone")

@@ -104,6 +104,30 @@ agentic:
 
 `nw profiles list|show|check` shows what each profile resolves to and which file set each value.
 
+### Role tiers and the size/tone cap (`agentic.lean.tiers`)
+
+Off by default. `agentic.lean: {tiers: true}` (or per project,
+`agentic.project_lean: {Meta-Tools: {tiers: true}}`) changes two things for the campaigns
+opened while it is on; a campaign pins the flags at open (`state.lean`, the `open` event) and
+never re-reads them.
+
+- **Tiers.** Each persona declares a tier in its builtin definition: `marshal` (gate and
+  review triagers) or `judge` (everything else); a declared persona may set `tier:`
+  (default `judge`). `src/nightwright/agentic/tier_map.yaml` maps tiers to models per
+  backend (Claude: `claude-haiku-5-5` / `claude-sonnet-5-5` / `claude-opus-5-5` for
+  marshal / judge / deep), with overlays `<config_dir>/tier_map.yaml`, `agentic.tiers` in
+  config and `<project>/.nw/tier_map.yaml`. A `model:` set for the persona in a user,
+  config or project profile layer, a model set's per-persona `model:`, or a `cursor_model:`
+  on a Cursor spawn still wins. Runs record `tier` (`run.json`, `run.start`, the runs
+  export).
+- **Cap.** The review's size/tone and `--profile` never pick a profile stronger than
+  `agentic.default_profile` (`frugal < balanced < thorough`; other profiles rank as the
+  builtin they extend). Only `size:` / `tone:` written by hand into the spec frontmatter,
+  as committed on the base branch when the campaign opens, raise it. A raised campaign gets
+  one extra fresh `adversarial_reviewer` run at tier `deep` when its review passes; that
+  verdict routes like any review. A size/tone written inside the campaign is ignored and
+  logged as `cap_ignored`.
+
 ### Profile files and layers
 
 Four layers define profiles; a higher layer wins, key by key:

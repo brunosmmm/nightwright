@@ -85,6 +85,16 @@
       "type": "string",
       "pattern": "^REQ-[0-9A-HJKMNP-TV-Z]{8}$",
       "description": "The public request this spec was written from (SPEC-0535)."
+    },
+    "size": {
+      "type": "string",
+      "enum": ["xs", "s", "m", "l"],
+      "description": "Human-only (SPEC-0553): campaign size written by hand. With agentic.lean.tiers, a hand-written size/tone is the only way a campaign runs above agentic.default_profile; a value added inside a campaign is ignored."
+    },
+    "tone": {
+      "type": "string",
+      "enum": ["cost-effective", "high-end", "critical"],
+      "description": "Human-only (SPEC-0553): campaign tone written by hand; see size."
     }
   },
   "allOf": [

@@ -208,7 +208,7 @@ dip elsewhere at default is accepted (human decision).
 
 ## Breakdown / sub-specs
 
-- [ ] SPEC-0553 (project: Meta-Tools) — Role tiers, per-backend tier mapping, size/tone cap
+- [x] SPEC-0553 (project: Meta-Tools) — Role tiers, per-backend tier mapping, size/tone cap
   and the hand-raised deep close pass; `agentic.lean` flag scaffolding. Measure: cost per
   campaign.
 - [ ] SPEC-0554 (project: Meta-Tools) — Marshal review packet `packet-loop-N.json` and delta

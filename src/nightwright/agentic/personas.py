@@ -296,6 +296,7 @@ class Persona:
     role: str | None = None             # SPEC-0371: set for declared (non-builtin) personas
     # SPEC-0394: a declared persona's {settings, required, when, template_sha256}; builtins None
     declared: Mapping | None = None
+    tier: str = "judge"                 # SPEC-0553: role tier (persona_defs/*.yaml `tier:`)
 
     @property
     def template(self) -> str:
@@ -338,7 +339,7 @@ KNOWN = {"output_schemas": frozenset(SCHEMAS), "invariants": frozenset(INVARIANT
 
 def _build_persona(defn) -> Persona:
     return Persona(defn.name, defn.template, SCHEMAS[defn.output_schema], defn.read_only,
-                   INVARIANTS[defn.invariant])
+                   INVARIANTS[defn.invariant], tier=defn.tier)
 
 
 _BUILTIN_DEFS = PR.load_builtin(KNOWN)
@@ -997,6 +998,13 @@ def _gate_tool_patterns(project_cfg) -> list[str]:
     return out
 
 
+# SPEC-0553: with `lean.tiers` pinned, only a human's edit of the spec on the base branch may
+# raise a campaign; a size/tone the writer adds is ignored and reported (`cap_ignored`).
+LEAN_SPEC_WRITER_NOTE = (
+    "Do not write `size:` or `tone:` keys in the spec front matter. They are set only by a "
+    "human, by hand, and a value written inside a campaign is ignored.")
+
+
 def build_request(cfg, profile, project_cfg, state, persona, *, run_dir,
                   previous=None, extra=None, invariant=None) -> RunRequest:
     """Turn profile + project config + campaign state into a `RunRequest` for `persona`.
@@ -1069,9 +1077,31 @@ def build_request(cfg, profile, project_cfg, state, persona, *, run_dir,
     elif not spawn_runner and _R.resolve_runner(cfg, campaign=state, project=state.get("project")) == "pi":
         row = _R.map_pi_model(alias, effort, cfg, project_root=project_root)
         pi_provider, pi_id, pi_thinking = row["provider"], row["id"], row["thinking"]
+    prompt = build_prompt(p, ctx) if invariant is None else build_prompt(p, ctx, invariant)
+    tier = None
+    from . import tiers as T
+    if T.tiers_on(state):                                   # SPEC-0553: pinned at open
+        tier = T.persona_tier(p, state)
+        backend = spawn_runner or _R.resolve_runner(cfg, campaign=state,
+                                                    project=state.get("project"))
+        if tier == "deep" or not T.explicit_model(cfg, profile, p, model_set=chosen,
+                                                  backend=backend, project_root=project_root):
+            row = T.tier_model(cfg, backend, tier, project_root)
+            effort = row["effort"] or effort
+            if backend == "cursor":
+                from .model_sets import cursor_id
+                model, model_alias = cursor_id(row["model"], effort), alias
+            elif backend == "pi":
+                model, model_alias = row["model"], alias
+                pi_provider, pi_id = model.split("/", 1)
+                pi_thinking = effort or "high"
+            else:
+                model, model_alias = row["model"], None
+        if persona == "spec_writer":
+            prompt += "\n\n" + LEAN_SPEC_WRITER_NOTE
     return RunRequest(
         persona=persona,
-        prompt=build_prompt(p, ctx) if invariant is None else build_prompt(p, ctx, invariant),
+        prompt=prompt,
         system_append=render(p.invariant if invariant is None else invariant, ctx),
         cwd=worktree,
         model=model,
@@ -1092,4 +1122,5 @@ def build_request(cfg, profile, project_cfg, state, persona, *, run_dir,
         pi_id=pi_id,
         pi_thinking=pi_thinking,
         runner=spawn_runner,
+        tier=tier,
     )

@@ -7,3 +7,4 @@ description: "explains why the gates failed and what to fix"
 order: 20
 output_schema: gate_triager
 invariant: default
+tier: marshal

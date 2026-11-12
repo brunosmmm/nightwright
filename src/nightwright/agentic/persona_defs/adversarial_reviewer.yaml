@@ -7,3 +7,4 @@ description: "hunts for bugs and regressions the other reviewers miss"
 order: 50
 output_schema: adversarial_reviewer
 invariant: default
+tier: judge

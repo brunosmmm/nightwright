@@ -97,6 +97,11 @@ DEFAULT_CONFIG = {
         # SPEC-0536: the campaign history cache is opt-in; cache=None readers stay pure unless true.
         "history": {"cache": False},
         "profiles": {},
+        # SPEC-0552/0553: the leaner campaign loop, one flag per phase, all off by default.
+        # `project_lean` overlays per project (`{Meta-Tools: {tiers: true}}`) for A/B. A
+        # campaign pins the effective flags at open (`state.lean`) and never re-reads them.
+        "lean": {"tiers": False, "packet": False, "collator": False, "sessions": False},
+        "project_lean": {},
     },
 }
 

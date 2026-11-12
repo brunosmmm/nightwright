@@ -8,3 +8,4 @@ order: 60
 output_schema: spec_reviewer
 read_only: true
 invariant: spec_review
+tier: judge

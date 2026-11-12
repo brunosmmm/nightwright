@@ -11,3 +11,4 @@ invariant: default
 adopt:
   step: review
   personas: [review_triager]
+tier: marshal

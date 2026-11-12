@@ -115,6 +115,11 @@ EVENT_KEYS: dict[str, tuple[str, ...]] = {
     "auto_resume_failed": ("rule", "error"),        # SPEC-0302
     "cap_raised": ("from", "to", "ceiling"),        # SPEC-0422: the cost-cap policy raised the cap
     "review_outcome": ("loop", "score", "pass_score", "outcome", "major", "must_fix"),  # SPEC-0422
+    # SPEC-0553: the open's re-pick with the spec's hand-written size/tone; a size/tone written
+    # inside the campaign (ignored); the hand-raised campaign's deep close pass (pending/done)
+    "lean_sizing": ("hand", "profile", "source", "reason", "raised"),
+    "cap_ignored": ("spec", "hand", "step"),
+    "deep_close": ("status", "loop"),
     "flaky_recorded": ("ids", "source"),                        # SPEC-0293
     "resume": ("to", "note", "cap_usd", "loops_reset"),
     "close": ("mode",),

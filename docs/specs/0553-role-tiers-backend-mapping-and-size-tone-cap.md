@@ -1,7 +1,7 @@
 ---
 id: SPEC-0553
 title: Role tiers (marshal/judge/deep), per-backend tier mapping and the hand-only size/tone cap
-status: accepted
+status: done
 owner: user
 created: 2026-11-11
 parent: SPEC-0552
@@ -121,6 +121,43 @@ extra fresh `adversarial_reviewer` run at tier deep (no session, no packet depen
 before the close; its `fix` verdict sends the campaign back to IMPLEMENTING as a normal
 review fix (counts against `loop_max`). Not raised → no extra run.
 
+### Design as built (where it differs from the above)
+
+- **Pin point.** The flags are pinned when the campaign is created (`store.create_campaign`,
+  which also writes the `open` ledger event, with `lean` and any `lean_off` reasons), not in
+  `_do_open_unwrapped`: that is where the `open` event lives, and it covers every creation
+  path. `state.lean` is written only when a flag is on (or a dependency was switched off),
+  so a flag-off campaign's state and events are unchanged; an absent `state.lean` reads as
+  all off and stays so.
+- **Cap in two places.** `plan_add` applies the cap (review / `--profile`) with the
+  effective flags, so `nw queue add` shows the capped profile and records `sizing.flag` /
+  `sizing.capped_from`. The OPENING step's apply (`queue._lean_open`) then reads the hand
+  values from the `spec_at_open` snapshot (the spec at the base sha) and re-runs
+  `select_profile(..., hand=, lean=True)`; a changed pick re-resolves the profile (name,
+  sources, sha, `cost.cap_usd`) and logs `lean_sizing`. `select_profile` keeps its old
+  signature and output unless `lean=True`.
+- **Hand rules.** A hand value fills the missing key from the review (else `m` /
+  `high-end`). `raised` is true only when the result ranks above the default (a hand
+  `cost-effective`/`xs` lowers and is not "raised"). With a flag and a hand value the flag
+  is capped at `max(default, hand cell)`.
+- **Override rule.** "Explicit `model:`" means a `personas.<name>.model` set by a layer
+  above the builtin profiles (user file, `agentic.profiles` delta, project file — read from
+  `profile_provenance`), a model set's per-persona `model:`, a `cursor_model:` on a Cursor
+  spawn, or a declared persona's own `model:`. A model set's set-level `model:` is not an
+  override (tiers replace it). The deep close pass ignores overrides (deep is deep).
+- **Deep close pass at the review decision.** Implemented where the reviews pass
+  (`_route_reviews`, decision `close`) rather than in `_do_prepare_close`: the adversarial
+  verdict of the loop is dropped and the campaign stays REVIEWING (`deep_close_pass`), so
+  the next review step runs that reviewer alone at tier deep and its verdict routes like any
+  review (pass → CLOSING, fix → IMPLEMENTING as a review fix, +1 loop). `state.deep_close`
+  (`pending` → `done`) makes it once per campaign; `deep_close` events record both. Skipped
+  when the profile's reviewers do not include `adversarial_reviewer`.
+- **In-campaign keys.** `cap_ignored` is checked when an implement or write_spec step
+  finishes (worktree spec vs the hand values at open), once per new value. The spec writer
+  note is appended to its prompt only with `lean.tiers` pinned (prompts are unchanged when
+  off).
+- New ledger event types: `lean_sizing`, `cap_ignored`, `deep_close`.
+
 ## Alternatives considered
 
 - **Retune the profile models only (reviewers to Sonnet)** — rejected by the human
@@ -134,22 +171,22 @@ review fix (counts against `loop_max`). Not raised → no extra run.
 
 ## Acceptance criteria
 
-- [ ] Every builtin persona definition declares a `tier`; a definition with a missing or
+- [x] Every builtin persona definition declares a `tier`; a definition with a missing or
       unknown tier fails `nw personas validate` naming the file.
-- [ ] With `lean.tiers` on, each builtin persona run on claude records the model and tier of
+- [x] With `lean.tiers` on, each builtin persona run on claude records the model and tier of
       `tier_map.yaml` (e.g. `conformance_reviewer` → `claude-sonnet-5-5`, judge), and an
       explicit profile/model-set `model:` still overrides it.
-- [ ] `select_profile` never returns a profile stronger than `agentic.default_profile` from
+- [x] `select_profile` never returns a profile stronger than `agentic.default_profile` from
       a review's size/tone or from `--profile`, unless the spec on base at open carries a
       hand-written `size`/`tone`; a key introduced inside the campaign is ignored and an
       event says so.
-- [ ] `spec_lint` accepts `size`/`tone` frontmatter with the enumerated values and rejects
+- [x] `spec_lint` accepts `size`/`tone` frontmatter with the enumerated values and rejects
       others.
-- [ ] A hand-raised campaign runs exactly one fresh deep-tier `adversarial_reviewer` at
+- [x] A hand-raised campaign runs exactly one fresh deep-tier `adversarial_reviewer` at
       close; a default campaign runs none.
-- [ ] `state.lean` is pinned at open; flipping the config mid-campaign changes nothing for
+- [x] `state.lean` is pinned at open; flipping the config mid-campaign changes nothing for
       that campaign; with every flag off, model selection is byte-identical to today.
-- [ ] The runs export has `tier`; the campaigns export has `lean` and `raised`.
+- [x] The runs export has `tier`; the campaigns export has `lean` and `raised`.
 
 ## Test plan
 
@@ -188,14 +225,72 @@ Existing campaigns keep their stored profile.
 
 ## Definition of done
 
-- [ ] Acceptance criteria all met.
-- [ ] Test plan executed; affected tests pass; measurement recorded in the spec.
-- [ ] No regressions.
-- [ ] Spec body updated to match what shipped.
-- [ ] `docs/LEDGER.md` updated.
+- [x] Acceptance criteria all met.
+- [x] Test plan executed; affected tests pass; measurement recorded in the spec
+      (post-merge, with the flag on: see As shipped).
+- [x] No regressions.
+- [x] Spec body updated to match what shipped.
+- [x] `docs/LEDGER.md` updated.
+
+## As shipped
+
+Shipped 2026-11-11 behind `agentic.lean.tiers` (default **off**; `agentic.lean` =
+`{tiers, packet, collator, sessions}` all `false` in `config.DEFAULT_CONFIG`, per-project
+overlay `agentic.project_lean`). With every flag off, `build_request` returns the same
+`RunRequest` as before (asserted field by field), `run.json` / `request.json` / `run.start`
+carry no `tier`, `state.json` gains no key and `select_profile` returns the old dict.
+
+**Modules.** `agentic/tiers.py` (flags, tier map loader + validation, `tier_model`,
+`persona_tier`, `explicit_model`), `agentic/tier_map.yaml` (`nw.tier_map.v1`), `tier:` in
+the ten `persona_defs/*.yaml` (`persona_registry.TIERS`, `check_tier`; `Persona.tier`),
+`profiles.select_profile(..., hand=, lean=)` + `profile_rank` / `hand_sizing`,
+`personas.build_request` (tier binding, spec-writer note), `RunRequest.tier` (run record,
+request doc, remote job), queue: `plan_add` cap, `_lean_open`, `_lean_cap_check`,
+`_start_deep_close` / `_note_deep_close`, `store.create_campaign` pin, export columns
+(`runs.tier`, `campaigns.lean`, `campaigns.raised`), `spec.schema.json` / `SCHEMA.md`
+`size` / `tone`, product docs (Agentic loop → Role tiers and the size/tone cap).
+
+**Tier map and the real calls (one per row, 2026-11-11).**
+
+| Backend | marshal | judge | deep | Real call |
+|---|---|---|---|---|
+| claude | `claude-haiku-5-5` medium | `claude-sonnet-5-5` high | `claude-opus-5-5` high | `claude -p --model <id> --effort <e> 'reply ok'`: all three replied `ok`, `modelUsage` named the same id. **Confirmed.** |
+| pi | `openai/gpt-5.6-luna` medium | `openai/gpt-5.6-sol` high | `openai/gpt-6.1-terra` high | `node pi_exec.mjs <run_dir>` with `pi_provider/pi_id/pi_thinking` as `build_request` writes them: all three returned a schema-valid `{"ok":"ok"}` result. **Confirmed.** |
+| cursor | `grok-4.7` low (`grok-4.7-low`) | `grok-4.7` high | `gpt-5.6-sol` high | SDK path (`cursor_exec`): `CURSOR_API_KEY` could not be resolved in this shell (`pass show cursor/sdk`: gpg "No pinentry"). `cursor-agent -p --model <launch id>`: the ids were accepted but no reply — grok rows "Weekly usage limit reached", `gpt-5.6-sol-high` "GPT-5.6 Sol is not included in your weekly usage". **To be confirmed** (rows kept, marked so in `tier_map.yaml`). |
+
+No id had to be replaced. Cursor rows validate against `sdk_models.yaml` (the effort must be
+one the model takes); Pi rows must be `provider/id`.
+
+**Tests (all run locally, passing).** New `tests/test_agentic_tiers.py` (38: tier
+validation builtin/declared/CLI, map rows, overlays, bad rows, Cursor effort parameter,
+flags, flag-off identity, claude/cursor/pi binding, override precedence incl. model sets,
+deep pass, run record/request/job carry `tier`); new `tests/test_agentic_lean_queue.py`
+(FakeRunner: pinned at open and unchanged by a later config flip both ways, review sizing
+capped, `--profile` capped, hand-raised `tone: critical` → `thorough`, `raised`, exactly one
+`claude-opus-5-5` deep adversarial run before close; deep `fix` → IMPLEMENTING with one loop
+and still one deep run; default campaign → no deep run and no `opus`; `cap_ignored` once for
+an in-campaign `size`/`tone`; hand ignored with the flag off); extended
+`tests/test_agentic_profiles.py` (cap over every size × tone × default, flag, hand,
+`profile_rank` via `extends`), `tests/test_specs.py` (`size`/`tone` accepted / rejected),
+`tests/test_agentic_campaign_export.py` (columns). The box gate (`--tier loop`) ran on the
+final commit (job id in the campaign report).
+
+**Pending (post-merge, flag on).** The measurement — Meta-Tools with only `lean.tiers`,
+≥10 campaigns, median `cost_usd` and summed tokens per campaign vs the SPEC-0552 baseline,
+and the regression-set replay (SPEC-0529 oracle, SPEC-0476 hang) with judge-tier reviewers
+— needs the flag on in real campaigns and is recorded here after merge. Two things on this
+host affect it: (1) the human's `cursor` profile (`~/.config/nightwright/profiles/
+cursor.yaml`, the `default_profile`) names `model:` for every persona and `agentic.profiles`
+names `cursor_model:`, which are explicit overrides, so tiers change nothing on those
+campaigns until those keys are dropped; (2) `agentic.profile_matrix` maps every cell to
+`cursor`, so a hand `size`/`tone` cannot rank above the default there and no campaign would
+be "raised". `nw spec review`'s `would_pick` still shows the uncapped pick (display only;
+`nw queue add` shows the capped one).
 
 ## Open questions
 
-- Confirm the Cursor and Pi tier models (see the epic).
+- ~~Confirm the Cursor and Pi tier models (see the epic).~~ Pi confirmed 2026-11-11 (As
+  shipped); Cursor still to be confirmed with one reply per row once the account's weekly
+  limit resets and `CURSOR_API_KEY` resolves.
 - ~~Should the conductor be allowed to raise via a relayed human OK?~~ Decided by the human
   2026-11-11: **no**. Only a size/tone the human wrote into the spec counts.

@@ -7,3 +7,4 @@ description: "writes the change that makes the spec's acceptance criteria true"
 order: 10
 output_schema: implementer
 invariant: default
+tier: judge

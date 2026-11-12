@@ -7,3 +7,4 @@ description: "do the tests prove the spec's behavior"
 order: 40
 output_schema: test_reviewer
 invariant: default
+tier: judge

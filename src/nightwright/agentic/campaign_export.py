@@ -52,6 +52,7 @@ CAMPAIGN_COLUMNS = (
     ("first_review_major", "int"), ("close_s", "int"), ("task_active_s", "int"),
     ("nw_sha", "str"), ("profile_sha256", "str"),                          # SPEC-0397
     ("cost_by_worker", "json"),                                            # SPEC-0345
+    ("lean", "json"), ("raised", "bool"),                                  # SPEC-0553
 )
 RUN_COLUMNS = (
     ("campaign", "str"), ("spec_id", "str"), ("profile", "str"), ("size", "str"), ("tone", "str"),
@@ -63,6 +64,7 @@ RUN_COLUMNS = (
     ("transient", "bool"), ("verdict_status", "str"), ("status", "str"),
     ("input_tokens", "int"), ("output_tokens", "int"), ("cache_read_tokens", "int"),
     ("worker", "str"),                                                     # SPEC-0346
+    ("tier", "str"),                                                       # SPEC-0553
 )
 FINDING_COLUMNS = (
     ("campaign", "str"), ("spec_id", "str"),
@@ -335,6 +337,7 @@ def campaign_row(cfg, state: dict, events: list[dict], now) -> dict:
         **_reviewer_stats(events), "close_s": close_s,
         "task_active_s": max(0, active_s - close_s),
         "nw_sha": open_ev.get("nw_sha"), "profile_sha256": open_ev.get("profile_sha256"),
+        "lean": state.get("lean"), "raised": bool(state.get("raised")),    # SPEC-0553
     }
     out = _project(row, CAMPAIGN_COLUMNS)       # signals read the coerced values
     out["signals"] = signals(out)
@@ -355,11 +358,14 @@ def run_rows(cfg, crow: dict, events=None) -> list[dict]:
         events = store.read_ledger(cfg, crow["campaign"], types=["run.start", "run.end"])
     workers = {e.get("run_id"): e.get("worker") or "local"
                for e in events if e.get("type") == "run.end" and e.get("run_id")}
+    tiers = {e.get("run_id"): e.get("tier")                       # SPEC-0553
+             for e in events if e.get("type") == "run.start" and e.get("run_id")}
     out = []
     for r in RN.campaign_runs(cfg, crow["campaign"], events):
         usage = r.get("usage") if isinstance(r.get("usage"), dict) else {}
         row = {**{k: crow.get(k) for k in ("campaign", "spec_id", "profile", "size", "tone")},
                **r, "budget_frac": _frac(r.get("charged_usd"), r.get("max_budget_usd")),
+               "tier": tiers.get(r.get("run_id")),
                "input_tokens": usage.get("input_tokens"),
                "output_tokens": usage.get("output_tokens"),
                "cache_read_tokens": usage.get("cache_read_input_tokens"),

@@ -7,3 +7,4 @@ description: "does the diff do what the spec says"
 order: 30
 output_schema: conformance_reviewer
 invariant: default
+tier: judge

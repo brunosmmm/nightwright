@@ -272,6 +272,12 @@ def create_campaign(cfg, state: dict, *, by="human") -> Path:
     state = dict(state)
     state.setdefault("schema", "nw.campaign.v1")
     state.setdefault("created_at", now_iso())
+    lean_off = []
+    if "lean" not in state:                # SPEC-0553: pin the lean flags once, at open
+        from . import tiers as T
+        flags, lean_off = T.effective_lean(cfg, state.get("project"))
+        if any(flags.values()) or lean_off:
+            state["lean"] = flags
     write_state(cfg, cid, state)
     repo = state.get("repo") or {}
     sizing = state.get("sizing") or {}
@@ -291,6 +297,8 @@ def create_campaign(cfg, state: dict, *, by="human") -> Path:
         **({"kind": "merge", "merge_branch": (state.get("merge") or {}).get("branch")}
            if state.get("kind") == "merge" else {}),               # SPEC-0233
         **({"docs_only": True} if (state.get("merge") or {}).get("docs_only") else {}),  # SPEC-0234
+        **({"lean": state["lean"]} if "lean" in state else {}),        # SPEC-0553
+        **({"lean_off": lean_off} if lean_off else {}),
     }, by=by)
     return d
 

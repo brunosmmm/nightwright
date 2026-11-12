@@ -22,7 +22,8 @@ from . import persona_registry as PR
 from . import personas as PS
 
 SCHEMA_ID = "nw.persona.v1"
-KEYS = ("schema", "name", "role", "template", "description", "category") + PR.DECLARED_KEYS
+KEYS = ("schema", "name", "role", "template", "description", "category",
+        "tier") + PR.DECLARED_KEYS                                  # tier: SPEC-0553
 ROLES = ("implementer", "reviewer", "triager")
 NAME_RE = re.compile(r"^[a-z][a-z0-9_]{1,39}$")
 CATEGORY_RE = re.compile(r"^[a-z][a-z0-9_]{0,31}$")
@@ -158,6 +159,7 @@ def _read_file(path: Path, layer: str, origin: str, directory: Path) -> Declared
         d.description = desc
     d.categories = _categories(doc, role, put)
     PR.check_declared_keys(doc, role, put)
+    PR.check_tier(doc, put, required=False)                         # SPEC-0553
     d.template_path, d.template_sha256 = _check_template(doc, role, directory, put)
     d.doc = doc
     return d
@@ -210,7 +212,8 @@ def _build(d: Declared) -> PS.Persona:
     else:
         schema, read_only = _ROLE_SCHEMA[d.role]
     return PS.Persona(d.name, str(d.template_path.resolve()), schema, read_only, role=d.role,
-                      declared=_declared(d))
+                      declared=_declared(d),
+                      tier=d.doc.get("tier", PR.DECLARED_DEFAULT_TIER))       # SPEC-0553
 
 
 def _declared(d: Declared) -> MappingProxyType:

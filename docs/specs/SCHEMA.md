@@ -23,6 +23,8 @@ by a **Markdown body** with a conventional set of sections.
 | `superseded_by` | – | `SPEC-NNNN` | Required when `status: superseded`. |
 | `source_idea` | – | string | The org idea's `:ID:`/`file:line`, set when the spec was scaffolded via `nw spec new --from-idea` (SPEC-0013). |
 | `source_request` | – | string | The `REQ-` id of the public file, set when the spec is written from an idea that has `:REQ:` (SPEC-0535). The key is the provenance that travels with the repo. `source_idea` still names the private idea on the machine that holds it. |
+| `size` | – | enum | **Human-only** (SPEC-0553): `xs`, `s`, `m` or `l`. Raises the campaign above `agentic.default_profile` (with `agentic.lean.tiers`); only the value in the spec as committed on the base branch when the campaign opens counts — agents must not write it. |
+| `tone` | – | enum | **Human-only** (SPEC-0553): `cost-effective`, `high-end` or `critical`; as `size`. |
 
 `additionalProperties` is `false` — unknown keys fail validation, so typos are caught.
 
