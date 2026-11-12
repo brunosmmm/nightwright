@@ -243,7 +243,8 @@ Keys: `slots`, `loop_max`, `run_timeout_s` (integers >= 1), `campaign_cap_usd`, 
 `review:` block (below) and `personas.<name>` with `model` (`opus|sonnet|haiku` or a
 `claude-*` id; Cursor maps aliases via `cursor_map.yaml`), `effort`
 (`low|medium|high|xhigh|max`), `max_budget_usd`, `permission_mode`
-(`default|acceptEdits|bypassPermissions|dontAsk|plan`) and `read_only`. Every source is
+(`manual|acceptEdits|auto|bypassPermissions|dontAsk|plan`; `default` is a deprecated alias
+of `manual`) and `read_only`. Every source is
 validated: an unknown key, persona, model, effort or permission mode, or a wrong type, fails
 with `<file>: <key.path>: <problem>`, and only the profile that file defines breaks. A campaign
 of that profile parks `open_failed` with that message; `nw queue add` and `nw spec review` fail

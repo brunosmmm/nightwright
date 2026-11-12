@@ -10,6 +10,7 @@ wholesale — `resolve_profile` therefore deep-merges the layers here, and users
 differs."""
 from __future__ import annotations
 from ..legacy import schema_ok
+from .runner import CLAUDE_PERMISSION_MODES, LEGACY_PERMISSION_MODES
 
 import copy
 import hashlib
@@ -56,7 +57,8 @@ PERSONA_SETTING_KEYS = frozenset({"model", "effort", "max_budget_usd", "permissi
 MODEL_ALIASES = ("opus", "sonnet", "haiku")
 MODEL_RE = re.compile(r"^claude-[a-z0-9][a-z0-9.-]*(\[1m\])?$")
 EFFORTS = ("low", "medium", "high", "xhigh", "max")
-PERMISSION_MODES = ("default", "acceptEdits", "bypassPermissions", "dontAsk", "plan")
+# SPEC-0593: the claude CLI's choices plus the deprecated alias `default` (launched as `manual`)
+PERMISSION_MODES = (*CLAUDE_PERMISSION_MODES, *LEGACY_PERMISSION_MODES)
 NAME_RE = re.compile(r"^[a-z][a-z0-9_-]*$")
 SCOPES = ("builtin", "user", "config", "project")     # layers, lowest first
 _DEFS_DIR = Path(__file__).resolve().parent / "profile_defs"

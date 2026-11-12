@@ -3,6 +3,8 @@ import json
 import os
 import re
 import shlex
+import shutil
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -936,6 +938,38 @@ def test_steward_plan_has_none_of_the_conductor_guard(cfg):
     cfg["agentic"]["conductor"]["launch"] = {"conductor_permission_mode": "default"}
     argv = L.build_plan(cfg, "steward", "Foo")["argv"]
     assert argv[argv.index("--permission-mode") + 1] == "dontAsk"
+
+
+@pytest.mark.parametrize("role", ["conductor", "steward"])
+@pytest.mark.parametrize("mode", ["manual", "auto", "bypassPermissions", "acceptEdits", "plan", "dontAsk"])
+def test_listed_permission_modes_pass_through(cfg, role, mode):
+    key = f"{role}_permission_mode"
+    cfg["agentic"]["conductor"]["launch"] = {key: mode}
+    assert L.settings(cfg)[key] == mode
+
+
+@pytest.mark.parametrize("role", ["conductor", "steward"])
+def test_default_permission_mode_is_launched_as_manual(cfg, role):
+    cfg["agentic"]["conductor"]["launch"] = {f"{role}_permission_mode": "default"}
+    plan = L.build_plan(cfg, role, "Foo" if role == "steward" else None)
+    assert plan["argv"][plan["argv"].index("--permission-mode") + 1] == "manual"
+    assert plan["permission_mode"] == "manual" and "default" not in plan["argv"]
+
+
+def test_permission_mode_constant_is_the_six_cli_choices():
+    assert set(R.CLAUDE_PERMISSION_MODES) == {"manual", "acceptEdits", "plan", "auto", "dontAsk",
+                                              "bypassPermissions"}
+    assert "default" not in R.CLAUDE_PERMISSION_MODES and L.PERMISSION_MODES is R.CLAUDE_PERMISSION_MODES
+    assert R.canonical_permission_mode("default") == "manual"
+    assert all(R.canonical_permission_mode(v) is None for v in ("yolo", "", 3, True, None))
+
+
+@pytest.mark.skipif(shutil.which("claude") is None, reason="claude binary not on PATH")
+def test_permission_modes_match_installed_claude():
+    out = subprocess.run(["claude", "--help"], capture_output=True, text=True, timeout=60).stdout
+    m = re.search(r"--permission-mode <mode>.*?\(choices:(.*?)\)", out, re.S)
+    assert m, "--permission-mode choices not found in `claude --help`"
+    assert set(re.findall(r'"([^"]+)"', m.group(1))) == set(R.CLAUDE_PERMISSION_MODES)
 
 
 def test_conductor_guard_settings_override_and_bad_value(cfg):

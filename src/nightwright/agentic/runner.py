@@ -27,6 +27,21 @@ from typing import Protocol
 from . import runproc as RP
 from . import schemas as SC
 
+# SPEC-0593: the choices of `claude --permission-mode` (claude 2.1.322 `--help`). Update when the CLI
+# changes; tests/test_agentic_launch.py::test_permission_modes_match_installed_claude detects drift.
+CLAUDE_PERMISSION_MODES = ("manual", "acceptEdits", "plan", "auto", "dontAsk", "bypassPermissions")
+# old names the CLI no longer lists, still accepted in configs and launched as their new name
+LEGACY_PERMISSION_MODES = {"default": "manual"}
+
+
+def canonical_permission_mode(v):
+    """The CLI-listed mode for a listed mode or a legacy alias; None for anything else."""
+    if not isinstance(v, str):
+        return None
+    v = LEGACY_PERMISSION_MODES.get(v, v)
+    return v if v in CLAUDE_PERMISSION_MODES else None
+
+
 _FENCE_RE = re.compile(r"^\s*```(?:json)?\s*\n(.*?)\n\s*```\s*$", re.DOTALL)
 _TAIL_CHARS = 2000
 
@@ -201,7 +216,7 @@ def build_argv(req: RunRequest, stream: bool = True) -> list[str]:
     if req.effort:
         argv += ["--effort", req.effort]
     argv += ["--max-budget-usd", f"{req.max_budget_usd:g}",
-             "--permission-mode", req.permission_mode,
+             "--permission-mode", canonical_permission_mode(req.permission_mode) or req.permission_mode,
              "--permission-prompts", "none"]
     if req.resume_session:                      # SPEC-0556: continue the persona's session
         argv += ["--resume", req.resume_session]

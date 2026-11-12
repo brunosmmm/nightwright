@@ -603,6 +603,19 @@ def _bad(tmp_path, text, name="bad", suffix=".yaml"):
     return f, str(e.value)
 
 
+@pytest.mark.parametrize("mode", ["manual", "auto", "default", "dontAsk"])
+def test_persona_permission_mode_accepts_cli_choices(tmp_path, mode):   # SPEC-0593
+    cfg, user, proj = _layers(tmp_path)
+    _put(user, "mine", SCHEMA + f"extends: balanced\npersonas: {{implementer: {{permission_mode: {mode}}}}}\n")
+    # the file stays as written; the rewrite of `default` happens where the argv is built
+    assert P.persona_settings(P.resolve_profile(cfg, "mine"), "implementer")["permission_mode"] == mode
+
+
+def test_persona_permission_mode_error_lists_manual(tmp_path):
+    f, msg = _bad(tmp_path, SCHEMA + "extends: balanced\npersonas: {implementer: {permission_mode: yolo}}\n")
+    assert f"{f}: personas.implementer.permission_mode: " in msg and "manual" in msg
+
+
 @pytest.mark.parametrize("text,path", [
     (SCHEMA + "extends: balanced\nbogus: 1\n", "bogus"),
     (SCHEMA + "extends: balanced\npersonas: {nobody: {model: opus}}\n", "personas.nobody"),

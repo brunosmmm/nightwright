@@ -105,6 +105,15 @@ def test_read_only_persona_gets_restricted_and_no_effort_when_none(tmp_path, mon
     assert argv[argv.index("--permission-mode") + 1] == "dontAsk"
 
 
+@pytest.mark.parametrize("given,sent", [("default", "manual"), ("dontAsk", "dontAsk"),
+                                        ("manual", "manual"), ("", "")])
+def test_permission_mode_argv_is_canonical(tmp_path, monkeypatch, given, sent):   # SPEC-0593
+    calls = _capture_run(monkeypatch, tmp_path, stdout=_result_json())
+    R.ClaudeRunner().run(_req(tmp_path, permission_mode=given))
+    argv = calls["argv"]
+    assert argv[argv.index("--permission-mode") + 1] == sent
+
+
 # ---- parsing matrix ----------------------------------------------------------------------
 
 def test_parse_structured_output_cost_usage_session(tmp_path, monkeypatch):

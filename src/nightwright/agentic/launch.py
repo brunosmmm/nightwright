@@ -18,6 +18,7 @@ import uuid
 import click
 
 from . import conductor_cost as CC
+from .runner import CLAUDE_PERMISSION_MODES, canonical_permission_mode
 
 CONDUCTOR_PROMPT = "Run the /nw-orient skill, then the /nw-conduct skill."
 STEWARD_PROMPT = "Run the /nw-orient skill, then the /nw-steward skill for project {project}."
@@ -221,7 +222,7 @@ TOOL_FLAGS = {"allowed_tools": "--allowedTools", "disallowed_tools": "--disallow
 # list-valued settings; `steward_allowed_tools` is merged into `--allowedTools`, never its own flag
 LIST_KEYS = {*TOOL_FLAGS, "steward_allowed_tools", "conductor_disallowed_tools",
              "conductor_allowed_tools"}
-PERMISSION_MODES = ("default", "acceptEdits", "plan", "auto", "dontAsk", "bypassPermissions")
+PERMISSION_MODES = CLAUDE_PERMISSION_MODES          # SPEC-0593; `default` is a deprecated alias of `manual`
 EFFORTS = ("low", "medium", "high", "xhigh", "max")
 AUTOCOMPACT_MIN, AUTOCOMPACT_MAX = 100_000, 1_000_000
 # settings key -> env var, in the order NW_LAUNCH_KEYS lists them
@@ -265,7 +266,7 @@ def _good(key, v):
     if key == "effort":
         return v if v in EFFORTS else None
     if key in ("conductor_permission_mode", "steward_permission_mode"):
-        return v if v in PERMISSION_MODES else None
+        return canonical_permission_mode(v)       # SPEC-0593: `default` -> `manual`
     if key == "autocompact":
         if isinstance(v, str) and v.strip().lower() == "auto":
             return "auto"

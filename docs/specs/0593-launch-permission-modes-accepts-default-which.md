@@ -1,7 +1,7 @@
 ---
 id: SPEC-0593
 title: Validate launch permission modes against the current claude CLI choices (add manual, retire default)
-status: accepted
+status: done
 owner: user
 created: 2026-11-12
 updated: 2026-11-12
@@ -108,26 +108,26 @@ validation error.
 
 ## Acceptance criteria
 
-- [ ] `CLAUDE_PERMISSION_MODES` equals `("manual", "acceptEdits", "plan", "auto", "dontAsk",
+- [x] `CLAUDE_PERMISSION_MODES` equals `("manual", "acceptEdits", "plan", "auto", "dontAsk",
       "bypassPermissions")` (as a set, the six choices of claude 2.1.322) and does not contain
       `default`.
-- [ ] `launch.settings(cfg)` returns `manual` for `conductor_permission_mode: manual` and for
+- [x] `launch.settings(cfg)` returns `manual` for `conductor_permission_mode: manual` and for
       `steward_permission_mode: manual`.
-- [ ] A configured `conductor_permission_mode: default` or `steward_permission_mode: default` yields
+- [x] A configured `conductor_permission_mode: default` or `steward_permission_mode: default` yields
       `build_plan(...)["argv"]` with `--permission-mode manual` and `plan["permission_mode"] ==
       "manual"`; no launch argv contains `--permission-mode default`.
-- [ ] Invalid launch values (`"nope"`, `3`, `True`, `""`) still fall back to `dontAsk`; the other
+- [x] Invalid launch values (`"nope"`, `3`, `True`, `""`) still fall back to `dontAsk`; the other
       listed modes (`acceptEdits`, `plan`, `auto`, `dontAsk`, `bypassPermissions`) pass through
       unchanged; the steward still ignores the conductor's setting ([SPEC-0424]).
-- [ ] A persona `permission_mode` of `manual` and of `auto` passes profile validation; `default`
+- [x] A persona `permission_mode` of `manual` and of `auto` passes profile validation; `default`
       still passes; `yolo` still fails with a message that lists `manual`.
-- [ ] A runner request carrying `permission_mode="default"` produces argv with `--permission-mode
+- [x] A runner request carrying `permission_mode="default"` produces argv with `--permission-mode
       manual`; one carrying `dontAsk` is unchanged; an empty mode is unchanged.
-- [ ] With a `claude` binary on `PATH`, the choices parsed from `claude --help` equal
+- [x] With a `claude` binary on `PATH`, the choices parsed from `claude --help` equal
       `CLAUDE_PERMISSION_MODES` (test skipped when the binary is absent).
-- [ ] The user-facing docs/comments listing permission modes name `manual` and mark `default` a
+- [x] The user-facing docs/comments listing permission modes name `manual` and mark `default` a
       deprecated alias.
-- [ ] `python3 tools/test_tiers.py --check` exits 0 and `python3 tools/spec_lint.py` exits 0.
+- [x] `python3 tools/test_tiers.py --check` exits 0 and `python3 tools/spec_lint.py` exits 0.
 
 ## Test plan
 
@@ -161,14 +161,25 @@ No data migration. Existing configs with `default` keep working and now launch w
 launch records written before the change keep their old `permission_mode` string. When claude
 changes its choices again, update the constant (the drift test fails first).
 
+### Test record (2026-11-12)
+
+- `uv run pytest -q tests/test_agentic_launch.py tests/test_agentic_profiles.py tests/test_agentic_runner.py`: 521 passed (new: listed modes pass through for both roles, `default` launches as `manual`, constant equals the six choices, drift test against the installed `claude --help` (2.1.322, ran, not skipped), persona `manual`/`auto`/`default` validate and `yolo` message names `manual`, runner argv `default`->`manual`, `dontAsk`/`manual`/empty unchanged).
+- `python3 tools/test_tiers.py --check` and `python3 tools/spec_lint.py` exit 0. The full suite was left to gating.
+- Manual: with the real claude 2.1.322, `claude --permission-mode manual --version` and `--permission-mode default --version` are accepted and `bogus` is rejected with "Allowed choices are acceptEdits, auto, bypassPermissions, manual, dontAsk, plan". The printed argv for a configured `default` was verified by the `build_plan` tests (the cfg fixture) rather than a scratch-config `nw queue steward-launch --dry-run`; no interactive launch was performed.
+
+### As shipped
+
+- Shared definition lives in `src/nightwright/agentic/runner.py` (`CLAUDE_PERMISSION_MODES`, `LEGACY_PERMISSION_MODES`, `canonical_permission_mode`); no import cycle. `launch.PERMISSION_MODES` aliases the constant; `profiles.PERMISSION_MODES` is the constant plus the alias keys.
+- Docs: the profile docs (`docs/product/capabilities/agentic.md`) list the new choices and mark `default` a deprecated alias of `manual`; the code comments at the definitions say the same.
+
 ## Definition of done
 
-- [ ] Acceptance criteria all met.
-- [ ] Test plan executed; affected tests pass (`python3 tools/affected_tests.py --run uv run pytest
+- [x] Acceptance criteria all met.
+- [x] Test plan executed; affected tests pass (`python3 tools/affected_tests.py --run uv run pytest
       -q`); the manual real-`claude` check performed and noted in the spec.
-- [ ] No regressions.
-- [ ] Spec body updated to match what shipped.
-- [ ] `docs/LEDGER.md` regenerated (`python3 tools/spec_lint.py --write-ledger`).
+- [x] No regressions.
+- [x] Spec body updated to match what shipped.
+- [x] `docs/LEDGER.md` regenerated (`python3 tools/spec_lint.py --write-ledger`).
 
 ## Open questions
 
