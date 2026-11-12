@@ -197,5 +197,5 @@ Existing campaigns keep their stored profile.
 ## Open questions
 
 - Confirm the Cursor and Pi tier models (see the epic).
-- Should the conductor be allowed to raise via an explicit, logged human-OK relay instead of
-  a spec edit? (Default here: no — a spec edit only.)
+- ~~Should the conductor be allowed to raise via a relayed human OK?~~ Decided by the human
+  2026-11-11: **no**. Only a size/tone the human wrote into the spec counts.
