@@ -1,9 +1,10 @@
 ---
 id: SPEC-0579
 title: "`nw doctor` follow-ups: close SPEC-0349's review gaps (tests, profiles-dir crash, ssh dir safety, data.dir and retention hints)"
-status: proposed
+status: accepted
 owner: user
 created: 2026-11-12
+updated: 2026-11-12
 kind: feature
 source_idea: IDEA-666
 depends_on: [SPEC-0349]
