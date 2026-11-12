@@ -60,7 +60,11 @@ def apply(cfg, *, effort, model, runner, pi_thinking=None, clamped_from=None) ->
     new_effort, was = clamp_effort(effort, limit)
     clamped_from = clamped_from or was
     if runner == "cursor":
-        model = clamp_cursor_id(model, limit)
+        lowered = clamp_cursor_id(model, limit)
+        if lowered != model:           # an explicit id above the ceiling: record its effort word
+            word = _SUFFIX_RE.search(str(model)).group(1)
+            clamped_from = clamped_from or ("xhigh" if word == "extra-high" else word)
+        model = lowered
     thinking, was_t = clamp_effort(pi_thinking, limit)
     if pi_thinking is not None and runner == "pi":
         clamped_from = clamped_from or was_t

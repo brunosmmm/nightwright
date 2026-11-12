@@ -124,7 +124,9 @@ Per AGENTS.md.
   every catalog id with an xhigh/max variant also lists `high` (tested).
 - **Record.** `RunRequest.effort_clamped_from` (the first lowered value, e.g. `xhigh`) is
   written to `run.json`, `request.json`, the remote job doc and the `run.start` ledger event,
-  only when set, and read back by `rebuild_request` / `request_from_job`. The campaign export
+  only when set (also when only an explicit Cursor id was lowered with the effort already
+  at or under the ceiling: it then holds the id's original word, `xhigh` / `max`, the way a
+  lowered Pi thinking level does), and read back by `rebuild_request` / `request_from_job`. The campaign export
   has an `effort_clamped_from` run column (from `run.start`). The spec-review run record
   carries it too.
 - **Tests** `tests/test_agentic_effort_ceiling.py` (47): helper; every persona x {claude,
@@ -143,6 +145,11 @@ Per AGENTS.md.
 - **Gate.** The first close gate (GATEJOB-2451) failed on one test that pinned an explicit
   `effort: max` (`test_agentic_persona_run_settings.py`); its expectation is now `high`. After rebasing onto main (62937eb6) the close gate
   GATEJOB-2463 passed (spec-lint, docs-tests, pytest).
+- **Review fix.** The clamp now sets `effort_clamped_from` when it rewrites an explicit Cursor
+  id although the effort was not lowered (the user's `cursor_model: grok-4.7-xhigh`
+  reviewers); tested for effort medium and high, on the request doc and the export row.
+  `agentic.effort_ceiling` is validated when a run is built (`ceiling()` raises on an unknown
+  value), not at config load: `load_config` has no validation hook.
 
 ## Open questions
 

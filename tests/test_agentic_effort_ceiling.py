@@ -215,15 +215,31 @@ def test_user_profile_shape_claude_cursor_pi(env):
 
 
 def test_explicit_cursor_ids_rewritten_to_high(env):
-    for explicit, want in (("grok-4.7-xhigh", "grok-4.7-high"),
-                           ("gpt-5.6-sol-xhigh", "gpt-5.6-sol-high"),
-                           ("gpt-5.6-sol-max", "gpt-5.6-sol-high")):
+    for explicit, want, was in (("grok-4.7-xhigh", "grok-4.7-high", "xhigh"),
+                                ("gpt-5.6-sol-xhigh", "gpt-5.6-sol-high", "xhigh"),
+                                ("gpt-5.6-sol-max", "gpt-5.6-sol-high", "max")):
         prof = {"personas": {"adversarial_reviewer": {"cursor_model": explicit, "effort": "high"}}}
         req = _req(env, "adversarial_reviewer", profile="balanced",
                    agentic={"runner": "cursor", "profiles": {
                        "balanced": prof, "thorough": {}}})
         assert req.model == want, explicit
-        assert req.effort == "high" and req.effort_clamped_from is None
+        assert req.effort == "high" and req.effort_clamped_from == was
+
+
+@pytest.mark.parametrize("effort", ["medium", "high"])
+def test_explicit_cursor_id_lowered_records_clamped_from_without_effort_change(env, effort):
+    prof = {"personas": {"conformance_reviewer": {"cursor_model": "grok-4.7-xhigh",
+                                                  "effort": effort}}}
+    req = _req(env, "conformance_reviewer", profile="balanced",
+               agentic={"runner": "cursor", "profiles": {"balanced": prof, "thorough": {}}})
+    assert (req.model, req.effort) == ("grok-4.7-high", effort)
+    assert req.effort_clamped_from == "xhigh"
+    assert R._request_doc(req, "t")["effort_clamped_from"] == "xhigh"
+    nowhere = _req(env, "conformance_reviewer", profile="balanced",
+                   agentic={"runner": "cursor", "profiles": {"balanced": {"personas": {
+                       "conformance_reviewer": {"cursor_model": "grok-4.7-high",
+                                                "effort": effort}}}, "thorough": {}}})
+    assert nowhere.effort_clamped_from is None
 
 
 def test_tier_overlay_effort_is_clamped(env, monkeypatch):
@@ -326,3 +342,21 @@ def test_run_start_and_export_show_effort_clamped_from(tmp_path, monkeypatch):
     assert runs[conf]["effort_clamped_from"] == "xhigh"
     assert runs["implementer"]["effort_clamped_from"] is None
     assert "effort_clamped_from" in [c for c, _ in CE.RUN_COLUMNS]
+
+
+def test_export_shows_effort_clamped_from_for_a_lowered_cursor_id(env, monkeypatch):
+    """The user's reviewer shape (`cursor_model: grok-4.7-xhigh`, effort high): the request
+    carries `effort_clamped_from`, the `run.start` payload is built from it, the export row
+    shows it."""
+    from nightwright.agentic import campaign_export as CE
+    from nightwright.agentic import runs as RN
+    req = _req(env, "adversarial_reviewer", profile="cursor", agentic={"runner": "cursor"})
+    assert (req.model, req.effort, req.effort_clamped_from) == ("grok-4.7-high", "high", "xhigh")
+    start = {"type": "run.start", "run_id": "001-adversarial_reviewer",
+             "persona": req.persona, "model": req.model, "effort": req.effort,
+             "effort_clamped_from": req.effort_clamped_from}
+    monkeypatch.setattr(RN, "campaign_runs", lambda cfg, cid, events: [
+        {"run_id": "001-adversarial_reviewer", "persona": req.persona, "model": req.model,
+         "effort": req.effort}])
+    rows = CE.run_rows({}, {"campaign": "c"}, events=[start])
+    assert rows[0]["effort_clamped_from"] == "xhigh" and rows[0]["effort"] == "high"
