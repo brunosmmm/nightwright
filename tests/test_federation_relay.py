@@ -138,7 +138,7 @@ def test_events_http_route_is_signed_json_and_post_is_405(tmp_path, monkeypatch)
     doc = json.loads(raw)
     assert doc["schema"] == "nw.federation.events.v1" and doc["events"] == [_ev(1)]
     assert F.verify(fed["secret"], "GET", "/v1/events", raw, hdrs["X-NW-Sig"],
-                    int(hdrs["X-NW-Sig-Ts"])) is None
+                    int(hdrs["X-NW-Sig-Ts"]), direction="resp", status=st) is None
     st, hdrs, raw = _raw("POST", url, "/v1/events", fed["token"], fed["secret"], now=now)
     assert st == 405 and json.loads(raw) == {"error": "method_not_allowed"}
     assert "X-NW-Sig" in hdrs
@@ -163,7 +163,8 @@ def test_events_bad_offset_is_409(tmp_path, monkeypatch):
         st, hdrs, raw, path = get(q)
         assert st == 409, q
         assert hdrs["Content-Type"] == "application/json" and json.loads(raw) == {"error": "bad_offset"}
-        assert F.verify(fed["secret"], "GET", path, raw, hdrs["X-NW-Sig"], int(hdrs["X-NW-Sig-Ts"])) is None
+        assert F.verify(fed["secret"], "GET", path, raw, hdrs["X-NW-Sig"],
+                        int(hdrs["X-NW-Sig-Ts"]), direction="resp", status=st) is None
     st, _, raw, _ = get(f"?offset={len(first)}")
     assert st == 200 and json.loads(raw) == {"schema": "nw.federation.events.v1", "events": [],
                                              "next_offset": len(first)}
