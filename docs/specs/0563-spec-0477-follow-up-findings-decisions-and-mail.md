@@ -206,12 +206,12 @@ Manual: none beyond the Pilot drives; the touched surfaces are fail-soft helpers
   cells, null filter match, shared guard x3 exceptions, docstring): all pass (8 passed with
   `-m tui -k` selecting them).
 - `-m tui` on the four modules (`test_tui_campaign_records`, `test_tui_mailbox_tab`,
-  `test_tui_escalations_tab`, `test_tui_campaign_detail_ac`): 112 passed, 2 failed. One failure
-  was my new corrupt-id test (fixed afterwards: it needed `goto` to select the thread; it now
-  passes). The other, `test_records_table_order_labels_and_no_placeholder`, is date-dependent
-  and unrelated to this change: it hardcodes `z:fixed` at `2026-11-12T00:00` as the newest
-  record, but the seeded ledger record carries "now" (also 2026-11-12), so it sorts first on
-  the day the fixture is built. It does not touch any code changed here; left alone.
+  `test_tui_escalations_tab`, `test_tui_campaign_detail_ac`), re-run after the review fixes:
+  114 passed, 0 failed. The earlier date-dependent failure in
+  `test_records_table_order_labels_and_no_placeholder` (hardcoded 2026-11-12 `z:fixed` older
+  than the fixture's "now" record) is fixed by using far-future timestamps (2098 tie records,
+  2099 `z:fixed`), keeping the tie order; the time-cell test now asserts the real `strftime`
+  string instead of a tautology.
 - `python3 tools/spec_lint.py` exits 0. Full suite left to gating.
 
 ## Rollout / migration

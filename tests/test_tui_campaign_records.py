@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from datetime import datetime
 from pathlib import Path
 
 import pytest
@@ -133,9 +134,9 @@ def test_mailbox_line_never_raises(tmp_path):
 
 def test_records_table_order_labels_and_no_placeholder(tmp_path, monkeypatch):
     cfg = world_cfg(tmp_path)
-    extra = [rec("z:tie-b", ts="2026-11-11T00:00:00-05:00"),
-             rec("z:tie-a", ts="2026-11-11T00:00:00-05:00"),
-             rec("z:fixed", ts="2026-11-12T00:00:00-05:00", status="fixed")]
+    extra = [rec("z:tie-b", ts="2098-01-01T00:00:00-05:00"),
+             rec("z:tie-a", ts="2098-01-01T00:00:00-05:00"),
+             rec("z:fixed", ts="2099-01-01T00:00:00-05:00", status="fixed")]
     patch_history(monkeypatch, lambda h: h["records"].extend(extra))
 
     async def body(app, pilot, s):
@@ -989,7 +990,9 @@ def test_time_cells_are_control_character_cleaned(tmp_path, monkeypatch):
         assert "\x1b" not in s.records_table.get_row("f:1")[0].plain
         assert "\x1b" not in s.mail_table.get_row("m:1")[0].plain
     drive_popup(cfg, body)
-    assert CD._timeline_time(TS) == CD._timeline_time(TS) and "\x1b" not in CD._timeline_time("a\x1bb")
+    assert CD._timeline_time(TS) == datetime.fromisoformat(TS).astimezone().strftime(
+        "%m-%d %H:%M:%S")
+    assert "\x1b" not in CD._timeline_time("a\x1bb")
 
 
 def test_a_null_field_never_matches_a_keyed_token():
