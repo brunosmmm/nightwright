@@ -1,7 +1,7 @@
 ---
 id: SPEC-0569
 title: "Spec-number collisions: a guard for numbers that bypass nw spec reserve, remote refs in the scan, and a re-reserve on collision"
-status: accepted
+status: done
 owner: user
 created: 2026-11-12
 updated: 2026-11-12
@@ -177,45 +177,45 @@ and `docs/README.md` so a new spec is numbered with `nw spec reserve` (or
 
 ## Acceptance criteria
 
-- [ ] `AGENTS.md` and `docs/README.md` no longer tell a session to pick "the next free
+- [x] `AGENTS.md` and `docs/README.md` no longer tell a session to pick "the next free
       number" by hand; both name `nw spec reserve` / `nw spec new --from-idea` and
       `nw spec check-numbers`.
-- [ ] `allocate` returns a number above one that exists only on a remote-tracking ref
+- [x] `allocate` returns a number above one that exists only on a remote-tracking ref
       (`refs/remotes/origin/main`), and ignores a symbolic `origin/HEAD`.
-- [ ] `collisions` reports a filename collision when `0490-a.md` is in the checked tree and
+- [x] `collisions` reports a filename collision when `0490-a.md` is in the checked tree and
       `0490-b.md` exists on another local branch, on a remote-tracking ref, or in another
       worktree's working tree; it reports nothing when the same filename `0490-a.md` exists
       on the other ref.
-- [ ] `collisions` reports a reservation collision for a number held by a live reservation of
+- [x] `collisions` reports a reservation collision for a number held by a live reservation of
       campaign `C1` when the checked tree is `nw/C2` (or `campaign="C2"`); nothing when the
       tree is `nw/C1`, when the branch is `nw/C1#2`'s base `C1`, or when the reservation has
       no campaign.
-- [ ] A pruned reservation (number committed on a branch) is not reported as a reservation
+- [x] A pruned reservation (number committed on a branch) is not reported as a reservation
       collision, and `collisions` leaves `spec-reservations.json` byte-identical.
-- [ ] `nw spec check-numbers` exits 0 with `no spec-number collisions` on a clean repo and
+- [x] `nw spec check-numbers` exits 0 with `no spec-number collisions` on a clean repo and
       exits 1 naming each colliding number and the other file/ref/campaign otherwise;
       `--json` carries schema `nw.spec.collisions.v1`; `--specs-dir` targets another
       repository.
-- [ ] `number_taken` returns the locations of a differently named file with that number on
+- [x] `number_taken` returns the locations of a differently named file with that number on
       another local branch, remote-tracking ref or worktree, when the checked tree holds no
       file with that number; it returns `[]` for a leftover file in the tree's own worktree
       and for the campaign's own `nw/<id>` ref, and leaves `spec-reservations.json`
       byte-identical.
-- [ ] A queue spec-write whose reserved number is taken before the writer starts uses a new
+- [x] A queue spec-write whose reserved number is taken before the writer starts uses a new
       number for the first writer run, with the old reservation gone and the new one live,
       both when the colliding file is committed on `main` (the reservation is already pruned:
       the queue tolerates the `ValueError` from `SN.release` and does not crash) and when it
       is uncommitted in another worktree (the reservation is still live and is released).
-- [ ] A number taken during the writer's run is reported as `w["collision"]`, not in
+- [x] A number taken during the writer's run is reported as `w["collision"]`, not in
       `w["problems"]`: the queue rolls the write back, re-reserves, returns to `SPEC_WRITING`
       with a new `number`/`path`, `brief["write_problems"]` does not contain the collision
       (nor other text problems found on that attempt), and `spec_write_retries` is unchanged;
       a text problem on a later attempt still gets its one retry.
-- [ ] The collision retry has its own counter `spec_number_retries` bounded by
+- [x] The collision retry has its own counter `spec_number_retries` bounded by
       `SPEC_NUMBER_RETRY_MAX = 2`; when it is exceeded the campaign parks `spec_write_failed`
       (not `FAILED`) with the collision (`SPEC-NNNN is already used by <file> on <ref>`) in
       `park.detail`.
-- [ ] Existing SPEC-0208 behavior is unchanged: its acceptance tests still pass.
+- [x] Existing SPEC-0208 behavior is unchanged: its acceptance tests still pass.
 
 ## Test plan
 
@@ -261,6 +261,13 @@ and `docs/README.md` so a new spec is numbered with `nw spec reserve` (or
   `python3 tools/affected_tests.py --run uv run pytest -q`; `python3 tools/spec_lint.py`
   exits 0 with the ledger regenerated.
 
+### Test record (2026-11-12)
+
+- `uv run pytest -q tests/test_rich_output_guard.py tests/test_spec_numbers.py tests/test_agentic_spec_writer.py -n 3`: 157 passed (remote-ref scan, `collisions`, `number_taken`, CLI, docs guard, queue snapshot/during-run/budget cases, raw-output allowlist entry for `spec_check_numbers_cmd`).
+- Affected tests ran at the queue gate; `python3 tools/test_tiers.py --check` exits 0; `python3 tools/spec_lint.py` exits 0 with the ledger regenerated.
+- Manual scenario (reserve on `b1`, same number hand-copied on `main`, `nw spec check-numbers` exits 1) is exercised by the CLI CliRunner tests on a scratch git repo with worktrees and a remote, not run separately by hand.
+- The full suite was left to gating.
+
 ## Rollout / migration
 
 1. Land the scan, `collisions`, the CLI command and the queue guard with their tests.
@@ -271,11 +278,11 @@ and `docs/README.md` so a new spec is numbered with `nw spec reserve` (or
 
 ## Definition of done
 
-- [ ] Acceptance criteria all met.
-- [ ] Test plan executed; affected automated tests pass; manual steps performed.
-- [ ] No regressions.
-- [ ] Spec body updated to match what shipped.
-- [ ] `docs/LEDGER.md` regenerated (status + date).
+- [x] Acceptance criteria all met.
+- [x] Test plan executed; affected automated tests pass; manual steps performed.
+- [x] No regressions.
+- [x] Spec body updated to match what shipped.
+- [x] `docs/LEDGER.md` regenerated (status + date).
 
 ## Open questions
 

@@ -30,6 +30,7 @@ ALLOWED = {
     ("cli.py", "spec_reserve_cmd"): "prints the bare SPEC-NNNN / JSON for scripts (SPEC-0208)",
     ("cli.py", "idea_publish_cmd"): "prints the bare IDEA-NNNN for scripts (SPEC-0480)",
     ("cli.py", "spec_reservations_cmd"): "JSON emitter (--json)",
+    ("cli.py", "spec_check_numbers_cmd"): "collision report (plain/--json) for scripts; exit code carries the result (SPEC-0569)",
     ("cli.py", "ideas_group_followups_cmd"): "JSON emitter (--json)",
     ("cli.py", "backups_prune_cmd"): "JSON emitter (--json)",
     ("cli.py", "idea_spec_link_cmd"): "JSON emitter (--json)",
