@@ -1224,6 +1224,113 @@ def set_idea_epic(cfg, selector, epic):
     return set_property(cfg, task, "EPIC", value)
 
 
+# `:AFTER:` ids (SPEC-0423/0562): one tokenizer for the writer and the queue's reader.
+AFTER_REF_PATTERN = r"[A-Za-z][A-Za-z0-9]*-\d+"
+_AFTER_REF_RE = re.compile(AFTER_REF_PATTERN)
+_AFTER_REF_FULL_RE = re.compile(AFTER_REF_PATTERN + r"\Z")
+
+
+def parse_after_refs(value) -> list[str]:
+    """The ids in an `:AFTER:` value (space/comma separated); `_idea_after_refs` uses this."""
+    return _AFTER_REF_RE.findall(value or "")
+
+
+def _after_ref(raw) -> str:
+    """Canonical form of one prerequisite id (stripped, upper-cased, idea ids zero-padded like
+    selectors); ValueError naming it when it is not an id."""
+    ref = _normalize_selector(str(raw or "").strip().upper())
+    if not _AFTER_REF_FULL_RE.match(ref):
+        raise ValueError(f"invalid id {str(raw).strip()!r} (expected e.g. IDEA-123 or SPEC-0423)")
+    return ref
+
+
+def _dedupe(refs):
+    out = []
+    for r in refs:
+        if r not in out:
+            out.append(r)
+    return out
+
+
+def _after_cycle(cfg, own, refs):
+    """Path `[ref, ..., own]` when walking ideas' `:AFTER:` edges from one of `refs` reaches
+    `own`, else None. Non-idea refs have no edges and end a walk."""
+    edges = {t.id: parse_after_refs(t.properties.get("AFTER"))
+             for t in load_tasks(cfg) if t.is_idea and t.id}
+
+    def walk(node, path, seen):
+        if node == own:
+            return path
+        if node in seen:
+            return None
+        seen.add(node)
+        for nxt in edges.get(node, ()):
+            hit = walk(nxt.upper(), path + [nxt.upper()], seen)
+            if hit:
+                return hit
+        return None
+
+    for ref in refs:
+        hit = walk(ref, [ref], set())
+        if hit:
+            return hit
+    return None
+
+
+def _warn_unknown_after(cfg, refs):
+    """SPEC-0018 permissive association: a prerequisite that is no idea and no spec warns."""
+    from .specs import resolve_spec_path
+    ideas = {t.id for t in load_tasks(cfg) if t.is_idea and t.id}
+    for ref in refs:
+        if ref in ideas:
+            continue
+        if not ref.startswith("IDEA-"):
+            try:
+                resolve_spec_path(cfg, ref)
+                continue
+            except (ValueError, OSError):
+                pass
+        warn(f"  ! unknown prerequisite {ref!r}: no idea or spec with that id")
+
+
+def set_idea_after(cfg, selector, *, add=(), remove=(), replace=None):
+    """Add/remove/replace the ids in an idea's `:AFTER:` (SPEC-0562); returns `(path, refs)`.
+
+    Malformed ids, a self-reference and a cycle among ideas' `:AFTER:` edges raise ValueError
+    before any write; unknown ids only warn. An empty result deletes the property, an unchanged
+    one writes nothing."""
+    task = resolve_selector(cfg, selector)
+    if not task.is_idea:
+        raise ValueError(f"{selector!r} is not an idea")
+    current = parse_after_refs(task.properties.get("AFTER"))
+    if replace is not None:
+        wanted = _dedupe(_after_ref(r) for r in parse_ref_list(replace))
+        refs = wanted
+        new = wanted
+    else:
+        new = _dedupe(_after_ref(r) for r in add)
+        drop = {_after_ref(r) for r in remove}
+        refs = [r for r in _dedupe(current + new) if r not in drop]
+    own = (task.id or "").upper()
+    for ref in new:
+        if ref == own:
+            raise ValueError(f"{ref}: an idea cannot come after itself")
+    cycle = _after_cycle(cfg, own, new)
+    if cycle:
+        raise ValueError(f"cycle: {' -> '.join(cycle)} (it would wait on itself)")
+    if refs == current:
+        return task.file, refs
+    _warn_unknown_after(cfg, new)
+    if not refs:
+        return clear_property(cfg, task, "AFTER"), refs
+    return set_property(cfg, task, "AFTER", " ".join(refs)), refs
+
+
+def parse_ref_list(value):
+    """Split a `--set` value on whitespace/commas without judging the tokens."""
+    return [t for t in re.split(r"[,\s]+", value or "") if t]
+
+
 def set_idea_workstream(cfg, selector, workstream):
     """Set `:WORKSTREAM:` on an idea (SPEC-0090). Validates against cfg['workstreams']."""
     task = resolve_selector(cfg, selector)

@@ -35,7 +35,7 @@ from .meetings import ingest_meetings, refresh_meetings
 from .export import export_spec
 from .export_schemes import available as available_schemes
 from .org_write import (IDEA_KINDS, add_idea, add_task, clock_in, clock_out, mark_done,
-                        reindex_ideas, resolve_selector, set_idea_epic, set_idea_kind,
+                        reindex_ideas, resolve_selector, set_idea_after, set_idea_epic, set_idea_kind,
                         set_idea_priority, set_idea_project, set_idea_tags,
                         set_idea_workstream, set_state_by_selector)
 from . import org_write as OW
@@ -773,6 +773,45 @@ def idea_epic_cmd(cfg, selector, epic):
         raise click.ClickException(str(e)) from e
     shown = epic.strip() or "(none)"
     console.print(f"[green]✓[/] epic ← {selector}  [white]{shown}[/]  [dim]{path}[/]")
+
+
+@idea_group.command("after")
+@click.argument("selector", shell_complete=C.complete_idea_id)
+@click.option("--add", "add", multiple=True, shell_complete=C.complete_idea_id,
+              help="add a prerequisite id (IDEA-N, SPEC-N, PROJ-N); repeatable")
+@click.option("--remove", "remove", multiple=True, shell_complete=C.complete_idea_id,
+              help="drop a prerequisite id (a missing one is a no-op); repeatable")
+@click.option("--set", "set_", default=None,
+              help="replace the whole list (space/comma separated); empty string clears")
+@click.option("--clear", is_flag=True, help="delete the idea's :AFTER: property")
+@click.pass_obj
+def idea_after_cmd(cfg, selector, add, remove, set_, clear):
+    """Set an idea's `:AFTER:` prerequisites (SPEC-0562): the queue orders or holds the idea's
+    campaign behind each one (SPEC-0423). Malformed ids, self-references and cycles are refused;
+    unknown ids warn but still write (SPEC-0018).
+
+    \b
+    nw idea after IDEA-1051 --add IDEA-987
+    nw idea after IDEA-1051 --add SPEC-0423 --remove IDEA-900
+    nw idea after IDEA-1051 --set "IDEA-987 IDEA-990"
+    nw idea after IDEA-1051 --clear
+    """
+    if set_ is not None and clear:
+        raise click.UsageError("--set and --clear are exclusive")
+    replacing = set_ is not None or clear
+    if replacing and (add or remove):
+        raise click.UsageError("--set/--clear cannot be combined with --add/--remove")
+    if not replacing and not (add or remove):
+        raise click.UsageError("pass --add, --remove, --set or --clear")
+    try:
+        path, refs = set_idea_after(cfg, selector, add=add, remove=remove,
+                                    replace="" if clear else set_)
+    except ValueError as e:
+        raise click.ClickException(str(e)) from e
+    shown = " ".join(refs) or "(none)"
+    console.print(f"[green]✓[/] after ← {selector}  [white]{shown}[/]  [dim]{path}[/]")
+    console.print("[dim]already-queued campaigns keep their own list; "
+                  "see: nw queue after <campaign> --add[/]")
 
 
 @idea_group.command("tags")

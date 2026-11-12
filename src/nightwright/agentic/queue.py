@@ -10071,8 +10071,8 @@ def _after_status(cfg, after_plan, project, repo_root) -> list[str]:
 
 def _idea_after_refs(task) -> list[str]:
     """The ids in an idea's `:AFTER:` property (space/comma separated)."""
-    return re.findall(r"[A-Za-z][A-Za-z0-9]*-\d+", (task.properties.get("AFTER") or "")
-                      if task is not None else "")
+    from ..org_write import parse_after_refs
+    return parse_after_refs(task.properties.get("AFTER") if task is not None else "")
 
 
 def _note_after(cfg, state: dict, by: str) -> None:
