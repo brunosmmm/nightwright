@@ -862,7 +862,8 @@ def seed_ideas_from_epic(cfg, epic_id, *, state="INCUBATE", tags=()):
 def validate_outbound(paths):
     """Light validator for outbound specs (schema/section presence only — no jsonschema, no
     ledger; the id namespace is PROJ-NNNN, not SPEC-NNNN, so it deliberately does not reuse
-    tools/spec_lint.py's schema). Returns a list of 'file: problem' strings (empty = OK)."""
+    tools/spec_lint.py's schema). The full validator is `nightwright.outbox_lint` (`nw spec
+    lint`, SPEC-0561). Returns a list of 'file: problem' strings (empty = OK)."""
     problems = []
     for path in paths:
         path = Path(path)

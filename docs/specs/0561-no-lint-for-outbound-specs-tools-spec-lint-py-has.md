@@ -1,7 +1,7 @@
 ---
 id: SPEC-0561
 title: Lint outbound specs before export (nw spec lint, tools/spec_lint.py --outbox)
-status: accepted
+status: done
 owner: user
 created: 2026-11-12
 updated: 2026-11-12
@@ -189,35 +189,35 @@ Warnings:
 
 ## Acceptance criteria
 
-- [ ] `nightwright.outbox_lint` exists, imports without `jsonschema`, and `lint_outbox` accepts
+- [x] `nightwright.outbox_lint` exists, imports without `jsonschema`, and `lint_outbox` accepts
       an outbox root, a project directory, or a single spec file.
-- [ ] A well-formed outbound feature spec yields no errors and no warnings; a spec shaped like
+- [x] A well-formed outbound feature spec yields no errors and no warnings; a spec shaped like
       JEROME-0022 (no `kind`, `status: shipped`, frozen `target_spec_path`) yields no errors.
-- [ ] Each error rule (1 to 11) is reported with its code for a spec that violates exactly that
+- [x] Each error rule (1 to 11) is reported with its code for a spec that violates exactly that
       rule, and not for a spec that satisfies it; each warning rule (12 to 14) likewise, without
       failing the exit code.
-- [ ] For a project whose `outbox_targets[target_project]` is absent or nw-native, any spec for
+- [x] For a project whose `outbox_targets[target_project]` is absent or nw-native, any spec for
       which `NwNativeScheme.validate` returns problems gets a `scheme` error containing each of
       those problems. For a project configured with a strict scheme in cfg, the scheme is
       resolved by `target_project` and its problems surface the same way, except a "product-fit
       outcome" problem, which becomes the `outcome` warning (exit code unaffected). So lint
       never passes a spec that a non-forced `nw spec export` rejects.
-- [ ] `specs.validate_outbound` behavior is unchanged (docstring pointer only) and its tests pass; a spec lacking only
+- [x] `specs.validate_outbound` behavior is unchanged (docstring pointer only) and its tests pass; a spec lacking only
       `target_repo` produces no lint error, and a spec missing a section `validate_outbound`
       requires also gets a lint `sections` error.
-- [ ] `INDEX.md`, `PROVENANCE.md` and `*.contract.md` in the outbox are not linted.
-- [ ] `nw spec lint JEROME-0022` (and with other outbound ids) lints one spec; `nw spec lint`
+- [x] `INDEX.md`, `PROVENANCE.md` and `*.contract.md` in the outbox are not linted.
+- [x] `nw spec lint JEROME-0022` (and with other outbound ids) lints one spec; `nw spec lint`
       lints every spec in the outbox; `--project` narrows it; the exit code is 0 for no errors,
       1 for errors (or warnings with `--strict`), 2 for an unknown/ambiguous outbound id or an
       internal `SPEC-NNNN` id.
-- [ ] `nw spec lint --json` prints the documented object and nothing else on stdout.
-- [ ] For an nw-native or unconfigured project, `python3 tools/spec_lint.py --outbox PATH`
+- [x] `nw spec lint --json` prints the documented object and nothing else on stdout.
+- [x] For an nw-native or unconfigured project, `python3 tools/spec_lint.py --outbox PATH`
       produces the same problems and exit code as `nw spec lint` for the same files (the
       cfg-less mode checks nw-native only, so parity is not claimed for strict-scheme
       projects); `python3 tools/spec_lint.py` with no flags behaves
       exactly as before (existing lint tests pass unchanged).
-- [ ] The lint never writes: file contents and mtimes under the outbox are identical after a run.
-- [ ] `SCHEMA.md` documents outbound specs and `nw spec lint`; the `nw-export` skill names the
+- [x] The lint never writes: file contents and mtimes under the outbox are identical after a run.
+- [x] `SCHEMA.md` documents outbound specs and `nw spec lint`; the `nw-export` skill names the
       pre-export lint step; `python3 tools/spec_lint.py` still exits 0 for this repo.
 
 ## Test plan
@@ -269,6 +269,45 @@ Warnings:
 - **Regression guard:** `python3 tools/spec_lint.py` (internal mode) exits 0 and the generated
   ledger block is unchanged; `nw spec export` tests pass without modification.
 
+### Test record (2026-11-12)
+
+- `uv run pytest -q tests/test_outbox_lint.py` — 39 passed (rules 1-14, scheme resolution by
+  `target_project`, product-fit routing, unknown scheme, `validate_outbound` reconciliation,
+  skipped non-spec files incl. `*.contract.md`, read-only, CLI single/all/project/exit codes/JSON,
+  `--outbox` parity with the CLI, no-`jsonschema` AST check, docs mention `nw spec lint`).
+- `uv run pytest -q tests/test_spec_lint_duplicates.py tests/test_export.py
+  tests/test_export_schemes.py tests/test_completion.py tests/test_skills.py tests/test_specs.py
+  tests/test_specs_dir.py` — pass (`test_specs.py` after the ledger regeneration below).
+- `python3 tools/test_tiers.py --check` exits 0; `python3 tools/spec_lint.py` exits 0 after
+  `--write-ledger`.
+- Manual, real binary, real outbox (47 specs, comfort-assistant + jerome): `uv run nw spec lint
+  JEROME-0022` exits 0 (0 errors, 3 warnings: stale unchecked boxes x2, no outcome signal);
+  `uv run nw spec lint` over the outbox: 0 errors, 52 warnings; `uv run python3 tools/spec_lint.py
+  --outbox <outbox>` prints the identical report. A temp copy of JEROME-0022 without `## Test
+  plan` gives `sections` + `scheme` errors and exit 1 (the same "missing Test plan" problem
+  export's nw-native `validate` raises).
+- The full suite / affected-test sweep was left to the close gate (the `cli.py` change makes the
+  affected set near-total).
+
+### As shipped (2026-11-12)
+
+- **Rule 8 (`unchecked`) is a warning, not an error.** The first real-outbox pass reported 45
+  errors, all rule 8 on `done`/`shipped` specs: `nw spec pull-status` mirrors only the target
+  repo's frontmatter `status`/`updated` into the outbox copy, never its ticked boxes, so every
+  pulled-back spec keeps stale `- [ ]` items. Per Test plan step 2 the rule was corrected rather
+  than the specs edited; the code stays `unchecked`, severity is `warning` (fails only with
+  `--strict`). Rules 1-7 and 9-11 are errors as designed.
+- Real-outbox result with that fix: 47 specs, 0 errors, 52 warnings (`unchecked`, `outcome`).
+- Definition of done stayed an error (no real spec lacks it).
+- `lint_files(paths, cfg=)` was added beside `lint_file` / `lint_outbox` so the CLI can lint
+  resolved ids; `LintReport` also carries `to_dict`, `format_text` and `exit_code(strict)`,
+  shared by `nw spec lint` and `tools/spec_lint.py --outbox` (which has no `--json`/`--strict`).
+- Rule 9 also compares the `PROJ-NNNN` filename prefix, as the internal linter does; rule 13's
+  known ids come from sibling filename prefixes.
+- Incident: during the manual pass `nw spec export JEROME-0022 --to <tmp>` was run by mistake
+  against the real outbox; it appended one `PROVENANCE.md` line (since removed) and the org
+  write was refused. No other outbox file changed.
+
 ## Rollout / migration
 
 1. Land `outbox_lint.py` with its tests, then the CLI subcommand and the `tools/` flag.
@@ -278,12 +317,12 @@ Warnings:
 
 ## Definition of done
 
-- [ ] Acceptance criteria all met.
-- [ ] Test plan executed; affected tests pass; `python3 tools/test_tiers.py --check` exits 0;
+- [x] Acceptance criteria all met.
+- [x] Test plan executed; affected tests pass; `python3 tools/test_tiers.py --check` exits 0;
       manual steps performed against the real binary and noted.
-- [ ] No regressions (internal lint and export tests unchanged and green).
-- [ ] Spec body updated to match what shipped.
-- [ ] `docs/LEDGER.md` regenerated (`python3 tools/spec_lint.py --write-ledger`) and
+- [x] No regressions (internal lint and export tests unchanged and green).
+- [x] Spec body updated to match what shipped.
+- [x] `docs/LEDGER.md` regenerated (`python3 tools/spec_lint.py --write-ledger`) and
       `python3 tools/spec_lint.py` exits 0.
 
 ## Open questions

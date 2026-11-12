@@ -1610,7 +1610,8 @@ def tui_cmd(cfg, state, kind, tag, project, workstream, priority, sort, desc, al
 
 @cli.group("spec")
 def spec_group():
-    """Spec scaffolding (SPEC-0013+). Doesn't wrap tools/spec_lint.py (still a dev tool)."""
+    """Spec scaffolding (SPEC-0013+). `lint` checks outbound specs (SPEC-0561); the internal
+    linter stays tools/spec_lint.py (a dev tool, not wrapped)."""
 
 
 @spec_group.command("new")
@@ -1809,6 +1810,54 @@ def spec_export_cmd(cfg, outbound_id, scheme, emit, to, force, task_id):
     else:
         detail = "  ".join(f"[white]{p}[/]" for p in result)
     console.print(f"[green]✓[/] {outbound_id} exported  {detail}")
+
+
+@spec_group.command("lint")
+@click.argument("outbound_ids", nargs=-1, shell_complete=C.complete_outbound_id)
+@click.option("--project", help="only lint this outbox project directory")
+@click.option("--json", "as_json", is_flag=True, help="emit one JSON object on stdout")
+@click.option("--strict", is_flag=True, help="exit 1 on warnings as well as errors")
+@click.pass_obj
+def spec_lint_cmd(cfg, outbound_ids, project, as_json, strict):
+    """Lint outbound specs before `nw spec export` (SPEC-0561).
+
+    No ids lints the whole outbox (narrow with --project). Errors exit 1; warnings only with
+    --strict. Includes the resolved export scheme's own validation, so a spec that passes is
+    one a non-forced export accepts. Read-only. Internal SPEC-NNNN ids: tools/spec_lint.py.
+
+    \b
+    nw spec lint                      every outbound spec
+    nw spec lint JEROME-0022          one spec
+    nw spec lint --project jerome --json
+    """
+    import json as _json
+
+    from . import outbox_lint as OL
+    from .export import _find_outbound_spec
+    from .specs import outbox_dir
+
+    if outbound_ids:
+        paths = []
+        for oid in outbound_ids:
+            if re.match(r"^SPEC-\d+$", oid):
+                raise click.UsageError(f"{oid} is an internal spec; lint it with "
+                                       f"`python3 tools/spec_lint.py`")
+            try:
+                path = _find_outbound_spec(cfg, oid)
+            except ValueError as e:
+                raise click.UsageError(str(e))
+            if project and path.parent.name != project:
+                raise click.UsageError(f"{oid} is in project {path.parent.name!r}, "
+                                       f"not {project!r}")
+            paths.append(path)
+        report = OL.lint_files(paths, cfg=cfg)
+    else:
+        report = OL.lint_outbox(outbox_dir(cfg), cfg=cfg, project=project)
+    if as_json:
+        click.echo(_json.dumps(report.to_dict(), indent=2, ensure_ascii=False))
+    else:
+        click.echo(report.format_text())
+    raise SystemExit(report.exit_code(strict))
 
 
 @spec_group.command("pull-status")

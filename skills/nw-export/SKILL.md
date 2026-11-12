@@ -16,13 +16,17 @@ and ready to become a real artifact in the target project's own repo.
 
 1. Confirm the outbound spec is accepted and complete (Acceptance criteria + Test plan filled
    in — same bar as an internal spec, see `AGENTS.md`).
-2. Check what export schemes exist and what each one requires/emits: `nw spec schemes`.
-3. Pick a scheme (or accept the target's configured default) and export:
+2. Lint it: `nw spec lint <OUTBOUND-ID>` (SPEC-0561) — fix every error before exporting; it
+   includes the target scheme's own validation, so a clean lint means a non-forced export
+   will not be rejected. Warnings (outcome signal, dangling refs, no Design) are advisory;
+   `--json` for machine-readable output.
+3. Check what export schemes exist and what each one requires/emits: `nw spec schemes`.
+4. Pick a scheme (or accept the target's configured default) and export:
    `nw spec export <OUTBOUND-ID>`. Run `nw spec export --help` for the exact flag syntax
    (`--scheme`, `--emit`, `--to`, `--force`).
-4. Successful export advances the linked idea to **EXPORTED** (not PROMOTED — that is the
+5. Successful export advances the linked idea to **EXPORTED** (not PROMOTED — that is the
    internal generate path). Do **not** run `nw spec generate` on outbound ids.
-5. If the destination already has content this export owns, don't blindly pass `--force` —
+6. If the destination already has content this export owns, don't blindly pass `--force` —
    understand why it diverged first (see SPEC-0016's non-clobbering guardrail below).
 
 ## Conventions / guardrails

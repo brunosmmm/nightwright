@@ -96,6 +96,22 @@ A large feature is modeled as an **epic** plus **child** specs:
 - The linter enforces: `parent` resolves to a spec whose `kind` is `epic`, and an epic
   can't be `done` while any child is unfinished.
 
+## Outbound specs
+
+Portable specs that nightwright file-drops into other repos live outside this directory, in the
+data-dir outbox (`<data_dir>/outbox/<project>/<PROJ>-NNNN-slug.md`, SPEC-0015 / SPEC-0021), and
+are **not** validated by `spec.schema.json` or `tools/spec_lint.py`. Their frontmatter is
+open-ended (extra keys such as `target_repo`, `target_spec_path`, `outcome`, `scope_paths` are
+legitimate): required are `id` (`PROJ-NNNN`, number = filename number, prefix = project code),
+`title`, `status`, `owner`, `created`, `target_project` (= the project directory). `status` is
+the internal set plus `shipped` (set on specs pulled back from the target repo). The body needs
+Context, Decision, Acceptance criteria, Test plan and Definition of done.
+
+`nw spec lint [OUTBOUND_ID ...] [--project P] [--json] [--strict]` is the validator
+(SPEC-0561): run it before `nw spec export`. Errors exit 1; warnings (missing outcome signal,
+dangling references, no Design section) only with `--strict`. `python3 tools/spec_lint.py
+--outbox PATH` runs the same code without config (nw-native scheme only).
+
 ## The ledger is generated
 
 `docs/LEDGER.md`'s spec index (Epics rollup + Active/Done/Superseded tables) is **generated

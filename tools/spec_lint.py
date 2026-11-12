@@ -4,7 +4,8 @@ LEDGER spec index.
 
 Standalone: `python3 tools/spec_lint.py` (validate, exit non-zero on any violation) or
 `python3 tools/spec_lint.py --write-ledger` (regenerate the LEDGER's generated block).
-Also exposed as `nw spec lint` / `nw spec write-ledger` once the package is installed.
+Outbound specs (the data-dir outbox) are linted by `nw spec lint` or `--outbox PATH` below
+(SPEC-0561); this tool's default run covers internal specs only.
 
 Checks:
   1. frontmatter validates against spec.schema.json (dates normalized to ISO strings)
@@ -333,7 +334,17 @@ def main():
                     help="advisory: flag 'done' specs whose source_idea is still stuck at "
                          "IDEA/INCUBATE/SPECCED (reads the live ideas file; requires `nw` "
                          "importable — run via `uv run`; not part of the main lint/pytest gate)")
+    ap.add_argument("--outbox", metavar="PATH",
+                    help="lint outbound specs under PATH (outbox root, project dir or one "
+                         "spec file) with nightwright.outbox_lint, nw-native scheme only "
+                         "(SPEC-0561; run via `uv run`; `nw spec lint` also applies per-project "
+                         "schemes)")
     args = ap.parse_args()
+    if args.outbox:
+        from nightwright import outbox_lint
+        report = outbox_lint.lint_outbox(args.outbox)
+        print(report.format_text())
+        return report.exit_code()
     specs = load_specs()
     if args.write_ledger:
         return write_ledger(specs)
