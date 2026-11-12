@@ -1,9 +1,10 @@
 ---
 id: SPEC-0575
 title: "SPEC-0567 review follow-ups: history-cache reconcile tests and one-snapshot recompute"
-status: proposed
+status: accepted
 owner: user
 created: 2026-11-12
+updated: 2026-11-12
 source_idea: IDEA-1324
 kind: feature
 depends_on: [SPEC-0567, SPEC-0472]
