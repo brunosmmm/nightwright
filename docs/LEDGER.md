@@ -371,7 +371,7 @@ progress. This is the single place to see *what has been decided* and *what is i
 | [SPEC-0552](./specs/0552-leaner-agentic-campaign-loop.md) | Leaner agentic campaign loop (role tiers, review packet, findings collator, resumable sessions) | epic | accepted | — | 2026-11-11 |
 | [SPEC-0556](./specs/0556-resumable-implementer-and-reviewer-sessions.md) | Resumable implementer and reviewer sessions per backend, with a fresh-session fallback | feature | in-progress | — | 2026-11-11 |
 | [SPEC-0572](./specs/0572-lean-spec-phase-sessions.md) | Lean spec phase — resumable spec writer and delta spec re-review (`spec_sessions`) | feature | accepted | — | 2026-11-12 |
-| [SPEC-0590](./specs/0590-nwfug-idea-605-20261112-84c8-spec-0582-review.md) | Close the SPEC-0582 completion-guard test gaps (docs checks, File case, type branches, stale edge cases) | feature | proposed | — | 2026-11-12 |
+| [SPEC-0590](./specs/0590-nwfug-idea-605-20261112-84c8-spec-0582-review.md) | Close the SPEC-0582 completion-guard test gaps (docs checks, File case, type branches, stale edge cases) | feature | accepted | — | 2026-11-12 |
 
 ## Done
 
