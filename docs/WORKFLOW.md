@@ -321,6 +321,11 @@ job process and gate slots above). An unknown name refuses `submit` and `gate-jo
 (started on the host by an executor, not over SSH); a rerun of the same dir is a new attempt
 (`NW_JOB_ATTEMPT`) that starts from fresh scratch and writes an `attempt` frame first.
 
+**Host config from the coordinator (SPEC-0538, SPEC-0578).** `nw workers config NAME get [KEY]`
+and `set KEY VALUE` read and write the host's `agentic.workers.executor` over SSH. KEY may be
+the short name `executor` or the full path `agentic.workers.executor`; both behave identically,
+and `--help` lists the allowed keys. The worker-side `config-set` grammar stays short-key only.
+
 Register a worker on the coordinator with the registry commands (SPEC-0337; not to be
 confused with `nw worker`, which runs on the worker host): `nw workers add NAME --ssh me@box
 [--slots N] [--nw PATH] [--no-check]` registers it (it runs `check` first unless `--no-check`),

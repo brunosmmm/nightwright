@@ -46,6 +46,7 @@ def workers_group():
     nw workers config NAME get [KEY]   read allowlisted host config keys (SPEC-0538)
     nw workers config NAME set KEY VALUE
                                        record desired executor and write agentic.workers.executor
+                                       (KEY: executor or agentic.workers.executor; SPEC-0578)
     """
 
 
@@ -634,14 +635,23 @@ def _desired_str(rec: dict) -> str | None:
     return ex if isinstance(ex, str) else None
 
 
-@workers_group.command("config")
+def _workers_config_help() -> str:
+    from . import worker_host_config as WHC
+    lines = ["Read or write allowlisted keys on a worker's config.yaml over SSH (SPEC-0538).",
+             "", "KEY is the short name or the full path (SPEC-0578).", "", "\b",
+             "Allowed keys (the short name or the full path):"]
+    for k, vals in WHC.ALLOWED.items():
+        lines.append(f"  {k}  ({WHC.KEY_PATHS[k]})   {' | '.join(sorted(vals))}")
+    return "\n".join(lines)
+
+
+@workers_group.command("config", help=_workers_config_help())
 @click.argument("name")
 @click.argument("op", type=click.Choice(["get", "set"]))
 @click.argument("args", nargs=-1)
 @click.option("--json", "as_json", is_flag=True)
 @click.pass_obj
 def workers_config(cfg, name, op, args, as_json):
-    """Read or write allowlisted keys on a worker's config.yaml over SSH (SPEC-0538)."""
     from . import worker_host_config as WHC
     from . import workers_host_config as WC
     rec, w = _workers_config_record(cfg, name)
@@ -653,6 +663,7 @@ def workers_config(cfg, name, op, args, as_json):
         key = args[0] if args else None
         if key is not None:
             try:
+                key = WHC.canonical_key(key)
                 WHC.validate_key(key)
             except ValueError as e:
                 raise click.UsageError(str(e)) from e
@@ -697,6 +708,7 @@ def workers_config(cfg, name, op, args, as_json):
         raise click.UsageError("set requires KEY VALUE")
     key, value = args
     try:
+        key = WHC.canonical_key(key)
         WHC.validate_value(key, value)
     except ValueError as e:
         raise click.UsageError(str(e)) from e

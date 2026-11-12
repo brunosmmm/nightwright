@@ -1512,3 +1512,108 @@ def test_config_set_succeeds_when_coordinator_config_broken(tmp_path, monkeypatc
     monkeypatch.setattr(sys, "argv", ["nw", "workers", "list"])
     r = CliRunner().invoke(cli, ["workers", "list"])
     assert r.exit_code != 0 and isinstance(r.exception, ValueError)
+
+
+# --- SPEC-0578: dotted-path alias on the coordinator -------------------------------------------
+
+DOTTED = "agentic.workers.executor"
+
+
+def _config_tails(st):
+    f = st / "config_argv"
+    return [json.loads(x) for x in f.read_text().splitlines()] if f.exists() else []
+
+
+def test_workers_config_set_dotted_path(coord_world):
+    st, cfg, *_ = coord_world
+    r = CliRunner().invoke(cli, ["workers", "config", "box", "set", DOTTED, "slurm", "--json"])
+    assert r.exit_code == 0, r.output
+    payload = json.loads(r.output)
+    assert payload["key"] == "executor" and payload["value"] == "slurm"
+    assert json.loads(WK.path(cfg).read_text())["workers"][0]["executor"] == "slurm"
+    assert _config_tails(st) == [["set", "executor", "slurm"]]
+    # the short-key run on a fresh host gives byte-identical stdout and exit code
+    (st / "config_argv").unlink()
+    r2 = CliRunner().invoke(cli, ["workers", "config", "box", "set", "executor", "slurm", "--json"])
+    assert r2.exit_code == r.exit_code and r2.output == r.output
+    assert _config_tails(st) == [["set", "executor", "slurm"]]
+    # text mode
+    t1 = CliRunner().invoke(cli, ["workers", "config", "box", "set", DOTTED, "slurm"])
+    t2 = CliRunner().invoke(cli, ["workers", "config", "box", "set", "executor", "slurm"])
+    assert t1.exit_code == t2.exit_code == 0 and t1.output == t2.output
+    assert "box executor slurm" in t1.output and DOTTED not in t1.output
+
+
+def test_workers_config_get_dotted_path(coord_world):
+    st, cfg, *_ = coord_world
+    for extra in ([], ["--json"]):
+        short = CliRunner().invoke(cli, ["workers", "config", "box", "get", "executor", *extra])
+        dotted = CliRunner().invoke(cli, ["workers", "config", "box", "get", DOTTED, *extra])
+        assert short.exit_code == dotted.exit_code == 0, dotted.output
+        assert dotted.output == short.output  # byte-identical stdout (incl. desired)
+    assert json.loads(dotted.output)["keys"].keys() == {"executor"}
+    assert _config_tails(st) == [["get", "executor"]] * 4
+
+
+@pytest.mark.parametrize("op_args", [["get"], ["set"]])
+@pytest.mark.parametrize("bad", ["workers.executor", "AGENTIC.WORKERS.EXECUTOR", " executor",
+                                 "slots", "agentic.workers", ""])
+def test_workers_config_rejects_other_spellings(coord_world, op_args, bad):
+    st, cfg, *_ = coord_world
+    before = WK.path(cfg).read_bytes()
+    args = [*op_args, bad] + (["slurm"] if op_args == ["set"] else [])
+    r = CliRunner().invoke(cli, ["workers", "config", "box", *args])
+    assert r.exit_code == 2, r.output
+    assert "is not allowed" in r.output
+    assert "executor" in r.output and DOTTED in r.output
+    assert WK.path(cfg).read_bytes() == before
+    assert not (st / "argv").exists()
+
+
+def test_workers_config_get_no_key_unchanged(coord_world):
+    st, *_ = coord_world
+    r = CliRunner().invoke(cli, ["workers", "config", "box", "get"])
+    assert r.exit_code == 0, r.output
+    assert _config_tails(st) == [["get"]]
+
+
+def test_workers_config_dotted_key_bad_value(coord_world):
+    st, cfg, *_ = coord_world
+    before = WK.path(cfg).read_bytes()
+    r = CliRunner().invoke(cli, ["workers", "config", "box", "set", DOTTED, "docker"])
+    assert r.exit_code == 2 and "is not allowed" in r.output
+    assert WK.path(cfg).read_bytes() == before
+    assert not (st / "argv").exists()
+
+
+def test_workers_config_help_lists_keys():
+    r = CliRunner().invoke(cli, ["workers", "config", "--help"])
+    assert r.exit_code == 0
+    for needle in ("executor", DOTTED, "local", "slurm"):
+        assert needle in r.output
+
+
+def test_key_tables_agree():
+    assert set(WHC.KEY_PATHS) == set(WHC.ALLOWED)
+    for short, path in WHC.KEY_PATHS.items():
+        assert WHC.canonical_key(short) == short
+        assert WHC.canonical_key(path) == short
+
+
+def test_worker_side_grammar_stays_short(cfg_home):
+    with pytest.raises(ValueError):
+        WHC.validate_key(DOTTED)
+    with pytest.raises(ValueError):
+        WHC.validate_value(DOTTED, "local")
+    for cmd in (f"nw worker config-set set {DOTTED} local", f"nw worker config-set get {DOTTED}"):
+        with pytest.raises(ValueError):
+            W.check_ssh_command(cmd)
+    cdir, _cfg = cfg_home
+    cdir.mkdir()
+    p = cdir / "config.yaml"
+    p.write_text("agentic:\n  workers:\n    executor: local\n")
+    raw = p.read_bytes()
+    for tail in (["set", DOTTED, "local"], ["get", DOTTED]):
+        r = CliRunner().invoke(cli, ["worker", "config-set", *tail])
+        assert r.exit_code == 2, r.output
+        assert p.read_bytes() == raw

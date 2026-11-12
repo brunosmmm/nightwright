@@ -21,7 +21,24 @@ ALLOWED: dict[str, frozenset[str]] = {
     "executor": frozenset({"local", "slurm"}),
 }
 
+# SPEC-0578: canonical short key -> its full YAML path. The coordinator accepts either spelling;
+# the worker host (validate_key below) stays short-key only.
+KEY_PATHS: dict[str, str] = {"executor": "agentic.workers.executor"}
+
 _O_NOFOLLOW = getattr(os, "O_NOFOLLOW", 0)
+
+
+def accepted_spellings() -> list[str]:
+    return [s for k in ALLOWED for s in (k, KEY_PATHS[k])]
+
+
+def canonical_key(key: str) -> str:
+    """The canonical short key for `key` (short name or full dotted path), exact match only;
+    else ValueError listing the accepted spellings. Coordinator side only (SPEC-0578)."""
+    for short, path in KEY_PATHS.items():
+        if key in (short, path):
+            return short
+    raise ValueError(f"key {key!r} is not allowed (allowed: {', '.join(accepted_spellings())})")
 
 
 def validate_key(key: str) -> None:

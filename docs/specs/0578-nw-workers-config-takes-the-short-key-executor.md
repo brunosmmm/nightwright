@@ -1,7 +1,7 @@
 ---
 id: SPEC-0578
 title: nw workers config accepts the dotted path agentic.workers.executor and lists allowed keys in --help
-status: accepted
+status: done
 owner: user
 created: 2026-11-12
 updated: 2026-11-12
@@ -112,22 +112,22 @@ docs that name the command (`docs/README.md` or the nw-orient skill, wherever
 
 ## Acceptance criteria
 
-- [ ] `nw workers config NAME set agentic.workers.executor slurm` behaves exactly like
+- [x] `nw workers config NAME set agentic.workers.executor slurm` behaves exactly like
       `set executor slurm`: same registry write, same SSH tail (`config-set set executor slurm`),
       same output and exit code.
-- [ ] `nw workers config NAME get agentic.workers.executor` behaves exactly like
+- [x] `nw workers config NAME get agentic.workers.executor` behaves exactly like
       `get executor`, including with `--json`.
-- [ ] Output (text and `--json` `key` / `keys`) uses the canonical short key `executor`
+- [x] Output (text and `--json` `key` / `keys`) uses the canonical short key `executor`
       whichever spelling was typed.
-- [ ] Any other key (`workers.executor`, `AGENTIC.WORKERS.EXECUTOR`, ` executor`, `slots`,
+- [x] Any other key (`workers.executor`, `AGENTIC.WORKERS.EXECUTOR`, ` executor`, `slots`,
       `agentic.workers`) exits 2 with a usage error that contains `is not allowed` and lists
       both accepted spellings; no registry write and no SSH happen.
-- [ ] A bad value with the dotted key is refused as with the short key.
-- [ ] `nw workers config --help` lists `executor`, `agentic.workers.executor`, and the values
+- [x] A bad value with the dotted key is refused as with the short key.
+- [x] `nw workers config --help` lists `executor`, `agentic.workers.executor`, and the values
       `local` and `slurm`.
-- [ ] The key tables are single-sourced: `KEY_PATHS` and `ALLOWED` have identical keys, and the
+- [x] The key tables are single-sourced: `KEY_PATHS` and `ALLOWED` have identical keys, and the
       error and help text are derived from them.
-- [ ] The worker-side grammar is unchanged: `validate_key` and `validate_value` are not modified
+- [x] The worker-side grammar is unchanged: `validate_key` and `validate_value` are not modified
       and do not accept the dotted path, and `nw worker config-set set agentic.workers.executor
       local` (also `get agentic.workers.executor`) exits 2 (`EXIT_REFUSE`) without touching the
       config file; `check_ssh_command` still refuses the dotted path.
@@ -166,14 +166,36 @@ docs that name the command (`docs/README.md` or the nw-orient skill, wherever
   `tests/test_worker_host_config.py` and `tests/test_worker_ssh_command.py`; all existing
   SPEC-0538 tests pass unchanged. `python3 tools/spec_lint.py` exits 0.
 
+### Test record (2026-11-12)
+
+- `uv run pytest -q tests/test_worker_host_config.py tests/test_worker_ssh_command.py`: 173 passed
+  (all SPEC-0538 tests unchanged; the new SPEC-0578 tests added to the same module).
+- `python3 tools/test_tiers.py --check`: exit 0.
+- `python3 tools/affected_tests.py --exclude-marks=integration,tui,remote,perf --run uv run
+  pytest -q -x -n 3`: 1762 passed. The unrestricted affected run (with integration/tui/remote
+  tiers) exceeded the 10 minute tool limit on the loaded box and was left to the gate; the full
+  suite was left to gating.
+- Manual: `uv run nw workers config --help` shows the allowed-keys block; against the real
+  worker `box`, `get executor` and `get agentic.workers.executor` both print
+  `box executor live=slurm effective=slurm desired=(unset)`.
+- `python3 tools/spec_lint.py` exits 0 (ledger regenerated).
+
+### As shipped (2026-11-12)
+
+As designed. Details: `canonical_key` and `accepted_spellings` sit next to `KEY_PATHS` in
+`worker_host_config.py`; `validate_key`/`validate_value` are unchanged. The command help is
+built at import time from `ALLOWED`/`KEY_PATHS` via `help=` with a `\b` block. `get` with no KEY
+canonicalizes nothing; an explicit empty KEY is refused. The docs line is in `docs/WORKFLOW.md`
+(a paragraph before the registry commands). Extra test `test_workers_config_get_no_key_unchanged`.
+
 ## Definition of done
 
-- [ ] Acceptance criteria all met.
-- [ ] Test plan executed; affected tests pass (`python3 tools/affected_tests.py --run uv run
+- [x] Acceptance criteria all met.
+- [x] Test plan executed; affected tests pass (`python3 tools/affected_tests.py --run uv run
       pytest -q`); `python3 tools/test_tiers.py --check` exits 0; manual steps performed.
-- [ ] No regressions.
-- [ ] Spec body updated to match what shipped.
-- [ ] `docs/LEDGER.md` regenerated (`python3 tools/spec_lint.py --write-ledger`).
+- [x] No regressions.
+- [x] Spec body updated to match what shipped.
+- [x] `docs/LEDGER.md` regenerated (`python3 tools/spec_lint.py --write-ledger`).
 
 ## Open questions
 
