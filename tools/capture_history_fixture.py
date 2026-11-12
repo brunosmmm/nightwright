@@ -47,7 +47,10 @@ SCENARIOS = [("merged_multi_loop", True), ("abandoned", True), ("handed_off", Fa
 
 PATH_RE = re.compile(r"(?:/home|/Users)/([A-Za-z0-9_.-]+)")
 EMAIL_RE = re.compile(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)+")
-TAIL_EMAIL_RE = re.compile(r"[\w.%+-]*@[\w.-]*$")      # an email cut in half by a truncation
+EMAIL_DOMAIN_RE = re.compile(r"@[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)+")
+EMAIL_LOCAL_RE = re.compile(r"[A-Za-z0-9._%+-]")
+TAIL_DOMAIN_RE = re.compile(r"[\w.-]*")            # an email cut in half by a truncation: local@domain
+TAIL_LOCAL_RE = re.compile(r"[\w.%+-]")               # ... ends the string; this is one local-part char
 TAIL_PATH_RE = re.compile(r"(?:/home|/Users)(?:/[A-Za-z0-9_.-]*)?$")   # a home path cut in half
 SECRET_RES = [re.compile(p) for p in (
     r"sk-[A-Za-z0-9_-]{16,}", r"ghp_[A-Za-z0-9]{20,}", r"github_pat_[A-Za-z0-9_]{20,}",
@@ -58,6 +61,12 @@ SECRET_KEY_RE = re.compile(r"(?i)(token|secret|password|api[_-]?key|authorizatio
 IPV4_RE = re.compile(r"\b(?:10\.\d{1,3}\.\d{1,3}\.\d{1,3}|192\.168\.\d{1,3}\.\d{1,3}"
                      r"|172\.(?:1[6-9]|2\d|3[01])\.\d{1,3}\.\d{1,3})\b")
 URL_HOST_RE = re.compile(r"^(https?://)([^/\s:]+)")
+# Account names that are also ordinary words: rewriting them everywhere would mangle prose
+# ("the runner log"), so they are rewritten as a path segment only (what `scan` checks).
+COMMON_WORD_USERS = frozenset({
+    "root", "runner", "dev", "admin", "ubuntu", "debian", "build", "ci", "test", "worker",
+    "agent", "deploy", "github", "jenkins", "docker", "service", "nobody", "ec2-user"})
+SAFE_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")   # a spec_id / project used as a path part
 RULES = ("home_path", "user_name", "email", "secret", "host", "ipv4", "pr_url_host", "env")
 
 
@@ -72,7 +81,9 @@ class Sanitizer:
         self.host_map, self.ip_map = {}, {}
         self.host_res = [re.compile(r"(?<![\w.-])" + re.escape(h) + r"(?![\w-])", re.I)
                          for h in self.hosts]
-        self.user_res = [re.compile(r"(?<![\w])" + re.escape(u) + r"(?![\w])") for u in self.users]
+        self.user_res = [
+            (re.compile(r"/" + re.escape(u) + r"(?![\w.-])"), "/user") if u in COMMON_WORD_USERS else
+            (re.compile(r"(?<![\w])" + re.escape(u) + r"(?![\w])"), "user") for u in self.users]
 
     def _host(self, m):
         self.counts["host"] += 1
@@ -103,15 +114,15 @@ class Sanitizer:
                 return m.group(0)
             self.counts["email"] += 1
             return PLACEHOLDER_EMAIL
-        s = EMAIL_RE.sub(email, s)
+        s = sub_emails(email, s)
         for rx in (PEM_RE, *SECRET_RES):
             s, n = rx.subn("[REDACTED]", s)
             self.counts["secret"] += n
         for rx in self.host_res:
             s = rx.sub(self._host, s)
         s = IPV4_RE.sub(self._ip, s)
-        for rx in self.user_res:
-            s, n = rx.subn("user", s)
+        for rx, repl in self.user_res:
+            s, n = rx.subn(repl, s)
             self.counts["user_name"] += n
         return s
 
@@ -234,10 +245,44 @@ def strings(v):
             yield from strings(x)
 
 
+def sub_emails(repl, s: str) -> str:
+    """`EMAIL_RE.sub(repl, s)` in linear time (the regex is quadratic on a long local-part run):
+    find each `@domain`, then extend the local part backwards, never into the previous match."""
+    out, pos = [], 0
+    for m in EMAIL_DOMAIN_RE.finditer(s):
+        j = m.start()
+        while j > pos and EMAIL_LOCAL_RE.fullmatch(s[j - 1]):
+            j -= 1
+        if j == m.start():
+            continue
+        out.append(s[pos:j])
+        out.append(repl(_Span(s, j, m.end())))
+        pos = m.end()
+    out.append(s[pos:])
+    return "".join(out)
+
+
+class _Span:
+    """Just enough of a match object for the sanitizer's replacement callbacks."""
+
+    def __init__(self, s, start, end):
+        self._t = s[start:end]
+
+    def group(self, _=0):
+        return self._t
+
+
 def trim_cut(s: str) -> str:
     """Drop a trailing email or home path that a truncation cut in half: the half no longer matches
     the placeholder, so the verification scan would flag it. Applied to cut strings only."""
-    s = TAIL_EMAIL_RE.sub("", s)
+    # an email can only be cut at the last '@' (a linear scan: a regex is quadratic on long runs)
+    body, nl = (s[:-1], "\n") if s.endswith("\n") else (s, "")
+    i = body.rfind("@")
+    if i >= 0 and TAIL_DOMAIN_RE.fullmatch(body, i + 1):
+        j = i
+        while j > 0 and TAIL_LOCAL_RE.fullmatch(body[j - 1]):
+            j -= 1
+        s = body[:j] + nl
     m = TAIL_PATH_RE.search(s)
     if m and m.group(0) != "/home/user":
         s = s[:m.start()]
@@ -501,6 +546,15 @@ def mentions(line: str, cids) -> bool:
     return any(cid in line for cid in cids)
 
 
+def _safe_name(v) -> bool:
+    """A spec_id / project from a (possibly hostile) state.json that is safe as one path part."""
+    return isinstance(v, str) and bool(SAFE_NAME_RE.match(v)) and v not in (".", "..")
+
+
+def _inside(path: Path, root: Path) -> bool:
+    return path.resolve().is_relative_to(root.resolve())
+
+
 def collect_records(agentic: Path, chosen: list[Camp], esc: dict, note) -> tuple[dict, dict, dict]:
     """-> (files: rel path under agentic/ -> raw bytes, sources, record counts)."""
     cids = {c.cid for c in chosen}
@@ -569,11 +623,18 @@ def collect_records(agentic: Path, chosen: list[Camp], esc: dict, note) -> tuple
 
     rv = agentic / "reviews"
     if src("reviews", rv):
-        for s in sorted(specs):
-            d = rv / str(s)
+        for s in sorted(specs, key=str):
+            if s is None:
+                continue
+            if not _safe_name(s):
+                note(f"unsafe spec_id {s!r}: skipped")
+                continue
+            d = rv / s
             if d.is_dir():
                 for f in sorted(d.rglob("*")):
-                    if f.is_file():
+                    if not _inside(f, agentic):
+                        note(f"reviews/{s}/{f.relative_to(d).as_posix()} resolves outside agentic/: skipped")
+                    elif f.is_file():
                         files[f"reviews/{s}/{f.relative_to(d).as_posix()}"] = f.read_bytes()
 
     p = agentic / "flaky-tests.json"
@@ -594,9 +655,12 @@ def collect_records(agentic: Path, chosen: list[Camp], esc: dict, note) -> tuple
 
     sd = agentic / "sentinel"
     if src("sentinel", sd):
-        for proj in sorted(x for x in projects if x):
+        for proj in sorted((x for x in projects if x is not None), key=str):
+            if not _safe_name(proj):
+                note(f"unsafe project {proj!r}: skipped")
+                continue
             f = sd / f"{proj}.last.json"
-            if f.is_file():
+            if _inside(f, agentic) and f.is_file():
                 files[f"sentinel/{proj}.last.json"] = f.read_bytes()
     return files, sources, counts
 

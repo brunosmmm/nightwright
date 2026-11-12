@@ -16,6 +16,7 @@ import os
 import shutil
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 import pytest
@@ -45,6 +46,40 @@ LIVE = "SPEC-0006-20261001-ffff"        # not a candidate
 DERIVED = "SPEC-0001-20261001-hdof"
 SECRETS = ["sk-abcdefghijklmnop12345", "ghp_abcdefghijklmnopqrstuvwx", "alice@corp.example",
            "abcdefghijklmnopqrstuvwxyz0123", "zzz-env-token", "buildbox.lan", "/home/alice"]
+
+
+HISTORY_FIXTURE_BUDGET_S = 20.0          # SPEC-0415 AC10, enforced by SPEC-0568
+_SPENT = [0.0]                           # summed wall time of this module's tests + the capture
+
+
+def check_budget(spent: float, budget: float | None = None) -> None:
+    """Raise AssertionError when `spent` seconds exceed the budget (NW_HISTORY_FIXTURE_BUDGET_S
+    overrides HISTORY_FIXTURE_BUDGET_S for a slow box)."""
+    if budget is None:
+        budget = float(os.environ.get("NW_HISTORY_FIXTURE_BUDGET_S") or HISTORY_FIXTURE_BUDGET_S)
+    assert spent <= budget, (f"tests/test_history_fixture.py took {spent:.1f}s of test time, "
+                             f"over its {budget:.1f}s budget")
+
+
+def tree_digest(src: Path) -> str:
+    h = hashlib.sha256()
+    for p in sorted(src.rglob("*")):
+        if p.is_file():
+            h.update(p.relative_to(src).as_posix().encode() + b"\0" + p.read_bytes() + b"\0")
+    return h.hexdigest()
+
+
+@pytest.fixture(autouse=True)
+def _time_each_test():
+    t = time.monotonic()
+    yield
+    _SPENT[0] += time.monotonic() - t
+
+
+@pytest.fixture(scope="module", autouse=True)
+def _enforce_budget():
+    yield
+    check_budget(_SPENT[0])
 
 
 def ts(minutes=0, seconds=0):
@@ -201,6 +236,7 @@ def tool():
 
 @pytest.fixture(scope="module")
 def captured(tmp_path_factory):
+    t0 = time.monotonic()
     base = tmp_path_factory.mktemp("capture")
     src = build_source(base / "src")
     out = base / "out"
@@ -208,7 +244,10 @@ def captured(tmp_path_factory):
     home.mkdir(parents=True)
     r = run_tool("--src", str(src), "--out", str(out), home=home)
     assert r.returncode == 0, r.stderr
-    return {"src": src, "out": out, "home": home, "stdout": r.stdout}
+    digest = tree_digest(src)
+    _SPENT[0] += time.monotonic() - t0
+    yield {"src": src, "out": out, "home": home, "stdout": r.stdout}
+    assert tree_digest(src) == digest, "a test changed the shared captured source"
 
 
 def manifest_of(out: Path):
@@ -469,15 +508,14 @@ def test_sanitization_redacts_and_verifies(captured, tmp_path):
     assert b"worker-1" in blob and b"user@example.invalid" in blob and b"/home/user/" in blob
     run = json.loads((out / "agentic/campaigns" / MULTI / "runs/001-implementer/run.json").read_text())
     assert run["launch"]["env"] == {} and run["Authorization"] == "[REDACTED]"
-    # a planted string no rule redacts, listed in the deny file, fails the scan
-    (captured["src"] / "agentic/campaigns" / MULTI / "spec_at_open.md").write_text("CODENAME-HYDRA\n")
+    # a planted string no rule redacts, listed in the deny file, fails the scan (on a copy)
+    src2 = tmp_path / "src2"
+    shutil.copytree(captured["src"], src2)
+    (src2 / "agentic/campaigns" / MULTI / "spec_at_open.md").write_text("CODENAME-HYDRA\n")
     deny = tmp_path / "deny.txt"
     deny.write_text("CODENAME-HYDRA\n")
     out2 = tmp_path / "out2"
-    try:
-        r = run_tool("--src", str(captured["src"]), "--out", str(out2), env={"NW_FIXTURE_DENY_FILE": str(deny)})
-    finally:
-        (captured["src"] / "agentic/campaigns" / MULTI / "spec_at_open.md").write_text("---\nid: X\n---\nbody\n")
+    r = run_tool("--src", str(src2), "--out", str(out2), env={"NW_FIXTURE_DENY_FILE": str(deny)})
     assert r.returncode == 4 and not out2.exists()
     assert not list(tmp_path.glob(".out2.tmp-*"))
 
@@ -1086,3 +1124,100 @@ def test_history_schema_validators_reject_independent_contract_mutations(tmp_pat
     allowed_index["extra"] = True
     allowed_index["closed_at"] = None
     assert SC.index_problems(allowed_index) == []
+
+
+# ---- SPEC-0568: SPEC-0415 review follow-ups -----------------------------------------------------
+
+@pytest.mark.parametrize("name", ["runner", "root", "dev", "admin"])
+def test_common_word_user_is_path_segment_only(tool, name):
+    san = tool.Sanitizer(users={name})
+    assert san.text(f"the {name} log at /home/{name}/x and /{name}/y") == \
+        f"the {name} log at /home/user/x and /user/y"
+    assert san.counts["user_name"] == 1                       # /home/<name> is the home_path rule
+    san = tool.Sanitizer(users={"alice"})
+    assert san.text("alice and /alice/x") == "user and /user/x"
+    assert san.counts["user_name"] == 2
+
+
+def test_capture_with_dictionary_word_user_keeps_prose(tool, tmp_path):
+    src = build_source(tmp_path / "src")
+    spec = src / "agentic/campaigns" / MULTI / "spec_at_open.md"
+    spec.write_text("the runner log lives in /runner/logs and /srv/runner/x\n")
+    home = tmp_path / "runner"
+    home.mkdir()
+    out = tmp_path / "out"
+    r = run_tool("--src", str(src), "--out", str(out), env={"USER": "runner", "HOME": str(home)})
+    assert r.returncode == 0, r.stderr
+    text = (out / "agentic/campaigns" / MULTI / "spec_at_open.md").read_text()
+    assert text == "the runner log lives in /user/logs and /srv/user/x\n"
+    assert tool.scan(out, [], users=["runner"]) == []
+
+
+@pytest.mark.parametrize("field", ["spec_id", "project"])
+@pytest.mark.parametrize("bad", ["../../etc", "/abs", "a/../../b", "..", "", "../x", "{tmp}"])
+def test_unsafe_spec_id_and_project_are_skipped(tool, tmp_path, field, bad):
+    src = build_source(tmp_path / "src")
+    ag = src / "agentic"
+    bad = bad.replace("{tmp}", str(tmp_path / "abs"))
+    sp = ag / "campaigns" / ABANDONED / "state.json"
+    st = json.loads(sp.read_text())
+    st[field] = bad
+    sp.write_text(json.dumps(st))
+    # a decoy wherever the traversal would land
+    where = (os.path.normpath(ag / "reviews" / bad) if field == "spec_id"
+             else os.path.normpath(ag / "sentinel" / f"{bad}.last.json"))
+    try:
+        if field == "spec_id":
+            Path(where).mkdir(parents=True, exist_ok=True)
+            Path(where, "d.json").write_text("DECOY-TEXT\n")
+        else:
+            Path(where).parent.mkdir(parents=True, exist_ok=True)
+            Path(where).write_text("DECOY-TEXT\n")
+    except OSError:
+        pass                                                  # e.g. "/abs": cannot be planted
+    notes = []
+    chosen = [tool.Camp(ag / "campaigns" / c) for c in (MULTI, ABANDONED)]
+    files, _, _ = tool.collect_records(ag, chosen, {}, notes.append)
+    assert not [k for k, v in files.items() if b"DECOY-TEXT" in v]
+    assert any(repr(bad) in n and "skipped" in n for n in notes), notes
+    assert f"reviews/{MULTI[:9]}/r.json" in files and "sentinel/Meta-Tools.last.json" in files
+    for k in files:
+        assert not Path(k).is_absolute() and ".." not in Path(k).parts, k
+    if bad != "../../etc":                                    # one full capture per field is enough
+        return
+    out = tmp_path / "out"
+    r = run_tool("--src", str(src), "--out", str(out), home=tmp_path)
+    assert r.returncode == 0, r.stderr
+    root = out.resolve()
+    for p in out.rglob("*"):
+        assert p.resolve().is_relative_to(root), p
+    assert b"DECOY-TEXT" not in b"".join(p.read_bytes() for p in out.rglob("*") if p.is_file())
+
+
+def test_review_symlink_escaping_source_is_not_read(tool, tmp_path):
+    src = build_source(tmp_path / "src")
+    outside = tmp_path / "outside.txt"
+    outside.write_text("OUTSIDE-SECRET-TEXT\n")
+    link = src / "agentic" / "reviews" / MULTI[:9] / "link.txt"
+    link.symlink_to(outside)
+    out = tmp_path / "out"
+    r = run_tool("--src", str(src), "--out", str(out), home=tmp_path)
+    assert r.returncode == 0, r.stderr
+    assert "link.txt" in r.stdout and "skipped" in r.stdout
+    assert b"OUTSIDE-SECRET-TEXT" not in b"".join(p.read_bytes() for p in out.rglob("*") if p.is_file())
+    assert (out / "agentic/reviews" / MULTI[:9] / "r.json").is_file()
+
+
+def test_check_budget(monkeypatch):
+    with pytest.raises(AssertionError, match="25.0s.*20.0s"):
+        check_budget(25, 20)
+    check_budget(5, 20)
+    monkeypatch.delenv("NW_HISTORY_FIXTURE_BUDGET_S", raising=False)
+    check_budget(HISTORY_FIXTURE_BUDGET_S - 1)
+    with pytest.raises(AssertionError):
+        check_budget(HISTORY_FIXTURE_BUDGET_S + 1)
+    monkeypatch.setenv("NW_HISTORY_FIXTURE_BUDGET_S", "0.001")
+    with pytest.raises(AssertionError):
+        check_budget(1)
+    monkeypatch.setenv("NW_HISTORY_FIXTURE_BUDGET_S", "100")
+    check_budget(50)
