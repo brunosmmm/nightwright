@@ -60,10 +60,35 @@ def name(loop: int) -> str:
     return f"packet-loop-{int(loop)}.json"
 
 
+def _worktree_head(state) -> str | None:
+    wt = ((state or {}).get("repo") or {}).get("worktree")
+    if not wt or not Path(wt).is_dir():
+        return None
+    try:
+        return git.git(wt, "rev-parse", "HEAD").stdout.strip() or None
+    except Exception:                       # noqa: BLE001 — unverifiable: not stale
+        return None
+
+
 def current(state) -> dict | None:
-    """`state.packet` when it is this loop's, else None (not attempted yet)."""
+    """`state.packet` when it is this loop's and was built at the worktree's current HEAD,
+    else None (not attempted yet, or stale: REVIEWING re-entered at the same loop after a new
+    commit). A HEAD that cannot be read does not make it stale."""
     p = (state or {}).get("packet")
-    return p if isinstance(p, dict) and p.get("loop") == loop_of(state) else None
+    if not (isinstance(p, dict) and p.get("loop") == loop_of(state)):
+        return None
+    if p.get("head"):
+        now = _worktree_head(state)
+        if now is not None and now != p["head"]:
+            return None
+    return p
+
+
+def forget(state) -> None:
+    """Called as REVIEWING is entered: drop the packet meta so this review builds its own
+    (`review_heads` of earlier loops and `packet_prev` stay). Flag off: nothing happens."""
+    if on(state):
+        state.pop("packet", None)
 
 
 def current_ok(state) -> bool:
@@ -91,7 +116,12 @@ def remember_verdicts(state) -> None:
     if not verdicts:
         return
     loops = {v.get("loop") for v in verdicts.values() if isinstance(v, dict)}
-    state["packet_prev"] = {"loop": max((x for x in loops if isinstance(x, int)), default=None),
+    loop = max((x for x in loops if isinstance(x, int)), default=None)
+    if loop is None or loop >= loop_of(state) - 1:
+        # verdicts of the loop being re-entered (a gate retry, a resume, a re-review): they
+        # are not the previous loop's, so the previous loop's snapshot stays
+        return
+    state["packet_prev"] = {"loop": loop,
                             "verdicts": copy.deepcopy(verdicts),
                             "waived": copy.deepcopy(lr.get("waived") or [])}
 
@@ -325,12 +355,16 @@ def build(cfg, state) -> dict:
     heads[str(loop)] = head
     state["review_heads"] = heads
     return {"loop": loop, "ok": True, "mode": doc["mode"], "path": name(loop),
-            "marshal": "pending", "bytes": size}
+            "marshal": "pending", "bytes": size, "head": head}
 
 
 def failed(state, error) -> dict:
-    return {"loop": loop_of(state), "ok": False, "marshal": "skipped",
-            "error": str(error)[:400]}
+    out = {"loop": loop_of(state), "ok": False, "marshal": "skipped",
+           "error": str(error)[:400]}
+    head = _worktree_head(state)
+    if head:
+        out["head"] = head
+    return out
 
 
 # ---- schema ----------------------------------------------------------------------------------

@@ -159,6 +159,13 @@ Flag: `state.lean.packet` (pinned at open, SPEC-0553). Off → today's prompts a
   finding straight into `advisory` (never scored, never backs a `fix` verdict) and lists its id
   under `basis_demoted` (key present only when non-empty). `review_outcome` gains `demoted`
   (only with the flag pinned).
+- **Re-entry at the same loop.** `counters.loops` only rises on a review fix, so REVIEWING
+  is also entered again at the same loop (a gate retry, a resume after a manual commit, a
+  re-review). `_begin_review` drops `state.packet` (`packet.forget`), so that review builds a
+  fresh packet (new head, gates, diff, delta) and refreshes `review_heads[N]`; earlier
+  `review_heads` and `packet_prev` stay (`remember_verdicts` does not overwrite the previous
+  loop's snapshot with verdicts of the loop being re-entered). As a guard, `packet.current`
+  also treats a packet as stale when its recorded `head` differs from the worktree HEAD.
 - **"Stays met" rule.** An AC assessed met earlier staying met unless the delta touches its
   hunks is a delta-mode prompt instruction, not code-enforced (`ac_assessment` handling is
   unchanged).
@@ -191,9 +198,8 @@ Flag: `state.lean.packet` (pinned at open, SPEC-0553). Off → today's prompts a
       demoted to advisory and never blocks; a prior finding marked `fixed` stops counting.
 - [x] Runs export `loop` and `packet`; campaigns export `demoted_findings`.
 - [x] With the flag off, reviewer prompts and triage are byte-identical to today.
-- [ ] The regression-set replay with the flag on catches the SPEC-0529 reflection oracle and
-      the SPEC-0476 trailing-newline hang. *(Pending: before default-on, with the
-      measurement; see As shipped.)*
+- [x] The regression-set replay with the flag on catches the SPEC-0529 reflection oracle and
+      the SPEC-0476 trailing-newline hang. *(See As shipped: both caught.)*
 
 ## Test plan
 
@@ -210,7 +216,8 @@ Flag: `state.lean.packet` (pinned at open, SPEC-0553). Off → today's prompts a
 - **Manual verification / regression set:** replay the review step of
   `SPEC-0529-20261110-f7b4` at the commit of the loop where seq 552/593 were raised, and of
   `SPEC-0476-20261109-ca46` at loop 1, with the flag on; both catches must reappear.
-- **Measurement:** ≥10 Meta-Tools campaigns with `tiers + packet` on vs `tiers` only:
+  *Executed* with `tools/replay_review_packet.py` (results in As shipped): both reappeared.
+- **Measurement (post-merge):** ≥10 Meta-Tools campaigns with `tiers + packet` on vs `tiers` only:
   median `cache_read_tokens` per review run (runs export, reviewer personas) and median
   `loops` per merged campaign.
 
@@ -224,18 +231,23 @@ after the regression set passes. Campaigns opened before the flag keep today's f
 - **Delta rule hides a real late bug** (the SPEC-0529 oracle was found late, by the
   adversarial reviewer, with no AC on the finding). Mitigated by `missed_ac` (the oracle
   ties to the request-auth AC) and by demotion rather than drop: the finding is still
-  recorded and filed. The replay is the gate.
+  recorded and filed. The replay is the gate. *Observed in the replay:* the SPEC-0529
+  oracle stayed blocking (the adversarial reviewer kept it open as `major`), but the test
+  reviewer's MAC-reflection test-gap finding came back `minor` with no basis and was demoted
+  to advisory. So demotion does move real (if secondary) findings off the blocking path; the
+  post-merge measurement tracks `demoted_findings` per campaign to watch this.
 - **A wrong AC map steers reviewers.** Reviewers may open raw files; the map is a hint, and
   `coverage: none` entries draw attention rather than hide it.
 - **Packet size.** Full diffs go to side files; the JSON stays small.
 
 ## Definition of done
 
-- [ ] Acceptance criteria all met.
-- [ ] Test plan executed; affected tests pass; measurement and replay recorded.
-- [ ] No regressions.
-- [ ] Spec body updated to match what shipped.
-- [ ] `docs/LEDGER.md` updated.
+- [x] Acceptance criteria all met.
+- [x] Test plan executed; affected tests pass; replay recorded (measurement post-merge, with
+      the flag on for Meta-Tools).
+- [x] No regressions.
+- [x] Spec body updated to match what shipped.
+- [x] `docs/LEDGER.md` updated.
 
 ## As shipped
 
@@ -280,11 +292,26 @@ diff side file 77,357 bytes. The marshal prompt was 13,289 chars; the run took 2
 thinking). It returned a valid map for all 9 ACs (2 covered, 7 partial, 0 none) using only
 candidate hunks and tests; the packet validated.
 
-**Pending (before default-on).** The regression-set replay (SPEC-0529 oracle at the loop of
-seq 552/593 in delta mode, SPEC-0476 hang at loop 1) with real reviewers, and the measurement
-(≥ 10 Meta-Tools campaigns, `tiers + packet` vs `tiers`: median `cache_read_tokens` per review
-run, median `loops` per merged campaign) need live campaigns with the flag on: post-merge.
-This spec stays `in-progress` until the replay is recorded.
+**Regression-set replay (AC7, `tools/replay_review_packet.py`).** Real reviewers on Sonnet
+with the packet, against scratch copies of the old campaigns:
+
+- SPEC-0529 (`SPEC-0529-20261110-f7b4`): delta loop 2 at `79aff687` (prev head `ee44a190`).
+  **Caught:** the adversarial reviewer kept "Signed 401 is a MAC oracle" open as `major`. The
+  test reviewer's MAC-reflection test-gap finding came back `minor` with no basis and was
+  demoted to advisory (see Risks).
+- SPEC-0476 (`SPEC-0476-20261109-ca46`): full loop 1 at `aaea30bf`. **Caught:** the
+  trailing-newline hang came back as `must_fix`.
+- Cost with the packet vs the original Sonnet runs: test reviewer $0.42 vs $0.64, adversarial
+  reviewer $0.30 vs $0.62; marshal $0.008 and $0.0055.
+
+**Re-entry fix (review finding).** A packet is rebuilt when REVIEWING is re-entered at the
+same loop (see Design as built); tested in `tests/test_agentic_packet.py` (new head and gates
+after a manual commit, `review_heads` refreshed, `packet_prev` kept; flag-off `_begin_review`
+unchanged).
+
+**Post-merge.** The measurement (≥ 10 Meta-Tools campaigns, `tiers + packet` vs `tiers`:
+median `cache_read_tokens` per review run, median `loops` per merged campaign, and
+`demoted_findings`) needs live campaigns with the flag on.
 
 ## Open questions
 

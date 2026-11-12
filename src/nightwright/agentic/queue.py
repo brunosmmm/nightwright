@@ -1611,6 +1611,7 @@ def _begin_review(state: dict) -> None:
     of this pass-through."""
     counters = _counters(state)
     PK.remember_verdicts(state)                     # SPEC-0554: no-op unless pinned
+    PK.forget(state)                                # SPEC-0554: each entry builds its packet
     lr = state.get("last_review") if isinstance(state.get("last_review"), dict) else {}
     for k in ("verdicts", "triage", "triager_run", "waived"):
         lr.pop(k, None)

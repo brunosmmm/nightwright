@@ -82,7 +82,8 @@ def test_build_two_loops(world):
     cfg, st, repo = world
     meta = PK.build(cfg, st)
     assert meta == {"loop": 1, "ok": True, "mode": "full", "path": "packet-loop-1.json",
-                    "marshal": "pending", "bytes": meta["bytes"]}
+                    "marshal": "pending", "bytes": meta["bytes"],
+                    "head": _git(repo, "rev-parse", "HEAD")}
     cdir = S.campaign_dir(cfg, st["id"])
     p1 = json.loads((cdir / "packet-loop-1.json").read_text())
     assert PK.validate(p1) == []
@@ -105,10 +106,10 @@ def test_build_two_loops(world):
         "adversarial_reviewer": {"loop": 0, "findings": [
             {"severity": "major", "title": "waived one", "files": ["x.py"]}]}},
         "waived": [{"title": "style", "files": [], "reason": "taste"}]}
+    st["counters"]["loops"] = 1                 # the fix route counts the loop, then REVIEWING
     PK.remember_verdicts(st)
     st["human_overrides"] = {"waive": [{"title": "waived one", "files": ["x.py"],
                                         "reason": "not in scope"}]}
-    st["counters"]["loops"] = 1
     _commit(repo, "feature.txt", "better\n", "fix")
     meta2 = PK.build(cfg, st)
     p2 = json.loads((cdir / "packet-loop-2.json").read_text())
@@ -235,3 +236,44 @@ def test_extend_schema_and_flag_helpers():
     assert PK.run_marks(on, "implementer", "implement") == {"loop": 3, "packet": False}
     PK.remember_verdicts(off)
     assert "packet_prev" not in off
+
+
+def test_reentry_at_the_same_loop_rebuilds_the_packet(world):
+    """REVIEWING re-entered at the same loop (gate retry, resume after a manual commit,
+    re-review): `_begin_review` drops the packet meta, the next build has the new head and
+    gates, `review_heads` of the loop is refreshed, `packet_prev` stays."""
+    from nightwright.agentic import queue as Q
+    cfg, st, repo = world
+    st["counters"]["loops"] = 1
+    first = _git(repo, "rev-parse", "HEAD~1")
+    st["review_heads"] = {"1": first}
+    st["packet_prev"] = {"loop": 0, "verdicts": {}, "waived": []}
+    st["packet"] = PK.build(cfg, st)
+    st["packet"]["marshal"] = "done"
+    old_head = st["packet"]["head"]
+    assert PK.current(st) is not None and not PK.marshal_due(st)
+    st["last_review"] = {"verdicts": {"conformance_reviewer": {"loop": 1, "findings": []}}}
+    new_head = _commit(repo, "feature.txt", "manual\n", "manual fix")
+    assert PK.current(st) is None and PK.marshal_due(st)       # guard: HEAD moved
+    st["last_gate"] = {"results": [{"name": "lint", "ok": True, "required": True,
+                                    "exit_code": 0, "log": "gates/002-lint.log"}]}
+    Q._begin_review(st)
+    assert "packet" not in st and st["packet_prev"] == {"loop": 0, "verdicts": {},
+                                                        "waived": []}
+    st["packet"] = PK.build(cfg, st)
+    doc = PK.load(cfg, st)
+    assert doc["head"] == new_head != old_head and st["packet"]["head"] == new_head
+    assert [r["name"] for r in doc["gates"]["results"]] == ["lint"]
+    assert st["review_heads"] == {"1": first, "2": new_head}
+    assert doc["prev_head"] == first and PK.current(st) is not None
+
+
+def test_flag_off_begin_review_is_unchanged(world):
+    from nightwright.agentic import queue as Q
+    _cfg, st, _repo = world
+    st.pop("lean")
+    st["packet"] = {"loop": 1, "ok": True}
+    st["last_review"] = {"verdicts": {"conformance_reviewer": {"loop": 0}}, "waived": []}
+    Q._begin_review(st)
+    assert st["packet"] == {"loop": 1, "ok": True} and "packet_prev" not in st
+    assert set(st["last_review"]) == {"entry_run"}
