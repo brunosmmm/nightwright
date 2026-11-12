@@ -6,12 +6,14 @@ owner: user
 created: 2026-11-10
 kind: feature
 parent: SPEC-0310
-depends_on: ["SPEC-0530"]
+depends_on: ["SPEC-0530", "SPEC-0595"]
 supersedes: ["SPEC-0527"]
 source_idea: IDEA-562
 ---
 
 ## Context
+
+Signing note (2026-11-12, ESC-0072): [SPEC-0595](./0595-federation-wire-mac-domain-separation.md) domain-separates the wire MAC before this spec opens. Every endpoint here signs and verifies with `direction=`.
 
 [SPEC-0527](./0527-federation-bounded-relay-mail-and-two-remote-verbs.md) replaced
 [SPEC-0335](./0335-federation-over-a-networked-mailbox.md) after two campaigns diverged

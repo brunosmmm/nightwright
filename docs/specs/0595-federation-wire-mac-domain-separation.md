@@ -65,15 +65,30 @@ The MAC is lowercase hex HMAC-SHA256 of the line's UTF-8 bytes, keyed with the s
 bytes. The header names are unchanged from 0529.
 
 **Why STATUS is bound:** a signed 4xx or 5xx body can't be presented as a signed 200, or the other
-way round. `HubClient` verifies the response MAC against the status it actually received, for
-every enrolled response including non-200 ones, before it acts on the status or the body.
+way round. That matters once a client acts on non-200 statuses. SPEC-0532 treats a 4xx as terminal
+and retries a 5xx.
+
+**`HubClient` change:** `HubClient.request` now verifies the response MAC, including
+`X-NW-Sig-V` and the observed status, before it looks at the status. Today it raises `HTTP <n>` for
+any non-200 response without checking the MAC.
+- A non-200 response with a valid MAC raises `ConnectionError("HTTP <n>")`, as today.
+- A response with a missing or invalid MAC, for any status, raises
+  `ConnectionError("bad response signature")`, so a forged 4xx can't end a retry loop.
+- An unenrolled host's unsigned `401 unauthorized` (0529's not-enrolled reply) is the one
+  exception. It stays `HTTP 401`, because there is no secret to verify it with.
 
 **Version marker and cutover:** every signed request and signed response also carries
 `X-NW-Sig-V: 2`.
-- A host that receives an authenticated request without `X-NW-Sig-V: 2` answers
-  `401 {"error":"sig_version"}`, signed with the new construction. That is the documented
-  delivery path for a version skew. It tells an old client to upgrade and reveals nothing about
-  its MAC.
+- **Header rules:** the header name is matched case-insensitively. The value must be exactly
+  `2`. A missing header, or any other value, counts as a version mismatch. The marker applies only
+  to authenticated (bearer-token) requests and to signed responses. Unenrolled replies are unchanged.
+- **Host side:** a host that receives an authenticated request without a valid marker answers
+  `401 {"error":"sig_version"}`, signed with the new construction. It also journals one
+  `host_sig_version` event, rate-limited to one per minute.
+  - An old client only sees a 401, as it would for any auth failure.
+  - The operator learns about the skew from the host's journal, shown by `nw hosts status` on the
+    hub as `rejected: old signature version`, and from the new client's error below.
+  - The reply reveals nothing about whether the old MAC was valid.
 - `HubClient` treats an enrolled response without `X-NW-Sig-V: 2` as the error
   `host uses an old signature version; upgrade it`.
 - There is no dual acceptance. Hub and hosts are the operator's own machines and upgrade together.
@@ -82,11 +97,14 @@ The GET/HEAD-with-body refusal from 0529 stays as defence in depth.
 
 ## Design
 
-- `federation.sign` takes a required keyword `direction` (`"req"` or `"resp"`) and, for
-  responses, a required `status`. `verify` takes the same arguments. Neither has a default, so a
-  missing direction is a `TypeError`. A test checks that `sign("abc", "GET", "/v1/status", b"",
-  1700000000)` without `direction` raises. A second test greps `src/nightwright` and asserts that
-  every `sign(` and `verify(` call passes `direction=`.
+- `federation.sign` and `verify` take a required keyword `direction`, with no default.
+  - A missing direction raises `TypeError`.
+  - A value other than `"req"` or `"resp"` raises `ValueError`.
+  - `status` is required (an int from 100 to 599) when `direction="resp"` and forbidden when
+    `direction="req"`. Breaking either rule raises `ValueError`.
+- An AST test parses every module under `src/nightwright`, finds each call to `sign` or `verify`
+  from `federation` (by name or as an attribute), and asserts that it passes `direction=` as a
+  keyword.
 - `request_headers`, `response_headers`, the host handler and `HubClient` pass the direction and
   status.
 - The protocol reference (`docs/product/reference/`, next to the existing host-channel section)
@@ -98,8 +116,9 @@ The GET/HEAD-with-body refusal from 0529 stays as defence in depth.
   old `abc` vector test is replaced.
 - `test_wire_mac_is_the_documented_four_field_formula` is replaced by a test that a client
   hand-built from the documented formula gets 200. Requests use the new tagged formula.
-- This campaign's diff also adds one sentence to SPEC-0532's Context. The sentence links here and
-  says that new endpoints sign with `direction=`. Nothing else in 0532 changes.
+- **Ordering:** SPEC-0532's frontmatter `depends_on` now includes `SPEC-0595`, and its Context
+  has one sentence that links here. The steward added both as a docs-only commit when this spec
+  was accepted. This campaign does not edit 0532.
 - A signed POST endpoint for the reflection test: the host has none today. The test registers a
   test-only POST route on the host handler through the test fixture. It is not shipped. It
   returns a signed 200 JSON body.
@@ -122,16 +141,23 @@ The GET/HEAD-with-body refusal from 0529 stays as defence in depth.
 - [ ] A response MAC for status S does not verify for status T ≠ S.
 - [ ] The documented request and response vectors are pinned by tests.
 - [ ] A client built from the documented formula alone gets 200.
-- [ ] A request without `X-NW-Sig-V: 2` gets a signed `401 {"error":"sig_version"}`.
-      `HubClient` reports the old-host error for a response without the marker.
-- [ ] Calling `sign` or `verify` without `direction` raises, and every call site in
-      `src/nightwright` passes it (grep test).
+- [ ] A request without `X-NW-Sig-V: 2`, or with another value, gets a signed
+      `401 {"error":"sig_version"}` and one `host_sig_version` journal event. `HubClient` reports
+      the old-host error for a response without the marker.
+- [ ] A request with the v2 marker but an old four-field MAC (0529's construction) gets
+      `401 unauthorized`.
+- [ ] `HubClient` verifies every enrolled response before acting on its status. A forged or
+      unsigned 4xx raises `bad response signature`, not `HTTP 4xx`. A signed 401 whose status is
+      changed to 200 fails verification.
+- [ ] `sign`/`verify` raise `ValueError` for a bad `direction`, for a missing or out-of-range
+      `status` on `resp`, and for any `status` on `req`.
+- [ ] Calling `sign` or `verify` without `direction` raises `TypeError`. The AST test finds no
+      call site in `src/nightwright` without `direction=`.
 - [ ] The 0529 tests still pass, apart from the replaced four-field formula test: request-body
       binding, replay window and GET/HEAD-with-body refusal.
 - [ ] The reference docs show the field table, both formulas and both vectors. The vectors were
       computed independently of nightwright, and the one-liner is recorded.
-- [ ] SPEC-0532's Context has the one-sentence link to this spec. A docs test asserts that the
-      link is present.
+
 
 ## Test plan
 
@@ -156,3 +182,7 @@ Per AGENTS.md.
 ## Open questions
 
 None.
+
+## As shipped
+
+_To be filled in by the implementing campaign._
