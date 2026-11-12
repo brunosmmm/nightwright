@@ -49,18 +49,25 @@ out of its scope. Reading the shipped code confirms each:
   result for it is `(False, ["spec file missing"])`, as for the other invalid `depends_on`
   shapes, and `backlog_readiness` does not raise.
 - `_find_dep_spec` itself refuses a malformed id with `ValueError`, so every caller is safe.
-- Every spec read in `backlog_readiness` (branch worktree, branch blob, base file, split
-  file, dependency file) and in `dependency_met`'s replacement scan maps `yaml.YAMLError`,
-  `RecursionError`, `MemoryError`, `UnicodeDecodeError`, `OSError`, and `ValueError` to the
-  existing "unreadable" outcome, and the base, split and dependency reads are size-capped
-  like the worktree read.
+- Every spec read reachable from `backlog_readiness` through its own code, `_spec_after_met`
+  (the `after` prerequisite read) and `dependency_met`'s replacement scan (branch worktree,
+  branch blob, base file, split file, dependency file, `after` spec file, replacement
+  files) maps `yaml.YAMLError`, `RecursionError`, `MemoryError`, `UnicodeDecodeError`,
+  `OSError`, and `ValueError` to the existing "unreadable" outcome (`spec file missing`,
+  `<dep> not found`, or the MERGED branch), and the base, split, dependency, `after` and
+  replacement reads are size-capped like the worktree read.
 - Real-checkout fixtures prove the early returns (red kind, merge, unmet `after`, spec-less
   idea) win over a branch that is checked out with an `accepted` spec.
 
 **Non-goals**
 
 - Any new `blocked_by` string, or changing which status is ready.
-- Changing where a spec is read from (SPEC-0539's source rule), `after` resolution, or open.
+- Changing where a spec is read from (SPEC-0539's source rule), `after` resolution (only
+  the file read inside `_spec_after_met` is hardened, not which prerequisite is chosen),
+  or open.
+- `_spec_reasons` and `_dangling` (queue.py around lines 9450 and 10920) are not reached
+  from `backlog_readiness`; they keep their narrow `(OSError, ValueError)` catch, and only
+  their `ValueError` on a malformed id changes (it reads as "not found" there too).
 - Refusing a symlinked base or dependency spec; only the byte cap is added there.
 - Validating `depends_on` anywhere outside `backlog_readiness` and `_find_dep_spec`
   (spec lint already owns authoring-time validation).
@@ -87,7 +94,7 @@ well-formed spec changes.
   `dep` is not a string that full-matches `_ANY_ID_RE`, before any glob. It also builds
   the exact-prefix glob with `glob.escape(dep)`. Its callers already catch `ValueError`
   (queue.py around lines 1361, 1409, 9450, 10920). A malformed id therefore reads as "not
-  found".
+  found"; the lines 9450 and 10920 sites are otherwise unchanged (see Non-goals).
 - `_find_spec` in `specs.py` is not changed; it is reached only after `_find_dep_spec`
   passed the check.
 
@@ -111,10 +118,20 @@ branch-source behavior: `(False, ["spec file missing"])`).
 - Split read: `_read_frontmatter_text(root / rel)`; `None` returns `["spec file missing"]`.
 - Branch source: `_parse_frontmatter_text(text)`; `None` returns `["spec file missing"]`.
 - Base source: `_read_frontmatter_text(root / rel)`; `None` returns `["spec file missing"]`.
-- Dependency loop: `_find_dep_spec(...)` and `_read_frontmatter_text(found)` inside the
-  existing `try`/`except ValueError`; the existing handler appends `"<dep> not found"`
-  unless the dependency is `MERGED`. A dependency file that is oversize or unparsable takes
-  that same path.
+- Dependency loop: replace the `try: split_frontmatter(_find_dep_spec(...).read_text())
+  except (OSError, ValueError)` with
+  `try: found = _find_dep_spec(spec_path.parent, dep)` / `except ValueError:` (a malformed
+  or unmatched id; the existing handler) followed by `dep_fm = _read_frontmatter_text(found)`.
+  Both `ValueError` and `dep_fm is None` (oversize, unreadable, invalid YAML, recursion,
+  memory) run the same handler body: append `"<dep> not found"` unless `merged`, then
+  `continue`. A non-mapping dependency frontmatter returns `{}` (not `None`), so it still
+  reaches `dependency_met` and gives `waiting on <dep> (no status)`. `{}` means a present
+  spec with no status; `None` means unreadable.
+- `_spec_after_met`: the same two-step shape: `_find_dep_spec(_specs_dir_of(state), spec_id)`
+  with `except (OSError, ValueError)` for the lookup, then `_read_frontmatter_text(found)`;
+  on `ValueError` or `None` return `(True, "", live)` when the campaign is `MERGED`, else
+  `(False, f"{spec_id} not found", live)`, as today. A `{}` result goes on to
+  `dependency_met`.
 - `_campaign_spec_text` keeps its `(GitError, OSError, UnicodeDecodeError, MemoryError)` catch
   and gains `RecursionError` for symmetry; its decode step is unchanged.
 - `dependency_met`'s replacement scan uses `_read_frontmatter_text(f)` and skips a file that
@@ -157,24 +174,24 @@ there, so `backlog_readiness` without an early return would give `(True, [])`.
       and does not raise (it raised `yaml.YAMLError` before).
 - [ ] A `split_frontmatter` that raises `RecursionError`, and one that raises `MemoryError`,
       each yield `(False, ["spec file missing"])` for the base and branch sources.
-- [ ] A base-source, split, or dependency spec file larger than `MAX_WORKTREE_SPEC_BYTES`
+- [ ] A base-source, split, `after`, or dependency spec file larger than `MAX_WORKTREE_SPEC_BYTES`
       (patched to a small value) is treated as unreadable: `spec file missing` for the
       campaign spec, `<dep> not found` for a dependency.
-- [ ] A dependency file with pathological frontmatter (deep nesting, invalid YAML) yields
-      `["SPEC-0002 not found"]` and does not raise; with a `MERGED` outbound campaign
-      the dependency is still met.
+- [ ] A dependency file, or an `after` spec file read by `_spec_after_met`, with pathological
+      frontmatter (deep nesting, invalid YAML) yields `["SPEC-0002 not found"]` and does not
+      raise; with a `MERGED` campaign the dependency is still met. A non-mapping dependency
+      frontmatter still yields `waiting on SPEC-0002 (no status)`. `dependency_met` for a
+      `superseded` dependency skips an unparsable replacement file and decides from the
+      readable ones.
 - [ ] A `done` dependency and an `accepted` campaign spec with well-formed ids still yield
-      `(True, [])` (no change for valid specs); `dependency_met` for a `superseded`
-      dependency skips an unparsable replacement file and still decides from the readable ones.
+      `(True, [])` (no change for valid specs).
 - [ ] With a real checkout whose branch holds an `accepted` spec (the
       `_checked_out_accepted` fixture): a `revert` campaign returns `(True, [])` and a
       `merge` campaign with a real existing branch returns `(True, [])` without
       `_campaign_spec_text` being called; an unmet `after` returns `(False, [<after text>])`;
-      an idea campaign with no spec id and an unmet `after` returns the `after` text;
-      in each case `_campaign_spec_text` is not called.
-- [ ] A spec-less idea campaign on the same repo does not read the branch spec
-      (`_campaign_spec_text` not called) and is decided by its idea, as in
-      `test_idea_ordering`.
+      an idea campaign with no spec id and an unmet `after` returns the `after` text, and one
+      with no unmet `after` is decided by its idea, as in `test_idea_ordering`; in each case
+      `_campaign_spec_text` is not called.
 
 ## Test plan
 
@@ -203,12 +220,18 @@ there, so `backlog_readiness` without an early return would give `(True, [])`.
   - `test_pathological_dependency_file_is_not_found`: dependency file deeply nested and
     invalid-YAML variants; assert `["SPEC-0002 not found"]`; plus an outbound `PROJ-0007`
     dependency with a `MERGED` campaign stays met (stub `Q._dep_campaign`).
+  - `test_after_spec_file_pathological_is_not_found`: `_spec_after_met` with the `after`
+    spec file deeply nested, invalid YAML and oversize; assert `(False, "SPEC-0002 not found",
+    live)`, and `(True, "", live)` with a `MERGED` campaign (stub `store.list_campaigns`).
+  - `test_non_mapping_dependency_frontmatter_has_no_status`: dependency file whose
+    frontmatter is a YAML list; assert `["waiting on SPEC-0002 (no status)"]`.
   - `test_dependency_met_skips_unparsable_replacement`: `superseded` dependency with one
     readable replacement (`done`) and one unparsable spec in the directory; assert met.
   - `test_early_returns_win_over_a_checked_out_accepted_spec`: `_checked_out_accepted`
     repo; `monkeypatch` `Q._campaign_spec_text` to raise `AssertionError`; assert the red kind,
     real-branch `merge`, unmet-`after` spec campaign, and spec-less idea campaign with an
-    unmet `after` results.
+    unmet `after` results, plus a spec-less idea campaign with no unmet `after` decided by
+    its idea.
   - Existing tests, including the monkeypatch-based early-return test, are kept.
 - **Manual verification:** none; temp repos only. Do not point the tests at the live data
   directory.
