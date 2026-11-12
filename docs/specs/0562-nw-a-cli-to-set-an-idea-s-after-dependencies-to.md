@@ -184,18 +184,23 @@ verb; campaigns already queued are updated with `nw queue after <campaign> --add
 - Deviation from the Design's Reading note: `nw idea show` does not print `:AFTER:` (it prints a
   fixed field set), so the value is verified through `plan_add_idea` / `_idea_after_refs` instead;
   no `idea show` change was made (out of scope).
+- Stored values are canonicalised before comparing (upper-case, idea ids padded, de-duplicated),
+  so hand-edited `idea-7` matches `IDEA-007` for add/remove and the cycle walk; the no-op check
+  compares the written string with the stored one, so a stored value with no parseable id
+  (`TBD`) is still cleared by `--clear` / `--set ""`.
 - Unknown-id warning text: `! unknown prerequisite 'X': no idea or spec with that id`; only newly
   added/replacing refs are checked.
 
 ### Test record (2026-11-12)
 
-- `uv run pytest -q tests/test_idea_after.py` — 18 passed.
+- `uv run pytest -q tests/test_idea_after.py` — 21 passed (loop 1 added unpadded-id, hand-edited
+  stored-value and junk-value cases).
 - `tests/test_seed_children.py tests/test_idea_ordering_e2e.py tests/test_idea_epic.py
   tests/test_idea_kind.py tests/test_completion.py` with the new module — 78 passed.
 - `python3 tools/test_tiers.py --check` exits 0.
 - Manual (scratch temp org, never the live file): `nw idea after IDEA-001 --add IDEA-002` wrote
   the property; `nw queue add IDEA-001` dry-run planned with the prerequisite.
-- `tools/affected_tests.py --run` (queue.py/org_write.py touch most modules) exceeded the
+- The queue's gate ran the affected tests green (6416 passed). Earlier local attempt: `tools/affected_tests.py --run` (queue.py/org_write.py touch most modules) exceeded the
   agent's time budget and was left, with the full suite, to the queue's gating.
 
 ## Definition of done

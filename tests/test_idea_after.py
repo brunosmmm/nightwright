@@ -180,3 +180,41 @@ def test_completion_lists_idea_ids(env):
     for name in ("selector", "add", "remove"):
         param = next(p for p in cli.commands["idea"].commands["after"].params if p.name == name)
         assert {i.value for i in param.shell_complete(ctx, "IDEA-")} >= {a, b}
+
+
+def test_unpadded_ids_are_normalised(env):
+    cfg, a, b, c = env                      # IDEA-001, IDEA-002, IDEA-003
+    assert run(a, "--add", "idea-2").exit_code == 0
+    assert prop(cfg, a) == b
+    r = run(a, "--add", "IDEA-1")
+    assert r.exit_code == 1 and "itself" in r.output          # self-reference, unpadded
+    assert run(b, "--add", "IDEA-3").exit_code == 0
+    snap = body(cfg)
+    r = run(c, "--add", "IDEA-1")                              # c -> a -> b -> c
+    assert r.exit_code == 1 and "cycle" in r.output
+    assert body(cfg) == snap
+
+
+def test_hand_edited_stored_refs_are_matched(env):
+    cfg, a, b, c = env
+    OW.set_property(cfg, OW.resolve_selector(cfg, a), "AFTER", "idea-2, IDEA-3 SPEC-0003")
+    assert run(a, "--add", "IDEA-2").exit_code == 0            # no duplicate appended
+    assert prop(cfg, a) == f"{b} {c} SPEC-0003"                # and the value is normalised
+    OW.set_property(cfg, OW.resolve_selector(cfg, a), "AFTER", "idea-2 IDEA-3")
+    assert run(a, "--remove", "IDEA-2").exit_code == 0
+    assert prop(cfg, a) == c
+    # a stored unpadded edge cannot hide a cycle
+    OW.set_property(cfg, OW.resolve_selector(cfg, b), "AFTER", "idea-1")
+    r = run(a, "--add", "IDEA-2")
+    assert r.exit_code == 1 and "cycle" in r.output
+
+
+def test_stored_junk_value_is_cleared(env):
+    cfg, a, *_ = env
+    for junk in ("TBD", "1051"):
+        OW.set_property(cfg, OW.resolve_selector(cfg, a), "AFTER", junk)
+        assert run(a, "--clear").exit_code == 0
+        assert ":AFTER:" not in body(cfg)
+    OW.set_property(cfg, OW.resolve_selector(cfg, a), "AFTER", "TBD")
+    assert run(a, "--set", "").exit_code == 0
+    assert ":AFTER:" not in body(cfg)

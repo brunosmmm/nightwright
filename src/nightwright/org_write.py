@@ -1244,6 +1244,12 @@ def _after_ref(raw) -> str:
     return ref
 
 
+def _canon_refs(value) -> list[str]:
+    """The ids in a stored `:AFTER:` value in canonical form (upper-cased, idea ids padded),
+    de-duplicated, so hand-edited `idea-7` still matches `IDEA-007`."""
+    return _dedupe(_after_ref(r) for r in parse_after_refs(value))
+
+
 def _dedupe(refs):
     out = []
     for r in refs:
@@ -1255,7 +1261,7 @@ def _dedupe(refs):
 def _after_cycle(cfg, own, refs):
     """Path `[ref, ..., own]` when walking ideas' `:AFTER:` edges from one of `refs` reaches
     `own`, else None. Non-idea refs have no edges and end a walk."""
-    edges = {t.id: parse_after_refs(t.properties.get("AFTER"))
+    edges = {t.id: _canon_refs(t.properties.get("AFTER"))
              for t in load_tasks(cfg) if t.is_idea and t.id}
 
     def walk(node, path, seen):
@@ -1265,7 +1271,7 @@ def _after_cycle(cfg, own, refs):
             return None
         seen.add(node)
         for nxt in edges.get(node, ()):
-            hit = walk(nxt.upper(), path + [nxt.upper()], seen)
+            hit = walk(nxt, path + [nxt], seen)
             if hit:
                 return hit
         return None
@@ -1302,7 +1308,8 @@ def set_idea_after(cfg, selector, *, add=(), remove=(), replace=None):
     task = resolve_selector(cfg, selector)
     if not task.is_idea:
         raise ValueError(f"{selector!r} is not an idea")
-    current = parse_after_refs(task.properties.get("AFTER"))
+    stored = (task.properties.get("AFTER") or "").strip()
+    current = _canon_refs(stored)
     if replace is not None:
         wanted = _dedupe(_after_ref(r) for r in parse_ref_list(replace))
         refs = wanted
@@ -1318,7 +1325,7 @@ def set_idea_after(cfg, selector, *, add=(), remove=(), replace=None):
     cycle = _after_cycle(cfg, own, new)
     if cycle:
         raise ValueError(f"cycle: {' -> '.join(cycle)} (it would wait on itself)")
-    if refs == current:
+    if " ".join(refs) == stored:
         return task.file, refs
     _warn_unknown_after(cfg, new)
     if not refs:
