@@ -1,7 +1,7 @@
 ---
 id: SPEC-0554
 title: Marshal review packet (packet-loop-N.json) and delta reviews from loop 2
-status: in-progress
+status: done
 owner: user
 created: 2026-11-11
 parent: SPEC-0552
@@ -251,7 +251,7 @@ after the regression set passes. Campaigns opened before the flag keep today's f
 
 ## As shipped
 
-Built 2026-11-11 behind `agentic.lean.packet` (default **off**, pinned per campaign at
+Shipped 2026-11-11 (close gate GATEJOB-2441 green on 4b5506b9) behind `agentic.lean.packet` (default **off**, pinned per campaign at
 creation by SPEC-0553's `state.lean`). Flag off: no marshal step, no packet files, no new
 `state` keys (`packet`, `packet_prev`, `review_heads`), `run.start` and `review_outcome`
 unchanged, every review persona's prompt, system block and schema object identical (asserted
