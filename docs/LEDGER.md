@@ -371,7 +371,6 @@ progress. This is the single place to see *what has been decided* and *what is i
 | [SPEC-0552](./specs/0552-leaner-agentic-campaign-loop.md) | Leaner agentic campaign loop (role tiers, review packet, findings collator, resumable sessions) | epic | accepted | — | 2026-11-11 |
 | [SPEC-0556](./specs/0556-resumable-implementer-and-reviewer-sessions.md) | Resumable implementer and reviewer sessions per backend, with a fresh-session fallback | feature | in-progress | — | 2026-11-11 |
 | [SPEC-0572](./specs/0572-lean-spec-phase-sessions.md) | Lean spec phase — resumable spec writer and delta spec re-review (`spec_sessions`) | feature | accepted | — | 2026-11-12 |
-| [SPEC-0580](./specs/0580-nw-data-usage-per-source-size-count-and-retention.md) | nw data usage — per-source size, count and retention report of the agentic data dir, with --json | feature | accepted | — | 2026-11-12 |
 
 ## Done
 
@@ -872,6 +871,7 @@ progress. This is the single place to see *what has been decided* and *what is i
 | [SPEC-0577](./specs/0577-nw-campaign-tail-run-accept-a-spec-id-resolve-to.md) | nw campaign commands accept a spec id and resolve it to its campaign | feature | done | — | 2026-11-12 |
 | [SPEC-0578](./specs/0578-nw-workers-config-takes-the-short-key-executor.md) | nw workers config accepts the dotted path agentic.workers.executor and lists allowed keys in --help | feature | done | — | 2026-11-12 |
 | [SPEC-0579](./specs/0579-spec-0349-nw-doctor-review-follow-ups-waived-at.md) | `nw doctor` follow-ups: close SPEC-0349's review gaps (tests, profiles-dir crash, ssh dir safety, data.dir and retention hints) | feature | done | — | 2026-11-12 |
+| [SPEC-0580](./specs/0580-nw-data-usage-per-source-size-count-and-retention.md) | nw data usage — per-source size, count and retention report of the agentic data dir, with --json | feature | done | — | 2026-11-12 |
 | [SPEC-0581](./specs/0581-nwfug-idea-1014-20261112-6135-spec-0566-review.md) | SPEC-0566 review follow-ups: symlinked campaign dirs in the uncached index, and confinement test strength | feature | done | — | 2026-11-12 |
 | [SPEC-0582](./specs/0582-shell-autocomplete-gaps-many-dynamic-value-args.md) | Make the SPEC-0039 shell-completion guard live with default-deny and an exemption ratchet | feature | done | — | 2026-11-12 |
 | [SPEC-0583](./specs/0583-nwfug-idea-1074-20261112-7400-spec-0569-review.md) | SPEC-0569 review follow-ups - cheaper ref scans, read-only collisions, own-branch rename, test gaps | feature | done | — | 2026-11-12 |

@@ -62,3 +62,5 @@ def register(cli, projects_group):
     cli.add_command(herdr_group)
     from .cli_dashboard import dashboard_group          # SPEC-0401
     cli.add_command(dashboard_group)
+    from .cli_data import data_group                    # SPEC-0580
+    cli.add_command(data_group)

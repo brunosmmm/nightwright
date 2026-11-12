@@ -2573,7 +2573,8 @@ def attach(queue_group):
     @click.pass_context
     def queue_disk_clean(ctx, run_days):
         """Sweep finished work's leftovers now (SPEC-0524): terminal campaigns' tmp and replay
-        logs, old sentinel logs, old gate-job records. The runner does this hourly."""
+        logs, old sentinel logs, old gate-job records. The runner does this hourly.
+        See `nw data usage` for what each source holds and how it is pruned."""
         from . import disk_clean as DC
         res = DC.sweep(ctx.obj, force=True, run_days=run_days)
         console.print(f"freed {res['bytes'] / 1e6:.1f} MB: {res['tmp_dirs']} tmp dirs, "

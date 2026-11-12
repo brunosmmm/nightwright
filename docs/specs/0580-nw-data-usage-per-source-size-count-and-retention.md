@@ -1,7 +1,7 @@
 ---
 id: SPEC-0580
 title: nw data usage — per-source size, count and retention report of the agentic data dir, with --json
-status: accepted
+status: done
 owner: user
 kind: feature
 created: 2026-11-12
@@ -200,14 +200,14 @@ one that sorts. `campaigns` has the extra `by_state` key. `total.bytes` equals t
 
 ## Acceptance criteria
 
-- [ ] `nw data usage` exists and is read-only: it creates, modifies or touches no file under the
+- [x] `nw data usage` exists and is read-only: it creates, modifies or touches no file under the
   data dir (including the `.disk-clean` stamp) and exits 0, including when the agentic dir is
   missing (all rows zero, `total.bytes` 0).
-- [ ] `--json` emits one JSON document with `schema: "nw.data.usage.v1"`, `root`, `generated_at`,
+- [x] `--json` emits one JSON document with `schema: "nw.data.usage.v1"`, `root`, `generated_at`,
   `skipped`, `total` and a `sources` list holding every source id of the Design table in that
   order, each row with `id`, `path` (a non-empty list of strings, the table's glob patterns),
   `bytes`, `files`, `count`, `count_unit`, `oldest`, `newest` and `retention{rule,setting,text}`.
-- [ ] Every regular file under the agentic dir is counted in exactly one source, and
+- [x] Every regular file under the agentic dir is counted in exactly one source, and
   `total.bytes` equals both the sum of source bytes and the bytes of an independent walk of the
   fixture. Symlinks (to files or dirs) are neither followed nor counted; a file that vanishes
   during the walk does not fail the command and increments `skipped`. The scope rules hold:
@@ -215,18 +215,18 @@ one that sorts. `campaigns` has the extra `by_state` key. `total.bytes` equals t
   `runs/<run>/sub/stream.jsonl` and a loose file under `campaigns/<id>/runs/` are `runs`;
   `gates/` and `tmp/` files are `gates` / `campaign-tmp`, never `campaigns`; a loose
   `campaigns/x.txt` is `other`.
-- [ ] `campaigns.count` equals the number of campaign dirs with a `state.json`, and `by_state` counts
+- [x] `campaigns.count` equals the number of campaign dirs with a `state.json`, and `by_state` counts
   sum to it, with an unreadable `state.json` bucketed as `UNKNOWN`.
-- [ ] `oldest`/`newest` are the min/max file mtime of the source in UTC `Z` ISO-8601, `null` when
+- [x] `oldest`/`newest` are the min/max file mtime of the source in UTC `Z` ISO-8601, `null` when
   the source is empty.
-- [ ] Retention texts use the effective config: overriding `agentic.disk_clean.run_days`,
+- [x] Retention texts use the effective config: overriding `agentic.disk_clean.run_days`,
   `agentic.disk_clean.log_days` and `agentic.gate_jobs.retention_days` changes the numbers in the
   `streams`, `sentinel` and `gatejobs` rows; `enabled: false` changes the sweep-governed rows to
   say the sweep is disabled.
-- [ ] `forever` is reported for the campaign records, `gates`, events, runner logs, decisions,
+- [x] `forever` is reported for the campaign records, `gates`, events, runner logs, decisions,
   mailbox and spec reviews, and each `forever` claim is backed by the implementer's grep recorded
   in the spec's "As shipped".
-- [ ] The text form is a table sorted by bytes descending with a total line and IEC units;
+- [x] The text form is a table sorted by bytes descending with a total line and IEC units;
   `nw data --help` and `nw data usage --help` describe the command, and `nw data` appears in
   the root command list.
 
@@ -276,6 +276,60 @@ one that sorts. `campaigns` has the extra `by_state` key. `total.bytes` equals t
   `tests/test_disk_clean.py` and `tests/test_console_piped.py` (root command registration);
   `python3 tools/spec_lint.py` exits 0.
 
+### Test record (2026-11-12)
+
+- `uv run pytest -q tests/test_data_usage.py tests/test_disk_clean.py tests/test_console_piped.py`:
+  28 passed (11 in `test_data_usage.py`: partition/total, per-source scope incl. the ambiguous
+  shapes, `classify` shapes, by_state, oldest/newest, symlinks + vanishing via the `_stat` seam,
+  missing dir, retention follows config, read-only snapshot, CLI json/table/help, scale).
+- `uv run pytest -q tests/test_dashboard_imports.py tests/test_agent_permissions.py
+  tests/test_completion.py`: 57 passed (root command registration neighbours).
+- `python3 tools/test_tiers.py --check` exits 0; `python3 tools/spec_lint.py` exits 0.
+- Manual: `nw data usage` and `--json` against the maintainer's live agentic dir: 15 sources,
+  `total.bytes` 3,386,378,412 vs `du -sb --apparent-size` 3,389,658,133 (du also counts the
+  directories' own sizes and the live runner kept writing between the calls). `nw queue
+  disk-clean` was not run on the live box from this campaign.
+- The full suite was left to the queue's gating.
+
+### As shipped
+
+- `src/nightwright/agentic/data_usage.py` (`SOURCES`, `classify`, `usage`, `human_size`,
+  `render_rows`; the walk's one stat call is the module-level `_stat(entry)` that
+  `test_symlinks_and_vanishing` patches), `src/nightwright/agentic/cli_data.py` (`nw data usage
+  [--json]`, registered in `cli.register`), and a "see `nw data usage`" line in the `nw queue
+  disk-clean` help. The nw-orient skill does not mention `disk-clean`, so nothing was added there.
+- JSON `nw.data.usage.v1`: `schema, root, generated_at, skipped, total{bytes,files}, sources[]`;
+  each source `id, path[] (list of glob strings), bytes, files, count, count_unit, oldest, newest,
+  retention{rule,setting,text}`; `campaigns` also has `by_state{STATE:{count,bytes}}`.
+  `count` units: campaigns with a `state.json`; run dirs (a dir holding any `runs`/`streams`
+  file, so a run whose `stream.jsonl` is the only file left still counts); stream files; gate
+  record files; campaigns with a `tmp/`; files under `sentinel/*.logs/` (`files` counts all of
+  `sentinel/**`); job dirs under `gatejobs/`; `remote-jobs/*.json` records; job dirs under
+  `runner-jobs/`; files for the rest.
+- Text form: Rich table (source, size, files, count, oldest, newest, retention) sorted by bytes
+  descending, a `campaigns by state:` line and a `total` line; every row is one line when piped.
+- **Deviation: `runner-jobs` is not `forever`.** The grep of `unlink`/`rmtree`/`os.remove` over
+  the code that writes each path found `runner_jobs._prune` (`runner_jobs.py:183-191`, called from
+  `service`), which removes a job dir 7 d (`KEEP_S`) after its `result.json` / `cancelled.json`.
+  Per the spec's own rule the row reports its true rule: `age`, `setting` null, "finished or
+  cancelled jobs removed after 7 d". The Design table's `forever` for `runner-jobs` is superseded
+  by this.
+- `forever` grep result for the other rows (no `unlink`/`rmtree` of the path anywhere in
+  `src/nightwright`): `campaigns` records, `gates` (only `gates.py` drops a lost-retry attempt's
+  own `NNN-*` files, not retention), `events` (`events.jsonl`, `.lock`, `.projector.json`,
+  `cursors/`), `runner-logs`, `decisions` (`conductor/`; `quiet.py` only unlinks its legacy
+  digest file), `mailbox`, `spec-reviews` (`spec-reviews.jsonl`, `spec-reviews/<run_id>`), `runs`
+  (only `stream.jsonl` is swept, and those are `streams`), `other`.
+- `remote-jobs` text follows `remote_jobs.prune` (`remote_jobs.py:206-221`): "final records (and
+  pull-job frames/uploads) dropped when their campaign ends; live and queued ones kept".
+  `job-queue/**` is never pruned by `prune`; it stays in this row as the Design table lists it.
+- Path check: `reviews/**` is only *read* (`history_cache.py:325`), nothing writes it; it is kept in
+  the table and in `path` because the Design fixes it, and is harmless. `events.lock`,
+  `events.projector.json`, `cursors/`, `spec-reviews/` and `spec-reviews.jsonl` are all written
+  (`events.py:216-228`, `spec_review.py:406,541`).
+- `agentic.disk_clean.enabled: false` changes only the `streams`, `campaign-tmp` and `sentinel`
+  texts; `gatejobs` keeps its retention text because `nw gate run` sweeps it regardless.
+
 ## Rollout / migration
 
 No data migration. Ship `data_usage.py`, `cli_data.py` and the `register()` line together; add the
@@ -285,12 +339,12 @@ spec's "As shipped" section on completion.
 
 ## Definition of done
 
-- [ ] Acceptance criteria all met.
-- [ ] Test plan executed: `tests/test_data_usage.py` passes, affected tests pass, `python3
+- [x] Acceptance criteria all met.
+- [x] Test plan executed: `tests/test_data_usage.py` passes, affected tests pass, `python3
   tools/test_tiers.py --check` exits 0, the manual comparison against `du` was done and noted.
-- [ ] No regressions (affected tests at the queue's close gate).
-- [ ] Spec body updated to match what shipped (including the grep that confirmed each `forever` row).
-- [ ] `docs/LEDGER.md` regenerated (`python3 tools/spec_lint.py --write-ledger`) and
+- [x] No regressions (affected tests at the queue's close gate).
+- [x] Spec body updated to match what shipped (including the grep that confirmed each `forever` row).
+- [x] `docs/LEDGER.md` regenerated (`python3 tools/spec_lint.py --write-ledger`) and
   `python3 tools/spec_lint.py` exits 0.
 
 ## Open questions
