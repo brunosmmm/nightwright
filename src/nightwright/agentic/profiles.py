@@ -474,7 +474,7 @@ def hand_sizing(fm) -> dict | None:
 def _lean_pick(cfg, base: dict, *, flag, review, hand, project_root) -> dict:
     """SPEC-0553 cap over `select_profile`'s uncapped pick `base`: a review or `--profile`
     pick never ranks above `agentic.default_profile`; a hand-written size/tone (from the spec
-    on the base branch at open) picks its matrix cell uncapped and lifts the flag's cap to that
+    on the base branch at open; a key it lacks is `m` / `high-end`) picks its matrix cell uncapped and lifts the flag's cap to that
     cell. `raised` is true when the result ranks above the default."""
     default = _agentic(cfg).get("default_profile") or "balanced"
 
@@ -484,11 +484,9 @@ def _lean_pick(cfg, base: dict, *, flag, review, hand, project_root) -> dict:
     out = dict(base)
     if hand:
         matrix = profile_matrix(cfg, project_root=project_root)
-        review = review or {}
-        size = hand.get("size") or (review.get("size") if review.get("size") in HAND_SIZES
-                                    else "m")
-        tone = hand.get("tone") or (review.get("tone") if review.get("tone") in TONES
-                                    else "high-end")
+        # the half the human did not write is the default, never the agent's estimate
+        size = hand.get("size") or "m"
+        tone = hand.get("tone") or "high-end"
         cell = matrix[tone][size]
         name, why = cell, f"hand-written size {size}, tone {tone} → {cell}"
         if flag and rank(flag) > rank(cell):
@@ -504,6 +502,15 @@ def _lean_pick(cfg, base: dict, *, flag, review, hand, project_root) -> dict:
         out["profile"] = default
     out["raised"] = rank(out["profile"]) > rank(default)
     return out
+
+
+def cap_flag(cfg, flag, *, project_root=None) -> str:
+    """SPEC-0553: a `--profile` name capped at `agentic.default_profile` (no hand values);
+    for the creation paths that take a flag without a review (merge, idea campaigns)."""
+    base = {"profile": flag, "source": "flag", "reason": f"--profile {flag}", "size": None,
+            "tone": None}
+    return _lean_pick(cfg, base, flag=flag, review=None, hand=None,
+                      project_root=project_root)["profile"]
 
 
 def select_profile(cfg, *, flag=None, review=None, project_root=None, hand=None,

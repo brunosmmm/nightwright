@@ -70,7 +70,7 @@ from . import workers
 from .codewatch import (_CODE_PATHS, _changed_paths, _git_out, code_changes,  # noqa: F401
                         code_checkout)
 from .gitops import GitError
-from .profiles import (SEVERITIES, persona_settings, profile_sha256, resolve_profile, review_params,
+from .profiles import (SEVERITIES, cap_flag, persona_settings, profile_sha256, resolve_profile, review_params,
                        reviewers_of, select_profile, triager_enabled)
 from .events import settings as events_settings
 from .events import temp_pressure as events_temp_pressure
@@ -2253,6 +2253,10 @@ def _adopt_spec_open_snapshot(cfg, state: dict, worktree: Path) -> str | None:
     if read_err is not None:
         spec.pop("sha256_at_open", None)
         return f"spec file unreadable at {worktree / rel_p}: {read_err}"
+    if TR.tiers_on(state):
+        # SPEC-0553: this snapshot is the worktree's spec, which in-campaign edits may have
+        # touched: its size/tone are not hand values (`_lean_open` reads them as absent)
+        spec["snapshot_adopted"] = True
     return _replace_spec_at_open_snapshot(cdir, snap, data, spec)
 
 
@@ -2402,7 +2406,11 @@ def _lean_open(ctx: _Ctx, state: dict, events: list) -> None:
     sizing = state.get("sizing") if isinstance(state.get("sizing"), dict) else {}
     if "hand" in sizing:
         return
-    hand = _spec_hand(ctx.cfg, state)
+    untrusted = bool((state.get("spec") or {}).get("snapshot_adopted"))
+    hand = None if untrusted else _spec_hand(ctx.cfg, state)
+    if untrusted:
+        journal(ctx.cfg, "lean_hand_untrusted", campaign=state["id"],
+                reason="spec_at_open re-snapshotted from the worktree; size/tone read as absent")
     root = (state.get("repo") or {}).get("root")
     review = ({"size": sizing["size"], "tone": sizing["tone"], "verdict": "approve"}
               if sizing.get("size") and sizing.get("tone") else None)
@@ -2425,7 +2433,8 @@ def _lean_open(ctx: _Ctx, state: dict, events: list) -> None:
     events.append(("lean_sizing", {"hand": hand, "profile": state.get("profile"),
                                    "source": sizing.get("source"),
                                    "reason": sizing.get("reason"),
-                                   "raised": state["raised"]}))
+                                   "raised": state["raised"],
+                                   **({"hand_untrusted": True} if untrusted else {})}))
 
 
 def _lean_cap_check(cfg, state: dict, events: list, step: str) -> None:
@@ -10047,6 +10056,8 @@ def plan_merge(cfg, branch, *, project=None, worktree=None, profile=None,
         wt_path, own = existing, False
     else:
         wt_path, own = P.worktree_root(pcfg, root, project) / cid, True
+    if profile and TR.effective_lean(cfg, project)[0]["tiers"]:        # SPEC-0553 cap
+        profile = cap_flag(cfg, profile, project_root=root)
     prof = resolve_profile(cfg, profile)
     return {
         "campaign": cid, "kind": "merge", "branch": branch, "project": project,
@@ -10137,6 +10148,8 @@ def plan_add_idea(cfg, idea_id, *, project=None, profile=None, base=None,
     project = project or (task.properties.get("PROJECT") or "").strip() or "Meta-Tools"
     pcfg = P.project_config(cfg, project)
     root = Path(pcfg["_root"])
+    if profile and TR.effective_lean(cfg, project)[0]["tiers"]:        # SPEC-0553 cap
+        profile = cap_flag(cfg, profile, project_root=root)
     prof = resolve_profile(cfg, profile, project_root=root)
     base = base or (pcfg.get("merge") or {}).get("base") or pcfg.get("base") or "main"
     cid = store.new_campaign_id(cfg, idea_id)

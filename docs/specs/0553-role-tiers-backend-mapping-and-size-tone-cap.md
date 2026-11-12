@@ -136,10 +136,18 @@ review fix (counts against `loop_max`). Not raised → no extra run.
   `select_profile(..., hand=, lean=True)`; a changed pick re-resolves the profile (name,
   sources, sha, `cost.cap_usd`) and logs `lean_sizing`. `select_profile` keeps its old
   signature and output unless `lean=True`.
-- **Hand rules.** A hand value fills the missing key from the review (else `m` /
-  `high-end`). `raised` is true only when the result ranks above the default (a hand
+- **Hand rules.** A key the human did not write is the default (`m` / `high-end`), never
+  the review's estimate (so a tone-only `high-end` with an agent `l` stays `balanced`).
+  `raised` is true only when the result ranks above the default (a hand
   `cost-effective`/`xs` lowers and is not "raised"). With a flag and a hand value the flag
   is capped at `max(default, hand cell)`.
+- **Other creation paths.** `plan_merge` and `plan_add_idea` (`nw queue add IDEA-…`) cap a
+  `--profile` at the default through `profiles.cap_flag` when the project's effective
+  `tiers` is on (no hand values on those paths).
+- **Untrusted snapshot.** When `_adopt_spec_open_snapshot` rebuilds `spec_at_open` from the
+  worktree (missing or untrusted snapshot on a resumed worktree), it marks
+  `spec.snapshot_adopted`; `_lean_open` then reads hand size/tone as absent, journals
+  `lean_hand_untrusted` and sets `hand_untrusted` on the `lean_sizing` event.
 - **Override rule.** "Explicit `model:`" means a `personas.<name>.model` set by a layer
   above the builtin profiles (user file, `agentic.profiles` delta, project file — read from
   `profile_provenance`), a model set's per-persona `model:`, a `cursor_model:` on a Cursor
@@ -269,9 +277,12 @@ deep pass, run record/request/job carry `tier`); new `tests/test_agentic_lean_qu
 capped, `--profile` capped, hand-raised `tone: critical` → `thorough`, `raised`, exactly one
 `claude-opus-5-5` deep adversarial run before close; deep `fix` → IMPLEMENTING with one loop
 and still one deep run; default campaign → no deep run and no `opus`; `cap_ignored` once for
-an in-campaign `size`/`tone`; hand ignored with the flag off); extended
+an in-campaign `size`/`tone`; hand ignored with the flag off; `nw queue add IDEA --profile thorough`
+capped; a worktree re-snapshot gives no hand values); extended
 `tests/test_agentic_profiles.py` (cap over every size × tone × default, flag, hand,
-`profile_rank` via `extends`), `tests/test_specs.py` (`size`/`tone` accepted / rejected),
+`profile_rank` via `extends`, the agent's estimate never fills a missing hand key,
+`cap_flag`); the flag-off identity test covers every persona × claude / cursor / pi, the
+`grok` and `gpt` model sets and the frugal / thorough profiles, `tests/test_specs.py` (`size`/`tone` accepted / rejected),
 `tests/test_agentic_campaign_export.py` (columns). The box gate (`--tier loop`) ran on the
 final commit (job id in the campaign report).
 

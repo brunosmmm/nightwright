@@ -202,3 +202,32 @@ def test_hand_raise_ignored_when_flag_off(tmp_path, monkeypatch):
 
 
 assert "{extra}" in SPEC_ACCEPTED                                 # the hand keys go there
+
+
+@pytest.mark.parametrize("lean,want", [(True, "balanced"), (False, "thorough")])
+def test_idea_campaign_profile_flag_is_capped(tmp_path, monkeypatch, lean, want):
+    from nightwright import org_write as OW
+    repo, cfg = _setup(tmp_path, lean=lean)
+    _, _, iid = OW.add_idea(cfg, "an idea to build")
+    cid = added(cfg, monkeypatch, iid, "--profile", "thorough")
+    assert S.read_state(cfg, cid)["profile"] == want
+
+
+def test_worktree_resnapshot_is_not_a_hand_value(tmp_path, monkeypatch):
+    """A missing / untrusted `spec_at_open` is rebuilt from the worktree on adopt; its
+    size/tone may be in-campaign edits, so the open reads them as absent and journals it."""
+    repo, cfg = _setup(tmp_path, extra_fm="tone: critical\n")
+    cid = added(cfg, monkeypatch)
+    st = S.read_state(cfg, cid)
+    wt = Path(st["repo"]["worktree"])
+    import subprocess
+    subprocess.run(["git", "-C", str(repo), "worktree", "add", "-q", "-b", st["repo"]["branch"],
+                   str(wt), "main"], check=True, capture_output=True)
+    assert Q._adopt_spec_open_snapshot(cfg, st, wt) is None
+    assert st["spec"]["snapshot_adopted"] is True
+    events = []
+    Q._lean_open(Q._Ctx(cfg), st, events)
+    assert st["sizing"]["hand"] is None and st["raised"] is False
+    assert st["profile"] == "balanced"
+    assert events[0][1]["hand_untrusted"] is True and events[0][1]["hand"] is None
+    assert "lean_hand_untrusted" in [j["kind"] for j in Q.read_journal(cfg)]

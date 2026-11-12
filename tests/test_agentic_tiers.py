@@ -220,14 +220,24 @@ def _fields(req):
             if f.name not in ("env", "run_dir")}
 
 
-@pytest.mark.parametrize("persona", ["conformance_reviewer", "implementer", "gate_triager",
-                                     "spec_writer"])
-def test_flag_off_is_byte_identical(env, persona):
-    today = _fields(_req(env, persona))
+@pytest.mark.parametrize("backend,profile", [
+    ({"runner": "claude"}, None), ({"runner": "cursor"}, None), ({"runner": "pi"}, None),
+    ({"model_set": "grok"}, None), ({"model_set": "gpt"}, None), ({"runner": "claude"}, "frugal"),
+    ({"runner": "cursor"}, "thorough")], ids=lambda v: str(v))
+@pytest.mark.parametrize("persona", sorted(PS.PERSONAS))
+def test_flag_off_is_byte_identical(env, persona, backend, profile):
+    """Every persona, every backend, a model set and a non-default profile: an absent
+    `state.lean` and a pinned all-off one give today's request, field for field."""
+    today = _fields(_req(env, persona, cfg_extra=backend, profile=profile))
     for lean in ({}, dict(ON, tiers=False)):
-        assert _fields(_req(env, persona, lean=lean)) == today
+        assert _fields(_req(env, persona, lean=lean, cfg_extra=backend,
+                            profile=profile)) == today
     assert today["tier"] is None
-    assert today["model"] == {"conformance_reviewer": "opus"}.get(persona, "sonnet")
+
+
+def test_flag_off_request_is_todays_model(env):
+    assert _req(env, "conformance_reviewer").model == "opus"
+    assert _req(env, "implementer").model == "sonnet"
 
 
 @pytest.mark.parametrize("persona,model,effort,tier", [

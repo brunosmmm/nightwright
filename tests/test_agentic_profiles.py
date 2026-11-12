@@ -891,8 +891,8 @@ def test_hand_values_pick_their_cell_uncapped():
     cfg = _cfg()
     pick = P.select_profile(cfg, review=_rv("s", "cost-effective"), hand={"tone": "critical"},
                             lean=True)
-    assert pick == {"profile": "thorough", "source": "hand", "size": "s", "tone": "critical",
-                    "reason": "hand-written size s, tone critical → thorough", "raised": True}
+    assert pick == {"profile": "thorough", "source": "hand", "size": "m", "tone": "critical",
+                    "reason": "hand-written size m, tone critical → thorough", "raised": True}
     big = P.select_profile(cfg, review=None, hand={"size": "l"}, lean=True)   # tone: high-end
     assert (big["profile"], big["tone"], big["raised"]) == ("thorough", "high-end", True)
     small = P.select_profile(cfg, review=_rv("l", "critical"),
@@ -929,3 +929,23 @@ def test_profile_rank_follows_extends(tmp_path):
     capped = P.select_profile(cfg, flag="bigger", lean=True)
     assert (capped["profile"], capped["capped_from"]) == ("balanced", "bigger")
     assert P.select_profile(cfg, flag="cheap", lean=True)["profile"] == "cheap"
+
+
+def test_agent_estimate_never_fills_the_half_the_human_left_out():
+    """A tone-only hand value with the agent's `l`: the size is the default `m`, not `l`, so
+    high-end stays balanced and is not raised (the review alone would have said thorough)."""
+    cfg = _cfg()
+    pick = P.select_profile(cfg, review=_rv("l", "high-end"), hand={"tone": "high-end"},
+                            lean=True)
+    assert (pick["profile"], pick["size"], pick["tone"], pick["raised"]) == (
+        "balanced", "m", "high-end", False)
+    size_only = P.select_profile(cfg, review=_rv("xs", "critical"), hand={"size": "s"},
+                                 lean=True)
+    assert (size_only["profile"], size_only["tone"], size_only["raised"]) == (
+        "balanced", "high-end", False)
+
+
+def test_cap_flag():
+    cfg = _cfg()
+    assert P.cap_flag(cfg, "thorough") == "balanced" and P.cap_flag(cfg, "frugal") == "frugal"
+    assert P.cap_flag(_cfg(default_profile="thorough"), "thorough") == "thorough"
