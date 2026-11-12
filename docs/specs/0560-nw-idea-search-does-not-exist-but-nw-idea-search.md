@@ -67,18 +67,41 @@ junk idea in the live file.
 - `src/nightwright/cli.py`:
   - New `@idea_group.command("search")` with `@click.argument("text", nargs=-1, required=True)`
     and options `--limit` (default 25, same as `ideas`), `--json` (`nw.ideas.v1`), `--plain`.
-    It joins `text` with spaces, raises `click.BadParameter` (param_hint `TEXT`) when the joined
-    text is blank, then calls `R.ideas(cfg, query=joined, limit=limit, as_json=as_json,
-    plain=plain, all_done=False, ...)` with the same defaults `ideas_list_cmd` passes for the
-    filters it does not expose. It performs no org write, so it works under `WT_PERSONA_RUN=1`.
+    It joins `text` with spaces and raises `click.BadParameter` (param_hint `TEXT`) when the
+    joined text is blank (the analogue of `ideas_list_cmd`'s `--query` blank check, which uses
+    param_hint `--query`). It then calls exactly
+    `R.ideas(cfg, state=None, all_done=False, as_json=as_json, kind=None, plain=plain,
+    query=joined, limit=limit, tag=None, project=None, workstream=None, priority=None,
+    sort=None, desc=False, tree=False, epic=None)`. Every unexposed argument is pinned to the
+    value `nw ideas --query X` passes by default (the click defaults of `ideas_list_cmd`,
+    `cli.py:1315-1376`: `tag`/`kind`/`project`/`epic`/`workstream`/`priority`/`sort`/`state`
+    are `None`, `all_done`/`tree`/`desc` are `False`). Because `project` is always `None`,
+    the `_warn_unknown_associations` project-warning path is skipped, as it is for
+    `nw ideas --query X` without `--project`; `--reindex` is not exposed (it writes). The
+    `--limit` help text documents `0 = unlimited` (as `ideas_list_cmd` does). The command
+    performs no org write, so it works under `NW_PERSONA_RUN=1` (`PERSONA_ENV`,
+    `src/nightwright/org_write.py:70`).
   - `IdeaGroup.resolve_command` needs no change: `search` is in `self.commands`, so it
     dispatches there before `capture`.
   - `_MULTIWORD_VERBS = frozenset({"find", "list", "ls", "rm", "delete", "del"})`.
     `_refuse_verb_capture` keeps its single-word branch and adds: if the first token's casefold
     is in `_MULTIWORD_VERBS` (and there are two or more tokens), raise `ClickException` with
     `refusing to capture '<text>' as an idea — it starts with the command-like word '<verb>';
-    did you mean `<hint>`? (pass --force to capture it anyway)`. Hints: `list`/`ls`/`find` → `nw idea search TEXT` (related-idea search) or `nw ideas` (list);
-    `rm`/`delete`/`del` → `nw idea --help`.
+    did you mean <hint>? (pass --force to capture it anyway)`, where `<hint>` is the literal
+    string for the verb:
+    - `list`/`ls`/`find` → ``nw idea search TEXT` (related-idea search) or `nw ideas` (list)``
+      (both commands appear in the message, each backticked);
+    - `rm`/`delete`/`del` → ``nw idea close IDEA-NNN --as drop --reason "…"` (closes an idea;
+      `nw idea --help` lists the rest)``. `nw idea close` is the real subcommand
+      (`cli.py:802`, `--as drop|researched` required); there is no delete.
+  - Guard semantics: it operates on the **joined text** (`" ".join(text)`, whitespace-stripped,
+    first token by `split()`), not on the argv shape. So `nw idea "list the ideas"` (one quoted
+    argument, several words) refuses exactly like `nw idea list the ideas`. Click options
+    (`--tag`, `--project`, …, anywhere on the line) are parsed out before `text` is joined, so
+    `nw idea find x --tag foo` refuses the same as `nw idea find x`; the guard sees only
+    `find x`. Casing is ignored (`LS`, `Find`). A first word that merely *starts* with a verb
+    (`nw idea listing of the queue`, `nw idea delegate the lease`) is not a match: the
+    comparison is on the whole first token.
   - `idea_group` docstring gains `nw idea search TEXT   # related-idea search (read-only)` and a
     line `nw idea capture search …   # capture text that starts with a subcommand name`.
   - The single-word hint for `search` itself is no longer reachable (it is a subcommand); a bare
@@ -105,10 +128,17 @@ junk idea in the live file.
 - [ ] `nw idea search a b --json` emits the same `nw.ideas.v1` document as
       `nw ideas --query "a b" --json`; `--limit N` caps the hits like `ideas --limit`.
 - [ ] `nw idea search` with no text and `nw idea search "   "` exit non-zero and create no idea.
-- [ ] `nw idea search <words>` with `WT_PERSONA_RUN=1` exits 0 (read-only path).
+- [ ] `nw idea search <words>` with `NW_PERSONA_RUN=1` exits 0 (read-only path) and leaves the
+      ideas file byte-identical.
 - [ ] `nw idea find x y`, `nw idea list the ideas`, `nw idea LS all`, `nw idea rm IDEA-1 now`,
       `nw idea delete foo bar` and `nw idea del foo bar` each exit 1 with a refusal that names the
       verb and `--force`, and leave the ideas file byte-identical.
+- [ ] The quoted single-argument form refuses the same as the unquoted form
+      (`nw idea "list the ideas"` and `nw idea list the ideas` both exit 1, no capture), and an
+      option on the line does not change that (`nw idea find x --tag foo` exits 1, no capture).
+- [ ] The `list`/`ls`/`find` refusals name `nw idea search TEXT` and `nw ideas`; the
+      `rm`/`delete`/`del` refusals name `nw idea close` (with `--as drop`), and that command
+      exists (`nw idea close --help` exits 0).
 - [ ] The same inputs with `--force` capture the full text as one new idea.
 - [ ] `nw idea refactor the parser`, `nw idea add retry to the queue`,
       `nw idea status page for the dashboard` and `nw idea capture search the ideas file faster`
@@ -124,13 +154,24 @@ junk idea in the live file.
     `pytestmark = pytest.mark.fast`, so no second tier): add
     `test_multiword_verb_capture_refused` (parametrized over the inputs above, asserts exit 1,
     verb and `--force` in output, `_ideas_bytes` unchanged),
+    `test_multiword_verb_quoted_and_with_options_refused` (`nw idea "list the ideas"`,
+    `nw idea find x --tag foo`; exit 1, no capture), `test_multiword_verb_hints` (list/ls/find
+    name `nw idea search` and `nw ideas`; rm/delete/del name `nw idea close`),
     `test_multiword_verb_force_captures`, `test_ordinary_multiword_captures_unchanged`
-    (`refactor …`, `add …`, `status …`, `capture search …`), and
+    (`refactor …`, `add …`, `status …`, `listing of the queue`, `capture search …`), and
     `test_single_word_guard_unchanged`.
+  - **Replace** the existing `test_multi_word_verb_text_captures` (line 87; it currently asserts
+    `nw idea list all the things` exits 0 and captures it, which Decision 2 makes a refusal)
+    with `test_multiword_verb_capture_refused`; the capture-of-multiword-verb-text assertion is
+    kept only with `--force` (`test_multiword_verb_force_captures`). A scan of `tests/` for
+    other multi-word `list`/`ls`/`rm`/`delete`/`del`/`find` captures through the CLI found no
+    other (`tests/test_queue_conflict_resolve.py:475` calls the `capture` helper directly with
+    "list fm", not the CLI guard); the implementer re-runs that grep and fixes any hit the same
+    way. No test may still assert that a multi-word verb-led capture succeeds without `--force`.
   - `tests/test_idea_search.py` (extend; already `pytestmark = pytest.mark.fast`): add
     `test_idea_search_matches_ideas_query` (seed ideas incl. a PROMOTED one; compare `idea search`
     stdout and `--json` payload to `ideas --query`), `test_idea_search_is_read_only` (file bytes
-    and `_snapshot` unchanged, also with `WT_PERSONA_RUN=1`), `test_idea_search_limit`, and
+    and `_snapshot` unchanged, also with `NW_PERSONA_RUN=1`), `test_idea_search_limit`, and
     `test_idea_search_requires_text` (no args, blank text: non-zero, no new idea).
   - Both edits reuse the modules' existing `_cfg`/`env` fixtures; no new test module is
     introduced, so no new speed-tier marker is needed. `python3 tools/test_tiers.py --check`
