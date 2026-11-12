@@ -1,7 +1,7 @@
 ---
 id: SPEC-0558
 title: Per-campaign lean opt-in (`nw queue add --lean`) and an A/B cohort tag
-status: accepted
+status: done
 owner: user
 created: 2026-11-12
 parent: SPEC-0552
@@ -220,7 +220,8 @@ Per AGENTS.md.
 - **Real-config table.** Computed as in Design (scratch script around
   `personas.build_request`); identical to the table the test pins for the copied profile
   shape.
-- **Gate.** See below.
+- **Gate.** Close gate GATEJOB-2574 on the box (commit 82b39e90) passed: spec-lint,
+  docs-tests, pytest (4374 passed, 0 failed, 6 skipped).
 - **Clock.** No `nw idea clock-in`: that writes the org files, which this lane may not touch.
 
 ## Open questions
