@@ -67,9 +67,12 @@ def canonical_key(key: str) -> str:
 `"agentic.workers.executor"` both return `"executor"`; anything else raises
 `ValueError("key 'x' is not allowed (allowed: executor, agentic.workers.executor)")`. The
 accepted spellings are derived from `KEY_PATHS`, so a future key added to `ALLOWED` and
-`KEY_PATHS` is listed automatically. `validate_key` calls `canonical_key` and keeps its
-existing "is not allowed" wording; `validate_value` is unchanged apart from validating the
-canonical key. A test asserts `KEY_PATHS` and `ALLOWED` have the same keys.
+`KEY_PATHS` is listed automatically. `canonical_key` is additive and independent of
+`validate_key`. `validate_key` and `validate_value` stay exactly as they are (exact short key
+only) and remain what the worker host uses (`run()`, `get_key`, `set_key`); they never call
+`canonical_key`, so the host-side grammar is not widened. The coordinator calls `canonical_key`
+first and then passes the canonical short key to `validate_key`/`validate_value`. A test
+asserts `KEY_PATHS` and `ALLOWED` have the same keys.
 
 **CLI.** In `workers_config` (`src/nightwright/agentic/cli_workers.py`), `get` and `set`
 replace `key` with `canonical_key(key)` right after argument-count checks and before the
@@ -123,8 +126,10 @@ docs that name the command (`docs/README.md` or the nw-orient skill, wherever
       `local` and `slurm`.
 - [ ] The key tables are single-sourced: `KEY_PATHS` and `ALLOWED` have identical keys, and the
       error and help text are derived from them.
-- [ ] The worker-side grammar is unchanged: `nw worker config-set set agentic.workers.executor
-      local` is still refused by `check_ssh_command` and by `nw worker config-set`.
+- [ ] The worker-side grammar is unchanged: `validate_key` and `validate_value` are not modified
+      and do not accept the dotted path, and `nw worker config-set set agentic.workers.executor
+      local` (also `get agentic.workers.executor`) exits 2 (`EXIT_REFUSE`) without touching the
+      config file; `check_ssh_command` still refuses the dotted path.
 
 ## Test plan
 
@@ -145,8 +150,10 @@ docs that name the command (`docs/README.md` or the nw-orient skill, wherever
     `agentic.workers.executor`, `local`, `slurm`.
   - `test_key_tables_agree`: `set(KEY_PATHS) == set(ALLOWED)` and `canonical_key` round-trips
     each path and short name.
-  - `test_worker_side_grammar_stays_short`: `check_ssh_command` and
-    `nw worker config-set set agentic.workers.executor local` refuse the dotted path.
+  - `test_worker_side_grammar_stays_short`: `validate_key("agentic.workers.executor")` raises
+    `ValueError`; `check_ssh_command` refuses the dotted path; `nw worker config-set set
+    agentic.workers.executor local` and `get agentic.workers.executor` (via `CliRunner` against
+    a temp host config) exit 2 and leave the config file unchanged.
   Run `python3 tools/test_tiers.py --check` (it exists) and require exit 0, since no new test
   module is added.
 - **Manual verification:** `uv run nw workers config --help` shows the allowed-keys block;
