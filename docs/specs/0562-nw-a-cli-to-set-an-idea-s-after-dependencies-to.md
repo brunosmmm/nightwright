@@ -1,9 +1,10 @@
 ---
 id: SPEC-0562
 title: "`nw idea after`: set an idea's `:AFTER:` prerequisites from the CLI"
-status: proposed
+status: accepted
 owner: user
 created: 2026-11-12
+updated: 2026-11-12
 kind: feature
 tags: [ideas, queue, cli]
 source_idea: IDEA-1065
