@@ -1,7 +1,7 @@
 ---
 id: SPEC-0564
 title: "SPEC-0476 follow-up: close the Runs pane test-strength gaps"
-status: accepted
+status: in-progress
 owner: user
 created: 2026-11-12
 updated: 2026-11-12

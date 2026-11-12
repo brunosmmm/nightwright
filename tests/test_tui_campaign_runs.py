@@ -466,32 +466,85 @@ def test_stream_result_and_stream_tail_unit(tmp_path):
     assert not any(ln.lstrip().startswith("{") and '"type":' in ln for ln in lines3)
 
 
+def _tool_result_event(content: str) -> str:
+    return json.dumps({"type": "user", "message": {"content": [{
+        "type": "tool_result", "tool_use_id": "t1", "content": content}]}})
+
+
+def _tool_out(i: int) -> str:
+    """The rendered line of `_tool_result_event(f"tool-out-{i:04d}")`."""
+    return f"  ← 1 line: tool-out-{i:04d}"
+
+
+def _multi_line_event(i: int) -> str:
+    """One assistant event with three tool_use blocks: three rendered lines."""
+    return json.dumps({"type": "assistant", "message": {"content": [
+        {"type": "tool_use", "id": f"u{i}{k}", "name": "Bash", "input": {"command": f"cmd-{i:03d}-{k}"}}
+        for k in range(3)]}})
+
+
+def _stream_copy(cfg, tag):
+    cid = _copy_campaign(cfg, CID_STREAM, tag)
+    rid = "001-implementer"
+    return cid, rid, S.runs_dir(cfg, cid) / rid
+
+
 def test_stream_initial_paint_caps_rendered_lines(tmp_path):
     cfg = TH.fixture_cfg(tmp_path)
     TH.prepare_queue_window(cfg)
-    cid_stream = CID_STREAM
-    camp = S.campaign_dir(cfg, cid_stream)
-    dst = camp.parent / f"{cid_stream}-stream200"
-    shutil.copytree(camp, dst)
-    cid3 = dst.name
-    rid = "001-implementer"
-    run_dir = S.runs_dir(cfg, cid3) / rid
-    chunks = [
-        json.dumps({
-            "type": "user",
-            "message": {"content": [{
-                "type": "tool_result",
-                "tool_use_id": "t1",
-                "content": f"tool-out-{i:04d}",
-            }]},
-        })
-        for i in range(250)
-    ]
-    (run_dir / "stream.jsonl").write_text("\n".join(chunks) + "\n", encoding="utf-8")
-    big = AM.load_run_pane_detail(cfg, cid3, rid)
-    assert big.offset == (run_dir / "stream.jsonl").stat().st_size
-    assert "tool-out-0049" not in big.text.plain
-    assert "tool-out-0050" in big.text.plain
+    cid3, rid, run_dir = _stream_copy(cfg, "stream200")
+    stream = run_dir / "stream.jsonl"
+    for n in (199, 200, 201, 250):
+        stream.write_text("\n".join(_tool_result_event(f"tool-out-{i:04d}") for i in range(n))
+                          + "\n", encoding="utf-8")
+        snap = AM.load_run_pane_detail(cfg, cid3, rid)
+        assert len(snap.body) == min(n, 200), n
+        assert snap.body[0] == _tool_out(max(n - 200, 0)), n
+        assert snap.body[-1] == _tool_out(n - 1), n
+        assert snap.offset == stream.stat().st_size, n
+        if n > 200:
+            assert _tool_out(n - 201) not in snap.body
+    # The cap counts rendered lines, not events: 100 three-line events keep the last 200 lines.
+    events = [_multi_line_event(i) for i in range(100)]
+    stream.write_text("\n".join(events) + "\n", encoding="utf-8")
+    snap = AM.load_run_pane_detail(cfg, cid3, rid)
+    assert len(snap.body) == 200
+    assert snap.body[-1] == "→ Bash cmd-099-2"
+    assert snap.body[0] == "→ Bash cmd-033-1"
+    assert snap.offset == stream.stat().st_size
+
+
+def test_stream_initial_paint_cap_in_popup(tmp_path, monkeypatch):
+    cfg, cid, run_id, run_dir, ended = _live_run_copy(tmp_path, monkeypatch, "cap", stream=True)
+    (run_dir / "stream.jsonl").write_text(
+        "\n".join(_tool_result_event(f"tool-out-{i:04d}") for i in range(250)) + "\n",
+        encoding="utf-8")
+    (run_dir / "stderr.log").write_text(
+        "\n".join(f"err-{i:04d}" for i in range(250)) + "\n", encoding="utf-8")
+    (run_dir / "run.json").write_text(
+        json.dumps({"verdict": {"status": "verdict-0564", "summary": "sum"}}), encoding="utf-8")
+    app = _desk(cfg, tab="queue")
+
+    async def drive():
+        async with app.run_test(size=SIZE) as pilot:
+            await settle(app, pilot)
+            app.open_campaign_detail(cid, focus={"tab": "runs", "run": run_id})
+            s = detail_screen(app)
+            assert await pilot_until(pilot, lambda: _tool_out(249) in runs_detail(app))
+            lines = runs_detail(app).splitlines()
+            assert lines[0] == "verdict-0564 sum"
+            assert _tool_out(50) in lines and _tool_out(49) not in lines
+            assert sum(ln.startswith("  ← 1 line: tool-out-") for ln in lines) == 200
+            # The stderr tail is not capped by the stream bound.
+            assert all(f"err-{i:04d}" in lines for i in range(50, 250))
+            assert "err-0049" not in lines
+            with open(run_dir / "stream.jsonl", "a", encoding="utf-8") as f:
+                f.write(_tool_result_event("tool-out-0250") + "\n")
+            assert await pilot_until(pilot, lambda: _tool_out(250) in runs_detail(app))
+            assert _tool_out(50) in runs_detail(app).splitlines()
+            assert s._run_follow_done is False
+
+    _run(drive())
 
 
 def test_ended_stream_trailing_fragment(tmp_path):
@@ -921,47 +974,112 @@ def test_string_result_and_files_raw(tmp_path):
     assert "outside-sentinel-0476" not in esc
 
 
+    # SPEC-0564: every shape of `files.raw` against a known result.json and two sentinels.
+    (run_dir / "result.json").write_text("RESULT-JSON-0564\n", encoding="utf-8")
+    (run_dir / "alt.txt").write_text("ALT-0564\n", encoding="utf-8")
+    sentinel = run_dir.parent.parent.parent / "outside-0564.txt"
+    sentinel.write_text("OUTSIDE-0564\n", encoding="utf-8")
+    evil = run_dir.parent / f"{run_id}-evil"
+    evil.mkdir()
+    (evil / "x.txt").write_text("OUTSIDE-0564\n", encoding="utf-8")
+    try:
+        (run_dir / "link.txt").symlink_to(sentinel)
+    except (OSError, NotImplementedError):
+        pytest.skip("cannot create symlinks")
+
+    def pane(run_json_files):
+        rj = json.loads((run_dir / "run.json").read_text(encoding="utf-8"))
+        rj["files"] = run_json_files
+        (run_dir / "run.json").write_text(json.dumps(rj), encoding="utf-8")
+        return AM.load_run_pane_detail(cfg, cid2, run_id).text.plain
+
+    hostile = [
+        "../../../outside-0564.txt",
+        str(sentinel),
+        str(run_dir / "alt.txt"),  # absolute, inside the run dir: rejected by is_absolute()
+        "link.txt",
+        f"../{run_id}-evil/x.txt",
+        "   ",
+        4,
+        ["alt.txt"],
+    ]
+    for raw in hostile:
+        text = pane({"raw": raw})
+        assert "RESULT-JSON-0564" in text, raw
+        assert "OUTSIDE-0564" not in text and "ALT-0564" not in text, raw
+    text = pane(["alt.txt"])
+    assert "RESULT-JSON-0564" in text and "ALT-0564" not in text
+    for raw in ("alt.txt", "sub/../alt.txt"):
+        text = pane({"raw": raw})
+        assert "ALT-0564" in text and "RESULT-JSON-0564" not in text, raw
+    text = pane({"raw": "missing.txt"})
+    assert "no result.json" in text and "RESULT-JSON-0564" not in text
+    (run_dir / "run.json").unlink()
+    assert "RESULT-JSON-0564" in AM.load_run_pane_detail(cfg, cid2, run_id).text.plain
+
+
 def test_runs_cursor_jk_and_arrows(tmp_path):
     cfg = TH.fixture_cfg(tmp_path)
     TH.prepare_queue_window(cfg)
-    cid = CID_MULTI
-    hist = Hist.campaign_history(cfg, cid)
+    # 13 runs: the whole table is walked within the TUI per-test budget.
+    cid = _copy_campaign(cfg, CID_STREAM, "jk")
+    run_ids = [r["run_id"] for r in Hist.campaign_history(cfg, cid)["runs"]]
+    assert len(run_ids) >= 3
+    for rid in run_ids:
+        path = S.runs_dir(cfg, cid) / rid / "run.json"
+        rj = json.loads(path.read_text(encoding="utf-8")) if path.is_file() else {}
+        verdict = rj.get("verdict") if isinstance(rj.get("verdict"), dict) else {}
+        verdict["summary"] = f"row-marker-{rid}"
+        rj["verdict"] = verdict
+        path.write_text(json.dumps(rj), encoding="utf-8")
+    markers = {rid: f"row-marker-{rid}" for rid in run_ids}
+    assert not any(m in other for m in markers.values() for other in markers.values()
+                   if m != other)
     app = _desk(cfg, tab="queue")
 
     async def drive():
         async with app.run_test(size=SIZE) as pilot:
-            await open_screen(app, pilot, cid, "delivered", timeline=False)
-            await press(app, pilot, ["3"])
+            await settle(app, pilot)
+            app.open_campaign_detail(cid, focus={"tab": "runs"})
             s = detail_screen(app)
+            assert await pilot_until(pilot, lambda: s.view is not None)
             tbl = runs_table(app)
-            assert await pilot_until(pilot, lambda: tbl.row_count > 1)
-            row0 = tbl.cursor_row
-            rid0 = str(tbl.ordered_rows[row0].key.value)
-            await press(app, pilot, ["down"])
-            assert await pilot_until(pilot, lambda: tbl.cursor_row == row0 + 1)
-            await press(app, pilot, ["up"])
-            assert await pilot_until(pilot, lambda: tbl.cursor_row == row0)
-            await press(app, pilot, ["j"])
-            assert await pilot_until(pilot, lambda: tbl.cursor_row == row0 + 1)
-            rid1 = str(tbl.ordered_rows[tbl.cursor_row].key.value)
-            assert rid1 == hist["runs"][row0 + 1]["run_id"]
-            await press(app, pilot, ["k"])
-            assert await pilot_until(pilot, lambda: tbl.cursor_row == row0)
-            s.select_run("002-gate_triager")
-            assert await pilot_until(pilot, lambda: GATE_TITLE in runs_detail(app))
-            tri_row = tbl.cursor_row
-            next_id = hist["runs"][tri_row + 1]["run_id"]
-            await press(app, pilot, ["down"])
-            assert await pilot_until(pilot, lambda: tbl.cursor_row == tri_row + 1)
+            assert await pilot_until(pilot, lambda: tbl.row_count == len(run_ids))
+            assert [str(tbl.ordered_rows[i].key.value) for i in range(tbl.row_count)] == run_ids
+            s.select_run(run_ids[0])
             assert await pilot_until(
-                pilot,
-                lambda: (
-                    MAJOR_TITLE in runs_detail(app)
-                    if next_id == "020-test_reviewer"
-                    else GATE_TITLE not in runs_detail(app)
-                ),
-            )
-            assert str(tbl.ordered_rows[tbl.cursor_row].key.value) == next_id
+                pilot, lambda: tbl.cursor_row == 0 and markers[run_ids[0]] in runs_detail(app))
+
+            def only_marker(rid):
+                assert markers[rid] in runs_detail(app)
+                for other, m in markers.items():
+                    if other != rid:
+                        assert m not in runs_detail(app), (other, rid)
+                assert s._selected_run_id == rid
+                assert str(tbl.ordered_rows[tbl.cursor_row].key.value) == rid
+
+            async def step(key, row):
+                await pilot.press(key)
+                rid = run_ids[row]
+                assert await pilot_until(
+                    pilot, lambda: tbl.cursor_row == row and markers[rid] in runs_detail(app)), (
+                    key, row, tbl.cursor_row, s._selected_run_id)
+                only_marker(rid)
+
+            async def boundary(key, row):
+                await pilot.press(key)
+                await settle(app, pilot)
+                assert tbl.cursor_row == row
+                only_marker(run_ids[row])
+
+            only_marker(run_ids[0])
+            last = len(run_ids) - 1
+            for row in range(1, last + 1):
+                await step(("down", "j")[(row - 1) % 2], row)
+            await boundary("j", last)
+            for row in range(last - 1, -1, -1):
+                await step(("up", "k")[(last - 1 - row) % 2], row)
+            await boundary("k", 0)
 
     _run(drive())
 
@@ -1075,6 +1193,7 @@ def test_stale_run_detail_dropped_on_switch(tmp_path, monkeypatch):
     slow_marker = GATE_TITLE
     other_marker = MAJOR_TITLE
     real = AM.load_run_pane_detail
+    paints = _spy_paints(monkeypatch)
 
     slow_done = threading.Event()
     slow_started = threading.Event()
@@ -1101,10 +1220,179 @@ def test_stale_run_detail_dropped_on_switch(tmp_path, monkeypatch):
             assert await pilot_until(pilot, slow_started.is_set)
             s.select_run(other)
             assert await pilot_until(pilot, lambda: other_marker in runs_detail(app))
+            assert await pilot_until(pilot, lambda: s._run_loaded_id == other)
+            state = _run_state(s)
+            n_paints = len(paints)
             assert await pilot_until(pilot, slow_done.is_set)
             await settle(app, pilot)
             assert other_marker in runs_detail(app)
             assert slow_marker not in runs_detail(app)
+            # The widget's follow state still belongs to the selected run.
+            assert s._run_loaded_id == other
+            assert _run_state(s) == state
+            assert s._run_renderer is state["renderer"]
+            assert other_marker in s._run_head.plain and slow_marker not in s._run_head.plain
+            assert slow_marker not in "".join(s._run_body)
+            assert len(paints) == n_paints
+
+    _run(drive())
+
+
+def _spy_paints(monkeypatch):
+    """Records every `_paint_runs_detail` call."""
+    calls = []
+    real = CD.CampaignDetail._paint_runs_detail
+
+    def spy(self, scroll):
+        calls.append(scroll)
+        return real(self, scroll)
+
+    monkeypatch.setattr(CD.CampaignDetail, "_paint_runs_detail", spy)
+    return calls
+
+
+def _run_state(s) -> dict:
+    """The Runs pane's stored follow state (renderer by identity, the rest by value)."""
+    return {"renderer": s._run_renderer, "offset": s._run_offset, "loaded": s._run_loaded_id,
+            "head": s._run_head.plain, "body": list(s._run_body), "done": s._run_follow_done,
+            "stale": s._run_detail_stale}
+
+
+def _late_snapshots(monkeypatch):
+    """While `mode["late"]` is set the loader returns the run's real snapshot with LATE-0564
+    at the top of the head, so a late result that is wrongly accepted is visible."""
+    mode = {"late": False}
+    real = AM.load_run_pane_detail
+
+    def load(cfg, campaign_id, rid, *extra):
+        snap = real(cfg, campaign_id, rid, *extra)
+        if mode["late"]:
+            head = Text("LATE-0564\n")
+            head.append_text(snap.head)
+            snap.head = head
+        return snap
+
+    monkeypatch.setattr(AM, "load_run_pane_detail", load)
+    return mode
+
+
+def _stream_run_pair(cfg):
+    runs = [r["run_id"] for r in Hist.campaign_history(cfg, CID_STREAM)["runs"]
+            if r.get("has_stream")]
+    assert len(runs) >= 2
+    return runs[0], runs[1]
+
+
+def test_late_load_token_guard(tmp_path, monkeypatch):
+    """A superseded load for the still-selected run is dropped by the token check alone."""
+    cfg = TH.fixture_cfg(tmp_path)
+    TH.prepare_queue_window(cfg)
+    a, _ = _stream_run_pair(cfg)
+    mode = _late_snapshots(monkeypatch)
+    paints = _spy_paints(monkeypatch)
+    app = _desk(cfg, tab="queue")
+
+    async def drive():
+        async with app.run_test(size=SIZE) as pilot:
+            await open_screen(app, pilot, CID_STREAM, "delivered", timeline=False)
+            s = detail_screen(app)
+            await press(app, pilot, ["3"])
+            s.select_run(a)
+            assert await pilot_until(pilot, lambda: s._run_loaded_id == a)
+            old = s._run_detail_token
+            r_first = s._run_renderer
+            n = len(paints)
+            s._load_run_detail(a)
+            assert s._run_detail_token == old + 1 and s._selected_run_id == a
+            assert await pilot_until(
+                pilot, lambda: len(paints) > n and s._run_renderer is not r_first)
+            await settle(app, pilot)
+            state, n = _run_state(s), len(paints)
+            shown = runs_detail(app)
+            mode["late"] = True
+            await s._load_run_detail_async(a, old)
+            await settle(app, pilot)
+            assert len(paints) == n
+            assert _run_state(s) == state and s._run_renderer is state["renderer"]
+            assert runs_detail(app) == shown and "LATE-0564" not in shown
+            assert "LATE-0564" not in s._run_head.plain
+
+    _run(drive())
+
+
+def test_late_load_selection_guard(tmp_path, monkeypatch):
+    """A late load for run A whose token is current is dropped by the selection check alone:
+    selecting B on the Timeline tab changes the selection without bumping the token."""
+    cfg = TH.fixture_cfg(tmp_path)
+    TH.prepare_queue_window(cfg)
+    a, b = _stream_run_pair(cfg)
+    mode = _late_snapshots(monkeypatch)
+    paints = _spy_paints(monkeypatch)
+    app = _desk(cfg, tab="queue")
+
+    async def drive():
+        async with app.run_test(size=SIZE) as pilot:
+            await open_screen(app, pilot, CID_STREAM, "delivered", timeline=False)
+            s = detail_screen(app)
+            await press(app, pilot, ["3"])
+            s.select_run(a)
+            assert await pilot_until(pilot, lambda: s._run_loaded_id == a)
+            await press(app, pilot, ["2"])
+            await settle(app, pilot)
+            token, n = s._run_detail_token, len(paints)
+            s._select_run_row(b)
+            assert s._run_detail_token == token and s._selected_run_id == b
+            assert s._run_loaded_id is None and s._run_renderer is None and s._run_offset == 0
+            assert s._run_detail_stale is True
+            before = _run_state(s)
+            mode["late"] = True
+            await s._load_run_detail_async(a, s._run_detail_token)
+            await settle(app, pilot)
+            assert s._selected_run_id == b and s._run_detail_token == token
+            assert s._run_loaded_id is None and s._run_renderer is None
+            assert s._run_offset == 0 and s._run_detail_stale is True
+            assert _run_state(s) == before
+            assert len(paints) == n and "LATE-0564" not in s._run_head.plain
+
+    _run(drive())
+
+
+def test_late_load_accepted_on_timeline_tab(tmp_path, monkeypatch):
+    """Nothing checks the active tab: with token and selection current, a load that lands
+    while the Timeline tab is showing is accepted and painted, only the scroll is skipped."""
+    cfg = TH.fixture_cfg(tmp_path)
+    TH.prepare_queue_window(cfg)
+    a, _ = _stream_run_pair(cfg)
+    mode = _late_snapshots(monkeypatch)
+    paints = _spy_paints(monkeypatch)
+    scrolls = []
+    real_scroll = CD.CampaignDetail._scroll_runs_detail
+
+    def scroll_spy(self, where):
+        scrolls.append(where)
+        return real_scroll(self, where)
+
+    monkeypatch.setattr(CD.CampaignDetail, "_scroll_runs_detail", scroll_spy)
+    app = _desk(cfg, tab="queue")
+
+    async def drive():
+        async with app.run_test(size=SIZE) as pilot:
+            await open_screen(app, pilot, CID_STREAM, "delivered", timeline=False)
+            s = detail_screen(app)
+            await press(app, pilot, ["3"])
+            s.select_run(a)
+            assert await pilot_until(pilot, lambda: s._run_loaded_id == a)
+            await press(app, pilot, ["2"])
+            await settle(app, pilot)
+            n = len(paints)
+            scrolls.clear()
+            mode["late"] = True
+            await s._load_run_detail_async(a, s._run_detail_token)
+            await settle(app, pilot)
+            assert s._run_loaded_id == a and s._run_detail_stale is False
+            assert "LATE-0564" in s._run_head.plain
+            assert len(paints) == n + 1
+            assert scrolls == []
 
     _run(drive())
 
@@ -1244,16 +1532,41 @@ def test_verdict_line_lead_fallbacks(tmp_path):
     TH.prepare_queue_window(cfg)
     cid = _copy_campaign(cfg, CID_MULTI, "lead")
     run_id = "001-implementer"
+    (S.runs_dir(cfg, cid) / run_id / "stderr.log").write_text("stderr-first-0564\n", encoding="utf-8")
 
     def only(verdict):
         def fn(rj):
             rj["verdict"] = verdict
         _edit_run_json(cfg, cid, run_id, fn)
-        return AM.load_run_pane_detail(cfg, cid, run_id).text.plain.splitlines()[0]
+        return AM.load_run_pane_detail(cfg, cid, run_id).head.plain.splitlines()[0]
+
+    def hist_status():
+        row = next(r for r in Hist.campaign_history(cfg, cid)["runs"] if r["run_id"] == run_id)
+        return row["verdict_status"]
 
     assert only({"disposition": "disp-0476", "score": 3, "summary": "sum-a"}) == "disp-0476 3 sum-a"
     assert only({"verdict": "verd-0476", "summary": "sum-b"}) == "verd-0476 sum-b"
-    assert only({"disposition": "d", "verdict": "v"}) == "d"
+    # Lead fallbacks: a null key falls through to the next key; the table agrees with the pane.
+    for verdict, lead in (
+            ({"status": None, "disposition": "d", "verdict": "v"}, "d"),
+            ({"status": None, "disposition": None, "verdict": "v"}, "v"),
+            ({"status": "s", "disposition": "d"}, "s"),
+            ({"disposition": "d", "verdict": "v"}, "d")):
+        assert only(verdict) == lead
+        assert hist_status() == lead
+    # No lead key at all: the first line is the score (a null lead is not a lead).
+    assert only({"score": 4}) == "4"
+    assert hist_status() is None
+    # An empty-string lead is present (not None): current behavior keeps it, so the line
+    # starts with a space and the table cell is the empty string.
+    assert only({"status": "", "score": 7}) == " 7"
+    assert hist_status() == ""
+    # No verdict line: the first line is the first blocking row, else the stderr first line.
+    for verdict in ({}, "text", [1]):
+        assert only(verdict) == "stderr-first-0564"
+    assert only({"blockers": ["blk-0564"]}) == "major: blk-0564"
+    (S.runs_dir(cfg, cid) / run_id / "stderr.log").unlink()
+    assert only({}) == "no stderr"
     # The shipped fixtures: gate_triager leads with its disposition, the reviewer with its verdict.
     for rid in ("002-gate_triager", "020-test_reviewer"):
         v = json.loads((S.runs_dir(cfg, cid) / rid / "run.json").read_text(
@@ -1261,6 +1574,59 @@ def test_verdict_line_lead_fallbacks(tmp_path):
         lead = next(v[k] for k in ("status", "disposition", "verdict") if v.get(k) is not None)
         first = AM.load_run_pane_detail(cfg, cid, rid).text.plain.splitlines()[0]
         assert first.startswith(str(lead))
+        row = next(r for r in Hist.campaign_history(cfg, cid)["runs"] if r["run_id"] == rid)
+        assert row["verdict_status"] == lead
+
+
+def test_verdict_line_composition(tmp_path):
+    cfg = TH.fixture_cfg(tmp_path)
+    TH.prepare_queue_window(cfg)
+    cid = _copy_campaign(cfg, CID_MULTI, "compose")
+    run_id = "001-implementer"
+    (S.runs_dir(cfg, cid) / run_id / "stderr.log").write_text("err-0564\n", encoding="utf-8")
+
+    def head(verdict):
+        def fn(rj):
+            rj["verdict"] = verdict
+        _edit_run_json(cfg, cid, run_id, fn)
+        return AM.load_run_pane_detail(cfg, cid, run_id).head.plain
+
+    for verdict, line in (
+            ({"status": "s", "score": 7, "summary": "m"}, "s 7 m"),
+            ({"status": "s", "score": 0, "summary": "m"}, "s 0 m"),
+            ({"status": "s", "score": 7, "summary": ""}, "s 7"),
+            ({"status": "s", "summary": "m"}, "s m"),
+            ({"status": "s", "score": 7}, "s 7"),
+            ({"status": "s"}, "s"),
+            ({"score": 7, "summary": "m"}, "7 m"),
+            ({"score": 0}, "0"),
+            ({"summary": "m"}, "m")):
+        assert head(verdict).splitlines()[0] == line, verdict
+    # Rich markup stays literal; control characters are stripped (printable remainder kept).
+    summary = "[b]x[/b] \x1b[31mred\x85end"
+    shown = "s 7 [b]x[/b] [31mredend"
+    plain = head({"status": "s", "score": 7, "summary": summary})
+    assert plain.splitlines()[0] == shown
+    assert "\x1b" not in plain and "\x85" not in plain
+    # Line order: verdict line, blocking rows, stderr.
+    plain = head({"status": "s", "score": 7, "summary": "m", "blockers": ["blk-0564"]})
+    assert plain.splitlines() == ["s 7 m", "major: blk-0564", "err-0564"]
+
+    app = _desk(cfg, tab="queue")
+
+    async def drive():
+        async with app.run_test(size=SIZE) as pilot:
+            await settle(app, pilot)
+            app.open_campaign_detail(cid, focus={"tab": "runs"})
+            s = detail_screen(app)
+            assert await pilot_until(pilot, lambda: s.view is not None)
+            head({"status": "s", "score": 7, "summary": summary})
+            s.select_run(run_id)
+            assert await pilot_until(pilot, lambda: shown in runs_detail(app).splitlines())
+            assert "\x1b" not in runs_detail(app) and "\x85" not in runs_detail(app)
+            assert runs_detail(app).splitlines()[0] == shown
+
+    _run(drive())
 
 
 def test_findings_must_fix_severity_and_excluded_keys(tmp_path):
@@ -1268,6 +1634,7 @@ def test_findings_must_fix_severity_and_excluded_keys(tmp_path):
     TH.prepare_queue_window(cfg)
     cid = _copy_campaign(cfg, CID_MULTI, "sev")
     run_id = "001-implementer"
+    (S.runs_dir(cfg, cid) / run_id / "stderr.log").write_text("stderr-0564\n", encoding="utf-8")
 
     def fn(rj):
         rj["changed_files"] = ["cf-top-0476.py"]
@@ -1278,19 +1645,54 @@ def test_findings_must_fix_severity_and_excluded_keys(tmp_path):
             "tests_run": ["tr-verdict-0476"],
             "findings": [
                 {"severity": "must_fix", "title": "[b]sev-must-0476[/b]", "files": ["a.py", "b.py"]},
-                {"severity": "major", "title": "sev-major-0476"},
-                {"severity": "minor", "title": "sev-minor-0476"},
-                {"severity": "nit", "title": "sev-nit-0476"},
+                {"severity": "major", "title": "sev-major-0564"},
+                {"severity": "minor", "title": "MARK-minor-0564"},
+                {"severity": "nit", "title": "MARK-nit-0564"},
+                {"severity": "MUST_FIX", "title": "MARK-upper-0564"},
+                {"severity": "blocker", "title": "MARK-blocker-0564"},
+                "MARK-str-finding-0564",
             ],
+            "must_fix": [
+                {"title": "mf-obj-0564", "files": ["c.py"]},
+                {"title": "mf-nofiles-0564"},
+                "MARK-str-mustfix-0564",
+            ],
+            "blockers": ["blk-str-0564", 918273645],
         }
 
     _edit_run_json(cfg, cid, run_id, fn)
+    head = AM.load_run_pane_detail(cfg, cid, run_id).head.plain
+    assert head.splitlines() == [
+        "fix",
+        "must_fix: [b]sev-must-0476[/b]", "  files: a.py, b.py",
+        "major: sev-major-0564",
+        "must_fix: mf-obj-0564", "  files: c.py",
+        "must_fix: mf-nofiles-0564",
+        "major: blk-str-0564",
+        "stderr-0564",
+    ]
     text = AM.load_run_pane_detail(cfg, cid, run_id).text.plain
-    assert "must_fix: [b]sev-must-0476[/b]\n  files: a.py, b.py\n" in text
-    assert "major: sev-major-0476" in text
-    assert "sev-minor-0476" not in text and "sev-nit-0476" not in text
-    for absent in ("cf-top-0476", "tr-top-0476", "cf-verdict-0476", "tr-verdict-0476"):
-        assert absent not in text
+    for absent in ("cf-top-0476", "tr-top-0476", "cf-verdict-0476", "tr-verdict-0476",
+                   "MARK-minor-0564", "MARK-nit-0564", "MARK-upper-0564", "MARK-blocker-0564",
+                   "MARK-str-finding-0564", "MARK-str-mustfix-0564", "918273645"):
+        assert absent not in text, absent
+    # The same rows reach the widget text of the open popup.
+    app = _desk(cfg, tab="queue")
+
+    async def drive():
+        async with app.run_test(size=SIZE) as pilot:
+            await settle(app, pilot)
+            app.open_campaign_detail(cid, focus={"tab": "runs"})
+            s = detail_screen(app)
+            assert await pilot_until(pilot, lambda: s.view is not None)
+            s.select_run(run_id)
+            assert await pilot_until(
+                pilot, lambda: "must_fix: [b]sev-must-0476[/b]" in runs_detail(app).splitlines())
+            lines = runs_detail(app).splitlines()
+            assert lines[:3] == ["fix", "must_fix: [b]sev-must-0476[/b]", "  files: a.py, b.py"]
+            assert "must_fix: mf-obj-0564" in lines and "MARK-minor-0564" not in runs_detail(app)
+
+    _run(drive())
 
 
 def test_malformed_shapes_and_control_chars(tmp_path):
