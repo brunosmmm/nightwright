@@ -1,7 +1,7 @@
 ---
 id: SPEC-0555
 title: Findings collator (marshal) and automatic follow-up ideas for out-of-scope findings
-status: in-progress
+status: done
 owner: user
 created: 2026-11-11
 parent: SPEC-0552
@@ -202,15 +202,16 @@ measured, then default-on. Existing grouped follow-up ideas are reused.
 
 ## Definition of done
 
-- [ ] Acceptance criteria all met.
-- [ ] Test plan executed; affected tests pass; measurement recorded.
-- [ ] No regressions.
-- [ ] Spec body updated to match what shipped.
-- [ ] `docs/LEDGER.md` updated.
+- [x] Acceptance criteria all met.
+- [x] Test plan executed; affected tests pass; measurement post-merge (with the flag on for Meta-Tools), as SPEC-0554.
+- [x] No regressions.
+- [x] Spec body updated to match what shipped.
+- [x] `docs/LEDGER.md` updated.
 
 ## As shipped
 
-Shipped behind `agentic.lean.collator` (default **off**, already in `config.DEFAULT_CONFIG`
+Shipped 2026-11-12 (close gate GATEJOB-2479 green on f96a45e8, rebased on SPEC-0557's
+44e5cefb; GATEJOB-2475 green on the pre-rebase head) behind `agentic.lean.collator` (default **off**, already in `config.DEFAULT_CONFIG`
 from SPEC-0553; needs `packet`, pinned per campaign at creation). Flag off, or a campaign
 pinned before this change (its `state.lean` has no `collator` key, whatever the live config
 says): no collator run, no `findings-loop-N.json`, no `last_review.collation`, no
