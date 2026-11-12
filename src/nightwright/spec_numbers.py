@@ -83,6 +83,12 @@ def _scan_refs(top):
     return refs
 
 
+def _short_ref(ref):
+    """The scan's location name for a full refname (`refs/heads/x` -> `x`, `refs/remotes/o/x` ->
+    `o/x`); the one rule both the ref scan and `_own_refs` use."""
+    return ref.split("/", 2)[2]
+
+
 def _ref_files(top, rel_dir, sha, cache):
     """Filenames under `rel_dir` at commit `sha`; one `git ls-tree` per distinct commit."""
     if sha not in cache:
@@ -97,12 +103,12 @@ class _RefScan:
 
     def __init__(self, top, rel_dir):
         self._top, self._rel_dir, self._files = top, rel_dir, None
+        self.cache: dict = {}             # commit sha -> filenames, shared with other listings
 
     @property
     def files(self):
         if self._files is None:
-            cache: dict = {}
-            self._files = [(ref, _ref_files(self._top, self._rel_dir, sha, cache))
+            self._files = [(ref, _ref_files(self._top, self._rel_dir, sha, self.cache))
                            for ref, sha in _scan_refs(self._top)]
         return self._files
 
@@ -143,7 +149,7 @@ def _number_files(top, rel_dir, scan):
         for name in names:
             add(name, f"worktree:{path}")
     for ref, names in scan.files:
-        short = ref.split("/", 2)[2]
+        short = _short_ref(ref)
         for name in names:
             add(name, short)
     return out
@@ -297,14 +303,15 @@ def _tree_campaign(tree):
 
 
 def _own_refs(tree):
-    """Short names of the refs `tree` stands on: its local branch and its upstream (empty when
-    detached or without an upstream). A slug rename there is not a collision."""
-    own = set()
-    for rev in ("HEAD", "@{upstream}"):
-        name = (_git(tree, "rev-parse", "--abbrev-ref", rev) or "").strip()
-        if name and name != "HEAD":
-            own.add(name)
-    return own
+    """`(branch, upstream)`: the scan location names of the local branch `tree` is on and of its
+    upstream, each `None` when detached or without one. Taken from full refnames so they match
+    the scan even when a short name is ambiguous (a tag named like the branch)."""
+    def name(*args, prefixes):
+        ref = (_git(tree, *args) or "").strip()
+        return _short_ref(ref) if ref.startswith(prefixes) else None
+    return (name("symbolic-ref", "-q", "HEAD", prefixes=("refs/heads/",)),
+            name("rev-parse", "--symbolic-full-name", "@{upstream}",
+                 prefixes=("refs/remotes/", "refs/heads/")))
 
 
 def collisions(cfg, *, specs_dir=None, tree=None, campaign=None) -> list:
@@ -314,19 +321,26 @@ def collisions(cfg, *, specs_dir=None, tree=None, campaign=None) -> list:
     the store (`_save` replaces it atomically, so an unlocked read is whole); sorted by number.
 
     A leftover or renamed-slug ref counts: delete the stale branch to clear it. The tree's own
-    branch and its upstream do not: a rename there is the tree's own change."""
+    branch does not, nor do names its upstream already held at their merge-base: a rename there
+    is the tree's own change. A name new on the upstream, or a second file in the tree itself,
+    is reported."""
     specs_dir, key, top, rel_dir = _resolve(cfg, specs_dir)
     if not top:
         return []
     tree = os.path.realpath(tree) if tree is not None else top
     campaign = _base_campaign(campaign) or _tree_campaign(tree)
-    own = {f"worktree:{tree}"} | _own_refs(tree)
+    branch, upstream = _own_refs(tree)
     scan = _RefScan(top, rel_dir)
     seen = _number_files(top, rel_dir, scan)
     records, _ = _prune(cfg, _load(cfg), key, scan)
     held = {r["number"]: r for r in records
             if r["key"] == key and r.get("campaign")
             and _base_campaign(r["campaign"]) != campaign}
+    base_names: set = set()           # names the tree and its upstream inherited from history
+    if upstream:
+        fork = (_git(tree, "merge-base", "HEAD", "@{upstream}") or "").strip()
+        if fork:
+            base_names = set(_ref_files(top, rel_dir, fork, scan.cache))
     out = []
     for p in sorted(Path(tree, rel_dir).glob("*.md")):
         m = _NUM_RE.match(p.name)
@@ -334,7 +348,8 @@ def collisions(cfg, *, specs_dir=None, tree=None, campaign=None) -> list:
             continue
         n = int(m.group(1))
         base = {"number": n, "id": f"SPEC-{n:04d}", "file": f"{rel_dir}/{p.name}"}
-        others = {f: [loc for loc in locs if loc not in own]
+        others = {f: [loc for loc in locs if loc != branch
+                      and not (loc == upstream and f in base_names)]
                   for f, locs in seen.get(n, {}).items() if f != p.name}
         others = {f: locs for f, locs in others.items() if locs}
         if others:

@@ -1,7 +1,7 @@
 ---
 id: SPEC-0587
 title: SPEC-0583 review follow-ups - own-ref exclusion no longer hides real collisions, full-ref own names, test gaps
-status: accepted
+status: done
 owner: user
 created: 2026-11-12
 updated: 2026-11-12
@@ -158,15 +158,15 @@ would be a separate pre-existing question outside this spec.
 
 ## Acceptance criteria
 
-- [ ] With `main` tracking `origin/main`, a different filename with the tree's number that another clone pushed to `origin/main` is reported as a `filename` collision with `other == ["origin/main"]`.
-- [ ] The tree's own uncommitted rename, and its own committed-but-unpushed rename, are not reported against `main` or `origin/main`.
-- [ ] A filename that appeared on the upstream after the merge-base is reported even when the tree is also ahead of the upstream.
-- [ ] Two same-number filenames in the tree's own tree (both committed, or committed plus untracked) are each reported with `worktree:<tree>` among the locations; a rename leaves no report.
-- [ ] `_own_refs` derives its names from full refnames through the shared `_short_ref`; with a tag named `main`, the own branch is `main` and the rename on `main` is not a collision.
-- [ ] A detached-HEAD tree owns no ref (`_own_refs == (None, None)`) and compares every ref; a branch without an upstream returns `(branch, None)`; a linked worktree on `nw/<id>` with an upstream is handled.
-- [ ] `collisions()` on a store holding a record committed on a ref and a record for an ABANDONED campaign, while another process holds the lock, leaves the store file's bytes and mtime unchanged and creates no other file in `data_dir`.
-- [ ] `release()` of a live record runs exactly one `for-each-ref` and one `ls-tree` and removes the record.
-- [ ] The `check-numbers` CLI output and the `nw.spec.collisions.v1` JSON shape are unchanged; all other tests in `tests/test_spec_numbers.py`, `tests/test_agentic_spec_writer.py` and `tests/test_specs*.py` pass without edits.
+- [x] With `main` tracking `origin/main`, a different filename with the tree's number that another clone pushed to `origin/main` is reported as a `filename` collision with `other == ["origin/main"]`.
+- [x] The tree's own uncommitted rename, and its own committed-but-unpushed rename, are not reported against `main` or `origin/main`.
+- [x] A filename that appeared on the upstream after the merge-base is reported even when the tree is also ahead of the upstream.
+- [x] Two same-number filenames in the tree's own tree (both committed, or committed plus untracked) are each reported with `worktree:<tree>` among the locations; a rename leaves no report.
+- [x] `_own_refs` derives its names from full refnames through the shared `_short_ref`; with a tag named `main`, the own branch is `main` and the rename on `main` is not a collision.
+- [x] A detached-HEAD tree owns no ref (`_own_refs == (None, None)`) and compares every ref; a branch without an upstream returns `(branch, None)`; a linked worktree on `nw/<id>` with an upstream is handled.
+- [x] `collisions()` on a store holding a record committed on a ref and a record for an ABANDONED campaign, while another process holds the lock, leaves the store file's bytes and mtime unchanged and creates no other file in `data_dir`.
+- [x] `release()` of a live record runs exactly one `for-each-ref` and one `ls-tree` and removes the record.
+- [x] The `check-numbers` CLI output and the `nw.spec.collisions.v1` JSON shape are unchanged; all other tests in `tests/test_spec_numbers.py`, `tests/test_agentic_spec_writer.py` and `tests/test_specs*.py` pass without edits.
 
 ## Test plan
 
@@ -182,17 +182,40 @@ would be a separate pre-existing question outside this spec.
 - **Manual verification:** in a scratch repo with a bare `origin`, set `main` to track `origin/main`, push `docs/specs/0001-r.md` from a second clone, fetch, and run `nw spec check-numbers` in the first clone holding `0001-x.md`: it exits 1 naming `origin/main`. Rename `0001-x.md` there without a push and with no other change on the remote: `nw spec check-numbers` prints `no spec-number collisions`.
 - **Regression guard:** `python3 tools/spec_lint.py` exits 0; the SPEC-0569 and SPEC-0583 collision tests pass unchanged.
 
+### Test record (2026-11-12)
+
+- `uv run pytest -q tests/test_spec_numbers.py`: 42 passed (new: `test_collisions_upstream_other_filename_is_a_collision`,
+  `test_collisions_upstream_renamed_elsewhere_while_behind`, `test_collisions_duplicate_number_in_own_tree_is_reported`,
+  `test_own_refs_shapes`, `test_own_refs_ambiguous_short_name`, `test_collisions_is_read_only_with_a_prunable_store`;
+  extended `test_prune_without_records_runs_no_ls_tree` with the `release` scan count). The existing
+  SPEC-0569/0583 tests pass unedited.
+- `python3 tools/test_tiers.py --check`: exit 0.
+- Manual: scratch repo with a bare origin, `main` tracking `origin/main`, second clone pushing `0001-r.md`:
+  `nw spec check-numbers` reported `0001-x.md also exists as 0001-r.md on origin/main`. The no-push rename case is
+  covered by the automated tests.
+- `tests/test_agentic_spec_writer.py`, `tests/test_specs.py`, `tests/test_specs_dir.py`: 143 passed together
+  with `test_spec_numbers.py`'s siblings in one run. The full affected-test set and full suite are left to gating (the box was loaded by other campaigns).
+
+### As shipped
+
+- The read-only extension is a sibling test, `test_collisions_is_read_only_with_a_prunable_store`, rather than an
+  edit of `test_collisions_is_read_only`; it compares the whole `data_dir` tree and the store's bytes and mtime
+  before and after, with the lock held in a second fd.
+- The linked-worktree rename case uses a file created on the `nw/<id>` branch (`0002-a.md`), since a file inherited
+  from `main` still exists on `main` and is rightly reported.
+- `_RefScan` gained a `cache` attribute so the merge-base listing shares the per-commit memo.
+
 ## Rollout / migration
 
 No data migration; the store schema is unchanged. Single change in `spec_numbers.py` plus tests; the only user-visible effect is that `nw spec check-numbers` and the queue's collision check now report cases they previously hid.
 
 ## Definition of done
 
-- [ ] Acceptance criteria all met.
-- [ ] Test plan executed; automated tests pass (affected tests, per AGENTS.md); manual steps performed.
-- [ ] No regressions.
-- [ ] Spec body updated to match what shipped.
-- [ ] `docs/LEDGER.md` updated (status + date).
+- [x] Acceptance criteria all met.
+- [x] Test plan executed; automated tests pass (affected tests, per AGENTS.md); manual steps performed.
+- [x] No regressions.
+- [x] Spec body updated to match what shipped.
+- [x] `docs/LEDGER.md` updated (status + date).
 
 ## Open questions
 

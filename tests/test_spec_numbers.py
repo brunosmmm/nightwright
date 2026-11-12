@@ -6,6 +6,7 @@ import os
 import re
 import shutil
 import subprocess
+from pathlib import Path
 
 import pytest
 from click.testing import CliRunner
@@ -661,6 +662,10 @@ def test_prune_without_records_runs_no_ls_tree(tmp_path, cfg, repo, monkeypatch)
     calls.clear()
     assert [r["number"] for r in SN.list_reservations(cfg, specs_dir=sd)] == [rec["number"]]
     assert calls.count("for-each-ref") == 1 and calls.count("ls-tree") == 1
+    calls.clear()
+    assert SN.release(cfg, rec["number"], specs_dir=sd)["number"] == rec["number"]
+    assert calls.count("for-each-ref") == 1 and calls.count("ls-tree") == 1
+    assert SN.list_reservations(cfg, specs_dir=sd) == []
 
 
 def test_collisions_is_read_only(tmp_path, repo):
@@ -680,6 +685,31 @@ def test_collisions_is_read_only(tmp_path, repo):
     assert [p.name for p in data.iterdir()] == ["spec-reservations.lock"]
 
 
+def test_collisions_is_read_only_with_a_prunable_store(tmp_path, cfg, repo):
+    sd = _sd(repo)
+    done = SN.allocate(cfg, by="t", campaign="C-DONE", specs_dir=sd)["number"]
+    gone = SN.allocate(cfg, by="t", campaign="C-AB", specs_dir=sd)["number"]
+    keep = SN.allocate(cfg, by="t", campaign="C-LIVE", specs_dir=sd)["number"]
+    store.campaign_dir(cfg, "C-AB").mkdir(parents=True)
+    store.write_state(cfg, "C-AB", {"id": "C-AB", "state": "ABANDONED"})
+    _touch(repo, done)
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-q", "-m", "done")           # `done` is committed on main
+    data = Path(cfg["data_dir"])
+    store_path, lock_path = SN._paths(cfg)
+    before = (_store_bytes(cfg), store_path.stat().st_mtime_ns)
+    files = sorted(str(p) for p in data.rglob("*"))
+    assert {r["number"] for r in json.loads(before[0])["reservations"]} == {done, gone, keep}
+    fd = os.open(lock_path, os.O_CREAT | os.O_RDWR)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX)                # an allocate in flight
+        SN.collisions(cfg, specs_dir=sd, campaign="C-OTHER")
+    finally:
+        os.close(fd)
+    assert (_store_bytes(cfg), store_path.stat().st_mtime_ns) == before
+    assert sorted(str(p) for p in data.rglob("*")) == files
+
+
 def test_collisions_own_branch_slug_rename_is_not_a_collision(tmp_path, cfg, repo):
     _with_origin(tmp_path, repo)
     _git(repo, "branch", "-q", "--set-upstream-to=origin/main", "main")
@@ -694,3 +724,113 @@ def test_collisions_own_branch_slug_rename_is_not_a_collision(tmp_path, cfg, rep
     _git(repo, "fetch", "-q", "origin")
     (c,) = SN.collisions(cfg, specs_dir=sd)
     assert c["other"] == ["origin/feature"]
+
+
+def _tracking_repo(tmp_path, repo):
+    """`repo` with a bare origin and `main` tracking `origin/main`; returns the bare path."""
+    bare = _with_origin(tmp_path, repo)
+    _git(repo, "branch", "-q", "--set-upstream-to=origin/main", "main")
+    return bare
+
+
+def _rename(sd, old, new):
+    (sd / old).rename(sd / new)
+
+
+def test_collisions_upstream_other_filename_is_a_collision(tmp_path, cfg, repo):
+    bare = _tracking_repo(tmp_path, repo)
+    sd = _sd(repo)
+    _clone_push(tmp_path, bare, "0001-r.md")           # another clone, same number, new slug
+    _git(repo, "fetch", "-q", "origin")
+    (c,) = SN.collisions(cfg, specs_dir=sd)
+    assert c["kind"] == "filename" and c["other"] == ["origin/main"]
+    assert c["other_files"] == ["0001-r.md"]
+    # ahead of the upstream with the tree's own committed rename: that name is the tree's own
+    _git(repo, "pull", "-q", "--ff-only")
+    _git(repo, "rm", "-q", "docs/specs/0001-r.md")
+    _git(repo, "commit", "-q", "-m", "drop r")
+    _git(repo, "push", "-q", "origin", "main")
+    _git(repo, "fetch", "-q", "origin")
+    assert SN.collisions(cfg, specs_dir=sd) == []
+    _git(repo, "mv", "docs/specs/0001-x.md", "docs/specs/0001-renamed.md")
+    _git(repo, "commit", "-q", "-m", "rename")         # committed, unpushed
+    assert SN.collisions(cfg, specs_dir=sd) == []
+    # ...and a name that appears upstream after the merge-base is still reported while ahead
+    _clone_push(tmp_path, bare, "0001-late.md")
+    _git(repo, "fetch", "-q", "origin")
+    (c,) = SN.collisions(cfg, specs_dir=sd)
+    assert c["other"] == ["origin/main"] and "0001-late.md" in c["other_files"]
+
+
+def test_collisions_upstream_renamed_elsewhere_while_behind(tmp_path, cfg, repo):
+    bare = _tracking_repo(tmp_path, repo)
+    sd = _sd(repo)
+    _rename(sd, "0001-x.md", "0001-renamed.md")        # uncommitted rename: only own state
+    assert SN.collisions(cfg, specs_dir=sd) == []
+    _rename(sd, "0001-renamed.md", "0001-x.md")
+    other = tmp_path / "clone-y"
+    subprocess.run(["git", "clone", "-q", str(bare), str(other)], check=True)
+    _git(other, "mv", "docs/specs/0001-x.md", "docs/specs/0001-y.md")
+    _git(other, "commit", "-q", "-m", "y")
+    _git(other, "push", "-q", "origin", "main")
+    _git(repo, "fetch", "-q", "origin")                # tree is behind; upstream renamed
+    (c,) = SN.collisions(cfg, specs_dir=sd)
+    assert c["other"] == ["origin/main"] and c["other_files"] == ["0001-y.md"]
+
+
+def test_collisions_duplicate_number_in_own_tree_is_reported(tmp_path, cfg, repo):
+    sd = _sd(repo)
+    (sd / "0005-a.md").write_text("x\n")
+    (sd / "0005-b.md").write_text("x\n")
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-q", "-m", "dup")
+    cs = [c for c in SN.collisions(cfg, specs_dir=sd) if c["number"] == 5]
+    assert [c["file"] for c in cs] == ["docs/specs/0005-a.md", "docs/specs/0005-b.md"]
+    tree = os.path.realpath(repo)
+    assert all(f"worktree:{tree}" in c["other"] for c in cs)
+    _git(repo, "rm", "-q", "-f", "docs/specs/0005-b.md")
+    _git(repo, "commit", "-q", "-m", "one")
+    (sd / "0005-b.md").write_text("x\n")               # untracked second file
+    cs = [c for c in SN.collisions(cfg, specs_dir=sd) if c["number"] == 5]
+    assert len(cs) == 2 and all(f"worktree:{tree}" in c["other"] for c in cs)
+    (sd / "0005-b.md").unlink()
+    _git(repo, "mv", "docs/specs/0005-a.md", "docs/specs/0005-c.md")   # old name only on main
+    assert [c for c in SN.collisions(cfg, specs_dir=sd) if c["number"] == 5] == []
+
+
+def test_own_refs_shapes(tmp_path, cfg, repo):
+    _tracking_repo(tmp_path, repo)
+    sd = _sd(repo)
+    assert SN._own_refs(str(repo)) == ("main", "origin/main")
+    _git(repo, "branch", "-q", "lone", "main")
+    _git(repo, "checkout", "-q", "lone")
+    assert SN._own_refs(str(repo)) == ("lone", None)
+    _git(repo, "checkout", "-q", "main")
+    # detached HEAD: owns no ref, so the uncommitted rename is reported against every ref
+    _git(repo, "checkout", "-q", "--detach")
+    assert SN._own_refs(str(repo)) == (None, None)
+    _rename(sd, "0001-x.md", "0001-renamed.md")
+    (c,) = SN.collisions(cfg, specs_dir=sd)
+    assert {"main", "origin/main", "lone"} <= set(c["other"])
+    _rename(sd, "0001-renamed.md", "0001-x.md")
+    _git(repo, "checkout", "-q", "main")
+    # a linked worktree on nw/<id> with an upstream
+    _commit_on(repo, "nw/IDEA-9-1", "0002-a.md")
+    _git(repo, "push", "-q", "origin", "nw/IDEA-9-1")
+    _git(repo, "fetch", "-q", "origin")
+    _git(repo, "branch", "-q", "--set-upstream-to=origin/nw/IDEA-9-1", "nw/IDEA-9-1")
+    wt = tmp_path / "wt"
+    _git(repo, "worktree", "add", "-q", str(wt), "nw/IDEA-9-1")
+    assert SN._own_refs(str(wt)) == ("nw/IDEA-9-1", "origin/nw/IDEA-9-1")
+    assert SN.collisions(cfg, specs_dir=sd, tree=wt) == []
+    _rename(wt / "docs" / "specs", "0002-a.md", "0002-b.md")
+    assert SN.collisions(cfg, specs_dir=sd, tree=wt) == []
+
+
+def test_own_refs_ambiguous_short_name(tmp_path, cfg, repo):
+    _tracking_repo(tmp_path, repo)
+    sd = _sd(repo)
+    _git(repo, "tag", "main")                          # `rev-parse --abbrev-ref HEAD` -> heads/main
+    assert SN._own_refs(str(repo)) == ("main", "origin/main")
+    _rename(sd, "0001-x.md", "0001-renamed.md")
+    assert SN.collisions(cfg, specs_dir=sd) == []
