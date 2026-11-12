@@ -142,7 +142,7 @@ class _Handler(http.server.BaseHTTPRequestHandler):
         if wire:
             self.send_header("Content-Type", "application/json")
         if signed and secret:
-            hdrs = F.response_headers(secret, method, path, wire, now=now)
+            hdrs = F.response_headers(secret, method, path, wire, status=status, now=now)
             self.send_header("X-NW-Sig-Ts", hdrs["X-NW-Sig-Ts"])
             self.send_header("X-NW-Sig", hdrs["X-NW-Sig"])
         self.send_header("Content-Length", str(len(wire)))
@@ -181,9 +181,9 @@ class _Handler(http.server.BaseHTTPRequestHandler):
             self._json_error(401, "unauthorized", signed=True, method=method, path=path,
                              secret=secret_key)
             return
-        # Responses are signed with the request construction, so a signed error body doubles as a
-        # valid request MAC for that method+path. Every route is bodyless: refuse a GET/HEAD that
-        # carries a body so a reflected response can never authenticate a request.
+        # Request and response MACs are domain-separated (direction tag, plus the status code on
+        # responses), so a reflected response never verifies as a request. Every route is also
+        # bodyless: a GET/HEAD that carries a body is refused as defence in depth.
         if method in ("GET", "HEAD") and (
                 self.headers.get("Transfer-Encoding") is not None
                 or (clen and str(clen).isascii() and str(clen).isdigit() and int(clen) > 0)):
@@ -202,7 +202,7 @@ class _Handler(http.server.BaseHTTPRequestHandler):
                              secret=secret_key)
             return
         mac = self.headers.get("X-NW-Req-Sig") or self.headers.get("x-nw-req-sig")
-        if F.verify(secret_key, method, path, body, mac or "", int(ts_s)):
+        if F.verify(secret_key, method, path, body, mac or "", int(ts_s), tag=F.REQ_TAG):
             self._json_error(401, "unauthorized", signed=True, method=method, path=path,
                              secret=secret_key)
             return

@@ -124,19 +124,32 @@ def _body_sha(body: bytes) -> str:
     return hashlib.sha256(body).hexdigest() if body else EMPTY_BODY_SHA
 
 
-def sign(secret: str, method: str, path: str, body: bytes, ts: int) -> str:
-    """Lowercase hex HMAC for the request/response four-tuple."""
-    line = f"{method.upper()}|{path}|{_body_sha(body)}|{ts}".encode()
-    return hmac.new(secret.encode("utf-8"), line, hashlib.sha256).hexdigest()
+def sign(secret: str, method: str, path: str, body: bytes, ts: int, *, tag: str = "") -> str:
+    """Lowercase hex HMAC for the four-tuple. With `tag` empty this is the bare four-field
+    construction (the frozen `abc` vector); the wire always passes a direction tag (`REQ_TAG`, or
+    `resp_tag(status)`) that is prepended to the signed string, so a request MAC and a response MAC
+    over the same method, path, body and ts are different values."""
+    line = f"{method.upper()}|{path}|{_body_sha(body)}|{ts}"
+    if tag:
+        line = f"{tag}|{line}"
+    return hmac.new(secret.encode("utf-8"), line.encode(), hashlib.sha256).hexdigest()
+
+
+REQ_TAG = "nw-req"
+
+
+def resp_tag(status: int) -> str:
+    return f"nw-resp-{int(status)}"
 
 
 def verify(secret: str, method: str, path: str, body: bytes, mac: str, ts: int,
-           *, now: float | None = None) -> str | None:
-    """Why the MAC is invalid, else None."""
+           *, tag: str, now: float | None = None) -> str | None:
+    """Why the MAC is invalid, else None. `tag` is required: a MAC only verifies in the
+    direction it was signed for."""
     now = time.time() if now is None else now
     if abs(int(now) - int(ts)) > SKEW_S:
         return "stale signature"
-    want = sign(secret, method, path, body, ts)
+    want = sign(secret, method, path, body, ts, tag=tag)
     try:
         good = isinstance(mac, str) and hmac.compare_digest(mac, want)
     except (TypeError, ValueError):
@@ -149,13 +162,14 @@ def verify(secret: str, method: str, path: str, body: bytes, mac: str, ts: int,
 def request_headers(secret: str, method: str, path: str, body: bytes, *,
                     now: float | None = None) -> dict[str, str]:
     ts = int(now if now is not None else time.time())
-    return {"X-NW-Req-Ts": str(ts), "X-NW-Req-Sig": sign(secret, method, path, body, ts)}
+    return {"X-NW-Req-Ts": str(ts), "X-NW-Req-Sig": sign(secret, method, path, body, ts, tag=REQ_TAG)}
 
 
-def response_headers(secret: str, method: str, path: str, body: bytes, *,
+def response_headers(secret: str, method: str, path: str, body: bytes, *, status: int = 200,
                      now: float | None = None) -> dict[str, str]:
     ts = int(now if now is not None else time.time())
-    return {"X-NW-Sig-Ts": str(ts), "X-NW-Sig": sign(secret, method, path, body, ts)}
+    return {"X-NW-Sig-Ts": str(ts),
+            "X-NW-Sig": sign(secret, method, path, body, ts, tag=resp_tag(status))}
 
 
 class HubClient:
@@ -355,7 +369,8 @@ class HubClient:
         if (not ts_raw or not str(ts_raw).isascii() or not str(ts_raw).isdigit()
                 or not mac):
             raise ConnectionError("missing response signature")
-        why = verify(self.secret, method, target, raw, mac, int(ts_raw), now=self._now)
+        why = verify(self.secret, method, target, raw, mac, int(ts_raw), tag=resp_tag(status),
+                     now=self._now)
         if why:
             raise ConnectionError(why)
         return status, raw, hdrs

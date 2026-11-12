@@ -89,11 +89,11 @@ def _raw(method, url, path, token, secret, body=b"", *, now=NOW, headers=None):
     return resp.status, dict(resp.getheaders()), raw
 
 
-def _resp_sig(secret, method, path, hdrs, raw):
+def _resp_sig(secret, method, path, hdrs, raw, status):
     ts = hdrs.get("X-NW-Sig-Ts") or hdrs.get("x-nw-sig-ts")
     mac = hdrs.get("X-NW-Sig") or hdrs.get("x-nw-sig")
     assert ts and mac
-    assert F.verify(secret, method, path, raw, mac, int(ts), now=NOW) is None
+    assert F.verify(secret, method, path, raw, mac, int(ts), tag=F.resp_tag(status), now=NOW) is None
 
 
 def _lease_checker_threads():
@@ -457,10 +457,61 @@ def test_unenrol_running_server_returns_unsigned_401(tmp_path, monkeypatch):
     srv.shutdown()
 
 
+def test_response_mac_is_not_a_request_mac(tmp_path, monkeypatch):
+    """Request and response MACs are domain-separated: a captured signed response never verifies
+    as a request MAC, even where the method, path, body and ts line up (SPEC-0529 reflection)."""
+    import time
+
+    monkeypatch.setattr(time, "time", lambda: NOW)
+    secret, path, ts = "abc", "/v1/status", int(NOW)
+    body = b'{"error":"unauthorized"}'
+    req_mac = F.sign(secret, "POST", path, body, ts, tag=F.REQ_TAG)
+    resp_mac = F.response_headers(secret, "POST", path, body, status=401, now=NOW)["X-NW-Sig"]
+    assert req_mac != resp_mac
+    assert F.sign(secret, "POST", path, body, ts) not in (req_mac, resp_mac)
+    # direction: a response MAC is rejected as a request, a request MAC as a response
+    assert F.verify(secret, "POST", path, body, resp_mac, ts, tag=F.REQ_TAG, now=NOW) == "bad signature"
+    assert F.verify(secret, "POST", path, body, req_mac, ts, tag=F.resp_tag(401), now=NOW) == "bad signature"
+    # the status code is signed too: a 401's MAC does not verify as a 200
+    assert F.verify(secret, "POST", path, body, resp_mac, ts, tag=F.resp_tag(200), now=NOW) == "bad signature"
+    assert F.verify(secret, "POST", path, body, resp_mac, ts, tag=F.resp_tag(401), now=NOW) is None
+    assert F.verify(secret, "POST", path, body, req_mac, ts, tag=F.REQ_TAG, now=NOW) is None
+    # method and path are in the request MAC
+    assert F.verify(secret, "GET", path, body, req_mac, ts, tag=F.REQ_TAG, now=NOW) == "bad signature"
+    assert F.verify(secret, "POST", "/v1/other", body, req_mac, ts, tag=F.REQ_TAG, now=NOW) == "bad signature"
+
+    # On the wire, on a route that allows a body (POST): replay a captured signed 401 -- its
+    # X-NW-Sig-Ts/X-NW-Sig and its body -- as the request MAC. The MAC is what rejects it: with the
+    # MAC accepted the same request would reach the 405, so a 401 is the discriminator.
+    host = _cfg(tmp_path, "host")
+    F.write_federation(host, {"hub_name": "h", "host_name": "box", "token": "tok", "secret": secret})
+    srv, base = _serve(host)
+    post_hdrs = {"Authorization": "Bearer wrong", "Content-Length": "1"}
+    st, h, raw401 = _raw("POST", base, path, "wrong", secret, b"x", headers=post_hdrs)
+    assert st == 401
+    _resp_sig(secret, "POST", path, h, raw401, st)
+    replay = {"Authorization": "Bearer tok", "X-NW-Req-Ts": h["X-NW-Sig-Ts"],
+              "X-NW-Req-Sig": h["X-NW-Sig"], "Content-Length": str(len(raw401))}
+    st, h2, raw2 = _raw("POST", base, path, "tok", secret, raw401, now=NOW, headers=replay)
+    assert st == 401
+    _resp_sig(secret, "POST", path, h2, raw2, st)
+    # control: the same request with a real request MAC over that body passes the MAC (405)
+    good = {"Authorization": "Bearer tok", **F.request_headers(secret, "POST", path, raw401, now=NOW),
+            "Content-Length": str(len(raw401))}
+    st, _, _ = _raw("POST", base, path, "tok", secret, raw401, headers=good)
+    assert st == 405
+    # request-body binding: the same MAC over a tampered body is a signed 401
+    tampered = raw401[:-1] + b"?"
+    st, h3, raw3 = _raw("POST", base, path, "tok", secret, tampered, headers=good)
+    assert st == 401
+    _resp_sig(secret, "POST", path, h3, raw3, st)
+    srv.shutdown()
+
+
 def test_hmac_test_vector(tmp_path):
     assert F.sign("abc", "GET", "/v1/status", b"", 1700000000) == (
         "53f715f892cd9e350af654bcacaca46fd6dcedb104c690ffaa9060fac03a49b5")
-    assert F.verify("abc", "GET", "/v1/status", b"", None, 1700000000, now=NOW) == "bad signature"
+    assert F.verify("abc", "GET", "/v1/status", b"", None, 1700000000, tag=F.REQ_TAG, now=NOW) == "bad signature"
     cfg = _cfg(tmp_path)
     sec_p = F.host_secret_path(cfg, "_nosuch")
     sec_p.parent.mkdir(parents=True, exist_ok=True)
@@ -488,33 +539,33 @@ def test_enrolled_request_auth(tmp_path, monkeypatch):
     secret = "abc"
     st, h, raw = req("GET", "/v1/status")
     assert st == 401
-    _resp_sig(secret, "GET", "/v1/status", h, raw)
+    _resp_sig(secret, "GET", "/v1/status", h, raw, st)
     no_sig = {"Authorization": "Bearer tok", "X-NW-Req-Ts": str(int(NOW))}
     st, h, raw = req("GET", "/v1/status", headers=no_sig)
     assert st == 401
-    _resp_sig(secret, "GET", "/v1/status", h, raw)
+    _resp_sig(secret, "GET", "/v1/status", h, raw, st)
     no_ts = {**F.request_headers(secret, "GET", "/v1/status", b"", now=NOW),
              "Authorization": "Bearer tok"}
     del no_ts["X-NW-Req-Ts"]
     st, h, raw = req("GET", "/v1/status", headers=no_ts)
     assert st == 401
-    _resp_sig(secret, "GET", "/v1/status", h, raw)
+    _resp_sig(secret, "GET", "/v1/status", h, raw, st)
     hdrs = {**F.request_headers(secret, "GET", "/v1/status", b"", now=NOW), "Authorization": "Bearer tok"}
     st, h, raw = req("GET", "/v1/status", headers=hdrs)
     assert st == 200
     hdrs_bad = {**F.request_headers(secret, "GET", "/v1/status", b"", now=NOW), "Authorization": "Bearer wrong"}
     st, h, raw = req("GET", "/v1/status", headers=hdrs_bad)
     assert st == 401
-    _resp_sig(secret, "GET", "/v1/status", h, raw)
+    _resp_sig(secret, "GET", "/v1/status", h, raw, st)
     hdrs = {**F.request_headers(secret, "GET", "/v1/status", b"", now=NOW + 121), "Authorization": "Bearer tok"}
     st, h, raw = req("GET", "/v1/status", headers=hdrs)
     assert st == 401
-    _resp_sig(secret, "GET", "/v1/status", h, raw)
+    _resp_sig(secret, "GET", "/v1/status", h, raw, st)
     hdrs_past = {**F.request_headers(secret, "GET", "/v1/status", b"", now=NOW - 121),
                  "Authorization": "Bearer tok"}
     st, h, raw = req("GET", "/v1/status", headers=hdrs_past)
     assert st == 401
-    _resp_sig(secret, "GET", "/v1/status", h, raw)
+    _resp_sig(secret, "GET", "/v1/status", h, raw, st)
     hdrs = {**F.request_headers(secret, "GET", "/v1/status", b"", now=NOW + 120), "Authorization": "Bearer tok"}
     assert req("GET", "/v1/status", headers=hdrs)[0] == 200
     hdrs_p120 = {**F.request_headers(secret, "GET", "/v1/status", b"", now=NOW - 120),
@@ -526,7 +577,7 @@ def test_enrolled_request_auth(tmp_path, monkeypatch):
     # must never be replayable as a request.
     st, h, raw = req("GET", "/v1/status", body=body, headers={**hdrs, "Content-Length": "1"})
     assert st == 401
-    _resp_sig(secret, "GET", "/v1/status", h, raw)
+    _resp_sig(secret, "GET", "/v1/status", h, raw, st)
     # Reflection: lift a signed 401's ts/sig and replay them as the request MAC over its body.
     st, h, raw401 = req("GET", "/v1/status", headers={"Authorization": "Bearer wrong"})
     assert st == 401
@@ -535,21 +586,21 @@ def test_enrolled_request_auth(tmp_path, monkeypatch):
     st, h2, raw2 = req("GET", "/v1/status", body=raw401, headers=replay)
     assert st == 401
     assert b"schema" not in raw2
-    _resp_sig(secret, "GET", "/v1/status", h2, raw2)
+    _resp_sig(secret, "GET", "/v1/status", h2, raw2, st)
     hdrs_empty = {**F.request_headers(secret, "GET", "/v1/status", b"", now=NOW), "Authorization": "Bearer tok"}
     st, h, raw = req("GET", "/v1/status", body=body, headers={**hdrs_empty, "Content-Length": "1"})
     assert st == 401
-    _resp_sig(secret, "GET", "/v1/status", h, raw)
+    _resp_sig(secret, "GET", "/v1/status", h, raw, st)
     tampered = {**hdrs, "X-NW-Req-Sig": hdrs["X-NW-Req-Sig"][:-1] + ("0" if hdrs["X-NW-Req-Sig"][-1] != "0" else "1")}
     st, h, raw = req("GET", "/v1/status", headers=tampered)
     assert st == 401
-    _resp_sig(secret, "GET", "/v1/status", h, raw)
+    _resp_sig(secret, "GET", "/v1/status", h, raw, st)
     post_body = b"!"
     post_hdrs = {**F.request_headers(secret, "POST", "/v1/status", post_body, now=NOW), "Authorization": "Bearer tok",
                  "Content-Length": "1"}
     st, h, raw = req("POST", "/v1/status", body=b"?", headers=post_hdrs)
     assert st == 401
-    _resp_sig(secret, "POST", "/v1/status", h, raw)
+    _resp_sig(secret, "POST", "/v1/status", h, raw, st)
     # The MAC binds the body on a route that reads one: a POST signed over its own body passes the
     # MAC (then 405, the method is not allowed); signed over b"" but sent with a body it is a 401.
     for sign_over, want in ((b"x", 405), (b"", 401), (b"y", 401)):
@@ -557,7 +608,7 @@ def test_enrolled_request_auth(tmp_path, monkeypatch):
               "Authorization": "Bearer tok", "Content-Length": "1"}
         st, h, raw = req("POST", "/v1/status", body=b"x", headers=bh)
         assert st == want, sign_over
-        _resp_sig(secret, "POST", "/v1/status", h, raw)
+        _resp_sig(secret, "POST", "/v1/status", h, raw, st)
     # A GET/HEAD with a body or a Transfer-Encoding, and a body over the cap, are signed 401s that
     # never reach the status document.
     big = str(FH.MAX_BODY_BYTES + 1)
@@ -574,50 +625,50 @@ def test_enrolled_request_auth(tmp_path, monkeypatch):
         st, h, raw = req(method, "/v1/status", body=rbody, headers=rh)
         assert st == 401, (method, extra)
         assert b"schema" not in raw
-        _resp_sig(secret, method, "/v1/status", h, b"" if method == "HEAD" else raw)
+        _resp_sig(secret, method, "/v1/status", h, b"" if method == "HEAD" else raw, st)
     post_hdrs = {**F.request_headers(secret, "POST", "/v1/status", b"", now=NOW), "Authorization": "Bearer tok"}
     st, h, raw = req("POST", "/v1/status", headers=post_hdrs)
     assert st == 405
-    _resp_sig(secret, "POST", "/v1/status", h, raw)
+    _resp_sig(secret, "POST", "/v1/status", h, raw, st)
     err405 = json.dumps({"error": "method_not_allowed"}, separators=(",", ":")).encode()
     for method in ("HEAD", "PATCH"):
         m_hdrs = {**F.request_headers(secret, method, "/v1/status", b"", now=NOW), "Authorization": "Bearer tok"}
         st, h, raw = req(method, "/v1/status", headers=m_hdrs)
         assert st == 405
         sig_body = b"" if method == "HEAD" else raw
-        _resp_sig(secret, method, "/v1/status", h, sig_body)
+        _resp_sig(secret, method, "/v1/status", h, sig_body, st)
     get_hdrs = {**F.request_headers(secret, "GET", "/nope", b"", now=NOW), "Authorization": "Bearer tok"}
     st, h, raw = req("GET", "/nope", headers=get_hdrs)
     assert st == 404
-    _resp_sig(secret, "GET", "/nope", h, raw)
+    _resp_sig(secret, "GET", "/nope", h, raw, st)
     patch_hdrs = {**F.request_headers(secret, "PATCH", "/nope", b"", now=NOW), "Authorization": "Bearer tok"}
     st, h, raw = req("PATCH", "/nope", headers=patch_hdrs)
     assert st == 404
-    _resp_sig(secret, "PATCH", "/nope", h, raw)
+    _resp_sig(secret, "PATCH", "/nope", h, raw, st)
     rev_hdrs = {**F.request_headers(secret, "POST", "/v1/revoke", b"", now=NOW), "Authorization": "Bearer tok"}
     st, h, raw = req("POST", "/v1/revoke", headers=rev_hdrs)
     assert st == 404
-    _resp_sig(secret, "POST", "/v1/revoke", h, raw)
+    _resp_sig(secret, "POST", "/v1/revoke", h, raw, st)
     qpath = "/v1/status?z=1&a=2"
     q_hdrs = {**F.request_headers(secret, "GET", qpath, b"", now=NOW), "Authorization": "Bearer tok"}
     st, h, raw = req("GET", qpath, headers=q_hdrs)
     assert st == 200
-    _resp_sig(secret, "GET", qpath, h, raw)
+    _resp_sig(secret, "GET", qpath, h, raw, st)
     bad_q = {**F.request_headers(secret, "GET", "/v1/status?a=2&z=1", b"", now=NOW),
              "Authorization": "Bearer tok"}
     st, h, raw = req("GET", qpath, headers=bad_q)
     assert st == 401
-    _resp_sig(secret, "GET", qpath, h, raw)
+    _resp_sig(secret, "GET", qpath, h, raw, st)
     unicode_ts = {**F.request_headers(secret, "GET", "/v1/status", b"", now=NOW),
                 "Authorization": "Bearer tok", "X-NW-Req-Ts": "\u00b2"}
     st, h, raw = req("GET", "/v1/status", headers=unicode_ts)
     assert st == 401
-    _resp_sig(secret, "GET", "/v1/status", h, raw)
+    _resp_sig(secret, "GET", "/v1/status", h, raw, st)
     lz = {**F.request_headers(secret, "GET", "/v1/status", b"", now=NOW),
           "Authorization": "Bearer tok", "X-NW-Req-Ts": "01700000000"}
     st, h, raw = req("GET", "/v1/status", headers=lz)
     assert st == 401
-    _resp_sig(secret, "GET", "/v1/status", h, raw)
+    _resp_sig(secret, "GET", "/v1/status", h, raw, st)
     lo = {**F.request_headers(secret, "GET", "/v1/status", b"", now=NOW), "Authorization": "Bearer tok"}
     lo["x-nw-req-sig"] = lo.pop("X-NW-Req-Sig")
     lo["x-nw-req-ts"] = lo.pop("X-NW-Req-Ts")
@@ -626,7 +677,7 @@ def test_enrolled_request_auth(tmp_path, monkeypatch):
           "Content-Length": "\u00b2"}
     st, h, raw = req("GET", "/v1/status", headers=cl)
     assert st == 200
-    _resp_sig(secret, "GET", "/v1/status", h, raw)
+    _resp_sig(secret, "GET", "/v1/status", h, raw, st)
     ok = {**F.request_headers(secret, "GET", "/v1/status", b"", now=NOW), "Authorization": "Bearer tok"}
     assert req("GET", "/v1/status", headers=ok)[0] == 200
     srv.shutdown()
@@ -657,14 +708,14 @@ def test_request_mac_is_enforced(tmp_path, monkeypatch):
     # correct MAC: accepted, and the 200 is itself signed
     st, h, raw = go()
     assert st == 200
-    _resp_sig(secret, "GET", path, h, raw)
+    _resp_sig(secret, "GET", path, h, raw, st)
 
     def flip(hdrs):
         sig = hdrs["X-NW-Req-Sig"]
         return {**hdrs, "X-NW-Req-Sig": ("0" if sig[0] != "0" else "1") + sig[1:]}
 
     def wrong_secret(hdrs):
-        return {**hdrs, "X-NW-Req-Sig": F.sign("not-abc", "GET", path, b"", int(NOW))}
+        return {**hdrs, "X-NW-Req-Sig": F.sign("not-abc", "GET", path, b"", int(NOW), tag=F.REQ_TAG)}
 
     rejected = {
         "wrong MAC (flipped)": go(mutate=flip),
@@ -678,7 +729,7 @@ def test_request_mac_is_enforced(tmp_path, monkeypatch):
     for label, (st, h, raw) in rejected.items():
         assert st == 401, label
         assert json.loads(raw) == {"error": "unauthorized"}, label
-        _resp_sig(secret, "GET", path, h, raw)  # enrolled: the 401 is signed
+        _resp_sig(secret, "GET", path, h, raw, st)  # enrolled: the 401 is signed
 
     # not enrolled any more: the 401 carries no signature headers at all
     F.federation_path(host).unlink()
@@ -839,7 +890,7 @@ def test_status_maps_queue_payload_items(tmp_path, monkeypatch):
     lease_raw = resp.read()
     lease_hdrs = dict(resp.getheaders())
     assert resp.status == 404
-    _resp_sig("abc", "GET", "/v1/lease", lease_hdrs, lease_raw)
+    _resp_sig("abc", "GET", "/v1/lease", lease_hdrs, lease_raw, resp.status)
     assert not isinstance(srv, PJ.PullServer)
     assert not list(_lease_checker_threads())
     srv.shutdown()
@@ -1147,7 +1198,7 @@ def test_status_document_failure_returns_signed_error(tmp_path, monkeypatch):
     st, hdrs, raw = _raw("GET", base, "/v1/status", "tok", "abc")
     assert st == 500
     assert json.loads(raw) == {"error": "internal_error"}
-    _resp_sig("abc", "GET", "/v1/status", hdrs, raw)
+    _resp_sig("abc", "GET", "/v1/status", hdrs, raw, st)
     monkeypatch.setattr(FH, "status_document", real_sd)
     srv.shutdown()
 
@@ -1652,7 +1703,7 @@ def test_check_after_unenrol_reports_http_401(tmp_path, monkeypatch):
 def _signed_reply(secret, *, ts_off=0, mac=None, body=None):
     body = body or b'{"schema":"nw.federation.status.v1","projects":[],"campaigns":[]}'
     ts = int(NOW) + ts_off
-    sig = mac or F.sign(secret, "GET", "/v1/status", body, ts)
+    sig = mac or F.sign(secret, "GET", "/v1/status", body, ts, tag=F.resp_tag(200))
     head = (f"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {len(body)}\r\n"
             f"X-NW-Sig-Ts: {ts}\r\nX-NW-Sig: {sig}\r\nConnection: close\r\n\r\n")
     return head.encode() + body

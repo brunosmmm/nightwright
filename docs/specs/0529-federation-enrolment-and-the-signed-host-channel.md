@@ -582,6 +582,18 @@ any other writer).
 - `uv run pytest tests/test_federation_channel.py tests/test_rich_output_guard.py -q` — 47 passed.
 - Full suite left to gating.
 
+### Test record (2026-11-12, review loop 7)
+
+- Domain-separated the MACs: the wire signs `nw-req|METHOD|PATH|BODYSHA|TS` for requests and
+  `nw-resp-<status>|METHOD|PATH|BODYSHA|TS` for responses; `verify` requires the direction tag.
+  Added `test_response_mac_is_not_a_request_mac` (a captured signed 401 replayed as the request MAC
+  of a POST, which reaches 405 if the MAC were accepted, is 401; cross-direction, other status,
+  other method and other path all `bad signature`; a request MAC over a tampered body is a signed
+  401). `test_enrolled_request_auth` keeps the GET reflection replay (401).
+- `uv run pytest tests/test_federation_channel.py tests/test_rich_output_guard.py -q` — 48 passed.
+- `python3 tools/test_tiers.py --check` — exit 0.
+- Full suite left to gating.
+
 ### As shipped (2026-11-10)
 
 Replay with two empty directory pairs (`HUB_*` and `HOST_*` below stand for the `NW_DATA_DIR` /
@@ -627,9 +639,14 @@ Deviations from the Design wording, recorded here because Design is frozen:
   `Transfer-Encoding`) with a signed 401 before the MAC check. Responses are signed with the same
   construction as requests, so without this a signed error body for `GET /v1/status` was a valid
   request MAC for that method and path, and a bearer-token holder without the secret could replay
-  it. `test_enrolled_request_auth` now covers the replay. Parts 3 and 4 must domain-separate
-  request and response MACs (a direction tag and the status code in the signed string) before any
-  route accepts bodies; that changes the frozen `abc` vector, so it belongs to a later part.
+  it. `test_enrolled_request_auth` now covers the replay. Superseded in review loop 7: the MACs are now domain-separated on the wire (see the next item).
+- Request and response MACs are domain-separated (review loop 7). `federation.sign(..., tag=)`
+  prepends a direction tag to the four-field string: `nw-req` on requests, `nw-resp-<status>` on
+  responses (so a response MAC also binds its status code); `verify` requires the tag. `sign` with
+  no tag is the bare four-field construction, so the frozen `abc` vector still holds for it, but
+  the wire never uses it. The wire MACs differ from the Design's four-field text; this is a
+  deliberate deviation to close the signed-401 reflection oracle. The GET/HEAD-with-body refusal
+  stays as defence in depth.
 - `nw hosts check` reports a status document whose `projects` is not a list as
   `NAME unreachable: bad status document`, and a registry record without a `name` as
   `? unreachable: malformed host record`; it continues with the remaining hosts. `add`/`rm`
