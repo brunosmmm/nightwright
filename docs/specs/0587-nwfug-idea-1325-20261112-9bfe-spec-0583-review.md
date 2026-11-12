@@ -1,9 +1,10 @@
 ---
 id: SPEC-0587
 title: SPEC-0583 review follow-ups - own-ref exclusion no longer hides real collisions, full-ref own names, test gaps
-status: proposed
+status: accepted
 owner: user
 created: 2026-11-12
+updated: 2026-11-12
 kind: feature
 source_idea: IDEA-1339
 depends_on: [SPEC-0583]
