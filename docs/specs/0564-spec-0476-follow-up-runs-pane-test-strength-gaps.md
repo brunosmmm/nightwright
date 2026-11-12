@@ -119,23 +119,67 @@ For each case with a lead, assert that `Hist.campaign_history(...)["runs"]` row'
 
 ### 3. Late load vs a changed run
 
-Extend the slow-load test: after the late load for run A lands, assert through the screen
-object that `_run_loaded_id == B`, `_run_offset == B's initial offset`, `_run_renderer`
-is the object painted for B, `_run_head` and `_run_body` contain B's marker and not A's,
-and that `_paint_runs_detail` was not called after B's paint (spy the method). Add a second
-case where the popup switches to the Timeline tab before the late load lands and assert
-that the late result neither repaints nor changes the stored state. Record the mutation
-check from the Test plan for the token guard and for the `_selected_run_id` guard
-separately.
+In `_load_run_detail_async` (`campaign_detail.py`), selecting a run via `_select_run_row`
+resets the follow state and either calls `_load_run_detail` (Runs tab active: bumps
+`_run_detail_token`) or only sets `_run_detail_stale` (any other tab: token unchanged); in
+both cases `_selected_run_id` is set. A late A-then-B switch therefore trips both guards at
+once, so the A-to-B case alone cannot show that each guard is needed. Because the worker is
+`exclusive`, a superseded worker is normally cancelled before it reaches the guards; the
+guard cases below therefore land the late result by awaiting
+`screen._load_run_detail_async(run_id, token)` directly inside the pilot, with
+`AM.load_run_pane_detail` patched to return a distinguishable snapshot (the run's marker
+plus `LATE-0564`) after a `threading.Event` gate, and `screen._paint_runs_detail` wrapped
+by a counting spy.
+
+- **3a. A-to-B (existing test, tightened).** After the slow load for A lands while B is
+  selected, assert `_run_loaded_id == B`, `_run_offset` equals B's initial offset,
+  `_run_renderer` is the object painted for B, `_run_head` and `_run_body` contain B's
+  marker and not A's, `_run_follow_done` matches B's snapshot, and the paint spy count did
+  not rise after B's paint. Both guards trip here; this case does not distinguish them.
+- **3b. Token guard alone.** Select A and wait until A is painted (`_selected_run_id == A`,
+  `_run_loaded_id == A`). Remember `old = screen._run_detail_token`, call
+  `screen._load_run_detail(A)` again (token bumps, selection stays A) and wait for its
+  paint. Record the spy count, `_run_renderer` and `_run_head`. Then await
+  `screen._load_run_detail_async(A, old)` returning the `LATE-0564` snapshot. Selection
+  matches, so only the token check can reject it: assert the spy count, `_run_renderer`
+  identity, `_run_offset`, `_run_head`, `_run_body`, and `runs_detail(app)` are unchanged
+  and `LATE-0564` is absent. **Kills the mutation that removes only the token check.**
+- **3c. Selection guard alone (Timeline tab, select B).** Select A and wait for its paint,
+  then press `2` (Timeline tab active) and call `screen._select_run_row(B)`. This only
+  sets `_selected_run_id = B`, resets the follow state (`_run_loaded_id is None`,
+  `_run_renderer is None`, `_run_offset == 0`) and sets `_run_detail_stale = True`; the
+  token is unchanged. Await `screen._load_run_detail_async(A, screen._run_detail_token)`
+  returning the `LATE-0564` snapshot. The token matches, so only the `_selected_run_id`
+  check can reject it: assert `_selected_run_id == B`, `_run_loaded_id is None`,
+  `_run_renderer is None`, `_run_offset == 0`, `_run_detail_stale is True`, `_run_head`
+  and `_run_body` equal their pre-load values, and the paint spy count is unchanged.
+  **Kills the mutation that removes only the `_selected_run_id` check.**
+- **3d. Timeline tab, same run (accepted, scroll skipped).** Select A, wait for its paint,
+  press `2`, spy on `screen._scroll_runs_detail`, then await
+  `screen._load_run_detail_async(A, screen._run_detail_token)` returning the `LATE-0564`
+  snapshot. Nothing checks the active tab, and token and selection match, so the load is
+  accepted: assert `_run_loaded_id == A`, `_run_detail_stale is False`, `_run_head` contains
+  `LATE-0564`, the paint spy count rose by exactly one, and `_scroll_runs_detail` was not
+  called (the scroll is skipped off the Runs tab).
 
 ### 4. `j` / `k` and arrows move the detail
 
 On a copy, give every run in `history.runs` a distinct verdict `summary` marker
 (`row-marker-<run_id>`) by editing each `run.json`. Walk the whole table with `down`, `j`,
-`up`, `k`: after every key, wait for `tbl.cursor_row` to change, then assert
-`row-marker-<run id at the cursor>` is in `runs_detail(app)` and no other run's marker is
-(unconditionally, no `if`). Press `k` at the first row and `j` at the last row and assert the
-cursor, the selected run, and the detail do not change and nothing raises.
+`up`, `k`. The detail loads in a worker after `_RUN_DETAIL_DEBOUNCE_S` and a thread hop, so
+the cursor moves before the detail does and the cursor alone is not a wait condition. After
+every key:
+
+1. `await pilot_until(pilot, lambda: tbl.cursor_row == expected_row and
+   f"row-marker-{run_id_at(expected_row)}" in runs_detail(app))`, where `expected_row` is
+   the row the key must reach and `run_id_at` reads `history.runs`.
+2. Only then assert that no other run's marker is in `runs_detail(app)` (unconditionally,
+   no `if`) and that `screen._selected_run_id` is the cursor's run.
+
+The boundary presses (`k` at the first row, `j` at the last row) have no positive event to
+wait on: press, run `settle` (or `_after_ticks`), then assert the cursor row, the selected
+run, and the detail (the same single marker) are unchanged and nothing raised. No fixed
+sleeps.
 
 ### 5. Verdict line composition
 
@@ -157,7 +201,13 @@ For a copied run without `stream.jsonl`, with `result.json` holding a known sent
 set `run.json` `files.raw` to each value and assert the pane text:
 
 - Hostile values show `RESULT-JSON-0564` and never `OUTSIDE-0564`: `../../../outside.txt`; an
-  absolute path to the sentinel; a symlink `link.txt` inside the run directory that points
+  absolute path to the sentinel; **an absolute path to a file inside the run directory**
+  (`str(run_dir / "alt.txt")`, holding `ALT-0564`), which must also show `RESULT-JSON-0564`
+  and not `ALT-0564` because absolute paths are rejected even when they stay inside
+  (`_result_file_path` checks `Path(raw).is_absolute()` first). Without the `is_absolute()`
+  check the outside-sentinel absolute value is still rejected by `is_relative_to`
+  (`run_dir / "/abs"` resolves to `/abs`), so the inside-the-run-dir absolute case is the one
+  that kills that mutation; keep both. More hostile values: a symlink `link.txt` inside the run directory that points
   to the sentinel; `../<run_id>-evil/x.txt`, where that sibling directory shares the run
   directory's name as a prefix and holds the sentinel; a whitespace-only string; a number;
   a list; and `files` itself being a list.
@@ -205,18 +255,22 @@ On a copy whose `stream.jsonl` holds one rendered line per event (the existing
 - [ ] **AC2. Lead fallback.** The Design 2 table asserts the exact first line for each
   verdict, the no-lead and no-verdict cases, and that the history `verdict_status` equals the
   pane's lead.
-- [ ] **AC3. Late load.** The late-load test asserts the widget's stored run id, offset,
-  renderer, head, and body belong to the selected run after a stale load lands, that no
-  repaint follows, and the Timeline-tab variant. The mutation check of the Test plan shows it
-  fails when either guard in `_load_run_detail_async` is removed.
+- [ ] **AC3. Late load.** Case 3a asserts the widget's stored run id, offset, renderer,
+  head, and body belong to the selected run after a stale load lands and that no repaint
+  follows. Case 3b (stale token, same selection) and case 3c (changed selection, current
+  token, Timeline tab) each assert the unchanged state and paint count; case 3d asserts the
+  accepted load with the scroll skipped. The mutation check shows 3b fails when only the
+  token check is removed and 3c fails when only the `_selected_run_id` check is removed.
 - [ ] **AC4. Cursor follows detail.** The `j` / `k` test asserts, after every key over the whole
-  table, that exactly the run under the cursor has its marker in the detail, and that `k` at the
-  first row and `j` at the last row change nothing. It has no conditional assertion.
+  table, once `pilot_until` sees the cursor at the expected row and that run's marker in the
+  detail, that no other run's marker is present, and that `k` at the first row and `j` at the
+  last row change nothing after `settle`. It has no conditional assertion and no fixed sleep.
 - [ ] **AC5. Composition.** The Design 5 cases assert exact first-line equality, a shown zero
   score, an omitted empty summary, literal markup, stripped control characters, and the line
   order (verdict line, blocking rows, stderr).
-- [ ] **AC6. `files.raw`.** Every hostile value in Design 6 shows `result.json` content and never
-  the outside sentinel, every allowed value shows its file, a missing allowed file shows
+- [ ] **AC6. `files.raw`.** Every hostile value in Design 6 (including an absolute path to a
+  file inside the run directory) shows `result.json` content and never the outside or
+  `ALT-0564` sentinel, every allowed value shows its file, a missing allowed file shows
   `no result.json`, and a missing `run.json` reads `result.json`.
 - [ ] **AC7. 200-line bound.** The Design 7 tests assert `len(body)` for 199, 200, 201, and 250
   events, the first and last shown lines, offset at end of file, the rendered-line bound for a
@@ -235,17 +289,19 @@ On a copy whose `stream.jsonl` holds one rendered line per event (the existing
   `test_verdict_line_lead_fallbacks` (gap 2), `test_stale_run_detail_dropped_on_switch`
   (gap 3), `test_runs_cursor_jk_and_arrows` (gap 4), `test_string_result_and_files_raw`
   (gap 6), and `test_stream_initial_paint_caps_rendered_lines` (gap 7). New:
-  `test_verdict_line_composition` (gap 5) and `test_late_load_after_timeline_switch`
-  (gap 3). Run them with `uv run pytest -q tests/test_tui_campaign_runs.py` while
+  `test_verdict_line_composition` (gap 5), `test_late_load_token_guard` (3b),
+  `test_late_load_selection_guard` (3c), and `test_late_load_accepted_on_timeline_tab` (3d). Run them with `uv run pytest -q tests/test_tui_campaign_runs.py` while
   iterating, and `python3 tools/affected_tests.py --run uv run pytest -q` before close.
 - **Mutation check (once, recorded in *As shipped*):** for each of these edits made
   temporarily in a scratch copy and reverted, the named test must fail: drop the `must_fix`
   label for `verdict.must_fix` objects (AC1), change the lead key order to
-  `disposition, status, verdict` (AC2), remove the `token != self._run_detail_token` check and,
-  separately, the `self._selected_run_id != run_id` check (AC3), make `_select_run_row`
+  `disposition, status, verdict` (AC2), remove the `token != self._run_detail_token` check (only
+  `test_late_load_token_guard` must fail; 3a and 3c stay green) and, separately, the
+  `self._selected_run_id != run_id` check (only `test_late_load_selection_guard` must fail;
+  3a and 3b stay green) (AC3), make `_select_run_row`
   skip the detail load (AC4), join the verdict parts with `", "` or drop a zero score (AC5),
   replace `is_relative_to` with a string-prefix test and, separately, drop the
-  `is_absolute()` check (AC6), and change `RUNS_STREAM_LINES` to 199, 201, and an
+  `is_absolute()` check (the absolute-path-inside-the-run-dir case must fail) (AC6), and change `RUNS_STREAM_LINES` to 199, 201, and an
   event-count bound (AC7).
 - **Manual verification:** none beyond the mutation check; the behavior under test is not
   changed.
