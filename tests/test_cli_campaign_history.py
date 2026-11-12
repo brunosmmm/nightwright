@@ -8,6 +8,7 @@ from pathlib import Path
 import pytest
 from click.testing import CliRunner
 
+from nightwright.agentic import cli_campaign as CC
 from nightwright.agentic import schemas as SC
 from nightwright.cli import cli
 
@@ -137,12 +138,34 @@ def test_history_rejects_escaping_campaign_ids(invoke):
     campaigns = invoke.root / "agentic" / "campaigns"
     relative = os.path.relpath(outside, campaigns)
     assert relative.startswith("..")
-    for cid in (str(outside), relative):
+    (campaigns / "escape-link").symlink_to(outside, target_is_directory=True)
+    for cid in (str(outside), relative, "escape-link"):
         result = invoke("history", cid)
         assert result.exit_code == 1, result.output
         assert f"campaign {cid} not found" in result.stderr
         assert "schema" not in result.stdout
         assert invoke("history", cid, "--json").stdout.strip() == ""
+    cfg = {"data_dir": str(invoke.root)}
+    assert not CC._campaign_dir_exists(cfg, "escape-link")
+    real = next(p.name for p in campaigns.iterdir() if p.is_dir() and not p.is_symlink())
+    assert CC._campaign_dir_exists(cfg, real)
+
+
+def test_history_list_skips_symlinked_campaign_dir(invoke):
+    outside = invoke.tmp / "outside"
+    outside.mkdir()
+    (outside / "state.json").write_text(json.dumps({"id": "outside", "state": "merged"}))
+    (outside / "ledger.jsonl").write_text("")
+    campaigns = invoke.root / "agentic" / "campaigns"
+    (campaigns / "escape-link").symlink_to(outside, target_is_directory=True)
+    result = invoke("history", "--list", "--json")
+    assert result.exit_code == 0, result.output
+    ids = {row["campaign"] for row in json.loads(result.output)["rows"]}
+    assert ids == {p.name for p in campaigns.iterdir() if not p.is_symlink()}
+    assert "escape-link" not in ids
+    plain = invoke("history", "--list")
+    assert plain.exit_code == 0, plain.output
+    assert "escape-link" not in plain.stdout
 
 
 def test_note_positional_probe_ignores_absolute_paths(invoke, monkeypatch):

@@ -965,11 +965,17 @@ def _enrich_records(records, headers):
     return records
 
 
+def _campaign_dir_names(cfg) -> list[str]:
+    """Sorted real (non-symlink) campaign dirs; matches history_cache._live_campaign_ids."""
+    root = store.campaigns_dir(cfg)
+    if not root.is_dir():
+        return []
+    return sorted(p.name for p in root.iterdir() if p.is_dir() and not p.is_symlink())
+
+
 def _records_all(cfg, headers=None, gaps=None):
     gaps = gaps if gaps is not None else []
-    campaigns_root = store.campaigns_dir(cfg)
-    cids = sorted(p.name for p in campaigns_root.iterdir() if p.is_dir()) \
-        if campaigns_root.is_dir() else []
+    cids = _campaign_dir_names(cfg)
     headers = headers or {}
     out = []
     for cid in cids:
@@ -1158,9 +1164,7 @@ def _campaign_history(cfg, cid, now, conductor_shares, *, shared_global=None, ru
     if shared_global is not None:
         records.extend(shared_global)
     else:
-        campaigns_root = store.campaigns_dir(cfg)
-        cids = sorted(p.name for p in campaigns_root.iterdir() if p.is_dir()) \
-            if campaigns_root.is_dir() else [cid]
+        cids = _campaign_dir_names(cfg) if store.campaigns_dir(cfg).is_dir() else [cid]
         records.extend(_global_records(cfg, cids, gaps))
     records = [r for r in _enrich_records(records, headers) if r.get("campaign") == cid]
     return {
@@ -1197,8 +1201,7 @@ def _uncached_history_index(cfg, *, now=None, progress=None) -> list[dict]:
         conductor_shares = _conductor_attribution(cfg, now)
     except Exception:
         conductor_shares = None
-    root = store.campaigns_dir(cfg)
-    cids = sorted(p.name for p in root.iterdir() if p.is_dir()) if root.is_dir() else []
+    cids = _campaign_dir_names(cfg)
     rows = []
     for done, cid in enumerate(cids, 1):
         doc = _campaign_history(cfg, cid, now, conductor_shares)

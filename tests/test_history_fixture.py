@@ -7,6 +7,7 @@ inside and outside the campaigns' intervals). The tests never read the developer
 from __future__ import annotations
 
 import ast
+import builtins
 import contextlib
 import copy
 import datetime as dt
@@ -1061,6 +1062,8 @@ def test_campaign_history_confines_ids(tmp_path, monkeypatch, cache):
     campaigns = S.campaigns_dir(cfg)
     link = campaigns / "escape-link"
     link.symlink_to(outside, target_is_directory=True)
+    if cache:
+        H.history_index(cfg, now=HISTORY_NOW, cache=True)   # build the cache before the spies go in
     real_json = H._json
     opened = []
 
@@ -1068,14 +1071,60 @@ def test_campaign_history_confines_ids(tmp_path, monkeypatch, cache):
         opened.append(Path(path))
         return real_json(path, *args, **kwargs)
     monkeypatch.setattr(H, "_json", spy)
+    touched = []
+
+    def record(path):
+        if isinstance(path, (str, bytes, os.PathLike)):
+            touched.append(Path(os.fsdecode(path)))
+
+    def wrap_func(owner, name):
+        real = getattr(owner, name)
+
+        def inner(path, *args, **kwargs):
+            record(path)
+            return real(path, *args, **kwargs)
+        monkeypatch.setattr(owner, name, inner)
+
+    def wrap_method(name):
+        real = getattr(Path, name)
+
+        def inner(self, *args, **kwargs):
+            record(self)
+            return real(self, *args, **kwargs)
+        monkeypatch.setattr(Path, name, inner)
+    for owner, name in ((builtins, "open"), (os, "scandir"), (os, "open")):
+        wrap_func(owner, name)
+    for name in ("open", "read_text", "read_bytes"):
+        wrap_method(name)
     ids = [str(outside), os.path.relpath(outside, campaigns), "../outside", "a/b", ".", "..",
-           "escape-link", "x/../../outside"]
+           "escape-link", "x/../../outside", "", "SPEC-0394-20261102-ae5b/", "a/"]
     for cid in ids:
-        with pytest.raises(ValueError, match="not found"):
+        with pytest.raises(ValueError, match=rf"^{re.escape(f'campaign {cid} not found')}$"):
             H.campaign_history(cfg, cid, now=HISTORY_NOW, cache=cache)
+    outside = outside.resolve()
     assert not [p for p in opened if outside in p.resolve().parents or p.resolve() == outside]
+    assert not [p for p in touched if outside in p.resolve().parents or p.resolve() == outside]
+    monkeypatch.undo()
     good = H.campaign_history(cfg, "SPEC-0394-20261102-ae5b", now=HISTORY_NOW, cache=cache)
     assert good["header"]["campaign"] == "SPEC-0394-20261102-ae5b"
+
+
+@pytest.mark.parametrize("cache", [False, True])
+def test_history_index_skips_symlinked_campaign_dir(tmp_path, cache):
+    cfg = history_cfg(tmp_path)
+    cfg["cache_dir"] = str(tmp_path / "cache")
+    before = {r["campaign"] for r in H.history_index(cfg, now=HISTORY_NOW, cache=cache)}
+    assert before
+    (S.campaigns_dir(cfg) / "escape-link").symlink_to(
+        _outside_campaign(tmp_path), target_is_directory=True)
+    rows = H.history_index(cfg, now=HISTORY_NOW, cache=cache)
+    ids = {r["campaign"] for r in rows}
+    assert "escape-link" not in ids
+    assert ids == before
+    other = {r["campaign"] for r in H.history_index(cfg, now=HISTORY_NOW, cache=not cache)}
+    assert other == ids
+    real = next(iter(sorted(before)))
+    assert H.campaign_history(cfg, real, now=HISTORY_NOW, cache=cache)["campaign"] == real
 
 
 def _decision_row(cid, **extra):
@@ -1101,11 +1150,19 @@ def test_decision_link_provenance_keeps_text(tmp_path, cache, monkeypatch):
     from nightwright.agentic import history_cache as HC
     calls = []
     real = HC._decision_records
-    monkeypatch.setattr(HC, "_decision_records",
-                        lambda *a, **k: calls.append(1) or real(*a, **k))
+
+    def record(*a, **k):
+        calls.append((a, k))
+        return real(*a, **k)
+    monkeypatch.setattr(HC, "_decision_records", record)
     recs = {r["id"]: r for r in H.history_records(cfg, campaign=cid, cache=cache)
             if r.get("source") == "decisions"}
     assert bool(calls) is cache   # the cache's decision reader (fix site) ran only when cache is on
+    if cache:
+        # the incremental dec_tail branch reads from the stored offset, never the whole file
+        reads = [k for a, k in calls if a[3] == dec]
+        assert reads
+        assert all(k.get("start", 0) > 0 and k.get("line_start", 0) > 0 for k in reads)
     assert recs["decisions:prov-text"]["links"]["escalation"] == "ESC-0001"
     assert recs["decisions:prov-text"]["linked_by"] == "text"
     assert recs["decisions:prov-field"]["linked_by"] == "field"
