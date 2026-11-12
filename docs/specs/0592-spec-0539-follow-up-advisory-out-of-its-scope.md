@@ -1,9 +1,10 @@
 ---
 id: SPEC-0592
 title: Backlog readiness spec reader hardening — dependency id check, pathological spec files, real-checkout early-return tests
-status: proposed
+status: accepted
 owner: user
 created: 2026-11-12
+updated: 2026-11-12
 milestone: "M9: agentic workflow"
 kind: feature
 tags: [agentic, queue]
