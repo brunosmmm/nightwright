@@ -1,7 +1,7 @@
 ---
 id: SPEC-0552
 title: Leaner agentic campaign loop (role tiers, review packet, findings collator, resumable sessions)
-status: draft
+status: accepted
 owner: user
 created: 2026-11-11
 kind: epic

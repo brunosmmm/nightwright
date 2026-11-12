@@ -1,7 +1,7 @@
 ---
 id: SPEC-0555
 title: Findings collator (marshal) and automatic follow-up ideas for out-of-scope findings
-status: draft
+status: accepted
 owner: user
 created: 2026-11-11
 parent: SPEC-0552

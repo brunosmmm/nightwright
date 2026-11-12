@@ -1,7 +1,7 @@
 ---
 id: SPEC-0556
 title: Resumable implementer and reviewer sessions per backend, with a fresh-session fallback
-status: draft
+status: accepted
 owner: user
 created: 2026-11-11
 parent: SPEC-0552

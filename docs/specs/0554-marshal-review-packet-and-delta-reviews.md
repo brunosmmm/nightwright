@@ -1,7 +1,7 @@
 ---
 id: SPEC-0554
 title: Marshal review packet (packet-loop-N.json) and delta reviews from loop 2
-status: draft
+status: accepted
 owner: user
 created: 2026-11-11
 parent: SPEC-0552

@@ -1,7 +1,7 @@
 ---
 id: SPEC-0553
 title: Role tiers (marshal/judge/deep), per-backend tier mapping and the hand-only size/tone cap
-status: draft
+status: accepted
 owner: user
 created: 2026-11-11
 parent: SPEC-0552
