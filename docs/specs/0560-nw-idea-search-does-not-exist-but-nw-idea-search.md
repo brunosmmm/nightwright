@@ -1,10 +1,11 @@
 ---
 id: SPEC-0560
 title: "nw idea search is a real subcommand; multi-word captures that start with a search/list verb are refused"
-status: proposed
+status: accepted
 kind: feature
 owner: user
 created: 2026-11-12
+updated: 2026-11-12
 source_idea: IDEA-1312
 tags: [ideas, cli, safety]
 ---
