@@ -75,10 +75,14 @@ trailing wildcard, `:**`: `* nw/*:**`, `* wt/*:**`, `*:nw/*:**`, `*:wt/*:**`. `*
 characters including none, so `**` matches the same strings as `*`, but the pattern ends in `**`,
 not in `:*`, so the legacy-prefix parser does not apply. The suffix constants are shared by both
 prefixes, so one change fixes all 8 rules. A real-binary probe is the acceptance gate for the
-spelling; if `claude` still warns or does not deny with `:**`, the implementer uses `:?*`
-instead (one character is required after the colon, which is the same for every real
-refspec), records which spelling was verified in the spec's As shipped section, and keeps the
-unit test below unchanged.
+spelling. Claude Code's `Bash()` pattern language documents only `*` as a wildcard; nothing
+shows that `?` is a single-character wildcard, so no `?` spelling (`:?*`, `:*?`) is part of this
+spec and the launch tests' matchers (`_permitted`, `_hits`: `*` becomes `.*`, everything else,
+`?` included, is literal) are not extended. If `claude` still warns or does not deny with `:**`,
+the implementer stops, does not ship a different spelling, records the probe output in the
+spec's As shipped section and sends the spec back for revision (a `?` fallback would first need
+its own real-binary proof that `?` is a wildcard, plus a declared matcher extension and tests).
+If the probe passes, the implementer records the `claude` version and the evidence in As shipped.
 
 ## Design
 
@@ -86,8 +90,9 @@ unit test below unchanged.
   `"* nw/*:*"`, `"* wt/*:*"`, `"*:nw/*:*"`, `"*:wt/*:*"` with
   `"* nw/*:**"`, `"* wt/*:**"`, `"*:nw/*:**"`, `"*:wt/*:**"`. `_push_deny()` still prefixes each
   with `git push ` and `git -C * push `, so the 8 rules become `Bash(git push * nw/*:**)` and
-  siblings. The rule count (50 `push` suffix rules plus the `git -C * push *` rule) does not change,
-  so the count assertions in `tests/test_agentic_launch.py` are unaffected.
+  siblings. The rule count (32 `_PUSH_DENY` suffixes times 2 prefixes, plus the `git -C * push *` rule, so
+  the 65 deny rules the count assertion at `tests/test_agentic_launch.py:680` expects) does not
+  change, so the count assertions in `tests/test_agentic_launch.py` are unaffected.
 - **Why `**` and not an enumerated allow-list inversion.** The deny stays a denylist
   (SPEC-0353's recorded residual risk). Replacing it with fewer, allow-shaped rules would need a
   different matcher model and is out of scope.
@@ -135,15 +140,17 @@ unit test below unchanged.
 - **Escape the colon (`\:`).** Escaping is only documented for `*` / `\`; the behaviour of an
   escaped `:` is unverified, and the same real-binary probe is needed anyway. `:**` is plain
   wildcard semantics and needs no escape.
-- **Drop to one rule per prefix such as `* nw/*:*?`.** Equivalent to the `:?*` fallback but gives
-  up the symmetric wording with the other suffixes; kept only as the fallback.
+- **A `?` spelling (`:?*` / `:*?`) as the spelling or as a fallback.** Claude Code documents
+  only `*` as a wildcard, so a `?` rule is unproven, and the test matchers treat `?` as a literal,
+  so every deny case would stop matching and the allow cases would prove nothing. Rejected: it
+  would need its own real-binary proof and a matcher extension that this spec does not scope.
 
 ## Acceptance criteria
 
 - [ ] No rule in any `L.DEFAULTS` rule list, and none in the effective `allowed_tools` /
       `disallowed_tools` of a conductor or steward `build_plan`, ends in `:*`.
-- [ ] The four suffixes are `* nw/*:**`, `* wt/*:**`, `*:nw/*:**`, `*:wt/*:**` (or the `:?*`
-      fallback recorded in As shipped), each present for both `git push` and `git -C * push`: 8 rules.
+- [ ] The four suffixes are `* nw/*:**`, `* wt/*:**`, `*:nw/*:**`, `*:wt/*:**`, each present for
+      both `git push` and `git -C * push`: 8 rules, and no rule contains a `?`.
 - [ ] With the `_permitted` matcher, `git push origin nw/x:release`, `git push origin
       HEAD:nw/x:release`, `git push origin wt/x:v1`, `git push origin HEAD:wt/x:v1` and their
       `git -C /w push …` forms are denied, and the named deny rule is the new one.
@@ -155,6 +162,8 @@ unit test below unchanged.
 - [ ] Real binary: a `claude` 2.1.318+ session started with the steward plan's flags prints no
       "reads its * literally" warning for any default rule, denies `git push origin nw/x:release`
       (listed in `permission_denials`, no remote ref created) and allows `git push origin nw/x`.
+      If any of the three fails, the spec is not shipped with another spelling: the failure is
+      recorded in As shipped and the spec is revised.
 - [ ] `docs/product/capabilities/agentic.md` states the no-trailing-`:*` rule.
 
 ## Test plan
@@ -169,6 +178,9 @@ unit test below unchanged.
   - a parametrized allow case for the lease-pinned and plain pushes in both prefix forms, to prove
     the legitimate pushes stay allowed, and an assertion that `main` / `master` destinations stay
     denied (`nw/x:main`, `HEAD:nw/x:refs/heads/main`).
+  - the test matchers `_permitted` / `_hits` are not changed (`?` stays a literal there), and the
+    parametrized cases cite exactly the `:**` strings the rules carry, so the behaviour tests
+    run against the shipped spelling;
   - the existing rule-count and legacy-literal tests (`test_push_rule_count_and_legacy_literals`)
     keep passing unchanged.
   - Run with `python3 tools/affected_tests.py --run uv run pytest -q`, plus
@@ -178,7 +190,8 @@ unit test below unchanged.
 - **Manual verification** (real binary, once, see Design): the (a) warning check and (b) denial /
   allow check against a scratch bare remote, using `claude` >= 2.1.318, with the version and the
   outcome recorded in As shipped. A fake cannot show the warning, so this is not optional
-  (memory: validate integrations against the real binary).
+  (memory: validate integrations against the real binary). If the `:**` probe fails, stop and
+  record it; no `?` spelling is tried inside this spec.
 - **Regression guard:** the existing SPEC-0353 / SPEC-0382 / SPEC-0424 launch tests and the
   `python3 tools/spec_lint.py` run stay green; `test_conductor_git_guard.py` and
   `test_claude_settings_allowlist.py` (which scan the same rule families) are run explicitly.
