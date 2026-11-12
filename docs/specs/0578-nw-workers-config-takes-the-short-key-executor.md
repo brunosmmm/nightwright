@@ -1,9 +1,10 @@
 ---
 id: SPEC-0578
 title: nw workers config accepts the dotted path agentic.workers.executor and lists allowed keys in --help
-status: proposed
+status: accepted
 owner: user
 created: 2026-11-12
+updated: 2026-11-12
 kind: feature
 source_idea: IDEA-1185
 tags: [workers, cli]
