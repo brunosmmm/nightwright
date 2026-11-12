@@ -1,7 +1,7 @@
 ---
 id: SPEC-0530
 title: "Hub event relay, health, and read-only host views"
-status: accepted
+status: done
 owner: user
 created: 2026-11-10
 kind: feature
@@ -421,7 +421,7 @@ filters ideas only. `nw hub --json` prints the key because it prints `hub_payloa
 
 ## Acceptance criteria
 
-- [ ] `GET /v1/events` returns `Content-Type: application/json` and
+- [x] `GET /v1/events` returns `Content-Type: application/json` and
       `nw.federation.events.v1`. Offset `0` on a missing or empty file returns
       `events: []` and `next_offset: 0`. A response seeks to `offset` and the only read
       before that offset is the one boundary byte. With 10,000 complete lines before
@@ -433,7 +433,7 @@ filters ideas only. `nw hub --json` prints the key because it prints `hub_payloa
       and a negative or non-integer offset each return signed `409`
       `{"error": "bad_offset"}` while enrolled. `POST /v1/events` is a signed 405
       `{"error": "method_not_allowed"}` while enrolled.
-- [ ] A relayed `runner_dead` keeps that type and its data, and gains top-level `host`,
+- [x] A relayed `runner_dead` keeps that type and its data, and gains top-level `host`,
       `origin` `{host, id}` with the host id, and `campaign` `<campaign>@<host>`. An
       unknown type, and a known type that fails `events.validate`, is stored as
       `host_event` with `data.type` equal to the host type, and the cursor still
@@ -442,17 +442,17 @@ filters ideas only. `nw hub --json` prints the key because it prints `hub_payloa
       twice in one page is appended once. The events request line is
       `/v1/events?offset=<n>&limit=500` with `offset` before `limit`. A second
       `relay_tick` adds no duplicate origin id.
-- [ ] If the events-file fsync raises, the cursor is unchanged. The next successful tick
+- [x] If the events-file fsync raises, the cursor is unchanged. The next successful tick
       has each copied origin id exactly once. If the checkpoint raises after a durable
       append, the next tick's rescan from `hub_events_offset` also leaves each origin id
       exactly once. The rescan does not parse bytes before `hub_events_offset`.
-- [ ] A verified `409` `bad_offset` appends one `host_cursor_reset` whose `data.host` is
+- [x] A verified `409` `bad_offset` appends one `host_cursor_reset` whose `data.host` is
       the registry name, sets `events_offset` to `0`, and keeps `events_origin_id`. The
       following page from offset `0` appends only host ids greater than that origin id.
       A crash after the reset append and before the checkpoint does not append a second
       reset. `HubClient` still rejects an unsigned events response: the cursor does not
       move and no host event is appended.
-- [ ] `POOL_WAIT_S` is `2.5`. Fetches for three enabled hosts overlap in time. Appends
+- [x] `POOL_WAIT_S` is `2.5`. Fetches for three enabled hosts overlap in time. Appends
       and `hosts.update` run on the calling thread after `wait`, in registry order, and
       do not overlap each other. A fetch that is still running when `wait` returns is
       not applied: that host's cursor and `status_cache` stay as they were, including
@@ -462,19 +462,19 @@ filters ideas only. `nw hub --json` prints the key because it prints `hub_payloa
       calls `relay_tick` once, and a raising `relay_tick` does not fail the tick. A
       status body that is not an object with `projects` and `campaigns`, or a non-200
       status response, leaves `status_cache` unchanged.
-- [ ] With `last_ok` 599 seconds before `now`, no `host_unreachable` is written. At 600
+- [x] With `last_ok` 599 seconds before `now`, no `host_unreachable` is written. At 600
       seconds, exactly one is written, `data.since` equals the stored `last_ok`, and
       `unreachable_reported` becomes true. A second `relay_tick` in a new call does not
       write another while the flag is true, and initializing a missing `cursor` does not
       clear `last_ok`. The next successful call writes one `host_reachable` and sets the
       flag false. A missing `last_ok` does not emit `host_unreachable`. A disabled host
       with an old `last_ok` does not emit it either.
-- [ ] `EVENT_TYPES` and `quiet.RULES` both contain `host_event`, `host_unreachable`,
+- [x] `EVENT_TYPES` and `quiet.RULES` both contain `host_event`, `host_unreachable`,
       `host_reachable`, `host_cursor_reset`, and `host_mail_rejected`, with the required
       data keys and the `wake` values in Design. The conductor skill's held sets are
       unchanged. A relay tick does not append `host_mail_rejected`. Existing `append`
       callers that pass no `host` write no `host` field.
-- [ ] Without `--all-hosts`, `nw queue status` JSON matches `queue_payload` and has no
+- [x] Without `--all-hosts`, `nw queue status` JSON matches `queue_payload` and has no
       host column. With `--all-hosts` and no hosts, it matches that same payload.
       `queue_payload` itself gains no host key. With a seeded cache of 2 `RUNNING` and
       1 `PARKED`, `--all-hosts` appends those three rows with the bare campaign id, the
@@ -482,12 +482,12 @@ filters ideas only. `nw hub --json` prints the key because it prints `hub_payloa
       `--state` filter the host rows. A cache `fetched_at` 600 seconds old is not
       stale. One 601 seconds old is stale, and the text cell contains `stale`. The host
       column is fixed.
-- [ ] The conductor brief and `hub_payload()["federation_hosts"]` each omit the key when
+- [x] The conductor brief and `hub_payload()["federation_hosts"]` each omit the key when
       the registry is empty. With the seeded cache they each include one object per host
       whose `line`, `n`, and `counts` match Design, and the brief text contains that
       line under a `hosts:` section. A stale host's line ends with `, stale`.
       `nw hub --state` does not change `federation_hosts`. Neither view dials a host.
-- [ ] With no `hosts.json`, `relay_tick` and `queue.tick` create no `hosts.json`, the
+- [x] With no `hosts.json`, `relay_tick` and `queue.tick` create no `hosts.json`, the
       brief has no `federation_hosts` key, and `hub_payload` has no `federation_hosts`
       key. An AST walk of `hosts.py`, `federation.py`, and `cli_hosts.py` still fails on
       any `queue` import, including `from . import queue as Q`. The relay does not add
@@ -596,6 +596,57 @@ filters ideas only. `nw hub --json` prints the key because it prints `hub_payloa
   `tests/test_hub.py`, and `tests/test_federation_channel.py` cover the brief, the hub,
   and the channel when no host has been added.
 
+### Test record (2026-11-12)
+
+- `uv run pytest -q tests/test_federation_relay.py`: 17 passed (all Test plan cases, plus
+  view-boundary and dropped-status cases).
+- Targeted related files (brief, hub, events, quiet, queue CLI/visibility, channel, docs,
+  tier/wait guards, TUI queue parity/hub, skills): 576 passed. `test_agentic_queue`,
+  `test_agentic_e2e`, `test_agentic_ping`, docs capability/guide/capture and guard-registry
+  files: 274 passed. `python3 tools/test_tiers.py --check` exits 0.
+- The full suite and the whole affected set (211 files) were left to the close gate.
+- Manual run (hub and host in separate `NW_DATA_DIR`/`NW_CONFIG_DIR`, host on
+  `127.0.0.1:18792` because 8792 was taken): see As shipped.
+
+### As shipped (2026-11-12)
+
+Built to Design. Deviations and choices:
+
+- `HubClient.request` gained `allow=(200,)`; the relay passes `(200, 409)` so a `409` is
+  signature-verified before it counts as a `bad_offset` reset. Other statuses still raise.
+- The fetch seams are `federation._fetch_events(rec, cfg, offset)` and
+  `federation._fetch_status(rec, cfg)` (pool side, no file access); the events fsync is
+  `federation._fsync_events(cfg)`.
+- The rescan runs inside `events._locked` together with the appends, the fsync and the size
+  `stat`. The fsync also runs when the tail holds records this host's relay wrote earlier
+  (an append whose fsync or checkpoint failed), so a checkpoint never follows unsynced bytes.
+- If a host's page or reset failed to checkpoint in a tick, that tick's health update does
+  not advance `hub_events_offset`, so the next rescan still covers the page.
+- `queue.tick` runs the relay through `queue._relay_hosts`, which imports `federation`
+  inside the function and journals `federation_relay_failed` on an exception.
+- The status cache keeps only the five documented campaign keys as bounded printable
+  strings (the `hosts check` sanitizer, moved to `federation.clean_str` /
+  `clean_campaigns`).
+- `nw queue status --all-hosts` text: remote rows are listed in the Active table with a
+  fixed `host` column (empty for local rows); the other tables are local only.
+
+Manual verification (temp dirs, host on port 18792):
+
+```
+hub:  nw hosts add box --url http://127.0.0.1:18792 > blob.json
+host: nw hosts enrol < blob.json
+host: (one runner_dead line appended to agentic/events.jsonl)  nw serve --federate --bind 127.0.0.1:18792
+hub:  nw queue tick
+      -> hub events.jsonl: {"id": 1, "type": "runner_dead", "campaign": "SPEC-1-20261112-aaaa@box",
+         ..., "host": "box", "origin": {"host": "box", "id": 1}}
+hub:  nw queue status --all-hosts      -> Active table with a host column
+hub:  nw queue conductor-brief         -> "hosts:\n- host box: last contact 4s, 0 campaigns"
+hub:  nw hub --json                    -> federation_hosts: [{"host": "box", ..., "stale": false}]
+(server stopped; health.last_ok set 11 minutes back, unreachable_reported false)
+hub:  nw queue tick; nw queue tick
+      -> exactly one host_unreachable (data.since = the stored last_ok); the second tick adds none
+```
+
 ## Clock Log
 
 Use `nw idea clock-in IDEA-562` at the start of an implementation session and
@@ -613,11 +664,11 @@ Use `nw idea clock-in IDEA-562` at the start of an implementation session and
 
 ## Definition of done
 
-- [ ] Acceptance criteria all met.
-- [ ] Test plan executed; automated tests pass; manual steps performed and recorded.
-- [ ] No regressions (affected tests at the close gate).
-- [ ] Spec body updated to match what shipped.
-- [ ] `docs/LEDGER.md` updated (status + date).
+- [x] Acceptance criteria all met.
+- [x] Test plan executed; automated tests pass; manual steps performed and recorded.
+- [x] No regressions (affected tests at the close gate).
+- [x] Spec body updated to match what shipped.
+- [x] `docs/LEDGER.md` updated (status + date).
 
 ## Open questions
 

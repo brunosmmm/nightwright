@@ -38,25 +38,9 @@ def _update(cfg, fn):
         raise click.ClickException(str(e))
 
 
-_CAMPAIGN_KEYS = ("campaign", "project", "state", "spec_id", "kind")
-_MAX_CAMPAIGNS = 1000
-_MAX_STR = 256
-
-
-def _clean_str(v):
-    """A host-supplied string that is safe to cache and echo, else None."""
-    if isinstance(v, str) and len(v) <= _MAX_STR and v.isprintable():
-        return v
-    return None
-
-
-def _clean_campaigns(raw) -> list[dict]:
-    """Only the five documented keys of dict items, as bounded printable strings or None."""
-    out = []
-    for item in raw[:_MAX_CAMPAIGNS] if isinstance(raw, list) else []:
-        if isinstance(item, dict):
-            out.append({k: _clean_str(item.get(k)) for k in _CAMPAIGN_KEYS})
-    return out
+_MAX_CAMPAIGNS = F.MAX_CAMPAIGNS
+_clean_str = F.clean_str                    # SPEC-0530: shared with the relay's status cache
+_clean_campaigns = F.clean_campaigns
 
 
 @hosts_group.command("add")

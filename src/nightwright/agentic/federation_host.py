@@ -4,12 +4,15 @@ from __future__ import annotations
 import hmac
 import http.server
 import json
+import os
+import re
 import socket
 import ssl
 import threading
 import time
-from urllib.parse import urlsplit
+from urllib.parse import parse_qs, urlsplit
 
+from . import events as E
 from . import federation as F
 from . import pull_jobs as PJ
 
@@ -31,6 +34,70 @@ def status_document(cfg) -> dict:
                        if isinstance(item, dict) and isinstance(item.get("project"), str)
                        and item["project"]})
     return {"schema": "nw.federation.status.v1", "projects": projects, "campaigns": campaigns}
+
+
+class BadOffset(ValueError):
+    """The requested byte offset is not an event-line boundary of the current file."""
+
+
+_INT_RE = re.compile(r"-?[0-9]{1,18}")
+
+
+def read_events_page(path, offset: int, limit: int) -> tuple[list[dict], int]:
+    """SPEC-0530: up to `limit` complete `events.jsonl` lines from byte `offset`, as decoded objects,
+    and the offset after the lines consumed. Only the byte before `offset` is read ahead of it;
+    a trailing partial line is neither returned nor consumed; a line that is not one JSON object
+    is consumed and omitted. The first line is returned even when it alone exceeds
+    `F.EVENTS_MAX_BYTES`, so a cursor can always pass it."""
+    try:
+        f = open(path, "rb")
+    except FileNotFoundError:
+        if offset != 0:
+            raise BadOffset(f"offset {offset} past the end") from None
+        return [], 0
+    with f:
+        size = os.fstat(f.fileno()).st_size
+        if offset > size:
+            raise BadOffset(f"offset {offset} past the end")
+        if offset > 0:
+            f.seek(offset - 1)
+            if f.read(1) != b"\n":
+                raise BadOffset(f"offset {offset} is not at a line start")
+        f.seek(offset)
+        remaining = size - offset
+        out: list[dict] = []
+        consumed = lines = 0
+        while lines < limit and consumed < remaining:
+            raw = f.readline(remaining - consumed)
+            if not raw.endswith(b"\n"):
+                break
+            if lines and consumed + len(raw) > F.EVENTS_MAX_BYTES:
+                break
+            consumed += len(raw)
+            lines += 1
+            try:
+                obj = json.loads(raw)
+            except (ValueError, RecursionError):
+                continue
+            if isinstance(obj, dict):
+                out.append(obj)
+    return out, offset + consumed
+
+
+def _events_args(query: str) -> tuple[int, int]:
+    """`(offset, limit)` from a query string; raises BadOffset for a bad `offset`."""
+    q = parse_qs(query, keep_blank_values=True)
+    offset = 0
+    if "offset" in q:
+        raw = q["offset"][0]
+        if not _INT_RE.fullmatch(raw) or raw.startswith("-"):
+            raise BadOffset("offset is not a non-negative integer")
+        offset = int(raw)
+    limit = F.EVENTS_LIMIT
+    raw = (q.get("limit") or [None])[0]
+    if raw is not None and _INT_RE.fullmatch(raw) and 1 <= int(raw) <= F.EVENTS_LIMIT:
+        limit = int(raw)
+    return offset, limit
 
 
 def make_federate_server(cfg, bind: str = DEFAULT_BIND, *, tls_cert=None, tls_key=None,
@@ -233,7 +300,23 @@ class _Handler(http.server.BaseHTTPRequestHandler):
             data = json.dumps(doc, separators=(",", ":")).encode()
             self._write(200, data, signed=True, method=method, path=path, secret=secret_key)
             return
-        if route == "/v1/status":
+        if route == "/v1/events" and method == "GET":
+            try:
+                offset, limit = _events_args(urlsplit(self.path).query)
+                evs, nxt = read_events_page(E.events_path(self.server.cfg), offset, limit)
+            except BadOffset:
+                self._json_error(409, "bad_offset", signed=True, method=method, path=path,
+                                 secret=secret_key)
+                return
+            except Exception:
+                self._json_error(500, "internal_error", signed=True, method=method, path=path,
+                                 secret=secret_key)
+                return
+            doc = {"schema": "nw.federation.events.v1", "events": evs, "next_offset": nxt}
+            data = json.dumps(doc, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
+            self._write(200, data, signed=True, method=method, path=path, secret=secret_key)
+            return
+        if route in ("/v1/status", "/v1/events"):
             self._json_error(405, "method_not_allowed", signed=True, method=method, path=path,
                              secret=secret_key)
             return

@@ -149,9 +149,13 @@ def _queue_table(payload: dict, width: int | None = None) -> Group:
         lease_txt = f"lease pid {lease.get('pid')} (heartbeat {hb}s ago){stale}"
     else:
         lease_txt = "no loop running"
-    active = [it for it in payload["items"] if it["state"] not in ("QUEUED", "WAITING")]
-    waiting = [it for it in payload["items"] if it["state"] == "WAITING"]
-    backlog = sorted((it for it in payload["items"] if it["state"] == "QUEUED"),
+    # SPEC-0530: `--all-hosts` items carry `host`; a remote row is a thin cached item
+    local = [it for it in payload["items"] if not it.get("host")]
+    remote = [it for it in payload["items"] if it.get("host")]
+    host_col = any("host" in it for it in payload["items"])
+    active = [it for it in local if it["state"] not in ("QUEUED", "WAITING")]
+    waiting = [it for it in local if it["state"] == "WAITING"]
+    backlog = sorted((it for it in local if it["state"] == "QUEUED"),
                      key=lambda it: it["backlog"]["position"])
     rows = []
     for it in active:
@@ -179,8 +183,18 @@ def _queue_table(payload: dict, width: int | None = None) -> Group:
                      "pri": str(it.get("priority")), "cost": _cost_cell(it),
                      "project": R.project_text(it.get("project")), "loops": str(it["loops"]),
                      "size": it.get("size") or "-", "tone": it.get("tone") or "-",
-                     "profile": _profile_text(it), "age": _age_txt(it.get("updated_age_s"))})
+                     "profile": _profile_text(it), "age": _age_txt(it.get("updated_age_s")),
+                     "host": Text()})
+    for it in remote:
+        rows.append({"campaign": Text(str(it.get("campaign"))),
+                     "state": Text(str(it.get("state") or "?")),
+                     "title": Text(str(it.get("spec_id") or "—")), "blocked_by": Text(),
+                     "park": Text(), "pri": "", "cost": "",
+                     "project": R.project_text(it.get("project")), "loops": "", "size": "-",
+                     "tone": "-", "profile": Text(), "age": "",
+                     "host": Text(str(it["host"]) + (" stale" if it.get("stale") else ""))})
     cols = [_col("campaign", "campaign", fixed=True), _col("state", "state", fixed=True),
+            *([_col("host", "host", fixed=True)] if host_col else []),
             _col("title", "title", flex=True),
             _col("blocked_by", "blocked by", fold="{} ", hide_empty=True),
             _col("park", "park", fold="[{}] ", hide_empty=True),
@@ -1821,12 +1835,21 @@ def attach(queue_group):
     @click.option("--all", "include_terminal", is_flag=True, help="include terminal campaigns")
     @click.option("--project", shell_complete=C.complete_project, help="filter by project")
     @click.option("--state", shell_complete=C.complete_campaign_state, help="filter by state")
+    @click.option("--all-hosts", "all_hosts", is_flag=True,
+                  help="also list federated hosts' campaigns from their cached status "
+                       "(SPEC-0530; dials no host)")
     @click.option("--json", "as_json", is_flag=True, help="emit nw.queue.v1 JSON")
     @click.pass_obj
-    def queue_list(cfg, include_terminal, project, state, as_json):
+    def queue_list(cfg, include_terminal, project, state, all_hosts, as_json):
         """What is in flight, in which state, at what cost — plus the lease and the slots."""
         payload = Q.queue_payload(cfg, include_terminal=include_terminal, project=project,
                                   state=state)
+        if all_hosts:
+            from . import federation as FED
+            if FED.host_views(cfg):
+                items = [{**it, "host": None, "stale": False} for it in payload["items"]]
+                payload = {**payload,
+                           "items": items + FED.host_rows(cfg, project=project, state=state)}
         if as_json:
             _dump_json(payload)
             return

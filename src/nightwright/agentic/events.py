@@ -109,6 +109,12 @@ EVENT_TYPES = {
     "launch_stale": ("reader", "session_id", "recorded_hash", "current_hash", "fix"),
     # SPEC-0300: synthetic follower line (never appended to events.jsonl)
     "conductor_digest": ("first_id", "last_id", "held", "merged"),
+    # SPEC-0530: the hub's copy of a host's queue events and the relay's own health events
+    "host_event": ("type",),
+    "host_unreachable": ("host", "since"),
+    "host_reachable": ("host",),
+    "host_cursor_reset": ("host",),
+    "host_mail_rejected": ("host", "msg_uid", "to", "reason"),    # emitted by the mail spec
 }
 
 # type -> {optional data key: accepted type(s)}
@@ -288,16 +294,20 @@ def _label_kw(st: dict) -> dict:
 
 
 def _append_locked(cfg, type_, *, campaign=None, spec_id=None, project=None, by, data,
-                   source=None, label=None) -> dict:
+                   source=None, label=None, host=None, origin=None, ts=None) -> dict:
     validate(type_, data)
     path = events_path(cfg)
-    rec = {"schema": SCHEMA, "id": _last_id(path) + 1, "ts": store.now_iso(), "type": type_,
+    rec = {"schema": SCHEMA, "id": _last_id(path) + 1, "ts": ts or store.now_iso(), "type": type_,
            "campaign": campaign, "spec_id": spec_id, "project": project, "by": by,
            "data": dict(data or {})}
     if label:
         rec["label"] = label
     if source:
         rec["source"] = source
+    if host is not None:                      # SPEC-0530: a relayed or host-scoped event
+        rec["host"] = host
+        if origin is not None:
+            rec["origin"] = origin
     line = (json.dumps(rec, ensure_ascii=False) + "\n").encode("utf-8")
     fd = os.open(path, os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o644)
     try:
@@ -308,11 +318,12 @@ def _append_locked(cfg, type_, *, campaign=None, spec_id=None, project=None, by,
 
 
 def append(cfg, type_, *, campaign=None, spec_id=None, project=None, by="nw", data=None,
-           source=None) -> dict:
+           source=None, host=None, origin=None, ts=None) -> dict:
     """Validate and append one event (flock + O_APPEND + single write; monotonic `id`)."""
     with _locked(_lock_path(cfg)):
         return _append_locked(cfg, type_, campaign=campaign, spec_id=spec_id, project=project,
-                              by=by, data=data or {}, source=source)
+                              by=by, data=data or {}, source=source, host=host, origin=origin,
+                              ts=ts)
 
 
 def read_id(cfg, event_id) -> dict | None:

@@ -564,6 +564,10 @@ def hub_payload(cfg, *, tasks_slice="today", state=None, kind=None, tag=None,
         "ideas_with_open_questions": _open_question_idea_count(cfg),   # SPEC-0080
         "agentic": _hub_agentic(cfg, project=project),                 # SPEC-0292
     }
+    from .agentic import federation as FED
+    hosts = FED.host_views(cfg)                 # SPEC-0530: cached status; `state` is the ideas filter
+    if hosts:
+        out["federation_hosts"] = hosts
     slice_name = (tasks_slice or "today").strip().lower()
     if slice_name == "today":
         out["today"] = hub_today_payload(cfg, **task_kw)

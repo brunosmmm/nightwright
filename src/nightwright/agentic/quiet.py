@@ -67,6 +67,9 @@ RULES = {
     "code_changed": "wake", "auto_resume_failed": "wake",
     "launch_stale": "wake",                      # SPEC-0424: a relaunch request
     "conductor_unresponsive": "wake",            # SPEC-0485: unacked conductor wake
+    # SPEC-0530: relayed host events and host health; none is held, so the skill's held lists stay
+    "host_event": "wake", "host_unreachable": "wake", "host_reachable": "wake",
+    "host_cursor_reset": "wake", "host_mail_rejected": "wake",
 }
 
 DEFAULTS = {"enabled": True, "readers": ["conductor"], "digest_interval_s": 1800}

@@ -11,6 +11,7 @@ from . import cost_policy as CP
 from . import decisions as D
 from . import escalations as ESC
 from . import events as E
+from . import federation as FED
 from . import queue as Q
 from .. import skills as SK
 
@@ -20,7 +21,7 @@ COMPACT_AT_DEFAULT = 150000
 CAPS = {"parked": 20, "active": 20, "open_dispatches": 10, "escalations_open": 10,
         "unanswered_mail": 10, "recent_decisions": 10, "auto_applied_24h": 10}
 # Highest priority first; truncation removes items from the end of this list first.
-SECTION_ORDER = ("runner", "conductor", "launch", "counts", "parked", "open_dispatches",
+SECTION_ORDER = ("runner", "conductor", "launch", "counts", "hosts", "parked", "open_dispatches",
                  "escalations_open", "auto_applied_24h", "unanswered_mail", "active",
                  "recent_decisions", "standing")
 
@@ -156,6 +157,7 @@ def conductor_brief(cfg, now=None) -> dict:
     limit = compact_at(cfg)
     conf = _conductor_conf(cfg)
     draining = lease.get("draining")
+    hosts = FED.host_views(cfg, now=now)                     # SPEC-0530: cached status only
     return {
         "schema": SCHEMA,
         "runner": {"held": lease["held"], "pid": lease["pid"],
@@ -168,6 +170,7 @@ def conductor_brief(cfg, now=None) -> dict:
         "launch": _stale_launches(cfg),                      # SPEC-0424
         "counts": {"active": len(active), "queued": sum(1 for i in items if i["state"] == "QUEUED"),
                    "parked": len(parked)},
+        **({"federation_hosts": hosts} if hosts else {}),
         **out_lists,
         "recent_decisions": recent,
         "standing": {"skill": str(SK.default_dest() / "nw-conduct" / "SKILL.md"),
@@ -194,6 +197,7 @@ def _sections(b) -> dict:
                                for x in b.get("launch") or []], 0),
         "counts": (f"counts: active {n['active']} queued {n['queued']} parked {n['parked']}", [], 0),
     }
+    s["hosts"] = ("hosts:", [f"- {h['line']}" for h in b.get("federation_hosts") or []], 0)
     s["parked"] = ("parked:", [
         f"- {p['campaign']} {p['label']} {p['reason']} owner={p['owner']} "
         f"for={p['parked_for_s']}s decided={str(p['decided']).lower()} "

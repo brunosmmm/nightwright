@@ -1,10 +1,13 @@
 """Federation signed channel (SPEC-0529): HMAC helpers and `HubClient`. No relay or queue."""
 from __future__ import annotations
 
+import concurrent.futures as cf
+import datetime as dt
 import hashlib
 import hmac
 import http.client
 import json
+import logging
 import os
 import secrets
 import socket
@@ -14,8 +17,14 @@ import time
 from pathlib import Path
 from urllib.parse import urlsplit
 
+from . import decisions as D
+from . import events as E
+from . import hosts as H
 from . import pull_jobs as PJ
+from . import store
 from . import workers as WK
+
+log = logging.getLogger(__name__)
 
 FEDERATION_REF = "secrets/federation.json"
 EMPTY_BODY_SHA = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
@@ -24,6 +33,13 @@ MAX_RESPONSE_BYTES = PJ.MAX_FRAMES_BYTES
 SIG_V_HEADER = "X-NW-Sig-V"
 SIG_VERSION = "2"
 UNAUTHORIZED_BODY = b'{"error":"unauthorized"}'
+POOL_WAIT_S = 2.5                 # SPEC-0530: the relay tick's bound on every host's calls
+UNREACHABLE_S = 600
+STALE_S = 600
+EVENTS_LIMIT = 500
+EVENTS_MAX_BYTES = 1048576
+MAX_CAMPAIGNS = 1000
+MAX_STR = 256
 
 
 def federation_path(cfg) -> Path:
@@ -343,7 +359,10 @@ class HubClient:
             raise ConnectionError(f"{type(last).__name__}: {last}") from last
         raise ConnectionError("TimeoutError: timed out")
 
-    def request(self, method: str, path: str, body: bytes = b"") -> tuple[int, bytes, dict]:
+    def request(self, method: str, path: str, body: bytes = b"",
+                allow: tuple = (200,)) -> tuple[int, bytes, dict]:
+        """A verified response. A status outside `allow` is an error before the signature is read;
+        one inside it (SPEC-0530: a `409`) must still carry a valid signature."""
         data = body or b""
         target = self._target(path)
         headers = {"Authorization": f"Bearer {self.token}",
@@ -422,7 +441,7 @@ class HubClient:
                      direction="resp", status=status, now=self._now)
         if why:
             raise ConnectionError(why)
-        if status != 200:
+        if status not in allow:
             raise ConnectionError(f"HTTP {status}")
         return status, raw, hdrs
 
@@ -435,3 +454,400 @@ class HubClient:
         if not isinstance(doc, dict):
             raise ConnectionError("response is not a JSON object")
         return doc
+
+
+# ---- the hub's event relay (SPEC-0530) -------------------------------------------------------
+# Network calls run in a pool; appends, fsyncs and `hosts.update` run on the calling thread.
+
+def clean_str(v):
+    """A host-supplied string that is safe to cache and echo, else None."""
+    if isinstance(v, str) and len(v) <= MAX_STR and v.isprintable():
+        return v
+    return None
+
+
+def clean_campaigns(raw) -> list[dict]:
+    """Only the five documented keys of dict items, as bounded printable strings or None."""
+    out = []
+    for item in raw[:MAX_CAMPAIGNS] if isinstance(raw, list) else []:
+        if isinstance(item, dict):
+            out.append({k: clean_str(item.get(k))
+                        for k in ("campaign", "project", "state", "spec_id", "kind")})
+    return out
+
+
+def _is_int(v) -> bool:
+    return isinstance(v, int) and not isinstance(v, bool)
+
+
+def _fetch_events(rec: dict, cfg, offset: int):
+    """`("page", doc)`, `("reset", None)` or `("fail", exc)`. Runs in the pool; touches no file."""
+    try:
+        client = HubClient(rec, cfg)
+        status, raw, _ = client.request(
+            "GET", f"/v1/events?offset={offset}&limit={EVENTS_LIMIT}", allow=(200, 409))
+        doc = json.loads(raw)
+        if not isinstance(doc, dict):
+            raise ConnectionError("response is not a JSON object")
+        if status == 409:
+            if doc.get("error") != "bad_offset":
+                raise ConnectionError("HTTP 409")
+            return "reset", None
+        nxt = doc.get("next_offset")
+        if (doc.get("schema") != "nw.federation.events.v1" or not isinstance(doc.get("events"), list)
+                or not _is_int(nxt) or nxt < offset):
+            raise ConnectionError("bad events page")
+        return "page", doc
+    except Exception as e:                                  # noqa: BLE001 - reported as a failure
+        return "fail", e
+
+
+def _fetch_status(rec: dict, cfg):
+    """`("ok", doc)` or `("fail", exc)`. Runs in the pool; touches no file."""
+    try:
+        doc = HubClient(rec, cfg).get_json("/v1/status")
+        if not isinstance(doc.get("projects"), list) or not isinstance(doc.get("campaigns"), list):
+            raise ConnectionError("bad status document")
+        return "ok", doc
+    except Exception as e:                                  # noqa: BLE001 - reported as a failure
+        return "fail", e
+
+
+def _events_size(cfg) -> int:
+    try:
+        return E.events_path(cfg).stat().st_size
+    except OSError:
+        return 0
+
+
+def _fsync_events(cfg) -> None:
+    fd = os.open(E.events_path(cfg), os.O_RDONLY)
+    try:
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+
+
+def _scan_tail(cfg, offset) -> list[dict]:
+    """The event objects of the hub log from `offset` to the end; earlier bytes are not read."""
+    out: list[dict] = []
+    try:
+        with open(E.events_path(cfg), "rb") as f:
+            size = os.fstat(f.fileno()).st_size
+            f.seek(offset if _is_int(offset) and 0 <= offset <= size else 0)
+            for raw in f:
+                try:
+                    obj = json.loads(raw)
+                except (ValueError, RecursionError):
+                    continue
+                if isinstance(obj, dict):
+                    out.append(obj)
+    except OSError:
+        pass
+    return out
+
+
+def _tail_origin_max(tail: list[dict], name: str) -> int:
+    best = 0
+    for ev in tail:
+        o = ev.get("origin")
+        if isinstance(o, dict) and o.get("host") == name and _is_int(o.get("id")):
+            best = max(best, o["id"])
+    return best
+
+
+def _data_host(ev: dict):
+    d = ev.get("data")
+    return d.get("host") if isinstance(d, dict) else None
+
+
+def _mine(ev: dict, name: str) -> bool:
+    """A record in the rescan tail that this host's relay wrote (it may not be durable yet)."""
+    o = ev.get("origin")
+    return (isinstance(o, dict) and o.get("host") == name) or (
+        isinstance(ev.get("type"), str) and ev["type"].startswith("host_")
+        and _data_host(ev) == name)
+
+
+def _locked_append(cfg, name: str, offset, fn):
+    """Under `events._locked`: rescan the tail from `offset`, let `fn(tail)` return
+    `(records to append, extra)`, append them, fsync when anything of this host's may still be
+    unsynced, and measure the new size. Returns `(size, extra)`."""
+    with E._locked(E._lock_path(cfg)):
+        tail = _scan_tail(cfg, offset)
+        kws, extra = fn(tail)
+        for kw in kws:
+            E._append_locked(cfg, **kw)
+        if kws or any(_mine(ev, name) for ev in tail):
+            _fsync_events(cfg)
+        return _events_size(cfg), extra
+
+
+def _host_record(obj: dict, name: str, now) -> dict:
+    typ, data = obj.get("type"), obj.get("data")
+    ok = isinstance(typ, str) and isinstance(data, dict)
+    if ok:
+        try:
+            E.validate(typ, data)
+        except Exception:                                   # noqa: BLE001 - any invalid record
+            ok = False
+    if not ok:
+        data = {**(data if isinstance(data, dict) else {}), "type": typ if isinstance(typ, str)
+                else str(typ)}
+        typ = "host_event"
+    camp = obj.get("campaign")
+    by = obj.get("by")
+    return {"type_": typ, "data": data,
+            "campaign": f"{camp}@{name}" if isinstance(camp, str) and camp else None,
+            "spec_id": obj["spec_id"] if isinstance(obj.get("spec_id"), str) else None,
+            "project": obj["project"] if isinstance(obj.get("project"), str) else None,
+            "by": by if isinstance(by, str) and by else "host", "host": name,
+            "origin": {"host": name, "id": obj["id"]},
+            "ts": obj["ts"] if isinstance(obj.get("ts"), str) else store.now_iso(now)}
+
+
+def _health_event(type_: str, name: str, now, **data) -> dict:
+    return {"type_": type_, "data": {"host": name, **data}, "campaign": None, "spec_id": None,
+            "project": None, "by": "federation", "host": name, "ts": store.now_iso(now)}
+
+
+def _set_cursor(cfg, name: str, **fields) -> None:
+    def fn(recs):
+        r = H.find(recs, name)
+        cur = r.get("cursor") if isinstance(r.get("cursor"), dict) else {}
+        r["cursor"] = {**cur, **fields}
+    H.update(cfg, fn)
+
+
+def _apply_page(cfg, name: str, cursor: dict, doc: dict, now) -> None:
+    def build(tail):
+        eff = max(cursor.get("events_origin_id") or 0, _tail_origin_max(tail, name))
+        top, seen, kws = eff, set(), []
+        for obj in doc["events"]:
+            if not isinstance(obj, dict) or not _is_int(obj.get("id")):
+                continue
+            top = max(top, obj["id"])
+            if obj["id"] <= eff or obj["id"] in seen or obj.get("type") == "message":
+                continue
+            seen.add(obj["id"])
+            kws.append(_host_record(obj, name, now))
+        return kws, top
+
+    size, top = _locked_append(cfg, name, cursor.get("hub_events_offset"), build)
+    _set_cursor(cfg, name, events_offset=doc["next_offset"], events_origin_id=top,
+                hub_events_offset=size)
+
+
+def _apply_reset(cfg, name: str, cursor: dict, now) -> None:
+    def build(tail):
+        eff = max(cursor.get("events_origin_id") or 0, _tail_origin_max(tail, name))
+        have = any(ev.get("type") == "host_cursor_reset" and _data_host(ev) == name for ev in tail)
+        return ([] if have else [_health_event("host_cursor_reset", name, now)]), eff
+
+    size, eff = _locked_append(cfg, name, cursor.get("hub_events_offset"), build)
+    _set_cursor(cfg, name, events_offset=0, events_origin_id=eff, hub_events_offset=size)
+
+
+def _apply_status(cfg, name: str, doc: dict, now) -> None:
+    cache = {"fetched_at": store.now_iso(now),
+             "projects": [p for p in map(clean_str, doc["projects"]) if p],
+             "campaigns": clean_campaigns(doc["campaigns"])}
+
+    def fn(recs):
+        H.find(recs, name)["status_cache"] = cache
+    H.update(cfg, fn)
+
+
+def _failure_text(exc) -> str:
+    return f"{type(exc).__name__}: {exc}"[:200]
+
+
+def _apply_health(cfg, rec: dict, ev, st, now, moved: bool) -> None:
+    """`ev` and `st` are the finished `(kind, value)` outcomes, or None for a dropped call.
+    `moved` is false when this tick's page failed to checkpoint: the rescan offset then stays put
+    so the next tick still sees that page's records."""
+    name = rec["name"]
+    health = dict(rec["health"]) if isinstance(rec.get("health"), dict) else {}
+    cursor = rec["cursor"]
+    fails = [o[1] for o in (ev, st) if o is not None and o[0] == "fail"]
+    reached = (ev is not None and ev[0] in ("page", "reset")) or (st is not None and st[0] == "ok")
+    update = {}
+    event = None
+    if reached:
+        update["last_ok"] = store.now_iso(now)
+        update["last_error"] = _failure_text(fails[0]) if fails else None
+        if health.get("unreachable_reported"):
+            event = ("host_reachable", lambda tail: not any(
+                ev_.get("type") == "host_reachable" and _data_host(ev_) == name
+                for ev_ in tail), {})
+            update["unreachable_reported"] = False
+    else:
+        if fails:
+            update["last_error"] = _failure_text(fails[0])
+        last_ok = health.get("last_ok")
+        ts = D.parse_ts(last_ok) if isinstance(last_ok, str) else None
+        if (ts is not None and not health.get("unreachable_reported")
+                and (now - ts).total_seconds() >= UNREACHABLE_S):
+            event = ("host_unreachable", lambda tail: not _open_outage(tail, name),
+                     {"since": last_ok})
+            update["unreachable_reported"] = True
+    if not update:
+        return
+    fields = {}
+    if event is not None:
+        type_, want, extra = event
+
+        def build(tail):
+            return ([_health_event(type_, name, now, **extra)] if want(tail) else []), None
+
+        size, _ = _locked_append(cfg, name, cursor.get("hub_events_offset"), build)
+        if moved:
+            fields["hub_events_offset"] = size
+
+    def fn(recs):
+        r = H.find(recs, name)
+        r["health"] = {**(r["health"] if isinstance(r.get("health"), dict) else {}), **update}
+        if fields:
+            r["cursor"] = {**(r["cursor"] if isinstance(r.get("cursor"), dict) else {}), **fields}
+    H.update(cfg, fn)
+
+
+def _open_outage(tail: list[dict], name: str) -> bool:
+    """The tail holds a `host_unreachable` for this host with no later `host_reachable`."""
+    open_ = False
+    for ev in tail:
+        if _data_host(ev) != name:
+            continue
+        if ev.get("type") == "host_unreachable":
+            open_ = True
+        elif ev.get("type") == "host_reachable":
+            open_ = False
+    return open_
+
+
+def relay_tick(cfg, *, now=None) -> None:
+    """One relay pass over every enabled host (SPEC-0530): fetch events and status together,
+    drop what is still running after `POOL_WAIT_S`, then apply on this thread in registry order."""
+    recs = H.load(cfg)
+    if not recs:
+        return
+    now = now or dt.datetime.now().astimezone()
+
+    def live(rs):
+        return [r for r in rs if isinstance(r, dict) and isinstance(r.get("name"), str)
+                and r.get("enabled", True)]
+
+    def needs_init(r):
+        return not isinstance(r.get("cursor"), dict) or not isinstance(r.get("health"), dict)
+
+    if any(needs_init(r) for r in live(recs)):
+        size = _events_size(cfg)
+
+        def init(rs):
+            for r in live(rs):
+                if not isinstance(r.get("cursor"), dict):
+                    r["cursor"] = {"events_offset": 0, "events_origin_id": 0,
+                                   "hub_events_offset": size}
+                if not isinstance(r.get("health"), dict):
+                    r["health"] = {"last_ok": None, "last_error": None,
+                                   "unreachable_reported": False}
+        recs = H.update(cfg, init)
+    hosts = live(recs)
+    if not hosts:
+        return
+
+    pool = cf.ThreadPoolExecutor(max_workers=2 * len(hosts), thread_name_prefix="nw-relay")
+    jobs = {}
+    try:
+        for r in hosts:
+            off = r["cursor"].get("events_offset")
+            off = off if _is_int(off) and off >= 0 else 0
+            jobs[r["name"]] = (pool.submit(_fetch_events, r, cfg, off), pool.submit(_fetch_status, r, cfg))
+        cf.wait([f for pair in jobs.values() for f in pair], timeout=POOL_WAIT_S)
+    finally:
+        pool.shutdown(wait=False, cancel_futures=True)
+
+    def outcome(fut):
+        if not fut.done():
+            return None                                     # dropped: neither success nor failure
+        try:
+            return fut.result()
+        except Exception as e:                              # noqa: BLE001
+            return "fail", e
+
+    results = {n: (outcome(a), outcome(b)) for n, (a, b) in jobs.items()}
+    moved = {r["name"]: True for r in hosts}
+    for r in hosts:                                         # event pages and resets
+        ev = results[r["name"]][0]
+        try:
+            if ev is not None and ev[0] == "page":
+                _apply_page(cfg, r["name"], r["cursor"], ev[1], now)
+            elif ev is not None and ev[0] == "reset":
+                _apply_reset(cfg, r["name"], r["cursor"], now)
+        except Exception as e:                              # noqa: BLE001 - one host must not stop the rest
+            moved[r["name"]] = False
+            log.warning("federation relay: events for host %s not applied: %s", r["name"], e)
+    for r in hosts:                                         # status caches
+        st = results[r["name"]][1]
+        if st is not None and st[0] == "ok":
+            try:
+                _apply_status(cfg, r["name"], st[1], now)
+            except Exception as e:                          # noqa: BLE001
+                log.warning("federation relay: status for host %s not stored: %s", r["name"], e)
+    fresh = {x["name"]: x for x in live(H.load(cfg))}
+    for r in hosts:                                         # health
+        cur = fresh.get(r["name"])
+        if cur is None or not isinstance(cur.get("cursor"), dict):
+            continue
+        try:
+            _apply_health(cfg, cur, *results[r["name"]], now, moved[r["name"]])
+        except Exception as e:                              # noqa: BLE001
+            log.warning("federation relay: health for host %s not stored: %s", r["name"], e)
+
+
+# ---- read-only views (SPEC-0530): the cached status only, no socket ---------------------------
+
+def _views(cfg, now, project, state) -> list[tuple[dict, list[dict]]]:
+    now = now or dt.datetime.now().astimezone()
+    out = []
+    for rec in H.load(cfg):
+        if not isinstance(rec, dict) or not isinstance(rec.get("name"), str):
+            continue
+        cache = rec.get("status_cache") if isinstance(rec.get("status_cache"), dict) else {}
+        fetched = cache.get("fetched_at") if isinstance(cache.get("fetched_at"), str) else None
+        ts = D.parse_ts(fetched)
+        age = int((now - ts).total_seconds()) if ts is not None else None
+        stale = age is None or age > STALE_S
+        camps = cache.get("campaigns") if isinstance(cache.get("campaigns"), list) else []
+        kept = [c for c in camps if isinstance(c, dict) and isinstance(c.get("state"), str)
+                and (project is None or c.get("project") == project)
+                and (state is None or c["state"] == state)]
+        counts: dict[str, int] = {}
+        for c in kept:
+            counts[c["state"]] = counts.get(c["state"], 0) + 1
+        counts = dict(sorted(counts.items()))
+        n = len(kept)
+        ago = "never" if age is None else f"{age}s"
+        line = f"host {rec['name']}: last contact {ago}, {n} campaigns"
+        if n:
+            line += " (" + ", ".join(f"{k}: {v}" for k, v in counts.items()) + ")"
+        if stale:
+            line += ", stale"
+        view = {"host": rec["name"], "enabled": bool(rec.get("enabled", True)), "stale": stale,
+                "fetched_at": fetched, "last_contact_s": age, "n": n, "counts": counts,
+                "line": line}
+        rows = [{"campaign": c.get("campaign"), "project": c.get("project"), "state": c["state"],
+                 "spec_id": c.get("spec_id"), "kind": c.get("kind"), "host": rec["name"],
+                 "stale": stale} for c in kept]
+        out.append((view, rows))
+    return out
+
+
+def host_views(cfg, *, now=None, project=None, state=None) -> list[dict]:
+    """One summary object per registered host (registry order, disabled included)."""
+    return [v for v, _ in _views(cfg, now, project, state)]
+
+
+def host_rows(cfg, *, now=None, project=None, state=None) -> list[dict]:
+    """One thin item per cached host campaign, host order then cache order."""
+    return [r for _, rows in _views(cfg, now, project, state) for r in rows]

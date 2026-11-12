@@ -6521,6 +6521,7 @@ def tick(cfg, *, stop: threading.Event | None = None, runner=None, admit=True,
     report = TickReport()
     try:
         _tick(cfg, ctx, pool, report, admit=admit, own=own, draining=draining and not own)
+        _relay_hosts(cfg)
     finally:
         if own:
             pool.shutdown()
@@ -6528,6 +6529,16 @@ def tick(cfg, *, stop: threading.Event | None = None, runner=None, admit=True,
     remaining = [s for s in store.list_campaigns(cfg) if s.get("state") != "PARKED"]
     report.idle = not remaining and not pool.flights
     return report
+
+
+def _relay_hosts(cfg) -> None:
+    """SPEC-0530: copy enabled federation hosts' events into this hub's log; a failure is
+    journalled and never fails the tick. Inert without `hosts.json`."""
+    try:
+        from . import federation as FED
+        FED.relay_tick(cfg)
+    except Exception as e:                                       # noqa: BLE001
+        journal(cfg, "federation_relay_failed", error=f"{type(e).__name__}: {e}"[:500])
 
 
 # ---- red episodes (SPEC-0420) -------------------------------------------------------------
