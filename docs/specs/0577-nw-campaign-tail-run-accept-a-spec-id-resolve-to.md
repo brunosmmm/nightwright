@@ -1,9 +1,10 @@
 ---
 id: SPEC-0577
 title: nw campaign commands accept a spec id and resolve it to its campaign
-status: proposed
+status: accepted
 owner: user
 created: 2026-11-12
+updated: 2026-11-12
 kind: feature
 source_idea: IDEA-657
 tags: [agentic, cli]
