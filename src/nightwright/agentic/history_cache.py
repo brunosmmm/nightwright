@@ -1,6 +1,7 @@
 """Disposable campaign history cache (SPEC-0472)."""
 from __future__ import annotations
 
+import copy
 import datetime as dt
 import fcntl
 import hashlib
@@ -1046,6 +1047,7 @@ def _stale_terminal_ids_records_quiet(cfg, index_rows: list[dict], sources: dict
 
 def _recompute_terminal_documents(
     cfg, root: Path, now, index_rows: list[dict], records: list[dict], cids: set[str],
+    *, sources: dict | None = None,
 ) -> tuple[list[dict], list[dict], dict | None]:
     if not cids:
         return index_rows, records, None
@@ -1053,7 +1055,9 @@ def _recompute_terminal_documents(
     gaps: list[str] = []
     global_recs = H._global_records(cfg, _campaign_ids(cfg), gaps)
     runner_down = H._runner_intervals(cfg, gaps)
-    sources = _read_json(root / "sources.json") or {}
+    given_sources = sources
+    if sources is None:
+        sources = _read_json(root / "sources.json") or {}
     index_by = {r["campaign"]: r for r in index_rows}
     windows = {cid: _live_window_for_campaign(cfg, cid) for cid in cids}
     split_rows = _patch_index_windows(index_rows, windows)
@@ -1065,12 +1069,11 @@ def _recompute_terminal_documents(
             shares=shares, window=window, write_campaign=True, extra_gaps=gaps,
         )
         index_rows = [row if r.get("campaign") == cid else r for r in index_rows]
-        records = _merge_records(
-            records, drop_campaign_all=cid, add=_records_for_campaign(doc, cid),
-        )
+        records = _merge_recomputed(records, doc, cid)
         _write_campaign_file(root, cid, doc)
         _append_pending_index_write(root, row)
-    fresh_sources = _read_json(root / "sources.json") or sources
+    fresh_sources = given_sources if given_sources is not None \
+        else _read_json(root / "sources.json") or sources
     for cid in cids:
         _set_campaign_cursors(fresh_sources, cfg, cid)
     return index_rows, records, fresh_sources
@@ -1757,12 +1760,9 @@ def _local_records(doc: dict) -> list[dict]:
 
 
 def _merge_records(existing: list[dict], *, drop_campaign: str | None = None,
-                  drop_campaign_all: str | None = None,
                   drop_predicate=None, add: list[dict] | None = None) -> list[dict]:
     out = []
     for rec in existing:
-        if drop_campaign_all and rec.get("campaign") == drop_campaign_all:
-            continue
         if drop_campaign and rec.get("campaign") == drop_campaign and rec.get("source") in _LOCAL_SOURCES:
             continue
         if drop_predicate and drop_predicate(rec):
@@ -1773,8 +1773,23 @@ def _merge_records(existing: list[dict], *, drop_campaign: str | None = None,
     return out
 
 
-def _records_for_campaign(doc: dict, cid: str) -> list[dict]:
-    return [rec for rec in doc.get("records") or [] if rec.get("campaign") == cid]
+def _merge_recomputed(records: list[dict], doc: dict, cid: str) -> list[dict]:
+    """Replace ``cid``'s local records with the recomputed document's.
+
+    Global records are never dropped here (they follow the live set, see
+    ``_reconcile_live_set``); only their ``spec_id``/``project`` follow the owner's header.
+    """
+    out = _merge_records(records, drop_campaign=cid, add=_local_records(doc))
+    owned = [
+        i for i, r in enumerate(out)
+        if r.get("campaign") == cid and r.get("source") not in _LOCAL_SOURCES
+    ]
+    if owned:
+        # Copies: ``records`` may share dicts with a start snapshot used for write merging.
+        for i in owned:
+            out[i] = {**out[i], "links": dict(out[i].get("links") or {})}
+        _lazy_history()._enrich_records([out[i] for i in owned], {cid: doc["header"]})
+    return out
 
 
 def _merge_record_writes(start: list[dict], target: list[dict], disk: list[dict]) -> list[dict]:
@@ -1934,35 +1949,12 @@ def _apply_pending_index_writes(cfg, root: Path, *, _hold_guard: bool = False) -
                     r.get("campaign") in p and r.get("source") in _LOCAL_SOURCES
                 ),
             )
-            live_list = sorted(_live_campaign_ids(cfg))
-            gaps: list[str] = []
-            global_recs = H._global_records(cfg, live_list, gaps)
-            records = _merge_records(
-                records, drop_predicate=lambda r: r.get("source") not in _LOCAL_SOURCES,
-            )
-            records.extend(H._enrich_records(global_recs, _headers_for_enrich(merged_idx)))
         sources_out = None
         if pruned:
-            live = _live_campaign_ids(cfg)
-            survivors = {
-                r["campaign"] for r in merged_idx
-                if r.get("outcome") in _TERMINAL_OUTCOMES and r.get("campaign") in live
-            }
-            touch: set[str] = set()
-            for cid in survivors:
-                doc = _read_json(root / "campaigns" / f"{cid}.json")
-                if not isinstance(doc, dict):
-                    touch.add(cid)
-                    continue
-                pure = H.campaign_history(cfg, cid, now=now, cache=False)
-                a = {k: v for k, v in doc.items() if k != "generated_at"}
-                b = {k: v for k, v in pure.items() if k != "generated_at"}
-                if a != b:
-                    touch.add(cid)
-            if touch:
-                merged_idx, records, sources_out = _recompute_terminal_documents(
-                    cfg, root, now, merged_idx, records, touch,
-                )
+            merged_idx, records, sources_out, _ = _reconcile_live_set(
+                cfg, root, now, _merge_index_writes(committed, pending, set()), records,
+                None, persist=False, _hold_guard=True,
+            )
         sources = sources_out or _read_json(root / "sources.json") or {}
         _persist_index_records(
             cfg,
@@ -2220,6 +2212,12 @@ def _cold_fill(cfg, root: Path, *, now=None, progress=None, _hold_guard: bool = 
         all_records: list[dict] = []
         headers = {}
         for done, cid in enumerate(cids, 1):
+            if not store.campaign_dir(cfg, cid).is_dir():
+                # Removed since the listing: nothing to compute (a removal that lands during
+                # the recompute is pruned by the reconcile below).
+                if progress:
+                    progress(done, len(cids))
+                continue
             doc, row = _recompute_campaign(
                 cfg, cid, now, global_recs=global_recs, runner_down=runner_down, shares=shares,
                 window=window_map.get(cid, {}), write_campaign=True, extra_gaps=gaps,
@@ -2231,8 +2229,21 @@ def _cold_fill(cfg, root: Path, *, now=None, progress=None, _hold_guard: bool = 
             _append_pending_index_write(root, row)
             if progress:
                 progress(done, len(cids))
-        enriched_global = H._enrich_records(global_recs, headers)
-        all_records.extend(enriched_global)
+        live_now = _live_campaign_ids(cfg)
+        scan_cids = sorted(live_now)
+        indexed = {r.get("campaign") for r in index_rows}
+        if indexed != live_now:
+            # The live set changed during the fill: reconcile in memory before committing.
+            index_rows, all_records, _, _ = _reconcile_live_set(
+                cfg, root, now, index_rows, all_records, sources, persist=False,
+                _hold_guard=True,
+            )
+            for row in index_rows:
+                if row.get("campaign") not in indexed:
+                    _append_pending_index_write(root, row)
+            headers = _headers_for_enrich(index_rows)
+        else:
+            all_records.extend(H._enrich_records(global_recs, headers))
         H2 = _lazy_history()
         all_records = H2._enrich_records(all_records, headers)
         pending = _read_pending_index_writes(root)
@@ -2248,8 +2259,8 @@ def _cold_fill(cfg, root: Path, *, now=None, progress=None, _hold_guard: bool = 
         if writes_path.is_file():
             writes_path.unlink()
         _write_records(root, all_records)
-        sources["campaign_files"] = _scan_all_campaign_files(cfg, cids)
-        sources["campaign_rg_dirs"] = _scan_all_campaign_rg_dirs(cfg, cids)
+        sources["campaign_files"] = _scan_all_campaign_files(cfg, scan_cids)
+        sources["campaign_rg_dirs"] = _scan_all_campaign_rg_dirs(cfg, scan_cids)
         sources["global_gaps"] = sorted(set(gaps))
         sources["complete"] = True
         _stamp_v1_files(sources, root)
@@ -2479,68 +2490,104 @@ def _runner_intervals_tail(path: Path, start: int, gaps: list[str],
     return out
 
 
-def _prune_gone_campaigns(cfg, root: Path, index_rows: list[dict], records: list[dict],
-                            *, persist: bool, _hold_guard: bool = False) -> tuple[list[dict], list[dict]]:
-    index_ids = {r.get("campaign") for r in index_rows if r.get("campaign")}
-    if not index_ids:
-        return index_rows, records
+def _global_tuple(rec: dict) -> str:
+    return json.dumps(
+        [rec.get("id"), rec.get("campaign"), rec.get("linked_by"), rec.get("links"),
+         rec.get("spec_id"), rec.get("project")],
+        sort_keys=True, default=str,
+    )
+
+
+def _reconcile_live_set(cfg, root: Path, now, index_rows: list[dict], records: list[dict],
+                        sources: dict | None = None, *, persist: bool,
+                        _hold_guard: bool = False) -> tuple[list[dict], list[dict], dict, set[str]]:
+    """Bring the cache in line with the live campaign-id set (SPEC-0567).
+
+    The live set is an input of every global record's campaign link, so a change of it can
+    invalidate stored terminals. Order: prune gone ids, index new ids (raw global records),
+    enrich + replace every global record once, then recompute exactly the terminals whose
+    stored global-record tuples differ. ``persist=False`` only mutates and returns; the caller
+    commits. ``persist=True`` ends with one ``_persist_index_records``. Returns
+    ``(index_rows, records, sources, touched)``.
+    """
     live = _live_campaign_ids(cfg)
-    if not (index_ids - live):
-        return index_rows, records
-    changed = False
-    for row in list(index_rows):
-        cid = row.get("campaign")
-        if cid and cid not in live:
-            index_rows = [r for r in index_rows if r.get("campaign") != cid]
-            records = _merge_records(records, drop_campaign_all=cid)
-            _safe_unlink_campaign_file(root, cid)
-            changed = True
-    if changed:
-        H = _lazy_history()
-        live_list = sorted(live)
-        gaps: list[str] = []
-        global_recs = H._global_records(cfg, live_list, gaps)
-        records = _merge_records(
-            records, drop_predicate=lambda r: r.get("source") not in _LOCAL_SOURCES,
+    index_ids = {r.get("campaign") for r in index_rows if r.get("campaign")}
+    if index_ids == live:
+        return index_rows, records, sources, set()
+    H = _lazy_history()
+    if sources is None:
+        sources = _read_json(root / "sources.json") or {}
+    records_at_start = list(records)
+    index_at_start = list(index_rows)
+    touched: set[str] = set()
+
+    gone = index_ids - live
+    for cid in sorted(gone):
+        index_rows = [r for r in index_rows if r.get("campaign") != cid]
+        records = _merge_records(records, drop_campaign=cid)
+        _safe_unlink_campaign_file(root, cid)
+        for key in ("campaign_files", "campaign_rg_dirs"):
+            if isinstance(sources.get(key), dict):
+                sources[key].pop(cid, None)
+        touched.add(cid)
+
+    gaps: list[str] = []
+    global_recs = H._global_records(cfg, sorted(live), gaps)
+    new_ids = sorted(live - (index_ids - gone))
+    if new_ids:
+        runner_down = H._runner_intervals(cfg, gaps)
+        windows = {cid: _live_window_for_campaign(cfg, cid) for cid in new_ids}
+        shares = _split_conductor_shares(
+            cfg, root, _patch_index_windows(index_rows, windows), sources,
         )
-        records.extend(H._enrich_records(global_recs, _headers_for_enrich(index_rows)))
-        if persist:
-            now = H._aware(dt.datetime.now().astimezone())
-            survivors = {
-                r["campaign"] for r in index_rows
-                if r.get("outcome") in _TERMINAL_OUTCOMES and r.get("campaign") in live
-            }
-            sources_out = None
-            if survivors:
-                touch: set[str] = set()
-                for cid in survivors:
-                    doc = _read_json(root / "campaigns" / f"{cid}.json")
-                    if not isinstance(doc, dict):
-                        touch.add(cid)
-                        continue
-                    pure = H.campaign_history(cfg, cid, now=now, cache=False)
-                    a = {k: v for k, v in doc.items() if k != "generated_at"}
-                    b = {k: v for k, v in pure.items() if k != "generated_at"}
-                    if a != b:
-                        touch.add(cid)
-                if touch:
-                    index_rows, records, sources_out = _recompute_terminal_documents(
-                        cfg, root, now, index_rows, records, touch,
-                    )
-            records_at_start = _read_records(root)
-            index_at_start = _read_index(root)
-            sources_for_persist = sources_out or _read_json(root / "sources.json") or {}
-            _persist_index_records(
-                cfg,
-                root,
-                records_at_start=records_at_start,
-                records=records,
-                index_at_start=index_at_start,
-                index_rows=index_rows,
-                sources=sources_for_persist,
-                _hold_guard=_hold_guard,
+        for cid in new_ids:
+            doc, row = _recompute_campaign(
+                cfg, cid, now, global_recs=global_recs, runner_down=runner_down,
+                shares=shares, window=windows[cid], write_campaign=True, extra_gaps=gaps,
             )
-    return index_rows, records
+            index_rows.append(row)
+            records = _merge_records(records, drop_campaign=cid, add=_local_records(doc))
+            _write_campaign_file(root, cid, doc)
+            _set_campaign_cursors(sources, cfg, cid)
+            touched.add(cid)
+
+    new_globals = H._enrich_records(copy.deepcopy(global_recs), _headers_for_enrich(index_rows))
+    records = [r for r in records if r.get("source") in _LOCAL_SOURCES] + new_globals
+
+    owned: dict[str, list[str]] = {}
+    for rec in new_globals:
+        if rec.get("campaign"):
+            owned.setdefault(rec["campaign"], []).append(_global_tuple(rec))
+    differing: set[str] = set()
+    for row in index_rows:
+        cid = row.get("campaign")
+        if (not cid or cid in new_ids or cid not in live
+                or row.get("outcome") not in _TERMINAL_OUTCOMES):
+            continue
+        doc = _read_json(root / "campaigns" / f"{cid}.json")
+        if not isinstance(doc, dict):
+            differing.add(cid)
+            continue
+        stored = sorted(
+            _global_tuple(r) for r in doc.get("records") or []
+            if r.get("source") not in _LOCAL_SOURCES
+        )
+        if stored != sorted(owned.get(cid, [])):
+            differing.add(cid)
+    if differing:
+        index_rows, records, _ = _recompute_terminal_documents(
+            cfg, root, now, index_rows, records, differing, sources=sources,
+        )
+        touched |= differing
+
+    if persist:
+        _persist_index_records(
+            cfg, root,
+            records_at_start=records_at_start, records=records,
+            index_at_start=index_at_start, index_rows=index_rows,
+            sources=sources, _hold_guard=_hold_guard,
+        )
+    return index_rows, records, sources, touched
 
 
 def _replace_enriched_global(records: list[dict], index_rows: list[dict], global_recs: list[dict],
@@ -3084,7 +3131,10 @@ def _sync_globals(cfg, root: Path, now, *, _hold_guard: bool = False) -> set[str
                 affected.add(row["campaign"])
 
     live_ids = set(cids)
-    index_rows, records = _prune_gone_campaigns(cfg, root, index_rows, records, persist=False)
+    index_rows, records, _, reconciled = _reconcile_live_set(
+        cfg, root, now, index_rows, records, fresh, persist=False, _hold_guard=_hold_guard,
+    )
+    affected -= reconciled
 
     gaps_changed = set(gaps) != prev_global_gaps
     if gaps_changed:
@@ -3094,7 +3144,7 @@ def _sync_globals(cfg, root: Path, now, *, _hold_guard: bool = False) -> set[str
 
     need_persist = (
         affected or records_dirty or runner_changed or sessions_changed or sessions_turns_dirty
-        or gaps_changed
+        or gaps_changed or reconciled
     )
     if need_persist:
         if global_recs is None:
@@ -3113,9 +3163,7 @@ def _sync_globals(cfg, root: Path, now, *, _hold_guard: bool = False) -> set[str
                 shares=shares, window=window, write_campaign=True, extra_gaps=gaps,
             )
             index_rows = [row if r.get("campaign") == cid else r for r in index_rows]
-            records = _merge_records(
-                records, drop_campaign_all=cid, add=_records_for_campaign(doc, cid),
-            )
+            records = _merge_recomputed(records, doc, cid)
             _write_campaign_file(root, cid, doc)
         if sessions_turns_dirty:
             _load_turns(cfg, root, sources, snap=fresh, sources_out=fresh)
@@ -3145,8 +3193,8 @@ def _sync_globals(cfg, root: Path, now, *, _hold_guard: bool = False) -> set[str
 
 def _refresh_live(cfg, root: Path, now, index_rows: list[dict], records: list[dict],
                   *, _hold_guard: bool = False) -> tuple:
-    live_cids, missing = _live_refresh_targets(cfg, index_rows)
-    if not live_cids and not missing:
+    live_cids, _ = _live_refresh_targets(cfg, index_rows)
+    if not live_cids:
         return index_rows, records
     records_at_start = list(records)
     index_at_start = list(index_rows)
@@ -3155,12 +3203,7 @@ def _refresh_live(cfg, root: Path, now, index_rows: list[dict], records: list[di
     global_recs = H._global_records(cfg, _campaign_ids(cfg), gaps)
     runner_down = H._runner_intervals(cfg, gaps)
     sources = _read_json(root / "sources.json")
-    if missing:
-        records = _merge_records(
-            records, drop_predicate=lambda r: r.get("source") not in _LOCAL_SOURCES,
-        )
-        records.extend(H._enrich_records(global_recs, _headers_for_enrich(index_rows)))
-    touch = live_cids + missing
+    touch = live_cids
     windows = {cid: _live_window_for_campaign(cfg, cid) for cid in touch}
     split_rows = _patch_index_windows(index_rows, windows)
     shares = _split_conductor_shares(cfg, root, split_rows, sources)
@@ -3172,21 +3215,7 @@ def _refresh_live(cfg, root: Path, now, index_rows: list[dict], records: list[di
             window=window, write_campaign=False, extra_gaps=gaps,
         )
         index_rows = [new_row if r.get("campaign") == cid else r for r in index_rows]
-        records = _merge_records(
-            records, drop_campaign_all=cid, add=_records_for_campaign(doc, cid),
-        )
-        _write_campaign_file(root, cid, doc)
-        changed = True
-    for cid in missing:
-        window = windows[cid]
-        doc, new_row = _recompute_campaign(
-            cfg, cid, now, global_recs=global_recs, runner_down=runner_down, shares=shares,
-            window=window, write_campaign=False, extra_gaps=gaps,
-        )
-        index_rows.append(new_row)
-        records = _merge_records(
-            records, drop_campaign_all=cid, add=_records_for_campaign(doc, cid),
-        )
+        records = _merge_recomputed(records, doc, cid)
         _write_campaign_file(root, cid, doc)
         changed = True
     if changed:
@@ -3253,8 +3282,8 @@ def _campaign_history_cached(cfg, cid, now, root: Path) -> dict:
         sources = _read_json(root / "sources.json") or {}
         index_rows = _read_index(root)
         records = _read_records(root)
-        index_rows, records = _prune_gone_campaigns(
-            cfg, root, index_rows, records, persist=True, _hold_guard=True,
+        index_rows, records, sources, _ = _reconcile_live_set(
+            cfg, root, now, index_rows, records, sources, persist=True, _hold_guard=True,
         )
         index_ids = {r.get("campaign") for r in index_rows if r.get("campaign")}
         live = _live_campaign_ids(cfg)
@@ -3285,9 +3314,7 @@ def _campaign_history_cached(cfg, cid, now, root: Path) -> dict:
         )
         records_start = list(_read_records(root))
         index_at_start = list(_read_index(root))
-        records = _merge_records(
-            records_start, drop_campaign_all=cid, add=_records_for_campaign(doc, cid),
-        )
+        records = _merge_recomputed(records_start, doc, cid)
         index_rows = [new_row if r.get("campaign") == cid else r for r in index_rows]
         if not any(r.get("campaign") == cid for r in index_rows):
             index_rows.append(new_row)
@@ -3326,8 +3353,10 @@ def _history_index_cached(cfg, now, progress, root: Path) -> list[dict]:
     if cold_filled:
         index_rows = _read_index(root)
         records = _read_records(root)
-        index_rows, records = _prune_gone_campaigns(cfg, root, index_rows, records, persist=True)
         sources = _read_json(root / "sources.json") or {}
+        index_rows, records, sources, _ = _reconcile_live_set(
+            cfg, root, now, index_rows, records, sources, persist=True,
+        )
         stale = _stale_terminal_ids(cfg, index_rows, sources)
         if stale:
             records_at_start = list(_read_records(root))
@@ -3370,13 +3399,12 @@ def _history_index_cached(cfg, now, progress, root: Path) -> list[dict]:
         index_rows = _read_index(root)
         live = _live_campaign_ids(cfg)
         index_ids = {r.get("campaign") for r in index_rows if r.get("campaign")}
-        need_prune = bool(index_ids - live)
         sources = _read_json(root / "sources.json") or {}
         records = None
-        if need_prune:
+        if index_ids != live:
             records = _read_records(root)
-            index_rows, records = _prune_gone_campaigns(
-                cfg, root, index_rows, records, persist=True, _hold_guard=True,
+            index_rows, records, sources, _ = _reconcile_live_set(
+                cfg, root, now, index_rows, records, sources, persist=True, _hold_guard=True,
             )
         stale = _stale_terminal_ids(cfg, index_rows, sources)
         if stale:
@@ -3487,13 +3515,12 @@ def _history_records_cached(cfg, *, now, root: Path, campaign=None, agent=None, 
         index_rows = _read_index(root)
         live = _live_campaign_ids(cfg)
         index_ids = {r.get("campaign") for r in index_rows if r.get("campaign")}
-        need_prune = bool(index_ids - live)
         sources = _read_json(root / "sources.json") or {}
         records: list[dict] | None = None
-        if need_prune:
+        if index_ids != live:
             records = _read_records(root)
-            index_rows, records = _prune_gone_campaigns(
-                cfg, root, index_rows, records, persist=True, _hold_guard=True,
+            index_rows, records, sources, _ = _reconcile_live_set(
+                cfg, root, now, index_rows, records, sources, persist=True, _hold_guard=True,
             )
         stale = _stale_terminal_ids_for_records(cfg, index_rows, sources)
         if stale:

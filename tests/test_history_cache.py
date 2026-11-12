@@ -1476,3 +1476,340 @@ def test_runner_null_line_gap_matches_pure(data_dir, cache_dir):
     cached = H.campaign_history(c, cid, now=NOW, cache=True)
     pure = H.campaign_history(c, cid, now=NOW, cache=False)
     assert cached["gaps"] == pure["gaps"]
+
+
+# --- SPEC-0567: a live-id set change invalidates stored terminals ---------------------------
+
+_A = "SPEC-0394-20261102-ae5b"
+_B = "SPEC-0336-20261031-6558"
+_X = "LIVE-20261107-ef02"
+_MAIL_ID = "live-set-mail"
+
+
+def _v1(cache_dir) -> Path:
+    return cache_dir / "history" / "v1"
+
+
+def _add_mail(data_dir, text: str, mail_id: str = _MAIL_ID) -> None:
+    mail = data_dir / "agentic" / "mailbox" / "human.jsonl"
+    with mail.open("a") as stream:
+        stream.write(json.dumps({
+            "schema": "nw.message.v1", "id": mail_id, "seq": 99998,
+            "ts": store.now_iso(NOW), "from": "conductor", "to": "human",
+            "kind": "note", "re": None, "text": text,
+        }) + "\n")
+
+
+def _install_terminal_campaign(data_dir, cid: str) -> None:
+    src = data_dir / "agentic" / "campaigns" / _A
+    dst = data_dir / "agentic" / "campaigns" / cid
+    shutil.copytree(src, dst)
+    state = json.loads((dst / "state.json").read_text())
+    state["id"] = cid
+    (dst / "state.json").write_text(json.dumps(state, indent=2) + "\n")
+    kept = []
+    for line in (dst / "ledger.jsonl").read_text().splitlines():
+        row = json.loads(line)
+        if "campaign" in row:
+            row = {**row, "campaign": cid}
+        kept.append(json.dumps(row))
+    (dst / "ledger.jsonl").write_text("\n".join(kept) + "\n")
+
+
+def _strip(doc: dict) -> dict:
+    return {k: v for k, v in doc.items() if k != "generated_at"}
+
+
+def _mail_campaign(c, cache: bool):
+    rec = next(r for r in H.history_records(c, cache=cache)
+               if "live-set-marker" in (r.get("text") or ""))
+    return rec.get("campaign")
+
+
+def _assert_cache_equals_pure(c, cache_dir) -> None:
+    """Stored terminals and records.jsonl first (a read must not be what heals them)."""
+    H.history_index(c, now=NOW, cache=True)
+    cached_records = H.history_records(c, cache=True)
+    v1 = _v1(cache_dir)
+    for row in HC._read_index(v1):
+        if row.get("outcome") not in HC._TERMINAL_OUTCOMES:
+            continue
+        stored = json.loads((v1 / "campaigns" / f"{row['campaign']}.json").read_text())
+        assert _strip(stored) == _strip(
+            H.campaign_history(c, row["campaign"], now=NOW, cache=False)), row["campaign"]
+    assert cached_records == H.history_records(c, cache=False)
+    assert {r["id"] for r in HC._read_records(v1)} == {r["id"] for r in cached_records}
+    for row in H.history_index(c, now=NOW, cache=False):
+        assert _strip(H.campaign_history(c, row["campaign"], now=NOW, cache=True)) == _strip(
+            H.campaign_history(c, row["campaign"], now=NOW, cache=False)), row["campaign"]
+
+
+def _mail_rid(c) -> str:
+    return next(r["id"] for r in H.history_records(c, cache=False)
+                if "live-set-marker" in (r.get("text") or ""))
+
+
+def _global_pairs(records):
+    return sorted(
+        (r["id"], r.get("campaign")) for r in records
+        if r.get("source") not in HC._LOCAL_SOURCES
+    )
+
+
+@pytest.mark.parametrize("case", ["add", "remove", "add+remove"])
+def test_live_set_change_stored_terminals_equal_pure(data_dir, cache_dir, case):
+    c = cfg(data_dir, cache_dir)
+    camps = data_dir / "agentic" / "campaigns"
+    _add_mail(data_dir, f"live-set-marker {_A} {_X}")
+    if case != "add":
+        _install_live_campaign(data_dir, _X)
+    H.history_index(c, now=NOW, cache=True)
+    H.history_records(c, cache=True)
+    if case == "add":
+        _install_live_campaign(data_dir, _X)
+    elif case == "remove":
+        shutil.rmtree(camps / _X)
+    else:
+        shutil.rmtree(camps / _X)
+        _install_live_campaign(data_dir, "LIVE-20261107-ef03")
+    _assert_cache_equals_pure(c, cache_dir)
+    assert _mail_campaign(c, True) == _mail_campaign(c, False)
+
+
+def test_live_set_add_unlinks_text_link(data_dir, cache_dir):
+    c = cfg(data_dir, cache_dir)
+    _add_mail(data_dir, f"live-set-marker {_A} {_X}")
+    H.history_index(c, now=NOW, cache=True)
+    assert _mail_campaign(c, True) == _A
+    _install_live_campaign(data_dir, _X)
+    H.history_index(c, now=NOW, cache=True)
+    assert _mail_campaign(c, True) is None
+    v1 = _v1(cache_dir)
+    stored = json.loads((v1 / "campaigns" / f"{_A}.json").read_text())
+    rid = _mail_rid(c)
+    assert all(r["id"] != rid for r in stored["records"])
+    assert all(r["id"] != rid or r.get("campaign") is None for r in HC._read_records(v1))
+
+
+def test_live_set_remove_relinks_text_link(data_dir, cache_dir):
+    c = cfg(data_dir, cache_dir)
+    _add_mail(data_dir, f"live-set-marker {_A} {_X}")
+    _install_live_campaign(data_dir, _X)
+    H.history_index(c, now=NOW, cache=True)
+    assert _mail_campaign(c, True) is None
+    shutil.rmtree(data_dir / "agentic" / "campaigns" / _X)
+    H.history_index(c, now=NOW, cache=True)
+    stored = json.loads((_v1(cache_dir) / "campaigns" / f"{_A}.json").read_text())
+    assert any(r["id"] == _mail_rid(c) for r in stored["records"])
+    assert _strip(stored) == _strip(H.campaign_history(c, _A, now=NOW, cache=False))
+
+
+def test_gone_id_leaves_no_trace(data_dir, cache_dir):
+    c = cfg(data_dir, cache_dir)
+    H.history_index(c, now=NOW, cache=True)
+    v1 = _v1(cache_dir)
+    assert (v1 / "campaigns" / f"{_A}.json").is_file()
+    shutil.rmtree(data_dir / "agentic" / "campaigns" / _A)
+    H.history_index(c, now=NOW, cache=True)
+    assert all(r["campaign"] != _A for r in HC._read_index(v1))
+    assert not (v1 / "campaigns" / f"{_A}.json").exists()
+    recs = HC._read_records(v1)
+    assert not [r for r in recs if r.get("campaign") == _A and r.get("source") in HC._LOCAL_SOURCES]
+    sources = json.loads((v1 / "sources.json").read_text())
+    assert _A not in sources["campaign_files"]
+    assert _A not in sources.get("campaign_rg_dirs", {})
+    # the flaky record names the gone campaign by field and is still returned
+    flaky = [r for r in H.history_records(c, cache=True, kind="flaky") if r.get("campaign") == _A]
+    assert flaky and flaky == [
+        r for r in H.history_records(c, cache=False, kind="flaky") if r.get("campaign") == _A]
+
+
+def test_moved_global_record_not_dropped(data_dir, cache_dir):
+    c = cfg(data_dir, cache_dir)
+    _add_mail(data_dir, f"live-set-marker {_A} {_X}")
+    H.history_index(c, now=NOW, cache=True)
+    assert _mail_campaign(c, True) == _A
+    shutil.rmtree(data_dir / "agentic" / "campaigns" / _A)
+    _install_live_campaign(data_dir, _X)
+    H.history_index(c, now=NOW, cache=True)
+    rid = _mail_rid(c)
+    mine = [r for r in HC._read_records(_v1(cache_dir)) if r["id"] == rid]
+    assert len(mine) == 1 and mine[0]["campaign"] == _X
+    assert _global_pairs(HC._read_records(_v1(cache_dir))) == _global_pairs(
+        H.history_records(c, cache=False))
+    assert H.history_records(c, cache=True) == H.history_records(c, cache=False)
+
+
+def test_refresh_live_leaves_globals_equal_pure(data_dir, cache_dir):
+    c = cfg(data_dir, cache_dir)
+    _add_mail(data_dir, f"live-set-marker {_A}")
+    _install_live_campaign(data_dir, _X)
+    H.history_index(c, now=NOW, cache=True)
+    ledger = data_dir / "agentic" / "campaigns" / _X / "ledger.jsonl"
+    with ledger.open("a") as stream:
+        stream.write(json.dumps({"ts": store.now_iso(NOW), "type": "note", "campaign": _X}) + "\n")
+    v1 = _v1(cache_dir)
+    root = v1
+    HC._refresh_live(c, root, NOW, HC._read_index(root), HC._read_records(root))
+    assert _global_pairs(HC._read_records(root)) == _global_pairs(H.history_records(c, cache=False))
+    assert H.history_records(c, cache=True) == H.history_records(c, cache=False)
+
+
+def test_recompute_touches_only_differing_terminals(data_dir, cache_dir):
+    c = cfg(data_dir, cache_dir)
+    _add_mail(data_dir, f"live-set-marker {_A} {_X}")
+    H.history_index(c, now=NOW, cache=True)
+    v1 = _v1(cache_dir)
+    mtimes = {p.name: p.stat().st_mtime_ns for p in (v1 / "campaigns").glob("*.json")}
+    _install_live_campaign(data_dir, _X)
+    calls: list[str] = []
+    real = H._campaign_history
+
+    def spy(cfg_, cid, *a, **kw):
+        calls.append(cid)
+        return real(cfg_, cid, *a, **kw)
+
+    with mock.patch.object(H, "_campaign_history", spy):
+        H.history_index(c, now=NOW, cache=True)
+    assert _A in calls
+    untouched = [cid for cid in calls if cid not in (_A, _X)]
+    assert untouched == []
+    for name, mtime in mtimes.items():
+        if name != f"{_A}.json":
+            assert (v1 / "campaigns" / name).stat().st_mtime_ns == mtime, name
+    assert (v1 / "campaigns" / f"{_A}.json").stat().st_mtime_ns != mtimes[f"{_A}.json"]
+
+
+def test_reconcile_persist_contract(data_dir, cache_dir):
+    c = cfg(data_dir, cache_dir)
+    H.history_index(c, now=NOW, cache=True)
+    v1 = _v1(cache_dir)
+    new_id = "SPEC-0394-20261112-aaaa"
+    _install_terminal_campaign(data_dir, new_id)
+    names = ("index.jsonl", "records.jsonl", "sources.json")
+    before = {n: (v1 / n).read_bytes() for n in names}
+    persist_calls: list = []
+    real = HC._persist_index_records
+
+    def spy(*a, **kw):
+        persist_calls.append(1)
+        return real(*a, **kw)
+
+    def load():
+        return HC._read_index(v1), HC._read_records(v1), json.loads((v1 / "sources.json").read_text())
+
+    with mock.patch.object(HC, "_persist_index_records", spy):
+        idx, recs, src = load()
+        out = HC._reconcile_live_set(c, v1, NOW, idx, recs, src, persist=False)
+        assert persist_calls == [] and new_id in out[3]
+        assert {n: (v1 / n).read_bytes() for n in names} == before
+        idx, recs, src = load()
+        HC._reconcile_live_set(c, v1, NOW, idx, recs, src, persist=True)
+        assert persist_calls == [1]
+    assert any(r["campaign"] == new_id for r in HC._read_index(v1))
+    seen: list[str] = []
+    real_ch = H._campaign_history
+    with mock.patch.object(H, "_campaign_history",
+                           lambda cfg_, cid, *a, **kw: seen.append(cid) or real_ch(cfg_, cid, *a, **kw)):
+        doc = H.campaign_history(c, new_id, now=NOW, cache=True)
+    assert seen == [] and doc["campaign"] == new_id
+
+
+def _delete_on_first_recompute(data_dir, pick, *, after: bool):
+    real = HC._recompute_campaign
+    state = {"n": 0, "victim": None}
+
+    def wrapper(cfg_, cid, *a, **kw):
+        state["n"] += 1
+        if state["n"] == 1:
+            state["victim"] = pick(cid)
+        if not after and state["n"] == 1 and state["victim"]:
+            shutil.rmtree(data_dir / "agentic" / "campaigns" / state["victim"])
+        out = real(cfg_, cid, *a, **kw)
+        if after and state["n"] == 1:
+            shutil.rmtree(data_dir / "agentic" / "campaigns" / state["victim"])
+        return out
+
+    return wrapper, state
+
+
+def test_cold_fill_skips_gone_id(data_dir, cache_dir):
+    c = cfg(data_dir, cache_dir)
+    ids = HC._campaign_ids(c)
+    wrapper, state = _delete_on_first_recompute(data_dir, lambda cid: ids[1], after=False)
+    seen: list[tuple[int, int]] = []
+    with mock.patch.object(HC, "_recompute_campaign", wrapper):
+        HC.rebuild_cache(c, now=NOW, progress=lambda d, t: seen.append((d, t)))
+    victim = state["victim"]
+    v1 = _v1(cache_dir)
+    assert seen[-1][0] == seen[-1][1] == len(ids)
+    assert not (v1 / "campaigns" / f"{victim}.json").exists()
+    assert not (v1 / "index.writes.jsonl").exists()
+    assert all(r["campaign"] != victim for r in HC._read_index(v1))
+    assert all(r.get("campaign") != victim or r.get("source") not in HC._LOCAL_SOURCES
+               for r in HC._read_records(v1))
+    assert victim not in json.loads((v1 / "sources.json").read_text())["campaign_files"]
+    assert H.history_records(c, cache=True) == H.history_records(c, cache=False)
+
+
+def test_cold_fill_dir_removed_during_its_recompute(data_dir, cache_dir):
+    c = cfg(data_dir, cache_dir)
+    ids = HC._campaign_ids(c)
+    wrapper, state = _delete_on_first_recompute(data_dir, lambda cid: cid, after=True)
+    with mock.patch.object(HC, "_recompute_campaign", wrapper):
+        HC.rebuild_cache(c, now=NOW)
+    victim = state["victim"]
+    v1 = _v1(cache_dir)
+    assert victim == ids[0]
+    assert not (v1 / "campaigns" / f"{victim}.json").exists()
+    assert all(r["campaign"] != victim for r in HC._read_index(v1))
+    assert all(r.get("campaign") != victim or r.get("source") not in HC._LOCAL_SOURCES
+               for r in HC._read_records(v1))
+    assert victim not in json.loads((v1 / "sources.json").read_text())["campaign_files"]
+    assert H.history_records(c, cache=True) == H.history_records(c, cache=False)
+
+
+def test_cold_fill_live_set_added_mid_fill(data_dir, cache_dir):
+    c = cfg(data_dir, cache_dir)
+    new_id = "SPEC-0394-20261112-bbbb"
+    _add_mail(data_dir, f"live-set-marker {_A} {new_id}")
+    real = HC._recompute_campaign
+    n = {"v": 0}
+
+    def wrapper(cfg_, cid, *a, **kw):
+        n["v"] += 1
+        if n["v"] == 1:
+            _install_terminal_campaign(data_dir, new_id)
+        return real(cfg_, cid, *a, **kw)
+
+    with mock.patch.object(HC, "_recompute_campaign", wrapper):
+        HC.rebuild_cache(c, now=NOW)
+    v1 = _v1(cache_dir)
+    assert any(r["campaign"] == new_id for r in HC._read_index(v1))
+    assert new_id in json.loads((v1 / "sources.json").read_text())["campaign_files"]
+    assert not (v1 / "index.writes.jsonl").exists()
+    assert _mail_campaign(c, True) == _mail_campaign(c, False) is None
+    _assert_cache_equals_pure(c, cache_dir)
+    seen: list[str] = []
+    real_ch = H._campaign_history
+    with mock.patch.object(H, "_campaign_history",
+                           lambda cfg_, cid, *a, **kw: seen.append(cid) or real_ch(cfg_, cid, *a, **kw)):
+        H.campaign_history(c, new_id, now=NOW, cache=True)
+    assert seen == []
+
+
+def test_unchanged_live_set_skips_reconcile(data_dir, cache_dir):
+    c = cfg(data_dir, cache_dir)
+    H.history_index(c, now=NOW, cache=True)
+    v1 = _v1(cache_dir)
+    idx, recs = HC._read_index(v1), HC._read_records(v1)
+    with mock.patch.object(H, "_global_records") as gl:
+        out = HC._reconcile_live_set(c, v1, NOW, idx, recs, None, persist=True)
+    gl.assert_not_called()
+    assert out[0] is idx and out[1] is recs and out[3] == set()
+    seen: list[str] = []
+    real_ch = H._campaign_history
+    with mock.patch.object(H, "_campaign_history",
+                           lambda cfg_, cid, *a, **kw: seen.append(cid) or real_ch(cfg_, cid, *a, **kw)):
+        H.campaign_history(c, _A, now=NOW, cache=True)
+    assert seen == []

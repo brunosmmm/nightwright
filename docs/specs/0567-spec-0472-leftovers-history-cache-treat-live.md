@@ -1,7 +1,7 @@
 ---
 id: SPEC-0567
 title: "History cache: a live-campaign-id set change invalidates stored terminals"
-status: accepted
+status: in-progress
 owner: user
 created: 2026-11-12
 updated: 2026-11-12
@@ -216,33 +216,33 @@ shipping stale.
 
 ## Acceptance criteria
 
-- [ ] **AC1. Added directory re-resolves text links.** With a warm cache, adding a live
+- [x] **AC1. Added directory re-resolves text links.** With a warm cache, adding a live
   campaign directory that makes a mail's text link ambiguous leaves every stored terminal
   document and `history_records(cache=True)` equal to the `cache=False` results (minus
   `generated_at`), for the add case of the parametrised equality test.
-- [ ] **AC2. Removed directory re-resolves text links and cleans up.** Removing a live directory
+- [x] **AC2. Removed directory re-resolves text links and cleans up.** Removing a live directory
   that made a link ambiguous gives the same equality (remove and add+remove cases); the gone id
   has no index row, `campaigns/<cid>.json`, local record, or `sources.json`
   `campaign_files`/`campaign_rg_dirs`/cursor entry, and a global record naming it by field is
   still returned.
-- [ ] **AC3. Moved globals survive; the invariant holds.** `drop_campaign_all` appears nowhere
+- [x] **AC3. Moved globals survive; the invariant holds.** `drop_campaign_all` appears nowhere
   in `src/`; a global record that moves between campaigns on a live-set change is in
   `records.jsonl` exactly once, under its new owner; a `_refresh_live` pass for a non-terminal
   campaign leaves `records.jsonl` equal to the pure result.
-- [ ] **AC4. Only differing terminals recompute.** After a live-set change, a terminal whose
+- [x] **AC4. Only differing terminals recompute.** After a live-set change, a terminal whose
   stored global-record tuples already match the re-resolved ones is not recomputed (its campaign
   file is not rewritten), and every terminal whose document differs from pure is.
-- [ ] **AC5. Persistence contract.** With `persist=False` the reconcile writes no `index.jsonl`,
+- [x] **AC5. Persistence contract.** With `persist=False` the reconcile writes no `index.jsonl`,
   `records.jsonl`, or `sources.json` and does not call `_persist_index_records`; with
   `persist=True` it calls it exactly once. After a reconcile that indexes or recomputes an id,
   that id's next `campaign_history(cache=True)` read is a doc hit (no recompute).
-- [ ] **AC6. `_cold_fill` skips gone ids.** An id whose directory vanishes during a cold fill
+- [x] **AC6. `_cold_fill` skips gone ids.** An id whose directory vanishes during a cold fill
   writes no campaign file, no pending write, and no record; `progress` ends at
   `done == total`.
-- [ ] **AC7. `_cold_fill` indexes ids added mid-fill.** An id added during the fill is indexed,
+- [x] **AC7. `_cold_fill` indexes ids added mid-fill.** An id added during the fill is indexed,
   its text links and the others' equal pure after the fill returns, `sources.json` holds its
   `campaign_files` entry, and its next `campaign_history` read is a doc hit.
-- [ ] **AC8. Unchanged live set keeps the fast path.** With an unchanged set the reconcile
+- [x] **AC8. Unchanged live set keeps the fast path.** With an unchanged set the reconcile
   returns early without resolving global records, and the warm `history_index` and warm
   `campaign_history` still pass the SPEC-0472 AC2 "hit" assertions and the AC8 budgets.
 
