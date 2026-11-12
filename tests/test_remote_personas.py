@@ -1089,7 +1089,10 @@ def test_reattach_loop_honours_the_deadline(tmp_path, monkeypatch):
         "job_id": "j1", "deadline_at": RJ.iso(1000.0), "cursor": 0}))
     seen = []
     monkeypatch.setattr(RPS, "_lost", lambda rr_, req_, hooks, rec, why: seen.append(why) or why)
-    assert rr.run(req) == "deadline" and seen == ["deadline"] and not polls
+    # SPEC-0513: past the deadline the loop polls once (a job that ended there is replayed, however
+    # late); a job still running is lost without the backoff poll or another attach
+    assert rr.run(req) == "deadline" and seen == ["deadline"]
+    assert [p[1:] for p in polls] == [("j1", 0)]
 
 
 def test_allowed_tools_sibling_of_the_worktree_is_not_remotable(tmp_path):

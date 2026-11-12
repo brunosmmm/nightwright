@@ -25,6 +25,14 @@ from waits import join, until
 
 pytestmark = pytest.mark.remote
 
+
+@pytest.fixture(autouse=True)
+def _outside_a_slurm_job(monkeypatch):
+    """The cadence runs these on the worker box inside a Slurm job, where the worker reports
+    `lease: none` (SPEC-0513) and measures on the job's cgroup; these tests pin the lease-bearing,
+    non-Slurm behaviour, so they run as if outside a job (test_executor_slurm.py covers the rest)."""
+    monkeypatch.delenv("SLURM_JOB_ID", raising=False)
+
 GOLDEN = Path(__file__).parent / "data" / "remote_gates_golden.json"
 # SPEC-0504: a gate's measured usage (`resources.used`) varies run to run like its duration
 _MASK = {"started_at", "duration_s", "slot_wait_s", "ts", "since", "waited_s", "nw_sha",

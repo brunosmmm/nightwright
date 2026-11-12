@@ -27,6 +27,14 @@ pytestmark = pytest.mark.remote
 
 
 @pytest.fixture(autouse=True)
+def _outside_a_slurm_job(monkeypatch):
+    """The cadence runs these on the worker box inside a Slurm job, where the worker reports
+    `lease: none` (SPEC-0513) and measures on the job's cgroup; these tests pin the lease-bearing,
+    non-Slurm behaviour, so they run as if outside a job (test_executor_slurm.py covers the rest)."""
+    monkeypatch.delenv("SLURM_JOB_ID", raising=False)
+
+
+@pytest.fixture(autouse=True)
 def _kill_leftover_jobs(tmp_path):
     """A failing test must not leave a detached job process (or its gates) running."""
     yield
