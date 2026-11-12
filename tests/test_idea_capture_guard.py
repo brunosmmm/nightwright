@@ -217,3 +217,18 @@ def test_root_group_converts_refusal_without_command_catching_it(env, monkeypatc
 
 def test_autouse_fixture_leaves_persona_flag_unset():
     assert "NW_PERSONA_RUN" not in os.environ
+
+
+def test_idea_help_lists_search_and_capture(env):
+    r = _run("idea", "--help")
+    assert r.exit_code == 0, r.output
+    assert "search" in r.output.split("Commands:", 1)[1]
+    assert "nw idea capture" in r.output
+
+
+def test_idea_search_bare_and_blank_exit_2_no_capture(env):
+    OW.add_idea(env, "seed idea")
+    before = _ideas_bytes(env)
+    assert _run("idea", "search").exit_code == 2
+    assert _run("idea", "search", "   ").exit_code == 2
+    assert _ideas_bytes(env) == before
