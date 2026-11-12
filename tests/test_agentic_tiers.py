@@ -24,7 +24,8 @@ EPIC_TIERS = {"spec_writer": "judge", "spec_reviewer": "judge", "implementer": "
               "test_reviewer": "judge", "adversarial_reviewer": "judge",
               "divergence_triager": "judge", "gate_triager": "marshal",
               "review_triager": "marshal",
-              "review_marshal": "marshal"}                       # SPEC-0554
+              "review_marshal": "marshal",                       # SPEC-0554
+              "findings_collator": "marshal"}                    # SPEC-0555
 
 
 # ---- persona tiers ---------------------------------------------------------------------------

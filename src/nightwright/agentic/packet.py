@@ -124,6 +124,10 @@ def remember_verdicts(state) -> None:
     state["packet_prev"] = {"loop": loop,
                             "verdicts": copy.deepcopy(verdicts),
                             "waived": copy.deepcopy(lr.get("waived") or [])}
+    from . import collator as CO
+    out = CO.out_findings(state)                    # SPEC-0555: empty unless it scoped any out
+    if out:
+        state["packet_prev"]["out_of_scope"] = out
 
 
 def path_of(cfg, state, loop=None) -> Path:
@@ -248,13 +252,14 @@ def _waiver_hit(spec_id, item, waivers) -> dict | None:
 
 
 def prior_findings(spec_id, prev: list, verdicts: dict, prev_loop: int, human_waived=(),
-                   triager_waived=()) -> list:
+                   triager_waived=(), out_of_scope=()) -> list:
     """Pure: every finding of the earlier loops, keyed by the stable follow-up key
     (`followups.finding_key`). `prev` = the previous packet's list; `verdicts` = the previous
     loop's stored verdicts (`state.packet_prev`), whose `prior_status` entries move a reviewer's
     own earlier findings to `fixed` / `open` and whose new findings are added as `open` (a
     demoted one is `advisory`). Human waivers and the triager's waivers make a finding
-    `waived`."""
+    `waived`; so does a finding the collator scoped out (SPEC-0555, `out_of_scope`: it is a
+    follow-up idea now, so the reviewer does not carry it into the next loop)."""
     out = [dict(f) for f in prev or [] if isinstance(f, dict) and f.get("id")]
     by_id = {f["id"]: f for f in out}
     for persona, v in (verdicts or {}).items():
@@ -292,6 +297,10 @@ def prior_findings(spec_id, prev: list, verdicts: dict, prev_loop: int, human_wa
             if w is not None and f.get("status") != "waived":
                 f["status"] = "waived"
                 f["evidence"] = f"{origin} waiver: {w.get('reason') or ''}".strip()[:_EVIDENCE_MAX]
+        if out_of_scope and f.get("status") != "waived" and any(
+                _key(spec_id, o) == f["id"] for o in out_of_scope if isinstance(o, dict)):
+            f["status"] = "waived"
+            f["evidence"] = "out of scope: filed as a follow-up idea"
     return out
 
 
@@ -329,7 +338,8 @@ def build(cfg, state) -> dict:
     findings = prior_findings(
         state.get("spec_id"), (prev_doc or {}).get("findings") or [],
         pp.get("verdicts") if pp.get("loop") == loop - 2 else {}, loop - 1, hw,
-        pp.get("waived") if pp.get("loop") == loop - 2 else ()) if loop > 1 else []
+        pp.get("waived") if pp.get("loop") == loop - 2 else (),
+        pp.get("out_of_scope") if pp.get("loop") == loop - 2 else ()) if loop > 1 else []
     gates = gates_of(cfg, state)
     doc = {
         "schema": SCHEMA_ID, "campaign": state["id"], "spec_id": state.get("spec_id"),

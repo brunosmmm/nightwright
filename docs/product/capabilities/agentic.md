@@ -145,6 +145,26 @@ never blocking; counted as `demoted` on `review_outcome`). A failed marshal leav
 `ac_map: null` and `ac_map_error`; a packet that cannot be built leaves today's prompt. Neither
 parks. Runs export `loop` and `packet`; campaigns export `demoted_findings`.
 
+### Findings collator and out-of-scope follow-ups (`agentic.lean.collator`)
+
+Off by default; needs `packet`; pinned per campaign like `tiers`. With it on, once every
+reviewer of a loop left a valid verdict, the `findings_collator` persona (tier `marshal`,
+read-only, $0.40 default budget) collates the loop's findings: per canonical finding the ids it
+merged, a tie (`AC<n>`, `decision`, `design`, `diff:<file>` or `none`), `scope: in|out` with a
+one-line reason, and the reviewer's severity. Code keeps every finding's text verbatim and
+enforces the scope rule: a finding tied to an AC / the Decision / the Design, citing a file the
+campaign changed, a `must_fix` or one on an unmet AC is never out; a dropped finding is restored
+in (`collator_dropped`); a changed severity is reverted. The result is
+`<campaign_dir>/findings-loop-N.json` (`nw.collated_findings.v1`). Only in-scope findings are
+scored and reach the implementer (once something is scoped out, the brief is the in-scope
+findings with their tie, not the reviewers' free-text briefs). Out-of-scope findings are filed
+at once into the campaign's grouped follow-up idea (`nwfug:<campaign>`, a `followup` event
+with origin `out_of_scope`), the next loop's packet marks them `waived`, and the close does not
+file them again. A loop without findings writes the file with no run (`skipped`). A failed,
+malformed or cost-capped collator routes every finding as before and records
+`collator_failed`; it never parks. Campaigns export `out_of_scope_findings` and
+`collator_fallbacks`; findings export `scope` and `tie`.
+
 ### Profile files and layers
 
 Four layers define profiles; a higher layer wins, key by key:

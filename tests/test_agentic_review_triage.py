@@ -1063,3 +1063,36 @@ def test_flag_off_triage_result_shape_unchanged():
     out = tri({A: v("fix", f("must_fix", "x"))})
     assert list(out) == ["outcome", "score", "score_only", "blocking", "advisory",
                          "waivable_weight", "fixing", "synthetic", "human_waived", "attested"]
+
+
+# ---- SPEC-0555: scoring on the in-scope set ------------------------------------------------
+
+def test_out_of_scope_findings_are_never_scored():
+    """A finding the collation scoped out is listed under `out_of_scope` (never blocking,
+    advisory or scored); the fix verdict it backed does not survive and no synthetic is added."""
+    out = tri({A: v("fix", f("major", "old code", scope="out", tie="none"),
+                    f("minor", "naming", scope="in", tie="AC1"), brief="fix both")})
+    assert out["outcome"] == "pass" and out["score"] == 96 and out["fixing"] == []
+    assert [x["title"] for x in out["out_of_scope"]] == ["old code"]
+    assert [x["title"] for x in out["advisory"]] == ["naming"]
+    assert out["advisory"][0]["tie"] == "AC1" and out["synthetic"] == []
+
+
+def test_in_scope_blocking_brief_carries_ties_and_no_out_of_scope_text():
+    verdicts = {A: v("fix", f("major", "real bug", files=["a.py"], scope="in", tie="AC2"),
+                     f("major", "old code", files=["b.py"], scope="out", tie="none"),
+                     brief="fix the real bug and old code")}
+    t = tri(verdicts)
+    assert [b["title"] for b in t["blocking"]] == ["real bug"] and t["blocking"][0]["tie"] == "AC2"
+    brief = Q.review_brief(verdicts, t, 80)
+    assert "old code" not in brief["fix_brief"] and "[AC2] real bug" in brief["fix_brief"]
+    assert brief["must_fix"][0]["tie"] == "AC2"
+    multi = {**verdicts, B: v("fix", f("major", "b only", scope="in", tie="design"),
+                              brief="see old code too")}
+    mb = Q.review_brief(multi, tri(multi), 80)
+    assert "old code" not in mb["fix_brief"] and "[design] b only" in mb["fix_brief"]
+
+
+def test_without_scope_keys_the_result_has_no_collation_keys():
+    out = tri({A: v("fix", f("major"))})
+    assert "out_of_scope" not in out and all("tie" not in b for b in out["blocking"])

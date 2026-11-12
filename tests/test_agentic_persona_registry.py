@@ -26,6 +26,8 @@ OLD_PERSONAS = [
     ("spec_writer", "spec_writer.md", "SPEC_WRITER_SCHEMA", False, "SPEC_WRITER_INVARIANT"),
     # SPEC-0554 (added after SPEC-0370): the review packet's marshal
     ("review_marshal", "review_marshal.md", "REVIEW_MARSHAL_SCHEMA", True, "INVARIANT"),
+    # SPEC-0555: the findings collator
+    ("findings_collator", "findings_collator.md", "FINDINGS_COLLATOR_SCHEMA", True, "INVARIANT"),
     ("review_triager", "review_triager.md", "REVIEW_TRIAGER_SCHEMA", True, "INVARIANT"),
     ("divergence_triager", "divergence_triager.md", "DIVERGENCE_TRIAGER_SCHEMA", True, "INVARIANT"),
     ("conflict_resolver", "conflict_resolver.md", "CONFLICT_RESOLVER_SCHEMA", False,
@@ -36,6 +38,7 @@ OLD_ADOPT = {
     "implementer": ("implement", ()),
     "gate_triager": ("triage", ()),
     "review_marshal": ("review", ("review_marshal",)),            # SPEC-0554
+    "findings_collator": ("review", ("findings_collator",)),      # SPEC-0555
     "review_triager": ("review", ("review_triager",)),
     "divergence_triager": ("divergence", ("divergence_triager",)),
     "conformance_reviewer": ("review", None),
@@ -79,7 +82,7 @@ def test_builtin_integrity():
     assert [f.stem for f in files] == sorted(r[0] for r in OLD_PERSONAS)
     assert not list((AGENTIC / "persona_defs").glob("*.yml"))
     defs = R.load_builtin(PS.KNOWN)               # raises when any builtin is invalid
-    assert len({d.order for d in defs}) == len(defs) == 11       # SPEC-0554: + review_marshal
+    assert len({d.order for d in defs}) == len(defs) == 12       # SPEC-0554/0555: + marshal, collator
     for d in defs:
         text = d.template_path.read_text(encoding="utf-8")
         assert d.template_path.parent == AGENTIC / "personas"

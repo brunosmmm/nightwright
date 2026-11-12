@@ -54,6 +54,7 @@ CAMPAIGN_COLUMNS = (
     ("cost_by_worker", "json"),                                            # SPEC-0345
     ("lean", "json"), ("raised", "bool"),                                  # SPEC-0553
     ("demoted_findings", "int"),                                           # SPEC-0554
+    ("out_of_scope_findings", "int"), ("collator_fallbacks", "int"),       # SPEC-0555
 )
 RUN_COLUMNS = (
     ("campaign", "str"), ("spec_id", "str"), ("profile", "str"), ("size", "str"), ("tone", "str"),
@@ -74,6 +75,7 @@ FINDING_COLUMNS = (
     ("seq", "int"), ("ts", "str"), ("state_at", "str"),
     ("persona", "str"), ("severity", "str"), ("gate", "str"), ("ac", "str"), ("title", "str"),
     ("detail", "str"), ("files", "json"),
+    ("scope", "str"), ("tie", "str"),                                      # SPEC-0555
 )
 COLUMNS = {"campaigns": CAMPAIGN_COLUMNS, "runs": RUN_COLUMNS, "findings": FINDING_COLUMNS}
 
@@ -275,6 +277,18 @@ def _demoted(events) -> int:
     return sum(per_loop.values())
 
 
+def _collation_stats(events) -> tuple:
+    """SPEC-0555: `(out_of_scope_findings, collator_fallbacks)`: the distinct finding keys any
+    loop's last collation scoped out, and the `collator_failed` events."""
+    per_loop = {}
+    for e in events:
+        if e.get("type") == "findings_collated" and isinstance(e.get("scopes"), list):
+            per_loop[e.get("loop")] = e["scopes"]
+    out = {s.get("key") or s.get("id") for scopes in per_loop.values() for s in scopes
+           if isinstance(s, dict) and s.get("scope") == "out"}
+    return len(out), sum(1 for e in events if e.get("type") == "collator_failed")
+
+
 def campaign_row(cfg, state: dict, events: list[dict], now) -> dict:
     cid = state["id"]
     sizing = state.get("sizing") or {}
@@ -352,6 +366,8 @@ def campaign_row(cfg, state: dict, events: list[dict], now) -> dict:
         "nw_sha": open_ev.get("nw_sha"), "profile_sha256": open_ev.get("profile_sha256"),
         "lean": state.get("lean"), "raised": bool(state.get("raised")),    # SPEC-0553
         "demoted_findings": _demoted(events),                              # SPEC-0554
+        "out_of_scope_findings": _collation_stats(events)[0],              # SPEC-0555
+        "collator_fallbacks": _collation_stats(events)[1],
     }
     out = _project(row, CAMPAIGN_COLUMNS)       # signals read the coerced values
     out["signals"] = signals(out)
@@ -394,14 +410,31 @@ def run_rows(cfg, crow: dict, events=None) -> list[dict]:
 
 
 def finding_rows(crow: dict, events: list[dict]) -> list[dict]:
-    out, cur = [], "QUEUED"
+    """One row per `finding` event. SPEC-0555: a reviewer finding gets the `scope` / `tie` of
+    the first collation after it that lists its key (null without one)."""
+    from .followups import finding_key
+    out, cur, open_rows = [], "QUEUED", []
     for e in events:
         if e.get("type") == "transition":
             cur = e.get("to") or cur
         elif e.get("type") == "finding":
             row = {**{k: crow.get(k) for k in ("campaign", "spec_id")}, **e, "state_at": cur,
                    "detail": (e.get("detail") or None) and str(e["detail"])[:FINDING_DETAIL_MAX]}
+            row.pop("scope", None)
+            row.pop("tie", None)
             out.append(_project(row, FINDING_COLUMNS))
+            if e.get("persona") in _REVIEWERS:
+                open_rows.append((out[-1], finding_key(crow.get("spec_id"), e.get("title"),
+                                                       e.get("files"))))
+        elif e.get("type") == "findings_collated" and isinstance(e.get("scopes"), list):
+            hits = {s.get("key"): s for s in e["scopes"] if isinstance(s, dict) and s.get("key")}
+            left = []
+            for row, key in open_rows:
+                if key in hits:
+                    row["scope"], row["tie"] = hits[key].get("scope"), hits[key].get("tie")
+                else:
+                    left.append((row, key))
+            open_rows = left
     return out
 
 

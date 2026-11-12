@@ -246,13 +246,34 @@ def _event(e: dict, idea_id) -> tuple:
         "title": e["title"], "key": e["key"], "idea_id": idea_id, "origin": e["origin"]})
 
 
-def _file(cfg, state, profile, events, summary, pending) -> None:
+def file_out_of_scope(cfg, state: dict, profile: dict, entries: list) -> tuple[list, dict]:
+    """SPEC-0555: file the collator's out-of-scope findings (`collator.followup_entries`) into
+    the campaign's grouped idea now, during the loop, through the same path as the close
+    (`followup` events keyed by finding key, the `nwfug:<campaign>` group, the cap). Returns
+    `(events, summary)` like `file_followups`; never raises. A key already filed (an earlier
+    loop, another open group) is not filed again, and the close skips it (its `followup`
+    event is on the ledger)."""
+    events: list = []
+    summary: dict = {"filed": [], "unfiled": [], "waived": [], "capped": [], "idea_id": None}
+    pending: list = []
+    try:
+        _file(cfg, state, profile or {}, events, summary, pending, items=entries)
+    except Exception as e:                                  # never blocks the review
+        events.append(_note(f"out-of-scope follow-ups: filer failed: {e!r}"))
+        for item in pending:
+            summary["unfiled"].append({"severity": item["severity"], "title": item["title"],
+                                       "error": repr(e)})
+    return events, summary
+
+
+def _file(cfg, state, profile, events, summary, pending, items=None) -> None:
     spec_id, cid = state.get("spec_id"), state["id"]
     enabled, nits = followup_params(profile)
-    items = considered(spec_id, state.get("review_carry"), state.get("last_review") or {})
-    summary["waived"] = [{"severity": e["severity"], "title": e["title"],
-                          "waive_reason": e.get("waive_reason")}
-                         for e in items if e["origin"] == "waived"]
+    if items is None:
+        items = considered(spec_id, state.get("review_carry"), state.get("last_review") or {})
+        summary["waived"] = [{"severity": e["severity"], "title": e["title"],
+                              "waive_reason": e.get("waive_reason")}
+                             for e in items if e["origin"] == "waived"]
     if not enabled:
         return
     wanted = FILED_SEVERITIES + (("nit",) if nits else ())

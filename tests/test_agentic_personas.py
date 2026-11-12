@@ -120,6 +120,8 @@ def test_templates_and_schemas(tmp_path):
             continue
         if name == "review_marshal":      # its own context (SPEC-0554): ACs + candidates
             continue
+        if name == "findings_collator":   # its own context (SPEC-0555): collator_input
+            continue
         text = persona.template
         for ph in ("{{campaign}}", "{{spec_id}}", "{{worktree}}", "{{spec_text}}",
                    "{{gate_results}}", "{{pending_brief}}", "{{previous_verdicts}}"):

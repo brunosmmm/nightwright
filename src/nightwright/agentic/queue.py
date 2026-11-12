@@ -44,6 +44,7 @@ from . import credentials as CR
 from . import runner_jobs as RNJ
 from . import cadence as CAD
 from . import close as CL
+from . import collator as CO
 from . import cost_policy as CP
 from . import decisions as DEC
 from . import divergence as DV
@@ -242,6 +243,16 @@ def _valid_verdicts(state: dict, profile: dict) -> dict:
             if isinstance(stored.get(p), dict) and stored[p].get("loop") == loop}
 
 
+def _scoped_verdicts(state: dict, profile: dict) -> dict:
+    """`_valid_verdicts`, its findings marked `scope` / `tie` by this verdict set's applied
+    collation (SPEC-0555); unchanged with the flag off or without one."""
+    valid = _valid_verdicts(state, profile)
+    try:
+        return CO.scoped(state, valid)
+    except Exception:                    # noqa: BLE001 — a bad collation is today's routing
+        return valid
+
+
 def _pending_reviewers(state: dict, profile: dict) -> list:
     """Reviewers without a valid current-loop verdict; the full list when none is pending
     (a review is never skipped)."""
@@ -320,7 +331,12 @@ def plan_step(state: dict, profile: dict, project_cfg: dict | None = None, *, re
         return Step("close")
     if st == "REVIEWING":
         reviewers = reviewers_of(profile)
-        if len(_valid_verdicts(state, profile)) == len(reviewers) \
+        valid_now = _valid_verdicts(state, profile)
+        if len(valid_now) == len(reviewers) and CO.pending(state, valid_now):
+            # SPEC-0555: the collation of this verdict set; the cap was checked when it became
+            # pending
+            return Step("review", persona=CO.NAME, personas=(CO.NAME,))
+        if len(valid_now) == len(reviewers) \
                 and (state.get("last_review") or {}).get("triage") == "pending":
             # SPEC-0206: the one exception to "a review is never skipped"; the cap was checked
             # when `triage` became pending
@@ -810,6 +826,7 @@ def triage_reviews(verdicts: dict, profile: dict, waived=(), human_waived=(),
         u for w in human_waived for u in w.get("resolved_ac") or () if u]
     attest_hit = []
     basis_demoted = []
+    out_scope = []                # SPEC-0555: findings the collation scoped out
     for p in personas:
         v = verdicts[p]
         raw = [f for f in v.get("findings") or [] if isinstance(f, dict)]
@@ -823,10 +840,17 @@ def triage_reviews(verdicts: dict, profile: dict, waived=(), human_waived=(),
                                       "files": list(f.get("files") or []), "ac": f.get("ac"),
                                       "category": f.get("category"), "synthetic": False})
                 continue
+            tie = {"tie": f["tie"]} if f.get("tie") else {}            # SPEC-0555
+            if f.get("scope") == "out":     # SPEC-0555: filed as a follow-up, never scored
+                out_scope.append({"id": f"{p}#{i}", "personas": [p], "severity": sev,
+                                  "title": f.get("title") or "", "detail": finding_detail(f),
+                                  "files": list(f.get("files") or []), "ac": f.get("ac"),
+                                  "category": f.get("category"), "synthetic": False, **tie})
+                continue
             recs.append({"id": f"{p}#{i}", "personas": [p], "severity": sev,
                          "title": f.get("title") or "", "detail": finding_detail(f),
                          "files": list(f.get("files") or []), "ac": f.get("ac"),
-                         "category": f.get("category"), "synthetic": False})
+                         "category": f.get("category"), "synthetic": False, **tie})
         wants_fix[p] = v.get("verdict") == "fix" or any(r["severity"] == "must_fix"
                                                        for r in recs)
         if v.get("verdict") == "fix" and not raw:
@@ -913,8 +937,11 @@ def triage_reviews(verdicts: dict, profile: dict, waived=(), human_waived=(),
     basis_demoted = [m for m in basis_demoted if not human_gone(m)]
     advisory = [m for m in surviving if m not in blocking] + demoted + basis_demoted
     keys = ("id", "personas", "severity", "title", "detail", "files", "ac", "category")
-    out = lambda ms: [{k: m[k] for k in keys} for m in ms]
+    out = lambda ms: [{**{k: m[k] for k in keys}, **({"tie": m["tie"]} if m.get("tie") else {})}
+                      for m in ms]
     extra = {"basis_demoted": [m["id"] for m in basis_demoted]} if basis_demoted else {}
+    if out_scope:                                                       # SPEC-0555
+        extra["out_of_scope"] = out(out_scope)
     return {**extra, "outcome": outcome, "score": score, "score_only": score_only,
             "blocking": out(blocking), "advisory": out(advisory),
             "waivable_weight": sum(weights[m["severity"]] for m in surviving
@@ -925,7 +952,8 @@ def triage_reviews(verdicts: dict, profile: dict, waived=(), human_waived=(),
 
 def _bullet(f: dict) -> str:
     files = ", ".join(f.get("files") or [])
-    return (f"- [{f['severity']}] {f['title']}" + (f" ({files})" if files else "")
+    tie = f" [{f['tie']}]" if f.get("tie") and f["tie"] != "none" else ""     # SPEC-0555
+    return (f"- [{f['severity']}]{tie} {f['title']}" + (f" ({files})" if files else "")
             + (f": {f['detail']}" if f.get("detail") else ""))
 
 
@@ -937,17 +965,20 @@ def review_brief(verdicts: dict, tri: dict, pass_score) -> dict:
     tail = ([f"Review score {tri['score']} is below the pass score {pass_score}; address the "
              f"highest-weight findings first."] if tri["score_only"] else [])
     tail += [_bullet(f) for f in blocking]
+    # SPEC-0555: once the collation scoped a finding out, the reviewers' free-text briefs may
+    # describe out-of-scope work; the brief is then the in-scope findings only (verbatim)
+    scoped_out = bool(tri.get("out_of_scope"))
     if len(verdicts) == 1:
         persona = next(iter(verdicts))
-        brief = verdicts[persona].get("fix_brief")
-        if not (brief or "").strip() and (tri["score_only"] or any(
-                f["id"] in tri["synthetic"] for f in blocking)):
+        brief = verdicts[persona].get("fix_brief") if not scoped_out else ""
+        if scoped_out or (not (brief or "").strip() and (tri["score_only"] or any(
+                f["id"] in tri["synthetic"] for f in blocking))):
             brief = "\n".join(tail)
         return {"fix_brief": brief, "must_fix": [
             _with_category({"ac": f["ac"], "title": f["title"], "detail": f["detail"],
                             "files": f["files"]}, f) for f in blocking]}
-    head = "\n\n".join(f"[{p}] {(verdicts[p].get('fix_brief') or '').strip()}".rstrip()
-                       for p in tri["fixing"])
+    head = "" if scoped_out else "\n\n".join(
+        f"[{p}] {(verdicts[p].get('fix_brief') or '').strip()}".rstrip() for p in tri["fixing"])
     reporters = {p for f in blocking for p in f["personas"]} | set(tri["fixing"])
     return {"fix_brief": "\n\n".join(x for x in (head, "\n".join(tail)) if x),
             "personas": [p for p in verdicts if p in reporters],
@@ -958,9 +989,12 @@ def review_brief(verdicts: dict, tri: dict, pass_score) -> dict:
 
 
 def _with_category(item: dict, f: dict) -> dict:
-    """A brief entry carries the finding's `category` when it has one (SPEC-0202)."""
+    """A brief entry carries the finding's `category` when it has one (SPEC-0202), and its
+    collation `tie` (SPEC-0555)."""
     if f.get("category"):
         item["category"] = f["category"]
+    if f.get("tie"):
+        item["tie"] = f["tie"]
     return item
 
 
@@ -1613,7 +1647,7 @@ def _begin_review(state: dict) -> None:
     PK.remember_verdicts(state)                     # SPEC-0554: no-op unless pinned
     PK.forget(state)                                # SPEC-0554: each entry builds its packet
     lr = state.get("last_review") if isinstance(state.get("last_review"), dict) else {}
-    for k in ("verdicts", "triage", "triager_run", "waived"):
+    for k in ("verdicts", "triage", "triager_run", "waived", "collation"):   # SPEC-0555
         lr.pop(k, None)
     lr["entry_run"] = counters["runs"]
     state["last_review"] = lr
@@ -2565,6 +2599,13 @@ def _previous_runs(cfg, state: dict, persona: str) -> list:
     """The `run.end` events shown to `persona` as previous verdicts (tail 2). A reviewer never
     sees the runs of its own review pass-through (run number > `last_review.entry_run`)."""
     entry = (state.get("last_review") or {}).get("entry_run")
+    if persona == "implementer" and CO.scoped_out(state):
+        # SPEC-0555: the review reaches the implementer as the in-scope brief only; the review
+        # runs' free-text summaries may describe out-of-scope work
+        group = CO.review_group(state)
+        ends = [e for e in store.read_ledger(cfg, state["id"], types=["run.end"])
+                if e.get("persona") not in group]
+        return ends[-2:]
     if persona not in PS.REVIEWER_PERSONAS or entry is None:
         return store.read_ledger(cfg, state["id"], types=["run.end"], tail=2)
     ends = store.read_ledger(cfg, state["id"], types=["run.end"])
@@ -2575,7 +2616,7 @@ def _previous_runs(cfg, state: dict, persona: str) -> list:
 def _triage_input(state: dict, profile: dict) -> str:
     """The `triage_input` prompt value of the review triager (SPEC-0206): the score, the
     reviewers' verdict and brief, and the waivable (surviving `minor`/`nit`) findings."""
-    valid = _valid_verdicts(state, profile)
+    valid = _scoped_verdicts(state, profile)
     hw, at = human_overrides_of(state)
     tri = triage_reviews(valid, profile, human_waived=hw, attested=at)
     keys = ("id", "personas", "severity", "title", "detail", "files")
@@ -2634,6 +2675,8 @@ def _prepare_run(ctx: _Ctx, state: dict, persona: str, step: Step | None = None)
     invariant = None
     if persona == "review_triager":     # its input carries the verdicts already (SPEC-0206)
         previous, extra = [], {"triage_input": _triage_input(state, profile)}
+    elif persona == CO.NAME:            # SPEC-0555: its input carries the verdicts
+        previous, extra = [], CO.collator_values(cfg, state, _valid_verdicts(state, profile))
     elif persona == "spec_writer":
         previous, extra = [], _prepare_spec_write(ctx, state)
     elif persona == "spec_reviewer":    # SPEC-0214: the campaign's own invariant and context
@@ -5205,7 +5248,7 @@ def _accept_waivers(state: dict, profile: dict, items) -> tuple:
     findings `{id, personas, severity, title, detail, files, ac, category, reason}`; ignored =
     `[(id, why)]`. Only a surviving `minor`/`nit` finding with a non-empty reason, once."""
     hw, at = human_overrides_of(state)
-    tri = triage_reviews(_valid_verdicts(state, profile), profile, human_waived=hw, attested=at)
+    tri = triage_reviews(_scoped_verdicts(state, profile), profile, human_waived=hw, attested=at)
     found = {f["id"]: f for f in tri["blocking"] + tri["advisory"]}
     accepted, ignored, seen = [], [], set()
     for item in items:
@@ -5398,6 +5441,8 @@ def _apply_reviews(ctx, state, profile, counters, res, row, events, finish):
     reviewers = reviewers_of(profile)
     if res.step.persona == PK.MARSHAL:                                # SPEC-0554
         return _apply_marshal(ctx, state, counters, res, row, events, finish)
+    if res.step.persona == CO.NAME:                                   # SPEC-0555
+        return _apply_collator(ctx, state, profile, counters, res, row, events, finish)
     if res.step.persona == "review_triager":
         out = _apply_triager(ctx, state, profile, counters, res, row, events)
         return out if out is not None else _route_reviews(
@@ -5522,6 +5567,11 @@ def _route_reviews(ctx, state, profile, counters, row, events, finish):
     reviewers = reviewers_of(profile)
     multi = len(reviewers) > 1
     valid = _valid_verdicts(state, profile)
+    if CO.on(state) and len(valid) == len(reviewers):                  # SPEC-0555
+        started = _start_collation(ctx, state, profile, valid, events, finish)
+        if started is not None:
+            return started
+        valid = _apply_collation(state, valid)
     lr = state.get("last_review") or {}
     decision = decide_reviews(state, profile, valid, [p for p in reviewers if p not in valid],
                               [w["id"] for w in lr.get("waived") or [] if isinstance(w, dict)],
@@ -5552,7 +5602,8 @@ def _route_reviews(ctx, state, profile, counters, row, events, finish):
             "outcome": tri["outcome"],
             "major": sum(1 for f in surviving if f["severity"] == "major"),
             "must_fix": sum(1 for f in surviving if f["severity"] == "must_fix"),
-            **({"demoted": len(tri.get("basis_demoted") or [])} if PK.on(state) else {})}))
+            **({"demoted": len(tri.get("basis_demoted") or [])} if PK.on(state) else {}),
+            **({"out_of_scope": len(tri.get("out_of_scope") or [])} if CO.on(state) else {})}))
         events.append(("note", {"text": f"review score {tri['score']}/{c['pass_score']} "
                                         f"{tri['outcome']}", "author": "queue"}))
         if tri["human_waived"] or tri["attested"]:
@@ -7088,7 +7139,7 @@ def _adopted_held(ctx: _Ctx, snap: dict, personas: tuple) -> tuple:
     set (the cap trimmed it): pending reviewers without a valid verdict. They were held, not
     failed, so applying the adopted members charges them no retry. () without a cap."""
     if PG.max_personas(ctx.cfg) is None or "review_triager" in personas \
-            or PK.MARSHAL in personas:
+            or PK.MARSHAL in personas or CO.NAME in personas:
         return ()
     try:
         prof = ctx.profile(snap)
@@ -7215,9 +7266,12 @@ def _prepare_reviews(ctx: _Ctx, pgate: PG.Gate, st: dict, step: Step, profile: d
     SPEC-0187; with several it is that reviewer's missing result and its siblings still run.
     Returns the `_ReviewGroup` to apply when its flight is harvested, or None."""
     # the triager (SPEC-0206) never takes the one-reviewer campaign-wide error path
-    multi = len(reviewers_of(profile)) > 1 or step.persona in ("review_triager", PK.MARSHAL)
+    multi = len(reviewers_of(profile)) > 1 or step.persona in ("review_triager", PK.MARSHAL,
+                                                                 CO.NAME)
     if step.persona == PK.MARSHAL:                                    # SPEC-0554
         return _prepare_marshal(ctx, pgate, st, step, profile, pending_agent, report)
+    if step.persona == CO.NAME:                                       # SPEC-0555
+        return _prepare_collator(ctx, st, step, pending_agent, report)
     for persona in step.personas:
         sub = Step("review", persona=persona, personas=step.personas)
         if _hold_local_backend_before_prepare(pgate, st, persona, sub):
@@ -7341,6 +7395,164 @@ def _apply_marshal(ctx, state, counters, res, row, events, finish):
     return finish("REVIEWING", "review_packet")
 
 
+def _prepare_collator(ctx: _Ctx, st: dict, step: Step, pending_agent: list,
+                      report: TickReport):
+    """SPEC-0555: prepare the `findings_collator` run of this verdict set. A run that cannot be
+    prepared is a missing result: `_apply_collator` then falls back to today's routing."""
+    cid = st["id"]
+    group = _ReviewGroup(st, step)
+    sub = Step("review", persona=CO.NAME, personas=step.personas)
+    try:
+        run_id, req, budget = _prepare_run(ctx, st, CO.NAME, step)
+    except _RunStarted as e:
+        report.errors.append(f"{cid}: {e!r}")
+        group.meta[CO.NAME] = (e.run_id, e.budget)
+        group.results[CO.NAME] = StepResult(cid, sub, st["state"], run_id=e.run_id,
+                                            budget=e.budget,
+                                            run_result=_synthetic_failure(repr(e)))
+        return group
+    except (ValueError, OSError) as e:
+        group.results[CO.NAME] = StepResult(cid, sub, st["state"], error=str(e))
+        return group
+    group.meta[CO.NAME] = (run_id, budget)
+    pending_agent.append((st, sub, run_id, req, budget, group))
+    return group
+
+
+def _start_collation(ctx, state, profile, valid, events, finish):
+    """SPEC-0555: a complete verdict set without a collation. No finding: nothing to collate
+    (`skipped`, the file is still written). The cost cap blocks the collator: fall back. Else
+    the collation becomes pending and the next review step runs the collator. Returns the
+    finish row, or None when routing goes on now."""
+    if not CO.needs_start(state, valid):
+        return None
+    lr = state["last_review"]
+    items = CO.inputs(valid)
+    loop = PK.loop_of(state)
+    if not items:
+        try:
+            CO.write(ctx.cfg, state, CO.document(state, loop, "skipped", [], []))
+        except OSError:
+            pass
+        lr["collation"] = {"runs": CO.signature(valid), "loop": loop, "status": "skipped",
+                           "scopes": {}}
+        events.append(("findings_collated", {"loop": loop, "status": "skipped", "findings": 0,
+                                             "out": 0, "scopes": []}))
+        return None
+    blocked = _cap_blocks(state, profile, [CO.NAME])[0]
+    if blocked:
+        _collation_failed(ctx.cfg, state, valid, events, f"cost cap: {blocked}")
+        return None
+    lr["collation"] = {"runs": CO.signature(valid), "loop": loop, "status": "pending"}
+    return finish("REVIEWING", "review_collate")
+
+
+def _apply_collation(state, valid) -> dict:
+    """SPEC-0555: the verdicts `decide_reviews` routes: marked `scope` / `tie` by this verdict
+    set's applied collation (out-of-scope findings are then never scored), else unchanged
+    (pending never reaches here; failed / skipped route every finding, as today)."""
+    try:
+        return CO.scoped(state, valid)
+    except Exception:                    # noqa: BLE001 — a bad collation is today's routing
+        return valid
+
+
+def _collation_failed(cfg, state, valid, events, error, run_id=None) -> None:
+    """SPEC-0555: today's routing for this verdict set (every finding in scope), recorded in
+    `findings-loop-N.json`, `last_review.collation` and a `collator_failed` event."""
+    loop = PK.loop_of(state)
+    items = CO.inputs(valid)
+    try:
+        CO.write(cfg, state, CO.document(state, loop, "failed", CO.fallback_records(items),
+                                         items, run_id=run_id, error=error))
+    except (OSError, ValueError, TypeError):
+        pass
+    state["last_review"]["collation"] = {"runs": CO.signature(valid), "loop": loop,
+                                         "status": "failed", "error": str(error)[:400],
+                                         **({"run": run_id} if run_id else {})}
+    events.append(("collator_failed", {"loop": loop, "error": str(error)[:400],
+                                       "run_id": run_id}))
+    events.append(("note", {"text": f"collator failed ({str(error)[:200]}); every finding "
+                                    f"stays in scope this loop", "author": "queue"}))
+
+
+def _collation_done(ctx, state, profile, valid, verdict, run_id, events) -> None:
+    """SPEC-0555: apply the collator's verdict with the code guards, write
+    `findings-loop-N.json`, record the scopes in `last_review.collation` and file the
+    out-of-scope findings into the campaign's grouped follow-up idea. Raises on a bad verdict
+    (the caller falls back)."""
+    cfg = ctx.cfg
+    loop = PK.loop_of(state)
+    items = CO.inputs(valid)
+    changed = CO.diff_files(cfg, state)
+    records, stats = CO.collate(
+        verdict, items, changed=changed, unmet=CO.unmet_acs(valid),
+        ac_ids={a["id"] for a in CO.acs_of(cfg, state)},
+        worktree=(state.get("repo") or {}).get("worktree"))
+    CO.write(cfg, state, CO.document(state, loop, "done", records, items, stats=stats,
+                                     run_id=run_id))
+    scopes = {i: list(v) for i, v in CO.scope_map(records).items()}
+    n_out = sum(1 for r in records if r["scope"] == "out")
+    state["last_review"]["collation"] = {"runs": CO.signature(valid), "loop": loop,
+                                         "status": "done", "run": run_id, "scopes": scopes,
+                                         "out": n_out, "stats": stats}
+    spec_id = state.get("spec_id")
+    by_id = {f["id"]: f for f in items}
+    events.append(("findings_collated", {
+        "loop": loop, "status": "done", "run_id": run_id, "findings": len(items),
+        "collated": len(records), "out": n_out, "stats": stats,
+        "scopes": [{"id": i, "key": FU.finding_key(spec_id, by_id[i]["title"],
+                                                   by_id[i]["files"]),
+                    "persona": by_id[i]["persona"], "scope": s, "tie": t}
+                   for i, (s, t) in scopes.items() if i in by_id]}))
+    entries = CO.followup_entries(spec_id, state["id"], loop, records, items)
+    if entries:
+        fevents, summary = FU.file_out_of_scope(cfg, state, profile, entries)
+        events += fevents
+        events.append(("note", {"text": f"out of scope: {n_out} finding(s); follow-ups filed "
+                                        f"{len(summary['filed'])}, capped "
+                                        f"{len(summary['capped'])}, unfiled "
+                                        f"{len(summary['unfiled'])}", "author": "queue"}))
+
+
+def _apply_collator(ctx, state, profile, counters, res, row, events, finish):
+    """SPEC-0555: record the collator run, apply its collation (or fall back to today's routing
+    on a failed, malformed or unusable run) and route the review. Interrupted: the run is
+    recorded, the collation stays pending and the next tick runs it again."""
+    cfg, cid = ctx.cfg, state["id"]
+    r = res.reviews[0]
+    events += r.events_before
+    rr = r.run_result
+    if rr is not None:
+        events += _record_run(state, CO.NAME, r.run_id, rr, r.budget,
+                              interrupted=r.interrupted)
+        row["run_id"] = r.run_id
+        row["cost_usd"] = rr.cost_usd if rr.cost_usd is not None else r.budget
+        row["cost_estimated"] = rr.cost_usd is None
+        if r.interrupted or rr.interrupted:
+            with store.item_lock(cfg, cid):
+                for etype, payload in events:
+                    store.append_event(cfg, cid, etype, payload)
+                store.write_state(cfg, cid, state)
+            row["to"], row["reason"] = res.from_state, "interrupted"
+            return row
+    valid = _valid_verdicts(state, profile)
+    verdict = rr.verdict if rr is not None and rr.verdict_ok else None
+    why = None
+    if not isinstance(verdict, dict):
+        why = (f"collator run not started: {r.error}" if rr is None else
+               "collator timed out" if rr.timed_out else
+               "collator run failed" if rr.is_error else "collator returned a malformed verdict")
+    else:
+        try:
+            _collation_done(ctx, state, profile, valid, verdict, r.run_id, events)
+        except Exception as e:           # noqa: BLE001 — never a park: today's routing
+            why = f"collation failed: {type(e).__name__}: {e}"
+    if why is not None:
+        _collation_failed(cfg, state, valid, events, why, r.run_id)
+    return _route_reviews(ctx, state, profile, counters, row, events, finish)
+
+
 def _finish_reviews(ctx: _Ctx, report: TickReport, group: _ReviewGroup) -> dict:
     """Apply a reviewer fan-out once, results in profile order. One reviewer: its bare result
     (or the campaign-wide error of a raising worker), as SPEC-0187. Several: a worker that
@@ -7348,7 +7560,7 @@ def _finish_reviews(ctx: _Ctx, report: TickReport, group: _ReviewGroup) -> dict:
     budget charge), so the reviewer is simply missing."""
     st = group.state
     multi = len(reviewers_of(ctx.profile(st))) > 1 \
-        or group.step.persona in ("review_triager", PK.MARSHAL)
+        or group.step.persona in ("review_triager", PK.MARSHAL, CO.NAME)
     ordered = []
     for persona in group.step.personas:
         item = group.results.get(persona)

@@ -122,6 +122,10 @@ EVENT_KEYS: dict[str, tuple[str, ...]] = {
     "deep_close": ("status", "loop"),
     # SPEC-0554: a review loop's packet was built (or not) / its marshal map was written
     "review_packet": ("loop", "ok"),
+    # SPEC-0555: a review loop's findings were collated (done / skipped) / the collator failed
+    # and the loop routed every finding, as before
+    "findings_collated": ("loop", "status", "findings", "out", "scopes"),
+    "collator_failed": ("loop", "error", "run_id"),
     "flaky_recorded": ("ids", "source"),                        # SPEC-0293
     "resume": ("to", "note", "cap_usd", "loops_reset"),
     "close": ("mode",),

@@ -198,3 +198,63 @@ def test_dry_run_names_an_existing_open_legacy_group_as_the_target(cfg):
     g = as_json(run("--json").output)["groups"][0]
     assert g["target"] == legacy and len(g["lines"]) == 1
     assert "group_id" not in g
+
+
+# ---- SPEC-0555: collation-time filing of out-of-scope findings ---------------------------------
+
+def _oos_campaign(cfg):
+    from nightwright.agentic import store as S
+    cid = "SPEC-0555-20261112-test"
+    S.campaign_dir(cfg, cid).mkdir(parents=True)
+    return {"id": cid, "spec_id": "SPEC-0555", "project": "Meta-Tools", "spec": {}, "repo": {},
+            "last_review": {}, "review_carry": []}
+
+
+def _oos(title, loop=1, sev="major", files=("src/old.py",)):
+    from nightwright.agentic import collator as CO
+    item = {"id": "adversarial_reviewer#0", "persona": "adversarial_reviewer", "severity": sev,
+            "title": title, "detail": "d", "files": list(files), "ac": None, "category": "bug"}
+    rec = {"id": item["id"], "merged": [], "scope": "out", "tie": "none", "reason": "untouched"}
+    return CO.followup_entries("SPEC-0555", "SPEC-0555-20261112-test", loop, [rec], [item])
+
+
+def _append(cfg, cid, events):
+    from nightwright.agentic import store as S
+    for etype, payload in events:
+        S.append_event(cfg, cid, etype, payload)
+
+
+def test_out_of_scope_filed_into_the_group_once_across_loops_and_close(cfg):
+    from nightwright.agentic import store as S
+    st = _oos_campaign(cfg)
+    prof = {"review": {"followups": True, "followups_max": 10}}
+    ev1, s1 = FU.file_out_of_scope(cfg, st, prof, _oos("old parser"))
+    _append(cfg, st["id"], ev1)
+    [g] = groups(cfg)
+    assert g.heading == f"nwfug:{st['id']} [SPEC-0555] review follow-ups (1 finding)"
+    body = EX.read_idea_enrichment(cfg, g)["summary"]
+    assert "old parser" in body and f"{st['id']} loop 1, tie none" in body
+    assert [e[1]["origin"] for e in ev1 if e[0] == "followup"] == ["out_of_scope"]
+    # loop 2: the same finding again plus a new one -> only the new one gets a line
+    ev2, s2 = FU.file_out_of_scope(cfg, st, prof, _oos("old parser", loop=2)
+                                   + _oos("old cache", loop=2))
+    _append(cfg, st["id"], ev2)
+    [g] = groups(cfg)
+    assert "(2 findings)" in g.heading
+    assert [f["title"] for f in s2["filed"]] == ["old parser", "old cache"]
+    assert [e[1]["title"] for e in ev2 if e[0] == "followup"] == ["old cache"]
+    # close: the same key as an advisory finding is skipped (its followup event is on the ledger)
+    st["last_review"] = {"advisory": [{"severity": "major", "title": "old parser",
+                                       "files": ["src/old.py"], "personas": ["test_reviewer"]}]}
+    ev3, s3 = FU.file_followups(cfg, st, prof)
+    assert [e for e in ev3 if e[0] == "followup"] == [] and "(2 findings)" in groups(cfg)[0].heading
+    assert len(S.read_ledger(cfg, st["id"], types=["followup"])) == 2
+
+
+def test_out_of_scope_respects_followups_off_and_never_raises(cfg, monkeypatch):
+    st = _oos_campaign(cfg)
+    ev, s = FU.file_out_of_scope(cfg, st, {"review": {"followups": False}}, _oos("x"))
+    assert ev == [] and s["filed"] == [] and groups(cfg) == []
+    monkeypatch.setattr(OW, "add_idea", lambda *a, **k: (_ for _ in ()).throw(OSError("disk")))
+    ev, s = FU.file_out_of_scope(cfg, st, {"review": {}}, _oos("y"))
+    assert s["unfiled"] and any("not filed" in e[1]["text"] for e in ev if e[0] == "note")

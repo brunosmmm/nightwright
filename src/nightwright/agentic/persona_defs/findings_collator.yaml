@@ -1,0 +1,14 @@
+# builtin persona (SPEC-0555); the template is agentic/personas/findings_collator.md
+schema: nw.persona.v1
+name: findings_collator
+role: system
+template: findings_collator.md
+description: "collates a review loop's findings: merges duplicates, ties each to an AC and scopes it in or out"
+order: 78
+output_schema: findings_collator
+read_only: true
+invariant: default
+adopt:
+  step: review
+  personas: [findings_collator]
+tier: marshal

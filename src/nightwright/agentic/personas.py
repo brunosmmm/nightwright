@@ -19,6 +19,7 @@ from . import flaky
 from . import gitops as git
 from . import persona_registry as PR
 from . import packet as _PK
+from . import collator as _CO
 from . import store
 from .gates import TARGETED_UNRESOLVED_EXITS, tmp_env
 from .profiles import persona_settings
@@ -306,6 +307,7 @@ class Persona:
 
 
 REVIEW_MARSHAL_SCHEMA = _PK.MARSHAL_SCHEMA               # SPEC-0554: the AC map only
+FINDINGS_COLLATOR_SCHEMA = _CO.SCHEMA                    # SPEC-0555: collated findings
 
 
 # SPEC-0370: the persona registry is data (`persona_defs/*.yaml`). The YAML names code objects
@@ -322,6 +324,7 @@ SCHEMAS = {
     "divergence_triager": DIVERGENCE_TRIAGER_SCHEMA,
     "conflict_resolver": CONFLICT_RESOLVER_SCHEMA,
     "review_marshal": REVIEW_MARSHAL_SCHEMA,             # SPEC-0554
+    "findings_collator": FINDINGS_COLLATOR_SCHEMA,       # SPEC-0555
 }
 INVARIANTS = {
     "default": INVARIANT,
@@ -337,7 +340,7 @@ PLACEHOLDERS = ("campaign", "spec_id", "spec_rel_path", "spec_text", "worktree",
                 "campaign_diff", "base_diff", "landed", "regenerate", "template_text",
                 "write_problems", "write_rules", "epic_text", "human_overrides", "flaky_history",
                 "packet_path", "review_mode", "marshal_input", "prior_findings",
-                "packet_loop")
+                "packet_loop", "collator_input")
 
 # What the registry validator needs from this module (it cannot import it).
 KNOWN = {"output_schemas": frozenset(SCHEMAS), "invariants": frozenset(INVARIANTS),
@@ -582,7 +585,9 @@ def render_pending_brief(brief) -> str:
         parts.append(f"Brief: {brief['fix_brief']}")
     for item in brief.get("must_fix") or []:
         if isinstance(item, dict):
-            tag = item.get("gate") or item.get("ac") or item.get("category") or item.get("section")
+            tie = item.get("tie") if item.get("tie") != "none" else None    # SPEC-0555
+            tag = item.get("gate") or item.get("ac") or tie or item.get("category") \
+                or item.get("section")
             where = f" [{tag}]" if tag else ""
             files = f" ({', '.join(item.get('files') or [])})" if item.get("files") else ""
             parts.append(f"- MUST FIX{where}: {item.get('title')}{files}"

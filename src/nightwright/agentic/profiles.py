@@ -381,9 +381,9 @@ def _resolve(layers, name) -> dict:
     _check_reviewers(profile)
     _check_review(profile)
     for persona in _persona_names():
-        # SPEC-0554: the marshal has default settings (`packet.MARSHAL_SETTINGS`); a profile
-        # may set it but need not
-        if persona not in profile["personas"] and persona != "review_marshal":
+        # SPEC-0554 / SPEC-0555: the marshal and the collator have default settings
+        # (`packet.MARSHAL_SETTINGS`, `collator.SETTINGS`); a profile may set them but need not
+        if persona not in profile["personas"] and persona not in DEFAULTED_PERSONAS:
             missing(f"personas.{persona}")
     return profile
 
@@ -701,6 +701,10 @@ def triager_enabled(profile) -> bool:
     return isinstance(review, dict) and review.get("triager") is True
 
 
+# Personas a profile need not list: their settings default in code (SPEC-0554, SPEC-0555).
+DEFAULTED_PERSONAS = ("review_marshal", "findings_collator")
+
+
 def followup_params(profile) -> tuple:
     """`(followups, followups_nits)` of `profile["review"]` (SPEC-0207); a hand-built profile
     without them behaves as the defaults (file follow-ups, no nits)."""
@@ -722,6 +726,9 @@ def persona_settings(profile, persona):
     if persona not in personas and persona == "review_marshal":      # SPEC-0554
         from .packet import MARSHAL_SETTINGS
         return dict(MARSHAL_SETTINGS)
+    if persona not in personas and persona == "findings_collator":   # SPEC-0555
+        from .collator import SETTINGS
+        return dict(SETTINGS)
     if persona not in personas:
         raise ValueError(f"profile {profile.get('name')!r} has no persona {persona!r}; "
                          f"known: {', '.join(sorted(personas))}")
