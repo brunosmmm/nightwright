@@ -1201,23 +1201,58 @@ def _idea_id_of(st: dict) -> str | None:
     return (st.get("idea") or {}).get("id")
 
 
+def _is_dep_id(dep) -> bool:
+    """True for a well-formed dependency id (`SPEC-NNNN`, outbound `PROJ-NNNN`): ASCII, full match."""
+    return isinstance(dep, str) and dep.isascii() and _ANY_ID_RE.fullmatch(dep) is not None
+
+
 def _readiness_dep_ids(fm: dict) -> list[str] | None:
-    """Frontmatter dependency ids for `backlog_readiness`; ``None`` when ``depends_on`` is invalid."""
+    """Frontmatter dependency ids for `backlog_readiness`, stripped; ``None`` when ``depends_on`` is
+    invalid, including an id that is not a well-formed spec id (it would reach a glob)."""
     raw = fm.get("depends_on") if isinstance(fm, dict) else None
     if raw is None:
         return []
     if isinstance(raw, bool):
         return None
     if isinstance(raw, str):
-        return [raw] if raw.strip() else []
+        raw = [raw] if raw.strip() else []
     if isinstance(raw, list):
         out: list[str] = []
         for d in raw:
-            if not isinstance(d, str) or not d.strip():
+            if not isinstance(d, str) or not _is_dep_id(d.strip()):
                 return None
-            out.append(d)
+            out.append(d.strip())
         return out
     return None
+
+
+def _parse_frontmatter_text(text: str) -> dict | None:
+    """Frontmatter mapping of decoded spec text; ``None`` when it cannot be parsed or is not a
+    mapping. A pathological spec (invalid YAML, deep nesting, huge) must not raise out of readiness."""
+    try:
+        fm, _ = split_frontmatter(text)
+    except (OSError, ValueError, yaml.YAMLError, RecursionError, MemoryError):
+        return None
+    return fm if isinstance(fm, dict) else None
+
+
+def _read_frontmatter_text(path) -> dict | None:
+    """Frontmatter of the spec file at `path`: ``None`` when it is unreadable (missing, not a
+    regular file, over `MAX_WORKTREE_SPEC_BYTES`, not UTF-8, invalid YAML, too deep); ``{}`` when
+    the file has no mapping frontmatter (a present spec with no status)."""
+    cap = MAX_WORKTREE_SPEC_BYTES
+    try:
+        if not stat.S_ISREG(os.stat(path).st_mode):
+            return None
+        with open(path, "rb") as fh:
+            data = fh.read(cap + 1)
+        if len(data) > cap:
+            return None
+        text = data.decode("utf-8").replace("\r\n", "\n")
+        fm, _ = split_frontmatter(text)
+    except (OSError, ValueError, yaml.YAMLError, RecursionError, MemoryError):
+        return None
+    return fm if isinstance(fm, dict) else {}
 
 
 def _read_branch_spec_blob(root: str, branch: str, rel: str) -> bytes | None:
@@ -1269,7 +1304,7 @@ def _campaign_spec_text(state: dict) -> tuple[str | None, bool]:
         if data is None:
             return None, True
         return _spec_bytes_as_text(data), True
-    except (GitError, OSError, UnicodeDecodeError, MemoryError):
+    except (GitError, OSError, UnicodeDecodeError, MemoryError, RecursionError):
         return None, True
 
 
@@ -1317,29 +1352,22 @@ def backlog_readiness(cfg, state: dict) -> tuple[bool, list[str]]:
     rel = rel or ""
     if split:
         spec_path = root / rel
-        try:
-            fm, _ = split_frontmatter(spec_path.read_text(encoding="utf-8"))
-        except (OSError, ValueError):
+        fm = _read_frontmatter_text(spec_path)
+        if fm is None:
             return False, ["spec file missing"]
-        fm = fm if isinstance(fm, dict) else {}
     else:
         text, from_branch = _campaign_spec_text(state)
         if from_branch:
             if text is None:
                 return False, ["spec file missing"]
-            try:
-                fm, _ = split_frontmatter(text)
-            except (OSError, ValueError, UnicodeDecodeError, yaml.YAMLError):
-                return False, ["spec file missing"]
-            if not isinstance(fm, dict):
+            fm = _parse_frontmatter_text(text)
+            if fm is None:
                 return False, ["spec file missing"]
         else:
             spec_path = root / rel
-            try:
-                fm, _ = split_frontmatter(spec_path.read_text(encoding="utf-8"))
-            except (OSError, ValueError):
+            fm = _read_frontmatter_text(spec_path)
+            if fm is None:
                 return False, ["spec file missing"]
-            fm = fm if isinstance(fm, dict) else {}
         spec_path = root / ((state.get("spec") or {}).get("rel_path") or "")
     blocked = []
     status = str(fm.get("status") or "")
@@ -1358,13 +1386,15 @@ def backlog_readiness(cfg, state: dict) -> tuple[bool, list[str]]:
         camp = _dep_campaign(cfg, dep, state.get("project"))
         merged = (camp or {}).get("state") == "MERGED"
         try:
-            dep_fm, _ = split_frontmatter(_find_dep_spec(spec_path.parent, dep)
-                                          .read_text(encoding="utf-8"))
-        except (OSError, ValueError):
+            found = _find_dep_spec(spec_path.parent, dep)
+        except ValueError:                      # malformed or unmatched id
+            found = None
+        dep_fm = _read_frontmatter_text(found) if found is not None else None
+        if dep_fm is None:                      # unmatched, oversize, unreadable, pathological
             if not merged:                      # SPEC-0347: the base may predate the export
                 blocked.append(f"{dep} not found")
             continue
-        met, why = dependency_met(spec_path.parent, dep, dep_fm or {},
+        met, why = dependency_met(spec_path.parent, dep, dep_fm,
                                   {str(fm["id"])} if fm.get("id") else set())
         if met or merged:                       # SPEC-0347: a merged PR the base lacks yet
             continue
@@ -1406,13 +1436,15 @@ def _spec_after_met(cfg, state: dict, spec_id: str) -> tuple[bool, str, bool]:
     camp = hits[0] if hits else None
     live = bool(camp and camp.get("state") not in TERMINAL_STATES)
     try:
-        dep_fm, _ = split_frontmatter(_find_dep_spec(_specs_dir_of(state), spec_id)
-                                      .read_text(encoding="utf-8"))
+        found = _find_dep_spec(_specs_dir_of(state), spec_id)
     except (OSError, ValueError):
+        found = None
+    dep_fm = _read_frontmatter_text(found) if found is not None else None
+    if dep_fm is None:
         if (camp or {}).get("state") == "MERGED":
             return True, "", live
         return False, f"{spec_id} not found", live
-    met, why = dependency_met(_specs_dir_of(state), spec_id, dep_fm or {}, set())
+    met, why = dependency_met(_specs_dir_of(state), spec_id, dep_fm, set())
     if met or (camp or {}).get("state") == "MERGED":
         return True, "", live
     if live:
@@ -1546,7 +1578,10 @@ def resolve_dependency_conflicts(cfg, queued: list[dict]) -> None:
 def _find_dep_spec(specs_dir, dep) -> Path:
     """SPEC-0347: the spec file for dependency `dep` under `specs_dir`. Exported outbound specs
     are filed as `PROJ-NNNN-slug.md` (next to a `.contract.md` sidecar, never the spec), so the
-    exact id prefix wins; else `specs._find_spec`'s `NNNN-*.md`. Raises ValueError."""
+    exact id prefix wins; else `specs._find_spec`'s `NNNN-*.md`. Raises ValueError, also for an id
+    that is not a well-formed spec id (it would otherwise reach the glob)."""
+    if not _is_dep_id(dep):
+        raise ValueError(f"invalid dependency id {dep!r}")
     exact = [p for p in sorted(Path(specs_dir).glob(f"{dep}-*.md"))
              if not p.name.endswith(".contract.md")]
     return exact[0] if exact else SP._find_spec(specs_dir, dep)
@@ -1576,11 +1611,8 @@ def dependency_met(specs_dir, dep_id, dep_fm, seen) -> tuple[bool, str]:
     seen = seen | {dep_id}
     repl = {}                                   # id -> front matter
     for f in sorted(Path(specs_dir).glob("[0-9]*.md")):
-        try:
-            rfm, _ = split_frontmatter(f.read_text(encoding="utf-8"))
-        except (OSError, ValueError):
-            continue
-        if not isinstance(rfm, dict) or not rfm.get("id") or rfm["id"] in seen:
+        rfm = _read_frontmatter_text(f)
+        if not rfm or not rfm.get("id") or rfm["id"] in seen:
             continue
         sup = rfm.get("supersedes") or []
         if rfm["id"] == (dep_fm or {}).get("superseded_by") or dep_id in (

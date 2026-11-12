@@ -1,7 +1,7 @@
 ---
 id: SPEC-0592
 title: Backlog readiness spec reader hardening — dependency id check, pathological spec files, real-checkout early-return tests
-status: accepted
+status: done
 owner: user
 created: 2026-11-12
 updated: 2026-11-12
@@ -159,34 +159,34 @@ there, so `backlog_readiness` without an early return would give `(True, [])`.
 
 ## Acceptance criteria
 
-- [ ] `_readiness_dep_ids` returns `None` for `depends_on: ["*"]`, `["../x"]`, `["/etc/x"]`,
+- [x] `_readiness_dep_ids` returns `None` for `depends_on: ["*"]`, `["../x"]`, `["/etc/x"]`,
       `["SPEC-0002/.."]`, `["SPEC-0002, SPEC-0003"]`, and `["a-*"]`, and returns
       `["SPEC-0002"]` for `["SPEC-0002 "]` and for the bare string `SPEC-0002`.
-- [ ] A branch-sourced spec with `depends_on: ["*"]` yields `(False, ["spec file missing"])`
+- [x] A branch-sourced spec with `depends_on: ["*"]` yields `(False, ["spec file missing"])`
       even when the base specs directory holds a `done` spec; it is not judged against the
       first file in the directory. `depends_on: ["/etc/x"]` yields the same and does not raise.
-- [ ] `_find_dep_spec(specs_dir, dep)` raises `ValueError` for `*`, `../x`, `/abs`, `""`, and
+- [x] `_find_dep_spec(specs_dir, dep)` raises `ValueError` for `*`, `../x`, `/abs`, `""`, and
       a non-string, and returns the same path as today for `SPEC-0002` and an outbound
       `PROJ-0007` (exact `PROJ-0007-*.md` wins over a `.contract.md` sidecar).
-- [ ] A campaign spec containing a 100000-deep `[` flow sequence in its frontmatter (within
+- [x] A campaign spec containing a 100000-deep `[` flow sequence in its frontmatter (within
       the size cap) yields `(False, ["spec file missing"])` and does not raise, for the
       branch worktree source, the branch blob source, the base source, and a `split` base file.
-- [ ] A base-source spec with invalid YAML frontmatter yields `(False, ["spec file missing"])`
+- [x] A base-source spec with invalid YAML frontmatter yields `(False, ["spec file missing"])`
       and does not raise (it raised `yaml.YAMLError` before).
-- [ ] A `split_frontmatter` that raises `RecursionError`, and one that raises `MemoryError`,
+- [x] A `split_frontmatter` that raises `RecursionError`, and one that raises `MemoryError`,
       each yield `(False, ["spec file missing"])` for the base and branch sources.
-- [ ] A base-source, split, `after`, or dependency spec file larger than `MAX_WORKTREE_SPEC_BYTES`
+- [x] A base-source, split, `after`, or dependency spec file larger than `MAX_WORKTREE_SPEC_BYTES`
       (patched to a small value) is treated as unreadable: `spec file missing` for the
       campaign spec, `<dep> not found` for a dependency.
-- [ ] A dependency file, or an `after` spec file read by `_spec_after_met`, with pathological
+- [x] A dependency file, or an `after` spec file read by `_spec_after_met`, with pathological
       frontmatter (deep nesting, invalid YAML) yields `["SPEC-0002 not found"]` and does not
       raise; with a `MERGED` campaign the dependency is still met. A non-mapping dependency
       frontmatter still yields `waiting on SPEC-0002 (no status)`. `dependency_met` for a
       `superseded` dependency skips an unparsable replacement file and decides from the
       readable ones.
-- [ ] A `done` dependency and an `accepted` campaign spec with well-formed ids still yield
+- [x] A `done` dependency and an `accepted` campaign spec with well-formed ids still yield
       `(True, [])` (no change for valid specs).
-- [ ] With a real checkout whose branch holds an `accepted` spec (the
+- [x] With a real checkout whose branch holds an `accepted` spec (the
       `_checked_out_accepted` fixture): a `revert` campaign returns `(True, [])` and a
       `merge` campaign with a real existing branch returns `(True, [])` without
       `_campaign_spec_text` being called; an unmet `after` returns `(False, [<after text>])`;
@@ -241,6 +241,32 @@ there, so `backlog_readiness` without an early return would give `(True, [])`.
   `python3 tools/affected_tests.py --run uv run pytest -q tests/test_backlog_readiness_branch_spec.py tests/test_agentic_queue.py tests/test_agentic_split.py tests/test_idea_ordering.py`
   and `python3 tools/spec_lint.py`.
 
+### Test record (2026-11-12)
+
+- `uv run pytest -q tests/test_backlog_readiness_branch_spec.py`: 75 passed (the 30-odd new cases
+  for the ten test-plan items plus the existing ones).
+- `uv run pytest -q -n 3 tests/test_backlog_readiness_branch_spec.py tests/test_agentic_queue.py
+  tests/test_agentic_split.py tests/test_idea_ordering.py`: 325 passed (the plan's regression-guard
+  files; the `affected_tests.py` wrapper stalled under machine load, so the same files were run
+  directly).
+- `python3 tools/test_tiers.py --check`: exit 0. `python3 tools/spec_lint.py`: exit 0.
+- The full suite was left to gating.
+
+### As shipped
+
+- `_is_dep_id` (ASCII + `_ANY_ID_RE.fullmatch`) is the one id predicate; `_readiness_dep_ids`
+  and `_find_dep_spec` both use it. `glob.escape` was not added (the check leaves only
+  `[A-Za-z0-9-]`). `0002` (bare number) and non-ASCII digits now read as `spec file missing` /
+  `<dep> not found`; tested.
+- `_read_frontmatter_text` also refuses a non-regular file (`S_ISREG` on the followed stat, so a
+  symlink to a regular file still reads) and reads at most `MAX_WORKTREE_SPEC_BYTES + 1` bytes,
+  so a FIFO cannot block the tick and a file that grew past the cap is unreadable. It decodes
+  CRLF to LF like `_spec_bytes_as_text`.
+- `dependency_met` skips a replacement file whose reader result is empty (`None` or `{}`),
+  which matches the old `not isinstance(rfm, dict) or not rfm.get("id")` skip.
+- Extra tests beyond the plan: `test_special_files_are_unreadable`,
+  `test_after_spec_malformed_id_is_not_found`, `test_well_formed_ids_are_unchanged`.
+
 ## Rollout / migration
 
 Ship the code change with the tests. No data migration. A queued campaign whose branch spec
@@ -249,11 +275,11 @@ to `spec file missing` on the next tick; a malformed id in the base spec behaves
 
 ## Definition of done
 
-- [ ] Acceptance criteria all met.
-- [ ] Test plan executed; automated tests pass (affected tests); no manual steps.
-- [ ] No regressions in the readiness, split, and `after` tests named above.
-- [ ] Spec body updated to match what shipped.
-- [ ] `docs/LEDGER.md` regenerated (`python3 tools/spec_lint.py --write-ledger`).
+- [x] Acceptance criteria all met.
+- [x] Test plan executed; automated tests pass (affected tests); no manual steps.
+- [x] No regressions in the readiness, split, and `after` tests named above.
+- [x] Spec body updated to match what shipped.
+- [x] `docs/LEDGER.md` regenerated (`python3 tools/spec_lint.py --write-ledger`).
 
 ## Open questions
 

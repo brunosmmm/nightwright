@@ -484,3 +484,240 @@ def test_early_returns_still_precede_the_branch_read(tmp_path, monkeypatch):
     assert Q.backlog_readiness({}, merge_ok) == (False, ["branch fix/x missing"])
     revert = {"kind": "revert", "repo": {"root": str(tmp_path), "branch": "nw/r"}, "spec": {"rel_path": REL}}
     assert Q.backlog_readiness({}, revert) == (True, [])
+
+
+# ---- SPEC-0592: dependency id check, pathological spec files, real-checkout early returns ----
+
+DEEP = "---\nstatus: " + "[" * 100000 + "\n---\n"
+MISSING = (False, ["spec file missing"])
+
+
+@pytest.mark.parametrize("bad", [["*"], ["../x"], ["/etc/x"], ["SPEC-0002/.."], ["SPEC-0002, SPEC-0003"],
+                                 ["a-*"], ["0002"], ["SPEC-٢"], [" "]])
+def test_readiness_dep_ids_reject_non_id_shapes(bad):
+    assert Q._readiness_dep_ids({"depends_on": bad}) is None
+
+
+def test_readiness_dep_ids_strip_and_accept_ids():
+    assert Q._readiness_dep_ids({"depends_on": ["SPEC-0002 "]}) == ["SPEC-0002"]
+    assert Q._readiness_dep_ids({"depends_on": "SPEC-0002"}) == ["SPEC-0002"]
+    assert Q._readiness_dep_ids({"depends_on": ["SPEC-0002", "PROJ-0007"]}) == ["SPEC-0002", "PROJ-0007"]
+    assert Q._readiness_dep_ids({}) == []
+
+
+@pytest.mark.parametrize("dep", ["*", "/etc/x"])
+def test_branch_dep_glob_star_is_not_a_wildcard(tmp_path, dep):
+    repo = _init_repo(tmp_path)
+    wt = tmp_path / "wt"
+    _add_worktree(repo, wt)
+    _write_spec(repo / "docs/specs/0002-d.md", "done", id="SPEC-0002")
+    _write_spec(wt / REL, "accepted", depends_on=f'["{dep}"]')
+    _git(wt, "add", "-A")
+    _git(wt, "commit", "-qm", "star dep")
+    assert Q.backlog_readiness({}, _campaign(repo, wt)) == MISSING
+
+
+@pytest.mark.parametrize("bad", ["*", "../x", "/abs", "", None, 7, "SPEC-0002\n", "0002"])
+def test_find_dep_spec_refuses_malformed_ids(tmp_path, bad):
+    (tmp_path / "0002-d.md").write_text("x")
+    with pytest.raises(ValueError):
+        Q._find_dep_spec(tmp_path, bad)
+
+
+def test_find_dep_spec_resolves_well_formed_ids(tmp_path):
+    (tmp_path / "0002-d.md").write_text("x")
+    (tmp_path / "PROJ-0007-a.contract.md").write_text("x")
+    (tmp_path / "PROJ-0007-a.md").write_text("x")
+    assert Q._find_dep_spec(tmp_path, "SPEC-0002") == tmp_path / "0002-d.md"
+    assert Q._find_dep_spec(tmp_path, "PROJ-0007") == tmp_path / "PROJ-0007-a.md"
+
+
+@pytest.mark.parametrize("source", ["worktree", "blob", "base", "split"])
+def test_deeply_nested_frontmatter_is_unreadable_on_every_source(tmp_path, source):
+    repo = _init_repo(tmp_path)
+    wt = tmp_path / "wt"
+    if source in ("worktree", "blob"):
+        _add_worktree(repo, wt)
+        (wt / REL).parent.mkdir(parents=True, exist_ok=True)
+        (wt / REL).write_text(DEEP)
+        st = _campaign(repo, wt)
+        if source == "blob":
+            _git(wt, "add", REL)
+            _git(wt, "commit", "-qm", "deep")
+            _git(repo, "worktree", "remove", str(wt), "--force")
+    elif source == "base":
+        (repo / REL).write_text(DEEP)
+        st = _campaign(repo, wt)
+    else:
+        (repo / REL).write_text(DEEP)
+        st = {"kind": "split", "repo": {"root": str(repo), "branch": "nw/split", "worktree": str(wt)},
+              "split": {"original_rel": REL, "review_sha": "x"}}
+    assert Q.backlog_readiness({}, st) == MISSING
+
+
+def test_invalid_yaml_base_spec_does_not_raise(tmp_path):
+    repo = _init_repo(tmp_path)
+    (repo / REL).write_text("---\nstatus: [unclosed\n---\n")
+    assert Q.backlog_readiness({}, _campaign(repo, tmp_path / "wt")) == MISSING
+
+
+@pytest.mark.parametrize("exc", [RecursionError, MemoryError])
+@pytest.mark.parametrize("source", ["base", "branch"])
+def test_frontmatter_recursion_and_memory_errors_are_unreadable(tmp_path, monkeypatch, exc, source):
+    repo = _init_repo(tmp_path)
+    wt = tmp_path / "wt"
+    if source == "branch":
+        _add_worktree(repo, wt)
+        _write_spec(wt / REL, "accepted")
+    else:
+        _write_spec(repo / REL, "accepted")
+
+    def _boom(_text):
+        raise exc()
+
+    monkeypatch.setattr(Q, "split_frontmatter", _boom)
+    assert Q.backlog_readiness({}, _campaign(repo, wt)) == MISSING
+
+
+def test_oversize_base_split_and_dep_files_are_unreadable(tmp_path, monkeypatch):
+    repo = _init_repo(tmp_path)
+    wt = tmp_path / "wt"
+    big = "---\nstatus: accepted\n---\n\n" + "x" * 500
+    monkeypatch.setattr(Q, "MAX_WORKTREE_SPEC_BYTES", 200)
+    (repo / REL).write_text(big)
+    assert Q.backlog_readiness({}, _campaign(repo, wt)) == MISSING
+    split = {"kind": "split", "repo": {"root": str(repo), "branch": "nw/split", "worktree": str(wt)},
+             "split": {"original_rel": REL, "review_sha": "x"}}
+    assert Q.backlog_readiness({}, split) == MISSING
+    # a small campaign spec with an oversize dependency file
+    small = "---\nid: SPEC-0001\nstatus: accepted\ndepends_on: [SPEC-0002]\n---\n"
+    assert len(small) < 200
+    (repo / REL).write_text(small)
+    (repo / "docs/specs/0002-d.md").write_text("---\nstatus: done\n---\n\n" + "x" * 500)
+    assert Q.backlog_readiness({}, _campaign(repo, wt)) == (False, ["SPEC-0002 not found"])
+
+
+def test_special_files_are_unreadable(tmp_path):
+    fifo = tmp_path / "0002-fifo.md"
+    os.mkfifo(fifo)
+    assert Q._read_frontmatter_text(fifo) is None            # must not block
+    assert Q._read_frontmatter_text(tmp_path) is None
+    assert Q._read_frontmatter_text(tmp_path / "absent.md") is None
+    real = tmp_path / "real.md"
+    real.write_text("---\nstatus: done\n---\n")
+    link = tmp_path / "link.md"
+    link.symlink_to(real)
+    assert Q._read_frontmatter_text(link) == {"status": "done"}
+
+
+def _dep_campaign_with(tmp_path, dep_body, **fm):
+    repo = _init_repo(tmp_path)
+    (repo / REL).write_text(_spec_md("accepted", depends_on="[SPEC-0002]", **fm))
+    (repo / "docs/specs/0002-d.md").write_text(dep_body)
+    return repo, _campaign(repo, tmp_path / "wt")
+
+
+@pytest.mark.parametrize("body", [DEEP, "---\nstatus: [unclosed\n---\n", "---\nstatus: \xff\n---\n"])
+def test_pathological_dependency_file_is_not_found(tmp_path, body):
+    repo, st = _dep_campaign_with(tmp_path, "")
+    (repo / "docs/specs/0002-d.md").write_bytes(body.encode("latin-1", "replace")
+                                                if "\xff" in body else body.encode())
+    assert Q.backlog_readiness({}, st) == (False, ["SPEC-0002 not found"])
+
+
+def test_pathological_outbound_dependency_stays_met_when_merged(tmp_path, monkeypatch):
+    repo = _init_repo(tmp_path)
+    (repo / REL).write_text(_spec_md("accepted", depends_on="[PROJ-0007]"))
+    (repo / "docs/specs/PROJ-0007-x.md").write_text(DEEP)
+    st = _campaign(repo, tmp_path / "wt")
+    assert Q.backlog_readiness({}, st) == (False, ["PROJ-0007 not found"])
+    monkeypatch.setattr(Q, "_dep_campaign", lambda *_a, **_k: {"state": "MERGED"})
+    assert Q.backlog_readiness({}, st) == (True, [])
+
+
+@pytest.mark.parametrize("kind", ["deep", "yaml", "oversize"])
+def test_after_spec_file_pathological_is_not_found(tmp_path, monkeypatch, kind):
+    specs = tmp_path / "docs" / "specs"
+    specs.mkdir(parents=True)
+    body = {"deep": DEEP, "yaml": "---\nstatus: [unclosed\n---\n",
+            "oversize": "---\nstatus: done\n---\n\n" + "x" * 500}[kind]
+    if kind == "oversize":
+        monkeypatch.setattr(Q, "MAX_WORKTREE_SPEC_BYTES", 200)
+    (specs / "0002-d.md").write_text(body)
+    st = {"project": "p", "repo": {"root": str(tmp_path)}, "spec": {"rel_path": "docs/specs/0001-c.md"}}
+    camps: list = []
+    monkeypatch.setattr(Q.store, "list_campaigns", lambda *_a, **_k: camps)
+    assert Q._spec_after_met({}, st, "SPEC-0002") == (False, "SPEC-0002 not found", False)
+    camps.append({"id": "c2", "state": "MERGED"})
+    assert Q._spec_after_met({}, st, "SPEC-0002") == (True, "", False)
+
+
+def test_after_spec_malformed_id_is_not_found(tmp_path, monkeypatch):
+    monkeypatch.setattr(Q.store, "list_campaigns", lambda *_a, **_k: [])
+    st = {"project": "p", "repo": {"root": str(tmp_path)}, "spec": {"rel_path": "docs/specs/0001-c.md"}}
+    assert Q._spec_after_met({}, st, "*") == (False, "* not found", False)
+
+
+def test_non_mapping_dependency_frontmatter_has_no_status(tmp_path):
+    _repo, st = _dep_campaign_with(tmp_path, "---\n- a\n- b\n---\n")
+    assert Q.backlog_readiness({}, st) == (False, ["waiting on SPEC-0002 (no status)"])
+
+
+def test_dependency_met_skips_unparsable_replacement(tmp_path):
+    (tmp_path / "0002-old.md").write_text("---\nid: SPEC-0002\nstatus: superseded\n---\n")
+    (tmp_path / "0003-new.md").write_text("---\nid: SPEC-0003\nstatus: done\nsupersedes: [SPEC-0002]\n---\n")
+    (tmp_path / "0004-bad.md").write_text(DEEP)
+    (tmp_path / "0005-bad.md").write_text("---\nid: [unclosed\n---\n")
+    old = {"id": "SPEC-0002", "status": "superseded"}
+    assert Q.dependency_met(tmp_path, "SPEC-0002", old, set()) == (True, "superseded")
+    (tmp_path / "0003-new.md").write_text(
+        "---\nid: SPEC-0003\nstatus: accepted\nsupersedes: [SPEC-0002]\n---\n")
+    assert Q.dependency_met(tmp_path, "SPEC-0002", old, set()) == (
+        False, "superseded; waiting on SPEC-0003")
+
+
+def test_well_formed_ids_are_unchanged(tmp_path):
+    _repo, st = _dep_campaign_with(tmp_path, "---\nid: SPEC-0002\nstatus: done\n---\n")
+    assert Q.backlog_readiness({}, st) == (True, [])
+
+
+def _checked_out_accepted(tmp_path):
+    """A repo whose branch `nw/camp-1` is really checked out at the planned worktree and holds an
+    `accepted` spec: without an early return `backlog_readiness` would say `(True, [])`."""
+    repo = _init_repo(tmp_path)
+    wt = tmp_path / "wt"
+    _add_worktree(repo, wt)
+    _write_spec(wt / REL, "accepted")
+    _git(wt, "add", REL)
+    _git(wt, "commit", "-qm", "accepted on branch")
+    assert Q.backlog_readiness({}, _campaign(repo, wt)) == (True, [])
+    return repo, wt
+
+
+def test_early_returns_win_over_a_checked_out_accepted_spec(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+
+    repo, wt = _checked_out_accepted(tmp_path)
+
+    def _no_read(_state):
+        raise AssertionError("_campaign_spec_text must not run")
+
+    monkeypatch.setattr(Q, "_campaign_spec_text", _no_read)
+    assert Q.backlog_readiness({}, _campaign(repo, wt, kind="revert")) == (True, [])
+    assert Q.backlog_readiness({}, _campaign(repo, wt, kind="merge")) == (True, [])
+    gone = {**_campaign(repo, wt, kind="merge"), "repo": {"root": str(repo), "branch": "nw/absent"}}
+    assert Q.backlog_readiness({}, gone) == (False, ["branch nw/absent missing"])
+
+    unmet = ["waiting on SPEC-0099 (accepted)"]
+    monkeypatch.setattr(Q, "_after_blocked", lambda _c, _s: unmet)
+    assert Q.backlog_readiness({}, _campaign(repo, wt)) == (False, unmet)
+    idea = _campaign(repo, wt, kind="idea", spec=None, idea={"id": "IDEA-1"})
+    assert Q.backlog_readiness({}, idea) == (False, unmet)
+
+    monkeypatch.setattr(Q, "_after_blocked", lambda _c, _s: [])
+    monkeypatch.setattr(Q, "_idea_task",
+                        lambda _c, _i: SimpleNamespace(state="IDEA", properties={}, id="IDEA-1"))
+    assert Q.backlog_readiness({}, idea) == (True, [])
+    monkeypatch.setattr(Q, "_idea_task",
+                        lambda _c, _i: SimpleNamespace(state="DONE", properties={}, id="IDEA-1"))
+    assert Q.backlog_readiness({}, idea) == (False, ["idea IDEA-1 is DONE"])
