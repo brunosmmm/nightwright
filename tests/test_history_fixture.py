@@ -7,10 +7,12 @@ inside and outside the campaigns' intervals). The tests never read the developer
 from __future__ import annotations
 
 import ast
+import contextlib
 import copy
 import datetime as dt
 import hashlib
 import importlib.util
+import io
 import json
 import math
 import os
@@ -214,13 +216,38 @@ def build_source(root: Path, runner_in_a=40) -> Path:
     return root
 
 
-def run_tool(*args, env=None, home=None):
+def _tool_env(env=None, home=None) -> dict:
     e = dict(os.environ)
     e.update(env or {})
     if home:
         e.update(HOME=str(home), USER="alice")
     e.pop("NW_DATA_DIR", None)
-    return subprocess.run([sys.executable, str(TOOL), *args], capture_output=True, text=True, env=e)
+    return e
+
+
+def run_tool_cli(*args, env=None, home=None):
+    """The tool as a real subprocess (the CLI contract: stdlib-only start, exit codes, streams)."""
+    return subprocess.run([sys.executable, str(TOOL), *args], capture_output=True, text=True,
+                          env=_tool_env(env, home))
+
+
+def run_tool(*args, env=None, home=None):
+    """`main(args)` in-process with the same env and the same result shape as `run_tool_cli`: a
+    subprocess per call (about 60 in this module) was the largest share of its test time (SPEC-0574)."""
+    mod = _load_tool()
+    out, err, saved = io.StringIO(), io.StringIO(), dict(os.environ)
+    os.environ.clear()
+    os.environ.update(_tool_env(env, home))
+    try:
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            try:
+                rc = mod.main(list(args))
+            except SystemExit as x:                           # argparse errors and `sys.exit` paths
+                rc = x.code if isinstance(x.code, int) else (0 if x.code is None else 1)
+    finally:
+        os.environ.clear()
+        os.environ.update(saved)
+    return subprocess.CompletedProcess(list(args), rc, out.getvalue(), err.getvalue())
 
 
 def tree_hashes(root: Path) -> dict:
@@ -239,13 +266,22 @@ def read_jsonl(p: Path):
     return [json.loads(x) for x in p.read_text().splitlines() if x.strip()]
 
 
+_TOOL = []
+
+
+def _load_tool():
+    if not _TOOL:
+        spec = importlib.util.spec_from_file_location("capture_history_fixture", TOOL)
+        mod = importlib.util.module_from_spec(spec)
+        sys.modules["capture_history_fixture"] = mod
+        spec.loader.exec_module(mod)
+        _TOOL.append(mod)
+    return _TOOL[0]
+
+
 @pytest.fixture(scope="module")
 def tool():
-    spec = importlib.util.spec_from_file_location("capture_history_fixture", TOOL)
-    mod = importlib.util.module_from_spec(spec)
-    sys.modules["capture_history_fixture"] = mod
-    spec.loader.exec_module(mod)
-    return mod
+    return _load_tool()
 
 
 @pytest.fixture(scope="module")
@@ -256,7 +292,7 @@ def captured(tmp_path_factory):
     out = base / "out"
     home = base / "home" / "alice"
     home.mkdir(parents=True)
-    r = run_tool("--src", str(src), "--out", str(out), home=home)
+    r = run_tool_cli("--src", str(src), "--out", str(out), home=home)
     assert r.returncode == 0, r.stderr
     digest = tree_digest(src)
     _SPENT[0] += time.monotonic() - t0
@@ -279,7 +315,7 @@ def test_tool_imports_only_stdlib():
         elif isinstance(n, ast.ImportFrom) and n.level == 0:
             mods.add(n.module.split(".")[0])
     assert mods <= set(sys.stdlib_module_names), mods
-    r = run_tool("--help")
+    r = run_tool_cli("--help")
     assert r.returncode == 0
     for flag in ("--src", "--out", "--cid", "--no-derive-handed-off", "--check",
                  "NW_FIXTURE_MAX_BYTES", "NW_FIXTURE_DENY_FILE"):
@@ -596,7 +632,7 @@ def fixture_files():
 
 
 def test_committed_fixture_matches_manifest():
-    r = run_tool("--check")
+    r = run_tool_cli("--check")
     assert r.returncode == 0, r.stderr
     m = fixture_manifest()
     assert m["totals"]["campaigns"] <= 12 and len(m["campaigns"]) <= 12
@@ -865,7 +901,11 @@ def test_secret_straddling_the_json_cut_is_redacted_first(tmp_path):
 def _clean(tool, data: bytes):
     text = data.decode()
     assert all(m.group(1) == "user" for m in tool.PATH_RE.finditer(text)), text[-40:]
-    assert all(m.group(0) == tool.PLACEHOLDER_EMAIL for m in tool.EMAIL_RE.finditer(text)), text[-40:]
+    # an email match needs an "@" and cannot span anything outside its charset: scan only the tokens
+    # that hold one (EMAIL_RE over a long "xxxx..." run is quadratic, SPEC-0574 test budget)
+    for tok in re.split(r"[^A-Za-z0-9._%+@-]+", text):
+        if "@" in tok:
+            assert all(m.group(0) == tool.PLACEHOLDER_EMAIL for m in tool.EMAIL_RE.finditer(tok)), text[-40:]
 
 
 def test_cut_cannot_leave_a_half_path_or_half_email(tool):
