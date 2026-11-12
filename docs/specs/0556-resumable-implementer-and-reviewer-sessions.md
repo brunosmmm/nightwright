@@ -241,13 +241,14 @@ own session files follow Claude's retention.
 
 - [ ] Acceptance criteria all met.
 - [ ] Test plan executed; affected tests pass; real-call checks and measurement recorded.
-- [ ] No regressions.
-- [ ] Spec body updated to match what shipped.
-- [ ] `docs/LEDGER.md` updated.
+- [x] No regressions.
+- [x] Spec body updated to match what shipped.
+- [x] `docs/LEDGER.md` updated.
 
 ## As shipped
 
-Built 2026-11-12 behind `agentic.lean.sessions` (default **off**, already in
+Built 2026-11-12 (close gate GATEJOB-2491 green on 2458304d: spec-lint, docs-tests, pytest)
+behind `agentic.lean.sessions` (default **off**, already in
 `config.DEFAULT_CONFIG` from SPEC-0553; needs `packet` and `collator`; pinned per campaign at
 creation). New config default `agentic.lean_session_max_tokens: 400000`. Status stays
 **in-progress**: the Cursor real call is not done (AC2) and the manual two-loop campaigns and
@@ -291,7 +292,9 @@ cost, docs without session keys, adoption rebuild, job doc round trip, FakeRunne
 `tests/test_cursor_sdk_exec.py` (`Agent.resume` with `--resume`, `Agent.create` otherwise,
 argv), `tests/js/pi_exec.test.js` via `tests/test_pi_exec_js.py` (create in `session_dir`,
 open + own-turn cost, missing file), `tests/test_agentic_campaign_export.py` (pinned columns).
-The remote placement test sits in `test_agentic_sessions.py` (a stand-in for the dispatched
+Affected tests (`tools/affected_tests.py`, 226 files): 7765 passed; the 3 failures are the
+ones that fail on main already (IDEA-1300: `test_tui_campaign_records`, two in
+`test_worker_job_reconcile`). The remote placement test sits in `test_agentic_sessions.py` (a stand-in for the dispatched
 worker) rather than `test_remote_personas.py`.
 
 **Real calls.** Claude (`claude` 2.1.322, `claude-haiku-5-5`, effort `medium`), through
