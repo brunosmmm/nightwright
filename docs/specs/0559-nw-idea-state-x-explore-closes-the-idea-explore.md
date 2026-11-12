@@ -1,9 +1,10 @@
 ---
 id: SPEC-0559
 title: "nw idea state refuses unknown keywords; nw idea reopen recovers a stranded idea"
-status: proposed
+status: accepted
 owner: user
 created: 2026-11-12
+updated: 2026-11-12
 source_idea: IDEA-1078
 kind: feature
 tags: [ideas, cli, lifecycle, bug]
