@@ -312,11 +312,32 @@ def test_default_deny_ignores_non_string_params(monkeypatch):
         click.Option(["--ratio"], type=click.FLOAT),
         click.Option(["--yes-no"], type=click.BOOL),
         click.Option(["--when"], type=click.DateTime()),
-        click.Option(["--blob"], type=click.File()),
+        click.Option(["--attachment"], type=click.File()),
         click.Option(["--uid"], type=click.UUID),
         click.Option(["--pair"], type=click.Tuple([int, int])),
     ])
+    # Guard against the name filter masking the type check (a File named `blob` once did).
+    names = {p.name for p in grp.commands["sub"].params}
+    assert names == {"flag", "path", "choice", "num", "ratio", "yes_no", "when",
+                     "attachment", "uid", "pair"}
+    assert not names & C.FREE_TEXT_NAMES
     assert C.missing_dynamic_completes(grp) == []
+
+
+def test_default_deny_file_param_not_masked_by_free_text(monkeypatch):
+    """With the name filter and ratchet emptied, File/UUID/Tuple are skipped by type alone."""
+    monkeypatch.setattr(C, "FREE_TEXT_NAMES", frozenset())
+    monkeypatch.setattr(C, "UNCOMPLETED_EXEMPT", {})
+    for param in (
+        click.Option(["--attachment"], type=click.File()),
+        click.Option(["--uid"], type=click.UUID),
+        click.Option(["--pair"], type=click.Tuple([int, int])),
+    ):
+        grp = _fixture_group(params=[param])
+        assert C.missing_dynamic_completes(grp) == [], param.name
+    # control: a plain string param is still reported with the same emptied filters
+    grp = _fixture_group(params=[click.Option(["--attachment"])])
+    assert C.missing_dynamic_completes(grp) == ["sub:attachment"]
 
 
 def test_required_and_dynamic_guards_clean_on_real_cli():
@@ -345,6 +366,81 @@ def test_stale_exemptions_detects_wired_and_missing(monkeypatch):
         "gone cmd:thing": "command removed",
     })
     assert C.stale_exemptions(grp) == ["gone cmd:thing", "sub:widget"]
+
+
+def _string_flag(*names):
+    """A flag whose type stays String (`flag_value` set), so only the `is_flag` branch skips it."""
+    param = click.Option(list(names), is_flag=True, flag_value="x")
+    assert isinstance(param.type, click.types.StringParamType)
+    assert param.is_flag
+    return param
+
+
+@pytest.mark.parametrize("factory, expected", [
+    (lambda: _string_flag("--project"), []),
+    (lambda: click.Option(["--project"], is_flag=True), []),
+    (lambda: click.Option(["--project"], type=click.Choice(["a", "b"])), []),
+    (lambda: click.Argument(["project"], type=click.Path()), []),
+    (lambda: click.Option(["--project"], type=click.INT), []),
+    (lambda: click.Option(["--project"], type=click.FLOAT), []),
+    (lambda: click.Option(["--project"], type=click.BOOL), []),
+    (lambda: click.Option(["--project"], type=click.DateTime()), []),
+    (lambda: click.Option(["--project"]), ["sub:project"]),
+], ids=["string-flag", "bool-flag", "choice", "path", "int", "float", "bool", "datetime",
+        "plain-string"])
+def test_required_name_ignores_params_with_type_completion(monkeypatch, factory, expected):
+    monkeypatch.setattr(C, "UNCOMPLETED_EXEMPT", {})
+    param = factory()
+    grp = _fixture_group(params=[param])
+    assert C.has_completer(param) == (expected == [])
+    assert C.missing_required_shell_completes(grp) == expected
+
+
+def test_stale_exemptions_reports_existing_non_string_or_typed_params(monkeypatch):
+    names = ["flagged", "switch", "picked", "located", "counted", "ratio", "toggle", "when",
+             "attachment", "live"]
+    grp = _fixture_group(params=[
+        _string_flag("--flagged"),
+        click.Option(["--switch"], is_flag=True),
+        click.Option(["--picked"], type=click.Choice(["a", "b"])),
+        click.Option(["--located"], type=click.Path()),
+        click.Option(["--counted"], type=click.INT),
+        click.Option(["--ratio"], type=click.FLOAT),
+        click.Option(["--toggle"], type=click.BOOL),
+        click.Option(["--when"], type=click.DateTime()),
+        click.Option(["--attachment"], type=click.File()),
+        click.Option(["--live"]),
+    ])
+    assert [p.name for p in grp.commands["sub"].params] == names
+    monkeypatch.setattr(C, "UNCOMPLETED_EXEMPT", {f"sub:{n}": "reason" for n in names})
+    assert C.stale_exemptions(grp) == sorted(f"sub:{n}" for n in names if n != "live")
+    # a key naming a param that does not exist on an existing command is reported too
+    monkeypatch.setattr(C, "UNCOMPLETED_EXEMPT", {"sub:live": "r", "sub:nonexistent": "r"})
+    assert C.stale_exemptions(grp) == ["sub:nonexistent"]
+
+
+def test_completion_docs_describe_default_deny_and_ratchet():
+    root = Path(__file__).resolve().parents[1]
+    lines = (root / "docs" / "WORKFLOW.md").read_text().splitlines()
+    start = next(i for i, ln in enumerate(lines) if ln.startswith("## Shell completion"))
+    end = next((i for i in range(start + 1, len(lines)) if lines[i].startswith("## ")),
+               len(lines))
+    section = "\n".join(lines[start:end]).lower()
+    for phrase in ("SPEC-0582", "default-deny", "FREE_TEXT_NAMES", "UNCOMPLETED_EXEMPT",
+                   "ratchet", "stale_exemptions"):
+        assert phrase.lower() in section, f"WORKFLOW.md Shell completion section lost {phrase}"
+
+    src = Path(C.__file__).read_text().splitlines()
+    idx = next(i for i, ln in enumerate(src) if ln.startswith("REQUIRED_SHELL_COMPLETE_NAMES = "))
+    block = []
+    for ln in reversed(src[:idx]):
+        if not ln.startswith("#"):
+            break
+        block.append(ln)
+    comment = "\n".join(reversed(block)).lower()
+    for phrase in ("SPEC-0582", "missing_dynamic_completes", "FREE_TEXT_NAMES",
+                   "UNCOMPLETED_EXEMPT"):
+        assert phrase.lower() in comment, f"REQUIRED_SHELL_COMPLETE_NAMES comment lost {phrase}"
 
 
 def test_exempt_covers_context_cases(monkeypatch):
