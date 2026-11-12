@@ -33,9 +33,13 @@ behind its back:
 2. **Remote-tracking refs are not scanned.** `_branch_numbers` reads `refs/heads/` only, so a
    number that exists on `origin/main` (another machine or clone pushed it, not yet merged
    into the local `main`) is reported free.
-3. **A taken number is never revisited.** The queue's spec-write step reserves once per
-   campaign (`queue.py` ~2771, idempotent on `campaign`); if the number is taken elsewhere
-   during the writer's run, nothing re-checks it before the spec is committed.
+3. **A taken number is only revisited when it is committed.** The queue's spec-write step
+   calls `allocate` on every snapshot (`queue.py` ~2772), but `allocate` is idempotent on
+   `campaign`: it returns the campaign's existing reservation unless `_prune` has dropped it,
+   and `_prune` drops a reservation only when its number is *committed* on a branch. A
+   number taken by an uncommitted file in another worktree, or by a differently named file
+   that appears during the writer's run, leaves the reservation intact and nothing
+   re-checks it before the spec is committed.
 
 ## Goals / Non-goals
 
@@ -61,8 +65,10 @@ behind its back:
 Add one read-only check, `spec_numbers.collisions`, exposed as `nw spec check-numbers`, that
 reports every spec file in a tree whose number is used by a *different* filename on another
 worktree or ref, or is held by a live reservation of a campaign other than the tree's own.
-Run it from the queue's spec-write validation, where a collision re-reserves the campaign's
-number and retries. Extend the allocator's branch scan with `refs/remotes/`. Change `AGENTS.md`
+Add a second read-only helper, `spec_numbers.number_taken`, for the moment before the
+campaign's file exists. Run both from the queue's spec-write step, where a collision
+re-reserves the campaign's number and retries on its own counter, without asking the writer
+to change the text. Extend the allocator's branch scan with `refs/remotes/`. Change `AGENTS.md`
 and `docs/README.md` so a new spec is numbered with `nw spec reserve` (or
 `nw spec new --from-idea`) and checked with `nw spec check-numbers` before it is committed.
 
@@ -102,17 +108,54 @@ and `docs/README.md` so a new spec is numbered with `nw spec reserve` (or
   `renumber one of them: nw spec reserve`. Exit 0 with `no spec-number collisions` when none,
   exit 1 otherwise. `--json` prints `{"schema": "nw.spec.collisions.v1", "collisions":
   [...]}`.
-- **Queue (`agentic/spec_write.py`, `agentic/queue.py`).** `validate_spec_change` appends a
-  problem `SPEC-NNNN is already used by <file> on <ref>` for a filename collision of the
-  campaign's own number (pass `cfg`/`campaign` through `spec_write`, or compute in the caller
-  at `queue.py` ~2956, whichever keeps `validate_spec_change` pure). On that problem the
-  queue does not ask the writer to fix the text; it releases the campaign's reservation
-  (`SN.release`), calls `SN.allocate(campaign=…)` again (which sees the taken number as used
-  and returns a new one), rebuilds the snapshot with the new `number`/`path` and starts the
-  next attempt. This consumes the existing `spec_write_retries` budget, so it cannot loop
-  forever; when the budget is spent the campaign fails with the collision named. The same
-  check runs once at snapshot time, before the writer starts, so a number taken between
-  reservation and start is replaced without spending a writer run.
+- **`number_taken(cfg, number, *, specs_dir=None, exclude_campaign=None) -> list[str]`.**
+  Read-only; built on `_number_files`, so it needs no file in the checked tree. It returns the
+  locations (`worktree:<path>` or ref names) where *any* filename carries `number`, ignoring
+  the location of the tree resolved from `specs_dir` (the campaign's own worktree, so a
+  leftover file of an earlier attempt does not count) and the campaign's own ref `nw/<id>`
+  (base id, `#k` stripped, when `exclude_campaign` is given). It does not write the store and
+  does not look at reservations. `[]` means the number is free of files elsewhere.
+- **Queue (`agentic/spec_write.py`, `agentic/queue.py`).** Two call sites, one re-reserve
+  helper.
+  - *Re-reserve helper* (in `queue.py`, beside the snapshot code): `SN.release(cfg, number,
+    specs_dir=…)`, catching `ValueError` ("is not reserved"); then `SN.allocate(cfg,
+    by="queue", campaign=state["id"], specs_dir=…)`. The `ValueError` is expected, not an
+    error: `release` and `allocate` both call `_prune` first, which already drops a
+    reservation whose number is committed on any local or remote-tracking branch (for example
+    committed on `main` or `origin/main`), so for that kind of collision `release` finds
+    nothing and `allocate` alone already returns a fresh number. The release matters for the
+    other kind, a number taken by an uncommitted file in another worktree or by a differently
+    named file in the campaign's own run, where the reservation is still live and `allocate`
+    would otherwise return it again. After the release, `allocate` sees the taken number as
+    used (worktree and branch scan) and returns a higher one.
+  - *Snapshot time* (`queue.py` ~2772, mode `write` only): after `SN.allocate`, call
+    `SN.number_taken(cfg, rec["number"], specs_dir=…, exclude_campaign=state["id"])`. When it
+    returns locations, run the re-reserve helper, repeat the check on the new number (at most
+    `SPEC_NUMBER_RETRY_MAX` times in this loop, counted on the collision counter below) and
+    build the snapshot (`number`, `path`) from the final reservation, so the first writer run
+    already uses it and no writer run is spent. The filename-aware `collisions` rule cannot
+    be used here, because the campaign's file does not exist yet.
+  - *After the writer* (`queue.py` ~2956, in the write-result step, after
+    `SW.validate_spec_change` and before regenerate/commit): the caller computes
+    `SN.collisions(cfg, specs_dir=…, tree=worktree, campaign=state["id"])` and keeps the
+    filename collision whose number is `sw["number"]`. `validate_spec_change` stays pure and
+    gains no `cfg`. A collision is a **distinct result, not a text problem**: it is stored
+    as `w["collision"] = {"number", "file", "other"}` next to `w["problems"]`, and its message
+    (`SPEC-NNNN is already used by <file> on <ref>`) is never appended to `w["problems"]`. The
+    rejected write is rolled back with the same `roll_back()` as a text problem.
+  - *Handling* (`queue.py` ~4858, before the `w["problems"]` branch): when `w["collision"]`
+    is set, the queue does not copy anything into `brief["write_problems"]` (so the writer
+    brief never mentions the collision and any other text problems found on the same attempt
+    are dropped, since the file is rewritten under a new number and validated afresh), runs
+    the re-reserve helper, increments the **own** counter `counters["spec_number_retries"]`,
+    and returns to `SPEC_WRITING` with reason `spec_number_retry`; the next snapshot builds
+    the new `number`/`path`. It does not touch `spec_write_retries` (`SPEC_WRITE_RETRY_MAX =
+    1`), so a collision never uses up the single text retry. `SPEC_NUMBER_RETRY_MAX = 2`
+    bounds the loop; when `spec_number_retries` exceeds it the campaign parks
+    `spec_write_failed` with `park.detail` = `SPEC-NNNN is already used by <file> on <ref>`
+    (the last collision) and `resume_to: SPEC_WRITING`. Both counters reset to 0 where
+    `spec_write_retries` is reset today (a committed spec, a split part, a manual resume at
+    `queue.py` ~11296).
 - **Docs.** `AGENTS.md` ("New work") and `docs/README.md` (step 1) say: get the number from
   `nw spec reserve` (or `nw spec new --from-idea`), never from `ls`; copy `TEMPLATE.md` to
   that number; run `nw spec check-numbers` before committing. No other contract text changes.
@@ -152,11 +195,25 @@ and `docs/README.md` so a new spec is numbered with `nw spec reserve` (or
       exits 1 naming each colliding number and the other file/ref/campaign otherwise;
       `--json` carries schema `nw.spec.collisions.v1`; `--specs-dir` targets another
       repository.
-- [ ] A queue spec-write whose reserved number is taken by a different filename on `main`
-      before the writer starts uses a new number for the first writer run; if it is taken
-      during the run, the validation problem triggers a re-reserve and a retry with a new
-      number and path, the old reservation is gone and the new one is live; with the retry
-      budget exhausted the campaign fails naming the collision.
+- [ ] `number_taken` returns the locations of a differently named file with that number on
+      another local branch, remote-tracking ref or worktree, when the checked tree holds no
+      file with that number; it returns `[]` for a leftover file in the tree's own worktree
+      and for the campaign's own `nw/<id>` ref, and leaves `spec-reservations.json`
+      byte-identical.
+- [ ] A queue spec-write whose reserved number is taken before the writer starts uses a new
+      number for the first writer run, with the old reservation gone and the new one live,
+      both when the colliding file is committed on `main` (the reservation is already pruned:
+      the queue tolerates the `ValueError` from `SN.release` and does not crash) and when it
+      is uncommitted in another worktree (the reservation is still live and is released).
+- [ ] A number taken during the writer's run is reported as `w["collision"]`, not in
+      `w["problems"]`: the queue rolls the write back, re-reserves, returns to `SPEC_WRITING`
+      with a new `number`/`path`, `brief["write_problems"]` does not contain the collision
+      (nor other text problems found on that attempt), and `spec_write_retries` is unchanged;
+      a text problem on a later attempt still gets its one retry.
+- [ ] The collision retry has its own counter `spec_number_retries` bounded by
+      `SPEC_NUMBER_RETRY_MAX = 2`; when it is exceeded the campaign parks `spec_write_failed`
+      (not `FAILED`) with the collision (`SPEC-NNNN is already used by <file> on <ref>`) in
+      `park.detail`.
 - [ ] Existing SPEC-0208 behavior is unchanged: its acceptance tests still pass.
 
 ## Test plan
@@ -173,11 +230,23 @@ and `docs/README.md` so a new spec is numbered with `nw spec reserve` (or
   - read-only: the store bytes are equal before and after;
   - CLI via CliRunner: clean repo exit 0; colliding repo exit 1, text and `--json`;
     `--specs-dir`.
-  Extend `tests/test_agentic_spec_writer.py` (queue spec-write tests): a fixture where
-  another branch commits `<n>-other.md` after the reservation but before the writer starts
-  (new number used), and one where it appears during the run (problem ⇒ release + allocate ⇒
-  second attempt uses the new number; with retries exhausted the campaign fails naming the
-  collision). Both modules already carry their single module-level speed-tier marker; no new
+  - `number_taken`: other branch, remote-tracking ref, other worktree ⇒ locations; own
+    worktree leftover and own `nw/<id>` ref ⇒ `[]`; store bytes unchanged.
+  Extend `tests/test_agentic_spec_writer.py` (queue spec-write tests), one fixture each:
+  - **committed collision before start:** another branch (`main`) commits `<n>-other.md`
+    after the reservation, so `_prune` already dropped it; the snapshot's `SN.release` raises
+    `ValueError`, the queue swallows it, and the first writer run uses a new number;
+  - **uncommitted collision before start:** `<n>-other.md` sits uncommitted in another
+    worktree; the reservation is live, `number_taken` reports it, release + allocate gives a
+    new number, old reservation gone and new one live;
+  - **collision during the run:** the writer fake's run creates `<n>-other.md` in another
+    worktree; the result carries `collision` and no collision text in `problems`, the write
+    is rolled back, `spec_write_retries` stays 0, `brief["write_problems"]` has no collision
+    text, `spec_number_retries` is 1 and the second attempt uses the new number/path;
+  - **collision plus a text problem on one attempt:** only the re-reserve happens, the text
+    problem is not in the brief, and a later text problem still gets its one retry;
+  - **budget exhausted:** collisions on every attempt park `spec_write_failed` after
+    `SPEC_NUMBER_RETRY_MAX` re-reserves, with the collision named in `park.detail`. Both modules already carry their single module-level speed-tier marker; no new
   `tests/test_*.py` is introduced, so no new `pytestmark` is added. When `tools/test_tiers.py`
   exists, `python3 tools/test_tiers.py --check` exits 0.
   - Docs guard: a test in `tests/test_spec_numbers.py` asserts `AGENTS.md` and
