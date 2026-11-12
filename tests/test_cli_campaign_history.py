@@ -145,11 +145,18 @@ def test_history_rejects_escaping_campaign_ids(invoke):
         assert invoke("history", cid, "--json").stdout.strip() == ""
 
 
-def test_note_positional_probe_ignores_absolute_paths(invoke):
+def test_note_positional_probe_ignores_absolute_paths(invoke, monkeypatch):
+    monkeypatch.delenv("NW_CAMPAIGN", raising=False)
     outside = invoke.tmp / "outside"
     outside.mkdir()
+    (outside / "state.json").write_text(json.dumps({"id": "outside", "state": "merged"}))
+    (outside / "ledger.jsonl").write_text("")
+    before = sorted(p.name for p in outside.iterdir())
     result = invoke("note", str(outside), "hello")
-    assert result.exit_code != 0
+    assert result.exit_code == 2, result.output
+    assert "campaign required" in result.output
+    assert sorted(p.name for p in outside.iterdir()) == before
+    assert (outside / "ledger.jsonl").read_text() == ""
     assert not (outside / "notes.jsonl").exists()
 
 

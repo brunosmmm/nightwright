@@ -986,7 +986,7 @@ def _decision_row(cid, **extra):
 
 
 @pytest.mark.parametrize("cache", [False, True])
-def test_decision_link_provenance_keeps_text(tmp_path, cache):
+def test_decision_link_provenance_keeps_text(tmp_path, cache, monkeypatch):
     cfg = history_cfg(tmp_path)
     cfg["cache_dir"] = str(tmp_path / "cache")
     cid = "SPEC-0394-20261102-ae5b"
@@ -999,8 +999,14 @@ def test_decision_link_provenance_keeps_text(tmp_path, cache):
             ("prov-field", {"escalation": "ESC-0001"}),
         ):
             stream.write(json.dumps(_decision_row(cid, event_id=ev, **extra)) + "\n")
+    from nightwright.agentic import history_cache as HC
+    calls = []
+    real = HC._decision_records
+    monkeypatch.setattr(HC, "_decision_records",
+                        lambda *a, **k: calls.append(1) or real(*a, **k))
     recs = {r["id"]: r for r in H.history_records(cfg, campaign=cid, cache=cache)
             if r.get("source") == "decisions"}
+    assert bool(calls) is cache   # the cache's decision reader (fix site) ran only when cache is on
     assert recs["decisions:prov-text"]["links"]["escalation"] == "ESC-0001"
     assert recs["decisions:prov-text"]["linked_by"] == "text"
     assert recs["decisions:prov-field"]["linked_by"] == "field"
