@@ -22,6 +22,8 @@ ALLOWED = {
     ("cli.py", "projects_rename_cmd"): "JSON emitter (--json)",
     ("cli.py", "spec_status_cmd"): "JSON emitter (--json)",
     ("cli.py", "spec_verify_cmd"): "JSON emitter (--json)",
+    ("cli.py", "spec_lint_cmd"): "JSON emitter (--json) / plain `<file>: <severity> [<code>] <msg>` "
+                                 "report shared with tools/spec_lint.py --outbox (SPEC-0561)",
     ("cli.py", "spec_review_cmd"): "JSON emitter (--json)",
     ("cli.py", "_show_review"): "JSON emitter (--json)",
     ("cli.py", "spec_reviews_cmd"): "JSON emitter (--json)",

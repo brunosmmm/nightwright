@@ -304,6 +304,9 @@ Warnings:
   shared by `nw spec lint` and `tools/spec_lint.py --outbox` (which has no `--json`/`--strict`).
 - Rule 9 also compares the `PROJ-NNNN` filename prefix, as the internal linter does; rule 13's
   known ids come from sibling filename prefixes.
+- `spec_lint_cmd` is on the `tests/test_rich_output_guard.py` ALLOWED list: its `--json` output and its plain
+  `<file>: <severity> [<code>] <message>` report are machine/script output shared with
+  `tools/spec_lint.py --outbox`, so they stay raw `click.echo`.
 - Incident: during the manual pass `nw spec export JEROME-0022 --to <tmp>` was run by mistake
   against the real outbox; it appended one `PROVENANCE.md` line (since removed) and the org
   write was refused. No other outbox file changed.
