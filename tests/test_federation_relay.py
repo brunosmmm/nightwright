@@ -371,7 +371,7 @@ def test_pool_overlaps_and_drops_late_results(tmp_path, monkeypatch):
     assert waits.until(slow_done.is_set)
     for t in threading.enumerate():             # let the dropped worker finish and return
         if t.name.startswith("nw-relay"):
-            t.join(5)
+            waits.join(t)
     assert _rec(hub, "c")["cursor"] == before and [a[0] for a in applied] == ["a", "b"]
 
 
