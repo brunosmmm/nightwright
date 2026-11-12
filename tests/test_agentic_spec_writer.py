@@ -978,11 +978,92 @@ def test_uncommitted_collision_before_start_releases_and_reallocates(tmp_path, m
     Q.tick(cfg)
     assert _reservations(cfg, wt) == [2]
     _other_file(repo, 2)                              # uncommitted in another worktree
-    Q.tick(cfg)
+    seen = []
+    Q.tick(cfg, runner=Hooked(tmp_path, before=lambda req: seen.append(
+        (_reservations(cfg, wt), S.read_state(cfg, cid)["counters"]["spec_number_retries"]))))
+    assert seen == [([3], 1)]                         # old reservation gone, new one live
     in_review(cfg, cid)
     st = S.read_state(cfg, cid)
     assert st["spec_id"] == "SPEC-0003" and st["counters"]["spec_number_retries"] == 0
     assert "SPEC-0003" in prompt(cfg, cid, 2) and "SPEC-0002" not in prompt(cfg, cid, 2)
+
+
+def _race_taken(monkeypatch, repo, numbers):
+    """`SN.number_taken` loses a race on each of `numbers` once: another worktree's
+    `<n>-other.md` appears between the allocate and the check (a callable `numbers` makes the
+    number taken without a file, for the exhausted budget). Returns the checked numbers."""
+    real, calls = SN.number_taken, []
+
+    def taken(cfg, number, **kw):
+        n = SN.parse_number(number)
+        calls.append(n)
+        if callable(numbers):
+            return ["worktree:/elsewhere"] if numbers(n) else real(cfg, number, **kw)
+        if n in numbers and calls.count(n) == 1:
+            _other_file(repo, n)
+        return real(cfg, number, **kw)
+    monkeypatch.setattr(SN, "number_taken", taken)
+    return calls
+
+
+def test_pre_start_collisions_loop_until_a_free_number(tmp_path, monkeypatch):
+    cfg, repo, iid, cid = start(tmp_path, monkeypatch, lambda i: [
+        CASES["wrong-path"](2, i), spec_written(4, i)])
+    wt = wtree(cfg, cid)
+    Q.tick(cfg)
+    assert _reservations(cfg, wt) == [2]
+    _other_file(repo, 2)                              # 2 is taken for real, 3 by a race
+    calls = _race_taken(monkeypatch, repo, {3})
+    seen = []
+    Q.tick(cfg, runner=Hooked(tmp_path, before=lambda req: seen.append(
+        (_reservations(cfg, wt), S.read_state(cfg, cid)["counters"]["spec_number_retries"]))))
+    assert calls == [2, 3, 4]
+    assert seen == [([4], 2)]                         # two re-reserves, one live reservation
+    in_review(cfg, cid)
+    st = S.read_state(cfg, cid)
+    assert st["spec_id"] == "SPEC-0004" and st["counters"]["spec_number_retries"] == 0
+
+
+def test_pre_start_collisions_beyond_the_budget_park(tmp_path, monkeypatch):
+    cfg, repo, iid, cid = start(tmp_path, monkeypatch, lambda i: [
+        CASES["wrong-path"](2, i), spec_written(9, i)])
+    wt = wtree(cfg, cid)
+    Q.tick(cfg)
+    text_retries = S.read_state(cfg, cid)["counters"]["spec_write_retries"]   # the first tick's
+    _race_taken(monkeypatch, repo, lambda n: True)          # every number is taken
+    Q.tick(cfg)
+    park = parked(cfg, cid)
+    assert park["reason"] == "spec_write_failed" and park["resume_to"] == "SPEC_WRITING"
+    assert "is already used on worktree:/elsewhere" in park["detail"]
+    st = S.read_state(cfg, cid)
+    assert st["counters"]["spec_number_retries"] == Q.SPEC_NUMBER_RETRY_MAX + 1
+    assert st["counters"]["spec_write_retries"] == text_retries
+    assert len(_reservations(cfg, wt)) == 1           # never more than the one live reservation
+    assert len(list((S.runs_dir(cfg, cid)).glob("*-spec_writer"))) == 1   # no writer run spent
+
+
+def test_pre_start_retries_share_the_budget_with_the_run(tmp_path, monkeypatch):
+    cfg, repo, iid, cid = start(tmp_path, monkeypatch, lambda i: [
+        CASES["wrong-path"](2, i), spec_written(4, i), spec_written(5, i)])
+    Q.tick(cfg)
+    _other_file(repo, 2)
+    _race_taken(monkeypatch, repo, {3})                     # two pre-start re-reserves: number 4
+    Q.tick(cfg, runner=Hooked(tmp_path, before=_took_number(repo)))   # 4 taken in the run
+    park = parked(cfg, cid)                           # the third collision exceeds the budget
+    assert park["reason"] == "spec_write_failed"
+    assert "SPEC-0004 is already used by 0004-other.md on worktree:" in park["detail"]
+    assert S.read_state(cfg, cid)["counters"]["spec_number_retries"] == Q.SPEC_NUMBER_RETRY_MAX + 1
+
+
+def test_resume_resets_the_number_retry_budget(tmp_path, monkeypatch):
+    cfg, repo, iid, cid = start(tmp_path, monkeypatch, lambda i: [
+        CASES["wrong-path"](2, i), spec_written(9, i)])
+    Q.tick(cfg)
+    _race_taken(monkeypatch, repo, lambda n: True)
+    Q.tick(cfg)
+    assert S.read_state(cfg, cid)["counters"]["spec_number_retries"] == Q.SPEC_NUMBER_RETRY_MAX + 1
+    resume(cfg, cid)
+    assert S.read_state(cfg, cid)["counters"]["spec_number_retries"] == 0
 
 
 def test_collision_during_the_run_is_re_reserved_without_a_text_retry(tmp_path, monkeypatch):

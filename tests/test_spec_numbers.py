@@ -557,6 +557,18 @@ def test_collisions_pruned_reservation_and_store_untouched(tmp_path, cfg, repo):
     assert _store_bytes(cfg) == before and json.loads(before)["reservations"]
 
 
+def test_prune_drops_a_reservation_committed_only_on_a_remote_tracking_ref(tmp_path, cfg, repo):
+    bare = _with_origin(tmp_path, repo)
+    sd = _sd(repo)
+    n = SN.allocate(cfg, by="t", campaign="C1", specs_dir=sd)["number"]
+    assert [r["number"] for r in SN.list_reservations(cfg, specs_dir=sd)] == [n]
+    _clone_push(tmp_path, bare, f"{n:04d}-remote.md")            # only origin/main has it
+    _git(repo, "fetch", "-q", "origin")
+    assert not (_sd(repo) / f"{n:04d}-remote.md").exists()       # not in the local main
+    assert SN.list_reservations(cfg, specs_dir=sd) == []         # pruned through refs/remotes
+    assert SN.allocate(cfg, by="t", campaign="C1", specs_dir=sd)["number"] > n
+
+
 def test_number_taken_locations_and_exclusions(tmp_path, cfg, repo):
     bare = _with_origin(tmp_path, repo)
     sd = _sd(repo)

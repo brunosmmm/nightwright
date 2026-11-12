@@ -266,6 +266,7 @@ and `docs/README.md` so a new spec is numbered with `nw spec reserve` (or
 - `uv run pytest -q tests/test_rich_output_guard.py tests/test_spec_numbers.py tests/test_agentic_spec_writer.py -n 3`: 157 passed (remote-ref scan, `collisions`, `number_taken`, CLI, docs guard, queue snapshot/during-run/budget cases, raw-output allowlist entry for `spec_check_numbers_cmd`).
 - Affected tests ran at the queue gate; `python3 tools/test_tiers.py --check` exits 0; `python3 tools/spec_lint.py` exits 0 with the ledger regenerated.
 - Manual scenario (reserve on `b1`, same number hand-copied on `main`, `nw spec check-numbers` exits 1) is exercised by the CLI CliRunner tests on a scratch git repo with worktrees and a remote, not run separately by hand.
+- Loop 2 (review): added a remote-only prune test, a before-start assertion that the old reservation is gone and the new one live, pre-start retry loop tests (two consecutive collisions, budget exhausted parks `spec_write_failed` with no writer run spent, pre-start retries sharing the during-run budget) and a resume reset of `spec_number_retries`; the three guarded test files then gave 162 passed.
 - The full suite was left to gating.
 
 ## Rollout / migration
