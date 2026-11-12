@@ -1,9 +1,10 @@
 ---
 id: SPEC-0564
 title: "SPEC-0476 follow-up: close the Runs pane test-strength gaps"
-status: proposed
+status: accepted
 owner: user
 created: 2026-11-12
+updated: 2026-11-12
 kind: feature
 source_idea: IDEA-1186
 tags: [tui, agentic, tests]
