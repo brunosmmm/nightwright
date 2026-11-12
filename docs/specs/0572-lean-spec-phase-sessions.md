@@ -203,7 +203,9 @@ fallback in `_do_write_spec` and `_do_spec_review`); `config.py`; `cli_queue.py`
 help); docs (`docs/product/capabilities/agentic.md`, README).
 
 **Tests.** `tests/test_agentic_spec_sessions.py` (13) pass; touched and regression files pass
-locally. A mutation check (`spec_on` forced true) fails the flag-off identity test, the
+locally. Close gate GATEJOB-2638 on the box (commit da1d5113) passed: spec-lint, docs-tests
+(244), pytest (4844 passed, 0 failed, 6 skipped); GATEJOB-2636 before it was cancelled by a
+client-side 600 s timeout, not a failure. A mutation check (`spec_on` forced true) fails the flag-off identity test, the
 managed test and the SPEC-0556 never-resumed test, so the identity test has teeth.
 
 **Real call** (`claude` 2.1.322, `claude-haiku-5-5`, effort `medium`, through
