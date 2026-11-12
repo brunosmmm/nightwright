@@ -371,7 +371,6 @@ progress. This is the single place to see *what has been decided* and *what is i
 | [SPEC-0552](./specs/0552-leaner-agentic-campaign-loop.md) | Leaner agentic campaign loop (role tiers, review packet, findings collator, resumable sessions) | epic | accepted | — | 2026-11-11 |
 | [SPEC-0556](./specs/0556-resumable-implementer-and-reviewer-sessions.md) | Resumable implementer and reviewer sessions per backend, with a fresh-session fallback | feature | in-progress | — | 2026-11-11 |
 | [SPEC-0572](./specs/0572-lean-spec-phase-sessions.md) | Lean spec phase — resumable spec writer and delta spec re-review (`spec_sessions`) | feature | accepted | — | 2026-11-12 |
-| [SPEC-0586](./specs/0586-nwfug-idea-548-20261112-2fe5-spec-0576-review.md) | SPEC-0576 review follow-ups - hyphenated 'existing' false match, self-referencing AFTER, test and docs gaps | feature | accepted | — | 2026-11-12 |
 
 ## Done
 
@@ -877,6 +876,7 @@ progress. This is the single place to see *what has been decided* and *what is i
 | [SPEC-0582](./specs/0582-shell-autocomplete-gaps-many-dynamic-value-args.md) | Make the SPEC-0039 shell-completion guard live with default-deny and an exemption ratchet | feature | done | — | 2026-11-12 |
 | [SPEC-0583](./specs/0583-nwfug-idea-1074-20261112-7400-spec-0569-review.md) | SPEC-0569 review follow-ups - cheaper ref scans, read-only collisions, own-branch rename, test gaps | feature | done | — | 2026-11-12 |
 | [SPEC-0584](./specs/0584-nwfug-idea-1186-20261112-8f82-spec-0564-review.md) | SPEC-0564 review follow-ups: honest 3a, no empty-lead pin, body-line fallback test, tui-tier run | feature | done | — | 2026-11-12 |
+| [SPEC-0586](./specs/0586-nwfug-idea-548-20261112-2fe5-spec-0576-review.md) | SPEC-0576 review follow-ups - hyphenated 'existing' false match, self-referencing AFTER, test and docs gaps | feature | done | — | 2026-11-12 |
 
 ## Superseded / rejected
 

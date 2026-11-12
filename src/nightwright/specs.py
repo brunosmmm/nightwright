@@ -771,14 +771,16 @@ def parse_breakdown_project(item: str) -> tuple[str, str | None]:
 
 
 # SPEC-0576: `existing IDEA-NNN` (optionally `existing idea IDEA-NNN` / ``existing `IDEA-NNN` ``)
-# names an idea already captured, in any org file; the bullet then seeds nothing.
-_EXISTING_IDEA_RE = re.compile(r"\bexisting\s+(?:idea\s+)?`?(IDEA-\d+)\b", re.IGNORECASE)
+# names an idea already captured, in any org file; the bullet then seeds nothing. SPEC-0586:
+# `existing` must be a standalone word: `pre-existing` / `non-existing` / `preexisting` don't match.
+_EXISTING_IDEA_RE = re.compile(r"(?<![\w-])existing\s+(?:idea\s+)?`?(IDEA-\d+)\b", re.IGNORECASE)
 
 
 def parse_breakdown_existing(item: str) -> str | None:
     """SPEC-0576: the upper-cased id of the first `existing IDEA-NNN` in a Breakdown bullet
     (any case; optional `idea` word and backticks), else None. A bare mention of an id
-    (`supersedes IDEA-12`) is not a match."""
+    (`supersedes IDEA-12`) is not a match, nor is a hyphen- or word-joined `existing`
+    (`pre-existing IDEA-12`, SPEC-0586)."""
     m = _EXISTING_IDEA_RE.search(item or "")
     return m.group(1).upper() if m else None
 
@@ -870,15 +872,22 @@ def seed_ideas_from_epic(cfg, epic_id, *, state="INCUBATE", tags=()):
         existing[key] = idea_id
         idea_of.append(idea_id)
         added.append(idea_id)
-    stamps = {idea_of[i]: " ".join(idea_of[o - 1] for o in ords)
-              for i, (_, _, _, ords, _e) in enumerate(parsed) if ords and idea_of[i]}
+    stamps: dict[str, list[str]] = {}           # SPEC-0586: merged per idea, never self-referencing
+    for i, (_, _, _, ords, _e) in enumerate(parsed):
+        if not (ords and idea_of[i]):
+            continue
+        prereqs = [idea_of[o - 1] for o in ords]
+        prereqs = [p for p in prereqs if p and p != idea_of[i]]
+        if prereqs:
+            merged = stamps.setdefault(idea_of[i], [])
+            merged.extend(p for p in dict.fromkeys(prereqs) if p not in merged)
     if stamps:
         from .org import invalidate_tasks_cache
         invalidate_tasks_cache()
         for t in load_tasks(cfg):
             tid = (t.properties.get("ID") or "").strip()
             if t.is_idea and tid in stamps and not (t.properties.get("AFTER") or "").strip():
-                W.set_property(cfg, t, "AFTER", stamps[tid])
+                W.set_property(cfg, t, "AFTER", " ".join(stamps[tid]))
                 invalidate_tasks_cache()
     return added
 

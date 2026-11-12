@@ -231,6 +231,12 @@ def test_parse_breakdown_existing():
     assert f("Existing idea idea-7 — x") == "IDEA-7"
     assert f("see existing `IDEA-12`") == "IDEA-12"
     assert f("supersedes IDEA-12") is None
+    assert f("pre-existing IDEA-12") is None
+    assert f("non-existing IDEA-12 — x") is None
+    assert f("preexisting IDEA-12") is None
+    assert f("(existing IDEA-12)") == "IDEA-12"
+    assert f("existing IDEA-12") == "IDEA-12"
+    assert f("Fold in existing idea `IDEA-12`") == "IDEA-12"
     assert f("nothing here") is None
     assert f("") is None
 
@@ -305,3 +311,87 @@ def test_seed_existing_idea_participates_in_after(tmp_path):
     (other,) = S.seed_ideas_from_epic(cfg, "ACME-0001")
     assert _after_of(cfg, "IDEA-450")[0] == [new]                 # never overwritten
     assert other != new
+
+
+# ---- SPEC-0586: SPEC-0576 review follow-ups --------------------------------------------------
+
+def test_seed_pre_existing_mention_still_seeds(tmp_path):
+    cfg = _cfg(tmp_path)
+    _second_ideas_file(cfg)
+    _write_outbound_epic(cfg, breakdown_lines=["pre-existing IDEA-450 — x"])
+    assert len(S.seed_ideas_from_epic(cfg, "ACME-0001")) == 1
+    assert _idea_count(cfg) == 2
+
+
+def test_seed_two_bullets_same_existing_idea_no_self_after(tmp_path):
+    cfg = _cfg(tmp_path)
+    _second_ideas_file(cfg)
+    _write_outbound_epic(cfg, breakdown_lines=[
+        "existing IDEA-450 — a", "existing IDEA-450 — b (depends_on child 1)"])
+    assert S.seed_ideas_from_epic(cfg, "ACME-0001") == []
+    assert _after_of(cfg, "IDEA-450")[0] == []
+    assert _idea_count(cfg) == 1
+
+
+def test_seed_same_existing_idea_self_dep_dropped_new_prereq_kept(tmp_path):
+    cfg = _cfg(tmp_path)
+    _second_ideas_file(cfg)
+    _write_outbound_epic(cfg, breakdown_lines=[
+        "existing IDEA-450 — a (depends_on child 3)",
+        "existing IDEA-450 — b (depends_on child 1 and child 3)",
+        "New slice"])
+    (new,) = S.seed_ideas_from_epic(cfg, "ACME-0001")
+    assert _after_of(cfg, "IDEA-450")[0] == [new]                 # once; own id dropped
+
+
+def test_seed_same_existing_idea_shared_prereq_listed_once(tmp_path):
+    cfg = _cfg(tmp_path)
+    _second_ideas_file(cfg)
+    _write_outbound_epic(cfg, breakdown_lines=[
+        "existing IDEA-450 — a (depends_on child 3)",
+        "existing IDEA-450 — b (depends_on child 3)",
+        "New slice"])
+    (new,) = S.seed_ideas_from_epic(cfg, "ACME-0001")
+    assert _after_of(cfg, "IDEA-450")[0] == [new]
+
+
+def test_seed_same_existing_idea_merges_distinct_prereqs_in_order(tmp_path):
+    cfg = _cfg(tmp_path)
+    _second_ideas_file(cfg)
+    _write_outbound_epic(cfg, breakdown_lines=[
+        "existing IDEA-450 — a (depends_on child 3)",
+        "existing IDEA-450 — b (depends_on child 4)",
+        "New slice one", "New slice two"])
+    one, two = S.seed_ideas_from_epic(cfg, "ACME-0001")
+    assert _after_of(cfg, "IDEA-450")[0] == [one, two]
+
+
+def test_seed_existing_lowercase_id_matches(tmp_path):
+    cfg = _cfg(tmp_path)
+    _second_ideas_file(cfg)
+    _write_outbound_epic(cfg, breakdown_lines=["existing idea-450 — x"])
+    assert S.seed_ideas_from_epic(cfg, "ACME-0001") == []
+    assert _idea_count(cfg) == 1
+
+
+def test_seed_existing_with_project_annotation(tmp_path):
+    cfg = _cfg(tmp_path, outbox_targets={
+        "acme": {"repo_path": "/tmp/acme"}, "Example": {"repo_path": "/tmp/example"}})
+    other = _second_ideas_file(cfg)
+    _write_outbound_epic(cfg, breakdown_lines=["existing IDEA-450 (project: Example) — x"])
+    before = other.read_text()
+    assert S.seed_ideas_from_epic(cfg, "ACME-0001") == []
+    assert other.read_text() == before
+    t = next(t for t in load_tasks(cfg) if t.properties.get("ID") == "IDEA-450")
+    assert t.properties.get("PROJECT") == "Elsewhere"
+    _write_outbound_epic(cfg, breakdown_lines=[
+        "Sibling new bullet", "existing IDEA-450 (project: NotARealProject) — x"])
+    with pytest.raises(ValueError, match="unknown project"):
+        S.seed_ideas_from_epic(cfg, "ACME-0001")
+    assert _idea_count(cfg) == 1
+
+
+def test_seed_existing_form_is_documented():
+    assert "existing IDEA-NNN" in (ROOT / "docs" / "specs" / "TEMPLATE-epic.md").read_text()
+    r = CliRunner().invoke(cli, ["spec", "seed-children", "--help"])
+    assert "existing IDEA-NNN" in " ".join(r.output.split())
