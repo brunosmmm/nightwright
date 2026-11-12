@@ -2082,17 +2082,19 @@ def test_each_id_recomputed_once_per_live_set_change(data_dir, cache_dir, entry)
             H.history_index(c, now=NOW, cache=True)
         else:
             H.campaign_history(c, _A, now=NOW, cache=True)
-    # a changed global source also puts every campaign that owns a global record into
-    # ``affected``; those are recomputed too, but each still exactly once
-    owners = {r["campaign"] for r in before_records
-              if r.get("source") not in HC._LOCAL_SOURCES and r.get("campaign")}
-    assert differing | {_N} <= set(counts) <= differing | owners | {_N}, counts
+    # a changed global source (the mailbox) also puts every campaign that owns a mailbox
+    # record into ``affected``; those are recomputed too, but each still exactly once
+    mailbox_owners = {r["campaign"] for r in before_records
+                      if r.get("source") == "mailbox" and r.get("campaign")}
+    expected = differing | {_N} | mailbox_owners
+    assert set(counts) == expected, counts
     assert set(counts.values()) == {1}, counts
 
 
 def test_no_drop_campaign_all_in_src():
-    src_root = Path(HC.__file__).resolve().parents[2]
-    assert src_root.name == "nightwright" or (src_root / "nightwright").is_dir()
+    src_root = Path(__file__).resolve().parents[1] / "src" / "nightwright"
+    assert src_root.is_dir()
+    assert (src_root / "agentic" / "history_cache.py").is_file()
     files = list(src_root.rglob("*.py"))
     assert files
     assert [p for p in files if "drop_campaign_all" in p.read_text()] == []
@@ -2121,6 +2123,7 @@ def test_reconcile_persist_contract_recompute_path(data_dir, cache_dir, persist)
     a_before = (v1 / "campaigns" / f"{_A}.json").read_bytes()
     calls, spy = _persist_calls_spy()
     idx, recs, src = _load(v1)
+    idx_on_disk = HC._read_index(v1)
     with mock.patch.object(HC, "_persist_index_records", spy):
         out = HC._reconcile_live_set(c, v1, NOW, idx, recs, src, persist=persist)
     assert {_A, _N} <= out[3]
@@ -2128,6 +2131,14 @@ def test_reconcile_persist_contract_recompute_path(data_dir, cache_dir, persist)
     if not persist:
         assert calls == []
         assert {n: (v1 / n).read_bytes() for n in names} == before
+        n_file = v1 / "campaigns" / f"{_N}.json"
+        assert n_file.is_file()
+        assert json.loads(n_file.read_text())["campaign"] == _N
+        assert any(r.get("campaign") == _N for r in out[0])
+        assert any(r.get("campaign") == _N and r.get("source") in HC._LOCAL_SOURCES
+                   for r in out[1])
+        assert _N in out[2]["campaign_files"]
+        assert HC._read_index(v1) == idx_on_disk
         return
     assert len(calls) == 1
     seen: list[str] = []
@@ -2219,6 +2230,10 @@ def test_reconcile_one_global_resolve_and_snapshot(data_dir, cache_dir):
     _add_mail(data_dir, f"live-set-marker {_A} {_N}")
     H.history_index(c, now=NOW, cache=True)
     v1 = _v1(cache_dir)
+    # a complete unparsable line makes the global sources report a gap, so the recomputed
+    # document's ``gaps`` can only match the pure path if ``extra_gaps`` reaches it
+    with (data_dir / "agentic" / "mailbox" / "human.jsonl").open("a") as stream:
+        stream.write("not json\n")
     _install_terminal_campaign(data_dir, _N)
     live_at_entry = sorted(HC._live_campaign_ids(c))
     glob_calls: list = []
@@ -2241,7 +2256,10 @@ def test_reconcile_one_global_resolve_and_snapshot(data_dir, cache_dir):
     assert glob_calls == [live_at_entry]
     assert live_calls == [1]
     stored = json.loads((v1 / "campaigns" / f"{_A}.json").read_text())
-    assert stored["gaps"] == H.campaign_history(c, _A, now=NOW, cache=False)["gaps"]
+    pure_gaps = H.campaign_history(c, _A, now=NOW, cache=False)["gaps"]
+    assert any("unparsable" in g for g in pure_gaps), pure_gaps
+    assert any("unparsable" in g for g in stored["gaps"]), stored["gaps"]
+    assert stored["gaps"] == pure_gaps
 
 
 def test_reconcile_directory_added_mid_call_picked_up_next_call(data_dir, cache_dir):
@@ -2260,10 +2278,31 @@ def test_reconcile_directory_added_mid_call_picked_up_next_call(data_dir, cache_
             _install_terminal_campaign(data_dir, late)
         return real(cfg_, cid, *a, **kw)
 
+    glob_calls: list = []
+    real_g = H._global_records
+
+    def glob(cfg_, cids, gaps, *a, **kw):
+        glob_calls.append(list(cids))
+        return real_g(cfg_, cids, gaps, *a, **kw)
+
     idx, recs, src = _load(v1)
-    with mock.patch.object(HC, "_recompute_campaign", wrapper):
+    with mock.patch.object(HC, "_recompute_campaign", wrapper), \
+            mock.patch.object(H, "_global_records", glob):
         idx, recs, src, touched = HC._reconcile_live_set(
             c, v1, NOW, idx, recs, src, persist=True)
+    # one snapshot: the single global parse never saw ``late`` and every stored/returned
+    # record resolved against the entry set
+    assert len(glob_calls) == 1
+    assert late not in glob_calls[0] and {_A, _N} <= set(glob_calls[0])
+    for cid in (_A, _N):
+        doc = json.loads((v1 / "campaigns" / f"{cid}.json").read_text())
+        assert all(r.get("campaign") != late for r in doc["records"])
+    assert all(r.get("campaign") != late for r in recs)
+    stored_a = json.loads((v1 / "campaigns" / f"{_A}.json").read_text())
+    assert (sorted(HC._global_tuple(r) for r in recs if r.get("campaign") == _A
+                   and r.get("source") not in HC._LOCAL_SOURCES)
+            == sorted(HC._global_tuple(r) for r in stored_a["records"]
+                      if r.get("source") not in HC._LOCAL_SOURCES))
     assert late not in touched and all(r["campaign"] != late for r in idx)
     assert all(r.get("campaign") != late for r in recs if r.get("source") in HC._LOCAL_SOURCES)
     idx2, recs2, src2 = _load(v1)
