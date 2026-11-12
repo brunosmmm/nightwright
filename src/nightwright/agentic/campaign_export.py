@@ -55,6 +55,7 @@ CAMPAIGN_COLUMNS = (
     ("lean", "json"), ("raised", "bool"),                                  # SPEC-0553
     ("demoted_findings", "int"),                                           # SPEC-0554
     ("out_of_scope_findings", "int"), ("collator_fallbacks", "int"),       # SPEC-0555
+    ("cohort", "str"), ("lean_request", "json"),                           # SPEC-0558
 )
 RUN_COLUMNS = (
     ("campaign", "str"), ("spec_id", "str"), ("profile", "str"), ("size", "str"), ("tone", "str"),
@@ -369,6 +370,7 @@ def campaign_row(cfg, state: dict, events: list[dict], now) -> dict:
         "demoted_findings": _demoted(events),                              # SPEC-0554
         "out_of_scope_findings": _collation_stats(events)[0],              # SPEC-0555
         "collator_fallbacks": _collation_stats(events)[1],
+        "cohort": state.get("cohort"), "lean_request": state.get("lean_request"),  # SPEC-0558
     }
     out = _project(row, CAMPAIGN_COLUMNS)       # signals read the coerced values
     out["signals"] = signals(out)

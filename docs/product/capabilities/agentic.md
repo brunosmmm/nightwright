@@ -184,6 +184,17 @@ is charged its cumulative `total_cost_usd` minus the session's cost before it) a
 resumes only on the worker that holds the session. Triagers, the marshal, the collator, spec
 personas and the deep close pass never resume. Runs export `resumed` and `session_fallback`.
 
+### Per-campaign lean opt-in (`nw queue add --lean`)
+
+The four flags above can also be chosen for one campaign, so lean and normal campaigns run
+side by side as an A/B test. `nw queue add SPEC-NNNN --lean --yes` turns all four on for that
+campaign; `--lean-flags tiers,packet` turns on only the named ones (unmet dependencies switch
+off with a reason, as above). The choice replaces `agentic.lean` / `agentic.project_lean` for
+that campaign only and is pinned into `state.lean` when it is created (`state.lean_request`
+keeps what was asked). `--cohort NAME` tags the campaign for the measurement (default `lean`
+with an opt-in, none otherwise); campaigns export `cohort` and `lean_request`. Without these
+options a campaign follows the config exactly as before.
+
 ### Profile files and layers
 
 Four layers define profiles; a higher layer wins, key by key:

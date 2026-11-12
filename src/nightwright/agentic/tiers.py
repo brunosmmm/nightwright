@@ -12,9 +12,15 @@ live config. Unmet dependencies (`collator` without `packet`; `sessions` without
 `cursor_map.yaml`: builtin, `<config_dir>/tier_map.yaml`, `agentic.tiers` in config.yaml,
 `<project>/.nw/tier_map.yaml`. With `state.lean.tiers` on, `personas.build_request` takes a
 persona's model from its tier unless the profile (above the builtin layer) or the model set
-names an explicit model for it (`explicit_model`)."""
+names an explicit model for it (`explicit_model`).
+
+**Per-campaign opt-in (SPEC-0558).** `nw queue add --lean` / `--lean-flags a,b` stores
+`lean_request` (and a `cohort` tag) on the queued campaign; `create_campaign` pins
+`effective_lean(..., request=)` from it, which replaces the config/project flags for that
+campaign only."""
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 import yaml
@@ -39,15 +45,28 @@ def _agentic(cfg) -> dict:
     return a if isinstance(a, dict) else {}
 
 
-def effective_lean(cfg, project=None) -> tuple[dict, list]:
+def effective_lean(cfg, project=None, *, request=None) -> tuple[dict, list]:
     """`({flag: bool}, [reason, …])` for a campaign of `project`: `agentic.lean` with
     `agentic.project_lean[project]` over it. Only a literal `true` turns a flag on; a flag
-    whose dependencies are off is switched off and the reason says why."""
-    a = _agentic(cfg)
-    base = a.get("lean") if isinstance(a.get("lean"), dict) else {}
-    over_all = a.get("project_lean") if isinstance(a.get("project_lean"), dict) else {}
-    over = over_all.get(project) if project and isinstance(over_all.get(project), dict) else {}
-    flags = {f: (over[f] if f in over else base.get(f)) is True for f in LEAN_FLAGS}
+    whose dependencies are off is switched off and the reason says why.
+
+    SPEC-0558: `request` (a campaign's `--lean` / `--lean-flags` opt-in, a list of flag
+    names) replaces the config and project flags for that campaign: exactly the named flags
+    are on, the dependency rule still applies. `None` = no opt-in (the config decides)."""
+    if request is not None:
+        names = set(request)
+        unknown = sorted(names - set(LEAN_FLAGS))
+        if unknown:
+            raise ValueError(f"unknown lean flag {', '.join(unknown)}; "
+                             f"known: {', '.join(LEAN_FLAGS)}")
+        flags = {f: f in names for f in LEAN_FLAGS}
+    else:
+        a = _agentic(cfg)
+        base = a.get("lean") if isinstance(a.get("lean"), dict) else {}
+        over_all = a.get("project_lean") if isinstance(a.get("project_lean"), dict) else {}
+        over = (over_all.get(project) if project and isinstance(over_all.get(project), dict)
+                else {})
+        flags = {f: (over[f] if f in over else base.get(f)) is True for f in LEAN_FLAGS}
     reasons = []
     for flag, needs in LEAN_REQUIRES.items():
         missing = [n for n in needs if not flags[n]]
@@ -55,6 +74,44 @@ def effective_lean(cfg, project=None) -> tuple[dict, list]:
             flags[flag] = False
             reasons.append(f"{flag} off: needs {' and '.join(missing)}")
     return flags, reasons
+
+
+_COHORT_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,39}$")
+DEFAULT_COHORT = "lean"
+
+
+def lean_request(lean=False, lean_flags=None) -> list | None:
+    """SPEC-0558: the per-campaign opt-in from `nw queue add --lean` (every flag) or
+    `--lean-flags a,b` (that subset), as a list in `LEAN_FLAGS` order; None without either.
+    ValueError on both at once, an empty list or an unknown flag."""
+    if lean and lean_flags is not None:
+        raise ValueError("--lean turns every lean flag on; give --lean-flags alone for a subset")
+    if lean:
+        return list(LEAN_FLAGS)
+    if lean_flags is None:
+        return None
+    raw = lean_flags if isinstance(lean_flags, (list, tuple)) else str(lean_flags).split(",")
+    names = {str(n).strip() for n in raw if str(n).strip()}
+    if not names:
+        raise ValueError(f"--lean-flags needs at least one of {', '.join(LEAN_FLAGS)}")
+    unknown = sorted(names - set(LEAN_FLAGS))
+    if unknown:
+        raise ValueError(f"unknown lean flag {', '.join(unknown)}; "
+                         f"known: {', '.join(LEAN_FLAGS)}")
+    return [f for f in LEAN_FLAGS if f in names]
+
+
+def campaign_cohort(cohort, request) -> str | None:
+    """SPEC-0558: the A/B cohort tag of a campaign: `cohort` as given (1..40 of
+    `[A-Za-z0-9._-]`, starting alphanumeric), else `lean` when the campaign opted in, else
+    None (untagged)."""
+    if cohort is None:
+        return DEFAULT_COHORT if request is not None else None
+    name = str(cohort).strip()
+    if not _COHORT_RE.match(name):
+        raise ValueError(f"bad cohort {cohort!r}: 1..40 letters, digits, '.', '_' or '-', "
+                         f"starting with a letter or digit")
+    return name
 
 
 def pinned(state) -> dict:

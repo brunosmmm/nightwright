@@ -79,7 +79,8 @@ for the per-project `.nw/project.yaml` ([Agentic loop](../capabilities/agentic.m
 
 ### `nw queue …`
 
-`add` (specs or `IDEA-NNN`; `--runner claude|cursor|pi` pins the campaign), `list` (`status`
+`add` (specs or `IDEA-NNN`; `--runner claude|cursor|pi` pins the campaign; `--lean` /
+`--lean-flags a,b` / `--cohort NAME` opt one campaign into the lean loop), `list` (`status`
 is an alias), `watch`, `run`, `tick`, `stop`, `restart`, `park` (needs `--reason`),
 `resume`, `abandon`, `prioritize`, `backlog`, `after`, `unqueued`, `graph`, `flaky`,
 `cost-policy`, `backend` (per-campaign pin, or `--host` / `--all`; the choice is

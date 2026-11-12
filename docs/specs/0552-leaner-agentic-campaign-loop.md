@@ -222,6 +222,10 @@ dip elsewhere at default is accepted (human decision).
 - [ ] SPEC-0557 (project: Meta-Tools) — Effort ceiling: no xhigh/max persona run on any
   backend (human decision 2026-11-11). Independent of 0553..0556; default on. Measure: cost
   per review run.
+- [ ] SPEC-0558 (project: Meta-Tools) — Per-campaign lean opt-in (`nw queue add --lean` /
+  `--lean-flags a,b`) and a `--cohort` tag exported per campaign, so lean campaigns run
+  alongside normal ones as an A/B (human decision 2026-11-12). Measure: cost and loops per
+  campaign by cohort.
 
 Sequencing / dependencies: linear. Tiers first because every later persona (marshal,
 collator) needs a tier; the packet before the collator because the collator ties findings

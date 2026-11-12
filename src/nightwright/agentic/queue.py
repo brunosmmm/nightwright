@@ -10090,8 +10090,19 @@ def _campaign_runner_pin(runner) -> dict:
     return {"runner": runner}
 
 
+def _campaign_lean_pin(lean_request, cohort) -> dict:
+    """SPEC-0558: `{lean_request, cohort}` for a campaign queued with `--lean` /
+    `--lean-flags` / `--cohort`; empty when none was given (the campaign follows the config,
+    exactly as before)."""
+    req = None if lean_request is None else TR.lean_request(lean_flags=list(lean_request))
+    tag = TR.campaign_cohort(cohort, req)
+    return {**({"lean_request": req} if req is not None else {}),
+            **({"cohort": tag} if tag else {})}
+
+
 def plan_add(cfg, spec_id, *, project=None, profile=None, base=None, force=False,
-             priority=PRIORITY_DEFAULT, split_origin=None, after=(), runner=None) -> dict:
+             priority=PRIORITY_DEFAULT, split_origin=None, after=(), runner=None,
+             lean_request=None, cohort=None) -> dict:
     """Resolve everything `nw queue add` needs and return the plan (no writes). Raises
     ValueError with the fix when the spec is not admissible. SPEC-0294: a spec with no review
     that a split campaign wrote as a part is admitted as `split_child` (`split_origin` is the
@@ -10167,7 +10178,9 @@ def plan_add(cfg, spec_id, *, project=None, profile=None, base=None, force=False
                             "scope": str(p.get("scope") or "")}
                            for i, p in enumerate(review_doc.get("suggested_splits") or [], 1)]}
         review_doc = None       # the review sizes the unsplit work, not writing the parts
-    lean, lean_off = TR.effective_lean(cfg, project)                   # SPEC-0553
+    lean_pin = _campaign_lean_pin(lean_request, cohort)                # SPEC-0558
+    lean, lean_off = TR.effective_lean(cfg, project,                   # SPEC-0553
+                                       request=lean_pin.get("lean_request"))
     pick = select_profile(cfg, flag=profile, review=review_doc,         # SPEC-0219
                           project_root=root, **({"lean": True} if lean["tiers"] else {}))
     prof = resolve_profile(cfg, pick["profile"], project_root=root)
@@ -10196,10 +10209,21 @@ def plan_add(cfg, spec_id, *, project=None, profile=None, base=None, force=False
         **_campaign_runner_pin(runner),
         # SPEC-0553: the flags this campaign pins, and the `--profile` asked for (the open
         # re-applies the cap with the spec's hand-written size/tone)
-        **({"lean": lean, "lean_off": lean_off} if any(lean.values()) or lean_off else {}),
+        **({"lean": lean, "lean_off": lean_off}
+           if any(lean.values()) or lean_off or "lean_request" in lean_pin else {}),
         **({"profile_flag": profile, "profile_capped_from": pick.get("capped_from")}
            if lean["tiers"] else {}),
+        **lean_pin,                                                     # SPEC-0558
     }
+
+
+def _pin_lean_request(state: dict, plan: dict) -> None:
+    """SPEC-0558: carry the plan's opt-in onto the queued state; `store.create_campaign` then
+    pins `state.lean` from `lean_request`. Nothing is written without an opt-in."""
+    if plan.get("lean_request") is not None:
+        state["lean_request"] = list(plan["lean_request"])
+    if plan.get("cohort"):
+        state["cohort"] = plan["cohort"]
 
 
 def apply_add(cfg, plan: dict, *, by="human") -> dict:
@@ -10230,6 +10254,7 @@ def apply_add(cfg, plan: dict, *, by="human") -> dict:
     }
     if plan.get("runner"):                                             # SPEC-0436
         state["runner"] = plan["runner"]
+    _pin_lean_request(state, plan)                                     # SPEC-0558
     if "profile_flag" in plan:                                         # SPEC-0553
         state["sizing"]["flag"] = plan["profile_flag"]
         if plan.get("profile_capped_from"):
@@ -10501,11 +10526,13 @@ def _open_idea_campaign(cfg, idea_id) -> dict | None:
 
 
 def plan_add_idea(cfg, idea_id, *, project=None, profile=None, base=None,
-                  priority=PRIORITY_DEFAULT, after=(), runner=None) -> dict:
+                  priority=PRIORITY_DEFAULT, after=(), runner=None, lean_request=None,
+                  cohort=None) -> dict:
     """`plan_add` for an idea (SPEC-0209): no writes. Refusals, first match wins: unknown idea,
     idea with a `:SPEC:`, closed idea, open campaign for the idea, unloadable project."""
     idea_id = (idea_id or "").strip()
     priority = check_priority(priority)
+    lean_pin = _campaign_lean_pin(lean_request, cohort)                # SPEC-0558
     task = _idea_task(cfg, idea_id)
     if task is None:
         raise ValueError(f"unknown idea {idea_id}")
@@ -10527,7 +10554,8 @@ def plan_add_idea(cfg, idea_id, *, project=None, profile=None, base=None,
     project = project or (task.properties.get("PROJECT") or "").strip() or "Meta-Tools"
     pcfg = P.project_config(cfg, project)
     root = Path(pcfg["_root"])
-    if profile and TR.effective_lean(cfg, project)[0]["tiers"]:        # SPEC-0553 cap
+    lean, lean_off = TR.effective_lean(cfg, project, request=lean_pin.get("lean_request"))
+    if profile and lean["tiers"]:                                      # SPEC-0553 cap
         profile = cap_flag(cfg, profile, project_root=root)
     prof = resolve_profile(cfg, profile, project_root=root)
     base = base or (pcfg.get("merge") or {}).get("base") or pcfg.get("base") or "main"
@@ -10545,6 +10573,9 @@ def plan_add_idea(cfg, idea_id, *, project=None, profile=None, base=None,
         "slots": prof.get("slots"), "merge_policy": (pcfg.get("merge") or {}).get("policy"),
         "profile_sha256": profile_sha256(prof),                         # SPEC-0397
         **_campaign_runner_pin(runner),
+        **({"lean": lean, "lean_off": lean_off}                         # SPEC-0558
+           if "lean_request" in lean_pin else {}),
+        **lean_pin,
     }
 
 
@@ -10592,6 +10623,7 @@ def apply_add_idea(cfg, plan: dict, *, by="human") -> dict:
         }
         if plan.get("runner"):                                         # SPEC-0436
             state["runner"] = plan["runner"]
+        _pin_lean_request(state, plan)                                 # SPEC-0558
         if plan.get("after"):
             state["after"] = list(plan["after"])                       # SPEC-0423
         store.create_campaign(cfg, state, by=by)
@@ -10823,14 +10855,16 @@ def _cascade(items, deps_of) -> None:
 
 
 def plan_add_batch(cfg, ids, *, project=None, profile=None, base=None, force=False,
-                   priority=PRIORITY_DEFAULT, split_origin=None, after=(), runner=None) -> dict:
+                   priority=PRIORITY_DEFAULT, split_origin=None, after=(), runner=None,
+                   lean_request=None, cohort=None) -> dict:
     """SPEC-0276: plan several specs and ideas as one batch (no writes). Each id goes through
     `plan_add` / `plan_add_idea`; on top, specs are ordered by their in-batch `depends_on`
     (ideas follow), cycles and dependents of refused items are refused, and dependencies that
     would block a spec forever are listed in its `would_block`."""
     ids = list(dict.fromkeys(_canon_id(i) for i in ids if i and i.strip()))
     params = {"project": project, "profile": profile, "base": base, "force": bool(force),
-              "priority": priority, **_campaign_runner_pin(runner)}
+              "priority": priority, **_campaign_runner_pin(runner),
+              **_campaign_lean_pin(lean_request, cohort)}                # SPEC-0558
     after = [str(a) for a in (after or ())]
     if after:
         params["after"] = after                                 # SPEC-0423
@@ -10845,11 +10879,13 @@ def plan_add_batch(cfg, ids, *, project=None, profile=None, base=None, force=Fal
         item = {"id": i, "kind": kind}
         try:
             item["plan"] = (plan_add_idea(cfg, i, project=project, profile=profile, base=base,
-                                          priority=priority, after=after, runner=runner)
+                                          priority=priority, after=after, runner=runner,
+                                          lean_request=lean_request, cohort=cohort)
                             if kind == "idea" else
                             plan_add(cfg, i, project=project, profile=profile, base=base,
                                      force=force, priority=priority, split_origin=split_origin,
-                                     after=after, runner=runner))
+                                     after=after, runner=runner, lean_request=lean_request,
+                                     cohort=cohort))
         except ValueError as e:
             item["error"] = str(e)
         items[i] = item
@@ -10899,7 +10935,9 @@ def apply_add_batch(cfg, batch: dict, *, skip_invalid=False, by="human") -> dict
                 plan = plan_add_idea(cfg, it["id"], project=prm.get("project"),
                                      profile=prm.get("profile"), base=prm.get("base"),
                                      priority=prm.get("priority", PRIORITY_DEFAULT),
-                                     after=prm.get("after") or (), runner=prm.get("runner"))
+                                     after=prm.get("after") or (), runner=prm.get("runner"),
+                                     lean_request=prm.get("lean_request"),
+                                     cohort=prm.get("cohort"))
                 apply_add_idea(cfg, plan, by=by)
             else:
                 plan = plan_add(cfg, it["id"], project=prm.get("project"),
@@ -10907,7 +10945,9 @@ def apply_add_batch(cfg, batch: dict, *, skip_invalid=False, by="human") -> dict
                                 force=bool(prm.get("force")),
                                 priority=prm.get("priority", PRIORITY_DEFAULT),
                                 split_origin=prm.get("split_origin"),
-                                after=prm.get("after") or (), runner=prm.get("runner"))
+                                after=prm.get("after") or (), runner=prm.get("runner"),
+                                lean_request=prm.get("lean_request"),
+                                cohort=prm.get("cohort"))
                 apply_add(cfg, plan, by=by)
         except ValueError as e:
             it["error"] = str(e)

@@ -275,8 +275,9 @@ def create_campaign(cfg, state: dict, *, by="human") -> Path:
     lean_off = []
     if "lean" not in state:                # SPEC-0553: pin the lean flags once, at open
         from . import tiers as T
-        flags, lean_off = T.effective_lean(cfg, state.get("project"))
-        if any(flags.values()) or lean_off:
+        req = state.get("lean_request")    # SPEC-0558: the campaign's own opt-in wins
+        flags, lean_off = T.effective_lean(cfg, state.get("project"), request=req)
+        if any(flags.values()) or lean_off or req is not None:
             state["lean"] = flags
     write_state(cfg, cid, state)
     repo = state.get("repo") or {}
@@ -299,6 +300,9 @@ def create_campaign(cfg, state: dict, *, by="human") -> Path:
         **({"docs_only": True} if (state.get("merge") or {}).get("docs_only") else {}),  # SPEC-0234
         **({"lean": state["lean"]} if "lean" in state else {}),        # SPEC-0553
         **({"lean_off": lean_off} if lean_off else {}),
+        **({"lean_request": state["lean_request"]}                    # SPEC-0558
+           if state.get("lean_request") is not None else {}),
+        **({"cohort": state["cohort"]} if state.get("cohort") else {}),
     }, by=by)
     return d
 

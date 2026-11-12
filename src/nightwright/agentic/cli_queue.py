@@ -1384,17 +1384,19 @@ def _print_plan(title: str, plan: dict) -> None:
 
 
 def _queue_add_one(cfg, spec_id, project, profile, base, force, priority, do_write, as_json,
-                    by="human", after=(), runner=None):
+                    by="human", after=(), runner=None, lean_request=None, cohort=None):
     """The single-id `nw queue add` (nw.queue.add.v1)."""
     try:
         if Q._IDEA_ID_RE.match((spec_id or "").strip()):
             plan = Q.plan_add_idea(cfg, spec_id, project=project, profile=profile,
-                                   base=base, priority=priority, after=after, runner=runner)
+                                   base=base, priority=priority, after=after, runner=runner,
+                                   lean_request=lean_request, cohort=cohort)
             if do_write:
                 Q.apply_add_idea(cfg, plan, by=by)
         else:
             plan = Q.plan_add(cfg, spec_id, project=project, profile=profile, base=base,
-                              force=force, priority=priority, after=after, runner=runner)
+                              force=force, priority=priority, after=after, runner=runner,
+                              lean_request=lean_request, cohort=cohort)
             if do_write:
                 Q.apply_add(cfg, plan, by=by)
     except ValueError as e:
@@ -1671,11 +1673,20 @@ def attach(queue_group):
                   help="emit nw.queue.add.v1 JSON (nw.queue.add.batch.v1 for a batch)")
     @click.option("--runner", "runner", default=None, type=click.Choice(["claude", "cursor", "pi"]),
                   help="pin this campaign to claude, cursor, or pi (omit = follow host/project)")
+    @click.option("--lean", "lean", is_flag=True,
+                  help="SPEC-0558: run this campaign with every lean flag on (tiers, packet, "
+                       "collator, sessions), whatever the config says; cohort `lean`")
+    @click.option("--lean-flags", "lean_flags", default=None, metavar="A,B",
+                  help="SPEC-0558: only these lean flags on for this campaign (comma list of "
+                       "tiers, packet, collator, sessions; unmet dependencies switch off)")
+    @click.option("--cohort", "cohort", default=None, metavar="NAME",
+                  help="SPEC-0558: A/B cohort tag, exported as the campaign `cohort` column "
+                       "(default `lean` with --lean / --lean-flags, none otherwise)")
     @click.option("--by", default=None,
                   help="who acts (default: $NW_MAILBOX_ADDR, then human)")
     @click.pass_obj
     def queue_add(cfg, ids, from_file, epic, after, skip_invalid, project, profile, base, force,
-                  priority, do_write, as_json, by, runner):
+                  priority, do_write, as_json, by, runner, lean, lean_flags, cohort):
         """Queue accepted specs and ideas as new campaigns (dry-run unless --yes).
 
         \b
@@ -1686,17 +1697,23 @@ def attach(queue_group):
         nw queue add --epic SPEC-0169 --yes      the epic's accepted children and open ideas
         nw queue add IDEA-2 --after IDEA-1 --yes wait for IDEA-1 (idea, spec or campaign id)
         nw queue add --from-file ids.txt --skip-invalid --yes
+        nw queue add SPEC-0170 --lean --runner claude --yes   lean A/B cohort (SPEC-0558)
+        nw queue add SPEC-0170 --lean-flags tiers,packet --cohort tiers-packet --yes
         """
         if not ids and not from_file and not epic:
             raise click.UsageError("give at least one SPEC-NNNN / IDEA-NNN id, --from-file or "
                                    "--epic")
+        from . import tiers as TR
         try:
             actor = _actor(cfg, by)
+            lean_request = TR.lean_request(lean, lean_flags)            # SPEC-0558
+            TR.campaign_cohort(cohort, lean_request)
         except ValueError as e:
             raise click.ClickException(str(e))
         if len(ids) == 1 and not from_file and not epic:
             return _queue_add_one(cfg, ids[0], project, profile, base, force, priority,
-                                  do_write, as_json, by=actor, after=after, runner=runner)
+                                  do_write, as_json, by=actor, after=after, runner=runner,
+                                  lean_request=lean_request, cohort=cohort)
         try:
             batch_ids = list(ids)
             if from_file:
@@ -1709,7 +1726,7 @@ def attach(queue_group):
                 batch_ids += epic_ids
             batch = Q.plan_add_batch(cfg, batch_ids, project=project, profile=profile,
                                      base=base, force=force, priority=priority, after=after,
-                                     runner=runner)
+                                     runner=runner, lean_request=lean_request, cohort=cohort)
             batch["skipped"] = [s for s in skipped if s["id"] not in explicit]
             refused = None
             if do_write:
