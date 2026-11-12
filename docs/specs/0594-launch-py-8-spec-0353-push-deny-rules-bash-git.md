@@ -1,7 +1,7 @@
 ---
 id: SPEC-0594
 title: "launch.py: the 8 SPEC-0353 `nw/x:<dst>` push deny rules must not end in the legacy `:*` prefix form"
-status: accepted
+status: done
 owner: user
 created: 2026-11-12
 updated: 2026-11-12
@@ -148,24 +148,24 @@ If the probe passes, the implementer records the `claude` version and the eviden
 
 ## Acceptance criteria
 
-- [ ] No rule in any `L.DEFAULTS` rule list, and none in the effective `allowed_tools` /
+- [x] No rule in any `L.DEFAULTS` rule list, and none in the effective `allowed_tools` /
       `disallowed_tools` of a conductor or steward `build_plan`, ends in `:*`.
-- [ ] The four suffixes are `* nw/*:**`, `* wt/*:**`, `*:nw/*:**`, `*:wt/*:**`, each present for
+- [x] The four suffixes are `* nw/*:**`, `* wt/*:**`, `*:nw/*:**`, `*:wt/*:**`, each present for
       both `git push` and `git -C * push`: 8 rules, and no rule contains a `?`.
-- [ ] With the `_permitted` matcher, `git push origin nw/x:release`, `git push origin
+- [x] With the `_permitted` matcher, `git push origin nw/x:release`, `git push origin
       HEAD:nw/x:release`, `git push origin wt/x:v1`, `git push origin HEAD:wt/x:v1` and their
       `git -C /w push …` forms are denied, and the named deny rule is the new one.
-- [ ] With the same matcher, `git push origin nw/x`, `git push --force-with-lease=r:sha origin
+- [x] With the same matcher, `git push origin nw/x`, `git push --force-with-lease=r:sha origin
       HEAD:nw/x`, `git -C /w push origin wt/x` and `git -C /w push --force-with-lease=r:sha origin
       HEAD:wt/x` are still allowed.
-- [ ] Pushes to `main` / `master` (including `nw/x:main`, `HEAD:refs/heads/main`) stay denied, and the
+- [x] Pushes to `main` / `master` (including `nw/x:main`, `HEAD:refs/heads/main`) stay denied, and the
       count of `push` allow rules (24) and the unique-rule assertions are unchanged.
-- [ ] Real binary: a `claude` 2.1.318+ session started with the steward plan's flags prints no
+- [x] Real binary: a `claude` 2.1.318+ session started with the steward plan's flags prints no
       "reads its * literally" warning for any default rule, denies `git push origin nw/x:release`
       (listed in `permission_denials`, no remote ref created) and allows `git push origin nw/x`.
       If any of the three fails, the spec is not shipped with another spelling: the failure is
       recorded in As shipped and the spec is revised.
-- [ ] `docs/product/capabilities/agentic.md` states the no-trailing-`:*` rule.
+- [x] `docs/product/capabilities/agentic.md` states the no-trailing-`:*` rule.
 
 ## Test plan
 
@@ -208,15 +208,51 @@ If the probe passes, the implementer records the `claude` version and the eviden
 
 ## Definition of done
 
-- [ ] Acceptance criteria all met.
-- [ ] Test plan executed; affected tests pass (`python3 tools/affected_tests.py --run uv run
+- [x] Acceptance criteria all met.
+- [x] Test plan executed; affected tests pass (`python3 tools/affected_tests.py --run uv run
       pytest -q`); real-binary steps performed and noted in the spec.
-- [ ] `python3 tools/test_tiers.py --check` exits 0.
-- [ ] No regressions.
-- [ ] Spec body updated to match what shipped (spelling used, claude version, evidence).
-- [ ] `docs/LEDGER.md` regenerated (`python3 tools/spec_lint.py --write-ledger`) and
+- [x] `python3 tools/test_tiers.py --check` exits 0.
+- [x] No regressions.
+- [x] Spec body updated to match what shipped (spelling used, claude version, evidence).
+- [x] `docs/LEDGER.md` regenerated (`python3 tools/spec_lint.py --write-ledger`) and
       `python3 tools/spec_lint.py` exits 0.
 
 ## Open questions
 
 - None.
+
+### Test record (2026-11-12)
+
+- `uv run pytest -q tests/test_agentic_launch.py tests/test_conductor_git_guard.py
+  tests/test_claude_settings_allowlist.py`: pass (new tests: `test_nw_ref_with_destination_is_denied`,
+  `test_legitimate_pushes_stay_allowed_with_colon_suffix_rules`,
+  `test_no_default_rule_ends_in_legacy_prefix_form`; `test_each_guard_family_is_what_stops_the_command`
+  cases updated to `:**` plus four `git -C` cases).
+- `python3 tools/affected_tests.py --run uv run pytest -q`: 2922 passed. `python3 tools/test_tiers.py
+  --check` exits 0; `python3 tools/spec_lint.py` exits 0 (ledger regenerated). The full suite is left
+  to gating.
+
+### As shipped (2026-11-12)
+
+- Spelling shipped: `:**` (`* nw/*:**`, `* wt/*:**`, `*:nw/*:**`, `*:wt/*:**`), exactly as Design;
+  `_push_deny()` still yields 65 rules, 8 of them the new ones, none with a `?`, none ending in `:*`.
+- One test outside the named files changed: the launch-rules snapshot hash in
+  `test_verb_rules_snapshot_and_two_projects_launch_the_same_rules` (it hashes `disallowed_tools`)
+  moved from `a7c908c1fafd7b35` to `696d5e0d73993c23`, the expected effect of the 8 respelled rules.
+- Real-binary probe, `claude` 2.1.322 (>= 2.1.318), scratch repo + bare remote, argv lists from
+  `uv run nw queue steward-launch Meta-Tools --dry-run --json`, `--setting-sources project`,
+  `--permission-mode dontAsk`; the model was told to run exactly the quoted command:
+  - (b) `git push origin nw/x:release` and `git push origin nw/x:v1.0`: both listed in
+    `permission_denials` with the exact command, and no `release` / `v1.0` ref appeared on the
+    remote; `git push origin nw/x` ran and created `refs/heads/nw/x`;
+    `git push --force-with-lease=nw/x:abc123 origin HEAD:nw/x` passed permissions (it failed in git
+    on the fake sha, no denial). With the previous `:*` rules (same probe, before the change)
+    `nw/x:release` ran and pushed to the remote. A single-rule probe showed `Bash(git push *
+    nw/*:**)` and `…:v*` deny while `:?*`, `\:*` and `:* *` do not, so `:**` needed no fallback.
+  - (a) `claude -p` prints no rule warning in either state; the diagnostic is `claude doctor`
+    ("Permission rules that may not work as written"). Before: `Bash(git push * nw/*:*)` "mixes *
+    with the trailing :* prefix syntax, so it is matched as a literal prefix". After, for all 8
+    rules: an advisory "has a :* that is not at the end, so it is matched as a * wildcard ... It
+    already matches as a * wildcard". The literal-prefix warning is gone; this different advisory
+    (it states the rule works) is still listed by `claude doctor`, so AC6's "no literal-`*`
+    warning" holds as worded but the doctor output is not fully clean. See the follow-up idea.

@@ -604,7 +604,7 @@ def test_verb_rules_snapshot_and_two_projects_launch_the_same_rules(cfg, tmp_pat
         L.DEFAULTS["allowed_tools"], L.DEFAULTS["steward_allowed_tools"],
         L.DEFAULTS["disallowed_tools"], list(L._CONDUCTOR_WIP_VERBS), L.STEWARD_CURSOR_POLICY,
     ]).encode()).hexdigest()[:16]
-    assert snap == "a7c908c1fafd7b35"
+    assert snap == "696d5e0d73993c23"  # SPEC-0594: the 8 `:**` push deny rules
     s_allow, s_deny = _eff(cfg, "steward")
     assert rule_decide('git -C /w rm -f --ignore-unmatch -- f "x log y"', s_allow, s_deny) == "deny"
     first = _eff(cfg, "conductor")
@@ -865,10 +865,14 @@ def _hits(command, rules):
     ("git push origin wt/x feature/y", "Bash(git push * wt/* *)"),
     ("git push origin nw/x master --verbose", "Bash(git push * master *)"),
     ("git push --force-with-lease=x origin nw/y -f", "Bash(git push * -f)"),
-    ("git push origin nw/x:heads/main", "Bash(git push * nw/*:*)"),
-    ("git push origin HEAD:nw/x:release", "Bash(git push *:nw/*:*)"),
-    ("git push origin wt/x:release", "Bash(git push * wt/*:*)"),
-    ("git push origin HEAD:wt/x:release", "Bash(git push *:wt/*:*)"),
+    ("git push origin nw/x:heads/main", "Bash(git push * nw/*:**)"),
+    ("git push origin HEAD:nw/x:release", "Bash(git push *:nw/*:**)"),
+    ("git push origin wt/x:release", "Bash(git push * wt/*:**)"),
+    ("git push origin HEAD:wt/x:release", "Bash(git push *:wt/*:**)"),
+    ("git -C /w push origin nw/x:heads/main", "Bash(git -C * push * nw/*:**)"),
+    ("git -C /w push origin HEAD:nw/x:release", "Bash(git -C * push *:nw/*:**)"),
+    ("git -C /w push origin wt/x:release", "Bash(git -C * push * wt/*:**)"),
+    ("git -C /w push origin HEAD:wt/x:release", "Bash(git -C * push *:wt/*:**)"),
     ("git push --force-with-lease=a b origin nw/x", "Bash(git push --force-with-lease=* * origin *)"),
     ("git -C /w config k touch push origin nw/y", "Bash(git -C * * push *)"),
     ("git -C /w -c core.sshCommand=sh fetch origin", "Bash(git * -c *)"),
@@ -895,6 +899,52 @@ def test_each_guard_family_is_what_stops_the_command(cfg, cmd, rule):
     hit = _hits(cmd, deny)
     assert rule in hit, hit
     assert _permitted(cmd, allow, [r for r in deny if r not in hit]) is True
+
+
+@pytest.mark.parametrize("role", ["conductor", "steward"])
+@pytest.mark.parametrize("cmd", [
+    "git push origin nw/x:release", "git push origin HEAD:nw/x:release",
+    "git push origin wt/x:v1", "git push origin HEAD:wt/x:v1",
+    "git -C /w push origin nw/x:release", "git -C /w push origin HEAD:nw/x:release",
+    "git -C /w push origin wt/x:v1", "git -C /w push origin HEAD:wt/x:v1",
+    # SPEC-0594: main / master destinations behind a namespaced ref stay denied
+    "git push origin nw/x:main", "git push origin HEAD:nw/x:refs/heads/main",
+    "git -C /w push origin wt/x:master", "git -C /w push origin HEAD:wt/x:refs/heads/main"])
+def test_nw_ref_with_destination_is_denied(cfg, role, cmd):
+    """SPEC-0594: the `:**` suffixes deny a push of an allowed ref to any `:<dst>`."""
+    allow, deny = _eff(cfg, role)
+    assert not _permitted(cmd, allow, deny)
+    assert _hits(cmd, deny)
+
+
+@pytest.mark.parametrize("role", ["conductor", "steward"])
+@pytest.mark.parametrize("cmd", [
+    "git push origin nw/x", "git push --force-with-lease=r:sha origin HEAD:nw/x",
+    "git push --force-with-lease=nw/x:abc123 origin HEAD:nw/x",
+    "git -C /w push origin wt/x", "git -C /w push --force-with-lease=r:sha origin HEAD:wt/x",
+    "git -C /w push --force-with-lease=wt/x:abc123 origin HEAD:wt/x"])
+def test_legitimate_pushes_stay_allowed_with_colon_suffix_rules(cfg, role, cmd):
+    """SPEC-0594: the pinned-lease spelling (`nw/x:<sha>` before `origin`) is not a `:<dst>`."""
+    allow, deny = _eff(cfg, role)
+    assert _permitted(cmd, allow, deny)
+
+
+def test_no_default_rule_ends_in_legacy_prefix_form(cfg):
+    """SPEC-0594: Claude Code reads a rule ending in `:*` as the legacy prefix form (its `*`
+    literal), so no default rule, and no effective launch rule, may end that way."""
+    def bad(rules):
+        return [r for r in rules if r.startswith("Bash(") and r.endswith(":*)")]
+    for key, val in L.DEFAULTS.items():
+        if isinstance(val, list):
+            assert not bad([r for r in val if isinstance(r, str)]), key
+    for role in ("conductor", "steward"):
+        allow, deny = _eff(cfg, role)
+        assert not bad(allow) and not bad(deny), role
+    deny = L._push_deny()
+    for pre in ("git push", "git -C * push"):
+        for suf in ("* nw/*:**", "* wt/*:**", "*:nw/*:**", "*:wt/*:**"):
+            assert f"Bash({pre} {suf})" in deny
+    assert not any("?" in r for r in deny)
 
 
 # SPEC-0382: the conductor never blocks on the human

@@ -929,6 +929,8 @@ Default permission rules (held in `launch.py`, a configured `allowed_tools` /
   namespaced ref (`nw/x:release`, `nw/x:heads/main`, a tag), a second remote or token hidden in
   a `--force-with-lease=` value, and any `git -C <dir>` command whose ` push ` is not the
   subcommand are denied too.
+  Default rules never end in `:*`, because Claude Code reads that as the legacy prefix form; a
+  configured rule list that ends in `:*` is read as a prefix with a literal `*`.
 - **Steward rebase set.** `steward_allowed_tools` (top level or `steward:`; `[]` removes it) is
   added to the allow list for stewards only: `git fetch|rebase|add|commit|restore` and
   `checkout --ours|--theirs`, plain or with `-C <dir>`. It is merged into `--allowedTools`.

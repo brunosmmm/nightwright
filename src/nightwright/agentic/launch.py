@@ -79,7 +79,7 @@ _PUSH_DENY = (
     "* nw/* *", "* wt/* *", "*:nw/* *", "*:wt/* *")
 # Added after review: `nw/x:<dst>` (any destination, incl. partly qualified `heads/main`, tags),
 # `heads/main` spellings, and tokens swallowed by `--force-with-lease=*` before `origin`.
-_PUSH_DENY += ("* nw/*:*", "* wt/*:*", "*:nw/*:*", "*:wt/*:*", "*heads/main*", "*heads/master*",
+_PUSH_DENY += ("* nw/*:**", "* wt/*:**", "*:nw/*:**", "*:wt/*:**", "*heads/main*", "*heads/master*",
                "--force-with-lease=* * origin *")
 # `git -C *` can swallow any subcommand, so ` push ` must be the 4th token (`git -C <dir> push`)
 _PUSH_DENY_C_ONLY = ("* push *",)
