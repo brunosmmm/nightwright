@@ -252,7 +252,7 @@ def hosts_enrol(cfg):
         raise click.ClickException("empty enrolment blob on stdin")
     try:
         doc = json.loads(line)
-    except ValueError as e:
+    except (ValueError, RecursionError) as e:
         raise click.ClickException(f"not JSON: {e}")
     if not isinstance(doc, dict):
         raise click.ClickException("enrolment blob must be a JSON object")

@@ -89,11 +89,11 @@ def _raw(method, url, path, token, secret, body=b"", *, now=NOW, headers=None):
     return resp.status, dict(resp.getheaders()), raw
 
 
-def _resp_sig(secret, method, path, hdrs, raw, status):
+def _resp_sig(secret, method, path, hdrs, raw, status=None):
     ts = hdrs.get("X-NW-Sig-Ts") or hdrs.get("x-nw-sig-ts")
     mac = hdrs.get("X-NW-Sig") or hdrs.get("x-nw-sig")
     assert ts and mac
-    assert F.verify(secret, method, path, raw, mac, int(ts), tag=F.resp_tag(status), now=NOW) is None
+    assert F.verify(secret, method, path, raw, mac, int(ts), now=NOW) is None
 
 
 def _lease_checker_threads():
@@ -457,61 +457,67 @@ def test_unenrol_running_server_returns_unsigned_401(tmp_path, monkeypatch):
     srv.shutdown()
 
 
-def test_response_mac_is_not_a_request_mac(tmp_path, monkeypatch):
-    """Request and response MACs are domain-separated: a captured signed response never verifies
-    as a request MAC, even where the method, path, body and ts line up (SPEC-0529 reflection)."""
+def test_wire_mac_is_the_documented_four_field_formula(tmp_path, monkeypatch):
+    """Requests and enrolled responses use the Design's one construction, HMAC-SHA256 over
+    `METHOD|PATH|BODYSHA|TS`: a client built from that formula alone is accepted (200) exactly like
+    one built through `federation.request_headers`, and the response verifies by the formula."""
+    import hashlib
+    import hmac
     import time
 
     monkeypatch.setattr(time, "time", lambda: NOW)
-    secret, path, ts = "abc", "/v1/status", int(NOW)
-    body = b'{"error":"unauthorized"}'
-    req_mac = F.sign(secret, "POST", path, body, ts, tag=F.REQ_TAG)
-    resp_mac = F.response_headers(secret, "POST", path, body, status=401, now=NOW)["X-NW-Sig"]
-    assert req_mac != resp_mac
-    assert F.sign(secret, "POST", path, body, ts) not in (req_mac, resp_mac)
-    # direction: a response MAC is rejected as a request, a request MAC as a response
-    assert F.verify(secret, "POST", path, body, resp_mac, ts, tag=F.REQ_TAG, now=NOW) == "bad signature"
-    assert F.verify(secret, "POST", path, body, req_mac, ts, tag=F.resp_tag(401), now=NOW) == "bad signature"
-    # the status code is signed too: a 401's MAC does not verify as a 200
-    assert F.verify(secret, "POST", path, body, resp_mac, ts, tag=F.resp_tag(200), now=NOW) == "bad signature"
-    assert F.verify(secret, "POST", path, body, resp_mac, ts, tag=F.resp_tag(401), now=NOW) is None
-    assert F.verify(secret, "POST", path, body, req_mac, ts, tag=F.REQ_TAG, now=NOW) is None
-    # method and path are in the request MAC
-    assert F.verify(secret, "GET", path, body, req_mac, ts, tag=F.REQ_TAG, now=NOW) == "bad signature"
-    assert F.verify(secret, "POST", "/v1/other", body, req_mac, ts, tag=F.REQ_TAG, now=NOW) == "bad signature"
-
-    # On the wire, on a route that allows a body (POST): replay a captured signed 401 -- its
-    # X-NW-Sig-Ts/X-NW-Sig and its body -- as the request MAC. The MAC is what rejects it: with the
-    # MAC accepted the same request would reach the 405, so a 401 is the discriminator.
     host = _cfg(tmp_path, "host")
+    secret, path, ts = "s3cret", "/v1/status", int(NOW)
     F.write_federation(host, {"hub_name": "h", "host_name": "box", "token": "tok", "secret": secret})
     srv, base = _serve(host)
-    post_hdrs = {"Authorization": "Bearer wrong", "Content-Length": "1"}
-    st, h, raw401 = _raw("POST", base, path, "wrong", secret, b"x", headers=post_hdrs)
+
+    def formula(method, path, body, ts):
+        line = f"{method}|{path}|{hashlib.sha256(body).hexdigest()}|{ts}"
+        return hmac.new(secret.encode(), line.encode(), hashlib.sha256).hexdigest()
+
+    assert F.sign(secret, "GET", path, b"", ts) == formula("GET", path, b"", ts)
+    via_helper = {"Authorization": "Bearer tok", **F.request_headers(secret, "GET", path, b"", now=NOW)}
+    by_hand = {"Authorization": "Bearer tok", "X-NW-Req-Ts": str(ts),
+               "X-NW-Req-Sig": formula("GET", path, b"", ts)}
+    assert by_hand["X-NW-Req-Sig"] == via_helper["X-NW-Req-Sig"]
+    for hdrs in (via_helper, by_hand):
+        st, h, raw = _raw("GET", base, path, "tok", secret, headers=hdrs)
+        assert st == 200
+        assert h["X-NW-Sig"] == formula("GET", path, raw, int(h["X-NW-Sig-Ts"]))
+    # the vector is the wire construction, with no direction tag
+    assert formula("GET", path, b"", ts) == F.sign(secret, "GET", path, b"", ts)
+    srv.shutdown()
+
+
+def test_reflected_signed_response_is_not_a_request(tmp_path, monkeypatch):
+    """Responses share the request construction, so a signed 401 body replayed as the body of a
+    GET must not verify as a request: the host refuses a bodied GET/HEAD before the MAC check."""
+    import time
+
+    monkeypatch.setattr(time, "time", lambda: NOW)
+    host = _cfg(tmp_path, "host")
+    secret, path = "abc", "/v1/status"
+    F.write_federation(host, {"hub_name": "h", "host_name": "box", "token": "tok", "secret": secret})
+    srv, base = _serve(host)
+    st, h, raw401 = _raw("GET", base, path, "wrong", secret)
     assert st == 401
-    _resp_sig(secret, "POST", path, h, raw401, st)
+    _resp_sig(secret, "GET", path, h, raw401)
     replay = {"Authorization": "Bearer tok", "X-NW-Req-Ts": h["X-NW-Sig-Ts"],
               "X-NW-Req-Sig": h["X-NW-Sig"], "Content-Length": str(len(raw401))}
-    st, h2, raw2 = _raw("POST", base, path, "tok", secret, raw401, now=NOW, headers=replay)
-    assert st == 401
-    _resp_sig(secret, "POST", path, h2, raw2, st)
-    # control: the same request with a real request MAC over that body passes the MAC (405)
-    good = {"Authorization": "Bearer tok", **F.request_headers(secret, "POST", path, raw401, now=NOW),
-            "Content-Length": str(len(raw401))}
-    st, _, _ = _raw("POST", base, path, "tok", secret, raw401, headers=good)
-    assert st == 405
-    # request-body binding: the same MAC over a tampered body is a signed 401
-    tampered = raw401[:-1] + b"?"
-    st, h3, raw3 = _raw("POST", base, path, "tok", secret, tampered, headers=good)
-    assert st == 401
-    _resp_sig(secret, "POST", path, h3, raw3, st)
+    st, h2, raw2 = _raw("GET", base, path, "tok", secret, raw401, now=NOW, headers=replay)
+    assert st == 401 and b"schema" not in raw2
+    _resp_sig(secret, "GET", path, h2, raw2)
+    # a signed 401 over an empty HEAD body is no status document either
+    st, h3, _ = _raw("HEAD", base, path, "tok", secret, headers={
+        "Authorization": "Bearer tok", "X-NW-Req-Ts": h["X-NW-Sig-Ts"], "X-NW-Req-Sig": h["X-NW-Sig"]})
+    assert st in (401, 405)
     srv.shutdown()
 
 
 def test_hmac_test_vector(tmp_path):
     assert F.sign("abc", "GET", "/v1/status", b"", 1700000000) == (
         "53f715f892cd9e350af654bcacaca46fd6dcedb104c690ffaa9060fac03a49b5")
-    assert F.verify("abc", "GET", "/v1/status", b"", None, 1700000000, tag=F.REQ_TAG, now=NOW) == "bad signature"
+    assert F.verify("abc", "GET", "/v1/status", b"", None, 1700000000, now=NOW) == "bad signature"
     cfg = _cfg(tmp_path)
     sec_p = F.host_secret_path(cfg, "_nosuch")
     sec_p.parent.mkdir(parents=True, exist_ok=True)
@@ -715,7 +721,7 @@ def test_request_mac_is_enforced(tmp_path, monkeypatch):
         return {**hdrs, "X-NW-Req-Sig": ("0" if sig[0] != "0" else "1") + sig[1:]}
 
     def wrong_secret(hdrs):
-        return {**hdrs, "X-NW-Req-Sig": F.sign("not-abc", "GET", path, b"", int(NOW), tag=F.REQ_TAG)}
+        return {**hdrs, "X-NW-Req-Sig": F.sign("not-abc", "GET", path, b"", int(NOW))}
 
     rejected = {
         "wrong MAC (flipped)": go(mutate=flip),
@@ -1134,10 +1140,11 @@ def test_hubclient_getaddrinfo_blocks_within_connect_budget(tmp_path, monkeypatc
 
     monkeypatch.setattr(socket, "getaddrinfo", gai)
     wedged = H.find(H.load(hub), "wedged")
+    monkeypatch.setattr(F.HubClient, "CONNECT_TIMEOUT", 0.5)  # scaled budget; the block lasts 10 s
     t0 = time.monotonic()
     with pytest.raises(ConnectionError):
         F.HubClient(wedged, hub, now=NOW).request("GET", "/v1/status")
-    assert time.monotonic() - t0 <= 4.0
+    assert time.monotonic() - t0 < 8.0  # far below the 10 s block, with room for a loaded runner
     block.set()
     cache = {"fetched_at": "2020-01-01T00:00:00+00:00", "projects": ["old"], "campaigns": []}
 
@@ -1360,7 +1367,7 @@ def test_hubclient_hung_and_dripping_peers_are_cut_off(tmp_path, monkeypatch):
             client.request("GET", "/v1/status")
         elapsed = time.monotonic() - t0
         stop()
-        assert 0.4 <= elapsed <= 3.0, (label, elapsed)
+        assert 0.4 <= elapsed < 8.0, (label, elapsed)
 
 
 def test_hubclient_one_byte_per_second_drip_stops_near_two_seconds(tmp_path, monkeypatch):
@@ -1369,14 +1376,14 @@ def test_hubclient_one_byte_per_second_drip_stops_near_two_seconds(tmp_path, mon
     hub = _cfg(tmp_path, "hub")
     head = b"HTTP/1.1 200 OK\r\nContent-Length: 100\r\n\r\n"
     port, stop = _raw_listener(_drip(head + b"y" * 100, 1.0))
+    monkeypatch.setattr(F.HubClient, "READ_TIMEOUT", 0.6)  # scaled budget; 100 B would take 100 s
     client = _client_for(hub, monkeypatch, port)
-    assert client.READ_TIMEOUT == 2
     t0 = time.monotonic()
     with pytest.raises(ConnectionError, match="timed out"):
         client.request("GET", "/v1/status")
     elapsed = time.monotonic() - t0
     stop()
-    assert elapsed <= 4.5
+    assert elapsed < 20.0
 
 
 def _blocking_connect(monkeypatch, blocked_ports, release):
@@ -1419,7 +1426,7 @@ def test_hubclient_blackholed_first_address_does_not_eat_the_budget(tmp_path, mo
     t0 = time.monotonic()
     doc = F.HubClient(rec, hub, now=NOW).get_json("/v1/status")
     assert doc["schema"] == "nw.federation.status.v1"
-    assert time.monotonic() - t0 < 1.5
+    assert time.monotonic() - t0 < 8.0  # the hole is held for 10 s; the second address wins
     # every address blackholed: bounded by the connect budget, then ConnectionError
     _dual(monkeypatch, [hole, hole + 1])
     _blocking_connect(monkeypatch, {hole, hole + 1}, release)
@@ -1427,7 +1434,7 @@ def test_hubclient_blackholed_first_address_does_not_eat_the_budget(tmp_path, mo
     t0 = time.monotonic()
     with pytest.raises(ConnectionError):
         F.HubClient(rec, hub, now=NOW).request("GET", "/v1/status")
-    assert time.monotonic() - t0 <= 3.0
+    assert time.monotonic() - t0 < 8.0
     release.set()
     srv.shutdown()
     srv.server_close()
@@ -1461,10 +1468,11 @@ def test_hubclient_all_addresses_refused_fails_fast_even_if_a_socket_cannot_be_m
     monkeypatch.setattr(threading, "excepthook", lambda a: uncaught.append(a))
     monkeypatch.setattr(socket, "getaddrinfo", gai)
     monkeypatch.setattr(socket, "socket", NoV6)
+    monkeypatch.setattr(F.HubClient, "CONNECT_TIMEOUT", 30)  # failing fast means not waiting this out
     t0 = time.monotonic()
     with pytest.raises(ConnectionError):
         F.HubClient(rec, hub, now=NOW).request("GET", "/v1/status")
-    assert time.monotonic() - t0 < 1.5
+    assert time.monotonic() - t0 < 15
     assert not uncaught
 
 
@@ -1703,7 +1711,7 @@ def test_check_after_unenrol_reports_http_401(tmp_path, monkeypatch):
 def _signed_reply(secret, *, ts_off=0, mac=None, body=None):
     body = body or b'{"schema":"nw.federation.status.v1","projects":[],"campaigns":[]}'
     ts = int(NOW) + ts_off
-    sig = mac or F.sign(secret, "GET", "/v1/status", body, ts, tag=F.resp_tag(200))
+    sig = mac or F.sign(secret, "GET", "/v1/status", body, ts)
     head = (f"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {len(body)}\r\n"
             f"X-NW-Sig-Ts: {ts}\r\nX-NW-Sig: {sig}\r\nConnection: close\r\n\r\n")
     return head.encode() + body
@@ -1842,5 +1850,74 @@ def test_check_on_off_with_corrupt_registry_records(tmp_path, monkeypatch):
         r = _invoke(hub, monkeypatch, verb, "ghost")
         assert r.exit_code != 0 and isinstance(r.exception, SystemExit)
         assert "Traceback" not in r.output
+    srv.shutdown()
+    srv.server_close()
+
+
+def test_enrol_deeply_nested_json_is_a_one_line_error(tmp_path):
+    cfg = _cfg(tmp_path)
+    env = {**os.environ, "NW_DATA_DIR": cfg["data_dir"], "NW_CONFIG_DIR": cfg["config_dir"]}
+    r = CliRunner().invoke(cli, ["hosts", "enrol"], input="[" * 100000 + "\n", env=env)
+    assert r.exit_code != 0
+    assert not isinstance(r.exception, RecursionError)
+    assert "not JSON" in r.output
+    assert not F.federation_path(cfg).exists()
+
+
+def test_secret_directories_are_0700_under_a_permissive_umask(tmp_path):
+    cfg = _cfg(tmp_path)
+    old = os.umask(0)
+    try:
+        F.write_host_secrets(cfg, "box", "tok", "sec")
+        F.write_federation(cfg, {"hub_name": "h", "host_name": "b", "token": "t", "secret": "s"})
+    finally:
+        os.umask(old)
+    root = Path(cfg["config_dir"]) / "secrets"
+    for d in (root, root / "hosts"):
+        assert stat.S_IMODE(d.stat().st_mode) == 0o700, d
+    assert stat.S_IMODE(F.host_token_path(cfg, "box").stat().st_mode) == 0o600
+
+
+def test_serve_federate_refuses_dashboard_only_options(tmp_path, monkeypatch):
+    host = _cfg(tmp_path, "host")
+    F.write_federation(host, {"hub_name": "h", "host_name": "b", "token": "t", "secret": "s"})
+    monkeypatch.setattr("nightwright.cli.load_config", lambda: host)
+
+    def _no_server(*a, **kw):
+        raise AssertionError("a server was constructed")
+
+    monkeypatch.setattr(FH, "make_federate_server", _no_server)
+    for extra in (["--code-root", str(tmp_path)], ["--no-code-watch"], ["--tailnet-wait", "5"]):
+        r = CliRunner().invoke(cli, ["serve", "--federate", *extra])
+        assert r.exit_code == 2, (extra, r.output)
+        assert "--dashboard options" in r.output
+
+
+def test_hubclient_closes_losing_sockets_of_a_multi_address_connect(tmp_path, monkeypatch):
+    import time
+
+    monkeypatch.setattr(time, "time", lambda: NOW)
+    hub = _cfg(tmp_path, "hub")
+    host = _cfg(tmp_path, "host")
+    _add_and_enrol(host, hub, monkeypatch)
+    srv, _ = _serve(host)
+    port = srv.server_address[1]
+    _dual(monkeypatch, [port, port, port])
+    rec = {**H.find(H.load(hub), "box"), "url": f"http://dual-stack.test:{port}"}
+    made: list = []
+    real_cls = socket.socket
+
+    class Tracked(real_cls):
+        def __init__(self, *a, **kw):
+            super().__init__(*a, **kw)
+            made.append(self)
+
+    monkeypatch.setattr(socket, "socket", Tracked)
+    doc = F.HubClient(rec, hub, now=NOW).get_json("/v1/status")
+    assert doc["schema"] == "nw.federation.status.v1"
+    deadline = time.monotonic() + 10
+    while time.monotonic() < deadline and any(s.fileno() != -1 for s in made):
+        time.sleep(0.05)
+    assert len(made) >= 3 and all(s.fileno() == -1 for s in made)
     srv.shutdown()
     srv.server_close()

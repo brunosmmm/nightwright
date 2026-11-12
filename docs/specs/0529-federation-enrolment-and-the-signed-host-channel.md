@@ -2,7 +2,7 @@
 id: SPEC-0529
 title: "Federation enrolment and the signed host channel"
 status: done
-updated: 2026-11-10
+updated: 2026-11-12
 owner: user
 created: 2026-11-10
 kind: feature
@@ -594,6 +594,16 @@ any other writer).
 - `python3 tools/test_tiers.py --check` — exit 0.
 - Full suite left to gating.
 
+### Test record (2026-11-12, review loop 8)
+
+- Reverted the direction-tagged wire MACs to the Design's four-field construction; added
+  `test_wire_mac_is_the_documented_four_field_formula` and `test_reflected_signed_response_is_not_a_request`
+  (replacing `test_response_mac_is_not_a_request_mac`), plus tests for the enrol `RecursionError`, 0700
+  `secrets/` under umask 0, `serve --federate` dashboard-only options, and the multi-address socket close.
+- `uv run pytest tests/test_federation_channel.py tests/test_rich_output_guard.py -q` — 53 passed.
+- `python3 tools/test_tiers.py --check` — exit 0.
+- Full suite left to gating.
+
 ### As shipped (2026-11-10)
 
 Replay with two empty directory pairs (`HUB_*` and `HOST_*` below stand for the `NW_DATA_DIR` /
@@ -639,14 +649,21 @@ Deviations from the Design wording, recorded here because Design is frozen:
   `Transfer-Encoding`) with a signed 401 before the MAC check. Responses are signed with the same
   construction as requests, so without this a signed error body for `GET /v1/status` was a valid
   request MAC for that method and path, and a bearer-token holder without the secret could replay
-  it. `test_enrolled_request_auth` now covers the replay. Superseded in review loop 7: the MACs are now domain-separated on the wire (see the next item).
-- Request and response MACs are domain-separated (review loop 7). `federation.sign(..., tag=)`
-  prepends a direction tag to the four-field string: `nw-req` on requests, `nw-resp-<status>` on
-  responses (so a response MAC also binds its status code); `verify` requires the tag. `sign` with
-  no tag is the bare four-field construction, so the frozen `abc` vector still holds for it, but
-  the wire never uses it. The wire MACs differ from the Design's four-field text; this is a
-  deliberate deviation to close the signed-401 reflection oracle. The GET/HEAD-with-body refusal
-  stays as defence in depth.
+  it. `test_enrolled_request_auth` now covers the replay. (Review loop 7's domain-separated MACs were reverted in loop 3 of the second pass; see the next item.)
+- The wire MAC is the Design's single four-field construction, HMAC-SHA256 over
+  `METHOD|PATH|BODYSHA|TS`, for requests and enrolled responses alike. A direction-tagged variant
+  (`nw-req|...`, `nw-resp-<status>|...`) was tried in review loop 7 and reverted: it made a client
+  built from the Design's `sign(secret, method, path, body, ts)` unusable against the host, and
+  Design is frozen. The reflection oracle stays closed by the GET/HEAD-with-body refusal above (a
+  signed response body can only be replayed as a request MAC on a request that carries that body;
+  `POST /v1/status` reaches the signed 405 and no data). `test_wire_mac_is_the_documented_four_field_formula`
+  checks that a hand-built formula client and `federation.request_headers` both get 200.
+- Review loop 3 fixes: `nw hosts enrol` turns a `RecursionError` from a deeply nested line into the
+  one-line "not JSON" error; `HubClient._connect` closes every losing socket of a multi-address
+  connect; directories created under `secrets/` are 0700 whatever the umask; `serve --federate`
+  refuses `--code-root`, `--no-code-watch` and `--tailnet-wait` (dashboard options) as a usage
+  error; the wall-clock HubClient tests scale `READ_TIMEOUT`/`CONNECT_TIMEOUT` down and use
+  generous upper bounds so a loaded runner cannot fail them.
 - `nw hosts check` reports a status document whose `projects` is not a list as
   `NAME unreachable: bad status document`, and a registry record without a `name` as
   `? unreachable: malformed host record`; it continues with the remaining hosts. `add`/`rm`

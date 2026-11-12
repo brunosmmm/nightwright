@@ -832,7 +832,7 @@ progress. This is the single place to see *what has been decided* and *what is i
 | [SPEC-0525](./specs/0525-implementer-and-spec-writer-prompts-must-say-new.md) | Implementer and spec-writer prompts require one speed-tier marker | feature | done | M9: agentic workflow | 2026-11-09 |
 | [SPEC-0526](./specs/0526-nw-campaign-run-id-run-crashes-with-a-rich-markup.md) | nw campaign run renders verdict text that contains brackets | feature | done | — | 2026-11-09 |
 | [SPEC-0528](./specs/0528-cli-signal-handlers-scoped-to-the-command.md) | CLI signal handlers scoped to the command: herdr watch, gate run, campaign tail restore the previous handler; bounded in-process watch loop | feature | done | M9: agentic workflow | 2026-11-10 |
-| [SPEC-0529](./specs/0529-federation-enrolment-and-the-signed-host-channel.md) | Federation enrolment and the signed host channel | feature | done | — | 2026-11-10 |
+| [SPEC-0529](./specs/0529-federation-enrolment-and-the-signed-host-channel.md) | Federation enrolment and the signed host channel | feature | done | — | 2026-11-12 |
 | [SPEC-0531](./specs/0531-spec-review-precheck-skips-review-on-a-stale-spec.md) | Spec-review precheck scopes already-accepted to the current spec | feature | done | — | 2026-11-10 |
 | [SPEC-0534](./specs/0534-worker-update-when-idle-never-completes-workers.md) | Reconcile a draining worker's confirmed-gone remote job | feature | done | — | 2026-11-10 |
 | [SPEC-0535](./specs/0535-specs-cite-the-public-request-they-come-from.md) | Specs cite the public request they come from | feature | done | — | 2026-11-10 |

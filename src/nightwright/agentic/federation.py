@@ -43,10 +43,25 @@ def new_host_credential() -> tuple[str, str]:
     return secrets.token_urlsafe(32), secrets.token_hex(32)
 
 
+def _mkdir_private(d: Path) -> None:
+    """`mkdir -p` where every directory this call creates is 0700 (`mkdir(mode=)` only covers the
+    leaf, and the umask can widen it), so a fresh `secrets/` is not left at the umask default."""
+    missing = []
+    while not d.exists():
+        missing.append(d)
+        d = d.parent
+    for m in reversed(missing):
+        try:
+            m.mkdir(mode=0o700)
+        except FileExistsError:
+            continue
+        os.chmod(m, 0o700)
+
+
 def _write_private_fsync(path: Path, text: str) -> None:
     """`PJ.write_private` plus an fsync of the temp file before the rename, so a crash cannot
     leave the registry naming a host whose secret file is empty."""
-    path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    _mkdir_private(path.parent)
     tmp = path.with_name(f".{path.name}.{os.getpid()}.tmp")
     fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
     try:
@@ -124,32 +139,20 @@ def _body_sha(body: bytes) -> str:
     return hashlib.sha256(body).hexdigest() if body else EMPTY_BODY_SHA
 
 
-def sign(secret: str, method: str, path: str, body: bytes, ts: int, *, tag: str = "") -> str:
-    """Lowercase hex HMAC for the four-tuple. With `tag` empty this is the bare four-field
-    construction (the frozen `abc` vector); the wire always passes a direction tag (`REQ_TAG`, or
-    `resp_tag(status)`) that is prepended to the signed string, so a request MAC and a response MAC
-    over the same method, path, body and ts are different values."""
+def sign(secret: str, method: str, path: str, body: bytes, ts: int) -> str:
+    """Lowercase hex HMAC-SHA256 over `METHOD|PATH|BODYSHA|TS` (the Design's four fields). Requests
+    and enrolled responses use this one construction."""
     line = f"{method.upper()}|{path}|{_body_sha(body)}|{ts}"
-    if tag:
-        line = f"{tag}|{line}"
     return hmac.new(secret.encode("utf-8"), line.encode(), hashlib.sha256).hexdigest()
 
 
-REQ_TAG = "nw-req"
-
-
-def resp_tag(status: int) -> str:
-    return f"nw-resp-{int(status)}"
-
-
 def verify(secret: str, method: str, path: str, body: bytes, mac: str, ts: int,
-           *, tag: str, now: float | None = None) -> str | None:
-    """Why the MAC is invalid, else None. `tag` is required: a MAC only verifies in the
-    direction it was signed for."""
+           *, now: float | None = None) -> str | None:
+    """Why the MAC is invalid, else None."""
     now = time.time() if now is None else now
     if abs(int(now) - int(ts)) > SKEW_S:
         return "stale signature"
-    want = sign(secret, method, path, body, ts, tag=tag)
+    want = sign(secret, method, path, body, ts)
     try:
         good = isinstance(mac, str) and hmac.compare_digest(mac, want)
     except (TypeError, ValueError):
@@ -162,14 +165,13 @@ def verify(secret: str, method: str, path: str, body: bytes, mac: str, ts: int,
 def request_headers(secret: str, method: str, path: str, body: bytes, *,
                     now: float | None = None) -> dict[str, str]:
     ts = int(now if now is not None else time.time())
-    return {"X-NW-Req-Ts": str(ts), "X-NW-Req-Sig": sign(secret, method, path, body, ts, tag=REQ_TAG)}
+    return {"X-NW-Req-Ts": str(ts), "X-NW-Req-Sig": sign(secret, method, path, body, ts)}
 
 
-def response_headers(secret: str, method: str, path: str, body: bytes, *, status: int = 200,
+def response_headers(secret: str, method: str, path: str, body: bytes, *,
                      now: float | None = None) -> dict[str, str]:
     ts = int(now if now is not None else time.time())
-    return {"X-NW-Sig-Ts": str(ts),
-            "X-NW-Sig": sign(secret, method, path, body, ts, tag=resp_tag(status))}
+    return {"X-NW-Sig-Ts": str(ts), "X-NW-Sig": sign(secret, method, path, body, ts)}
 
 
 class HubClient:
@@ -235,7 +237,7 @@ class HubClient:
         return addrs
 
     def _try_connect_one(self, family, stype, proto, sockaddr, deadline: float,
-                         out: list, lock: threading.Lock) -> None:
+                         out: list, lock: threading.Lock, state: dict) -> None:
         remaining = deadline - time.monotonic()
         if remaining <= 0:
             return
@@ -245,7 +247,10 @@ class HubClient:
             sock.settimeout(remaining)
             sock.connect(sockaddr)
             with lock:
-                out.append(("ok", sock))
+                if not state["done"]:
+                    out.append(("ok", sock))
+                    return
+            sock.close()  # the race was already decided: a late winner is closed, not leaked
         except OSError as e:
             if sock is not None:
                 sock.close()
@@ -270,28 +275,46 @@ class HubClient:
                 raise ConnectionError(f"{type(e).__name__}: {e}") from e
         results: list = []
         lock = threading.Lock()
+        state = {"done": False}
         threads: list[threading.Thread] = []
         for family, stype, proto, _canon, sockaddr in addrs:
             t = threading.Thread(
                 target=self._try_connect_one,
-                args=(family, stype, proto, sockaddr, deadline, results, lock),
+                args=(family, stype, proto, sockaddr, deadline, results, lock, state),
                 daemon=True,
             )
             t.start()
             threads.append(t)
+        winner: socket.socket | None = None
         last: OSError | None = None
         seen = 0
-        while time.monotonic() < deadline:
+        try:
+            while winner is None and time.monotonic() < deadline:
+                with lock:
+                    pending = results[seen:]
+                    seen = len(results)
+                for kind, val in pending:
+                    if kind == "ok":
+                        if winner is None:
+                            winner = val
+                        else:
+                            val.close()
+                    else:
+                        last = val
+                if winner is not None:
+                    break
+                if seen >= len(addrs) and all(not t.is_alive() for t in threads):
+                    break
+                time.sleep(min(0.05, max(0, deadline - time.monotonic())))
+        finally:
             with lock:
-                pending = results[seen:]
-                seen = len(results)
-            for kind, val in pending:
-                if kind == "ok":
-                    return val
-                last = val
-            if seen >= len(addrs) and all(not t.is_alive() for t in threads):
-                break
-            time.sleep(min(0.05, max(0, deadline - time.monotonic())))
+                state["done"] = True
+                # Close every success the loop did not take (found between the last poll and now).
+                for kind, val in results[seen:]:
+                    if kind == "ok" and val is not winner:
+                        val.close()
+        if winner is not None:
+            return winner
         if last is not None:
             raise ConnectionError(f"{type(last).__name__}: {last}") from last
         raise ConnectionError("TimeoutError: timed out")
@@ -369,7 +392,7 @@ class HubClient:
         if (not ts_raw or not str(ts_raw).isascii() or not str(ts_raw).isdigit()
                 or not mac):
             raise ConnectionError("missing response signature")
-        why = verify(self.secret, method, target, raw, mac, int(ts_raw), tag=resp_tag(status),
+        why = verify(self.secret, method, target, raw, mac, int(ts_raw),
                      now=self._now)
         if why:
             raise ConnectionError(why)

@@ -394,6 +394,9 @@ def serve_cmd(cfg, jobs, dashboard, federate, bind, tls_cert, tls_key, client_ca
         raise click.UsageError("give exactly one of --jobs, --dashboard, and --federate")
     if client_ca and federate:
         raise click.UsageError("--federate does not take --client-ca")
+    if federate and (code_root or no_code_watch or tailnet_wait):
+        raise click.UsageError("--federate does not take --code-root, --no-code-watch, or "
+                               "--tailnet-wait (they are --dashboard options)")
     if dashboard:
         return _serve_dashboard(cfg, bind, tls_cert, tls_key, client_ca, code_root=code_root,
                                 no_code_watch=no_code_watch, tailnet_wait=tailnet_wait)
