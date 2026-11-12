@@ -64,21 +64,23 @@ The fields are defined as follows. Everything not listed here is exactly as in 0
 The MAC is lowercase hex HMAC-SHA256 of the line's UTF-8 bytes, keyed with the secret's UTF-8
 bytes. The header names are unchanged from 0529.
 
-**Why STATUS is bound:** a signed 4xx or 5xx body can't be presented as a signed 200, or the other
-way round. That matters once a client acts on non-200 statuses. SPEC-0532 treats a 4xx as terminal
-and retries a 5xx.
+**Why STATUS is bound:** an on-path attacker without the secret can't relabel a signed reply's
+status, for example turn a signed 401 into a 200 or a signed 503 into a terminal 4xx. Binding the
+status does not stop a valid token holder from getting the host to sign a genuine 4xx. That is the
+host's real answer, and 0529's token model already allows it.
 
 **Version marker:** every authenticated request and every signed response carries
 `X-NW-Sig-V: 2`. The header name is case-insensitive and the value must be exactly `2`. Unenrolled
 replies (0529's unsigned `401 unauthorized`) are unchanged and carry no marker. There is no dual
 acceptance; hub and hosts are the operator's own machines and upgrade together.
 
-**Host check order** (each step answers with 0529's existing reply unless stated otherwise):
-1. Not enrolled: unsigned `401 unauthorized`, as in 0529.
-2. Bearer token wrong: as in 0529.
-3. Marker missing or not `2`: `401 {"error":"sig_version"}`, signed with the new construction.
-4. Timestamp skew, then MAC: as in 0529. An old four-field MAC fails here as a bad MAC.
-5. GET/HEAD with a body: as in 0529.
+**Host check order:** 0529's existing order is unchanged. That includes the GET/HEAD-with-body
+refusal before the MAC check. The one addition is a marker check right after the bearer-token
+check: a missing marker, or one that isn't `2`, gets `401 {"error":"sig_version"}`, signed with
+the new construction. An old four-field MAC then fails at the existing MAC check as a bad MAC.
+
+Every signed host reply carries `X-NW-Sig-V: 2` and the new construction. That includes error
+replies from `_reject_bad_request` and `_json_error`.
 
 An old client only ever sees a 401, the same as any auth failure. The version error is for new
 clients and for anyone reading the raw reply.
@@ -112,20 +114,25 @@ The GET/HEAD-with-body refusal from 0529 stays as defence in depth.
 - `request_headers`, `response_headers`, the host handler and `HubClient` pass the direction and
   status.
 - The protocol reference (`docs/product/reference/`, next to the existing host-channel section)
-  documents the field table, both line formats and two vectors: secret `abc`, `GET /v1/status`,
-  empty body, ts `1700000000`, giving one request vector and one response vector at status 200.
-  The implementer computes both vectors with a standalone one-liner that does not import
-  nightwright (`python3 -c 'import hmac,hashlib; …'`). The one-liner and its output go in As shipped
-  and in the reference. The pinned tests compare `federation.sign` to those literal strings. The
-  old `abc` vector test is replaced.
+  documents the field table, both line formats and these two vectors. Both use secret `abc`,
+  `GET /v1/status`, the empty body and ts `1700000000`. The steward computed them with
+  `hmac`/`hashlib` alone, without nightwright, when writing this spec:
+  - request `nw-req|GET|/v1/status|e3b0…b855|1700000000` gives
+    `a4879c456e4e8357b2b486928f5d4ed18b6a92754b581fc173ba3e787f56f61b`
+  - response at status 200 `nw-resp|200|GET|/v1/status|e3b0…b855|1700000000` gives
+    `9a6a671ded7c7fdcd11b3b6fd50c812a6f0a8b73724caa3ae8b8106ee9e8b8dd`
+
+  The tests pin `federation.sign` to these literal strings and replace the old `abc` vector test.
 - `test_wire_mac_is_the_documented_four_field_formula` is replaced by a test that a client
   hand-built from the documented formula gets 200. Requests use the new tagged formula.
 - **Ordering:** SPEC-0532's frontmatter `depends_on` now includes `SPEC-0595`, and its Context
   has one sentence that links here. The steward added both as a docs-only commit when this spec
   was accepted. This campaign does not edit 0532.
-- **Reflection test route:** the host has no signed POST endpoint today. The test monkeypatches
-  the host handler's route table in the fixture to add `POST /v1/_test_echo`, which returns a
-  signed 200 JSON body. This route is never shipped.
+- **Reflection test route:** the host has no signed POST endpoint today, and no route table. The
+  implementer adds the smallest seam that lets a test register one extra signed POST route on the
+  host handler, `POST /v1/_test_echo`, which returns a signed 200 JSON body. Either a handler
+  subclass in the test fixture or a private hook defaulting to no extra routes is fine. The seam
+  ships no route, and As shipped records which one was used.
 
 ## Alternatives considered
 
@@ -138,21 +145,23 @@ The GET/HEAD-with-body refusal from 0529 stays as defence in depth.
 
 ## Acceptance criteria
 
-- [ ] Requests and responses are signed with the tagged formulas above. The request and
-      response vectors are pinned by tests, and the vectors were computed independently, with the
-      one-liner recorded. A client built only from the documented formula gets 200.
+- [ ] Requests and responses are signed with the tagged formulas above. Tests pin the two
+      vectors given in Design. A client built only from the documented formula gets 200.
 - [ ] A signed response replayed as a request fails verification. This is tested for a GET (the
       0529 case), for a bodied POST to the test-only route, and for a signed 401.
 - [ ] A response MAC for status S does not verify for status T ≠ S, and a signed 401 whose status
       is changed to 200 fails in `HubClient`.
-- [ ] The host check order is as listed. A missing or wrong marker gets the signed
-      `sig_version` 401. A v2-marked request with an old four-field MAC gets `401 unauthorized`.
+- [ ] The host keeps 0529's check order, plus the marker check. A missing or wrong marker gets
+      the signed `sig_version` 401. A v2-marked request with an old four-field MAC gets
+      `401 unauthorized`. Every signed reply, error replies included, carries the marker.
 - [ ] `HubClient` applies its check order as listed, so a forged or unsigned 4xx raises a
       signature error, never `HTTP 4xx`.
 - [ ] `sign` and `verify` reject a missing direction (`TypeError`), a bad direction or bad
       `status` usage (`ValueError`). The AST test finds no call site without `direction=`.
-- [ ] The 0529 tests still pass apart from the replaced formula test, and the reference docs
-      show the field table, both formulas, both vectors and both check orders.
+- [ ] The 0529 tests still pass, apart from tests whose expected messages change under the new
+      `HubClient` order and the replaced formula and vector tests. Those are updated, and As
+      shipped lists each one. The reference docs show the field table, both formulas, both vectors
+      and both check orders.
 
 ## Test plan
 
