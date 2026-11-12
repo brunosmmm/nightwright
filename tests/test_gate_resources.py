@@ -113,3 +113,17 @@ def test_the_dogfood_config_declares_resources():
     assert by["pytest-affected"] == {"cpus": 3, "mem": "3G"}
     assert by["pytest"] == {"cpus": 5, "mem": "5G"}
     assert by["docs-tests"] == {"cpus": 3, "mem": "3G"}
+
+
+def test_adhoc_resources_mapping_drives_the_job_request():
+    """SPEC-0571: the `resources` the `nw gate run --cmd` flags set ride the gate dict."""
+    pytest_gate = {"name": "cmd-1", "cmd": "x", "results": {"format": "pytest"}}
+    full = {**pytest_gate, "resources": {"cpus": 8, "mem": "12G", "licenses": ["lic:2"]}}
+    req = GR.job_request([full], {}, time_s=60)
+    assert (req["cpus"], req["mem_mb"], req["licenses"]) == (8, 12288, {"lic": 2})
+    part = GR.job_request([{**pytest_gate, "resources": {"cpus": 8}}], {}, time_s=60)
+    assert (part["cpus"], part["mem_mb"]) == (8, 3072)
+    part = GR.job_request([{**pytest_gate, "resources": {"mem": "8G"}}], {}, time_s=60)
+    assert (part["cpus"], part["mem_mb"]) == (3, 8192)
+    none = GR.job_request([pytest_gate], {}, time_s=60)
+    assert (none["cpus"], none["mem_mb"], none["licenses"]) == (3, 3072, {})

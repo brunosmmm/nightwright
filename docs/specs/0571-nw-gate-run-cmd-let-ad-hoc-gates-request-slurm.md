@@ -1,7 +1,7 @@
 ---
 id: SPEC-0571
 title: "nw gate run --cmd: ad-hoc gates request Slurm resources (--cpus, --mem, --licenses), capped by box policy"
-status: accepted
+status: done
 owner: user
 created: 2026-11-12
 updated: 2026-11-12
@@ -119,32 +119,32 @@ partition clamp stays as the second line.
 
 ## Acceptance criteria
 
-- [ ] `nw gate run --cmd C --cpus 8 --mem 12G --licenses lic:2` produces a job whose gate has
+- [x] `nw gate run --cmd C --cpus 8 --mem 12G --licenses lic:2` produces a job whose gate has
       `resources == {"cpus": 8, "mem": "12G", "licenses": ["lic:2"]}`, and
       `gate_resources.job_request` of it yields cpus 8, `mem_mb` 12288, licenses `{"lic": 2}`.
-- [ ] A `--cmd` run with none of the flags has no `resources` on its gates and requests 3 cpus
+- [x] A `--cmd` run with none of the flags has no `resources` on its gates and requests 3 cpus
       / 3072 MB, exactly as before.
-- [ ] `--cpus 8` alone requests 8 cpus and 3072 MB; `--mem 8G` alone requests 3 cpus and
+- [x] `--cpus 8` alone requests 8 cpus and 3072 MB; `--mem 8G` alone requests 3 cpus and
       8192 MB.
-- [ ] `--cpus`, `--mem` or `--licenses` without `--cmd` exits 2 with a usage message naming
+- [x] `--cpus`, `--mem` or `--licenses` without `--cmd` exits 2 with a usage message naming
       `--cmd`; no job record is created.
-- [ ] `--cpus 0`, `--mem lots`, `--mem 8` and a malformed license name exit 2 with the
+- [x] `--cpus 0`, `--mem lots`, `--mem 8` and a malformed license name exit 2 with the
       validation message of `gate_resources.check` (e.g. `cpus: must be an integer >= 1`);
       no job record is created.
-- [ ] With defaults, `--cpus 9`, `--mem 17G` and `--licenses jerome_target` each exit 2 naming
+- [x] With defaults, `--cpus 9`, `--mem 17G` and `--licenses jerome_target` each exit 2 naming
       the value, the cap, and `agentic.gate_jobs.adhoc.max_cpus` / `.max_mem` / `.licenses`;
       `--cpus 8 --mem 16G` is accepted; the refusals happen before any bundle is cut or worker
       is contacted.
-- [ ] With `agentic.gate_jobs.adhoc: {max_cpus: 16, max_mem: 64G, licenses: [jerome_target]}`,
+- [x] With `agentic.gate_jobs.adhoc: {max_cpus: 16, max_mem: 64G, licenses: [jerome_target]}`,
       `--cpus 16 --mem 64G --licenses jerome_target` is accepted; a malformed cap value falls
       back to the default for that key.
-- [ ] A host cap below the default request (e.g. `max_cpus: 2`) does not refuse a run that sets
+- [x] A host cap below the default request (e.g. `max_cpus: 2`) does not refuse a run that sets
       no flag, and `--mem 8G` alone is accepted (cpus stays the 3-cpu default) while
       `--cpus 3` is refused naming `agentic.gate_jobs.adhoc.max_cpus`.
-- [ ] The same command with different `--cpus` creates a second job; the same command and
+- [x] The same command with different `--cpus` creates a second job; the same command and
       flags while the first is live reuses it.
-- [ ] `nw gate run --help` lists `--cpus`, `--mem` and `--licenses`.
-- [ ] Project (non `--cmd`) gate runs are unchanged: their request still comes from
+- [x] `nw gate run --help` lists `--cpus`, `--mem` and `--licenses`.
+- [x] Project (non `--cmd`) gate runs are unchanged: their request still comes from
       `.nw/project.yaml` `resources:` or the kind defaults.
 
 ## Test plan
@@ -175,6 +175,28 @@ partition clamp stays as the second line.
 - **Regression guard**: the existing `tests/test_gate_jobs.py`, `tests/test_gate_resources.py`
   and `tests/test_cli_gate_slots.py` pass unchanged; `python3 tools/spec_lint.py` exits 0.
 
+### Test record (2026-11-12)
+
+- `uv run pytest -q tests/test_gate_jobs.py tests/test_gate_resources.py tests/test_cli_gate_slots.py`:
+  85 passed (new SPEC-0571 cases: flag-to-`resources` mapping and `job_request`, no-flag default,
+  partial flags, flags without `--cmd`, invalid values, default and configured caps, bad-cap
+  fallback per key, `max_cpus: 2` with `--mem 8G` accepted / `--cpus 3` refused, dedup key,
+  `--help`, docs grep, payload `check_payload`). Every refusal case stubs
+  `RG.commit_under_test` and `RG.run_detached` to raise and asserts no `GATEJOB-*` directory.
+- `python3 tools/test_tiers.py --check` exits 0; `python3 tools/spec_lint.py` exits 0; the
+  affected-tests run and the full suite were left to gating. The manual Slurm-box steps were not performed here (no Slurm
+  worker in this session).
+
+### As shipped (2026-11-12)
+
+- Matches Design. The flag validation and caps live in `gate_jobs.adhoc_resources` (called at
+  the top of the `cmds` branch of `resolve`); `settings()` returns the caps under `"adhoc"`, so
+  the existing `test_settings_defaults_and_bad_values` expectation gained the `adhoc` key.
+- Validation messages carry the path prefix `resources.` (e.g.
+  `resources.cpus: must be an integer >= 1`).
+- Docs: `docs/product/reference/index.md` (`gate` row) and `skills/nw-orient/SKILL.md`.
+
+
 ## Rollout / migration
 
 1. Land the code; defaults keep every existing `--cmd` invocation as it is.
@@ -184,12 +206,12 @@ partition clamp stays as the second line.
 
 ## Definition of done
 
-- [ ] Acceptance criteria all met.
-- [ ] Test plan executed; automated tests pass (affected tests plus the touched files); the
+- [x] Acceptance criteria all met.
+- [x] Test plan executed; automated tests pass (affected tests plus the touched files); the
       manual steps performed or noted as not possible on the box.
-- [ ] No regressions.
-- [ ] Spec body updated to match what shipped.
-- [ ] `docs/LEDGER.md` regenerated (`python3 tools/spec_lint.py --write-ledger`).
+- [x] No regressions.
+- [x] Spec body updated to match what shipped.
+- [x] `docs/LEDGER.md` regenerated (`python3 tools/spec_lint.py --write-ledger`).
 
 ## Open questions
 

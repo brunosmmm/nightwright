@@ -81,6 +81,15 @@ def _report(cfg, rec: dict, as_json: bool, reused: bool = False) -> int:
               help="which project gates run")
 @click.option("--cmd", "cmds", multiple=True,
               help="ad-hoc gate command (repeatable; replaces the project gates)")
+@click.option("--cpus", type=int, default=None,
+              help="Slurm cpus for --cmd gates, capped by agentic.gate_jobs.adhoc.max_cpus "
+                   "(default 3)")
+@click.option("--mem", default=None,
+              help="Slurm memory for --cmd gates, e.g. 12G or 512M, capped by "
+                   "agentic.gate_jobs.adhoc.max_mem (default 3G)")
+@click.option("--licenses", multiple=True, metavar="NAME[:N]",
+              help="Slurm licenses for --cmd gates (repeatable), only those listed in "
+                   "agentic.gate_jobs.adhoc.licenses")
 @click.option("--by", default=None,
               help="requester (default: $NW_MAILBOX_ADDR, else $USER@<project>)")
 @click.option("--wait/--detach", default=True, help="block for the result (default) or not")
@@ -91,24 +100,30 @@ def _report(cfg, rec: dict, as_json: bool, reused: bool = False) -> int:
               help="per-gate timeout for ad-hoc --cmd gates (SPEC-0490)")
 @click.option("--json", "as_json", is_flag=True, help="emit nw.gatejob.v1 JSON")
 @click.pass_obj
-def gate_run(cfg, project, worktree, branch, base, tier, cmds, by, wait, wait_s, gate_timeout_s,
-             as_json):
+def gate_run(cfg, project, worktree, branch, base, tier, cmds, cpus, mem, licenses, by, wait,
+             wait_s, gate_timeout_s, as_json):
     """Gate a worktree or a branch on a worker box, without a campaign (SPEC-0381).
 
     Exit 0 green, 1 red, 2 cannot start, 3 box unavailable (no placeable worker or no slot
     within --wait-s), 4 transport failure, 130 cancelled. Never runs gates locally.
 
     \b
-    Example: nw gate run --project Meta-Tools --worktree . --tier close --json"""
+    Example: nw gate run --project Meta-Tools --worktree . --tier close --json
+    Heavy one-off job (SPEC-0571): nw gate run --cmd 'python solve.py' --cpus 8 --mem 12G
+    --licenses jerome_target:1  (caps: agentic.gate_jobs.adhoc)"""
     if worktree and branch:
         raise click.UsageError("--worktree and --branch are exclusive")
+    if (cpus is not None or mem is not None or licenses) and not cmds:
+        raise click.UsageError("--cpus/--mem/--licenses need --cmd; project gates declare "
+                               "`resources:` in .nw/project.yaml")
     if not J.settings(cfg)["enabled"]:
         console.print("standalone gate jobs are disabled (agentic.gate_jobs.enabled: false)")
         sys.exit(2)
     J.gc(cfg)
     try:
         target = J.resolve(cfg, project=project, worktree=worktree, branch=branch, base=base,
-                           tier=tier, cmds=cmds, gate_timeout_s=gate_timeout_s)
+                           tier=tier, cmds=cmds, gate_timeout_s=gate_timeout_s,
+                           cpus=cpus, mem=mem, licenses=licenses)
     except J.JobError as e:
         console.print(f"nw gate run: {e.message}", highlight=False)
         sys.exit(e.code)

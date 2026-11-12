@@ -25,6 +25,7 @@ from pathlib import Path
 from ..export import _atomic_write
 from . import events as E
 from . import gate_slots as GS
+from . import gate_resources as GR
 from . import gates as G
 from . import project as P
 from . import remote_gates as RG
@@ -40,8 +41,9 @@ EXIT = {"passed": 0, "failed": 1, "error": 2, "unavailable": 3, "transport_error
         "lost": 4, "cancelled": 130}
 TIERS = ("loop", "close", "all")
 DEFAULT_WAIT_S = 1800.0                 # SPEC-0500: `agentic.gate_jobs.wait_s` default
+ADHOC_DEFAULTS = {"max_cpus": 8, "max_mem": "16G", "licenses": []}   # SPEC-0571
 DEFAULTS = {"enabled": True, "max_per_requester": 2, "max_slots": None, "retention_days": 7,
-            "wait_s": DEFAULT_WAIT_S}
+            "wait_s": DEFAULT_WAIT_S, "adhoc": ADHOC_DEFAULTS}
 POLL_S = 1.0
 SEQ = 1                                 # one gate run per job: logs are `gates/001-<gate>.log`
 
@@ -75,7 +77,60 @@ def settings(cfg) -> dict:
         r = raw.get(k)
         if isinstance(r, (int, float)) and not isinstance(r, bool) and math.isfinite(r) and r > 0:
             out[k] = r
+    out["adhoc"] = _adhoc_caps(raw.get("adhoc"))
     return out
+
+
+def _adhoc_caps(raw) -> dict:
+    """`agentic.gate_jobs.adhoc` over `ADHOC_DEFAULTS`, per key (SPEC-0571): `max_cpus` a
+    positive int, `max_mem` a size like 16G, `licenses` a list of bare allowlisted names
+    (no `:N` count); a bad value falls back to the default for its key."""
+    raw = raw if isinstance(raw, dict) else {}
+    out = {**ADHOC_DEFAULTS, "licenses": list(ADHOC_DEFAULTS["licenses"])}
+    if _pos_int(raw.get("max_cpus")):
+        out["max_cpus"] = raw["max_cpus"]
+    m = raw.get("max_mem")
+    if isinstance(m, str) and GR.MEM_RE.match(m) and GR.mem_mb(m) >= 1:
+        out["max_mem"] = m
+    lic = raw.get("licenses")
+    if isinstance(lic, list) and all(isinstance(x, str) and GR.LICENSE_RE.match(x) and ":" not in x
+                                     for x in lic):
+        out["licenses"] = list(lic)
+    return out
+
+
+def adhoc_resources(cfg, cpus=None, mem=None, licenses=()) -> dict | None:
+    """The `resources` mapping the `--cpus/--mem/--licenses` flags ask for (only the keys
+    given; None when none is), validated like `.nw/project.yaml` and held to the host's
+    `agentic.gate_jobs.adhoc` caps. Each cap is compared only against the key its flag set.
+    Raises JobError(2)."""
+    res: dict = {}
+    if cpus is not None:
+        res["cpus"] = cpus
+    if mem is not None:
+        res["mem"] = mem
+    if licenses:
+        res["licenses"] = list(licenses)
+    if not res:
+        return None
+    problems: list = []
+    GR.check(problems, res, "resources")
+    if problems:
+        raise JobError(2, "; ".join(problems))
+    caps = settings(cfg)["adhoc"]
+    if cpus is not None and cpus > caps["max_cpus"]:
+        raise JobError(2, f"--cpus {cpus} is over the ad-hoc cap of {caps['max_cpus']} cpus; "
+                          f"raise agentic.gate_jobs.adhoc.max_cpus on this host")
+    if mem is not None and GR.mem_mb(mem) > GR.mem_mb(caps["max_mem"]):
+        raise JobError(2, f"--mem {mem} is over the ad-hoc cap of {caps['max_mem']}; "
+                          f"raise agentic.gate_jobs.adhoc.max_mem on this host")
+    for lic in licenses:
+        if lic.split(":", 1)[0] not in caps["licenses"]:
+            raise JobError(2, f"--licenses {lic}: license {lic.split(':', 1)[0]!r} is not "
+                              f"allowed for ad-hoc gates (allowed: "
+                              f"{', '.join(caps['licenses']) or 'none'}); list it under "
+                              f"agentic.gate_jobs.adhoc.licenses on this host")
+    return res
 
 
 def max_slots(cfg) -> int:
@@ -200,9 +255,10 @@ def _git(cwd, *args) -> str | None:
 
 
 def resolve(cfg, *, project=None, worktree=None, branch=None, base=None, tier="loop",
-            cmds=(), gate_timeout_s: int = 1200) -> dict:
+            cmds=(), gate_timeout_s: int = 1200, cpus=None, mem=None, licenses=()) -> dict:
     """What a job gates: `{project, repo, worktree, branch, commit, tree, base, tier, gates,
-    skipped, key}`. A precondition that fails raises JobError(2)."""
+    skipped, key}`. A precondition that fails raises JobError(2). `cpus`, `mem`, `licenses`
+    (SPEC-0571) size the ad-hoc `--cmd` gates' Slurm request."""
     if tier not in TIERS:
         raise JobError(2, f"--tier must be one of {', '.join(TIERS)}")
     wt = Path(worktree or os.getcwd()).resolve()
@@ -222,8 +278,10 @@ def resolve(cfg, *, project=None, worktree=None, branch=None, base=None, tier="l
         raise JobError(2, "no registered project with .nw/project.yaml gates here; pass "
                           "--project or --cmd")
     if cmds:
+        # flags and caps first: a refused run cuts no commit and reaches no worker
+        res = adhoc_resources(cfg, cpus, mem, licenses)
         gates = [{"name": f"cmd-{i}", "cmd": c, "timeout_s": int(gate_timeout_s),
-                  "results": {"format": "pytest"}}
+                  "results": {"format": "pytest"}, **({"resources": dict(res)} if res else {})}
                  for i, c in enumerate(cmds, 1)]
         skipped = []
     else:

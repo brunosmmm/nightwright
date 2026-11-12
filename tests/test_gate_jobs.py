@@ -12,6 +12,7 @@ from click.testing import CliRunner
 import waits
 from nightwright.agentic import events as E
 from nightwright.agentic import gate_jobs as J
+from nightwright.agentic import gate_resources as GR
 from nightwright.agentic import gate_slots as GS
 from nightwright.agentic import gates as G
 from nightwright.agentic import project as P
@@ -250,7 +251,8 @@ def test_same_commit_and_project_returns_the_running_job(gw, monkeypatch):
 def test_settings_defaults_and_bad_values():
     s = J.settings({})
     assert s == {"enabled": True, "max_per_requester": 2, "max_slots": None,
-                 "retention_days": 7, "wait_s": 1800.0}
+                 "retention_days": 7, "wait_s": 1800.0,
+                 "adhoc": {"max_cpus": 8, "max_mem": "16G", "licenses": []}}   # SPEC-0571
     bad = {"agentic": {"gate_jobs": {"enabled": "yes", "max_per_requester": 0,
                                      "max_slots": -1, "retention_days": "x", "wait_s": True}}}
     assert J.settings(bad) == s
@@ -716,3 +718,163 @@ def test_unavailable_message_names_line_and_cap(gw):
         os.close(fd)
     assert out[first["id"]]["status"] == "cancelled"
     assert J.line(cfg, "share") == []
+
+
+# ---- SPEC-0571: --cpus / --mem / --licenses on --cmd gates, capped by agentic.gate_jobs.adhoc --
+
+def _adhoc_run(gw, monkeypatch, *flags, cmd=CMD):
+    return _invoke(gw["cfg"], monkeypatch, "run", "--worktree", str(gw["repo"]), *cmd, *flags,
+                   "--json")
+
+
+def _no_cut(gw, monkeypatch):
+    """Make a commit cut or a worker dispatch fail the test: a refusal must precede both."""
+    def boom(*a, **k):
+        raise AssertionError("refusal came after the commit was cut / worker contacted")
+    monkeypatch.setattr(RG, "commit_under_test", boom)
+    monkeypatch.setattr(RG, "run_detached", boom)
+
+
+def _no_job_dir(gw):
+    assert not list((J.root(gw["cfg"])).glob("GATEJOB-*")) and gw["calls"] == []
+
+
+def test_flags_become_the_gate_resources_and_the_request(gw):
+    t = J.resolve(gw["cfg"], worktree=str(gw["repo"]), cmds=("a", "b"), cpus=8, mem="12G",
+                  licenses=())
+    assert t["gates"][0]["resources"] == {"cpus": 8, "mem": "12G"}
+    gw["cfg"]["agentic"]["gate_jobs"] = {"adhoc": {"licenses": ["lic"]}}
+    t = J.resolve(gw["cfg"], worktree=str(gw["repo"]), cmds=("a",), cpus=8, mem="12G",
+                  licenses=("lic:2",))
+    g = t["gates"][0]
+    assert g["resources"] == {"cpus": 8, "mem": "12G", "licenses": ["lic:2"]}
+    req = GR.job_request(t["gates"], gw["cfg"], time_s=60)
+    assert (req["cpus"], req["mem_mb"], req["licenses"]) == (8, 12288, {"lic": 2})
+
+
+def test_no_flags_leave_resources_off_and_the_default_request(gw):
+    t = J.resolve(gw["cfg"], worktree=str(gw["repo"]), cmds=("a",))
+    assert "resources" not in t["gates"][0]
+    req = GR.job_request(t["gates"], gw["cfg"], time_s=60)
+    assert (req["cpus"], req["mem_mb"]) == (3, 3072)
+
+
+def test_partial_flags_keep_the_other_defaults(gw):
+    t = J.resolve(gw["cfg"], worktree=str(gw["repo"]), cmds=("a",), cpus=8)
+    req = GR.job_request(t["gates"], gw["cfg"], time_s=60)
+    assert (req["cpus"], req["mem_mb"]) == (8, 3072)
+    t = J.resolve(gw["cfg"], worktree=str(gw["repo"]), cmds=("a",), mem="8G")
+    req = GR.job_request(t["gates"], gw["cfg"], time_s=60)
+    assert (req["cpus"], req["mem_mb"]) == (3, 8192)
+
+
+def test_a_flagged_run_reaches_the_worker_with_a_valid_payload(gw, monkeypatch):
+    _workers(gw["cfg"], ("box", 4))
+    r = _adhoc_run(gw, monkeypatch, "--cpus", "8", "--mem", "12G")
+    assert r.exit_code == 0, r.output
+    rec = J.read(gw["cfg"], "GATEJOB-0001")
+    assert rec["gate_cfg"][0]["resources"] == {"cpus": 8, "mem": "12G"}
+    req = GR.job_request(rec["gate_cfg"], gw["cfg"], time_s=60)
+    assert GR.check_payload(req) is None and (req["cpus"], req["mem_mb"]) == (8, 12288)
+    state = gw["calls"][0]["state"]
+    pcfg_req = GR.job_request(J.read(gw["cfg"], "GATEJOB-0001")["gate_cfg"], gw["cfg"])
+    assert state["id"] == "GATEJOB-0001" and GR.check_payload(pcfg_req) is None
+
+
+@pytest.mark.parametrize("flags", [("--cpus", "2"), ("--mem", "1G"), ("--licenses", "lic")])
+def test_flags_without_cmd_exit_2_with_a_usage_message(gw, monkeypatch, flags):
+    _workers(gw["cfg"], ("box", 4))
+    _no_cut(gw, monkeypatch)
+    r = _invoke(gw["cfg"], monkeypatch, "run", "--worktree", str(gw["repo"]), *flags)
+    assert r.exit_code == 2 and "--cmd" in r.output
+    _no_job_dir(gw)
+
+
+@pytest.mark.parametrize("flags, needle", [
+    (("--cpus", "0"), "cpus: must be an integer >= 1"),
+    (("--mem", "lots"), "mem: must be a size"),
+    (("--mem", "8"), "mem: must be a size"),
+    (("--licenses", "Bad Name"), "licenses: must be a list"),
+])
+def test_invalid_flag_values_exit_2_before_any_cut(gw, monkeypatch, flags, needle):
+    _workers(gw["cfg"], ("box", 4))
+    _no_cut(gw, monkeypatch)
+    r = _adhoc_run(gw, monkeypatch, *flags)
+    assert r.exit_code == 2 and needle in r.output, r.output
+    _no_job_dir(gw)
+
+
+@pytest.mark.parametrize("flags, needle", [
+    (("--cpus", "9"), "agentic.gate_jobs.adhoc.max_cpus"),
+    (("--mem", "17G"), "agentic.gate_jobs.adhoc.max_mem"),
+    (("--licenses", "jerome_target"), "agentic.gate_jobs.adhoc.licenses"),
+])
+def test_default_caps_refuse_before_any_cut(gw, monkeypatch, flags, needle):
+    _workers(gw["cfg"], ("box", 4))
+    _no_cut(gw, monkeypatch)
+    r = _adhoc_run(gw, monkeypatch, *flags)
+    assert r.exit_code == 2 and needle in r.output and flags[1] in r.output, r.output
+    _no_job_dir(gw)
+
+
+def test_values_at_the_default_caps_are_accepted(gw, monkeypatch):
+    _workers(gw["cfg"], ("box", 4))
+    r = _adhoc_run(gw, monkeypatch, "--cpus", "8", "--mem", "16G")
+    assert r.exit_code == 0, r.output
+
+
+def test_configured_caps_raise_the_limits(gw, monkeypatch):
+    _workers(gw["cfg"], ("box", 4))
+    gw["cfg"]["agentic"]["gate_jobs"] = {"adhoc": {"max_cpus": 16, "max_mem": "64G",
+                                                   "licenses": ["jerome_target"]}}
+    r = _adhoc_run(gw, monkeypatch, "--cpus", "16", "--mem", "64G", "--licenses",
+                   "jerome_target:2")
+    assert r.exit_code == 0, r.output
+
+
+@pytest.mark.parametrize("bad", [
+    {"max_cpus": 0}, {"max_cpus": "9"}, {"max_cpus": True}, {"max_mem": "lots"}, {"max_mem": 16},
+    {"licenses": "jerome_target"}, {"licenses": ["Bad Name"]}, {"licenses": ["lic:2"]}, "x"])
+def test_a_malformed_cap_falls_back_to_the_default_per_key(gw, bad):
+    gw["cfg"]["agentic"]["gate_jobs"] = {"adhoc": bad}
+    assert J.settings(gw["cfg"])["adhoc"] == J.ADHOC_DEFAULTS
+    gw["cfg"]["agentic"]["gate_jobs"] = {"adhoc": {**(bad if isinstance(bad, dict) else {}),
+                                                   "max_cpus": 4}}
+    a = J.settings(gw["cfg"])["adhoc"]
+    assert a["max_cpus"] == 4 and a["max_mem"] == "16G" and a["licenses"] == []
+
+
+def test_a_cap_below_the_default_request_only_checks_the_flags_set(gw, monkeypatch):
+    _workers(gw["cfg"], ("box", 4))
+    gw["cfg"]["agentic"]["gate_jobs"] = {"adhoc": {"max_cpus": 2}}
+    assert _adhoc_run(gw, monkeypatch).exit_code == 0               # no flag: 3 cpus not refused
+    assert _adhoc_run(gw, monkeypatch, "--mem", "8G").exit_code == 0  # cpus stays the default 3
+    _no_cut(gw, monkeypatch)
+    r = _adhoc_run(gw, monkeypatch, "--cpus", "3")
+    assert r.exit_code == 2 and "agentic.gate_jobs.adhoc.max_cpus" in r.output
+
+
+def test_resources_are_part_of_the_dedup_key(gw, monkeypatch):
+    _workers(gw["cfg"], ("box", 4))
+    gw["b"]["block"] = threading.Event()
+    args = ("run", "--worktree", str(gw["repo"]), *CMD, "--detach", "--json")
+    a = json.loads(_invoke(gw["cfg"], monkeypatch, *args, "--cpus", "4").output)
+    b = json.loads(_invoke(gw["cfg"], monkeypatch, *args, "--cpus", "5").output)
+    c = json.loads(_invoke(gw["cfg"], monkeypatch, *args, "--cpus", "4").output)
+    assert a["id"] != b["id"] and c["id"] == a["id"]
+    gw["b"]["block"].set()
+
+
+def test_help_lists_the_resource_flags(gw, monkeypatch):
+    r = _invoke(gw["cfg"], monkeypatch, "run", "--help")
+    assert r.exit_code == 0
+    for opt in ("--cpus", "--mem", "--licenses", "agentic.gate_jobs.adhoc"):
+        assert opt in r.output
+
+
+def test_docs_name_the_flags_and_the_cap_key():
+    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    for rel in ("skills/nw-orient/SKILL.md", "docs/product/reference/index.md"):
+        text = open(os.path.join(root, rel)).read()
+        for needle in ("--cpus", "--mem", "--licenses", "agentic.gate_jobs.adhoc"):
+            assert needle in text, (rel, needle)
