@@ -231,3 +231,80 @@ def test_worktree_resnapshot_is_not_a_hand_value(tmp_path, monkeypatch):
     assert st["profile"] == "balanced"
     assert events[0][1]["hand_untrusted"] is True and events[0][1]["hand"] is None
     assert "lean_hand_untrusted" in [j["kind"] for j in Q.read_journal(cfg)]
+
+
+# ---- post-merge fix: an equal-rank `--profile` survives the open (and the spec acceptance) ----
+
+EQUAL = "lean-medium"          # config-only profile: ranks as `balanced`, the default
+
+
+def _lean_sizing(cfg, cid):
+    return S.read_ledger(cfg, cid, types=["lean_sizing"])
+
+
+@pytest.mark.parametrize("lean", [True, False])
+def test_idea_campaign_keeps_an_equal_rank_profile_flag(tmp_path, monkeypatch, lean):
+    """IDEA-1322-20261112-f0ea: `nw queue add IDEA --lean --profile lean-medium` opened as the
+    default (`lean_sizing` source default) because the idea path never recorded `sizing.flag`.
+    The flag is kept at open, through SPEC_WRITING and the in-loop spec acceptance."""
+    from test_agentic_idea_campaign import add_idea_campaign, capture
+    from test_agentic_spec_review_loop import reviewed
+    from test_agentic_spec_writer import make_project, spec_written
+    repo = make_project(tmp_path)
+    cfg = make_cfg(tmp_path, repo, script(tmp_path, []))
+    cfg["agentic"]["profiles"][EQUAL] = {"reviewers": [CONF]}
+    monkeypatch.setattr("nightwright.cli.load_config", lambda: cfg)
+    iid = capture(cfg)
+    cid = add_idea_campaign(cfg, monkeypatch, iid, *(["--lean"] if lean else []),
+                            "--profile", EQUAL)
+    st = S.read_state(cfg, cid)
+    assert st["profile"] == EQUAL
+    if lean:
+        assert st["sizing"]["flag"] == EQUAL and "capped_from" not in st["sizing"]
+        assert S.read_ledger(cfg, cid, types=["open"])[0]["profile_source"] == "flag"
+    else:
+        assert "sizing" not in st                                  # flag off: as before
+    script(tmp_path, [spec_written(2, iid), reviewed()])
+    Q.tick(cfg)                                                    # open → SPEC_WRITING
+    st = S.read_state(cfg, cid)
+    assert st["state"] == "SPEC_WRITING" and st["profile"] == EQUAL
+    if lean:
+        (ev,) = _lean_sizing(cfg, cid)
+        assert (ev["profile"], ev["source"]) == (EQUAL, "flag"), ev
+        assert ev["reason"] == f"--profile {EQUAL}"
+    else:
+        assert not _lean_sizing(cfg, cid)
+    for _ in range(4):                                             # write, review + accept
+        Q.tick(cfg)
+        if S.read_state(cfg, cid)["state"] not in ("SPEC_WRITING", "SPEC_REVIEW"):
+            break
+    st = S.read_state(cfg, cid)
+    assert st["state"] == "IMPLEMENTING", st.get("park")
+    assert st["profile"] == EQUAL and len(_lean_sizing(cfg, cid)) == (1 if lean else 0)
+
+
+def test_idea_campaign_stronger_profile_flag_still_capped_at_open(tmp_path, monkeypatch):
+    from nightwright import org_write as OW
+    repo, cfg = _setup(tmp_path)
+    _, _, iid = OW.add_idea(cfg, "an idea to build")
+    cid = added(cfg, monkeypatch, iid, "--profile", "thorough")
+    st = S.read_state(cfg, cid)
+    assert st["profile"] == "balanced"
+    assert (st["sizing"]["flag"], st["sizing"]["capped_from"]) == ("thorough", "thorough")
+    events = []
+    Q._lean_open(Q._Ctx(cfg), st, events)
+    assert st["profile"] == "balanced" and events[0][1]["profile"] == "balanced"
+
+
+def test_spec_campaign_keeps_an_equal_rank_profile_flag(tmp_path, monkeypatch):
+    repo, cfg = _setup(tmp_path, lean=False)
+    cfg["agentic"]["profiles"][EQUAL] = {"reviewers": [CONF, ADV]}
+    cid = added(cfg, monkeypatch, "SPEC-0001", "--lean-flags", "tiers", "--profile", EQUAL)
+    st = S.read_state(cfg, cid)
+    assert st["profile"] == EQUAL and st["sizing"]["flag"] == EQUAL
+    runner = _Recording({"implementer": [impl_done()], CONF: [review()], ADV: [adv_review()]})
+    st = _drive(cfg, cid, runner)
+    assert st["state"] == "MERGED", st.get("park")
+    assert st["profile"] == EQUAL
+    (ev,) = _lean_sizing(cfg, cid)
+    assert (ev["profile"], ev["source"]) == (EQUAL, "flag"), ev

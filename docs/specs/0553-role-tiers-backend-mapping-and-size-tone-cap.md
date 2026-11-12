@@ -286,6 +286,30 @@ capped; a worktree re-snapshot gives no hand values); extended
 `tests/test_agentic_campaign_export.py` (columns). The box gate (`--tier loop`) ran on the
 final commit (job id in the campaign report).
 
+**Post-merge fix (2026-11-12): an idea campaign's `--profile` was dropped at open.**
+Campaign IDEA-1322-20261112-f0ea (`nw queue add IDEA-1322 --lean --profile lean-medium`) was
+queued as `lean-medium`, then the open's `_lean_open` re-picked `cursor` (`lean_sizing`
+source `default`, "no approving review (--force)"), so its code reviewers ran at the default
+profile's effort. Root cause: `plan_add_idea` capped the flag through `cap_flag` but did not
+record it, and `apply_add_idea` wrote no `sizing`, so `_lean_open` called `select_profile`
+with `flag=None` and got the default. That broke this spec's own rule (`--profile` gives
+`min(flag, default)`): a flag ranked equal to the default must be kept. Fix: with `tiers`
+on, `plan_add_idea` takes the flag's pick from `select_profile(..., lean=True)` and carries
+`profile_flag` / `profile_capped_from` / source / reason; `apply_add_idea` writes
+`sizing = {size: None, tone: None, source, reason, flag[, capped_from]}` through the
+`_pin_profile_flag` helper, which `apply_add` now uses too. Batch adds go through
+`plan_add` / `plan_add_idea`, so they are covered. The spec path (`plan_add`, which split
+campaigns also use) already recorded `sizing.flag`. A split's child campaigns take no
+`--profile` (as before, flags on or off), and no step after the open re-picks the profile
+(an idea campaign's spec acceptance keeps it), so nothing else lost the flag. With `tiers`
+off, or with no `--profile`, an idea campaign's state is unchanged (no `sizing` key).
+Campaigns opened before the fix keep the profile they were opened with (it is pinned in
+`state.profile`; `_lean_open` runs once). Tests in `tests/test_agentic_lean_queue.py`: an
+idea campaign with `--lean --profile lean-medium` (equal rank) keeps it at add, at open and
+through the spec acceptance (flag-off variant: no `sizing`, no `lean_sizing`); a stronger
+idea flag is still capped and records `capped_from`; the spec-campaign equivalent keeps the
+flag to MERGED.
+
 **Pending (post-merge, flag on).** The measurement — Meta-Tools with only `lean.tiers`,
 ≥10 campaigns, median `cost_usd` and summed tokens per campaign vs the SPEC-0552 baseline,
 and the regression-set replay (SPEC-0529 oracle, SPEC-0476 hang) with judge-tier reviewers

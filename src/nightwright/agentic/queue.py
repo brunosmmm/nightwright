@@ -10279,6 +10279,18 @@ def plan_add(cfg, spec_id, *, project=None, profile=None, base=None, force=False
     }
 
 
+def _pin_profile_flag(state: dict, plan: dict) -> None:
+    """SPEC-0553: record the `--profile` asked for (`sizing.flag`, and `capped_from` when the
+    add capped it) so `_lean_open` re-applies the cap to the flag, not to the default. Only a
+    plan made with `lean.tiers` on carries `profile_flag`; without it nothing is written."""
+    if "profile_flag" not in plan:
+        return
+    sizing = state.setdefault("sizing", {})
+    sizing["flag"] = plan["profile_flag"]
+    if plan.get("profile_capped_from"):
+        sizing["capped_from"] = plan["profile_capped_from"]
+
+
 def _pin_lean_request(state: dict, plan: dict) -> None:
     """SPEC-0558: carry the plan's opt-in onto the queued state; `store.create_campaign` then
     pins `state.lean` from `lean_request`. Nothing is written without an opt-in."""
@@ -10317,10 +10329,7 @@ def apply_add(cfg, plan: dict, *, by="human") -> dict:
     if plan.get("runner"):                                             # SPEC-0436
         state["runner"] = plan["runner"]
     _pin_lean_request(state, plan)                                     # SPEC-0558
-    if "profile_flag" in plan:                                         # SPEC-0553
-        state["sizing"]["flag"] = plan["profile_flag"]
-        if plan.get("profile_capped_from"):
-            state["sizing"]["capped_from"] = plan["profile_capped_from"]
+    _pin_profile_flag(state, plan)                                     # SPEC-0553
     if plan.get("after"):
         state["after"] = list(plan["after"])                           # SPEC-0423
     if plan.get("split_origin"):
@@ -10617,8 +10626,13 @@ def plan_add_idea(cfg, idea_id, *, project=None, profile=None, base=None,
     pcfg = P.project_config(cfg, project)
     root = Path(pcfg["_root"])
     lean, lean_off = TR.effective_lean(cfg, project, request=lean_pin.get("lean_request"))
+    flag_pin = {}
     if profile and lean["tiers"]:                                      # SPEC-0553 cap
-        profile = cap_flag(cfg, profile, project_root=root)
+        pick = select_profile(cfg, flag=profile, project_root=root, lean=True)
+        # the flag is kept for `_lean_open`, which re-picks from `sizing.flag`
+        flag_pin = {"profile_flag": profile, "profile_capped_from": pick.get("capped_from"),
+                    "profile_source": pick["source"], "profile_reason": pick["reason"]}
+        profile = pick["profile"]
     prof = resolve_profile(cfg, profile, project_root=root)
     base = base or (pcfg.get("merge") or {}).get("base") or pcfg.get("base") or "main"
     cid = store.new_campaign_id(cfg, idea_id)
@@ -10637,6 +10651,7 @@ def plan_add_idea(cfg, idea_id, *, project=None, profile=None, base=None,
         **_campaign_runner_pin(runner),
         **({"lean": lean, "lean_off": lean_off}                         # SPEC-0558
            if "lean_request" in lean_pin else {}),
+        **flag_pin,                                                     # SPEC-0553
         **lean_pin,
     }
 
@@ -10686,6 +10701,11 @@ def apply_add_idea(cfg, plan: dict, *, by="human") -> dict:
         if plan.get("runner"):                                         # SPEC-0436
             state["runner"] = plan["runner"]
         _pin_lean_request(state, plan)                                 # SPEC-0558
+        if "profile_flag" in plan:                                     # SPEC-0553
+            state["sizing"] = {"size": None, "tone": None,
+                               "source": plan.get("profile_source"),
+                               "reason": plan.get("profile_reason")}
+            _pin_profile_flag(state, plan)
         if plan.get("after"):
             state["after"] = list(plan["after"])                       # SPEC-0423
         store.create_campaign(cfg, state, by=by)
