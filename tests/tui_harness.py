@@ -108,6 +108,8 @@ def prepare_queue_window(cfg, *, now=None) -> dt.datetime:
     for i, path in enumerate(camps):
         target = now - dt.timedelta(hours=(n - i))
         deltas.append(target - _anchor(path))
+    # Links are refused after the anchors and before the first write, so a refusal leaves the copy untouched.
+    _refuse_links(data, camps)
     for cid, path, delta in zip(cids, camps, deltas):
         _shift_tree(path, delta)
         for log in _global_logs(data):
@@ -148,9 +150,31 @@ def _parse_dt(text: str) -> dt.datetime:
     return parsed
 
 
-def _global_logs(data: Path) -> list[Path]:
-    """Global logs whose records are shifted when they name the campaign. `runner.jsonl` is not
-    one of them: the shifted copy is for the queue, not for runner-down history."""
+def _refuse_links(data: Path, camps: list[Path]) -> None:
+    """Raise `ValueError` naming the first symlink, hardlinked file, or path that resolves outside
+    `data` among what the shift would touch: the campaign trees (directories included) and the
+    global-log candidates. The candidates are checked before `_global_logs` drops non-files, so a
+    dangling link is seen; the directories those logs live in are checked too."""
+    root = data.resolve()
+    agentic = data / "agentic"
+    paths = [agentic, agentic / "campaigns", agentic / "conductor",
+             agentic / "mailbox", agentic / "escalations"]
+    paths.extend(_global_candidates(data))
+    for camp in camps:
+        paths.append(camp)
+        paths.extend(camp.rglob("*"))
+    for path in paths:
+        if path.is_symlink():
+            raise ValueError(f"{path} is a symlink; the queue window is shifted on a plain copy")
+        resolved = path.resolve()
+        if resolved != root and root not in resolved.parents:
+            raise ValueError(f"{path} resolves outside the copy {root}")
+        if path.is_file() and path.stat().st_nlink > 1:
+            raise ValueError(f"{path} is hardlinked (st_nlink > 1); a write would change its twin")
+
+
+def _global_candidates(data: Path) -> list[Path]:
+    """Every global-log path the shift may write, whether or not it exists as a file."""
     agentic = data / "agentic"
     logs = [
         agentic / "conductor" / "decisions.jsonl",
@@ -163,7 +187,13 @@ def _global_logs(data: Path) -> list[Path]:
     escalations = agentic / "escalations"
     if escalations.is_dir():
         logs.extend(sorted(escalations.glob("*.json")))
-    return [path for path in logs if path.is_file()]
+    return logs
+
+
+def _global_logs(data: Path) -> list[Path]:
+    """Global logs whose records are shifted when they name the campaign. `runner.jsonl` is not
+    one of them: the shifted copy is for the queue, not for runner-down history."""
+    return [path for path in _global_candidates(data) if path.is_file()]
 
 
 def _shift_tree(root: Path, delta: dt.timedelta) -> None:

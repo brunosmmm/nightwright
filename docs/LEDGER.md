@@ -369,7 +369,6 @@ progress. This is the single place to see *what has been decided* and *what is i
 | [SPEC-0533](./specs/0533-remote-park-and-resume.md) | Remote park and resume | feature | accepted | — | 2026-11-10 |
 | [SPEC-0552](./specs/0552-leaner-agentic-campaign-loop.md) | Leaner agentic campaign loop (role tiers, review packet, findings collator, resumable sessions) | epic | accepted | — | 2026-11-11 |
 | [SPEC-0556](./specs/0556-resumable-implementer-and-reviewer-sessions.md) | Resumable implementer and reviewer sessions per backend, with a fresh-session fallback | feature | in-progress | — | 2026-11-11 |
-| [SPEC-0573](./specs/0573-nwfug-idea-967-20261107-2a79-spec-0459-review.md) | SPEC-0459 follow-ups: real click handler, link-safe queue-window shift, stronger harness tests | feature | accepted | — | 2026-11-12 |
 
 ## Done
 
@@ -863,6 +862,7 @@ progress. This is the single place to see *what has been decided* and *what is i
 | [SPEC-0569](./specs/0569-nw-spec-reserve-does-not-prevent-collisions-spec.md) | Spec-number collisions: a guard for numbers that bypass nw spec reserve, remote refs in the scan, and a re-reserve on collision | feature | done | — | 2026-11-12 |
 | [SPEC-0570](./specs/0570-check-the-idea-1024-spec-0458-link-idea-1024-is.md) | Repair the IDEA-1024 / SPEC-0458 provenance link | feature | done | — | 2026-11-12 |
 | [SPEC-0571](./specs/0571-nw-gate-run-cmd-let-ad-hoc-gates-request-slurm.md) | nw gate run --cmd: ad-hoc gates request Slurm resources (--cpus, --mem, --licenses), capped by box policy | feature | done | M9: agentic workflow | 2026-11-12 |
+| [SPEC-0573](./specs/0573-nwfug-idea-967-20261107-2a79-spec-0459-review.md) | SPEC-0459 follow-ups: real click handler, link-safe queue-window shift, stronger harness tests | feature | done | — | 2026-11-12 |
 
 ## Superseded / rejected
 

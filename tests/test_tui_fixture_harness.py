@@ -4,7 +4,11 @@ from __future__ import annotations
 import asyncio
 import datetime as dt
 import hashlib
+import inspect
 import json
+import os
+import re
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -20,8 +24,8 @@ from nightwright import report as R
 from nightwright.agentic import queue as Q
 from nightwright.tui import agentic_model as AM
 from nightwright.tui.app import IdeaDesk
-from nightwright.tui.campaign_detail import CampaignDetail
-from nightwright.tui.queue_tab import QueueTable, QueueView, _ID_W
+from nightwright.tui.campaign_detail import CampaignDetail, DetailOpener
+from nightwright.tui.queue_tab import QueueView, _ID_W
 from waits import pilot_until
 
 pytestmark = pytest.mark.tui
@@ -140,6 +144,44 @@ def _delivered(app):
 
 def _run(coro):
     return asyncio.run(coro)
+
+
+def _assert_size(app) -> None:
+    """The pilot runs at 160x48: the 30-column ident and `delivered (8)` depend on it."""
+    assert (app.size.width, app.size.height) == (160, 48)
+
+
+# Written apart from `tui_harness._ISO` on purpose: group 1 is the offset, if any.
+_TOKEN = re.compile(
+    rb"(?<!\d)\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(Z|[+-]\d{2}:\d{2})?(?!\d)")
+
+
+def _token_time(raw: bytes) -> dt.datetime:
+    text = raw.decode("ascii")
+    return dt.datetime.fromisoformat(text[:-1] + "+00:00" if text.endswith("Z") else text)
+
+
+def _check_unit(before: bytes, after: bytes, delta: dt.timedelta) -> int:
+    """Every ISO token in `before` moved by `delta` within 1 s in `after`, with its offset kept
+    and everything outside tokens identical. Returns the token count."""
+    old = [m for m in _TOKEN.finditer(before)]
+    new = [m for m in _TOKEN.finditer(after)]
+    assert len(old) == len(new), (before, after)
+    for a, b in zip(old, new):
+        assert a.group(1) == b.group(1), (a.group(0), b.group(0))
+        moved = _token_time(b.group(0)) - _token_time(a.group(0))
+        assert abs((moved - delta).total_seconds()) <= 1, (a.group(0), b.group(0), delta)
+    assert _TOKEN.sub(b"<ts>", before) == _TOKEN.sub(b"<ts>", after)
+    return len(old)
+
+
+def _snap(path: Path):
+    """What an outside target holds: bytes, a hash map for a directory, or None when missing."""
+    if path.is_dir():
+        return _hashes(path)
+    if path.is_file():
+        return path.read_bytes()
+    return None
 
 
 def _under(root: Path, value) -> None:
@@ -282,17 +324,152 @@ def _moved_with(anchor_delta: dt.timedelta, found, after) -> bool:
 
 
 def test_prepare_queue_window_refuses_the_committed_fixture(tmp_path):
-    with pytest.raises(ValueError):
+    fixture_before = _hashes(HS.FIXTURE_DIR)
+    assert "MANIFEST.json" in fixture_before
+    with pytest.raises(ValueError, match="inside the committed fixture"):
         TH.prepare_queue_window({"data_dir": HS.FIXTURE_DIR})
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="inside the committed fixture"):
         TH.prepare_queue_window({"data_dir": HS.FIXTURE_DIR / "agentic"})
     empty = tmp_path / "empty"
     empty.mkdir()
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="does not contain agentic/campaigns"):
         TH.prepare_queue_window({"data_dir": empty})
-    # The raises above must not have written the fixture. A missing campaigns dir is the
-    # second refusal; the fixture path is the first.
-    assert (HS.FIXTURE_DIR / "MANIFEST.json").is_file()
+    assert list(empty.iterdir()) == []
+    assert _hashes(HS.FIXTURE_DIR) == fixture_before
+    # A manifest campaign with no directory refuses before any shift: the copy is untouched.
+    cfg = TH.fixture_cfg(tmp_path / "missing")
+    data = Path(cfg["data_dir"])
+    shutil.rmtree(data / "agentic" / "campaigns" / _cids()[3])
+    copy_before = _hashes(data)
+    with pytest.raises(ValueError, match="has no directory under"):
+        TH.prepare_queue_window(cfg)
+    assert _hashes(data) == copy_before
+
+
+def _link_file(data: Path, outside: Path):
+    camp = data / "agentic" / "campaigns" / _cids()[0]
+    victim = camp / "state.json"
+    outside_file = outside / "target.json"
+    outside_file.write_bytes(victim.read_bytes())   # holds the ISO timestamps a write would move
+    victim.unlink()
+    victim.symlink_to(outside_file)
+    return victim, outside_file
+
+
+def _link_hard(data: Path, outside: Path):
+    victim = data / "agentic" / "campaigns" / _cids()[1] / "state.json"
+    outside_file = outside / "target.json"
+    outside_file.write_bytes(victim.read_bytes())
+    victim.unlink()
+    os.link(outside_file, victim)
+    return victim, outside_file
+
+
+def _link_dir(data: Path, outside: Path):
+    victim = data / "agentic" / "campaigns" / _cids()[2]
+    moved = outside / "moved-campaign"
+    shutil.move(str(victim), str(moved))
+    victim.symlink_to(moved, target_is_directory=True)
+    return victim, moved
+
+
+def _link_global(data: Path, outside: Path):
+    victim = data / "agentic" / "events.jsonl"
+    outside_file = outside / "events.jsonl"
+    outside_file.write_bytes(victim.read_bytes())
+    victim.unlink()
+    victim.symlink_to(outside_file)
+    return victim, outside_file
+
+
+def _link_inside(data: Path, outside: Path):
+    camp = data / "agentic" / "campaigns" / _cids()[3]
+    victim = camp / "alias.json"
+    victim.symlink_to(camp / "state.json")
+    return victim, camp / "state.json"
+
+
+def _link_dangling_global(data: Path, outside: Path):
+    victim = data / "agentic" / "mailbox" / "dangling.jsonl"
+    victim.parent.mkdir(exist_ok=True)
+    outside_file = outside / "never-created.jsonl"
+    victim.symlink_to(outside_file)
+    return victim, outside_file
+
+
+@pytest.mark.parametrize("make", [
+    _link_file, _link_hard, _link_dir, _link_global, _link_inside, _link_dangling_global])
+def test_prepare_queue_window_refuses_links(tmp_path, make):
+    cfg = TH.fixture_cfg(tmp_path / "copy")
+    data = Path(cfg["data_dir"]).resolve()
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    victim, target = make(data, outside)   # a link that cannot be made fails the test
+    before, outside_before = _hashes(data), _snap(outside)
+    target_before = _snap(target)
+    with pytest.raises(ValueError, match=re.escape(str(victim))):
+        TH.prepare_queue_window(cfg)
+    assert _hashes(data) == before
+    assert _snap(outside) == outside_before
+    assert _snap(target) == target_before
+
+
+def test_every_matching_token_moves_by_its_campaign_delta(tmp_path):
+    cfg = TH.fixture_cfg(tmp_path)
+    data = Path(cfg["data_dir"])
+    cids = _cids()
+    camps = {cid: data / "agentic" / "campaigns" / cid for cid in cids}
+    anchors = {cid: _anchor(data, cid) for cid in cids}
+    files = {cid: {p: p.read_bytes() for p in sorted(camps[cid].rglob("*")) if p.is_file()}
+             for cid in cids}
+    globs = {path: _records(path) for path in _global_files(data)}
+    TH.prepare_queue_window(cfg)
+    checked = 0
+    for cid in cids:
+        delta = _anchor(data, cid) - anchors[cid]
+        assert abs(delta.total_seconds()) > 60
+        assert files[cid]
+        tokens = 0
+        for path, raw in files[cid].items():
+            tokens += _check_unit(raw, path.read_bytes(), delta)
+        assert tokens > 0, cid
+        # for .jsonl the unit is the line; for escalations/*.json it is the whole file
+        for path, records in globs.items():
+            after = _records(path)
+            assert len(after) == len(records)
+            for (raw, locator), (new, _) in zip(records, after):
+                if locator == cid:
+                    checked += _check_unit(raw, new, delta)
+    assert checked > 0
+    for path, records in globs.items():
+        for (raw, locator), (new, _) in zip(records, _records(path)):
+            if locator not in cids:
+                assert new == raw
+
+
+def test_shift_datetimes_grammar():
+    delta = dt.timedelta(hours=1, minutes=30)
+    raw = (
+        b'{"z": "2026-11-03T10:00:00Z", "zf": "2026-11-03T10:00:00.5Z",'
+        b' "p": "2026-11-03T10:00:00+05:30", "m": "2026-11-03T10:00:00-05:00",'
+        b' "frac": "2026-11-03T10:00:00.987654+00:00", "naive": "2026-11-03T10:00:00",'
+        b' "midnight": "2026-11-03T23:00:00Z", "month": "2026-11-30T23:00:00Z",'
+        b' "date": "2026-11-03", "cid": "SPEC-0100-20261103-ab12",'
+        b' "digit_before": "12026-11-03T01:02:03", "digit_after": "2026-11-03T01:02:033",'
+        b' "bad": "2026-13-45T00:00:00", "duration_s": 3600.5, "n": 20261103}')
+    expected = (
+        b'{"z": "2026-11-03T11:30:00Z", "zf": "2026-11-03T11:30:00Z",'
+        b' "p": "2026-11-03T11:30:00+05:30", "m": "2026-11-03T11:30:00-05:00",'
+        b' "frac": "2026-11-03T11:30:00+00:00", "naive": "2026-11-03T11:30:00",'
+        b' "midnight": "2026-11-04T00:30:00Z", "month": "2026-12-01T00:30:00Z",'
+        b' "date": "2026-11-03", "cid": "SPEC-0100-20261103-ab12",'
+        b' "digit_before": "12026-11-03T01:02:03", "digit_after": "2026-11-03T01:02:033",'
+        b' "bad": "2026-13-45T00:00:00", "duration_s": 3600.5, "n": 20261103}')
+    assert TH._shift_datetimes(raw, delta) == expected
+
+
+def test_size_is_160_by_48():
+    assert TH.SIZE == (160, 48)
 
 
 # --- pilot ---------------------------------------------------------------------------------
@@ -306,10 +483,19 @@ def test_unshifted_copy_hides_closed_campaigns(tmp_path):
             f"2026-11-03T21:14:52-05:00")
     cfg = TH.fixture_cfg(tmp_path)
     cids = _cids()
+    # The idents the screen paints for these campaigns come from the model's own rows on a
+    # shifted copy, so the clip rule is not written a second time here.
+    shifted = TH.fixture_cfg(tmp_path / "shifted")
+    now = TH.prepare_queue_window(shifted)
+    rows = AM.rows_from_payload(Q.dashboard_payload(shifted, recent=20, now=now), now=now)
+    idents = [_clipped(row) for row in rows if row.kind == "campaign" and row.group == "delivered"]
+    assert len(idents) == len(cids) == 8 and all(idents)
     app = IdeaDesk(cfg, tab="queue")
 
     async def drive():
         async with app.run_test(size=TH.SIZE) as pilot:
+            _assert_size(app)
+
             def settled():
                 view = app.query_one("#queue-view", QueueView)
                 text = TH.visible_text(app)
@@ -322,6 +508,8 @@ def test_unshifted_copy_hides_closed_campaigns(tmp_path):
             assert "queue failed" not in text, text
             for cid in cids:
                 assert cid not in text
+            for ident in idents:
+                assert ident not in text
             assert "delivered (" not in text
 
     _run(drive())
@@ -336,6 +524,8 @@ def test_shifted_queue_lists_every_fixture_campaign(tmp_path):
     async def drive():
         async with app.run_test(size=TH.SIZE) as pilot:
             assert await pilot_until(pilot, lambda: "delivered (8)" in TH.visible_text(app))
+            _assert_size(app)
+            assert _ID_W == 30
             rows = _delivered(app)
             assert rows[0].campaign == cids[-1]
             assert {row.campaign for row in rows} == set(cids)
@@ -348,35 +538,37 @@ def test_shifted_queue_lists_every_fixture_campaign(tmp_path):
     _run(drive())
 
 
-def test_double_click_dispatches_to_the_queue_table(tmp_path):
+def test_double_click_dispatches_to_the_queue_table(tmp_path, monkeypatch):
     cfg = TH.fixture_cfg(tmp_path)
     TH.prepare_queue_window(cfg)
     app = IdeaDesk(cfg, tab="queue")
     seen: list[Click] = []
+    # `QueueTable` has no click handler of its own: its `_on_click` is DataTable's and stays
+    # untouched. The open-detail handler is `DetailOpener.on_click`; wrap it, calling the original.
+    original = DetailOpener.on_click
 
-    def spy(self, event):
-        if isinstance(event, Click):
-            seen.append(event)
+    async def wrapper(self, event):
+        seen.append(event)
+        result = original(self, event)
+        if inspect.isawaitable(result):
+            await result
 
-    QueueTable._on_click = spy
+    monkeypatch.setattr(DetailOpener, "on_click", wrapper)
 
     async def drive():
         async with app.run_test(size=TH.SIZE) as pilot:
             assert await pilot_until(pilot, lambda: "delivered (8)" in TH.visible_text(app))
+            _assert_size(app)
             before = list(app.screen_stack)
             landed = await pilot.double_click("#queue", offset=(2, 2))
-            await pilot.pause(0.05)
             assert landed is True
             assert sum(event.chain == 2 for event in seen) == 1
-            assert len(app.screen_stack) == len(before) + 1
+            assert await pilot_until(pilot, lambda: len(app.screen_stack) == len(before) + 1)
             assert isinstance(app.screen_stack[-1], CampaignDetail)
             assert list(app.screen_stack)[:-1] == before
             assert isinstance(app, IdeaDesk)
 
-    try:
-        _run(drive())
-    finally:
-        del QueueTable._on_click
+    _run(drive())
 
 
 def test_pilot_session_does_not_write_the_copy(tmp_path):
