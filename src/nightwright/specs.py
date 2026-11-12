@@ -770,6 +770,19 @@ def parse_breakdown_project(item: str) -> tuple[str, str | None]:
     return cleaned, project or None
 
 
+# SPEC-0576: `existing IDEA-NNN` (optionally `existing idea IDEA-NNN` / ``existing `IDEA-NNN` ``)
+# names an idea already captured, in any org file; the bullet then seeds nothing.
+_EXISTING_IDEA_RE = re.compile(r"\bexisting\s+(?:idea\s+)?`?(IDEA-\d+)\b", re.IGNORECASE)
+
+
+def parse_breakdown_existing(item: str) -> str | None:
+    """SPEC-0576: the upper-cased id of the first `existing IDEA-NNN` in a Breakdown bullet
+    (any case; optional `idea` word and backticks), else None. A bare mention of an id
+    (`supersedes IDEA-12`) is not a match."""
+    m = _EXISTING_IDEA_RE.search(item or "")
+    return m.group(1).upper() if m else None
+
+
 def _canonical_seed_project(cfg, name: str) -> str:
     """Resolve annotation to a known project name or raise (SPEC-0097). No soft-warn."""
     from .rules import registered_projects
@@ -792,7 +805,9 @@ def seed_ideas_from_epic(cfg, epic_id, *, state="INCUBATE", tags=()):
     Each new idea gets `:EPIC: <epic_id>`. `:PROJECT:` comes from an optional
     `(project: Name)` annotation on the bullet, else outbound `target_project` when present.
     Unknown annotated names hard-fail. Idempotent: skips headings that already exist under
-    the same epic. Returns list of newly created idea ids.
+    the same epic. A bullet containing `existing IDEA-NNN` (SPEC-0576) maps to that idea in
+    any org file: nothing is created or changed for it, and an unknown id hard-fails before
+    anything is seeded. Returns list of newly created idea ids.
     """
     from .explore import set_summary
     from .org import load_tasks
@@ -814,7 +829,9 @@ def seed_ideas_from_epic(cfg, epic_id, *, state="INCUBATE", tags=()):
     existing = {_strip_deps_annot(t.heading or "").casefold().strip():
                 (t.properties.get("ID") or "").strip() for t in epic_tasks}
 
-    parsed = []                                 # (item, project, title, ordinals) per bullet
+    ideas_by_id = {(t.properties.get("ID") or "").strip().upper(): t
+                   for t in load_tasks(cfg) if t.is_idea}   # all files, any :EPIC:
+    parsed = []                     # (item, project, title, ordinals, existing id) per bullet
     for n, item in enumerate(items, 1):
         cleaned, annotated = parse_breakdown_project(item)
         cleaned, ords = parse_breakdown_deps(cleaned)
@@ -829,11 +846,18 @@ def seed_ideas_from_epic(cfg, epic_id, *, state="INCUBATE", tags=()):
             project = _canonical_seed_project(cfg, annotated)
         else:
             project = default_project
-        parsed.append((item, project, _breakdown_idea_title(cleaned), ords))
+        existing_id = parse_breakdown_existing(cleaned)
+        if existing_id and existing_id not in ideas_by_id:
+            raise ValueError(f"Breakdown bullet {n} ({item.strip()[:60]!r}): existing "
+                             f"{existing_id} is not an idea in any org file")
+        parsed.append((item, project, _breakdown_idea_title(cleaned), ords, existing_id))
 
     added = []
     idea_of = []                                # bullet index -> idea id
-    for item, project, title, _ords in parsed:
+    for item, project, title, _ords, existing_id in parsed:
+        if existing_id:                         # SPEC-0576: matched by id; leave it untouched
+            idea_of.append((ideas_by_id[existing_id].properties.get("ID") or "").strip())
+            continue
         key = title.casefold().strip()
         if key in existing:
             idea_of.append(existing[key])
@@ -847,7 +871,7 @@ def seed_ideas_from_epic(cfg, epic_id, *, state="INCUBATE", tags=()):
         idea_of.append(idea_id)
         added.append(idea_id)
     stamps = {idea_of[i]: " ".join(idea_of[o - 1] for o in ords)
-              for i, (_, _, _, ords) in enumerate(parsed) if ords and idea_of[i]}
+              for i, (_, _, _, ords, _e) in enumerate(parsed) if ords and idea_of[i]}
     if stamps:
         from .org import invalidate_tasks_cache
         invalidate_tasks_cache()

@@ -207,3 +207,101 @@ def test_seed_bad_ordinal_is_a_hard_error_naming_the_bullet(tmp_path):
         with pytest.raises(ValueError, match=f"bullet 2.*{frag}"):
             S.seed_ideas_from_epic(cfg, "ACME-0001")
     assert [t for t in load_tasks(cfg) if t.is_idea] == []        # nothing seeded
+
+
+# ---- SPEC-0576: `existing IDEA-NNN` bullets match by id across all ideas files ----------------
+
+def _second_ideas_file(cfg, iid="IDEA-450", *, extra=""):
+    """An org file other than the capture/ideas file holding one idea."""
+    p = Path(cfg["org_files"][0]) / "ideas-other.org"
+    p.write_text(f"#+TODO: IDEA INCUBATE SPECCED | PROMOTED EXPORTED DROPPED\n\n* INCUBATE Already captured idea\n  :PROPERTIES:\n  :ID: {iid}\n"
+                 f"  :PROJECT: Elsewhere\n{extra}  :END:\nOriginal summary.\n", encoding="utf-8")
+    return p
+
+
+def _idea_count(cfg):
+    from nightwright.org import invalidate_tasks_cache
+    invalidate_tasks_cache()
+    return len([t for t in load_tasks(cfg) if t.is_idea])
+
+
+def test_parse_breakdown_existing():
+    f = S.parse_breakdown_existing
+    assert f("existing IDEA-450 — rest") == "IDEA-450"
+    assert f("Existing idea idea-7 — x") == "IDEA-7"
+    assert f("see existing `IDEA-12`") == "IDEA-12"
+    assert f("supersedes IDEA-12") is None
+    assert f("nothing here") is None
+    assert f("") is None
+
+
+def test_seed_existing_idea_in_other_ideas_file_not_duplicated(tmp_path):
+    cfg = _cfg(tmp_path)
+    other = _second_ideas_file(cfg)
+    _write_outbound_epic(cfg, breakdown_lines=["existing IDEA-450 — already tracked"])
+    before_text, n = other.read_text(), _idea_count(cfg)
+    assert n == 1
+    assert S.seed_ideas_from_epic(cfg, "ACME-0001") == []
+    assert _idea_count(cfg) == n
+    assert other.read_text() == before_text                       # EPIC/PROJECT/heading untouched
+    t = next(t for t in load_tasks(cfg) if t.properties.get("ID") == "IDEA-450")
+    assert not (t.properties.get("EPIC") or "").strip()
+    assert t.properties.get("PROJECT") == "Elsewhere"
+
+
+@pytest.mark.parametrize("line", [
+    "EXISTING IDEA-450 — x", "existing idea IDEA-450 — x", "existing `IDEA-450` — x",
+    "Fold in existing idea `IDEA-450`",
+])
+def test_seed_existing_idea_form_variants(tmp_path, line):
+    cfg = _cfg(tmp_path)
+    _second_ideas_file(cfg)
+    _write_outbound_epic(cfg, breakdown_lines=[line])
+    assert S.seed_ideas_from_epic(cfg, "ACME-0001") == []
+    assert _idea_count(cfg) == 1
+
+
+def test_seed_plain_idea_mention_still_seeds(tmp_path):
+    cfg = _cfg(tmp_path)
+    _second_ideas_file(cfg, "IDEA-12")
+    _write_outbound_epic(cfg, breakdown_lines=["New slice — supersedes IDEA-12"])
+    assert len(S.seed_ideas_from_epic(cfg, "ACME-0001")) == 1
+    assert _idea_count(cfg) == 2
+
+
+def test_seed_existing_unknown_id_hard_fails_before_seeding(tmp_path):
+    cfg = _cfg(tmp_path)
+    _write_outbound_epic(cfg, breakdown_lines=["Sibling new bullet", "existing IDEA-999 — typo"])
+    with pytest.raises(ValueError, match=r"bullet 2.*existing IDEA-999 is not an idea"):
+        S.seed_ideas_from_epic(cfg, "ACME-0001")
+    assert _idea_count(cfg) == 0                                  # the sibling was not created
+
+
+def test_seed_mixed_existing_and_new_is_idempotent(tmp_path):
+    cfg = _cfg(tmp_path)
+    _second_ideas_file(cfg)
+    _write_outbound_epic(cfg, breakdown_lines=["existing IDEA-450 — tracked", "Fresh slice"])
+    added = S.seed_ideas_from_epic(cfg, "ACME-0001")
+    assert len(added) == 1 and "IDEA-450" not in added
+    assert _idea_count(cfg) == 2
+    assert S.seed_ideas_from_epic(cfg, "ACME-0001") == []
+    assert _idea_count(cfg) == 2
+
+
+def test_seed_existing_idea_participates_in_after(tmp_path):
+    cfg = _cfg(tmp_path)
+    _second_ideas_file(cfg)
+    _write_outbound_epic(cfg, breakdown_lines=[
+        "existing IDEA-450 — tracked", "New slice (depends_on child 1)"])
+    (new,) = S.seed_ideas_from_epic(cfg, "ACME-0001")
+    assert _after_of(cfg, new)[0] == ["IDEA-450"]
+    # the matched idea itself depends on a new child: stamped only when its :AFTER: is blank
+    _write_outbound_epic(cfg, breakdown_lines=[
+        "existing IDEA-450 — tracked (depends_on child 2)", "New slice"])
+    S.seed_ideas_from_epic(cfg, "ACME-0001")
+    assert _after_of(cfg, "IDEA-450")[0] == [new]
+    _write_outbound_epic(cfg, breakdown_lines=[
+        "existing IDEA-450 — tracked (depends_on child 3)", "New slice", "Other slice"])
+    (other,) = S.seed_ideas_from_epic(cfg, "ACME-0001")
+    assert _after_of(cfg, "IDEA-450")[0] == [new]                 # never overwritten
+    assert other != new

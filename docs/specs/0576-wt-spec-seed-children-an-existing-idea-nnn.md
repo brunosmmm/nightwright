@@ -1,7 +1,7 @@
 ---
 id: SPEC-0576
 title: "seed-children: match an 'existing IDEA-NNN' Breakdown bullet by id across all ideas files"
-status: accepted
+status: done
 owner: user
 created: 2026-11-12
 updated: 2026-11-12
@@ -99,24 +99,24 @@ as today.
 
 ## Acceptance criteria
 
-- [ ] A Breakdown bullet `existing IDEA-NNN — …` whose idea sits in a second org ideas file
+- [x] A Breakdown bullet `existing IDEA-NNN — …` whose idea sits in a second org ideas file
       (not the capture/ideas file) creates no new idea; `seed_ideas_from_epic` returns `[]`
       for it and the total idea count is unchanged.
-- [ ] The matched idea's `:EPIC:`, `:PROJECT:`, heading, Summary and state are unchanged.
-- [ ] Matching is case-insensitive and accepts `existing IDEA-N`, `existing idea IDEA-N`
+- [x] The matched idea's `:EPIC:`, `:PROJECT:`, heading, Summary and state are unchanged.
+- [x] Matching is case-insensitive and accepts `existing IDEA-N`, `existing idea IDEA-N`
       and ``existing `IDEA-N` ``.
-- [ ] A bullet that only mentions an id without `existing` (e.g. `supersedes IDEA-12`)
+- [x] A bullet that only mentions an id without `existing` (e.g. `supersedes IDEA-12`)
       still seeds a new idea.
-- [ ] A bullet naming `existing IDEA-999` where no such idea exists raises `ValueError`
+- [x] A bullet naming `existing IDEA-999` where no such idea exists raises `ValueError`
       naming the bullet number and the id, and no ideas are created by that call (including
       for other bullets in the same Breakdown).
-- [ ] Mixed Breakdown (one matched bullet, one new bullet): only the new bullet is seeded;
+- [x] Mixed Breakdown (one matched bullet, one new bullet): only the new bullet is seeded;
       a second run returns `[]`.
-- [ ] `(depends_on child N)` on a new bullet pointing at a matched bullet stamps the matched
+- [x] `(depends_on child N)` on a new bullet pointing at a matched bullet stamps the matched
       idea's id into `:AFTER:`; a matched idea with a non-empty `:AFTER:` is not overwritten.
-- [ ] Bullets without the `existing IDEA-NNN` form behave exactly as before (existing
+- [x] Bullets without the `existing IDEA-NNN` form behave exactly as before (existing
       `tests/test_seed_children.py` tests pass unchanged).
-- [ ] `TEMPLATE-epic.md` and the `seed-children` help text document the form.
+- [x] `TEMPLATE-epic.md` and the `seed-children` help text document the form.
 
 ## Test plan
 
@@ -138,6 +138,17 @@ as today.
   (covers `tests/test_seed_children.py`, `tests/test_idea_ordering_e2e.py`) and
   `python3 tools/spec_lint.py` exit 0.
 
+### Test record (2026-11-12)
+
+- `uv run pytest -q tests/test_seed_children.py tests/test_idea_ordering_e2e.py`: 21 passed
+  (12 pre-existing seed-children tests unchanged, plus the new SPEC-0576 tests).
+- `python3 tools/test_tiers.py --check` and `python3 tools/spec_lint.py`: exit 0.
+- Manual: scratch config with a second org file holding `IDEA-450`; `nw spec seed-children`
+  on an epic with `existing IDEA-450 — x` printed "no new child ideas" (exit 0); with
+  `existing IDEA-999 — x` exited 1 with "Breakdown bullet 1 (...): existing IDEA-999 is not an
+  idea in any org file".
+- The full suite was left to gating.
+
 ## Rollout / migration
 
 No data migration. Epics already seeded with duplicates (e.g. IDEA-547 for IDEA-450) are
@@ -145,11 +156,11 @@ not touched; the human closes the duplicate. The fix applies on the next `seed-c
 
 ## Definition of done
 
-- [ ] Acceptance criteria all met.
-- [ ] Test plan executed; affected automated tests pass; manual steps performed.
-- [ ] No regressions.
-- [ ] Spec body updated to match what shipped.
-- [ ] `docs/LEDGER.md` regenerated via `python3 tools/spec_lint.py --write-ledger`.
+- [x] Acceptance criteria all met.
+- [x] Test plan executed; affected automated tests pass; manual steps performed.
+- [x] No regressions.
+- [x] Spec body updated to match what shipped.
+- [x] `docs/LEDGER.md` regenerated via `python3 tools/spec_lint.py --write-ledger`.
 
 ## Open questions
 

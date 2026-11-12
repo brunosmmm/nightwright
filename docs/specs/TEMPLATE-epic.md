@@ -38,7 +38,8 @@ checklist current as children are created and completed (the ledger also rolls i
 
 Multi-project fan-out (SPEC-0095/0097): annotate a bullet with `(project: Name)` so
 `nw spec seed-children` stamps the right `:PROJECT:` (omit → epic `target_project`). Name must
-be a known project (`nw projects --json`).
+be a known project (`nw projects --json`). A bullet worded `existing IDEA-NNN — …` (SPEC-0576)
+maps to that already-captured idea in any org file: no new idea is seeded (an unknown id fails).
 
 - [ ] Child A (project: Meta-Tools) — <one-line scope>
 - [ ] Child B (project: Example) — <one-line scope> (depends_on A)

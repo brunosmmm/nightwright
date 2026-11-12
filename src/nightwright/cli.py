@@ -2509,6 +2509,8 @@ def spec_seed_children_cmd(cfg, epic_id):
 
     Each idea gets :EPIC: <epic_id>. :PROJECT: from optional `(project: Name)` on the bullet,
     else outbound target_project. Unknown annotated names hard-fail. Idempotent on headings.
+    A bullet saying `existing IDEA-NNN` (SPEC-0576) matches that idea in any org file (not just
+    the ideas file) and seeds nothing for it; an unknown id hard-fails.
 
     \b
     nw spec seed-children SPEC-0011
