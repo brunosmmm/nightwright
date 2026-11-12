@@ -1,9 +1,10 @@
 ---
 id: SPEC-0585
 title: "SPEC-0574 review follow-ups: pin the sentinel, dangling-link, spec-reviews guard and sanitizer-boundary behaviour; reap parallel children; a real decoy-safety check"
-status: proposed
+status: accepted
 owner: user
 created: 2026-11-12
+updated: 2026-11-12
 kind: feature
 source_idea: IDEA-1333
 tags: [history-fixture, sanitization, tests]
