@@ -38,6 +38,13 @@ def _raw(cfg):
     return open(cfg["org_ideas_file"]).read()
 
 
+OLD_STAMP = "[2020-01-01 Wed 00:00]"
+
+
+def _updated(raw):
+    return re.findall(r"^\s*:UPDATED:\s*(.*?)\s*$", raw, flags=re.M)
+
+
 def _task(cfg, idea_id="IDEA-001"):
     return [t for t in load_tasks(cfg) if t.properties.get("ID") == idea_id][0]
 
@@ -50,9 +57,11 @@ def _strand(cfg, state="EXPLORE"):
     raw = re.sub(r"^(\*+) IDEA ", rf"\1 {state} ", raw, count=1, flags=re.M)
     raw = re.sub(r"^(\*+ .*\n)", lambda m: m.group(1) + "  CLOSED: [2026-11-09 Mon]\n", raw,
                  count=1, flags=re.M) if "CLOSED:" not in raw else raw
+    raw = re.sub(r"^(\s*:UPDATED:).*$", rf"\1 {OLD_STAMP}", raw, count=1, flags=re.M)
     open(cfg["org_ideas_file"], "w").write(raw)
     t = _task(cfg)
     assert t.state == state and not t.is_idea
+    assert _updated(raw) == [OLD_STAMP]
     return t
 
 
@@ -83,6 +92,8 @@ def test_state_accepts_every_configured_keyword(tmp_path, kw):
     cfg = _cfg(tmp_path)
     W.add_idea(cfg, "an idea")
     EX.set_idea_state(cfg, "IDEA-001", kw)           # DROPPED etc. archive cleanly (archive file set)
+    if kw in ("IDEA", "INCUBATE", "SPECCED"):
+        assert _task(cfg).state == kw
 
 
 def test_state_accepts_custom_vocabulary_keyword(tmp_path):
@@ -116,7 +127,24 @@ def test_reopen_stranded_idea(tmp_path):
     assert t.state == "IDEA" and t.is_idea
     raw = _raw(cfg)
     assert "CLOSED:" not in raw
-    assert ":UPDATED:" in raw
+    stamps = _updated(raw)
+    assert len(stamps) == 1 and stamps[0] != OLD_STAMP     # bumped by reopen, not just present
+
+
+def test_helper_message_on_stranded_idea_setters(tmp_path):
+    cfg = _cfg(tmp_path)
+    t = _strand(cfg)
+    before = _raw(cfg)
+    calls = (
+        lambda: W.set_idea_kind(cfg, "IDEA-001", "bug"),
+        lambda: W.set_idea_project(cfg, "IDEA-001", "Meta-Tools"),
+        lambda: EX.retitle_idea(cfg, "IDEA-001", "new title"),
+    )
+    for call in calls:
+        with pytest.raises(ValueError, match="nw idea reopen IDEA-001"):
+            call()
+    assert _raw(cfg) == before
+    assert t.id == "IDEA-001"
 
 
 def test_reopen_into_incubate(tmp_path):
@@ -223,3 +251,6 @@ def test_cli_reopen_bad_state_and_plain_message_for_tasks(cli_cfg):
     task = [t for t in load_tasks(cli_cfg) if not t.is_idea and not t.id.startswith("IDEA")][0]
     r = _run("idea", "show", task.id)
     assert r.exit_code != 0 and "is not an idea" in r.output and "nw idea reopen" not in r.output
+    for cmd in (["log", task.id, "--note", "x"], ["state", task.id, "IDEA"]):
+        r = _run("idea", *cmd)
+        assert r.exit_code != 0 and "is not an idea" in r.output and "nw idea reopen" not in r.output
