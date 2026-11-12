@@ -62,11 +62,12 @@ IPV4_RE = re.compile(r"\b(?:10\.\d{1,3}\.\d{1,3}\.\d{1,3}|192\.168\.\d{1,3}\.\d{
                      r"|172\.(?:1[6-9]|2\d|3[01])\.\d{1,3}\.\d{1,3})\b")
 URL_HOST_RE = re.compile(r"^(https?://)([^/\s:]+)")
 # Account names that are also ordinary words: rewriting them everywhere would mangle prose
-# ("the runner log"), so they are rewritten as a path segment only (what `scan` checks).
+# ("the runner log"), so they are rewritten only where they identify an account: a path segment
+# (what `scan` checks), `name@host`, and the value of USER= / LOGNAME= / USERNAME=.
 COMMON_WORD_USERS = frozenset({
     "root", "runner", "dev", "admin", "ubuntu", "debian", "build", "ci", "test", "worker",
     "agent", "deploy", "github", "jenkins", "docker", "service", "nobody", "ec2-user"})
-SAFE_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")   # a spec_id / project used as a path part
+SAFE_NAME_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*")   # a spec_id / project used as a path part (fullmatch)
 RULES = ("home_path", "user_name", "email", "secret", "host", "ipv4", "pr_url_host", "env")
 
 
@@ -81,9 +82,16 @@ class Sanitizer:
         self.host_map, self.ip_map = {}, {}
         self.host_res = [re.compile(r"(?<![\w.-])" + re.escape(h) + r"(?![\w-])", re.I)
                          for h in self.hosts]
-        self.user_res = [
-            (re.compile(r"/" + re.escape(u) + r"(?![\w.-])"), "/user") if u in COMMON_WORD_USERS else
-            (re.compile(r"(?<![\w])" + re.escape(u) + r"(?![\w])"), "user") for u in self.users]
+        self.user_res = []
+        for u in self.users:
+            e = re.escape(u)
+            if u in COMMON_WORD_USERS:
+                self.user_res += [
+                    (re.compile(r"/" + e + r"(?![\w.-])"), "/user"),
+                    (re.compile(r"(?<![\w.-])" + e + r"(?=@)"), "user"),
+                    (re.compile(r"\b(USER|LOGNAME|USERNAME)=" + e + r"(?![\w.-])"), r"\1=user")]
+            else:
+                self.user_res.append((re.compile(r"(?<![\w])" + e + r"(?![\w])"), "user"))
 
     def _host(self, m):
         self.counts["host"] += 1
@@ -548,22 +556,35 @@ def mentions(line: str, cids) -> bool:
 
 def _safe_name(v) -> bool:
     """A spec_id / project from a (possibly hostile) state.json that is safe as one path part."""
-    return isinstance(v, str) and bool(SAFE_NAME_RE.match(v)) and v not in (".", "..")
+    return isinstance(v, str) and SAFE_NAME_RE.fullmatch(v) is not None and v not in (".", "..")
 
 
 def _inside(path: Path, root: Path) -> bool:
-    """`path` resolves (symlinks followed) inside `root`; a symlink loop or unreadable link is outside."""
+    """`path` resolves (symlinks followed) inside `root` as given (callers pass a resolved parent plus a
+    validated name, so a symlinked `root` itself fails); a symlink loop or unreadable link is outside."""
     try:
-        return path.resolve().is_relative_to(root.resolve())
+        # strict for anything that exists or is a link: Python 3.13+ does not raise on a loop otherwise
+        return path.resolve(strict=os.path.lexists(path)).is_relative_to(root)
     except (OSError, RuntimeError):
         return False
+
+
+def _names(values, kind: str, note) -> set:
+    """The `str` values only: anything else (a list or dict would be unhashable) is noted, never hashed."""
+    out = set()
+    for v in values:
+        if isinstance(v, str):
+            out.add(v)
+        elif v is not None:
+            note(f"unsafe {kind} {v!r}: skipped")
+    return out
 
 
 def collect_records(agentic: Path, chosen: list[Camp], esc: dict, note) -> tuple[dict, dict, dict]:
     """-> (files: rel path under agentic/ -> raw bytes, sources, record counts)."""
     cids = {c.cid for c in chosen}
-    specs = {c.state.get("spec_id") for c in chosen}
-    projects = {c.state.get("project") for c in chosen}
+    specs = _names((c.state.get("spec_id") for c in chosen), "spec_id", note)
+    projects = _names((c.state.get("project") for c in chosen), "project", note)
     files: dict[str, bytes] = {}
     sources: dict[str, str] = {}
     counts = {"decisions": 0, "escalations": 0, "mail": 0, "events": 0}
@@ -622,22 +643,21 @@ def collect_records(agentic: Path, chosen: list[Camp], esc: dict, note) -> tuple
 
     p = agentic / "spec-reviews.jsonl"
     if src("spec-reviews", p):
-        keep = [ln for ln, o in read_jsonl(p) if isinstance(o, dict) and o.get("spec_id") in specs]
+        keep = [ln for ln, o in read_jsonl(p) if isinstance(o, dict) and isinstance(o.get("spec_id"), str) and o["spec_id"] in specs]
         files["spec-reviews.jsonl"] = "".join(keep).encode()
 
     rv = agentic / "reviews"
     if src("reviews", rv):
-        for s in sorted(specs, key=str):
-            if s is None:
-                continue
+        for s in sorted(specs):
             if not _safe_name(s):
                 note(f"unsafe spec_id {s!r}: skipped")
                 continue
             d = rv / s
             if d.is_dir():
+                root = rv.resolve() / s     # a symlinked <spec_id> dir resolves elsewhere: every file fails
                 for f in sorted(d.rglob("*")):
-                    if not _inside(f, agentic):
-                        note(f"reviews/{s}/{f.relative_to(d).as_posix()} resolves outside agentic/: skipped")
+                    if not _inside(f, root):
+                        note(f"reviews/{s}/{f.relative_to(d).as_posix()} resolves outside its own directory: skipped")
                     elif f.is_file():
                         files[f"reviews/{s}/{f.relative_to(d).as_posix()}"] = f.read_bytes()
 
@@ -659,13 +679,17 @@ def collect_records(agentic: Path, chosen: list[Camp], esc: dict, note) -> tuple
 
     sd = agentic / "sentinel"
     if src("sentinel", sd):
-        for proj in sorted((x for x in projects if x is not None), key=str):
+        for proj in sorted(projects):
             if not _safe_name(proj):
                 note(f"unsafe project {proj!r}: skipped")
                 continue
             f = sd / f"{proj}.last.json"
-            if not _inside(f, agentic):
-                note(f"sentinel/{proj}.last.json resolves outside agentic/: skipped")
+            try:    # equality, not a root check: `sentinel/` also holds every other project's file
+                own = f.resolve() == sd.resolve() / f"{proj}.last.json"
+            except (OSError, RuntimeError):
+                own = False
+            if not own:
+                note(f"sentinel/{proj}.last.json does not resolve to itself: skipped")
             elif f.is_file():
                 files[f"sentinel/{proj}.last.json"] = f.read_bytes()
     return files, sources, counts

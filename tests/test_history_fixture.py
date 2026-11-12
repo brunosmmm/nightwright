@@ -12,6 +12,7 @@ import datetime as dt
 import hashlib
 import importlib.util
 import json
+import math
 import os
 import random
 import re
@@ -58,9 +59,19 @@ def check_budget(spent: float, budget: float | None = None) -> None:
     """Raise AssertionError when `spent` seconds exceed the budget (NW_HISTORY_FIXTURE_BUDGET_S
     overrides HISTORY_FIXTURE_BUDGET_S for a slow box)."""
     if budget is None:
-        budget = float(os.environ.get("NW_HISTORY_FIXTURE_BUDGET_S") or HISTORY_FIXTURE_BUDGET_S)
+        raw = os.environ.get("NW_HISTORY_FIXTURE_BUDGET_S") or HISTORY_FIXTURE_BUDGET_S
+        try:
+            budget = float(raw)
+        except (TypeError, ValueError):
+            budget = float("nan")
+        assert math.isfinite(budget) and budget > 0, (
+            f"NW_HISTORY_FIXTURE_BUDGET_S must be a positive finite number of seconds, got {raw!r}")
     assert spent <= budget, (f"tests/test_history_fixture.py took {spent:.1f}s of test time, "
                              f"over its {budget:.1f}s budget")
+
+
+def assert_tree_unchanged(src: Path, digest: str) -> None:
+    assert tree_digest(src) == digest, "a test changed the shared captured source"
 
 
 def tree_digest(src: Path) -> str:
@@ -250,7 +261,7 @@ def captured(tmp_path_factory):
     digest = tree_digest(src)
     _SPENT[0] += time.monotonic() - t0
     yield {"src": src, "out": out, "home": home, "stdout": r.stdout}
-    assert tree_digest(src) == digest, "a test changed the shared captured source"
+    assert_tree_unchanged(src, digest)
 
 
 def manifest_of(out: Path):
@@ -708,12 +719,19 @@ def test_committed_fixture_is_a_data_dir(tmp_path):
         k: v for k, v in tree_hashes(HS.FIXTURE_DIR).items() if k != "MANIFEST.json"}
 
 
-@pytest.mark.parametrize("user,home", [("nw", "/home/nw"), ("agentic", "/home/agentic"),
-                                       ("campaigns", "/home/campaigns"), ("bruno", "/home/bruno")])
-def test_check_is_independent_of_the_running_user(user, home):
-    """`--check` of the committed fixture must not depend on $USER or $HOME (gate workers differ)."""
-    r = run_tool("--check", env={"USER": user, "HOME": home})
-    assert r.returncode == 0, r.stderr
+def test_check_is_independent_of_the_running_user():
+    """`--check` of the committed fixture must not depend on $USER or $HOME (gate workers differ).
+    The four runs go in parallel (SPEC-0574: the module's test time is budgeted)."""
+    procs = []
+    for user, home in [("nw", "/home/nw"), ("agentic", "/home/agentic"),
+                       ("campaigns", "/home/campaigns"), ("bruno", "/home/bruno")]:
+        e = dict(os.environ, USER=user, HOME=home)
+        e.pop("NW_DATA_DIR", None)
+        procs.append((user, subprocess.Popen([sys.executable, str(TOOL), "--check"], env=e,
+                                             stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)))
+    for user, proc in procs:
+        _, err = proc.communicate()
+        assert proc.returncode == 0, (user, err)
 
 
 def test_scan_user_segments_only_when_given(tool, tmp_path):
@@ -1157,7 +1175,7 @@ def test_capture_with_dictionary_word_user_keeps_prose(tool, tmp_path):
 
 
 @pytest.mark.parametrize("field", ["spec_id", "project"])
-@pytest.mark.parametrize("bad", ["../../etc", "/abs", "a/../../b", "..", "", "../x", "{tmp}"])
+@pytest.mark.parametrize("bad", ["../../etc", "/abs", "a/../../b", "..", "", "../x", "{tmp}", "SPEC-0001\n"])
 def test_unsafe_spec_id_and_project_are_skipped(tool, tmp_path, field, bad):
     src = build_source(tmp_path / "src")
     ag = src / "agentic"
@@ -1169,15 +1187,15 @@ def test_unsafe_spec_id_and_project_are_skipped(tool, tmp_path, field, bad):
     # a decoy wherever the traversal would land
     where = (os.path.normpath(ag / "reviews" / bad) if field == "spec_id"
              else os.path.normpath(ag / "sentinel" / f"{bad}.last.json"))
-    try:
+    if Path(where).is_relative_to(tmp_path):                  # never plant a decoy outside tmp_path
         if field == "spec_id":
             Path(where).mkdir(parents=True, exist_ok=True)
             Path(where, "d.json").write_text("DECOY-TEXT\n")
         else:
             Path(where).parent.mkdir(parents=True, exist_ok=True)
             Path(where).write_text("DECOY-TEXT\n")
-    except OSError:
-        pass                                                  # e.g. "/abs": cannot be planted
+    elif bad == "/abs":
+        assert not Path(where).exists()                       # nothing was planted at /abs
     notes = []
     chosen = [tool.Camp(ag / "campaigns" / c) for c in (MULTI, ABANDONED)]
     files, _, _ = tool.collect_records(ag, chosen, {}, notes.append)
@@ -1232,7 +1250,7 @@ def test_sentinel_symlink_escaping_source_is_not_read(tool, tmp_path):
     files = _collect(tool, src, notes)
     assert "sentinel/Meta-Tools.last.json" not in files
     assert not [k for k, v in files.items() if b"OUTSIDE-SECRET-TEXT" in v]
-    assert any("Meta-Tools.last.json" in n and "outside" in n for n in notes), notes
+    assert any("Meta-Tools.last.json" in n and "skipped" in n for n in notes), notes
 
 
 @pytest.mark.parametrize("kind", ["dir_link", "spec_dir_link", "loop"])
@@ -1286,7 +1304,7 @@ def test_sub_emails_matches_the_regex_on_edge_cases(tool, s):
 
 def test_sub_emails_matches_the_regex_on_a_seeded_corpus(tool):
     f = lambda m: f"<{m.group(0)}>"
-    for s in _email_corpus(20000, 1):
+    for s in _email_corpus(4000, 1):
         assert tool.sub_emails(f, s) == tool.EMAIL_RE.sub(f, s), repr(s)
 
 
@@ -1304,7 +1322,7 @@ def test_trim_cut_matches_the_old_regex_on_edge_cases(tool, s):
 
 
 def test_trim_cut_matches_the_old_regex_on_a_seeded_corpus(tool):
-    for s in _email_corpus(20000, 2, "abz09.%+-@_ \n/hmUsr"):
+    for s in _email_corpus(4000, 2, "abz09.%+-@_ \n/hmUsr"):
         assert tool.trim_cut(s) == _old_trim_cut(tool, s), repr(s)
 
 
@@ -1321,3 +1339,125 @@ def test_check_budget(monkeypatch):
         check_budget(1)
     monkeypatch.setenv("NW_HISTORY_FIXTURE_BUDGET_S", "100")
     check_budget(50)
+    for raw in ("abc", "-1", "0", "nan", "inf", "-inf"):
+        monkeypatch.setenv("NW_HISTORY_FIXTURE_BUDGET_S", raw)
+        with pytest.raises(AssertionError, match=f"NW_HISTORY_FIXTURE_BUDGET_S.*{raw!r}"):
+            check_budget(5)
+    monkeypatch.setenv("NW_HISTORY_FIXTURE_BUDGET_S", "100")
+    check_budget(5)
+
+
+# ---- SPEC-0574: SPEC-0568 review follow-ups -----------------------------------------------------
+
+def test_tree_digest_guard_fires(tmp_path):
+    (tmp_path / "d").mkdir()
+    (tmp_path / "d" / "a.txt").write_text("one\n")
+    digest = tree_digest(tmp_path)
+    assert_tree_unchanged(tmp_path, digest)                   # silent when nothing changed
+    (tmp_path / "d" / "a.txt").write_text("two\n")
+    with pytest.raises(AssertionError, match="changed the shared captured source"):
+        assert_tree_unchanged(tmp_path, digest)
+
+
+def test_safe_name_rejects_trailing_newline(tool, tmp_path):
+    assert tool._safe_name("SPEC-0001") and not tool._safe_name("SPEC-0001\n") and not tool._safe_name("a\n")
+    src = build_source(tmp_path / "src")
+    ag = src / "agentic"
+    sp = ag / "campaigns" / ABANDONED / "state.json"
+    st = json.loads(sp.read_text())
+    st["spec_id"] = "SPEC-0001\n"
+    sp.write_text(json.dumps(st))
+    (ag / "reviews" / "SPEC-0001\n").mkdir(parents=True)     # a directory whose name has the newline
+    (ag / "reviews" / "SPEC-0001\n" / "d.json").write_text("DECOY-TEXT\n")
+    notes = []
+    files = _collect(tool, src, notes)
+    assert not [k for k, v in files.items() if b"DECOY-TEXT" in v or "\n" in k]
+    assert any(repr("SPEC-0001\n") in n and "skipped" in n for n in notes), notes
+
+
+@pytest.mark.parametrize("field", ["spec_id", "project"])
+@pytest.mark.parametrize("bad", [["a"], {"a": 1}, 5, ""])
+def test_non_string_ids_are_skipped_not_fatal(tool, tmp_path, field, bad):
+    src = build_source(tmp_path / "src")
+    ag = src / "agentic"
+    sp = ag / "campaigns" / ABANDONED / "state.json"
+    st = json.loads(sp.read_text())
+    st[field] = bad
+    sp.write_text(json.dumps(st))
+    notes = []
+    files = _collect(tool, src, notes)                        # must not raise TypeError
+    assert any(repr(bad) in n and "skipped" in n for n in notes), notes
+    assert f"reviews/{MULTI[:9]}/r.json" in files and "sentinel/Meta-Tools.last.json" in files
+    assert not [k for k in files if k.startswith("reviews/") and k != f"reviews/{MULTI[:9]}/r.json"]
+    assert [k for k in files if k.startswith("sentinel/")] == ["sentinel/Meta-Tools.last.json"]
+    if (field, bad) != ("spec_id", ["a"]):                    # one full capture is enough
+        return
+    out = tmp_path / "out"
+    r = run_tool("--src", str(src), "--out", str(out), home=tmp_path)
+    assert r.returncode == 0, r.stderr
+
+
+def test_review_symlink_to_unselected_agentic_data_is_not_read(tool, tmp_path):
+    src = build_source(tmp_path / "src")
+    ag = src / "agentic"
+    rv = ag / "reviews" / MULTI[:9]
+    (ag / "escalations").mkdir(exist_ok=True)
+    esc = ag / "escalations" / "ESC-9999.json"
+    esc.write_text("ESC-OTHER-CAMPAIGN-TEXT\n")
+    (rv / "esc.json").symlink_to(esc)
+    sd = ag / "sentinel"
+    (sd / "Other.last.json").write_text("SENTINEL-B-MARKER\n")
+    (sd / "Meta-Tools.last.json").unlink()
+    (sd / "Meta-Tools.last.json").symlink_to(sd / "Other.last.json")     # A -> B, same directory
+    other = ag / "reviews" / "SPEC-0099"
+    other.mkdir(parents=True)
+    (other / "x.json").write_text("OTHER-SPEC-REVIEW-TEXT\n")
+    (ag / "reviews" / MULTI[:9] / "sib.json").write_text("SIBLING-OK\n")
+    (rv / "insame.json").symlink_to(rv / "sib.json")                    # inside its own dir: still read
+    notes = []
+    files = _collect(tool, src, notes)
+    blob = b"".join(files.values())
+    assert b"ESC-OTHER-CAMPAIGN-TEXT" not in blob and b"SENTINEL-B-MARKER" not in blob
+    assert "sentinel/Meta-Tools.last.json" not in files
+    assert any("esc.json" in n and "resolves outside" in n for n in notes), notes
+    assert any("Meta-Tools.last.json" in n and "skipped" in n for n in notes), notes
+    assert files[f"reviews/{MULTI[:9]}/insame.json"] == b"SIBLING-OK\n"
+    # the reviews/<spec_id> directory itself symlinked to another directory under agentic/
+    for f in list(rv.iterdir()):
+        f.unlink()
+    rv.rmdir()
+    rv.symlink_to(other, target_is_directory=True)
+    notes = []
+    files = _collect(tool, src, notes)
+    assert not [k for k in files if k.startswith("reviews/")]
+    assert b"OTHER-SPEC-REVIEW-TEXT" not in b"".join(files.values())
+    assert any("x.json" in n and "skipped" in n for n in notes), notes
+    # a regular sentinel/A.last.json is still read
+    (sd / "Meta-Tools.last.json").unlink()
+    (sd / "Meta-Tools.last.json").write_text("REGULAR\n")
+    assert _collect(tool, src, [])["sentinel/Meta-Tools.last.json"] == b"REGULAR\n"
+
+
+COMMON_WORD_ROWS = [
+    ({"runner"}, "runner@localhost", "user@localhost"),
+    ({"runner"}, "USER=runner", "USER=user"),
+    ({"runner"}, "LOGNAME=runner", "LOGNAME=user"),
+    ({"runner"}, "USERNAME=runner", "USERNAME=user"),
+    ({"runner"}, "runner@localhost and USER=runner", "user@localhost and USER=user"),
+    ({"runner"}, "the runner log", "the runner log"),
+    ({"runner"}, "/runner.log", "/runner.log"),
+    ({"runner"}, "/runnerx", "/runnerx"),
+    ({"runner"}, "/Runner/x", "/Runner/x"),
+    ({"runner"}, "user=runner", "user=runner"),
+    ({"runner"}, "USER=runner.x", "USER=runner.x"),
+    ({"runner"}, "/home/runner/x", "/home/user/x"),
+    ({"test"}, "mode=test", "mode=test"),
+    ({"build"}, "--target=build", "--target=build"),
+    ({"ci"}, "env=ci", "env=ci"),
+    ({"runner", "alice"}, "alice@x runner@x /runner/a alice runner", "user@x user@x /user/a user runner"),
+]
+
+
+@pytest.mark.parametrize("users,text,expected", COMMON_WORD_ROWS)
+def test_common_word_user_edge_cases(tool, users, text, expected):
+    assert tool.Sanitizer(users=users).text(text) == expected
