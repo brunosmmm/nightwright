@@ -118,6 +118,8 @@ def test_templates_and_schemas(tmp_path):
             continue
         if name == "spec_writer":         # no gates or previous runs (SPEC-0215)
             continue
+        if name == "review_marshal":      # its own context (SPEC-0554): ACs + candidates
+            continue
         text = persona.template
         for ph in ("{{campaign}}", "{{spec_id}}", "{{worktree}}", "{{spec_text}}",
                    "{{gate_results}}", "{{pending_brief}}", "{{previous_verdicts}}"):
@@ -1187,3 +1189,122 @@ def test_flaky_history_none_known(tmp_path):
     p = PS.build_prompt("gate_triager", PS.build_context(cfg, st, _project_cfg()))
     assert "## Known flaky tests" in p and "(none known)" in p
     assert PS.render_flaky_history(cfg, dict(st, last_gate=None)) == "(none known)"
+
+
+# ---- SPEC-0554: the review packet in reviewer prompts -----------------------------------------
+
+def _packet_state(tmp_path, *, lean=None, loops=0):
+    from nightwright.agentic import packet as PK
+    st = _state(tmp_path, state="REVIEWING", counters={"loops": loops, "runs": 2})
+    if lean is not None:
+        st["lean"] = lean
+    return st, PK
+
+
+_REVIEW_PERSONAS = sorted(PS.REVIEWER_PERSONAS) + ["review_triager"]
+
+
+@pytest.mark.parametrize("persona", _REVIEW_PERSONAS)
+def test_flag_off_review_prompts_and_schemas_unchanged(tmp_path, monkeypatch, persona):
+    """With `lean.packet` off (absent, all false, or tiers only) no packet code runs and every
+    reviewer's prompt, system block and schema are the same as a campaign without `lean`."""
+    from nightwright.agentic import packet as PK
+
+    def boom(*a, **k):
+        raise AssertionError("packet code ran with the flag off")
+    for fn in ("review_values", "marshal_values", "note", "extend_schema", "load"):
+        monkeypatch.setattr(PK, fn, boom)
+    cfg = _cfg(tmp_path)
+    profile = resolve_profile(cfg)
+    base = PS.build_request(cfg, profile, _project_cfg(), _state(tmp_path, state="REVIEWING"),
+                            persona, run_dir=tmp_path / "r0")
+    for i, lean in enumerate(({"tiers": False, "packet": False, "collator": False,
+                               "sessions": False}, {"packet": False})):
+        req = PS.build_request(cfg, profile, _project_cfg(),
+                               _state(tmp_path, state="REVIEWING", lean=lean), persona,
+                               run_dir=tmp_path / f"r{i + 1}")
+        assert req.prompt == base.prompt and req.system_append == base.system_append
+        assert req.json_schema is PS.get_persona(persona).schema
+    assert "packet" not in base.prompt.lower() or persona == "review_triager"
+
+
+def _write_packet(cfg, st, PK, *, mode="full", findings=(), delta_text=""):
+    cdir = S.campaign_dir(cfg, st["id"])
+    cdir.mkdir(parents=True, exist_ok=True)
+    loop = PK.loop_of(st)
+    doc = {"schema": PK.SCHEMA_ID, "campaign": st["id"], "spec_id": "SPEC-0001", "loop": loop,
+           "mode": mode, "head": "h" * 40, "base": "b" * 40,
+           "prev_head": "p" * 40 if mode == "delta" else None,
+           "acs": [{"id": "AC1", "text": "x"}],
+           "diff": {"stat": [{"path": "a.py", "added": 1, "deleted": 0}], "path": "d.diff"},
+           "delta": ({"stat": [{"path": "a.py", "added": 1, "deleted": 0}],
+                      "path": f"packet-loop-{loop}.delta.diff"} if mode == "delta" else None),
+           "ac_map": None, "gates": {"results": [], "failing": [], "flaky": []},
+           "findings": list(findings),
+           "pointers": {"spec": "docs/specs/0001-x.md", "diff": "d.diff", "runs": "runs/",
+                        "gate_logs": []}}
+    (cdir / PK.name(loop)).write_text(json.dumps(doc))
+    if mode == "delta":
+        (cdir / f"packet-loop-{loop}.delta.diff").write_text(delta_text)
+    st["packet"] = {"loop": loop, "ok": True, "mode": mode, "marshal": "done"}
+    return doc
+
+
+def test_full_mode_prompt_references_the_packet(tmp_path):
+    cfg = _cfg(tmp_path)
+    st, PK = _packet_state(tmp_path, lean={"packet": True})
+    _write_packet(cfg, st, PK)
+    req = PS.build_request(cfg, resolve_profile(cfg), _project_cfg(), st,
+                           "conformance_reviewer", run_dir=tmp_path / "r")
+    assert "## Review packet (read it first)" in req.prompt
+    assert "review mode: `full`" in req.prompt and "packet-loop-1.json" in req.prompt
+    props = req.json_schema["properties"]
+    assert props["prior_status"]["items"]["properties"]["status"]["enum"] == ["fixed", "open"]
+    assert props["findings"]["items"]["properties"]["basis"]["enum"] == list(PK.BASES)
+    assert "prior_status" not in PS.CONFORMANCE_REVIEWER_SCHEMA["properties"]   # not mutated
+
+
+def test_delta_mode_prompt_has_delta_and_only_own_findings(tmp_path):
+    cfg = _cfg(tmp_path)
+    st, PK = _packet_state(tmp_path, lean={"packet": True}, loops=1)
+    mine = {"id": "k1", "persona": "test_reviewer", "loop": 1, "severity": "major",
+            "title": "no test for AC1", "status": "open", "evidence": "", "files": []}
+    other = dict(mine, id="k2", persona="adversarial_reviewer", title="adversarial thing")
+    gone = dict(mine, id="k3", title="already fixed", status="fixed")
+    _write_packet(cfg, st, PK, mode="delta", findings=[mine, other, gone],
+                  delta_text="diff --git a/a.py b/a.py\n+delta line\n")
+    req = PS.build_request(cfg, resolve_profile(cfg), _project_cfg(), st, "test_reviewer",
+                           run_dir=tmp_path / "r")
+    assert "review mode: `delta`" in req.prompt and "+delta line" in req.prompt
+    assert "`k1` loop 1 major: no test for AC1" in req.prompt
+    assert "adversarial thing" not in req.prompt and "already fixed" not in req.prompt
+    assert "Diff against `pppppppppppp`" in req.prompt          # base = the previous loop's head
+    assert "delta_regression" in req.prompt and "missed_ac" in req.prompt
+
+
+def test_packet_pinned_but_not_built_keeps_todays_prompt(tmp_path):
+    cfg = _cfg(tmp_path)
+    profile = resolve_profile(cfg)
+    base = PS.build_request(cfg, profile, _project_cfg(), _state(tmp_path, state="REVIEWING"),
+                            "adversarial_reviewer", run_dir=tmp_path / "a")
+    st, PK = _packet_state(tmp_path, lean={"packet": True})
+    st["counters"] = base_counters = {"loops": 1, "runs": 2}
+    st["packet"] = {"loop": 2, "ok": False, "error": "boom"}
+    req = PS.build_request(cfg, profile, _project_cfg(), st, "adversarial_reviewer",
+                           run_dir=tmp_path / "b")
+    assert req.prompt == base.prompt and req.json_schema is PS.ADVERSARIAL_REVIEWER_SCHEMA
+    assert base_counters["loops"] == 1
+
+
+def test_marshal_request_is_read_only_marshal_tier(tmp_path):
+    cfg = _cfg(tmp_path)
+    st, PK = _packet_state(tmp_path, lean={"packet": True, "tiers": True})
+    doc = _write_packet(cfg, st, PK)
+    doc["candidates"] = {"hunks": ["a.py:1"], "tests": ["tests/t.py::test_a"]}
+    (S.campaign_dir(cfg, st["id"]) / PK.name(1)).write_text(json.dumps(doc))
+    req = PS.build_request(cfg, resolve_profile(cfg), _project_cfg(), st, "review_marshal",
+                           run_dir=tmp_path / "m")
+    assert req.read_only and req.tier == "marshal" and req.model == "claude-haiku-5-5"
+    assert '"a.py:1"' in req.prompt and '"tests/t.py::test_a"' in req.prompt
+    assert req.json_schema["required"] == ["ac_map"]
+    assert req.max_budget_usd == PK.MARSHAL_SETTINGS["max_budget_usd"]

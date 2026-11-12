@@ -1,7 +1,7 @@
 ---
 id: SPEC-0554
 title: Marshal review packet (packet-loop-N.json) and delta reviews from loop 2
-status: accepted
+status: in-progress
 owner: user
 created: 2026-11-11
 parent: SPEC-0552
@@ -111,6 +111,61 @@ reviewers get today's prompt and the run records `packet: false`.
 
 Flag: `state.lean.packet` (pinned at open, SPEC-0553). Off → today's prompts and schemas.
 
+### Design as built (where it differs from the above)
+
+- **The marshal is its own REVIEWING sub-step.** `plan_step` returns
+  `Step("review", persona="review_marshal")` while `packet.marshal_due(state)` (flag pinned,
+  this loop's packet not attempted or its marshal pending), before the reviewer fan-out, like
+  the review triager. `_prepare_reviews` (→ `_prepare_marshal`) builds the packet there (code,
+  main thread) and prepares the marshal run; its harvest (`_apply_marshal`) writes the map and
+  stays in REVIEWING (reason `review_packet`), and the next tick fans the reviewers out. So the
+  tick thread never waits on an LLM, and adoption, cost, budgets and the export treat the
+  marshal like any persona run (`adopt: review/[review_marshal]`). A packet that cannot be
+  built (`state.packet.ok: false`), a marshal the cost cap blocks or one that cannot be
+  prepared skips the marshal (`ac_map: null`, `ac_map_error`) and never parks. New ledger
+  event `review_packet` (`loop`, `ok`, `mode`, `bytes`, `ac_map`, `none`, `ac_map_error`).
+- **Marshal settings.** The builtin profiles do not list `review_marshal` (adding it would
+  change every profile's sha for flag-off campaigns); `profiles.persona_settings` falls back to
+  `packet.MARSHAL_SETTINGS` (haiku/medium, $0.25, read-only, `dontAsk`) and a profile may set
+  it. With `lean.tiers` the model is the marshal tier's (`claude-haiku-5-5` on claude).
+- **Marshal input / output.** The marshal gets the packet's ACs and code-computed candidates
+  (`candidates.hunks` as `path:start-end` new-side ranges of `git diff --unified=0`,
+  `candidates.tests` as `path::name` from `personas.tests_touched`). Its map is cleaned by code
+  (`packet.clean_map`): only packet AC ids and candidate strings are kept, one entry per AC in
+  order; an AC it left out (or with no hunk/test left) is `coverage: none`.
+- **Diff range.** `diff` is `merge-base(base, HEAD)..head` (the three-dot diff the reviewers
+  already get); `delta` is `prev_head..head`, `prev_head` from `state.review_heads[N-1]`
+  (written by each packet build). The packet also carries `mode` (`full` / `delta`) and
+  `candidates`.
+- **Prior findings across loops.** Verdicts are cleared when REVIEWING is entered
+  (`_begin_review`), so with the flag pinned `_begin_review` first copies the outgoing verdicts
+  and triager waivers to `state.packet_prev`. Loop N's `findings` = loop N-1's packet findings,
+  updated by `packet_prev`'s `prior_status` entries (a reviewer moves only its own findings),
+  plus its new findings (`open`; a demoted one carries `advisory: true` and never counts
+  again); human waivers (`human_overrides`) and the triager's waivers then set `waived`. A
+  `fixed` finding raised again is `open` again.
+- **Prompts.** The templates are unchanged (flag off must be byte-identical); with a packet,
+  `build_request` appends a packet note (`packet.FULL_NOTE` / `DELTA_NOTE`) rendered with
+  `{{packet_path}}`, `{{review_mode}}`, `{{packet_loop}}` and `{{prior_findings}}` (registered
+  placeholders). Delta mode sets `diff` to the delta (≤ 1500 lines) and `base` to the previous
+  loop's head (so the template's "Diff against" header is true) and lists only the reviewer's
+  own open, non-advisory prior findings. `packet.extend_schema` adds `prior_status` and
+  per-finding `basis` as optional keys, so a verdict without them still conforms. Applies to
+  builtin and declared reviewers, not to the review triager.
+- **Enforcement where verdicts are stored.** `_store_verdicts` (given `packet.enforcement`,
+  delta mode only) stores the reviewer's still-open prior findings (`prior: <id>`, unless
+  marked `fixed`) followed by its new findings; a new finding whose key equals a prior one is
+  that prior one; an invalid basis marks it `demoted: true`. `triage_reviews` puts a demoted
+  finding straight into `advisory` (never scored, never backs a `fix` verdict) and lists its id
+  under `basis_demoted` (key present only when non-empty). `review_outcome` gains `demoted`
+  (only with the flag pinned).
+- **"Stays met" rule.** An AC assessed met earlier staying met unless the delta touches its
+  hunks is a delta-mode prompt instruction, not code-enforced (`ac_assessment` handling is
+  unchanged).
+- **Export.** `runs.loop` / `runs.packet` come from `run.start` (`packet.run_marks`, written
+  only with the flag pinned; `packet` true for a marshal or reviewer run with a built packet);
+  `campaigns.demoted_findings` sums the last `review_outcome.demoted` of each loop.
+
 ## Alternatives considered
 
 - **A new `PACKETING` queue state** — clearer on the timeline, but touches `STATES`,
@@ -124,20 +179,21 @@ Flag: `state.lean.packet` (pinned at open, SPEC-0553). Off → today's prompts a
 
 ## Acceptance criteria
 
-- [ ] With `lean.packet` on, every review loop writes `packet-loop-N.json` (valid against
+- [x] With `lean.packet` on, every review loop writes `packet-loop-N.json` (valid against
       `nw.review_packet.v1`) with verbatim ACs, diff and delta stats and files, gates, prior
       findings with status and evidence, and pointers, before any reviewer starts.
-- [ ] `review_marshal` runs at tier marshal, outputs only the AC map (incl. `coverage:
+- [x] `review_marshal` runs at tier marshal, outputs only the AC map (incl. `coverage:
       none` entries), and its failure leaves a packet with `ac_map: null` and the reviewers
       still running.
-- [ ] Reviewer prompts reference the packet; from loop 2 they are in `delta` mode with the
+- [x] Reviewer prompts reference the packet; from loop 2 they are in `delta` mode with the
       delta diff and only that reviewer's own prior findings.
-- [ ] From loop 2, a new finding without a valid `delta_regression` or `missed_ac` basis is
+- [x] From loop 2, a new finding without a valid `delta_regression` or `missed_ac` basis is
       demoted to advisory and never blocks; a prior finding marked `fixed` stops counting.
-- [ ] Runs export `loop` and `packet`; campaigns export `demoted_findings`.
-- [ ] With the flag off, reviewer prompts and triage are byte-identical to today.
+- [x] Runs export `loop` and `packet`; campaigns export `demoted_findings`.
+- [x] With the flag off, reviewer prompts and triage are byte-identical to today.
 - [ ] The regression-set replay with the flag on catches the SPEC-0529 reflection oracle and
-      the SPEC-0476 trailing-newline hang.
+      the SPEC-0476 trailing-newline hang. *(Pending: before default-on, with the
+      measurement; see As shipped.)*
 
 ## Test plan
 
@@ -180,6 +236,55 @@ after the regression set passes. Campaigns opened before the flag keep today's f
 - [ ] No regressions.
 - [ ] Spec body updated to match what shipped.
 - [ ] `docs/LEDGER.md` updated.
+
+## As shipped
+
+Built 2026-11-11 behind `agentic.lean.packet` (default **off**, pinned per campaign at
+creation by SPEC-0553's `state.lean`). Flag off: no marshal step, no packet files, no new
+`state` keys (`packet`, `packet_prev`, `review_heads`), `run.start` and `review_outcome`
+unchanged, every review persona's prompt, system block and schema object identical (asserted
+for the conformance / test / adversarial reviewers and the review triager with `lean` absent,
+all false and packet-false, with the packet code patched to raise), and `triage_reviews`
+returns the same keys.
+
+**Modules.** `agentic/packet.py` (flag helpers, `parse_acs`, `build`, `prior_findings`,
+`validate` + `PACKET_SCHEMA`, marshal values / `clean_map` / `apply_marshal`, reviewer
+`review_values` / notes / `extend_schema`, `enforcement` / `enforce`, `run_marks`),
+`persona_defs/review_marshal.yaml` + `personas/review_marshal.md` (`REVIEW_MARSHAL_SCHEMA`),
+`personas.build_request` (marshal values, packet note + schema), `profiles` (marshal default
+settings, not required in a profile), queue (`plan_step` pre-step, `_prepare_marshal`,
+`_apply_marshal`, `_begin_review` → `remember_verdicts`, `_store_verdicts` enforcement,
+`triage_reviews` demotions, `review_outcome.demoted`, the new state keys kept across
+`finish`), `schemas` (`review_packet` event), export columns, docs (capabilities, README).
+
+**Tests.** `tests/test_agentic_packet.py` (new: AC parse, two-loop build from a fixture repo
+with diff / delta / gates / candidates, prior-finding statuses incl. waivers and re-raise,
+marshal map cleaning and failure, builder failure, validation, basis enforcement, helpers);
+`tests/test_agentic_packet_queue.py` (new, FakeRunner: two loops with a packet per loop and the
+marshal before the reviewers, loop-2 delta prompts with only own findings, a demoted finding
+counted and advisory, a `fixed` prior not counted, an omitted prior still blocking, marshal
+failure → `ac_map: null` and reviewers run, build failure → today's prompt and `packet:
+false`, flag off → nothing); `tests/test_agentic_review_triage.py` (demotion, human waiver of
+a demoted finding, `fixed` vs open priors, unknown `missed_ac`, result keys);
+`tests/test_agentic_personas.py` (flag-off identity over all review personas, full / delta
+rendering, pinned-but-unbuilt fallback, the marshal request); registry / CLI / tiers / export
+fixtures updated for the new builtin persona and columns.
+
+**Real run (marshal, `claude -p --model claude-haiku-5-5`).** Read-only replay on the merged
+campaign `SPEC-0547-20261111-a2c5`: its `state.json` copied into a scratch data dir, the
+worktree a scratch clone at the campaign head `45e38aa0` with base `0ab6ff54` (live campaign
+dir untouched), `lean: {tiers, packet}`. `packet.build` took 0.9 s; the packet JSON was 14,936
+bytes before the map and **18,798 bytes** after (9 ACs, 20 files in the diff stat), the full
+diff side file 77,357 bytes. The marshal prompt was 13,289 chars; the run took 27.6 s and cost
+**$0.0108**; tokens: input 8, cache creation 33,079, cache read 50,332, output 7,365 (3,533
+thinking). It returned a valid map for all 9 ACs (2 covered, 7 partial, 0 none) using only
+candidate hunks and tests; the packet validated.
+
+**Pending (before default-on).** The regression-set replay (SPEC-0529 oracle at the loop of
+seq 552/593 in delta mode, SPEC-0476 hang at loop 1) with real reviewers, and the measurement
+(≥ 10 Meta-Tools campaigns, `tiers + packet` vs `tiers`: median `cache_read_tokens` per review
+run, median `loops` per merged campaign) need live campaigns with the flag on: post-merge.
+This spec stays `in-progress` until the replay is recorded.
 
 ## Open questions
 

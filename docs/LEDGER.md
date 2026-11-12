@@ -319,7 +319,7 @@ progress. This is the single place to see *what has been decided* and *what is i
   - [ ] [SPEC-0521](./specs/0521-retire-pull-workers.md) Retire pull workers: remove the coordinator job API, pull_jobs, pull_worker and nw serve --jobs — draft
 - **[SPEC-0552](./specs/0552-leaner-agentic-campaign-loop.md) — Leaner agentic campaign loop (role tiers, review packet, findings collator, resumable sessions)** · accepted · (1/5 done)
   - [x] [SPEC-0553](./specs/0553-role-tiers-backend-mapping-and-size-tone-cap.md) Role tiers (marshal/judge/deep), per-backend tier mapping and the hand-only size/tone cap — done
-  - [ ] [SPEC-0554](./specs/0554-marshal-review-packet-and-delta-reviews.md) Marshal review packet (packet-loop-N.json) and delta reviews from loop 2 — accepted
+  - [ ] [SPEC-0554](./specs/0554-marshal-review-packet-and-delta-reviews.md) Marshal review packet (packet-loop-N.json) and delta reviews from loop 2 — in-progress
   - [ ] [SPEC-0555](./specs/0555-findings-collator-and-auto-follow-up-ideas.md) Findings collator (marshal) and automatic follow-up ideas for out-of-scope findings — accepted
   - [ ] [SPEC-0556](./specs/0556-resumable-implementer-and-reviewer-sessions.md) Resumable implementer and reviewer sessions per backend, with a fresh-session fallback — accepted
   - [ ] [SPEC-0557](./specs/0557-effort-ceiling-no-xhigh-on-any-backend.md) Effort ceiling — no xhigh/max persona run on any backend — accepted
@@ -367,7 +367,7 @@ progress. This is the single place to see *what has been decided* and *what is i
 | [SPEC-0532](./specs/0532-exactly-once-mail-between-hub-and-host.md) | Exactly-once mail between hub and host | feature | accepted | — | 2026-11-10 |
 | [SPEC-0533](./specs/0533-remote-park-and-resume.md) | Remote park and resume | feature | accepted | — | 2026-11-10 |
 | [SPEC-0552](./specs/0552-leaner-agentic-campaign-loop.md) | Leaner agentic campaign loop (role tiers, review packet, findings collator, resumable sessions) | epic | accepted | — | 2026-11-11 |
-| [SPEC-0554](./specs/0554-marshal-review-packet-and-delta-reviews.md) | Marshal review packet (packet-loop-N.json) and delta reviews from loop 2 | feature | accepted | — | 2026-11-11 |
+| [SPEC-0554](./specs/0554-marshal-review-packet-and-delta-reviews.md) | Marshal review packet (packet-loop-N.json) and delta reviews from loop 2 | feature | in-progress | — | 2026-11-11 |
 | [SPEC-0555](./specs/0555-findings-collator-and-auto-follow-up-ideas.md) | Findings collator (marshal) and automatic follow-up ideas for out-of-scope findings | feature | accepted | — | 2026-11-11 |
 | [SPEC-0556](./specs/0556-resumable-implementer-and-reviewer-sessions.md) | Resumable implementer and reviewer sessions per backend, with a fresh-session fallback | feature | accepted | — | 2026-11-11 |
 | [SPEC-0557](./specs/0557-effort-ceiling-no-xhigh-on-any-backend.md) | Effort ceiling — no xhigh/max persona run on any backend | feature | accepted | — | 2026-11-11 |

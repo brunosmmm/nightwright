@@ -53,6 +53,7 @@ from . import gate_slots
 from . import gates as G
 from . import gitops as git
 from . import lease as L
+from . import packet as PK
 from . import persona_gate as PG
 from . import personas as PS
 from . import project as P
@@ -324,6 +325,8 @@ def plan_step(state: dict, profile: dict, project_cfg: dict | None = None, *, re
             # SPEC-0206: the one exception to "a review is never skipped"; the cap was checked
             # when `triage` became pending
             return Step("review", persona="review_triager", personas=("review_triager",))
+        if PK.marshal_due(state):           # SPEC-0554: the packet pre-step of this loop
+            return Step("review", persona=PK.MARSHAL, personas=(PK.MARSHAL,))
         pending = _pending_reviewers(state, profile)
         blocked, budget = _cap_blocks(state, profile, pending, **cap_kw)
         if blocked:
@@ -806,12 +809,20 @@ def triage_reviews(verdicts: dict, profile: dict, waived=(), human_waived=(),
     attest_all = [a for a in attested or () if a] + [
         u for w in human_waived for u in w.get("resolved_ac") or () if u]
     attest_hit = []
+    basis_demoted = []
     for p in personas:
         v = verdicts[p]
         raw = [f for f in v.get("findings") or [] if isinstance(f, dict)]
         recs = []
         for i, f in enumerate(raw):
             sev = f.get("severity") if f.get("severity") in SEVERITIES else "minor"
+            if f.get("demoted"):    # SPEC-0554: a delta-rule demotion is advisory, never scored
+                basis_demoted.append({"id": f"{p}#{i}", "personas": [p], "severity": sev,
+                                      "title": f.get("title") or "",
+                                      "detail": finding_detail(f),
+                                      "files": list(f.get("files") or []), "ac": f.get("ac"),
+                                      "category": f.get("category"), "synthetic": False})
+                continue
             recs.append({"id": f"{p}#{i}", "personas": [p], "severity": sev,
                          "title": f.get("title") or "", "detail": finding_detail(f),
                          "files": list(f.get("files") or []), "ac": f.get("ac"),
@@ -899,10 +910,12 @@ def triage_reviews(verdicts: dict, profile: dict, waived=(), human_waived=(),
         blocking = sorted(surviving, key=lambda m: -weights[m["severity"]])
     else:
         blocking = [m for m in surviving if m["severity"] in ("must_fix", "major")]
-    advisory = [m for m in surviving if m not in blocking] + demoted
+    basis_demoted = [m for m in basis_demoted if not human_gone(m)]
+    advisory = [m for m in surviving if m not in blocking] + demoted + basis_demoted
     keys = ("id", "personas", "severity", "title", "detail", "files", "ac", "category")
     out = lambda ms: [{k: m[k] for k in keys} for m in ms]
-    return {"outcome": outcome, "score": score, "score_only": score_only,
+    extra = {"basis_demoted": [m["id"] for m in basis_demoted]} if basis_demoted else {}
+    return {**extra, "outcome": outcome, "score": score, "score_only": score_only,
             "blocking": out(blocking), "advisory": out(advisory),
             "waivable_weight": sum(weights[m["severity"]] for m in surviving
                                    if m["severity"] in ("minor", "nit")),
@@ -1597,6 +1610,7 @@ def _begin_review(state: dict) -> None:
     verdicts and per-review counters, and remember the run count so reviewers never see runs
     of this pass-through."""
     counters = _counters(state)
+    PK.remember_verdicts(state)                     # SPEC-0554: no-op unless pinned
     lr = state.get("last_review") if isinstance(state.get("last_review"), dict) else {}
     for k in ("verdicts", "triage", "triager_run", "waived"):
         lr.pop(k, None)
@@ -2649,6 +2663,7 @@ def _prepare_run(ctx: _Ctx, state: dict, persona: str, step: Step | None = None)
                      "personas": list(step.personas) if step else []},
             "profile": req.profile,                                    # SPEC-0238
             **({"tier": req.tier} if req.tier else {}),                # SPEC-0553
+            **PK.run_marks(state, persona, step.kind if step else None),  # SPEC-0554
         })
         counters["runs"] = run_no
         try:
@@ -3750,7 +3765,8 @@ def _apply_step(ctx: _Ctx, state: dict, res: StepResult) -> dict:
                       "gate_exclusive", "last_green_loop", "close_red", "gate_retry_pending",
                       "divergence", "conflict_mail",
                       "mem_boost", "gate_local",             # SPEC-0515
-                      "raised", "deep_close", "cap_ignored"):   # SPEC-0553 (lean only)
+                      "raised", "deep_close", "cap_ignored",    # SPEC-0553 (lean only)
+                      "packet", "packet_prev", "review_heads"):  # SPEC-0554 (lean only)
                 if k in state:
                     current[k] = state[k]
             for k in state.pop("_lean_copy", ()):            # SPEC-0553: the open's re-pick
@@ -5141,9 +5157,12 @@ def _synthetic_failure(error: str) -> RunResult:
                      verdict_ok=False, result_text=error, raw_path=None)
 
 
-def _store_verdicts(state: dict, profile: dict, counters: dict, results) -> bool:
+def _store_verdicts(state: dict, profile: dict, counters: dict, results, enf=None) -> bool:
     """Merge this pass's valid verdicts into `last_review.verdicts` (overwriting a retried
-    reviewer's entry) and refresh `run` / `runs` / `loop`. True when any verdict was stored."""
+    reviewer's entry) and refresh `run` / `runs` / `loop`. True when any verdict was stored.
+    SPEC-0554: `enf` (a delta-mode packet's `packet.enforcement`) makes the stored findings
+    the reviewer's still-open prior findings plus its new ones, unsupported ones marked
+    `demoted`; the verdict's `prior_status` is kept."""
     lr = state.get("last_review") if isinstance(state.get("last_review"), dict) else {}
     verdicts = dict(lr.get("verdicts") or {})
     stored = False
@@ -5160,6 +5179,13 @@ def _store_verdicts(state: dict, profile: dict, counters: dict, results) -> bool
             entry["ac_assessment"] = v["ac_assessment"]
         if "coverage_assessment" in v:
             entry["coverage_assessment"] = v["coverage_assessment"]
+        if enf is not None:
+            entry["findings"], entry["demoted"] = PK.enforce(
+                state.get("spec_id"), r.step.persona, v, enf)
+            entry["prior_status"] = [x for x in v.get("prior_status") or []
+                                     if isinstance(x, dict)]
+        elif v.get("prior_status") and PK.on(state):        # loop 1: kept for the record
+            entry["prior_status"] = [x for x in v["prior_status"] if isinstance(x, dict)]
         entry.update(run=r.run_id, loop=counters["loops"])
         verdicts[r.step.persona] = entry
         stored = True
@@ -5367,6 +5393,8 @@ def _apply_reviews(ctx, state, profile, counters, res, row, events, finish):
     (SPEC-0206) is handled by `_apply_triager` and then routed the same way."""
     cfg, cid = ctx.cfg, state["id"]
     reviewers = reviewers_of(profile)
+    if res.step.persona == PK.MARSHAL:                                # SPEC-0554
+        return _apply_marshal(ctx, state, counters, res, row, events, finish)
     if res.step.persona == "review_triager":
         out = _apply_triager(ctx, state, profile, counters, res, row, events)
         return out if out is not None else _route_reviews(
@@ -5397,7 +5425,8 @@ def _apply_reviews(ctx, state, profile, counters, res, row, events, finish):
         # No decision, no retry counted: the next tick re-spawns the reviewers still lacking a
         # valid verdict (one reviewer: state unchanged, as SPEC-0187).
         if multi:
-            _store_verdicts(state, profile, counters, res.reviews)
+            _store_verdicts(state, profile, counters, res.reviews,
+                            PK.enforcement(cfg, state) if PK.on(state) else None)
         with store.item_lock(cfg, cid):
             for etype, payload in events:
                 store.append_event(cfg, cid, etype, payload)
@@ -5408,7 +5437,8 @@ def _apply_reviews(ctx, state, profile, counters, res, row, events, finish):
         return finish("PARKED", "config_invalid", park={
             "reason": "config_invalid", "detail": f"project config: {bad.error}",
             "resume_to": "REVIEWING"})
-    _store_verdicts(state, profile, counters, res.reviews)
+    _store_verdicts(state, profile, counters, res.reviews,
+                    PK.enforcement(cfg, state) if PK.on(state) else None)       # SPEC-0554
     _note_deep_close(state, profile, res, events)                      # SPEC-0553
     if res.step.held:
         # SPEC-0345: the persona cap held part of the fan-out; no routing until every reviewer
@@ -5518,7 +5548,8 @@ def _route_reviews(ctx, state, profile, counters, row, events, finish):
             "loop": counters["loops"], "score": tri["score"], "pass_score": c["pass_score"],
             "outcome": tri["outcome"],
             "major": sum(1 for f in surviving if f["severity"] == "major"),
-            "must_fix": sum(1 for f in surviving if f["severity"] == "must_fix")}))
+            "must_fix": sum(1 for f in surviving if f["severity"] == "must_fix"),
+            **({"demoted": len(tri.get("basis_demoted") or [])} if PK.on(state) else {})}))
         events.append(("note", {"text": f"review score {tri['score']}/{c['pass_score']} "
                                         f"{tri['outcome']}", "author": "queue"}))
         if tri["human_waived"] or tri["attested"]:
@@ -7053,7 +7084,8 @@ def _adopted_held(ctx: _Ctx, snap: dict, personas: tuple) -> tuple:
     """SPEC-0345: the reviewers an adopted fan-out's members leave out while `max_personas` is
     set (the cap trimmed it): pending reviewers without a valid verdict. They were held, not
     failed, so applying the adopted members charges them no retry. () without a cap."""
-    if PG.max_personas(ctx.cfg) is None or "review_triager" in personas:
+    if PG.max_personas(ctx.cfg) is None or "review_triager" in personas \
+            or PK.MARSHAL in personas:
         return ()
     try:
         prof = ctx.profile(snap)
@@ -7180,7 +7212,9 @@ def _prepare_reviews(ctx: _Ctx, pgate: PG.Gate, st: dict, step: Step, profile: d
     SPEC-0187; with several it is that reviewer's missing result and its siblings still run.
     Returns the `_ReviewGroup` to apply when its flight is harvested, or None."""
     # the triager (SPEC-0206) never takes the one-reviewer campaign-wide error path
-    multi = len(reviewers_of(profile)) > 1 or step.persona == "review_triager"
+    multi = len(reviewers_of(profile)) > 1 or step.persona in ("review_triager", PK.MARSHAL)
+    if step.persona == PK.MARSHAL:                                    # SPEC-0554
+        return _prepare_marshal(ctx, pgate, st, step, profile, pending_agent, report)
     for persona in step.personas:
         sub = Step("review", persona=persona, personas=step.personas)
         if _hold_local_backend_before_prepare(pgate, st, persona, sub):
@@ -7215,13 +7249,103 @@ def _prepare_reviews(ctx: _Ctx, pgate: PG.Gate, st: dict, step: Step, profile: d
     return group
 
 
+def _prepare_marshal(ctx: _Ctx, pgate: PG.Gate, st: dict, step: Step, profile: dict,
+                     pending_agent: list, report: TickReport):
+    """SPEC-0554: the packet pre-step of a review loop. Build this loop's packet (code), then
+    prepare the `review_marshal` run that adds the AC map. A packet that cannot be built, a
+    marshal the cost cap blocks or a marshal run that cannot be prepared is recorded in
+    `state.packet` (a `review_packet` event) and the reviewers run next tick: never a park."""
+    cfg, cid = ctx.cfg, st["id"]
+    cur = PK.current(st)
+    events = []
+    if cur is None:
+        try:
+            cur = PK.build(cfg, st)
+        except Exception as e:                  # noqa: BLE001 — falls back to today's prompt
+            cur = PK.failed(st, f"{type(e).__name__}: {e}")
+        st["packet"] = cur
+        events.append(("review_packet", {"loop": cur["loop"], "ok": cur["ok"],
+                                         "mode": cur.get("mode"), "bytes": cur.get("bytes"),
+                                         **({"error": cur["error"]} if cur.get("error") else {})}))
+    skip = None
+    if cur.get("ok") and cur.get("marshal") == "pending":
+        blocked, _budget = _cap_blocks(st, profile, PK.MARSHAL)
+        if blocked:
+            skip = f"cost cap: {blocked}"
+        else:
+            try:
+                run_id, req, budget = _prepare_run(ctx, st, PK.MARSHAL, step)
+            except _RunStarted as e:
+                report.errors.append(f"{cid}: {e!r}")
+                group = _ReviewGroup(st, step)
+                group.meta[PK.MARSHAL] = (e.run_id, e.budget)
+                group.results[PK.MARSHAL] = StepResult(
+                    cid, Step("review", persona=PK.MARSHAL, personas=step.personas),
+                    st["state"], run_id=e.run_id, budget=e.budget,
+                    run_result=_synthetic_failure(repr(e)))
+                return group
+            except (ValueError, OSError) as e:
+                skip = f"marshal not started: {e}"
+            else:
+                with store.item_lock(cfg, cid):
+                    for etype, payload in events:
+                        store.append_event(cfg, cid, etype, payload)
+                group = _ReviewGroup(st, step)
+                group.meta[PK.MARSHAL] = (run_id, budget)
+                sub = Step("review", persona=PK.MARSHAL, personas=step.personas)
+                pending_agent.append((st, sub, run_id, req, budget, group))
+                return group
+    if skip is not None:
+        events.append(("review_packet", PK.apply_marshal(cfg, st, None, error=skip)))
+    with store.item_lock(cfg, cid):
+        for etype, payload in events:
+            store.append_event(cfg, cid, etype, payload)
+        store.write_state(cfg, cid, st)
+    pgate.release_campaign_reservations(cid, step.personas)
+    pgate.release_admit_charge(cid)
+    return None
+
+
+def _apply_marshal(ctx, state, counters, res, row, events, finish):
+    """SPEC-0554: record the marshal run and write its AC map into the packet. A failed,
+    malformed or over-budget run leaves `ac_map: null` + `ac_map_error`; the reviewers run
+    either way. Interrupted: state unchanged but the run, so the next tick runs it again."""
+    cfg, cid = ctx.cfg, state["id"]
+    r = res.reviews[0]
+    events += r.events_before
+    rr = r.run_result
+    if rr is not None:
+        events += _record_run(state, PK.MARSHAL, r.run_id, rr, r.budget,
+                              interrupted=r.interrupted)
+        row["run_id"] = r.run_id
+        row["cost_usd"] = rr.cost_usd if rr.cost_usd is not None else r.budget
+        row["cost_estimated"] = rr.cost_usd is None
+        if r.interrupted or rr.interrupted:
+            with store.item_lock(cfg, cid):
+                for etype, payload in events:
+                    store.append_event(cfg, cid, etype, payload)
+                store.write_state(cfg, cid, state)
+            row["to"], row["reason"] = res.from_state, "interrupted"
+            return row
+    verdict = rr.verdict if rr is not None and rr.verdict_ok else None
+    why = None
+    if not isinstance(verdict, dict):
+        why = (f"marshal run not started: {r.error}" if rr is None else
+               "marshal timed out" if rr.timed_out else
+               "marshal run failed" if rr.is_error else "marshal returned a malformed verdict")
+    events.append(("review_packet", {**PK.apply_marshal(cfg, state, verdict, error=why),
+                                     "run_id": r.run_id}))
+    return finish("REVIEWING", "review_packet")
+
+
 def _finish_reviews(ctx: _Ctx, report: TickReport, group: _ReviewGroup) -> dict:
     """Apply a reviewer fan-out once, results in profile order. One reviewer: its bare result
     (or the campaign-wide error of a raising worker), as SPEC-0187. Several: a worker that
     raised or errored after `run.start` becomes a synthetic failed run (a `run.end` and the
     budget charge), so the reviewer is simply missing."""
     st = group.state
-    multi = len(reviewers_of(ctx.profile(st))) > 1 or group.step.persona == "review_triager"
+    multi = len(reviewers_of(ctx.profile(st))) > 1 \
+        or group.step.persona in ("review_triager", PK.MARSHAL)
     ordered = []
     for persona in group.step.personas:
         item = group.results.get(persona)

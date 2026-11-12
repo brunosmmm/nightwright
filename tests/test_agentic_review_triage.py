@@ -1007,3 +1007,59 @@ def test_suggested_fix_reaches_the_brief_and_changes_nothing_else():          # 
     brief = Q.review_brief(fixed, t1, 80)
     assert brief["must_fix"][0]["detail"] == "why\nFix: rename x\nDone when: test_x passes"
     assert Q.review_brief(plain, t0, 80)["must_fix"][0]["detail"] == "why"
+
+
+# ---- SPEC-0554: delta-rule demotions (stored by `_store_verdicts` via `packet.enforce`) -------
+
+def test_demoted_finding_is_advisory_and_never_blocks():
+    out = tri({A: v("fix", f("must_fix", "old code", files=["x.py"], demoted=True))})
+    assert out["outcome"] == "pass" and out["blocking"] == [] and out["fixing"] == []
+    assert [a["title"] for a in out["advisory"]] == ["old code"]
+    assert out["basis_demoted"] == [f"{A}#0"] and out["score"] == 100
+
+
+def test_demoted_beside_real_finding_and_human_waiver():
+    out = tri({A: v("fix", f("must_fix", "real", files=["a.py"]),
+                    f("major", "unsupported", demoted=True))})
+    assert out["outcome"] == "fix" and [b["title"] for b in out["blocking"]] == ["real"]
+    assert "unsupported" in [a["title"] for a in out["advisory"]]
+    hw = [{"id": f"{A}#1", "title": "unsupported", "files": [], "reason": "no"}]
+    out = Q.triage_reviews({A: v("pass", f("major", "unsupported", demoted=True))}, BAL,
+                           human_waived=hw)
+    assert out["advisory"] == [] and "basis_demoted" not in out
+
+
+def test_fixed_prior_not_counted_open_prior_counts():
+    """`packet.enforce` keeps an open prior finding as a stored finding (`prior`) and drops a
+    `fixed` one; the scorer then counts only what is stored."""
+    from nightwright.agentic import packet as PK
+    doc = {"findings": [
+        {"id": "k1", "persona": A, "loop": 1, "severity": "must_fix", "title": "fixed one",
+         "status": "open", "evidence": "", "files": []},
+        {"id": "k2", "persona": A, "loop": 1, "severity": "must_fix", "title": "still open",
+         "status": "open", "evidence": "", "files": []}]}
+    enf = {"loop": 2, "delta_files": set(), "ac_ids": {"AC1"}, "doc": doc}
+    for status, outcome in (("fixed", "fix"), ("both", "pass")):
+        ps = [{"id": "k1", "status": "fixed"}] + (
+            [{"id": "k2", "status": "fixed"}] if status == "both" else [])
+        verdict = v("pass")
+        verdict["prior_status"] = ps
+        stored, demoted = PK.enforce("SPEC-1", A, verdict, enf)
+        out = tri({A: dict(verdict, findings=stored)})
+        assert out["outcome"] == outcome and demoted == 0
+        assert "fixed one" not in [b["title"] for b in out["blocking"]]
+
+
+def test_missed_ac_with_unknown_ac_is_demoted():
+    from nightwright.agentic import packet as PK
+    enf = {"loop": 2, "delta_files": {"a.py"}, "ac_ids": {"AC1"}, "doc": {"findings": []}}
+    verdict = v("fix", f("must_fix", "missed", ac="AC5", basis="missed_ac"))
+    stored, demoted = PK.enforce("SPEC-1", A, verdict, enf)
+    assert demoted == 1
+    assert tri({A: dict(verdict, findings=stored)})["outcome"] == "pass"
+
+
+def test_flag_off_triage_result_shape_unchanged():
+    out = tri({A: v("fix", f("must_fix", "x"))})
+    assert list(out) == ["outcome", "score", "score_only", "blocking", "advisory",
+                         "waivable_weight", "fixing", "synthetic", "human_waived", "attested"]

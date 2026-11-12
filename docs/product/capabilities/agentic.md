@@ -128,6 +128,23 @@ never re-reads them.
   verdict routes like any review. A size/tone written inside the campaign is ignored and
   logged as `cap_ignored`.
 
+### Review packet and delta reviews (`agentic.lean.packet`)
+
+Off by default; pinned per campaign like `tiers`. With it on, each review loop starts with a
+pre-step inside REVIEWING: code writes `<campaign_dir>/packet-loop-N.json`
+(`nw.review_packet.v1`: the spec's ACs verbatim as `AC1..`, the diff stat against base and the
+delta since the previous loop's reviewed head with the full text in `packet-loop-N.diff` /
+`.delta.diff`, condensed gate results, every earlier finding with status `open` / `fixed` /
+`waived` and evidence, pointers), then the `review_marshal` persona (tier `marshal`,
+read-only, $0.25 default budget) adds only the AC -> hunks/tests map (`ac_map`, with
+`coverage: none` entries). Reviewers read the packet first. From loop 2 they run in `delta`
+mode: their diff is the delta, they see only their own open findings and return a
+`prior_status` for each; a new finding needs `basis: delta_regression` (a file in the delta)
+or `missed_ac` (a packet AC id), otherwise it is demoted to advisory (recorded and filed,
+never blocking; counted as `demoted` on `review_outcome`). A failed marshal leaves
+`ac_map: null` and `ac_map_error`; a packet that cannot be built leaves today's prompt. Neither
+parks. Runs export `loop` and `packet`; campaigns export `demoted_findings`.
+
 ### Profile files and layers
 
 Four layers define profiles; a higher layer wins, key by key:

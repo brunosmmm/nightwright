@@ -18,6 +18,7 @@ from pathlib import Path
 from . import flaky
 from . import gitops as git
 from . import persona_registry as PR
+from . import packet as _PK
 from . import store
 from .gates import TARGETED_UNRESOLVED_EXITS, tmp_env
 from .profiles import persona_settings
@@ -304,6 +305,9 @@ class Persona:
         return (_TEMPLATES_DIR / self.template_file).read_text(encoding="utf-8")
 
 
+REVIEW_MARSHAL_SCHEMA = _PK.MARSHAL_SCHEMA               # SPEC-0554: the AC map only
+
+
 # SPEC-0370: the persona registry is data (`persona_defs/*.yaml`). The YAML names code objects
 # by key; these maps resolve the keys to the schemas and invariants defined in this module.
 SCHEMAS = {
@@ -317,6 +321,7 @@ SCHEMAS = {
     "review_triager": REVIEW_TRIAGER_SCHEMA,
     "divergence_triager": DIVERGENCE_TRIAGER_SCHEMA,
     "conflict_resolver": CONFLICT_RESOLVER_SCHEMA,
+    "review_marshal": REVIEW_MARSHAL_SCHEMA,             # SPEC-0554
 }
 INVARIANTS = {
     "default": INVARIANT,
@@ -330,7 +335,9 @@ PLACEHOLDERS = ("campaign", "spec_id", "spec_rel_path", "spec_text", "worktree",
                 "previous_verdicts", "diff", "test_files", "tests_touched", "changed_files",
                 "schema_text", "idea_text", "triage_input", "divergence_input", "rebase_target", "conflicts",
                 "campaign_diff", "base_diff", "landed", "regenerate", "template_text",
-                "write_problems", "write_rules", "epic_text", "human_overrides", "flaky_history")
+                "write_problems", "write_rules", "epic_text", "human_overrides", "flaky_history",
+                "packet_path", "review_mode", "marshal_input", "prior_findings",
+                "packet_loop")
 
 # What the registry validator needs from this module (it cannot import it).
 KNOWN = {"output_schemas": frozenset(SCHEMAS), "invariants": frozenset(INVARIANTS),
@@ -1037,6 +1044,15 @@ def build_request(cfg, profile, project_cfg, state, persona, *, run_dir,
             or "bypassPermissions"
         allowed = tuple(list(agents.get("allowed_tools") or []) + _gate_tool_patterns(project_cfg))
     extra = {**(persona_extra(state, persona, project_cfg) or {}), **(extra or {})} or None
+    is_rev = persona in REVIEWER_PERSONAS or (p.declared is not None and p.role == "reviewer")
+    pk = None
+    if _PK.on(state):                                       # SPEC-0554: pinned at open
+        if persona == _PK.MARSHAL:
+            extra = {**(extra or {}), **_PK.marshal_values(cfg, state)}
+        elif is_rev:
+            pk = _PK.review_values(cfg, state, persona)
+            if pk is not None:
+                extra = {**(extra or {}), **pk}
     ctx = build_context(cfg, state, project_cfg, loop_max=profile.get("loop_max"),
                         previous=previous,
                         review=persona in REVIEWER_PERSONAS or persona == "divergence_triager"
@@ -1078,6 +1094,10 @@ def build_request(cfg, profile, project_cfg, state, persona, *, run_dir,
         row = _R.map_pi_model(alias, effort, cfg, project_root=project_root)
         pi_provider, pi_id, pi_thinking = row["provider"], row["id"], row["thinking"]
     prompt = build_prompt(p, ctx) if invariant is None else build_prompt(p, ctx, invariant)
+    json_schema = p.schema
+    if pk is not None:                                      # SPEC-0554: the packet note + schema
+        prompt = prompt.rstrip("\n") + "\n\n" + _PK.note(ctx) + "\n"
+        json_schema = _PK.extend_schema(p.schema)
     tier = None
     from . import tiers as T
     if T.tiers_on(state):                                   # SPEC-0553: pinned at open
@@ -1112,7 +1132,7 @@ def build_request(cfg, profile, project_cfg, state, persona, *, run_dir,
         read_only=read_only,
         allowed_tools=allowed,
         add_dirs=(worktree,),
-        json_schema=p.schema,
+        json_schema=json_schema,
         env=env,
         run_dir=Path(run_dir),
         profile=profile.get("name"),

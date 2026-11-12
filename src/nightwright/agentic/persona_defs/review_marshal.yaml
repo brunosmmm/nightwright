@@ -1,0 +1,14 @@
+# builtin persona (SPEC-0554); the template is agentic/personas/review_marshal.md
+schema: nw.persona.v1
+name: review_marshal
+role: system
+template: review_marshal.md
+description: "maps the spec's acceptance criteria to diff hunks and tests for the review packet"
+order: 75
+output_schema: review_marshal
+read_only: true
+invariant: default
+adopt:
+  step: review
+  personas: [review_marshal]
+tier: marshal

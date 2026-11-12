@@ -53,6 +53,7 @@ CAMPAIGN_COLUMNS = (
     ("nw_sha", "str"), ("profile_sha256", "str"),                          # SPEC-0397
     ("cost_by_worker", "json"),                                            # SPEC-0345
     ("lean", "json"), ("raised", "bool"),                                  # SPEC-0553
+    ("demoted_findings", "int"),                                           # SPEC-0554
 )
 RUN_COLUMNS = (
     ("campaign", "str"), ("spec_id", "str"), ("profile", "str"), ("size", "str"), ("tone", "str"),
@@ -65,6 +66,7 @@ RUN_COLUMNS = (
     ("input_tokens", "int"), ("output_tokens", "int"), ("cache_read_tokens", "int"),
     ("worker", "str"),                                                     # SPEC-0346
     ("tier", "str"),                                                       # SPEC-0553
+    ("loop", "int"), ("packet", "bool"),                                   # SPEC-0554
 )
 FINDING_COLUMNS = (
     ("campaign", "str"), ("spec_id", "str"),
@@ -262,6 +264,16 @@ def _reviewer_stats(events: list[dict]) -> dict:
             "first_review_must_fix": first_must, "first_review_major": first_major}
 
 
+def _demoted(events) -> int:
+    """SPEC-0554: new findings the delta rule demoted to advisory, summed over the review
+    loops (the last `review_outcome` of each loop counts: a re-route repeats the number)."""
+    per_loop = {}
+    for e in events:
+        if e.get("type") == "review_outcome" and isinstance(e.get("demoted"), int):
+            per_loop[e.get("loop")] = e["demoted"]
+    return sum(per_loop.values())
+
+
 def campaign_row(cfg, state: dict, events: list[dict], now) -> dict:
     cid = state["id"]
     sizing = state.get("sizing") or {}
@@ -338,6 +350,7 @@ def campaign_row(cfg, state: dict, events: list[dict], now) -> dict:
         "task_active_s": max(0, active_s - close_s),
         "nw_sha": open_ev.get("nw_sha"), "profile_sha256": open_ev.get("profile_sha256"),
         "lean": state.get("lean"), "raised": bool(state.get("raised")),    # SPEC-0553
+        "demoted_findings": _demoted(events),                              # SPEC-0554
     }
     out = _project(row, CAMPAIGN_COLUMNS)       # signals read the coerced values
     out["signals"] = signals(out)
@@ -358,14 +371,17 @@ def run_rows(cfg, crow: dict, events=None) -> list[dict]:
         events = store.read_ledger(cfg, crow["campaign"], types=["run.start", "run.end"])
     workers = {e.get("run_id"): e.get("worker") or "local"
                for e in events if e.get("type") == "run.end" and e.get("run_id")}
-    tiers = {e.get("run_id"): e.get("tier")                       # SPEC-0553
-             for e in events if e.get("type") == "run.start" and e.get("run_id")}
+    starts = {e.get("run_id"): e for e in events
+              if e.get("type") == "run.start" and e.get("run_id")}
+    tiers = {k: e.get("tier") for k, e in starts.items()}                # SPEC-0553
     out = []
     for r in RN.campaign_runs(cfg, crow["campaign"], events):
         usage = r.get("usage") if isinstance(r.get("usage"), dict) else {}
         row = {**{k: crow.get(k) for k in ("campaign", "spec_id", "profile", "size", "tone")},
                **r, "budget_frac": _frac(r.get("charged_usd"), r.get("max_budget_usd")),
                "tier": tiers.get(r.get("run_id")),
+               "loop": (starts.get(r.get("run_id")) or {}).get("loop"),     # SPEC-0554
+               "packet": bool((starts.get(r.get("run_id")) or {}).get("packet")),
                "input_tokens": usage.get("input_tokens"),
                "output_tokens": usage.get("output_tokens"),
                "cache_read_tokens": usage.get("cache_read_input_tokens"),

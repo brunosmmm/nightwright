@@ -381,7 +381,9 @@ def _resolve(layers, name) -> dict:
     _check_reviewers(profile)
     _check_review(profile)
     for persona in _persona_names():
-        if persona not in profile["personas"]:
+        # SPEC-0554: the marshal has default settings (`packet.MARSHAL_SETTINGS`); a profile
+        # may set it but need not
+        if persona not in profile["personas"] and persona != "review_marshal":
             missing(f"personas.{persona}")
     return profile
 
@@ -717,6 +719,9 @@ def followup_cap(profile) -> int:
 def persona_settings(profile, persona):
     """`profile["personas"][persona]` or ValueError naming the persona and the profile."""
     personas = profile.get("personas") or {}
+    if persona not in personas and persona == "review_marshal":      # SPEC-0554
+        from .packet import MARSHAL_SETTINGS
+        return dict(MARSHAL_SETTINGS)
     if persona not in personas:
         raise ValueError(f"profile {profile.get('name')!r} has no persona {persona!r}; "
                          f"known: {', '.join(sorted(personas))}")

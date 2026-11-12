@@ -48,7 +48,7 @@ def test_list_text_and_json(env):
     d = json.loads(r.output)
     assert d["schema"] == "nw.personas.v1"
     by = {p["name"]: p for p in d["personas"]}
-    assert sum(1 for p in d["personas"] if p["scope"] == "builtin") == 10
+    assert sum(1 for p in d["personas"] if p["scope"] == "builtin") == 11   # SPEC-0554: + review_marshal
     assert by["security_reviewer"]["scope"] == "project" and by["security_reviewer"]["reviewer"]
     assert by["conformance_reviewer"]["scope"] == "builtin"
     assert by["implementer"]["reviewer"] is False
