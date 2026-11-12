@@ -1,9 +1,10 @@
 ---
 id: SPEC-0563
 title: "SPEC-0477 follow-up: fail-soft mailbox ids, time cell cleaning, null filter match, single guard"
-status: proposed
+status: accepted
 owner: user
 created: 2026-11-12
+updated: 2026-11-12
 kind: feature
 source_idea: IDEA-1203
 tags: [tui, agentic, observability]
