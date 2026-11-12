@@ -290,6 +290,10 @@ no second tier marker is added; `python3 tools/test_tiers.py --check` must exit 
 3. `python3 tools/capture_history_fixture.py --check`, `python3 tools/test_tiers.py --check` and
    `python3 tools/spec_lint.py` exit 0; `git diff main --stat` lists only the AC9 files.
 
+**Regression guard.** `python3 tools/affected_tests.py --run uv run pytest -q`, plus
+`uv run pytest -q tests/test_history_fixture.py`, `python3 tools/spec_lint.py` and
+`python3 tools/spec_lint.py --write-ledger`. The full suite is not run by the implementer.
+
 ### Test record (2026-11-12)
 
 Python 3.14.7, non-root (no root shell available, so the AC5 "as root" run was not done; the spy
@@ -338,10 +342,6 @@ per-test time, of which the new and edited tests of this spec (`inside_*`, `revi
 `non_string`) account for about 1.3 s. The earlier 33-45 s readings were a load effect (load average 10-14),
 as the first run's note says. The pytest-affected gate (which excludes `integration`) passed 1541 tests;
 the full suite was left to gating. `python3 tools/spec_lint.py` exits 0 with the ledger regenerated.
-
-**Regression guard.** `python3 tools/affected_tests.py --run uv run pytest -q`, plus
-`uv run pytest -q tests/test_history_fixture.py`, `python3 tools/spec_lint.py` and
-`python3 tools/spec_lint.py --write-ledger`. The full suite is not run by the implementer.
 
 ## Rollout / migration
 
