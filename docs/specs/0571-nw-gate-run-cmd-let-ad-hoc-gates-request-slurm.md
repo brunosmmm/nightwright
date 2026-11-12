@@ -183,6 +183,10 @@ partition clamp stays as the second line.
   fallback per key, `max_cpus: 2` with `--mem 8G` accepted / `--cpus 3` refused, dedup key,
   `--help`, docs grep, payload `check_payload`). Every refusal case stubs
   `RG.commit_under_test` and `RG.run_detached` to raise and asserts no `GATEJOB-*` directory.
+- Review round 1: the payload guard now inspects the gates the dispatch stub received
+  (`pcfg_gates`), refusal tests assert value, cap and setting, `max_cpus: 2` asserts the 3 cpu /
+  3072 MB and 3 cpu / 8192 MB requests, and multi-gate, multi-license and cross-unit mem cap
+  cases were added (`tests/test_gate_jobs.py`: 71 passed).
 - `python3 tools/test_tiers.py --check` exits 0; `python3 tools/spec_lint.py` exits 0; the
   affected-tests run and the full suite were left to gating. The manual Slurm-box steps were not performed here (no Slurm
   worker in this session).
