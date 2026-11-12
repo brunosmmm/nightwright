@@ -64,7 +64,9 @@ Close the cause and add the recovery:
    accepts any entry whose `:ID:` matches `IDEA-<digits>`, and flips it to `STATE`, which
    must be on the active (left of `|`) side of `org_idea_keywords`.
 3. The `is not an idea` message on an entry with an `IDEA-<n>` `:ID:` and a non-vocabulary
-   state says so and names `nw idea reopen`.
+   state says so and names `nw idea reopen`, at the sites listed under Design > Hint
+   (`show`, `log`, `state`, `retitle`, `kind`, `project`); the other sites keep the plain
+   message.
 
 ## Design
 
@@ -90,23 +92,39 @@ keyword still works: the vocabulary is the single source.
    `ValueError("<id> is already open (<state>)")`. An idea in a done idea state (for example
    `DROPPED`) is reopened normally; reopening an idea that was auto-archived is out of scope
    (non-goals).
-4. `ensure_idea_keyword` is not needed (the target is in the vocabulary). Call
-   `set_state(cfg, task, state)`. Leaving a done keyword drops the `CLOSED:` stamp
-   (`org_write.py:376`). Because `set_state` bumps `:UPDATED:` only when `task.is_idea`, and a
-   stranded task is not one, `reopen_idea` also calls `stamp_updated` on the headline in the
-   same atomic write, by passing through a small `is_idea`-override argument to `set_state`
-   (`touch_updated=True`), rather than writing twice.
+4. If `state` is not on the file's own `#+TODO` line (`file_keywords`, `org_write.py:341`;
+   that line can differ from the `org_idea_keywords` vocabulary, which is why
+   `ensure_idea_keyword` exists), `reopen_idea` raises `ValueError` naming the file and the
+   missing keyword, before any write. It does not call `ensure_idea_keyword`, which would only
+   append the keyword to the **done** side and so make the reopened idea terminal again.
+   Otherwise call `set_state(cfg, task, state, touch_updated=True)`. Leaving a done keyword
+   drops the `CLOSED:` stamp (`org_write.py:376`). `set_state` bumps `:UPDATED:` only when
+   `task.is_idea` (`org_write.py:378`) and a stranded task is not one, so `set_state` gains a
+   keyword-only `touch_updated=False` argument that makes that bump unconditional
+   (`if task.is_idea or touch_updated`); the stamp lands in the same atomic write, not a second
+   one.
 5. Returns the file path.
 
 `nw idea reopen <selector> [--state STATE]` in `cli.py` calls it and prints
 `✓ reopened IDEA-1059 → IDEA  <path>`, with `ClickException` on `ValueError` like its siblings.
 `--state` completes from `complete_idea_state`.
 
-**Hint.** One helper, `not_an_idea_message(task, selector)`, returns
-`f"{selector!r} is not an idea"`, plus
+**Hint.** One helper, `not_an_idea_message(task, selector)`, lives in `org_write.py` next to
+`resolve_selector`. It returns `f"{selector!r} is not an idea"`, plus
 `f" (state {task.state!r} is not an idea keyword; recover with `nw idea reopen {task.id}`)"`
-when `task.id` matches `^IDEA-\d+$`. The `cli.py` sites that raise `is not an idea` for
-`show`/`log`/`state`/`ext`/`retitle`/`kind`/`project` and `set_idea_state` use it.
+when `task.id` matches `^IDEA-\d+$`. Scope, exhaustively:
+
+- **Uses the helper** (the commands a stranded idea is most often hit with): `cli.py`
+  `idea_show_cmd` (:1001); `explore.py` `set_idea_state` (:793, `nw idea state`),
+  `append_log` (:639, `nw idea log`), `_require_idea` (:325), `retitle_idea` (:805); and
+  `org_write.py` `set_idea_kind` (:1185) and `set_idea_project` (:1201).
+- **Keeps the plain message** (unchanged, out of scope): the `nw idea ext` subcommands
+  (`cli.py:1025-1112`, `idea_ext.py:20/112`), `idea_link.py:662`, `idea_export.py:19`,
+  `specs.py:157/325/532` (different wording), `explore.py` `set_summary` (:313),
+  `normalize_idea_log_stamps` (:622) and `close_idea` (:758), and `org_write.py`
+  `archive_idea` (:1077), `set_idea_epic`, `set_idea_workstream`, `set_idea_priority` and
+  `set_idea_tags` (:1219-1297). Widening them is mechanical later; the recovery command exists
+  after this spec either way.
 
 ## Alternatives considered
 
@@ -138,8 +156,11 @@ when `task.id` matches `^IDEA-\d+$`. The `cli.py` sites that raise `is not an id
 - [ ] `nw idea reopen` on an idea already in an active state exits non-zero ("already open")
   with no file change; on an idea in a done idea state (`DROPPED`) it reopens normally.
 - [ ] `nw idea reopen` on an ordinary task (no `IDEA-<n>` `:ID:`) is rejected with no file change.
-- [ ] The `is not an idea` error for a stranded idea names `nw idea reopen <id>`; for an
-  ordinary task id it is unchanged.
+- [ ] `nw idea show`, `nw idea log` and `nw idea state` on a stranded idea exit non-zero with an
+  error that names `nw idea reopen <id>`; for an ordinary task id the message is unchanged.
+- [ ] `nw idea reopen <id> --state SPECCED` (or any active keyword) on a file whose `#+TODO`
+  line lacks that keyword exits non-zero with an error naming the file and the keyword, and
+  leaves the file byte-identical (`#+TODO` line included).
 - [ ] `python3 tools/spec_lint.py` exits 0 and `python3 tools/test_tiers.py --check` exits 0.
 
 ## Test plan
@@ -155,8 +176,14 @@ when `task.id` matches `^IDEA-\d+$`. The `cli.py` sites that raise `is not an id
     task then has `is_idea` true;
   - `--state INCUBATE` works; `SHIPPED` and `NOPE` are rejected with no write;
   - already-open and non-`IDEA-<n>` entries are rejected with no write; a `DROPPED` idea reopens;
-  - `CliRunner` runs of `nw idea state ... EXPLORE`, `nw idea reopen ...` and `nw idea show` on
-    a stranded idea show the exit codes and the `nw idea reopen` hint in the message.
+  - a file whose `#+TODO` line lacks `SPECCED` while `org_idea_keywords` lists it: `reopen_idea`
+    with `state="SPECCED"` raises `ValueError` naming the file and `SPECCED`, and the file bytes
+    are identical (no `ensure_idea_keyword` write);
+  - `set_state(..., touch_updated=True)` bumps `:UPDATED:` on a non-idea task; the default call
+    on a non-idea task still does not;
+  - `CliRunner` runs of `nw idea state ... EXPLORE`, `nw idea reopen ...`, and `nw idea show`,
+    `nw idea log` and `nw idea state` on a stranded idea show the exit codes and the
+    `nw idea reopen` hint in the message; an ordinary task id gets the plain message.
 - **Manual verification:** on a scratch copy of the ideas file, `nw idea state IDEA-N EXPLORE`
   must fail; hand-edit a headline to `EXPLORE`, run `nw idea show IDEA-N` (error with hint),
   `nw idea reopen IDEA-N`, then `nw idea show IDEA-N` (resolves). Run this against the real
