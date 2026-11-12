@@ -1,7 +1,7 @@
 ---
 id: SPEC-0585
 title: "SPEC-0574 review follow-ups: pin the sentinel, dangling-link, spec-reviews guard and sanitizer-boundary behaviour; reap parallel children; a real decoy-safety check"
-status: in-progress
+status: done
 owner: user
 created: 2026-11-12
 updated: 2026-11-12
@@ -239,7 +239,7 @@ marker `pytestmark = pytest.mark.integration`. No new module, so no second tier 
 - [x] **AC8.** Every row of the Design's common-word table holds exactly, and the counting test
   holds: `counts["user_name"]` equals the number of substitutions and every other rule counter is 0
   for those strings (`/home/runner/x` gives `home_path == 1`, `user_name == 0`).
-- [ ] **AC9.** `tools/capture_history_fixture.py`, the committed fixture and `MANIFEST.json` are
+- [x] **AC9.** `tools/capture_history_fixture.py`, the committed fixture and `MANIFEST.json` are
   byte-identical to `main`; `git diff main --stat` lists only `tests/test_history_fixture.py`, this
   spec and the generated `docs/LEDGER.md`; `python3 tools/capture_history_fixture.py --check`,
   `python3 tools/test_tiers.py --check` and `python3 tools/spec_lint.py` exit 0; the module
@@ -322,12 +322,22 @@ that name); `COUNT_ROWS` holds the counting rows and the `/home/runner/x` row is
 (`test_common_word_user_home_path_is_not_double_counted`); the read spy also asserts that the
 tool's own read of `reviews/<MULTI[:9]>/r.json` was recorded, so a broken spy cannot pass vacuously.
 
-AC9 is left unticked: everything in it holds (tool, fixture and manifest untouched, `--check`,
+AC9 was left unticked in the first loop: everything in it holds (tool, fixture and manifest untouched, `--check`,
 `test_tiers --check` and `spec_lint` exit 0, only the test module, this spec and the ledger changed)
 except the 20 s module budget, which could not be shown on this box (load average 14 from other
 campaigns): the guard errors at 33-44 s here, and the unchanged `HEAD` module errors at 45.7 s. The new
 tests add about 4 s under that load. The affected-tests run (`tools/affected_tests.py --run`) was
 started but did not finish on the saturated box.
+
+### Test record, loop 1 (2026-11-12)
+
+`uv run pytest -q --durations=0 tests/test_history_fixture.py` with the default 20 s budget, once the
+box load dropped (load average 6.7, 8 cores): 187 passed, no budget error, 11.4 s wall, 10.4 s summed
+per-test time, of which the new and edited tests of this spec (`inside_*`, `review_dangling`,
+`review_file_whose`, `sentinel_dangling`, `reap_all`, `spec_reviews_rows`, the counting tests, `unsafe_spec`,
+`non_string`) account for about 1.3 s. The earlier 33-45 s readings were a load effect (load average 10-14),
+as the first run's note says. The pytest-affected gate (which excludes `integration`) passed 1541 tests;
+the full suite was left to gating. `python3 tools/spec_lint.py` exits 0 with the ledger regenerated.
 
 **Regression guard.** `python3 tools/affected_tests.py --run uv run pytest -q`, plus
 `uv run pytest -q tests/test_history_fixture.py`, `python3 tools/spec_lint.py` and
@@ -340,12 +350,12 @@ before and after.
 
 ## Definition of done
 
-- [ ] Acceptance criteria all met.
-- [ ] Test plan executed (module run explicitly, measured time and mutation results recorded);
+- [x] Acceptance criteria all met.
+- [x] Test plan executed (module run explicitly, measured time and mutation results recorded);
   automated tests pass; manual steps performed.
-- [ ] No regressions: `--check` exits 0 and the committed fixture is unchanged.
-- [ ] Spec body updated to match what shipped.
-- [ ] `docs/LEDGER.md` regenerated (`python3 tools/spec_lint.py --write-ledger`) and
+- [x] No regressions: `--check` exits 0 and the committed fixture is unchanged.
+- [x] Spec body updated to match what shipped.
+- [x] `docs/LEDGER.md` regenerated (`python3 tools/spec_lint.py --write-ledger`) and
   `python3 tools/spec_lint.py` exits 0.
 
 ## Open questions
