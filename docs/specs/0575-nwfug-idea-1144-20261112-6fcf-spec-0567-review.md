@@ -30,7 +30,7 @@ finds an unguarded or wrong path fixes `src/` in the same change.
 | 5 | `0847c362fd63` minor: no check that an id is recomputed exactly once | The spy test asserts membership, not multiplicity | Count per-id recomputes (AC5) |
 | 6 | `eba7afd3fba6` minor: no test greps `src/` for `drop_campaign_all` | The removal is real; SPEC-0567's Test plan promised the grep | Add the grep test (AC6) |
 | 7 | `7614c954148c`, `c846c4aa76ff` minor: persist contract only covers the "index a new id" path | `test_reconcile_persist_contract` unchanged | Cover the step-5 recompute, `sources=None`, and the doc-hit paths (AC7) |
-| 8 | `8ec60ca2df06` minor: reconcile writes outside the cache lock in the `cold_filled` branch | The branch wraps the reconcile in `_cache_write_guard` with `_hold_guard=True` (`history_cache.py:3361-3366`, loop-2 change) | Prove, with a lock probe, that every write in that branch happens under the lock (AC8) |
+| 8 | `8ec60ca2df06` minor: reconcile writes outside the cache lock in the `cold_filled` branch | The branch wraps the reconcile in `_cache_write_guard` with `_hold_guard=True` (`history_cache.py:3361-3366`, loop-2 change) | Prove, with a lock probe, that every write the reconcile call makes in that branch happens under the lock (AC8); the later `stale` and `_refresh_live` steps of the branch are out of scope (see Non-goals) |
 | 9 | capped minor: reconcile mixes two live-set snapshots | `_reconcile_live_set` reads the live set once (`:2518`) and resolves globals with it (`:2545`), but step 5's `_recompute_terminal_documents` re-lists the live set and re-parses every global source (`:1056`) | One snapshot and one global parse per reconcile (AC9) |
 
 ## Goals / Non-goals
@@ -49,6 +49,12 @@ finds an unguarded or wrong path fixes `src/` in the same change.
 
 - Any change to the cache layout, the v1 schemas, link rules, the SPEC-0536 opt-in, or the
   SPEC-0472 budgets.
+- The `stale` recompute and `_refresh_live` steps that follow the reconcile in the
+  `cold_filled` branch of `_history_index_cached` (`history_cache.py:3372-3386`). They call
+  `_recompute_terminal_documents`, `_persist_index_records`, and `_refresh_live` without
+  `_hold_guard` and without an enclosing `_cache_write_guard` (the non-cold branch wraps them),
+  so their writes are not under one held lock. They are not part of finding `8ec60ca2df06`,
+  which names the reconcile, and no test here asserts anything about their locking.
 - Moving the lock, or changing who writes `index.jsonl`/`records.jsonl`/`sources.json`
   (SPEC-0567 Decision 2 stands).
 - New product behaviour. This is hardening of SPEC-0567.
@@ -70,8 +76,8 @@ finds an unguarded or wrong path fixes `src/` in the same change.
    `global_recs`, the list it already resolved with `sorted(live)`; step 2 passes the same
    list to `_recompute_campaign`, so steps 2 and 5 now see one resolution of the global
    sources. The list is not mutated by either step (step 3 enriches a `copy.deepcopy`).
-3. **Fix what a test finds.** If a lock probe or call-count test in item 8 or 4 shows a write
-   outside the lock or a double recompute, the implementer fixes `src/` in the same change and
+3. **Fix what a test finds.** If a lock probe or call-count test in item 8 or 4 shows a
+   reconcile write outside the lock or a double recompute, the implementer fixes `src/` in the same change and
    notes it in *As shipped*. The fix keeps SPEC-0567's contract: callers that hold the lock pass
    `_hold_guard=True`.
 
@@ -96,7 +102,7 @@ conflicts with the cache's own).
 | `test_no_drop_campaign_all_in_src` | 6 | Walk every `*.py` under `src/` and assert `drop_campaign_all` appears in none. |
 | `test_reconcile_persist_contract_recompute_path` | 7 | Warm cache; add an id that makes a stored terminal's links differ (so step 5 recomputes it) and an id that is new. With `persist=False`: zero `_persist_index_records` calls, the bytes of `index.jsonl`, `records.jsonl`, `sources.json` unchanged, the differing terminal's `campaigns/<cid>.json` rewritten, its id in `touched`. With `persist=True` on a fresh copy of the read data: exactly one call, and both ids are doc hits on the next `campaign_history(cache=True)`. |
 | `test_reconcile_persist_sources_none` | 7 | `persist=True` with `sources=None` reads `sources.json` on entry; the single `_persist_index_records` call receives a dict equal to the on-disk one plus the reconcile's cursor updates, and the written `sources.json` contains the new id's `campaign_files` entry. `persist=False` with `sources=None` still writes no file among the three. |
-| `test_cold_filled_branch_reconciles_under_lock` | 8 | Empty cache dir; start a live-set change after the cold fill by patching `HC._ensure_writable_cache` with a wrapper that calls the real one, then adds a campaign directory and returns its result. Run `H.history_index(c, now=NOW, cache=True)`. Spies on `_reconcile_live_set`, `_write_campaign_file`, `_append_pending_index_write`, and `_persist_index_records`, called after the wrapper returns, record `_lock_held(v1)`; every recording is `True`, at least one of each of the first and last was recorded, and the result equals `cache=False`. Mutation: remove the `with _cache_write_guard(root)` around the reconcile, the first recording is `False`. |
+| `test_cold_filled_branch_reconciles_under_lock` | 8 | Scope: the `_reconcile_live_set` call in the `cold_filled` branch only. Empty cache dir; start a live-set change after the cold fill by patching `HC._ensure_writable_cache` with a wrapper that calls the real one, then (a) adds a new campaign directory `_NEW`, and (b) adds a mail linking to `_NEW` so that an already-stored terminal's links differ and step 5 recomputes it. Run `H.history_index(c, now=NOW, cache=True)`. A spy on `HC._reconcile_live_set` sets an `inside` flag for the duration of its call (it calls the real function) and records `_lock_held(v1)` at entry; spies on `HC._write_campaign_file`, `HC._append_pending_index_write`, and `HC._persist_index_records` (each calling through) record `_lock_held(v1)` only while `inside` is set, so the later `stale` and `_refresh_live` calls are not recorded. Asserts: the reconcile was entered once with `_lock_held` true; each of the three writer spies recorded at least once while `inside` (`_write_campaign_file` and `_append_pending_index_write` come from the step-5 recompute of the differing terminal, `_persist_index_records` from `persist=True`); every recording is `True`; the result equals `cache=False`. The test fails if any of the three lists is empty, so the set-up cannot pass vacuously. Mutation: remove the `with _cache_write_guard(root)` around the reconcile, the first recording is `False`. |
 | `test_reconcile_one_global_resolve_and_snapshot` | 9 | Spy on `H._global_records` and on `HC._live_campaign_ids` during one `_reconcile_live_set(..., persist=False)` call that indexes a new id and recomputes a differing terminal: `H._global_records` is called exactly once, and its `cids` argument equals `sorted(live)` taken at entry; `_live_campaign_ids` is called once. A second case adds a directory between step 2 and step 5 (inside a wrapped `_recompute_campaign`) and asserts the late directory is neither indexed nor linked in this call and is picked up by the next call. |
 
 ### Source change (finding 9)
@@ -130,7 +136,13 @@ copy and `_recompute_campaign` only reads `shared_global`.
   is that the assertion proves nothing; without a recorded mutation check nothing says the
   assertion now does.
 - **Move the cold-filled reconcile into `_cold_fill`.** Changes SPEC-0567's decision on who
-  writes what; the lock probe shows the present placement is correct.
+  writes what; the reconcile is already inside `_cache_write_guard` in `_history_index_cached`,
+  and AC8 pins that.
+- **Also wrap the `stale` recompute and `_refresh_live` of the `cold_filled` branch in the
+  guard (`_hold_guard=True`), as the non-cold branch does.** Real, but a different defect from
+  the one finding `8ec60ca2df06` reports, and it would need its own set-up that forces
+  `_stale_terminal_ids` non-empty after a cold fill; left to a separate follow-up so this spec
+  stays a test-strength change.
 
 ## Acceptance criteria
 
@@ -151,9 +163,13 @@ copy and `_recompute_campaign` only reads `shared_global`.
   recompute (no `_persist_index_records` call, three files unchanged, campaign file rewritten);
   `persist=True` with a step-5 recompute (one call, doc hit on the next read); and
   `persist=True` with `sources=None` (the on-disk `sources.json` is read and updated).
-- [ ] **AC8.** In `test_cold_filled_branch_reconciles_under_lock` every campaign-file write,
-  pending-write append, and `_persist_index_records` call made by the `cold_filled` branch
-  happens while the cache lock is held, and the test fails when the guard is removed.
+- [ ] **AC8.** `test_cold_filled_branch_reconciles_under_lock` covers exactly the
+  `_reconcile_live_set` call in the `cold_filled` branch of `_history_index_cached`: while that
+  call runs, the cache lock is held at its entry and at every `_write_campaign_file`,
+  `_append_pending_index_write`, and `_persist_index_records` call it makes; the set-up forces
+  each of those three to be recorded at least once (a new campaign plus a mail that makes a
+  stored terminal differ), and the test fails when the guard around the reconcile is removed.
+  The `stale` and `_refresh_live` steps of that branch are not covered or asserted.
 - [ ] **AC9.** `_recompute_terminal_documents` accepts `global_recs`; one
   `_reconcile_live_set` call parses the global sources once with `sorted(live)` taken at entry,
   and a directory added mid-call is picked up by the next call, not half-applied; a recomputed
