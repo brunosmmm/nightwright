@@ -1,10 +1,11 @@
 ---
 id: SPEC-0580
 title: nw data usage — per-source size, count and retention report of the agentic data dir, with --json
-status: proposed
+status: accepted
 owner: user
 kind: feature
 created: 2026-11-12
+updated: 2026-11-12
 source_idea: IDEA-890
 tags: [agentic, cli, storage]
 ---
