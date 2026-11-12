@@ -111,7 +111,7 @@ def test_settings_keys_invalid(env, extra, key, needle):
 def test_declared_keys_refused_in_a_builtin_definition(key, value):
     doc = {"schema": "nw.persona.v1", "name": "implementer", "role": "implementer",
            "template": "implementer.md", "description": "x", "order": 10,
-           "output_schema": "implementer", key: value}
+           "output_schema": "implementer", "tier": "judge", key: value}
     errs = R.validate_persona_doc(doc, origin="builtin:persona_defs/implementer.yaml",
                                   layer="builtin", stem="implementer", known=PS.KNOWN)
     assert errs == [f"builtin:persona_defs/implementer.yaml: {key}: allowed only in a user "
