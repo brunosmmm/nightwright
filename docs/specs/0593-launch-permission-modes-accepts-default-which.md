@@ -1,9 +1,10 @@
 ---
 id: SPEC-0593
 title: Validate launch permission modes against the current claude CLI choices (add manual, retire default)
-status: proposed
+status: accepted
 owner: user
 created: 2026-11-12
+updated: 2026-11-12
 kind: feature
 tags: [agentic, launch, claude-cli]
 depends_on: [SPEC-0424]
