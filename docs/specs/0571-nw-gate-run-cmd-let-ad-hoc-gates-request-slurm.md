@@ -1,9 +1,10 @@
 ---
 id: SPEC-0571
 title: "nw gate run --cmd: ad-hoc gates request Slurm resources (--cpus, --mem, --licenses), capped by box policy"
-status: proposed
+status: accepted
 owner: user
 created: 2026-11-12
+updated: 2026-11-12
 milestone: "M9: agentic workflow"
 kind: feature
 tags: [agentic, gates, slurm, cli]
