@@ -1843,6 +1843,35 @@ def spec_reservations_cmd(cfg, all_keys, as_json, specs_dir):
     console.print(table)
 
 
+@spec_group.command("check-numbers")
+@click.option("--json", "as_json", is_flag=True, help="machine-readable output")
+@_specs_dir_opt
+@click.pass_obj
+def spec_check_numbers_cmd(cfg, as_json, specs_dir):
+    """Check this checkout's spec numbers against other worktrees, local and remote-tracking
+    refs and live reservations (SPEC-0569). Exit 1 on a collision. Read-only."""
+    from . import spec_numbers as SN
+    try:
+        found = SN.collisions(cfg, specs_dir=specs_dir)
+    except ValueError as e:
+        raise click.ClickException(str(e))
+    if as_json:
+        click.echo(json.dumps({"schema": "nw.spec.collisions.v1", "collisions": found},
+                              indent=2))
+    elif not found:
+        click.echo("no spec-number collisions")
+    else:
+        for c in found:
+            if c["kind"] == "filename":
+                click.echo(f"{c['id']}: {c['file']} also exists as {', '.join(c['other_files'])}"
+                           f" on {', '.join(c['other'])}")
+            else:
+                click.echo(f"{c['id']}: {c['file']} is reserved by campaign {c['other'][0]}")
+        click.echo("renumber one of them: nw spec reserve")
+    if found:
+        raise SystemExit(1)
+
+
 @spec_group.command("release")
 @click.argument("number")
 @click.option("--yes", is_flag=True, help="apply (default is a dry run)")

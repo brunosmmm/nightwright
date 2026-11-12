@@ -41,7 +41,10 @@ The linter lives at `tools/spec_lint.py` (repo root) and is enforced by `uv run 
 
 ## Workflow for a new feature
 
-1. `cp specs/TEMPLATE.md specs/NNNN-my-feature.md` (next free number). For a large feature
+1. Get the number from `nw spec reserve` (or `nw spec new --from-idea`), never from `ls`: it
+   sees other branches, worktrees and live reservations. Then
+   `cp specs/TEMPLATE.md specs/NNNN-my-feature.md` with that number, and run
+   `nw spec check-numbers` before committing. For a large feature
    that fans out into many specs, `cp specs/TEMPLATE-epic.md …` and give each child a
    `parent: SPEC-NNNN`.
 2. Fill in the frontmatter and body; set `status: draft`.

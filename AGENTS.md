@@ -46,7 +46,9 @@ Cursor may load from `~/.claude/plugins` even when you are not using Claude Code
 2. Find or create the governing spec:
    - **Existing work:** locate it in [`docs/LEDGER.md`](./docs/LEDGER.md); set it
      `in-progress`.
-   - **New work:** `cp docs/specs/TEMPLATE.md docs/specs/NNNN-slug.md`, fill it in. For a
+   - **New work:** get the number from `nw spec reserve` (or `nw spec new --from-idea`),
+     never from `ls`, then `cp docs/specs/TEMPLATE.md docs/specs/NNNN-slug.md` with that
+     number and fill it in; run `nw spec check-numbers` before committing. For a
      **large feature that fans out into many specs**, create an *epic* from
      `TEMPLATE-epic.md` and give each child spec a `parent: SPEC-NNNN`. Get specs to
      `accepted` **before** implementing.

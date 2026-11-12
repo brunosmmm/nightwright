@@ -925,6 +925,127 @@ def test_two_campaigns_in_one_tick_get_different_numbers(tmp_path, monkeypatch):
     assert {S.read_state(cfg, c)["state"] for c in cids} == {"SPEC_REVIEW"}
 
 
+# ---- SPEC-0569: a number another worktree takes is re-reserved, not rewritten ------------------
+
+def _other_file(repo, number):
+    """`<number>-other.md` uncommitted in the project's main checkout (another worktree)."""
+    (repo / "docs" / "specs" / f"{number:04d}-other.md").write_text("x\n")
+
+
+def _took_number(repo, when="run"):
+    """A Hooked `before`: the first writer run finds its number taken in another worktree."""
+    done = []
+
+    def before(req):
+        if not done:
+            done.append(1)
+            _other_file(repo, int(re.search(r"Spec id: `SPEC-(\d{4})`", req.prompt).group(1)))
+    return before
+
+
+def _reservations(cfg, wt):
+    return [r["number"] for r in SN.list_reservations(cfg, specs_dir=wt / "docs/specs")]
+
+
+def test_committed_collision_before_start_swallows_the_release_error(tmp_path, monkeypatch):
+    cfg, repo, iid, cid = start(tmp_path, monkeypatch, lambda i: [
+        CASES["wrong-path"](2, i), spec_written(3, i)])
+    wt = wtree(cfg, cid)
+    Q.tick(cfg)                                       # rejected: the reservation 2 stays live
+    assert _reservations(cfg, wt) == [2]
+    _other_file(repo, 2)
+    _git(repo, "add", "docs/specs/0002-other.md")
+    _git(repo, "commit", "-q", "-m", "other 0002")    # committed on main: the prune drops it
+    Q.tick(cfg)
+    in_review(cfg, cid)
+    st = S.read_state(cfg, cid)
+    assert st["spec_id"] == "SPEC-0003" and st["spec_write"]["number"] == 3
+    assert _reservations(cfg, wt) == []               # 3 is committed on the campaign branch
+    # the helper itself must tolerate a reservation that is already pruned
+    st["id"] = "C-pruned"
+    first = SN.allocate(cfg, by="t", campaign="C-pruned", specs_dir=wt / "docs/specs")
+    _other_file(wt, first["number"])
+    _git(wt, "add", "-A", "docs")
+    _git(wt, "commit", "-q", "-m", "taken", "--no-verify")     # committed: the prune drops it
+    assert Q._rereserve_spec_number(cfg, st, first["number"], wt / "docs/specs")[
+        "number"] > first["number"]
+
+
+def test_uncommitted_collision_before_start_releases_and_reallocates(tmp_path, monkeypatch):
+    cfg, repo, iid, cid = start(tmp_path, monkeypatch, lambda i: [
+        CASES["wrong-path"](2, i), spec_written(3, i)])
+    wt = wtree(cfg, cid)
+    Q.tick(cfg)
+    assert _reservations(cfg, wt) == [2]
+    _other_file(repo, 2)                              # uncommitted in another worktree
+    Q.tick(cfg)
+    in_review(cfg, cid)
+    st = S.read_state(cfg, cid)
+    assert st["spec_id"] == "SPEC-0003" and st["counters"]["spec_number_retries"] == 0
+    assert "SPEC-0003" in prompt(cfg, cid, 2) and "SPEC-0002" not in prompt(cfg, cid, 2)
+
+
+def test_collision_during_the_run_is_re_reserved_without_a_text_retry(tmp_path, monkeypatch):
+    cfg, repo, iid, cid = start(tmp_path, monkeypatch, lambda i: [
+        spec_written(2, i), spec_written(3, i)])
+    wt = wtree(cfg, cid)
+    head = _git(wt, "rev-parse", "HEAD")
+    Q.tick(cfg, runner=Hooked(tmp_path, before=_took_number(repo)))
+    st = S.read_state(cfg, cid)
+    assert st["state"] == "SPEC_WRITING"
+    assert st["counters"]["spec_number_retries"] == 1
+    assert st["counters"].get("spec_write_retries", 0) == 0
+    assert "write_problems" not in (st.get("pending_brief") or {})
+    assert _git(wt, "rev-parse", "HEAD") == head
+    assert _git(wt, "status", "--porcelain").splitlines() == ["?? setup-out.txt"]
+    assert _reservations(cfg, wt) == [3]
+    assert not any(f["gate"] == "spec-write" for f in ledger(cfg, cid, "finding"))
+    Q.tick(cfg)
+    in_review(cfg, cid)
+    st = S.read_state(cfg, cid)
+    assert st["spec_id"] == "SPEC-0003" and st["spec"]["rel_path"] == \
+        "docs/specs/0003-add-a-thing.md"
+    assert "0003-add-a-thing.md" in prompt(cfg, cid, 2) and "already used" not in prompt(cfg, cid, 2)
+    assert st["counters"]["spec_number_retries"] == 0 and st["counters"]["spec_write_retries"] == 0
+
+
+def test_collision_with_a_text_problem_only_re_reserves(tmp_path, monkeypatch):
+    bad = {"bogus": "1"}
+    cfg, repo, iid, cid = start(tmp_path, monkeypatch, lambda i: [
+        spec_written(2, i, fm=bad), spec_written(3, i, fm=bad), spec_written(3, i)])
+    Q.tick(cfg, runner=Hooked(tmp_path, before=_took_number(repo)))
+    st = S.read_state(cfg, cid)
+    assert st["state"] == "SPEC_WRITING" and st["counters"]["spec_number_retries"] == 1
+    assert st["counters"].get("spec_write_retries", 0) == 0
+    assert "write_problems" not in (st.get("pending_brief") or {})
+    Q.tick(cfg)                                       # a text problem on a later attempt
+    st = S.read_state(cfg, cid)
+    assert st["state"] == "SPEC_WRITING" and st["counters"]["spec_write_retries"] == 1
+    assert st["pending_brief"]["write_problems"]
+    Q.tick(cfg)                                       # still gets its one retry, then writes
+    in_review(cfg, cid)
+
+
+def test_collisions_on_every_attempt_park_spec_write_failed(tmp_path, monkeypatch):
+    cfg, repo, iid, cid = start(tmp_path, monkeypatch, lambda i: [
+        spec_written(2, i), spec_written(3, i), spec_written(4, i)])
+
+    def before(req):
+        _other_file(repo, int(re.search(r"Spec id: `SPEC-(\d{4})`", req.prompt).group(1)))
+
+    runner = Hooked(tmp_path, before=before)
+    for _ in range(Q.SPEC_NUMBER_RETRY_MAX):
+        Q.tick(cfg, runner=runner)
+        assert S.read_state(cfg, cid)["state"] == "SPEC_WRITING"
+    Q.tick(cfg, runner=runner)
+    park = parked(cfg, cid)
+    assert park["reason"] == "spec_write_failed" and park["resume_to"] == "SPEC_WRITING"
+    assert "SPEC-0004 is already used by 0004-other.md on worktree:" in park["detail"]
+    st = S.read_state(cfg, cid)
+    assert st["counters"]["spec_number_retries"] == Q.SPEC_NUMBER_RETRY_MAX + 1
+    assert st["counters"].get("spec_write_retries", 0) == 0
+
+
 # ---- profiles, placeholder parity --------------------------------------------------------------------------
 
 def test_every_builtin_profile_has_a_spec_writer_entry():

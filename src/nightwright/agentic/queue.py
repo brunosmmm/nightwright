@@ -131,6 +131,9 @@ SPEC_PHASE_PARKS = frozenset({"spec_write_failed", "spec_review_exhausted",
                               "spec_review_unavailable"})
 # SPEC-0215: rejected spec writes retried before the campaign parks `spec_write_failed`.
 SPEC_WRITE_RETRY_MAX = 1
+# SPEC-0569: re-reserves of a spec number another worktree or ref took (own counter
+# `spec_number_retries`) before the campaign parks `spec_write_failed`.
+SPEC_NUMBER_RETRY_MAX = 2
 # SPEC-0214: failed spec-review runs retried before the campaign parks `spec_review_exhausted`.
 SPEC_REVIEW_RETRY_MAX = 1
 # Malformed triage verdicts tolerated per loop before the triage is treated as `escalate`.
@@ -2722,6 +2725,34 @@ def _prepare_run(ctx: _Ctx, state: dict, persona: str, step: Step | None = None)
     return run_id, req, budget
 
 
+def _rereserve_spec_number(cfg, state: dict, number: int, specs_dir) -> dict:
+    """SPEC-0569: move the campaign off `number`, which another worktree or ref took. `release`
+    finds nothing when the reservation was already pruned (the number is committed on a branch):
+    `allocate` then returns a fresh number on its own."""
+    from .. import spec_numbers as SN
+    try:
+        SN.release(cfg, number, specs_dir=specs_dir)
+    except ValueError:
+        pass
+    return SN.allocate(cfg, by="queue", campaign=state["id"], specs_dir=specs_dir)
+
+
+def _collision_text(c: dict) -> str:
+    return f"SPEC-{int(c['number']):04d} is already used by {c['file']} on {c['other']}"
+
+
+def _spec_collision(cfg, worktree, sw: dict, state: dict) -> dict | None:
+    """SPEC-0569: the filename collision of the number the writer just used, or None. A
+    collision is its own result, never a text problem: the writer is not asked to fix it."""
+    from .. import spec_numbers as SN
+    for c in SN.collisions(cfg, specs_dir=Path(worktree) / "docs" / "specs", tree=worktree,
+                           campaign=state["id"]):
+        if c["kind"] == "filename" and c["number"] == sw["number"]:
+            return {"number": c["number"], "file": ", ".join(c["other_files"]),
+                    "other": ", ".join(c["other"])}
+    return None
+
+
 def _prepare_spec_write(ctx: _Ctx, state: dict) -> dict:
     """Main thread, before the writer's `run.start` (SPEC-0215): resolve the parent epic, fix the
     spec number and path, record `state.spec_write` and return the prompt values. Raises
@@ -2769,8 +2800,15 @@ def _prepare_spec_write(ctx: _Ctx, state: dict) -> dict:
                     idea["summary"] = agreed.summary
                     state["idea"] = idea
             from .. import spec_numbers as SN
-            rec = SN.allocate(ctx.cfg, by="queue", campaign=state["id"],
-                              specs_dir=worktree / "docs" / "specs")
+            specs_dir = worktree / "docs" / "specs"
+            rec = SN.allocate(ctx.cfg, by="queue", campaign=state["id"], specs_dir=specs_dir)
+            while taken := SN.number_taken(ctx.cfg, rec["number"], specs_dir=specs_dir,
+                                           exclude_campaign=state["id"]):     # SPEC-0569
+                counters["spec_number_retries"] = counters.get("spec_number_retries", 0) + 1
+                if counters["spec_number_retries"] > SPEC_NUMBER_RETRY_MAX:
+                    raise ValueError(f"SPEC-{rec['number']:04d} is already used on "
+                                     f"{', '.join(taken)}")
+                rec = _rereserve_spec_number(ctx.cfg, state, rec["number"], specs_dir)
             mode, number = "write", rec["number"]
             path = f"docs/specs/{rec['number']:04d}-{SP.slugify(idea.get('heading') or '')}.md"
         sw = SW.snapshot(worktree, mode=mode, number=number, path=path)
@@ -2888,7 +2926,8 @@ def _do_write_spec(ctx: _Ctx, state: dict, step: Step, run_id: str, req,
     worktree = (state.get("repo") or {}).get("worktree")
     sw = dict(state["spec_write"])
     res.write = {"problems": [], "blocked": None, "committed": False, "sha": None,
-                 "title": None, "mode": sw["mode"], "rollback_failed": False}
+                 "title": None, "mode": sw["mode"], "rollback_failed": False,
+                 "collision": None}
     w = res.write
     branch = (state.get("repo") or {}).get("branch")
     env_interrupt = False
@@ -2954,12 +2993,17 @@ def _do_write_spec(ctx: _Ctx, state: dict, step: Step, run_id: str, req,
             problems = SW.verdict_problems(rr, sw)
             if not problems:
                 problems = SW.validate_spec_change(worktree, sw, state.get("idea"))
+            collision = (_spec_collision(ctx.cfg, worktree, sw, state)      # SPEC-0569
+                         if sw["mode"] == "write" else None)
             generated = []
-            if not problems:
+            if not problems and not collision:
                 pcfg = ctx.project(state)
                 regen = (pcfg.get("merge") or {}).get("regenerate") or []
                 problems, generated = SW.regenerate(worktree, regen, sw)
-            if problems:
+            if collision:
+                w["collision"] = collision          # not a text problem: kept out of `problems`
+                roll_back()
+            elif problems:
                 w["problems"] = problems
                 roll_back()
             else:
@@ -4848,6 +4892,22 @@ def _apply_spec_write(ctx, state, counters, res, row, events, finish):
         return finish("PARKED", "spec_write_failed", park={
             "reason": "spec_write_failed", "detail": "blocked: " + "; ".join(w["blocked"]),
             **park_back})
+    if w.get("collision"):                                              # SPEC-0569
+        # the number was taken meanwhile: re-reserve and rewrite under the new one; neither the
+        # collision nor other problems of this attempt reach the writer's brief
+        detail = _collision_text(w["collision"])
+        counters["spec_number_retries"] = counters.get("spec_number_retries", 0) + 1
+        if counters["spec_number_retries"] <= SPEC_NUMBER_RETRY_MAX:
+            try:
+                _rereserve_spec_number(cfg, state, w["collision"]["number"],
+                                       Path((state.get("repo") or {}).get("worktree") or ".")
+                                       / "docs" / "specs")
+            except ValueError as e:
+                detail = f"{detail}; cannot re-reserve: {e}"
+            else:
+                return finish("SPEC_WRITING", "spec_number_retry")
+        return finish("PARKED", "spec_write_failed", park={
+            "reason": "spec_write_failed", "detail": detail, **park_back})
     if w["problems"]:
         for problem in w["problems"]:
             events.append(("finding", {"persona": persona, "severity": "major",
@@ -4871,7 +4931,7 @@ def _apply_spec_write(ctx, state, counters, res, row, events, finish):
         if w["sha"]:
             events.append(("commit", {"sha": w["sha"], "message": f"spec split — {spec_id}"}))
         state.setdefault("repo", {})["head"] = w.get("head") or w["sha"]
-        counters["spec_write_retries"] = 0
+        counters["spec_write_retries"] = counters["spec_number_retries"] = 0
         state["pending_brief"] = None
         events.append(("spec_written", {"spec_id": spec_id, "rel_path": sw["path"],
                                         "title": w["title"], "mode": "split"}))
@@ -4890,7 +4950,7 @@ def _apply_spec_write(ctx, state, counters, res, row, events, finish):
             link_error = _link_idea(cfg, state, spec_id)
     state["spec"] = {**(state.get("spec") or {}), **record}
     state["spec_id"] = spec_id
-    counters["spec_write_retries"] = 0
+    counters["spec_write_retries"] = counters["spec_number_retries"] = 0
     if sw["mode"] != "amend":
         state["pending_brief"] = None
     events.append(("spec_written", {"spec_id": spec_id, "rel_path": sw["path"],
@@ -11294,6 +11354,7 @@ def _reset_spec_write(cfg, st: dict) -> None:
     """Resuming a spec-phase park (SPEC-0215, SPEC-0214): fresh retry budgets and a fresh idea
     snapshot (its text may have been edited meanwhile), keeping `state_before`."""
     _counters(st)["spec_write_retries"] = 0
+    _counters(st)["spec_number_retries"] = 0
     _counters(st)["spec_review_retries"] = 0
     old = st.get("idea") or {}
     if old.get("request_only"):                         # SPEC-0541: refresh from the public file

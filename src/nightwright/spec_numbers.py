@@ -64,25 +64,67 @@ def _dir_numbers(d):
 
 
 def _worktree_numbers(top, rel_dir):
-    out = _git(top, "worktree", "list", "--porcelain") or ""
     nums = set()
+    for path in _worktree_paths(top):
+        nums |= _dir_numbers(Path(path) / rel_dir)
+    return nums
+
+
+def _scan_refs(top):
+    """Every local and remote-tracking ref (SPEC-0569), symbolic `*/HEAD` refs skipped."""
+    refs = []
+    for prefix in ("refs/heads/", "refs/remotes/"):
+        out = _git(top, "for-each-ref", "--format=%(refname)", prefix) or ""
+        refs += [r for r in out.split() if not r.endswith("/HEAD")]
+    return refs
+
+
+def _ref_files(top, rel_dir, ref):
+    listing = _git(top, "ls-tree", "-z", "--name-only", ref, "--", f"{rel_dir}/") or ""
+    return [os.path.basename(n) for n in listing.split("\0") if n]
+
+
+def _branch_numbers(top, rel_dir):
+    nums = set()
+    for ref in _scan_refs(top):
+        nums |= _numbers(_ref_files(top, rel_dir, ref))
+    return nums
+
+
+def _worktree_paths(top):
+    out = _git(top, "worktree", "list", "--porcelain") or ""
+    paths = []
     for block in out.split("\n\n"):
         lines = block.splitlines()
         path = next((ln[len("worktree "):] for ln in lines if ln.startswith("worktree ")), None)
         if path is None or any(ln.split(" ", 1)[0] == "prunable" for ln in lines):
             continue
         if os.path.isdir(path):
-            nums |= _dir_numbers(Path(path) / rel_dir)
-    return nums
+            paths.append(os.path.realpath(path))
+    return paths
 
 
-def _branch_numbers(top, rel_dir):
-    refs = (_git(top, "for-each-ref", "--format=%(refname)", "refs/heads/") or "").split()
-    nums = set()
-    for ref in refs:
-        listing = _git(top, "ls-tree", "-z", "--name-only", ref, "--", f"{rel_dir}/") or ""
-        nums |= _numbers(os.path.basename(n) for n in listing.split("\0") if n)
-    return nums
+def _number_files(top, rel_dir):
+    """`{number: {filename: [location, ...]}}` over every worktree's working tree (location
+    `worktree:<path>`) and every local and remote-tracking ref (location: the ref name)."""
+    out: dict = {}
+
+    def add(name, location):
+        if name.endswith(".md") and (m := _NUM_RE.match(name)):
+            out.setdefault(int(m.group(1)), {}).setdefault(name, []).append(location)
+
+    for path in _worktree_paths(top):
+        try:
+            names = [p.name for p in (Path(path) / rel_dir).glob("*.md")]
+        except OSError:
+            continue
+        for name in names:
+            add(name, f"worktree:{path}")
+    for ref in _scan_refs(top):
+        short = ref.split("/", 2)[2]
+        for name in _ref_files(top, rel_dir, ref):
+            add(name, short)
+    return out
 
 
 # ---- store ---------------------------------------------------------------------------------
@@ -211,3 +253,72 @@ def release(cfg, number, *, specs_dir=None) -> dict:
             raise ValueError(f"SPEC-{n:04d} is not reserved under {key}")
         _save(cfg, [r for r in records if r is not hit])
         return hit
+
+
+# ---- collision checks (SPEC-0569), read-only -----------------------------------------------
+
+def _base_campaign(campaign):
+    return campaign.split("#")[0] if campaign else None
+
+
+def _tree_campaign(tree):
+    """The base campaign id when `tree` is on branch `nw/<id>` (split suffix stripped)."""
+    branch = (_git(tree, "rev-parse", "--abbrev-ref", "HEAD") or "").strip()
+    return _base_campaign(branch[len("nw/"):]) if branch.startswith("nw/") else None
+
+
+def collisions(cfg, *, specs_dir=None, tree=None, campaign=None) -> list:
+    """Spec files of `tree` (default: the checkout holding `specs_dir`) whose number is used by
+    a different filename on another worktree or ref ("filename"), or held by a live reservation
+    of another campaign ("reservation"). Never writes the store; sorted by number.
+
+    A leftover or renamed-slug ref counts: delete the stale branch to clear it."""
+    specs_dir, key, top, rel_dir = _resolve(cfg, specs_dir)
+    if not top:
+        return []
+    tree = os.path.realpath(tree) if tree is not None else top
+    campaign = _base_campaign(campaign) or _tree_campaign(tree)
+    own = f"worktree:{tree}"
+    seen = _number_files(top, rel_dir)
+    with _locked(cfg):
+        records, _ = _prune(cfg, _load(cfg), key, top, rel_dir)
+    held = {r["number"]: r for r in records
+            if r["key"] == key and r.get("campaign")
+            and _base_campaign(r["campaign"]) != campaign}
+    out = []
+    for p in sorted(Path(tree, rel_dir).glob("*.md")):
+        m = _NUM_RE.match(p.name)
+        if not m:
+            continue
+        n = int(m.group(1))
+        base = {"number": n, "id": f"SPEC-{n:04d}", "file": f"{rel_dir}/{p.name}"}
+        others = {f: [loc for loc in locs if loc != own]
+                  for f, locs in seen.get(n, {}).items() if f != p.name}
+        others = {f: locs for f, locs in others.items() if locs}
+        if others:
+            out.append({**base, "kind": "filename",
+                        "other": sorted({loc for locs in others.values() for loc in locs}),
+                        "other_files": sorted(others)})
+        if n in held:
+            out.append({**base, "kind": "reservation",
+                        "other": [_base_campaign(held[n]["campaign"])]})
+    return sorted(out, key=lambda c: (c["number"], c["kind"]))
+
+
+def number_taken(cfg, number, *, specs_dir=None, exclude_campaign=None) -> list:
+    """Locations (`worktree:<path>` or ref names) where any filename carries `number`, ignoring
+    the worktree holding `specs_dir` and the campaign's own `nw/<id>` ref. Needs no file in the
+    checked tree, never reads reservations or writes the store; `[]` means free of files."""
+    n = parse_number(number)
+    _, _, top, rel_dir = _resolve(cfg, specs_dir)
+    if not top:
+        return []
+    own = f"worktree:{top}"
+    base = _base_campaign(exclude_campaign)
+    locs = set()
+    for names in _number_files(top, rel_dir).get(n, {}).values():
+        for loc in names:
+            if loc == own or (base and (loc == f"nw/{base}" or loc.endswith(f"/nw/{base}"))):
+                continue
+            locs.add(loc)
+    return sorted(locs)

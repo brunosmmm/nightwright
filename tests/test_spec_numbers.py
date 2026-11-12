@@ -430,3 +430,182 @@ def test_spec_new_release_failure_keeps_original_error(tmp_path, monkeypatch):
         S.scaffold_from_idea(cfg, "instant review agent")
     monkeypatch.undo()
     assert [r["number"] for r in SN.list_reservations(cfg, specs_dir=sd)] == [2]  # stale, kept
+
+
+# ---- SPEC-0569: remote refs, collisions, number_taken, check-numbers ----------------------------
+
+def _commit_on(repo, branch, name, *, base="main", text="x\n"):
+    """Commit docs/specs/<name> on `branch` (created from `base`); leave `main` checked out."""
+    _git(repo, "checkout", "-q", "-B", branch, base)
+    (_sd(repo) / name).write_text(text)
+    _git(repo, "add", f"docs/specs/{name}")
+    _git(repo, "commit", "-q", "-m", name)
+    _git(repo, "checkout", "-q", "main")
+
+
+def _with_origin(tmp_path, repo):
+    """A bare `origin` fed from `repo`, fetched; returns the bare path (origin/HEAD is set)."""
+    bare = tmp_path / "origin.git"
+    subprocess.run(["git", "init", "-q", "--bare", "-b", "main", str(bare)], check=True)
+    _git(repo, "remote", "add", "origin", str(bare))
+    _git(repo, "push", "-q", "origin", "main")
+    _git(repo, "fetch", "-q", "origin")
+    _git(repo, "remote", "set-head", "origin", "main")
+    return bare
+
+
+def _clone_push(tmp_path, bare, name, branch="main"):
+    """Another clone pushes docs/specs/<name> to origin/<branch>."""
+    other = tmp_path / f"clone-{name}"
+    subprocess.run(["git", "clone", "-q", str(bare), str(other)], check=True)
+    d = other / "docs" / "specs"
+    d.mkdir(parents=True, exist_ok=True)
+    (d / name).write_text("x\n")
+    _git(other, "add", "-A")
+    _git(other, "commit", "-q", "-m", name)
+    _git(other, "push", "-q", "origin", f"HEAD:{branch}")
+
+
+def _store_bytes(cfg):
+    p = SN._paths(cfg)[0]
+    return p.read_bytes() if p.exists() else b""
+
+
+def test_allocate_sees_remote_tracking_refs_and_ignores_origin_head(tmp_path, cfg, repo):
+    bare = _with_origin(tmp_path, repo)
+    assert "refs/remotes/origin/HEAD" in subprocess.run(
+        ["git", "-C", str(repo), "for-each-ref", "--format=%(refname)"], capture_output=True,
+        text=True).stdout
+    _clone_push(tmp_path, bare, "0490-remote.md")
+    _git(repo, "fetch", "-q", "origin")
+    assert SN.allocate(cfg, by="t", specs_dir=_sd(repo))["number"] == 491
+    assert SN._scan_refs(str(repo)).count("refs/remotes/origin/HEAD") == 0
+
+
+def test_collisions_filename_other_branch_remote_and_worktree(tmp_path, cfg, repo):
+    bare = _with_origin(tmp_path, repo)
+    _touch(repo, 7)                                    # 0007-x.md in the checked tree (untracked)
+    assert SN.collisions(cfg, specs_dir=_sd(repo)) == []
+    _commit_on(repo, "b1", "0007-b.md")
+    (c,) = SN.collisions(cfg, specs_dir=_sd(repo))
+    assert (c["number"], c["id"], c["kind"], c["file"]) == (7, "SPEC-0007", "filename",
+                                                           "docs/specs/0007-x.md")
+    assert c["other"] == ["b1"] and c["other_files"] == ["0007-b.md"]
+    _git(repo, "branch", "-q", "-D", "b1")
+    _clone_push(tmp_path, bare, "0007-r.md", branch="feature")
+    _git(repo, "fetch", "-q", "origin")
+    (c,) = SN.collisions(cfg, specs_dir=_sd(repo))
+    assert c["other"] == ["origin/feature"] and c["other_files"] == ["0007-r.md"]
+    w = tmp_path / "w9"
+    _git(repo, "worktree", "add", "-q", "--detach", str(w), "main")
+    _touch(w, 7)
+    (w / "docs/specs/0007-x.md").rename(w / "docs/specs/0007-w.md")
+    (c,) = SN.collisions(cfg, specs_dir=_sd(repo))
+    assert f"worktree:{os.path.realpath(w)}" in c["other"]
+    assert c["other_files"] == ["0007-r.md", "0007-w.md"]
+
+
+def test_collisions_same_filename_elsewhere_is_not_a_collision(tmp_path, cfg, repo):
+    _with_origin(tmp_path, repo)
+    _commit_on(repo, "b1", "0007-x.md")
+    _touch(repo, 7)
+    assert SN.collisions(cfg, specs_dir=_sd(repo)) == []
+
+
+def test_collisions_stale_ref_with_another_slug_is_reported(tmp_path, cfg, repo):
+    """Accepted limitation: a leftover branch with an old slug is reported until it is deleted."""
+    _touch(repo, 7)
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-q", "-m", "seven")
+    _commit_on(repo, "stale", "0007-old.md", base="main~1")
+    assert [c["other"] for c in SN.collisions(cfg, specs_dir=_sd(repo))] == [["stale"]]
+    _git(repo, "branch", "-q", "-D", "stale")
+    assert SN.collisions(cfg, specs_dir=_sd(repo)) == []
+
+
+def test_collisions_reservation_cases(tmp_path, cfg, repo):
+    _touch(repo, 7)
+    sd = _sd(repo)
+    SN.allocate(cfg, by="t", campaign="C1", specs_dir=sd)        # number 8
+    SN.allocate(cfg, by="t", note="human", specs_dir=sd)         # number 9, no campaign
+    for n in (8, 9):
+        _touch(repo, n)
+    got = SN.collisions(cfg, specs_dir=sd, campaign="C2")
+    assert [(c["number"], c["kind"], c["other"]) for c in got] == [(8, "reservation", ["C1"])]
+    assert SN.collisions(cfg, specs_dir=sd, campaign="C1") == []
+    assert SN.collisions(cfg, specs_dir=sd, campaign="C1#2") == []      # split suffix stripped
+    _git(repo, "checkout", "-q", "-b", "nw/C1")
+    assert SN.collisions(cfg, specs_dir=sd) == []                       # branch detection
+    _git(repo, "checkout", "-q", "-b", "nw/C1#2", "main")
+    assert SN.collisions(cfg, specs_dir=sd) == []                       # `#k` on the branch side
+    _git(repo, "checkout", "-q", "main")
+    assert [c["number"] for c in SN.collisions(cfg, specs_dir=sd)] == [8]
+
+
+def test_collisions_pruned_reservation_and_store_untouched(tmp_path, cfg, repo):
+    sd = _sd(repo)
+    SN.allocate(cfg, by="t", campaign="C1", specs_dir=sd)        # number 2
+    _touch(repo, 2)
+    assert [c["kind"] for c in SN.collisions(cfg, specs_dir=sd, campaign="C2")] == ["reservation"]
+    before = _store_bytes(cfg)
+    SN.collisions(cfg, specs_dir=sd, campaign="C2")
+    assert _store_bytes(cfg) == before
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-q", "-m", "two")                      # committed: pruned in memory
+    before = _store_bytes(cfg)
+    assert SN.collisions(cfg, specs_dir=sd, campaign="C2") == []
+    assert _store_bytes(cfg) == before and json.loads(before)["reservations"]
+
+
+def test_number_taken_locations_and_exclusions(tmp_path, cfg, repo):
+    bare = _with_origin(tmp_path, repo)
+    sd = _sd(repo)
+    SN.allocate(cfg, by="t", campaign="C1", specs_dir=sd)
+    before = _store_bytes(cfg)
+    assert SN.number_taken(cfg, 7, specs_dir=sd) == []
+    _commit_on(repo, "b1", "0007-b.md")
+    _clone_push(tmp_path, bare, "0007-r.md", branch="feature")
+    _git(repo, "fetch", "-q", "origin")
+    w = tmp_path / "w9"
+    _git(repo, "worktree", "add", "-q", "--detach", str(w), "main")
+    _touch(w, 7)
+    assert SN.number_taken(cfg, "SPEC-0007", specs_dir=sd) == sorted(
+        ["b1", "origin/feature", f"worktree:{os.path.realpath(w)}"])
+    # the tree's own leftover file and the campaign's own ref do not count
+    _touch(repo, 8)
+    assert SN.number_taken(cfg, 8, specs_dir=sd) == []
+    _commit_on(repo, "nw/C1", "0009-mine.md")
+    assert SN.number_taken(cfg, 9, specs_dir=sd) == ["nw/C1"]
+    assert SN.number_taken(cfg, 9, specs_dir=sd, exclude_campaign="C1#2") == []
+    assert _store_bytes(cfg) == before
+
+
+def test_cli_check_numbers(tmp_path, cfg, repo, run):
+    r = run("check-numbers")
+    assert r.exit_code == 0 and r.output.strip() == "no spec-number collisions"
+    _commit_on(repo, "b1", "0001-other.md")
+    r = run("check-numbers")
+    assert r.exit_code == 1, r.output
+    assert "SPEC-0001: docs/specs/0001-x.md also exists as 0001-other.md on b1" in r.output
+    assert "renumber one of them: nw spec reserve" in r.output
+    d = json.loads(run("check-numbers", "--json").output)
+    assert d["schema"] == "nw.spec.collisions.v1"
+    assert [(c["number"], c["kind"]) for c in d["collisions"]] == [(1, "filename")]
+    other = _make_repo(tmp_path / "repo2")
+    r = run("check-numbers", "--specs-dir", str(_sd(other)))
+    assert r.exit_code == 0 and r.output.strip() == "no spec-number collisions"
+    SN.allocate(cfg, by="t", campaign="C9", specs_dir=_sd(repo))      # number 2
+    _touch(repo, 2)
+    assert "SPEC-0002: docs/specs/0002-x.md is reserved by campaign C9" in run(
+        "check-numbers").output
+
+
+def test_contract_docs_name_the_allocator_and_the_check():
+    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    for name in ("AGENTS.md", os.path.join("docs", "README.md")):
+        text = open(os.path.join(root, name), encoding="utf-8").read()
+        assert "nw spec reserve" in text and "nw spec check-numbers" in text, name
+        assert "(next free number)" not in text, name
+    agents = open(os.path.join(root, "AGENTS.md"), encoding="utf-8").read()
+    step = next(ln for ln in agents.splitlines() if "**New work:**" in ln)
+    assert "nw spec reserve" in step
