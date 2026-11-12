@@ -1679,7 +1679,8 @@ def attach(queue_group):
                        "`lean`")
     @click.option("--lean-flags", "lean_flags", default=None, metavar="A,B",
                   help="SPEC-0558: only these lean flags on for this campaign (comma list of "
-                       "tiers, packet, collator, sessions; unmet dependencies switch off)")
+                       "tiers, packet, collator, sessions, spec_sessions; unmet dependencies "
+                       "switch off)")
     @click.option("--cohort", "cohort", default=None, metavar="NAME",
                   help="SPEC-0558: A/B cohort tag, exported as the campaign `cohort` column "
                        "(default `lean` with --lean / --lean-flags, none otherwise)")
