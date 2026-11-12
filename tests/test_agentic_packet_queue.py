@@ -67,7 +67,9 @@ ADV_OLD_CODE = {"severity": "major", "category": "bug", "title": "pyproject name
 def test_two_loops_packet_per_loop_and_delta_review(tmp_path, monkeypatch):
     repo, cfg = _setup(tmp_path)
     cid = added(cfg, monkeypatch)
-    loop2_new = dict(ADV_OLD_CODE, basis="initial")          # untouched code, no valid basis
+    # untouched code, no valid basis; a minor, so the delta rule demotes it (SPEC-0596 keeps a
+    # major blocking: see test_outside_delta_major_stays_blocking)
+    loop2_new = dict(ADV_OLD_CODE, severity="minor", basis="initial")
     runner = _Recording({
         "implementer": [impl_done(), impl_done(content="better\n")],
         MARSHAL: [marshal(), marshal()],
@@ -128,6 +130,57 @@ def test_two_loops_packet_per_loop_and_delta_review(tmp_path, monkeypatch):
     assert by[(MARSHAL, 1)]["packet"] is True and by[(ADV, 2)]["packet"] is True
     assert by[("implementer", 1)]["packet"] is False
     assert CE.export_tables(cfg)["campaigns"][0]["demoted_findings"] == 1
+    assert CE.export_tables(cfg)["campaigns"][0]["outside_delta_findings"] == 0
+    assert [o["outside_delta"] for o in outcomes] == [0, 0]
+
+
+def test_outside_delta_major_stays_blocking(tmp_path, monkeypatch):
+    """SPEC-0596: a loop-2 `major` on untouched code with no valid basis is not demoted: it
+    stays blocking (another fix loop), is marked `basis_outside_delta`, counted as
+    `outside_delta` in `review_outcome` and exported as `outside_delta_findings`."""
+    repo, cfg = _setup(tmp_path)
+    cid = added(cfg, monkeypatch)
+    # raised by the conformance reviewer with a `fix` verdict, so the SPEC-0468 adversarial-major
+    # relief (conformance passed) does not apply and only the delta rule decides
+    loop2_new = {"severity": "major", "title": "pyproject name is odd",
+                 "files": ["pyproject.toml"], "basis": "initial",
+                 "suggested_fix": "rename the project"}
+    met = [{"ac": "feature.txt exists", "met": True, "evidence": "feature.txt"}]
+    runner = _Recording({
+        "implementer": [impl_done(), impl_done(content="better\n"), impl_done(content="c\n")],
+        MARSHAL: [marshal(), marshal(), marshal()],
+        CONF: [review(), review("fix", findings=[loop2_new], fix_brief="rename it",
+                                         ac_assessment=met), review()],
+        ADV: [adv("fix", [ADV_BUG]), adv("pass"), adv("pass")]})
+    orig = runner._next_entry
+    seen = []
+
+    def next_entry(req):
+        e = orig(req)
+        if req.persona in (ADV, CONF) and "delta review" in req.prompt:
+            seen.append((req.persona, req.prompt))
+            n = 2 + sum(1 for p, _ in seen[:-1] if p == req.persona)
+            doc = json.loads((S.campaign_dir(cfg, cid) / f"packet-loop-{n}.json").read_text())
+            e = json.loads(json.dumps(e))
+            e["verdict"]["prior_status"] = [
+                {"id": x["id"], "status": "fixed", "evidence": "ok"}
+                for x in doc["findings"] if x["persona"] == req.persona and x["status"] == "open"
+                and (req.persona == ADV or n == 3)]
+        return e
+    runner._next_entry = next_entry
+    st = _drive(cfg, cid, runner, ticks=45)
+    assert st["state"] == "MERGED", st.get("park")
+    outcomes = S.read_ledger(cfg, cid, types=["review_outcome"])
+    assert [(o["outcome"], o["demoted"], o["outside_delta"]) for o in outcomes] == [
+        ("fix", 0, 0), ("fix", 0, 1), ("pass", 0, 0)]
+    # loop 3's packet carries it as an open, non-advisory finding (it was blocking)
+    p3 = json.loads((S.campaign_dir(cfg, cid) / "packet-loop-3.json").read_text())
+    odd = next(x for x in p3["findings"] if x["title"] == "pyproject name is odd")
+    assert odd["status"] == "open" and not odd.get("advisory")
+    conf_prompts = [pr for p, pr in seen if p == CONF]
+    assert "pyproject name is odd" in conf_prompts[1].split("Your open findings")[1]
+    camp = CE.export_tables(cfg)["campaigns"][0]
+    assert (camp["demoted_findings"], camp["outside_delta_findings"]) == (0, 1)
 
 
 def test_open_prior_finding_still_blocks(tmp_path, monkeypatch):
@@ -206,5 +259,6 @@ def test_flag_off_no_marshal_no_packet(tmp_path, monkeypatch):
         assert "loop" not in e and "packet" not in e
     assert not S.read_ledger(cfg, cid, types=["review_packet"])
     assert "demoted" not in S.read_ledger(cfg, cid, types=["review_outcome"])[0]
+    assert "outside_delta" not in S.read_ledger(cfg, cid, types=["review_outcome"])[0]
     camp = CE.export_tables(cfg)["campaigns"][0]
-    assert camp["demoted_findings"] == 0
+    assert camp["demoted_findings"] == 0 and camp["outside_delta_findings"] == 0

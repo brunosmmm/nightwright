@@ -226,6 +226,10 @@ dip elsewhere at default is accepted (human decision).
   `--lean-flags a,b`) and a `--cohort` tag exported per campaign, so lean campaigns run
   alongside normal ones as an A/B (human decision 2026-11-12). Measure: cost and loops per
   campaign by cohort.
+- [ ] SPEC-0596 (project: Meta-Tools) — Safety amendment to SPEC-0554's delta rule: a `major`
+  / `must_fix` with an invalid basis is never demoted, only marked `basis_outside_delta`
+  (steward decision 2026-11-12, from the SPEC-0529 MAC-oracle replays). Measure:
+  `outside_delta_findings` vs `demoted_findings` per campaign.
 - [ ] SPEC-0572 (project: Meta-Tools) — Lean spec phase: resumable spec writer and delta spec
   re-review behind `agentic.lean.spec_sessions`, which `--lean` turns on (human decision
   2026-11-12; depends_on SPEC-0556, SPEC-0558). Measure: spec-phase cost per campaign.

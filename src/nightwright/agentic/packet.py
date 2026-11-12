@@ -658,6 +658,10 @@ def enforcement(cfg, state) -> dict | None:
             "ac_ids": {a["id"] for a in doc.get("acs") or []}, "doc": doc}
 
 
+# SPEC-0596: severities the delta rule never demotes (an invalid basis only marks them)
+BLOCKING_SEVERITIES = ("major", "must_fix")
+
+
 def _basis_ok(f, enf) -> bool:
     basis = f.get("basis")
     if basis == "delta_regression":
@@ -672,7 +676,10 @@ def enforce(spec_id, persona, verdict, enf) -> tuple:
     own open prior findings that it did not mark `fixed` come first (as findings carrying
     `prior: <id>`); then its new findings, each with a `demoted: True` mark when its basis is
     not a valid `delta_regression` (a file in the delta) or `missed_ac` (a packet AC id). A new
-    finding that repeats a prior one (same key) is that prior finding, not a new one."""
+    finding that repeats a prior one (same key) is that prior finding, not a new one.
+    SPEC-0596: only a `minor` / `nit` / `info` finding (or one without a known severity) is
+    demoted; a `major` / `must_fix` with an invalid basis stays blocking and is marked
+    `basis_outside_delta: True` instead (not counted in `demoted`)."""
     status = {ps.get("id"): ps.get("status") for ps in verdict.get("prior_status") or []
               if isinstance(ps, dict)}
     prior = own_open(enf["doc"], persona)
@@ -693,7 +700,10 @@ def enforce(spec_id, persona, verdict, enf) -> tuple:
             continue
         g = dict(f)
         if not _basis_ok(g, enf):
-            g["demoted"] = True
-            demoted += 1
+            if g.get("severity") in BLOCKING_SEVERITIES:     # SPEC-0596: stays blocking
+                g["basis_outside_delta"] = True
+            else:
+                g["demoted"] = True
+                demoted += 1
         out.append(g)
     return out, demoted

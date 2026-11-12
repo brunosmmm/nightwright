@@ -56,6 +56,7 @@ CAMPAIGN_COLUMNS = (
     ("demoted_findings", "int"),                                           # SPEC-0554
     ("out_of_scope_findings", "int"), ("collator_fallbacks", "int"),       # SPEC-0555
     ("cohort", "str"), ("lean_request", "json"),                           # SPEC-0558
+    ("outside_delta_findings", "int"),                                     # SPEC-0596
 )
 RUN_COLUMNS = (
     ("campaign", "str"), ("spec_id", "str"), ("profile", "str"), ("size", "str"), ("tone", "str"),
@@ -269,13 +270,14 @@ def _reviewer_stats(events: list[dict]) -> dict:
             "first_review_must_fix": first_must, "first_review_major": first_major}
 
 
-def _demoted(events) -> int:
+def _demoted(events, key="demoted") -> int:
     """SPEC-0554: new findings the delta rule demoted to advisory, summed over the review
-    loops (the last `review_outcome` of each loop counts: a re-route repeats the number)."""
+    loops (the last `review_outcome` of each loop counts: a re-route repeats the number).
+    SPEC-0596: `key="outside_delta"` sums the majors / must-fixes kept blocking instead."""
     per_loop = {}
     for e in events:
-        if e.get("type") == "review_outcome" and isinstance(e.get("demoted"), int):
-            per_loop[e.get("loop")] = e["demoted"]
+        if e.get("type") == "review_outcome" and isinstance(e.get(key), int):
+            per_loop[e.get("loop")] = e[key]
     return sum(per_loop.values())
 
 
@@ -371,6 +373,7 @@ def campaign_row(cfg, state: dict, events: list[dict], now) -> dict:
         "out_of_scope_findings": _collation_stats(events)[0],              # SPEC-0555
         "collator_fallbacks": _collation_stats(events)[1],
         "cohort": state.get("cohort"), "lean_request": state.get("lean_request"),  # SPEC-0558
+        "outside_delta_findings": _demoted(events, "outside_delta"),       # SPEC-0596
     }
     out = _project(row, CAMPAIGN_COLUMNS)       # signals read the coerced values
     out["signals"] = signals(out)

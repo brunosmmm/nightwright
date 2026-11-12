@@ -1053,10 +1053,40 @@ def test_fixed_prior_not_counted_open_prior_counts():
 def test_missed_ac_with_unknown_ac_is_demoted():
     from nightwright.agentic import packet as PK
     enf = {"loop": 2, "delta_files": {"a.py"}, "ac_ids": {"AC1"}, "doc": {"findings": []}}
-    verdict = v("fix", f("must_fix", "missed", ac="AC5", basis="missed_ac"))
+    verdict = v("fix", f("minor", "missed", ac="AC5", basis="missed_ac"))
     stored, demoted = PK.enforce("SPEC-1", A, verdict, enf)
     assert demoted == 1
-    assert tri({A: dict(verdict, findings=stored)})["outcome"] == "pass"
+    out = tri({A: dict(verdict, findings=stored)})
+    assert out["outcome"] == "pass" and out["basis_demoted"] == [f"{A}#0"]
+    assert "basis_outside_delta" not in out
+
+
+# ---- SPEC-0596: a major / must_fix with an invalid basis stays blocking --------------------
+
+@pytest.mark.parametrize("sev", ["major", "must_fix"])
+def test_blocking_severity_outside_delta_stays_blocking_and_marked(sev):
+    from nightwright.agentic import packet as PK
+    enf = {"loop": 2, "delta_files": {"a.py"}, "ac_ids": {"AC1"}, "doc": {"findings": []}}
+    verdict = v("fix", f(sev, "MAC reflection", files=["old.py"], basis="initial"),
+                f("minor", "naming", files=["old.py"]))
+    stored, demoted = PK.enforce("SPEC-1", A, verdict, enf)
+    assert demoted == 1
+    out = tri({A: dict(verdict, findings=stored)})
+    assert out["outcome"] == "fix" and out["fixing"] == [A]
+    assert [(b["title"], b.get("basis_outside_delta")) for b in out["blocking"]] == [
+        ("MAC reflection", True)]
+    assert out["basis_outside_delta"] == [f"{A}#0"] and out["basis_demoted"] == [f"{A}#1"]
+    assert [a["title"] for a in out["advisory"]] == ["naming"]
+    assert "basis_outside_delta" not in out["advisory"][0]
+
+
+def test_outside_delta_major_merged_and_human_waived():
+    """The marked finding is an ordinary finding to the scorer: a human waiver removes it, and
+    then neither the marker list nor a block remains."""
+    stored = [f("major", "MAC reflection", files=["old.py"], basis_outside_delta=True)]
+    hw = [{"id": f"{A}#0", "title": "MAC reflection", "files": ["old.py"], "reason": "known"}]
+    out = Q.triage_reviews({A: v("fix", *stored)}, BAL, human_waived=hw)
+    assert out["outcome"] == "pass" and "basis_outside_delta" not in out
 
 
 def test_flag_off_triage_result_shape_unchanged():

@@ -140,10 +140,14 @@ read-only, $0.25 default budget) adds only the AC -> hunks/tests map (`ac_map`, 
 `coverage: none` entries). Reviewers read the packet first. From loop 2 they run in `delta`
 mode: their diff is the delta, they see only their own open findings and return a
 `prior_status` for each; a new finding needs `basis: delta_regression` (a file in the delta)
-or `missed_ac` (a packet AC id), otherwise it is demoted to advisory (recorded and filed,
-never blocking; counted as `demoted` on `review_outcome`). A failed marshal leaves
+or `missed_ac` (a packet AC id), otherwise a `minor` / `nit` / `info` finding is demoted to
+advisory (recorded and filed, never blocking; counted as `demoted` on `review_outcome`). A
+`major` or `must_fix` with an invalid basis is never demoted (SPEC-0596): it is scored like any
+finding and marked `basis_outside_delta` (listed under that key in the triage result, counted
+as `outside_delta` on `review_outcome`). A failed marshal leaves
 `ac_map: null` and `ac_map_error`; a packet that cannot be built leaves today's prompt. Neither
-parks. Runs export `loop` and `packet`; campaigns export `demoted_findings`.
+parks. Runs export `loop` and `packet`; campaigns export `demoted_findings` and
+`outside_delta_findings`.
 
 ### Findings collator and out-of-scope follow-ups (`agentic.lean.collator`)
 

@@ -171,7 +171,7 @@ def test_columns_and_key_order(cfg):
         "blocking_per_reviewer_run", "first_review_must_fix", "first_review_major", "close_s",
         "task_active_s", "nw_sha", "profile_sha256", "cost_by_worker", "lean", "raised",
         "demoted_findings", "out_of_scope_findings", "collator_fallbacks", "cohort",
-        "lean_request"]
+        "lean_request", "outside_delta_findings"]
     assert [n for n, _ in CE.RUN_COLUMNS] == [
         "campaign", "spec_id", "profile", "size", "tone", "run_id", "persona", "model", "effort",
         "max_budget_usd", "timeout_s", "started_at", "duration_s", "cost_usd", "charged_usd",
@@ -217,8 +217,9 @@ def test_column_types_pinned():
         ("cost_by_worker", "json"), ("lean", "json"), ("raised", "bool"),   # SPEC-0553
         ("demoted_findings", "int"),                                        # SPEC-0554
         ("out_of_scope_findings", "int"), ("collator_fallbacks", "int"),    # SPEC-0555
-        ("cohort", "str"), ("lean_request", "json"))                        # SPEC-0558
-    assert len(CE.CAMPAIGN_COLUMNS) == 67 and CE.CAMPAIGN_COLUMNS[47][0] == "resolver_overcap_usd"
+        ("cohort", "str"), ("lean_request", "json"),                        # SPEC-0558
+        ("outside_delta_findings", "int"))                                  # SPEC-0596
+    assert len(CE.CAMPAIGN_COLUMNS) == 68 and CE.CAMPAIGN_COLUMNS[47][0] == "resolver_overcap_usd"
     assert CE.EXPORT_SCHEMA == "nw.campaign.export.v1"
     assert CE.RUN_COLUMNS == (
         ("campaign", "str"), ("spec_id", "str"), ("profile", "str"), ("size", "str"),
@@ -889,10 +890,11 @@ def test_failed_write_cleanup_cannot_mask_the_error(cfg, invoke, tmp_path, monke
 def test_export_conductor_columns_appended(cfg, tmp_path):
     """SPEC-0299: two columns are the conductor's share and the total with it (SPEC-0303
     appended four more after them, SPEC-0396 nine more, SPEC-0397 two more, SPEC-0345 one more,
-    SPEC-0553 two more, SPEC-0554 one more, SPEC-0555 two more, SPEC-0558 two more)."""
+    SPEC-0553 two more, SPEC-0554 one more, SPEC-0555 two more, SPEC-0558 two more,
+    SPEC-0596 one more)."""
     from nightwright.agentic import conductor_cost as CC
     names = [n for n, _ in CE.CAMPAIGN_COLUMNS]
-    assert names[-25:-23] == ["conductor_usd", "cost_with_conductor_usd"]
+    assert names[-26:-24] == ["conductor_usd", "cost_with_conductor_usd"]
     make(cfg, "C1", [(10, "transition", tr("CLOSING", "MERGED"))], created=0,
          state="MERGED", cost={"total_usd": 2.5, "cap_usd": None, "by_persona": {}})
     make(cfg, "C2", [], created=600, cost={"total_usd": None, "cap_usd": None, "by_persona": {}})
@@ -917,7 +919,7 @@ def test_export_conductor_columns_appended(cfg, tmp_path):
         assert (r["conductor_usd"], r["cost_with_conductor_usd"]) == (None, None)
     transcript("claude-x")
     got = rows()
-    assert list(got["C1"])[-25:-23] == ["conductor_usd", "cost_with_conductor_usd"]
+    assert list(got["C1"])[-26:-24] == ["conductor_usd", "cost_with_conductor_usd"]
     assert got["C1"]["conductor_usd"] == 1.0 and got["C1"]["cost_with_conductor_usd"] == 3.5
     assert got["C2"]["conductor_usd"] == 0.0                     # no attributed turn
     assert got["C2"]["cost_usd"] is None

@@ -212,12 +212,24 @@ def test_enforce_basis_rule():
          "basis": "delta_regression"},
         {"severity": "major", "title": "missed", "ac": "AC2", "basis": "missed_ac"},
         {"severity": "major", "title": "missed unknown", "ac": "AC7", "basis": "missed_ac"},
-        {"severity": "major", "title": "no basis"}]}
+        {"severity": "major", "title": "no basis"},
+        {"severity": "minor", "title": "minor elsewhere", "files": ["b.py"],
+         "basis": "delta_regression"},
+        {"severity": "nit", "title": "nit no basis"},
+        {"severity": "info", "title": "info unknown ac", "ac": "AC9", "basis": "missed_ac"},
+        {"title": "no severity"}]}
     out, demoted = PK.enforce("SPEC-1", "c", verdict, enf)
-    assert [(f["title"], f.get("prior"), bool(f.get("demoted"))) for f in out] == [
-        ("P2", "p2", False), ("reg", None, False), ("reg elsewhere", None, True),
-        ("missed", None, False), ("missed unknown", None, True), ("no basis", None, True)]
-    assert demoted == 3
+    # SPEC-0596: a major / must_fix with an invalid basis stays blocking, marked; only the
+    # lower severities are demoted (and counted)
+    assert [(f["title"], f.get("prior"), bool(f.get("demoted")),
+             bool(f.get("basis_outside_delta"))) for f in out] == [
+        ("P2", "p2", False, False), ("reg", None, False, False),
+        ("reg elsewhere", None, False, True), ("missed", None, False, False),
+        ("missed unknown", None, False, True), ("no basis", None, False, True),
+        ("minor elsewhere", None, True, False), ("nit no basis", None, True, False),
+        ("info unknown ac", None, True, False), ("no severity", None, True, False)]
+    assert demoted == 4
+    assert not any(f.get("demoted") and f.get("basis_outside_delta") for f in out)
 
 
 def test_extend_schema_and_flag_helpers():

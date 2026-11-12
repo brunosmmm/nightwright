@@ -846,6 +846,8 @@ def triage_reviews(verdicts: dict, profile: dict, waived=(), human_waived=(),
                                       "category": f.get("category"), "synthetic": False})
                 continue
             tie = {"tie": f["tie"]} if f.get("tie") else {}            # SPEC-0555
+            if f.get("basis_outside_delta"):        # SPEC-0596: kept blocking, marked
+                tie["basis_outside_delta"] = True
             if f.get("scope") == "out":     # SPEC-0555: filed as a follow-up, never scored
                 out_scope.append({"id": f"{p}#{i}", "personas": [p], "severity": sev,
                                   "title": f.get("title") or "", "detail": finding_detail(f),
@@ -942,9 +944,13 @@ def triage_reviews(verdicts: dict, profile: dict, waived=(), human_waived=(),
     basis_demoted = [m for m in basis_demoted if not human_gone(m)]
     advisory = [m for m in surviving if m not in blocking] + demoted + basis_demoted
     keys = ("id", "personas", "severity", "title", "detail", "files", "ac", "category")
-    out = lambda ms: [{**{k: m[k] for k in keys}, **({"tie": m["tie"]} if m.get("tie") else {})}
+    out = lambda ms: [{**{k: m[k] for k in keys}, **({"tie": m["tie"]} if m.get("tie") else {}),
+                       **({"basis_outside_delta": True} if m.get("basis_outside_delta") else {})}
                       for m in ms]
     extra = {"basis_demoted": [m["id"] for m in basis_demoted]} if basis_demoted else {}
+    outside = [m["id"] for m in blocking + advisory if m.get("basis_outside_delta")]
+    if outside:                                                         # SPEC-0596
+        extra["basis_outside_delta"] = outside
     if out_scope:                                                       # SPEC-0555
         extra["out_of_scope"] = out(out_scope)
     return {**extra, "outcome": outcome, "score": score, "score_only": score_only,
@@ -5766,7 +5772,9 @@ def _route_reviews(ctx, state, profile, counters, row, events, finish):
             "outcome": tri["outcome"],
             "major": sum(1 for f in surviving if f["severity"] == "major"),
             "must_fix": sum(1 for f in surviving if f["severity"] == "must_fix"),
-            **({"demoted": len(tri.get("basis_demoted") or [])} if PK.on(state) else {}),
+            **({"demoted": len(tri.get("basis_demoted") or []),
+                "outside_delta": len(tri.get("basis_outside_delta") or [])}
+               if PK.on(state) else {}),
             **({"out_of_scope": len(tri.get("out_of_scope") or [])} if CO.on(state) else {})}))
         events.append(("note", {"text": f"review score {tri['score']}/{c['pass_score']} "
                                         f"{tri['outcome']}", "author": "queue"}))

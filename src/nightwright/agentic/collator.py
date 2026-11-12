@@ -134,7 +134,8 @@ def _sev(f) -> str:
 def inputs(verdicts: dict) -> list:
     """The findings to collate, `{id, persona, severity, title, detail, files, ac, category}`;
     ids are `queue.triage_reviews`' (`<persona>#<index>` over the stored findings). A finding
-    the SPEC-0554 delta rule demoted is advisory already and is left out."""
+    the SPEC-0554 delta rule demoted is advisory already and is left out; a `major` /
+    `must_fix` it kept (SPEC-0596, `basis_outside_delta`) is an input like any other."""
     out = []
     for p, v in (verdicts or {}).items():
         raw = [f for f in (v or {}).get("findings") or [] if isinstance(f, dict)]
@@ -145,7 +146,8 @@ def inputs(verdicts: dict) -> list:
                     "title": f.get("title") or "", "detail": f.get("detail"),
                     "files": [str(x) for x in f.get("files") or [] if x is not None],
                     "ac": f.get("ac"), "category": f.get("category")}
-            for k in ("suggested_fix", "acceptance", "trigger", "prior"):
+            for k in ("suggested_fix", "acceptance", "trigger", "prior",
+                      "basis_outside_delta"):                           # SPEC-0596
                 if f.get(k):
                     item[k] = f[k]
             out.append(item)

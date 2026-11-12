@@ -13,7 +13,8 @@ clone (`git clone --shared` of the project root, detached at `--head`, a local `
   (`review_marshal`, tier marshal) and write its map (`packet.apply_marshal`);
 - for each `--personas` reviewer: `personas.build_request` (same call as
   `queue._prepare_run`, previous runs from the copied ledger) and a real `ClaudeRunner` run;
-  in delta mode `packet.enforce` marks which new findings would be demoted to advisory.
+  in delta mode `packet.enforce` marks which new findings would be demoted to advisory (and,
+  SPEC-0596, which major / must-fix ones stay blocking with `basis_outside_delta`).
 
 `--dry-run` stops before any model call and prints the request models and prompt sizes.
 Prints one JSON summary per run (model, cost, tokens, findings, demoted, `--match` hits).
@@ -223,12 +224,14 @@ def main(argv=None) -> int:
         row["score"] = v.get("score")
         row["prior_status"] = v.get("prior_status")
         row["findings"] = [{k: f.get(k) for k in ("severity", "basis", "ac", "title", "prior",
-                                                  "demoted")} for f in findings]
+                                                  "demoted", "basis_outside_delta")}
+                           for f in findings]
         if pat is not None:
             row["match"] = [
                 {"title": f.get("title"), "severity": f.get("severity"),
                  "basis": f.get("basis"), "prior": f.get("prior"),
-                 "advisory": bool(f.get("demoted"))}
+                 "advisory": bool(f.get("demoted")),
+                 "basis_outside_delta": bool(f.get("basis_outside_delta"))}    # SPEC-0596
                 for f in findings
                 if pat.search(f"{f.get('title')}\n{f.get('detail')}")]
     print(json.dumps(out, indent=2, default=str))
