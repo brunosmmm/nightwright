@@ -1,9 +1,10 @@
 ---
 id: SPEC-0567
 title: "History cache: a live-campaign-id set change invalidates stored terminals"
-status: proposed
+status: accepted
 owner: user
 created: 2026-11-12
+updated: 2026-11-12
 source_idea: IDEA-1144
 kind: feature
 depends_on: [SPEC-0472, SPEC-0536]
