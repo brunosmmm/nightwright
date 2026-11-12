@@ -1,9 +1,10 @@
 ---
 id: SPEC-0561
 title: Lint outbound specs before export (nw spec lint, tools/spec_lint.py --outbox)
-status: proposed
+status: accepted
 owner: user
 created: 2026-11-12
+updated: 2026-11-12
 kind: feature
 source_idea: IDEA-1135
 tags: [specs, outbox, lint]
