@@ -4616,7 +4616,9 @@ def _queue_split_children(cfg, state: dict, events: list) -> None:
     try:
         batch = plan_add_batch(cfg, ids, project=state.get("project"),
                                priority=state.get("priority") or PRIORITY_DEFAULT,
-                               split_origin=state)
+                               split_origin=state,
+                               lean_request=state.get("lean_request"),   # SPEC-0558: inherit
+                               cohort=state.get("cohort"))
         apply_add_batch(cfg, batch, skip_invalid=True, by="queue")
         for it in batch["items"]:
             if it.get("written"):

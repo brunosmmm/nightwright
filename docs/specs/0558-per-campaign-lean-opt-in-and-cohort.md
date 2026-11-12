@@ -72,7 +72,10 @@ column `cohort` (plus `lean_request`).
   (`select_profile(lean=True)`, `cap_flag`) use `effective_lean(..., request=)`, so a lean
   campaign is capped at `agentic.default_profile` like a config-lean one. `apply_add` /
   `apply_add_idea` copy the two keys onto the state (`_pin_lean_request`); the batch params
-  carry them to every item's re-plan.
+  carry them to every item's re-plan. **Split children inherit the opt-in:** when a merged
+  split campaign queues its child specs (`_queue_split_children`), it passes its own
+  `lean_request` and `cohort` to the batch, so every child pins the same flags and tag
+  instead of falling back to the live config.
 - **Pin.** `store.create_campaign` passes `state.lean_request` to `effective_lean` and writes
   `state.lean` when a flag is on, a dependency was switched off, or an opt-in was given (the
   old rule otherwise). The `open` event gains `lean_request` and `cohort` only when present.
@@ -169,7 +172,8 @@ file and is left as is.
 - [x] A campaign queued without `--lean` / `--lean-flags` / `--cohort` has no new state or
       `open`-event keys and runs the same models as before, with the config flags off and on;
       lean and plain campaigns coexist in one queue.
-- [x] The opt-in works for spec campaigns, idea campaigns and batches.
+- [x] The opt-in works for spec campaigns, idea campaigns and batches, and the children a
+      lean split campaign queues carry its `lean_request` and `cohort` (none without one).
 - [x] A lean campaign on Claude under the user's profile shape resolves the table above: no
       Opus, no effort above `high`; personas with an explicit profile model keep it.
 
@@ -217,6 +221,11 @@ Per AGENTS.md.
   `nw queue add SPEC-NNNN --lean-flags tiers,packet --cohort tiers-packet --yes`.
 - **Tests.** `tests/test_agentic_lean_optin.py` (20) pass; the touched files above pass
   locally (641 passed, 3 skipped, after the two export column-position pins were updated).
+- **Review fix (split children).** Review found `_queue_split_children` queued a split's
+  children without the opt-in, so they followed the live config. It now passes the parent's
+  `lean_request` / `cohort` to `plan_add_batch`; `tests/test_agentic_split_queue.py::
+  test_split_children_inherit_the_lean_opt_in` (with and without an opt-in) fails without
+  the fix and passes with it.
 - **Real-config table.** Computed as in Design (scratch script around
   `personas.build_request`); identical to the table the test pins for the copied profile
   shape.

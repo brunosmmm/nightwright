@@ -376,3 +376,22 @@ def test_split_children_link_the_idea_the_split_released(tmp_path, monkeypatch, 
     for sid in PARTS:
         assert not [e for e in ledger(cfg, made[sid][0]["id"], "idea_link_skipped")
                     if f"held by {cid}" in e["reason"]]
+
+
+@pytest.mark.parametrize("optin", [None, {"lean_request": ["tiers", "packet"], "cohort": "ab"}])
+def test_split_children_inherit_the_lean_opt_in(tmp_path, monkeypatch, optin):
+    """SPEC-0558: the children of a lean split campaign carry its `lean_request` and `cohort`
+    (pinned into their own `state.lean`), not the live config; without an opt-in, none."""
+    cfg, repo, cid = written(tmp_path, monkeypatch)
+    if optin:
+        S.write_state(cfg, cid, {**S.read_state(cfg, cid), **optin})
+    assert run_ticks(cfg, cid, 2)["state"] == "MERGED"
+    made = children(cfg)
+    for sid in PARTS:
+        (child,) = made[sid]
+        if optin:
+            assert child["lean_request"] == ["tiers", "packet"] and child["cohort"] == "ab"
+            assert child["lean"] == {"tiers": True, "packet": True, "collator": False,
+                                     "sessions": False}
+        else:
+            assert not {"lean", "lean_request", "cohort"} & set(child)
