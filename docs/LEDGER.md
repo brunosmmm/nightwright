@@ -369,7 +369,6 @@ progress. This is the single place to see *what has been decided* and *what is i
 | [SPEC-0533](./specs/0533-remote-park-and-resume.md) | Remote park and resume | feature | accepted | — | 2026-11-10 |
 | [SPEC-0552](./specs/0552-leaner-agentic-campaign-loop.md) | Leaner agentic campaign loop (role tiers, review packet, findings collator, resumable sessions) | epic | accepted | — | 2026-11-11 |
 | [SPEC-0556](./specs/0556-resumable-implementer-and-reviewer-sessions.md) | Resumable implementer and reviewer sessions per backend, with a fresh-session fallback | feature | in-progress | — | 2026-11-11 |
-| [SPEC-0559](./specs/0559-nw-idea-state-x-explore-closes-the-idea-explore.md) | nw idea state refuses unknown keywords; nw idea reopen recovers a stranded idea | feature | accepted | — | 2026-11-12 |
 
 ## Done
 
@@ -850,6 +849,7 @@ progress. This is the single place to see *what has been decided* and *what is i
 | [SPEC-0555](./specs/0555-findings-collator-and-auto-follow-up-ideas.md) | Findings collator (marshal) and automatic follow-up ideas for out-of-scope findings | feature | done | — | 2026-11-11 |
 | [SPEC-0557](./specs/0557-effort-ceiling-no-xhigh-on-any-backend.md) | Effort ceiling — no xhigh/max persona run on any backend | feature | done | — | 2026-11-11 |
 | [SPEC-0558](./specs/0558-per-campaign-lean-opt-in-and-cohort.md) | Per-campaign lean opt-in (`nw queue add --lean`) and an A/B cohort tag | feature | done | — | 2026-11-12 |
+| [SPEC-0559](./specs/0559-nw-idea-state-x-explore-closes-the-idea-explore.md) | nw idea state refuses unknown keywords; nw idea reopen recovers a stranded idea | feature | done | — | 2026-11-12 |
 | [SPEC-0560](./specs/0560-nw-idea-search-does-not-exist-but-nw-idea-search.md) | nw idea search is a real subcommand; multi-word captures that start with a search/list verb are refused | feature | done | — | 2026-11-12 |
 | [SPEC-0561](./specs/0561-no-lint-for-outbound-specs-tools-spec-lint-py-has.md) | Lint outbound specs before export (nw spec lint, tools/spec_lint.py --outbox) | feature | done | — | 2026-11-12 |
 | [SPEC-0562](./specs/0562-nw-a-cli-to-set-an-idea-s-after-dependencies-to.md) | `nw idea after`: set an idea's `:AFTER:` prerequisites from the CLI | feature | done | — | 2026-11-12 |

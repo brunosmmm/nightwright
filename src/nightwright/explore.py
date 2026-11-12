@@ -9,7 +9,8 @@ import re
 
 from .org_write import (_HEADLINE_RE, _atomic_backup_write, _locate_headline, org_writer,
                         resolve_selector, set_state, file_keywords, _inactive_stamp, set_property, ensure_idea_keyword,
-                        stamp_updated, parse_inactive_stamp, _INACTIVE_STAMP_RE)
+                        stamp_updated, parse_inactive_stamp, _INACTIVE_STAMP_RE, not_an_idea_message)
+from .org import _split_keywords
 from .org_markup import to_org_body
 
 SECTION_SUMMARY = "Summary"
@@ -322,7 +323,7 @@ def read_idea_questions(cfg, task, *, lines=None) -> list[dict]:
 def _require_idea(cfg, selector):
     task = resolve_selector(cfg, selector)
     if not task.is_idea:
-        raise ValueError(f"{selector!r} is not an idea")
+        raise ValueError(not_an_idea_message(task, selector))
     return task
 
 
@@ -636,7 +637,7 @@ def append_log(cfg, selector, note, *, when=None):
     """
     task = resolve_selector(cfg, selector)
     if not task.is_idea:
-        raise ValueError(f"{selector!r} is not an idea")
+        raise ValueError(not_an_idea_message(task, selector))
     if (task.state or "").upper() == "IDEA":
         active, done = file_keywords(cfg, task.file)
         if "INCUBATE" in set(active) | set(done):
@@ -788,12 +789,51 @@ def set_idea_state(cfg, selector, new_state):
     new_state = (new_state or "").strip().upper()
     if not new_state:
         raise ValueError("state is empty")
+    active, done = _idea_vocabulary(cfg)
+    if new_state not in active + done:                 # SPEC-0559: never write a stray keyword
+        raise ValueError(f"{new_state!r} is not an idea state; "
+                         f"valid: {' '.join(active)} | {' '.join(done)}")
     task = resolve_selector(cfg, selector)
     if not task.is_idea:
-        raise ValueError(f"{selector!r} is not an idea")
+        raise ValueError(not_an_idea_message(task, selector))
     if ensure_idea_keyword(cfg, task.file, new_state):
         task = resolve_selector(cfg, selector)
     set_state(cfg, task, new_state)
+    return task.file
+
+
+def _idea_vocabulary(cfg):
+    """(active, done) idea keywords — `org_idea_keywords`, else the config default (the same
+    split `load_tasks` uses to decide `Task.is_idea`)."""
+    kws = cfg.get("org_idea_keywords")
+    if not kws:
+        from .config import DEFAULT_CONFIG
+        kws = DEFAULT_CONFIG["org_idea_keywords"]
+    return _split_keywords(kws)
+
+
+def reopen_idea(cfg, selector, state="IDEA"):
+    """Put a stranded idea back into an active idea state (SPEC-0559).
+
+    A stranded idea carries an `IDEA-<n>` `:ID:` but a headline state outside the idea
+    vocabulary (so `Task.is_idea` is false and every `nw idea` command refuses it). Resolves
+    without the `is_idea` check; flips to `state` (active side of `org_idea_keywords`),
+    dropping `CLOSED:` and bumping `:UPDATED:` in one atomic write. Spec links and other
+    properties are untouched. Live ideas files only (archived ideas are SPEC-0072's)."""
+    state = (state or "").strip().upper()
+    active, _done = _idea_vocabulary(cfg)
+    if state not in active:
+        raise ValueError(f"{state!r} is not an active idea state; valid: {' '.join(active)}")
+    task = resolve_selector(cfg, selector)
+    if not re.match(r"^IDEA-\d+$", task.id or ""):
+        raise ValueError(f"{selector!r} is not an idea entry")
+    if task.is_idea and task.state in active:
+        raise ValueError(f"{task.id} is already open ({task.state})")
+    f_active, f_done = file_keywords(cfg, task.file)
+    if state not in f_active:                          # ensure_idea_keyword would add it as done
+        raise ValueError(f"{state!r} is not an active keyword on the #+TODO line of {task.file}; "
+                         f"valid: {' '.join(f_active)} | {' '.join(f_done)}")
+    set_state(cfg, task, state, touch_updated=True)
     return task.file
 
 
@@ -802,7 +842,7 @@ def retitle_idea(cfg, selector, new_title):
     """Rewrite the idea headline text; keep stars, state, tags, properties."""
     task = resolve_selector(cfg, selector)
     if not task.is_idea:
-        raise ValueError(f"{selector!r} is not an idea")
+        raise ValueError(not_an_idea_message(task, selector))
     new_title = " ".join(str(new_title).split())
     if not new_title:
         raise ValueError("title is empty")

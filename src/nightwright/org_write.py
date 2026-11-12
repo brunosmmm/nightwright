@@ -178,6 +178,17 @@ def file_keywords(cfg, path):
 
 
 _IDEA_SELECTOR_RE = re.compile(r"^IDEA-(\d+)$", re.IGNORECASE)
+_IDEA_ID_RE = re.compile(r"^IDEA-\d+$")
+
+
+def not_an_idea_message(task, selector):
+    """`'<selector>' is not an idea`, plus the recovery hint when the entry carries an
+    `IDEA-<n>` `:ID:` (a stranded idea whose state left the idea vocabulary, SPEC-0559)."""
+    msg = f"{selector!r} is not an idea"
+    if _IDEA_ID_RE.match(task.id or ""):
+        msg += (f" (state {task.state!r} is not an idea keyword; "
+                f"recover with `nw idea reopen {task.id}`)")
+    return msg
 
 
 def _normalize_selector(selector):
@@ -334,10 +345,13 @@ _ARCHIVE_ON_STATES = frozenset({"DROPPED", "RESEARCHED", "PROMOTED", "SHIPPED"})
 
 
 @org_writer
-def set_state(cfg, task, new_state, *, stamp_closed=True):
+def set_state(cfg, task, new_state, *, stamp_closed=True, touch_updated=False):
     """Set `task`'s TODO keyword to `new_state` in its file. Validates the state against the
     file's keyword set, verifies the on-disk headline still matches (drift guard), manages the
-    CLOSED: stamp, backs up the original, and writes atomically. Returns the file path."""
+    CLOSED: stamp, backs up the original, and writes atomically. Returns the file path.
+
+    `touch_updated` (SPEC-0559) stamps `:UPDATED:` even when `task.is_idea` is false (a stranded
+    idea being reopened); the archive-on-terminal gate below stays keyed on `task.is_idea`."""
     active, done = file_keywords(cfg, task.file)
     valid = set(active) | set(done)
     if new_state not in valid:
@@ -376,7 +390,7 @@ def set_state(cfg, task, new_state, *, stamp_closed=True):
         elif has_closed:                             # leaving done → drop the stamp
             del lines[nxt]
 
-    if task.is_idea:                                 # SPEC-0076: a lifecycle move is an update
+    if task.is_idea or touch_updated:                # SPEC-0076: a lifecycle move is an update
         stamp_updated(cfg, lines, idx, stars)
 
     _atomic_backup_write(cfg, task.file, "".join(lines))
@@ -1182,7 +1196,7 @@ def set_idea_kind(cfg, selector, kind):
     """Set `:KIND:` on an idea (SPEC-0044). Always writes the property (including `idea`)."""
     task = resolve_selector(cfg, selector)
     if not task.is_idea:
-        raise ValueError(f"{selector!r} is not an idea")
+        raise ValueError(not_an_idea_message(task, selector))
     return set_property(cfg, task, "KIND", normalize_idea_kind(kind))
 
 
@@ -1198,7 +1212,7 @@ def set_idea_project(cfg, selector, project):
     """
     task = resolve_selector(cfg, selector)
     if not task.is_idea:
-        raise ValueError(f"{selector!r} is not an idea")
+        raise ValueError(not_an_idea_message(task, selector))
     value = (project or "").strip()
     if not value:
         return clear_property(cfg, task, "PROJECT")

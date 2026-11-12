@@ -1,7 +1,7 @@
 ---
 id: SPEC-0559
 title: "nw idea state refuses unknown keywords; nw idea reopen recovers a stranded idea"
-status: accepted
+status: done
 owner: user
 created: 2026-11-12
 updated: 2026-11-12
@@ -142,27 +142,27 @@ when `task.id` matches `^IDEA-\d+$`. Scope, exhaustively:
 
 ## Acceptance criteria
 
-- [ ] `nw idea state <idea> EXPLORE` (any keyword outside `org_idea_keywords`) exits non-zero
+- [x] `nw idea state <idea> EXPLORE` (any keyword outside `org_idea_keywords`) exits non-zero
   with a message listing the valid keywords, and leaves the ideas file byte-identical
   (headline, `CLOSED:` stamp and `#+TODO` line unchanged).
-- [ ] `nw idea state` still accepts every configured idea keyword, active and done, including
+- [x] `nw idea state` still accepts every configured idea keyword, active and done, including
   one added through a custom `org_idea_keywords`.
-- [ ] The TUI state picker path (`tui/model.py:339`) gets the same rejection through
+- [x] The TUI state picker path (`tui/model.py:339`) gets the same rejection through
   `set_idea_state`, with no file change.
-- [ ] `nw idea reopen <id>` on an idea whose headline state is `EXPLORE` flips it to `IDEA`,
+- [x] `nw idea reopen <id>` on an idea whose headline state is `EXPLORE` flips it to `IDEA`,
   removes its `CLOSED:` line, bumps `:UPDATED:`, and afterwards `nw idea show`, `log` and `state`
   resolve it as an idea.
-- [ ] `nw idea reopen <id> --state INCUBATE` flips it to `INCUBATE`; `--state SHIPPED` (a done
+- [x] `nw idea reopen <id> --state INCUBATE` flips it to `INCUBATE`; `--state SHIPPED` (a done
   keyword) and `--state NOPE` are rejected with no file change.
-- [ ] `nw idea reopen` on an idea already in an active state exits non-zero ("already open")
+- [x] `nw idea reopen` on an idea already in an active state exits non-zero ("already open")
   with no file change; on an idea in a done idea state (`DROPPED`) it reopens normally.
-- [ ] `nw idea reopen` on an ordinary task (no `IDEA-<n>` `:ID:`) is rejected with no file change.
-- [ ] `nw idea show`, `nw idea log` and `nw idea state` on a stranded idea exit non-zero with an
+- [x] `nw idea reopen` on an ordinary task (no `IDEA-<n>` `:ID:`) is rejected with no file change.
+- [x] `nw idea show`, `nw idea log` and `nw idea state` on a stranded idea exit non-zero with an
   error that names `nw idea reopen <id>`; for an ordinary task id the message is unchanged.
-- [ ] `nw idea reopen <id> --state SPECCED` (or any active keyword) on a file whose `#+TODO`
+- [x] `nw idea reopen <id> --state SPECCED` (or any active keyword) on a file whose `#+TODO`
   line lacks that keyword exits non-zero with an error naming the file and the keyword, and
   leaves the file byte-identical (`#+TODO` line included).
-- [ ] `python3 tools/spec_lint.py` exits 0 and `python3 tools/test_tiers.py --check` exits 0.
+- [x] `python3 tools/spec_lint.py` exits 0 and `python3 tools/test_tiers.py --check` exits 0.
 
 ## Test plan
 
@@ -195,6 +195,25 @@ when `task.id` matches `^IDEA-\d+$`. Scope, exhaustively:
   stay green. `python3 tools/test_tiers.py --check` exits 0 with the new module marked.
   `python3 tools/spec_lint.py` exits 0.
 
+### Test record (2026-11-12)
+
+- `uv run pytest -q tests/test_idea_reopen.py tests/test_close.py tests/test_reconcile.py
+  tests/test_tui_mutations.py tests/test_promote_guard.py` → 187 passed.
+- `python3 tools/test_tiers.py --check` → exit 0; `python3 tools/spec_lint.py` → exit 0.
+- Manual, real `nw` binary on a scratch config: `nw idea state IDEA-001 EXPLORE` exits 1 with
+  the valid-keyword list; on a hand-made `EXPLORE` headline `nw idea show IDEA-001` exits 1 with
+  the `nw idea reopen IDEA-001` hint. `nw idea reopen` itself could not be run against the real
+  binary: the queue's persona guard (`NW_PERSONA_RUN=1`) refuses org writes from a campaign
+  agent, so that step is covered by the `CliRunner` tests only.
+- The full suite was left to gating.
+
+### As shipped
+
+As designed. `reopen_idea`, `_idea_vocabulary` (shared by `set_idea_state` and `reopen_idea`) and
+the CLI command `nw idea reopen` live in `explore.py` / `cli.py`; `not_an_idea_message` and
+`set_state(..., touch_updated=False)` live in `org_write.py`. The TUI state path is tested via
+`tui.model.apply_mutation(cfg, "state", ...)`.
+
 ## Rollout / migration
 
 1. Land the validation, `reopen_idea`, the CLI command and the hint helper together.
@@ -206,12 +225,12 @@ when `task.id` matches `^IDEA-\d+$`. Scope, exhaustively:
 
 ## Definition of done
 
-- [ ] Acceptance criteria all met.
-- [ ] Test plan executed; affected tests pass; manual steps performed and noted here.
-- [ ] No regressions (affected tests pass at the close gate).
-- [ ] Spec body updated to match what shipped.
-- [ ] `docs/LEDGER.md` regenerated (`python3 tools/spec_lint.py --write-ledger`).
-- [ ] `python3 tools/spec_lint.py` exits 0.
+- [x] Acceptance criteria all met.
+- [x] Test plan executed; affected tests pass; manual steps performed and noted here.
+- [x] No regressions (affected tests pass at the close gate).
+- [x] Spec body updated to match what shipped.
+- [x] `docs/LEDGER.md` regenerated (`python3 tools/spec_lint.py --write-ledger`).
+- [x] `python3 tools/spec_lint.py` exits 0.
 
 ## Open questions
 

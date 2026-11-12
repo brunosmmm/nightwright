@@ -923,6 +923,28 @@ def idea_state_cmd(cfg, selector, new_state):
         f"[green]✓[/] {selector} → [bold]{(new_state or '').strip().upper()}[/]  [dim]{path}[/]")
 
 
+@idea_group.command("reopen")
+@click.argument("selector", shell_complete=C.complete_idea_id)
+@click.option("--state", "state", default="IDEA", show_default=True,
+              shell_complete=C.complete_idea_state,
+              help="active idea state to reopen into")
+@click.pass_obj
+def idea_reopen_cmd(cfg, selector, state):
+    """Recover a stranded idea (SPEC-0559): an `IDEA-<n>` entry whose state left the idea
+    vocabulary (for example a stray `EXPLORE`) so every `nw idea` command refuses it.
+
+    \b
+    nw idea reopen IDEA-1059
+    nw idea reopen IDEA-1059 --state INCUBATE
+    """
+    try:
+        path = EX.reopen_idea(cfg, selector, state)
+        task = resolve_selector(cfg, selector)
+    except ValueError as e:
+        raise click.ClickException(str(e))
+    console.print(f"[green]✓[/] reopened {task.id} → [bold]{task.state}[/]  [dim]{path}[/]")
+
+
 @idea_group.command("spec-link")
 @click.argument("idea", shell_complete=C.complete_idea_id)
 @click.argument("spec", shell_complete=C.complete_spec_id)
@@ -1077,7 +1099,7 @@ def idea_show_cmd(cfg, selector, as_json, plain):
     try:
         task = resolve_selector(cfg, selector)
         if not task.is_idea:
-            raise ValueError(f"{selector!r} is not an idea")
+            raise ValueError(OW.not_an_idea_message(task, selector))
         if as_json:
             EX.dump_idea_show_json(cfg, task)
         else:
