@@ -78,7 +78,16 @@ branch, not assumed):
    or when the suite runs as root). `_inside` gets direct unit tests: dangling link -> `False`;
    link to a file inside the root -> `True`; link to a file outside -> `False`; loop -> `False`;
    `resolve()` raising `PermissionError` / `RuntimeError` -> `False`; plain missing path under the
-   root -> `True`.
+   root -> `True`. **Where a dangling link points matters.** A non-strict `resolve()` of a dangling
+   link returns its missing target, so a link whose target lies *outside* the root is "outside"
+   under strict and non-strict resolve alike and cannot tell them apart. The dangling link in the
+   `_inside` unit tests (`root/dangling.json`) and in the reviews test
+   (`reviews/<MULTI[:9]>/dangling.json`) therefore targets a **missing file inside** the root /
+   directory (`root/missing.json`, `missing.json` beside it): only strict resolve makes it
+   "outside", so reverting `_inside` to `path.resolve()` makes those tests fail on every Python
+   version. (A dangling link to a missing file outside the root is added as a second, non-killing
+   case.) The loop case additionally kills that revert only on Python 3.13+; on older Pythons a
+   non-strict loop raises `RuntimeError` and still counts as outside.
 2. **Children are always reaped.** A helper `reap_all(procs)` kills every `Popen` that has not
    exited (`poll() is None`) and waits for it; `test_check_is_independent_of_the_running_user`
    collects the four results inside `try: ... finally: reap_all(procs)`, so a failing return-code
@@ -87,10 +96,17 @@ branch, not assumed):
 3. **The decoy-safety check becomes a read spy.** The `elif bad == "/abs": assert not
    Path(where).exists()` branch is removed. In every case the test records the paths the tool
    opens during `collect_records` (a spy on `Path.read_bytes`, `Path.read_text`, `Path.open` and
-   `builtins.open`, recording `os.fspath` of the path, delegating to the original) and asserts that
-   none equals or lies under the normalised decoy path `where`. The decoy is still planted only
-   when `where` is inside `tmp_path`, so no test writes outside its tmp dir, and the result no
-   longer depends on what exists outside it.
+   `builtins.open`, recording `os.path.normpath(os.fspath(path))`, delegating to the original) and
+   asserts that the tool opened **no planted decoy file and nothing under an unplanted decoy
+   path**. The check is narrowed to the decoy itself because for `spec_id` `..` and `""` the
+   normalised `where` is `agentic/` and `agentic/reviews`, directories the tool legitimately reads
+   other files from (`reviews/<MULTI[:9]>/r.json`, `spec-reviews.jsonl`, `sentinel/...`). The test
+   records the exact decoy files it planted (`where/d.json` for `spec_id`, the `where` file for
+   `project`); a recorded read must not equal any of them. For `/abs`, which is never planted
+   (`where` is outside `tmp_path`), no recorded read may equal `where` or lie under it. The decoy
+   is still planted only when `where` is inside `tmp_path`, so no test writes outside its tmp dir,
+   and the result no longer depends on what exists outside it. The existing "`DECOY-TEXT` is in no
+   collected file's content" assertion stays.
 4. **AC2's full capture runs for every (field, value).** `test_non_string_ids_are_skipped_not_fatal`
    runs `run_tool("--src", ..., "--out", ...)` (the in-process `main`, cheap) for all eight
    combinations and asserts exit 0, empty stderr traceback (no `Traceback` text), and the valid
@@ -127,12 +143,20 @@ marker `pytestmark = pytest.mark.integration`. No new module, so no second tier 
   containing `Meta-Tools.last.json` and `skipped`; for (b) only the "not read, no crash" half.
   A sibling regular `sentinel/Other.last.json` need not be selected; the test checks the other
   selected project's output is unaffected where the source has one.
-- **Reviews tests**: a dangling `reviews/<MULTI[:9]>/dangling.json` link is noted (`dangling.json`
+- **Reviews tests**: a dangling `reviews/<MULTI[:9]>/dangling.json -> missing.json` link (the target
+  is a missing file in the same directory, i.e. inside the root; Decision 1) is noted (`dangling.json`
   and `resolves outside`) and `r.json` is still captured; the `resolve`-raising variants for a
   reviews file give the same note.
 - **`_inside` unit tests** replace nothing: they sit beside `test_inside_treats_a_symlink_loop_as_outside`.
+  The dangling case builds `root/dangling.json -> root/missing.json` (missing, in-root; the case that
+  separates strict from non-strict resolve) and, separately, `root/dangling_out.json ->
+  tmp/outside_missing.json` (missing, outside; `False` under both, kept as a plain regression).
 - **`test_unsafe_spec_id_and_project_are_skipped`**: the existing parameters, the existing
-  in-tmp decoy plant, the spy of Decision 3, and removal of the `/abs` existence assertion.
+  in-tmp decoy plant (now also recording the planted decoy file paths: `where/d.json` or `where`,
+  normalised), the spy of Decision 3, and removal of the `/abs` existence assertion. The spy
+  assertion is `not any(r in decoy_files for r in reads)` when a decoy was planted, and `not
+  any(r == where or r.startswith(where + os.sep) for r in reads)` when `where` is outside `tmp_path`
+  (`/abs`); it never compares against `where` as a directory prefix for a planted case.
 - **spec-reviews test**: builds the rows with `json.dumps` per line, overwriting
   `src/agentic/spec-reviews.jsonl` (written by `build_source`, line 209).
 - **Common-word rows** appended to `COMMON_WORD_ROWS` (all `Sanitizer(users=...).text(in) == out`):
@@ -183,10 +207,12 @@ marker `pytestmark = pytest.mark.integration`. No new module, so no second tier 
 
 ## Acceptance criteria
 
-- [ ] **AC1.** `_inside` returns `False` for a dangling link, a loop, a link to a file outside the
-  root, and when `Path.resolve` raises `PermissionError` or `RuntimeError`; `True` for a link to a
-  file inside the root and for a plain missing path under it.
-- [ ] **AC2.** A dangling link in `reviews/<spec_id>/` is skipped with a note naming it and
+- [ ] **AC1.** `_inside` returns `False` for a dangling link whose missing target is **inside** the
+  root (`root/dangling.json -> root/missing.json`) and for one whose missing target is outside, a
+  loop, a link to a file outside the root, and when `Path.resolve` raises `PermissionError` or
+  `RuntimeError`; `True` for a link to a file inside the root and for a plain missing path under it.
+- [ ] **AC2.** A dangling link in `reviews/<spec_id>/` whose target is a missing file inside that
+  directory (`dangling.json -> missing.json`) is skipped with a note naming it and
   `resolves outside`, and the directory's regular files are still captured.
 - [ ] **AC3.** A dangling sentinel link is skipped with the `does not resolve to itself: skipped`
   note; a self-looping sentinel link is not read and does not crash the capture; with `resolve`
@@ -197,9 +223,12 @@ marker `pytestmark = pytest.mark.integration`. No new module, so no second tier 
   after the call), and `test_check_is_independent_of_the_running_user` calls it in a `finally`, so
   no child of that test survives it when an assertion fails.
 - [ ] **AC5.** `test_unsafe_spec_id_and_project_are_skipped` has no assertion about the existence
-  of any path outside `tmp_path`; for every `bad` value it asserts the tool opened no path equal to
-  or under the normalised decoy path; it creates nothing outside `tmp_path`; it passes when the
-  suite runs as root and when `/abs` exists.
+  of any path outside `tmp_path`; for every parametrised (`field`, `bad`) combination, including `spec_id`
+  `..` and `""`, it asserts the tool opened no planted decoy file (`where/d.json` for `spec_id`, the
+  `where` file for `project`) and, for the unplanted `/abs`, nothing equal to or under `where`;
+  reads of other files under the same directories (e.g. `reviews/<MULTI[:9]>/r.json`) are allowed;
+  it creates nothing outside `tmp_path`; it passes when the suite runs as root and when `/abs`
+  exists.
 - [ ] **AC6.** For every combination of `field` in (`spec_id`, `project`) and `bad` in
   (`["a"]`, `{"a": 1}`, `5`, `""`), a full `run_tool` capture exits 0, prints no `Traceback`, and
   the output contains the valid sibling campaign's review file.
@@ -217,6 +246,9 @@ marker `pytestmark = pytest.mark.integration`. No new module, so no second tier 
 - [ ] **AC10.** Mutation check (manual step 2): reverting the `isinstance` guard on
   `spec-reviews.jsonl`, the strict resolve in `_inside`, the `\b` before `USER`, or the
   `(?<![\w.-])` before `name@` each makes at least one new test fail, and the tool is restored.
+  For the strict-resolve revert the failing test is the in-root dangling case (in
+  `test_inside_link_shapes` and `test_review_dangling_link_is_noted_and_skipped`), which fails on
+  any Python; the record names the Python version the check ran on.
 
 ## Test plan
 
@@ -224,7 +256,7 @@ marker `pytestmark = pytest.mark.integration`. No new module, so no second tier 
 module-level marker `pytestmark = pytest.mark.integration`; no new test module is introduced, so
 no second tier marker is added; `python3 tools/test_tiers.py --check` must exit 0 when run):
 
-- `test_inside_link_shapes` (AC1): parametrised dangling / loop / outside link / inside link /
+- `test_inside_link_shapes` (AC1): parametrised dangling-in-root / dangling-outside / loop / outside link / inside link /
   missing plain path / `resolve` raising `PermissionError` / `RuntimeError`.
 - `test_review_dangling_link_is_noted_and_skipped` (AC2), including the `resolve`-raising
   variants for a reviews file.
@@ -234,7 +266,8 @@ no second tier marker is added; `python3 tools/test_tiers.py --check` must exit 
   `test_check_is_independent_of_the_running_user` (AC4): the first starts
   `python -c "import time; time.sleep(60)"`, calls `reap_all`, asserts `returncode < 0`; the second
   wraps its collection in `try/finally`.
-- Edited `test_unsafe_spec_id_and_project_are_skipped` (AC5) with the read spy.
+- Edited `test_unsafe_spec_id_and_project_are_skipped` (AC5) with the read spy against the planted
+  decoy files (and `where` plus children for the unplanted `/abs`).
 - Edited `test_non_string_ids_are_skipped_not_fatal` (AC6): full in-process capture for all eight
   combinations; the real subprocess for `spec_id=["a"]` only.
 - `test_spec_reviews_rows_with_non_string_ids_are_skipped` (AC7).
@@ -250,9 +283,9 @@ no second tier marker is added; `python3 tools/test_tiers.py --check` must exit 
    root shell is available, once as root too (AC5).
 2. Mutation check (AC10), one at a time, each followed by `git checkout --
    tools/capture_history_fixture.py`: (a) drop `isinstance(o.get("spec_id"), str) and` from the
-   `spec-reviews.jsonl` filter; (b) change `_inside` to `path.resolve()`; (c) drop the `\b` in the
+   `spec-reviews.jsonl` filter; (b) change `_inside` to `path.resolve()` (the in-root dangling cases must fail, on the Python in use: record `python3 --version`); (c) drop the `\b` in the
    `USER|LOGNAME|USERNAME` rule; (d) drop `(?<![\w.-])` in the `name@` rule. The named new tests fail
-   each time; record which. Nothing from this step is committed.
+   each time; record which, and the Python version for (b). Nothing from this step is committed.
 3. `python3 tools/capture_history_fixture.py --check`, `python3 tools/test_tiers.py --check` and
    `python3 tools/spec_lint.py` exit 0; `git diff main --stat` lists only the AC9 files.
 
