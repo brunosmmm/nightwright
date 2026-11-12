@@ -219,6 +219,9 @@ dip elsewhere at default is accepted (human decision).
   rulings.
 - [ ] SPEC-0556 (project: Meta-Tools) — Resumable implementer and reviewer sessions per
   backend, with the fresh-session fallback (depends_on SPEC-0555). Measure: tokens per loop.
+- [ ] SPEC-0557 (project: Meta-Tools) — Effort ceiling: no xhigh/max persona run on any
+  backend (human decision 2026-11-11). Independent of 0553..0556; default on. Measure: cost
+  per review run.
 
 Sequencing / dependencies: linear. Tiers first because every later persona (marshal,
 collator) needs a tier; the packet before the collator because the collator ties findings
