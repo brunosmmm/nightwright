@@ -46,31 +46,63 @@ and 0529 stays `done`.
 Prefix each signed string with a direction tag. A response also binds the status code of the
 request it answers.
 
-- Request: `HMAC-SHA256(secret, "nw-req|" + METHOD + "|" + PATH + "|" + BODYSHA + "|" + TS)`
-- Response: `HMAC-SHA256(secret, "nw-resp|" + STATUS + "|" + METHOD + "|" + PATH + "|" + BODYSHA + "|" + TS)`
-  - METHOD and PATH are those of the request being answered.
-  - BODYSHA is the hex SHA-256 of the response body.
-  - STATUS is the decimal HTTP status.
+The signed line is ASCII, with fields joined by `|` and no trailing newline:
 
-This is a one-shot cutover. Hub and hosts are the operator's own machines and upgrade together.
-A peer that sends an old-construction MAC fails verification with a distinct, documented error
-(`bad signature (expected nw-req/nw-resp construction)`), so a version skew is obvious. The
-GET/HEAD-with-body refusal from 0529 stays as defence in depth.
+- Request line: `nw-req|METHOD|PATH|BODYSHA|TS`
+- Response line: `nw-resp|STATUS|METHOD|PATH|BODYSHA|TS`
+
+The fields are defined as follows. Everything not listed here is exactly as in 0529's Design.
+
+| Field | Definition |
+|---|---|
+| METHOD | The request method, uppercase. On a response, the method of the request being answered. |
+| PATH | The request target as sent: path plus `?query` if any, not normalised. On a response, the target of the request being answered. |
+| BODYSHA | Lowercase hex SHA-256 of the raw body bytes: the request body for a request, the response body as sent for a response. HEAD responses sign the empty body. |
+| TS | Decimal unix seconds, as in 0529. |
+| STATUS | The response's decimal HTTP status code, e.g. `200`, `401`, `405`. |
+
+The MAC is lowercase hex HMAC-SHA256 of the line's UTF-8 bytes, keyed with the secret's UTF-8
+bytes. The header names are unchanged from 0529.
+
+**Why STATUS is bound:** a signed 4xx or 5xx body can't be presented as a signed 200, or the other
+way round. `HubClient` verifies the response MAC against the status it actually received, for
+every enrolled response including non-200 ones, before it acts on the status or the body.
+
+**Version marker and cutover:** every signed request and signed response also carries
+`X-NW-Sig-V: 2`.
+- A host that receives an authenticated request without `X-NW-Sig-V: 2` answers
+  `401 {"error":"sig_version"}`, signed with the new construction. That is the documented
+  delivery path for a version skew. It tells an old client to upgrade and reveals nothing about
+  its MAC.
+- `HubClient` treats an enrolled response without `X-NW-Sig-V: 2` as the error
+  `host uses an old signature version; upgrade it`.
+- There is no dual acceptance. Hub and hosts are the operator's own machines and upgrade together.
+
+The GET/HEAD-with-body refusal from 0529 stays as defence in depth.
 
 ## Design
 
-- `federation.sign` takes a required `direction` (`"req"` or `"resp"`) and, for responses,
-  `status`. `verify` also requires them. No call site may omit the direction. A test enumerates
-  the call sites.
+- `federation.sign` takes a required keyword `direction` (`"req"` or `"resp"`) and, for
+  responses, a required `status`. `verify` takes the same arguments. Neither has a default, so a
+  missing direction is a `TypeError`. A test checks that `sign("abc", "GET", "/v1/status", b"",
+  1700000000)` without `direction` raises. A second test greps `src/nightwright` and asserts that
+  every `sign(` and `verify(` call passes `direction=`.
 - `request_headers`, `response_headers`, the host handler and `HubClient` pass the direction and
   status.
-- The command and protocol reference documents both formulas, with one known vector each (secret
-  `abc`, `GET /v1/status`, empty body, ts `1700000000`; the response vector at status 200). The
-  existing `abc` vector test becomes the request vector.
+- The protocol reference (`docs/product/reference/`, next to the existing host-channel section)
+  documents the field table, both line formats and two vectors: secret `abc`, `GET /v1/status`,
+  empty body, ts `1700000000`, giving one request vector and one response vector at status 200.
+  The implementer computes both vectors with a standalone one-liner that does not import
+  nightwright (`python3 -c 'import hmac,hashlib; …'`). The one-liner and its output go in As shipped
+  and in the reference. The pinned tests compare `federation.sign` to those literal strings. The
+  old `abc` vector test is replaced.
 - `test_wire_mac_is_the_documented_four_field_formula` is replaced by a test that a client
   hand-built from the documented formula gets 200. Requests use the new tagged formula.
-- SPEC-0532 and any later endpoint use `sign(..., direction=...)`. A note in 0532's Context
-  points here.
+- This campaign's diff also adds one sentence to SPEC-0532's Context. The sentence links here and
+  says that new endpoints sign with `direction=`. Nothing else in 0532 changes.
+- A signed POST endpoint for the reflection test: the host has none today. The test registers a
+  test-only POST route on the host handler through the test fixture. It is not shipped. It
+  returns a signed 200 JSON body.
 
 ## Alternatives considered
 
@@ -86,15 +118,20 @@ GET/HEAD-with-body refusal from 0529 stays as defence in depth.
 - [ ] Requests and responses are signed with the tagged formulas above, and `verify` rejects a
       MAC signed for the other direction.
 - [ ] A signed response replayed as a request fails verification. This is tested for a GET
-      (the 0529 case), for a bodied POST to a signed endpoint (e.g. the signed 405 on
-      `POST /v1/events`, or a test-only POST route), and for a signed 401.
+      (the 0529 case), for a bodied POST to the test-only signed POST route, and for a signed 401.
 - [ ] A response MAC for status S does not verify for status T ≠ S.
 - [ ] The documented request and response vectors are pinned by tests.
 - [ ] A client built from the documented formula alone gets 200.
-- [ ] An old four-field MAC gets the distinct construction error.
+- [ ] A request without `X-NW-Sig-V: 2` gets a signed `401 {"error":"sig_version"}`.
+      `HubClient` reports the old-host error for a response without the marker.
+- [ ] Calling `sign` or `verify` without `direction` raises, and every call site in
+      `src/nightwright` passes it (grep test).
 - [ ] The 0529 tests still pass, apart from the replaced four-field formula test: request-body
       binding, replay window and GET/HEAD-with-body refusal.
-- [ ] The reference docs show both formulas and both vectors. SPEC-0532's Context links here.
+- [ ] The reference docs show the field table, both formulas and both vectors. The vectors were
+      computed independently of nightwright, and the one-liner is recorded.
+- [ ] SPEC-0532's Context has the one-sentence link to this spec. A docs test asserts that the
+      link is present.
 
 ## Test plan
 
