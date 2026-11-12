@@ -56,7 +56,7 @@ The fields are defined as follows. Everything not listed here is exactly as in 0
 | Field | Definition |
 |---|---|
 | METHOD | The request method, uppercase. On a response, the method of the request being answered. |
-| PATH | The request target as sent: path plus `?query` if any, not normalised. On a response, the target of the request being answered. |
+| PATH | Exactly what 0529 signs today: the host's `_path()` result on the host side, and the `target` passed to `HubClient.request` on the client side. On a response, the target of the request being answered. |
 | BODYSHA | Lowercase hex SHA-256 of the raw body bytes: the request body for a request, the response body as sent for a response. HEAD responses sign the empty body. |
 | TS | Decimal unix seconds, as in 0529. |
 | STATUS | The response's decimal HTTP status code, e.g. `200`, `401`, `405`. |
@@ -68,30 +68,32 @@ bytes. The header names are unchanged from 0529.
 way round. That matters once a client acts on non-200 statuses. SPEC-0532 treats a 4xx as terminal
 and retries a 5xx.
 
-**`HubClient` change:** `HubClient.request` now verifies the response MAC, including
-`X-NW-Sig-V` and the observed status, before it looks at the status. Today it raises `HTTP <n>` for
-any non-200 response without checking the MAC.
-- A non-200 response with a valid MAC raises `ConnectionError("HTTP <n>")`, as today.
-- A response with a missing or invalid MAC, for any status, raises
-  `ConnectionError("bad response signature")`, so a forged 4xx can't end a retry loop.
-- An unenrolled host's unsigned `401 unauthorized` (0529's not-enrolled reply) is the one
-  exception. It stays `HTTP 401`, because there is no secret to verify it with.
+**Version marker:** every authenticated request and every signed response carries
+`X-NW-Sig-V: 2`. The header name is case-insensitive and the value must be exactly `2`. Unenrolled
+replies (0529's unsigned `401 unauthorized`) are unchanged and carry no marker. There is no dual
+acceptance; hub and hosts are the operator's own machines and upgrade together.
 
-**Version marker and cutover:** every signed request and signed response also carries
-`X-NW-Sig-V: 2`.
-- **Header rules:** the header name is matched case-insensitively. The value must be exactly
-  `2`. A missing header, or any other value, counts as a version mismatch. The marker applies only
-  to authenticated (bearer-token) requests and to signed responses. Unenrolled replies are unchanged.
-- **Host side:** a host that receives an authenticated request without a valid marker answers
-  `401 {"error":"sig_version"}`, signed with the new construction. It also journals one
-  `host_sig_version` event, rate-limited to one per minute.
-  - An old client only sees a 401, as it would for any auth failure.
-  - The operator learns about the skew from the host's journal, shown by `nw hosts status` on the
-    hub as `rejected: old signature version`, and from the new client's error below.
-  - The reply reveals nothing about whether the old MAC was valid.
-- `HubClient` treats an enrolled response without `X-NW-Sig-V: 2` as the error
-  `host uses an old signature version; upgrade it`.
-- There is no dual acceptance. Hub and hosts are the operator's own machines and upgrade together.
+**Host check order** (each step answers with 0529's existing reply unless stated otherwise):
+1. Not enrolled: unsigned `401 unauthorized`, as in 0529.
+2. Bearer token wrong: as in 0529.
+3. Marker missing or not `2`: `401 {"error":"sig_version"}`, signed with the new construction.
+4. Timestamp skew, then MAC: as in 0529. An old four-field MAC fails here as a bad MAC.
+5. GET/HEAD with a body: as in 0529.
+
+An old client only ever sees a 401, the same as any auth failure. The version error is for new
+clients and for anyone reading the raw reply.
+
+**`HubClient` check order** for every response. Today it raises `HTTP <n>` for a non-200 before
+checking anything. The new order replaces that:
+1. No `X-NW-Sig` headers on a 401 with body `{"error":"unauthorized"}`: raise
+   `ConnectionError("host not enrolled")`. This is not terminal for callers; it is an operator
+   fix.
+2. Marker missing or not `2`: raise `ConnectionError("host uses an old signature version")`.
+3. Signature headers missing, or a bad timestamp or MAC: keep 0529's existing messages
+   (`missing response signature`, `stale signature`, `bad signature`). These are signature
+   failures and never terminal outcomes, so a forged 4xx can't end a retry loop.
+4. Verified non-200: raise `ConnectionError("HTTP <n>")`, as today.
+5. Verified 200: return.
 
 The GET/HEAD-with-body refusal from 0529 stays as defence in depth.
 
@@ -102,9 +104,11 @@ The GET/HEAD-with-body refusal from 0529 stays as defence in depth.
   - A value other than `"req"` or `"resp"` raises `ValueError`.
   - `status` is required (an int from 100 to 599) when `direction="resp"` and forbidden when
     `direction="req"`. Breaking either rule raises `ValueError`.
-- An AST test parses every module under `src/nightwright`, finds each call to `sign` or `verify`
-  from `federation` (by name or as an attribute), and asserts that it passes `direction=` as a
-  keyword.
+- An AST test parses every module under `src/nightwright`, including `federation.py` itself.
+  It finds calls to `sign` or `verify` that refer to `nightwright.agentic.federation`: bare names
+  inside `federation.py`, and `F.sign`/`F.verify` or `federation.sign`/`federation.verify` where
+  the module is imported. It asserts that each call passes `direction=` as a keyword. Other
+  `sign`/`verify` look-alikes (e.g. `hmac`) are ignored.
 - `request_headers`, `response_headers`, the host handler and `HubClient` pass the direction and
   status.
 - The protocol reference (`docs/product/reference/`, next to the existing host-channel section)
@@ -119,9 +123,9 @@ The GET/HEAD-with-body refusal from 0529 stays as defence in depth.
 - **Ordering:** SPEC-0532's frontmatter `depends_on` now includes `SPEC-0595`, and its Context
   has one sentence that links here. The steward added both as a docs-only commit when this spec
   was accepted. This campaign does not edit 0532.
-- A signed POST endpoint for the reflection test: the host has none today. The test registers a
-  test-only POST route on the host handler through the test fixture. It is not shipped. It
-  returns a signed 200 JSON body.
+- **Reflection test route:** the host has no signed POST endpoint today. The test monkeypatches
+  the host handler's route table in the fixture to add `POST /v1/_test_echo`, which returns a
+  signed 200 JSON body. This route is never shipped.
 
 ## Alternatives considered
 
@@ -134,30 +138,21 @@ The GET/HEAD-with-body refusal from 0529 stays as defence in depth.
 
 ## Acceptance criteria
 
-- [ ] Requests and responses are signed with the tagged formulas above, and `verify` rejects a
-      MAC signed for the other direction.
-- [ ] A signed response replayed as a request fails verification. This is tested for a GET
-      (the 0529 case), for a bodied POST to the test-only signed POST route, and for a signed 401.
-- [ ] A response MAC for status S does not verify for status T ≠ S.
-- [ ] The documented request and response vectors are pinned by tests.
-- [ ] A client built from the documented formula alone gets 200.
-- [ ] A request without `X-NW-Sig-V: 2`, or with another value, gets a signed
-      `401 {"error":"sig_version"}` and one `host_sig_version` journal event. `HubClient` reports
-      the old-host error for a response without the marker.
-- [ ] A request with the v2 marker but an old four-field MAC (0529's construction) gets
-      `401 unauthorized`.
-- [ ] `HubClient` verifies every enrolled response before acting on its status. A forged or
-      unsigned 4xx raises `bad response signature`, not `HTTP 4xx`. A signed 401 whose status is
-      changed to 200 fails verification.
-- [ ] `sign`/`verify` raise `ValueError` for a bad `direction`, for a missing or out-of-range
-      `status` on `resp`, and for any `status` on `req`.
-- [ ] Calling `sign` or `verify` without `direction` raises `TypeError`. The AST test finds no
-      call site in `src/nightwright` without `direction=`.
-- [ ] The 0529 tests still pass, apart from the replaced four-field formula test: request-body
-      binding, replay window and GET/HEAD-with-body refusal.
-- [ ] The reference docs show the field table, both formulas and both vectors. The vectors were
-      computed independently of nightwright, and the one-liner is recorded.
-
+- [ ] Requests and responses are signed with the tagged formulas above. The request and
+      response vectors are pinned by tests, and the vectors were computed independently, with the
+      one-liner recorded. A client built only from the documented formula gets 200.
+- [ ] A signed response replayed as a request fails verification. This is tested for a GET (the
+      0529 case), for a bodied POST to the test-only route, and for a signed 401.
+- [ ] A response MAC for status S does not verify for status T ≠ S, and a signed 401 whose status
+      is changed to 200 fails in `HubClient`.
+- [ ] The host check order is as listed. A missing or wrong marker gets the signed
+      `sig_version` 401. A v2-marked request with an old four-field MAC gets `401 unauthorized`.
+- [ ] `HubClient` applies its check order as listed, so a forged or unsigned 4xx raises a
+      signature error, never `HTTP 4xx`.
+- [ ] `sign` and `verify` reject a missing direction (`TypeError`), a bad direction or bad
+      `status` usage (`ValueError`). The AST test finds no call site without `direction=`.
+- [ ] The 0529 tests still pass apart from the replaced formula test, and the reference docs
+      show the field table, both formulas, both vectors and both check orders.
 
 ## Test plan
 
@@ -166,8 +161,6 @@ The GET/HEAD-with-body refusal from 0529 stays as defence in depth.
   Run the touched tests and the docs tests.
 - **Gate:** the campaign's close gate on the box.
 - **Manual:** none. Everything is checkable from the worktree.
-
-## Clock Log
 
 ## Rollout / migration
 
