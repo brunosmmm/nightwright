@@ -67,8 +67,9 @@ partition clamp stays as the second line.
 
 ## Design
 
-- **CLI** (`cli_gate.py` `gate_run`): new options `--cpus` (`click.IntRange(min=1)`),
-  `--mem` (string), `--licenses` (multiple). Help text: "Slurm resources for --cmd gates,
+- **CLI** (`cli_gate.py` `gate_run`): new options `--cpus` (plain `int`, no click range, so a
+  non-positive value reaches `gate_resources.check` and its message), `--mem` (string),
+  `--licenses` (multiple). Help text: "Slurm resources for --cmd gates,
   capped by agentic.gate_jobs.adhoc; the default is 3 cpus / 3G". Passed to `J.resolve` as
   `cpus`, `mem`, `licenses`. Giving any of them without `--cmd` raises `click.UsageError`
   ("--cpus/--mem/--licenses need --cmd; project gates declare `resources:` in
@@ -79,16 +80,20 @@ partition clamp stays as the second line.
 - **Resolve** (`gate_jobs.resolve`, `cmds` branch): when any flag is set, each ad-hoc gate dict
   gains `"resources": {"cpus": N, "mem": "SIZE", "licenses": ["NAME[:N]", ...]}` with only the
   keys given. `gate_resources.gate_request` already reads it over the pytest defaults, so an
-  unset key keeps its default (`--cpus 8` alone is 8 cpus / 3G).
+  unset key keeps its default (`--cpus 8` alone is 8 cpus / 3G). The flag validation and the
+  cap checks (see Caps) run at the top of the `cmds` branch, before the `ineligible` /
+  `commit_under_test` calls and `header_refusal` (`gate_jobs.py` `resolve`), so a refused
+  run never cuts a commit or reaches the dispatch.
 - **Caps**: `gate_jobs.DEFAULTS["adhoc"] = {"max_cpus": 8, "max_mem": "16G", "licenses": []}`;
   `gate_jobs.settings` overlays `agentic.gate_jobs.adhoc` and falls back per key on a bad value
   (a non-positive int, a `mem` failing `MEM_RE`, a non-list `licenses`), like the other
-  settings there. `resolve` computes the request with `gate_resources.gate_request` and raises
-  `JobError(2, ...)` when cpus exceed `max_cpus`, memory (`mem_mb`) exceeds `max_mem`, or a
-  license name is not in the allowlist, naming the value, the cap and
-  `agentic.gate_jobs.adhoc.<key>`. The cap applies to ad-hoc gates only, and only to what the
-  flags set: the pytest default (3 cpus / 3G) is never refused, even if a host sets a smaller
-  cap.
+  settings there. `resolve` compares each cap only against the key the flags set: cpus against
+  `--cpus`, `mem_mb` of `--mem` against `max_mem`, license names of `--licenses` against the
+  allowlist; a key whose flag is unset is never checked. It raises `JobError(2, ...)` on a
+  breach, naming the value, the cap and `agentic.gate_jobs.adhoc.<key>`. The cap applies to
+  ad-hoc gates only: the pytest default (3 cpus / 3G) is never refused, even if a host sets
+  a smaller cap, so `--mem 8G` under `max_cpus: 2` is accepted (cpus stays the default 3)
+  while `--cpus 3` there is refused.
 - **Dedup key**: `resolve` hashes the `gates` list, so `resources` is part of the idempotence
   key (SPEC-0381): the same command with a different `--cpus` is a different job, the same
   command and flags still reuses a running one.
@@ -123,7 +128,8 @@ partition clamp stays as the second line.
 - [ ] `--cpus`, `--mem` or `--licenses` without `--cmd` exits 2 with a usage message naming
       `--cmd`; no job record is created.
 - [ ] `--cpus 0`, `--mem lots`, `--mem 8` and a malformed license name exit 2 with the
-      validation message of `gate_resources.check`; no job record is created.
+      validation message of `gate_resources.check` (e.g. `cpus: must be an integer >= 1`);
+      no job record is created.
 - [ ] With defaults, `--cpus 9`, `--mem 17G` and `--licenses jerome_target` each exit 2 naming
       the value, the cap, and `agentic.gate_jobs.adhoc.max_cpus` / `.max_mem` / `.licenses`;
       `--cpus 8 --mem 16G` is accepted; the refusals happen before any bundle is cut or worker
@@ -132,7 +138,8 @@ partition clamp stays as the second line.
       `--cpus 16 --mem 64G --licenses jerome_target` is accepted; a malformed cap value falls
       back to the default for that key.
 - [ ] A host cap below the default request (e.g. `max_cpus: 2`) does not refuse a run that sets
-      no flag.
+      no flag, and `--mem 8G` alone is accepted (cpus stays the 3-cpu default) while
+      `--cpus 3` is refused naming `agentic.gate_jobs.adhoc.max_cpus`.
 - [ ] The same command with different `--cpus` creates a second job; the same command and
       flags while the first is live reuses it.
 - [ ] `nw gate run --help` lists `--cpus`, `--mem` and `--licenses`.
@@ -146,9 +153,12 @@ partition clamp stays as the second line.
   - `tests/test_gate_jobs.py` (the `gw` fixture and `CliRunner`, worker dispatch stubbed):
     resolve/CLI cases for flag-to-`resources` mapping, defaults unchanged, partial flags,
     flags without `--cmd`, invalid values, over-cap refusals (default caps and configured
-    caps, bad cap config fallback, small cap not refusing a flagless run), refusal before the
-    dispatch stub is called (`calls` stays empty, no GATEJOB directory), dedup-key behaviour,
-    and `--help` listing the options.
+    caps, bad cap config fallback, small cap not refusing a flagless run, and `--mem 8G` alone
+    accepted / `--cpus 3` refused under `max_cpus: 2`), dedup-key behaviour, and `--help`
+    listing the options. For every refusal and validation case the test monkeypatches
+    `RG.commit_under_test` and the dispatch stub to raise if called, then asserts the exit
+    code, the message, and that no `gatejobs/` job directory exists, which proves the
+    refusal happens before any commit is cut or worker contacted.
   - `tests/test_gate_resources.py`: `job_request` of a gate dict carrying
     `resources: {cpus: 8, mem: "12G", licenses: ["lic:2"]}` gives 8 / 12288 / `{"lic": 2}`;
     a partial mapping keeps the pytest default for the missing key.
