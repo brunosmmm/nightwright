@@ -70,6 +70,8 @@ scraping tables. Shapes below are illustrative — fields evolve; trust the live
 | `nw.message.v1` | `nw mailbox follow --to ADDR` (one per line) / `nw mailbox send --json` | `{schema, id, seq, ts, from, to, kind, campaign, re, text, needs_reply}`; optional `campaign_from` (`"text"` or `"re"`) when `send` inferred the campaign. Precedence: an explicit `--campaign` wins, else the campaign of the `--re` message, else the one existing campaign the text names; `--no-campaign` skips inference and conflicts with `--campaign`. |
 | `nw.mailbox.list.v1` | `nw mailbox list --to ADDR --json` | `{schema, to, messages:[nw.message.v1…]}` |
 
+`nw campaign tail|run|runs|log|show` take a campaign id or a spec id; a spec id resolves to that spec's newest open campaign (else its newest campaign), the resolved id is noted on stderr, and a spec that is open in more than one project fails listing the campaign ids (SPEC-0577).
+
 Example (hub triage):
 
 ```bash

@@ -1,7 +1,7 @@
 ---
 id: SPEC-0577
 title: nw campaign commands accept a spec id and resolve it to its campaign
-status: accepted
+status: done
 owner: user
 created: 2026-11-12
 updated: 2026-11-12
@@ -97,23 +97,23 @@ its existing `campaign` / `id` field.
 
 ## Acceptance criteria
 
-- [ ] `store.resolve_campaign_ref(cfg, "<existing campaign id>")` returns that id with
+- [x] `store.resolve_campaign_ref(cfg, "<existing campaign id>")` returns that id with
       `resolved_from_spec` false, even when the id also looks like it starts with a spec id.
-- [ ] Given a spec id with one open campaign, it returns that campaign with
+- [x] Given a spec id with one open campaign, it returns that campaign with
       `resolved_from_spec` true.
-- [ ] Given a spec id with a MERGED campaign and a newer or older open one, the open one
+- [x] Given a spec id with a MERGED campaign and a newer or older open one, the open one
       wins; given only terminal campaigns, the newest by `created_at` wins.
-- [ ] Given a spec id whose winning tier spans two projects, it raises `ValueError` and the
+- [x] Given a spec id whose winning tier spans two projects, it raises `ValueError` and the
       message lists every candidate campaign id with its project and state.
-- [ ] Given an unknown id, a path-like string (`../x`) or an unknown spec id, it raises
+- [x] Given an unknown id, a path-like string (`../x`) or an unknown spec id, it raises
       `ValueError` and no directory outside the campaigns root is read.
-- [ ] `nw campaign tail SPEC-N`, `run SPEC-N <run>`, `runs SPEC-N`, `log SPEC-N` and
+- [x] `nw campaign tail SPEC-N`, `run SPEC-N <run>`, `runs SPEC-N`, `log SPEC-N` and
       `show SPEC-N` behave exactly as with the resolved campaign id, exit non-zero with the
       resolver's message when it raises, and their `campaign` argument help mentions spec ids.
-- [ ] A spec id prints the resolution note on stderr only (stdout and `--json` unchanged,
+- [x] A spec id prints the resolution note on stderr only (stdout and `--json` unchanged,
       same schema); a real campaign id prints no note.
-- [ ] `nw campaign tail --follow-campaign SPEC-N` follows the resolved campaign.
-- [ ] `nw campaign history`, `records`, `export` and `note` are unchanged.
+- [x] `nw campaign tail --follow-campaign SPEC-N` follows the resolved campaign.
+- [x] `nw campaign history`, `records`, `export` and `note` are unchanged.
 
 ## Test plan
 
@@ -139,6 +139,29 @@ its existing `campaign` / `id` field.
 - **Regression guard:** run the affected tests (`python3 tools/affected_tests.py --run uv run
   pytest -q`) plus `tests/test_agentic_campaign_cli.py`; `python3 tools/spec_lint.py` exits 0.
 
+### Test record (2026-11-12)
+
+- `uv run pytest -q tests/test_agentic_campaign_cli.py`: 23 passed (11 new SPEC-0577 tests:
+  resolver cases incl. two-project ambiguity and `../x` never opened; CLI `runs`/`log`/`show`/
+  `run`/`tail` with a spec id equal to the full-id output, both stderr note variants, real id
+  prints no note, ambiguity/unknown exit codes, `--follow-campaign` receives the resolved id,
+  `history` does not resolve). Stdout/stderr asserted via `r.stdout` / `r.stderr` (Click 8.4
+  keeps them separate).
+- `python3 tools/test_tiers.py --check` exit 0; `python3 tools/spec_lint.py` OK.
+- Affected tests (`python3 tools/affected_tests.py --run uv run pytest -q`) run; full suite left
+  to gating.
+- Manual, real data dir: `nw campaign runs SPEC-0577 --json` printed `campaign
+  IDEA-657-20261112-6e90 (newest open campaign for SPEC-0577)` on stderr and `.campaign` equal to
+  the id `nw campaign list --spec SPEC-0577 --json` shows.
+
+### As shipped
+
+- The unknown-ref message reads `no campaign '<ref>' (not a campaign id, and no campaign has
+  that spec id)`, keeping the `no campaign '<ref>'` prefix existing tests and callers match.
+- For `--follow-campaign` the stderr note is written before following starts and may be wiped
+  by the viewer's screen clear.
+- `docs/product/guides/agent-surface.md` carries the one-line note under the schema table.
+
 ## Rollout / migration
 
 None. The change is additive: every argument that worked before still resolves to the same
@@ -146,11 +169,11 @@ campaign. Add the guide line in `docs/product/guides/agent-surface.md` in the sa
 
 ## Definition of done
 
-- [ ] Acceptance criteria all met.
-- [ ] Test plan executed; affected automated tests pass; manual steps performed.
-- [ ] No regressions.
-- [ ] Spec body updated to match what shipped.
-- [ ] `docs/LEDGER.md` regenerated (`python3 tools/spec_lint.py --write-ledger`).
+- [x] Acceptance criteria all met.
+- [x] Test plan executed; affected automated tests pass; manual steps performed.
+- [x] No regressions.
+- [x] Spec body updated to match what shipped.
+- [x] `docs/LEDGER.md` regenerated (`python3 tools/spec_lint.py --write-ledger`).
 
 ## Open questions
 

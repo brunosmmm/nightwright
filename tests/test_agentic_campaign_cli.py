@@ -274,3 +274,141 @@ def test_show_prints_the_story_by_default_raw_on_request_and_both_in_json(tmp_pa
     d = json.loads(_run(cfg, monkeypatch, ["campaign", "show", cid, "--json"]).output)
     assert d["schema"] == "nw.campaign.v1" and d["last_events"][-1]["type"] == "gate"
     assert d["story"]["schema"] == "nw.campaign.story.v1" and d["story"]["events"] == 4
+
+
+# --- SPEC-0577: a spec id resolves to its campaign -------------------------------------
+
+def _mk(cfg, cid, spec, state, created, project="Meta-Tools"):
+    S.create_campaign(cfg, {"id": cid, "spec_id": spec, "project": project, "profile": "balanced",
+                            "state": state, "created_at": created, "repo": {}, "counters": {},
+                            "cost": {}})
+
+
+def _mk_run(cfg, cid, run="001-implementer"):
+    d = S.runs_dir(cfg, cid) / run
+    d.mkdir(parents=True)
+    (d / "stream.jsonl").write_text(json.dumps(
+        {"type": "result", "subtype": "success", "result": "all done", "is_error": False,
+         "total_cost_usd": 0.1}) + "\n")
+    return d
+
+
+def test_resolve_ref_real_id_passes_through(tmp_path):
+    cfg = _cfg(tmp_path)
+    _seed(cfg)
+    assert S.resolve_campaign_ref(cfg, "SPEC-0170-20261025-aaaa") == ("SPEC-0170-20261025-aaaa", False)
+    # a real id that merely starts with a spec id that also has its own campaign
+    _mk(cfg, "SPEC-0170-20261026-cccc", "SPEC-0170", "GATING", "2026-10-26T10:00:00-04:00")
+    assert S.resolve_campaign_ref(cfg, "SPEC-0170-20261025-aaaa") == ("SPEC-0170-20261025-aaaa", False)
+
+
+def test_resolve_ref_spec_id_open_beats_terminal(tmp_path):
+    cfg = _cfg(tmp_path)
+    _seed(cfg)
+    assert S.resolve_campaign_ref(cfg, "SPEC-0170") == ("SPEC-0170-20261025-aaaa", True)
+    _mk(cfg, "SPEC-0170-20261020-0001", "SPEC-0170", "MERGED", "2026-10-20T10:00:00-04:00")
+    _mk(cfg, "SPEC-0170-20261030-0002", "SPEC-0170", "ABANDONED", "2026-10-30T10:00:00-04:00")
+    assert S.resolve_campaign_ref(cfg, "SPEC-0170") == ("SPEC-0170-20261025-aaaa", True)
+
+
+def test_resolve_ref_only_terminal_picks_newest(tmp_path):
+    cfg = _cfg(tmp_path)
+    _mk(cfg, "SPEC-0200-20261001-0001", "SPEC-0200", "MERGED", "2026-10-01T10:00:00-04:00")
+    _mk(cfg, "SPEC-0200-20261002-0002", "SPEC-0200", "ABANDONED", "2026-10-02T10:00:00-04:00")
+    assert S.resolve_campaign_ref(cfg, "SPEC-0200") == ("SPEC-0200-20261002-0002", True)
+
+
+def test_resolve_ref_two_projects_ambiguous_lists_all(tmp_path):
+    cfg = _cfg(tmp_path)
+    _mk(cfg, "SPEC-0300-20261001-0001", "SPEC-0300", "GATING", "2026-10-01T10:00:00-04:00")
+    _mk(cfg, "SPEC-0300-20261002-0002", "SPEC-0300", "OPENING", "2026-10-02T10:00:00-04:00", "Other")
+    with pytest.raises(ValueError) as e:
+        S.resolve_campaign_ref(cfg, "SPEC-0300")
+    msg = str(e.value)
+    assert "SPEC-0300-20261001-0001 (Meta-Tools, GATING)" in msg
+    assert "SPEC-0300-20261002-0002 (Other, OPENING)" in msg
+
+
+def test_resolve_ref_open_in_one_project_terminal_in_other(tmp_path):
+    cfg = _cfg(tmp_path)
+    _mk(cfg, "SPEC-0300-20261001-0001", "SPEC-0300", "GATING", "2026-10-01T10:00:00-04:00")
+    _mk(cfg, "SPEC-0300-20261002-0002", "SPEC-0300", "MERGED", "2026-10-02T10:00:00-04:00", "Other")
+    assert S.resolve_campaign_ref(cfg, "SPEC-0300") == ("SPEC-0300-20261001-0001", True)
+
+
+def test_resolve_ref_unknown_and_pathlike_raise_without_reading_outside(tmp_path, monkeypatch):
+    cfg = _cfg(tmp_path)
+    _seed(cfg)
+    outside = tmp_path / "data" / "x"
+    outside.mkdir(parents=True)
+    (outside / "state.json").write_text(json.dumps({"id": "x", "spec_id": "../x", "state": "GATING"}))
+    opened = []
+    real = S.read_state
+    monkeypatch.setattr(S, "read_state", lambda c, cid: (opened.append(cid), real(c, cid))[1])
+    for ref in ("SPEC-9999-20261025-zzzz", "SPEC-9999", "../x"):
+        with pytest.raises(ValueError):
+            S.resolve_campaign_ref(cfg, ref)
+    assert "../x" not in opened
+
+
+def test_cli_spec_id_equals_campaign_id(tmp_path, monkeypatch):
+    cfg = _cfg(tmp_path)
+    _seed(cfg)
+    cid = "SPEC-0170-20261025-aaaa"
+    _ev(cfg, cid, "gate", {"ok": True})
+    _mk_run(cfg, cid)
+    full = _run(cfg, monkeypatch, ["campaign", "runs", cid, "--json"])
+    spec = _run(cfg, monkeypatch, ["campaign", "runs", "SPEC-0170", "--json"])
+    assert spec.exit_code == 0, spec.output
+    assert json.loads(spec.stdout) == json.loads(full.stdout)
+    assert json.loads(spec.stdout)["campaign"] == cid
+    assert f"campaign {cid} (newest open campaign for SPEC-0170)" in spec.stderr
+    assert full.stderr == ""                                  # a real id prints no note
+    r = _run(cfg, monkeypatch, ["campaign", "log", "SPEC-0170", "--tail", "1"])
+    assert r.exit_code == 0 and "gate" in r.stdout
+    d = json.loads(_run(cfg, monkeypatch, ["campaign", "show", "SPEC-0170", "--json"]).stdout)
+    assert d["schema"] == "nw.campaign.v1" and d["id"] == cid
+    r = _run(cfg, monkeypatch, ["campaign", "run", "SPEC-0170", "001", "--json"])
+    assert json.loads(r.stdout)["campaign"] == cid
+    r = _run(cfg, monkeypatch, ["campaign", "tail", "SPEC-0170"])
+    assert r.exit_code == 0 and "result: success" in r.stdout
+    assert cid in r.stderr
+
+
+def test_cli_note_variant_when_none_open(tmp_path, monkeypatch):
+    cfg = _cfg(tmp_path)
+    _seed(cfg)
+    r = _run(cfg, monkeypatch, ["campaign", "log", "SPEC-0171"])
+    assert r.exit_code == 0, r.output
+    assert "campaign SPEC-0171-20261025-bbbb (newest campaign for SPEC-0171; none open)" in r.stderr
+
+
+def test_cli_ambiguous_and_unknown_exit_codes(tmp_path, monkeypatch):
+    cfg = _cfg(tmp_path)
+    _mk(cfg, "SPEC-0300-20261001-0001", "SPEC-0300", "GATING", "2026-10-01T10:00:00-04:00")
+    _mk(cfg, "SPEC-0300-20261002-0002", "SPEC-0300", "GATING", "2026-10-02T10:00:00-04:00", "Other")
+    for cmd in (["runs"], ["log"], ["show"], ["tail"]):
+        r = _run(cfg, monkeypatch, ["campaign", cmd[0], "SPEC-0300"])
+        assert r.exit_code != 0
+        assert "SPEC-0300-20261001-0001" in r.stderr and "SPEC-0300-20261002-0002" in r.stderr
+    r = _run(cfg, monkeypatch, ["campaign", "runs", "SPEC-4242"])
+    assert r.exit_code != 0 and "no campaign 'SPEC-4242'" in r.stderr
+
+
+def test_cli_tail_follow_campaign_gets_resolved_id(tmp_path, monkeypatch):
+    cfg = _cfg(tmp_path)
+    _seed(cfg)
+    seen = []
+    monkeypatch.setattr("nightwright.agentic.tail.follow_campaign",
+                        lambda cfg, cid, **kw: seen.append(cid) or 0)
+    r = _run(cfg, monkeypatch, ["campaign", "tail", "--follow-campaign", "SPEC-0170"])
+    assert r.exit_code == 0, r.output
+    assert seen == ["SPEC-0170-20261025-aaaa"]
+
+
+def test_cli_history_and_note_do_not_resolve_spec_ids(tmp_path, monkeypatch):
+    cfg = _cfg(tmp_path)
+    _seed(cfg)
+    r = _run(cfg, monkeypatch, ["campaign", "history", "SPEC-0170"])
+    assert r.exit_code != 0
+    assert "newest open campaign" not in r.stderr

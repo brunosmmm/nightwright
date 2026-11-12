@@ -32,6 +32,21 @@ def _campaign_dir_exists(cfg, campaign) -> bool:
     return root is not None and root.is_dir()
 
 
+def _campaign_arg(cfg, ref) -> str:
+    """The campaign id for a campaign-or-spec-id argument (SPEC-0577). A spec id prints the
+    resolution on stderr, so stdout (JSON, transcripts) is unchanged."""
+    try:
+        cid, from_spec = store.resolve_campaign_ref(cfg, ref)
+    except ValueError as e:
+        raise click.ClickException(str(e))
+    if from_spec:
+        st = store.campaign_state(cfg, cid) or {}
+        how = ("newest open campaign for %s" if st.get("state") not in store.TERMINAL_STATES
+               else "newest campaign for %s; none open") % ref
+        R.note(f"campaign {cid} ({how})")
+    return cid
+
+
 def _history_cache_unwritable_warn(cfg) -> None:
     from . import history_cache as HC
     if not HC.cache_wanted(cfg, None):
@@ -315,7 +330,9 @@ def attach(campaign_group):
     @click.pass_obj
     def campaign_show(cfg, campaign, raw, expand, as_json):
         """State of one campaign plus its story: the ledger grouped by loop and phase, one line
-        per run, gate, review round and rebase (SPEC-0433). `--raw` shows the last raw events."""
+        per run, gate, review round and rebase (SPEC-0433). `--raw` shows the last raw events.
+        CAMPAIGN is a campaign id, or a spec id (its newest open campaign)."""
+        campaign = _campaign_arg(cfg, campaign)
         try:
             st = dict(store.read_state(cfg, campaign))
         except ValueError as e:
@@ -414,7 +431,9 @@ def attach(campaign_group):
     @click.option("--json", "as_json", is_flag=True, help="emit nw.campaign.log.v1 JSON")
     @click.pass_obj
     def campaign_log(cfg, campaign, types, tail, as_json):
-        """The campaign's append-only ledger."""
+        """The campaign's append-only ledger. CAMPAIGN is a campaign id, or a spec id (its
+        newest open campaign)."""
+        campaign = _campaign_arg(cfg, campaign)
         try:
             store.read_state(cfg, campaign)
         except ValueError as e:
@@ -590,7 +609,9 @@ def attach(campaign_group):
     @click.option("--json", "as_json", is_flag=True, help="emit nw.campaign.runs.v1 JSON")
     @click.pass_obj
     def campaign_runs(cfg, campaign, as_json):
-        """One row per persona run: cost, exit, errors, transient?, verdict status."""
+        """One row per persona run: cost, exit, errors, transient?, verdict status. CAMPAIGN
+        is a campaign id, or a spec id (its newest open campaign)."""
+        campaign = _campaign_arg(cfg, campaign)
         try:
             runs = RN.campaign_runs(cfg, campaign)
         except ValueError as e:
@@ -610,7 +631,9 @@ def attach(campaign_group):
     @click.pass_obj
     def campaign_run(cfg, campaign, run, as_json):
         """One run in full: verdict, must_fix / blockers, error / stderr tails, file paths.
-        RUN is a run id (001-implementer) or a unique prefix (001)."""
+        RUN is a run id (001-implementer) or a unique prefix (001). CAMPAIGN is a campaign id,
+        or a spec id (its newest open campaign)."""
+        campaign = _campaign_arg(cfg, campaign)
         try:
             rec = RN.campaign_run(cfg, campaign, run)
         except ValueError as e:
@@ -633,8 +656,10 @@ def attach(campaign_group):
     def campaign_tail(cfg, campaign, run, follow, raw, follow_campaign):
         """A persona run as a readable transcript (SPEC-0362): tool calls with a short result
         summary, assistant text, running cost vs budget, the final result. Reads
-        runs/<run>/stream.jsonl; a run launched without stream capture shows its result."""
+        runs/<run>/stream.jsonl; a run launched without stream capture shows its result.
+        CAMPAIGN is a campaign id, or a spec id (its newest open campaign)."""
         from . import tail as TL
+        campaign = _campaign_arg(cfg, campaign)
         if follow_campaign:
             import signal
 

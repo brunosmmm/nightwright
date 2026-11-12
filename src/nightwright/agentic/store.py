@@ -542,3 +542,23 @@ def active_campaign_for_spec(cfg, spec_id, project=None) -> dict | None:
     (SPEC-0327): with `project`, only that project's campaigns count."""
     hits = list_campaigns(cfg, spec_id=spec_id, project=project)
     return hits[0] if hits else None
+
+
+def resolve_campaign_ref(cfg, ref: str) -> tuple[str, bool]:
+    """(campaign id, resolved_from_spec) for a campaign id or a spec id (SPEC-0577). A real
+    campaign id always means that campaign. A spec id resolves to its newest non-terminal
+    campaign, else its newest terminal one; ValueError when nothing matches or when that tier
+    spans more than one project (spec ids are per project, SPEC-0327)."""
+    if campaign_state(cfg, ref) is not None:
+        return ref, False
+    rows = list_campaigns(cfg, include_terminal=True, spec_id=ref) if isinstance(ref, str) else []
+    if not rows:
+        raise ValueError(f"no campaign {ref!r} (not a campaign id, and no campaign has that spec id)")
+    open_rows = [r for r in rows if r.get("state") not in TERMINAL_STATES]
+    pool = open_rows or rows
+    if len({r.get("project") or INTERNAL_PROJECT for r in pool}) > 1:
+        listing = ", ".join(f"{r['id']} ({r.get('project') or INTERNAL_PROJECT}, {r.get('state')})"
+                            for r in pool)
+        raise ValueError(f"spec {ref!r} has campaigns in more than one project; "
+                         f"use a campaign id: {listing}")
+    return pool[0]["id"], True
