@@ -1,6 +1,10 @@
 """SPEC-0472 history cache tests."""
 import builtins
+import collections
+import contextlib
+import copy
 import datetime as dt
+import fcntl
 import hashlib
 import json
 import os
@@ -1823,8 +1827,10 @@ def test_cold_fill_skips_gone_id(data_dir, cache_dir):
     assert victim not in calls["pending"]
     assert victim not in calls["file"]
     assert sorted(calls["recompute"]) == sorted(set(ids) - {victim})
+    # the spy is the assertion: ``_cold_fill`` always unlinks index.writes.jsonl, so the
+    # absence of that file would pass whether or not a pending write was recorded
+    assert sorted(calls["pending"]) == sorted(set(ids) - {victim})
     assert not (v1 / "campaigns" / f"{victim}.json").exists()
-    assert not (v1 / "index.writes.jsonl").exists()
     assert all(r["campaign"] != victim for r in HC._read_index(v1))
     assert all(r.get("campaign") != victim or r.get("source") not in HC._LOCAL_SOURCES
                for r in HC._read_records(v1))
@@ -1910,11 +1916,19 @@ def test_unchanged_live_set_skips_reconcile(data_dir, cache_dir):
     idx, recs = HC._read_index(v1), HC._read_records(v1)
     names = ("index.jsonl", "records.jsonl", "sources.json")
     before = {n: (v1 / n).read_bytes() for n in names}
+    writers = ("_append_pending_index_write", "_write_campaign_file", "_write_records",
+               "_write_index", "_atomic_write_json", "_safe_unlink_campaign_file",
+               "_recompute_campaign")
     with mock.patch.object(H, "_global_records") as gl, \
-            mock.patch.object(HC, "_persist_index_records") as persist:
+            mock.patch.object(HC, "_persist_index_records") as persist, \
+            contextlib.ExitStack() as stack:
+        spies = {n: stack.enter_context(mock.patch.object(HC, n)) for n in writers}
         out = HC._reconcile_live_set(c, v1, NOW, idx, recs, None, persist=True)
     gl.assert_not_called()
     persist.assert_not_called()
+    for name, spy in spies.items():
+        assert not spy.called, name
+    assert not (v1 / "index.writes.jsonl").exists()
     assert {n: (v1 / n).read_bytes() for n in names} == before
     assert out[0] is idx and out[1] is recs and out[3] == set()
     seen: list[str] = []
@@ -1923,3 +1937,338 @@ def test_unchanged_live_set_skips_reconcile(data_dir, cache_dir):
                            lambda cfg_, cid, *a, **kw: seen.append(cid) or real_ch(cfg_, cid, *a, **kw)):
         H.campaign_history(c, _A, now=NOW, cache=True)
     assert seen == []
+
+
+# --- SPEC-0575: SPEC-0567 review follow-ups --------------------------------------------
+
+_N = "SPEC-0394-20261112-aaaa"
+
+
+def _lock_held(v1: Path) -> bool:
+    """True while the cache's flock is held: a second descriptor conflicts with the first."""
+    fd = os.open(v1 / ".lock", os.O_RDWR | os.O_CREAT, 0o644)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        return True
+    else:
+        fcntl.flock(fd, fcntl.LOCK_UN)
+        return False
+    finally:
+        os.close(fd)
+
+
+def _load(v1: Path):
+    return HC._read_index(v1), HC._read_records(v1), json.loads((v1 / "sources.json").read_text())
+
+
+def _spy_reconcile(v1: Path, log: list):
+    real = HC._reconcile_live_set
+
+    def spy(*a, **kw):
+        log.append({"kw": dict(kw), "locked": _lock_held(v1)})
+        return real(*a, **kw)
+
+    return spy
+
+
+def test_cold_fill_skipped_gone_id_forces_reconcile(data_dir, cache_dir):
+    c = cfg(data_dir, cache_dir)
+    gone = "SPEC-9999-20261112-zzzz"
+    _install_terminal_campaign(data_dir, gone)
+    _add_mail(data_dir, f"live-set-marker {_A} {gone}")
+    removed = {"done": False}
+    real = HC._recompute_campaign
+
+    def deleting(cfg_, cid, *a, **kw):
+        if not removed["done"]:
+            removed["done"] = True
+            shutil.rmtree(data_dir / "agentic" / "campaigns" / gone)
+        return real(cfg_, cid, *a, **kw)
+
+    log: list = []
+    with mock.patch.object(HC, "_recompute_campaign", deleting), \
+            mock.patch.object(HC, "_reconcile_live_set", _spy_reconcile(_v1(cache_dir), log)):
+        HC.rebuild_cache(c, now=NOW)
+    assert len(log) == 1
+    assert log[0]["kw"]["force"] is True and log[0]["kw"]["persist"] is False
+    assert _mail_campaign(c, False) == _A
+    _assert_cache_equals_pure(c, cache_dir)
+    assert _mail_campaign(c, True) == _A
+
+
+def _change_live_set(data_dir, case: str) -> None:
+    camps = data_dir / "agentic" / "campaigns"
+    if case == "add":
+        _install_terminal_campaign(data_dir, _N)
+    else:
+        shutil.rmtree(camps / _N)
+
+
+def _warm_for(data_dir, c, case: str) -> None:
+    if case == "remove":
+        _install_terminal_campaign(data_dir, _N)
+    _add_mail(data_dir, f"live-set-marker {_A} {_N}")
+    H.history_index(c, now=NOW, cache=True)
+    H.history_records(c, cache=True)
+
+
+@pytest.mark.parametrize("case", ["add", "remove"])
+def test_first_campaign_history_after_live_set_change_reconciles_under_lock(
+        data_dir, cache_dir, case):
+    c = cfg(data_dir, cache_dir)
+    _warm_for(data_dir, c, case)
+    _change_live_set(data_dir, case)
+    log: list = []
+    with mock.patch.object(HC, "_sync_globals", lambda *a, **kw: set()), \
+            mock.patch.object(HC, "_reconcile_live_set", _spy_reconcile(_v1(cache_dir), log)):
+        doc = H.campaign_history(c, _A, now=NOW, cache=True)
+    assert _strip(doc) == _strip(H.campaign_history(c, _A, now=NOW, cache=False))
+    assert len(log) == 1
+    assert log[0]["kw"]["persist"] is True and log[0]["kw"]["_hold_guard"] is True
+    assert log[0]["locked"] is True
+
+
+@pytest.mark.parametrize("case", ["add", "remove"])
+def test_first_history_records_after_live_set_change_reconciles_under_lock(
+        data_dir, cache_dir, case):
+    c = cfg(data_dir, cache_dir)
+    _warm_for(data_dir, c, case)
+    _change_live_set(data_dir, case)
+    log: list = []
+    with mock.patch.object(HC, "_sync_globals", lambda *a, **kw: set()), \
+            mock.patch.object(HC, "_reconcile_live_set", _spy_reconcile(_v1(cache_dir), log)):
+        got = H.history_records(c, cache=True)
+    assert got == H.history_records(c, cache=False)
+    assert len(log) == 1
+    assert log[0]["kw"]["persist"] is True and log[0]["kw"]["_hold_guard"] is True
+    assert log[0]["locked"] is True
+
+
+@pytest.mark.parametrize("entry", ["history_index", "campaign_history"])
+def test_each_id_recomputed_once_per_live_set_change(data_dir, cache_dir, entry):
+    c = cfg(data_dir, cache_dir)
+    H.history_index(c, now=NOW, cache=True)
+    v1 = _v1(cache_dir)
+    other = next(r["campaign"] for r in HC._read_index(v1)
+                 if r["campaign"] != _A and r.get("outcome") in HC._TERMINAL_OUTCOMES)
+    # one change: a new id, and (a global source) two mails each naming one existing id, so the
+    # two terminals are in ``affected`` (global source) and in the reconcile's ``differing``
+    _install_terminal_campaign(data_dir, _N)
+    _add_mail(data_dir, f"live-set-marker {_A}", "mail-one")
+    _add_mail(data_dir, f"live-set-marker {other}", "mail-two")
+
+    def owned(doc):
+        return sorted(HC._global_tuple(r) for r in doc["records"]
+                      if r.get("source") not in HC._LOCAL_SOURCES)
+
+    differing = {
+        r["campaign"] for r in HC._read_index(v1)
+        if r.get("outcome") in HC._TERMINAL_OUTCOMES
+        and owned(json.loads((v1 / "campaigns" / f"{r['campaign']}.json").read_text()))
+        != owned(H.campaign_history(c, r["campaign"], now=NOW, cache=False))
+    }
+    assert {_A, other} <= differing
+    before_records = HC._read_records(v1)
+    counts: collections.Counter = collections.Counter()
+    real = H._campaign_history
+
+    def spy(cfg_, cid, *a, **kw):
+        counts[cid] += 1
+        return real(cfg_, cid, *a, **kw)
+
+    with mock.patch.object(H, "_campaign_history", spy):
+        if entry == "history_index":
+            H.history_index(c, now=NOW, cache=True)
+        else:
+            H.campaign_history(c, _A, now=NOW, cache=True)
+    # a changed global source also puts every campaign that owns a global record into
+    # ``affected``; those are recomputed too, but each still exactly once
+    owners = {r["campaign"] for r in before_records
+              if r.get("source") not in HC._LOCAL_SOURCES and r.get("campaign")}
+    assert differing | {_N} <= set(counts) <= differing | owners | {_N}, counts
+    assert set(counts.values()) == {1}, counts
+
+
+def test_no_drop_campaign_all_in_src():
+    src_root = Path(HC.__file__).resolve().parents[2]
+    assert src_root.name == "nightwright" or (src_root / "nightwright").is_dir()
+    files = list(src_root.rglob("*.py"))
+    assert files
+    assert [p for p in files if "drop_campaign_all" in p.read_text()] == []
+
+
+def _persist_calls_spy():
+    calls: list = []
+    real = HC._persist_index_records
+
+    def spy(*a, **kw):
+        calls.append({**kw, "sources": copy.deepcopy(kw.get("sources"))})
+        return real(*a, **kw)
+
+    return calls, spy
+
+
+@pytest.mark.parametrize("persist", [False, True])
+def test_reconcile_persist_contract_recompute_path(data_dir, cache_dir, persist):
+    c = cfg(data_dir, cache_dir)
+    _add_mail(data_dir, f"live-set-marker {_A} {_N}")
+    H.history_index(c, now=NOW, cache=True)
+    v1 = _v1(cache_dir)
+    _install_terminal_campaign(data_dir, _N)
+    names = ("index.jsonl", "records.jsonl", "sources.json")
+    before = {n: (v1 / n).read_bytes() for n in names}
+    a_before = (v1 / "campaigns" / f"{_A}.json").read_bytes()
+    calls, spy = _persist_calls_spy()
+    idx, recs, src = _load(v1)
+    with mock.patch.object(HC, "_persist_index_records", spy):
+        out = HC._reconcile_live_set(c, v1, NOW, idx, recs, src, persist=persist)
+    assert {_A, _N} <= out[3]
+    assert (v1 / "campaigns" / f"{_A}.json").read_bytes() != a_before
+    if not persist:
+        assert calls == []
+        assert {n: (v1 / n).read_bytes() for n in names} == before
+        return
+    assert len(calls) == 1
+    seen: list[str] = []
+    real_ch = H._campaign_history
+    with mock.patch.object(H, "_campaign_history",
+                           lambda cfg_, cid, *a, **kw: seen.append(cid) or real_ch(cfg_, cid, *a, **kw)):
+        for cid in (_A, _N):
+            assert H.campaign_history(c, cid, now=NOW, cache=True)["campaign"] == cid
+    assert seen == []
+
+
+def test_reconcile_persist_sources_none(data_dir, cache_dir):
+    c = cfg(data_dir, cache_dir)
+    H.history_index(c, now=NOW, cache=True)
+    v1 = _v1(cache_dir)
+    _install_terminal_campaign(data_dir, _N)
+    names = ("index.jsonl", "records.jsonl", "sources.json")
+    before = {n: (v1 / n).read_bytes() for n in names}
+    idx, recs, _ = _load(v1)
+    HC._reconcile_live_set(c, v1, NOW, idx, recs, None, persist=False)
+    assert {n: (v1 / n).read_bytes() for n in names} == before
+    on_disk = json.loads(before["sources.json"])
+    idx, recs, _ = _load(v1)
+    calls, spy = _persist_calls_spy()
+    with mock.patch.object(HC, "_persist_index_records", spy):
+        HC._reconcile_live_set(c, v1, NOW, idx, recs, None, persist=True)
+    assert len(calls) == 1
+    got = calls[0]["sources"]
+    assert isinstance(got, dict) and _N not in on_disk["campaign_files"]
+    assert {k: v for k, v in got.items() if k not in ("campaign_files", "campaign_rg_dirs")} == {
+        k: v for k, v in on_disk.items() if k not in ("campaign_files", "campaign_rg_dirs")}
+    assert {k: v for k, v in got["campaign_files"].items() if k != _N} == on_disk["campaign_files"]
+    assert _N in got["campaign_files"]
+    assert _N in json.loads((v1 / "sources.json").read_text())["campaign_files"]
+
+
+def test_cold_filled_branch_reconciles_under_lock(data_dir, cache_dir):
+    c = cfg(data_dir, cache_dir)
+    v1 = _v1(cache_dir)
+    _add_mail(data_dir, f"live-set-marker {_A} {_N}")  # links to _A until _N is live
+    real_ensure = HC._ensure_writable_cache
+    state = {"inside": False}
+    log: list = []
+    recorded = {"file": [], "pending": [], "persist": []}
+
+    def ensure(*a, **kw):
+        out = real_ensure(*a, **kw)
+        if out and not state.get("installed"):
+            state["installed"] = True
+            _install_terminal_campaign(data_dir, _N)
+        return out
+
+    real_re = HC._reconcile_live_set
+
+    def reconcile(*a, **kw):
+        log.append(_lock_held(v1))
+        state["inside"] = True
+        try:
+            return real_re(*a, **kw)
+        finally:
+            state["inside"] = False
+
+    def recording(name, real):
+        def spy(*a, **kw):
+            if state["inside"]:
+                recorded[name].append(_lock_held(v1))
+            return real(*a, **kw)
+        return spy
+
+    with mock.patch.object(HC, "_ensure_writable_cache", ensure), \
+            mock.patch.object(HC, "_reconcile_live_set", reconcile), \
+            mock.patch.object(HC, "_write_campaign_file",
+                              recording("file", HC._write_campaign_file)), \
+            mock.patch.object(HC, "_append_pending_index_write",
+                              recording("pending", HC._append_pending_index_write)), \
+            mock.patch.object(HC, "_persist_index_records",
+                              recording("persist", HC._persist_index_records)):
+        rows = H.history_index(c, now=NOW, cache=True)
+    assert log == [True]
+    for name, seen in recorded.items():
+        assert seen, f"no {name} write recorded inside the reconcile"
+        assert all(seen), name
+    assert rows == H.history_index(c, now=NOW, cache=False)
+    _assert_cache_equals_pure(c, cache_dir)
+
+
+def test_reconcile_one_global_resolve_and_snapshot(data_dir, cache_dir):
+    c = cfg(data_dir, cache_dir)
+    _add_mail(data_dir, f"live-set-marker {_A} {_N}")
+    H.history_index(c, now=NOW, cache=True)
+    v1 = _v1(cache_dir)
+    _install_terminal_campaign(data_dir, _N)
+    live_at_entry = sorted(HC._live_campaign_ids(c))
+    glob_calls: list = []
+    live_calls: list = []
+    real_g, real_l = H._global_records, HC._live_campaign_ids
+
+    def glob(cfg_, cids, gaps, *a, **kw):
+        glob_calls.append(list(cids))
+        return real_g(cfg_, cids, gaps, *a, **kw)
+
+    def live(*a, **kw):
+        live_calls.append(1)
+        return real_l(*a, **kw)
+
+    idx, recs, src = _load(v1)
+    with mock.patch.object(H, "_global_records", glob), \
+            mock.patch.object(HC, "_live_campaign_ids", live):
+        out = HC._reconcile_live_set(c, v1, NOW, idx, recs, src, persist=False)
+    assert {_A, _N} <= out[3]
+    assert glob_calls == [live_at_entry]
+    assert live_calls == [1]
+    stored = json.loads((v1 / "campaigns" / f"{_A}.json").read_text())
+    assert stored["gaps"] == H.campaign_history(c, _A, now=NOW, cache=False)["gaps"]
+
+
+def test_reconcile_directory_added_mid_call_picked_up_next_call(data_dir, cache_dir):
+    c = cfg(data_dir, cache_dir)
+    late = "SPEC-0394-20261112-cccc"
+    _add_mail(data_dir, f"live-set-marker {_A} {_N} {late}")
+    H.history_index(c, now=NOW, cache=True)
+    v1 = _v1(cache_dir)
+    _install_terminal_campaign(data_dir, _N)
+    real = HC._recompute_campaign
+    state = {"n": 0}
+
+    def wrapper(cfg_, cid, *a, **kw):
+        state["n"] += 1
+        if state["n"] == 1:
+            _install_terminal_campaign(data_dir, late)
+        return real(cfg_, cid, *a, **kw)
+
+    idx, recs, src = _load(v1)
+    with mock.patch.object(HC, "_recompute_campaign", wrapper):
+        idx, recs, src, touched = HC._reconcile_live_set(
+            c, v1, NOW, idx, recs, src, persist=True)
+    assert late not in touched and all(r["campaign"] != late for r in idx)
+    assert all(r.get("campaign") != late for r in recs if r.get("source") in HC._LOCAL_SOURCES)
+    idx2, recs2, src2 = _load(v1)
+    assert all(r["campaign"] != late for r in idx2)
+    _, _, _, touched2 = HC._reconcile_live_set(c, v1, NOW, idx2, recs2, src2, persist=True)
+    assert late in touched2
+    assert any(r["campaign"] == late for r in HC._read_index(v1))
+    _assert_cache_equals_pure(c, cache_dir)

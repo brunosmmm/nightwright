@@ -1047,13 +1047,16 @@ def _stale_terminal_ids_records_quiet(cfg, index_rows: list[dict], sources: dict
 
 def _recompute_terminal_documents(
     cfg, root: Path, now, index_rows: list[dict], records: list[dict], cids: set[str],
-    *, sources: dict | None = None,
+    *, sources: dict | None = None, global_recs: list[dict] | None = None,
+    extra_gaps: list[str] | None = None,
 ) -> tuple[list[dict], list[dict], dict | None]:
+    """``global_recs`` (the reconcile's one-snapshot raw list) skips the re-parse."""
     if not cids:
         return index_rows, records, None
     H = _lazy_history()
-    gaps: list[str] = []
-    global_recs = H._global_records(cfg, _campaign_ids(cfg), gaps)
+    gaps: list[str] = list(extra_gaps or [])
+    if global_recs is None:
+        global_recs = H._global_records(cfg, _campaign_ids(cfg), gaps)
     runner_down = H._runner_intervals(cfg, gaps)
     given_sources = sources
     if sources is None:
@@ -2582,6 +2585,7 @@ def _reconcile_live_set(cfg, root: Path, now, index_rows: list[dict], records: l
     if differing:
         index_rows, records, _ = _recompute_terminal_documents(
             cfg, root, now, index_rows, records, differing, sources=sources,
+            global_recs=global_recs, extra_gaps=gaps,
         )
         touched |= differing
 

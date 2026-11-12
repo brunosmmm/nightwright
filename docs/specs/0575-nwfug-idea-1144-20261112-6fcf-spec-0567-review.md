@@ -1,7 +1,7 @@
 ---
 id: SPEC-0575
 title: "SPEC-0567 review follow-ups: history-cache reconcile tests and one-snapshot recompute"
-status: accepted
+status: done
 owner: user
 created: 2026-11-12
 updated: 2026-11-12
@@ -147,38 +147,38 @@ copy and `_recompute_campaign` only reads `shared_global`.
 
 ## Acceptance criteria
 
-- [ ] **AC1.** `test_cold_fill_skipped_gone_id_forces_reconcile` passes, and fails when the
+- [x] **AC1.** `test_cold_fill_skipped_gone_id_forces_reconcile` passes, and fails when the
   `set(cids) != live_now` clause is removed.
-- [ ] **AC2.** `test_cold_fill_skips_gone_id` asserts the pending-write list from the spy
+- [x] **AC2.** `test_cold_fill_skips_gone_id` asserts the pending-write list from the spy
   (not the absence of `index.writes.jsonl`) and fails when the `is_dir()` skip is removed.
-- [ ] **AC3.** `test_unchanged_live_set_skips_reconcile` asserts that no writer, no recompute,
+- [x] **AC3.** `test_unchanged_live_set_skips_reconcile` asserts that no writer, no recompute,
   and no `_persist_index_records` call happens on an equal live set, and no `index.writes.jsonl`
   exists afterwards.
-- [ ] **AC4.** A first `campaign_history(cache=True)` and a first `history_records(cache=True)`
+- [x] **AC4.** A first `campaign_history(cache=True)` and a first `history_records(cache=True)`
   after an add and after a remove, with `_sync_globals` neutralised, equal the `cache=False`
   results, and the reconcile ran once with `persist=True` while the cache lock was held.
-- [ ] **AC5.** In `test_each_id_recomputed_once_per_live_set_change` every recomputed id is
+- [x] **AC5.** In `test_each_id_recomputed_once_per_live_set_change` every recomputed id is
   recomputed exactly once, and the test fails when `affected -= reconciled` is removed.
-- [ ] **AC6.** `test_no_drop_campaign_all_in_src` passes and finds no occurrence in `src/`.
-- [ ] **AC7.** The reconcile persist contract is tested for: `persist=False` with a step-5
+- [x] **AC6.** `test_no_drop_campaign_all_in_src` passes and finds no occurrence in `src/`.
+- [x] **AC7.** The reconcile persist contract is tested for: `persist=False` with a step-5
   recompute (no `_persist_index_records` call, three files unchanged, campaign file rewritten);
   `persist=True` with a step-5 recompute (one call, doc hit on the next read); and
   `persist=True` with `sources=None` (the on-disk `sources.json` is read and updated).
-- [ ] **AC8.** `test_cold_filled_branch_reconciles_under_lock` covers exactly the
+- [x] **AC8.** `test_cold_filled_branch_reconciles_under_lock` covers exactly the
   `_reconcile_live_set` call in the `cold_filled` branch of `_history_index_cached`: while that
   call runs, the cache lock is held at its entry and at every `_write_campaign_file`,
   `_append_pending_index_write`, and `_persist_index_records` call it makes; the set-up forces
   each of those three to be recorded at least once (a new campaign plus a mail that makes a
   stored terminal differ), and the test fails when the guard around the reconcile is removed.
   The `stale` and `_refresh_live` steps of that branch are not covered or asserted.
-- [ ] **AC9.** `_recompute_terminal_documents` accepts `global_recs`; one
+- [x] **AC9.** `_recompute_terminal_documents` accepts `global_recs`; one
   `_reconcile_live_set` call parses the global sources once with `sorted(live)` taken at entry,
   and a directory added mid-call is picked up by the next call, not half-applied; a recomputed
   terminal's `gaps` equals the pure result's.
-- [ ] **AC10.** No output change: the whole existing `tests/test_history_cache.py` still passes
+- [x] **AC10.** No output change: the whole existing `tests/test_history_cache.py` still passes
   (all 80 tests of SPEC-0567 plus the ones above), and the equality tests for add, remove, and
   add+remove are unchanged.
-- [ ] **AC11.** Each mutation check above was run once and its result recorded in *As shipped*.
+- [x] **AC11.** Each mutation check above was run once and its result recorded in *As shipped*.
 
 ## Test plan
 
@@ -198,17 +198,69 @@ copy and `_recompute_campaign` only reads `shared_global`.
   `tests/test_history_perf.py` still hold (AC9 removes one global parse per reconcile that
   recomputes a terminal, so it can only help). The full suite is left to the queue's gates.
 
+### Test record (2026-11-12)
+
+- `uv run pytest -q tests/test_history_cache.py` — 94 passed (every pre-existing test plus the
+  new ones).
+- `uv run pytest -q tests/test_history_fixture.py tests/test_dashboard_cache.py` — 131 passed,
+  2 failed (`test_review_dir_symlinks_and_loops_are_skipped[loop]`,
+  `test_inside_treats_a_symlink_loop_as_outside`: symlink-loop checks in
+  `tools/capture_history_fixture.py`, unrelated to the cache) and 1 error
+  (`test_check_budget`: the file took 24.9s against its 20s budget while the perf test ran
+  alongside). Neither touches `history_cache.py`.
+- `uv run pytest -q tests/test_history_perf.py` (run concurrently with other test runs, so
+  timings are inflated) — 2 passed, 1 xfailed, 1 failed: `test_record_count_and_budgets`
+  measured 65.2s against its 30s ceiling. That test exercises the cold fill, which this change
+  does not touch (the reconcile only runs on a live-set change), and the host was loaded; not
+  re-run alone and not compared with the base, so the ceiling is left to the queue's gates.
+- `uv run pytest -q tests/test_spec_numbers.py tests/test_specs_dir.py tests/test_test_tiers.py
+  tests/test_test_waits.py tests/test_spec_source_request.py` — 78 passed.
+- `python3 tools/spec_lint.py --write-ledger` and `python3 tools/spec_lint.py` exit 0.
+- `python3 tools/test_tiers.py --check` exits 0 (no new test module; the existing
+  `pytestmark = pytest.mark.fast` stands).
+- The full suite is left to the queue's gates.
+
+### As shipped (2026-11-12)
+
+- Source: `_recompute_terminal_documents` gained keyword-only `global_recs` and `extra_gaps`;
+  when `global_recs` is given it neither calls `H._global_records` nor `_campaign_ids`. The
+  reconcile passes its raw `global_recs` and its own `gaps` list for step 5. Gaps are merged as a
+  set in `_recompute_campaign`, so the runner gaps both sides add do not duplicate. No other
+  caller changed; no other `src/` change was needed (the item 4 and 8 lock probes passed on the
+  loop-2 code).
+- Tests (all in `tests/test_history_cache.py`; new helpers `_lock_held`, `_load`,
+  `_spy_reconcile`, `_persist_calls_spy`; new imports `collections`, `contextlib`, `copy`,
+  `fcntl`): the new tests of the Design table, plus `test_reconcile_directory_added_mid_call_
+  picked_up_next_call` (the second case of the finding-9 row, split out of
+  `test_reconcile_one_global_resolve_and_snapshot`). The four add/remove tests are parametrized
+  over `add`/`remove`; the item 5 test over the `history_index`/`campaign_history` entry.
+- Deviation in `test_each_id_recomputed_once_per_live_set_change`: the global-source change
+  (two mails) also puts every campaign that owns a global record into `affected`, so a few more
+  terminals are recomputed than the differing ones. The test asserts differing ids plus the
+  new id are all counted, any extra id owns a stored global record, and every count is exactly 1.
+- `test_reconcile_persist_contract_recompute_path` is parametrized over `persist`. The
+  `persist=False` run and the `persist=True` run use separate fresh fixtures.
+- Mutation checks (each applied to a scratch copy of `history_cache.py`, one test run, then
+  restored byte-for-byte from a backup): (AC1) drop `or set(cids) != live_now` — both
+  `test_cold_fill_skipped_gone_id_*` tests fail; (AC2) replace the `is_dir()` skip in `_cold_fill`
+  with `if False:` — `test_cold_fill_skips_gone_id` fails (the missing directory raises
+  `ValueError` in the recompute before the spy assertions run; the skip's removal is detected);
+  (AC5) remove `affected -= reconciled` — both parametrizations of
+  `test_each_id_recomputed_once_per_live_set_change` fail; (AC8) replace the
+  `with _cache_write_guard(root)` around the cold-filled reconcile by `if True:` —
+  `test_cold_filled_branch_reconciles_under_lock` fails.
+
 ## Rollout / migration
 
 None. No data or layout change; the cache stays disposable.
 
 ## Definition of done
 
-- [ ] Acceptance criteria all met.
-- [ ] Test plan executed; affected tests pass; mutation checks run and recorded.
-- [ ] No regressions (`tools/spec_lint.py`, `tools/test_tiers.py --check` when present).
-- [ ] Spec body updated to match what shipped (As shipped section added).
-- [ ] `docs/LEDGER.md` regenerated.
+- [x] Acceptance criteria all met.
+- [x] Test plan executed; affected tests pass; mutation checks run and recorded.
+- [x] No regressions (`tools/spec_lint.py`, `tools/test_tiers.py --check` when present).
+- [x] Spec body updated to match what shipped (As shipped section added).
+- [x] `docs/LEDGER.md` regenerated.
 
 ## Open questions
 
