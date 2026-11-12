@@ -216,7 +216,12 @@ def test_gate_job_matches_the_ssh_push_path(tmp_path):
         run = G.run_and_log(pw.cfg, pw.state, pw.project, by="test")
     finally:
         p.close()
-    assert run.worker == "box" and srun.worker == "box" and run.job_id == srun.job_id == JOB
+    # a gate that fell back to the local runner (worker None) says why: the job record's pull
+    # state/error and the worker's own log, which the bare comparison would not show
+    why = (f"gate ran on worker {run.worker!r}; job record {RJ.read(pw.cfg, JOB)!r}; "
+           f"serve log:\n{p.log()}")
+    assert run.worker == "box", why
+    assert srun.worker == "box" and run.job_id == srun.job_id == JOB
     a, b = _snapshot(pw, run), _snapshot(sw, srun)
     assert a["files"] == b["files"]             # the same gate files, byte for byte
     assert a["payload"] == b["payload"] and a["gate_run"] == b["gate_run"]
