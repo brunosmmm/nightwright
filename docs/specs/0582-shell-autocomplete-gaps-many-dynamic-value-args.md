@@ -1,6 +1,6 @@
 ---
 id: SPEC-0582
-title: Shell completion for the remaining dynamic-value args, a live SPEC-0039 guard, and group tab-completion
+title: Make the SPEC-0039 shell-completion guard live with default-deny and an exemption ratchet
 status: proposed
 owner: user
 created: 2026-11-12
@@ -12,15 +12,17 @@ depends_on: [SPEC-0039]
 
 ## Context
 
-IDEA-605 (audit run 2026-11-01) lists dynamic-value CLI args with no `shell_complete`:
-`queue steward-launch PROJECT`, `queue merge BRANCH/--base/--profile`, `mailbox thread MSG_ID`
-and `mailbox send --re`, `--campaign` on `queue events/decisions`, the `--reader/--from/--by`
-addresses, `--project` on several commands, `idea close --folded-into/--superseded-by`,
-`spec export --task-id`, `spec release NUMBER`, `override` topic, `projects rename OLD`, and
-`--tag`/`--epic` on list commands. It also reports that `nw projects` / `nw projects show`
-complete to nothing although `cli_projects.py:31,55` carry completers.
+IDEA-605 (audit run 2026-11-01) lists many dynamic-value CLI args with no `shell_complete`
+(`queue steward-launch PROJECT`, `queue merge BRANCH/--base/--profile`, `mailbox thread MSG_ID`,
+`--campaign` on `queue events|decisions`, the `--reader/--from/--by` addresses, `--project`,
+`idea close --folded-into`, `spec export --task-id`, `spec release`, `override` topic,
+`projects rename OLD`, `--tag`/`--epic`, …). It asks to strengthen the SPEC-0039 guard so the
+next uncompleted dynamic param is caught automatically. It also reports that `nw projects` /
+`nw projects show` complete to nothing.
 
-Investigation for this spec found three root causes, not just missing wiring:
+Investigation found three independent root causes. This spec fixes only the first two
+guard-related ones (the guard itself); the wiring of new completers and the group
+tab-completion fix are separate follow-up specs (see Non-goals).
 
 1. **The SPEC-0039 guard is vacuous.** `missing_required_shell_completes`
    (`src/nightwright/completion.py:367`) skips a param when
@@ -28,190 +30,150 @@ Investigation for this spec found three root causes, not just missing wiring:
    is a *method* on every param, so the check is always true and the function always returns
    `[]`; `tests/test_completion.py::test_required_shell_complete_names_wired` can never fail.
    The Click attribute that records a user-supplied completer is `_custom_shell_complete`.
-   With that attribute, params whose names are *already* in `REQUIRED_SHELL_COMPLETE_NAMES`
-   turn out to lack completers: `project` (`queue steward-launch`, `queue mvp-report`,
-   `sheet plan|record`, `idea project`, `spec lint`, `gate run|stats`, `gate cadence run|status`,
+   With it, params whose names are *already* in `REQUIRED_SHELL_COMPLETE_NAMES` turn out to
+   lack completers: `project` (`queue steward-launch`, `queue mvp-report`, `sheet plan|record`,
+   `idea project`, `spec lint`, `gate run|stats`, `gate cadence run|status`,
    `campaign history|records`), `by` (every `queue … --by`, `gate run --by`,
    `escalations answer --by`), `campaign` (`queue events|decisions`, `campaign records`),
    `epic` (`ideas list|export`), `scheme` (`projects add`), `spec_id`
    (`backlog add|edit`, `campaign history`) and `key` (`add`, `idea capture`, `spec generate`).
 2. **The guard matches by param name only** (`REQUIRED_SHELL_COMPLETE_NAMES`,
-   `completion.py:33`), so a dynamic param with a new name (`branch`, `reader`, `frm`,
-   `re_`, `msg_id`, `folded_into`, `superseded_by`, `profile`, `topic`, `old`, `number`,
-   `task_id`, `tag`) is invisible to it.
-3. **`nw projects <TAB>` and `nw ideas <TAB>` return nothing** because `ProjectsGroup` /
-   `IdeasGroup` (`cli.py:1228`, `cli.py:1389`) prepend `list` in `parse_args` whenever the
-   first arg is not a subcommand. Click resolves the completion context by calling
-   `parse_args` on a resilient context, so with no args the context becomes the `list`
-   subcommand and the group's own subcommand names (`config`, `init`, `add`, `rename`, …) are
-   never offered. `projects show` is not a command (there is no such subcommand, `show` is
-   rejected as an unknown argument to `list`), so it completing to nothing is correct; the
-   working completers are on `projects config` and `projects init`, which already
-   complete project names (verified with `_NW_COMPLETE=bash_complete`).
+   `completion.py:33`), so a dynamic param with a new name (`branch`, `reader`, `frm`, `re_`,
+   `msg_id`, `folded_into`, `superseded_by`, `profile`, `topic`, `old`, `number`, `task_id`,
+   `tag`) is invisible to it.
+3. *(Out of scope here.)* `nw projects <TAB>` / `nw ideas <TAB>` return nothing because
+   `ProjectsGroup`/`IdeasGroup` (`cli.py:1228`, `cli.py:1389`) prepend `list` in `parse_args`
+   even during resilient completion parsing. `projects show` is not a command, so it completing
+   to nothing is correct; the working completers are on `projects config` and `projects init`.
 
-The installed fish stub is Click's live wrapper and is current: no reinstall is needed for any
-of this.
+The installed fish stub is Click's live wrapper and is current: no reinstall is needed.
 
 ## Goals / Non-goals
 
 **Goals**
-- Every dynamic-value argument/option named in IDEA-605 completes real values.
-- The SPEC-0039 guard actually works (fix the vacuous check) and is strengthened from a
-  name list to "any string-valued param without a completer must be justified".
-- `nw projects <TAB>` and `nw ideas <TAB>` offer subcommands (and `--json` etc. still
-  complete for the default `list`).
+- The guard really detects a missing completer (fix the vacuous predicate).
+- The guard becomes default-deny: any string-valued, non-flag param without a completer must be
+  named in `FREE_TEXT_NAMES` or carry an explicit, reasoned entry in `UNCOMPLETED_EXEMPT`.
+- `UNCOMPLETED_EXEMPT` is a ratchet: seeded with every current violation, only allowed to
+  shrink, enforced by a stale-entry check.
 
-**Non-goals**
-- Completing free-text params (`text`, `title`, `note`, `reason`, `--for` on `spec reserve`
-  which is documented as a free-text note, dates, `--since/--until`, `KEY=VALUE` properties).
-- Adding a `projects show` subcommand.
-- Completers for `workers` names, gate/worker job ids, and other args outside IDEA-605; they
-  are recorded in the guard's exemption list as follow-ups and the list may only shrink.
-- Reinstalling any shell stub.
+**Non-goals** (each is a separate follow-up spec; this spec lands none of their behavior)
+- **Completer wiring spec** (depends on this one): add `complete_address`, `complete_msg_id`,
+  `complete_branch`, `complete_base_branch`, `complete_bucket`, `complete_tag`,
+  `complete_idea_or_spec_id`, `complete_reserved_number`, `complete_task_id`, attach them and
+  the existing completers to the commands listed in IDEA-605, and delete the matching
+  `UNCOMPLETED_EXEMPT` entries (enforced by `stale_exemptions()`).
+- **Default-list group completion spec** (independent): a shared `DefaultListGroup` base for
+  `ProjectsGroup`/`IdeasGroup` so `nw projects <TAB>` / `nw ideas <TAB>` offer subcommands.
+- Adding a `projects show` subcommand; completing free-text params; reinstalling any shell stub;
+  changing any command's runtime behavior.
 
 ## Decision
 
-1. Fix the guard predicate to use `param._custom_shell_complete` and wire every violation the
-   corrected guard reveals.
-2. Add the missing completers to `completion.py` and attach them to the args in IDEA-605.
-3. Replace "name in required set" with a **default-deny** rule: every non-flag param whose
-   Click type is plain string (`click.STRING`, not Path/Choice/numeric/DateTime) must either
-   carry a custom completer, have a name in a generic `FREE_TEXT_NAMES` set, or appear in an
-   explicit `UNCOMPLETED_EXEMPT` set of `"<command path>:<param>"` entries. `REQUIRED_SHELL_COMPLETE_NAMES`
-   stays as an extra check: a required-name param needs a completer even if a path is exempted
-   by name. A test asserts no exemption entry is stale.
-4. Give the two default-`list` groups a shared base class whose `parse_args` does not prepend
-   `list` during resilient (completion) parsing when there are no args, and whose
-   `shell_complete` also offers the `list` command's options when the incomplete word starts
-   with `-`.
+1. Fix `missing_required_shell_completes` to use `param._custom_shell_complete`, via one shared
+   `has_completer(param)` helper.
+2. Add a **default-deny** `missing_dynamic_completes()`: every non-flag param whose Click type is
+   plain string (`click.STRING`; not `Path`, `Choice`, numeric, bool or `DateTime`) must carry a
+   custom completer, have its name in `FREE_TEXT_NAMES`, or appear in `UNCOMPLETED_EXEMPT`.
+3. `UNCOMPLETED_EXEMPT` is a dict `"<command path>:<param>" -> reason`. **One ordering process:**
+   this spec seeds it with *every* violation the corrected guards currently report on the real
+   CLI tree, each with a non-empty reason (grouped by cause, e.g. "pending completer wiring
+   (IDEA-605 follow-up)", "workers names", "gate/worker job ids", "KEY=VALUE properties").
+   The later wiring spec removes the entries it wires; `stale_exemptions()` fails the suite if
+   an entry is left behind. The list is never regenerated after the fact.
+4. The required-name check keeps its contract (a `REQUIRED_SHELL_COMPLETE_NAMES` param needs a
+   completer) with the corrected predicate; it honors `UNCOMPLETED_EXEMPT` too, so the real-tree
+   guards pass on seeded exemptions while a new violation fails.
 
 ## Design
 
-### Completers (`src/nightwright/completion.py`, all wrapped in `@_soft`)
+All in `src/nightwright/completion.py` (no change to any command or completer behavior).
 
-| Completer | Values | Attached to |
-|---|---|---|
-| `complete_address` (moved from `agentic/cli_mailbox.py:18`, re-exported there) | `mailbox.known_addresses(cfg)`: `conductor`, `human`, `steward:<project>` | every `--by`, `--from`/`frm`, `--reader`, `--requested-by` option: `queue add|abandon|after|backend|decision|park|prioritize|restart|resume|stop|sentinel resume-fix --by`, `queue merge --by`, `gate run --by`, `escalations answer --by`, `escalations withdraw --from`, `queue escalate --from`, `queue events|wakeups --reader`, `queue conductor-session add|list --reader` |
-| `complete_msg_id` | `id` of each record from `mailbox._all_messages`, newest first, capped at 50, help = `summary_line` clipped via `_clip_help` | `mailbox thread MSG_ID`, `mailbox send --re` |
-| `complete_branch` | `nw/<campaign id>` for non-terminal campaigns from the store, then `git for-each-ref refs/heads` of the cwd repo (2 s timeout; any failure yields only the campaign branches) | `queue merge BRANCH`, `gate run --branch` |
-| `complete_base_branch` | local branches of the cwd repo only (same git call) | `--base` on `queue merge`, `queue add`, `gate run`, `queue main-dirty-plan|apply` |
-| `complete_bucket` | distinct `facets[cfg project_axis]` values in `load_mappings(cfg)` plus `registered_projects` | `projects rename OLD` |
-| `complete_tag` | distinct org tags over `load_tasks(cfg)` (ideas and tasks) | `--tag` on `ideas list|export`, `tasks`, `agenda`, `hub`, `next`, `tui` |
-| `complete_idea_or_spec_id` | idea ids (open and closed) plus internal spec ids | `idea close --folded-into`, `--superseded-by` |
-| `complete_reserved_number` | numbers from `spec_numbers.list_reservations(cfg, specs_dir=…)` as `SPEC-NNNN` | `spec release NUMBER` |
-| `complete_task_id` | ids of open org tasks (`complete_task_selector` without topic keys) | `spec export --task-id` |
-
-Existing completers are reused where they already fit: `complete_project` for every `--project`
-(`queue mvp-report`, `sheet plan|record`, `idea project`, `spec lint`, `gate run|stats`,
-`gate cadence run|status`, `campaign history|records`) and `queue steward-launch PROJECT`;
-`complete_profile` for `queue add|merge --profile`; `complete_campaign_id` for `--campaign` on
-`queue events|decisions` and `campaign records`; `complete_spec_id` for `backlog add|edit
---spec-id` and `campaign history --spec-id`; `complete_epic` for `--epic` on `ideas list|export`;
-`complete_scheme` for `projects add --scheme`; `complete_mapped_topic` for `override` topic.
-`override`'s `session`/`start`/`end` arguments and `map assignments` stay free text/exempt.
-
-### Group completion (`src/nightwright/cli.py`)
-
-A `DefaultListGroup(click.Group)` replaces the duplicated `ProjectsGroup`/`IdeasGroup`
-`parse_args`: it prepends `list` exactly as today except when `ctx.resilient_parsing` is true
-and `args` is empty. `shell_complete(ctx, incomplete)` returns `super()` results, and when
-`incomplete.startswith("-")` also the `list` command's option completions (so `nw projects
---j<TAB>` still offers `--json`). Non-completion behavior is unchanged.
-
-### The strengthened guard (`completion.py`, `tests/test_completion.py`)
-
-- `has_completer(param)`: `getattr(param, "_custom_shell_complete", None) is not None`, or the
-  type is `click.Path`/`click.Choice`, or the param is a flag, or its type is numeric/bool/
-  `DateTime`.
-- `missing_dynamic_completes(cmd=None)` walks `iter_cli_params`; for each non-flag param with
-  string type and no completer it reports `"<path>:<param>"` unless its name is in
-  `FREE_TEXT_NAMES` (`text`, `title`, `note`, `reason`, `summary`, `tags`, `query`, `since`,
-  `until`, `date`, `value`, `message`, …) or the path is in `UNCOMPLETED_EXEMPT`.
-  `missing_required_shell_completes` keeps its contract (required-name params) with the
-  corrected predicate.
-- `stale_exemptions()` returns `UNCOMPLETED_EXEMPT` entries that no longer name an existing,
-  completer-less string param. The initial `UNCOMPLETED_EXEMPT` is generated from the audit
-  walk after wiring this spec's completers; each group of entries carries a one-line comment
-  (workers names, gate/worker job ids, `--key` KEY=VALUE properties, free-form `--cmds`, …).
-- The docstring of `REQUIRED_SHELL_COMPLETE_NAMES` and the README/`docs/WORKFLOW.md` completion
-  checklist are updated: a new string param needs a completer or an exemption entry with a reason.
+- `has_completer(param) -> bool`: true when `getattr(param, "_custom_shell_complete", None)` is
+  not None, or the param is a flag option, or its type is `click.Path`, `click.Choice`,
+  numeric (`INT`/`FLOAT`), `BOOL` or `DateTime`.
+- `FREE_TEXT_NAMES`: frozenset of generic free-text param names (`text`, `title`, `note`,
+  `reason`, `summary`, `tags`, `query`, `since`, `until`, `date`, `value`, `message`, …; the
+  implementer fixes the final list from the audit walk, each name genuinely free text).
+- `UNCOMPLETED_EXEMPT: dict[str, str]`: see Decision 3. Path keys use the same
+  `"<space-joined command path>:<param name>"` format `missing_required_shell_completes` emits.
+- `missing_dynamic_completes(cmd=None) -> list[str]`: walks `iter_cli_params(cmd)`; for each
+  string-typed param where `has_completer` is false, reports `"<path>:<param>"` unless the name
+  is in `FREE_TEXT_NAMES` or the key is in `UNCOMPLETED_EXEMPT`.
+- `missing_required_shell_completes(cmd=None)`: same signature; uses `has_completer`, skips
+  `UNCOMPLETED_EXEMPT` keys.
+- `stale_exemptions(cmd=None) -> list[str]`: `UNCOMPLETED_EXEMPT` keys that no longer name an
+  existing, completer-less, string-typed param (the command/param vanished or was wired).
+- Update the `REQUIRED_SHELL_COMPLETE_NAMES` comment and the README / `docs/WORKFLOW.md`
+  completion checklist: a new string param needs a completer, a `FREE_TEXT_NAMES` name, or an
+  `UNCOMPLETED_EXEMPT` entry with a reason; the exemption list may only shrink.
 
 ## Alternatives considered
 
-- **Extend only `REQUIRED_SHELL_COMPLETE_NAMES` with the new names** — still name-only: the next
+- **Extend only `REQUIRED_SHELL_COMPLETE_NAMES` with the new names** — still name-only; the next
   new param name slips through again, which is the weakness IDEA-605 reports.
-- **Allowlist every currently uncompleted param without a staleness test** — the list would rot
-  and stop shrinking; the stale check makes it a ratchet.
-- **Add a `projects show` subcommand to match the audit** — the audit mis-read the surface;
-  `projects config` already serves that purpose.
-- **Fix group completion by overriding `resolve_command`** — Click's completion resolution goes
-  through `parse_args`, so changing it there is the smaller, symmetric fix.
+- **Allowlist without a staleness test** — the list would rot and stop shrinking; the stale
+  check makes it a ratchet.
+- **Do guard, wiring and group fix in one spec** — three independent subsystems exceed one
+  campaign; the guard lands first so the wiring spec is checked by it.
+- **Generate the exemption list after wiring** — hides real gaps behind a hand-maintained list
+  and conflicts with the ratchet; seeding first and removing as wired is the single process.
 
 ## Acceptance criteria
 
-- [ ] `missing_required_shell_completes()` uses `_custom_shell_complete`; temporarily removing a
-      completer from `queue steward-launch PROJECT` makes it return that entry.
-- [ ] After this change `missing_required_shell_completes()` returns `[]` and
-      `missing_dynamic_completes()` returns `[]` on the real CLI tree; `stale_exemptions()` returns `[]`.
-- [ ] A fixture command with an un-annotated string option named `widget`, added to a Click tree,
-      is reported by `missing_dynamic_completes`; adding `shell_complete`, a `FREE_TEXT_NAMES`
-      name or an exemption removes it.
-- [ ] `nw queue steward-launch <TAB>` yields the registered project names.
-- [ ] `nw queue merge <TAB>` yields `nw/<campaign id>` for non-terminal campaigns; `--base <TAB>`
-      yields local git branches; with git unavailable it still returns the campaign branches / `[]`
-      without raising.
-- [ ] `nw mailbox thread <TAB>` and `nw mailbox send --re <TAB>` yield message ids with a clipped
-      one-line help.
-- [ ] `--campaign` on `queue events` and `queue decisions` yields campaign ids.
-- [ ] `--reader`, `--from`, `--by`, `--requested-by` on the commands in the Design table yield
-      `conductor`, `human` and `steward:<project>`.
-- [ ] `--project` on `queue mvp-report`, `sheet plan`, `sheet record`, `idea project`, `spec lint`,
-      `gate run`, `gate stats` yields registered projects; `--profile` on `queue add|merge`
-      yields profile names.
-- [ ] `idea close --folded-into <TAB>` / `--superseded-by <TAB>` yield idea and spec ids.
-- [ ] `spec release <TAB>` yields reserved `SPEC-NNNN` numbers; `spec export --task-id <TAB>`
-      yields open task ids; `override <TAB>` topic yields mapped topics;
-      `projects rename <TAB>` yields buckets; `--tag` and `--epic` on `ideas list|export` yield tags and epics.
-- [ ] `nw projects <TAB>` yields `add`, `config`, `init`, `list`, `rename`; `nw projects --<TAB>`
-      includes `--json`; `nw ideas <TAB>` yields `export` and `list`; `nw projects --json` and
-      `nw ideas --all` still run the default `list`.
-- [ ] Every completer fails soft: with an unreadable config each returns `[]`.
-- [ ] README and `docs/WORKFLOW.md` describe the default-deny rule and the exemption ratchet.
+- [ ] `has_completer` and `missing_required_shell_completes` use `_custom_shell_complete`: a
+      Click fixture with one uncompleted `project` argument and one completed one reports only
+      the first.
+- [ ] `missing_dynamic_completes()` flags a fixture string option named `widget` with no
+      completer; adding `shell_complete`, a `FREE_TEXT_NAMES` name or an `UNCOMPLETED_EXEMPT`
+      entry removes it.
+- [ ] Flags, `Path`, `Choice`, numeric, bool and `DateTime` params are never reported.
+- [ ] On the real CLI tree `missing_required_shell_completes()` and `missing_dynamic_completes()`
+      both return `[]`, and `stale_exemptions()` returns `[]`.
+- [ ] `UNCOMPLETED_EXEMPT` contains an entry for every violation the corrected guards find
+      without the exemptions (including each `project`, `by`, `campaign`, `epic`, `scheme`,
+      `spec_id`, `key` case listed in Context), and every entry has a non-empty reason.
+- [ ] `stale_exemptions()` reports an entry whose param was given a completer and an entry whose
+      command does not exist (fixture-tested).
+- [ ] The `REQUIRED_SHELL_COMPLETE_NAMES` comment and the README / `docs/WORKFLOW.md`
+      completion checklist describe the default-deny rule and the exemption ratchet.
+- [ ] No command runtime behavior or existing completer output changes.
 
 ## Test plan
 
-- **Automated tests** (extend `tests/test_completion.py`, which already carries its single
-  module marker `pytestmark = pytest.mark.fast`; no new module and no second marker):
-  - `test_guard_detects_missing_custom_completer`: build a small Click group with one
-    uncompleted `project` argument and one completed one; assert only the first is reported
-    (regression for the vacuous predicate).
-  - `test_default_deny_flags_unknown_string_param` and `test_default_deny_accepts_free_text_and_exempt`.
-  - `test_required_and_dynamic_guards_clean_on_real_cli` and `test_uncompleted_exempt_has_no_stale_entries`.
-  - One parametrized test calling each new completer (`complete_msg_id`, `complete_branch`,
-    `complete_base_branch`, `complete_bucket`, `complete_tag`, `complete_idea_or_spec_id`,
-    `complete_reserved_number`, `complete_task_id`, `complete_address`) against `_cfg(tmp_path)`
-    fixtures (mailbox jsonl, mappings.yaml, a tmp git repo for branches) asserting prefix
-    filtering and values; plus a soft-fail test with a broken config.
-  - `test_wiring_by_command`: resolve each command in the Design table via `cli` and assert the
-    param's `_custom_shell_complete` is the expected completer.
-  - Group tests with `CliRunner` + `_NW_COMPLETE=bash_complete` env (or Click's
-    `shell_complete` API): `projects` and `ideas` with no args list their subcommands;
-    `projects --` offers `--json`; `projects --json` and `ideas --all` still execute `list`.
-  - `python3 tools/test_tiers.py --check` exits 0.
-- **Manual verification** (against a real config): run
-  `_NW_COMPLETE=bash_complete COMP_WORDS="nw projects " COMP_CWORD=2 uv run nw` and the same for
-  `nw queue steward-launch `, `nw queue merge `, `nw mailbox thread `, `nw queue events --reader `;
-  expect non-empty value lists. One interactive fish `nw projects <TAB>` check on the installed stub.
-- **Regression guard:** `python3 tools/affected_tests.py --run uv run pytest -q`, the existing
-  idea/projects CLI tests (default `list` routing), and `python3 tools/spec_lint.py` exit 0.
+- **Automated tests** (extend `tests/test_completion.py`, which already carries its single module
+  marker `pytestmark = pytest.mark.fast`; no new module and no second marker):
+  - `test_guard_detects_missing_custom_completer`: small Click group, one uncompleted and one
+    completed `project` argument; only the first is reported (regression for the vacuous
+    predicate).
+  - `test_default_deny_flags_unknown_string_param` and
+    `test_default_deny_accepts_free_text_and_exempt` (monkeypatch `FREE_TEXT_NAMES` /
+    `UNCOMPLETED_EXEMPT` for the fixture).
+  - `test_default_deny_ignores_non_string_params`: flags, `Path`, `Choice`, `INT`, `BOOL`,
+    `DateTime`.
+  - `test_required_and_dynamic_guards_clean_on_real_cli` and
+    `test_uncompleted_exempt_has_no_stale_entries` (real tree).
+  - `test_uncompleted_exempt_has_reasons`: every value is a non-empty string.
+  - `test_stale_exemptions_detects_wired_and_missing`: fixture tree.
+  - `test_exempt_covers_context_cases`: the real tree with `UNCOMPLETED_EXEMPT` monkeypatched
+    empty reports at least the `project`, `by`, `campaign`, `epic`, `scheme`, `spec_id`, `key`
+    paths named in Context (proves the seed is complete and the guard is live).
+  - `python3 tools/test_tiers.py --check` exits 0 (no new test module is added).
+- **Manual verification:** temporarily delete one `UNCOMPLETED_EXEMPT` entry and run
+  `uv run pytest tests/test_completion.py -q`; expect the real-tree guard to fail naming it.
+  Restore it.
+- **Regression guard:** `python3 tools/affected_tests.py --run uv run pytest -q` and
+  `python3 tools/spec_lint.py` exit 0.
 
 ## Rollout / migration
 
-1. Fix the predicate and add the default-deny guard with a temporary exemption list covering every
-   current violation; run the guard tests.
-2. Add completers and wire them; delete the matching exemption entries as each lands.
-3. Land the group base class; update README/`docs/WORKFLOW.md`.
-4. No shell reinstall: the fish stub is Click's live wrapper.
+1. Fix the predicate and add `has_completer`, `FREE_TEXT_NAMES`, `missing_dynamic_completes`,
+   `stale_exemptions`.
+2. Run the corrected guards against the real tree and seed `UNCOMPLETED_EXEMPT` with every
+   violation, each with a reason; add the tests.
+3. Update the comment, README and `docs/WORKFLOW.md`.
+4. The follow-up wiring spec (depends on this one) removes entries as it wires completers; the
+   group-completion spec is independent. No shell reinstall: the fish stub is Click's live wrapper.
 
 ## Definition of done
 
