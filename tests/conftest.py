@@ -1,6 +1,8 @@
 """Shared fixtures."""
 import json
 import os
+import re
+import shlex
 import subprocess
 
 import pytest
@@ -110,6 +112,93 @@ def _no_ambient_herdr_env(monkeypatch):
         monkeypatch.delenv(k)
 
 
+_SHELLS = frozenset({"sh", "bash", "dash", "zsh", "ksh"})
+_WRAPPERS = frozenset({"env", "exec", "command", "nohup", "nice", "setsid", "sudo", "time",
+                       "timeout", "stdbuf"})
+_WRAPPER_FLAGS_WITH_ARG = frozenset({"-s", "-k", "-n", "-u", "-g", "-i", "-o", "-e"})
+_SHELL_KEYWORDS = frozenset({"then", "do", "else", "{", "!"})
+_SEP_CHARS = frozenset(";&|()\n")
+_ASSIGN = re.compile(r"[A-Za-z_][A-Za-z0-9_]*=")
+_DURATION = re.compile(r"\d+(\.\d+)?[smhd]?\Z")
+_SHELL_C_FLAG = re.compile(r"-[A-Za-z]*c[A-Za-z]*\Z")
+
+
+def _as_text(x):
+    if isinstance(x, (bytes, bytearray)):
+        return os.fsdecode(bytes(x))
+    if isinstance(x, os.PathLike):
+        return os.fsdecode(os.fspath(x))
+    return str(x)
+
+
+def _shell_words(line):
+    """Words of a shell command line; unquoted `;&|()` and newlines come out as separators."""
+    lex = shlex.shlex(line, posix=True, punctuation_chars=";&|()\n<>")
+    lex.whitespace_split = True
+    lex.whitespace = " \t\r"
+    try:
+        return list(lex)
+    except ValueError:  # unbalanced quote
+        return re.sub(r"([;&|()\n])", r" \1 ", line).split()
+
+
+def _simple_is_notify_send(words, depth):
+    """Is the simple command `words` (after env assignments and wrappers) `notify-send`, or a
+    shell whose `-c` script is?"""
+    i, n = 0, len(words)
+    while i < n:
+        w = words[i]
+        base = os.path.basename(w)
+        if _ASSIGN.match(w) or w in _SHELL_KEYWORDS:
+            i += 1
+        elif base in _WRAPPERS:
+            i += 1
+            while i < n:
+                if words[i] in _WRAPPER_FLAGS_WITH_ARG and base != "env":
+                    i += 2
+                elif words[i].startswith("-") or _DURATION.match(words[i]):
+                    i += 1
+                else:
+                    break
+        else:
+            break
+    if i >= n:
+        return False
+    cmd = os.path.basename(words[i])
+    if cmd == "notify-send":
+        return True
+    if cmd in _SHELLS and depth > 0:
+        for j in range(i + 1, n - 1):
+            if _SHELL_C_FLAG.match(words[j]):
+                return _line_is_notify_send(words[j + 1], depth - 1)
+    return False
+
+
+def _line_is_notify_send(line, depth):
+    cmds, cur = [], []
+    for tok in _shell_words(line):
+        if set(tok) <= _SEP_CHARS:
+            cmds.append(cur)
+            cur = []
+        else:
+            cur.append(tok)
+    cmds.append(cur)
+    return any(_simple_is_notify_send(c, depth) for c in cmds)
+
+
+def _is_notify_send(cmd, depth=3):
+    """SPEC-0499/0589: would this `Popen` argv exec `notify-send`? Decodes `bytes`/`PathLike`,
+    treats a `str` as a shell command line, and looks through shell wrappers (`sh -c`, `env`,
+    `&&`) to the command they run. A small command-position scan, not a shell interpreter."""
+    if isinstance(cmd, (list, tuple)):
+        return _simple_is_notify_send([_as_text(x) for x in cmd], depth)
+    if isinstance(cmd, (str, bytes, bytearray)):
+        return _line_is_notify_send(_as_text(cmd), depth)
+    if isinstance(cmd, os.PathLike):
+        return os.path.basename(_as_text(cmd)) == "notify-send"
+    return False
+
+
 @pytest.fixture(autouse=True)
 def _no_desktop_notify(monkeypatch):
     """SPEC-0499: default `notify=auto` must not spawn the session's `notify-send`; any test that
@@ -123,31 +212,18 @@ def _no_desktop_notify(monkeypatch):
 
     monkeypatch.setattr(ESC, "_run_notify", lambda argv: _Done())
 
-    _real_run = subprocess.run
-    _Popen = subprocess.Popen
+    _real_init = subprocess.Popen.__init__
 
-    def _is_notify_send(cmd):
-        if isinstance(cmd, (list, tuple)):
-            return bool(cmd) and os.path.basename(str(cmd[0])) == "notify-send"
-        if isinstance(cmd, str):
-            part = cmd.strip().split(None, 1)
-            return bool(part) and os.path.basename(part[0]) == "notify-send"
-        return False
+    def _guarded_init(self, args, *a, **kw):
+        # Sets no instance state before raising: `Popen._child_created` is a class attribute,
+        # so the half-built object's `__del__` returns at once (SPEC-0589).
+        if _is_notify_send(args):
+            raise AssertionError(f"notify-send blocked in tests: {args!r}")
+        _real_init(self, args, *a, **kw)
 
-    def _guarded_run(*args, **kwargs):
-        cmd = args[0] if args else kwargs.get("args")
-        if cmd is not None and _is_notify_send(cmd):
-            raise AssertionError(f"notify-send blocked in tests: {cmd!r}")
-        return _real_run(*args, **kwargs)
-
-    class _GuardedPopen(_Popen):
-        def __init__(self, args, *a, **kw):
-            if _is_notify_send(args):
-                raise AssertionError(f"notify-send blocked in tests: {args!r}")
-            super().__init__(args, *a, **kw)
-
-    monkeypatch.setattr(subprocess, "run", _guarded_run)
-    monkeypatch.setattr(subprocess, "Popen", _GuardedPopen)
+    # One class-level patch covers `run`/`call`/`check_output`, every subclass (`gates._MeteredPopen`)
+    # and every `popen=subprocess.Popen` default bound at import (SPEC-0589).
+    monkeypatch.setattr(subprocess.Popen, "__init__", _guarded_init)
 
 
 @pytest.fixture(autouse=True)
