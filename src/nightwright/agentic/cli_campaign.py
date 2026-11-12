@@ -9,7 +9,6 @@ import sys
 from pathlib import Path
 
 import click
-from rich.markup import escape
 from rich.table import Table
 from rich.text import Text
 
@@ -141,15 +140,14 @@ def _runs_table(cid: str, runs: list[dict]) -> Table:
 
 def _print_run(rec: dict) -> None:
     def kv(key, value):
-        console.print(f"  [dim]{key:<14}[/] {escape(str(value))}", highlight=False)
+        console.print(Text.assemble("  ", (f"{key:<14}", "dim"), " ", str(value)), highlight=False)
 
     vs = rec["verdict_status"]
     verdict = rec["verdict"] if isinstance(rec["verdict"], dict) else {}
     style = _VERDICT_STYLES.get(vs, "")
-    status_frag = f"[{style}]{escape(str(vs))}[/]" if style else escape(str(vs))
-    console.print(f"[bold]{escape(str(rec['run_id']))}[/]  {escape(str(rec['campaign']))}  "
-                  f"{status_frag}  ({escape(str(rec['source']))}, {escape(str(rec['status']))})",
-                  highlight=False)
+    console.print(Text.assemble(
+        (str(rec["run_id"]), "bold"), "  ", str(rec["campaign"]), "  ", (str(vs), style),
+        "  (", str(rec["source"]), ", ", str(rec["status"]), ")"), highlight=False)
     kv("persona", f"{rec['persona'] or '-'}  {_model_text(rec)}")
     kv("started", f"{rec['started_at'] or '-'}  ({_duration_text(rec) or '-'})")
     kv("exit", f"{rec['exit_code']}  is_error={rec['is_error']}  timed_out={rec['timed_out']}  "
@@ -165,7 +163,7 @@ def _print_run(rec: dict) -> None:
     if rec["permission_denials"]:
         kv("denials", json.dumps(rec["permission_denials"], ensure_ascii=False)[:800])
     if rec["stderr_tail"]:
-        console.print("  [dim]stderr tail[/]")
+        console.print(Text("  stderr tail", style="dim"))
         for line in rec["stderr_tail"]:
             console.print(Text("    " + line), highlight=False)
     for key, path in rec["paths"].items():

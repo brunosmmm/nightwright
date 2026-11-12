@@ -1,12 +1,16 @@
 """SPEC-0199: `nw campaign runs|run` — persona runs without reading run files."""
+import io
 import json
+import re
 import shutil
 from pathlib import Path
 
 import pytest
+from rich.console import Console
 
 from test_agentic_e2e import (_git_env, added, impl_done, make_cfg, make_repo, review, run_cli,
                               script)
+from nightwright.agentic import cli_campaign
 from nightwright.agentic import events as EV
 from nightwright.agentic import runs as RN
 from nightwright.agentic import schemas as SC
@@ -313,3 +317,67 @@ def test_run_json_keeps_bracketed_verdict(merged):
     assert run["must_fix"] == ["fix [link]"]
     assert run["blockers"] == ["wait [/on] review"]
     assert run["result_tail"] == "err [/red]"
+
+
+_ANSI = re.compile(r"\x1b\[[0-9;]*m")
+BOLD, DIM, GREEN, RED = "\x1b[1m", "\x1b[2m", "\x1b[32m", "\x1b[31m"
+
+
+def render_run(cfg, cid, run, monkeypatch, mutate=None) -> str:
+    """`_print_run` output of a run on a forced-color console (ANSI escapes kept)."""
+    rec = RN.campaign_run(cfg, cid, run)
+    if mutate:
+        mutate(rec)
+    buf = io.StringIO()
+    monkeypatch.setattr(cli_campaign, "console",
+                        Console(file=buf, force_terminal=True, color_system="standard", width=250))
+    cli_campaign._print_run(rec)
+    return buf.getvalue()
+
+
+def test_run_human_view_styles_id_labels_and_verdict(merged):
+    cfg, cid, mp = merged
+    add_run(cfg, cid, "070-implementer", end={"verdict_ok": True, "verdict": {"status": "done"}})
+    add_run(cfg, cid, "071-implementer", end={"verdict_ok": True, "verdict": {"status": "blocked"}})
+    for run, color, status in (("070-implementer", GREEN, "done"),
+                               ("071-implementer", RED, "blocked")):
+        out = render_run(cfg, cid, run, mp)
+        assert f"{BOLD}{run}" in out
+        for label in ("persona", "started", "exit", "cost"):
+            assert f"{DIM}{label}" in out
+        assert f"{color}{status}" in out
+
+
+@pytest.mark.parametrize("verdict, status", [({"disposition": "fix"}, "fix"), ({}, "?")])
+def test_run_human_view_leaves_unmapped_status_unstyled(merged, verdict, status):
+    cfg, cid, mp = merged
+    add_run(cfg, cid, "072-implementer", end={"verdict_ok": True, "verdict": verdict})
+    out = render_run(cfg, cid, "072-implementer", mp)
+    assert f"{BOLD}072-implementer" in out and f"{DIM}persona" in out
+    header = out.splitlines()[0]
+    assert re.search(rf"  {re.escape(status)}  \(", header)
+    assert not re.search(rf"\x1b\[3\dm{re.escape(status)}", header)
+
+
+def test_run_human_view_prints_trailing_backslashes_once(merged):
+    cfg, cid, mp = merged
+    add_run(cfg, cid, "073-implementer", end={
+        "verdict_ok": True, "result_tail": "tail\\",
+        "verdict": {"status": "odd\\", "summary": "sum\\", "must_fix": ["mf\\"],
+                    "blockers": ["bl\\"]}})
+    d = runs_dir(cfg, cid) / "073-implementer"
+    d.mkdir(parents=True, exist_ok=True)
+    (d / "stderr.log").write_text("err\\\n", encoding="utf-8")
+
+    def paths(rec):
+        rec["paths"]["dir"] = "C:\\dir\\"
+        rec["paths"]["even"] = "ev\\\\"
+        rec["permission_denials"] = ["x" * 797 + "\\"]  # the [:800] cut leaves one `\`
+    out = _ANSI.sub("", render_run(cfg, cid, "073-implementer", mp, paths))
+    lines = out.splitlines()
+    assert "odd\\  (" in lines[0] and "odd\\\\" not in lines[0]
+    for tail in ("sum\\", "mf\\", "bl\\", "tail\\", "C:\\dir\\"):
+        assert any(ln.endswith(" " + tail) for ln in lines), (tail, out)
+    assert any(ln.endswith("err\\") for ln in lines) and not any(ln.endswith("err\\\\") for ln in lines)
+    assert any(ln.endswith(" ev\\\\") for ln in lines)
+    assert any(ln.endswith("x\\") and not ln.endswith("x\\\\") for ln in lines)  # denials (wrapped)
