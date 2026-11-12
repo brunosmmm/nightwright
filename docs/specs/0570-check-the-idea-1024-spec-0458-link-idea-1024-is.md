@@ -1,9 +1,10 @@
 ---
 id: SPEC-0570
 title: Repair the IDEA-1024 / SPEC-0458 provenance link
-status: proposed
+status: accepted
 owner: user
 created: 2026-11-12
+updated: 2026-11-12
 kind: feature
 tags: [specs, provenance]
 source_idea: IDEA-1161
