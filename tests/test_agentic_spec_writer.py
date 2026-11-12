@@ -978,10 +978,15 @@ def test_uncommitted_collision_before_start_releases_and_reallocates(tmp_path, m
     Q.tick(cfg)
     assert _reservations(cfg, wt) == [2]
     _other_file(repo, 2)                              # uncommitted in another worktree
-    seen = []
-    Q.tick(cfg, runner=Hooked(tmp_path, before=lambda req: seen.append(
-        (_reservations(cfg, wt), S.read_state(cfg, cid)["counters"]["spec_number_retries"]))))
-    assert seen == [([3], 1)]                         # old reservation gone, new one live
+    seen = {}
+    Q.tick(cfg, runner=Hooked(
+        tmp_path,
+        before=lambda req: seen.update(before=_reservations(cfg, wt), retries=S.read_state(
+            cfg, cid)["counters"]["spec_number_retries"]),
+        after=lambda req: seen.update(after=_reservations(cfg, wt))))
+    assert 2 not in seen["before"] and 3 in seen["before"]      # old reservation gone, new live
+    assert seen["retries"] == 1
+    assert seen["after"] == [3]                       # 2 is not re-created during the run
     in_review(cfg, cid)
     st = S.read_state(cfg, cid)
     assert st["spec_id"] == "SPEC-0003" and st["counters"]["spec_number_retries"] == 0

@@ -71,24 +71,46 @@ def _worktree_numbers(top, rel_dir):
 
 
 def _scan_refs(top):
-    """Every local and remote-tracking ref (SPEC-0569), symbolic `*/HEAD` refs skipped."""
+    """`[(ref, commit sha)]` for every local and remote-tracking ref (SPEC-0569), symbolic
+    `*/HEAD` refs skipped, from one `git for-each-ref`."""
+    out = _git(top, "for-each-ref", "--format=%(refname) %(objectname)",
+               "refs/heads/", "refs/remotes/") or ""
     refs = []
-    for prefix in ("refs/heads/", "refs/remotes/"):
-        out = _git(top, "for-each-ref", "--format=%(refname)", prefix) or ""
-        refs += [r for r in out.split() if not r.endswith("/HEAD")]
+    for line in out.splitlines():
+        ref, _, sha = line.partition(" ")
+        if ref and sha and not ref.endswith("/HEAD"):
+            refs.append((ref, sha))
     return refs
 
 
-def _ref_files(top, rel_dir, ref):
-    listing = _git(top, "ls-tree", "-z", "--name-only", ref, "--", f"{rel_dir}/") or ""
-    return [os.path.basename(n) for n in listing.split("\0") if n]
+def _ref_files(top, rel_dir, sha, cache):
+    """Filenames under `rel_dir` at commit `sha`; one `git ls-tree` per distinct commit."""
+    if sha not in cache:
+        listing = _git(top, "ls-tree", "-z", "--name-only", sha, "--", f"{rel_dir}/") or ""
+        cache[sha] = [os.path.basename(n) for n in listing.split("\0") if n]
+    return cache[sha]
 
 
-def _branch_numbers(top, rel_dir):
-    nums = set()
-    for ref in _scan_refs(top):
-        nums |= _numbers(_ref_files(top, rel_dir, ref))
-    return nums
+class _RefScan:
+    """One scan of every ref's spec filenames, built lazily on first use and shared by every
+    consumer in a public call. `files` is `[(ref, [filename, ...])]`."""
+
+    def __init__(self, top, rel_dir):
+        self._top, self._rel_dir, self._files = top, rel_dir, None
+
+    @property
+    def files(self):
+        if self._files is None:
+            cache: dict = {}
+            self._files = [(ref, _ref_files(self._top, self._rel_dir, sha, cache))
+                           for ref, sha in _scan_refs(self._top)]
+        return self._files
+
+    def numbers(self):
+        nums = set()
+        for _, names in self.files:
+            nums |= _numbers(names)
+        return nums
 
 
 def _worktree_paths(top):
@@ -104,7 +126,7 @@ def _worktree_paths(top):
     return paths
 
 
-def _number_files(top, rel_dir):
+def _number_files(top, rel_dir, scan):
     """`{number: {filename: [location, ...]}}` over every worktree's working tree (location
     `worktree:<path>`) and every local and remote-tracking ref (location: the ref name)."""
     out: dict = {}
@@ -120,9 +142,9 @@ def _number_files(top, rel_dir):
             continue
         for name in names:
             add(name, f"worktree:{path}")
-    for ref in _scan_refs(top):
+    for ref, names in scan.files:
         short = ref.split("/", 2)[2]
-        for name in _ref_files(top, rel_dir, ref):
+        for name in names:
             add(name, short)
     return out
 
@@ -183,14 +205,18 @@ def _abandoned(cfg, campaign) -> bool:
         return False
 
 
-def _prune(cfg, records, key, top, rel_dir):
-    """Drop reservations whose number is committed on a local branch (this key only) or whose
-    campaign is ABANDONED. Returns (live, changed)."""
-    committed = _branch_numbers(top, rel_dir) if top else set()
+def _prune(cfg, records, key, scan):
+    """Drop reservations whose number is committed on a ref (this key only) or whose campaign
+    is ABANDONED. `scan` is a `_RefScan` (None outside git); it is only read, so a store with
+    no record for the key costs no git command. Returns (live, changed)."""
+    committed = None
     live = []
     for r in records:
-        if r["key"] == key and r["number"] in committed:
-            continue
+        if r["key"] == key and scan is not None:
+            if committed is None:
+                committed = scan.numbers()
+            if r["number"] in committed:
+                continue
         if r.get("campaign") and _abandoned(cfg, r["campaign"]):
             continue
         live.append(r)
@@ -202,8 +228,9 @@ def _prune(cfg, records, key, top, rel_dir):
 def allocate(cfg, *, by, note=None, campaign=None, specs_dir=None) -> dict:
     """Reserve and return the next free spec number as a reservation record."""
     specs_dir, key, top, rel_dir = _resolve(cfg, specs_dir)
+    scan = _RefScan(top, rel_dir) if top else None
     with _locked(cfg):
-        records, changed = _prune(cfg, _load(cfg), key, top, rel_dir)
+        records, changed = _prune(cfg, _load(cfg), key, scan)
         if campaign:
             for r in records:
                 if r["key"] == key and r.get("campaign") == campaign:
@@ -212,7 +239,7 @@ def allocate(cfg, *, by, note=None, campaign=None, specs_dir=None) -> dict:
                     return r
         used = {r["number"] for r in records if r["key"] == key}
         if top:
-            used |= _worktree_numbers(top, rel_dir) | _branch_numbers(top, rel_dir)
+            used |= _worktree_numbers(top, rel_dir) | scan.numbers()
         else:
             used |= _dir_numbers(specs_dir)
         number = max(used, default=0) + 1
@@ -226,8 +253,9 @@ def allocate(cfg, *, by, note=None, campaign=None, specs_dir=None) -> dict:
 def list_reservations(cfg, *, specs_dir=None, all_keys=False) -> list:
     """Live reservations for the key (every key with `all_keys`), ordered by number."""
     _, key, top, rel_dir = _resolve(cfg, specs_dir)
+    scan = _RefScan(top, rel_dir) if top else None
     with _locked(cfg):
-        records, changed = _prune(cfg, _load(cfg), key, top, rel_dir)
+        records, changed = _prune(cfg, _load(cfg), key, scan)
         if changed:
             _save(cfg, records)
     return sorted((r for r in records if all_keys or r["key"] == key),
@@ -245,8 +273,9 @@ def release(cfg, number, *, specs_dir=None) -> dict:
     """Delete the reservation for `number` under the key; ValueError when there is none."""
     n = parse_number(number)
     _, key, top, rel_dir = _resolve(cfg, specs_dir)
+    scan = _RefScan(top, rel_dir) if top else None
     with _locked(cfg):
-        records, _ = _prune(cfg, _load(cfg), key, top, rel_dir)
+        records, _ = _prune(cfg, _load(cfg), key, scan)
         hit = next((r for r in records if r["key"] == key and r["number"] == n), None)
         if hit is None:
             _save(cfg, records)
@@ -267,21 +296,34 @@ def _tree_campaign(tree):
     return _base_campaign(branch[len("nw/"):]) if branch.startswith("nw/") else None
 
 
+def _own_refs(tree):
+    """Short names of the refs `tree` stands on: its local branch and its upstream (empty when
+    detached or without an upstream). A slug rename there is not a collision."""
+    own = set()
+    for rev in ("HEAD", "@{upstream}"):
+        name = (_git(tree, "rev-parse", "--abbrev-ref", rev) or "").strip()
+        if name and name != "HEAD":
+            own.add(name)
+    return own
+
+
 def collisions(cfg, *, specs_dir=None, tree=None, campaign=None) -> list:
     """Spec files of `tree` (default: the checkout holding `specs_dir`) whose number is used by
     a different filename on another worktree or ref ("filename"), or held by a live reservation
-    of another campaign ("reservation"). Never writes the store; sorted by number.
+    of another campaign ("reservation"). Read-only: takes no lock and never creates or writes
+    the store (`_save` replaces it atomically, so an unlocked read is whole); sorted by number.
 
-    A leftover or renamed-slug ref counts: delete the stale branch to clear it."""
+    A leftover or renamed-slug ref counts: delete the stale branch to clear it. The tree's own
+    branch and its upstream do not: a rename there is the tree's own change."""
     specs_dir, key, top, rel_dir = _resolve(cfg, specs_dir)
     if not top:
         return []
     tree = os.path.realpath(tree) if tree is not None else top
     campaign = _base_campaign(campaign) or _tree_campaign(tree)
-    own = f"worktree:{tree}"
-    seen = _number_files(top, rel_dir)
-    with _locked(cfg):
-        records, _ = _prune(cfg, _load(cfg), key, top, rel_dir)
+    own = {f"worktree:{tree}"} | _own_refs(tree)
+    scan = _RefScan(top, rel_dir)
+    seen = _number_files(top, rel_dir, scan)
+    records, _ = _prune(cfg, _load(cfg), key, scan)
     held = {r["number"]: r for r in records
             if r["key"] == key and r.get("campaign")
             and _base_campaign(r["campaign"]) != campaign}
@@ -292,7 +334,7 @@ def collisions(cfg, *, specs_dir=None, tree=None, campaign=None) -> list:
             continue
         n = int(m.group(1))
         base = {"number": n, "id": f"SPEC-{n:04d}", "file": f"{rel_dir}/{p.name}"}
-        others = {f: [loc for loc in locs if loc != own]
+        others = {f: [loc for loc in locs if loc not in own]
                   for f, locs in seen.get(n, {}).items() if f != p.name}
         others = {f: locs for f, locs in others.items() if locs}
         if others:
@@ -316,7 +358,7 @@ def number_taken(cfg, number, *, specs_dir=None, exclude_campaign=None) -> list:
     own = f"worktree:{top}"
     base = _base_campaign(exclude_campaign)
     locs = set()
-    for names in _number_files(top, rel_dir).get(n, {}).values():
+    for names in _number_files(top, rel_dir, _RefScan(top, rel_dir)).get(n, {}).values():
         for loc in names:
             if loc == own or (base and (loc == f"nw/{base}" or loc.endswith(f"/nw/{base}"))):
                 continue

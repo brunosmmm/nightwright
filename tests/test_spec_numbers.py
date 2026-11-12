@@ -1,4 +1,5 @@
 """Spec-number allocator (SPEC-0208): worktree/branch-aware reservations under a flock."""
+import fcntl
 import json
 import multiprocessing as mp
 import os
@@ -479,7 +480,7 @@ def test_allocate_sees_remote_tracking_refs_and_ignores_origin_head(tmp_path, cf
     _clone_push(tmp_path, bare, "0490-remote.md")
     _git(repo, "fetch", "-q", "origin")
     assert SN.allocate(cfg, by="t", specs_dir=_sd(repo))["number"] == 491
-    assert SN._scan_refs(str(repo)).count("refs/remotes/origin/HEAD") == 0
+    assert [r for r, _ in SN._scan_refs(str(repo))].count("refs/remotes/origin/HEAD") == 0
 
 
 def test_collisions_filename_other_branch_remote_and_worktree(tmp_path, cfg, repo):
@@ -618,6 +619,78 @@ def test_contract_docs_name_the_allocator_and_the_check():
         text = open(os.path.join(root, name), encoding="utf-8").read()
         assert "nw spec reserve" in text and "nw spec check-numbers" in text, name
         assert "(next free number)" not in text, name
+        assert "--from-idea" in text, name
     agents = open(os.path.join(root, "AGENTS.md"), encoding="utf-8").read()
     step = next(ln for ln in agents.splitlines() if "**New work:**" in ln)
     assert "nw spec reserve" in step
+
+
+# ---- SPEC-0583: cheaper scans, read-only collisions, own-branch rename -------------------------
+
+def _count_git(monkeypatch):
+    """Count `SN._git` calls by subcommand."""
+    real, calls = SN._git, []
+
+    def counted(cwd, *args):
+        calls.append(args[0])
+        return real(cwd, *args)
+    monkeypatch.setattr(SN, "_git", counted)
+    return calls
+
+
+def test_allocate_runs_one_ls_tree_per_distinct_commit(tmp_path, cfg, repo, monkeypatch):
+    _with_origin(tmp_path, repo)                      # origin/main shares main's commit
+    _git(repo, "branch", "same", "main")              # a second local ref at that commit
+    _commit_on(repo, "b1", "0002-b.md")               # one ref at a different commit
+    SN.allocate(cfg, by="t", campaign="C0", specs_dir=_sd(repo))      # a record to prune
+    calls = _count_git(monkeypatch)
+    assert SN.allocate(cfg, by="t", specs_dir=_sd(repo))["number"] == 4
+    assert calls.count("for-each-ref") == 1
+    assert calls.count("ls-tree") == 2                # main/same/origin/main + b1
+
+
+def test_prune_without_records_runs_no_ls_tree(tmp_path, cfg, repo, monkeypatch):
+    _with_origin(tmp_path, repo)
+    sd = _sd(repo)
+    calls = _count_git(monkeypatch)
+    assert SN.list_reservations(cfg, specs_dir=sd) == []
+    with pytest.raises(ValueError):
+        SN.release(cfg, 5, specs_dir=sd)
+    assert "ls-tree" not in calls and "for-each-ref" not in calls
+    rec = SN.allocate(cfg, by="t", specs_dir=sd)
+    calls.clear()
+    assert [r["number"] for r in SN.list_reservations(cfg, specs_dir=sd)] == [rec["number"]]
+    assert calls.count("for-each-ref") == 1 and calls.count("ls-tree") == 1
+
+
+def test_collisions_is_read_only(tmp_path, repo):
+    data = tmp_path / "fresh" / "data"
+    cfg = {"data_dir": str(data)}
+    _touch(repo, 7)
+    assert SN.collisions(cfg, specs_dir=_sd(repo)) == []
+    assert not data.exists() and not data.parent.exists()
+    data.mkdir(parents=True)
+    fd = os.open(data / "spec-reservations.lock", os.O_CREAT | os.O_RDWR)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX)                # an allocate in flight
+        _commit_on(repo, "b1", "0007-b.md")
+        assert [c["kind"] for c in SN.collisions(cfg, specs_dir=_sd(repo))] == ["filename"]
+    finally:
+        os.close(fd)
+    assert [p.name for p in data.iterdir()] == ["spec-reservations.lock"]
+
+
+def test_collisions_own_branch_slug_rename_is_not_a_collision(tmp_path, cfg, repo):
+    _with_origin(tmp_path, repo)
+    _git(repo, "branch", "-q", "--set-upstream-to=origin/main", "main")
+    sd = _sd(repo)
+    (sd / "0001-x.md").rename(sd / "0001-renamed.md")  # uncommitted rename, number 1
+    assert SN.collisions(cfg, specs_dir=sd) == []      # main and origin/main still hold 0001-x
+    _commit_on(repo, "stale", "0001-old.md")           # another branch, another slug
+    (c,) = SN.collisions(cfg, specs_dir=sd)
+    assert c["other"] == ["stale"] and "0001-old.md" in c["other_files"]
+    _git(repo, "branch", "-q", "-D", "stale")
+    _clone_push(tmp_path, tmp_path / "origin.git", "0001-r.md", branch="feature")
+    _git(repo, "fetch", "-q", "origin")
+    (c,) = SN.collisions(cfg, specs_dir=sd)
+    assert c["other"] == ["origin/feature"]
