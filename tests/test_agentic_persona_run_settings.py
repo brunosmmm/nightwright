@@ -287,7 +287,7 @@ def _req(cfg, profile, root, state, persona, tmp_path):
     ((None, "absent", None), ("sonnet", "medium", 1.0)),   # nightwright defaults
     (("effort: low\n", "absent", None), ("sonnet", "low", 1.0)),
     (("effort: low\n", None, {"model": "claude-x-1", "effort": "max"}),
-     ("claude-x-1", "max", 1.5)),
+     ("claude-x-1", "high", 1.5)),                      # explicit max, clamped (SPEC-0557)
 ])
 def test_build_request_declared_reviewer_layering(env, tmp_path, layers, want):
     cfg, user, root, pdir, state = env

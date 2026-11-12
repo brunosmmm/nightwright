@@ -140,6 +140,8 @@ Per AGENTS.md.
   through `pass:cursor/sdk` (pinentry) and no Pi provider key is in the environment. Their
   lowered ids are covered by the catalog test (`grok-4.7-high` and `gpt-5.6-sol-high` are
   legal catalog efforts) and the Pi map already has `high` rows.
+- **Gate.** The first close gate (GATEJOB-2451) failed on one test that pinned an explicit
+  `effort: max` (`test_agentic_persona_run_settings.py`); its expectation is now `high`.
 
 ## Open questions
 
