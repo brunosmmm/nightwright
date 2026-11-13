@@ -1,7 +1,7 @@
 ---
 id: SPEC-0597
 title: A security major from any reviewer always blocks
-status: accepted
+status: done
 owner: user
 created: 2026-11-12
 updated: 2026-11-12
@@ -186,7 +186,7 @@ it at their next triage.
 - [x] Test plan executed; affected tests pass; replay recorded.
 - [x] No regressions (close gate).
 - [x] Spec body updated to match what shipped.
-- [ ] `docs/LEDGER.md` updated.
+- [x] `docs/LEDGER.md` updated.
 
 ## As shipped
 
