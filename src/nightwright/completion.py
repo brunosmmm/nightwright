@@ -163,6 +163,7 @@ UNCOMPLETED_EXEMPT: dict[str, str] = {
     "tasks:tag": _WIRING,
     "tui:tag": _WIRING,
     # workers
+    "hosts add:name": _FREE,
     "projects add:name": _FREE,
     "queue gates:worker": _WORKERS,
     "queue jobs bump:worker": _WORKERS,

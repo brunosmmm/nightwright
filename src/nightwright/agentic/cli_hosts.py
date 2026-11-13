@@ -9,11 +9,20 @@ import sys
 
 import click
 
+from .. import completion as C
 from . import federation as F
 from . import federation_host as FH
 from . import hosts as H
 from . import pull_jobs as PJ
 from .store import now_iso
+
+
+@C._soft
+def complete_host_name(ctx, param, incomplete):
+    """Registered host names (the hub's hosts.json)."""
+    names = [r["name"] for r in H.load(C._cfg_from_ctx(ctx))
+             if isinstance(r, dict) and isinstance(r.get("name"), str)]
+    return C._items(names, incomplete)
 
 
 @click.group("hosts")
@@ -98,7 +107,7 @@ def hosts_list(cfg):
 
 
 @hosts_group.command("rm")
-@click.argument("name")
+@click.argument("name", shell_complete=complete_host_name)
 @click.pass_obj
 def hosts_rm(cfg, name):
     if not H.NAME_RE.fullmatch(name):
@@ -127,7 +136,7 @@ def hosts_rm(cfg, name):
 
 
 @hosts_group.command("on")
-@click.argument("name")
+@click.argument("name", shell_complete=complete_host_name)
 @click.pass_obj
 def hosts_on(cfg, name):
 
@@ -141,7 +150,7 @@ def hosts_on(cfg, name):
 
 
 @hosts_group.command("off")
-@click.argument("name")
+@click.argument("name", shell_complete=complete_host_name)
 @click.pass_obj
 def hosts_off(cfg, name):
 
