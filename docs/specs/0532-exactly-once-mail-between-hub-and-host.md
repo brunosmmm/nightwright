@@ -656,6 +656,21 @@ any other string raising `ValueError`. The source does not reference `hosts`,
   `queued c7c5…2d42 → human@box`, and two ticks left one record in the host `human` inbox.
   `nw mailbox send --to human --from conductor local` wrote hub `human:1` and no outbox line.
 
+### Test record (2026-11-12, round 2)
+
+- `uv run pytest -q tests/test_federation_mail.py` — 31 passed. Added: unsigned 4xx on POST and
+  unsigned 409 on GET over a real socket (tampered `response_headers`), `relay_mail` once after a
+  raising `relay_tick` and the `federation_mail_failed` journal, `host_mail_rejected` dedupe when the
+  ack write fails and when the events fsync fails, a task finishing during an earlier host's apply
+  staying unapplied, the multi-page 409 replay window (65 host lines in pages of 20), POST after a
+  verified 409, `MAIL_LIMIT` and `MAIL_POST_BYTES` batch caps, 200-char reason truncation, odd 200
+  results and non-JSON 5xx, non-ASCII bodies, malformed `post_mail` elements, the host rescan from
+  the last `inbox_end`, and the hub delivery filter and `ts`/`re`/`from` copying. The bare
+  `monkeypatch.undo()` calls are `monkeypatch.context()` blocks. Mutation checks: reverting the done
+  set or the replay window fails the matching test.
+- `python3 tools/test_tiers.py --check` and `python3 tools/spec_lint.py` — see the close gate. The
+  full suite is left to gating.
+
 ### As shipped
 
 - **Mail 409 replay.** The Design says a verified mail 409 sets `mail_offset` to `0` and leaves
@@ -665,6 +680,18 @@ any other string raising `ValueError`. The source does not reference `hosts`,
   set, `deliver_conductor` and the `host_mail_rejected` dedupe rescan from byte `0` of the hub
   inbox and events log; the next page checkpoint clears it. The two offsets are still untouched
   by the 409. The key is absent in every other state.
+- **Replay window (round 2).** `cursor.mail_replay` holds the old `mail_offset`, the high-water
+  mark of what may already be on the hub, not a bare flag. The hub offsets stay unchanged and the
+  rescans stay from byte `0` on every replayed page; only the page whose `next_offset` reaches the
+  mark (or a page that makes no progress, i.e. the host end) checkpoints them and clears the key.
+  Intermediate pages move only `mail_offset`. A 409 inside a window keeps the larger mark.
+- **POST batch bytes.** Besides `MAIL_LIMIT` lines, a POST batch stops before its body passes
+  `MAIL_POST_BYTES` (2 MiB), so the host's 4 MiB body cap (a signed 401) cannot take innocent lines
+  with it. The first pending line is always taken, so a single message over the host cap alone is
+  rejected as `unauthorized`, which is terminal as the Design's 4xx rule says. Retrying a verified
+  401, 408 or 429 would deviate from AC4 and is left as a follow-up.
+- **Apply set.** `relay_mail` applies only the futures `cf.wait` returned as done; a task that
+  finishes while an earlier host is being applied is dropped for that tick.
 - **Page checkpoint.** A page that consumed nothing (`next_offset` equals `mail_offset`, no
   replay) writes no cursor update, so an idle host does not rewrite `hosts.json` each tick. The
   `hub_mail_events_offset` is also not advanced on a tick whose ack or rejected-event write was

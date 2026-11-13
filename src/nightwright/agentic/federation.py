@@ -43,6 +43,7 @@ EVENTS_LIMIT = 500
 EVENTS_MAX_BYTES = 1048576
 MAIL_LIMIT = 200                  # SPEC-0532
 MAIL_MAX_BYTES = 1048576
+MAIL_POST_BYTES = 2097152         # one POST batch stops here (the host refuses bodies over 4 MiB)
 MAX_CAMPAIGNS = 1000
 MAX_STR = 256
 
@@ -973,14 +974,20 @@ def _read_outbox(cfg, name: str) -> tuple[list[dict], set[str]]:
     return msgs, acked
 
 
-def pending_mail(cfg, name: str, limit: int = MAIL_LIMIT) -> list[dict]:
+def pending_mail(cfg, name: str, limit: int = MAIL_LIMIT,
+                 max_bytes: int = MAIL_POST_BYTES) -> list[dict]:
+    """The unacked outbox lines in file order: at most `limit`, and at most `max_bytes` of body
+    (the first line is always taken, so one large message is not stuck behind the cap)."""
     msgs, acked = _read_outbox(cfg, name)
-    out, seen = [], set()
+    out, seen, size = [], set(), 0
     for m in msgs:
         u = m["msg_uid"]
         if u in acked or u in seen:
             continue
         seen.add(u)
+        size += len(json.dumps(m, ensure_ascii=False, separators=(",", ":")).encode("utf-8")) + 1
+        if out and size > max_bytes:
+            break
         out.append(m)
         if len(out) >= limit:
             break
@@ -1072,7 +1079,7 @@ def deliver_conductor(cfg, message: dict, host: str, *, cursor: dict | None = No
     `mailbox.send` or `validate_address`."""
     if cursor is None:
         cursor = H.find(H.load(cfg), host).get("cursor") or {}
-    replay = bool(cursor.get("mail_replay"))
+    replay = bool(_replay_mark(cursor))
     uid = message["msg_uid"]
     sender = message.get("from") if isinstance(message.get("from"), str) and message["from"] \
         else "host"
@@ -1112,8 +1119,11 @@ def _apply_mail_page(cfg, name: str, cursor: dict, doc: dict, now, *, events_ok:
     for m in doc["messages"]:
         if _valid_mail(m):                  # anything else is consumed without a delivery
             deliver_conductor(cfg, m, name, cursor=cursor, now=now)
-    nxt, replay = doc["next_offset"], bool(cursor.get("mail_replay"))
-    if nxt == cursor.get("mail_offset") and not replay:
+    nxt, mark = doc["next_offset"], _replay_mark(cursor)
+    if nxt == cursor.get("mail_offset") and not mark:
+        return
+    if mark and nxt < mark and nxt != cursor.get("mail_offset"):
+        _set_cursor(cfg, name, mail_offset=nxt)             # still replaying: window stays open
         return
     fields = {"mail_offset": nxt, "hub_inbox_offset": _inbox_size(cfg)}
     if events_ok:
@@ -1128,11 +1138,20 @@ def _apply_mail_page(cfg, name: str, cursor: dict, doc: dict, now, *, events_ok:
     H.update(cfg, fn)
 
 
-def _apply_mail_reset(cfg, name: str) -> None:
-    """A verified mail 409: read from 0 next tick. `mail_replay` makes that read's rescans start
-    at byte 0 of the hub logs, so an already delivered `msg_uid` is found; the two hub offsets and
-    the events log are left as they were."""
-    _set_cursor(cfg, name, mail_offset=0, mail_replay=True)
+def _replay_mark(cursor: dict) -> int:
+    """The host offset a mail replay runs up to (0 when none is open)."""
+    m = cursor.get("mail_replay")
+    return m if _is_int(m) and m > 0 else 0
+
+
+def _apply_mail_reset(cfg, name: str, cursor: dict) -> None:
+    """A verified mail 409: read from 0 next tick. `mail_replay` (the old `mail_offset`, the
+    high-water mark of what may already be on the hub) makes every rescan until a page checkpoint
+    reaches that mark start at byte 0 of the hub logs, so an already delivered `msg_uid` is found;
+    the two hub offsets and the events log are left as they were."""
+    off = cursor.get("mail_offset")
+    mark = max(_replay_mark(cursor), off if _is_int(off) else 0, 1)
+    _set_cursor(cfg, name, mail_offset=0, mail_replay=mark)
 
 
 def _emit_rejected(cfg, name: str, cursor: dict, line: dict, reason: str, now) -> None:
@@ -1145,7 +1164,7 @@ def _emit_rejected(cfg, name: str, cursor: dict, line: dict, reason: str, now) -
         return ([] if have else [_health_event("host_mail_rejected", name, now, msg_uid=uid,
                                                to=line.get("to"), reason=reason)]), None
 
-    _locked_append(cfg, name, 0 if cursor.get("mail_replay") else cursor.get("hub_mail_events_offset"),
+    _locked_append(cfg, name, 0 if _replay_mark(cursor) else cursor.get("hub_mail_events_offset"),
                    build)
 
 
@@ -1248,14 +1267,14 @@ def relay_mail(cfg, *, now=None) -> None:
             off = off if _is_int(off) and off >= 0 else 0
             posted = pending_mail(cfg, r["name"])
             jobs[r["name"]] = (posted, pool.submit(_mail_task, r, cfg, off, posted))
-        cf.wait([f for _, f in jobs.values()], timeout=POOL_WAIT_S)
+        finished, _ = cf.wait([f for _, f in jobs.values()], timeout=POOL_WAIT_S)
     finally:
         pool.shutdown(wait=False, cancel_futures=True)
 
     for r in hosts:
         name = r["name"]
         posted, fut = jobs[name]
-        if not fut.done():
+        if fut not in finished:
             continue                                        # dropped: neither acked nor moved
         try:
             out = fut.result()
@@ -1270,6 +1289,6 @@ def relay_mail(cfg, *, now=None) -> None:
             if kind == "page":
                 _apply_mail_page(cfg, name, cur, val, now, events_ok=ok)
             elif kind == "reset":
-                _apply_mail_reset(cfg, name)
+                _apply_mail_reset(cfg, name, cur)
         except Exception as e:                              # noqa: BLE001 - one host must not stop the rest
             log.warning("federation mail: host %s not applied: %s", name, e)

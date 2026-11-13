@@ -299,12 +299,12 @@ def test_verified_4xx_is_terminal(tmp_path, monkeypatch):
         F.relay_mail(hub)
     assert [(x["result"], x["reason"]) for x in _acks(hub)] == [("rejected", "bad_request")] * 2
     assert len(_hub_events(hub, "host_mail_rejected")) == 2
-    spy = _Spy(monkeypatch)
-    F.relay_mail(hub)
+    with monkeypatch.context() as mp:
+        spy = _Spy(mp)
+        F.relay_mail(hub)
     assert spy.posts() == [] and len(_hub_events(hub, "host_mail_rejected")) == 2
     assert not M._inbox_path(host, "human").exists()
     c = _send(hub, "c")
-    monkeypatch.undo()
     with monkeypatch.context() as mp:
         _Spy(mp, post=_stub(404, b""))
         F.relay_mail(hub)
@@ -314,8 +314,9 @@ def test_verified_4xx_is_terminal(tmp_path, monkeypatch):
         spy = _Spy(mp, post=_boom("missing response signature"))
         F.relay_mail(hub)
     assert all(x["msg_uid"] != d["msg_uid"] for x in _acks(hub))
-    spy = _Spy(monkeypatch)
-    F.relay_mail(hub)
+    with monkeypatch.context() as mp:
+        spy = _Spy(mp)
+        F.relay_mail(hub)
     assert [m["msg_uid"] for m in spy.posts()[0]] == [d["msg_uid"]]
     assert {a["msg_uid"], b["msg_uid"], c["msg_uid"]} <= {x["msg_uid"] for x in _acks(hub)}
     srv.shutdown()
@@ -337,9 +338,10 @@ def test_rejected_address_is_acked_once(tmp_path, monkeypatch):
     assert sorted(e["data"]["msg_uid"] for e in evs) == sorted(got)
     assert all(e["host"] == "box" and e["campaign"] is None and "origin" not in e
                and e["by"] == "federation" for e in evs)
-    spy = _Spy(monkeypatch)
-    F.relay_mail(hub)
-    F.relay_mail(hub)
+    with monkeypatch.context() as mp:
+        spy = _Spy(mp)
+        F.relay_mail(hub)
+        F.relay_mail(hub)
     assert spy.posts() == [] and len(_hub_events(hub, "host_mail_rejected")) == 4
     srv.shutdown()
 
@@ -351,9 +353,9 @@ def test_mail_page_seeks_and_caps(tmp_path, monkeypatch):
     p.write_bytes(pad + tail)
     decoded = []
     real = json.loads
-    monkeypatch.setattr(FH.json, "loads", lambda raw, *a, **k: (decoded.append(raw), real(raw))[1])
-    msgs, nxt = FH.read_mail_page(p, len(pad), 200)
-    monkeypatch.undo()
+    with monkeypatch.context() as mp:
+        mp.setattr(FH.json, "loads", lambda raw, *a, **k: (decoded.append(raw), real(raw))[1])
+        msgs, nxt = FH.read_mail_page(p, len(pad), 200)
     assert len(decoded) == 3 and [m["id"] for m in msgs] == [0, 1, 2]
     assert nxt == len(pad) + len(tail)
     big = b'{"x":"' + b"a" * F.MAIL_MAX_BYTES + b'"}\n'
@@ -431,7 +433,10 @@ def test_mail_409_resets_without_duplicates(tmp_path, monkeypatch):
     assert good == len(M._inbox_path(host, "conductor").read_bytes())
     H.update(hub, lambda rs: H.find(rs, "box")["cursor"].__setitem__("mail_offset", good - 3))
     keep = {k: _cursor(hub)[k] for k in ("hub_inbox_offset", "hub_mail_events_offset")}
-    F.relay_mail(hub)
+    queued = _send(hub, "posted after a 409")
+    F.relay_mail(hub)                                       # a verified 409 still POSTs the outbox
+    assert [a["msg_uid"] for a in _acks(hub)] == [queued["msg_uid"]]
+    assert len(_inbox(host, "human")) == 1
     after = _cursor(hub)
     assert after["mail_offset"] == 0 and {k: after[k] for k in keep} == keep
     assert not _hub_events(hub, "host_cursor_reset") and len(_inbox(hub, "conductor")) == 1
@@ -482,8 +487,10 @@ def test_conductor_delivery_one_event(tmp_path, monkeypatch):
     c = M.send(host, to="conductor", frm="human", text="third")
     mark = E.events_path(hub).stat().st_size
     real = F._fsync_events
+    off = _cursor(hub)["mail_offset"]
     monkeypatch.setattr(F, "_fsync_events", lambda cfg: (_ for _ in ()).throw(OSError("x")))
     F.relay_mail(hub)
+    assert _cursor(hub)["mail_offset"] == off
     monkeypatch.setattr(F, "_fsync_events", real)
     with open(E.events_path(hub), "r+b") as f:
         f.truncate(mark)
@@ -536,7 +543,7 @@ def test_delivery_fsync_and_checkpoint(tmp_path, monkeypatch):
     seen = []
     monkeypatch.setattr(F, "json", _J(seen))
     F.relay_mail(hub)
-    assert not [r for r in seen if b'"pad"' in r]
+    assert seen and not [r for r in seen if b'"pad"' in r]
     assert [r["msg_uid"] for r in _inbox(hub, "conductor")][-1] == a["msg_uid"]
     assert len([r for r in _inbox(hub, "conductor") if r.get("msg_uid") == a["msg_uid"]]) == 1
     assert len([e for e in _hub_events(hub, "message") if e["data"]["msg_uid"] == a["msg_uid"]]) == 1
@@ -559,7 +566,7 @@ def test_delivery_fsync_and_checkpoint(tmp_path, monkeypatch):
     seen.clear()
     monkeypatch.setattr(F, "json", _J(seen))
     F.relay_mail(hub)
-    assert not [r for r in seen if b'"pad"' in r]
+    assert seen and not [r for r in seen if b'"pad"' in r]
     assert len([r for r in _inbox(hub, "conductor") if r.get("msg_uid") == b["msg_uid"]]) == 1
     assert len([e for e in _hub_events(hub, "message") if e["data"]["msg_uid"] == b["msg_uid"]]) == 1
     srv.shutdown()
@@ -752,3 +759,341 @@ def test_inert_and_no_queue_import(tmp_path, monkeypatch):
     assert not _queue_import_violations((root / "federation_host.py").read_text(),
                                         federation_host_payload_only=True)
     assert "subprocess" not in (root / "federation_host.py").read_text()
+
+
+# ---- review round: signature path, tick isolation, dedupe, caps, replay window ----------------
+
+def _tamper(monkeypatch, method):
+    """Real socket, real host: every response to `method` leaves the host with a bad signature."""
+    real = F.response_headers
+
+    def headers(secret, m, *a, **k):
+        if m == method:
+            return {"X-NW-Sig-Ts": "1", "X-NW-Sig": "bad"}
+        return real(secret, m, *a, **k)
+
+    monkeypatch.setattr(F, "response_headers", headers)
+    return real
+
+
+def test_unsigned_mail_responses_over_a_real_socket(tmp_path, monkeypatch):
+    hub, host, srv, _ = _pair(tmp_path, monkeypatch)
+    _ready(hub)
+    line = _send(hub, "pending")
+    # a signed 401 from the host's body cap, but the signature is bad: not a verified 4xx
+    with monkeypatch.context() as mp:
+        mp.setattr(FH, "MAX_BODY_BYTES", 10)
+        _tamper(mp, "POST")
+        F.relay_mail(hub)
+    assert _acks(hub) == [] and not _hub_events(hub, "host_mail_rejected")
+    assert not M._inbox_path(host, "human").exists()
+    # the same 401 with a good signature is verified (and terminal) - this is what the tamper blocked
+    with monkeypatch.context() as mp:
+        mp.setattr(FH, "MAX_BODY_BYTES", 10)
+        spy = _Spy(mp)
+        F.relay_mail(hub)
+    assert [a["reason"] for a in _acks(hub)] == ["unauthorized"] and len(spy.posts()) == 1
+    # an unsigned 409 on the GET: no reset, no POST, nothing appended
+    other = _send(hub, "next")
+    H.update(hub, lambda rs: H.find(rs, "box")["cursor"].__setitem__("mail_offset", 5))
+    before = (_cursor(hub), _lines(E.events_path(hub)))
+    with monkeypatch.context() as mp:
+        _tamper(mp, "GET")
+        spy = _Spy(mp)
+        F.relay_mail(hub)
+    assert spy.posts() == [] and (_cursor(hub), _lines(E.events_path(hub))) == before
+    assert [a["msg_uid"] for a in _acks(hub)] == [line["msg_uid"]]
+    assert F.pending_mail(hub, "box")[0]["msg_uid"] == other["msg_uid"]
+    srv.shutdown()
+
+
+def test_tick_runs_mail_once_after_a_raising_relay_tick(tmp_path, monkeypatch):
+    import nightwright.agentic.federation as FED
+    repo = make_repo(tmp_path)
+    cfg = make_cfg(tmp_path, repo, script(tmp_path, []))
+    calls, journal = [], []
+    monkeypatch.setattr(Q, "journal", lambda c, name, **kw: journal.append((name, kw)))
+    monkeypatch.setattr(FED, "relay_tick", lambda c, **k: (calls.append("tick"), 1 / 0)[1])
+    monkeypatch.setattr(FED, "relay_mail", lambda c, **k: calls.append("mail"))
+    assert Q.tick(cfg) is not None
+    assert calls == ["tick", "mail"]
+    assert [n for n, _ in journal if n.startswith("federation_")] == ["federation_relay_failed"]
+    calls.clear()
+    journal.clear()
+    monkeypatch.setattr(FED, "relay_tick", lambda c, **k: calls.append("tick"))
+    monkeypatch.setattr(FED, "relay_mail", lambda c, **k: (calls.append("mail"), 1 / 0)[1])
+    assert Q.tick(cfg) is not None
+    assert calls == ["tick", "mail"]
+    assert [n for n, _ in journal if n.startswith("federation_")] == ["federation_mail_failed"]
+
+
+def _rejected_line(hub):
+    _raw_outbox(hub, msg_uid="1" * 32, to="steward:Missing")
+    return "1" * 32
+
+
+def test_rejected_event_is_not_duplicated_when_the_ack_write_fails(tmp_path, monkeypatch):
+    hub, host, srv, _ = _pair(tmp_path, monkeypatch)
+    _ready(hub)
+    uid = _rejected_line(hub)
+    real = F._append_durable
+    left = [1]
+
+    def flaky(path, line):
+        if left and path == F.outbox_path(hub, "box"):
+            left.pop()
+            raise OSError("ack write")
+        return real(path, line)
+
+    with monkeypatch.context() as mp:
+        mp.setattr(F, "_append_durable", flaky)
+        F.relay_mail(hub)
+    assert _acks(hub) == [] and len(_hub_events(hub, "host_mail_rejected")) == 1
+    F.relay_mail(hub)                                       # retried: found in the tail, acked
+    assert [a["msg_uid"] for a in _acks(hub)] == [uid]
+    assert len(_hub_events(hub, "host_mail_rejected")) == 1
+    F.relay_mail(hub)
+    assert len(_hub_events(hub, "host_mail_rejected")) == 1 and len(_acks(hub)) == 1
+    srv.shutdown()
+
+
+def test_rejected_event_fsync_failure_does_not_ack(tmp_path, monkeypatch):
+    hub, host, srv, _ = _pair(tmp_path, monkeypatch)
+    _ready(hub)
+    uid = _rejected_line(hub)
+    real = F._fsync_events
+    left = [1]
+
+    def flaky(cfg):
+        if left:
+            left.pop()
+            raise OSError("events fsync")
+        return real(cfg)
+
+    with monkeypatch.context() as mp:
+        mp.setattr(F, "_fsync_events", flaky)
+        F.relay_mail(hub)
+    assert _acks(hub) == [] and [m["msg_uid"] for m in F.pending_mail(hub, "box")] == [uid]
+    F.relay_mail(hub)
+    assert [a["msg_uid"] for a in _acks(hub)] == [uid]
+    assert len(_hub_events(hub, "host_mail_rejected")) == 1
+    srv.shutdown()
+
+
+def test_a_task_that_finishes_during_an_earlier_apply_is_not_applied(tmp_path, monkeypatch):
+    hub, host, srv, _ = _pair(tmp_path, monkeypatch)
+    hub, host2, srv2, _ = _pair(tmp_path, monkeypatch, name="box2", hub=hub)
+    _ready(hub)
+    _ready(hub, "box2")
+    _send(hub, "to a")
+    _send(hub, "to b", to="human@box2")
+    M.send(host2, to="conductor", frm="human", text="from b")
+    release, finished = threading.Event(), threading.Event()
+    real_task = F._mail_task
+
+    def task(rec, cfg, offset, pending):
+        if rec["name"] == "box2":
+            release.wait(waits.WAIT_S)
+        try:
+            return real_task(rec, cfg, offset, pending)
+        finally:
+            if rec["name"] == "box2":
+                finished.set()
+
+    real_apply = F._apply_post
+
+    def apply(cfg, name, *a):
+        if name == "box":                                   # B finishes while A is being applied
+            release.set()
+            assert finished.wait(waits.WAIT_S)
+        return real_apply(cfg, name, *a)
+
+    monkeypatch.setattr(F, "POOL_WAIT_S", 0.05)
+    monkeypatch.setattr(F, "_mail_task", task)
+    monkeypatch.setattr(F, "_apply_post", apply)
+    F.relay_mail(hub)
+    assert len(_acks(hub, "box")) == 1 and _acks(hub, "box2") == []
+    assert _cursor(hub, "box2")["mail_offset"] == 0 and len(_inbox(host2, "human")) == 1
+    assert [m for m in _inbox(hub, "conductor")] == []
+    monkeypatch.setattr(F, "POOL_WAIT_S", 2.5)
+    monkeypatch.setattr(F, "_mail_task", real_task)
+    F.relay_mail(hub)
+    assert [a["result"] for a in _acks(hub, "box2")] == ["dup"]
+    assert len(_inbox(host2, "human")) == 1 and len(_inbox(hub, "conductor")) == 1
+    srv.shutdown()
+    srv2.shutdown()
+
+
+def test_mail_409_replay_window_spans_every_page(tmp_path, monkeypatch):
+    hub, host, srv, _ = _pair(tmp_path, monkeypatch)
+    monkeypatch.setattr(F, "MAIL_LIMIT", 20)               # pages of 20 host lines
+    _ready(hub)
+    sent = [M.send(host, to="conductor", frm="human", text=f"m{i}")["msg_uid"] for i in range(65)]
+    F.relay_mail(hub)
+    assert len(_inbox(hub, "conductor")) == 20              # the hub-side page limit
+    for _ in range(3):
+        F.relay_mail(hub)
+    end = len(M._inbox_path(host, "conductor").read_bytes())
+    assert _cursor(hub)["mail_offset"] == end and len(_inbox(hub, "conductor")) == 65
+    H.update(hub, lambda rs: H.find(rs, "box")["cursor"].__setitem__("mail_offset", end - 3))
+    keep = {k: _cursor(hub)[k] for k in ("hub_inbox_offset", "hub_mail_events_offset")}
+    F.relay_mail(hub)
+    cur = _cursor(hub)
+    assert cur["mail_offset"] == 0 and cur["mail_replay"] == end - 3
+    for _ in range(3):                                      # pages 1-3 of 4: the window stays open
+        F.relay_mail(hub)
+        cur = _cursor(hub)
+        assert cur["mail_replay"] == end - 3 and {k: cur[k] for k in keep} == keep
+        assert len(_inbox(hub, "conductor")) == 65 and len(_hub_events(hub, "message")) == 65
+    F.relay_mail(hub)                                       # the page that reaches the mark
+    cur = _cursor(hub)
+    assert cur["mail_offset"] == end and "mail_replay" not in cur
+    assert [r["msg_uid"] for r in _inbox(hub, "conductor")] == sent
+    assert sorted(e["data"]["msg_uid"] for e in _hub_events(hub, "message")) == sorted(sent)
+    srv.shutdown()
+
+
+def test_mail_409_on_an_emptied_host_inbox_closes_the_window(tmp_path, monkeypatch):
+    hub, host, srv, _ = _pair(tmp_path, monkeypatch)
+    _ready(hub)
+    M.send(host, to="conductor", frm="human", text="x")
+    F.relay_mail(hub)
+    M._inbox_path(host, "conductor").write_bytes(b"")       # the host log was replaced
+    F.relay_mail(hub)                                       # 409: offset past the end
+    assert _cursor(hub)["mail_offset"] == 0 and _cursor(hub)["mail_replay"] > 0
+    F.relay_mail(hub)                                       # an empty page at 0: nothing to replay
+    assert "mail_replay" not in _cursor(hub)
+    srv.shutdown()
+
+
+def test_outbox_batches_are_capped_by_count_and_bytes(tmp_path, monkeypatch):
+    hub, host, srv, _ = _pair(tmp_path, monkeypatch)
+    _ready(hub)
+    uids = [f"{i:032x}" for i in range(205)]
+    for u in uids:
+        _raw_outbox(hub, msg_uid=u)
+    with monkeypatch.context() as mp:
+        spy = _Spy(mp)
+        F.relay_mail(hub)
+        F.relay_mail(hub)
+    first, second = spy.posts()
+    assert [m["msg_uid"] for m in first] == uids[:200]
+    assert [m["msg_uid"] for m in second] == uids[200:]
+    assert F.pending_mail(hub, "box") == []
+    # bytes: a batch stops before it passes MAIL_POST_BYTES, but one big line always goes alone
+    big = "x" * 500000
+    path = F.outbox_path(hub, "box")
+    path.unlink()
+    ids = [f"{i + 1000:032x}" for i in range(7)]
+    for u in ids:
+        _raw_outbox(hub, msg_uid=u, text=big)
+    batch = F.pending_mail(hub, "box")
+    assert [m["msg_uid"] for m in batch] == ids[:4]
+    assert len(F._mail_body(batch)) <= F.MAIL_POST_BYTES
+    path.unlink()
+    _raw_outbox(hub, msg_uid=ids[0], text="y" * (F.MAIL_POST_BYTES + 5))
+    _raw_outbox(hub, msg_uid=ids[1])
+    assert [m["msg_uid"] for m in F.pending_mail(hub, "box")] == [ids[0]]
+    srv.shutdown()
+
+
+def test_ack_reasons_are_truncated_and_odd_results_stay_pending(tmp_path, monkeypatch):
+    hub, host, srv, _ = _pair(tmp_path, monkeypatch)
+    _ready(hub)
+    a, b = _send(hub, "a"), _send(hub, "b")
+    with monkeypatch.context() as mp:
+        _Spy(mp, post=_stub(400, {"error": "e" * 500}))
+        F.relay_mail(hub)
+    assert [len(x["reason"]) for x in _acks(hub)] == [200, 200]
+    assert all(len(e["data"]["reason"]) == 200 for e in _hub_events(hub, "host_mail_rejected"))
+    c, d, e, f, g = (_send(hub, t) for t in "cdefg")
+    foreign = "f" * 32
+    doc = {"schema": "nw.federation.mail.v1", "results": [
+        {"msg_uid": c["msg_uid"], "result": "weird", "seq": 1},                 # unknown result
+        {"msg_uid": foreign, "result": "delivered", "seq": 2},                  # not in the POST
+        {"msg_uid": d["msg_uid"], "result": "delivered", "seq": 3},
+        {"msg_uid": d["msg_uid"], "result": "dup", "seq": 4},                   # duplicate element
+        {"msg_uid": e["msg_uid"], "result": "delivered"},                       # no integer seq
+        {"msg_uid": f["msg_uid"], "result": "dup", "seq": "7"},
+        "junk"]}                                                                # g: missing
+    with monkeypatch.context() as mp:
+        _Spy(mp, post=_stub(200, doc))
+        F.relay_mail(hub)
+    got = [x for x in _acks(hub) if x["msg_uid"] in {c["msg_uid"], d["msg_uid"], e["msg_uid"],
+                                                     f["msg_uid"], g["msg_uid"], foreign}]
+    assert got == [{"msg_uid": d["msg_uid"], "result": "delivered", "seq": 3}]
+    assert [m["msg_uid"] for m in F.pending_mail(hub, "box")] == [
+        c["msg_uid"], e["msg_uid"], f["msg_uid"], g["msg_uid"]]
+    for status, body in ((503, b"<html>down</html>"), (502, b""), (200, b"[]"), (200, b"nope")):
+        with monkeypatch.context() as mp:
+            _Spy(mp, post=_stub(status, body))
+            F.relay_mail(hub)
+        assert len(F.pending_mail(hub, "box")) == 4
+    srv.shutdown()
+
+
+def test_non_ascii_text_round_trips_signed(tmp_path, monkeypatch):
+    hub, host, srv, _ = _pair(tmp_path, monkeypatch)
+    _ready(hub)
+    text = "héllo ✓ 日本語"
+    _send(hub, text)
+    with monkeypatch.context() as mp:
+        spy = _Spy(mp)
+        F.relay_mail(hub)
+    assert text.encode("utf-8") in spy.calls[-1][2] and b"\\u" not in spy.calls[-1][2]
+    assert _inbox(host, "human")[0]["text"] == text and len(_acks(hub)) == 1
+    srv.shutdown()
+
+
+def test_post_mail_rejects_malformed_elements(tmp_path):
+    host = _mk(tmp_path, "host")
+    ok = {"msg_uid": UID, "to": "human", "from": "c", "kind": "info", "text": "t"}
+    res = FH.post_mail(host, [{**ok, "from": ""}, {k: v for k, v in ok.items() if k != "from"},
+                              {**ok, "from": 5}, 5, "str", None, {**ok, "msg_uid": 7}])
+    assert [r["result"] for r in res] == ["rejected"] * 7
+    assert [r["reason"] for r in res] == ["bad_message"] * 3 + ["bad_msg_uid"] * 4
+    assert [r["msg_uid"] for r in res] == [UID, UID, UID, "", "", "", ""]
+    assert not M._inbox_path(host, "human").exists()
+
+
+def test_host_post_rescans_from_the_last_received_inbox_end(tmp_path, monkeypatch):
+    host = _mk(tmp_path, "host")
+    ipath = M._inbox_path(host, "human")
+    ipath.parent.mkdir(parents=True, exist_ok=True)
+    ipath.write_bytes(b"".join(b'{"pad":%d,"seq":%d}\n' % (i, i + 1) for i in range(80)))
+    mk = lambda u, t: {"msg_uid": u, "to": "human", "from": "c", "kind": "info", "text": t}
+    assert FH.post_mail(host, [mk("1" * 32, "one")])[0]["result"] == "delivered"
+    seen = []
+    monkeypatch.setattr(FH, "json", _J(seen))
+    assert FH.post_mail(host, [mk("2" * 32, "two")])[0] == {
+        "msg_uid": "2" * 32, "result": "delivered", "seq": 82}
+    assert seen and not [r for r in seen if b'"pad"' in r]
+
+
+def test_hub_delivery_filter_and_field_copying(tmp_path, monkeypatch):
+    hub, host, srv, _ = _pair(tmp_path, monkeypatch)
+    _ready(hub)
+    cp = M._inbox_path(host, "conductor")
+    cp.parent.mkdir(parents=True, exist_ok=True)
+    base = {"schema": "nw.message.v1", "from": "human", "kind": "info", "text": "t",
+            "campaign": None, "re": None}
+    rows = [{**base, "seq": 1, "msg_uid": "1" * 32, "kind": "nope"},        # bad kind
+            {**base, "seq": 2, "msg_uid": "2" * 32, "text": "  "},          # empty text
+            {**base, "seq": 3, "msg_uid": "3" * 32, "text": {"x": 1}},      # text not a string
+            {**base, "seq": 4, "msg_uid": "4" * 32, "from": None, "ts": "2026-01-02T03:04:05+00:00",
+             "re": "C-9", "campaign": 5, "needs_reply": True},
+            {**base, "seq": 5, "msg_uid": "5" * 32, "ts": 5, "re": 7}]
+    cp.write_bytes(b"".join((json.dumps(r) + "\n").encode() for r in rows))
+    F.relay_mail(hub)
+    recs = _inbox(hub, "conductor")
+    assert [r["msg_uid"] for r in recs] == ["4" * 32, "5" * 32]
+    assert _cursor(hub)["mail_offset"] == len(cp.read_bytes())
+    r4, r5 = recs
+    assert r4["from"] == "host@box" and r4["ts"] == "2026-01-02T03:04:05+00:00"
+    assert r4["re"] == "C-9" and r4["campaign"] is None and r4["needs_reply"] is True
+    assert r5["ts"] != 5 and r5["re"] is None and r5["from"] == "human@box"
+    evs = {e["data"]["msg_uid"]: e for e in _hub_events(hub, "message")}
+    assert sorted(evs) == ["4" * 32, "5" * 32]
+    assert evs["4" * 32]["ts"] == "2026-01-02T03:04:05+00:00" and evs["4" * 32]["data"]["re"] == "C-9"
+    assert evs["4" * 32]["data"]["from"] == "host@box" and evs["5" * 32]["data"]["re"] is None
+    srv.shutdown()
