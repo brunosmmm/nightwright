@@ -1,7 +1,8 @@
 ---
 id: SPEC-0596
 title: Delta rule never demotes a major or must_fix finding (basis_outside_delta marker)
-status: accepted
+status: done
+updated: 2026-11-12
 owner: user
 created: 2026-11-12
 parent: SPEC-0552
@@ -154,15 +155,15 @@ in-flight campaigns get it at their next delta review.
 
 ## Definition of done
 
-- [ ] Acceptance criteria all met.
-- [ ] Test plan executed; affected tests pass; replay recorded.
-- [ ] No regressions (close gate).
-- [ ] Spec body updated to match what shipped.
-- [ ] `docs/LEDGER.md` updated.
+- [x] Acceptance criteria all met.
+- [x] Test plan executed; affected tests pass; replay recorded.
+- [x] No regressions (close gate).
+- [x] Spec body updated to match what shipped.
+- [x] `docs/LEDGER.md` updated.
 
 ## As shipped
 
-Implemented on branch `lean/no-demote-major` (not merged). Code as in Design.
+Shipped 2026-11-12 on branch `lean/no-demote-major` (close gate GATEJOB-2758 green). Code as in Design.
 
 **Replay (AC6), 2026-11-12.** Hybrid case 1 through this branch's
 `tools/replay_review_packet.py`, scratch copies on `/home` (two earlier launches with the
@@ -183,10 +184,13 @@ whether those two rules should yield for security majors is a separate decision 
 human.
 
 **Tests and gate.** The Test plan's tests pass locally (packet, review triage, packet queue,
-campaign export, collator: 221 passed). `spec_lint` exits 0. Close gate **GATEJOB-2749** on the
-box (commit `13fd5240`): spec-lint and docs-tests green, pytest 4187 passed / **1 failed**:
-`tests/test_completion.py::test_required_and_dynamic_guards_clean_on_real_cli` (`hosts
-add:name` and three other `hosts` commands missing dynamic completion). That failure is
-pre-existing: it fails the same on base `d5eb7c6c` without this change, and this change does
-not touch the CLI. Not re-gated (a re-gate cannot pass until that is fixed on main). Status
-stays `accepted` until a green close gate.
+campaign export, collator, completion: 267 passed). `spec_lint` exits 0. A first close gate,
+GATEJOB-2749 (on the pre-rebase commit `13fd5240`), failed only on
+`tests/test_completion.py::test_required_and_dynamic_guards_clean_on_real_cli`. That failure was
+already on main (it failed the same on base `d5eb7c6c`) and was fixed there at `c7f71bdb`. After
+rebasing onto `c7f71bdb`, close gate **GATEJOB-2758** (commit `3d2546bc`) passed: spec-lint,
+docs-tests 249 passed, pytest 8399 passed, none failing.
+
+The open question in "Finding the replay surfaced" (the reviewer's `pass` verdict with the pass
+score, and SPEC-0468's adversarial-major relief, still let the finding pass) is with the human.
+It is not part of this spec.
