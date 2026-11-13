@@ -386,6 +386,7 @@ def test_mailbox_send_action_flag(tmp_path, monkeypatch):
                  ["--to", "steward:Demo@box", "--reason", "hold"],
                  ["--to", "steward:Demo@box", "--action", "park", "--campaign", "C",
                   "--no-campaign"],
+                 ["--to", "steward:Demo@box", "--action", "park", "--campaign", ""],
                  ["--to", "steward:Demo", "--action", "park", "--campaign", "SPEC-1"]):
         assert _send(args).exit_code != 0, args
     assert out.stat().st_size == size
@@ -734,3 +735,79 @@ def test_ping_row_edges(tmp_path):
     assert set(rows) == {"fall", "flap", "trunc"}
     assert rows["fall"]["age_s"] == 2000 and rows["fall"]["since"] == since(2000)
     assert rows["flap"]["age_s"] == 1900 and rows["trunc"]["age_s"] == 1800
+
+
+# ---- review round 3: the guard against an existing journal, answer fields, edges --------------
+
+def test_pending_line_without_federation_json_is_not_run(tmp_path, monkeypatch):
+    cfg = _mk(tmp_path)
+    _campaign(cfg)
+    _pending(cfg, UID, ACT)
+    (Path(cfg["config_dir"]) / "secrets" / "federation.json").unlink()
+    state_file = store.campaign_dir(cfg, "C-1") / "state.json"
+    before = state_file.read_bytes()
+    journal = _journal_path(cfg).read_bytes()
+    spies = [Spy(monkeypatch, n) for n in ("plan_park", "apply_park", "plan_resume", "apply_resume")]
+    FA.drain_actions(cfg)
+    assert not any(s.calls for s in spies)
+    assert state_file.read_bytes() == before and _journal_path(cfg).read_bytes() == journal
+    assert not _answers(cfg, UID) and not M.read_inbox(cfg, "human")
+
+
+def test_answer_record_fields(tmp_path, monkeypatch):
+    cfg = _mk(tmp_path)
+    _campaign(cfg)
+    _pending(cfg, UID, ACT)
+    FA.drain_actions(cfg)
+    (rec,) = _answers(cfg, UID)
+    assert rec["campaign"] == "C-1" and rec["from"] == "steward:Demo"
+    assert rec["kind"] == "answer" and rec["text"] == "ok"
+    # refused: a campaign with '@' is not stamped; a non-steward address falls back to human
+    u2, u3, u4 = _uid(2), _uid(3), _uid(4)
+    _pending(cfg, u2, {"verb": "park", "campaign": "SPEC-1@box", "reason": ""})
+    _pending(cfg, u3, ACT, to="human")
+    _pending(cfg, u4, {"verb": "park", "campaign": "NOPE", "reason": ""})
+    FA.drain_actions(cfg)
+    (r2,) = _answers(cfg, u2)
+    assert r2["campaign"] is None and r2["from"] == "steward:Demo"
+    (r3,) = _answers(cfg, u3)
+    assert r3["from"] == "human" and r3["campaign"] == "C-1"
+    (r4,) = _answers(cfg, u4)                                # unreadable campaign: not stamped
+    assert r4["campaign"] is None and r4["text"] == "refused: campaign"
+    (h2,) = _answers(cfg, u2, "human")
+    assert h2["kind"] == "info" and h2["campaign"] is None and h2["text"] == "refused: campaign"
+
+
+def test_failed_conductor_send_does_not_skip_the_human_copy(tmp_path, monkeypatch):
+    cfg = _mk(tmp_path)
+    _campaign(cfg)
+    _pending(cfg, UID, {"verb": "rebase", "campaign": "C-1", "reason": ""})
+    real = M.send
+    monkeypatch.setattr(M, "send", lambda *a, **kw: (
+        real(*a, **kw) if kw["to"] == "human" else (_ for _ in ()).throw(OSError("down"))))
+    FA.drain_actions(cfg)
+    assert not _answers(cfg, UID) and len(_answers(cfg, UID, "human")) == 1
+    monkeypatch.setattr(M, "send", real)
+    FA.drain_actions(cfg)
+    FA.drain_actions(cfg)
+    assert len(_answers(cfg, UID)) == 1 and len(_answers(cfg, UID, "human")) == 1
+
+
+def test_fingerprint_ignores_non_matching_federation_items():
+    base = QT.ping_fingerprint({}, frozenset())
+    items = [{"kind": "host_reachable", "host": "a"}, {"kind": "host_unreachable", "host": 5},
+             {"kind": "host_unreachable"}, "x", 3, None]
+    assert QT.ping_fingerprint({"federation": items}, frozenset()) == base
+    for bad in ("x", {"kind": "host_unreachable", "host": "a"}, 7, None):
+        assert QT.ping_fingerprint({"federation": bad}, frozenset()) == base
+    assert QT.ping_fingerprint({"federation": items + [{"kind": "host_unreachable", "host": "b"}]},
+                               frozenset()) == [["federation", "b"]]
+
+
+def test_rejected_message_with_an_action_writes_no_action_line(tmp_path):
+    host = _mk(tmp_path)
+    res = FH.post_mail(host, [_msg(to="nobody-here")])
+    assert res[0]["result"] == "rejected" and res[0]["reason"] == "bad_address"
+    assert not _journal_path(host).exists()
+    res = FH.post_mail(host, [_msg(kind="nonsense")])
+    assert res[0]["result"] == "rejected" and not _journal_path(host).exists()

@@ -576,7 +576,7 @@ delivered ping row.
 
 ### Test record (2026-11-12)
 
-- `uv run pytest -q tests/test_federation_actions.py` — 21 passed (every test named in the plan,
+- `uv run pytest -q tests/test_federation_actions.py` — 26 passed (every test named in the plan,
   plus the review-round tests listed under As shipped; module-marked `fast`;
   `python3 tools/test_tiers.py --check` exits 0). With `test_federation_mail.py` and
   `test_federation_channel.py`: 107 passed.
@@ -611,6 +611,12 @@ Built to Design. Notes:
   instead of parking again (an addition to the recovery flow; tested). `_append_durable` writes a
   leading newline when the file does not end in one, so a torn trailing line cannot swallow the
   next record (also applies to the inbox and `received.jsonl` appends).
+- Review round 3 (tests only): a pending journal line with `federation.json` removed leaves the
+  verbs uncalled and the state unchanged (the guard was checked by deleting it: the test fails);
+  the answer record's `campaign` and `from` fallbacks; a failing conductor send does not skip the
+  human copy; `--campaign ""` with `--action` exits non-zero; non-matching and non-list
+  `data.federation` items add no fingerprint pair; a rejected message with an `action` writes no
+  action line.
 - Review round 2 (tests): journal-before-verb ordering, plan/apply failure paths, deferred recovery
   paths, refusal order and edge inputs, reason pass-through, drain robustness, torn-line repair,
   ping-row edge cases, and the exact fsync sequence (inbox, `actions.jsonl`, `received.jsonl`).
