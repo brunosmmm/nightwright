@@ -123,25 +123,25 @@ intended. Nothing stored is rewritten.
 
 ## Acceptance criteria
 
-- [ ] AC1: An adversarial `major` with a security category, under that reviewer's `pass`
+- [x] AC1: An adversarial `major` with a security category, under that reviewer's `pass`
       verdict and score 85 (pass score 80), with conformance passed, makes `triage_reviews`
       return `fix` with the finding in `blocking` and listed under `security_block`.
       `decide_reviews` routes it to `implement`.
-- [ ] AC2: A non-security adversarial `major` (including `data_loss`) in the same shape still
+- [x] AC2: A non-security adversarial `major` (including `data_loss`) in the same shape still
       gets SPEC-0468's relief: outcome `pass`, finding advisory.
-- [ ] AC3: The collator cannot scope out a security major (guard `security`). A stored
+- [x] AC3: The collator cannot scope out a security major (guard `security`). A stored
       `scope: out` or `demoted` mark on one is ignored by the triage, and `collator.inputs`
       keeps a demoted one.
-- [ ] AC4: A conformance or test reviewer `major` with a security `category` blocks under a
+- [x] AC4: A conformance or test reviewer `major` with a security `category` blocks under a
       `pass` verdict. Their schemas carry the optional security `category` and their prompts
       ask for it.
-- [ ] AC5: With the lean flags off, and with them on, a FakeRunner campaign whose adversarial
+- [x] AC5: With the lean flags off, and with them on, a FakeRunner campaign whose adversarial
       reviewer passes with a security major goes back to implementing (outcomes `fix`, `pass`),
       and the finding reaches the implementer. With a non-security category it merges after one
       loop as before.
-- [ ] AC6: Results without a security finding are unchanged (no `security_block` key); a human
+- [x] AC6: Results without a security finding are unchanged (no `security_block` key); a human
       waiver still removes a security major; a security `minor` does not force `fix`.
-- [ ] AC7: Replay case 1 (SPEC-0529, delta loop 2, adversarial reviewer at effort `high`)
+- [x] AC7: Replay case 1 (SPEC-0529, delta loop 2, adversarial reviewer at effort `high`)
       on this branch gives the campaign-level route `fix` (`implement`), where the same
       verdicts without categories give `pass`.
 
@@ -182,10 +182,10 @@ it at their next triage.
 
 ## Definition of done
 
-- [ ] Acceptance criteria all met.
-- [ ] Test plan executed; affected tests pass; replay recorded.
-- [ ] No regressions (close gate).
-- [ ] Spec body updated to match what shipped.
+- [x] Acceptance criteria all met.
+- [x] Test plan executed; affected tests pass; replay recorded.
+- [x] No regressions (close gate).
+- [x] Spec body updated to match what shipped.
 - [ ] `docs/LEDGER.md` updated.
 
 ## As shipped
@@ -208,4 +208,9 @@ with verdict **`pass`** (score 70). The delta rule kept it (`basis_outside_delta
 pre-0597 route. That is the 0596 replay's outcome: verdict `pass`, 85 >= 80, and 0468 relief
 with conformance passing.
 
-**Tests and gate.** GATE_PLACEHOLDER
+**Tests and gate.** `tests/test_security_blocks.py` has 29 tests; with the triage, 0468, collator
+and packet-queue tests, 165 pass locally. Persona, registry, packet and profile tests: 468
+passed. `spec_lint` exits 0. Close gate **GATEJOB-2783** (commit `c09c999d`) passed:
+spec-lint, docs-tests 249 passed, pytest 8426 passed, none failing.
+
+Status stays `accepted` as the brief set it. Moving it to `done` is left to the merge.
