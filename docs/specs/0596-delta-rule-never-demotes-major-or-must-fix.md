@@ -107,19 +107,19 @@ next delta review (enforcement runs when verdicts are stored). Findings already 
 
 ## Acceptance criteria
 
-- [ ] AC1: In delta mode, a new `major` or `must_fix` finding with an invalid basis is not
+- [x] AC1: In delta mode, a new `major` or `must_fix` finding with an invalid basis is not
       demoted: it carries `basis_outside_delta: true`, no `demoted` mark, and is not counted
       in `enforce`'s `demoted`.
-- [ ] AC2: Such a finding is scored and blocks like any other: with a `fix` verdict it is in
+- [x] AC2: Such a finding is scored and blocks like any other: with a `fix` verdict it is in
       `blocking`, it backs the verdict, and the result lists it under `basis_outside_delta`;
       the next loop's packet carries it as `open` and non-advisory.
-- [ ] AC3: A new `minor`, `nit`, `info` (or unknown-severity) finding with an invalid basis is
+- [x] AC3: A new `minor`, `nit`, `info` (or unknown-severity) finding with an invalid basis is
       still demoted and counted (`demoted`, `basis_demoted`).
-- [ ] AC4: `review_outcome` carries `outside_delta` with the flag pinned, and the campaign
+- [x] AC4: `review_outcome` carries `outside_delta` with the flag pinned, and the campaign
       export's `outside_delta_findings` and `demoted_findings` count correctly.
-- [ ] AC5: With the packet flag off nothing changes: no `outside_delta` on `review_outcome`,
+- [x] AC5: With the packet flag off nothing changes: no `outside_delta` on `review_outcome`,
       `outside_delta_findings` is 0, the triage result shape is unchanged.
-- [ ] AC6: The hybrid replay case 1 (SPEC-0529, delta loop 2, adversarial reviewer at effort
+- [x] AC6: The hybrid replay case 1 (SPEC-0529, delta loop 2, adversarial reviewer at effort
       `high`) on this code shows the MAC reflection finding no longer demoted.
 
 ## Test plan
@@ -182,4 +182,11 @@ adversarial-only major to advisory anyway. The delta rule is no longer what hide
 whether those two rules should yield for security majors is a separate decision for the
 human.
 
-**Tests and gate.** See Test plan; results recorded at close.
+**Tests and gate.** The Test plan's tests pass locally (packet, review triage, packet queue,
+campaign export, collator: 221 passed). `spec_lint` exits 0. Close gate **GATEJOB-2749** on the
+box (commit `13fd5240`): spec-lint and docs-tests green, pytest 4187 passed / **1 failed**:
+`tests/test_completion.py::test_required_and_dynamic_guards_clean_on_real_cli` (`hosts
+add:name` and three other `hosts` commands missing dynamic completion). That failure is
+pre-existing: it fails the same on base `d5eb7c6c` without this change, and this change does
+not touch the CLI. Not re-gated (a re-gate cannot pass until that is fixed on main). Status
+stays `accepted` until a green close gate.
