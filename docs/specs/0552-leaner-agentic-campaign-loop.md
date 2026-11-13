@@ -230,6 +230,10 @@ dip elsewhere at default is accepted (human decision).
   / `must_fix` with an invalid basis is never demoted, only marked `basis_outside_delta`
   (steward decision 2026-11-12, from the SPEC-0529 MAC-oracle replays). Measure:
   `outside_delta_findings` vs `demoted_findings` per campaign.
+- [ ] SPEC-0597 (project: Meta-Tools) — Safety rule: a `major` in a security category from any
+  reviewer always blocks (not the reviewer's `pass`, the pass score, SPEC-0468's relief, the
+  collator or the delta rule); applies with or without the lean flags (human decision
+  2026-11-12, from the SPEC-0596 replay). Measure: `security_block` findings per campaign.
 - [ ] SPEC-0572 (project: Meta-Tools) — Lean spec phase: resumable spec writer and delta spec
   re-review behind `agentic.lean.spec_sessions`, which `--lean` turns on (human decision
   2026-11-12; depends_on SPEC-0556, SPEC-0558). Measure: spec-phase cost per campaign.

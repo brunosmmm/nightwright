@@ -10,8 +10,9 @@ reason, and the reviewer's severity.
 Code owns everything else. The collator never writes a finding's text: `collate` joins the
 title, detail, files and severity of each record from the reviewers' verdicts **verbatim**, then
 applies the hard guards (a finding tied to an AC / the Decision / the Design, citing a file the
-campaign changed, a `must_fix` or a finding on an unmet AC is never `out`; a dropped finding is
-restored `in` with reason `collator_dropped`; a changed severity is reverted). The result goes to
+campaign changed, a `must_fix`, a security major (SPEC-0597) or a finding on an unmet AC is never
+`out`; a dropped finding is restored `in` with reason `collator_dropped`; a changed severity is
+reverted). The result goes to
 `<campaign_dir>/findings-loop-N.json` (`nw.collated_findings.v1`) and `last_review.collation`;
 `scoped` marks each stored finding `scope` / `tie` for `queue.triage_reviews`, which scores the
 in-scope ones only. Out-of-scope findings are filed into the campaign's grouped follow-up idea
@@ -27,7 +28,7 @@ from pathlib import Path
 
 from . import packet as PK
 from . import store
-from .profiles import SEVERITIES
+from .profiles import SEVERITIES, security_blocks
 
 NAME = "findings_collator"
 SCHEMA_ID = "nw.collated_findings.v1"
@@ -135,12 +136,14 @@ def inputs(verdicts: dict) -> list:
     """The findings to collate, `{id, persona, severity, title, detail, files, ac, category}`;
     ids are `queue.triage_reviews`' (`<persona>#<index>` over the stored findings). A finding
     the SPEC-0554 delta rule demoted is advisory already and is left out; a `major` /
-    `must_fix` it kept (SPEC-0596, `basis_outside_delta`) is an input like any other."""
+    `must_fix` it kept (SPEC-0596, `basis_outside_delta`) is an input like any other, and so is
+    a security major it demoted before SPEC-0596 (SPEC-0597: never left out)."""
     out = []
     for p, v in (verdicts or {}).items():
         raw = [f for f in (v or {}).get("findings") or [] if isinstance(f, dict)]
         for i, f in enumerate(raw):
-            if f.get("demoted"):
+            if f.get("demoted") and not security_blocks({"severity": _sev(f),
+                                                         "category": f.get("category")}):
                 continue
             item = {"id": f"{p}#{i}", "persona": p, "severity": _sev(f),
                     "title": f.get("title") or "", "detail": f.get("detail"),
@@ -278,7 +281,8 @@ def collate(verdict, items: list, *, changed=(), unmet=(), ac_ids=(), worktree=N
     `severity` the highest of its members' input severities. Guards: the collator's severity is
     reverted to that (`severity_reverted`); `out` becomes `in` (`guard`) for a tie to an AC /
     `decision` / `design` / a changed hunk, a member citing a changed file, a `must_fix` member,
-    a member the delta rule kept (`basis_outside_delta`, SPEC-0596) or a member whose `ac`
+    a member the delta rule kept (`basis_outside_delta`, SPEC-0596), a security `major` /
+    `must_fix` member (SPEC-0597) or a member whose `ac`
     names an unmet AC; an input finding in no record is restored as its
     own `in` record with reason `collator_dropped`. A record naming no known, unused id is
     ignored (`unknown`). Raises ValueError when the verdict has no `collated` list, or names
@@ -330,6 +334,8 @@ def collate(verdict, items: list, *, changed=(), unmet=(), ac_ids=(), worktree=N
                 guard = "must_fix"
             elif any(f.get("basis_outside_delta") for f in mem):      # SPEC-0596
                 guard = "basis_outside_delta"
+            elif any(security_blocks(f) for f in mem):                 # SPEC-0597
+                guard = "security"
             elif any(f.get("ac") and _covers(f["ac"], unmet) for f in mem):
                 guard = "on an unmet AC"
             if guard is not None:

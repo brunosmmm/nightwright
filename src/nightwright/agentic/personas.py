@@ -22,7 +22,7 @@ from . import packet as _PK
 from . import collator as _CO
 from . import store
 from .gates import TARGETED_UNRESOLVED_EXITS, tmp_env
-from .profiles import persona_settings
+from .profiles import SECURITY_CATEGORIES, persona_settings
 from .runner import RunRequest, mapped_model
 
 _PLACEHOLDER_RE = re.compile(r"\{\{(\w+)\}\}")
@@ -127,6 +127,12 @@ GATE_TRIAGER_SCHEMA = {
     },
 }
 
+# SPEC-0597: a conformance / test reviewer marks a security finding with this optional
+# `category` (the security subset of `ADVERSARIAL_CATEGORIES`); a `major` / `must_fix` with one
+# always blocks. Present on every campaign, lean flags or not: the rule is a safety rule.
+def _security_category() -> dict:
+    return {"type": "string", "enum": list(SECURITY_CATEGORIES)}
+
 CONFORMANCE_REVIEWER_SCHEMA = {
     "type": "object",
     "required": ["verdict", "score", "findings", "ac_assessment", "fix_brief"],
@@ -138,6 +144,7 @@ CONFORMANCE_REVIEWER_SCHEMA = {
             "properties": {"severity": {"type": "string",
                                         "enum": ["must_fix", "major", "minor", "nit"]},
                            "ac": {"type": "string"}, "title": {"type": "string"},
+                           "category": _security_category(),                # SPEC-0597
                            "detail": {"type": "string"},
                            "suggested_fix": {"type": "string"},
                            "acceptance": {"type": "string"},
@@ -161,6 +168,7 @@ TEST_REVIEWER_SCHEMA = {
             "properties": {"severity": {"type": "string",
                                         "enum": ["must_fix", "major", "minor", "nit"]},
                            "ac": {"type": "string"}, "title": {"type": "string"},
+                           "category": _security_category(),                # SPEC-0597
                            "detail": {"type": "string"},
                            "files": {"type": "array", "items": {"type": "string"}}}}},
         "coverage_assessment": {"type": "array", "items": {

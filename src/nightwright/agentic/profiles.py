@@ -31,6 +31,23 @@ DEFAULT_PASS_SCORE = 80
 REVIEW_KEYS = frozenset({"pass_score", "weights", "triager", "followups", "followups_nits",
                            "followups_max"})
 
+# SPEC-0597: finding categories that make a `major` / `must_fix` a security finding, which always
+# blocks (no reviewer `pass` verdict, pass score, SPEC-0468 relief, collator scope-out or delta
+# demotion lets it through). `data_loss` is deliberately not one (see the spec).
+SECURITY_CATEGORIES = ("security", "injection", "path_traversal", "secrets", "subprocess")
+SECURITY_BLOCKING_SEVERITIES = ("major", "must_fix")
+
+
+def is_security_category(category) -> bool:
+    return isinstance(category, str) and category.strip().lower() in SECURITY_CATEGORIES
+
+
+def security_blocks(finding) -> bool:
+    """SPEC-0597: a `major` / `must_fix` finding in a security category (any reviewer)."""
+    return (isinstance(finding, dict)
+            and finding.get("severity") in SECURITY_BLOCKING_SEVERITIES
+            and is_security_category(finding.get("category")))
+
 
 def deep_merge(base, delta):
     """Recursive dict merge: mappings merge key by key, anything else from `delta` wins."""

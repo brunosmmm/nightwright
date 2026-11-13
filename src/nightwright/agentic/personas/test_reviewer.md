@@ -61,6 +61,9 @@ Read the spec's Decision, Design, Acceptance criteria and Test plan, then the di
   justification in the spec is `must_fix`.
 - Do not re-review what the gates already prove (the suite being green, formatting, lint).
 - If the diff was truncated, read the rest from the worktree files before judging.
+- A finding that is a security flaw sets `category` to one of `security`, `injection`,
+  `path_traversal`, `secrets`, `subprocess`; any other finding leaves `category` out. A
+  `major` or `must_fix` security finding always blocks the campaign.
 
 ## Verdict
 
@@ -68,6 +71,6 @@ Finish with ONE JSON object and nothing after it:
 
 - `verdict`: `pass` | `fix` (any `must_fix` finding means `fix`)
 - `score`: 0..100, how well the tests cover the spec
-- `findings`: `[{"severity": "must_fix|major|minor|nit", "ac": "...", "title": "...", "detail": "...", "files": ["..."]}, …]`
+- `findings`: `[{"severity": "must_fix|major|minor|nit", "ac": "...", "title": "...", "category": "...", "detail": "...", "files": ["..."]}, …]`
 - `coverage_assessment`: `[{"ac": "...", "covered": true|false, "tests": ["path::name", …]}, …]`
 - `fix_brief`: the paragraph the next implementer reads first (empty on `pass`)

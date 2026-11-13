@@ -18,6 +18,9 @@ clone (`git clone --shared` of the project root, detached at `--head`, a local `
 
 `--dry-run` stops before any model call and prints the request models and prompt sizes.
 Prints one JSON summary per run (model, cost, tokens, findings, demoted, `--match` hits).
+SPEC-0597: `--triage` also feeds the replayed verdicts (enforced findings) to
+`queue.triage_reviews` / `decide_reviews` with the campaign's profile and prints the
+campaign-level route; `--assume-pass` adds reviewers that were not replayed as a clean `pass`.
 
     uv run python tools/replay_review_packet.py --campaign SPEC-0529-20261110-f7b4 ...
 """
@@ -98,6 +101,36 @@ def usage_of(rr) -> dict:
                                   "cache_read_input_tokens", "output_tokens")}
 
 
+def campaign_route(prof, st, replayed: dict, assume_pass) -> dict:
+    """SPEC-0597: the campaign-level outcome of the replayed verdicts, as `_route_reviews` would
+    reach it (`decide_reviews` over the profile's reviewer order, no waivers)."""
+    from nightwright.agentic import queue as Q
+    verdicts = {p: {"verdict": "pass", "score": 100, "findings": [], "fix_brief": ""}
+                for p in assume_pass}
+    verdicts.update(replayed)
+    order = [p for p in Q.reviewers_of(prof) if p in verdicts] + [
+        p for p in verdicts if p not in Q.reviewers_of(prof)]
+    verdicts = {p: verdicts[p] for p in order}
+    tri = Q.triage_reviews(verdicts, prof)
+    step = Q.decide_reviews({"counters": {"loops": int((st.get("counters") or {})
+                                                       .get("loops") or 0)}},
+                            dict(prof, reviewers=order), verdicts)
+    return {"reviewers": order, "assumed_pass": list(assume_pass),
+            "pass_score": Q.review_params(prof)[0], "outcome": tri["outcome"],
+            "score": tri["score"], "route": step.kind, "reason": step.reason,
+            "blocking": [(f["id"], f["severity"], f.get("category"), f["title"])
+                         for f in tri["blocking"]],
+            "advisory": [(f["id"], f["severity"], f.get("category"), f["title"])
+                         for f in tri["advisory"]],
+            "security_block": tri.get("security_block") or [],
+            "basis_outside_delta": tri.get("basis_outside_delta") or [],
+            # the same verdicts with every finding's category dropped: the pre-SPEC-0597 route
+            "without_categories": Q.triage_reviews(
+                {p: {**v, "findings": [{k: x for k, x in f.items() if k != "category"}
+                                       for f in v.get("findings") or []]}
+                 for p, v in verdicts.items()}, prof)["outcome"]}
+
+
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     ap.add_argument("--campaign", required=True)
@@ -116,6 +149,10 @@ def main(argv=None) -> int:
                     help="override the reviewers' model (e.g. claude-sonnet-5-5, the judge tier)")
     ap.add_argument("--reviewer-effort", default="",
                     help="override the reviewers' effort (e.g. medium)")
+    ap.add_argument("--triage", action="store_true",
+                    help="SPEC-0597: print the campaign-level triage / route of the replayed verdicts")
+    ap.add_argument("--assume-pass", default="",
+                    help="reviewers not replayed, counted as `pass` with no findings in --triage")
     ap.add_argument("--dry-run", action="store_true",
                     help="no model calls; also write each reviewer's flag-off prompt "
                          "(prompt.flagoff.md) and its packet prompt (prompt.packet.md) to compare with the original run's prompt.md")
@@ -199,6 +236,7 @@ def main(argv=None) -> int:
         out["packet"]["valid"] = PK.validate(PK.load(cfg, st))
     enf = PK.enforcement(cfg, st)
     pat = re.compile(a.match, re.IGNORECASE | re.DOTALL) if a.match else None
+    replayed = {}                                    # persona -> verdict as stored (SPEC-0597)
     for persona in [p for p in a.personas.split(",") if p]:
         req = request(persona)
         if a.reviewer_model:
@@ -220,11 +258,13 @@ def main(argv=None) -> int:
         if enf is not None:
             findings, demoted = PK.enforce(st.get("spec_id"), persona, v, enf)
             row["demoted"] = demoted
+        replayed[persona] = {**v, "findings": findings}
         row["verdict"] = v.get("verdict")
         row["score"] = v.get("score")
         row["prior_status"] = v.get("prior_status")
-        row["findings"] = [{k: f.get(k) for k in ("severity", "basis", "ac", "title", "prior",
-                                                  "demoted", "basis_outside_delta")}
+        row["findings"] = [{k: f.get(k) for k in ("severity", "category", "basis", "ac",
+                                                  "title", "prior", "demoted",
+                                                  "basis_outside_delta")}
                            for f in findings]
         if pat is not None:
             row["match"] = [
@@ -234,6 +274,9 @@ def main(argv=None) -> int:
                  "basis_outside_delta": bool(f.get("basis_outside_delta"))}    # SPEC-0596
                 for f in findings
                 if pat.search(f"{f.get('title')}\n{f.get('detail')}")]
+    if a.triage and replayed:
+        out["triage"] = campaign_route(prof, st, replayed,
+                                       [p for p in a.assume_pass.split(",") if p])
     print(json.dumps(out, indent=2, default=str))
     (sp / "replay.json").write_text(json.dumps(out, indent=2, default=str))
     return 0

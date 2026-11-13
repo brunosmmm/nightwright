@@ -74,7 +74,7 @@ from . import workers
 from .codewatch import (_CODE_PATHS, _changed_paths, _git_out, code_changes,  # noqa: F401
                         code_checkout)
 from .gitops import GitError
-from .profiles import (SEVERITIES, cap_flag, persona_settings, profile_sha256, resolve_profile, review_params,
+from .profiles import (SEVERITIES, security_blocks, cap_flag, persona_settings, profile_sha256, resolve_profile, review_params,
                        reviewers_of, select_profile, triager_enabled)
 from .events import settings as events_settings
 from .events import temp_pressure as events_temp_pressure
@@ -812,7 +812,13 @@ def triage_reviews(verdicts: dict, profile: dict, waived=(), human_waived=(),
     `attested` ACs (plus every human-waived finding's `resolved_ac` texts) make an unmet
     `ac_assessment` entry met when equal after normalizing (SPEC-0264); synthetic waivers do not
     key real findings. The result also lists `human_waived` ids and `attested` texts
-    that applied."""
+    that applied.
+
+    SPEC-0597: a `major` / `must_fix` in a security category (`profiles.SECURITY_CATEGORIES`),
+    from any reviewer, is never delta-demoted, scoped out or given SPEC-0468's relief, and
+    forces `fix` whatever its reviewer's verdict and the score; its records carry
+    `security_block: true` and the result lists their ids under `security_block` (present only
+    when non-empty). Only a human waiver removes it."""
     pass_score, weights = review_params(profile)
     personas = list(verdicts)
     own = {}                      # persona -> its finding records, in order
@@ -838,7 +844,10 @@ def triage_reviews(verdicts: dict, profile: dict, waived=(), human_waived=(),
         recs = []
         for i, f in enumerate(raw):
             sev = f.get("severity") if f.get("severity") in SEVERITIES else "minor"
-            if f.get("demoted"):    # SPEC-0554: a delta-rule demotion is advisory, never scored
+            # SPEC-0597: a security major / must_fix always blocks: never demoted, never scoped
+            # out, never relieved (covers verdicts stored before the rule, too)
+            sec = security_blocks({"severity": sev, "category": f.get("category")})
+            if f.get("demoted") and not sec:    # SPEC-0554: a delta-rule demotion is advisory
                 basis_demoted.append({"id": f"{p}#{i}", "personas": [p], "severity": sev,
                                       "title": f.get("title") or "",
                                       "detail": finding_detail(f),
@@ -846,9 +855,11 @@ def triage_reviews(verdicts: dict, profile: dict, waived=(), human_waived=(),
                                       "category": f.get("category"), "synthetic": False})
                 continue
             tie = {"tie": f["tie"]} if f.get("tie") else {}            # SPEC-0555
-            if f.get("basis_outside_delta"):        # SPEC-0596: kept blocking, marked
+            if f.get("basis_outside_delta") or f.get("demoted"):    # SPEC-0596: kept, marked
                 tie["basis_outside_delta"] = True
-            if f.get("scope") == "out":     # SPEC-0555: filed as a follow-up, never scored
+            if sec:
+                tie["security_block"] = True
+            if f.get("scope") == "out" and not sec:     # SPEC-0555: a follow-up, never scored
                 out_scope.append({"id": f"{p}#{i}", "personas": [p], "severity": sev,
                                   "title": f.get("title") or "", "detail": finding_detail(f),
                                   "files": list(f.get("files") or []), "ac": f.get("ac"),
@@ -904,6 +915,8 @@ def triage_reviews(verdicts: dict, profile: dict, waived=(), human_waived=(),
                     m["personas"].append(p)
                 if r.get("basis_outside_delta"):        # SPEC-0596: the marker survives a merge
                     m["basis_outside_delta"] = True
+                if r.get("security_block"):             # SPEC-0597: so does the security mark
+                    m["security_block"] = True
             if all(m is not x for x in belongs[p]):
                 belongs[p].append(m)
     # 2: waive (minor/nit only; synthetic findings never)
@@ -915,6 +928,7 @@ def triage_reviews(verdicts: dict, profile: dict, waived=(), human_waived=(),
     surviving = [m for m in merged if id(m) not in gone]
     # SPEC-0468: an adversarial major does not block once conformance passed with no
     # must-fix and no unmet AC. It stays advisory so the close files it as a follow-up.
+    # SPEC-0597: never a security major.
     demoted = []
     conf = verdicts.get("conformance_reviewer")
     if isinstance(conf, dict) and conf.get("verdict") == "pass" and not unmet and not any(
@@ -922,7 +936,7 @@ def triage_reviews(verdicts: dict, profile: dict, waived=(), human_waived=(),
         kept = []
         for m in surviving:
             if (m["personas"] == [ADVERSARIAL_REVIEWER] and m["severity"] == "major"
-                    and not m["synthetic"]):
+                    and not m["synthetic"] and not m.get("security_block")):
                 demoted.append(m)
             else:
                 kept.append(m)
@@ -933,7 +947,9 @@ def triage_reviews(verdicts: dict, profile: dict, waived=(), human_waived=(),
     # 4/5: score and outcome
     score = max(0, 100 - sum(weights[m["severity"]] for m in surviving))
     must = any(m["severity"] == "must_fix" for m in surviving)
-    hard = must or bool(fixing) or unmet
+    # SPEC-0597: a surviving security major blocks whatever the verdict and the score say
+    security = [m for m in surviving if m.get("security_block")]
+    hard = must or bool(fixing) or unmet or bool(security)
     outcome = "fix" if hard or score < pass_score else "pass"
     score_only = outcome == "fix" and not hard
     # 6: blocking and advisory
@@ -947,7 +963,8 @@ def triage_reviews(verdicts: dict, profile: dict, waived=(), human_waived=(),
     advisory = [m for m in surviving if m not in blocking] + demoted + basis_demoted
     keys = ("id", "personas", "severity", "title", "detail", "files", "ac", "category")
     out = lambda ms: [{**{k: m[k] for k in keys}, **({"tie": m["tie"]} if m.get("tie") else {}),
-                       **({"basis_outside_delta": True} if m.get("basis_outside_delta") else {})}
+                       **({"basis_outside_delta": True} if m.get("basis_outside_delta") else {}),
+                       **({"security_block": True} if m.get("security_block") else {})}
                       for m in ms]
     extra = {"basis_demoted": [m["id"] for m in basis_demoted]} if basis_demoted else {}
     outside = [m["id"] for m in blocking + advisory if m.get("basis_outside_delta")]
@@ -955,6 +972,8 @@ def triage_reviews(verdicts: dict, profile: dict, waived=(), human_waived=(),
         extra["basis_outside_delta"] = outside
     if out_scope:                                                       # SPEC-0555
         extra["out_of_scope"] = out(out_scope)
+    if security:                                                        # SPEC-0597
+        extra["security_block"] = [m["id"] for m in security]
     return {**extra, "outcome": outcome, "score": score, "score_only": score_only,
             "blocking": out(blocking), "advisory": out(advisory),
             "waivable_weight": sum(weights[m["severity"]] for m in surviving
@@ -985,7 +1004,7 @@ def review_brief(verdicts: dict, tri: dict, pass_score) -> dict:
         persona = next(iter(verdicts))
         brief = verdicts[persona].get("fix_brief") if not scoped_out else ""
         if scoped_out or (not (brief or "").strip() and (tri["score_only"] or any(
-                f["id"] in tri["synthetic"] for f in blocking))):
+                f["id"] in tri["synthetic"] or f.get("security_block") for f in blocking))):
             brief = "\n".join(tail)
         return {"fix_brief": brief, "must_fix": [
             _with_category({"ac": f["ac"], "title": f["title"], "detail": f["detail"],
