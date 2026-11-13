@@ -163,7 +163,7 @@ in-flight campaigns get it at their next delta review.
 
 ## As shipped
 
-Shipped 2026-11-12 on branch `lean/no-demote-major` (close gate GATEJOB-2758 green). Code as in Design.
+Shipped 2026-11-12 on branch `lean/no-demote-major` (close gate GATEJOB-2764 green after the review fix). Code as in Design.
 
 **Replay (AC6), 2026-11-12.** Hybrid case 1 through this branch's
 `tools/replay_review_packet.py`, scratch copies on `/home` (two earlier launches with the
@@ -199,7 +199,8 @@ finding merged into an unmarked first one. Fixed: collator guard `basis_outside_
 (`tests/test_agentic_collator.py::test_basis_outside_delta_major_is_never_scoped_out`) and the
 merge keeps the marker
 (`tests/test_agentic_review_triage.py::test_outside_delta_marker_survives_merge_into_unmarked_finding`).
-Touched tests 223 passed; close gate: see the next line.
+Touched tests 223 passed; close gate **GATEJOB-2764** (commit `ebabf030`) passed: spec-lint,
+docs-tests 249 passed, pytest 8401 passed, none failing.
 
 The open question in "Finding the replay surfaced" (the reviewer's `pass` verdict with the pass
 score, and SPEC-0468's adversarial-major relief, still let the finding pass) is with the human.
