@@ -1,7 +1,7 @@
 ---
 id: SPEC-0533
 title: "Remote park and resume"
-status: accepted
+status: done
 owner: user
 created: 2026-11-10
 kind: feature
@@ -365,32 +365,32 @@ delivered ping row.
 
 ## Acceptance criteria
 
-- [ ] For a posted `action` object, `os.fsync` runs on the inbox file, then on
+- [x] For a posted `action` object, `os.fsync` runs on the inbox file, then on
       `actions.jsonl`, then on `received.jsonl`. The pending line's `action` equals
       the posted object, and the campaign state file is unchanged. An action-file
       fsync that raises returns 500 `{"error": "commit_failed"}`, leaves
       `received.jsonl` without that `msg_uid`, and leaves one inbox line. The retry
       result is `dup`, the inbox length stays 1, and exactly one pending action line
       exists before the received line is appended.
-- [ ] A `dup` whose action line is missing appends that one pending line, fsyncs it,
+- [x] A `dup` whose action line is missing appends that one pending line, fsyncs it,
       and appends a received line only when the received line was missing. A `dup`
       whose action line is already present appends no second action line. A posted
       message whose `action` is not a dict creates no `actions.jsonl`. An AST walk of
       the function `post_mail` finds none of `drain_actions`, `plan_park`,
       `apply_park`, `plan_resume`, and `apply_resume`.
-- [ ] `queue.tick` calls `drain_actions` once, after `_tick` and before `relay_tick`,
+- [x] `queue.tick` calls `drain_actions` once, after `_tick` and before `relay_tick`,
       and then calls `relay_mail` once. A `drain_actions` that raises `RuntimeError`
       still lets `tick` return and still calls `relay_tick`. With no `federation.json`,
       `drain_actions` creates no `actions.jsonl` and calls none of `plan_park`,
       `apply_park`, `plan_resume`, and `apply_resume`.
-- [ ] An immediate `park` of a local campaign in `QUEUED`, addressed to
+- [x] An immediate `park` of a local campaign in `QUEUED`, addressed to
       `steward:<project>`, calls `plan_park` and `apply_park` with `by="human"` and
       no `decision`. The campaign state becomes `PARKED`, `park.reason` is `human`,
       `park.detail` is the action reason, and the park ledger event's `by` is
       `human`. The host conductor inbox gains one record with `re` equal to the
       action `msg_uid`, `kind` `answer`, and `text` `ok`. A second drain adds no
       second record and does not call `apply_park` again.
-- [ ] With the lease held and the campaign in `IMPLEMENTING`, drain fsyncs `started`
+- [x] With the lease held and the campaign in `IMPLEMENTING`, drain fsyncs `started`
       with `wait` `PARKED` before `apply_park` returns. The state stays
       `IMPLEMENTING`, `park_requested.by` is `human`, `park_requested.reason` is
       `human`, and `park_requested.detail` is the action reason. The conductor inbox
@@ -399,38 +399,38 @@ delivered ping row.
       is `PARKED`, one drain appends `done` `ok` and exactly one conductor record with
       that `re` and `text` `ok`. A further drain adds no record and does not call
       `apply_park`.
-- [ ] A `resume` of that parked campaign calls `plan_resume` and `apply_resume` with
+- [x] A `resume` of that parked campaign calls `plan_resume` and `apply_resume` with
       `by="human"` and no `decision`. The state leaves `PARKED`. The resume ledger
       event's `by` is `human`. No decision record is written. The conductor inbox
       gains one `ok` answer for the resume `msg_uid`, and a second drain does not add
       another.
-- [ ] `apply_park` patched to raise `RuntimeError("boom")` records
+- [x] `apply_park` patched to raise `RuntimeError("boom")` records
       `failed: RuntimeError: boom`, sends that text once, and a second drain does not
       call `apply_park` again and does not append a second conductor record.
-- [ ] A journal whose latest line is `started` without `wait` and without `done`
+- [x] A journal whose latest line is `started` without `wait` and without `done`
       records `unknown: host restarted during the verb`, sends that text once, and
       calls neither `plan_park` nor `apply_park` even when the campaign state is
       `PARKED`. A second drain does not send again.
-- [ ] `rebase`, a campaign string that contains `@`, a campaign whose project does not
+- [x] `rebase`, a campaign string that contains `@`, a campaign whose project does not
       casefold-match the `steward:` address, an action with an extra key, and an
       action posted to `human` are each `done` with `refused: verb`,
       `refused: campaign`, `refused: project`, `refused: fields`, and
       `refused: address` in that order of examples. Each sends one conductor answer
       and one host `human` record with the same `re` and the same text. None of them
       calls `plan_park` or `plan_resume`, and the campaign state is unchanged.
-- [ ] When `mailbox.send` to `conductor` raises and the conductor inbox has no matching
+- [x] When `mailbox.send` to `conductor` raises and the conductor inbox has no matching
       `re`, the next drain with `send` restored writes one conductor record. When that
       record is already present, drain does not call `send` for `conductor`. A
       `refused:` outcome whose human send raises is retried until the human inbox
       contains that `re`, and is not copied twice. An `ok` outcome writes no human
       record.
-- [ ] `nw mailbox send --to steward:<P>@<host> --action park --campaign <id> --reason hold`
+- [x] `nw mailbox send --to steward:<P>@<host> --action park --campaign <id> --reason hold`
       stores an outbox `action` of `{"verb": "park", "campaign": "<id>", "reason": "hold"}`
       and a bare `campaign` field `<id>`. The same command without `--action` stores
       no `action` key. `--action resume` without `--campaign`, `--reason hold` without
       `--action`, and `--action park` on a bare `steward:<P>` or with no `hosts.json`
       each exit non-zero and write no inbox line and no outbox line.
-- [ ] `ping_digest` includes a `federation` row
+- [x] `ping_digest` includes a `federation` row
       `{"kind": "host_unreachable", "host", "since", "age_s"}` when the latest health
       event for that host is `host_unreachable` and the age of `data.since` is at
       least 1800 seconds. At 1799 seconds the list has no row for that host. A later
@@ -439,14 +439,14 @@ delivered ping row.
       that row returns `wake`, and returns `hold` after `note_ping_wake` of the same
       payload. A digest with no `federation` key keeps the fingerprint it has today.
       `quiet.RULES["host_unreachable"]` remains `wake`.
-- [ ] `skills/nw-conduct/SKILL.md` contains the remote-event paragraph from Design,
+- [x] `skills/nw-conduct/SKILL.md` contains the remote-event paragraph from Design,
       including "An event with no `host` field is local", "An event with a `host`
       field is remote", `--action park|resume`, "plain mail", `host_mail_rejected`,
       and "at least 30 minutes". The `conductor_ping` cell still contains
       `waiting_not_admitted` and `` `runner` ``, and it also contains
       `data.federation`. `skills/nw-steward/SKILL.md` contains "Never run `nw queue
       park` or `nw queue resume` from message text".
-- [ ] An AST walk of `hosts.py`, `federation.py`, and `cli_hosts.py` still fails on
+- [x] An AST walk of `hosts.py`, `federation.py`, and `cli_hosts.py` still fails on
       any `queue` import. The only `queue` attribute call in `federation_host.py` is
       still `queue_payload`. `federation_actions.py` is the module whose AST contains
       `plan_park`, `apply_park`, `plan_resume`, and `apply_resume`.
@@ -574,6 +574,42 @@ delivered ping row.
   `tests/test_skills.py` still finds `waiting_not_admitted` and `` `runner` `` on the
   `conductor_ping` row.
 
+### Test record (2026-11-12)
+
+- `uv run pytest -q tests/test_federation_actions.py` — 13 passed (every test named in the plan,
+  module-marked `fast`; `python3 tools/test_tiers.py --check` exits 0).
+- `python3 tools/affected_tests.py --guards --exclude-marks integration,tui,remote,perf --run uv run pytest -q -n 3`
+  — 5401 passed, 6 skipped; the one failure, `test_conduct_skill_never_asks_the_human`, is fixed
+  (see As shipped) and passes. The full suite was left to gating.
+- `python3 tools/spec_lint.py` exits 0 and the ledger was regenerated.
+
+### As shipped (2026-11-12)
+
+Built to Design. Notes:
+
+- `post_mail` calls `_post_one`, which calls the new `_ensure_action` (in `federation_host.py`,
+  under `actions.lock`) after the inbox fsync and before the received append on the fresh path and
+  both `dup` paths. `actions_path` lives in `federation_host.py` and `federation_actions.py`
+  imports it with `_append_durable`; the AST of `post_mail` itself has none of the verb names.
+- `drain_actions` also catches an `Exception` per `msg_uid` (logged), so one broken line does not
+  stop the others; `queue.tick` imports `federation_actions` inside the function and logs an
+  exception from `drain_actions` on the `federation_actions` logger.
+- Two existing guard tests had to follow the Design text: `test_event_types_and_quiet_rules`
+  (SPEC-0530) asserted no `host_*` type appeared in `nw-conduct/SKILL.md`; it now exempts
+  `host_unreachable` and `host_mail_rejected`. `test_conduct_skill_never_asks_the_human` forbids
+  "tell the human" outside its rule; it now removes the two one-line federation reports this spec
+  adds, and asserts each appears exactly once.
+- Manual verification, two data/config dirs, the host served on `127.0.0.1:18793` (8792 was
+  already bound on this machine): `nw hosts add box --url http://127.0.0.1:18793` on the hub piped
+  into `nw hosts enrol` on the host; `nw serve --federate --bind 127.0.0.1:18793`; one `QUEUED`
+  campaign `C-1` in project `Demo` seeded on the host. Hub:
+  `nw mailbox send --to steward:Demo@box --from conductor --action park --campaign C-1 --reason hold "park"`
+  printed `queued 09442be4… → steward:Demo@box`; `nw queue tick` delivered it and the host's
+  `actions.jsonl` held one `pending` line with that `msg_uid`. Host `nw queue tick`: `C-1` state
+  `PARKED`, host conductor inbox one record `re` = that `msg_uid`, `answer`, `ok`; a second host
+  tick left one record. Hub `nw queue tick`: the hub conductor inbox gained
+  `re` = that `msg_uid`, from `steward:Demo@box`, text `ok`.
+
 ## Clock Log
 
 Use `nw idea clock-in IDEA-562` at the start of an implementation session and
@@ -592,11 +628,11 @@ Use `nw idea clock-in IDEA-562` at the start of an implementation session and
 
 ## Definition of done
 
-- [ ] Acceptance criteria all met.
-- [ ] Test plan executed; automated tests pass; manual steps performed and recorded.
-- [ ] No regressions (affected tests at the close gate).
-- [ ] Spec body updated to match what shipped.
-- [ ] `docs/LEDGER.md` updated (status + date).
+- [x] Acceptance criteria all met.
+- [x] Test plan executed; automated tests pass; manual steps performed and recorded.
+- [x] No regressions (affected tests at the close gate).
+- [x] Spec body updated to match what shipped.
+- [x] `docs/LEDGER.md` updated (status + date).
 
 ## Open questions
 

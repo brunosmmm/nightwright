@@ -477,7 +477,8 @@ def test_event_types_and_quiet_rules(tmp_path):
     cond = {t for t, v in QT.RULES.items() if v == "cond"}
     assert not set(want) & (held | cond)
     skill = (Path(__file__).resolve().parents[1] / "skills" / "nw-conduct" / "SKILL.md").read_text()
-    assert not any(t in skill for t in want)
+    # SPEC-0533 documents the two events the conductor acts on; the rest stay out of the skill
+    assert not any(t in skill for t in set(want) - {"host_unreachable", "host_mail_rejected"})
     cfg = _cfg(tmp_path)
     rec = E.append(cfg, "note", data={"text": "x"})
     assert "host" not in rec and "origin" not in rec

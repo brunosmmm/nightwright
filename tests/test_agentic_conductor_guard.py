@@ -152,6 +152,12 @@ def test_conduct_skill_never_asks_the_human():
     rule = [p for p in paras if p.startswith("**Never ask the human")]
     assert len(rule) == 1 and 'never "wait for the human"' in " ".join(rule[0].split())
     rest = " ".join(text.replace(rule[0], "").lower().split())
+    # SPEC-0533: two one-line federation reports (informational, never a wait) say "tell the human"
+    for sentence in ("tell the human about `host_mail_rejected` in the turn that event arrives.",
+                     "for each `data.federation` item, tell the human one line with the host and "
+                     "`since`."):
+        assert rest.count(sentence) == 1, sentence
+        rest = rest.replace(sentence, "")
     for phrase in ("tell the human", "unless told", "wait for the human"):
         assert phrase not in rest, phrase
 

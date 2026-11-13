@@ -783,6 +783,45 @@ def revise_pending_items(cfg) -> list[dict]:
             and r.get("matches_current") is not None and r["spec_id"] not in held]
 
 
+FEDERATION_ESCALATE_S = 1800
+
+
+def federation_rows(cfg, now) -> list[dict]:
+    """SPEC-0533: one row per host whose latest health event is `host_unreachable` with an outage
+    (`data.since`, else the event `ts`) at least 30 minutes old."""
+    from . import decisions as DEC
+    last: dict[str, dict] = {}
+    try:
+        f = open(events_path(cfg), "rb")
+    except OSError:
+        return []
+    with f:
+        for raw in f:
+            try:
+                ev = json.loads(raw)
+            except (ValueError, RecursionError):
+                continue
+            if not isinstance(ev, dict) or ev.get("type") not in ("host_unreachable",
+                                                                   "host_reachable"):
+                continue
+            data = ev.get("data")
+            host = data.get("host") if isinstance(data, dict) else None
+            if isinstance(host, str):
+                last[host] = ev
+    rows = []
+    for host, ev in last.items():
+        if ev["type"] != "host_unreachable":
+            continue
+        since = DEC.parse_ts(ev["data"].get("since")) or DEC.parse_ts(ev.get("ts"))
+        if since is None:
+            continue
+        age = (now - since).total_seconds()
+        if age >= FEDERATION_ESCALATE_S:
+            rows.append({"kind": "host_unreachable", "host": host, "since": since.isoformat(),
+                         "age_s": int(age)})
+    return rows
+
+
 def ping_digest(cfg, now=None) -> dict:
     """The `conductor_ping` payload: what needs the conductor's eyes right now."""
     from .queue import ACTIVE_STATES, park_view
@@ -824,6 +863,7 @@ def ping_digest(cfg, now=None) -> dict:
     esc = ESC.digest_rows(cfg, now)
     counts["escalations_open"] = len(esc)
     return {"blocked": blocked, "parked": parked, "stuck": stuck, "waiting": waiting,
+            "federation": federation_rows(cfg, now),
             "ready_not_admitted": rna, "waiting_not_admitted": wna, "escalations_open": esc,
             "revise_pending": revise_pending_items(cfg),
             "runner": runner_silence(cfg, now, sett), "counts": counts}

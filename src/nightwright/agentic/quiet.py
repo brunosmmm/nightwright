@@ -159,6 +159,11 @@ def ping_fingerprint(data: dict, live_specs=frozenset()) -> list:
     runner = data.get("runner")
     if runner:
         fp.add(("runner", str(runner.get("pid"))))
+    fed = data.get("federation")                                      # SPEC-0533
+    for it in fed if isinstance(fed, list) else []:
+        if isinstance(it, dict) and it.get("kind") == "host_unreachable" \
+                and isinstance(it.get("host"), str):
+            fp.add(("federation", it["host"]))
     return [list(p) for p in sorted(fp)]
 
 

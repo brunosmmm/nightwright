@@ -241,6 +241,33 @@ def post_mail(cfg, messages: list) -> list[dict]:
     return results
 
 
+def actions_path(cfg):
+    return store.agentic_dir(cfg) / "federation" / "actions.jsonl"
+
+
+def _ensure_action(cfg, m: dict, uid: str, to: str) -> None:
+    """SPEC-0533: one fsynced `pending` line in `actions.jsonl` for a posted `action` object, unless
+    some line already carries `uid`. Runs after the inbox fsync and before the dedupe line."""
+    if not isinstance(m.get("action"), dict):
+        return
+    path = actions_path(cfg)
+    with E._locked(path.with_name("actions.lock")):
+        try:
+            with open(path, "rb") as f:
+                for raw in f:
+                    try:
+                        rec = json.loads(raw)
+                    except (ValueError, RecursionError):
+                        continue
+                    if isinstance(rec, dict) and rec.get("msg_uid") == uid:
+                        return
+        except FileNotFoundError:
+            pass
+        line = {"msg_uid": uid, "state": "pending", "to": to, "ts": store.now_iso(),
+                "action": m["action"]}
+        _append_durable(path, (json.dumps(line) + "\n").encode("utf-8"))
+
+
 def _post_one(cfg, m, seen: list[dict], rpath) -> dict:
     why, to = _reject_reason(cfg, m)
     uid = m.get("msg_uid") if isinstance(m, dict) and isinstance(m.get("msg_uid"), str) else ""
@@ -253,11 +280,13 @@ def _post_one(cfg, m, seen: list[dict], rpath) -> dict:
                  if x["inbox"] == prior["inbox"] and x["inbox_end"] < prior["inbox_end"]]
         hit = (_find_uid(ipath, max(below, default=0), uid) if prior["inbox"] == to else None) \
             or _find_uid(ipath, 0, uid)
+        _ensure_action(cfg, m, uid, to)
         return {"msg_uid": uid, "result": "dup", "seq": hit[0] if hit else 0}
     ends = [x["inbox_end"] for x in seen if x["inbox"] == to]
     hit = _find_uid(ipath, ends[-1] if ends else 0, uid)
     if hit is not None:                                      # the inbox line is durable, the dedupe is not
         entry = {"msg_uid": uid, "inbox": to, "inbox_end": hit[1]}
+        _ensure_action(cfg, m, uid, to)
         _append_durable(rpath, (json.dumps(entry) + "\n").encode("utf-8"))
         seen.append(entry)
         return {"msg_uid": uid, "result": "dup", "seq": hit[0]}
@@ -275,6 +304,7 @@ def _post_one(cfg, m, seen: list[dict], rpath) -> dict:
         ipath.parent.mkdir(parents=True, exist_ok=True)
         end = _append_durable(ipath, (json.dumps(rec, ensure_ascii=False) + "\n").encode("utf-8"))
     entry = {"msg_uid": uid, "inbox": to, "inbox_end": end}
+    _ensure_action(cfg, m, uid, to)
     _append_durable(rpath, (json.dumps(entry) + "\n").encode("utf-8"))
     seen.append(entry)
     return {"msg_uid": uid, "result": "delivered", "seq": seq}

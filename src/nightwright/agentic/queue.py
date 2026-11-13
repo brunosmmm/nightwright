@@ -17,6 +17,7 @@ import copy
 import errno
 import hashlib
 import json
+import logging
 import math
 import os
 import re
@@ -6521,6 +6522,11 @@ def tick(cfg, *, stop: threading.Event | None = None, runner=None, admit=True,
     report = TickReport()
     try:
         _tick(cfg, ctx, pool, report, admit=admit, own=own, draining=draining and not own)
+        from . import federation_actions as FA     # SPEC-0533: after the campaign steps
+        try:
+            FA.drain_actions(cfg)
+        except Exception:                                        # noqa: BLE001
+            logging.getLogger("federation_actions").exception("drain_actions failed")
         _relay_hosts(cfg)
     finally:
         if own:

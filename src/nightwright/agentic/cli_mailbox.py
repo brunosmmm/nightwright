@@ -44,12 +44,16 @@ def mailbox_group():
               help="campaign this message is about")
 @click.option("--no-campaign", is_flag=True,
               help="do not infer a campaign from --re or the text")
+@click.option("--action", "action", type=click.Choice(["park", "resume"]), default=None,
+              help="ask the host runner to park/resume --campaign (steward:<P>@<host> only)")
+@click.option("--reason", default="", help="the park reason or resume note (with --action)")
 @click.option("--re", "re_", default=None, help="message id this replies to")
 @click.option("--no-reply", is_flag=True, help="no reply expected (default for answer/info)")
 @click.option("--json", "as_json", is_flag=True, help="emit the nw.message.v1 envelope")
 @click.argument("text", nargs=-1, required=True)
 @click.pass_obj
-def mailbox_send(cfg, to, frm, kind, campaign, no_campaign, re_, no_reply, as_json, text):
+def mailbox_send(cfg, to, frm, kind, campaign, no_campaign, action, reason, re_, no_reply,
+                 as_json, text):
     """Append a message to TO's inbox (mail to the conductor also wakes its event stream).
     Without --campaign the campaign of the --re message, or the one campaign the text names, is
     stamped (SPEC-0431). An explicit --campaign, including an empty one, is stored as given.
@@ -60,12 +64,23 @@ def mailbox_send(cfg, to, frm, kind, campaign, no_campaign, re_, no_reply, as_js
     if campaign is not None and no_campaign:
         raise click.UsageError("--no-campaign conflicts with --campaign")
     body = " ".join(text)
-    if "@" in to and H.load(cfg):          # SPEC-0532: only an explicit @<host> leaves this machine
+    if reason and not action:
+        raise click.UsageError("--reason needs --action")
+    remote = "@" in to and bool(H.load(cfg))
+    act = None
+    if action:                             # SPEC-0533: the host runner runs it from its tick
+        if not campaign or no_campaign:
+            raise click.UsageError("--action needs --campaign (and not --no-campaign)")
+        if not remote:
+            raise click.UsageError("--action needs a remote address "
+                                   "(steward:<Project>@<host>) and an enrolled host")
+        act = {"verb": action, "campaign": campaign, "reason": reason}
+    if remote:          # SPEC-0532: only an explicit @<host> leaves this machine
         try:
             frm = M.validate_address(cfg, frm)
             rec = FED.enqueue_remote(cfg, to=to, frm=frm, text=body, kind=kind,
                                      campaign=campaign, re=re_,
-                                     needs_reply=False if no_reply else None)
+                                     needs_reply=False if no_reply else None, action=act)
         except (ValueError, OSError) as e:
             raise click.ClickException(str(e))
         if as_json:

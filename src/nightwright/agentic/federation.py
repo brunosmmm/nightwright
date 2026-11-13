@@ -913,10 +913,11 @@ def _outbox_lock(cfg, name: str) -> Path:
 
 
 def enqueue_remote(cfg, *, to, frm, text, kind="info", campaign=None, re=None,
-                   needs_reply=None) -> dict:
+                   needs_reply=None, action=None) -> dict:
     """Queue one message for `<local>@<host>` (`to` is the full address). Raises ValueError when
     the host is unknown or disabled, the local part is not `human` / `steward:<Name>`, or the
-    host's cached project list lacks the project. Returns the outbox record, fsynced."""
+    host's cached project list lacks the project. Returns the outbox record, fsynced. A dict
+    `action` (SPEC-0533) is stored on the line; without one the line has no `action` key."""
     local, at, host = (to or "").strip().rpartition("@")
     rec = next((r for r in H.load(cfg) if isinstance(r, dict) and r.get("name") == host), None) \
         if at else None
@@ -946,6 +947,8 @@ def enqueue_remote(cfg, *, to, frm, text, kind="info", campaign=None, re=None,
            "campaign": campaign, "re": re,
            "needs_reply": bool(kind in ("question", "request") if needs_reply is None
                                else needs_reply)}
+    if isinstance(action, dict):                 # SPEC-0533: the host runner runs it, not the POST
+        out["action"] = action
     line = (json.dumps(out) + "\n").encode("utf-8")
     with E._locked(_outbox_lock(cfg, host)):
         _append_durable(outbox_path(cfg, host), line)
