@@ -81,11 +81,11 @@ collated under SPEC-0555's normal guards), and the marker is carried to the tria
   `review_outcome.outside_delta` of each loop, summed, the way `demoted_findings` is). Appended
   at the end, so v1 consumers keep their column positions.
 - Collator (SPEC-0555): `collator.inputs` already skips only `demoted` findings, so a kept
-  major is an input; it now also passes `basis_outside_delta` through to the collator. The
-  guards are unchanged and stay consistent: a `must_fix` is never scoped out, nor is a finding
-  tied to an AC / the Decision / the Design, citing a changed file or on an unmet AC. A kept
-  `major` with none of those ties may still be scoped out by the collator; that is the
-  collator's job (it is then filed as a follow-up), not a delta-rule demotion.
+  major is an input; it passes `basis_outside_delta` through to the collator, and the guard
+  chain gains `basis_outside_delta` (after `must_fix`): a member the delta rule kept is never
+  scoped `out`, so it cannot leave the scored set through `out_of_scope` (review fix, below).
+- `triage_reviews` step 1d (identical findings merge): the merged record keeps
+  `basis_outside_delta` when any member had it (review fix).
 - `packet.prior_findings`: unchanged; since the finding has no `demoted` mark it is carried
   into the next loop's packet as `open`, non-advisory, so the reviewer must account for it.
 - The review triager sees only waivable `minor` / `nit` findings (SPEC-0206), so the marker
@@ -190,6 +190,16 @@ GATEJOB-2749 (on the pre-rebase commit `13fd5240`), failed only on
 already on main (it failed the same on base `d5eb7c6c`) and was fixed there at `c7f71bdb`. After
 rebasing onto `c7f71bdb`, close gate **GATEJOB-2758** (commit `3d2546bc`) passed: spec-lint,
 docs-tests 249 passed, pytest 8399 passed, none failing.
+
+**Review fix.** The spec review found (blocking) that a kept major / must_fix with no
+AC / Decision / Design tie and no changed file could still be scoped `out` by the collator,
+landing in `out_of_scope`: unscored, never blocking and not counted, which would lose the
+MAC-reflection major again; and (minor) that the 1d merge dropped the marker when a marked
+finding merged into an unmarked first one. Fixed: collator guard `basis_outside_delta`
+(`tests/test_agentic_collator.py::test_basis_outside_delta_major_is_never_scoped_out`) and the
+merge keeps the marker
+(`tests/test_agentic_review_triage.py::test_outside_delta_marker_survives_merge_into_unmarked_finding`).
+Touched tests 223 passed; close gate: see the next line.
 
 The open question in "Finding the replay surfaced" (the reviewer's `pass` verdict with the pass
 score, and SPEC-0468's adversarial-major relief, still let the finding pass) is with the human.

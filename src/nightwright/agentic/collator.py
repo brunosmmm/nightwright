@@ -277,8 +277,9 @@ def collate(verdict, items: list, *, changed=(), unmet=(), ac_ids=(), worktree=N
     with the text fields copied verbatim from the input finding `id` (the canonical one) and
     `severity` the highest of its members' input severities. Guards: the collator's severity is
     reverted to that (`severity_reverted`); `out` becomes `in` (`guard`) for a tie to an AC /
-    `decision` / `design` / a changed hunk, a member citing a changed file, a `must_fix` member
-    or a member whose `ac` names an unmet AC; an input finding in no record is restored as its
+    `decision` / `design` / a changed hunk, a member citing a changed file, a `must_fix` member,
+    a member the delta rule kept (`basis_outside_delta`, SPEC-0596) or a member whose `ac`
+    names an unmet AC; an input finding in no record is restored as its
     own `in` record with reason `collator_dropped`. A record naming no known, unused id is
     ignored (`unknown`). Raises ValueError when the verdict has no `collated` list, or names
     none of the input findings (an empty list for a non-empty input is a failed run)."""
@@ -327,6 +328,8 @@ def collate(verdict, items: list, *, changed=(), unmet=(), ac_ids=(), worktree=N
                 guard = "cites a file this campaign changed"
             elif any(f["severity"] == "must_fix" for f in mem):
                 guard = "must_fix"
+            elif any(f.get("basis_outside_delta") for f in mem):      # SPEC-0596
+                guard = "basis_outside_delta"
             elif any(f.get("ac") and _covers(f["ac"], unmet) for f in mem):
                 guard = "on an unmet AC"
             if guard is not None:

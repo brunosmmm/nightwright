@@ -60,6 +60,18 @@ def test_guards_force_in(it, why):
     assert out[0]["scope"] == "in" and out[0]["guard"] == why and stats["guarded"] == 1
 
 
+def test_basis_outside_delta_major_is_never_scoped_out():
+    """SPEC-0596: a major the delta rule kept (no tie, no changed file) stays in scope even
+    when the collator says `out`; `inputs` carries the marker from the stored verdict."""
+    verdicts = {ADV: {"findings": [{"severity": "major", "title": "MAC reflection",
+                                    "files": ["src/old.py"], "basis_outside_delta": True}]}}
+    [it] = CO.inputs(verdicts)
+    assert it["basis_outside_delta"] is True
+    out, stats = collate([rec(0)], [it])
+    assert out[0]["scope"] == "in" and out[0]["guard"] == "basis_outside_delta"
+    assert stats["guarded"] == 1
+
+
 def test_a_tie_to_an_ac_decision_or_design_is_in_scope():
     items = [item(0), item(1), item(2)]
     out, _ = collate([rec(0, tie="AC2"), rec(1, tie="design"), rec(2, tie="diff:src/new.py")],

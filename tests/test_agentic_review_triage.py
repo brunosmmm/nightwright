@@ -1080,6 +1080,21 @@ def test_blocking_severity_outside_delta_stays_blocking_and_marked(sev):
     assert "basis_outside_delta" not in out["advisory"][0]
 
 
+def test_outside_delta_marker_survives_merge_into_unmarked_finding():
+    """SPEC-0596 (review fix): an identical finding (same files and title) from two reviewers
+    merges into the first one; the marker of a later, marked member is kept."""
+    out = tri({A: v("fix", f("minor", "MAC reflection", files=["old.py"])),
+               B: v("fix", f("major", "MAC reflection", files=["old.py"],
+                             basis_outside_delta=True))})
+    [b] = out["blocking"]
+    assert b["severity"] == "major" and b["basis_outside_delta"] is True
+    assert out["basis_outside_delta"] == [b["id"]]
+    out = tri({A: v("fix", f("major", "MAC reflection", files=["old.py"])),
+               B: v("fix", f("major", "MAC reflection", files=["old.py"],
+                             basis_outside_delta=True))})
+    assert out["blocking"][0]["basis_outside_delta"] is True
+
+
 def test_outside_delta_major_merged_and_human_waived():
     """The marked finding is an ordinary finding to the scorer: a human waiver removes it, and
     then neither the marker list nor a block remains."""

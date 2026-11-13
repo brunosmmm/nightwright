@@ -902,6 +902,8 @@ def triage_reviews(verdicts: dict, profile: dict, waived=(), human_waived=(),
                              ac=r["ac"], category=r["category"])
                 if p not in m["personas"]:
                     m["personas"].append(p)
+                if r.get("basis_outside_delta"):        # SPEC-0596: the marker survives a merge
+                    m["basis_outside_delta"] = True
             if all(m is not x for x in belongs[p]):
                 belongs[p].append(m)
     # 2: waive (minor/nit only; synthetic findings never)
