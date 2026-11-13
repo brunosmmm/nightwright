@@ -81,12 +81,14 @@ def _uid(n):
 
 
 class Spy:
-    def __init__(self, monkeypatch, name, raises=None):
+    def __init__(self, monkeypatch, name, raises=None, on_call=None):
         self.calls = []
         real = getattr(Q, name)
 
         def wrapper(*a, **kw):
             self.calls.append((a, kw))
+            if on_call:
+                on_call()
             if raises:
                 raise raises
             return real(*a, **kw)
@@ -122,8 +124,8 @@ def test_action_line_fsyncs_before_dedupe(tmp_path, monkeypatch):
         return real(fd)
     monkeypatch.setattr(os, "fsync", fsync)
     assert FH.post_mail(host, [_msg()])[0]["result"] == "delivered"
-    assert synced.index("actions.jsonl") < synced.index("received.jsonl")
-    assert synced.index("actions.jsonl") > 0
+    assert synced == [M._inbox_path(host, "steward:Demo").name, "actions.jsonl",
+                      "received.jsonl"]
     (line,) = _journal(host)
     assert line["state"] == "pending" and line["action"] == ACT and line["to"] == "steward:Demo"
     assert before == {p: p.read_bytes() for p in state.rglob("*") if p.is_file()}
@@ -448,3 +450,287 @@ def test_queue_import_guards():
     names = {n.attr for n in ast.walk(ast.parse((root / "federation_actions.py").read_text()))
              if isinstance(n, ast.Attribute)}
     assert {"plan_park", "apply_park", "plan_resume", "apply_resume"} <= names
+
+
+# ---- review round: ordering, failure paths, refusals, edges ----------------------------------
+
+def _last(cfg):
+    return _journal(cfg)[-1]
+
+
+def _started_line(cfg, uid, ts="2020-01-01T00:00:00+00:00", **extra):
+    with open(_journal_path(cfg), "a") as f:
+        f.write(json.dumps({"msg_uid": uid, "state": "started", "ts": ts, **extra}) + "\n")
+
+
+def _hold_lease(cfg):
+    fd = os.open(L.lock_path(cfg), os.O_RDWR | os.O_CREAT)
+    fcntl.flock(fd, fcntl.LOCK_EX)
+    return fd
+
+
+def test_started_is_journalled_before_the_verb(tmp_path, monkeypatch):
+    cfg = _mk(tmp_path)
+    _campaign(cfg)
+    seen = {}
+
+    def snap(name):
+        return lambda: seen.setdefault(name, dict(_last(cfg)))
+    Spy(monkeypatch, "apply_park", on_call=snap("apply_park"))
+    Spy(monkeypatch, "plan_resume", on_call=snap("plan_resume"))
+    Spy(monkeypatch, "apply_resume", on_call=snap("apply_resume"))
+    _pending(cfg, UID, ACT)
+    FA.drain_actions(cfg)
+    assert seen["apply_park"]["state"] == "started" and "wait" not in seen["apply_park"]
+    _pending(cfg, _uid(2), {"verb": "resume", "campaign": "C-1", "reason": ""})
+    FA.drain_actions(cfg)
+    for name in ("plan_resume", "apply_resume"):
+        assert seen[name]["state"] == "started" and seen[name]["msg_uid"] == _uid(2), name
+        assert "wait" not in seen[name]
+    # the deferred park: `started` with wait PARKED is on disk when apply_park runs
+    cfg2 = _mk(tmp_path, "deferred")
+    _campaign(cfg2, state="IMPLEMENTING")
+    Spy(monkeypatch, "apply_park", on_call=lambda: seen.update(deferred=dict(_last(cfg2))))
+    _pending(cfg2, UID, ACT)
+    lock = _hold_lease(cfg2)
+    try:
+        FA.drain_actions(cfg2)
+    finally:
+        os.close(lock)
+    assert seen["deferred"]["state"] == "started" and seen["deferred"]["wait"] == "PARKED"
+
+
+def test_plan_and_apply_failures(tmp_path, monkeypatch):
+    # plan_park raises: started without wait, then done failed, apply_park never called
+    cfg = _mk(tmp_path)
+    _campaign(cfg)
+    Spy(monkeypatch, "plan_park", raises=ValueError("nope"))
+    apark = Spy(monkeypatch, "apply_park")
+    _pending(cfg, UID, ACT)
+    FA.drain_actions(cfg)
+    j = _journal(cfg)
+    assert [x["state"] for x in j] == ["pending", "started", "done"] and "wait" not in j[1]
+    assert j[2]["outcome"] == "failed: ValueError: nope" and not apark.calls
+    assert [a["text"] for a in _answers(cfg, UID)] == ["failed: ValueError: nope"]
+    monkeypatch.undo()
+    # a deferred apply_park that raises
+    cfg = _mk(tmp_path, "deferred")
+    _campaign(cfg, state="IMPLEMENTING")
+    apark = Spy(monkeypatch, "apply_park", raises=RuntimeError("boom"))
+    _pending(cfg, UID, ACT)
+    lock = _hold_lease(cfg)
+    try:
+        FA.drain_actions(cfg)
+    finally:
+        os.close(lock)
+    assert _journal(cfg)[-2]["wait"] == "PARKED"
+    assert _last(cfg)["outcome"] == "failed: RuntimeError: boom"
+    assert [a["text"] for a in _answers(cfg, UID)] == ["failed: RuntimeError: boom"]
+    monkeypatch.undo()
+    # resume: plan_resume raising, then apply_resume raising
+    for name in ("plan_resume", "apply_resume"):
+        cfg = _mk(tmp_path, name)
+        _campaign(cfg, state="PARKED")
+        spy = Spy(monkeypatch, name, raises=RuntimeError(name))
+        _pending(cfg, UID, {"verb": "resume", "campaign": "C-1", "reason": ""})
+        FA.drain_actions(cfg)
+        FA.drain_actions(cfg)
+        assert _last(cfg)["outcome"] == f"failed: RuntimeError: {name}" and len(spy.calls) == 1
+        assert [a["text"] for a in _answers(cfg, UID)] == [f"failed: RuntimeError: {name}"]
+        monkeypatch.undo()
+
+
+def test_deferred_recovery_paths(tmp_path, monkeypatch):
+    # a started/wait PARKED line whose park request is gone: ask again
+    for name, raises, want in (("plan_park", ValueError("p"), "failed: ValueError: p"),
+                               ("apply_park", RuntimeError("a"), "failed: RuntimeError: a")):
+        cfg = _mk(tmp_path, name)
+        _campaign(cfg, state="IMPLEMENTING")
+        _pending(cfg, UID, ACT)
+        _started_line(cfg, UID, wait="PARKED")
+        Spy(monkeypatch, name, raises=raises)
+        FA.drain_actions(cfg)
+        assert _last(cfg)["outcome"] == want
+        assert [a["text"] for a in _answers(cfg, UID)] == [want]
+        monkeypatch.undo()
+    # the re-request sticks (no lease: an immediate park): done ok
+    cfg = _mk(tmp_path, "sticks")
+    _campaign(cfg, state="IMPLEMENTING")
+    _pending(cfg, UID, ACT)
+    _started_line(cfg, UID, wait="PARKED")
+    FA.drain_actions(cfg)
+    assert store.read_state(cfg, "C-1")["state"] == "PARKED"
+    assert [a["text"] for a in _answers(cfg, UID)] == ["ok"]
+    # the campaign became unreadable: failed, answered once, no verb call
+    cfg = _mk(tmp_path, "gone")
+    _pending(cfg, UID, ACT)
+    _started_line(cfg, UID, wait="PARKED")
+    apark = Spy(monkeypatch, "apply_park")
+    FA.drain_actions(cfg)
+    FA.drain_actions(cfg)
+    assert _last(cfg)["outcome"].startswith("failed: ValueError: no readable campaign")
+    assert len(_answers(cfg, UID)) == 1 and not apark.calls
+    monkeypatch.undo()
+    # the park happened (ledger `park` after `started`) and a human resumed it since: not re-parked
+    cfg = _mk(tmp_path, "resumed")
+    _campaign(cfg, state="IMPLEMENTING")
+    _pending(cfg, UID, ACT)
+    _started_line(cfg, UID, wait="PARKED")
+    store.append_event(cfg, "C-1", "park", {"reason": "human", "detail": "hold", "resume_to": "IMPLEMENTING"}, by="human")
+    apark = Spy(monkeypatch, "apply_park")
+    FA.drain_actions(cfg)
+    assert not apark.calls and store.read_state(cfg, "C-1")["state"] == "IMPLEMENTING"
+    assert _last(cfg)["outcome"] == "ok" and len(_answers(cfg, UID)) == 1
+
+
+def test_refusal_order_and_edges(tmp_path, monkeypatch):
+    cfg = _mk(tmp_path)
+    _campaign(cfg)
+    cdir = store.campaign_dir(cfg, "C-1")
+    import shutil
+    shutil.copytree(cdir, cdir.parent / "evil")              # a state.json with a matching project
+    plan, resume = Spy(monkeypatch, "plan_park"), Spy(monkeypatch, "plan_resume")
+    apark = Spy(monkeypatch, "apply_park")
+    state_file = cdir / "state.json"
+    before = state_file.read_bytes()
+    ok = {"verb": "park", "campaign": "C-1", "reason": ""}
+    cases = {
+        "extra key beats bad verb": ({**ok, "verb": "stop", "x": 1}, "steward:Demo", "fields"),
+        "bad verb beats bad address": ({**ok, "verb": "stop"}, "human", "verb"),
+        "non-string reason": ({**ok, "reason": 5}, "steward:Demo", "fields"),
+        "not a dict": ("park", "steward:Demo", "fields"),
+        "no project name": (ok, "steward:", "address"),
+        "address beats campaign": ({**ok, "campaign": ""}, "human", "address"),
+        "empty campaign": ({**ok, "campaign": ""}, "steward:Demo", "campaign"),
+        "non-string campaign": ({**ok, "campaign": 3}, "steward:Demo", "campaign"),
+        "missing campaign": ({"verb": "park"}, "steward:Demo", "campaign"),
+        "unreadable beats project": ({**ok, "campaign": "NOPE"}, "steward:Other", "campaign"),
+        "parent traversal": ({**ok, "campaign": "../evil"}, "steward:Demo", "campaign"),
+        "absolute path": ({**ok, "campaign": str(cdir)}, "steward:Demo", "campaign"),
+        "dot dot": ({**ok, "campaign": ".."}, "steward:Demo", "campaign"),
+        "slash": ({**ok, "campaign": "a/b"}, "steward:Demo", "campaign"),
+    }
+    uids = {}
+    for i, (name, (action, to, why)) in enumerate(cases.items()):
+        uids[name] = _uid(200 + i)
+        _pending(cfg, uids[name], action, to=to)
+    FA.drain_actions(cfg)
+    for name, (_a, _t, why) in cases.items():
+        assert [a["text"] for a in _answers(cfg, uids[name])] == [f"refused: {why}"], name
+        assert [a["text"] for a in _answers(cfg, uids[name], "human")] == [f"refused: {why}"], name
+    assert not plan.calls and not resume.calls and not apark.calls
+    assert before == state_file.read_bytes()
+    assert json.loads((cdir.parent / "evil" / "state.json").read_text())["state"] == "QUEUED"
+
+
+def test_reason_is_passed_through(tmp_path, monkeypatch):
+    cfg = _mk(tmp_path)
+    _campaign(cfg)
+    plan, resume = Spy(monkeypatch, "plan_park"), Spy(monkeypatch, "plan_resume")
+    _pending(cfg, UID, {"verb": "park", "campaign": "C-1"})          # no `reason` key
+    FA.drain_actions(cfg)
+    assert plan.calls[0][0][2] == "" and store.read_state(cfg, "C-1")["park"]["detail"] == ""
+    _pending(cfg, _uid(2), {"verb": "resume", "campaign": "C-1", "reason": "back"})
+    FA.drain_actions(cfg)
+    assert resume.calls[0][1]["note"] == "back" and resume.calls[0][1]["by"] == "human"
+
+
+def test_drain_robustness(tmp_path, monkeypatch):
+    cfg = _mk(tmp_path)
+    _campaign(cfg)
+    # federation.json present, actions.jsonl absent: nothing created, no calls
+    spies = [Spy(monkeypatch, n) for n in ("plan_park", "apply_park", "plan_resume", "apply_resume")]
+    FA.drain_actions(cfg)
+    assert not _journal_path(cfg).exists() and not any(s.calls for s in spies)
+    # a broken line, then a torn trailing line: other ids still run, the torn line is skipped
+    p = _journal_path(cfg)
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text("{not json\n")
+    _pending(cfg, UID, ACT)
+    with open(p, "a") as f:
+        f.write(json.dumps({"msg_uid": _uid(9), "state": "pending", "to": "steward:Demo",
+                            "action": ACT}))                  # no newline: torn
+    FA.drain_actions(cfg)
+    assert store.read_state(cfg, "C-1")["state"] == "PARKED" and len(_answers(cfg, UID)) == 1
+    assert not _answers(cfg, _uid(9))
+    # one id raising does not stop the next
+    cfg = _mk(tmp_path, "second")
+    _campaign(cfg)
+    monkeypatch.undo()
+    real = FA._handle
+
+    def handle(c, uid, item):
+        if uid == UID:
+            raise RuntimeError("bad line")
+        return real(c, uid, item)
+    monkeypatch.setattr(FA, "_handle", handle)
+    _pending(cfg, UID, ACT)
+    _pending(cfg, _uid(2), ACT)
+    FA.drain_actions(cfg)
+    assert len(_answers(cfg, _uid(2))) == 1 and not _answers(cfg, UID)
+    # a BaseException propagates and keeps the lines already fsynced
+    monkeypatch.undo()
+    cfg = _mk(tmp_path, "interrupt")
+    _campaign(cfg)
+    Spy(monkeypatch, "apply_park", raises=KeyboardInterrupt())
+    _pending(cfg, UID, ACT)
+    with pytest.raises(KeyboardInterrupt):
+        FA.drain_actions(cfg)
+    assert _last(cfg)["state"] == "started"
+
+
+def test_torn_journal_line_does_not_swallow_the_next_record(tmp_path):
+    host = _mk(tmp_path)
+    p = _journal_path(host)
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text('{"msg_uid": "' + "c" * 32 + '", "state": "pend')     # a torn append
+    assert FH.post_mail(host, [_msg()])[0]["result"] == "delivered"
+    lines = p.read_text().split("\n")
+    assert lines[0].endswith('"pend') and json.loads(lines[1])["msg_uid"] == UID
+    # the drain journals after the repaired line and still runs the action
+    _campaign(host)
+    FA.drain_actions(host)
+    assert store.read_state(host, "C-1")["state"] == "PARKED"
+    assert [j.get("state") for j in _journal_lines_ok(p)] == ["pending", "started", "done"]
+
+
+def _journal_lines_ok(p):
+    out = []
+    for raw in p.read_text().splitlines():
+        try:
+            out.append(json.loads(raw))
+        except ValueError:
+            pass
+    return out
+
+
+def test_ping_row_edges(tmp_path):
+    cfg = _cfg(tmp_path, "hub")
+    now = dt.datetime(2026, 11, 12, 12, 0, tzinfo=dt.timezone.utc)
+    path = E.events_path(cfg)
+
+    def since(s):
+        return (now - dt.timedelta(seconds=s)).isoformat()
+
+    def raw(type_, data, ts=None, i=[0]):
+        i[0] += 1
+        with open(path, "a") as f:
+            f.write(json.dumps({"id": i[0], "ts": ts or since(1), "type": type_, "data": data}) + "\n")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("not json\n[1]\n")
+    # unparsable since: falls back to the event ts
+    raw("host_unreachable", {"host": "fall", "since": "garbage"}, ts=since(2000))
+    # neither parses: omitted
+    raw("host_unreachable", {"host": "none", "since": "x"}, ts="y")
+    # a non-string host is ignored
+    raw("host_unreachable", {"host": 5, "since": since(5000)})
+    # reachable then unreachable again: the row is back
+    raw("host_unreachable", {"host": "flap", "since": since(9000)})
+    raw("host_reachable", {"host": "flap"})
+    raw("host_unreachable", {"host": "flap", "since": since(1900)})
+    # int(age) truncates
+    raw("host_unreachable", {"host": "trunc", "since": since(1800.9)})
+    rows = {r["host"]: r for r in E.ping_digest(cfg, now)["federation"]}
+    assert set(rows) == {"fall", "flap", "trunc"}
+    assert rows["fall"]["age_s"] == 2000 and rows["fall"]["since"] == since(2000)
+    assert rows["flap"]["age_s"] == 1900 and rows["trunc"]["age_s"] == 1800

@@ -141,9 +141,14 @@ def _fsync_fd(fd: int) -> None:
 
 
 def _append_durable(path, line: bytes) -> int:
-    """Append one line (one `os.write`), fsync, and return the file size after the fsync."""
-    fd = os.open(path, os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o644)
+    """Append one line (one `os.write`), fsync, and return the file size after the fsync. A file
+    that ends without a newline (a torn earlier append) gets one first, so the torn fragment stays
+    its own unparseable line and does not swallow this record."""
+    fd = os.open(path, os.O_RDWR | os.O_APPEND | os.O_CREAT, 0o644)
     try:
+        size = os.fstat(fd).st_size
+        if size and os.pread(fd, 1, size - 1) != b"\n":
+            line = b"\n" + line
         os.write(fd, line)
         _fsync_fd(fd)
         return os.fstat(fd).st_size

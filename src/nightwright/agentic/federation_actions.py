@@ -12,6 +12,7 @@ import json
 import logging
 from pathlib import Path
 
+from . import decisions as DEC
 from . import events as E
 from . import mailbox as MB
 from . import store
@@ -68,6 +69,11 @@ def _campaign_str(action) -> str:
 
 
 def _read_state(cfg, campaign: str):
+    """The campaign's state, or None when it is unreadable or `campaign` is not a plain id: a
+    remote string is never joined into a store path unless it is one path component."""
+    if (not campaign or campaign in (".", "..") or campaign != Path(campaign).name
+            or "\\" in campaign or "\0" in campaign):
+        return None
     try:
         return store.read_state(cfg, campaign)
     except ValueError:
@@ -170,6 +176,15 @@ def _resume(cfg, uid: str, item: dict) -> None:
     _finish(cfg, uid, item, "ok")
 
 
+def _parked_since(cfg, campaign: str, since) -> bool:
+    """True when the campaign ledger has a `park` event at or after `since` (the `started` line)."""
+    t0 = DEC.parse_ts(since)
+    if t0 is None:
+        return False
+    return any((t := DEC.parse_ts(e.get("ts"))) is not None and t >= t0
+               for e in store.read_ledger(cfg, campaign, types=["park"]))
+
+
 def _await_parked(cfg, uid: str, item: dict) -> None:
     """The latest line is `started` with `wait: PARKED`: answer `ok` once the state is PARKED,
     re-request a park that did not stick, otherwise wait."""
@@ -184,6 +199,9 @@ def _await_parked(cfg, uid: str, item: dict) -> None:
         _finish(cfg, uid, item, "ok")
         return
     if isinstance(state.get("park_requested"), dict):
+        return
+    if _parked_since(cfg, campaign, item["last"].get("ts")):
+        _finish(cfg, uid, item, "ok")                        # parked, then resumed by someone else
         return
     try:
         Q.apply_park(cfg, Q.plan_park(cfg, campaign, action.get("reason") or "", by="human"))

@@ -576,8 +576,10 @@ delivered ping row.
 
 ### Test record (2026-11-12)
 
-- `uv run pytest -q tests/test_federation_actions.py` — 13 passed (every test named in the plan,
-  module-marked `fast`; `python3 tools/test_tiers.py --check` exits 0).
+- `uv run pytest -q tests/test_federation_actions.py` — 21 passed (every test named in the plan,
+  plus the review-round tests listed under As shipped; module-marked `fast`;
+  `python3 tools/test_tiers.py --check` exits 0). With `test_federation_mail.py` and
+  `test_federation_channel.py`: 107 passed.
 - `python3 tools/affected_tests.py --guards --exclude-marks integration,tui,remote,perf --run uv run pytest -q -n 3`
   — 5401 passed, 6 skipped; the one failure, `test_conduct_skill_never_asks_the_human`, is fixed
   (see As shipped) and passes. The full suite was left to gating.
@@ -599,6 +601,19 @@ Built to Design. Notes:
   `host_unreachable` and `host_mail_rejected`. `test_conduct_skill_never_asks_the_human` forbids
   "tell the human" outside its rule; it now removes the two one-line federation reports this spec
   adds, and asserts each appears exactly once.
+- Review round 2 (code): a remote `campaign` must be one path component (not `.`/`..`, no `/`, `\\`
+  or NUL), else `refused: campaign` (a tightening of check 4 so a value like `../x` never reaches a
+  store path); `_read_state` enforces it, so `_answer` and `_await_parked` use the same rule. A
+  `started`/`wait: PARKED` line whose campaign is no longer readable finishes `failed: ValueError:
+  no readable campaign ...` (an addition; tested). Before re-requesting a park that "did not
+  stick", `_await_parked` looks for a `park` ledger event at or after the `started` line's `ts`;
+  when there is one the park did happen (someone resumed it since), so it appends `done` `ok`
+  instead of parking again (an addition to the recovery flow; tested). `_append_durable` writes a
+  leading newline when the file does not end in one, so a torn trailing line cannot swallow the
+  next record (also applies to the inbox and `received.jsonl` appends).
+- Review round 2 (tests): journal-before-verb ordering, plan/apply failure paths, deferred recovery
+  paths, refusal order and edge inputs, reason pass-through, drain robustness, torn-line repair,
+  ping-row edge cases, and the exact fsync sequence (inbox, `actions.jsonl`, `received.jsonl`).
 - Manual verification, two data/config dirs, the host served on `127.0.0.1:18793` (8792 was
   already bound on this machine): `nw hosts add box --url http://127.0.0.1:18793` on the hub piped
   into `nw hosts enrol` on the host; `nw serve --federate --bind 127.0.0.1:18793`; one `QUEUED`
