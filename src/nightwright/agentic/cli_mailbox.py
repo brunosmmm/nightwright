@@ -10,6 +10,8 @@ from .. import completion as C
 from .. import render as R
 from ..console import console
 from ..report import _dump_json
+from . import federation as FED
+from . import hosts as H
 from . import mailbox as M
 from . import store as S
 
@@ -33,7 +35,8 @@ def mailbox_group():
 
 @mailbox_group.command("send")
 @click.option("--to", "to", required=True, shell_complete=complete_address,
-              help="recipient: conductor | human | steward:<Project>")
+              help="recipient: conductor | human | steward:<Project> "
+                   "(with hosts enrolled: human@<host> | steward:<Project>@<host>)")
 @click.option("--from", "frm", default=None, shell_complete=complete_address,
               help="sender (default: $NW_MAILBOX_ADDR)")
 @click.option("--kind", type=click.Choice(M.KINDS), default="info", show_default=True)
@@ -57,6 +60,20 @@ def mailbox_send(cfg, to, frm, kind, campaign, no_campaign, re_, no_reply, as_js
     if campaign is not None and no_campaign:
         raise click.UsageError("--no-campaign conflicts with --campaign")
     body = " ".join(text)
+    if "@" in to and H.load(cfg):          # SPEC-0532: only an explicit @<host> leaves this machine
+        try:
+            frm = M.validate_address(cfg, frm)
+            rec = FED.enqueue_remote(cfg, to=to, frm=frm, text=body, kind=kind,
+                                     campaign=campaign, re=re_,
+                                     needs_reply=False if no_reply else None)
+        except (ValueError, OSError) as e:
+            raise click.ClickException(str(e))
+        if as_json:
+            _dump_json(rec)
+            return
+        console.print(f"queued {rec['msg_uid']} → {rec['to']}@{to.rpartition('@')[2]}",
+                      highlight=False)
+        return
     campaign_from = None
     if campaign is None and not no_campaign:
         replied = M.find_message(cfg, re_) if re_ else None

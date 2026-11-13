@@ -9,17 +9,20 @@ import http.client
 import json
 import logging
 import os
+import re
 import secrets
 import socket
 import ssl
 import threading
 import time
+import uuid
 from pathlib import Path
 from urllib.parse import urlsplit
 
 from . import decisions as D
 from . import events as E
 from . import hosts as H
+from . import mailbox as MB
 from . import pull_jobs as PJ
 from . import store
 from . import workers as WK
@@ -38,6 +41,8 @@ UNREACHABLE_S = 600
 STALE_S = 600
 EVENTS_LIMIT = 500
 EVENTS_MAX_BYTES = 1048576
+MAIL_LIMIT = 200                  # SPEC-0532
+MAIL_MAX_BYTES = 1048576
 MAX_CAMPAIGNS = 1000
 MAX_STR = 256
 
@@ -360,9 +365,10 @@ class HubClient:
         raise ConnectionError("TimeoutError: timed out")
 
     def request(self, method: str, path: str, body: bytes = b"",
-                allow: tuple = (200,)) -> tuple[int, bytes, dict]:
-        """A verified response. A status outside `allow` is an error before the signature is read;
-        one inside it (SPEC-0530: a `409`) must still carry a valid signature."""
+                allow: tuple | None = (200,)) -> tuple[int, bytes, dict]:
+        """A verified response. A status outside `allow` is an error after the signature is checked;
+        one inside it (SPEC-0530: a `409`) must still carry a valid signature. `allow=None` returns
+        any verified status (SPEC-0532: the mail relay tells a 4xx from a 5xx)."""
         data = body or b""
         target = self._target(path)
         headers = {"Authorization": f"Bearer {self.token}",
@@ -441,7 +447,7 @@ class HubClient:
                      direction="resp", status=status, now=self._now)
         if why:
             raise ConnectionError(why)
-        if status not in allow:
+        if allow is not None and status not in allow:
             raise ConnectionError(f"HTTP {status}")
         return status, raw, hdrs
 
@@ -872,3 +878,398 @@ def host_views(cfg, *, now=None, project=None, state=None) -> list[dict]:
 def host_rows(cfg, *, now=None, project=None, state=None) -> list[dict]:
     """One thin item per cached host campaign, host order then cache order."""
     return [r for _, rows in _views(cfg, now, project, state) for r in rows]
+
+
+# ---- exactly-once mail (SPEC-0532) -----------------------------------------------------------
+# The outbox is `<agentic_dir>/mailbox/outbox-<host>.jsonl`: message lines and ack lines. Network
+# calls run in a pool; every append, fsync and `hosts.update` runs on the calling thread.
+
+_UID_RE = re.compile(r"[0-9a-f]{32}")
+_ACK_RESULTS = ("delivered", "dup", "rejected")
+
+
+def _fsync_fd(fd: int) -> None:
+    os.fsync(fd)
+
+
+def _append_durable(path: Path, line: bytes) -> None:
+    """One `os.write` (O_APPEND) then an fsync; an fsync failure raises."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd = os.open(path, os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o644)
+    try:
+        os.write(fd, line)
+        _fsync_fd(fd)
+    finally:
+        os.close(fd)
+
+
+def outbox_path(cfg, name: str) -> Path:
+    return MB.mailbox_dir(cfg) / f"outbox-{E._safe(name)}.jsonl"
+
+
+def _outbox_lock(cfg, name: str) -> Path:
+    return MB.mailbox_dir(cfg) / f"outbox-{E._safe(name)}.lock"
+
+
+def enqueue_remote(cfg, *, to, frm, text, kind="info", campaign=None, re=None,
+                   needs_reply=None) -> dict:
+    """Queue one message for `<local>@<host>` (`to` is the full address). Raises ValueError when
+    the host is unknown or disabled, the local part is not `human` / `steward:<Name>`, or the
+    host's cached project list lacks the project. Returns the outbox record, fsynced."""
+    local, at, host = (to or "").strip().rpartition("@")
+    rec = next((r for r in H.load(cfg) if isinstance(r, dict) and r.get("name") == host), None) \
+        if at else None
+    if rec is None:
+        raise ValueError(f"unknown host {host!r}" if at else f"{to!r} has no @<host>")
+    if not rec.get("enabled", True):
+        raise ValueError(f"host {host!r} is disabled")
+    local = local.strip()
+    if local.lower().startswith("steward:") and local[len("steward:"):].strip():
+        name = local[len("steward:"):].strip()
+        cache = rec.get("status_cache")
+        projects = cache.get("projects") if isinstance(cache, dict) else None
+        if isinstance(projects, list):
+            hit = {p.casefold(): p for p in projects if isinstance(p, str)}.get(name.casefold())
+            if not hit:
+                raise ValueError(f"host {host!r} has no project {name!r}; "
+                                 f"known: {', '.join(p for p in projects if isinstance(p, str)) or '(none)'}")
+            name = hit
+        local = f"steward:{name}"
+    elif local != "human":
+        raise ValueError(f"unknown remote address {local!r} (human | steward:<Project>)@<host>")
+    if kind not in MB.KINDS:
+        raise ValueError(f"unknown kind {kind!r} ({' | '.join(MB.KINDS)})")
+    if not (text or "").strip():
+        raise ValueError("empty message text")
+    out = {"msg_uid": uuid.uuid4().hex, "to": local, "from": frm, "kind": kind, "text": text,
+           "campaign": campaign, "re": re,
+           "needs_reply": bool(kind in ("question", "request") if needs_reply is None
+                               else needs_reply)}
+    line = (json.dumps(out) + "\n").encode("utf-8")
+    with E._locked(_outbox_lock(cfg, host)):
+        _append_durable(outbox_path(cfg, host), line)
+    return out
+
+
+def _read_outbox(cfg, name: str) -> tuple[list[dict], set[str]]:
+    """`(message lines in file order, msg_uids that have an ack line)`."""
+    msgs: list[dict] = []
+    acked: set[str] = set()
+    try:
+        with open(outbox_path(cfg, name), "rb") as f:
+            for raw in f:
+                try:
+                    obj = json.loads(raw)
+                except (ValueError, RecursionError):
+                    continue
+                if not isinstance(obj, dict) or not isinstance(obj.get("msg_uid"), str):
+                    continue
+                if "result" in obj:
+                    acked.add(obj["msg_uid"])
+                else:
+                    msgs.append(obj)
+    except OSError:
+        pass
+    return msgs, acked
+
+
+def pending_mail(cfg, name: str, limit: int = MAIL_LIMIT) -> list[dict]:
+    msgs, acked = _read_outbox(cfg, name)
+    out, seen = [], set()
+    for m in msgs:
+        u = m["msg_uid"]
+        if u in acked or u in seen:
+            continue
+        seen.add(u)
+        out.append(m)
+        if len(out) >= limit:
+            break
+    return out
+
+
+def _mail_body(msgs: list[dict]) -> bytes:
+    return json.dumps({"messages": msgs}, ensure_ascii=False,
+                      separators=(",", ":")).encode("utf-8")
+
+
+def _mail_task(rec: dict, cfg, offset: int, pending: list[dict]) -> dict:
+    """Pool task: HTTP only. `get` is `("page", doc)`, `("reset", None)` or `("fail", exc)`;
+    `post` is None, `("resp", status, raw)` or `("fail", exc)`."""
+    out: dict = {"get": None, "post": None}
+    try:
+        client = HubClient(rec, cfg)
+        status, raw, _ = client.request(
+            "GET", f"/v1/mail?offset={offset}&limit={MAIL_LIMIT}", allow=None)
+        doc = json.loads(raw)
+        if not isinstance(doc, dict):
+            raise ConnectionError("response is not a JSON object")
+        if status == 409 and doc.get("error") == "bad_offset":
+            out["get"] = ("reset", None)
+        elif status != 200:
+            raise ConnectionError(f"HTTP {status}")
+        else:
+            nxt = doc.get("next_offset")
+            if (doc.get("schema") != "nw.federation.mail.page.v1"
+                    or not isinstance(doc.get("messages"), list) or not _is_int(nxt)
+                    or nxt < offset):
+                raise ConnectionError("bad mail page")
+            out["get"] = ("page", doc)
+    except Exception as e:                                  # noqa: BLE001 - reported as a failure
+        out["get"] = ("fail", e)
+        return out
+    if pending:
+        try:
+            status, raw, _ = client.request("POST", "/v1/mail", _mail_body(pending), allow=None)
+            out["post"] = ("resp", status, raw)
+        except Exception as e:                              # noqa: BLE001
+            out["post"] = ("fail", e)
+    return out
+
+
+def _inbox_size(cfg) -> int:
+    try:
+        return MB._inbox_path(cfg, "conductor").stat().st_size
+    except OSError:
+        return 0
+
+
+def _find_in_inbox(path: Path, offset, uid: str) -> dict | None:
+    """The inbox record carrying `uid`, parsing only lines from byte `offset` (a bad or non-line
+    boundary offset falls back to 0)."""
+    try:
+        with open(path, "rb") as f:
+            size = os.fstat(f.fileno()).st_size
+            if not (_is_int(offset) and 0 < offset <= size):
+                offset = 0
+            if offset:
+                f.seek(offset - 1)
+                if f.read(1) != b"\n":
+                    offset = 0
+            f.seek(offset)
+            for raw in f:
+                try:
+                    rec = json.loads(raw)
+                except (ValueError, RecursionError):
+                    continue
+                if isinstance(rec, dict) and rec.get("msg_uid") == uid:
+                    return rec
+    except OSError:
+        pass
+    return None
+
+
+def _valid_mail(m) -> bool:
+    return (isinstance(m, dict) and isinstance(m.get("msg_uid"), str)
+            and bool(_UID_RE.fullmatch(m["msg_uid"])) and m.get("kind") in MB.KINDS
+            and isinstance(m.get("text"), str) and bool(m["text"].strip()))
+
+
+def deliver_conductor(cfg, message: dict, host: str, *, cursor: dict | None = None,
+                      now=None) -> str:
+    """Write one host conductor message into the hub conductor inbox and one `message` event
+    (SPEC-0532). Both appends are idempotent on `msg_uid` over a rescan of the log tails from the
+    cursor's offsets (from byte 0 after a mail 409). Returns the hub inbox id. Does not call
+    `mailbox.send` or `validate_address`."""
+    if cursor is None:
+        cursor = H.find(H.load(cfg), host).get("cursor") or {}
+    replay = bool(cursor.get("mail_replay"))
+    uid = message["msg_uid"]
+    sender = message.get("from") if isinstance(message.get("from"), str) and message["from"] \
+        else "host"
+    frm = f"{sender}@{host}"
+    camp = f"{message['campaign']}@{host}" \
+        if isinstance(message.get("campaign"), str) and message["campaign"] else None
+    ts = message["ts"] if isinstance(message.get("ts"), str) else store.now_iso(now)
+    kind, text = message["kind"], message["text"]
+    re_ = message["re"] if isinstance(message.get("re"), str) else None
+    ipath = MB._inbox_path(cfg, "conductor")
+    with E._locked(MB._inbox_lock(cfg, "conductor")):
+        have = _find_in_inbox(ipath, 0 if replay else cursor.get("hub_inbox_offset"), uid)
+        if have is not None and isinstance(have.get("id"), str):
+            msg_id = have["id"]
+        else:
+            seq = MB._last_seq(ipath) + 1
+            msg_id = f"conductor:{seq}"
+            rec = {"schema": MB.SCHEMA, "id": msg_id, "seq": seq, "ts": ts, "from": frm,
+                   "to": "conductor", "kind": kind, "campaign": camp, "re": re_, "text": text,
+                   "needs_reply": message["needs_reply"] if isinstance(message.get("needs_reply"), bool)
+                   else kind in ("question", "request"), "msg_uid": uid}
+            _append_durable(ipath, (json.dumps(rec, ensure_ascii=False) + "\n").encode("utf-8"))
+    with E._locked(E._lock_path(cfg)):
+        tail = _scan_tail(cfg, 0 if replay else cursor.get("hub_mail_events_offset"))
+        if not any(ev.get("type") == "message" and ev.get("host") == host
+                   and isinstance(ev.get("data"), dict) and ev["data"].get("msg_uid") == uid
+                   for ev in tail):
+            E._append_locked(cfg, "message", campaign=camp, spec_id=None, project=None, by=frm,
+                             host=host, ts=ts,
+                             data={"msg_id": msg_id, "from": frm, "kind": kind, "text": text,
+                                   "re": re_, "msg_uid": uid})
+        _fsync_events(cfg)
+    return msg_id
+
+
+def _apply_mail_page(cfg, name: str, cursor: dict, doc: dict, now, *, events_ok: bool) -> None:
+    for m in doc["messages"]:
+        if _valid_mail(m):                  # anything else is consumed without a delivery
+            deliver_conductor(cfg, m, name, cursor=cursor, now=now)
+    nxt, replay = doc["next_offset"], bool(cursor.get("mail_replay"))
+    if nxt == cursor.get("mail_offset") and not replay:
+        return
+    fields = {"mail_offset": nxt, "hub_inbox_offset": _inbox_size(cfg)}
+    if events_ok:
+        fields["hub_mail_events_offset"] = _events_size(cfg)
+
+    def fn(recs):
+        r = H.find(recs, name)
+        cur = dict(r["cursor"]) if isinstance(r.get("cursor"), dict) else {}
+        cur.update(fields)
+        cur.pop("mail_replay", None)
+        r["cursor"] = cur
+    H.update(cfg, fn)
+
+
+def _apply_mail_reset(cfg, name: str) -> None:
+    """A verified mail 409: read from 0 next tick. `mail_replay` makes that read's rescans start
+    at byte 0 of the hub logs, so an already delivered `msg_uid` is found; the two hub offsets and
+    the events log are left as they were."""
+    _set_cursor(cfg, name, mail_offset=0, mail_replay=True)
+
+
+def _emit_rejected(cfg, name: str, cursor: dict, line: dict, reason: str, now) -> None:
+    """One `host_mail_rejected` per rejected id (a rescan of the events tail dedupes), fsynced."""
+    uid = line["msg_uid"]
+
+    def build(tail):
+        have = any(ev.get("type") == "host_mail_rejected" and _own_health(ev, name)
+                   and ev["data"].get("msg_uid") == uid for ev in tail)
+        return ([] if have else [_health_event("host_mail_rejected", name, now, msg_uid=uid,
+                                               to=line.get("to"), reason=reason)]), None
+
+    _locked_append(cfg, name, 0 if cursor.get("mail_replay") else cursor.get("hub_mail_events_offset"),
+                   build)
+
+
+def _post_acks(posted: list[dict], status: int, raw: bytes) -> list[dict]:
+    """The ack lines a verified POST response earns, or [] when every line stays pending."""
+    uids = {m["msg_uid"] for m in posted}
+    try:
+        doc = json.loads(raw)
+    except (ValueError, RecursionError):
+        doc = None
+    if status == 200:
+        if not (isinstance(doc, dict) and doc.get("schema") == "nw.federation.mail.v1"
+                and isinstance(doc.get("results"), list)):
+            return []
+        acks, seen = [], set()
+        for el in doc["results"]:
+            if not isinstance(el, dict) or el.get("result") not in _ACK_RESULTS:
+                continue
+            u = el.get("msg_uid")
+            if u not in uids or u in seen:
+                continue
+            if el["result"] == "rejected":
+                reason = el.get("reason")
+                acks.append({"msg_uid": u, "result": "rejected",
+                             "reason": (reason if isinstance(reason, str) else "rejected")[:200]})
+            elif _is_int(el.get("seq")):
+                acks.append({"msg_uid": u, "result": el["result"], "seq": el["seq"]})
+            else:
+                continue
+            seen.add(u)
+        return acks
+    if 400 <= status <= 499:
+        err = doc.get("error") if isinstance(doc, dict) else None
+        reason = err[:200] if isinstance(err, str) else f"http_{status}"
+        return [{"msg_uid": m["msg_uid"], "result": "rejected", "reason": reason} for m in posted]
+    return []
+
+
+def _apply_post(cfg, name: str, cursor: dict, posted: list[dict], resp, now) -> bool:
+    """Write the acks a verified response earns. False when an ack or its event may not be durable."""
+    if resp is None or resp[0] != "resp":
+        return True
+    acks = _post_acks(posted, resp[1], resp[2])
+    by_uid = {m["msg_uid"]: m for m in posted}
+    clean, keep = True, []
+    for a in acks:
+        if a["result"] == "rejected":
+            try:
+                _emit_rejected(cfg, name, cursor, by_uid[a["msg_uid"]], a["reason"], now)
+            except Exception as e:                          # noqa: BLE001 - do not ack
+                log.warning("federation mail: rejection of %s on host %s not recorded: %s",
+                            a["msg_uid"], name, e)
+                clean = False
+                continue
+        keep.append(a)
+    if keep:
+        data = "".join(json.dumps(a) + "\n" for a in keep).encode("utf-8")
+        try:
+            with E._locked(_outbox_lock(cfg, name)):
+                _append_durable(outbox_path(cfg, name), data)
+        except OSError as e:
+            log.warning("federation mail: acks for host %s not durable: %s", name, e)
+            clean = False
+    return clean
+
+
+def relay_mail(cfg, *, now=None) -> None:
+    """One mail pass over every enabled host that has an event cursor (SPEC-0532): GET the host's
+    conductor inbox page and POST pending outbox lines in a pool, drop what is still running after
+    `POOL_WAIT_S`, then apply on this thread in registry order."""
+    recs = H.load(cfg)
+    if not recs:
+        return
+    now = now or dt.datetime.now().astimezone()
+
+    def live(rs):
+        return [r for r in rs if isinstance(r, dict) and isinstance(r.get("name"), str)
+                and r.get("enabled", True) and isinstance(r.get("cursor"), dict)]
+
+    todo = [r["name"] for r in live(recs) if "mail_offset" not in r["cursor"]]
+    if todo:
+        inbox, events = _inbox_size(cfg), _events_size(cfg)
+
+        def init(rs):
+            for n in todo:
+                c = H.find(rs, n).get("cursor")
+                if isinstance(c, dict) and "mail_offset" not in c:
+                    c.update({"mail_offset": 0, "hub_inbox_offset": inbox,
+                              "hub_mail_events_offset": events})
+        recs = H.update(cfg, init)
+    hosts = live(recs)
+    if not hosts:
+        return
+
+    pool = cf.ThreadPoolExecutor(max_workers=len(hosts), thread_name_prefix="nw-mail")
+    jobs = {}
+    try:
+        for r in hosts:
+            off = r["cursor"].get("mail_offset")
+            off = off if _is_int(off) and off >= 0 else 0
+            posted = pending_mail(cfg, r["name"])
+            jobs[r["name"]] = (posted, pool.submit(_mail_task, r, cfg, off, posted))
+        cf.wait([f for _, f in jobs.values()], timeout=POOL_WAIT_S)
+    finally:
+        pool.shutdown(wait=False, cancel_futures=True)
+
+    for r in hosts:
+        name = r["name"]
+        posted, fut = jobs[name]
+        if not fut.done():
+            continue                                        # dropped: neither acked nor moved
+        try:
+            out = fut.result()
+        except Exception as e:                              # noqa: BLE001
+            log.warning("federation mail: host %s failed: %s", name, e)
+            continue
+        try:
+            cur = H.find(H.load(cfg), name).get("cursor")
+            cur = cur if isinstance(cur, dict) else r["cursor"]
+            ok = _apply_post(cfg, name, cur, posted, out["post"], now)
+            kind, val = out["get"]
+            if kind == "page":
+                _apply_mail_page(cfg, name, cur, val, now, events_ok=ok)
+            elif kind == "reset":
+                _apply_mail_reset(cfg, name)
+        except Exception as e:                              # noqa: BLE001 - one host must not stop the rest
+            log.warning("federation mail: host %s not applied: %s", name, e)

@@ -1,4 +1,4 @@
-"""`nw serve --federate` (SPEC-0529): signed `GET /v1/status` only."""
+"""`nw serve --federate`: the signed host channel (SPEC-0529), event pages (SPEC-0530), mail (SPEC-0532)."""
 from __future__ import annotations
 
 import hmac
@@ -14,7 +14,9 @@ from urllib.parse import parse_qs, urlsplit
 
 from . import events as E
 from . import federation as F
+from . import mailbox as MB
 from . import pull_jobs as PJ
+from . import store
 
 DEFAULT_BIND = "127.0.0.1:8792"
 HANDLER_TIMEOUT_S = PJ.HANDLER_TIMEOUT_S
@@ -51,6 +53,15 @@ def read_events_page(path, offset: int, limit: int) -> tuple[list[dict], int]:
     is consumed and omitted. The first line is returned even when it alone exceeds
     `F.EVENTS_MAX_BYTES`, so a cursor can always pass it; one too large for the hub's response cap
     is consumed unread and omitted. Memory use is bounded by one capped line."""
+    return _read_page(path, offset, limit, F.EVENTS_MAX_BYTES)
+
+
+def read_mail_page(path, offset: int, limit: int) -> tuple[list[dict], int]:
+    """SPEC-0532: the same page rules over the `conductor` inbox, with `F.MAIL_MAX_BYTES`."""
+    return _read_page(path, offset, limit, F.MAIL_MAX_BYTES)
+
+
+def _read_page(path, offset: int, limit: int, max_bytes: int) -> tuple[list[dict], int]:
     try:
         f = open(path, "rb")
     except FileNotFoundError:
@@ -71,9 +82,9 @@ def read_events_page(path, offset: int, limit: int) -> tuple[list[dict], int]:
         consumed = lines = 0
         while lines < limit and consumed < remaining:
             first = lines == 0
-            # Never hold more than one capped line: the first line may exceed EVENTS_MAX_BYTES
+            # Never hold more than one capped line: the first line may exceed the byte cap
             # (so a cursor can pass it) up to what the hub can read back; later lines stop at the cap.
-            cap = _MAX_FIRST_LINE if first else F.EVENTS_MAX_BYTES - consumed
+            cap = _MAX_FIRST_LINE if first else max_bytes - consumed
             raw = f.readline(min(remaining - consumed, cap + 1))
             if first and len(raw) > cap:
                 # Too large for the hub to read in one response: consume it unread, omit it.
@@ -88,7 +99,7 @@ def read_events_page(path, offset: int, limit: int) -> tuple[list[dict], int]:
                 continue
             if not raw.endswith(b"\n"):
                 break
-            if lines and consumed + len(raw) > F.EVENTS_MAX_BYTES:
+            if lines and consumed + len(raw) > max_bytes:
                 break
             consumed += len(raw)
             lines += 1
@@ -101,8 +112,9 @@ def read_events_page(path, offset: int, limit: int) -> tuple[list[dict], int]:
     return out, offset + consumed
 
 
-def _events_args(query: str) -> tuple[int, int]:
-    """`(offset, limit)` from a query string; raises BadOffset for a bad `offset`."""
+def _events_args(query: str, max_limit: int = F.EVENTS_LIMIT) -> tuple[int, int]:
+    """`(offset, limit)` from a query string; raises BadOffset for a bad `offset`. An omitted or
+    out-of-range `limit` means `max_limit`."""
     q = parse_qs(query, keep_blank_values=True)
     offset = 0
     if "offset" in q:
@@ -110,11 +122,162 @@ def _events_args(query: str) -> tuple[int, int]:
         if not _INT_RE.fullmatch(raw) or raw.startswith("-"):
             raise BadOffset("offset is not a non-negative integer")
         offset = int(raw)
-    limit = F.EVENTS_LIMIT
+    limit = max_limit
     raw = (q.get("limit") or [None])[0]
-    if raw is not None and _INT_RE.fullmatch(raw) and 1 <= int(raw) <= F.EVENTS_LIMIT:
+    if raw is not None and _INT_RE.fullmatch(raw) and 1 <= int(raw) <= max_limit:
         limit = int(raw)
     return offset, limit
+
+
+class CommitFailed(Exception):
+    """A durable write of `post_mail` failed; the lines already fsynced stay on disk."""
+
+
+_UID_RE = re.compile(r"[0-9a-f]{32}")
+
+
+def _fsync_fd(fd: int) -> None:
+    os.fsync(fd)
+
+
+def _append_durable(path, line: bytes) -> int:
+    """Append one line (one `os.write`), fsync, and return the file size after the fsync."""
+    fd = os.open(path, os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o644)
+    try:
+        os.write(fd, line)
+        _fsync_fd(fd)
+        return os.fstat(fd).st_size
+    finally:
+        os.close(fd)
+
+
+def _find_uid(path, start: int, uid: str) -> tuple[int, int] | None:
+    """`(seq, end offset)` of the inbox line carrying `uid`, scanning from byte `start` only."""
+    try:
+        f = open(path, "rb")
+    except OSError:
+        return None
+    with f:
+        size = os.fstat(f.fileno()).st_size
+        if not 0 <= start <= size:
+            start = 0
+        f.seek(start)
+        pos = start
+        for raw in f:
+            pos += len(raw)
+            if not raw.endswith(b"\n"):
+                break
+            try:
+                rec = json.loads(raw)
+            except (ValueError, RecursionError):
+                continue
+            if isinstance(rec, dict) and rec.get("msg_uid") == uid:
+                seq = rec.get("seq")
+                return (seq if isinstance(seq, int) and not isinstance(seq, bool) else 0), pos
+    return None
+
+
+def _read_received(path) -> list[dict]:
+    out = []
+    try:
+        with open(path, "rb") as f:
+            for raw in f:
+                try:
+                    rec = json.loads(raw)
+                except (ValueError, RecursionError):
+                    continue
+                if (isinstance(rec, dict) and isinstance(rec.get("msg_uid"), str)
+                        and isinstance(rec.get("inbox"), str)
+                        and isinstance(rec.get("inbox_end"), int)):
+                    out.append(rec)
+    except OSError:
+        pass
+    return out
+
+
+def _canonical_to(cfg, to) -> str | None:
+    if not isinstance(to, str):
+        return None
+    a = to.strip()
+    if a == "human":
+        return a
+    if a.lower().startswith("steward:"):
+        from ..rules import projects_payload
+        try:
+            known = [p["name"] for p in projects_payload(cfg)["projects"]]
+        except Exception:                                    # noqa: BLE001
+            known = []
+        hit = {n.casefold(): n for n in known}.get(a[len("steward:"):].strip().casefold())
+        if hit:
+            return f"steward:{hit}"
+    return None
+
+
+def _reject_reason(cfg, m) -> tuple[str, str | None]:
+    """`(reason, canonical to)`; an empty reason means the element is acceptable."""
+    uid = m.get("msg_uid") if isinstance(m, dict) else None
+    if not isinstance(uid, str) or not _UID_RE.fullmatch(uid):
+        return "bad_msg_uid", None
+    if (m.get("kind") not in MB.KINDS or not isinstance(m.get("text"), str)
+            or not m["text"].strip() or not isinstance(m.get("from"), str) or not m["from"]):
+        return "bad_message", None
+    to = _canonical_to(cfg, m.get("to"))
+    return ("", to) if to else ("bad_address", None)
+
+
+def post_mail(cfg, messages: list) -> list[dict]:
+    """SPEC-0532: write each posted message to its inbox and the dedupe line, nothing else.
+    One result per element, in order. A failed durable write raises `CommitFailed`."""
+    d = store.agentic_dir(cfg) / "federation"
+    rpath = d / "received.jsonl"
+    results: list[dict] = []
+    try:
+        with E._locked(d / "mail.lock"):
+            seen = _read_received(rpath)
+            for m in messages:
+                results.append(_post_one(cfg, m, seen, rpath))
+    except OSError as e:
+        raise CommitFailed(str(e)) from e
+    return results
+
+
+def _post_one(cfg, m, seen: list[dict], rpath) -> dict:
+    why, to = _reject_reason(cfg, m)
+    uid = m.get("msg_uid") if isinstance(m, dict) and isinstance(m.get("msg_uid"), str) else ""
+    if why:
+        return {"msg_uid": uid, "result": "rejected", "reason": why}
+    ipath = MB._inbox_path(cfg, to)
+    prior = next((x for x in seen if x["msg_uid"] == uid), None)
+    if prior is not None:
+        below = [x["inbox_end"] for x in seen
+                 if x["inbox"] == prior["inbox"] and x["inbox_end"] < prior["inbox_end"]]
+        hit = (_find_uid(ipath, max(below, default=0), uid) if prior["inbox"] == to else None) \
+            or _find_uid(ipath, 0, uid)
+        return {"msg_uid": uid, "result": "dup", "seq": hit[0] if hit else 0}
+    ends = [x["inbox_end"] for x in seen if x["inbox"] == to]
+    hit = _find_uid(ipath, ends[-1] if ends else 0, uid)
+    if hit is not None:                                      # the inbox line is durable, the dedupe is not
+        entry = {"msg_uid": uid, "inbox": to, "inbox_end": hit[1]}
+        _append_durable(rpath, (json.dumps(entry) + "\n").encode("utf-8"))
+        seen.append(entry)
+        return {"msg_uid": uid, "result": "dup", "seq": hit[0]}
+    kind = m["kind"]
+    with E._locked(MB._inbox_lock(cfg, to)):
+        seq = MB._last_seq(ipath) + 1
+        rec = {"schema": MB.SCHEMA, "id": f"{to}:{seq}", "seq": seq, "ts": store.now_iso(),
+               "from": m["from"], "to": to, "kind": kind,
+               "campaign": m["campaign"] if isinstance(m.get("campaign"), str) else None,
+               "re": m["re"] if isinstance(m.get("re"), str) else None, "text": m["text"],
+               "needs_reply": m["needs_reply"] if isinstance(m.get("needs_reply"), bool)
+               else kind in ("question", "request"), "msg_uid": uid}
+        if isinstance(m.get("action"), dict):
+            rec["action"] = m["action"]
+        ipath.parent.mkdir(parents=True, exist_ok=True)
+        end = _append_durable(ipath, (json.dumps(rec, ensure_ascii=False) + "\n").encode("utf-8"))
+    entry = {"msg_uid": uid, "inbox": to, "inbox_end": end}
+    _append_durable(rpath, (json.dumps(entry) + "\n").encode("utf-8"))
+    seen.append(entry)
+    return {"msg_uid": uid, "result": "delivered", "seq": seq}
 
 
 def make_federate_server(cfg, bind: str = DEFAULT_BIND, *, tls_cert=None, tls_key=None,
@@ -333,7 +496,47 @@ class _Handler(http.server.BaseHTTPRequestHandler):
             data = json.dumps(doc, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
             self._write(200, data, signed=True, method=method, path=path, secret=secret_key)
             return
-        if route in ("/v1/status", "/v1/events"):
+        if route == "/v1/mail" and method == "GET":
+            try:
+                offset, limit = _events_args(urlsplit(self.path).query, F.MAIL_LIMIT)
+                msgs, nxt = read_mail_page(MB._inbox_path(self.server.cfg, "conductor"), offset,
+                                           limit)
+            except BadOffset:
+                self._json_error(409, "bad_offset", signed=True, method=method, path=path,
+                                 secret=secret_key)
+                return
+            except Exception:
+                self._json_error(500, "internal_error", signed=True, method=method, path=path,
+                                 secret=secret_key)
+                return
+            doc = {"schema": "nw.federation.mail.page.v1", "messages": msgs, "next_offset": nxt}
+            data = json.dumps(doc, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
+            self._write(200, data, signed=True, method=method, path=path, secret=secret_key)
+            return
+        if route == "/v1/mail" and method == "POST":
+            try:
+                doc = json.loads(body)
+            except (ValueError, RecursionError):
+                doc = None
+            if not isinstance(doc, dict) or not isinstance(doc.get("messages"), list):
+                self._json_error(400, "bad_request", signed=True, method=method, path=path,
+                                 secret=secret_key)
+                return
+            try:
+                results = post_mail(self.server.cfg, doc["messages"])
+            except CommitFailed:
+                self._json_error(500, "commit_failed", signed=True, method=method, path=path,
+                                 secret=secret_key)
+                return
+            except Exception:
+                self._json_error(500, "internal_error", signed=True, method=method, path=path,
+                                 secret=secret_key)
+                return
+            data = json.dumps({"schema": "nw.federation.mail.v1", "results": results},
+                              separators=(",", ":"), ensure_ascii=False).encode("utf-8")
+            self._write(200, data, signed=True, method=method, path=path, secret=secret_key)
+            return
+        if route in ("/v1/status", "/v1/events", "/v1/mail"):
             self._json_error(405, "method_not_allowed", signed=True, method=method, path=path,
                              secret=secret_key)
             return

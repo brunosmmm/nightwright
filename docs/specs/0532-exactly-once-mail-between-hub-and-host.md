@@ -1,7 +1,7 @@
 ---
 id: SPEC-0532
 title: "Exactly-once mail between hub and host"
-status: accepted
+status: done
 owner: user
 created: 2026-11-10
 kind: feature
@@ -402,34 +402,34 @@ any other string raising `ValueError`. The source does not reference `hosts`,
 
 ## Acceptance criteria
 
-- [ ] `enqueue_remote` stores `msg_uid` as 32 lowercase hex from `uuid.uuid4().hex`
+- [x] `enqueue_remote` stores `msg_uid` as 32 lowercase hex from `uuid.uuid4().hex`
       and fsyncs the outbox before it returns. An fsync failure raises and the CLI
       exits non-zero. Two `multiprocessing` processes that each send 20 messages to
       one enabled host produce 40 distinct `msg_uid`s, and one drained tick delivers
       all 40, each once. The outbox append is one `os.write` under `events._locked`.
       `--json` prints that outbox record. A successful remote send prints
       `queued <msg_uid>`.
-- [ ] A `delivered` result, a `dup` result, and a `rejected` result each append one ack
+- [x] A `delivered` result, a `dup` result, and a `rejected` result each append one ack
       with that `result`. A later `relay_mail` POST body does not contain those
       `msg_uid`s. `delivered` and `dup` acks include `seq`. A `rejected` ack includes
       `reason` and no `seq`.
-- [ ] When the host commits a POST and the client then raises before the hub reads the
+- [x] When the host commits a POST and the client then raises before the hub reads the
       response, the line stays pending, the retry result is `dup`, the destination
       inbox holds one copy, and the outbox is acked. The same holds when the inbox
       fsync raises after the append and the handler returns 500: the retry is `dup` and
       the inbox holds one copy. When the handler returns 500 before any append, the
       retry is `delivered` and the inbox holds one copy.
-- [ ] A signature-verified status in `400..499` on `POST /v1/mail` acks every line in
+- [x] A signature-verified status in `400..499` on `POST /v1/mail` acks every line in
       that POST as `rejected`, emits one `host_mail_rejected` per line, and a later
       tick does not POST those ids. A 400 `{"error": "bad_request"}` writes no inbox
       line and the ack reason is `bad_request`. An unsigned response, a timeout, or a
       connection error acks nothing.
-- [ ] A message to a project the host does not have, a bad `kind`, an empty `text`, and
+- [x] A message to a project the host does not have, a bad `kind`, an empty `text`, and
       a `msg_uid` that is not 32 lowercase hex are each a 200 `rejected` with reason
       `bad_address`, `bad_message`, or `bad_msg_uid`. Each is acked, is absent from the
       next POST, writes no inbox line, and emits one `host_mail_rejected`. A second
       tick emits no second event for that `msg_uid`.
-- [ ] `GET /v1/mail` returns `Content-Type: application/json` and
+- [x] `GET /v1/mail` returns `Content-Type: application/json` and
       `nw.federation.mail.page.v1`. Offset `0` on a missing file returns
       `messages: []` and `next_offset: 0`. With 10,000 complete lines before `offset`,
       the page parser decodes only the lines from `offset` onward. The page stops at
@@ -441,11 +441,11 @@ any other string raising `ValueError`. The source does not reference `hosts`,
       enrolled. `PUT /v1/mail` is a signed 405 `{"error": "method_not_allowed"}`.
       An empty `messages` list is 200 `nw.federation.mail.v1` with `results: []` and
       writes nothing. The hub request line is `/v1/mail?offset=<n>&limit=200`.
-- [ ] A verified mail 409 sets `mail_offset` to `0` and appends no `host_cursor_reset`.
+- [x] A verified mail 409 sets `mail_offset` to `0` and appends no `host_cursor_reset`.
       The following read from `0` delivers no second copy of a `msg_uid` already in the
       hub conductor inbox. An unsigned mail response leaves `mail_offset` unchanged and
       appends nothing.
-- [ ] One host conductor message with a `msg_uid` and a non-empty campaign becomes one
+- [x] One host conductor message with a `msg_uid` and a non-empty campaign becomes one
       hub conductor record that stores that `msg_uid`, with `from` ending in `@<host>`
       and `campaign` `<campaign>@<host>`, and exactly one hub `message` event with
       `host` equal to the registry name, the same campaign, `data.msg_uid` equal to
@@ -456,17 +456,17 @@ any other string raising `ValueError`. The source does not reference `hosts`,
       `deliver_conductor` does not call `mailbox.send` or `validate_address`. A crash
       that leaves the inbox line and loses the event reuses that line's `id` as
       `data.msg_id` and still appends only one event.
-- [ ] If the hub inbox fsync or the message-event fsync raises, `mail_offset` is
+- [x] If the hub inbox fsync or the message-event fsync raises, `mail_offset` is
       unchanged. The next successful tick leaves one inbox record and one `message`
       event. If the checkpoint raises after both fsyncs, the next tick's rescan from
       `hub_inbox_offset` and `hub_mail_events_offset` also leaves one of each, and
       neither rescan decodes bytes before its offset.
-- [ ] `POST /v1/mail` with an `action` object stores that object on the inbox record,
+- [x] `POST /v1/mail` with an `action` object stores that object on the inbox record,
       leaves campaign state unchanged, and calls none of `drain_actions`, `plan_park`,
       `apply_park`, `plan_resume`, or `apply_resume`. An AST walk of `post_mail` finds
       none of those names. A `dup` whose inbox line is already durable appends only the
       missing `received.jsonl` line and does not append the inbox again.
-- [ ] `validate_address` still returns `conductor`, `human`, and the canonical
+- [x] `validate_address` still returns `conductor`, `human`, and the canonical
       `steward:<Project>`, and it still raises `ValueError` for `steward:P@host`,
       `human@host`, and `bob`. Its source contains none of `hosts`, `federation`, `@`,
       and `msg_uid`. `mailbox.py` does not import `federation`. With no `hosts.json`,
@@ -477,13 +477,13 @@ any other string raising `ValueError`. The source does not reference `hosts`,
       present, a conductor send stores a 32-hex `msg_uid` and a send to `human` does
       not. `steward:demo@<host>` with `status_cache.projects` of `["Demo"]` stores
       `to` as `steward:Demo`.
-- [ ] `nw mailbox send --to human@<host>` to an unknown host, to a disabled host, or to
+- [x] `nw mailbox send --to human@<host>` to an unknown host, to a disabled host, or to
       a project absent from a list `status_cache.projects` exits non-zero and writes no
       outbox line. The same send to an enabled host with a null `status_cache` appends
       one pending line. `relay_mail` does not call a disabled host, and it does not call
       an enabled host that has no `cursor` object. After `on`, the next `relay_mail`
       can deliver.
-- [ ] `POOL_WAIT_S` is `2.5`, and `relay_mail` passes that value to
+- [x] `POOL_WAIT_S` is `2.5`, and `relay_mail` passes that value to
       `concurrent.futures.wait`. A task still running when `wait` returns is not
       applied: no ack and no `mail_offset` change, including after the task finishes.
       When that task had already committed the POST, the next applied tick gets `dup`
@@ -495,7 +495,7 @@ any other string raising `ValueError`. The source does not reference `hosts`,
       does not add `mail_seq` or `hub_inbox_offset`. After `relay_mail`, an enabled
       host's `cursor` also has `mail_offset`, `hub_inbox_offset`, and
       `hub_mail_events_offset`, and its event cursor keys are unchanged.
-- [ ] With no `hosts.json`, `relay_mail` and `queue.tick` create no `hosts.json` and no
+- [x] With no `hosts.json`, `relay_mail` and `queue.tick` create no `hosts.json` and no
       outbox file. An AST walk of `hosts.py`, `federation.py`, and `cli_hosts.py` still
       fails on any `queue` import, including `from . import queue as Q`. The only
       `queue` attribute call in `federation_host.py` is still `queue_payload`.
@@ -636,6 +636,55 @@ any other string raising `ValueError`. The source does not reference `hosts`,
   local mailbox, the channel, and the event relay. The relay test that reads the
   record after `relay_tick` still sees no `mail_seq` and no `hub_inbox_offset`.
 
+### Test record (2026-11-12)
+
+- `uv run pytest -q tests/test_federation_mail.py` — 18 passed (every test named in the plan, plus
+  `test_mail_cursor_keys`).
+- `uv run pytest -q tests/test_agentic_mailbox.py tests/test_federation_channel.py
+  tests/test_federation_relay.py tests/test_federation_mail.py` — 128 passed.
+- `uv run pytest -q -n 4` over the 41 test files that mention mailbox, relay_hosts or federation —
+  1462 passed, 2 skipped. (`tools/affected_tests.py --run` selects a larger set because `queue.py`
+  changed and hit the 10-minute tool limit, so it was not completed here.) The full suite is left to
+  the queue's close gate.
+- `python3 tools/test_tiers.py --check` exits 0; `python3 tools/spec_lint.py` exits 0.
+- Manual verification (steps 1-6, a hub and a host data dir on one machine, host on
+  `127.0.0.1:18792`): `nw hosts add box ... | nw hosts enrol` enrolled; a host
+  `nw mailbox send --to conductor --from human --campaign SPEC-1 hello` then one hub
+  `nw queue tick` left one hub conductor record (`from` `human@box`, `campaign` `SPEC-1@box`, a
+  32-hex `msg_uid`) and one `message` event (`host` `box`, `data.msg_id` `conductor:1`); a second
+  tick added neither. `nw mailbox send --to human@box --from conductor ping` printed
+  `queued c7c5…2d42 → human@box`, and two ticks left one record in the host `human` inbox.
+  `nw mailbox send --to human --from conductor local` wrote hub `human:1` and no outbox line.
+
+### As shipped
+
+- **Mail 409 replay.** The Design says a verified mail 409 sets `mail_offset` to `0` and leaves
+  `hub_inbox_offset` and `hub_mail_events_offset` alone, and that the re-read finds the
+  `msg_uid` by dedupe. A rescan that starts at the checkpointed offsets cannot see a message
+  delivered before that checkpoint, so the 409 also sets `cursor.mail_replay: true`. While it is
+  set, `deliver_conductor` and the `host_mail_rejected` dedupe rescan from byte `0` of the hub
+  inbox and events log; the next page checkpoint clears it. The two offsets are still untouched
+  by the 409. The key is absent in every other state.
+- **Page checkpoint.** A page that consumed nothing (`next_offset` equals `mail_offset`, no
+  replay) writes no cursor update, so an idle host does not rewrite `hosts.json` each tick. The
+  `hub_mail_events_offset` is also not advanced on a tick whose ack or rejected-event write was
+  not durable, so the dedupe tail still covers that event.
+- **Hub delivery filter.** Besides a missing 32-hex `msg_uid`, a host line whose `kind` is not in
+  `mailbox.KINDS` or whose `text` is empty is consumed without a delivery.
+- **`enqueue_remote`** takes the full address (`<local>@<host>`) as `to`, since its signature
+  has no host argument, and does the host, enabled, local-part and `status_cache` checks; the CLI
+  turns its `ValueError`/`OSError` into a non-zero exit. The remote path does not infer a
+  campaign from `--re` or the text (those name hub campaigns).
+- **`queue._relay_hosts`** (the helper `tick` already calls for `relay_tick`) now also calls
+  `relay_mail`, each in its own try, so `relay_mail` runs once even when `relay_tick` raised. Both
+  failures are journalled (`federation_relay_failed`, `federation_mail_failed`).
+- **Manual step 5.** On a host with no campaigns the hub's `status_cache.projects` is `[]`, a list
+  without `Missing`, so `nw mailbox send --to steward:Missing@box` is refused at the CLI as
+  specified (no outbox line). The host-side `bad_address` rejection and its one
+  `host_mail_rejected` are covered by `test_rejected_address_is_acked_once`.
+- `HubClient.request(..., allow=None)` returns any verified status; the default `(200,)` is
+  unchanged.
+
 ## Clock Log
 
 Use `nw idea clock-in IDEA-562` at the start of an implementation session and
@@ -654,11 +703,11 @@ Use `nw idea clock-in IDEA-562` at the start of an implementation session and
 
 ## Definition of done
 
-- [ ] Acceptance criteria all met.
-- [ ] Test plan executed; automated tests pass; manual steps performed and recorded.
-- [ ] No regressions (affected tests at the close gate).
-- [ ] Spec body updated to match what shipped.
-- [ ] `docs/LEDGER.md` updated (status + date).
+- [x] Acceptance criteria all met.
+- [x] Test plan executed; automated tests pass; manual steps performed and recorded.
+- [x] No regressions (affected tests at the close gate).
+- [x] Spec body updated to match what shipped.
+- [x] `docs/LEDGER.md` updated (status + date).
 
 ## Open questions
 

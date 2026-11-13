@@ -223,7 +223,7 @@ progress. This is the single place to see *what has been decided* and *what is i
   - [x] [SPEC-0325](./specs/0325-steward-campaign-notices-project-idea-reconcile-remote-open.md) Stewards get campaign notices; a second-project merge reconciles its idea; pr campaigns branch from the remote — done
   - [x] [SPEC-0327](./specs/0327-cross-project-spec-id-collision-the-comfort.md) Spec ids are per project: a second project's SPEC-NNNN never resolves against wt's own specs — done
   - [x] [SPEC-0393](./specs/0393-wtfug-spec-0304-20261030-7a4f-spec-0304-review.md) SPEC-0304 review follow-ups: mvp-report edge cases in E4, E5 and E6, and the tests that pin them — done
-- **[SPEC-0310](./specs/0310-remote-workers-run-gates-persona-runs-and.md) — Remote workers: run gates, persona runs and campaigns on other machines** · accepted · (20/22 done)
+- **[SPEC-0310](./specs/0310-remote-workers-run-gates-persona-runs-and.md) — Remote workers: run gates, persona runs and campaigns on other machines** · accepted · (21/22 done)
   - [x] [SPEC-0331](./specs/0331-remote-gates-over-ssh-on-one-worker-host.md) Remote gates over SSH on one worker host — superseded
   - [x] [SPEC-0332](./specs/0332-worker-owned-async-jobs.md) Worker-owned async jobs — superseded
   - [x] [SPEC-0333](./specs/0333-remote-persona-runs-with-bundle-write-back.md) Remote persona runs with bundle write-back — superseded
@@ -243,7 +243,7 @@ progress. This is the single place to see *what has been decided* and *what is i
   - [x] [SPEC-0527](./specs/0527-federation-bounded-relay-mail-and-two-remote-verbs.md) Federation, bounded: relay, mail and two remote verbs — superseded
   - [x] [SPEC-0529](./specs/0529-federation-enrolment-and-the-signed-host-channel.md) Federation enrolment and the signed host channel — done
   - [x] [SPEC-0530](./specs/0530-hub-event-relay-health-and-read-only-host-views.md) Hub event relay, health, and read-only host views — done
-  - [ ] [SPEC-0532](./specs/0532-exactly-once-mail-between-hub-and-host.md) Exactly-once mail between hub and host — accepted
+  - [x] [SPEC-0532](./specs/0532-exactly-once-mail-between-hub-and-host.md) Exactly-once mail between hub and host — done
   - [ ] [SPEC-0533](./specs/0533-remote-park-and-resume.md) Remote park and resume — accepted
   - [x] [SPEC-0595](./specs/0595-federation-wire-mac-domain-separation.md) Federation wire MAC: domain-separate request and response signatures — done
 - **[SPEC-0348](./specs/0348-declarative-per-project-agentic-pipeline.md) — Declarative per-project agentic pipeline: steps, personas and routing as data, with a lean fast-track lane** · accepted · (3/3 done)
@@ -365,7 +365,6 @@ progress. This is the single place to see *what has been decided* and *what is i
 | [SPEC-0519](./specs/0519-retire-count-slots-and-gate-job-tokens.md) | Retire nw's own admission: count-based gate slots, persona slots and SPEC-0500 gate-job tokens give way to Slurm | feature | draft | M9: agentic workflow | 2026-11-09 |
 | [SPEC-0520](./specs/0520-retire-placement-cooldown-retry-drain-lost-paths.md) | Retire nw's placement, worker cooldown, cross-worker retry, drain internals, lease and lost-job kill paths, and the sync gate-job path | feature | draft | M9: agentic workflow | 2026-11-09 |
 | [SPEC-0521](./specs/0521-retire-pull-workers.md) | Retire pull workers: remove the coordinator job API, pull_jobs, pull_worker and nw serve --jobs | feature | draft | M9: agentic workflow | 2026-11-09 |
-| [SPEC-0532](./specs/0532-exactly-once-mail-between-hub-and-host.md) | Exactly-once mail between hub and host | feature | accepted | — | 2026-11-10 |
 | [SPEC-0533](./specs/0533-remote-park-and-resume.md) | Remote park and resume | feature | accepted | — | 2026-11-10 |
 | [SPEC-0552](./specs/0552-leaner-agentic-campaign-loop.md) | Leaner agentic campaign loop (role tiers, review packet, findings collator, resumable sessions) | epic | accepted | — | 2026-11-11 |
 | [SPEC-0556](./specs/0556-resumable-implementer-and-reviewer-sessions.md) | Resumable implementer and reviewer sessions per backend, with a fresh-session fallback | feature | in-progress | — | 2026-11-11 |
@@ -835,6 +834,7 @@ progress. This is the single place to see *what has been decided* and *what is i
 | [SPEC-0529](./specs/0529-federation-enrolment-and-the-signed-host-channel.md) | Federation enrolment and the signed host channel | feature | done | — | 2026-11-12 |
 | [SPEC-0530](./specs/0530-hub-event-relay-health-and-read-only-host-views.md) | Hub event relay, health, and read-only host views | feature | done | — | 2026-11-10 |
 | [SPEC-0531](./specs/0531-spec-review-precheck-skips-review-on-a-stale-spec.md) | Spec-review precheck scopes already-accepted to the current spec | feature | done | — | 2026-11-10 |
+| [SPEC-0532](./specs/0532-exactly-once-mail-between-hub-and-host.md) | Exactly-once mail between hub and host | feature | done | — | 2026-11-10 |
 | [SPEC-0534](./specs/0534-worker-update-when-idle-never-completes-workers.md) | Reconcile a draining worker's confirmed-gone remote job | feature | done | — | 2026-11-10 |
 | [SPEC-0535](./specs/0535-specs-cite-the-public-request-they-come-from.md) | Specs cite the public request they come from | feature | done | — | 2026-11-10 |
 | [SPEC-0536](./specs/0536-history-cache-opt-in.md) | History cache opt-in (replaces SPEC-0472 Decision 1) | feature | done | — | 2026-11-10 |

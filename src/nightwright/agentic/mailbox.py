@@ -12,6 +12,7 @@ import json
 import os
 import sys
 import time
+import uuid
 from pathlib import Path
 
 from . import codewatch as CW
@@ -99,6 +100,8 @@ def send(cfg, *, to, frm, text, kind="info", campaign=None, re=None, needs_reply
                "text": text, "needs_reply": bool(needs_reply)}
         if campaign_from:
             rec["campaign_from"] = campaign_from
+        if to == "conductor" and (Path(cfg["config_dir"]) / "secrets" / "federation.json").is_file():
+            rec["msg_uid"] = uuid.uuid4().hex     # SPEC-0532: an enrolled host's mail carries its id
         line = (json.dumps(rec, ensure_ascii=False) + "\n").encode("utf-8")
         fd = os.open(path, os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o644)
         try:

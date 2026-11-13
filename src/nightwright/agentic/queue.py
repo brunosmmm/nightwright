@@ -6533,12 +6533,15 @@ def tick(cfg, *, stop: threading.Event | None = None, runner=None, admit=True,
 
 def _relay_hosts(cfg) -> None:
     """SPEC-0530: copy enabled federation hosts' events into this hub's log; a failure is
-    journalled and never fails the tick. Inert without `hosts.json`."""
-    try:
-        from . import federation as FED
-        FED.relay_tick(cfg)
-    except Exception as e:                                       # noqa: BLE001
-        journal(cfg, "federation_relay_failed", error=f"{type(e).__name__}: {e}"[:500])
+    journalled and never fails the tick. SPEC-0532: then relay mail, once, even when the event
+    relay raised. Inert without `hosts.json`."""
+    from . import federation as FED
+    for step, name in ((lambda: FED.relay_tick(cfg), "federation_relay_failed"),
+                       (lambda: FED.relay_mail(cfg), "federation_mail_failed")):
+        try:
+            step()
+        except Exception as e:                                   # noqa: BLE001
+            journal(cfg, name, error=f"{type(e).__name__}: {e}"[:500])
 
 
 # ---- red episodes (SPEC-0420) -------------------------------------------------------------
